@@ -129,22 +129,37 @@
                         <span class="glyphicon glyphicon-search"></span>
                     </span>
                     <input type="text" class="form-control" placeholder="Search for jobs by RepGroup identifier"
-                        data-bind="value: searchRepGroup, valueUpdate: 'afterkeydown'">
+                        data-bind="value: searchRepGroup, valueUpdate: 'afterkeydown', disable: isSearchLoading">
                     <span class="input-group-addon">
                         <label class="checkbox-inline">
-                            <input type="checkbox" data-bind="checked: searchIsSubstring"> match substrings
+                            <input type="checkbox" data-bind="checked: searchIsSubstring, disable: isSearchLoading">
+                            match substrings
                         </label>
                     </span>
                     <span class="input-group-btn">
-                        <button class="btn btn-primary" type="submit">
+                        <button class="btn btn-primary" type="submit" data-bind="disable: isSearchLoading">
+                            <!-- ko if: !isSearchLoading() -->
                             <span class="glyphicon glyphicon-search"></span> Search
+                            <!-- /ko -->
+                            <!-- ko if: isSearchLoading() -->
+                            <span class="loader"></span> Searching...
+                            <!-- /ko -->
+                        </button>
+                        <button class="btn btn-default" type="button"
+                            data-bind="click: clearSearch, disable: isSearchLoading() || !hasSearched()">
+                            <span class="glyphicon glyphicon-remove"></span> Clear
+                        </button>
+                        <button class="btn btn-default" type="button"
+                            data-bind="click: toggleSearchMinimized, disable: isSearchLoading() || !hasSearched() || searchSummaries().length === 0">
+                            <span class="glyphicon"
+                                data-bind="css: { 'glyphicon-chevron-up': !searchMinimized(), 'glyphicon-chevron-down': searchMinimized }"></span>
                         </button>
                     </span>
                 </div>
             </form>
 
-            <!-- Search results container -->
-            <div data-bind="if: searchSummaries().length > 0" class="top-margin">
+            <!-- Search results container (only shown when not minimized) -->
+            <div data-bind="if: searchSummaries().length > 0 && !searchMinimized()" class="top-margin">
                 <h5><span data-bind="text: searchResults().length"></span> jobs found across <span
                         data-bind="text: searchSummaries().length - (searchSummaries().length > 1 ? 1 : 0)"></span>
                     RepGroups
@@ -274,6 +289,14 @@
                 </div>
             </div>
 
+            <!-- Minimized indicator (shown when minimized) -->
+            <div data-bind="if: searchSummaries().length > 0 && searchMinimized()" class="top-margin">
+                <div class="alert alert-info">
+                    <span data-bind="text: searchResults().length"></span> search results minimized.
+                    <a href="#" data-bind="click: toggleSearchMinimized">Show results</a>
+                </div>
+            </div>
+
             <!-- No results message -->
             <div data-bind="if: hasSearched() && searchResults().length === 0" class="top-margin">
                 <div class="alert alert-info">No jobs found matching your search criteria.</div>
@@ -353,48 +376,57 @@
         <div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
             <div style="width: 100%;" class="well well-sm">
                 <div style="margin: 0 auto;" data-bind="attr: { 'data-repgroup': id }">
-                    <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge"
-                            data-bind="text: total"></span></h5>
+                    <h5 style="margin: 0; padding: 0">
+                        <span data-bind="text: id"></span>
+                        <span class="badge" data-bind="text: total"></span>
+
+                        <!-- Close button for search repgroups -->
+                        <button type="button" class="btn btn-xs btn-default pull-right"
+                            data-bind="visible: id.startsWith('search:'), click: function() { $parent.removeSearchRepGroup(id) }">
+                            <span class="glyphicon glyphicon-remove"></span> Close
+                        </button>
+                    </h5>
+
                     <div class="top-margin" data-bind="if: total() > 0">
                         <div class="progress" style="margin-bottom: 0">
-                            <div class="progress-bar progress-bar-striped active progress-bar-warning clickable"
-                                role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed, attr: { 'aria-valuenow': delayPct() }">
+                            <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed, attr: { 'aria-valuenow': delayPct() }"
+                                role="progressbar" aria-valuemin="0" aria-valuemax="100">
                                 <!-- ko if: delayed() > 0 -->
                                 <span data-bind="text: delayed"></span> delayed
                                 <!-- /ko -->
                             </div>
-                            <div class="progress-bar progress-bar-striped active progress-bar-warning clickable"
-                                role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent, attr: { 'aria-valuenow': dependentPct() }">
+                            <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent, attr: { 'aria-valuenow': dependentPct() }"
+                                role="progressbar" aria-valuemin="0" aria-valuemax="100">
                                 <!-- ko if: dependent() > 0 -->
                                 <span data-bind="text: dependent"></span> dependent
                                 <!-- /ko -->
                             </div>
-                            <div class="progress-bar progress-bar-striped active progress-bar-info clickable"
-                                role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady, attr: { 'aria-valuenow': readyPct() }">
+                            <div class="progress-bar progress-bar-striped active progress-bar-info"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady, attr: { 'aria-valuenow': readyPct() }"
+                                role="progressbar" aria-valuemin="0" aria-valuemax="100">
                                 <!-- ko if: ready() > 0 -->
                                 <span data-bind="text: ready"></span> pending
                                 <!-- /ko -->
                             </div>
-                            <div class="progress-bar progress-bar-striped active clickable" role="progressbar"
-                                aria-valuemin="0" aria-valuemax="100"
-                                data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning, attr: { 'aria-valuenow': runPct() }">
+                            <div class="progress-bar progress-bar-striped active"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning, attr: { 'aria-valuenow': runPct() }"
+                                role="progressbar" aria-valuemin="0" aria-valuemax="100">
                                 <!-- ko if: running() > 0 -->
                                 <span data-bind="text: running"></span> running
                                 <!-- /ko -->
                             </div>
-                            <div class="progress-bar progress-bar-striped active progress-bar-danger clickable"
-                                role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                data-bind="style: { width: lostPct() + '%' }, click: $parent.showRepgroupLost, attr: { 'aria-valuenow': lostPct() }">
+                            <div class="progress-bar progress-bar-striped active progress-bar-danger" role="progressbar"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: lostPct() + '%' }, click: $parent.showRepgroupLost, attr: { 'aria-valuenow': lostPct() }"
+                                aria-valuemin="0" aria-valuemax="100">
                                 <!-- ko if: lost() > 0 -->
                                 <span data-bind="text: lost"></span> lost contact
                                 <!-- /ko -->
                             </div>
-                            <div class="progress-bar progress-bar-danger clickable" role="progressbar" aria-valuemin="0"
+                            <div class="progress-bar progress-bar-danger" role="progressbar" aria-valuemin="0"
                                 aria-valuemax="100"
-                                data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried, attr: { 'aria-valuenow': buryPct() }">
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried, attr: { 'aria-valuenow': buryPct() }">
                                 <!-- ko if: buried() > 0 -->
                                 <span data-bind="text: buried"></span> buried
                                 <!-- /ko -->
@@ -406,9 +438,9 @@
                                 <span data-bind="text: deleted"></span> deleted
                                 <!-- /ko -->
                             </div>
-                            <div class="progress-bar progress-bar-success clickable" role="progressbar"
-                                aria-valuemin="0" aria-valuemax="100"
-                                data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete, attr: { 'aria-valuenow': completePct() }">
+                            <div class="progress-bar progress-bar-success"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete, attr: { 'aria-valuenow': completePct() }"
+                                role="progressbar" aria-valuemin="0" aria-valuemax="100">
                                 <!-- ko if: complete() > 0 -->
                                 <span data-bind="text: complete"></span> complete
                                 <!-- /ko -->

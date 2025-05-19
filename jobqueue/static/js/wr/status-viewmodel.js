@@ -44,6 +44,87 @@ export function StatusViewModel() {
     self.searchSummaries = ko.observableArray([]);
     self.hasSearched = ko.observable(false);
     self.isSearchMode = ko.observable(false);
+    self.searchMinimized = ko.observable(false);
+    self.isSearchLoading = ko.observable(false);
+
+    // Clear search and reset UI
+    self.clearSearch = function () {
+        self.searchRepGroup('');
+        self.searchResults([]);
+        self.searchSummaries([]);
+        self.hasSearched(false);
+        self.searchMinimized(false);
+
+        // Remove any search-created RepGroups
+        self.removeAllSearchRepGroups();
+
+        return false; // Prevent form submission
+    };
+
+    // Toggle search UI minimized state
+    self.toggleSearchMinimized = function () {
+        self.searchMinimized(!self.searchMinimized());
+        return false;
+    };
+
+    // Remove a specific search RepGroup
+    self.removeSearchRepGroup = function (repgroupId) {
+        let foundIndex = -1;
+        for (let i = 0; i < self.repGroups.length; i++) {
+            if (self.repGroups[i].id === repgroupId) {
+                foundIndex = i;
+                break;
+            }
+        }
+
+        if (foundIndex >= 0) {
+            // Remove from the sortable array first
+            self.sortableRepGroups.remove(self.repGroups[foundIndex]);
+
+            // Then remove from the array and lookup
+            self.repGroups.splice(foundIndex, 1);
+            delete self.repGroupLookup[repgroupId];
+
+            // Update lookup indices
+            for (const rgId in self.repGroupLookup) {
+                if (self.repGroupLookup[rgId] > foundIndex) {
+                    self.repGroupLookup[rgId]--;
+                }
+            }
+        }
+    };
+
+    // Remove all search-created RepGroups
+    self.removeAllSearchRepGroups = function () {
+        // Identify all search RepGroups (they start with "search:")
+        const searchRepGroupIndices = [];
+
+        for (let i = 0; i < self.repGroups.length; i++) {
+            if (self.repGroups[i].id.startsWith('search:')) {
+                searchRepGroupIndices.push(i);
+            }
+        }
+
+        // Remove them in reverse order to avoid index issues
+        for (let i = searchRepGroupIndices.length - 1; i >= 0; i--) {
+            const index = searchRepGroupIndices[i];
+            const repgroupId = self.repGroups[index].id;
+
+            // Remove from sortable array
+            self.sortableRepGroups.remove(self.repGroups[index]);
+
+            // Remove from array and lookup
+            self.repGroups.splice(index, 1);
+            delete self.repGroupLookup[repgroupId];
+
+            // Update lookup indices for remaining groups
+            for (const rgId in self.repGroupLookup) {
+                if (self.repGroupLookup[rgId] > index) {
+                    self.repGroupLookup[rgId]--;
+                }
+            }
+        }
+    };
 
     // Show jobs from a search result as a RepGroup
     self.showGroupJobs = function (summary) {
@@ -73,6 +154,9 @@ export function StatusViewModel() {
 
         // Create a new repgroup using the summary information
         const repgroup = createRepGroupTracker(`search:${summary.name}`, self.rateLimit);
+
+        // Mark this as a search group (so we can disable click handlers)
+        repgroup.isSearchGroup = true;
 
         // Update the counts to match our summary
         repgroup.complete(summary.counts.complete || 0);
@@ -261,9 +345,33 @@ export function StatusViewModel() {
     };
 
     self.searchJobs = function () {
+        // Set loading state
+        self.isSearchLoading(true);
+
+        // Close any open details sections first
+        if (self.detailsOA) {
+            // Unsubscribe from current updates
+            self.ws.send(JSON.stringify({
+                Request: "unsubscribe"
+            }));
+
+            if (self.wallTimeUpdater) {
+                self.wallTimeUpdaters = new Array();
+                window.clearInterval(self.wallTimeUpdater);
+                self.wallTimeUpdater = '';
+            }
+
+            // Clear current details
+            self.detailsOA([]);
+            self.detailsRepgroup = '';
+            self.detailsState = '';
+            self.detailsOA = '';
+        }
+
         // Clear previous results
         self.searchResults([]);
         self.searchSummaries([]);
+        self.searchMinimized(false);
 
         // Set search flags
         self.hasSearched(true);
@@ -281,12 +389,20 @@ export function StatusViewModel() {
             // Exit search mode after a timeout - assuming all results arrive within 2 seconds
             setTimeout(function () {
                 self.isSearchMode(false);
+                self.isSearchLoading(false); // End loading state
+
+                // Unsubscribe from the automatically subscribed jobs
+                self.ws.send(JSON.stringify({
+                    Request: "unsubscribe"
+                }));
+
                 // Process the results once we've received them all
                 self.processSearchResults();
             }, 2000);
         } else {
             // If no RepGroup, exit search mode immediately
             self.isSearchMode(false);
+            self.isSearchLoading(false); // End loading state
         }
 
         return false; // Prevent form submit
@@ -309,32 +425,39 @@ export function StatusViewModel() {
         requestRepGroup(self);
     };
 
-    // Functions for clicking on different progress bar types
+    // Function to check if this is a search-created repgroup before handling progress bar clicks
     self.showRepgroupDelayed = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return; // Don't handle clicks for search-created groups
         showGroupState(self, repGroup, 'delayed');
     };
 
     self.showRepgroupDependent = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'dependent');
     };
 
     self.showRepgroupReady = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'ready');
     };
 
     self.showRepgroupRunning = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'reserved'); // which includes 'running'
     };
 
     self.showRepgroupLost = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'lost');
     };
 
     self.showRepgroupBuried = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'buried');
     };
 
     self.showRepgroupComplete = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'complete');
     };
 
