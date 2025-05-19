@@ -35,6 +35,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2475,6 +2476,14 @@ func (s *Server) getDBJobsByRepGroup(rg string, state JobState, srerr *string, q
 		cj.RepGroup = rg
 	}
 
+	sort.Slice(complete, func(i, j int) bool {
+		if complete[i].StartTime.Equal(complete[j].StartTime) {
+			return complete[i].EndTime.Before(complete[j].EndTime)
+		}
+
+		return complete[i].StartTime.Before(complete[j].StartTime)
+	})
+
 	return complete
 }
 
@@ -2485,6 +2494,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 		srerr = ErrDBError
 		qerr = err.Error()
 	}
+
 	return jobs, srerr, qerr
 }
 
