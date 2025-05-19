@@ -87,7 +87,11 @@ const (
 	ServerModeDrain     = "draining"
 )
 
-const maxJobsForStd = 1000
+const (
+	maxJobsForStd                  = 1000
+	serverWaitPeriodToStartRunning = 1 * time.Millisecond
+	serverMaxRetriesToStartRunning = 50
+)
 
 // ServerVersion gets set during build:
 // go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
@@ -1676,7 +1680,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 		// send detailed updates to subscribed connections
 		s.jsmutex.RLock()
-		jobSubscriptions := make(map[string][]string) // job key -> []connection IDs
+		jobSubscriptions := make(map[string][]string)
 
 		for connID, jobs := range s.jobSubscriptions {
 			for jobKey := range jobs {
@@ -1686,7 +1690,7 @@ func (s *Server) createQueue(ctx context.Context) {
 		s.jsmutex.RUnlock()
 
 		for _, inter := range data {
-			job := inter.(*Job)
+			job := inter.(*Job) //nolint:errcheck,forcetypeassert
 			jobKey := job.Key()
 
 			connIDs, ok := jobSubscriptions[jobKey]
@@ -1698,10 +1702,10 @@ func (s *Server) createQueue(ctx context.Context) {
 				tries := 0
 
 				for job.StartTime.IsZero() {
-					<-time.After(50 * time.Millisecond)
+					<-time.After(serverWaitPeriodToStartRunning)
 
 					tries++
-					if tries > 10 {
+					if tries > serverMaxRetriesToStartRunning {
 						break
 					}
 				}

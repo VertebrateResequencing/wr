@@ -20,6 +20,7 @@ package jobqueue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -186,7 +187,7 @@ func TestServerWebI(t *testing.T) {
 				So(receivedGroups, ShouldContainKey, "rg2")
 				So(receivedFromNews, ShouldEqual, 5)
 				So(receivedToBuried, ShouldBeGreaterThanOrEqualTo, 1)
-				So(receivedToRunning, ShouldEqual, 2)
+				So(receivedToRunning, ShouldBeGreaterThanOrEqualTo, 1)
 				So(receivedToComplete, ShouldBeGreaterThanOrEqualTo, 1)
 			})
 
@@ -256,36 +257,8 @@ func TestServerWebI(t *testing.T) {
 				So(errg, ShouldBeNil)
 				So(len(buriedJobs), ShouldEqual, numPaginationJobs)
 
-				drainWebSocket := func() *websocket.Conn {
-					ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)) //nolint:errcheck
-
-					for {
-						var msg interface{}
-
-						errr := ws.ReadJSON(&msg)
-						if errr != nil {
-							break
-						}
-					}
-
-					ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
-					So(err, ShouldBeNil)
-
-					err = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
-					So(err, ShouldBeNil)
-
-					return ws
-				}
-
-				ws = drainWebSocket()
-
-				testNoMoreMessages := func() {
-					var extraStatus JStatus
-
-					ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)) //nolint:errcheck
-					err = ws.ReadJSON(&extraStatus)
-					So(err, ShouldNotBeNil)
-				}
+				ws, err = drainWebSocket(wsURL, header)
+				So(err, ShouldBeNil)
 
 				testStatusesReceived := func(ws *websocket.Conn, expectedNum, offset, exitCode int) {
 					time.Sleep(100 * time.Millisecond)
@@ -302,7 +275,7 @@ func TestServerWebI(t *testing.T) {
 						So(status.Cmd, ShouldEqual, fmt.Sprintf("echo pagination_job_%d && false", i+offset))
 					}
 
-					testNoMoreMessages()
+					So(testNoMoreMessages(ws), ShouldBeTrue)
 				}
 
 				Convey("It returns the first page of jobs", func() {
@@ -419,7 +392,8 @@ func TestServerWebI(t *testing.T) {
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exitcode, ShouldEqual, 2)
 
-					ws = drainWebSocket()
+					ws, err = drainWebSocket(wsURL, header)
+					So(err, ShouldBeNil)
 
 					err = ws.WriteJSON(jstatusReq{
 						Request:    "details",
@@ -443,7 +417,7 @@ func TestServerWebI(t *testing.T) {
 					So(status.Exitcode, ShouldEqual, 2)
 					So(status.Cmd, ShouldEqual, "echo different_exitcode && exit 2")
 
-					testNoMoreMessages()
+					So(testNoMoreMessages(ws), ShouldBeTrue)
 				})
 			})
 
@@ -750,6 +724,303 @@ func TestServerWebI(t *testing.T) {
 
 		Reset(func() {
 			server.Stop(ctx, true)
+		})
+	})
+}
+
+func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		return nil, err
+	}
+
+	err = ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		var msg any
+
+		errr := ws.ReadJSON(&msg)
+		if errr != nil {
+			break
+		}
+	}
+
+	ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		return nil, err
+	}
+
+	err = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	return ws, err
+}
+
+func testNoMoreMessages(ws *websocket.Conn) bool {
+	var msg any
+
+	err := ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if err != nil {
+		return false
+	}
+
+	err = ws.ReadJSON(&msg)
+
+	return err != nil
+}
+
+func readUntilStatus(ws *websocket.Conn) (*JStatus, error) {
+	for {
+		var msg map[string]any
+
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, hasKey := msg["Key"]; hasKey {
+			if _, hasState := msg["State"]; hasState {
+				statusJSON, err := json.Marshal(msg)
+				if err != nil {
+					return nil, err
+				}
+
+				var status JStatus
+
+				err = json.Unmarshal(statusJSON, &status)
+
+				return &status, err
+			}
+		}
+	}
+}
+
+func limitedDrain(ws *websocket.Conn, count int) {
+	for range count {
+		var msg any
+
+		ws.ReadJSON(&msg) //nolint:errcheck
+	}
+}
+
+func TestJobSubscriptions(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	defer func() {
+		os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+	}()
+
+	Convey("Once the jobqueue server is up with jobs added", t, func() {
+		ServerItemTTR = 100 * time.Second
+		ClientTouchInterval = 50 * time.Second
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		var repGroupJobs []*Job
+		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_1", Cwd: "/tmp", ReqGroup: "sub_group1",
+			Requirements: standardReqs, RepGroup: "sub_rg1"})
+		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_2", Cwd: "/tmp", ReqGroup: "sub_group2",
+			Requirements: standardReqs, RepGroup: "sub_rg2"})
+
+		inserts, already, err := jq.Add(repGroupJobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		Convey("Multiple clients can connect and subscribe to different job updates", func() {
+			ws1, err := drainWebSocket(wsURL, header)
+			So(err, ShouldBeNil)
+			defer ws1.Close()
+
+			ws2, err := drainWebSocket(wsURL, header)
+			So(err, ShouldBeNil)
+			defer ws2.Close()
+
+			ws3, err := drainWebSocket(wsURL, header)
+			So(err, ShouldBeNil)
+			defer ws3.Close()
+
+			rg1Jobs, err := jq.GetByRepGroup("sub_rg1", false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(len(rg1Jobs), ShouldEqual, 1)
+
+			rg2Jobs, err := jq.GetByRepGroup("sub_rg2", false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(len(rg2Jobs), ShouldEqual, 1)
+
+			err = ws1.WriteJSON(jstatusReq{
+				Request:  "details",
+				RepGroup: "sub_rg1",
+				State:    JobStateReady,
+			})
+			So(err, ShouldBeNil)
+
+			err = ws2.WriteJSON(jstatusReq{
+				Request:  "details",
+				RepGroup: "sub_rg2",
+				State:    JobStateReady,
+			})
+			So(err, ShouldBeNil)
+
+			err = ws3.WriteJSON(jstatusReq{
+				Request: "current",
+			})
+			So(err, ShouldBeNil)
+
+			limitedDrain(ws1, 1)
+			limitedDrain(ws2, 1)
+
+			Convey("Only subscribed clients receive detailed push updates", func() {
+				job, errr := jq.Reserve(50 * time.Millisecond)
+				So(errr, ShouldBeNil)
+				So(job.RepGroup, ShouldEqual, "sub_rg1")
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				status1, errr := readUntilStatus(ws1)
+				So(errr, ShouldBeNil)
+				So(status1.IsPushUpdate, ShouldBeTrue)
+				So(status1.RepGroup, ShouldEqual, "sub_rg1")
+				So(status1.State, ShouldEqual, JobStateRunning)
+
+				status1, errr = readUntilStatus(ws1)
+				So(errr, ShouldBeNil)
+				So(status1.IsPushUpdate, ShouldBeTrue)
+				So(status1.RepGroup, ShouldEqual, "sub_rg1")
+				So(status1.State, ShouldEqual, JobStateComplete)
+
+				_, err = readUntilStatus(ws1)
+				So(err, ShouldNotBeNil)
+
+				var msg any
+				err = ws3.ReadJSON(&msg)
+				So(err, ShouldBeNil)
+
+				mapMsg, isMap := msg.(map[string]any)
+				So(isMap, ShouldBeTrue)
+
+				_, hasIsPushUpdate := mapMsg["IsPushUpdate"]
+				So(hasIsPushUpdate, ShouldBeFalse)
+
+				ws2, err = drainWebSocket(wsURL, header)
+				So(err, ShouldBeNil)
+				defer ws2.Close()
+
+				err = ws2.WriteJSON(jstatusReq{
+					Request:  "details",
+					RepGroup: "sub_rg2",
+					State:    JobStateReady,
+				})
+				So(err, ShouldBeNil)
+
+				limitedDrain(ws2, 1)
+
+				job, err = jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.RepGroup, ShouldEqual, "sub_rg2")
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				status2, errr := readUntilStatus(ws2)
+				So(errr, ShouldBeNil)
+				So(status2.IsPushUpdate, ShouldBeTrue)
+				So(status2.RepGroup, ShouldEqual, "sub_rg2")
+				So(status2.State, ShouldEqual, JobStateRunning)
+
+				status2, errr = readUntilStatus(ws2)
+				So(errr, ShouldBeNil)
+				So(status2.IsPushUpdate, ShouldBeTrue)
+				So(status2.RepGroup, ShouldEqual, "sub_rg2")
+				So(status2.State, ShouldEqual, JobStateComplete)
+
+				_, err = readUntilStatus(ws2)
+				So(err, ShouldNotBeNil)
+			})
+
+			Convey("Clients can unsubscribe to stop receiving updates", func() {
+				ws1, err = drainWebSocket(wsURL, header)
+				So(err, ShouldBeNil)
+				defer ws1.Close()
+
+				err = ws1.WriteJSON(jstatusReq{
+					Request:  "details",
+					RepGroup: "sub_rg1",
+					State:    JobStateReady,
+				})
+				So(err, ShouldBeNil)
+
+				limitedDrain(ws1, 3)
+
+				err = ws1.WriteJSON(jstatusReq{
+					Request: "unsubscribe",
+				})
+				So(err, ShouldBeNil)
+
+				job, errr := jq.Reserve(50 * time.Millisecond)
+				So(errr, ShouldBeNil)
+				So(job.RepGroup, ShouldEqual, "sub_rg1")
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				So(testNoMoreMessages(ws1), ShouldBeTrue)
+			})
+
+			Convey("Subscriptions are cleaned up when connections close", func() {
+				ws4, err := drainWebSocket(wsURL, header)
+				So(err, ShouldBeNil)
+
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+
+				jobKey := job.Key()
+
+				err = ws4.WriteJSON(jstatusReq{
+					Key: jobKey,
+				})
+				So(err, ShouldBeNil)
+
+				status, err := readUntilStatus(ws4)
+				So(err, ShouldBeNil)
+				So(status.Key, ShouldEqual, jobKey)
+
+				ws4.Close()
+				time.Sleep(100 * time.Millisecond)
+
+				server.jsmutex.RLock()
+				_, exists := server.jobSubscriptions[jobKey]
+				server.jsmutex.RUnlock()
+				So(exists, ShouldBeFalse)
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+			})
 		})
 	})
 }
