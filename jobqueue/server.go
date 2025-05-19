@@ -2524,6 +2524,16 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptio
 		return jobs
 	}
 
+	opts = s.normalizeOptions(opts)
+	limited := s.filterAndGroupJobs(jobs, opts)
+	getStd := shouldPopulateStd(limited, opts.GetStd)
+	s.populateJobData(ctx, limited, getStd, opts.GetEnv)
+
+	return limited
+}
+
+// normalizeOptions ensures the options have valid values.
+func (s *Server) normalizeOptions(opts limitJobsOptions) limitJobsOptions {
 	if opts.Limit < 0 {
 		opts.Limit = 0
 	}
@@ -2532,86 +2542,171 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptio
 		opts.Offset = 0
 	}
 
-	groups := make(map[string][]*Job)
+	if opts.State == JobStateRunning {
+		opts.State = JobStateReserved
+	}
+
+	return opts
+}
+
+// filterAndGroupJobs filters jobs by state and groups them by characteristics.
+func (s *Server) filterAndGroupJobs(jobs []*Job, opts limitJobsOptions) []*Job {
+	if opts.Limit == 0 {
+		return s.filterJobsByState(jobs, opts)
+	}
+
+	return s.groupAndLimitJobs(jobs, opts)
+}
+
+// filterJobsByState returns only jobs matching the state filters.
+func (s *Server) filterJobsByState(jobs []*Job, opts limitJobsOptions) []*Job {
 	var limited []*Job
 	for _, job := range jobs {
-		job.RLock()
-		jState := job.State
-		jExitCode := job.Exitcode
-		jFailReason := job.FailReason
-		jLost := job.Lost
-		job.RUnlock()
-		if jState == JobStateRunning {
-			if jLost {
-				jState = JobStateLost
-			} else {
-				jState = JobStateReserved
-			}
-		}
-
-		if opts.State != "" {
-			if opts.State == JobStateRunning {
-				opts.State = JobStateReserved
-			}
-
-			if opts.State == JobStateDeletable {
-				if jState == JobStateRunning || jState == JobStateComplete {
-					continue
-				}
-			} else if jState != opts.State {
-				continue
-			}
-		}
-
-		if opts.FailReason != "" && (jFailReason != opts.FailReason || jExitCode != opts.ExitCode) {
-			continue
-		}
-
-		if opts.Limit == 0 {
+		if s.jobMatchesFilters(job, opts) {
 			limited = append(limited, job)
-		} else {
-			group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
-			jobs, existed := groups[group]
-			if existed {
-				lenj := len(jobs)
-				if lenj == opts.Offset+opts.Limit {
-					jobs[lenj-1].Similar++
-				} else {
-					jobs = append(jobs, job)
-					groups[group] = jobs
-				}
-			} else {
-				jobs = []*Job{job}
-				groups[group] = jobs
-			}
-		}
-	}
-
-	if opts.Offset > 0 {
-		for group, jobs := range groups {
-			if opts.Offset < len(jobs) {
-				groups[group] = jobs[opts.Offset:]
-			} else {
-				delete(groups, group)
-			}
-		}
-	}
-
-	if opts.Limit > 0 {
-		for _, jobs := range groups {
-			limited = append(limited, jobs...)
-		}
-	}
-
-	getStd := shouldPopulateStd(limited, opts.GetStd)
-
-	if opts.GetEnv || getStd {
-		for _, job := range limited {
-			s.jobPopulateStdEnv(ctx, job, getStd, opts.GetEnv)
 		}
 	}
 
 	return limited
+}
+
+// jobMatchesFilters checks if a job matches the filtering criteria.
+func (s *Server) jobMatchesFilters(job *Job, opts limitJobsOptions) bool {
+	jState, jExitCode, jFailReason, jLost := getJobProps(job)
+
+	jState = s.normalizeJobState(jState, jLost)
+
+	return s.matchesStateFilter(jState, opts.State) &&
+		s.matchesFailureFilter(jFailReason, jExitCode, opts.FailReason, opts.ExitCode)
+}
+
+func getJobProps(job *Job) (JobState, int, string, bool) {
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.State, job.Exitcode, job.FailReason, job.Lost
+}
+
+// normalizeJobState converts running jobs to either lost or reserved state.
+func (s *Server) normalizeJobState(state JobState, lost bool) JobState {
+	if state == JobStateRunning {
+		if lost {
+			return JobStateLost
+		}
+
+		return JobStateReserved
+	}
+
+	return state
+}
+
+// matchesStateFilter checks if a job's state matches the filter criteria.
+func (s *Server) matchesStateFilter(jobState JobState, filterState JobState) bool {
+	if filterState == "" {
+		return true
+	}
+
+	if filterState == JobStateDeletable {
+		return jobState != JobStateRunning && jobState != JobStateComplete
+	}
+
+	return jobState == filterState
+}
+
+// matchesFailureFilter checks if a job's failure reason and exit code match the
+// filter criteria.
+func (s *Server) matchesFailureFilter(jobFailReason string, jobExitCode int,
+	filterFailReason string, filterExitCode int) bool {
+	if filterFailReason == "" {
+		return true
+	}
+
+	return jobFailReason == filterFailReason && jobExitCode == filterExitCode
+}
+
+// groupAndLimitJobs groups jobs by characteristics and applies limits.
+func (s *Server) groupAndLimitJobs(jobs []*Job, opts limitJobsOptions) []*Job {
+	groups := s.groupJobsByCharacteristics(jobs, opts)
+	groups = s.applyOffsetToGroups(groups, opts.Offset)
+
+	return s.collectJobsFromGroups(groups)
+}
+
+// groupJobsByCharacteristics groups jobs by state, exit code, and failure
+// reason.
+func (s *Server) groupJobsByCharacteristics(jobs []*Job, opts limitJobsOptions) map[string][]*Job {
+	groups := make(map[string][]*Job)
+
+	for _, job := range jobs {
+		if !s.jobMatchesFilters(job, opts) {
+			continue
+		}
+
+		jState, jExitCode, jFailReason, jLost := getJobProps(job)
+		jState = s.normalizeJobState(jState, jLost)
+
+		group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
+		s.addJobToGroup(job, group, groups, opts)
+	}
+
+	return groups
+}
+
+// applyOffsetToGroups applies pagination offset to each group of jobs.
+func (s *Server) applyOffsetToGroups(groups map[string][]*Job, offset int) map[string][]*Job {
+	if offset <= 0 {
+		return groups
+	}
+
+	for group, groupJobs := range groups {
+		if offset < len(groupJobs) {
+			groups[group] = groupJobs[offset:]
+		} else {
+			delete(groups, group)
+		}
+	}
+
+	return groups
+}
+
+// collectJobsFromGroups flattens all job groups into a single slice.
+func (s *Server) collectJobsFromGroups(groups map[string][]*Job) []*Job {
+	var allJobs []*Job
+	for _, groupJobs := range groups {
+		allJobs = append(allJobs, groupJobs...)
+	}
+
+	return allJobs
+}
+
+// addJobToGroup adds a job to a group, managing counts and similarity.
+func (s *Server) addJobToGroup(job *Job, group string, groups map[string][]*Job, opts limitJobsOptions) {
+	jobs, existed := groups[group]
+	if !existed {
+		jobs = []*Job{job}
+		groups[group] = jobs
+
+		return
+	}
+
+	lenj := len(jobs)
+	if lenj == opts.Offset+opts.Limit {
+		jobs[lenj-1].Similar++
+	} else {
+		jobs = append(jobs, job)
+		groups[group] = jobs
+	}
+}
+
+// populateJobData fills in standard output/error and environment data.
+func (s *Server) populateJobData(ctx context.Context, jobs []*Job, getStd, getEnv bool) {
+	if !getEnv && !getStd {
+		return
+	}
+
+	for _, job := range jobs {
+		s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+	}
 }
 
 // shouldPopulateStd only returns true if the given getStd is true and if the
@@ -3122,12 +3217,14 @@ func (s *Server) unsubscribeFromJob(connID string, jobKey string) {
 
 	if jobKey == "" {
 		delete(s.jobSubscriptions, connID)
-	} else {
-		delete(subscriptions, jobKey)
 
-		if len(subscriptions) == 0 {
-			delete(s.jobSubscriptions, connID)
-		}
+		return
+	}
+
+	delete(subscriptions, jobKey)
+
+	if len(subscriptions) == 0 {
+		delete(s.jobSubscriptions, connID)
 	}
 }
 
