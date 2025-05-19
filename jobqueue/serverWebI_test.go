@@ -81,8 +81,6 @@ func TestServerWebI(t *testing.T) {
 		job, err := jq.Reserve(50 * time.Millisecond)
 		So(err, ShouldBeNil)
 		So(job.Cmd, ShouldEqual, "echo 1")
-		// err = jq.Execute(ctx, job, config.RunnerExecShell)
-		// So(err, ShouldBeNil)
 
 		job, err = jq.Reserve(50 * time.Millisecond)
 		So(err, ShouldBeNil)
