@@ -38,6 +38,28 @@
 
     <!-- Chart.js for resource visualizations -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@sgratzl/chartjs-chart-boxplot@4.4.4/build/index.umd.min.js"></script>
+    <script>
+        // Register the boxplot controller
+        window.chartRegistered = false;
+        function ensureChartTypesRegistered() {
+            if (!window.chartRegistered && typeof Chart !== 'undefined') {
+                if (window.ChartBoxPlot) {
+                    Chart.register(ChartBoxPlot.BoxPlotController, ChartBoxPlot.BoxAndWiskers);
+                    window.chartRegistered = true;
+                }
+            }
+        }
+
+        // Try to register immediately if Chart is loaded
+        if (typeof Chart !== 'undefined') {
+            ensureChartTypesRegistered();
+        }
+
+        // Also try again on window load to be sure
+        window.addEventListener('load', ensureChartTypesRegistered);
+    </script>
+
 </head>
 
 <body>
@@ -491,7 +513,7 @@
                                 aria-valuemax="100"
                                 data-bind="style: { width: deletePct() + '%' }, attr: { 'aria-valuenow': deletePct() }">
                                 <!-- ko if: deleted() > 0 -->
-                                <span data-bind="text: deleted"></span> deleted
+                                <span data-bind="text: deleted"></span> <span class="text-muted">(deleted)</span>
                                 <!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-success"
