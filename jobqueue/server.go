@@ -1755,11 +1755,11 @@ func (s *Server) createQueue(ctx context.Context) {
 					mutex *sync.Mutex
 				}) {
 					cm.mutex.Lock()
-					err = cm.conn.WriteJSON(status)
+					errw := cm.conn.WriteJSON(status)
 					cm.mutex.Unlock()
 
-					if err != nil {
-						clog.Warn(ctx, "failed to send job update to subscriber", "err", err)
+					if errw != nil {
+						clog.Warn(ctx, "failed to send job update to subscriber", "err", errw)
 					}
 				}(cm)
 			}
