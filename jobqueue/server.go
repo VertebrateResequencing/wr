@@ -35,13 +35,12 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -52,8 +51,10 @@ import (
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
+	"github.com/lindell/go-ordered-set/orderedset"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
+	"github.com/wtsi-ssg/wr/clog"
 	mangos "nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/rep"
 	"nanomsg.org/go-mangos/transport/tlstcp"
@@ -87,7 +88,12 @@ const (
 	ServerModeDrain     = "draining"
 )
 
-const maxJobsForStd = 1000
+const (
+	maxJobsForStd                  = 1000
+	serverWaitPeriodToStartRunning = 1 * time.Millisecond
+	serverMaxRetriesToStartRunning = 50
+	serverSocketWait               = 50 * time.Millisecond
+)
 
 // ServerVersion gets set during build:
 // go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
@@ -178,9 +184,48 @@ type ServerStats struct {
 	ETC     time.Duration // how long until the the slowest of the currently running jobs is expected to complete
 }
 
+// rgToKeys is a thread-safe map of RepGroup to a PList of keys.
 type rgToKeys struct {
 	sync.RWMutex
-	lookup map[string]map[string]bool
+	lookup map[string]*orderedset.OrderedSet[string]
+}
+
+func newRGToKeys() *rgToKeys {
+	return &rgToKeys{lookup: make(map[string]*orderedset.OrderedSet[string])}
+}
+
+// Add adds the key to the list of keys for the given RepGroup. You must hold a
+// Lock() when using this method!
+func (r *rgToKeys) Add(rg string, key string) {
+	if _, ok := r.lookup[rg]; !ok {
+		r.lookup[rg] = orderedset.New[string]()
+	}
+
+	r.lookup[rg].Add(key)
+}
+
+// Delete removes the key from the list of keys for the given RepGroup. You must
+// hold a Lock() when using this method!
+func (r *rgToKeys) Delete(rg string, key string) {
+	if _, ok := r.lookup[rg]; !ok {
+		return
+	}
+
+	r.lookup[rg].Delete(key)
+}
+
+// Values gets the keys for the given RepGroup. It does its own RLock(); do not
+// try to RLock() before calling this.
+func (r *rgToKeys) Values(rg string) []string {
+	r.RLock()
+	defer r.RUnlock()
+
+	plist, ok := r.lookup[rg]
+	if !ok {
+		return nil
+	}
+
+	return plist.Values()
 }
 
 // jstateCount is the state count change we send to the status webpage; we are
@@ -311,6 +356,8 @@ type Server struct {
 	racCheckTimer             *time.Timer
 	pauseRequests             int
 	wsconns                   map[string]*websocket.Conn
+	wsWriteMutexes            map[string]*sync.Mutex     // mutex per websocket connection
+	jobSubscriptions          map[string]map[string]bool // conn ID -> job key -> subscribed
 	badServers                map[string]*cloud.Server
 	schedIssues               map[string]*schedulerIssue
 	racmutex                  sync.RWMutex // to protect the readyaddedcallback
@@ -320,8 +367,9 @@ type Server struct {
 	ssmutex                   sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
+	jsmutex                   sync.RWMutex // to protect jobSubscriptions
 	sync.Mutex
-	wsmutex              sync.Mutex
+	wsmutex              sync.RWMutex
 	up                   bool
 	drain                bool
 	blocking             bool
@@ -667,7 +715,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		uploadDir:                 uploadDir,
 		sock:                      sock,
 		ch:                        new(codec.BincHandle),
-		rpl:                       &rgToKeys{lookup: make(map[string]map[string]bool)},
+		rpl:                       newRGToKeys(),
 		limiter:                   l,
 		db:                        db,
 		stopSigHandling:           stopSigHandling,
@@ -681,6 +729,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		wsconns:                   make(map[string]*websocket.Conn),
 		statusCaster:              bcast.NewGroup(),
 		badServerCaster:           bcast.NewGroup(),
+		wsWriteMutexes:            make(map[string]*sync.Mutex),
+		jobSubscriptions:          make(map[string]map[string]bool),
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               bcast.NewGroup(),
 		schedIssues:               make(map[string]*schedulerIssue),
@@ -1487,7 +1537,7 @@ func (s *Server) createQueue(ctx context.Context) {
 					defer internal.LogPanic(ctx, "jobqueue unschedule runners", true)
 					defer s.wg.Done(wgk)
 					clog.Debug(ctx, "rac unscheduling uneeded group", "group", group.name)
-					s.scheduleRunners(ctx, group)
+					s.scheduleRunners(ctx, group.clone(0))
 				}(group.clone(0))
 				delete(s.previouslyScheduledGroups, name)
 				clog.Debug(ctx, "rac deleted previous unneeded group", "group", name)
@@ -1629,6 +1679,91 @@ func (s *Server) createQueue(ctx context.Context) {
 				s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
 			}
 		}
+
+		// send detailed updates to subscribed connections
+		s.jsmutex.RLock()
+		jobSubscriptions := make(map[string][]string)
+
+		for connID, jobs := range s.jobSubscriptions {
+			for jobKey := range jobs {
+				jobSubscriptions[jobKey] = append(jobSubscriptions[jobKey], connID)
+			}
+		}
+		s.jsmutex.RUnlock()
+
+		for _, inter := range data {
+			job := inter.(*Job) //nolint:errcheck,forcetypeassert
+			job.RLock()
+			jobKey := job.Key()
+			job.RUnlock()
+
+			connIDs, ok := jobSubscriptions[jobKey]
+			if !ok {
+				continue
+			}
+
+			if to == JobStateRunning {
+				for range serverMaxRetriesToStartRunning {
+					<-time.After(serverWaitPeriodToStartRunning)
+
+					job.RLock()
+					if !job.StartTime.IsZero() {
+						job.RUnlock()
+
+						break
+					}
+					job.RUnlock()
+				}
+			}
+
+			if from == JobStateRunning {
+				s.jobPopulateStdEnv(ctx, job, true, false)
+			}
+
+			status, err := job.ToStatus()
+			if err != nil {
+				clog.Warn(ctx, "failed to convert job to status", "err", err)
+
+				continue
+			}
+
+			status.IsPushUpdate = true
+
+			s.wsmutex.RLock()
+
+			connMutexes := make(map[string]struct {
+				conn  *websocket.Conn
+				mutex *sync.Mutex
+			})
+
+			for _, connID := range connIDs {
+				conn, exists := s.wsconns[connID]
+				mutex, mutexExists := s.wsWriteMutexes[connID]
+
+				if exists && mutexExists {
+					connMutexes[connID] = struct {
+						conn  *websocket.Conn
+						mutex *sync.Mutex
+					}{conn, mutex}
+				}
+			}
+			s.wsmutex.RUnlock()
+
+			for _, cm := range connMutexes {
+				go func(cm struct {
+					conn  *websocket.Conn
+					mutex *sync.Mutex
+				}) {
+					cm.mutex.Lock()
+					errw := cm.conn.WriteJSON(status)
+					cm.mutex.Unlock()
+
+					if errw != nil {
+						clog.Warn(ctx, "failed to send job update to subscriber", "err", errw)
+					}
+				}(cm)
+			}
+		}
 	})
 
 	// we set a callback for running items that hit their ttr because the
@@ -1707,10 +1842,7 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 	s.rpl.Lock()
 	for _, itemdef := range itemdefs {
 		rp := itemdef.Data.(*Job).RepGroup
-		if _, exists := s.rpl.lookup[rp]; !exists {
-			s.rpl.lookup[rp] = make(map[string]bool)
-		}
-		s.rpl.lookup[rp][itemdef.Key] = true
+		s.rpl.Add(rp, itemdef.Key)
 	}
 	s.rpl.Unlock()
 
@@ -2102,7 +2234,7 @@ func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 			// clean up rpl lookups
 			s.rpl.Lock()
 			for i, rg := range repGroups {
-				delete(s.rpl.lookup[rg], toDelete[i])
+				s.rpl.Delete(rg, toDelete[i])
 			}
 			s.rpl.Unlock()
 
@@ -2269,53 +2401,97 @@ func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
 	return matching, err
 }
 
+type repGroupOptions struct {
+	RepGroup string // The RepGroup to get jobs for
+	Search   bool   // If true, search for RepGroups containing RepGroup
+	limitJobsOptions
+}
+
+func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
+	return limitJobsOptions{
+		Limit:      opts.Limit,
+		Offset:     opts.Offset,
+		State:      opts.State,
+		ExitCode:   opts.ExitCode,
+		FailReason: opts.FailReason,
+		GetStd:     opts.GetStd,
+		GetEnv:     opts.GetEnv,
+	}
+}
+
 // getJobsByRepGroup gets jobs in the given group (current and complete).
-func (s *Server) getJobsByRepGroup(ctx context.Context, repgroup string, search bool, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
-	var rgs []string
-	if search {
-		var errs error
-		rgs, errs = s.searchRepGroups(repgroup)
-		if errs != nil {
-			return nil, ErrDBError, errs.Error()
-		}
-	} else {
-		rgs = append(rgs, repgroup)
+func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (jobs []*Job, srerr string, qerr string) {
+	rgs, srerr, qerr := s.getRepGroupsList(opts.RepGroup, opts.Search)
+	if srerr != "" {
+		return nil, srerr, qerr
 	}
 
 	for _, rg := range rgs {
-		// look in the in-memory queue for matching jobs
-		s.rpl.RLock()
-		for key := range s.rpl.lookup[rg] {
-			item, err := s.q.Get(key)
-			if err == nil && item != nil {
-				job := s.itemToJob(ctx, item, false, false)
-				jobs = append(jobs, job)
-			}
-		}
-		s.rpl.RUnlock()
+		queueJobs := s.getQueueJobsByRepGroup(ctx, rg)
+		jobs = append(jobs, queueJobs...)
 
-		// look in the permanent store for matching jobs
-		if state == "" || state == JobStateComplete {
-			var complete []*Job
-			complete, srerr, qerr = s.getCompleteJobsByRepGroup(rg)
-			if len(complete) > 0 {
-				// a job is stored in the db with only the single most recent
-				// RepGroup it had, but we're able to retrieve jobs based on any of
-				// the RepGroups it ever had; set the RepGroup to the one the user
-				// requested *** may want to change RepGroup to store a slice of
-				// RepGroups? But that could be massive...
-				for _, cj := range complete {
-					cj.RepGroup = rg
-				}
-				jobs = append(jobs, complete...)
-			}
-		}
+		complete := s.getDBJobsByRepGroup(rg, opts.State, &srerr, &qerr)
+		jobs = append(jobs, complete...)
 	}
 
-	if limit > 0 || state != "" || getStd || getEnv {
-		jobs = s.limitJobs(ctx, jobs, limit, state, getStd, getEnv)
-	}
+	jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
+
 	return jobs, srerr, qerr
+}
+
+// getRepGroupsList gets the list of RepGroups based on search criteria.
+func (s *Server) getRepGroupsList(repGroup string, search bool) ([]string, string, string) {
+	if search {
+		rgs, err := s.searchRepGroups(repGroup)
+		if err != nil {
+			return nil, ErrDBError, err.Error()
+		}
+
+		return rgs, "", ""
+	}
+
+	return []string{repGroup}, "", ""
+}
+
+// getQueueJobsByRepGroup gets jobs from the in-memory queue for a given
+// RepGroup.
+func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string) []*Job {
+	var jobs []*Job
+
+	for _, key := range s.rpl.Values(repGroup) {
+		item, _ := s.q.Get(key) //nolint:errcheck
+		if item != nil {
+			job := s.itemToJob(ctx, item, false, false)
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+// getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup.
+func (s *Server) getDBJobsByRepGroup(rg string, state JobState, srerr *string, qerr *string) []*Job {
+	if state != "" && state != JobStateComplete {
+		return nil
+	}
+
+	var complete []*Job
+
+	complete, *srerr, *qerr = s.getCompleteJobsByRepGroup(rg)
+
+	for _, cj := range complete {
+		cj.RepGroup = rg
+	}
+
+	sort.Slice(complete, func(i, j int) bool {
+		if complete[i].StartTime.Equal(complete[j].StartTime) {
+			return complete[i].EndTime.Before(complete[j].EndTime)
+		}
+
+		return complete[i].StartTime.Before(complete[j].StartTime)
+	})
+
+	return complete
 }
 
 // getCompleteJobsByRepGroup gets complete jobs in the given group.
@@ -2325,6 +2501,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 		srerr = ErrDBError
 		qerr = err.Error()
 	}
+
 	return jobs, srerr, qerr
 }
 
@@ -2336,82 +2513,217 @@ func (s *Server) getJobsCurrent(ctx context.Context, limit int, state JobState, 
 		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
 	}
 
-	if limit > 0 || state != "" || getStd || getEnv {
-		jobs = s.limitJobs(ctx, jobs, limit, state, getStd, getEnv)
-	}
+	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
+		Limit:  limit,
+		State:  state,
+		GetStd: getStd,
+		GetEnv: getEnv,
+	})
 
 	return jobs
+}
+
+type limitJobsOptions struct {
+	Limit      int      // Maximum number of jobs to return (<1 = no limit)
+	Offset     int      // Starting offset for pagination
+	FailReason string   // Fail reason to filter jobs by
+	ExitCode   int      // Exit code to filter jobs by (if FailReason is set)
+	State      JobState // Filter jobs by this state
+	GetStd     bool     // If true, populate StdOut and StdErr of jobs
+	GetEnv     bool     // If true, populate Env of jobs
 }
 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
-func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state JobState, getStd bool, getEnv bool) []*Job {
-	groups := make(map[string][]*Job)
+func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptions) []*Job {
+	if !(opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv) {
+		return jobs
+	}
+
+	opts = s.normalizeOptions(opts)
+	limited := s.filterAndGroupJobs(jobs, opts)
+	getStd := shouldPopulateStd(limited, opts.GetStd)
+	s.populateJobData(ctx, limited, getStd, opts.GetEnv)
+
+	return limited
+}
+
+// normalizeOptions ensures the options have valid values.
+func (s *Server) normalizeOptions(opts limitJobsOptions) limitJobsOptions {
+	if opts.Limit < 0 {
+		opts.Limit = 0
+	}
+
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+
+	if opts.State == JobStateRunning {
+		opts.State = JobStateReserved
+	}
+
+	return opts
+}
+
+// filterAndGroupJobs filters jobs by state and groups them by characteristics.
+func (s *Server) filterAndGroupJobs(jobs []*Job, opts limitJobsOptions) []*Job {
+	if opts.Limit == 0 {
+		return s.filterJobsByState(jobs, opts)
+	}
+
+	return s.groupAndLimitJobs(jobs, opts)
+}
+
+// filterJobsByState returns only jobs matching the state filters.
+func (s *Server) filterJobsByState(jobs []*Job, opts limitJobsOptions) []*Job {
 	var limited []*Job
 	for _, job := range jobs {
-		job.RLock()
-		jState := job.State
-		jExitCode := job.Exitcode
-		jFailReason := job.FailReason
-		jLost := job.Lost
-		job.RUnlock()
-		if jState == JobStateRunning {
-			if jLost {
-				jState = JobStateLost
-			} else {
-				jState = JobStateReserved
-			}
-		}
-
-		if state != "" {
-			if state == JobStateRunning {
-				state = JobStateReserved
-			}
-			if state == JobStateDeletable {
-				if jState == JobStateRunning || jState == JobStateComplete {
-					continue
-				}
-			} else if jState != state {
-				continue
-			}
-		}
-
-		if limit == 0 {
+		if s.jobMatchesFilters(job, opts) {
 			limited = append(limited, job)
-		} else {
-			group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
-			jobs, existed := groups[group]
-			if existed {
-				lenj := len(jobs)
-				if lenj == limit {
-					jobs[lenj-1].Similar++
-				} else {
-					jobs = append(jobs, job)
-					groups[group] = jobs
-				}
-			} else {
-				jobs = []*Job{job}
-				groups[group] = jobs
-			}
-		}
-	}
-
-	if limit > 0 {
-		for _, jobs := range groups {
-			limited = append(limited, jobs...)
-		}
-	}
-
-	getStd = shouldPopulateStd(limited, getStd)
-
-	if getEnv || getStd {
-		for _, job := range limited {
-			s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
 		}
 	}
 
 	return limited
+}
+
+// jobMatchesFilters checks if a job matches the filtering criteria.
+func (s *Server) jobMatchesFilters(job *Job, opts limitJobsOptions) bool {
+	jState, jExitCode, jFailReason, jLost := getJobProps(job)
+
+	jState = s.normalizeJobState(jState, jLost)
+
+	return s.matchesStateFilter(jState, opts.State) &&
+		s.matchesFailureFilter(jFailReason, jExitCode, opts.FailReason, opts.ExitCode)
+}
+
+func getJobProps(job *Job) (JobState, int, string, bool) {
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.State, job.Exitcode, job.FailReason, job.Lost
+}
+
+// normalizeJobState converts running jobs to either lost or reserved state.
+func (s *Server) normalizeJobState(state JobState, lost bool) JobState {
+	if state == JobStateRunning {
+		if lost {
+			return JobStateLost
+		}
+
+		return JobStateReserved
+	}
+
+	return state
+}
+
+// matchesStateFilter checks if a job's state matches the filter criteria.
+func (s *Server) matchesStateFilter(jobState JobState, filterState JobState) bool {
+	if filterState == "" {
+		return true
+	}
+
+	if filterState == JobStateDeletable {
+		return jobState != JobStateRunning && jobState != JobStateComplete
+	}
+
+	return jobState == filterState
+}
+
+// matchesFailureFilter checks if a job's failure reason and exit code match the
+// filter criteria.
+func (s *Server) matchesFailureFilter(jobFailReason string, jobExitCode int,
+	filterFailReason string, filterExitCode int) bool {
+	if filterFailReason == "" {
+		return true
+	}
+
+	return jobFailReason == filterFailReason && jobExitCode == filterExitCode
+}
+
+// groupAndLimitJobs groups jobs by characteristics and applies limits.
+func (s *Server) groupAndLimitJobs(jobs []*Job, opts limitJobsOptions) []*Job {
+	groups := s.groupJobsByCharacteristics(jobs, opts)
+	groups = s.applyOffsetToGroups(groups, opts.Offset)
+
+	return s.collectJobsFromGroups(groups)
+}
+
+// groupJobsByCharacteristics groups jobs by state, exit code, and failure
+// reason.
+func (s *Server) groupJobsByCharacteristics(jobs []*Job, opts limitJobsOptions) map[string][]*Job {
+	groups := make(map[string][]*Job)
+
+	for _, job := range jobs {
+		if !s.jobMatchesFilters(job, opts) {
+			continue
+		}
+
+		jState, jExitCode, jFailReason, jLost := getJobProps(job)
+		jState = s.normalizeJobState(jState, jLost)
+
+		group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
+		s.addJobToGroup(job, group, groups, opts)
+	}
+
+	return groups
+}
+
+// applyOffsetToGroups applies pagination offset to each group of jobs.
+func (s *Server) applyOffsetToGroups(groups map[string][]*Job, offset int) map[string][]*Job {
+	if offset <= 0 {
+		return groups
+	}
+
+	for group, groupJobs := range groups {
+		if offset < len(groupJobs) {
+			groups[group] = groupJobs[offset:]
+		} else {
+			delete(groups, group)
+		}
+	}
+
+	return groups
+}
+
+// collectJobsFromGroups flattens all job groups into a single slice.
+func (s *Server) collectJobsFromGroups(groups map[string][]*Job) []*Job {
+	var allJobs []*Job
+	for _, groupJobs := range groups {
+		allJobs = append(allJobs, groupJobs...)
+	}
+
+	return allJobs
+}
+
+// addJobToGroup adds a job to a group, managing counts and similarity.
+func (s *Server) addJobToGroup(job *Job, group string, groups map[string][]*Job, opts limitJobsOptions) {
+	jobs, existed := groups[group]
+	if !existed {
+		jobs = []*Job{job}
+		groups[group] = jobs
+
+		return
+	}
+
+	lenj := len(jobs)
+	if lenj == opts.Offset+opts.Limit {
+		jobs[lenj-1].Similar++
+	} else {
+		jobs = append(jobs, job)
+		groups[group] = jobs
+	}
+}
+
+// populateJobData fills in standard output/error and environment data.
+func (s *Server) populateJobData(ctx context.Context, jobs []*Job, getStd, getEnv bool) {
+	if !getEnv && !getStd {
+		return
+	}
+
+	for _, job := range jobs {
+		s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+	}
 }
 
 // shouldPopulateStd only returns true if the given getStd is true and if the
@@ -2709,6 +3021,7 @@ func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
 	defer s.wsmutex.Unlock()
 	unique := logext.RandId(8)
 	s.wsconns[unique] = conn
+	s.wsWriteMutexes[unique] = &sync.Mutex{}
 	return unique
 }
 
@@ -2718,16 +3031,23 @@ func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
 // it again.
 func (s *Server) closeWebSocketConnection(ctx context.Context, unique string) {
 	s.wsmutex.Lock()
-	defer s.wsmutex.Unlock()
+
 	conn, found := s.wsconns[unique]
-	if !found {
-		return
+	if found {
+		delete(s.wsconns, unique)
+		delete(s.wsWriteMutexes, unique)
 	}
-	err := conn.Close()
-	if err != nil {
-		clog.Warn(ctx, "websocket close failed", "err", err)
+
+	s.wsmutex.Unlock()
+
+	if found {
+		err := conn.Close()
+		if err != nil {
+			clog.Warn(ctx, "websocket close failed", "err", err)
+		}
 	}
-	delete(s.wsconns, unique)
+
+	s.cleanupSubscriptions(unique)
 }
 
 // shutdown stops listening to client connections, close all queues and
@@ -2784,9 +3104,6 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.scheduler.Cleanup(ctx)
 
 	// graceful shutdown of all websocket-related goroutines and connections
-	s.statusCaster.Close()
-	s.badServerCaster.Close()
-	s.schedCaster.Close()
 	s.wsmutex.Lock()
 	for unique, conn := range s.wsconns {
 		errc := conn.Close()
@@ -2794,8 +3111,15 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 			clog.Warn(ctx, "server shutdown failed to close a websocket", "err", errc)
 		}
 		delete(s.wsconns, unique)
+		delete(s.wsWriteMutexes, unique)
 	}
 	s.wsmutex.Unlock()
+
+	time.Sleep(serverSocketWait)
+
+	s.statusCaster.Close()
+	s.badServerCaster.Close()
+	s.schedCaster.Close()
 
 	// not-fully graceful shutdown of http server, since it takes too long to
 	// shutdown normally due to a fixed 500ms poll
@@ -2879,4 +3203,55 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	if wasBlocking {
 		s.done <- Error{"Serve", "", reason}
 	}
+}
+
+// subscribeToJobs subscribes the given connection to updates for the specified
+// jobs.
+func (s *Server) subscribeToJobs(connID string, jobKeys []string) {
+	if len(jobKeys) == 0 {
+		return
+	}
+
+	s.jsmutex.Lock()
+	defer s.jsmutex.Unlock()
+
+	if _, exists := s.jobSubscriptions[connID]; !exists {
+		s.jobSubscriptions[connID] = make(map[string]bool)
+	}
+
+	for _, key := range jobKeys {
+		s.jobSubscriptions[connID][key] = true
+	}
+}
+
+// unsubscribeFromJob removes the subscription for a specific job or all jobs if
+// jobKey is empty.
+func (s *Server) unsubscribeFromJob(connID string, jobKey string) {
+	s.jsmutex.Lock()
+	defer s.jsmutex.Unlock()
+
+	subscriptions, exists := s.jobSubscriptions[connID]
+	if !exists {
+		return
+	}
+
+	if jobKey == "" {
+		delete(s.jobSubscriptions, connID)
+
+		return
+	}
+
+	delete(subscriptions, jobKey)
+
+	if len(subscriptions) == 0 {
+		delete(s.jobSubscriptions, connID)
+	}
+}
+
+// cleanupSubscriptions removes all subscriptions for the given connection.
+func (s *Server) cleanupSubscriptions(connID string) {
+	s.jsmutex.Lock()
+	defer s.jsmutex.Unlock()
+
+	delete(s.jobSubscriptions, connID)
 }

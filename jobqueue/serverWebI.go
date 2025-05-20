@@ -25,13 +25,12 @@ import (
 	"embed"
 	"net/http"
 	"strings"
-	"sync"
-
-	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
+	"github.com/grafov/bcast"
+	"github.com/wtsi-ssg/wr/clog"
 )
 
 //go:embed static
@@ -50,6 +49,7 @@ type jstatusReq struct {
 	// confirmBadServer = confirm that the server with ID ServerID is bad.
 	// dismissMsg = dismiss the given Msg.
 	// dismissMsgs = dismiss all scheduler messages.
+	// unsubscribe = unsubscribe from job updates for a specific key or all if key is empty.
 	Request string
 
 	// sending Key means "give me detailed info about this single job", and
@@ -61,7 +61,10 @@ type jstatusReq struct {
 	// the given RepGroup, ExitCode and FailReason
 	RepGroup string
 
+	Search     bool     // RepGroup is treated as a substring search term
 	State      JobState // A Job.State to limit RepGroup by in details mode
+	Limit      int      // Limit the number of jobs returned in details mode (0 = no limit)
+	Offset     int      // Offset the start of the returned jobs in details mode
 	Exitcode   int
 	FailReason string
 	ServerID   string // required argument for confirmBadServer
@@ -110,6 +113,7 @@ type JStatus struct {
 	Attempts        uint32
 	HomeChanged     bool
 	Exited          bool
+	IsPushUpdate    bool
 }
 
 // webInterfaceStatic is a http handler for our static documents in the static
@@ -135,36 +139,45 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 		if err != nil {
 			clog.Warn(ctx, "not found", "err", err)
 			http.NotFound(w, r)
+
 			return
 		}
 
-		switch {
-		case strings.HasPrefix(path, "static/js"):
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		case strings.HasPrefix(path, "static/css"):
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case strings.HasPrefix(path, "static/fonts"):
-			switch {
-			case strings.HasSuffix(path, ".eot"):
-				w.Header().Set("Content-Type", "application/vnd.ms-fontobject")
-			case strings.HasSuffix(path, ".svg"):
-				w.Header().Set("Content-Type", "image/svg+xml")
-			case strings.HasSuffix(path, ".ttf"):
-				w.Header().Set("Content-Type", "application/x-font-truetype")
-			case strings.HasSuffix(path, ".woff"):
-				w.Header().Set("Content-Type", "application/font-woff")
-			case strings.HasSuffix(path, ".woff2"):
-				w.Header().Set("Content-Type", "application/font-woff2")
-			}
-		case strings.HasSuffix(path, "favicon.ico"):
-			w.Header().Set("Content-Type", "image/x-icon")
-		}
+		w.Header().Set("Content-Type", getContentTypeForPath(path))
 
 		_, err = w.Write(doc)
 		if err != nil {
 			clog.Error(ctx, "web interface static document write failed", "err", err)
 		}
 	}
+}
+
+// getContentTypeForPath determines the appropriate Content-Type header based on
+// the file path.
+func getContentTypeForPath(path string) string { //nolint:gocyclo
+	switch {
+	case strings.HasPrefix(path, "static/js"):
+		return "text/javascript; charset=utf-8"
+	case strings.HasPrefix(path, "static/css"):
+		return "text/css; charset=utf-8"
+	case strings.HasPrefix(path, "static/fonts"):
+		switch {
+		case strings.HasSuffix(path, ".eot"):
+			return "application/vnd.ms-fontobject"
+		case strings.HasSuffix(path, ".svg"):
+			return "image/svg+xml"
+		case strings.HasSuffix(path, ".ttf"):
+			return "application/x-font-truetype"
+		case strings.HasSuffix(path, ".woff"):
+			return "application/font-woff"
+		case strings.HasSuffix(path, ".woff2"):
+			return "application/font-woff2"
+		}
+	case strings.HasSuffix(path, "favicon.ico"):
+		return "image/x-icon"
+	}
+
+	return "text/html; charset=utf-8"
 }
 
 // webSocket upgrades a http connection to a websocket
@@ -196,8 +209,6 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 			return
 		}
 
-		writeMutex := &sync.Mutex{}
-
 		// when the server shuts down it will close our conn, ending the main
 		// goroutine
 		storedName := s.storeWebSocketConnection(conn)
@@ -222,6 +233,16 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				errr := conn.ReadJSON(&req)
 				if errr != nil {
 					// browser was refreshed or server shutdown
+					break
+				}
+
+				// Get the write mutex for this connection
+				s.wsmutex.RLock()
+				writeMutex := s.wsWriteMutexes[connStorageName]
+				s.wsmutex.RUnlock()
+
+				if writeMutex == nil {
+					// Connection is being shut down
 					break
 				}
 
@@ -276,31 +297,61 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							break
 						}
 					case "details":
-						// *** probably want to take the count as a req option,
-						// so user can request to see more than just 1 job per
-						// State+Exitcode+FailReason
-						jobs, _, errstr := s.getJobsByRepGroup(ctx, req.RepGroup, false, 1, req.State, true, true)
+						opts := repGroupOptions{
+							RepGroup: req.RepGroup,
+							Search:   req.Search,
+							limitJobsOptions: limitJobsOptions{
+								Limit:      req.Limit,
+								Offset:     req.Offset,
+								State:      req.State,
+								ExitCode:   req.Exitcode,
+								FailReason: req.FailReason,
+								GetStd:     true,
+								GetEnv:     true,
+							},
+						}
+
+						jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false
+
+							jobKeys := make([]string, 0, len(jobs))
+
 							for _, job := range jobs {
 								status, err := job.ToStatus()
 								if err != nil {
 									failed = true
 									break
 								}
-								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
+
+								if !req.Search {
+									// since we want to return the group the
+									// user asked for, not the most recent group
+									// the job was made for
+									status.RepGroup = req.RepGroup
+								}
+
 								err = conn.WriteJSON(status)
 								if err != nil {
 									failed = true
 									break
 								}
+
+								jobKeys = append(jobKeys, job.Key())
 							}
+
+							if len(jobKeys) > 0 {
+								s.subscribeToJobs(connStorageName, jobKeys)
+							}
+
 							writeMutex.Unlock()
 							if failed {
 								break
 							}
 						}
+					case "unsubscribe":
+						s.unsubscribeFromJob(connStorageName, req.Key)
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						s.kickJobs(ctx, jobs)
@@ -349,8 +400,14 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						if err != nil {
 							break
 						}
+
 						writeMutex.Lock()
+
 						err = conn.WriteJSON(status)
+						if err == nil {
+							s.subscribeToJobs(connStorageName, []string{req.Key})
+						}
+
 						writeMutex.Unlock()
 						if err != nil {
 							break
@@ -360,73 +417,49 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 			}
 		}(conn, storedName, stopper)
 
-		// go routines to push changes to the client
-		go func(conn *websocket.Conn, stop chan bool) {
-			// log panics and die
-			defer internal.LogPanic(ctx, "jobqueue websocket status updating", true)
+		// Set up goroutines to push changes to the client
+		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.statusCaster, "status updater")
+		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
+		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
+	}
+}
 
-			statusReceiver := s.statusCaster.Join()
-			defer statusReceiver.Close()
+// setupUpdateListener creates a goroutine that listens for updates from a
+// broadcaster and forwards them to the WebSocket client.
+func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool, //nolint:gocognit,funlen
+	connName string, caster *bcast.Group, name string) {
+	defer internal.LogPanic(ctx, "jobqueue websocket "+name, true)
 
-			for {
-				select {
-				case <-stop:
-					return
-				case status := <-statusReceiver.In:
-					writeMutex.Lock()
-					err := conn.WriteJSON(status)
-					writeMutex.Unlock()
-					if err != nil {
-						clog.Warn(ctx, "status updater failed to send JSON to client", "err", err)
-						return
-					}
-				}
+	receiver := caster.Join()
+	defer receiver.Close()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case msg, ok := <-receiver.In:
+			if !ok {
+				return
 			}
-		}(conn, stopper)
 
-		go func(conn *websocket.Conn, stop chan bool) {
-			defer internal.LogPanic(ctx, "jobqueue websocket bad server updating", true)
+			s.wsmutex.RLock()
+			writeMutex := s.wsWriteMutexes[connName]
+			s.wsmutex.RUnlock()
 
-			badserverReceiver := s.badServerCaster.Join()
-			defer badserverReceiver.Close()
-
-			for {
-				select {
-				case <-stop:
-					return
-				case server := <-badserverReceiver.In:
-					writeMutex.Lock()
-					err := conn.WriteJSON(server)
-					writeMutex.Unlock()
-					if err != nil {
-						clog.Warn(ctx, "bad server caster failed to send JSON to client", "err", err)
-						return
-					}
-				}
+			if writeMutex == nil {
+				return
 			}
-		}(conn, stopper)
 
-		go func(conn *websocket.Conn, stop chan bool) {
-			defer internal.LogPanic(ctx, "jobqueue websocket scheduler issue updating", true)
+			writeMutex.Lock()
+			err := conn.WriteJSON(msg)
+			writeMutex.Unlock()
 
-			schedIssueReceiver := s.schedCaster.Join()
-			defer schedIssueReceiver.Close()
+			if err != nil {
+				clog.Warn(ctx, name+" failed to send JSON to client", "err", err)
 
-			for {
-				select {
-				case <-stop:
-					return
-				case si := <-schedIssueReceiver.In:
-					writeMutex.Lock()
-					err := conn.WriteJSON(si)
-					writeMutex.Unlock()
-					if err != nil {
-						clog.Warn(ctx, "scheduler issues caster failed to send JSON to client", "err", err)
-						return
-					}
-				}
+				return
 			}
-		}(conn, stopper)
+		}
 	}
 }
 
@@ -440,9 +473,7 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 
 	var jobs []*Job
 	if req.RepGroup != "" {
-		s.rpl.RLock()
-		defer s.rpl.RUnlock()
-		for key := range s.rpl.lookup[req.RepGroup] {
+		for _, key := range s.rpl.Values(req.RepGroup) {
 			item, err := s.q.Get(key)
 			if item == nil || err != nil {
 				continue

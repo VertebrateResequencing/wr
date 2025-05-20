@@ -380,9 +380,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							qerr = err.Error()
 						} else {
 							s.rpl.Lock()
-							if m, exists := s.rpl.lookup[rgroup]; exists {
-								delete(m, key)
-							}
+							s.rpl.Delete(rgroup, key)
 							s.rpl.Unlock()
 							clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
 							s.decrementGroupCount(ctx, sgroup, 1)
@@ -399,8 +397,6 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				if cr.JobEndState == nil {
 					cr.JobEndState = &JobEndState{}
 				}
-				cr.JobEndState.Stdout = cr.Job.StdOutC
-				cr.JobEndState.Stderr = cr.Job.StdErrC
 				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, false)
 				if errq != nil {
 					srerr = ErrInternalError
@@ -558,11 +554,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							}
 
 							rp := keyToRP[new]
-							if _, exists := s.rpl.lookup[rp]; !exists {
-								s.rpl.lookup[rp] = make(map[string]bool)
-							}
-							delete(s.rpl.lookup[rp], old)
-							s.rpl.lookup[rp][new] = true
+							s.rpl.Delete(rp, old)
+							s.rpl.Add(rp, new)
 						}
 						s.rpl.Unlock()
 
@@ -645,7 +638,19 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
-				jobs, srerr, qerr = s.getJobsByRepGroup(ctx, cr.Job.RepGroup, cr.Search, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
+
+				opts := repGroupOptions{
+					RepGroup: cr.Job.RepGroup,
+					Search:   cr.Search,
+					limitJobsOptions: limitJobsOptions{
+						Limit:  cr.Limit,
+						State:  cr.State,
+						GetStd: cr.GetStd,
+						GetEnv: cr.GetEnv,
+					},
+				}
+
+				jobs, srerr, qerr = s.getJobsByRepGroup(ctx, opts)
 				if len(jobs) > 0 {
 					sr = &serverResponse{Jobs: jobs}
 				}

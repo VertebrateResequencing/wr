@@ -1403,10 +1403,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		PeakDisk: peakdisk,
 		CPUtime:  cmd.ProcessState.SystemTime() + cmd.ProcessState.UserTime() + time.Duration(dockerCPU)*time.Second,
 		EndTime:  endTime,
-		Stdout:   finalStdOut,
-		Stderr:   finalStdErr,
+		Stdout:   compressStd(finalStdOut),
+		Stderr:   compressStd(finalStdErr),
 		Exited:   true,
 	}
+
 	for {
 		if time.Now().After(retryEnd) {
 			clog.Warn(ctx, "giving up trying to connect to server")
@@ -1536,6 +1537,19 @@ func (c *Client) createLSFSymlinks(prependPath string, job *Job) error {
 	return nil
 }
 
+func compressStd(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+
+	compressed, err := compress(data)
+	if err != nil {
+		return nil
+	}
+
+	return compressed
+}
+
 // Started updates a Job on the server with information that you've started
 // running the Job's Cmd. Started also figures out some host name, ip and
 // possibly id (in cloud situations) to associate with the job, so that if
@@ -1598,40 +1612,28 @@ type JobEndState struct {
 	Exited   bool
 }
 
-// ended updates a Job for the benefit of the client only; this has no effect on
-// the server's knowledge of the Job, but does alter the Job so that it's
-// StdOutC and StdErrC are populated correctly for passing to the server).
-func (c *Client) ended(job *Job, jes *JobEndState) error {
+// ended updates a Job for the benefit of the client only: this has no effect on
+// the server's knowledge of the Job.
+//
+// teMutex and job must be locked before calling this function.
+func (c *Client) ended(job *Job, jes *JobEndState) {
 	if jes == nil || !jes.Exited {
-		return nil
+		return
 	}
-	c.teMutex.Lock()
-	defer c.teMutex.Unlock()
-	job.Lock()
-	defer job.Unlock()
+
 	job.Exited = true
 	job.Exitcode = jes.Exitcode
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
 	job.EndTime = jes.EndTime
+
 	if jes.Cwd != "" {
 		job.ActualCwd = jes.Cwd
 	}
-	var err error
-	if len(jes.Stdout) > 0 {
-		job.StdOutC, err = compress(jes.Stdout)
-		if err != nil {
-			return err
-		}
-	}
-	if len(jes.Stderr) > 0 {
-		job.StdErrC, err = compress(jes.Stderr)
-		if err != nil {
-			return err
-		}
-	}
-	return err
+
+	job.StdOutC = jes.Stdout
+	job.StdErrC = jes.Stderr
 }
 
 // Archive removes a job from the jobqueue and adds it to the database of
@@ -1639,19 +1641,20 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
 func (c *Client) Archive(job *Job, jes *JobEndState) error {
-	err := c.ended(job, jes)
-	if err != nil {
-		return err
-	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+
 	job.RLock()
 	defer job.RUnlock()
-	_, err = c.request(&clientRequest{Method: "jarchive", Job: job, JobEndState: jes})
+
+	_, err := c.request(&clientRequest{Method: "jarchive", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
 	}
+
+	c.ended(job, jes)
 	job.State = JobStateComplete
+
 	return err
 }
 
@@ -1663,30 +1666,33 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 // in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
 // number of times.)
 func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
-	err := c.ended(job, jes)
-	if err != nil {
-		return err
-	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+
 	job.Lock()
 	defer job.Unlock()
+
 	job.FailReason = failreason
-	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
+
+	_, err := c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
 	}
+
+	c.ended(job, jes)
 
 	// update our process with what the server would have done
 	if job.Exited && job.Exitcode != 0 {
 		job.UntilBuried--
 	}
+
 	if job.UntilBuried <= 0 {
 		job.State = JobStateBuried
 	} else {
 		job.State = JobStateDelayed
 	}
-	return err
+
+	return nil
 }
 
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
@@ -1694,27 +1700,31 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 // reserve a job before you can bury it. Optionally supply an error that will
 // be be displayed as the Job's stderr.
 func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...error) error {
-	err := c.ended(job, jes)
-	if err != nil {
-		return err
-	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+
 	job.Lock()
 	defer job.Unlock()
+
 	job.FailReason = failreason
+
 	if len(stderr) == 1 && stderr[0] != nil {
-		job.StdErrC, err = compress([]byte(stderr[0].Error()))
-		if err != nil {
-			return err
+		if jes == nil {
+			jes = &JobEndState{}
 		}
+
+		jes.Stderr = compressStd([]byte(stderr[0].Error()))
 	}
-	_, err = c.request(&clientRequest{Method: "jbury", Job: job, JobEndState: jes})
+
+	_, err := c.request(&clientRequest{Method: "jbury", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
 	}
+
+	c.ended(job, jes)
 	job.State = JobStateBuried
-	return err
+
+	return nil
 }
 
 // Kick makes previously Bury()'d jobs runnable again (it can be Reserve()d in

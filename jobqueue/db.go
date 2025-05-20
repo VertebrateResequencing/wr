@@ -733,14 +733,6 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	return err
 }
 
-// deleteLiveJob remove a job from the live bucket, for use when jobs were
-// added in error.
-func (db *db) deleteLiveJob(ctx context.Context, key string) {
-	db.remove(ctx, bucketJobsLive, key)
-	db.backgroundBackup(ctx)
-	//*** we're not removing the lookup entries from the bucket*TK buckets...
-}
-
 // deleteLiveJobs remove multiple jobs from the live bucket.
 func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
@@ -1434,25 +1426,6 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 		clog.Error(ctx, "Database retrieve failed", "err", err)
 	}
 	return val
-}
-
-// remove does a basic delete of a key from a given bucket. We don't care about
-// errors here.
-func (db *db) remove(ctx context.Context, bucket []byte, key string) {
-	db.wgMutex.Lock()
-	defer db.wgMutex.Unlock()
-	wgk := db.wg.Add(1)
-	go func() {
-		defer internal.LogPanic(ctx, "jobqueue database remove", true)
-		defer db.wg.Done(wgk)
-		err := db.bolt.Batch(func(tx *bolt.Tx) error {
-			b := tx.Bucket(bucket)
-			return b.Delete([]byte(key))
-		})
-		if err != nil {
-			clog.Error(ctx, "Database remove failed", "err", err)
-		}
-	}()
 }
 
 // storeBatched stores items in the db in batches for efficiency. bucket is the
