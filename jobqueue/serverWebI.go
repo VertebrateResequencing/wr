@@ -426,20 +426,12 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 
 // setupUpdateListener creates a goroutine that listens for updates from a
 // broadcaster and forwards them to the WebSocket client.
-func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
+func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool, //nolint:gocognit,funlen
 	connName string, caster *bcast.Group, name string) {
 	defer internal.LogPanic(ctx, "jobqueue websocket "+name, true)
 
 	receiver := caster.Join()
-	defer func() {
-		// Handle potential race during close by catching panics
-		defer func() {
-			if r := recover(); r != nil {
-				clog.Debug(ctx, "recovered from panic during receiver close", "name", name)
-			}
-		}()
-		receiver.Close()
-	}()
+	defer receiver.Close()
 
 	for {
 		select {
