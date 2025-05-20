@@ -92,6 +92,7 @@ const (
 	maxJobsForStd                  = 1000
 	serverWaitPeriodToStartRunning = 1 * time.Millisecond
 	serverMaxRetriesToStartRunning = 50
+	serverSocketWait               = 50 * time.Millisecond
 )
 
 // ServerVersion gets set during build:
@@ -1749,13 +1750,15 @@ func (s *Server) createQueue(ctx context.Context) {
 			s.wsmutex.RUnlock()
 
 			for _, cm := range connMutexes {
-				cm.mutex.Lock()
-				err = cm.conn.WriteJSON(status)
-				cm.mutex.Unlock()
+				go func() {
+					cm.mutex.Lock()
+					err = cm.conn.WriteJSON(status)
+					cm.mutex.Unlock()
 
-				if err != nil {
-					clog.Warn(ctx, "failed to send job update to subscriber", "err", err)
-				}
+					if err != nil {
+						clog.Warn(ctx, "failed to send job update to subscriber", "err", err)
+					}
+				}()
 			}
 		}
 	})
@@ -2425,9 +2428,7 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		jobs = append(jobs, queueJobs...)
 
 		complete := s.getDBJobsByRepGroup(rg, opts.State, &srerr, &qerr)
-		if len(complete) > 0 {
-			jobs = append(jobs, complete...)
-		}
+		jobs = append(jobs, complete...)
 	}
 
 	jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
@@ -2455,8 +2456,8 @@ func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string) []
 	var jobs []*Job
 
 	for _, key := range s.rpl.Values(repGroup) {
-		item, err := s.q.Get(key)
-		if err == nil && item != nil {
+		item, _ := s.q.Get(key) //nolint:errcheck
+		if item != nil {
 			job := s.itemToJob(ctx, item, false, false)
 			jobs = append(jobs, job)
 		}
@@ -3111,7 +3112,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	}
 	s.wsmutex.Unlock()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(serverSocketWait)
 
 	s.statusCaster.Close()
 	s.badServerCaster.Close()
