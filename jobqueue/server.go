@@ -1536,7 +1536,7 @@ func (s *Server) createQueue(ctx context.Context) {
 					defer internal.LogPanic(ctx, "jobqueue unschedule runners", true)
 					defer s.wg.Done(wgk)
 					clog.Debug(ctx, "rac unscheduling uneeded group", "group", group.name)
-					s.scheduleRunners(ctx, group)
+					s.scheduleRunners(ctx, group.clone(0))
 				}(group.clone(0))
 				delete(s.previouslyScheduledGroups, name)
 				clog.Debug(ctx, "rac deleted previous unneeded group", "group", name)
@@ -1692,7 +1692,9 @@ func (s *Server) createQueue(ctx context.Context) {
 
 		for _, inter := range data {
 			job := inter.(*Job) //nolint:errcheck,forcetypeassert
+			job.RLock()
 			jobKey := job.Key()
+			job.RUnlock()
 
 			connIDs, ok := jobSubscriptions[jobKey]
 			if !ok {
@@ -1700,15 +1702,16 @@ func (s *Server) createQueue(ctx context.Context) {
 			}
 
 			if to == JobStateRunning {
-				tries := 0
-
-				for job.StartTime.IsZero() {
+				for range serverMaxRetriesToStartRunning {
 					<-time.After(serverWaitPeriodToStartRunning)
 
-					tries++
-					if tries > serverMaxRetriesToStartRunning {
+					job.RLock()
+					if !job.StartTime.IsZero() {
+						job.RUnlock()
+
 						break
 					}
+					job.RUnlock()
 				}
 			}
 
@@ -3097,9 +3100,6 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.scheduler.Cleanup(ctx)
 
 	// graceful shutdown of all websocket-related goroutines and connections
-	s.statusCaster.Close()
-	s.badServerCaster.Close()
-	s.schedCaster.Close()
 	s.wsmutex.Lock()
 	for unique, conn := range s.wsconns {
 		errc := conn.Close()
@@ -3110,6 +3110,12 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 		delete(s.wsWriteMutexes, unique)
 	}
 	s.wsmutex.Unlock()
+
+	time.Sleep(50 * time.Millisecond)
+
+	s.statusCaster.Close()
+	s.badServerCaster.Close()
+	s.schedCaster.Close()
 
 	// not-fully graceful shutdown of http server, since it takes too long to
 	// shutdown normally due to a fixed 500ms poll

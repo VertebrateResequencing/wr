@@ -418,26 +418,38 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 		}(conn, storedName, stopper)
 
 		// Set up goroutines to push changes to the client
-		go setupUpdateListener(ctx, conn, stopper, storedName, s, s.statusCaster, "status updater")
-		go setupUpdateListener(ctx, conn, stopper, storedName, s, s.badServerCaster, "bad server caster")
-		go setupUpdateListener(ctx, conn, stopper, storedName, s, s.schedCaster, "scheduler issues caster")
+		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.statusCaster, "status updater")
+		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
+		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
 	}
 }
 
 // setupUpdateListener creates a goroutine that listens for updates from a
 // broadcaster and forwards them to the WebSocket client.
-func setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
-	connName string, s *Server, caster *bcast.Group, name string) {
+func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
+	connName string, caster *bcast.Group, name string) {
 	defer internal.LogPanic(ctx, "jobqueue websocket "+name, true)
 
 	receiver := caster.Join()
-	defer receiver.Close()
+	defer func() {
+		// Handle potential race during close by catching panics
+		defer func() {
+			if r := recover(); r != nil {
+				clog.Debug(ctx, "recovered from panic during receiver close", "name", name)
+			}
+		}()
+		receiver.Close()
+	}()
 
 	for {
 		select {
 		case <-stop:
 			return
-		case msg := <-receiver.In:
+		case msg, ok := <-receiver.In:
+			if !ok {
+				return
+			}
+
 			s.wsmutex.RLock()
 			writeMutex := s.wsWriteMutexes[connName]
 			s.wsmutex.RUnlock()
