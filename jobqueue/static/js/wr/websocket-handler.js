@@ -160,13 +160,7 @@ function handleStateChangeMessage(viewModel, json) {
  * @returns {boolean} True if job already exists
  */
 function jobExists(detailsArray, key) {
-    const jobs = detailsArray();
-    for (let i = 0; i < jobs.length; i++) {
-        if (jobs[i].Key === key) {
-            return true;
-        }
-    }
-    return false;
+    return detailsArray().some(job => job.Key === key);
 }
 
 /**
@@ -215,13 +209,14 @@ function handleJobDetailsMessage(viewModel, json) {
         // Check if this is a push update for an existing job
         if (json['IsPushUpdate']) {
             const jobs = viewModel.detailsOA();
-            for (let i = 0; i < jobs.length; i++) {
-                if (jobs[i].Key === json.Key) {
+            for (const job of jobs) {
+                if (job.Key === json.Key) {
                     // Set up LiveWalltime for the job
                     setupLiveWalltime(json, json['Walltime'], viewModel);
 
                     // Simply replace the job at the same index
-                    viewModel.detailsOA.splice(i, 1, json);
+                    const index = jobs.indexOf(job);
+                    viewModel.detailsOA.splice(index, 1, json);
                     return;
                 }
             }
@@ -286,9 +281,7 @@ function handleSchedulerMessage(viewModel, json) {
     var updated = false;
     var messages = viewModel.messages();
 
-    for (var i = 0; i < messages.length; ++i) {
-        var si = messages[i];
-
+    for (const si of messages) {
         if (si.Msg == json['Msg']) {
             si.LastDate(json['LastDate']);
             si.Count(json['Count']);

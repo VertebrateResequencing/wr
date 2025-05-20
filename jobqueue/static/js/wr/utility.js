@@ -219,9 +219,8 @@ export function setupLiveWalltime(job, walltime, viewModel) {
         // Set up the interval to update the time if not already done
         if (!viewModel.wallTimeUpdater) {
             viewModel.wallTimeUpdater = window.setInterval(function () {
-                const arrayLength = viewModel.wallTimeUpdaters.length;
-                for (let i = 0; i < arrayLength; i++) {
-                    viewModel.wallTimeUpdaters[i](new Date());
+                for (const updater of viewModel.wallTimeUpdaters) {
+                    updater(new Date());
                 }
             }, 1000);
         }

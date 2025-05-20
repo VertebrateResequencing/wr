@@ -90,9 +90,9 @@ export function StatusViewModel() {
     // Remove a specific search RepGroup
     self.removeSearchRepGroup = function (repgroupId) {
         let foundIndex = -1;
-        for (let i = 0; i < self.repGroups.length; i++) {
-            if (self.repGroups[i].id === repgroupId) {
-                foundIndex = i;
+        for (const repGroup of self.repGroups) {
+            if (repGroup.id === repgroupId) {
+                foundIndex = self.repGroups.indexOf(repGroup);
                 break;
             }
         }
@@ -119,9 +119,9 @@ export function StatusViewModel() {
         // Identify all search RepGroups (they start with "search:")
         const searchRepGroupIndices = [];
 
-        for (let i = 0; i < self.repGroups.length; i++) {
-            if (self.repGroups[i].id.startsWith('search:')) {
-                searchRepGroupIndices.push(i);
+        for (const repGroup of self.repGroups) {
+            if (repGroup.id.startsWith('search:')) {
+                searchRepGroupIndices.push(self.repGroups.indexOf(repGroup));
             }
         }
 
@@ -153,9 +153,9 @@ export function StatusViewModel() {
 
         // First check if a repgroup already exists with this name
         let existingGroupIndex = -1;
-        for (let i = 0; i < self.repGroups.length; i++) {
-            if (self.repGroups[i].id === `search:${summary.name}`) {
-                existingGroupIndex = i;
+        for (const repGroup of self.repGroups) {
+            if (repGroup.id === `search:${summary.name}`) {
+                existingGroupIndex = self.repGroups.indexOf(repGroup);
                 break;
             }
         }
