@@ -1,6 +1,7 @@
 /* Modal Handlers
  * Handles modals for the WR status page.
  */
+import { capitalizeFirstLetter } from '/js/wr/utility.js';
 
 /**
  * Initializes the action details object for a modal
@@ -22,6 +23,9 @@ export function jobToActionDetails(viewModel, job, action, button) {
     // Use TotalSimilar if available (from pagination), otherwise fallback to Similar + 1
     const count = job.TotalSimilar !== undefined ? job.TotalSimilar + 1 : job.Similar + 1;
     viewModel.actionDetails.count(count);
+
+    // Add the utility function to the viewModel for use in templates
+    viewModel.capitalizeFirstLetter = capitalizeFirstLetter;
 }
 
 /**

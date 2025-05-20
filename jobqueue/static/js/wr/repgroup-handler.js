@@ -39,7 +39,7 @@ export function showGroupState(viewModel, repGroup, state) {
         repGroup.details([]);
         viewModel.detailsRepgroup = '';
         viewModel.detailsState = '';
-        viewModel.detailsOA = '';
+        viewModel.detailsOA = ko.observableArray([]);
         viewModel.currentLimit = 1; // Reset limit when closing details
         viewModel.currentOffset = 0; // Reset offset when closing details
         viewModel.offsetMap = {};    // Clear the offset map

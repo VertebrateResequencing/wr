@@ -59,10 +59,13 @@ export function setupCommandPathBehavior(viewModel) {
     });
 
     // Start observing the document body for child list changes
-    observer.observe(document.getElementById('status'), {
-        childList: true,
-        subtree: true
-    });
+    const statusElement = document.getElementById('status');
+    if (statusElement) {
+        observer.observe(statusElement, {
+            childList: true,
+            subtree: true
+        });
+    }
 
     // Check when new jobs are loaded
     if (viewModel.detailsOA) {

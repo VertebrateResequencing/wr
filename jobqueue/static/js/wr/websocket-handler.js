@@ -1,7 +1,7 @@
 /* WebSocket Handler
  * Handles WebSocket communication for the WR status page
  */
-import { removeBadServer } from '/js/wr/utility.js';
+import { removeBadServer, setupLiveWalltime } from '/js/wr/utility.js';
 import { createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 
 /**
@@ -217,32 +217,8 @@ function handleJobDetailsMessage(viewModel, json) {
             const jobs = viewModel.detailsOA();
             for (let i = 0; i < jobs.length; i++) {
                 if (jobs[i].Key === json.Key) {
-                    // Prepare walltime for the new job
-                    var walltime = json['Walltime'];
-                    if (json['State'] == "running") {
-                        // Auto-increment walltime for running jobs
-                        var began = new Date();
-                        var now = ko.observable(new Date());
-
-                        json['LiveWalltime'] = ko.computed(function () {
-                            return walltime + ((now() - began) / 1000);
-                        });
-
-                        viewModel.wallTimeUpdaters.push(now);
-
-                        if (!viewModel.wallTimeUpdater) {
-                            viewModel.wallTimeUpdater = window.setInterval(function () {
-                                var arrayLength = viewModel.wallTimeUpdaters.length;
-                                for (var i = 0; i < arrayLength; i++) {
-                                    viewModel.wallTimeUpdaters[i](new Date());
-                                }
-                            }, 1000);
-                        }
-                    } else {
-                        json['LiveWalltime'] = ko.computed(function () {
-                            return walltime;
-                        });
-                    }
+                    // Set up LiveWalltime for the job
+                    setupLiveWalltime(json, json['Walltime'], viewModel);
 
                     // Simply replace the job at the same index
                     viewModel.detailsOA.splice(i, 1, json);
@@ -258,33 +234,8 @@ function handleJobDetailsMessage(viewModel, json) {
             return;
         }
 
-        var walltime = json['Walltime'];
-
-        if (json['State'] == "running") {
-            // Auto-increment walltime for running jobs
-            var began = new Date();
-            var now = ko.observable(new Date());
-
-            json['LiveWalltime'] = ko.computed(function () {
-                return walltime + ((now() - began) / 1000);
-            });
-
-            viewModel.wallTimeUpdaters.push(now);
-
-            if (!viewModel.wallTimeUpdater) {
-                viewModel.wallTimeUpdater = window.setInterval(function () {
-                    var arrayLength = viewModel.wallTimeUpdaters.length;
-
-                    for (var i = 0; i < arrayLength; i++) {
-                        viewModel.wallTimeUpdaters[i](new Date());
-                    }
-                }, 1000);
-            }
-        } else {
-            json['LiveWalltime'] = ko.computed(function () {
-                return walltime;
-            });
-        }
+        // Set up LiveWalltime for the job
+        setupLiveWalltime(json, json['Walltime'], viewModel);
 
         // Create a key for this exitcode+reason combination
         const exitReasonKey = `${json.Exitcode}:${json.FailReason || ''}`;

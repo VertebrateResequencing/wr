@@ -2,6 +2,7 @@
  * Chart Configuration Helper
  * Handles creation of chart configurations for various resource types
  */
+import { toDuration, toDate, mbIEC } from '/js/wr/utility.js';
 
 /**
  * Creates a memory chart configuration
@@ -72,9 +73,9 @@ export function createMemoryChartConfig(memoryValues) {
                         // Use more precision for small ranges
                         if (useDecimals) {
                             // Format with 1-2 decimals for small ranges
-                            return Number(value).toFixed(2).mbIEC();
+                            return mbIEC(Number(value).toFixed(2));
                         }
-                        return value.mbIEC();
+                        return mbIEC(value);
                     }
                 }
             },
@@ -163,9 +164,9 @@ export function createDiskChartConfig(diskValues) {
                         // Use more precision for small ranges
                         if (useDecimals) {
                             // Format with 1-2 decimals for small ranges
-                            return Number(value).toFixed(2).mbIEC();
+                            return mbIEC(Number(value).toFixed(2));
                         }
-                        return value.mbIEC();
+                        return mbIEC(value);
                     }
                 }
             },
@@ -266,7 +267,7 @@ export function createCombinedTimeChartConfig(walltimeValues, cputimeValues) {
                         }
 
                         // Use the standard duration formatter for larger ranges
-                        return value.toDuration();
+                        return toDuration(value);
                     }
                 }
             },
@@ -444,9 +445,9 @@ export function createExecutionChartConfig(jobsData) {
                         if (item.count === 1) {
                             return [
                                 `Command: ${item.cmd}`,
-                                `Start: ${item.startDate.toDate()}`,
-                                `End: ${item.endDate.toDate()}`,
-                                `Duration: ${item.duration.toDuration()}`,
+                                `Start: ${toDate(item.startDate)}`,
+                                `End: ${toDate(item.endDate)}`,
+                                `Duration: ${toDuration(item.duration)}`,
                                 `Host: ${item.hostid}`,
                                 `Status: ${item.state}`
                             ];
@@ -456,8 +457,8 @@ export function createExecutionChartConfig(jobsData) {
                         const maxToShow = Math.min(3, item.allPoints.length);
                         const result = [
                             `${item.count} jobs at this point`,
-                            `Start time: ${item.startDate.toDate()}`,
-                            `Duration: ${item.duration.toDuration()}`,
+                            `Start time: ${toDate(item.startDate)}`,
+                            `Duration: ${toDuration(item.duration)}`,
                             `Status: ${item.count > 1 ? 'Mixed' : item.state}`
                         ];
 
@@ -490,7 +491,7 @@ export function createExecutionChartConfig(jobsData) {
                 },
                 ticks: {
                     callback: function (value) {
-                        return value.toDate();
+                        return toDate(value);
                     },
                     // Rotate the labels to prevent overlapping
                     maxRotation: 45,
@@ -526,7 +527,7 @@ export function createExecutionChartConfig(jobsData) {
                         }
 
                         // Use the standard duration formatter for larger ranges
-                        return value.toDuration();
+                        return toDuration(value);
                     }
                 }
             }
@@ -545,11 +546,11 @@ export function createExecutionChartConfig(jobsData) {
     <div class="stat-item"><span class="stat-label">Jobs:</span> ${rawScatterData.length}</div>
     <div class="stat-item"><span class="stat-label">Unique Points:</span> ${scatterData.length}</div>
     <div class="stat-item"><span class="stat-label">Grouped Points:</span> ${scatterData.filter(p => p.count > 1).length}</div>
-    <div class="stat-item"><span class="stat-label">First Job:</span> ${minStart.toDate()}</div>
-    <div class="stat-item"><span class="stat-label">Last Job:</span> ${maxStart.toDate()}</div>
-    <div class="stat-item"><span class="stat-label">Min Duration:</span> ${minDuration.toDuration()}</div>
-    <div class="stat-item"><span class="stat-label">Max Duration:</span> ${maxDuration.toDuration()}</div>
-    <div class="stat-item"><span class="stat-label">Avg Duration:</span> ${avgDuration.toDuration()}</div>
+    <div class="stat-item"><span class="stat-label">First Job:</span> ${toDate(minStart)}</div>
+    <div class="stat-item"><span class="stat-label">Last Job:</span> ${toDate(maxStart)}</div>
+    <div class="stat-item"><span class="stat-label">Min Duration:</span> ${toDuration(minDuration)}</div>
+    <div class="stat-item"><span class="stat-label">Max Duration:</span> ${toDuration(maxDuration)}</div>
+    <div class="stat-item"><span class="stat-label">Avg Duration:</span> ${toDuration(avgDuration)}</div>
     `;
 
     return {
@@ -632,7 +633,7 @@ export function createTimeChartConfig(timeValues, timeType) {
 
     // Create data structure
     const chartData = {
-        labels: bins.map(bin => `${bin.min.toDuration()} - ${bin.max.toDuration()}`),
+        labels: bins.map(bin => `${toDuration(bin.min)} - ${toDuration(bin.max)}`),
         datasets: [{
             label: isWallTime ? 'Wall Time (seconds)' : 'CPU Time (seconds)',
             backgroundColor: isWallTime ? 'rgba(255, 159, 64, 0.5)' : 'rgba(153, 102, 255, 0.5)',
@@ -695,7 +696,7 @@ export function createTimeChartConfig(timeValues, timeType) {
                 },
                 ticks: {
                     callback: function (value) {
-                        return value.toDuration();
+                        return toDuration(value);
                     }
                 }
             }

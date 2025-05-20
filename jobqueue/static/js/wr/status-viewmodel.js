@@ -1,7 +1,14 @@
 /* Status View Model
  * Main view model for the WR status page.
  */
-import { getParameterByName } from '/js/wr/utility.js';
+import {
+    getParameterByName,
+    toDuration,
+    toDate,
+    mbIEC,
+    capitalizeFirstLetter,
+    setupLiveWalltime
+} from '/js/wr/utility.js';
 import { setupInflightTracking, createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 import { setupWebSocket } from '/js/wr/websocket-handler.js';
 import { requestRepGroup, showGroupState, loadMoreJobs } from '/js/wr/repgroup-handler.js';
@@ -18,6 +25,12 @@ import {
 // viewmodel for displaying status
 export function StatusViewModel() {
     var self = this;
+
+    // Make utility functions available to templates
+    self.mbIEC = mbIEC;
+    self.toDuration = toDuration;
+    self.toDate = toDate;
+    self.capitalizeFirstLetter = capitalizeFirstLetter;
 
     //-------------------------------------------------------------------------
     // PROPERTIES AND BASIC OBSERVABLES
@@ -210,31 +223,8 @@ export function StatusViewModel() {
                 // Clone the job to avoid reference issues
                 const clonedJob = JSON.parse(JSON.stringify(job));
 
-                // Add LiveWalltime for running jobs
-                if (clonedJob.State === "running") {
-                    const walltime = clonedJob.Walltime;
-                    const began = new Date();
-                    const now = ko.observable(new Date());
-
-                    clonedJob.LiveWalltime = ko.computed(function () {
-                        return walltime + ((now() - began) / 1000);
-                    });
-
-                    self.wallTimeUpdaters.push(now);
-
-                    if (!self.wallTimeUpdater) {
-                        self.wallTimeUpdater = window.setInterval(function () {
-                            var arrayLength = self.wallTimeUpdaters.length;
-                            for (var i = 0; i < arrayLength; i++) {
-                                self.wallTimeUpdaters[i](new Date());
-                            }
-                        }, 1000);
-                    }
-                } else {
-                    clonedJob.LiveWalltime = ko.computed(function () {
-                        return clonedJob.Walltime;
-                    });
-                }
+                // Set up LiveWalltime for the job
+                setupLiveWalltime(clonedJob, clonedJob.Walltime, self);
 
                 jobsToAdd.push(clonedJob);
             }
@@ -747,7 +737,7 @@ export function StatusViewModel() {
                     }
 
                     config = createMemoryChartConfig(memoryValues);
-                    statsHtml = generateStatsHtml(memoryValues, 'Memory', value => value.mbIEC());
+                    statsHtml = generateStatsHtml(memoryValues, 'Memory', value => mbIEC(value));
                     break;
 
                 case 'disk':
@@ -761,7 +751,7 @@ export function StatusViewModel() {
                     }
 
                     config = createDiskChartConfig(diskValues);
-                    statsHtml = generateStatsHtml(diskValues, 'Disk', value => value.mbIEC());
+                    statsHtml = generateStatsHtml(diskValues, 'Disk', value => mbIEC(value));
                     break;
 
                 case 'time':
@@ -784,10 +774,10 @@ export function StatusViewModel() {
                     // Create combined stats HTML for both metrics
                     statsHtml = '<div class="row"><div class="col-md-6">';
                     statsHtml += '<h5>Wall Time</h5>';
-                    statsHtml += generateStatsHtml(walltimeValues, 'Wall Time', value => value.toDuration());
+                    statsHtml += generateStatsHtml(walltimeValues, 'Wall Time', value => toDuration(value));
                     statsHtml += '</div><div class="col-md-6">';
                     statsHtml += '<h5>CPU Time</h5>';
-                    statsHtml += generateStatsHtml(cputimeValues, 'CPU Time', value => value.toDuration());
+                    statsHtml += generateStatsHtml(cputimeValues, 'CPU Time', value => toDuration(value));
                     statsHtml += '</div></div>';
                     break;
 
@@ -802,7 +792,7 @@ export function StatusViewModel() {
                     config = createTimeChartConfig(timeValues, resourceType);
                     statsHtml = generateStatsHtml(timeValues,
                         isWallTime ? 'Wall Time' : 'CPU Time',
-                        value => value.toDuration());
+                        value => toDuration(value));
                     break;
 
                 case 'execution':
@@ -850,10 +840,6 @@ export function StatusViewModel() {
         }
     };
 
-    //-------------------------------------------------------------------------
-    // HELPER FUNCTIONS
-    //-------------------------------------------------------------------------
-    // Keep the existing generateStatsHtml function the same
     // Helper function to generate statistics HTML
     function generateStatsHtml(data, label, formatter) {
         if (data.length === 0) return `<div>No data available</div>`;

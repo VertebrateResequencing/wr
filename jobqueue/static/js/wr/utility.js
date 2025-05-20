@@ -108,63 +108,68 @@ export function percentScaler(ints, max) {
 }
 
 /**
- * Setup Number prototype extensions
+ * Convert seconds to human-readable duration
+ * @param {number} seconds - The seconds to format
+ * @returns {string} Formatted duration string
  */
-export function initNumberPrototypes() {
-    // Convert seconds to human-readable duration
-    Number.prototype.toDuration = function () {
-        var d = this;
-        var days = Math.floor(d / 86400);
-        var h = Math.floor(d % 86400 / 3600);
-        var m = Math.floor(d % 3600 / 60);
-        var s = Math.floor(d % 3600 % 60);
+export function toDuration(seconds) {
+    var d = seconds;
+    var days = Math.floor(d / 86400);
+    var h = Math.floor(d % 86400 / 3600);
+    var m = Math.floor(d % 3600 / 60);
+    var s = Math.floor(d % 3600 % 60);
 
-        var dur = '';
-        if (days > 0) {
-            dur += days + 'd ';
-        }
-        if (h > 0) {
-            dur += h + 'h ';
-        }
-        if (m > 0) {
-            dur += m + 'm ';
-        }
-        if (s > 0) {
-            dur += s + 's ';
-        }
-        if (dur == '') {
-            var ms = Math.round(((d % 3600 % 60) - s) * 1000);
-            dur += ms + 'ms';
-        }
-        return dur;
-    };
-
-    // Convert Unix timestamp to date string
-    Number.prototype.toDate = function () {
-        var d = this;
-        var date = new Date(d * 1000);
-        var hour = date.getHours() < 10 ? '0' + date.getHours() : date.getHours();
-        var min = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes();
-        var sec = date.getSeconds() < 10 ? '0' + date.getSeconds() : date.getSeconds();
-        return date.getFullYear().toString().substr(-2) + "/" + (date.getMonth() + 1) + "/" + date.getDate() + " " + hour + ":" + min + ":" + sec;
-    };
-
-    // Convert MB to appropriate unit (MB, GB, TB)
-    Number.prototype.mbIEC = function () {
-        var size = this * 1048576;
-        var i = Math.floor(Math.log(size) / Math.log(1024));
-        return (size / Math.pow(1024, i)).toFixed(2) * 1 + ' ' + ['B', 'kB', 'MB', 'GB', 'TB'][i];
-    };
+    var dur = '';
+    if (days > 0) {
+        dur += days + 'd ';
+    }
+    if (h > 0) {
+        dur += h + 'h ';
+    }
+    if (m > 0) {
+        dur += m + 'm ';
+    }
+    if (s > 0) {
+        dur += s + 's ';
+    }
+    if (dur == '') {
+        var ms = Math.round(((d % 3600 % 60) - s) * 1000);
+        dur += ms + 'ms';
+    }
+    return dur;
 }
 
 /**
- * Setup String prototype extensions
+ * Convert Unix timestamp to date string
+ * @param {number} timestamp - Unix timestamp in seconds
+ * @returns {string} Formatted date string
  */
-export function initStringPrototypes() {
-    // Capitalize the first letter of a string
-    String.prototype.capitalizeFirstLetter = function () {
-        return this.charAt(0).toUpperCase() + this.slice(1);
-    };
+export function toDate(timestamp) {
+    var date = new Date(timestamp * 1000);
+    var hour = date.getHours() < 10 ? '0' + date.getHours() : date.getHours();
+    var min = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes();
+    var sec = date.getSeconds() < 10 ? '0' + date.getSeconds() : date.getSeconds();
+    return date.getFullYear().toString().substr(-2) + "/" + (date.getMonth() + 1) + "/" + date.getDate() + " " + hour + ":" + min + ":" + sec;
+}
+
+/**
+ * Convert MB to appropriate unit (MB, GB, TB)
+ * @param {number} mbSize - Size in MB
+ * @returns {string} Formatted size string with appropriate unit
+ */
+export function mbIEC(mbSize) {
+    var size = mbSize * 1048576;
+    var i = Math.floor(Math.log(size) / Math.log(1024));
+    return (size / Math.pow(1024, i)).toFixed(2) * 1 + ' ' + ['B', 'kB', 'MB', 'GB', 'TB'][i];
+}
+
+/**
+ * Capitalize the first letter of a string
+ * @param {string} str - The string to capitalize
+ * @returns {string} String with capitalized first letter
+ */
+export function capitalizeFirstLetter(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
 /**
@@ -191,4 +196,39 @@ export function initKnockoutBindings() {
             trigger: "hover"
         }
     };
+}
+
+/**
+ * Sets up a LiveWalltime computed observable for a job
+ * @param {object} job - The job object to set up LiveWalltime for
+ * @param {number} walltime - The walltime value to use
+ * @param {StatusViewModel} viewModel - The view model containing wallTimeUpdaters
+ */
+export function setupLiveWalltime(job, walltime, viewModel) {
+    if (job.State === "running") {
+        // Auto-increment walltime for running jobs
+        const began = new Date();
+        const now = ko.observable(new Date());
+
+        job.LiveWalltime = ko.computed(function () {
+            return walltime + ((now() - began) / 1000);
+        });
+
+        viewModel.wallTimeUpdaters.push(now);
+
+        // Set up the interval to update the time if not already done
+        if (!viewModel.wallTimeUpdater) {
+            viewModel.wallTimeUpdater = window.setInterval(function () {
+                const arrayLength = viewModel.wallTimeUpdaters.length;
+                for (let i = 0; i < arrayLength; i++) {
+                    viewModel.wallTimeUpdaters[i](new Date());
+                }
+            }, 1000);
+        }
+    } else {
+        // Static walltime for non-running jobs
+        job.LiveWalltime = ko.computed(function () {
+            return walltime;
+        });
+    }
 }

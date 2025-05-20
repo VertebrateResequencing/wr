@@ -1,10 +1,16 @@
-import { initNumberPrototypes, initStringPrototypes, initKnockoutBindings } from '/js/wr/utility.js';
+import { initKnockoutBindings, mbIEC, toDuration, toDate } from '/js/wr/utility.js';
 import { StatusViewModel } from '/js/wr/status-viewmodel.js';
 import { setupCommandPathBehavior } from '/js/wr/ui-helpers.js';
 
-// Initialize prototype extensions
-initNumberPrototypes();
-initStringPrototypes();
+// Make utility functions globally available for templates
+if (typeof window.wrUtils === 'undefined') {
+    window.wrUtils = {};
+}
+window.wrUtils.mbIEC = mbIEC;
+window.wrUtils.toDuration = toDuration;
+window.wrUtils.toDate = toDate;
+
+// Initialize Knockout bindings
 initKnockoutBindings();
 
 // Initialize the application when DOM is fully loaded

@@ -20,6 +20,12 @@
     <!-- Knockstrap to make buttons and things work 2-way between knockout and bootstrap -->
     <script src="/js/knockstrap-1.3.2.min.js"></script>
 
+    <!-- Import utility functions for template access -->
+    <script>
+        // Store the utility functions so they're accessible from templates
+        window.wrUtils = {};
+    </script>
+
     <!-- Main entry point for the status page (which imports all other modules) -->
     <script src="/js/wr/main.js" type="module"></script>
 
@@ -102,13 +108,13 @@
                         ID: <span data-bind="text: ID"></span><br>
                         IP: <span data-bind="text: IP"></span><br>
                         <!-- ko if: Problem == "" -->
-                        Lost contact: <span data-bind="text: Date.toDate()"></span>
+                        Lost contact: <span data-bind="text: window.wrUtils.toDate(Date)"></span>
                         <button type="button" class="btn btn-danger pull-right"
                             data-bind="click: $root.confirmDeadServer">It's really dead</button>
                         <!-- /ko -->
                         <!-- ko if: !Problem == "" -->
                         Problem encountered: <span data-bind="text: Problem"></span><br>
-                        Problem encountered at: <span data-bind="text: Date.toDate()"></span>
+                        Problem encountered at: <span data-bind="text: window.wrUtils.toDate(Date)"></span>
                         <button type="button" class="btn btn-danger pull-right"
                             data-bind="click: $root.confirmDeadServer">Kill it</button>
                         <!-- /ko -->
@@ -129,12 +135,12 @@
                     <div class="panel-heading">
                         Scheduler Issue
                         <!-- ko if: Count() > 1 -->
-                        [first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
+                        [first reported at: <span data-bind="text: window.wrUtils.toDate(FirstDate)"></span>]
                         <!-- /ko -->
                     </div>
                     <div class="panel-body">
                         <span data-bind="text: Msg"></span><br>
-                        Reported at: <span data-bind="text: LastDate().toDate()"></span>
+                        Reported at: <span data-bind="text: window.wrUtils.toDate(LastDate())"></span>
                         <!-- ko if: Count() > 1 -->
                         <br>Reported: <span data-bind="text: Count"></span> times
                         <!-- /ko -->
@@ -296,10 +302,12 @@
                      click: function() { $root.showResourceChart('memory', $parent, $data) }">
                                             <span class="prop-name">Memory</span>
                                             <span class="prop-value">
-                                                <span data-bind="text: resources.memory.avg.mbIEC()"></span>
+                                                <span
+                                                    data-bind="text: window.wrUtils.mbIEC(resources.memory.avg)"></span>
                                                 <!-- ko if: resources.memory.stdDev > 0 -->
                                                 <span class="prop-separator">±</span>
-                                                <span data-bind="text: resources.memory.stdDev.mbIEC()"></span>
+                                                <span
+                                                    data-bind="text: window.wrUtils.mbIEC(resources.memory.stdDev)"></span>
                                                 <!-- /ko -->
                                                 <i class="glyphicon glyphicon-stats"
                                                     style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
@@ -310,10 +318,11 @@
                      click: function() { $root.showResourceChart('disk', $parent, $data) }">
                                             <span class="prop-name">Disk</span>
                                             <span class="prop-value">
-                                                <span data-bind="text: resources.disk.avg.mbIEC()"></span>
+                                                <span data-bind="text: window.wrUtils.mbIEC(resources.disk.avg)"></span>
                                                 <!-- ko if: resources.disk.stdDev > 0 -->
                                                 <span class="prop-separator">±</span>
-                                                <span data-bind="text: resources.disk.stdDev.mbIEC()"></span>
+                                                <span
+                                                    data-bind="text: window.wrUtils.mbIEC(resources.disk.stdDev)"></span>
                                                 <!-- /ko -->
                                                 <i class="glyphicon glyphicon-stats"
                                                     style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
@@ -327,10 +336,11 @@
                                             <span class="prop-value">
                                                 <!-- Wall Time section -->
                                                 <span
-                                                    data-bind="text: 'Wall: ' + resources.walltime.avg.toDuration()"></span>
+                                                    data-bind="text: 'Wall: ' + window.wrUtils.toDuration(resources.walltime.avg)"></span>
                                                 <!-- ko if: resources.walltime.stdDev > 0 -->
                                                 <span class="prop-separator">±</span>
-                                                <span data-bind="text: resources.walltime.stdDev.toDuration()"></span>
+                                                <span
+                                                    data-bind="text: window.wrUtils.toDuration(resources.walltime.stdDev)"></span>
                                                 <!-- /ko -->
 
                                                 <!-- Separator between Wall and CPU -->
@@ -338,10 +348,11 @@
 
                                                 <!-- CPU Time section -->
                                                 <span
-                                                    data-bind="text: 'CPU: ' + resources.cputime.avg.toDuration()"></span>
+                                                    data-bind="text: 'CPU: ' + window.wrUtils.toDuration(resources.cputime.avg)"></span>
                                                 <!-- ko if: resources.cputime.stdDev > 0 -->
                                                 <span class="prop-separator">±</span>
-                                                <span data-bind="text: resources.cputime.stdDev.toDuration()"></span>
+                                                <span
+                                                    data-bind="text: window.wrUtils.toDuration(resources.cputime.stdDev)"></span>
                                                 <!-- /ko -->
 
                                                 <i class="glyphicon glyphicon-stats"
@@ -361,10 +372,11 @@
                                             <span class="prop-name">When</span>
                                             <span class="prop-value">
                                                 <span
-                                                    data-bind="text: 'Started: ' + (timeline.started ? timeline.started.toDate() : 'Unknown')"></span>
+                                                    data-bind="text: 'Started: ' + (timeline.started ? window.wrUtils.toDate(timeline.started) : 'Unknown')"></span>
                                                 <!-- ko if: timeline.ended -->
                                                 <span class="prop-separator">→</span>
-                                                <span data-bind="text: 'Ended: ' + timeline.ended.toDate()"></span>
+                                                <span
+                                                    data-bind="text: 'Ended: ' + window.wrUtils.toDate(timeline.ended)"></span>
                                                 <!-- /ko -->
                                                 <i class="glyphicon glyphicon-stats"
                                                     style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
@@ -374,7 +386,7 @@
                                         <div class="prop-tag" data-bind="visible: timeline.elapsed > 0">
                                             <span class="prop-name">Elapsed</span>
                                             <span class="prop-value elapsed-time"
-                                                data-bind="text: timeline.elapsed.toDuration()"></span>
+                                                data-bind="text: window.wrUtils.toDuration(timeline.elapsed)"></span>
                                         </div>
                                     </td>
                                 </tr>
@@ -588,11 +600,11 @@
                                         <div class="prop-tag">
                                             <span class="prop-name">RAM</span>
                                             <span class="prop-value">
-                                                <span data-bind="text: ExpectedRAM.mbIEC()"></span>
+                                                <span data-bind="text: window.wrUtils.mbIEC(ExpectedRAM)"></span>
                                                 <!-- ko if: Exited && PeakRAM > 0 -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: PeakRAM.mbIEC(), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                                    data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>
@@ -600,26 +612,27 @@
                                         <div class="prop-tag">
                                             <span class="prop-name">Time</span>
                                             <span class="prop-value">
-                                                <span data-bind="text: ExpectedTime.toDuration()"></span>
+                                                <span data-bind="text: window.wrUtils.toDuration(ExpectedTime)"></span>
 
                                                 <!-- ko if: Exited -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                                    data-bind="text: window.wrUtils.toDuration(Walltime), css: { 'over-limit': Walltime > ExpectedTime }"></span>
                                                 <span class="prop-separator">•</span>
-                                                <span data-bind="text: 'CPU: ' + CPUtime.toDuration()"></span>
+                                                <span
+                                                    data-bind="text: 'CPU: ' + window.wrUtils.toDuration(CPUtime)"></span>
                                                 <!-- /ko -->
 
                                                 <!-- ko if: !Exited && (State == 'running' || State == 'reserved') -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: LiveWalltime().toDuration(), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
+                                                    data-bind="text: window.wrUtils.toDuration(LiveWalltime()), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
                                                 <!-- /ko -->
 
                                                 <!-- ko if: !Exited && State == 'lost' -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                                    data-bind="text: window.wrUtils.toDuration(Walltime), css: { 'over-limit': Walltime > ExpectedTime }"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>
@@ -632,7 +645,7 @@
                                                 <!-- ko if: Exited -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: PeakDisk === 0 ? '0GB' : PeakDisk.mbIEC(), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk*1024 }"></span>
+                                                    data-bind="text: PeakDisk === 0 ? '0GB' : window.wrUtils.mbIEC(PeakDisk), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk*1024 }"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>
@@ -686,10 +699,11 @@
                                         <div class="prop-tag">
                                             <span class="prop-name">When</span>
                                             <span class="prop-value">
-                                                <span data-bind="text: 'Started: ' + Started.toDate()"></span>
+                                                <span
+                                                    data-bind="text: 'Started: ' + window.wrUtils.toDate(Started)"></span>
                                                 <!-- ko if: Exited -->
                                                 <span class="prop-separator">→</span>
-                                                <span data-bind="text: 'Ended: ' + Ended.toDate()"></span>
+                                                <span data-bind="text: 'Ended: ' + window.wrUtils.toDate(Ended)"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>
@@ -813,11 +827,11 @@
         <script type="text/html" id="actionModalFooterTemplate">
             <div class="btn-group">
                 <!-- ko if: count() > 1 -->
-                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: button().capitalizeFirstLetter() + ' all'"></button>
-                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter() + ' 1'"></button>
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: $root.capitalizeFirstLetter(button()) + ' all'"></button>
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: $root.capitalizeFirstLetter(button()) + ' 1'"></button>
                 <!-- /ko -->
                 <!-- ko if: count() == 1 -->
-                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter()"></button>
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: $root.capitalizeFirstLetter(button())"></button>
                 <!-- /ko -->
                 <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
             </div>
