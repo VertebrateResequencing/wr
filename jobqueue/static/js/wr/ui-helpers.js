@@ -3,6 +3,24 @@
  */
 
 /**
+ * Creates a debounced function that delays invoking func until after wait milliseconds
+ * @param {Function} func - The function to debounce
+ * @param {number} wait - The number of milliseconds to delay
+ * @returns {Function} The debounced function
+ */
+function debounce(func, wait) {
+    let timeout;
+    return function () {
+        const context = this;
+        const args = arguments;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+            func.apply(context, args);
+        }, wait);
+    };
+}
+
+/**
  * Sets up command path truncation and expansion functionality
  * @param {StatusViewModel} viewModel - The main view model
  */
@@ -35,24 +53,25 @@ export function setupCommandPathBehavior(viewModel) {
         });
     }
 
-    // Run the check after a slight delay to ensure DOM is rendered
-    setTimeout(checkForTruncation, 100);
+    // Create a debounced version of the function
+    const debouncedCheckForTruncation = debounce(checkForTruncation, 100);
 
-    // Also check when window is resized
-    window.addEventListener('resize', function () {
-        setTimeout(checkForTruncation, 100);
-    });
+    // Run the check after a slight delay to ensure DOM is rendered
+    debouncedCheckForTruncation();
+
+    // Use debounced function for resize events
+    window.addEventListener('resize', debouncedCheckForTruncation);
 
     // Check after job details are loaded
     viewModel.sortableRepGroups.subscribe(function () {
-        setTimeout(checkForTruncation, 100);
+        debouncedCheckForTruncation();
     });
 
     // Setup MutationObserver to detect DOM changes and check truncation
     const observer = new MutationObserver(function (mutations) {
         for (const mutation of mutations) {
             if (mutation.addedNodes.length > 0) {
-                setTimeout(checkForTruncation, 100);
+                debouncedCheckForTruncation();
                 break;
             }
         }
@@ -72,7 +91,7 @@ export function setupCommandPathBehavior(viewModel) {
         viewModel.detailsOA.subscribe(function (jobs) {
             // Only run if there are jobs and this is not an initial load (length > 1)
             if (jobs.length > 1) {
-                setTimeout(checkForTruncation, 100);
+                debouncedCheckForTruncation();
             }
         });
     }
