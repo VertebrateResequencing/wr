@@ -307,8 +307,10 @@ func sAddr(s *jobqueue.ServerInfo) string {
 // token file. Does not die or report any kind of error if an optional bool is
 // supplied true.
 func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
+	shouldWarn := !(len(expectedToBeDown) == 1 && expectedToBeDown[0])
+
 	token, err := token()
-	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+	if err != nil && shouldWarn {
 		die("could not read token file; has the manager been started? [%s]", err)
 	}
 
@@ -317,20 +319,20 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 
 	var jq *jobqueue.Client
 
-	if addrErr == nil {
+	if addrErr == nil { //nolint:nestif
 		jq, err = jobqueue.Connect(serverAddr, caFile, config.ManagerCertDomain, token, wait)
 		if err == nil {
 			return jq
 		}
 
-		if !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+		if shouldWarn {
 			warn("failed to connect to manager at address from file (%s): %s, falling back to config address", serverAddr, err)
 		}
 	}
 
 	// fall back to using the config-defined address
 	jq, err = jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
-	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+	if err != nil && shouldWarn {
 		die("%s", err)
 	}
 
