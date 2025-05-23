@@ -3,7 +3,7 @@ PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
 TAG := $(shell git describe --abbrev=0 --tags)
-LDFLAGS = -ldflags "-X ${PKG}/jobqueue.ServerVersion=${VERSION}"
+LDFLAGS = -s -w -X ${PKG}/jobqueue.ServerVersion=${VERSION}
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
 
@@ -11,12 +11,12 @@ default: install
 
 build: export CGO_ENABLED = 0
 build:
-	go build -tags netgo ${LDFLAGS}
+	go build -tags netgo -ldflags "${LDFLAGS}"
 
 install: export CGO_ENABLED = 0
 install:
 	@rm -f ${GOPATH}/bin/wr
-	@go install -tags netgo ${LDFLAGS}
+	@go install -tags netgo -ldflags "${LDFLAGS}"
 	@echo installed to ${GOPATH}/bin/wr
 
 compile_k8s_tmp: /tmp/wr
@@ -55,14 +55,9 @@ clean:
 	@rm -f /tmp/wr
 
 dist: export CGO_ENABLED = 0
-# go get -u github.com/gobuild/gopack
-# go get -u github.com/aktau/github-release
+dist: export WR_LDFLAGS = $(LDFLAGS)
+# go install github.com/goreleaser/goreleaser/v2@2.9.0
 dist:
-	gopack pack --os linux --arch amd64 -o linux-dist.zip
-	gopack pack --os darwin --arch amd64 -o darwin-dist.zip
-	github-release release --tag ${TAG} --pre-release
-	github-release upload --tag ${TAG} --name wr-linux-x86-64.zip --file linux-dist.zip
-	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
-	@rm -f wr linux-dist.zip darwin-dist.zip
+	goreleaser release --clean
 
 .PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e test-k8s-unit
