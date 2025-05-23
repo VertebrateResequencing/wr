@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -117,6 +118,11 @@ func initConfig() {
 	caFile = config.ManagerCAFile
 }
 
+// managerAddrFile returns the path to the file that stores the manager's actual address.
+func managerAddrFile() string {
+	return filepath.Join(filepath.Dir(config.ManagerTokenFile), "manager.addr")
+}
+
 // token reads and returns the token from the file created when the manager
 // starts.
 func token() ([]byte, error) {
@@ -125,6 +131,17 @@ func token() ([]byte, error) {
 		return nil, err
 	}
 	return token, nil
+}
+
+// managerAddr reads and returns the address from the file created when the manager
+// starts.
+func managerAddr() (string, error) {
+	addrBytes, err := os.ReadFile(managerAddrFile())
+	if err != nil {
+		return "", err
+	}
+
+	return string(addrBytes), nil
 }
 
 // realUsername returns the username of the current user.
@@ -290,14 +307,34 @@ func sAddr(s *jobqueue.ServerInfo) string {
 // token file. Does not die or report any kind of error if an optional bool is
 // supplied true.
 func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
+	shouldWarn := !(len(expectedToBeDown) == 1 && expectedToBeDown[0])
+
 	token, err := token()
-	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+	if err != nil && shouldWarn {
 		die("could not read token file; has the manager been started? [%s]", err)
 	}
 
-	jq, err := jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
-	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+	// try to get the actual address from the manager.addr file first
+	serverAddr, addrErr := managerAddr()
+
+	var jq *jobqueue.Client
+
+	if addrErr == nil { //nolint:nestif
+		jq, err = jobqueue.Connect(serverAddr, caFile, config.ManagerCertDomain, token, wait)
+		if err == nil {
+			return jq
+		}
+
+		if shouldWarn {
+			warn("failed to connect to manager at address from file (%s): %s, falling back to config address", serverAddr, err)
+		}
+	}
+
+	// fall back to using the config-defined address
+	jq, err = jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
+	if err != nil && shouldWarn {
 		die("%s", err)
 	}
+
 	return jq
 }

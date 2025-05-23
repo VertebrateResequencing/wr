@@ -66,6 +66,7 @@ var (
 const (
 	kubernetes      = "kubernetes"
 	deadlockTimeout = 5 * time.Minute
+	ownerReadWrite  = 0600
 )
 
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
@@ -644,6 +645,11 @@ func init() {
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager %s started on %s, pid %d", jobqueue.ServerVersion, sAddr(s), s.PID)
 
+	err := os.WriteFile(managerAddrFile(), []byte(s.Addr), ownerReadWrite)
+	if err != nil {
+		warn("could not save manager address to file [%s]: %s", managerAddrFile(), err)
+	}
+
 	// go back to just stderr so we don't log token to file (this doesn't affect
 	// server logging)
 	clog.ToDefaultAtLevel("info")
@@ -884,5 +890,11 @@ func deleteToken() {
 	err := os.Remove(config.ManagerTokenFile)
 	if err != nil && !os.IsNotExist(err) {
 		warn("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
+	}
+
+	// also remove the manager address file
+	err = os.Remove(managerAddrFile())
+	if err != nil && !os.IsNotExist(err) {
+		warn("could not remove manager address file [%s]: %s", managerAddrFile(), err)
 	}
 }
