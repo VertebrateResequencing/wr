@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.36.0] - 2025-04-07
+### Added
+- `wr manager start` now records the host and port it starts on in a file next
+  to the token file, so wrmanagerhost doesn't need to be set as a config option
+  to connect to the manager from other machines anymore.
+
+### Changed
+- STDOUT/ERR is now always shown in `wr status` if any was produced.
+- Overhauled the web UI:
+  - Improved organisation of information
+  - Show stdout/err if available, without a click
+  - Allow loading more commands
+  - Allow searching for repgroups (including completed jobs)
+  - Show summary statistics for searched jobs, with plots
+  - Live update open details if their state changes
+- There is now a warning if you add commands with relative paths in them but
+  aren't using --cwd_matters (disable the warning with --disable_relative_check)
+
+### Fixed
+- Reverted the v0.35.2 change to go back to using localhost as the default for
+  generated certs. Fixes issues connecting to manager on different host. If you
+  used v0.35.2, you may need to delete your generated certificates and have
+  wr manager re-create them.
+- Fixed edge cases where STDOUT/ERR wasn't be stored properly, and gave an error
+  when trying to display it with `wr status`.
+- Updated some dependencies to address potential security vulnerabilities.
+
+
 ## [0.35.3] - 2025-04-07
 ### Added
 - New client.FindJobsByRepGroupPrefixAndState() function for eg. finding
