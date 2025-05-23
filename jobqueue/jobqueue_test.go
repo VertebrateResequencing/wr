@@ -921,10 +921,6 @@ func TestJobqueueBasics(t *testing.T) {
 			jq, err := ConnectUsingConfig(ctx, "development", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
-
-			So(jq.ServerInfo.Host, ShouldNotBeBlank)
-			So(jq.ServerInfo.Host, ShouldNotEqual, "localhost")
-			So(jq.ServerInfo.Host, ShouldNotEndWith, ".")
 		})
 
 		Convey("You can connect to the server and add jobs and get back their IDs", func() {

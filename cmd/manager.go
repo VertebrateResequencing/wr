@@ -664,7 +664,7 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 }
 
 func websiteURL(s *jobqueue.ServerInfo, token []byte) string {
-	return fmt.Sprintf("https://%s/?token=%s", net.JoinHostPort(s.Host, s.WebPort), string(token))
+	return fmt.Sprintf("https://%s/?token=%s", net.JoinHostPort(s.FQDN, s.WebPort), string(token))
 }
 
 func startJQ(postCreation, preDestroy []byte) {

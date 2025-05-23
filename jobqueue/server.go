@@ -160,6 +160,7 @@ type serverResponse struct {
 type ServerInfo struct {
 	Addr       string // ip:port
 	Host       string // hostname
+	FQDN       string // fully qualified domain name
 	Port       string // port
 	WebPort    string // port of the web interface
 	PID        int    // process id of server
@@ -441,7 +442,7 @@ type ServerConfig struct {
 	KeyFile string
 
 	// Domain that a generated CertFile should be valid for. If not supplied,
-	// defaults to the fqdn of the current host.
+	// defaults to "localhost".
 	//
 	// When using your own CertFile, this should be set to a domain that the
 	// certifcate is valid for, as when the server spawns clients, those clients
@@ -557,7 +558,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	keyFile := config.KeyFile
 	certDomain := config.CertDomain
 	if certDomain == "" {
-		certDomain = internal.FQDN()
+		certDomain = localhost
 	}
 	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string
@@ -709,7 +710,17 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	l := limiter.New(db.retrieveLimitGroup)
 
 	s = &Server{
-		ServerInfo:                &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		ServerInfo: &ServerInfo{
+			Addr:       ip + ":" + config.Port,
+			Host:       certDomain,
+			FQDN:       fqdn(),
+			Port:       config.Port,
+			WebPort:    config.WebPort,
+			PID:        os.Getpid(),
+			Deployment: config.Deployment,
+			Scheduler:  config.SchedulerName,
+			Mode:       ServerModeNormal,
+		},
 		ServerVersions:            &ServerVersions{Version: ServerVersion, API: restAPIVersion},
 		token:                     token,
 		uploadDir:                 uploadDir,

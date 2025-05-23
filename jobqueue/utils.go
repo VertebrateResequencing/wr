@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -657,4 +658,20 @@ func calculateItemDelay(numPreviousDelays int) time.Duration {
 	}
 
 	return d
+}
+
+// fqdn returns the fully qualified domain name of the current host, or
+// "localhost" or just the hostname on error.
+func fqdn() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return localhost
+	}
+
+	fqdn, err := net.LookupCNAME(hostname)
+	if err != nil {
+		fqdn = hostname
+	}
+
+	return strings.TrimSuffix(fqdn, ".")
 }
