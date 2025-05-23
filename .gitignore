@@ -24,3 +24,6 @@ _testmain.go
 
 .vrpipe_config.yml
 testjobs*
+
+# Added by goreleaser init:
+dist/
