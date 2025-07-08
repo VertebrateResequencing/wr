@@ -255,7 +255,7 @@ new internal ids is printed.`,
 		}
 
 		if cobraCmd.Flags().Changed("override") {
-			jm.SetOverride(uint8(cmdOvr))
+			jm.SetOverride(uint8(overrideStringToInt(cmdOvr)))
 		}
 		if cobraCmd.Flags().Changed("priority") {
 			jm.SetPriority(uint8(cmdPri))
@@ -394,7 +394,8 @@ func init() {
 	modCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
 	modCmd.Flags().Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
 	modCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required (default 0)")
-	modCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
+	modCmd.Flags().StringVarP(&cmdOvr, "override", "o", "no",
+		"[0|no|1|higher|2|always] should your mem/time estimates override? (default no)")
 	modCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	modCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	modCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
