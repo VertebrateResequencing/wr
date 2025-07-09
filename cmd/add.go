@@ -47,6 +47,9 @@ const (
 	syncMinBackoff    = 500 * time.Millisecond
 	syncMaxBackoff    = 1 * time.Minute
 	syncBackoffFactor = 1.1
+	overrideNo        = 0
+	overrideHigher    = 1
+	overrideAlways    = 2
 )
 
 // options for this cmd
@@ -56,7 +59,7 @@ var (
 	cmdMem                  string
 	cmdCPUs                 float64
 	cmdDisk                 int
-	cmdOvr                  int
+	cmdOvr                  string
 	cmdPri                  int
 	cmdRet                  int
 	cmdFile                 string
@@ -234,9 +237,10 @@ should almost always be part of the req_grp name.)
 
 "override" defines if your memory, disk or time should be used instead of the
 manager's estimate. Possible values are:
-0 = do not override wr's learned values for memory, disk and time (if any)
-1 = override if yours are higher
-2 = always override specified resource(s)
+0 | no | n = do not override wr's learned values for memory, disk and time (if
+             any)
+1 | higher | h = override if yours are higher
+2 | always | a = always override specified resource(s)
 (If you choose to override eg. only disk, then the learned value for memory and
 time will be used. If you want to override all 3 resources to disable learning
 completly, you must explicitly supply non-zero values for memory and time and 0
@@ -525,7 +529,8 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
 	addCmd.Flags().Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
 	addCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required (default 0)")
-	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
+	addCmd.Flags().StringVarP(&cmdOvr, "override", "o", "no",
+		"[0|no|1|higher|2|always] should your mem/time estimates override? (default no)")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	addCmd.Flags().StringVarP(&cmdNoRetry, "no_retry_over_walltime", "n", "", "do not retry if cmd runs longer than this [specify units such as m for minutes or h for hours]")
@@ -623,7 +628,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		CPUs:                 cmdCPUs,
 		Disk:                 cmdDisk,
 		DiskSet:              diskSet,
-		Override:             cmdOvr,
+		Override:             overrideStringToInt(cmdOvr),
 		Priority:             cmdPri,
 		Retries:              cmdRet,
 		Env:                  cmdEnv,
@@ -949,4 +954,19 @@ func getJob(jq *jobqueue.Client, id string) *jobqueue.Job {
 	}
 
 	return job
+}
+
+func overrideStringToInt(input string) int {
+	switch input {
+	case "0", "no", "n":
+		return overrideNo
+	case "1", "higher", "h":
+		return overrideHigher
+	case "2", "always", "a":
+		return overrideAlways
+	default:
+		die("invalid override value")
+
+		return -1
+	}
 }
