@@ -89,11 +89,11 @@ type jobqueueClient interface {
 
 type pretendJobqueue struct {
 	jobBuffer []*jobqueue.Job
-	output    io.Writer
+	output    io.WriteCloser
 }
 
 func newPretendJobqueue() *pretendJobqueue {
-	var w io.Writer
+	var w io.WriteCloser
 
 	fd, errr := strconv.ParseUint(PretendSubmissions, 10, 64)
 	if errr == nil {
@@ -155,7 +155,7 @@ func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {
 }
 
 func (p *pretendJobqueue) Disconnect() error {
-	return nil
+	return p.output.Close()
 }
 
 // Scheduler can be used to schedule commands to be executed by adding them to
