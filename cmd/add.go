@@ -129,7 +129,7 @@ cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk queue misc priority retries rep_grp dep_grps deps
 cmd_deps monitor_docker with_docker with_singularity container_mounts cloud_os
 cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
-cloud_shared env bsub_mode
+cloud_shared env bsub_mode modules limit_grps
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are

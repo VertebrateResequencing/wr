@@ -300,6 +300,10 @@ redirect (eg. "mycmd > stdout.txt").
 						homeChanged = "Changed home: true\n"
 					}
 				}
+				var modules string
+				if len(job.Modules) > 0 {
+					modules += fmt.Sprintf("Modules: %s; ", strings.Join(job.Modules, ", "))
+				}
 				var groups string
 				if len(job.DepGroups) > 0 {
 					groups = fmt.Sprintf("Dependency groups: %s; ", strings.Join(job.DepGroups, ", "))
@@ -339,7 +343,7 @@ redirect (eg. "mycmd > stdout.txt").
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, containerInfo, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, groups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, modules, mounts, homeChanged, containerInfo, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, groups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:

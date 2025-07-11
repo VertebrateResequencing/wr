@@ -3210,7 +3210,7 @@ func TestJobqueueModules(t *testing.T) {
 
 	testModulesStr := os.Getenv("WR_TEST_MODULES")
 	if testModulesStr == "" {
-		Convey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", t, func() {})
+		SkipConvey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", t, func() {})
 
 		return
 	}
@@ -3234,7 +3234,7 @@ func TestJobqueueModules(t *testing.T) {
 
 		server.rc = serverRC
 
-		Convey("You can connect, and add jobs with Modules", func() {
+		Convey("You can connect, and add a job with Modules", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 
@@ -3455,6 +3455,45 @@ func TestJobqueueModify(t *testing.T) {
 			job = kick("a", rgroup, "echo b && false", "b")
 			So(job.Attempts, ShouldEqual, 2)
 		})
+
+		testModulesStr := os.Getenv("WR_TEST_MODULES")
+		if testModulesStr == "" {
+			SkipConvey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", t, func() {})
+		} else {
+			testModules := strings.Split(testModulesStr, ",")
+			testModule := testModules[0]
+			cmd := "module is-loaded " + testModule
+			repgrp := "moduletest"
+
+			Convey("You can modify the modules of a job", func() {
+				addJobs = append(addJobs, &Job{
+					Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup",
+					Requirements: standardReqs, Override: uint8(2), Retries: uint8(0),
+					RepGroup: repgrp,
+				})
+
+				add(1)
+
+				job := reserve(rgroup, cmd)
+				job = execute(job, false, "")
+				So(job.Attempts, ShouldEqual, 1)
+
+				jm.SetModules([]string{testModule})
+				modify(repgrp, 1)
+
+				jobs, err := jq.GetByRepGroup(repgrp, false, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 1)
+
+				kicked, err := jq.Kick(jobsToJobEssenses(jobs))
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				job = reserve(rgroup, cmd)
+				job = execute(job, true, "")
+				So(job.Attempts, ShouldEqual, 2)
+			})
+		}
 
 		Convey("You can't modify the command line of a job to match another job", func() {
 			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})

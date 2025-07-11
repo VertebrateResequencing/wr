@@ -1033,6 +1033,7 @@ func (j *JobEssence) Stringify() string {
 type JobModifier struct {
 	EnvOverride              []byte
 	LimitGroups              []string
+	Modules                  []string
 	DepGroups                []string
 	Dependencies             Dependencies
 	Behaviours               Behaviours
@@ -1061,6 +1062,7 @@ type JobModifier struct {
 	NoRetriesOverWalltimeSet bool
 	EnvOverrideSet           bool
 	LimitGroupsSet           bool
+	ModulesSet               bool
 	DepGroupsSet             bool
 	DependenciesSet          bool
 	BehavioursSet            bool
@@ -1164,6 +1166,12 @@ func (j *JobModifier) SetEnvOverride(new string) error {
 func (j *JobModifier) SetLimitGroups(new []string) {
 	j.LimitGroups = new
 	j.LimitGroupsSet = true
+}
+
+// SetModules notes that you want to modify the Modules of Jobs.
+func (j *JobModifier) SetModules(new []string) {
+	j.Modules = new
+	j.ModulesSet = true
 }
 
 // SetDepGroups notes that you want to modify the DepGroups of Jobs.
@@ -1341,6 +1349,9 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		}
 		if j.LimitGroupsSet {
 			job.LimitGroups = j.LimitGroups
+		}
+		if j.ModulesSet {
+			job.Modules = j.Modules
 		}
 		if j.DepGroupsSet {
 			job.DepGroups = j.DepGroups
