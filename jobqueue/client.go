@@ -504,6 +504,9 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // property. The unique folder structure itself can be wholly deleted through
 // the Job behaviour "cleanup".
 //
+// If any environment variables were set when the Job was Add()ed, they are
+// force loaded before execution of the Cmd.
+//
 // If any remote file system mounts have been configured for the Job, these are
 // mounted prior to running the Cmd, and unmounted afterwards.
 //
@@ -547,6 +550,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return fmt.Errorf("failed to set up cmd file: %w", err)
 	}
 	defer cmdLineCleanup()
+
+	if len(job.Modules) > 0 {
+		jc = "module load --force " + strings.Join(job.Modules, " ") + "; " + jc
+	}
 
 	// we support arbitrary shell commands that may include semi-colons,
 	// quoted stuff and pipes, so it's best if we just pass it to bash

@@ -166,6 +166,10 @@ type Job struct {
 	// running. It's a way of not running too many of a type of job at once.
 	LimitGroups []string
 
+	// Modules are the names of environment modules that should be loaded before
+	// running Cmd.
+	Modules []string
+
 	// DepGroups are the dependency groups this job belongs to that other jobs
 	// can refer to in their Dependencies.
 	DepGroups []string

@@ -3201,6 +3201,79 @@ func jobsToJobEssenses(jobs []*Job) []*JobEssence {
 	return jes
 }
 
+func TestJobqueueModules(t *testing.T) {
+	ctx := context.Background()
+
+	if runnermode || servermode {
+		return
+	}
+
+	testModulesStr := os.Getenv("WR_TEST_MODULES")
+	if testModulesStr == "" {
+		Convey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", t, func() {})
+
+		return
+	}
+
+	testModules := strings.Split(testModulesStr, ",")
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
+	Convey("Once a new jobqueue server is up", t, func() {
+		ServerItemTTR = 1 * time.Second
+		ClientTouchInterval = 2500 * time.Millisecond
+
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		server.rc = serverRC
+
+		Convey("You can connect, and add jobs with Modules", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+
+			defer func() {
+				errd := jq.Disconnect()
+
+				if errd != nil {
+					t.Logf("Disconnect failed: %s\n", errd)
+				}
+			}()
+
+			cmds := make([]string, 0, len(testModules))
+			for _, m := range testModules {
+				cmds = append(cmds, "module is-loaded "+m)
+			}
+
+			addJobs := []*Job{{
+				Cmd: strings.Join(cmds, " && "),
+				Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs,
+				Override: uint8(2), Retries: uint8(0), RepGroup: "moduletest",
+				Modules: testModules}}
+
+			inserts, already, err := jq.Add(addJobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			Convey("Which can then execute successfully after loading their modules", func() {
+				job, errr := jq.ReserveScheduled(25*time.Millisecond, "110:30:1:0")
+				So(errr, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+			})
+		})
+	})
+}
+
 func TestJobqueueModify(t *testing.T) {
 	ctx := context.Background()
 
