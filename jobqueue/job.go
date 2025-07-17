@@ -934,6 +934,7 @@ func (j *Job) ToStatus() (JStatus, error) {
 		LimitGroups:     j.LimitGroups,
 		DepGroups:       j.DepGroups,
 		Dependencies:    j.Dependencies.Stringify(),
+		Modules:         j.Modules,
 		Cmd:             j.Cmd,
 		State:           state,
 		CwdBase:         j.Cwd,
