@@ -24,6 +24,7 @@ require (
 	github.com/jinzhu/configor v1.2.2
 	github.com/jpillora/backoff v1.0.0
 	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0
+	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/lindell/go-ordered-set v1.0.2
 	github.com/mattn/go-shellwords v1.0.12
 	github.com/olekukonko/tablewriter v0.0.5

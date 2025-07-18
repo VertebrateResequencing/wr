@@ -939,6 +939,17 @@ func TestJobqueueBasics(t *testing.T) {
 			So(ids[1], ShouldEqual, "2bb7055e49e21ea85066899a5ba38d8e")
 		})
 
+		pickTestPriority := func(i int) uint8 {
+			switch i {
+			case 7:
+				return uint8(4)
+			case 4:
+				return uint8(7)
+			default:
+				return uint8(i) //nolint:gosec
+			}
+		}
+
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -949,15 +960,17 @@ func TestJobqueueBasics(t *testing.T) {
 			So(jq.ServerInfo.Deployment, ShouldEqual, "development")
 
 			var jobs []*Job
-			for i := 0; i < 10; i++ {
-				pri := i
-				if i == 7 {
-					pri = 4
-				} else if i == 4 {
-					pri = 7
-				}
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Priority: uint8(pri), Retries: uint8(3), RepGroup: "manually_added"})
+
+			for i := range 10 {
+				pri := pickTestPriority(i)
+				jobs = append(jobs, &Job{
+					Cmd: fmt.Sprintf("test cmd %d", i),
+					Cwd: "/fake/cwd", ReqGroup: "fake_group",
+					Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1},
+					Priority:     pri, Retries: uint8(3), RepGroup: "manually_added"},
+				)
 			}
+
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 10)
@@ -1083,12 +1096,7 @@ func TestJobqueueBasics(t *testing.T) {
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {
 				for i := 9; i >= 0; i-- {
-					jid := i
-					if i == 7 {
-						jid = 4
-					} else if i == 4 {
-						jid = 7
-					}
+					jid := pickTestPriority(i)
 					job, err := jq.ReserveScheduled(50*time.Millisecond, "1024:240:1:0")
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
@@ -1180,12 +1188,7 @@ func TestJobqueueBasics(t *testing.T) {
 						So(job, ShouldBeNil)
 
 						for i := 9; i >= 0; i-- {
-							jid := i
-							if i == 7 {
-								jid = 4
-							} else if i == 4 {
-								jid = 7
-							}
+							jid := pickTestPriority(i)
 							job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
 							So(err, ShouldBeNil)
 							So(job, ShouldNotBeNil)

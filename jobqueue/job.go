@@ -1095,20 +1095,20 @@ func (j *JobModifier) SetCwd(cwd string) {
 }
 
 // SetCwdMatters notes that you want to modify the CwdMatters of Jobs.
-func (j *JobModifier) SetCwdMatters(new bool) {
-	j.CwdMatters = new
+func (j *JobModifier) SetCwdMatters(newVal bool) {
+	j.CwdMatters = newVal
 	j.CwdMattersSet = true
 }
 
 // SetChangeHome notes that you want to modify the ChangeHome of Jobs.
-func (j *JobModifier) SetChangeHome(new bool) {
-	j.ChangeHome = new
+func (j *JobModifier) SetChangeHome(newVal bool) {
+	j.ChangeHome = newVal
 	j.ChangeHomeSet = true
 }
 
 // SetReqGroup notes that you want to modify the ReqGroup of Jobs.
-func (j *JobModifier) SetReqGroup(new string) {
-	j.ReqGroup = new
+func (j *JobModifier) SetReqGroup(newVal string) {
+	j.ReqGroup = newVal
 	j.ReqGroupSet = true
 }
 
@@ -1122,110 +1122,113 @@ func (j *JobModifier) SetRequirements(req *scheduler.Requirements) {
 }
 
 // SetOverride notes that you want to modify the Override of Jobs.
-func (j *JobModifier) SetOverride(new uint8) {
-	j.Override = new
+func (j *JobModifier) SetOverride(newVal uint8) {
+	j.Override = newVal
 	j.OverrideSet = true
 }
 
 // SetPriority notes that you want to modify the Priority of Jobs.
-func (j *JobModifier) SetPriority(new uint8) {
-	j.Priority = new
+func (j *JobModifier) SetPriority(newVal uint8) {
+	j.Priority = newVal
 	j.PrioritySet = true
 }
 
 // SetRetries notes that you want to modify the Retries of Jobs.
-func (j *JobModifier) SetRetries(new uint8) {
-	j.Retries = new
+func (j *JobModifier) SetRetries(newVal uint8) {
+	j.Retries = newVal
 	j.RetriesSet = true
 }
 
 // SetNoRetriesOverWalltime notes that you want to modify the
 // NoRetriesOverWalltime of Jobs.
-func (j *JobModifier) SetNoRetriesOverWalltime(new time.Duration) {
-	j.NoRetriesOverWalltime = new
+func (j *JobModifier) SetNoRetriesOverWalltime(newVal time.Duration) {
+	j.NoRetriesOverWalltime = newVal
 	j.NoRetriesOverWalltimeSet = true
 }
 
 // SetEnvOverride notes that you want to modify the EnvOverride of Jobs. The
 // supplied string should be a comma separated list of key=value pairs. This can
 // generate an error if compression of the data fails.
-func (j *JobModifier) SetEnvOverride(new string) error {
+func (j *JobModifier) SetEnvOverride(newVal string) error {
 	var compressedEnv []byte
-	if new != "" {
+
+	if newVal != "" {
 		var err error
-		compressedEnv, err = compressEnv(strings.Split(new, ","))
+		compressedEnv, err = compressEnv(strings.Split(newVal, ","))
 		if err != nil {
 			return err
 		}
 	}
+
 	j.EnvOverride = compressedEnv
 	j.EnvOverrideSet = true
+
 	return nil
 }
 
 // SetLimitGroups notes that you want to modify the LimitGroups of Jobs.
-func (j *JobModifier) SetLimitGroups(new []string) {
-	j.LimitGroups = new
+func (j *JobModifier) SetLimitGroups(newVal []string) {
+	j.LimitGroups = newVal
 	j.LimitGroupsSet = true
 }
 
 // SetModules notes that you want to modify the Modules of Jobs.
-func (j *JobModifier) SetModules(new []string) {
-	j.Modules = new
+func (j *JobModifier) SetModules(newVal []string) {
+	j.Modules = newVal
 	j.ModulesSet = true
 }
 
 // SetDepGroups notes that you want to modify the DepGroups of Jobs.
-func (j *JobModifier) SetDepGroups(new []string) {
-	j.DepGroups = new
+func (j *JobModifier) SetDepGroups(newVal []string) {
+	j.DepGroups = newVal
 	j.DepGroupsSet = true
 }
 
 // SetDependencies notes that you want to modify the Dependencies of Jobs.
-func (j *JobModifier) SetDependencies(new Dependencies) {
-	j.Dependencies = new
+func (j *JobModifier) SetDependencies(newVal Dependencies) {
+	j.Dependencies = newVal
 	j.DependenciesSet = true
 }
 
 // SetBehaviours notes that you want to modify the Behaviours of Jobs.
-func (j *JobModifier) SetBehaviours(new Behaviours) {
-	j.Behaviours = new
+func (j *JobModifier) SetBehaviours(newVal Behaviours) {
+	j.Behaviours = newVal
 	j.BehavioursSet = true
 }
 
 // SetMountConfigs notes that you want to modify the MountConfigs of Jobs.
-func (j *JobModifier) SetMountConfigs(new MountConfigs) {
-	j.MountConfigs = new
+func (j *JobModifier) SetMountConfigs(newVal MountConfigs) {
+	j.MountConfigs = newVal
 	j.MountConfigsSet = true
 }
 
 // SetBsubMode notes that you want to modify the BsubMode of Jobs.
-func (j *JobModifier) SetBsubMode(new string) {
-	j.BsubMode = new
+func (j *JobModifier) SetBsubMode(newVal string) {
+	j.BsubMode = newVal
 	j.BsubModeSet = true
 }
 
 // SetMonitorDocker notes that you want to modify the MonitorDocker of Jobs.
-func (j *JobModifier) SetMonitorDocker(new string) {
-	j.MonitorDocker = new
+func (j *JobModifier) SetMonitorDocker(newVal string) {
+	j.MonitorDocker = newVal
 	j.MonitorDockerSet = true
 }
 
 // SetWithDocker notes that you want to modify the WithDocker of Jobs.
-func (j *JobModifier) SetWithDocker(new string) {
-	j.WithDocker = new
+func (j *JobModifier) SetWithDocker(newVal string) {
+	j.WithDocker = newVal
 	j.WithDockerSet = true
 }
 
 // SetWithSingularity notes that you want to modify the WithSingularity of Jobs.
-func (j *JobModifier) SetWithSingularity(new string) {
-	j.WithSingularity = new
+func (j *JobModifier) SetWithSingularity(newVal string) {
+	j.WithSingularity = newVal
 	j.WithSingularitySet = true
 }
 
 // SetContainerMounts notes that you want to modify the ContainerMounts of Jobs.
-func (j *JobModifier) SetContainerMounts(new string) {
-	j.ContainerMounts = new
+func (j *JobModifier) SetContainerMounts(newVal string) {
+	j.ContainerMounts = newVal
 	j.ContainerMountsSet = true
 }
 
@@ -1351,9 +1354,11 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		if j.LimitGroupsSet {
 			job.LimitGroups = j.LimitGroups
 		}
+
 		if j.ModulesSet {
 			job.Modules = j.Modules
 		}
+
 		if j.DepGroupsSet {
 			job.DepGroups = j.DepGroups
 		}

@@ -42,6 +42,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/docker/docker/client"
 	"github.com/gofrs/uuid"
+	"github.com/kballard/go-shellquote"
 	"github.com/shirou/gopsutil/process"
 	"github.com/ugorji/go/codec"
 	"github.com/wtsi-ssg/wr/clog"
@@ -552,7 +553,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	defer cmdLineCleanup()
 
 	if len(job.Modules) > 0 {
-		jc = "module load --force " + strings.Join(job.Modules, " ") + "; " + jc
+		jc = "module load --force " + shellquote.Join(job.Modules...) + "; " + jc
 	}
 
 	// we support arbitrary shell commands that may include semi-colons,
