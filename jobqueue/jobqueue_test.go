@@ -3461,7 +3461,7 @@ func TestJobqueueModify(t *testing.T) {
 
 		testModulesStr := os.Getenv("WR_TEST_MODULES")
 		if testModulesStr == "" {
-			SkipConvey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", t, func() {})
+			SkipConvey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", func() {})
 		} else {
 			testModules := strings.Split(testModulesStr, ",")
 			testModule := testModules[0]
