@@ -505,8 +505,8 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // property. The unique folder structure itself can be wholly deleted through
 // the Job behaviour "cleanup".
 //
-// If any environment variables were set when the Job was Add()ed, they are
-// force loaded before execution of the Cmd.
+// If any environment modules were set when the Job was Add()ed, they are force
+// loaded before execution of the Cmd.
 //
 // If any remote file system mounts have been configured for the Job, these are
 // mounted prior to running the Cmd, and unmounted afterwards.
