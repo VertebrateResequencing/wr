@@ -146,6 +146,10 @@ new internal ids is printed.`,
 			jm.SetLimitGroups(strings.Split(cmdLimitGroups, ","))
 		}
 
+		if cobraCmd.Flags().Changed("modules") {
+			jm.SetModules(strings.Split(cmdModules, ","))
+		}
+
 		// *** implementing dep_grps modification is complex; not done for now
 		// if cobraCmd.Flags().Changed("dep_grps") {
 		// 	jm.SetDepGroups(strings.Split(cmdDepGroups, ","))

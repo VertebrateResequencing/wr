@@ -858,7 +858,7 @@
             <!-- ko if: LimitGroups && LimitGroups.length > 0 -->
             <div class="details-section">
                 <h4 class="details-heading">Limit Groups</h4>
-                <div class="details-content" data-bind="text: LimitGroups.join('<br>')"></div>
+                <div class="details-content" data-bind="html: LimitGroups.join('<br>')"></div>
             </div>
             <!-- /ko -->
 
@@ -866,7 +866,7 @@
             <!-- ko if: DepGroups && DepGroups.length > 0 -->
             <div class="details-section">
                 <h4 class="details-heading">Dependency Groups</h4>
-                <div class="details-content" data-bind="text: DepGroups.join('<br>')"></div>
+                <div class="details-content" data-bind="html: DepGroups.join('<br>')"></div>
             </div>
             <!-- /ko -->
 
@@ -874,7 +874,15 @@
             <!-- ko if: Dependencies && Dependencies.length > 0 -->
             <div class="details-section">
                 <h4 class="details-heading">Dependencies</h4>
-                <div class="details-content" data-bind="text: Dependencies.join('<br>')"></div>
+                <div class="details-content" data-bind="html: Dependencies.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
+
+            <!-- Modules Section -->
+            <!-- ko if: Modules && Modules.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Modules</h4>
+                <div class="details-content" data-bind="html: Modules.join('<br>')"></div>
             </div>
             <!-- /ko -->
 
@@ -890,7 +898,7 @@
             <!-- ko if: OtherRequests && OtherRequests.length > 0 -->
             <div class="details-section">
                 <h4 class="details-heading">Other Requirements</h4>
-                <div class="details-content" data-bind="text: OtherRequests.join('<br>')"></div>
+                <div class="details-content" data-bind="html: OtherRequests.join('<br>')"></div>
             </div>
             <!-- /ko -->
 

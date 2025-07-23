@@ -76,6 +76,7 @@ type jstatusReq struct {
 type JStatus struct {
 	LimitGroups     []string
 	DepGroups       []string
+	Modules         []string
 	Dependencies    []string
 	OtherRequests   []string
 	Env             []string

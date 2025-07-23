@@ -1,4 +1,4 @@
-// Copyright © 2016-2021 Genome Research Limited
+// Copyright © 2016-2021,2024,2025 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -67,6 +67,7 @@ var (
 	cmdChangeHome           bool
 	cmdRepGroup             string
 	cmdLimitGroups          string
+	cmdModules              string
 	cmdDepGroups            string
 	cmdCmdDeps              string
 	cmdGroupDeps            string
@@ -128,7 +129,8 @@ cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk queue misc priority retries rep_grp dep_grps deps
 cmd_deps monitor_docker with_docker with_singularity container_mounts cloud_os
 cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
-cloud_shared env bsub_mode
+cloud_shared env bsub_mode modules limit_grps queues_avoid reserve_timeout
+no_retry_over_walltime
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -342,6 +344,9 @@ following limit group:
 With the above formats, the job will only be able to start if it satisfies the
 format given. Jobs can run past valid times.
 
+"modules" is an array of environment module names that should be loaded before
+running the Cmd. "module load --force <modules>" will be used.
+
 "dep_grps" is an array of arbitrary names you can associate with a command, so
 that you can then refer to this job (and others with the same dep_grp) in
 another job's deps.
@@ -520,6 +525,7 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
 	addCmd.Flags().StringVarP(&cmdRepGroup, "rep_grp", "i", "manually_added", "reporting group for your commands")
 	addCmd.Flags().StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
+	addCmd.Flags().StringVar(&cmdModules, "modules", "", "comma-separated list of environment modules to load")
 	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
 	addCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
@@ -684,6 +690,10 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 
 	if cmdLimitGroups != "" {
 		jd.LimitGroups = strings.Split(cmdLimitGroups, ",")
+	}
+
+	if cmdModules != "" {
+		jd.Modules = strings.Split(cmdModules, ",")
 	}
 
 	if cmdDepGroups != "" {

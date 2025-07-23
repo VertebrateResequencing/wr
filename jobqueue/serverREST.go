@@ -58,6 +58,7 @@ const (
 type JobViaJSON struct {
 	MountConfigs MountConfigs      `json:"mounts"`
 	LimitGrps    []string          `json:"limit_grps"`
+	Modules      []string          `json:"modules"`
 	DepGrps      []string          `json:"dep_grps"`
 	Deps         []string          `json:"deps"`
 	CmdDeps      Dependencies      `json:"cmd_deps"`
@@ -104,6 +105,7 @@ type JobViaJSON struct {
 // the conversion.
 type JobDefaults struct {
 	LimitGroups   []string
+	Modules       []string
 	DepGroups     []string
 	Deps          Dependencies
 	OnFailure     Behaviours
@@ -216,17 +218,19 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // properties of this JobViaJSON. The Job will not be in the queue until passed
 // to a method that adds jobs to the queue.
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
-	var cmd, cwd, rg, repg, monitorDocker, withDocker, withSingularity, containerMounts string
-	var mb, disk, override, priority, retries int
-	var diskSet bool
-	var cpus float64
-	var dur, noRetry time.Duration
-	var envOverride []byte
-	var limitGroups, depGroups []string
-	var deps Dependencies
-	var behaviours Behaviours
-	var mounts MountConfigs
-	var bsubMode string
+	var (
+		cmd, cwd, rg, repg, monitorDocker, bsubMode  string
+		withDocker, withSingularity, containerMounts string
+		mb, disk, override, priority, retries        int
+		diskSet                                      bool
+		cpus                                         float64
+		dur, noRetry                                 time.Duration
+		envOverride                                  []byte
+		limitGroups, modules, depGroups              []string
+		deps                                         Dependencies
+		behaviours                                   Behaviours
+		mounts                                       MountConfigs
+	)
 
 	if jvj.RepGrp == "" {
 		repg = jd.RepGrp
@@ -341,6 +345,12 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		limitGroups = jd.LimitGroups
 	} else {
 		limitGroups = jvj.LimitGrps
+	}
+
+	if len(jvj.Modules) == 0 {
+		modules = jd.Modules
+	} else {
+		modules = jvj.Modules
 	}
 
 	if len(jvj.DepGrps) == 0 {
@@ -513,6 +523,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		Retries:               uint8(retries),
 		NoRetriesOverWalltime: noRetry,
 		LimitGroups:           limitGroups,
+		Modules:               modules,
 		DepGroups:             depGroups,
 		Dependencies:          deps,
 		EnvOverride:           envOverride,

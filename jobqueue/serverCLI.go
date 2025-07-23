@@ -787,6 +787,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		RepGroup:              sjob.RepGroup,
 		ReqGroup:              sjob.ReqGroup,
 		LimitGroups:           sjob.LimitGroups,
+		Modules:               sjob.Modules,
 		DepGroups:             sjob.DepGroups,
 		Cmd:                   sjob.Cmd,
 		Cwd:                   sjob.Cwd,

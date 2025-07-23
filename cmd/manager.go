@@ -411,13 +411,14 @@ down will be lost.`,
 			completeMsg = fmt.Sprintf("complete in less than %s", etc)
 		}
 
-		if numLeft == 0 {
+		switch numLeft {
+		case 0:
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
 			deleteToken()
-		} else if numLeft == 1 {
+		case 1:
 			info("wr manager running on port %s is now draining; there is a job still running, and it should %s",
 				config.ManagerPort, completeMsg)
-		} else {
+		default:
 			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should %s",
 				config.ManagerPort, numLeft, completeMsg)
 		}
@@ -455,11 +456,12 @@ running job will finish.`,
 			die("even though I was able to connect to the manager, it failed to enter pause mode: %s", err)
 		}
 
-		if numLeft == 0 {
+		switch numLeft {
+		case 0:
 			info("wr manager running on port %s is paused: there were no jobs still running.", config.ManagerPort)
-		} else if numLeft == 1 {
+		case 1:
 			info("wr manager running on port %s is now paused; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
-		} else {
+		default:
 			info("wr manager running on port %s is now paused; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
 

@@ -939,6 +939,17 @@ func TestJobqueueBasics(t *testing.T) {
 			So(ids[1], ShouldEqual, "2bb7055e49e21ea85066899a5ba38d8e")
 		})
 
+		pickTestPriority := func(i int) uint8 {
+			switch i {
+			case 7:
+				return uint8(4)
+			case 4:
+				return uint8(7)
+			default:
+				return uint8(i) //nolint:gosec
+			}
+		}
+
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -949,15 +960,17 @@ func TestJobqueueBasics(t *testing.T) {
 			So(jq.ServerInfo.Deployment, ShouldEqual, "development")
 
 			var jobs []*Job
-			for i := 0; i < 10; i++ {
-				pri := i
-				if i == 7 {
-					pri = 4
-				} else if i == 4 {
-					pri = 7
-				}
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Priority: uint8(pri), Retries: uint8(3), RepGroup: "manually_added"})
+
+			for i := range 10 {
+				pri := pickTestPriority(i)
+				jobs = append(jobs, &Job{
+					Cmd: fmt.Sprintf("test cmd %d", i),
+					Cwd: "/fake/cwd", ReqGroup: "fake_group",
+					Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1},
+					Priority:     pri, Retries: uint8(3), RepGroup: "manually_added"},
+				)
 			}
+
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 10)
@@ -1083,12 +1096,7 @@ func TestJobqueueBasics(t *testing.T) {
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {
 				for i := 9; i >= 0; i-- {
-					jid := i
-					if i == 7 {
-						jid = 4
-					} else if i == 4 {
-						jid = 7
-					}
+					jid := pickTestPriority(i)
 					job, err := jq.ReserveScheduled(50*time.Millisecond, "1024:240:1:0")
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
@@ -1180,12 +1188,7 @@ func TestJobqueueBasics(t *testing.T) {
 						So(job, ShouldBeNil)
 
 						for i := 9; i >= 0; i-- {
-							jid := i
-							if i == 7 {
-								jid = 4
-							} else if i == 4 {
-								jid = 7
-							}
+							jid := pickTestPriority(i)
 							job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
 							So(err, ShouldBeNil)
 							So(job, ShouldNotBeNil)
@@ -3201,6 +3204,79 @@ func jobsToJobEssenses(jobs []*Job) []*JobEssence {
 	return jes
 }
 
+func TestJobqueueModules(t *testing.T) {
+	ctx := context.Background()
+
+	if runnermode || servermode {
+		return
+	}
+
+	testModulesStr := os.Getenv("WR_TEST_MODULES")
+	if testModulesStr == "" {
+		SkipConvey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", t, func() {})
+
+		return
+	}
+
+	testModules := strings.Split(testModulesStr, ",")
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
+	Convey("Once a new jobqueue server is up", t, func() {
+		ServerItemTTR = 1 * time.Second
+		ClientTouchInterval = 2500 * time.Millisecond
+
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		server.rc = serverRC
+
+		Convey("You can connect, and add a job with Modules", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+
+			defer func() {
+				errd := jq.Disconnect()
+
+				if errd != nil {
+					t.Logf("Disconnect failed: %s\n", errd)
+				}
+			}()
+
+			cmds := make([]string, 0, len(testModules))
+			for _, m := range testModules {
+				cmds = append(cmds, "module is-loaded "+m)
+			}
+
+			addJobs := []*Job{{
+				Cmd: strings.Join(cmds, " && "),
+				Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs,
+				Override: uint8(2), Retries: uint8(0), RepGroup: "moduletest",
+				Modules: testModules}}
+
+			inserts, already, err := jq.Add(addJobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			Convey("Which can then execute successfully after loading their modules", func() {
+				job, errr := jq.ReserveScheduled(25*time.Millisecond, "110:30:1:0")
+				So(errr, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+			})
+		})
+	})
+}
+
 func TestJobqueueModify(t *testing.T) {
 	ctx := context.Background()
 
@@ -3382,6 +3458,45 @@ func TestJobqueueModify(t *testing.T) {
 			job = kick("a", rgroup, "echo b && false", "b")
 			So(job.Attempts, ShouldEqual, 2)
 		})
+
+		testModulesStr := os.Getenv("WR_TEST_MODULES")
+		if testModulesStr == "" {
+			SkipConvey("Skipping TestJobqueueModules because WR_TEST_MODULES is not set", func() {})
+		} else {
+			testModules := strings.Split(testModulesStr, ",")
+			testModule := testModules[0]
+			cmd := "module is-loaded " + testModule
+			repgrp := "moduletest"
+
+			Convey("You can modify the modules of a job", func() {
+				addJobs = append(addJobs, &Job{
+					Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup",
+					Requirements: standardReqs, Override: uint8(2), Retries: uint8(0),
+					RepGroup: repgrp,
+				})
+
+				add(1)
+
+				job := reserve(rgroup, cmd)
+				job = execute(job, false, "")
+				So(job.Attempts, ShouldEqual, 1)
+
+				jm.SetModules([]string{testModule})
+				modify(repgrp, 1)
+
+				jobs, err := jq.GetByRepGroup(repgrp, false, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 1)
+
+				kicked, err := jq.Kick(jobsToJobEssenses(jobs))
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				job = reserve(rgroup, cmd)
+				job = execute(job, true, "")
+				So(job.Attempts, ShouldEqual, 2)
+			})
+		}
 
 		Convey("You can't modify the command line of a job to match another job", func() {
 			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
