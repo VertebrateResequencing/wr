@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.36.1] - 2025-08-21
+### Added
+- New `--modules` option for `wr add` to load environment modules prior to
+  running the command
+
+### Changed
+- The `--override` option for `wr add` can now take friendly text values:
+  "no" instead of 0, "higher" instead of 1, "always" instead of 2
+- Improvements when testing from external packages; the default job status for
+  the mock queue is now "delayed".
+
+
 ## [0.36.0] - 2025-04-07
 ### Added
 - `wr manager start` now records the host and port it starts on in a file next
