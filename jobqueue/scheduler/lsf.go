@@ -682,7 +682,7 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	queues := s.sortedqs
 
 	if queue, ok := req.Other["scheduler_queue"]; strings.Contains(queue, " ") {
-		queues = strings.Split(queue, " ")
+		queues = strings.Split(queue, ",")
 	} else if ok {
 		return queue, nil
 	}

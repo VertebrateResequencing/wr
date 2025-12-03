@@ -536,12 +536,12 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				otherReqs["scheduler_queue"] = "normal long"
+				otherReqs["scheduler_queue"] = "normal,long"
 				queue, err = impl.determineQueue(&Requirements{1, 47 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				otherReqs["scheduler_queue"] = "normal long"
+				otherReqs["scheduler_queue"] = "normal,long"
 				queue, err = impl.determineQueue(&Requirements{1, 11 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
