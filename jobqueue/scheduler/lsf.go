@@ -679,7 +679,11 @@ func (s *lsf) busy(ctx context.Context) bool {
 // job the soonest (amongst those that are capable of running it). If req.Other
 // contains a scheduler_queue value, returns that instead.
 func (s *lsf) determineQueue(req *Requirements) (string, error) {
-	if queue, ok := req.Other["scheduler_queue"]; ok {
+	queues := s.sortedqs
+
+	if queue, ok := req.Other["scheduler_queue"]; strings.Contains(queue, " ") {
+		queues = strings.Split(queue, " ")
+	} else if ok {
 		return queue, nil
 	}
 
@@ -690,7 +694,7 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 		queuesToAvoid = strings.Split(req.Other["scheduler_queues_avoid"], ",")
 	}
 
-	for _, queue := range s.sortedqs {
+	for _, queue := range queues {
 		if queueShouldBeAvoided(queue, queuesToAvoid) {
 			continue
 		}
