@@ -331,9 +331,9 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 		"hosts":      {18, 1}, // weight, sort order
 		"max_user":   {10, 1},
 		"max":        {5, 1},
-		"prio":       {5, 0},
+		"prio":       {1, 0},
 		"chunk_size": {10000, 0},
-		"runlimit":   {5, 1},
+		"runlimit":   {1, 1},
 		"memlimit":   {1, 0},
 		"num_users":  {15, 0},
 	}
