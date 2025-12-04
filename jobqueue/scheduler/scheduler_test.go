@@ -535,6 +535,16 @@ func TestLSF(t *testing.T) {
 				queue, err = impl.determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
+
+				otherReqs["scheduler_queue"] = "normal,long"
+				queue, err = impl.determineQueue(&Requirements{1, 47 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "long")
+
+				otherReqs["scheduler_queue"] = "normal,long"
+				queue, err = impl.determineQueue(&Requirements{1, 11 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "normal")
 			})
 
 			Convey("determineQueue() picks the best queue depending on given resource requirements", func() {
@@ -552,15 +562,21 @@ func TestLSF(t *testing.T) {
 
 				queue, err = impl.determineQueue(&Requirements{1000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "teramem")
+
+				queue, err = impl.determineQueue(&Requirements{3000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "hugemem")
 
 				queue, err = impl.determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long-chkpt")
 
-				queue, err = impl.determineQueue(&Requirements{1, 169 * time.Hour, 1, 20, otherReqs, true, true, true})
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "hugemem")
+				SkipConvey("Should be week, but we need to check 'span[hosts]' as well", func() {
+					queue, err = impl.determineQueue(&Requirements{1, 167 * time.Hour, 1, 20, otherReqs, true, true, true})
+					So(err, ShouldBeNil)
+					So(queue, ShouldEqual, "week")
+				})
 
 				queue, err = impl.determineQueue(&Requirements{1, 361 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)

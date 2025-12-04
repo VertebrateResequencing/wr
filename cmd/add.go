@@ -259,7 +259,8 @@ space usage checking and learning only occurs for jobs where cwd doesn't matter
 "queue" tells wr which queue a job should be submitted to, when using a job
 scheduler that has queues (eg. LSF). If queue is not specified, wr will use
 heuristics to pick the most appropriate queue based on the time, memory and cpu
-requirements of the job.
+requirements of the job. If a comma-separated list of queue names is supplied,
+we will limit its picking to be amongst those.
 
 "queues_avoid" is comma-separated list of substrings found in queue names that
 should not be submitted to, when using a job scheduler that has queues (eg. LSF)
@@ -559,7 +560,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	addCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
-	addCmd.Flags().StringVar(&cmdQueuesAvoid, "queues_avoid", "",
+	addCmd.Flags().StringVar(&cmdQueuesAvoid, "queues_avoid", "interactive",
 		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
 	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
