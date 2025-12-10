@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.36.2] - 2025-12-10
+### Changed
+- The `--queue` option for `wr add` can now be a comma separated list of queues
+  that wr is allowed to pick from.
+
+
 ## [0.36.1] - 2025-08-21
 ### Added
 - New `--modules` option for `wr add` to load environment modules prior to
