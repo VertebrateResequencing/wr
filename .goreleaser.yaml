@@ -20,6 +20,8 @@ builds:
         goarch: amd64
     ldflags:
       - "{{ .Env.WR_LDFLAGS }}"
+    tags:
+      - netgo
 
 archives:
   - ids:
