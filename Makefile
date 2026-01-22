@@ -37,6 +37,7 @@ test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kub
 race: export CGO_ENABLED = 1
 race:
 	go test -p 1 -tags netgo -race --count 1 -failfast ./
+	go test -p 1 -tags netgo -race --count 1 -failfast ./cmd
 	go test -p 1 -tags netgo -race --count 1 -failfast ./queue
 	go test -p 1 -tags netgo -race --count 1 -failfast -timeout 30m ./jobqueue
 	go test -p 1 -tags netgo -race --count 1 -failfast -timeout 40m ./jobqueue/scheduler

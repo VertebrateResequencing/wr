@@ -85,7 +85,7 @@ var (
 	cmdCloudSharedDisk      bool
 	cmdFlavor               string
 	cmdQueue                string
-	cmdQueuesAvoid          string
+	cmdQueuesAvoidAdd       string
 	cmdMisc                 string
 	cmdMonitorDocker        string
 	cmdWithDocker           string
@@ -560,7 +560,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	addCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
-	addCmd.Flags().StringVar(&cmdQueuesAvoid, "queues_avoid", "interactive",
+	addCmd.Flags().StringVar(&cmdQueuesAvoidAdd, "queues_avoid", "interactive",
 		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
 	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
@@ -651,7 +651,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		CloudFlavor:          cmdFlavor,
 		CloudShared:          cmdCloudSharedDisk,
 		SchedulerQueue:       cmdQueue,
-		SchedulerQueuesAvoid: cmdQueuesAvoid,
+		SchedulerQueuesAvoid: cmdQueuesAvoidAdd,
 		SchedulerMisc:        cmdMisc,
 		BsubMode:             bsubMode,
 		RTimeout:             rtimeoutint,
