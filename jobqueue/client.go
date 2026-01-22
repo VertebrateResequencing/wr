@@ -565,7 +565,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	var cmd *exec.Cmd
 
 	if job.Group != "" {
-		cmd = exec.Command("newgrp", job.Group)
+		cmd = exec.Command("newgrp", job.Group) //nolint:gosec
 		cmd.Stdin = strings.NewReader(jc)
 	} else {
 		cmd = exec.Command(shell, "-c", jc) // #nosec Our whole purpose is to allow users to run arbitrary commands via us...
