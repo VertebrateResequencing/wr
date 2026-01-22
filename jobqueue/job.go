@@ -132,6 +132,10 @@ type Job struct {
 	// you expect to have similar resource requirements.
 	ReqGroup string
 
+	// Group is the group name to run the executable as; a value of empty string
+	// will use the default group.
+	Group string
+
 	// Requirements describes the resources this Cmd needs to run, such as RAM,
 	// Disk and time. These may be determined for you by the system (depending
 	// on Override) based on past experience of running jobs with the same

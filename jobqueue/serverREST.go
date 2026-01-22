@@ -69,6 +69,7 @@ type JobViaJSON struct {
 	Cmd          string            `json:"cmd"`
 	Cwd          string            `json:"cwd"`
 	ReqGrp       string            `json:"req_grp"`
+	Group        string            `json:"group"`
 	// Memory is a number and unit suffix, eg. 1G for 1 Gigabyte.
 	Memory string `json:"memory"`
 	// Time is a duration with a unit suffix, eg. 1h for 1 hour.
@@ -114,6 +115,7 @@ type JobDefaults struct {
 	MountConfigs  MountConfigs
 	compressedEnv []byte
 	RepGrp        string
+	Group         string
 	// Cwd defaults to /tmp.
 	Cwd    string
 	ReqGrp string
@@ -268,6 +270,11 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		}
 	} else {
 		rg = jvj.ReqGrp
+	}
+
+	group := jd.Group
+	if jvj.Group != "" {
+		group = jvj.Group
 	}
 
 	if jvj.CPUs == nil {
@@ -517,6 +524,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		CwdMatters:            cwdMatters,
 		ChangeHome:            changeHome,
 		ReqGroup:              rg,
+		Group:                 group,
 		Requirements:          &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, DiskSet: diskSet, Other: other},
 		Override:              uint8(override),
 		Priority:              uint8(priority),

@@ -561,7 +561,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	if strings.Contains(jc, " | ") {
 		jc = "set -o pipefail; " + jc
 	}
-	cmd := exec.Command(shell, "-c", jc) // #nosec Our whole purpose is to allow users to run arbitrary commands via us...
+
+	var cmd *exec.Cmd
+
+	if job.Group != "" {
+		cmd = exec.Command("newgrp", job.Group)
+		cmd.Stdin = strings.NewReader(jc)
+	} else {
+		cmd = exec.Command(shell, "-c", jc) // #nosec Our whole purpose is to allow users to run arbitrary commands via us...
+	}
 
 	// we'll filter STDERR/OUT of the cmd to keep only the first and last line
 	// of any contiguous block of \r terminated lines (to mostly eliminate
@@ -851,6 +859,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			"LSF_LIBDIR=/dev/null",
 			"LSF_ENVDIR=/dev/null",
 			"LSF_BINDIR=" + prependPath,
+			"SHELL=" + shell,
 		})
 	}
 	cmd.Env = env
