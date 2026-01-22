@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.36.3] - 2026-01-22
+### Added
+- New `--group` option for `wr add` that lets you run commands as particular
+  unix groups.
+
+### Fixed
+- The `--queues_avoid` option for `wr add` default value of 'interactive' now
+  applies.
+
+
 ## [0.36.2] - 2025-12-10
 ### Changed
 - The `--queue` option for `wr add` can now be a comma separated list of queues
