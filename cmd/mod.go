@@ -173,6 +173,10 @@ new internal ids is printed.`,
 			jm.SetReqGroup(reqGroup)
 		}
 
+		if cobraCmd.Flags().Changed("group") {
+			jm.SetUnixGroup(cmdGroup)
+		}
+
 		req := &jqs.Requirements{}
 		var setReq bool
 		if cobraCmd.Flags().Changed("memory") {
@@ -422,6 +426,7 @@ func init() {
 	modCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	modCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	modCmd.Flags().BoolVar(&cmdCloudSharedDiskUnset, "unset_cloud_shared", false, "unset --cloud_shared")
+	modCmd.Flags().StringVar(&cmdGroup, "group", "", "unix group to start the command as")
 	modCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	modCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
 	modCmd.Flags().StringVar(&cmdQueuesAvoidMod, "queues_avoid", "",

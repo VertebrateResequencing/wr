@@ -1046,6 +1046,7 @@ type JobModifier struct {
 	Cmd                      string
 	Cwd                      string
 	ReqGroup                 string
+	Group                    string
 	BsubMode                 string
 	MonitorDocker            string
 	WithDocker               string
@@ -1057,6 +1058,7 @@ type JobModifier struct {
 	ChangeHome               bool
 	ChangeHomeSet            bool
 	ReqGroupSet              bool
+	GroupSet                 bool
 	Override                 uint8
 	OverrideSet              bool
 	Priority                 uint8
@@ -1114,6 +1116,11 @@ func (j *JobModifier) SetChangeHome(newVal bool) {
 func (j *JobModifier) SetReqGroup(newVal string) {
 	j.ReqGroup = newVal
 	j.ReqGroupSet = true
+}
+
+func (j *JobModifier) SetUnixGroup(group string) {
+	j.Group = group
+	j.GroupSet = true
 }
 
 // SetRequirements notes that you want to modify the Requirements of Jobs. You
@@ -1322,6 +1329,9 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		}
 		if j.ReqGroupSet {
 			job.ReqGroup = j.ReqGroup
+		}
+		if j.GroupSet {
+			job.Group = j.Group
 		}
 		if j.Requirements != nil {
 			if j.Requirements.RAM != 0 {

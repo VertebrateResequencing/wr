@@ -176,8 +176,8 @@ a flag to disable this check: --disable_relative_check.
 the $HOME environment variable to the actual command working directory before
 running the cmd.
 
-"group" specifies which group the command should run as; if no value is set, the
-users default group is used.
+"group" specifies which unix group the command should run as; if no value is
+set, the users default unix group is used.
 
 "on_failure" determines what behaviours are triggered if your cmd exits non-0.
 Behaviours are described using an array of objects, where each object has a key
@@ -572,7 +572,7 @@ func init() {
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 	addCmd.Flags().BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
 		"disable the relative path checking when cwd_matters is false")
-	addCmd.Flags().StringVar(&cmdGroup, "group", "", "group to start the command as")
+	addCmd.Flags().StringVar(&cmdGroup, "group", "", "unix group to start the command as")
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
 	addCmd.Flags().BoolVarP(&simpleOutput, "simple", "s", false, "simplify output to only queued job ids")
