@@ -1330,9 +1330,11 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		if j.ReqGroupSet {
 			job.ReqGroup = j.ReqGroup
 		}
+
 		if j.GroupSet {
 			job.Group = j.Group
 		}
+
 		if j.Requirements != nil {
 			if j.Requirements.RAM != 0 {
 				job.Requirements.RAM = j.Requirements.RAM
