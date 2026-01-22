@@ -30,6 +30,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -1298,6 +1299,51 @@ func TestJobqueueBasics(t *testing.T) {
 				stdout, err := job.StdOut()
 				So(err, ShouldBeNil)
 				So(stdout, ShouldEqual, "c\nd")
+			})
+
+			Convey("You can execute a job as a different group", func() {
+				server.racmutex.Lock()
+				server.rc = ""
+				server.racmutex.Unlock()
+
+				groups, err := os.Getgroups()
+				So(err, ShouldBeNil)
+				So(len(groups), ShouldBeGreaterThan, 1)
+
+				second, err := user.LookupGroupId(strconv.Itoa(groups[1]))
+				So(err, ShouldBeNil)
+
+				inserts, already, err := jq.Add([]*Job{
+					{Cmd: "id", Cwd: t.TempDir(), Requirements: standardReqs, RepGroup: "manually_added"},
+					{Cmd: "id ", Group: second.Name, Cwd: t.TempDir(), Requirements: standardReqs, RepGroup: "manually_added"},
+				}, []string{}, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 2)
+				So(already, ShouldEqual, 0)
+
+				job, err := jq.Reserve(0)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				stdoutA, err := job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdoutA, ShouldNotBeEmpty)
+
+				job, err = jq.Reserve(0)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				stdoutB, err := job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdoutB, ShouldNotBeEmpty)
+
+				So(stdoutA, ShouldNotEqual, stdoutB)
 			})
 
 			Convey("You can stop the server by sending it a SIGTERM or SIGINT", func() {
