@@ -2522,25 +2522,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 // true, in which case RepGroup may contain repGroup as a substring.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search bool,
 	limit int, state JobState, getStd bool, getEnv bool) []*Job {
-	var jobs []*Job
-
-	if repGroup != "" && !search {
-		jobs = s.getQueueJobsByRepGroup(ctx, repGroup)
-	} else {
-		allItems := s.q.AllItems()
-		jobs = make([]*Job, 0, len(allItems))
-
-		for _, item := range allItems {
-			if repGroup != "" {
-				job, ok := item.Data().(*Job)
-				if !ok || !matchesRepGroup(job.RepGroup, repGroup, search) {
-					continue
-				}
-			}
-
-			jobs = append(jobs, s.itemToJob(ctx, item, false, false))
-		}
-	}
+	jobs := s.getQueueJobsCurrent(ctx, repGroup, search)
 
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
 		Limit:  limit,
@@ -2548,6 +2530,45 @@ func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search boo
 		GetStd: getStd,
 		GetEnv: getEnv,
 	})
+
+	return jobs
+}
+
+func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, search bool) []*Job {
+	if repGroup == "" {
+		return s.getAllQueueJobs(ctx)
+	}
+
+	if search {
+		return s.getQueueJobsByRepGroupSearch(ctx, repGroup)
+	}
+
+	return s.getQueueJobsByRepGroup(ctx, repGroup)
+}
+
+func (s *Server) getAllQueueJobs(ctx context.Context) []*Job {
+	allItems := s.q.AllItems()
+	jobs := make([]*Job, 0, len(allItems))
+
+	for _, item := range allItems {
+		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
+	}
+
+	return jobs
+}
+
+func (s *Server) getQueueJobsByRepGroupSearch(ctx context.Context, repGroup string) []*Job {
+	allItems := s.q.AllItems()
+	jobs := make([]*Job, 0, len(allItems))
+
+	for _, item := range allItems {
+		job, ok := item.Data().(*Job)
+		if !ok || !strings.Contains(job.RepGroup, repGroup) {
+			continue
+		}
+
+		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
+	}
 
 	return jobs
 }
