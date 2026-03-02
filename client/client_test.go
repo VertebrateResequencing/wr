@@ -421,7 +421,7 @@ func TestFindIncompleteJobsByRepGroupPrefixErrors(t *testing.T) {
 		jq := &incompleteCallTrackingJQ{err: expectedErr}
 		s := &Scheduler{jq: jq}
 
-		Convey("FindIncompleteJobsByRepGroupPrefix propagates errors and calls GetIncompleteByRepGroup once with default args", func() {
+		Convey("FindIncompleteJobsByRepGroupPrefix propagates errors", func() {
 			jobs, err := s.FindIncompleteJobsByRepGroupPrefix("rep")
 			So(err, ShouldEqual, expectedErr)
 			So(jobs, ShouldBeNil)

@@ -2524,11 +2524,11 @@ func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search boo
 	limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	allItems := s.q.AllItems()
 	jobs := make([]*Job, 0, len(allItems))
+
 	for _, item := range allItems {
 		if repGroup != "" {
 			job, ok := item.Data().(*Job)
-			if !ok || (search && !strings.Contains(job.RepGroup, repGroup)) ||
-				(!search && job.RepGroup != repGroup) {
+			if !ok || !matchesRepGroup(job.RepGroup, repGroup, search) {
 				continue
 			}
 		}
@@ -2544,6 +2544,14 @@ func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search boo
 	})
 
 	return jobs
+}
+
+func matchesRepGroup(jobRepGroup, filterRepGroup string, search bool) bool {
+	if search {
+		return strings.Contains(jobRepGroup, filterRepGroup)
+	}
+
+	return jobRepGroup == filterRepGroup
 }
 
 type limitJobsOptions struct {

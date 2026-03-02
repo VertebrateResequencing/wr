@@ -146,16 +146,15 @@ func (p *pretendJobqueue) GetIncompleteByRepGroup(repgroup string, subStr bool,
 	var jobs []*jobqueue.Job
 
 	for _, job := range p.jobBuffer {
-		matched := false
+		matched := job.RepGroup == repgroup
 		if subStr {
 			matched = strings.Contains(job.RepGroup, repgroup)
-		} else {
-			matched = job.RepGroup == repgroup
 		}
 
-		if job.State != jobqueue.JobStateComplete &&
-			(state == "" || job.State == state) &&
-			matched {
+		incompleteAndStateMatched := job.State != jobqueue.JobStateComplete &&
+			(state == "" || job.State == state)
+
+		if incompleteAndStateMatched && matched {
 			jobs = append(jobs, job)
 		}
 	}
