@@ -28,7 +28,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"strconv"
 	"testing"
@@ -308,7 +307,7 @@ func TestFakeScheduler(t *testing.T) {
 				job2.State = jobqueue.JobStateReady
 				job3.State = jobqueue.JobStateComplete
 
-				jobs, err := s.FindIncompleteJobsByRepGroupPrefix("rep1")
+				jobs, err = s.FindIncompleteJobsByRepGroupPrefix("rep1")
 				So(err, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job1})
 			})
@@ -322,7 +321,7 @@ func TestFakeScheduler(t *testing.T) {
 				job2.State = jobqueue.JobStateReady
 				job3.State = jobqueue.JobStateRunning
 
-				jobs, err := s.FindIncompleteJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
+				jobs, err = s.FindIncompleteJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
 				So(err, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job3})
 			})
@@ -388,7 +387,8 @@ func (i *incompleteCallTrackingJQ) GetByRepGroup(_ string, _ bool, _ int,
 	return nil, nil
 }
 
-func (i *incompleteCallTrackingJQ) GetIncomplete(limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error) {
+func (i *incompleteCallTrackingJQ) GetIncomplete(limit int, state jobqueue.JobState,
+	getStd bool, getEnv bool) ([]*jobqueue.Job, error) {
 	i.getIncompleteCalls++
 	i.getIncompleteLimit = limit
 	i.getIncompleteState = state
@@ -412,7 +412,7 @@ func (i *incompleteCallTrackingJQ) Disconnect() error {
 
 func TestFindIncompleteJobsByRepGroupPrefixErrors(t *testing.T) {
 	Convey("Given a scheduler using a jobqueue that errors on GetIncomplete", t, func() {
-		expectedErr := errors.New("bang")
+		expectedErr := Error("bang")
 		jq := &incompleteCallTrackingJQ{err: expectedErr}
 		s := &Scheduler{jq: jq}
 
