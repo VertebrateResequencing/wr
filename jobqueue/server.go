@@ -2522,18 +2522,24 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 // true, in which case RepGroup may contain repGroup as a substring.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search bool,
 	limit int, state JobState, getStd bool, getEnv bool) []*Job {
-	allItems := s.q.AllItems()
-	jobs := make([]*Job, 0, len(allItems))
+	var jobs []*Job
 
-	for _, item := range allItems {
-		if repGroup != "" {
-			job, ok := item.Data().(*Job)
-			if !ok || !matchesRepGroup(job.RepGroup, repGroup, search) {
-				continue
+	if repGroup != "" && !search {
+		jobs = s.getQueueJobsByRepGroup(ctx, repGroup)
+	} else {
+		allItems := s.q.AllItems()
+		jobs = make([]*Job, 0, len(allItems))
+
+		for _, item := range allItems {
+			if repGroup != "" {
+				job, ok := item.Data().(*Job)
+				if !ok || !matchesRepGroup(job.RepGroup, repGroup, search) {
+					continue
+				}
 			}
-		}
 
-		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
+			jobs = append(jobs, s.itemToJob(ctx, item, false, false))
+		}
 	}
 
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
