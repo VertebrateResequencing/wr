@@ -656,7 +656,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				}
 			}
 		case "getin":
-			// get all jobs in the jobqueue
+			// get incomplete jobs in the jobqueue, optionally filtered by rep group
 			var repGroup string
 			if cr.Job != nil {
 				repGroup = cr.Job.RepGroup

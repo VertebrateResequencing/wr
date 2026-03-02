@@ -416,8 +416,8 @@ func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, er
 	}), nil
 }
 
-// FindJobsByRepGroupPrefixAndState finds all of the jobs in wr whose rep group has the
-// supplied prefix with the matching state, if one is provided.
+// FindJobsByRepGroupPrefixAndState finds all jobs in wr whose RepGroup starts
+// with the supplied prefix, optionally limited to the supplied state.
 func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobqueue.JobState) ([]*jobqueue.Job, error) {
 	jobs, err := s.jq.GetByRepGroup(prefix, true, 0, state, true, false)
 	if err != nil {
@@ -429,8 +429,8 @@ func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobque
 	}), nil
 }
 
-// FindIncompleteJobsByRepGroupPrefix finds incomplete jobs in wr whose rep group
-// has the supplied prefix.
+// FindIncompleteJobsByRepGroupPrefix finds incomplete jobs in wr whose
+// RepGroup starts with the supplied prefix.
 func (s *Scheduler) FindIncompleteJobsByRepGroupPrefix(prefix string) ([]*jobqueue.Job, error) {
 	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, "", false,
 		false)
@@ -444,8 +444,8 @@ func (s *Scheduler) FindIncompleteJobsByRepGroupPrefix(prefix string) ([]*jobque
 }
 
 // FindIncompleteJobsByRepGroupPrefixAndState finds incomplete jobs in wr whose
-// rep group has the supplied prefix with the matching state, if one is
-// provided.
+// RepGroup starts with the supplied prefix, optionally limited to the supplied
+// state.
 func (s *Scheduler) FindIncompleteJobsByRepGroupPrefixAndState(prefix string,
 	state jobqueue.JobState) ([]*jobqueue.Job, error) {
 	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, state, false,

@@ -2546,6 +2546,8 @@ func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search boo
 	return jobs
 }
 
+// matchesRepGroup returns true if jobRepGroup matches filterRepGroup exactly,
+// or by substring when search is true.
 func matchesRepGroup(jobRepGroup, filterRepGroup string, search bool) bool {
 	if search {
 		return strings.Contains(jobRepGroup, filterRepGroup)

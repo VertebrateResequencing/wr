@@ -429,7 +429,7 @@ func TestFindIncompleteJobsByRepGroupPrefixErrors(t *testing.T) {
 			So(jq.getIncRGPRepGroup, ShouldEqual, "rep")
 			So(jq.getIncRGPSubStr, ShouldBeTrue)
 			So(jq.getIncRGPLimit, ShouldEqual, 0)
-			So(jq.getIncRGPState, ShouldEqual, "")
+			So(jq.getIncRGPState, ShouldEqual, jobqueue.JobState(""))
 			So(jq.getIncRGPGetStd, ShouldBeFalse)
 			So(jq.getIncRGPGetEnv, ShouldBeFalse)
 		})
