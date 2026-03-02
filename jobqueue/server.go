@@ -2573,16 +2573,6 @@ func (s *Server) getQueueJobsByRepGroupSearch(ctx context.Context, repGroup stri
 	return jobs
 }
 
-// matchesRepGroup returns true if jobRepGroup matches filterRepGroup exactly,
-// or by substring when search is true.
-func matchesRepGroup(jobRepGroup, filterRepGroup string, search bool) bool {
-	if search {
-		return strings.Contains(jobRepGroup, filterRepGroup)
-	}
-
-	return jobRepGroup == filterRepGroup
-}
-
 type limitJobsOptions struct {
 	Limit      int      // Maximum number of jobs to return (<1 = no limit)
 	Offset     int      // Starting offset for pagination
