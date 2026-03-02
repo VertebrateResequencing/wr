@@ -83,7 +83,8 @@ type jobqueueClient interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
 	GetByRepGroup(repgroup string, subStr bool, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
-	GetIncomplete(limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
+	GetIncompleteByRepGroup(repgroup string, subStr bool, limit int,
+		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	Delete(jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
 }
@@ -139,12 +140,22 @@ func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 	return jobs, nil
 }
 
-// GetIncomplete behaves like jobqueue.GetIncomplete.
-func (p *pretendJobqueue) GetIncomplete(_ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+// GetIncompleteByRepGroup behaves like jobqueue.GetIncompleteByRepGroup.
+func (p *pretendJobqueue) GetIncompleteByRepGroup(repgroup string, subStr bool,
+	_ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
 	var jobs []*jobqueue.Job
 
 	for _, job := range p.jobBuffer {
-		if job.State != jobqueue.JobStateComplete && (state == "" || job.State == state) {
+		matched := false
+		if subStr {
+			matched = strings.Contains(job.RepGroup, repgroup)
+		} else {
+			matched = job.RepGroup == repgroup
+		}
+
+		if job.State != jobqueue.JobStateComplete &&
+			(state == "" || job.State == state) &&
+			matched {
 			jobs = append(jobs, job)
 		}
 	}
@@ -422,7 +433,8 @@ func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobque
 // FindIncompleteJobsByRepGroupPrefix finds incomplete jobs in wr whose rep group
 // has the supplied prefix.
 func (s *Scheduler) FindIncompleteJobsByRepGroupPrefix(prefix string) ([]*jobqueue.Job, error) {
-	jobs, err := s.jq.GetIncomplete(0, "", false, false)
+	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, "", false,
+		false)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +449,8 @@ func (s *Scheduler) FindIncompleteJobsByRepGroupPrefix(prefix string) ([]*jobque
 // provided.
 func (s *Scheduler) FindIncompleteJobsByRepGroupPrefixAndState(prefix string,
 	state jobqueue.JobState) ([]*jobqueue.Job, error) {
-	jobs, err := s.jq.GetIncomplete(0, state, false, false)
+	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, state, false,
+		false)
 	if err != nil {
 		return nil, err
 	}

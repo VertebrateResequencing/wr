@@ -307,8 +307,8 @@ func TestFakeScheduler(t *testing.T) {
 				job2.State = jobqueue.JobStateReady
 				job3.State = jobqueue.JobStateComplete
 
-				jobs, err = s.FindIncompleteJobsByRepGroupPrefix("rep1")
-				So(err, ShouldBeNil)
+				jobs, errf := s.FindIncompleteJobsByRepGroupPrefix("rep1")
+				So(errf, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job1})
 			})
 
@@ -321,8 +321,8 @@ func TestFakeScheduler(t *testing.T) {
 				job2.State = jobqueue.JobStateReady
 				job3.State = jobqueue.JobStateRunning
 
-				jobs, err = s.FindIncompleteJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
-				So(err, ShouldBeNil)
+				jobs, errf := s.FindIncompleteJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
+				So(errf, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job3})
 			})
 
@@ -369,13 +369,15 @@ func TestFakeScheduler(t *testing.T) {
 }
 
 type incompleteCallTrackingJQ struct {
-	err                 error
-	jobs                []*jobqueue.Job
-	getIncompleteCalls  int
-	getIncompleteLimit  int
-	getIncompleteState  jobqueue.JobState
-	getIncompleteGetStd bool
-	getIncompleteGetEnv bool
+	err               error
+	jobs              []*jobqueue.Job
+	getIncRGPCalls    int
+	getIncRGPRepGroup string
+	getIncRGPSubStr   bool
+	getIncRGPLimit    int
+	getIncRGPState    jobqueue.JobState
+	getIncRGPGetStd   bool
+	getIncRGPGetEnv   bool
 }
 
 func (i *incompleteCallTrackingJQ) Add(_ []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
@@ -387,13 +389,16 @@ func (i *incompleteCallTrackingJQ) GetByRepGroup(_ string, _ bool, _ int,
 	return nil, nil
 }
 
-func (i *incompleteCallTrackingJQ) GetIncomplete(limit int, state jobqueue.JobState,
-	getStd bool, getEnv bool) ([]*jobqueue.Job, error) {
-	i.getIncompleteCalls++
-	i.getIncompleteLimit = limit
-	i.getIncompleteState = state
-	i.getIncompleteGetStd = getStd
-	i.getIncompleteGetEnv = getEnv
+func (i *incompleteCallTrackingJQ) GetIncompleteByRepGroup(repgroup string,
+	subStr bool, limit int, state jobqueue.JobState, getStd bool,
+	getEnv bool) ([]*jobqueue.Job, error) {
+	i.getIncRGPCalls++
+	i.getIncRGPRepGroup = repgroup
+	i.getIncRGPSubStr = subStr
+	i.getIncRGPLimit = limit
+	i.getIncRGPState = state
+	i.getIncRGPGetStd = getStd
+	i.getIncRGPGetEnv = getEnv
 
 	if i.err != nil {
 		return nil, i.err
@@ -411,31 +416,35 @@ func (i *incompleteCallTrackingJQ) Disconnect() error {
 }
 
 func TestFindIncompleteJobsByRepGroupPrefixErrors(t *testing.T) {
-	Convey("Given a scheduler using a jobqueue that errors on GetIncomplete", t, func() {
+	Convey("Given a scheduler using a jobqueue that errors on GetIncompleteByRepGroup", t, func() {
 		expectedErr := Error("bang")
 		jq := &incompleteCallTrackingJQ{err: expectedErr}
 		s := &Scheduler{jq: jq}
 
-		Convey("FindIncompleteJobsByRepGroupPrefix propagates errors and calls GetIncomplete once with default args", func() {
+		Convey("FindIncompleteJobsByRepGroupPrefix propagates errors and calls GetIncompleteByRepGroup once with default args", func() {
 			jobs, err := s.FindIncompleteJobsByRepGroupPrefix("rep")
 			So(err, ShouldEqual, expectedErr)
 			So(jobs, ShouldBeNil)
-			So(jq.getIncompleteCalls, ShouldEqual, 1)
-			So(jq.getIncompleteLimit, ShouldEqual, 0)
-			So(jq.getIncompleteState, ShouldEqual, "")
-			So(jq.getIncompleteGetStd, ShouldBeFalse)
-			So(jq.getIncompleteGetEnv, ShouldBeFalse)
+			So(jq.getIncRGPCalls, ShouldEqual, 1)
+			So(jq.getIncRGPRepGroup, ShouldEqual, "rep")
+			So(jq.getIncRGPSubStr, ShouldBeTrue)
+			So(jq.getIncRGPLimit, ShouldEqual, 0)
+			So(jq.getIncRGPState, ShouldEqual, "")
+			So(jq.getIncRGPGetStd, ShouldBeFalse)
+			So(jq.getIncRGPGetEnv, ShouldBeFalse)
 		})
 
 		Convey("FindIncompleteJobsByRepGroupPrefixAndState propagates errors and passes state", func() {
 			jobs, err := s.FindIncompleteJobsByRepGroupPrefixAndState("rep", jobqueue.JobStateBuried)
 			So(err, ShouldEqual, expectedErr)
 			So(jobs, ShouldBeNil)
-			So(jq.getIncompleteCalls, ShouldEqual, 1)
-			So(jq.getIncompleteLimit, ShouldEqual, 0)
-			So(jq.getIncompleteState, ShouldEqual, jobqueue.JobStateBuried)
-			So(jq.getIncompleteGetStd, ShouldBeFalse)
-			So(jq.getIncompleteGetEnv, ShouldBeFalse)
+			So(jq.getIncRGPCalls, ShouldEqual, 1)
+			So(jq.getIncRGPRepGroup, ShouldEqual, "rep")
+			So(jq.getIncRGPSubStr, ShouldBeTrue)
+			So(jq.getIncRGPLimit, ShouldEqual, 0)
+			So(jq.getIncRGPState, ShouldEqual, jobqueue.JobStateBuried)
+			So(jq.getIncRGPGetStd, ShouldBeFalse)
+			So(jq.getIncRGPGetEnv, ShouldBeFalse)
 		})
 	})
 }

@@ -1858,6 +1858,21 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 	return resp.Jobs, err
 }
 
+// GetIncompleteByRepGroup gets all Jobs currently in the jobqueue with the
+// supplied RepGroup, excluding archived complete jobs. If 'subStr' is true,
+// gets Jobs in all RepGroups that the supplied repgroup is a substring of. The
+// args are otherwise as in GetByRepGroup().
+func (c *Client) GetIncompleteByRepGroup(repgroup string, subStr bool, limit int,
+	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
+		Search: subStr, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
 // GetOrSetLimitGroup takes the name of a limit group and returns the current
 // limit for that group. If the group isn't known about, returns -1.
 //

@@ -2276,8 +2276,9 @@ func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
 func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]bool) []*Job {
 	var jobs []*Job
 	if len(serverIDs) > 0 {
-		running := s.getJobsCurrent(ctx, 0, JobStateRunning, false, false)
-		lost := s.getJobsCurrent(ctx, 0, JobStateLost, false, false)
+		running := s.getJobsCurrent(ctx, "", false, 0, JobStateRunning, false,
+			false)
+		lost := s.getJobsCurrent(ctx, "", false, 0, JobStateLost, false, false)
 		for _, job := range append(running, lost...) {
 			if serverIDs[job.HostID] {
 				k, err := s.killJob(ctx, job.Key())
@@ -2516,11 +2517,22 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 	return jobs, srerr, qerr
 }
 
-// getJobsCurrent gets all current (incomplete) jobs.
-func (s *Server) getJobsCurrent(ctx context.Context, limit int, state JobState, getStd bool, getEnv bool) []*Job {
+// getJobsCurrent gets all current (incomplete) jobs. If repGroup is not
+// blank, only jobs whose RepGroup equals repGroup are returned unless search is
+// true, in which case RepGroup may contain repGroup as a substring.
+func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search bool,
+	limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	allItems := s.q.AllItems()
 	jobs := make([]*Job, 0, len(allItems))
 	for _, item := range allItems {
+		if repGroup != "" {
+			job, ok := item.Data().(*Job)
+			if !ok || (search && !strings.Contains(job.RepGroup, repGroup)) ||
+				(!search && job.RepGroup != repGroup) {
+				continue
+			}
+		}
+
 		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
 	}
 

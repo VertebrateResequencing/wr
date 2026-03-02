@@ -657,7 +657,13 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			}
 		case "getin":
 			// get all jobs in the jobqueue
-			jobs := s.getJobsCurrent(ctx, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
+			var repGroup string
+			if cr.Job != nil {
+				repGroup = cr.Job.RepGroup
+			}
+
+			jobs := s.getJobsCurrent(ctx, repGroup, cr.Search, cr.Limit, cr.State,
+				cr.GetStd, cr.GetEnv)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
