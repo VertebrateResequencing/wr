@@ -2569,7 +2569,8 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 }
 
 func normalizeRepGroupMatch(match RepGroupMatch, search bool) RepGroupMatch {
-	if match != "" {
+	switch match {
+	case RepGroupMatchExact, RepGroupMatchSubStr, RepGroupMatchPrefix, RepGroupMatchSuffix:
 		return match
 	}
 

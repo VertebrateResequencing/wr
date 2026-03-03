@@ -245,6 +245,8 @@ func TestJobqueueUtils(t *testing.T) {
 		So(normalizeRepGroupMatch("", true), ShouldEqual, RepGroupMatchSubStr)
 		So(normalizeRepGroupMatch(RepGroupMatchPrefix, false), ShouldEqual, RepGroupMatchPrefix)
 		So(normalizeRepGroupMatch(RepGroupMatchSuffix, true), ShouldEqual, RepGroupMatchSuffix)
+		So(normalizeRepGroupMatch(RepGroupMatch("typo"), false), ShouldEqual, RepGroupMatchExact)
+		So(normalizeRepGroupMatch(RepGroupMatch("typo"), true), ShouldEqual, RepGroupMatchSubStr)
 	})
 
 	Convey("RepGroupMatches applies exact, substring, prefix and suffix modes", t, func() {
