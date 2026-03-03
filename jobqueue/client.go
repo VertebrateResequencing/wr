@@ -133,9 +133,35 @@ type clientRequest struct {
 	GetStd                  bool
 	IgnoreComplete          bool
 	Search                  bool
+	RepGroupMatch           RepGroupMatch
 	ConfirmDeadCloudServers bool
 	DestroyCloudHost        string
 	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
+}
+
+// RepGroupMatch controls how RepGroup filters are applied by repgroup-based
+// job retrieval calls.
+type RepGroupMatch string
+
+const (
+	RepGroupMatchExact  RepGroupMatch = "exact"
+	RepGroupMatchSubStr RepGroupMatch = "substr"
+	RepGroupMatchPrefix RepGroupMatch = "prefix"
+	RepGroupMatchSuffix RepGroupMatch = "suffix"
+)
+
+// RepGroupMatches reports if jobRepGroup matches repgroup according to match.
+func RepGroupMatches(jobRepGroup, repgroup string, match RepGroupMatch) bool {
+	switch match {
+	case RepGroupMatchSubStr:
+		return strings.Contains(jobRepGroup, repgroup)
+	case RepGroupMatchPrefix:
+		return strings.HasPrefix(jobRepGroup, repgroup)
+	case RepGroupMatchSuffix:
+		return strings.HasSuffix(jobRepGroup, repgroup)
+	default:
+		return jobRepGroup == repgroup
+	}
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -1840,7 +1866,21 @@ func (c *Client) jesToKeys(jes []*JobEssence) []string {
 // Providing 'state' only returns jobs in that State. 'getStd' and 'getEnv', if
 // true, retrieve the stdout, stderr and environement variables for the Jobs.
 func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Search: subStr, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+	match := RepGroupMatchExact
+	if subStr {
+		match = RepGroupMatchSubStr
+	}
+
+	return c.GetByRepGroupMatch(repgroup, match, limit, state, getStd, getEnv)
+}
+
+// GetByRepGroupMatch gets multiple Jobs at once given their RepGroup and the
+// desired match mode.
+func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit int,
+	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return nil, err
 	}
@@ -1855,6 +1895,21 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 	if err != nil {
 		return nil, err
 	}
+	return resp.Jobs, err
+}
+
+// GetIncompleteByRepGroupMatch gets all non-archived jobs currently in the
+// queue whose RepGroup matches repgroup using the supplied match mode. The
+// remaining args are as in GetByRepGroup().
+func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMatch,
+	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
 	return resp.Jobs, err
 }
 

@@ -100,7 +100,8 @@ func TestScheduler(t *testing.T) {
 					job2 := s.NewJob("cmd2", "rep", "req", "a", "b", nil)
 					So(job2.Cmd, ShouldEqual, "cmd2")
 					So(job2.DepGroups, ShouldResemble, []string{"a"})
-					So(job2.Dependencies, ShouldResemble, jobqueue.Dependencies{{DepGroup: "b"}})
+					So(job2.Dependencies, ShouldResemble,
+						jobqueue.Dependencies{&jobqueue.Dependency{DepGroup: "b"}})
 
 					Convey("which you can add to the queue", func() {
 						err = s.SubmitJobs([]*jobqueue.Job{job, job2})
@@ -288,15 +289,43 @@ func TestFakeScheduler(t *testing.T) {
 
 				jobs, err = s.FindJobsByRepGroupPrefixAndState("ep1", jobqueue.JobStateDelayed)
 				So(err, ShouldBeNil)
-				So(jobs, ShouldResemble, []*jobqueue.Job{})
+				So(jobs, ShouldBeNil)
 
 				jobs, err = s.FindJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
 				So(err, ShouldBeNil)
-				So(jobs, ShouldResemble, []*jobqueue.Job(nil))
+				So(jobs, ShouldBeNil)
 
 				jobs, err = s.FindJobsByRepGroupPrefixAndState("rep", "")
 				So(err, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
+			})
+
+			Convey("You can find only incomplete jobs by repgroup match", func() {
+				job3 := s.NewJob("cmd3", "rep1complete", "req3", "", "", nil)
+				err = s.SubmitJobs([]*jobqueue.Job{job3})
+				So(err, ShouldBeNil)
+
+				job2.State = jobqueue.JobStateReady
+				job3.State = jobqueue.JobStateComplete
+
+				jobs, errf := s.FindIncompleteJobsByRepGroup("rep1", jobqueue.RepGroupMatchPrefix)
+				So(errf, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job1})
+			})
+
+			Convey("You can find only incomplete jobs by repgroup match and state", func() {
+				job3 := s.NewJob("cmd3", "rep1running", "req3", "", "", nil)
+				err = s.SubmitJobs([]*jobqueue.Job{job3})
+				So(err, ShouldBeNil)
+
+				job1.State = jobqueue.JobStateDelayed
+				job2.State = jobqueue.JobStateReady
+				job3.State = jobqueue.JobStateRunning
+
+				jobs, errf := s.FindIncompleteJobsByRepGroupAndState("rep1",
+					jobqueue.RepGroupMatchPrefix, jobqueue.JobStateRunning)
+				So(errf, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job3})
 			})
 
 			Convey("You can remove jobs", func() {
@@ -337,6 +366,43 @@ func TestFakeScheduler(t *testing.T) {
 
 			So(<-jch, ShouldBeNil)
 			So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
+		})
+	})
+}
+
+func TestPretendGetIncompleteByRepGroupEmptyRepGroup(t *testing.T) {
+	Convey("Given a pretend jobqueue with mixed complete and incomplete jobs", t, func() {
+		p := newPretendJobqueue()
+		p.jobBuffer = []*jobqueue.Job{
+			{RepGroup: "rg1", State: jobqueue.JobStateReady},
+			{RepGroup: "rg2", State: jobqueue.JobStateRunning},
+			{RepGroup: "rg3", State: jobqueue.JobStateComplete},
+		}
+
+		Convey("GetIncompleteByRepGroupMatch with empty repgroup returns all incomplete jobs", func() {
+			jobs, err := p.GetIncompleteByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+				0, "", false, false)
+			So(err, ShouldBeNil)
+			So(jobs, ShouldResemble, []*jobqueue.Job{p.jobBuffer[0], p.jobBuffer[1]})
+		})
+	})
+}
+
+func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
+	Convey("Given a pretend jobqueue", t, func() {
+		p := newPretendJobqueue()
+
+		Convey("GetByRepGroupMatch with empty repgroup returns ErrBadRequest", func() {
+			jobs, err := p.GetByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+				0, "", false, false)
+			So(jobs, ShouldBeNil)
+			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
+		})
+
+		Convey("GetByRepGroup with empty repgroup returns ErrBadRequest", func() {
+			jobs, err := p.GetByRepGroup("", false, 0, "", false, false)
+			So(jobs, ShouldBeNil)
+			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
 		})
 	})
 }

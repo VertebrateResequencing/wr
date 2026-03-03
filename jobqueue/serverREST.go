@@ -702,7 +702,7 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			// id might be a Job.RepGroup
 			opts := repGroupOptions{
 				RepGroup: id,
-				Search:   search,
+				Match:    normalizeRepGroupMatch("", search),
 				limitJobsOptions: limitJobsOptions{
 					Limit:  limit,
 					State:  state,
@@ -722,7 +722,8 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	}
 
 	// get all current jobs
-	return s.getJobsCurrent(ctx, limit, state, getStd, getEnv), http.StatusOK, err
+	return s.getJobsCurrent(ctx, "", RepGroupMatchExact, limit, state, getStd,
+		getEnv), http.StatusOK, err
 }
 
 // restJobsAdd creates and adds jobs to the queue and returns them on success.

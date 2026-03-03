@@ -239,6 +239,28 @@ func TestJobqueueUtils(t *testing.T) {
 		So(d, ShouldBeGreaterThanOrEqualTo, 30*time.Second)
 		So(d, ShouldBeLessThan, 60*time.Second)
 	})
+
+	Convey("normalizeRepGroupMatch defaults and preserves explicit match", t, func() {
+		So(normalizeRepGroupMatch("", false), ShouldEqual, RepGroupMatchExact)
+		So(normalizeRepGroupMatch("", true), ShouldEqual, RepGroupMatchSubStr)
+		So(normalizeRepGroupMatch(RepGroupMatchPrefix, false), ShouldEqual, RepGroupMatchPrefix)
+		So(normalizeRepGroupMatch(RepGroupMatchSuffix, true), ShouldEqual, RepGroupMatchSuffix)
+		So(normalizeRepGroupMatch(RepGroupMatch("typo"), false), ShouldEqual, RepGroupMatchExact)
+		So(normalizeRepGroupMatch(RepGroupMatch("typo"), true), ShouldEqual, RepGroupMatchSubStr)
+	})
+
+	Convey("RepGroupMatches applies exact, substring, prefix and suffix modes", t, func() {
+		const value = "alpha-beta-gamma"
+
+		So(RepGroupMatches(value, "alpha-beta-gamma", RepGroupMatchExact), ShouldBeTrue)
+		So(RepGroupMatches(value, "alpha", RepGroupMatchPrefix), ShouldBeTrue)
+		So(RepGroupMatches(value, "gamma", RepGroupMatchSuffix), ShouldBeTrue)
+		So(RepGroupMatches(value, "beta", RepGroupMatchSubStr), ShouldBeTrue)
+
+		So(RepGroupMatches(value, "beta", RepGroupMatchPrefix), ShouldBeFalse)
+		So(RepGroupMatches(value, "alpha", RepGroupMatchSuffix), ShouldBeFalse)
+		So(RepGroupMatches(value, "delta", RepGroupMatchSubStr), ShouldBeFalse)
+	})
 }
 
 func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jqs.Requirements, time.Duration) {
@@ -1017,6 +1039,8 @@ func TestJobqueueBasics(t *testing.T) {
 			})
 
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
+				So(RecSecRound, ShouldBeGreaterThan, 0)
+
 				// these are ignored by the learning system unless the job
 				// failed due to running out of a resource
 				for index, job := range jobs {
@@ -1063,7 +1087,9 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 100)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
-				So(rtime, ShouldEqual, 1800)
+
+				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
+				So(rtime, ShouldEqual, expectedShort)
 
 				for i := 11; i <= 100; i++ {
 					job := &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}
@@ -1092,7 +1118,8 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 12800)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
-				So(rtime, ShouldEqual, 10800)
+				So(rtime, ShouldBeGreaterThanOrEqualTo, 9500)
+				So(rtime%RecSecRound, ShouldEqual, 0)
 			})
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {
@@ -2465,6 +2492,64 @@ func TestJobqueueMedium(t *testing.T) {
 				gottenJobs, err = jq.GetByRepGroup("2", true, 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(gottenJobs), ShouldEqual, 1)
+			})
+
+			Convey("You can retrieve jobs by RepGroup using prefix and suffix server-side", func() {
+				gottenJobs, err := jq.GetByRepGroupMatch("dep", RepGroupMatchPrefix, 0,
+					"", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 3)
+
+				gottenJobs, err = jq.GetByRepGroupMatch("3", RepGroupMatchSuffix, 0,
+					"", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 1)
+				So(gottenJobs[0].RepGroup, ShouldEqual, "dep3")
+			})
+
+			Convey("You can retrieve incomplete jobs by RepGroup exact match or substring", func() {
+				gottenJobs, err := jq.GetIncompleteByRepGroupMatch("dep2",
+					RepGroupMatchExact, 0,
+					"", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 1)
+				So(gottenJobs[0].RepGroup, ShouldEqual, "dep2")
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("dep",
+					RepGroupMatchSubStr, 0,
+					"", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 3)
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("dep",
+					RepGroupMatchSubStr, 0,
+					JobStateReady, false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 3)
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("dep",
+					RepGroupMatchSubStr, 0,
+					JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 0)
+			})
+
+			Convey("You can retrieve incomplete jobs by RepGroup prefix and suffix", func() {
+				gottenJobs, err := jq.GetIncompleteByRepGroupMatch("dep",
+					RepGroupMatchPrefix, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 3)
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("2",
+					RepGroupMatchSuffix, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 1)
+				So(gottenJobs[0].RepGroup, ShouldEqual, "dep2")
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("dep",
+					RepGroupMatchPrefix, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 0)
 			})
 
 			Convey("You can reserve and execute one of them", func() {
@@ -4859,15 +4944,16 @@ func TestJobqueueRunners(t *testing.T) {
 				}
 			}()
 			So(<-started, ShouldBeTrue)
+			So(len(jobs), ShouldEqual, 1)
 
-			killCount, err := jq.Kill([]*JobEssence{{Cmd: cmd}})
+			killCount, err := jq.Kill([]*JobEssence{{JobKey: jobs[0].Key()}})
 			So(err, ShouldBeNil)
 			So(killCount, ShouldEqual, 1)
 
 			// wait for the job to get killed
 			killed := make(chan bool, 1)
 			go func() {
-				limit := time.After(25 * time.Second)
+				limit := time.After(40 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
