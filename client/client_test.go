@@ -100,7 +100,8 @@ func TestScheduler(t *testing.T) {
 					job2 := s.NewJob("cmd2", "rep", "req", "a", "b", nil)
 					So(job2.Cmd, ShouldEqual, "cmd2")
 					So(job2.DepGroups, ShouldResemble, []string{"a"})
-					So(job2.Dependencies, ShouldResemble, jobqueue.Dependencies{{DepGroup: "b"}})
+					So(job2.Dependencies, ShouldResemble,
+						jobqueue.Dependencies{&jobqueue.Dependency{DepGroup: "b"}})
 
 					Convey("which you can add to the queue", func() {
 						err = s.SubmitJobs([]*jobqueue.Job{job, job2})
@@ -299,7 +300,7 @@ func TestFakeScheduler(t *testing.T) {
 				So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
 			})
 
-			Convey("You can find only incomplete jobs by repgroup prefix", func() {
+			Convey("You can find only incomplete jobs by repgroup match", func() {
 				job3 := s.NewJob("cmd3", "rep1complete", "req3", "", "", nil)
 				err = s.SubmitJobs([]*jobqueue.Job{job3})
 				So(err, ShouldBeNil)
@@ -307,12 +308,12 @@ func TestFakeScheduler(t *testing.T) {
 				job2.State = jobqueue.JobStateReady
 				job3.State = jobqueue.JobStateComplete
 
-				jobs, errf := s.FindIncompleteJobsByRepGroupPrefix("rep1")
+				jobs, errf := s.FindIncompleteJobsByRepGroup("rep1", jobqueue.RepGroupMatchPrefix)
 				So(errf, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job1})
 			})
 
-			Convey("You can find only incomplete jobs by repgroup prefix and state", func() {
+			Convey("You can find only incomplete jobs by repgroup match and state", func() {
 				job3 := s.NewJob("cmd3", "rep1running", "req3", "", "", nil)
 				err = s.SubmitJobs([]*jobqueue.Job{job3})
 				So(err, ShouldBeNil)
@@ -321,7 +322,8 @@ func TestFakeScheduler(t *testing.T) {
 				job2.State = jobqueue.JobStateReady
 				job3.State = jobqueue.JobStateRunning
 
-				jobs, errf := s.FindIncompleteJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
+				jobs, errf := s.FindIncompleteJobsByRepGroupAndState("rep1",
+					jobqueue.RepGroupMatchPrefix, jobqueue.JobStateRunning)
 				So(errf, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job3})
 			})
@@ -368,12 +370,98 @@ func TestFakeScheduler(t *testing.T) {
 	})
 }
 
+type byRepGroupCallTrackingJQ struct {
+	err            error
+	jobs           []*jobqueue.Job
+	getByRGPCalls  int
+	getByRGPGroup  string
+	getByRGPMatch  jobqueue.RepGroupMatch
+	getByRGPState  jobqueue.JobState
+	getByRGPGetStd bool
+	getByRGPGetEnv bool
+}
+
+func (b *byRepGroupCallTrackingJQ) Add(_ []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
+	return 0, 0, nil
+}
+
+func (b *byRepGroupCallTrackingJQ) GetByRepGroup(repgroup string, subStr bool,
+	limit int, state jobqueue.JobState, getStd bool,
+	getEnv bool) ([]*jobqueue.Job, error) {
+	match := jobqueue.RepGroupMatchExact
+	if subStr {
+		match = jobqueue.RepGroupMatchSubStr
+	}
+
+	return b.GetByRepGroupMatch(repgroup, match, limit, state, getStd, getEnv)
+}
+
+func (b *byRepGroupCallTrackingJQ) GetByRepGroupMatch(repgroup string,
+	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, getStd bool,
+	getEnv bool) ([]*jobqueue.Job, error) {
+	b.getByRGPCalls++
+	b.getByRGPGroup = repgroup
+	b.getByRGPMatch = match
+	b.getByRGPState = state
+	b.getByRGPGetStd = getStd
+	b.getByRGPGetEnv = getEnv
+
+	if b.err != nil {
+		return nil, b.err
+	}
+
+	return b.jobs, nil
+}
+
+func (b *byRepGroupCallTrackingJQ) GetIncompleteByRepGroupMatch(_ string,
+	_ jobqueue.RepGroupMatch, _ int, _ jobqueue.JobState, _ bool,
+	_ bool) ([]*jobqueue.Job, error) {
+	return nil, nil
+}
+
+func (b *byRepGroupCallTrackingJQ) Delete(_ []*jobqueue.JobEssence) (int, error) {
+	return 0, nil
+}
+
+func (b *byRepGroupCallTrackingJQ) Disconnect() error {
+	return nil
+}
+
+func TestFindJobsByRepGroupUsesServerSideMatchModes(t *testing.T) {
+	Convey("Given a scheduler using a tracking jobqueue", t, func() {
+		jq := &byRepGroupCallTrackingJQ{jobs: []*jobqueue.Job{}}
+		s := &Scheduler{jq: jq}
+
+		Convey("FindJobsByRepGroupSuffix requests suffix matching server-side", func() {
+			_, err := s.FindJobsByRepGroupSuffix("suffix")
+			So(err, ShouldBeNil)
+			So(jq.getByRGPCalls, ShouldEqual, 1)
+			So(jq.getByRGPGroup, ShouldEqual, "suffix")
+			So(jq.getByRGPMatch, ShouldEqual, jobqueue.RepGroupMatchSuffix)
+			So(jq.getByRGPState, ShouldEqual, jobqueue.JobState(""))
+			So(jq.getByRGPGetStd, ShouldBeTrue)
+			So(jq.getByRGPGetEnv, ShouldBeFalse)
+		})
+
+		Convey("FindJobsByRepGroupPrefixAndState requests prefix matching server-side", func() {
+			_, err := s.FindJobsByRepGroupPrefixAndState("pref", jobqueue.JobStateRunning)
+			So(err, ShouldBeNil)
+			So(jq.getByRGPCalls, ShouldEqual, 1)
+			So(jq.getByRGPGroup, ShouldEqual, "pref")
+			So(jq.getByRGPMatch, ShouldEqual, jobqueue.RepGroupMatchPrefix)
+			So(jq.getByRGPState, ShouldEqual, jobqueue.JobStateRunning)
+			So(jq.getByRGPGetStd, ShouldBeTrue)
+			So(jq.getByRGPGetEnv, ShouldBeFalse)
+		})
+	})
+}
+
 type incompleteCallTrackingJQ struct {
 	err               error
 	jobs              []*jobqueue.Job
 	getIncRGPCalls    int
 	getIncRGPRepGroup string
-	getIncRGPSubStr   bool
+	getIncRGPMatch    jobqueue.RepGroupMatch
 	getIncRGPLimit    int
 	getIncRGPState    jobqueue.JobState
 	getIncRGPGetStd   bool
@@ -389,12 +477,18 @@ func (i *incompleteCallTrackingJQ) GetByRepGroup(_ string, _ bool, _ int,
 	return nil, nil
 }
 
-func (i *incompleteCallTrackingJQ) GetIncompleteByRepGroup(repgroup string,
-	subStr bool, limit int, state jobqueue.JobState, getStd bool,
-	getEnv bool) ([]*jobqueue.Job, error) {
+func (i *incompleteCallTrackingJQ) GetByRepGroupMatch(_ string,
+	_ jobqueue.RepGroupMatch, _ int, _ jobqueue.JobState, _ bool,
+	_ bool) ([]*jobqueue.Job, error) {
+	return nil, nil
+}
+
+func (i *incompleteCallTrackingJQ) GetIncompleteByRepGroupMatch(repgroup string,
+	match jobqueue.RepGroupMatch, limit int, state jobqueue.JobState,
+	getStd bool, getEnv bool) ([]*jobqueue.Job, error) {
 	i.getIncRGPCalls++
 	i.getIncRGPRepGroup = repgroup
-	i.getIncRGPSubStr = subStr
+	i.getIncRGPMatch = match
 	i.getIncRGPLimit = limit
 	i.getIncRGPState = state
 	i.getIncRGPGetStd = getStd
@@ -415,32 +509,33 @@ func (i *incompleteCallTrackingJQ) Disconnect() error {
 	return nil
 }
 
-func TestFindIncompleteJobsByRepGroupPrefixErrors(t *testing.T) {
-	Convey("Given a scheduler using a jobqueue that errors on GetIncompleteByRepGroup", t, func() {
+func TestFindIncompleteJobsByRepGroupErrors(t *testing.T) {
+	Convey("Given a scheduler using a jobqueue that errors on GetIncompleteByRepGroupMatch", t, func() {
 		expectedErr := Error("bang")
 		jq := &incompleteCallTrackingJQ{err: expectedErr}
 		s := &Scheduler{jq: jq}
 
-		Convey("FindIncompleteJobsByRepGroupPrefix propagates errors", func() {
-			jobs, err := s.FindIncompleteJobsByRepGroupPrefix("rep")
+		Convey("FindIncompleteJobsByRepGroup propagates errors", func() {
+			jobs, err := s.FindIncompleteJobsByRepGroup("rep", jobqueue.RepGroupMatchPrefix)
 			So(err, ShouldEqual, expectedErr)
 			So(jobs, ShouldBeNil)
 			So(jq.getIncRGPCalls, ShouldEqual, 1)
 			So(jq.getIncRGPRepGroup, ShouldEqual, "rep")
-			So(jq.getIncRGPSubStr, ShouldBeTrue)
+			So(jq.getIncRGPMatch, ShouldEqual, jobqueue.RepGroupMatchPrefix)
 			So(jq.getIncRGPLimit, ShouldEqual, 0)
 			So(jq.getIncRGPState, ShouldEqual, jobqueue.JobState(""))
 			So(jq.getIncRGPGetStd, ShouldBeFalse)
 			So(jq.getIncRGPGetEnv, ShouldBeFalse)
 		})
 
-		Convey("FindIncompleteJobsByRepGroupPrefixAndState propagates errors and passes state", func() {
-			jobs, err := s.FindIncompleteJobsByRepGroupPrefixAndState("rep", jobqueue.JobStateBuried)
+		Convey("FindIncompleteJobsByRepGroupAndState propagates errors and passes state", func() {
+			jobs, err := s.FindIncompleteJobsByRepGroupAndState("rep",
+				jobqueue.RepGroupMatchPrefix, jobqueue.JobStateBuried)
 			So(err, ShouldEqual, expectedErr)
 			So(jobs, ShouldBeNil)
 			So(jq.getIncRGPCalls, ShouldEqual, 1)
 			So(jq.getIncRGPRepGroup, ShouldEqual, "rep")
-			So(jq.getIncRGPSubStr, ShouldBeTrue)
+			So(jq.getIncRGPMatch, ShouldEqual, jobqueue.RepGroupMatchPrefix)
 			So(jq.getIncRGPLimit, ShouldEqual, 0)
 			So(jq.getIncRGPState, ShouldEqual, jobqueue.JobStateBuried)
 			So(jq.getIncRGPGetStd, ShouldBeFalse)
@@ -458,8 +553,9 @@ func TestPretendGetIncompleteByRepGroupEmptyRepGroup(t *testing.T) {
 			{RepGroup: "rg3", State: jobqueue.JobStateComplete},
 		}
 
-		Convey("GetIncompleteByRepGroup with empty repgroup returns all incomplete jobs", func() {
-			jobs, err := p.GetIncompleteByRepGroup("", false, 0, "", false, false)
+		Convey("GetIncompleteByRepGroupMatch with empty repgroup returns all incomplete jobs", func() {
+			jobs, err := p.GetIncompleteByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+				0, "", false, false)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldResemble, []*jobqueue.Job{p.jobBuffer[0], p.jobBuffer[1]})
 		})

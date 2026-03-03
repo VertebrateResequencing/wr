@@ -641,7 +641,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 				opts := repGroupOptions{
 					RepGroup: cr.Job.RepGroup,
-					Search:   cr.Search,
+					Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
 					limitJobsOptions: limitJobsOptions{
 						Limit:  cr.Limit,
 						State:  cr.State,
@@ -662,7 +662,9 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				repGroup = cr.Job.RepGroup
 			}
 
-			jobs := s.getJobsCurrent(ctx, repGroup, cr.Search, cr.Limit, cr.State,
+			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
+
+			jobs := s.getJobsCurrent(ctx, repGroup, match, cr.Limit, cr.State,
 				cr.GetStd, cr.GetEnv)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}

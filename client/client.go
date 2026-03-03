@@ -32,7 +32,6 @@ import (
 	"os"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -83,8 +82,10 @@ type jobqueueClient interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
 	GetByRepGroup(repgroup string, subStr bool, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
-	GetIncompleteByRepGroup(repgroup string, subStr bool, limit int,
+	GetByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
+	GetIncompleteByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch,
+		limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	Delete(jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
 }
@@ -129,10 +130,19 @@ func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
 // considered (as a substring).
 func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 	state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+	return p.GetByRepGroupMatch(repgroup, jobqueue.RepGroupMatchSubStr, 0,
+		state, false, false)
+}
+
+// GetByRepGroupMatch behaves like jobqueue.GetByRepGroupMatch, but only
+// repgroup, match mode and state are considered.
+func (p *pretendJobqueue) GetByRepGroupMatch(repgroup string,
+	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool,
+	_ bool) ([]*jobqueue.Job, error) {
 	var jobs []*jobqueue.Job
 
 	for _, job := range p.jobBuffer {
-		if strings.Contains(job.RepGroup, repgroup) && (state == "" || job.State == state) {
+		if jobqueue.RepGroupMatches(job.RepGroup, repgroup, match) && (state == "" || job.State == state) {
 			jobs = append(jobs, job)
 		}
 	}
@@ -140,16 +150,17 @@ func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 	return jobs, nil
 }
 
-// GetIncompleteByRepGroup behaves like jobqueue.GetIncompleteByRepGroup, but
-// only uses repgroup/subStr and state to filter incomplete jobs; the limit and
-// final boolean arguments (eg. getStd/getEnv) are ignored in this pretend
-// implementation.
-func (p *pretendJobqueue) GetIncompleteByRepGroup(repgroup string, subStr bool,
-	_ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+// GetIncompleteByRepGroupMatch behaves like
+// jobqueue.GetIncompleteByRepGroupMatch, but only repgroup/match and state are
+// considered; the limit and final boolean arguments (eg. getStd/getEnv) are
+// ignored in this pretend implementation.
+func (p *pretendJobqueue) GetIncompleteByRepGroupMatch(repgroup string,
+	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool,
+	_ bool) ([]*jobqueue.Job, error) {
 	jobs := make([]*jobqueue.Job, 0, len(p.jobBuffer))
 
 	for _, job := range p.jobBuffer {
-		if !matchesIncompleteRepGroup(job.RepGroup, repgroup, subStr) {
+		if !matchesIncompleteRepGroup(job.RepGroup, repgroup, match) {
 			continue
 		}
 
@@ -163,16 +174,13 @@ func (p *pretendJobqueue) GetIncompleteByRepGroup(repgroup string, subStr bool,
 	return jobs, nil
 }
 
-func matchesIncompleteRepGroup(jobRepGroup, repgroup string, subStr bool) bool {
+func matchesIncompleteRepGroup(jobRepGroup, repgroup string,
+	match jobqueue.RepGroupMatch) bool {
 	if repgroup == "" {
 		return true
 	}
 
-	if subStr {
-		return strings.Contains(jobRepGroup, repgroup)
-	}
-
-	return jobRepGroup == repgroup
+	return jobqueue.RepGroupMatches(jobRepGroup, repgroup, match)
 }
 
 func isIncompleteStateMatch(jobState, state jobqueue.JobState) bool {
@@ -350,7 +358,7 @@ func createDepGroups(depGroup string) []string {
 func createDependencies(dep string) jobqueue.Dependencies {
 	var dependencies jobqueue.Dependencies
 	if dep != "" {
-		dependencies = jobqueue.Dependencies{{DepGroup: dep}}
+		dependencies = jobqueue.Dependencies{&jobqueue.Dependency{DepGroup: dep}}
 	}
 
 	return dependencies
@@ -427,63 +435,39 @@ func (s *Scheduler) SubmittedJobs() []*jobqueue.Job {
 // FindJobsByRepGroupSuffix finds all of the jobs in wr whose rep group has the
 // supplied suffix.
 func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, error) {
-	jobs, err := s.jq.GetByRepGroup(suffix, true, 0, "", true, false)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
-		return !strings.HasSuffix(job.RepGroup, suffix)
-	}), nil
+	return s.jq.GetByRepGroupMatch(suffix, jobqueue.RepGroupMatchSuffix, 0, "",
+		true, false)
 }
 
 // FindJobsByRepGroupPrefixAndState finds all jobs in wr whose RepGroup starts
 // with the supplied prefix, optionally limited to the supplied state.
 func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobqueue.JobState) ([]*jobqueue.Job, error) {
-	jobs, err := s.jq.GetByRepGroup(prefix, true, 0, state, true, false)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
-		return !strings.HasPrefix(job.RepGroup, prefix)
-	}), nil
+	return s.jq.GetByRepGroupMatch(prefix, jobqueue.RepGroupMatchPrefix, 0,
+		state, true, false)
 }
 
-// FindIncompleteJobsByRepGroupPrefix finds incomplete jobs in wr whose RepGroup
-// starts with the supplied prefix.
+// FindIncompleteJobsByRepGroup finds incomplete jobs in wr whose RepGroup
+// matches the supplied value according to match.
 //
 // Unlike FindJobsByRepGroupPrefixAndState(), this method does not request
 // stdout, stderr, or env from the server.
-func (s *Scheduler) FindIncompleteJobsByRepGroupPrefix(prefix string) ([]*jobqueue.Job, error) {
-	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, "", false,
+func (s *Scheduler) FindIncompleteJobsByRepGroup(repgroup string,
+	match jobqueue.RepGroupMatch) ([]*jobqueue.Job, error) {
+	return s.jq.GetIncompleteByRepGroupMatch(repgroup, match, 0, "", false,
 		false)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
-		return !strings.HasPrefix(job.RepGroup, prefix)
-	}), nil
 }
 
-// FindIncompleteJobsByRepGroupPrefixAndState finds incomplete jobs in wr whose
-// RepGroup starts with the supplied prefix, optionally limited to the supplied
-// state.
+// FindIncompleteJobsByRepGroupAndState finds incomplete jobs in wr whose
+// RepGroup matches the supplied value according to match, optionally limited to
+// the supplied state.
 //
 // Unlike FindJobsByRepGroupPrefixAndState(), this method does not request
 // stdout, stderr, or env from the server.
-func (s *Scheduler) FindIncompleteJobsByRepGroupPrefixAndState(prefix string,
+func (s *Scheduler) FindIncompleteJobsByRepGroupAndState(repgroup string,
+	match jobqueue.RepGroupMatch,
 	state jobqueue.JobState) ([]*jobqueue.Job, error) {
-	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, state, false,
+	return s.jq.GetIncompleteByRepGroupMatch(repgroup, match, 0, state, false,
 		false)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
-		return !strings.HasPrefix(job.RepGroup, prefix)
-	}), nil
 }
 
 // Kill asks the server to kill the provided jobs.
