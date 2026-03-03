@@ -744,9 +744,7 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		newUnix := job.EndTime.Unix()
 		existing := b.Get(rgKey)
 
-		if len(existing) == rgEndTimeBytes &&
-			int64(binary.BigEndian.Uint64(existing)) >= newUnix { //nolint:gosec
-
+		if len(existing) == rgEndTimeBytes && int64(binary.BigEndian.Uint64(existing)) >= newUnix { //nolint:gosec
 			return nil
 		}
 
