@@ -289,7 +289,7 @@ func TestFakeScheduler(t *testing.T) {
 
 				jobs, err = s.FindJobsByRepGroupPrefixAndState("ep1", jobqueue.JobStateDelayed)
 				So(err, ShouldBeNil)
-				So(jobs, ShouldResemble, []*jobqueue.Job{})
+				So(jobs, ShouldResemble, []*jobqueue.Job(nil))
 
 				jobs, err = s.FindJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
 				So(err, ShouldBeNil)
