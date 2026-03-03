@@ -139,6 +139,10 @@ func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 func (p *pretendJobqueue) GetByRepGroupMatch(repgroup string,
 	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool,
 	_ bool) ([]*jobqueue.Job, error) {
+	if repgroup == "" {
+		return nil, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest}
+	}
+
 	var jobs []*jobqueue.Job
 
 	for _, job := range p.jobBuffer {

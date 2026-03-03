@@ -561,3 +561,22 @@ func TestPretendGetIncompleteByRepGroupEmptyRepGroup(t *testing.T) {
 		})
 	})
 }
+
+func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
+	Convey("Given a pretend jobqueue", t, func() {
+		p := newPretendJobqueue()
+
+		Convey("GetByRepGroupMatch with empty repgroup returns ErrBadRequest", func() {
+			jobs, err := p.GetByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+				0, "", false, false)
+			So(jobs, ShouldBeNil)
+			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
+		})
+
+		Convey("GetByRepGroup with empty repgroup returns ErrBadRequest", func() {
+			jobs, err := p.GetByRepGroup("", false, 0, "", false, false)
+			So(jobs, ShouldBeNil)
+			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
+		})
+	})
+}
