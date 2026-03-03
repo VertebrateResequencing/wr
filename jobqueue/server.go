@@ -36,7 +36,6 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -2396,23 +2395,6 @@ func (s *Server) checkJobByKey(key string) (bool, error) {
 
 	found, err := s.db.retrieveCompleteJobsByKeys([]string{key})
 	return len(found) == 1, err
-}
-
-// searchRepGroups looks up the rep groups of all jobs that have ever been added
-// and returns those that contain the given sub string.
-func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
-	rgs, err := s.db.retrieveRepGroups()
-	if err != nil {
-		return nil, err
-	}
-
-	var matching []string
-	for _, rg := range rgs {
-		if strings.Contains(rg, partialRepGroup) {
-			matching = append(matching, rg)
-		}
-	}
-	return matching, err
 }
 
 type repGroupOptions struct {
