@@ -146,23 +146,41 @@ func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 // implementation.
 func (p *pretendJobqueue) GetIncompleteByRepGroup(repgroup string, subStr bool,
 	_ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
-	var jobs []*jobqueue.Job
+	jobs := make([]*jobqueue.Job, 0, len(p.jobBuffer))
 
 	for _, job := range p.jobBuffer {
-		matched := job.RepGroup == repgroup
-		if subStr {
-			matched = strings.Contains(job.RepGroup, repgroup)
+		if !matchesIncompleteRepGroup(job.RepGroup, repgroup, subStr) {
+			continue
 		}
 
-		incompleteAndStateMatched := job.State != jobqueue.JobStateComplete &&
-			(state == "" || job.State == state)
-
-		if incompleteAndStateMatched && matched {
-			jobs = append(jobs, job)
+		if !isIncompleteStateMatch(job.State, state) {
+			continue
 		}
+
+		jobs = append(jobs, job)
 	}
 
 	return jobs, nil
+}
+
+func matchesIncompleteRepGroup(jobRepGroup, repgroup string, subStr bool) bool {
+	if repgroup == "" {
+		return true
+	}
+
+	if subStr {
+		return strings.Contains(jobRepGroup, repgroup)
+	}
+
+	return jobRepGroup == repgroup
+}
+
+func isIncompleteStateMatch(jobState, state jobqueue.JobState) bool {
+	if jobState == jobqueue.JobStateComplete {
+		return false
+	}
+
+	return state == "" || jobState == state
 }
 
 func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {

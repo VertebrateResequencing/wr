@@ -448,3 +448,20 @@ func TestFindIncompleteJobsByRepGroupPrefixErrors(t *testing.T) {
 		})
 	})
 }
+
+func TestPretendGetIncompleteByRepGroupEmptyRepGroup(t *testing.T) {
+	Convey("Given a pretend jobqueue with mixed complete and incomplete jobs", t, func() {
+		p := newPretendJobqueue()
+		p.jobBuffer = []*jobqueue.Job{
+			{RepGroup: "rg1", State: jobqueue.JobStateReady},
+			{RepGroup: "rg2", State: jobqueue.JobStateRunning},
+			{RepGroup: "rg3", State: jobqueue.JobStateComplete},
+		}
+
+		Convey("GetIncompleteByRepGroup with empty repgroup returns all incomplete jobs", func() {
+			jobs, err := p.GetIncompleteByRepGroup("", false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(jobs, ShouldResemble, []*jobqueue.Job{p.jobBuffer[0], p.jobBuffer[1]})
+		})
+	})
+}

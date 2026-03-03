@@ -340,6 +340,21 @@ func timeAdd(add time.Duration) string {
 	now := time.Now().Truncate(time.Second)
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	dayEnd := dayStart.Add(24*time.Hour - time.Second)
+
+	if add > 0 && now.Equal(dayEnd) {
+		time.Sleep(time.Second)
+		now = time.Now().Truncate(time.Second)
+		dayStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		dayEnd = dayStart.Add(24*time.Hour - time.Second)
+	}
+
+	if add < 0 && now.Equal(dayStart) {
+		time.Sleep(time.Second)
+		now = time.Now().Truncate(time.Second)
+		dayStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		dayEnd = dayStart.Add(24*time.Hour - time.Second)
+	}
+
 	target := now.Add(add)
 
 	if target.Before(dayStart) {
