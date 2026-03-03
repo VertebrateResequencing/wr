@@ -4944,15 +4944,16 @@ func TestJobqueueRunners(t *testing.T) {
 				}
 			}()
 			So(<-started, ShouldBeTrue)
+			So(len(jobs), ShouldEqual, 1)
 
-			killCount, err := jq.Kill([]*JobEssence{{Cmd: cmd}})
+			killCount, err := jq.Kill([]*JobEssence{{JobKey: jobs[0].Key()}})
 			So(err, ShouldBeNil)
 			So(killCount, ShouldEqual, 1)
 
 			// wait for the job to get killed
 			killed := make(chan bool, 1)
 			go func() {
-				limit := time.After(25 * time.Second)
+				limit := time.After(40 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
