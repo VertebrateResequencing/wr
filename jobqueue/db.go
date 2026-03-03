@@ -53,6 +53,7 @@ const (
 	dbDelimiter                   = "_::_"
 	jobStatWindowPercent          = float32(5)
 	dbFilePermission              = 0o600
+	rgEndTimeBytes                = 8
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 )
@@ -71,6 +72,7 @@ var (
 	bucketJobRAM       = []byte("jobRAM")
 	bucketJobDisk      = []byte("jobDisk")
 	bucketJobSecs      = []byte("jobSecs")
+	bucketRGEndTime    = []byte("repgroupEndTime") //nolint:gochecknoglobals
 	wipeDevDBOnInit    = true
 	forceBackups       = false
 )
@@ -324,6 +326,12 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, errf)
 		}
+
+		_, errf = tx.CreateBucketIfNotExists(bucketRGEndTime)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketRGEndTime, errf)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -725,12 +733,66 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		}
 		b = tx.Bucket(bucketJobSecs)
 		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
-		return b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
+
+		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, secs), []byte(strconv.Itoa(secs)))
+		if errf != nil {
+			return errf
+		}
+
+		b = tx.Bucket(bucketRGEndTime)
+		rgKey := []byte(job.RepGroup)
+		newUnix := job.EndTime.Unix()
+		existing := b.Get(rgKey)
+
+		existingUnix, ok := decodeInt64BigEndian(existing)
+		if existing != nil && ok && existingUnix >= newUnix {
+			return nil
+		}
+
+		val, errf := encodeInt64BigEndian(newUnix)
+		if errf != nil {
+			return errf
+		}
+
+		errf = b.Put(rgKey, val)
+		if errf != nil {
+			return errf
+		}
+
+		return nil
 	})
 
 	db.backgroundBackup(ctx)
 
 	return err
+}
+
+func encodeInt64BigEndian(value int64) ([]byte, error) {
+	buf := bytes.NewBuffer(make([]byte, 0, rgEndTimeBytes))
+
+	err := binary.Write(buf, binary.BigEndian, value)
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeInt64BigEndian(encoded []byte) (int64, bool) {
+	if len(encoded) != rgEndTimeBytes {
+		return 0, false
+	}
+
+	buf := bytes.NewReader(encoded)
+
+	var value int64
+
+	err := binary.Read(buf, binary.BigEndian, &value)
+	if err != nil {
+		return 0, false
+	}
+
+	return value, true
 }
 
 // deleteLiveJobs remove multiple jobs from the live bucket.
@@ -815,6 +877,31 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 		})
 	})
 	return rgs, err
+}
+
+// retrieveLastCompletionTimeByRepGroup gets the latest archived completion
+// time for each supplied RepGroup.
+func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
+	completionTimes := make(map[string]time.Time)
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketRGEndTime)
+
+		for _, repGroup := range repGroups {
+			encoded := bucket.Get([]byte(repGroup))
+			unix, ok := decodeInt64BigEndian(encoded)
+
+			if !ok {
+				continue
+			}
+
+			completionTimes[repGroup] = time.Unix(unix, 0)
+		}
+
+		return nil
+	})
+
+	return completionTimes, err
 }
 
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the

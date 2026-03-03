@@ -1913,6 +1913,19 @@ func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMat
 	return resp.Jobs, err
 }
 
+// GetLastCompletionTimeByRepGroup returns the most recent completion time for
+// each matched RepGroup.
+func (c *Client) GetLastCompletionTimeByRepGroup(repgroup string,
+	match RepGroupMatch) (map[string]time.Time, error) {
+	resp, err := c.request(&clientRequest{Method: "getlct", Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.CompletionTimes, nil
+}
+
 // GetOrSetLimitGroup takes the name of a limit group and returns the current
 // limit for that group. If the group isn't known about, returns -1.
 //
