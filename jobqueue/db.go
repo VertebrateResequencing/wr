@@ -744,15 +744,14 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		newUnix := job.EndTime.Unix()
 		existing := b.Get(rgKey)
 
-		existingUnix, ok := decodeInt64BigEndian(existing)
-		if existing != nil && ok && existingUnix >= newUnix {
+		if len(existing) == rgEndTimeBytes &&
+			int64(binary.BigEndian.Uint64(existing)) >= newUnix { //nolint:gosec
+
 			return nil
 		}
 
-		val, errf := encodeInt64BigEndian(newUnix)
-		if errf != nil {
-			return errf
-		}
+		val := make([]byte, rgEndTimeBytes)
+		binary.BigEndian.PutUint64(val, uint64(newUnix)) //nolint:gosec
 
 		errf = b.Put(rgKey, val)
 		if errf != nil {
@@ -765,34 +764,6 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	db.backgroundBackup(ctx)
 
 	return err
-}
-
-func encodeInt64BigEndian(value int64) ([]byte, error) {
-	buf := bytes.NewBuffer(make([]byte, 0, rgEndTimeBytes))
-
-	err := binary.Write(buf, binary.BigEndian, value)
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-func decodeInt64BigEndian(encoded []byte) (int64, bool) {
-	if len(encoded) != rgEndTimeBytes {
-		return 0, false
-	}
-
-	buf := bytes.NewReader(encoded)
-
-	var value int64
-
-	err := binary.Read(buf, binary.BigEndian, &value)
-	if err != nil {
-		return 0, false
-	}
-
-	return value, true
 }
 
 // deleteLiveJobs remove multiple jobs from the live bucket.
@@ -889,13 +860,11 @@ func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[stri
 
 		for _, repGroup := range repGroups {
 			encoded := bucket.Get([]byte(repGroup))
-			unix, ok := decodeInt64BigEndian(encoded)
-
-			if !ok {
+			if len(encoded) != rgEndTimeBytes {
 				continue
 			}
 
-			completionTimes[repGroup] = time.Unix(unix, 0)
+			completionTimes[repGroup] = time.Unix(int64(binary.BigEndian.Uint64(encoded)), 0) //nolint:gosec
 		}
 
 		return nil

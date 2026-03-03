@@ -2552,23 +2552,23 @@ func TestJobqueueMedium(t *testing.T) {
 				So(len(gottenJobs), ShouldEqual, 0)
 			})
 
+			mkLCTJob := func(cmd, repGroup string, endTime time.Time) *Job {
+				return &Job{
+					Cmd:       cmd,
+					Cwd:       "/tmp",
+					ReqGroup:  "fake_group",
+					RepGroup:  repGroup,
+					StartTime: endTime.Add(-1 * time.Second),
+					EndTime:   endTime,
+				}
+			}
+
 			Convey("You can retrieve latest completion times by rep group in db", func() {
 				base := time.Now().Truncate(time.Second)
 
-				mkJob := func(cmd, repGroup string, endTime time.Time) *Job {
-					return &Job{
-						Cmd:       cmd,
-						Cwd:       "/tmp",
-						ReqGroup:  "fake_group",
-						RepGroup:  repGroup,
-						StartTime: endTime.Add(-1 * time.Second),
-						EndTime:   endTime,
-					}
-				}
-
-				j1 := mkJob("echo lct1", "lct-rg", base.Add(1*time.Second))
-				j2 := mkJob("echo lct2", "lct-rg", base.Add(3*time.Second))
-				j3 := mkJob("echo lct3", "lct-rg", base.Add(2*time.Second))
+				j1 := mkLCTJob("echo lct1", "lct-rg", base.Add(1*time.Second))
+				j2 := mkLCTJob("echo lct2", "lct-rg", base.Add(3*time.Second))
+				j3 := mkLCTJob("echo lct3", "lct-rg", base.Add(2*time.Second))
 
 				err = server.db.archiveJob(ctx, j1.Key(), j1)
 				So(err, ShouldBeNil)
@@ -2587,20 +2587,9 @@ func TestJobqueueMedium(t *testing.T) {
 			Convey("You can retrieve latest completion times by rep group prefix", func() {
 				base := time.Now().Truncate(time.Second)
 
-				mkJob := func(cmd, repGroup string, endTime time.Time) *Job {
-					return &Job{
-						Cmd:       cmd,
-						Cwd:       "/tmp",
-						ReqGroup:  "fake_group",
-						RepGroup:  repGroup,
-						StartTime: endTime.Add(-1 * time.Second),
-						EndTime:   endTime,
-					}
-				}
-
-				jA := mkJob("echo lctA", "lct-rgA", base.Add(2*time.Second))
-				jB1 := mkJob("echo lctB1", "lct-rgB", base.Add(1*time.Second))
-				jB2 := mkJob("echo lctB2", "lct-rgB", base.Add(4*time.Second))
+				jA := mkLCTJob("echo lctA", "lct-rgA", base.Add(2*time.Second))
+				jB1 := mkLCTJob("echo lctB1", "lct-rgB", base.Add(1*time.Second))
+				jB2 := mkLCTJob("echo lctB2", "lct-rgB", base.Add(4*time.Second))
 
 				err = server.db.storeLookups(bucketRGs, sobsd{
 					{[]byte("lct-rgA"), nil},
