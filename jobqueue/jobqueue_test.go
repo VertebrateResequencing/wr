@@ -1017,6 +1017,12 @@ func TestJobqueueBasics(t *testing.T) {
 			})
 
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
+				oldRecSecRound := RecSecRound
+				RecSecRound = 1800
+				defer func() {
+					RecSecRound = oldRecSecRound
+				}()
+
 				// these are ignored by the learning system unless the job
 				// failed due to running out of a resource
 				for index, job := range jobs {
