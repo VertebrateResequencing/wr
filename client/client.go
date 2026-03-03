@@ -362,7 +362,7 @@ func createDepGroups(depGroup string) []string {
 func createDependencies(dep string) jobqueue.Dependencies {
 	var dependencies jobqueue.Dependencies
 	if dep != "" {
-		dependencies = jobqueue.Dependencies{&jobqueue.Dependency{DepGroup: dep}}
+		dependencies = jobqueue.Dependencies{{DepGroup: dep}}
 	}
 
 	return dependencies
