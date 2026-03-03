@@ -849,7 +849,7 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 }
 
 // retrieveLastCompletionTimeByRepGroup gets the latest archived completion
-// time for each supplied RepGroup.
+// time for each supplied RepGroup as UTC instants.
 func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
 	completionTimes := make(map[string]time.Time)
 
@@ -862,7 +862,7 @@ func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[stri
 				continue
 			}
 
-			completionTimes[repGroup] = time.Unix(int64(binary.BigEndian.Uint64(encoded)), 0) //nolint:gosec
+			completionTimes[repGroup] = time.Unix(int64(binary.BigEndian.Uint64(encoded)), 0).UTC() //nolint:gosec
 		}
 
 		return nil

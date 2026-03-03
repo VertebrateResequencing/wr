@@ -2580,8 +2580,9 @@ func TestJobqueueMedium(t *testing.T) {
 				completionTimes, errf := server.db.retrieveLastCompletionTimeByRepGroup(
 					[]string{"lct-rg"})
 				So(errf, ShouldBeNil)
-				So(completionTimes, ShouldResemble,
-					map[string]time.Time{"lct-rg": base.Add(3 * time.Second)})
+				So(len(completionTimes), ShouldEqual, 1)
+				So(completionTimes["lct-rg"].Unix(), ShouldEqual,
+					base.Add(3*time.Second).Unix())
 			})
 
 			Convey("You can retrieve latest completion times by rep group prefix", func() {
