@@ -432,11 +432,11 @@ func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobque
 	}), nil
 }
 
-// FindIncompleteJobsByRepGroupPrefix finds incomplete jobs in wr whose
-// RepGroup starts with the supplied prefix.
+// FindIncompleteJobsByRepGroupPrefix finds incomplete jobs in wr whose RepGroup
+// starts with the supplied prefix.
 //
-// Unlike FindJobsByRepGroupPrefix(), this method does not request stdout,
-// stderr, or env from the server.
+// Unlike FindJobsByRepGroupPrefixAndState(), this method does not request
+// stdout, stderr, or env from the server.
 func (s *Scheduler) FindIncompleteJobsByRepGroupPrefix(prefix string) ([]*jobqueue.Job, error) {
 	jobs, err := s.jq.GetIncompleteByRepGroup(prefix, true, 0, "", false,
 		false)
