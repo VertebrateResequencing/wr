@@ -1860,8 +1860,9 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 
 // GetIncompleteByRepGroup gets all non-archived jobs currently in the queue
 // whose RepGroup matches repgroup. If subStr is true, a substring match is
-// used; otherwise an exact match is used. The remaining args are as in
-// GetByRepGroup().
+// used; otherwise an exact match is used. If repgroup is the empty string,
+// all current (incomplete) jobs are returned and subStr is ignored. The
+// remaining args are as in GetByRepGroup().
 func (c *Client) GetIncompleteByRepGroup(repgroup string, subStr bool, limit int,
 	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
