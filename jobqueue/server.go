@@ -2519,7 +2519,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 
 // getJobsCurrent gets all current (incomplete) jobs. If repGroup is not
 // blank, only jobs whose RepGroup equals repGroup are returned unless search is
-// true, in which case RepGroup may contain repGroup as a substring.
+// true, in which case only jobs whose RepGroup field contains repGroup as a substring are returned.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, search bool,
 	limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	jobs := s.getQueueJobsCurrent(ctx, repGroup, search)
