@@ -1065,6 +1065,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 100)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
+
 				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
 				So(rtime, ShouldEqual, expectedShort)
 
