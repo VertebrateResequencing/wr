@@ -140,7 +140,10 @@ func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 	return jobs, nil
 }
 
-// GetIncompleteByRepGroup behaves like jobqueue.GetIncompleteByRepGroup.
+// GetIncompleteByRepGroup behaves like jobqueue.GetIncompleteByRepGroup, but
+// only uses repgroup/subStr and state to filter incomplete jobs; the limit and
+// final boolean arguments (eg. getStd/getEnv) are ignored in this pretend
+// implementation.
 func (p *pretendJobqueue) GetIncompleteByRepGroup(repgroup string, subStr bool,
 	_ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
 	var jobs []*jobqueue.Job
