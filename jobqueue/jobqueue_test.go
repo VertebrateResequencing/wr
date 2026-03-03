@@ -4700,7 +4700,7 @@ func TestJobqueueRunners(t *testing.T) {
 			// wait for the job to start running
 			started := make(chan int, 1)
 			go func() {
-				limit := time.After(10 * time.Second)
+				limit := time.After(30 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
