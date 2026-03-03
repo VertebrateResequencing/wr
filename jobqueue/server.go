@@ -2562,12 +2562,12 @@ func (s *Server) getQueueJobsByRepGroupSearch(ctx context.Context, repGroup stri
 	jobs := make([]*Job, 0, len(allItems))
 
 	for _, item := range allItems {
-		job, ok := item.Data().(*Job)
-		if !ok || !strings.Contains(job.RepGroup, repGroup) {
+		job := s.itemToJob(ctx, item, false, false)
+		if job == nil || !strings.Contains(job.RepGroup, repGroup) {
 			continue
 		}
 
-		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
+		jobs = append(jobs, job)
 	}
 
 	return jobs

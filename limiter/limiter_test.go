@@ -337,7 +337,8 @@ func TestLimiter(t *testing.T) {
 }
 
 func timeAdd(add time.Duration) string {
-	nowSecs := secondsInDay()
+	now := time.Now()
+	nowSecs := int64(now.Hour())*3600 + int64(now.Minute())*60 + int64(now.Second())
 	targetSecs := nowSecs + int64(add/time.Second)
 
 	if add > 0 && targetSecs <= nowSecs {
@@ -356,7 +357,6 @@ func timeAdd(add time.Duration) string {
 		targetSecs = 86399
 	}
 
-	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
 	return dayStart.Add(time.Duration(targetSecs) * time.Second).Format(time.TimeOnly)
