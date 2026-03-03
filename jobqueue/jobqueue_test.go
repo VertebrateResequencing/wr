@@ -2602,6 +2602,12 @@ func TestJobqueueMedium(t *testing.T) {
 				jB1 := mkJob("echo lctB1", "lct-rgB", base.Add(1*time.Second))
 				jB2 := mkJob("echo lctB2", "lct-rgB", base.Add(4*time.Second))
 
+				err = server.db.storeLookups(bucketRGs, sobsd{
+					{[]byte("lct-rgA"), nil},
+					{[]byte("lct-rgB"), nil},
+				})
+				So(err, ShouldBeNil)
+
 				err = server.db.archiveJob(ctx, jA.Key(), jA)
 				So(err, ShouldBeNil)
 				err = server.db.archiveJob(ctx, jB1.Key(), jB1)
@@ -2612,10 +2618,11 @@ func TestJobqueueMedium(t *testing.T) {
 				completionTimes, err := jq.GetLastCompletionTimeByRepGroup("lct-rg",
 					RepGroupMatchPrefix)
 				So(err, ShouldBeNil)
-				So(completionTimes, ShouldResemble, map[string]time.Time{
-					"lct-rgA": base.Add(2 * time.Second),
-					"lct-rgB": base.Add(4 * time.Second),
-				})
+				So(len(completionTimes), ShouldEqual, 2)
+				So(completionTimes["lct-rgA"].Unix(), ShouldEqual,
+					base.Add(2*time.Second).Unix())
+				So(completionTimes["lct-rgB"].Unix(), ShouldEqual,
+					base.Add(4*time.Second).Unix())
 			})
 
 			Convey("You get an empty map when no rep group has completed jobs", func() {
