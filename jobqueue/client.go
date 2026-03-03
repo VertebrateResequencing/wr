@@ -1879,7 +1879,7 @@ func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state Jo
 func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit int,
 	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup},
-		Search: match == RepGroupMatchSubStr, RepGroupMatch: match, Limit: limit,
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
 		State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return nil, err
@@ -1904,7 +1904,7 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
-		Search: match == RepGroupMatchSubStr, RepGroupMatch: match, Limit: limit,
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
 		State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return nil, err
