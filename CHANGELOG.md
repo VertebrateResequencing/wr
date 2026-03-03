@@ -5,6 +5,23 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.36.4] - 2026-03-03
+### Added
+- New go client `Scheduler` methods:
+  - `FindIncompleteJobsByRepGroup(repgroup, match)`
+  - `FindIncompleteJobsByRepGroupAndState(repgroup, match, state)`
+- New rep-group match modes for go API consumers via `jobqueue.RepGroupMatch`
+  (`exact`, `substr`, `prefix`, `suffix`).
+- New `jobqueue.Client` methods:
+  - `GetByRepGroupMatch(repgroup, match, limit, state, getStd, getEnv)`
+  - `GetIncompleteByRepGroupMatch(repgroup, match, limit, state, getStd, getEnv)`
+
+### Changed
+- Rep-group filtering for go-client lookup helpers is now done server-side,
+  including prefix/suffix/incomplete queries, instead of client-side
+  post-filtering, for increased performance.
+
+
 ## [0.36.3] - 2026-01-22
 ### Added
 - New `--group` option for `wr add` that lets you run commands as particular
