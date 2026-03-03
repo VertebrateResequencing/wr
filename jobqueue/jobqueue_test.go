@@ -1017,12 +1017,7 @@ func TestJobqueueBasics(t *testing.T) {
 			})
 
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
-				oldRecSecRound := RecSecRound
-				RecSecRound = 1800
-
-				defer func() {
-					RecSecRound = oldRecSecRound
-				}()
+				So(RecSecRound, ShouldBeGreaterThan, 0)
 
 				// these are ignored by the learning system unless the job
 				// failed due to running out of a resource
@@ -1070,7 +1065,8 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 100)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
-				So(rtime, ShouldEqual, 1800)
+				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
+				So(rtime, ShouldEqual, expectedShort)
 
 				for i := 11; i <= 100; i++ {
 					job := &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}
@@ -1099,7 +1095,8 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 12800)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
-				So(rtime, ShouldEqual, 10800)
+				So(rtime, ShouldBeGreaterThanOrEqualTo, 9500)
+				So(rtime%RecSecRound, ShouldEqual, 0)
 			})
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {

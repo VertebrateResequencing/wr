@@ -337,29 +337,28 @@ func TestLimiter(t *testing.T) {
 }
 
 func timeAdd(add time.Duration) string {
-	now := time.Now()
-	nowSecs := int64(now.Hour())*3600 + int64(now.Minute())*60 + int64(now.Second())
-	targetSecs := nowSecs + int64(add/time.Second)
-
-	if add > 0 && targetSecs <= nowSecs {
-		targetSecs = nowSecs + 1
-	}
-
-	if add < 0 && targetSecs >= nowSecs {
-		targetSecs = nowSecs - 1
-	}
-
-	if targetSecs < 0 {
-		targetSecs = 0
-	}
-
-	if targetSecs > 86399 {
-		targetSecs = 86399
-	}
-
+	now := time.Now().Truncate(time.Second)
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	dayEnd := dayStart.Add(24*time.Hour - time.Second)
+	target := now.Add(add)
 
-	return dayStart.Add(time.Duration(targetSecs) * time.Second).Format(time.TimeOnly)
+	if target.Before(dayStart) {
+		target = dayStart
+	}
+
+	if target.After(dayEnd) {
+		target = dayEnd
+	}
+
+	if add > 0 && !target.After(now) && now.Before(dayEnd) {
+		target = now.Add(time.Second)
+	}
+
+	if add < 0 && !target.Before(now) && now.After(dayStart) {
+		target = now.Add(-time.Second)
+	}
+
+	return target.Format(time.TimeOnly)
 }
 
 func dateAdd(add time.Duration) string {
