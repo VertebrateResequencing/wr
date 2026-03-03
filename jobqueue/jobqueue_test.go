@@ -2467,6 +2467,29 @@ func TestJobqueueMedium(t *testing.T) {
 				So(len(gottenJobs), ShouldEqual, 1)
 			})
 
+			Convey("You can retrieve incomplete jobs by RepGroup exact match or substring", func() {
+				gottenJobs, err := jq.GetIncompleteByRepGroup("dep2", false, 0,
+					"", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 1)
+				So(gottenJobs[0].RepGroup, ShouldEqual, "dep2")
+
+				gottenJobs, err = jq.GetIncompleteByRepGroup("dep", true, 0,
+					"", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 3)
+
+				gottenJobs, err = jq.GetIncompleteByRepGroup("dep", true, 0,
+					JobStateReady, false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 3)
+
+				gottenJobs, err = jq.GetIncompleteByRepGroup("dep", true, 0,
+					JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 0)
+			})
+
 			Convey("You can reserve and execute one of them", func() {
 				j1, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
