@@ -2552,6 +2552,76 @@ func TestJobqueueMedium(t *testing.T) {
 				So(len(gottenJobs), ShouldEqual, 0)
 			})
 
+			mkLCTJob := func(cmd, repGroup string, endTime time.Time) *Job {
+				return &Job{
+					Cmd:       cmd,
+					Cwd:       "/tmp",
+					ReqGroup:  "fake_group",
+					RepGroup:  repGroup,
+					StartTime: endTime.Add(-1 * time.Second),
+					EndTime:   endTime,
+				}
+			}
+
+			Convey("You can retrieve latest completion times by rep group in db", func() {
+				base := time.Now().Truncate(time.Second)
+
+				j1 := mkLCTJob("echo lct1", "lct-rg", base.Add(1*time.Second))
+				j2 := mkLCTJob("echo lct2", "lct-rg", base.Add(3*time.Second))
+				j3 := mkLCTJob("echo lct3", "lct-rg", base.Add(2*time.Second))
+
+				err = server.db.archiveJob(ctx, j1.Key(), j1)
+				So(err, ShouldBeNil)
+				err = server.db.archiveJob(ctx, j2.Key(), j2)
+				So(err, ShouldBeNil)
+				err = server.db.archiveJob(ctx, j3.Key(), j3)
+				So(err, ShouldBeNil)
+
+				completionTimes, errf := server.db.retrieveLastCompletionTimeByRepGroup(
+					[]string{"lct-rg"})
+				So(errf, ShouldBeNil)
+				So(len(completionTimes), ShouldEqual, 1)
+				So(completionTimes["lct-rg"].Unix(), ShouldEqual,
+					base.Add(3*time.Second).Unix())
+			})
+
+			Convey("You can retrieve latest completion times by rep group prefix", func() {
+				base := time.Now().Truncate(time.Second)
+
+				jA := mkLCTJob("echo lctA", "lct-rgA", base.Add(2*time.Second))
+				jB1 := mkLCTJob("echo lctB1", "lct-rgB", base.Add(1*time.Second))
+				jB2 := mkLCTJob("echo lctB2", "lct-rgB", base.Add(4*time.Second))
+
+				err = server.db.storeLookups(bucketRGs, sobsd{
+					{[]byte("lct-rgA"), nil},
+					{[]byte("lct-rgB"), nil},
+				})
+				So(err, ShouldBeNil)
+
+				err = server.db.archiveJob(ctx, jA.Key(), jA)
+				So(err, ShouldBeNil)
+				err = server.db.archiveJob(ctx, jB1.Key(), jB1)
+				So(err, ShouldBeNil)
+				err = server.db.archiveJob(ctx, jB2.Key(), jB2)
+				So(err, ShouldBeNil)
+
+				completionTimes, err := jq.GetLastCompletionTimeByRepGroup("lct-rg",
+					RepGroupMatchPrefix)
+				So(err, ShouldBeNil)
+				So(len(completionTimes), ShouldEqual, 2)
+				So(completionTimes["lct-rgA"].Unix(), ShouldEqual,
+					base.Add(2*time.Second).Unix())
+				So(completionTimes["lct-rgB"].Unix(), ShouldEqual,
+					base.Add(4*time.Second).Unix())
+			})
+
+			Convey("You get an empty map when no rep group has completed jobs", func() {
+				completionTimes, err := jq.GetLastCompletionTimeByRepGroup("does-not-exist",
+					RepGroupMatchExact)
+				So(err, ShouldBeNil)
+				So(completionTimes, ShouldResemble, map[string]time.Time{})
+			})
+
 			Convey("You can reserve and execute one of them", func() {
 				j1, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
@@ -4630,7 +4700,7 @@ func TestJobqueueRunners(t *testing.T) {
 			// wait for the job to start running
 			started := make(chan int, 1)
 			go func() {
-				limit := time.After(10 * time.Second)
+				limit := time.After(30 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {

@@ -53,6 +53,7 @@ const (
 	dbDelimiter                   = "_::_"
 	jobStatWindowPercent          = float32(5)
 	dbFilePermission              = 0o600
+	rgEndTimeBytes                = 8
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 )
@@ -71,6 +72,7 @@ var (
 	bucketJobRAM       = []byte("jobRAM")
 	bucketJobDisk      = []byte("jobDisk")
 	bucketJobSecs      = []byte("jobSecs")
+	bucketRGEndTime    = []byte("repgroupEndTime") //nolint:gochecknoglobals
 	wipeDevDBOnInit    = true
 	forceBackups       = false
 )
@@ -324,6 +326,12 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, errf)
 		}
+
+		_, errf = tx.CreateBucketIfNotExists(bucketRGEndTime)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketRGEndTime, errf)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -725,7 +733,30 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		}
 		b = tx.Bucket(bucketJobSecs)
 		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
-		return b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
+
+		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, secs), []byte(strconv.Itoa(secs)))
+		if errf != nil {
+			return errf
+		}
+
+		b = tx.Bucket(bucketRGEndTime)
+		rgKey := []byte(job.RepGroup)
+		newUnix := job.EndTime.Unix()
+		existing := b.Get(rgKey)
+
+		if len(existing) == rgEndTimeBytes && int64(binary.BigEndian.Uint64(existing)) >= newUnix { //nolint:gosec
+			return nil
+		}
+
+		val := make([]byte, rgEndTimeBytes)
+		binary.BigEndian.PutUint64(val, uint64(newUnix)) //nolint:gosec
+
+		errf = b.Put(rgKey, val)
+		if errf != nil {
+			return errf
+		}
+
+		return nil
 	})
 
 	db.backgroundBackup(ctx)
@@ -815,6 +846,29 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 		})
 	})
 	return rgs, err
+}
+
+// retrieveLastCompletionTimeByRepGroup gets the latest archived completion
+// time for each supplied RepGroup as UTC instants.
+func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
+	completionTimes := make(map[string]time.Time)
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketRGEndTime)
+
+		for _, repGroup := range repGroups {
+			encoded := bucket.Get([]byte(repGroup))
+			if len(encoded) != rgEndTimeBytes {
+				continue
+			}
+
+			completionTimes[repGroup] = time.Unix(int64(binary.BigEndian.Uint64(encoded)), 0).UTC() //nolint:gosec
+		}
+
+		return nil
+	})
+
+	return completionTimes, err
 }
 
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the

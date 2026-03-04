@@ -669,6 +669,22 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
+		case "getlct":
+			if cr.Job == nil || cr.Job.RepGroup == "" {
+				srerr = ErrBadRequest
+
+				break
+			}
+
+			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
+			m, serr, qe := s.getLastCompletionTimeByRepGroup(cr.Job.RepGroup,
+				match)
+			srerr = serr
+			qerr = qe
+
+			if srerr == "" {
+				sr = &serverResponse{CompletionTimes: m}
+			}
 		case "getbcs":
 			servers := s.getBadServers()
 

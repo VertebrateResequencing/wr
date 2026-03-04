@@ -138,21 +138,22 @@ func (e Error) Error() string {
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
-	Err         string // string instead of error so we can decode on the client side
-	Added       int
-	Existed     int
-	AddedIDs    []string
-	Modified    map[string]string
-	KillCalled  bool
-	Job         *Job
-	Jobs        []*Job
-	Limit       int
-	LimitGroups map[string]int
-	SInfo       *ServerInfo
-	SStats      *ServerStats
-	DB          []byte
-	Path        string
-	BadServers  []*BadServer
+	Err             string // string instead of error so we can decode on the client side
+	Added           int
+	Existed         int
+	AddedIDs        []string
+	Modified        map[string]string
+	KillCalled      bool
+	Job             *Job
+	Jobs            []*Job
+	Limit           int
+	LimitGroups     map[string]int
+	SInfo           *ServerInfo
+	SStats          *ServerStats
+	CompletionTimes map[string]time.Time
+	DB              []byte
+	Path            string
+	BadServers      []*BadServer
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -2509,6 +2510,23 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 	}
 
 	return jobs, srerr, qerr
+}
+
+// getLastCompletionTimeByRepGroup gets the latest completion time by RepGroup
+// for matching groups.
+func (s *Server) getLastCompletionTimeByRepGroup(repGroup string,
+	match RepGroupMatch) (map[string]time.Time, string, string) {
+	rgs, srerr, qerr := s.getRepGroupsList(repGroup, match)
+	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	completionTimes, err := s.db.retrieveLastCompletionTimeByRepGroup(rgs)
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	return completionTimes, "", ""
 }
 
 // getJobsCurrent gets all current (incomplete) jobs. If repGroup is not

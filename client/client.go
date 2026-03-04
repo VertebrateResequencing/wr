@@ -86,6 +86,8 @@ type jobqueueClient interface {
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	GetIncompleteByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch,
 		limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
+	GetLastCompletionTimeByRepGroup(repgroup string,
+		match jobqueue.RepGroupMatch) (map[string]time.Time, error)
 	Delete(jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
 }
@@ -176,6 +178,31 @@ func (p *pretendJobqueue) GetIncompleteByRepGroupMatch(repgroup string,
 	}
 
 	return jobs, nil
+}
+
+// GetLastCompletionTimeByRepGroup behaves like
+// jobqueue.GetLastCompletionTimeByRepGroup, but only complete jobs currently
+// in memory are considered.
+func (p *pretendJobqueue) GetLastCompletionTimeByRepGroup(repgroup string,
+	match jobqueue.RepGroupMatch) (map[string]time.Time, error) {
+	completionTimes := make(map[string]time.Time)
+
+	for _, job := range p.jobBuffer {
+		if job.State != jobqueue.JobStateComplete {
+			continue
+		}
+
+		if !jobqueue.RepGroupMatches(job.RepGroup, repgroup, match) {
+			continue
+		}
+
+		current, found := completionTimes[job.RepGroup]
+		if !found || current.Before(job.EndTime) {
+			completionTimes[job.RepGroup] = job.EndTime
+		}
+	}
+
+	return completionTimes, nil
 }
 
 func matchesIncompleteRepGroup(jobRepGroup, repgroup string,
@@ -472,6 +499,13 @@ func (s *Scheduler) FindIncompleteJobsByRepGroupAndState(repgroup string,
 	state jobqueue.JobState) ([]*jobqueue.Job, error) {
 	return s.jq.GetIncompleteByRepGroupMatch(repgroup, match, 0, state, false,
 		false)
+}
+
+// GetLastCompletionTimeByRepGroup finds the latest completion time among
+// complete jobs in each RepGroup that matches repgroup according to match.
+func (s *Scheduler) GetLastCompletionTimeByRepGroup(repgroup string,
+	match jobqueue.RepGroupMatch) (map[string]time.Time, error) {
+	return s.jq.GetLastCompletionTimeByRepGroup(repgroup, match)
 }
 
 // Kill asks the server to kill the provided jobs.

@@ -328,6 +328,42 @@ func TestFakeScheduler(t *testing.T) {
 				So(jobs, ShouldResemble, []*jobqueue.Job{job3})
 			})
 
+			Convey("You can get the latest completion time by repgroup", func() {
+				now := time.Now().Truncate(time.Second)
+
+				job1.State = jobqueue.JobStateComplete
+				job1.EndTime = now.Add(1 * time.Second)
+
+				job2.State = jobqueue.JobStateComplete
+				job2.EndTime = now.Add(2 * time.Second)
+
+				job3 := s.NewJob("cmd3", "rep2suffix", "req3", "", "", nil)
+				err = s.SubmitJobs([]*jobqueue.Job{job3})
+				So(err, ShouldBeNil)
+
+				job3.State = jobqueue.JobStateComplete
+				job3.EndTime = now.Add(3 * time.Second)
+
+				lct, errf := s.GetLastCompletionTimeByRepGroup("rep1suffix",
+					jobqueue.RepGroupMatchExact)
+				So(errf, ShouldBeNil)
+				So(lct, ShouldResemble,
+					map[string]time.Time{"rep1suffix": job1.EndTime})
+
+				lct, errf = s.GetLastCompletionTimeByRepGroup("rep",
+					jobqueue.RepGroupMatchPrefix)
+				So(errf, ShouldBeNil)
+				So(lct, ShouldResemble, map[string]time.Time{
+					"rep1suffix": job1.EndTime,
+					"rep2suffix": job3.EndTime,
+				})
+
+				lct, errf = s.GetLastCompletionTimeByRepGroup("missing",
+					jobqueue.RepGroupMatchExact)
+				So(errf, ShouldBeNil)
+				So(lct, ShouldResemble, map[string]time.Time{})
+			})
+
 			Convey("You can remove jobs", func() {
 				err := s.RemoveJobs(job1)
 				So(err, ShouldBeNil)
