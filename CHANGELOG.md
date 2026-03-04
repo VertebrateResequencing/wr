@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.36.5] - 2026-03-04
+### Added
+- New go client `Scheduler` method
+  `GetLastCompletionTimeByRepGroup(repgroup, match)`
+
+
 ## [0.36.4] - 2026-03-03
 ### Added
 - New go client `Scheduler` methods:
