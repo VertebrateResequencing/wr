@@ -8,7 +8,7 @@ slices that wr executes with proper dependencies, resource hints,
 container wrapping, and output publishing. A `cmd/nextflow.go` file adds
 `wr nextflow run` and `wr nextflow status` sub-commands.
 
-DSL 2 only; DSL 1 deferred to a later phase. No intermediate files on
+DSL 2 only (DSL 1 was removed from Nextflow in v22.12). No intermediate files on
 disk. No separate state store -- crash recovery relies entirely on wr's
 existing job persistence. Dynamic workflows use wr's live dependency
 feature plus `--follow` polling to add jobs incrementally as upstream
@@ -348,9 +348,9 @@ func Parse(r io.Reader) (*Workflow, error)
     then error contains the line number.
 11. Given a process with `disk '10 GB'`, when parsed, then
     `Directives["disk"]` evaluates to int 10.
-12. Given a DSL 1 file (uses `into` channel assignment, e.g.
-    `process foo { output: stdout into result }`), when parsed,
-    then error mentions DSL 1 is not supported.
+12. Given a legacy DSL 1 file (uses `into` channel assignment,
+    e.g. `process foo { output: stdout into result }`), when
+    parsed, then error mentions DSL 1 is not supported.
 13. Given a process with `scratch true`, when parsed, then parse
     succeeds without error and `Directives` map does not contain
     key `"scratch"`.
@@ -1164,8 +1164,8 @@ once D1 is complete. E2-E4 depend on E1.
 
 ## Appendix: Key Decisions
 
-1. **DSL 2 only.** DSL 1 support deferred; parser rejects DSL 1
-   syntax with a clear error.
+1. **DSL 2 only.** DSL 1 was removed from Nextflow in v22.12;
+   parser rejects legacy DSL 1 syntax with a clear error.
 2. **No intermediate files.** Channel data flows via file paths in
    working directories, not serialised channel state.
 3. **Override=0 always.** wr's resource learning is the primary
