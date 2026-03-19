@@ -25,7 +25,8 @@ syntax with a clear error. Ignore unrecognised directives with a
 warning. Covering all 13 acceptance tests from A1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Parse workflow blocks
 
@@ -40,7 +41,8 @@ acceptance tests from A2.
 Depends on Item 1.1 for the parser foundation and AST types.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: A3 - Parse channel factories and operators
 
@@ -58,7 +60,8 @@ Depends on Item 1.2 for the workflow/channel expression AST
 types.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.4: A4 - Parse import statements
 
@@ -72,4 +75,5 @@ tests from A4.
 Depends on Item 1.1 for the parser foundation.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
