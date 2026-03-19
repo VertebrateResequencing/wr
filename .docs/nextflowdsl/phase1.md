@@ -20,8 +20,8 @@ in `nextflowdsl/ast.go` (`Workflow`, `Process`, `Expr`,
 `Declaration`, `PublishDir`). Handle process blocks with
 directives (`cpus`, `memory`, `time`, `disk`, `container`,
 `maxForks`, `errorStrategy`, `maxRetries`, `publishDir`, `env`),
-input/output sections, and script bodies. Reject DSL 1 syntax
-with a clear error. Ignore unrecognised directives with a
+input/output sections, and script bodies. Reject legacy DSL 1
+syntax with a clear error. Ignore unrecognised directives with a
 warning. Covering all 13 acceptance tests from A1.
 
 - [ ] implemented

@@ -1,8 +1,8 @@
 # Feature: Native Nextflow DSL Parser and wr Integration
 
 Add a `nextflowdsl` library package and a `cmd` sub-command `wr nextflow` to
-this repo that lets users easily run Nextflow workflows written in the original
-DSL or DSL 2 without using Nextflow at all — only using wr.
+this repo that lets users easily run Nextflow DSL 2 workflows without using
+Nextflow at all — only using wr.
 
 ## Background
 
@@ -14,8 +14,8 @@ creation of lots of little files on disk.
 
 ## Requirements
 
-Instead, we want to be able to natively parse (pure Go) both versions of the
-Nextflow DSL (original and DSL 2) along with Nextflow config files and translate
+Instead, we want to be able to natively parse (pure Go) Nextflow DSL 2 along
+with Nextflow config files and translate
 these into something that ultimately adds commands with appropriate resource
 reservations, identifiers, limits and dependencies etc. to wr's normal queue.
 Without the use of any intermediate files on disk.
@@ -42,8 +42,8 @@ done.
 
 ## Notes
 
-- The initial implementation targets Nextflow DSL 2 only. DSL 1 support will be
-  added in a later phase.
+- Only DSL 2 is supported. DSL 1 was removed from Nextflow itself in
+  v22.12 (late 2022), so all actively maintained workflows are DSL 2.
 - Dynamic workflows (where the full DAG is not known upfront) are handled using
   wr's live dependency feature: child jobs auto-run when new `dep_grp` members
   are added, so the parser can add jobs incrementally as upstream steps complete.
