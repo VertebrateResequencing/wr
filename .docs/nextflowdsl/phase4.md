@@ -31,7 +31,8 @@ Depends on Phases 1-3 for AST, config, params, Groovy, and
 module types.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Batch 2 (parallel, after item 4.1 is reviewed)
 
@@ -47,7 +48,8 @@ publishDir paths. Support multiple publishDir directives and
 glob patterns. Covering all 8 acceptance tests from D2.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.3: D3 - Subworkflow translation [parallel with 4.2, 4.4, 4.5]
 
@@ -61,7 +63,8 @@ error on rep_grp collisions. Covering all 3 acceptance tests
 from D3.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.4: D4 - Dynamic workflow detection [parallel with 4.2, 4.3, 4.5]
 
@@ -76,7 +79,8 @@ jobs given completed upstream job info. Covering all 4
 acceptance tests from D4.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.5: D5 - Channel factory resolution [parallel with 4.2, 4.3, 4.4]
 
@@ -92,7 +96,8 @@ and DepGroups (`nf.{runId}.{process}.{itemIdx}`). Covering
 all 6 acceptance tests from D5.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -112,4 +117,5 @@ acceptance tests from D6.
 Depends on Item 4.5 for channel factory resolution.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
