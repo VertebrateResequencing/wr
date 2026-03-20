@@ -22,7 +22,8 @@ directory. Return error for missing files. Covering all 3
 acceptance tests from C1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.2: C2 - Remote module resolution (GitHub) [parallel with 3.1]
 
@@ -37,7 +38,8 @@ real-network tests should be guarded by an env var or mock.
 Covering all 4 acceptance tests from C2.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -57,4 +59,5 @@ Depends on Items 3.1 and 3.2 for LocalResolver and
 GitHubResolver.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

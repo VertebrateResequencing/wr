@@ -43,3 +43,15 @@
 - B3 acceptance tests are written against `EvalExpr` directly and do not explicitly require parsed-input end-to-end coverage, even though the feature description implies expressions should work from real workflow/config source.
 - The implementation now supports parsed workflow arithmetic and variable references end to end, and config-backed `params.*` expressions when the relevant params are already available in parse order.
 - The spec does not state whether config-origin `params.*` expressions must resolve regardless of section order. The current implementation evaluates against the params visible at the point the process block is parsed.
+
+### Phase 3 Items 3.1-3.2
+
+- C1 names `./` and `/` module specs explicitly but does not say whether other relative forms such as `../...` are in scope. The implementation stays narrow and only accepts the forms named by the spec.
+- C2 describes the cache path as `{owner}/{repo}/{revision}` but does not define the default revision name when the input is only `owner/repo`. The implementation uses `HEAD` for the default-branch cache key.
+- C2 says the revision component may be a git ref, branch name, or tag, but the implementation uses `git clone --branch <revision>` for explicit revisions, which is suitable for branches and tags but not arbitrary commit SHAs. The spec should clarify whether raw SHAs are intended to be supported.
+
+### Phase 3 Item 3.3
+
+- C3 defines ordered fallback semantics but does not say what should happen when all resolvers fail, when the resolver list is empty, or when a `nil` resolver is present.
+- The implementation skips `nil` resolvers, reports `no resolvers configured` for an empty usable chain, and returns a joined error when every resolver fails.
+- `NewChainResolver` is implemented and tested directly, but later phases still need to wire it into actual module import resolution paths for end-to-end coverage.
