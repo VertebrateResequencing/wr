@@ -1,0 +1,1065 @@
+/*******************************************************************************
+ * Copyright (c) 2026 Genome Research Ltd.
+ *
+ * Author: Sendu Bala <sb10@sanger.ac.uk>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ ******************************************************************************/
+
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	clienttesting "github.com/VertebrateResequencing/wr/client/testing"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/nextflowdsl"
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+func TestGenerateNextflowRunID(t *testing.T) {
+	Convey("generated run IDs are lowercase hex strings of at least 8 chars", t, func() {
+		runID := generateNextflowRunID("/tmp/workflow.nf")
+		So(regexp.MustCompile("^[0-9a-f]{8,}$").MatchString(runID), ShouldBeTrue)
+	})
+}
+
+type nextflowCommandTestEnv struct {
+	t      *testing.T
+	server *jobqueue.Server
+	undo   func()
+}
+
+func newNextflowCommandTestEnv(t *testing.T) *nextflowCommandTestEnv {
+	t.Helper()
+
+	deployment = "development"
+	serverConfig, undo := clienttesting.PrepareWrConfig(t)
+	server := clienttesting.Serve(t, serverConfig)
+	initConfig()
+	timeoutint = 2
+
+	return &nextflowCommandTestEnv{t: t, server: server, undo: undo}
+}
+
+func (e *nextflowCommandTestEnv) cleanup() {
+	e.server.Stop(context.Background(), true)
+	e.undo()
+}
+
+func (e *nextflowCommandTestEnv) writeWorkflow(name, content string) string {
+	e.t.Helper()
+
+	return e.writeText(name, content)
+}
+
+func (e *nextflowCommandTestEnv) writeText(name, content string) string {
+	e.t.Helper()
+
+	path := filepath.Join(mustGetwd(e.t), name)
+	err := os.WriteFile(path, []byte(content), 0o644)
+	if err != nil {
+		e.t.Fatalf("write %s: %v", name, err)
+	}
+
+	return path
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+
+	return wd
+}
+
+func (e *nextflowCommandTestEnv) executeRun(args ...string) error {
+	e.t.Helper()
+
+	options := nextflowRunOptions{}
+	cmd := newNextflowRunCommand(&options)
+	cmd.SetArgs(args)
+
+	return cmd.Execute()
+}
+
+func (e *nextflowCommandTestEnv) executeStatus(args ...string) (string, error) {
+	e.t.Helper()
+
+	options := nextflowStatusOptions{}
+	cmd := newNextflowStatusCommand(&options)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs(args)
+
+	err := cmd.Execute()
+
+	return buf.String(), err
+}
+
+func (e *nextflowCommandTestEnv) connectClient() *jobqueue.Client {
+	e.t.Helper()
+
+	return connect(2 * time.Second)
+}
+
+func (e *nextflowCommandTestEnv) addJob(job *jobqueue.Job) {
+	e.t.Helper()
+
+	jq := e.connectClient()
+	defer func() {
+		if err := jq.Disconnect(); err != nil {
+			e.t.Fatalf("disconnect jobqueue client: %v", err)
+		}
+	}()
+
+	inserted, already, err := jq.Add([]*jobqueue.Job{job}, nil, true)
+	if err != nil {
+		e.t.Fatalf("add job %s: %v", job.RepGroup, err)
+	}
+	if inserted != 1 || already != 0 {
+		e.t.Fatalf("unexpected add counts for %s: inserted=%d already=%d", job.RepGroup, inserted, already)
+	}
+}
+
+func (e *nextflowCommandTestEnv) addAndReserveJob(job *jobqueue.Job) (*jobqueue.Client, *jobqueue.Job) {
+	e.t.Helper()
+
+	jq := e.connectClient()
+	inserted, already, err := jq.Add([]*jobqueue.Job{job}, nil, true)
+	if err != nil {
+		e.t.Fatalf("add job %s: %v", job.RepGroup, err)
+	}
+	if inserted != 1 || already != 0 {
+		e.t.Fatalf("unexpected add counts for %s: inserted=%d already=%d", job.RepGroup, inserted, already)
+	}
+
+	reserved, err := jq.Reserve(2 * time.Second)
+	if err != nil {
+		_ = jq.Disconnect()
+		e.t.Fatalf("reserve job %s: %v", job.RepGroup, err)
+	}
+	if reserved == nil {
+		_ = jq.Disconnect()
+		e.t.Fatalf("reserve job %s: got nil job", job.RepGroup)
+	}
+	if reserved.RepGroup != job.RepGroup {
+		_ = jq.Disconnect()
+		e.t.Fatalf("reserved unexpected job: got %s want %s", reserved.RepGroup, job.RepGroup)
+	}
+
+	return jq, reserved
+}
+
+func (e *nextflowCommandTestEnv) waitForRepGroupState(repGroup string, state jobqueue.JobState) *jobqueue.Job {
+	e.t.Helper()
+
+	jq := e.connectClient()
+	defer func() {
+		if err := jq.Disconnect(); err != nil {
+			e.t.Fatalf("disconnect jobqueue client: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs, err := jq.GetByRepGroup(repGroup, false, 0, state, false, false)
+		if err == nil && len(jobs) == 1 {
+			return jobs[0]
+		}
+
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	e.t.Fatalf("timed out waiting for %s to reach %s", repGroup, state)
+
+	return nil
+}
+
+func (e *nextflowCommandTestEnv) jobsByRepGroupSubstring(repGroup string) []*jobqueue.Job {
+	e.t.Helper()
+
+	jq := connect(2 * time.Second)
+	defer func() {
+		if err := jq.Disconnect(); err != nil {
+			e.t.Fatalf("disconnect jobqueue client: %v", err)
+		}
+	}()
+
+	jobs, err := jq.GetByRepGroup(repGroup, true, 0, "", false, false)
+	if err != nil {
+		e.t.Fatalf("get jobs for %s: %v", repGroup, err)
+	}
+
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].RepGroup != jobs[j].RepGroup {
+			return jobs[i].RepGroup < jobs[j].RepGroup
+		}
+
+		return jobs[i].Cmd < jobs[j].Cmd
+	})
+
+	return jobs
+}
+
+func TestNextflowRunCommand(t *testing.T) {
+	Convey("wr nextflow run covers E1", t, func() {
+		Convey("valid workflows are translated and submitted with an auto-generated lowercase hex run ID", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("workflow.nf", simplePipelineWorkflow("hello", "echo $x"))
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.workflow.")
+			So(jobs, ShouldHaveLength, 2)
+
+			sort.Slice(jobs, func(i, j int) bool {
+				return jobs[i].RepGroup < jobs[j].RepGroup
+			})
+
+			runID := strings.Split(jobs[0].RepGroup, ".")[2]
+			So(regexp.MustCompile("^[0-9a-f]{8,}$").MatchString(runID), ShouldBeTrue)
+			So(jobs[0].RepGroup, ShouldEqual, "nf.workflow."+runID+".A")
+			So(jobs[1].RepGroup, ShouldEqual, "nf.workflow."+runID+".B")
+			So(jobs[0].DepGroups, ShouldResemble, []string{"nf." + runID + ".A"})
+			So(jobs[1].Dependencies.DepGroups(), ShouldResemble, []string{"nf." + runID + ".A"})
+		})
+
+		Convey("explicit run IDs are propagated into submitted report groups", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("workflow.nf", simplePipelineWorkflow("hello", "echo $x"))
+
+			err := env.executeRun("--run-id", "myrun", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.workflow.myrun")
+			So(jobs, ShouldHaveLength, 2)
+			for _, job := range jobs {
+				So(job.RepGroup, ShouldContainSubstring, ".myrun.")
+			}
+		})
+
+		Convey("config params are applied to translated job commands", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("configurable.nf", singleProcessWorkflow("cat ${params.input}"))
+			configPath := env.writeText("nextflow.config", "params { input = '/cfg' }")
+
+			err := env.executeRun("--config", configPath, workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.configurable.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/cfg")
+		})
+
+		Convey("params files override config params", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("configurable.nf", singleProcessWorkflow("cat ${params.input}"))
+			configPath := env.writeText("nextflow.config", "params { input = '/cfg' }")
+			paramsPath := env.writeText("params.json", `{"input":"/file"}`)
+
+			err := env.executeRun("--config", configPath, "--params-file", paramsPath, workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.configurable.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/file")
+		})
+
+		Convey("docker runtime uses WithDocker for containerized jobs", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("container.nf", "process A {\ncontainer 'ubuntu:22.04'\nscript: 'echo hello'\n}\nworkflow { A() }\n")
+
+			err := env.executeRun("--container-runtime", "docker", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.container.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].WithDocker, ShouldEqual, "ubuntu:22.04")
+			So(jobs[0].WithSingularity, ShouldEqual, "")
+		})
+
+		Convey("selected profiles contribute their config-scoped params", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("profiled.nf", singleProcessWorkflow("cat ${params.input}"))
+			configPath := env.writeText("nextflow.config", "profiles { test { params { input = '/profile' } } }")
+
+			err := env.executeRun("--config", configPath, "--profile", "test", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.profiled.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/profile")
+		})
+
+		Convey("missing workflow files return an error naming the missing path", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			err := env.executeRun("missing.nf")
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "missing.nf")
+		})
+
+		Convey("workflow syntax errors surface parse line numbers", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("broken.nf", "process A {\nscript: 'echo hello'\n")
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "line 2")
+		})
+
+		Convey("CLI params win over config and params-file values", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("configurable.nf", singleProcessWorkflow("cat ${params.input}"))
+			configPath := env.writeText("nextflow.config", "params { input = '/cfg' }")
+			paramsPath := env.writeText("params.yaml", "input: /file\n")
+
+			err := env.executeRun("--config", configPath, "--params-file", paramsPath, "--param", "input=/override", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.configurable.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/override")
+		})
+
+		Convey("nested CLI param overrides preserve sibling nested params", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("nested.nf", singleProcessWorkflow("cat ${params.input.dir}/${params.input.file}"))
+			configPath := env.writeText("nextflow.config", "params { input = 'unused' }")
+			paramsPath := env.writeText("params.json", `{"input":{"dir":"/data","file":"a.fq"}}`)
+
+			err := env.executeRun("--config", configPath, "--params-file", paramsPath, "--param", "input.file=b.fq", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.nested.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/data/b.fq")
+		})
+	})
+}
+
+func simplePipelineWorkflow(outputValue, consumerScript string) string {
+	return "process A {\noutput: val '" + outputValue + "'\nscript: 'echo hello'\n}\n" +
+		"process B {\ninput: val x\nscript: '" + consumerScript + "'\n}\n" +
+		"workflow { A(); B(A.out) }\n"
+}
+
+func singleProcessWorkflow(script string) string {
+	return "process A {\nscript: '" + script + "'\n}\nworkflow { A() }\n"
+}
+
+func TestNextflowStatusCommand(t *testing.T) {
+	Convey("wr nextflow status covers E4", t, func() {
+		Convey("it aggregates pending, running, complete, and buried counts per process for a run id", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			completeClient, completeJob := env.addAndReserveJob(newStatusTestJob("nf.mywf.r1.prepare", "true"))
+			So(completeClient.Execute(context.Background(), completeJob, "bash"), ShouldBeNil)
+			So(completeClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.prepare", jobqueue.JobStateComplete)
+
+			buriedClient, buriedJob := env.addAndReserveJob(newStatusTestJob("nf.mywf.r1.publish", "false"))
+			So(buriedClient.Execute(context.Background(), buriedJob, "bash"), ShouldNotBeNil)
+			So(buriedClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.publish", jobqueue.JobStateBuried)
+
+			runningJobDef := newStatusTestJob("nf.mywf.r1.call", "sleep 2")
+			runningJobDef.DepGroups = []string{"nf.mywf.r1.call.dep"}
+			runningClient, runningJob := env.addAndReserveJob(runningJobDef)
+			executeErr := make(chan error, 1)
+			go func() {
+				executeErr <- runningClient.Execute(context.Background(), runningJob, "bash")
+				_ = runningClient.Disconnect()
+			}()
+
+			env.waitForRepGroupState("nf.mywf.r1.call", jobqueue.JobStateRunning)
+			env.addJob(&jobqueue.Job{
+				Cmd:          "echo waiting",
+				Cwd:          os.TempDir(),
+				ReqGroup:     "nextflow-status",
+				Requirements: &jqs.Requirements{RAM: 1, Time: time.Minute, Cores: 1, Other: make(map[string]string)},
+				Retries:      uint8(0),
+				Override:     uint8(2),
+				RepGroup:     "nf.mywf.r1.align",
+				Dependencies: jobqueue.Dependencies{jobqueue.NewDepGroupDependency("nf.mywf.r1.call.dep")},
+			})
+			env.waitForRepGroupState("nf.mywf.r1.align", jobqueue.JobStateDependent)
+
+			output, err := env.executeStatus("--run-id", "r1")
+			So(err, ShouldBeNil)
+
+			counts := statusCounts(output)
+			So(counts, ShouldContainKey, "align")
+			So(counts["align"], ShouldResemble, []string{"1", "0", "0", "0", "1"})
+			So(counts, ShouldContainKey, "call")
+			So(counts["call"], ShouldResemble, []string{"0", "1", "0", "0", "1"})
+			So(counts, ShouldContainKey, "prepare")
+			So(counts["prepare"], ShouldResemble, []string{"0", "0", "1", "0", "1"})
+			So(counts, ShouldContainKey, "publish")
+			So(counts["publish"], ShouldResemble, []string{"0", "0", "0", "1", "1"})
+
+			So(<-executeErr, ShouldBeNil)
+		})
+
+		Convey("it prints no jobs found and succeeds when the run id has no matches", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			output, err := env.executeStatus("--run-id", "missing")
+			So(err, ShouldBeNil)
+			So(strings.TrimSpace(output), ShouldEqual, "no jobs found")
+		})
+
+		Convey("it filters results to the requested workflow", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			env.addJob(newStatusTestJob("nf.wf1.r1.alpha", "echo wf1"))
+			env.addJob(newStatusTestJob("nf.wf2.r2.beta", "echo wf2"))
+
+			output, err := env.executeStatus("--workflow", "wf1")
+			So(err, ShouldBeNil)
+
+			counts := statusCounts(output)
+			So(counts, ShouldContainKey, "alpha")
+			So(counts, ShouldNotContainKey, "beta")
+		})
+	})
+}
+
+func newStatusTestJob(repGroup, cmd string) *jobqueue.Job {
+	return &jobqueue.Job{
+		Cmd:          cmd,
+		Cwd:          os.TempDir(),
+		ReqGroup:     "nextflow-status",
+		Requirements: &jqs.Requirements{RAM: 1, Time: time.Minute, Cores: 1, Other: make(map[string]string)},
+		Retries:      uint8(0),
+		Override:     uint8(2),
+		RepGroup:     repGroup,
+	}
+}
+
+func statusCounts(output string) map[string][]string {
+	rows := make(map[string][]string)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 6 || fields[0] == "Process" {
+			continue
+		}
+
+		rows[fields[0]] = fields[1:]
+	}
+
+	return rows
+}
+
+type fakeNextflowSnapshot struct {
+	complete   []*jobqueue.Job
+	buried     []*jobqueue.Job
+	incomplete []*jobqueue.Job
+}
+
+func TestNextflowRunCommandFollow(t *testing.T) {
+	Convey("wr nextflow run --follow covers E2", t, func() {
+		Convey("the command path follows dynamic workflows using the requested poll interval", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("dynamic.nf", "process A {\noutput: path 'produced.txt'\nscript: 'echo hello > produced.txt'\n}\nprocess B {\ninput: path reads\nscript: 'cat $reads > consumed.txt'\n}\nworkflow { A(); B(A.out) }\n")
+
+			workerDone := make(chan error, 1)
+			go func() {
+				jq := env.connectClient()
+				defer func() {
+					_ = jq.Disconnect()
+				}()
+
+				for range 2 {
+					job, err := jq.Reserve(5 * time.Second)
+					if err != nil {
+						workerDone <- err
+						return
+					}
+					if job == nil {
+						workerDone <- os.ErrDeadlineExceeded
+						return
+					}
+
+					if err := jq.Execute(context.Background(), job, "bash"); err != nil {
+						workerDone <- err
+						return
+					}
+				}
+
+				workerDone <- nil
+			}()
+
+			sleeps := []time.Duration{}
+			previousSleep := nextflowSleep
+			nextflowSleep = func(delay time.Duration) {
+				sleeps = append(sleeps, delay)
+				time.Sleep(10 * time.Millisecond)
+			}
+			defer func() {
+				nextflowSleep = previousSleep
+			}()
+
+			err := env.executeRun("--run-id", "followrun", "--follow", "--poll-interval", "20ms", workflowPath)
+			So(err, ShouldBeNil)
+			So(<-workerDone, ShouldBeNil)
+
+			env.waitForRepGroupState("nf.dynamic.followrun.A", jobqueue.JobStateComplete)
+			env.waitForRepGroupState("nf.dynamic.followrun.B", jobqueue.JobStateComplete)
+			So(sleeps, ShouldNotBeEmpty)
+			for _, sleep := range sleeps {
+				So(sleep, ShouldEqual, 20*time.Millisecond)
+			}
+		})
+
+		Convey("completed upstream jobs are translated into concrete downstream jobs and the workflow exits 0 once all jobs finish", func() {
+			queue, pending, tc, producer := newNextflowFollowScenario(t, "dynamic", "cat $reads > consumed.txt")
+			queue.completeAfterAdd = true
+			queue.snapshots = []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+			}
+
+			sleeps, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 100*time.Millisecond)
+
+			So(err, ShouldBeNil)
+			So(queue.added, ShouldHaveLength, 1)
+			So(queue.added[0], ShouldHaveLength, 1)
+			So(queue.added[0][0].Cmd, ShouldContainSubstring, filepath.Join(producer.Cwd, "produced.txt"))
+			So(*sleeps, ShouldResemble, []time.Duration{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond})
+		})
+
+		Convey("buried downstream jobs make follow exit non-zero after the workflow reaches terminal state", func() {
+			queue, pending, tc, producer := newNextflowFollowScenario(t, "dynamic_fail", "cat $reads && exit 1")
+			queue.buryAfterAdd = true
+			queue.snapshots = []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+			}
+
+			_, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 100*time.Millisecond)
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "buried")
+			So(queue.added, ShouldHaveLength, 1)
+		})
+
+		Convey("custom poll intervals are used instead of the 5s default", func() {
+			queue, pending, tc, producer := newNextflowFollowScenario(t, "polled", "cat $reads > consumed.txt")
+			queue.completeAfterAdd = true
+			queue.snapshots = []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+			}
+
+			sleeps, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, time.Second)
+
+			So(err, ShouldBeNil)
+			So(*sleeps, ShouldResemble, []time.Duration{time.Second, time.Second, time.Second})
+		})
+	})
+}
+
+func TestNextflowRunCommandResumeMissing(t *testing.T) {
+	Convey("resume skips completed upstream work and adds missing downstream jobs", t, func() {
+		env := newNextflowCommandTestEnv(t)
+		defer env.cleanup()
+
+		workflowPath := env.writeWorkflow("resume_missing.nf", dynamicWorkflow("cat $reads > consumed.txt"))
+
+		So(env.executeRun("--run-id", "r1", workflowPath), ShouldBeNil)
+		So(executeReservedJobs(env, 1), ShouldBeNil)
+		env.waitForRepGroupState("nf.resume_missing.r1.A", jobqueue.JobStateComplete)
+
+		workerDone := runReservedJobsInBackground(env, 1)
+		So(env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath), ShouldBeNil)
+		So(<-workerDone, ShouldBeNil)
+
+		jobs := env.jobsByRepGroupSubstring("nf.resume_missing.r1")
+		So(jobs, ShouldHaveLength, 2)
+		env.waitForRepGroupState("nf.resume_missing.r1.B", jobqueue.JobStateComplete)
+	})
+}
+
+func TestNextflowRunCommandResumeComplete(t *testing.T) {
+	Convey("resume exits successfully without re-adding jobs when the whole workflow is already complete", t, func() {
+		env := newNextflowCommandTestEnv(t)
+		defer env.cleanup()
+
+		workflowPath := env.writeWorkflow("resume_complete.nf", dynamicWorkflow("cat $reads > consumed.txt"))
+
+		workerDone := runReservedJobsInBackground(env, 2)
+		So(env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath), ShouldBeNil)
+		So(<-workerDone, ShouldBeNil)
+
+		jobsBefore := env.jobsByRepGroupSubstring("nf.resume_complete.r1")
+		So(jobsBefore, ShouldHaveLength, 2)
+
+		So(env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath), ShouldBeNil)
+
+		jobsAfter := env.jobsByRepGroupSubstring("nf.resume_complete.r1")
+		So(jobsAfter, ShouldHaveLength, 2)
+	})
+}
+
+func TestNextflowRunCommandResumeBuried(t *testing.T) {
+	Convey("resume deletes buried jobs and re-adds them", t, func() {
+		env := newNextflowCommandTestEnv(t)
+		defer env.cleanup()
+
+		workflowPath := env.writeWorkflow("resume_buried.nf", dynamicWorkflow("cat $reads && false"))
+
+		So(env.executeRun("--run-id", "r1", workflowPath), ShouldBeNil)
+		So(executeReservedJobs(env, 1), ShouldBeNil)
+		env.waitForRepGroupState("nf.resume_buried.r1.A", jobqueue.JobStateComplete)
+
+		buriedWorker := runReservedJobsInBackground(env, 1)
+		err := env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath)
+		So(err, ShouldNotBeNil)
+		So(<-buriedWorker, ShouldNotBeNil)
+		env.waitForRepGroupState("nf.resume_buried.r1.B", jobqueue.JobStateBuried)
+
+		workflowPath = env.writeWorkflow("resume_buried.nf", dynamicWorkflow("cat $reads > consumed.txt"))
+		resumeWorker := runReservedJobsInBackground(env, 1)
+		So(env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath), ShouldBeNil)
+		So(<-resumeWorker, ShouldBeNil)
+
+		env.waitForRepGroupState("nf.resume_buried.r1.B", jobqueue.JobStateComplete)
+		jq := env.connectClient()
+		buriedJobs, err := jq.GetByRepGroup("nf.resume_buried.r1.B", false, 0, jobqueue.JobStateBuried, false, false)
+		So(err, ShouldBeNil)
+		So(jq.Disconnect(), ShouldBeNil)
+		So(buriedJobs, ShouldBeEmpty)
+	})
+}
+
+func TestNextflowRunCommandResumeDeleted(t *testing.T) {
+	Convey("resume re-adds deleted downstream jobs while skipping completed upstream work", t, func() {
+		env := newNextflowCommandTestEnv(t)
+		defer env.cleanup()
+
+		workflowPath := env.writeWorkflow("resume_deleted.nf", dynamicWorkflow("cat $reads > consumed.txt"))
+
+		So(env.executeRun("--run-id", "r1", workflowPath), ShouldBeNil)
+		So(executeReservedJobs(env, 1), ShouldBeNil)
+		producer := env.waitForRepGroupState("nf.resume_deleted.r1.A", jobqueue.JobStateComplete)
+
+		pendingJobs, err := translatedPendingJobs(t, workflowPath, "r1", producer)
+		So(err, ShouldBeNil)
+		So(pendingJobs, ShouldHaveLength, 1)
+		env.addJob(pendingJobs[0])
+
+		jq := env.connectClient()
+		deleted, err := jq.Delete([]*jobqueue.JobEssence{{JobKey: pendingJobs[0].Key()}})
+		So(err, ShouldBeNil)
+		So(deleted, ShouldEqual, 1)
+		So(jq.Disconnect(), ShouldBeNil)
+
+		workerDone := runReservedJobsInBackground(env, 1)
+		So(env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath), ShouldBeNil)
+		So(<-workerDone, ShouldBeNil)
+
+		jobs := env.jobsByRepGroupSubstring("nf.resume_deleted.r1")
+		So(jobs, ShouldHaveLength, 2)
+		env.waitForRepGroupState("nf.resume_deleted.r1.B", jobqueue.JobStateComplete)
+	})
+}
+
+func TestNextflowResumeJobs(t *testing.T) {
+	Convey("resume reconciliation handles buried, deleted, and already-existing jobs", t, func() {
+		job := &jobqueue.Job{Cmd: "echo hello", RepGroup: "nf.resume.r1.A"}
+
+		Convey("complete jobs are skipped", func() {
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{complete: []*jobqueue.Job{{Cmd: "echo old", RepGroup: job.RepGroup, State: jobqueue.JobStateComplete}}}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldBeEmpty)
+		})
+
+		Convey("buried jobs are deleted and returned for re-add", func() {
+			buriedJob := &jobqueue.Job{Cmd: "echo old", RepGroup: job.RepGroup, State: jobqueue.JobStateBuried}
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{buried: []*jobqueue.Job{buriedJob}}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldResemble, []*jobqueue.Job{job})
+			So(queue.deletedKeys, ShouldContain, buriedJob.Key())
+		})
+
+		Convey("missing jobs are re-added, which also covers deleted jobs absent from queue queries", func() {
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldResemble, []*jobqueue.Job{job})
+		})
+
+		Convey("running jobs are skipped", func() {
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{incomplete: []*jobqueue.Job{{Cmd: "echo old", RepGroup: job.RepGroup, State: jobqueue.JobStateRunning}}}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldBeEmpty)
+		})
+
+		Convey("dependent jobs are skipped", func() {
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{incomplete: []*jobqueue.Job{{Cmd: "echo old", RepGroup: job.RepGroup, State: jobqueue.JobStateDependent}}}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldBeEmpty)
+		})
+	})
+}
+
+func dynamicWorkflow(consumerScript string) string {
+	return "process A {\noutput: path 'produced.txt'\nscript: 'echo hello > produced.txt'\n}\n" +
+		"process B {\ninput: path reads\nscript: '" + consumerScript + "'\n}\n" +
+		"workflow { A(); B(A.out) }\n"
+}
+
+func executeReservedJobs(env *nextflowCommandTestEnv, count int) error {
+	jq := env.connectClient()
+	defer func() {
+		_ = jq.Disconnect()
+	}()
+
+	for range count {
+		job, err := jq.Reserve(5 * time.Second)
+		if err != nil {
+			return err
+		}
+		if job == nil {
+			return os.ErrDeadlineExceeded
+		}
+
+		if err = jq.Execute(context.Background(), job, "bash"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func runReservedJobsInBackground(env *nextflowCommandTestEnv, count int) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		result <- executeReservedJobs(env, count)
+	}()
+
+	return result
+}
+
+func translatedPendingJobs(t *testing.T, workflowPath, runID string, completed *jobqueue.Job) ([]*jobqueue.Job, error) {
+	t.Helper()
+
+	workflowFile, err := os.Open(workflowPath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = workflowFile.Close()
+	}()
+
+	wf, err := nextflowdsl.Parse(workflowFile)
+	if err != nil {
+		return nil, err
+	}
+
+	tc := nextflowdsl.TranslateConfig{
+		RunID:        runID,
+		WorkflowName: nextflowWorkflowName(workflowPath),
+		WorkflowPath: workflowPath,
+		Cwd:          mustGetwd(t),
+	}
+
+	result, err := nextflowdsl.Translate(wf, nil, tc)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Pending) != 1 {
+		return nil, os.ErrInvalid
+	}
+
+	completedJobs, ready, err := nextflowdsl.CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{completed})
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		return nil, os.ErrNotExist
+	}
+
+	return nextflowdsl.TranslatePending(result.Pending[0], completedJobs, tc)
+}
+
+func newNextflowFollowScenario(t *testing.T, workflowName, consumerScript string) (*fakeNextflowQueue, []*nextflowdsl.PendingStage, nextflowdsl.TranslateConfig, *jobqueue.Job) {
+	t.Helper()
+
+	baseDir := t.TempDir()
+	wf := &nextflowdsl.Workflow{
+		Processes: []*nextflowdsl.Process{
+			{
+				Name:       "A",
+				Directives: map[string]nextflowdsl.Expr{},
+				Script:     "echo hello > produced.txt",
+				Output: []*nextflowdsl.Declaration{{
+					Kind: "path",
+					Expr: nextflowdsl.StringExpr{Value: "produced.txt"},
+				}},
+				Env:        map[string]string{},
+				PublishDir: []*nextflowdsl.PublishDir{},
+			},
+			{
+				Name:       "B",
+				Directives: map[string]nextflowdsl.Expr{},
+				Input:      []*nextflowdsl.Declaration{{Kind: "path", Name: "reads"}},
+				Script:     consumerScript,
+				Env:        map[string]string{},
+				PublishDir: []*nextflowdsl.PublishDir{},
+			},
+		},
+		EntryWF: &nextflowdsl.WorkflowBlock{Calls: []*nextflowdsl.Call{{Target: "A"}, {Target: "B", Args: []nextflowdsl.ChanExpr{nextflowdsl.ChanRef{Name: "A.out"}}}}},
+	}
+
+	tc := nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: workflowName, Cwd: baseDir}
+	result, err := nextflowdsl.Translate(wf, nil, tc)
+	if err != nil {
+		t.Fatalf("translate follow scenario: %v", err)
+	}
+	if len(result.Jobs) != 1 || len(result.Pending) != 1 {
+		t.Fatalf("unexpected follow scenario shape: jobs=%d pending=%d", len(result.Jobs), len(result.Pending))
+	}
+
+	producer := cloneJobs(result.Jobs)[0]
+	producer.State = jobqueue.JobStateComplete
+	if err = os.MkdirAll(producer.Cwd, 0o755); err != nil {
+		t.Fatalf("create producer cwd: %v", err)
+	}
+	if err = os.WriteFile(filepath.Join(producer.Cwd, "produced.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write producer output: %v", err)
+	}
+
+	queue := &fakeNextflowQueue{}
+
+	return queue, result.Pending, tc, producer
+}
+
+func cloneJobs(jobs []*jobqueue.Job) []*jobqueue.Job {
+	cloned := make([]*jobqueue.Job, 0, len(jobs))
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+		cloned = append(cloned, &jobqueue.Job{
+			Cmd:             job.Cmd,
+			Cwd:             job.Cwd,
+			CwdMatters:      job.CwdMatters,
+			RepGroup:        job.RepGroup,
+			ReqGroup:        job.ReqGroup,
+			Requirements:    job.Requirements,
+			Override:        job.Override,
+			Retries:         job.Retries,
+			DepGroups:       append([]string{}, job.DepGroups...),
+			Dependencies:    job.Dependencies,
+			WithDocker:      job.WithDocker,
+			WithSingularity: job.WithSingularity,
+			State:           job.State,
+			Exitcode:        job.Exitcode,
+		})
+	}
+
+	return cloned
+}
+
+func withFakeNextflowSleep(queue *fakeNextflowQueue) (*[]time.Duration, func()) {
+	sleeps := []time.Duration{}
+	previousSleep := nextflowSleep
+	nextflowSleep = func(delay time.Duration) {
+		sleeps = append(sleeps, delay)
+		queue.advance()
+	}
+
+	return &sleeps, func() {
+		nextflowSleep = previousSleep
+	}
+}
+
+type fakeNextflowQueue struct {
+	snapshots         []fakeNextflowSnapshot
+	index             int
+	added             [][]*jobqueue.Job
+	addedCompleteJobs []*jobqueue.Job
+	addedBuriedJobs   []*jobqueue.Job
+	completeAfterAdd  bool
+	buryAfterAdd      bool
+	deletedKeys       []string
+}
+
+func (f *fakeNextflowQueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
+	clonedJobs := cloneJobs(jobs)
+	f.added = append(f.added, clonedJobs)
+	f.addedCompleteJobs = cloneJobs(clonedJobs)
+	f.addedBuriedJobs = cloneJobs(clonedJobs)
+	for _, job := range f.addedCompleteJobs {
+		job.State = jobqueue.JobStateComplete
+	}
+	for _, job := range f.addedBuriedJobs {
+		job.State = jobqueue.JobStateBuried
+	}
+	if len(f.snapshots) > 0 {
+		f.snapshots[f.index].incomplete = append(cloneJobs(f.snapshots[f.index].incomplete), clonedJobs...)
+	}
+	if f.index+1 < len(f.snapshots) {
+		if f.completeAfterAdd {
+			f.snapshots[f.index+1].complete = append(cloneJobs(f.snapshots[f.index+1].complete), cloneJobs(f.addedCompleteJobs)...)
+		}
+		if f.buryAfterAdd {
+			f.snapshots[f.index+1].buried = append(cloneJobs(f.snapshots[f.index+1].buried), cloneJobs(f.addedBuriedJobs)...)
+		}
+	}
+
+	return len(jobs), 0, nil
+}
+
+func (f *fakeNextflowQueue) Delete(jes []*jobqueue.JobEssence) (int, error) {
+	keys := make(map[string]struct{}, len(jes))
+	for _, je := range jes {
+		key := je.Key()
+		keys[key] = struct{}{}
+		f.deletedKeys = append(f.deletedKeys, key)
+	}
+
+	deleted := 0
+	for index := range f.snapshots {
+		complete, removedComplete := removeJobsByKey(f.snapshots[index].complete, keys)
+		buried, removedBuried := removeJobsByKey(f.snapshots[index].buried, keys)
+		incomplete, removedIncomplete := removeJobsByKey(f.snapshots[index].incomplete, keys)
+		f.snapshots[index].complete = complete
+		f.snapshots[index].buried = buried
+		f.snapshots[index].incomplete = incomplete
+		deleted += removedComplete + removedBuried + removedIncomplete
+	}
+
+	return deleted, nil
+}
+
+func (f *fakeNextflowQueue) GetByRepGroupMatch(_ string, _ jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+	snapshot := f.current()
+	if state == "" {
+		jobs := cloneJobs(snapshot.complete)
+		jobs = append(jobs, cloneJobs(snapshot.buried)...)
+		jobs = append(jobs, cloneJobs(snapshot.incomplete)...)
+
+		return jobs, nil
+	}
+	if state == jobqueue.JobStateComplete {
+		return cloneJobs(snapshot.complete), nil
+	}
+	if state == jobqueue.JobStateBuried {
+		return cloneJobs(snapshot.buried), nil
+	}
+
+	return nil, nil
+}
+
+func (f *fakeNextflowQueue) GetIncompleteByRepGroupMatch(_ string, _ jobqueue.RepGroupMatch, _ int, _ jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+	return cloneJobs(f.current().incomplete), nil
+}
+
+func (f *fakeNextflowQueue) current() fakeNextflowSnapshot {
+	if len(f.snapshots) == 0 {
+		return fakeNextflowSnapshot{}
+	}
+	if f.index >= len(f.snapshots) {
+		return f.snapshots[len(f.snapshots)-1]
+	}
+
+	return f.snapshots[f.index]
+}
+
+func (f *fakeNextflowQueue) advance() {
+	if f.index < len(f.snapshots)-1 {
+		f.index++
+	}
+}
+
+func removeJobsByKey(jobs []*jobqueue.Job, keys map[string]struct{}) ([]*jobqueue.Job, int) {
+	filtered := make([]*jobqueue.Job, 0, len(jobs))
+	removed := 0
+	for _, job := range jobs {
+		if _, ok := keys[job.Key()]; ok {
+			removed++
+			continue
+		}
+
+		filtered = append(filtered, job)
+	}
+
+	return filtered, removed
+}

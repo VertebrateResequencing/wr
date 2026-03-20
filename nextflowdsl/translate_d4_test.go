@@ -26,8 +26,11 @@
 package nextflowdsl
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -156,8 +159,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}},
-					},
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
 					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
 				}},
 			}
@@ -177,6 +179,65 @@ func TestTranslateD4(t *testing.T) {
 			So(jobs, ShouldHaveLength, 2)
 			So(jobs[0].Cmd, ShouldContainSubstring, "/work/nf-work/r1/PRODUCE/0/produced.txt")
 			So(jobs[1].Cmd, ShouldContainSubstring, "/work/nf-work/r1/PRODUCE/1/produced.txt")
+		})
+
+		Convey("CompletedJobsForPending waits for every awaited dep group and expands concrete output paths", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:       "PRODUCE",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "val", Name: "token"}},
+						Script:     "touch produced.txt",
+						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "CONSUME",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cat $reads",
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			baseDir := t.TempDir()
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Pending, ShouldHaveLength, 1)
+
+			writeOutput := func(job *jobqueue.Job) string {
+				So(os.MkdirAll(job.Cwd, 0o755), ShouldBeNil)
+				outputPath := filepath.Join(job.Cwd, "produced.txt")
+				So(os.WriteFile(outputPath, []byte("ok"), 0o644), ShouldBeNil)
+
+				return outputPath
+			}
+
+			firstPath := writeOutput(result.Jobs[0])
+
+			completed, ready, err := CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0]})
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeFalse)
+			So(completed, ShouldBeNil)
+
+			secondPath := writeOutput(result.Jobs[1])
+
+			completed, ready, err = CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0], result.Jobs[1]})
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeTrue)
+			So(completed, ShouldHaveLength, 2)
+			So(completed[0].OutputPaths, ShouldResemble, []string{firstPath})
+			So(completed[1].OutputPaths, ShouldResemble, []string{secondPath})
 		})
 	})
 }

@@ -102,5 +102,14 @@ func TestParams(t *testing.T) {
 
 			So(merged["input"], ShouldEqual, "/cli")
 		})
+
+		Convey("MergeParams preserves sibling nested keys when overriding one leaf", func() {
+			merged := MergeParams(
+				map[string]any{"input": map[string]any{"dir": "/cfg", "file": "a.fq"}},
+				map[string]any{"input": map[string]any{"file": "b.fq"}},
+			)
+
+			So(merged, ShouldResemble, map[string]any{"input": map[string]any{"dir": "/cfg", "file": "b.fq"}})
+		})
 	})
 }
