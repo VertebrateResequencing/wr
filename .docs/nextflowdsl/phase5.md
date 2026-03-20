@@ -28,7 +28,8 @@ tests from E1.
 Depends on Phase 4 for Translate().
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Batch 2 (parallel, after item 5.1 is reviewed)
 
@@ -43,8 +44,8 @@ TranslatePending for each pending stage to create next-stage
 jobs. Exit 0 when all jobs reach terminal state; exit non-zero
 if any job is buried. Covering all 4 acceptance tests from E2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.3: E4 - `wr nextflow status` sub-command [parallel with 5.2]
 
@@ -57,8 +58,8 @@ Query jobs by rep_grp prefix, aggregate per-process counts
 table. Show "no jobs found" when no matches. Covering all 3
 acceptance tests from E4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -78,5 +79,5 @@ deleted. Covering all 4 acceptance tests from E3.
 
 Depends on Item 5.2 for --follow integration.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

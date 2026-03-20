@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +56,83 @@ type TranslateConfig struct {
 	Profile          string
 }
 
+func translatedCallForRepGroup(translated map[string]translatedCall, repGrp string) (translatedCall, bool) {
+	for _, stage := range translated {
+		if stage.repGroup == repGrp {
+			return stage, true
+		}
+	}
+
+	return translatedCall{}, false
+}
+
+func completedOutputPathsForJob(pending *PendingStage, repGrp string, job *jobqueue.Job) ([]string, error) {
+	stage, ok := translatedCallForRepGroup(pending.translated, repGrp)
+	if !ok {
+		return nil, fmt.Errorf("missing translated stage for rep group %q", repGrp)
+	}
+
+	patterns := outputPatternsForCwd(stage.outputPaths, job.Cwd)
+	if len(patterns) == 0 {
+		return nil, fmt.Errorf("missing output patterns for rep group %q in %q", repGrp, job.Cwd)
+	}
+
+	resolved := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		matched, err := expandCompletedOutputPattern(pattern)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, matched...)
+	}
+
+	if len(resolved) == 0 {
+		return nil, fmt.Errorf("no completed output paths found for rep group %q in %q", repGrp, job.Cwd)
+	}
+
+	return resolved, nil
+}
+
+func outputPatternsForCwd(patterns []string, cwd string) []string {
+	filtered := make([]string, 0, len(patterns))
+	cleanCwd := filepath.Clean(cwd)
+
+	for _, pattern := range patterns {
+		cleanPattern := filepath.Clean(pattern)
+		if cleanPattern == cleanCwd || strings.HasPrefix(cleanPattern, cleanCwd+string(os.PathSeparator)) {
+			filtered = append(filtered, pattern)
+		}
+	}
+
+	return filtered
+}
+
+func expandCompletedOutputPattern(pattern string) ([]string, error) {
+	if strings.ContainsAny(pattern, "*?[") {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("expand output pattern %q: %w", pattern, err)
+		}
+		if len(matches) == 0 {
+			return nil, nil
+		}
+
+		sort.Strings(matches)
+
+		return matches, nil
+	}
+
+	if _, err := os.Stat(pattern); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("stat output path %q: %w", pattern, err)
+	}
+
+	return []string{pattern}, nil
+}
+
 // PendingStage describes a stage whose jobs will be created later.
 type PendingStage struct {
 	Process      *Process
@@ -66,6 +144,65 @@ type PendingStage struct {
 	params       map[string]any
 	translated   map[string]translatedCall
 	awaitRepGrps []string
+}
+
+// CompletedJobsForPending builds completed upstream job records for a pending
+// stage from concrete wr jobs that have already finished successfully.
+func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job) ([]CompletedJob, bool, error) {
+	if pending == nil {
+		return nil, false, fmt.Errorf("pending stage is nil")
+	}
+
+	jobsByRepGrp := make(map[string][]*jobqueue.Job)
+	jobsByDepGrp := make(map[string]*jobqueue.Job)
+
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+
+		jobsByRepGrp[job.RepGroup] = append(jobsByRepGrp[job.RepGroup], job)
+		for _, depGrp := range job.DepGroups {
+			jobsByDepGrp[depGrp] = job
+		}
+	}
+
+	for _, depGrp := range pending.AwaitDepGrps {
+		if _, ok := jobsByDepGrp[depGrp]; !ok {
+			return nil, false, nil
+		}
+	}
+
+	completed := make([]CompletedJob, 0, len(jobs))
+	for _, repGrp := range pending.awaitRepGrps {
+		matchedJobs := jobsByRepGrp[repGrp]
+		if len(matchedJobs) == 0 {
+			return nil, false, nil
+		}
+
+		sort.Slice(matchedJobs, func(i, j int) bool {
+			if matchedJobs[i].Cwd != matchedJobs[j].Cwd {
+				return matchedJobs[i].Cwd < matchedJobs[j].Cwd
+			}
+
+			return matchedJobs[i].Cmd < matchedJobs[j].Cmd
+		})
+
+		for _, job := range matchedJobs {
+			outputPaths, err := completedOutputPathsForJob(pending, repGrp, job)
+			if err != nil {
+				return nil, false, err
+			}
+
+			completed = append(completed, CompletedJob{
+				RepGrp:      repGrp,
+				OutputPaths: outputPaths,
+				ExitCode:    job.Exitcode,
+			})
+		}
+	}
+
+	return completed, true, nil
 }
 
 // TranslateResult holds the output of Translate.

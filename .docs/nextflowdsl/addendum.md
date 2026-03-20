@@ -66,3 +66,20 @@
 
 - D6 prose includes `join`, `last`, `take`, `map`, and `flatMap` as translation-relevant operators, but the written D6 acceptance list only exercises `collect`, `first`, `groupTuple`, `filter`, and `mix` end to end.
 - The implementation covers those additional operators at the channel-resolution level, but the spec does not currently give them dedicated workflow-translation acceptance cases.
+
+### Phase 5 Item 5.1
+
+- E1 does not say whether nested `--param` overrides should preserve sibling nested keys. The implementation now uses deep merge semantics so overriding one leaf does not discard adjacent nested params.
+- E1 lists `--follow` in the command surface, but Phase 5.2 is where the follow behavior is actually implemented. The current implementation exposes the flag and returns a clear not-yet-implemented error until E2 is completed.
+- E1 does not define how workflow names should be derived for `rep_grp`. The implementation uses the workflow filename without its extension.
+
+### Phase 5 Items 5.2-5.3
+
+- E2 says the follow behavior is "tested via integration", but it does not define whether every acceptance branch must run through the Cobra command path or whether one command-path test plus narrower follow-loop tests is sufficient. The implementation now covers both: a real command-path follow test and focused follow-loop edge-case tests.
+- E4 defines per-process status counts but does not specify how subworkflow-qualified process names should be rendered in the `Process` column. The current implementation reports the full process segment parsed from `rep_grp`, preserving any dotted subworkflow prefix.
+
+### Phase 5 Item 5.4
+
+- E3 lists a `deleted` job state in the resume matrix, but in practice the command detects that case by the job being absent from the `rep_grp`-prefix query result. The spec should say explicitly whether "deleted" means "missing from current wr state".
+- E3 frames resume as re-invocation with both `--run-id` and `--follow`, but the implementation's reconciliation hook applies during general submission as well. The broader behavior is harmless and consistent, but the spec does not say whether resume semantics outside follow mode are intended.
+- Real `wr` manager state can momentarily lag between an execution failure and the buried job appearing in the buried-state query. The follow loop now requires one confirmation poll before reporting terminal success so fast failures do not race past the error path, but the spec does not mention this visibility nuance.

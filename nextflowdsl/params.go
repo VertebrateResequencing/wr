@@ -48,8 +48,26 @@ func MergeParams(sources ...map[string]any) map[string]any {
 
 	for _, source := range sources {
 		for key, value := range source {
-			merged[key] = value
+			merged[key] = mergeParamValue(merged[key], value)
 		}
+	}
+
+	return merged
+}
+
+func mergeParamValue(existing, incoming any) any {
+	existingMap, existingOK := existing.(map[string]any)
+	incomingMap, incomingOK := incoming.(map[string]any)
+	if !existingOK || !incomingOK {
+		return incoming
+	}
+
+	merged := make(map[string]any, len(existingMap))
+	for key, value := range existingMap {
+		merged[key] = normalizeParamValue(value)
+	}
+	for key, value := range incomingMap {
+		merged[key] = mergeParamValue(merged[key], value)
 	}
 
 	return merged
