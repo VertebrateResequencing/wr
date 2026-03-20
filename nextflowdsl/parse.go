@@ -152,7 +152,12 @@ func lex(input string) ([]token, error) {
 }
 
 func isClosureSymbol(r rune) bool {
-	return r == '*' || r == '>'
+	switch r {
+	case '*', '+', '-', '/', '<', '>', '?':
+		return true
+	default:
+		return false
+	}
 }
 
 func isIdentStart(r rune) bool {
@@ -693,12 +698,20 @@ func parseExprTokens(tokens []token) (Expr, error) {
 		return nil, fmt.Errorf("expected expression")
 	}
 
+	if expr, ok, err := parseBinaryExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
 	if paramsPath, ok := parseParamsPath(tokens); ok {
 		return ParamsExpr{Path: paramsPath}, nil
 	}
 
+	if variable, ok := parseVarExprTokens(tokens); ok {
+		return variable, nil
+	}
+
 	if len(tokens) != 1 {
-		return nil, fmt.Errorf("unsupported expression %q", joinTokens(tokens))
+		return UnsupportedExpr{Text: expressionText(tokens)}, nil
 	}
 
 	tok := tokens[0]
@@ -723,6 +736,122 @@ func parseExprTokens(tokens []token) (Expr, error) {
 	default:
 		return nil, fmt.Errorf("unsupported expression %q", joinTokens(tokens))
 	}
+}
+
+func parseBinaryExprTokens(tokens []token) (Expr, bool, error) {
+	for _, operators := range [][]string{{"+", "-"}, {"*", "/"}} {
+		depth := 0
+		for index := len(tokens) - 1; index >= 0; index-- {
+			current := tokens[index]
+			switch current.typ {
+			case tokenRParen:
+				depth++
+			case tokenLParen:
+				depth--
+			}
+
+			if depth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, operators) {
+				continue
+			}
+
+			leftTokens := tokens[:index]
+			rightTokens := tokens[index+1:]
+			if len(leftTokens) == 0 || len(rightTokens) == 0 {
+				return nil, false, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+			}
+
+			leftExpr, err := parseExprTokens(leftTokens)
+			if err != nil {
+				return nil, true, err
+			}
+
+			rightExpr, err := parseExprTokens(rightTokens)
+			if err != nil {
+				return nil, true, err
+			}
+
+			return BinaryExpr{Left: leftExpr, Op: current.lit, Right: rightExpr}, true, nil
+		}
+	}
+
+	return nil, false, nil
+}
+
+func parseVarExprTokens(tokens []token) (Expr, bool) {
+	if len(tokens) == 0 || tokens[0].typ != tokenIdent {
+		return nil, false
+	}
+
+	parts := []string{tokens[0].lit}
+	for index := 1; index < len(tokens); index += 2 {
+		if tokens[index].typ != tokenDot {
+			return nil, false
+		}
+		if index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
+			return nil, false
+		}
+		parts = append(parts, tokens[index+1].lit)
+	}
+
+	if len(parts) == 1 {
+		return VarExpr{Root: parts[0]}, true
+	}
+
+	return VarExpr{Root: parts[0], Path: strings.Join(parts[1:], ".")}, true
+}
+
+func expressionText(tokens []token) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	for index, tok := range tokens {
+		if index > 0 && needsSpaceBetween(tokens[index-1], tok) {
+			builder.WriteByte(' ')
+		}
+		builder.WriteString(tok.lit)
+	}
+
+	return strings.TrimSpace(builder.String())
+}
+
+func needsSpaceBetween(prev, current token) bool {
+	if prev.typ == tokenDot || current.typ == tokenDot {
+		return false
+	}
+
+	if current.typ == tokenLParen {
+		return false
+	}
+
+	if prev.typ == tokenLParen || current.typ == tokenRParen {
+		return false
+	}
+
+	if prev.typ == tokenSymbol || current.typ == tokenSymbol {
+		return true
+	}
+
+	if current.typ == tokenComma || current.typ == tokenColon || current.typ == tokenSemicolon {
+		return false
+	}
+
+	if prev.typ == tokenComma || prev.typ == tokenColon || prev.typ == tokenSemicolon {
+		return true
+	}
+
+	return true
+}
+
+func stringInSlice(target string, values []string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (p *parser) parseChannelRefName() string {
