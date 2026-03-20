@@ -739,7 +739,7 @@ func parseExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseBinaryExprTokens(tokens []token) (Expr, bool, error) {
-	for _, operators := range [][]string{{"+", "-"}, {"*", "/"}} {
+	for _, operators := range [][]string{{">", "<"}, {"+", "-"}, {"*", "/"}} {
 		depth := 0
 		for index := len(tokens) - 1; index >= 0; index-- {
 			current := tokens[index]

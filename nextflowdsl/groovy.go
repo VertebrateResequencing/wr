@@ -159,6 +159,10 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 			return nil, fmt.Errorf("division by zero")
 		}
 		return leftInt / rightInt, nil
+	case ">":
+		return leftInt > rightInt, nil
+	case "<":
+		return leftInt < rightInt, nil
 	default:
 		return nil, fmt.Errorf("unsupported operator %q", expr.Op)
 	}
