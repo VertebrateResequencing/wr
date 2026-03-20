@@ -159,3 +159,27 @@ type BoolExpr struct {
 }
 
 func (BoolExpr) expr() {}
+
+// VarExpr stores a variable reference, optionally with a dotted path.
+type VarExpr struct {
+	Root string
+	Path string
+}
+
+func (VarExpr) expr() {}
+
+// BinaryExpr stores a basic arithmetic expression.
+type BinaryExpr struct {
+	Left  Expr
+	Op    string
+	Right Expr
+}
+
+func (BinaryExpr) expr() {}
+
+// UnsupportedExpr stores an expression that cannot be evaluated.
+type UnsupportedExpr struct {
+	Text string
+}
+
+func (UnsupportedExpr) expr() {}

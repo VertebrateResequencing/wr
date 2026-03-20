@@ -25,3 +25,21 @@
 - A4 does not explicitly say whether `include` statements are valid only at the top level or may also appear inside workflows. The implementation accepts them only at the top level.
 - A4 examples show quoted `from` sources, but the spec does not explicitly state that the source must be a string literal. The parser currently requires a quoted source.
 - A4 acceptance cases cover isolated import statements but not interleaving multiple `include` statements with `process` and `workflow` declarations, even though the parser now supports that top-level mix.
+
+### Phase 2 Item 2.1
+
+- B1 says profile-scoped values merge over defaults, but the Phase 2 Item 2.1 API only defines `ParseConfig`. The implementation parses and stores defaults plus profile overrides without inventing a separate profile-selection API yet.
+- B1 acceptance coverage does not explicitly assert profile-scoped `process {}` overrides even though the implementation supports them.
+- B1 remains intentionally narrow to block-style config parsing and does not define whether dotted assignments such as `params.input = '/data'` are in scope.
+
+### Phase 2 Item 2.2
+
+- B2 requires content sniffing for params files with ambiguous extensions, but the written B2 acceptance list does not include an explicit test case for that behavior.
+- B2 does not define deep-merge semantics for nested maps during `MergeParams`; the implementation uses shallow top-level override, which is the minimal behavior required by the acceptance cases.
+- B2 does not specify how non-string substituted values should be rendered into command strings. The implementation uses normal string formatting of the resolved value.
+
+### Phase 2 Item 2.3
+
+- B3 acceptance tests are written against `EvalExpr` directly and do not explicitly require parsed-input end-to-end coverage, even though the feature description implies expressions should work from real workflow/config source.
+- The implementation now supports parsed workflow arithmetic and variable references end to end, and config-backed `params.*` expressions when the relevant params are already available in parse order.
+- The spec does not state whether config-origin `params.*` expressions must resolve regardless of section order. The current implementation evaluates against the params visible at the point the process block is parsed.

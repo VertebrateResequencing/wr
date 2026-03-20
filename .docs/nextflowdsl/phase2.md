@@ -22,7 +22,8 @@ Covering all 6 acceptance tests from B1.
 Depends on Phase 1 for Expr types and lexer patterns.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Batch 2 (parallel, after item 2.1 is reviewed)
 
@@ -40,7 +41,8 @@ nested dot-separated key lookups. Covering all 8 acceptance
 tests from B2.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 2.3: B3 - Minimal Groovy expression evaluator [parallel with 2.2]
 
@@ -56,7 +58,8 @@ B3.
 Depends on Phase 1 for Expr AST types.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
