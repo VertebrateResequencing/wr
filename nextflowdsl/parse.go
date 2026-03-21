@@ -76,10 +76,12 @@ const (
 )
 
 type token struct {
-	typ  tokenType
-	lit  string
-	line int
-	col  int
+	typ   tokenType
+	lit   string
+	line  int
+	col   int
+	start int
+	end   int
 }
 
 func lex(input string) ([]token, error) {
@@ -95,9 +97,9 @@ func lex(input string) ([]token, error) {
 		case r == ' ' || r == '\t' || r == '\r':
 			l.next()
 		case r == '\n':
-			line, col := l.line, l.col
+			line, col, start := l.line, l.col, l.pos
 			l.next()
-			tokens = append(tokens, token{typ: tokenNewline, lit: "\n", line: line, col: col})
+			tokens = append(tokens, token{typ: tokenNewline, lit: "\n", line: line, col: col, start: start, end: l.pos})
 		case r == '/' && l.peekN(1) == '/':
 			for l.peek() != 0 && l.peek() != '\n' {
 				l.next()
@@ -111,38 +113,49 @@ func lex(input string) ([]token, error) {
 				l.next()
 			}
 		case r == '{':
-			tokens = append(tokens, token{typ: tokenLBrace, lit: "{", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenLBrace, lit: "{", line: line, col: col, start: start, end: l.pos})
 		case r == '}':
-			tokens = append(tokens, token{typ: tokenRBrace, lit: "}", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenRBrace, lit: "}", line: line, col: col, start: start, end: l.pos})
 		case r == '(':
-			tokens = append(tokens, token{typ: tokenLParen, lit: "(", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenLParen, lit: "(", line: line, col: col, start: start, end: l.pos})
 		case r == ')':
-			tokens = append(tokens, token{typ: tokenRParen, lit: ")", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenRParen, lit: ")", line: line, col: col, start: start, end: l.pos})
 		case r == ':':
-			tokens = append(tokens, token{typ: tokenColon, lit: ":", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenColon, lit: ":", line: line, col: col, start: start, end: l.pos})
 		case r == ',':
-			tokens = append(tokens, token{typ: tokenComma, lit: ",", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenComma, lit: ",", line: line, col: col, start: start, end: l.pos})
 		case r == '.':
-			tokens = append(tokens, token{typ: tokenDot, lit: ".", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenDot, lit: ".", line: line, col: col, start: start, end: l.pos})
 		case r == ';':
-			tokens = append(tokens, token{typ: tokenSemicolon, lit: ";", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenSemicolon, lit: ";", line: line, col: col, start: start, end: l.pos})
 		case r == '=':
-			tokens = append(tokens, token{typ: tokenAssign, lit: "=", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenAssign, lit: "=", line: line, col: col, start: start, end: l.pos})
 		case r == '|':
-			tokens = append(tokens, token{typ: tokenPipe, lit: "|", line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenPipe, lit: "|", line: line, col: col, start: start, end: l.pos})
 		case isClosureSymbol(r):
-			tokens = append(tokens, token{typ: tokenSymbol, lit: string(r), line: l.line, col: l.col})
+			start, line, col := l.pos, l.line, l.col
 			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: string(r), line: line, col: col, start: start, end: l.pos})
 		case r == '\'' || r == '"':
 			stringTok, err := l.readString()
 			if err != nil {
@@ -154,14 +167,16 @@ func lex(input string) ([]token, error) {
 		case isIdentStart(r):
 			tokens = append(tokens, l.readIdent())
 		default:
-			return nil, fmt.Errorf("line %d: unexpected character %q", l.line, r)
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: string(r), line: line, col: col, start: start, end: l.pos})
 		}
 	}
 }
 
 func isClosureSymbol(r rune) bool {
 	switch r {
-	case '*', '+', '-', '/', '<', '>', '?':
+	case '*', '+', '-', '/', '<', '>', '?', '!', '&', '$', '%', '[', ']', '^', '~', '@', '\\':
 		return true
 	default:
 		return false
@@ -170,6 +185,10 @@ func isClosureSymbol(r rune) bool {
 
 func isIdentStart(r rune) bool {
 	return r == '_' || unicode.IsLetter(r)
+}
+
+func warnUnsupportedOutputQualifier(name token) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported output qualifier %q at line %d will not be translated\n", name.lit, name.line)
 }
 
 func parseParamsPath(tokens []token) (string, bool) {
@@ -189,6 +208,224 @@ func parseParamsPath(tokens []token) (string, bool) {
 	}
 
 	return strings.Join(parts, "."), true
+}
+
+func parseTupleDeclaration(tokens []token) (*Declaration, error) {
+	if len(tokens) == 1 {
+		return nil, fmt.Errorf("line %d: tuple requires at least one element", tokens[0].line)
+	}
+
+	elementSegments := splitTopLevelCommaSegments(tokens[1:])
+	elements := make([]*TupleElement, 0, len(elementSegments))
+	for _, segment := range elementSegments {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		element, err := parseTupleElement(trimmed)
+		if err != nil {
+			return nil, err
+		}
+		elements = append(elements, element)
+	}
+
+	if len(elements) == 0 {
+		return nil, fmt.Errorf("line %d: tuple requires at least one element", tokens[0].line)
+	}
+
+	return &Declaration{Kind: "tuple", Elements: elements}, nil
+}
+
+func parseDeclarationNameArg(tokens []token) (string, error) {
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("expected name")
+	}
+
+	if len(tokens) == 1 && (tokens[0].typ == tokenIdent || tokens[0].typ == tokenString) {
+		return tokens[0].lit, nil
+	}
+
+	return expressionText(tokens), nil
+}
+
+func joinDeclarationSegments(segments [][]token) []token {
+	joined := make([]token, 0)
+	for index, segment := range segments {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if len(joined) != 0 && index > 0 {
+			joined = append(joined, token{typ: tokenComma, lit: ",", line: trimmed[0].line, col: trimmed[0].col})
+		}
+		joined = append(joined, trimmed...)
+	}
+
+	return joined
+}
+
+func parseTupleElement(tokens []token) (*TupleElement, error) {
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("expected tuple element")
+	}
+
+	element := &TupleElement{Kind: tokens[0].lit, Raw: joinTokens(tokens)}
+	if len(tokens) == 1 && (element.Kind == "stdout" || element.Kind == "stdin") {
+		return element, nil
+	}
+
+	if isCallLikeDeclaration(tokens) {
+		segments := splitTopLevelCommaSegments(tokens[2 : len(tokens)-1])
+		if len(segments) == 0 {
+			return nil, fmt.Errorf("line %d: %s requires an argument", tokens[0].line, element.Kind)
+		}
+
+		primary := trimDeclarationTokens(segments[0])
+		if len(primary) == 0 {
+			return nil, fmt.Errorf("line %d: %s requires an argument", tokens[0].line, element.Kind)
+		}
+
+		if err := applyTupleElementPrimary(element, primary); err != nil {
+			return nil, wrapLineError(tokens[0].line, err)
+		}
+
+		for _, segment := range segments[1:] {
+			trimmed := trimDeclarationTokens(segment)
+			if len(trimmed) == 0 {
+				continue
+			}
+			if err := applyTupleElementQualifier(element, trimmed); err != nil {
+				return nil, err
+			}
+		}
+
+		return element, nil
+	}
+
+	if len(tokens) == 2 && tokens[1].typ == tokenIdent {
+		element.Name = tokens[1].lit
+		return element, nil
+	}
+
+	if len(tokens) > 1 {
+		expr, err := parseExprTokens(tokens[1:])
+		if err != nil {
+			return nil, wrapLineError(tokens[0].line, err)
+		}
+		element.Expr = expr
+	}
+
+	return element, nil
+}
+
+func isCallLikeDeclaration(tokens []token) bool {
+	return len(tokens) >= 4 && tokens[1].typ == tokenLParen && tokens[len(tokens)-1].typ == tokenRParen
+}
+
+func splitTopLevelCommaSegments(tokens []token) [][]token {
+	segments := make([][]token, 0, 1)
+	segmentStart := 0
+	depth := 0
+
+	for index, tok := range tokens {
+		switch tok.typ {
+		case tokenLParen:
+			depth++
+		case tokenRParen:
+			if depth > 0 {
+				depth--
+			}
+		case tokenComma:
+			if depth == 0 {
+				segments = append(segments, tokens[segmentStart:index])
+				segmentStart = index + 1
+			}
+		}
+	}
+
+	return append(segments, tokens[segmentStart:])
+}
+
+func trimDeclarationTokens(tokens []token) []token {
+	start := 0
+	for start < len(tokens) && tokens[start].typ == tokenNewline {
+		start++
+	}
+	end := len(tokens)
+	for end > start && tokens[end-1].typ == tokenNewline {
+		end--
+	}
+
+	return tokens[start:end]
+}
+
+func applyTupleElementPrimary(element *TupleElement, tokens []token) error {
+	if element.Kind == "env" {
+		name, err := parseDeclarationNameArg(tokens)
+		if err != nil {
+			return err
+		}
+		element.Name = name
+		return nil
+	}
+
+	if len(tokens) == 1 && tokens[0].typ == tokenIdent {
+		element.Name = tokens[0].lit
+		return nil
+	}
+
+	expr, err := parseExprTokens(tokens)
+	if err != nil {
+		return err
+	}
+	element.Expr = expr
+
+	return nil
+}
+
+func applyTupleElementQualifier(element *TupleElement, tokens []token) error {
+	if !isDeclarationQualifierTokens(tokens) {
+		return fmt.Errorf("line %d: unsupported tuple element qualifier %q", tokens[0].line, joinTokens(tokens))
+	}
+
+	name := tokens[0]
+	valueTokens := tokens[2:]
+	if len(valueTokens) == 0 {
+		return fmt.Errorf("line %d: qualifier %q requires a value", name.line, name.lit)
+	}
+
+	switch name.lit {
+	case "arity":
+		_, err := parseExprTokens(valueTokens)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+	case "emit":
+		value, err := parseExprTokens(valueTokens)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		switch emitValue := value.(type) {
+		case StringExpr:
+			element.Emit = emitValue.Value
+		case VarExpr:
+			if emitValue.Path != "" {
+				return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
+			}
+			element.Emit = emitValue.Root
+		default:
+			return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
+		}
+	default:
+		return fmt.Errorf("line %d: unsupported tuple element qualifier %q", name.line, name.lit)
+	}
+
+	return nil
+}
+
+func isDeclarationQualifierTokens(tokens []token) bool {
+	return len(tokens) >= 2 && tokens[0].typ == tokenIdent && tokens[1].typ == tokenColon
 }
 
 type lexer struct {
@@ -261,7 +498,7 @@ func (l *lexer) skipBlockComment() error {
 
 func (l *lexer) readString() (token, error) {
 	quote := l.peek()
-	line, col := l.line, l.col
+	line, col, start := l.line, l.col, l.pos
 	triple := l.peekN(1) == quote && l.peekN(2) == quote
 	if triple {
 		l.next()
@@ -304,7 +541,7 @@ func (l *lexer) readString() (token, error) {
 		builder.WriteRune(l.next())
 	}
 
-	return token{typ: tokenString, lit: builder.String(), line: line, col: col}, nil
+	return token{typ: tokenString, lit: builder.String(), line: line, col: col, start: start, end: l.pos}, nil
 }
 
 func unescapeRune(r rune) rune {
@@ -321,23 +558,21 @@ func unescapeRune(r rune) rune {
 }
 
 func (l *lexer) readInt() token {
-	line, col := l.line, l.col
-	start := l.pos
+	line, col, start := l.line, l.col, l.pos
 	for unicode.IsDigit(l.peek()) {
 		l.next()
 	}
 
-	return token{typ: tokenInt, lit: string(l.input[start:l.pos]), line: line, col: col}
+	return token{typ: tokenInt, lit: string(l.input[start:l.pos]), line: line, col: col, start: start, end: l.pos}
 }
 
 func (l *lexer) readIdent() token {
-	line, col := l.line, l.col
-	start := l.pos
+	line, col, start := l.line, l.col, l.pos
 	for isIdentPart(l.peek()) {
 		l.next()
 	}
 
-	return token{typ: tokenIdent, lit: string(l.input[start:l.pos]), line: line, col: col}
+	return token{typ: tokenIdent, lit: string(l.input[start:l.pos]), line: line, col: col, start: start, end: l.pos}
 }
 
 func isIdentPart(r rune) bool {
@@ -347,12 +582,13 @@ func isIdentPart(r rune) bool {
 type parser struct {
 	tokens      []token
 	pos         int
+	source      []rune
 	assignments map[string]ChanExpr
 	localScopes []map[string]ChanExpr
 }
 
-func newParser(tokens []token) *parser {
-	return &parser{tokens: tokens, assignments: make(map[string]ChanExpr)}
+func newParser(tokens []token, source string) *parser {
+	return &parser{tokens: tokens, source: []rune(source), assignments: make(map[string]ChanExpr)}
 }
 
 func (p *parser) parseWorkflow() (*Workflow, error) {
@@ -1304,13 +1540,13 @@ func (p *parser) parseProcess() (*Process, error) {
 func (p *parser) parseSection(proc *Process, label token) error {
 	switch label.lit {
 	case "input":
-		decls, err := p.parseDeclarations()
+		decls, err := p.parseDeclarations(label.lit)
 		if err != nil {
 			return err
 		}
 		proc.Input = append(proc.Input, decls...)
 	case "output":
-		decls, err := p.parseDeclarations()
+		decls, err := p.parseDeclarations(label.lit)
 		if err != nil {
 			return err
 		}
@@ -1321,6 +1557,34 @@ func (p *parser) parseSection(proc *Process, label token) error {
 			return err
 		}
 		proc.Script = script
+	case "stub":
+		stub, err := p.parseRawSectionBody()
+		if err != nil {
+			return err
+		}
+		proc.Stub = stub
+		warnUnsupportedProcessSection(label)
+	case "exec":
+		execBody, err := p.parseRawSectionBody()
+		if err != nil {
+			return err
+		}
+		proc.Exec = execBody
+		warnUnsupportedProcessSection(label)
+	case "shell":
+		shell, err := p.parseRawSectionBody()
+		if err != nil {
+			return err
+		}
+		proc.Shell = shell
+		warnUnsupportedProcessSection(label)
+	case "when":
+		when, err := p.parseRawSectionBody()
+		if err != nil {
+			return err
+		}
+		proc.When = when
+		warnUnsupportedProcessSection(label)
 	default:
 		return fmt.Errorf("line %d: unsupported section %q", label.line, label.lit)
 	}
@@ -1328,7 +1592,11 @@ func (p *parser) parseSection(proc *Process, label token) error {
 	return nil
 }
 
-func (p *parser) parseDeclarations() ([]*Declaration, error) {
+func warnUnsupportedProcessSection(name token) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported process section %q at line %d will not be translated\n", name.lit, name.line)
+}
+
+func (p *parser) parseDeclarations(section string) ([]*Declaration, error) {
 	decls := []*Declaration{}
 	for {
 		p.skipNewlines()
@@ -1341,7 +1609,7 @@ func (p *parser) parseDeclarations() ([]*Declaration, error) {
 			return decls, nil
 		}
 
-		decl, err := p.parseDeclarationLine()
+		decl, err := p.parseDeclarationLine(section)
 		if err != nil {
 			return nil, err
 		}
@@ -1349,7 +1617,7 @@ func (p *parser) parseDeclarations() ([]*Declaration, error) {
 	}
 }
 
-func (p *parser) parseDeclarationLine() (*Declaration, error) {
+func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 	lineTokens := p.readLineTokens()
 	if len(lineTokens) == 0 {
 		return nil, fmt.Errorf("line %d: expected declaration", p.current().line)
@@ -1361,16 +1629,120 @@ func (p *parser) parseDeclarationLine() (*Declaration, error) {
 		}
 	}
 
-	decl := &Declaration{Kind: lineTokens[0].lit, Raw: joinTokens(lineTokens)}
-	if len(lineTokens) == 2 && lineTokens[1].typ == tokenIdent {
-		decl.Name = lineTokens[1].lit
+	primaryTokens, qualifierTokens, err := splitDeclarationLineTokens(lineTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	decl, err := parseDeclarationPrimary(primaryTokens)
+	if err != nil {
+		return nil, err
+	}
+	decl.Raw = joinTokens(lineTokens)
+
+	for _, qualifier := range qualifierTokens {
+		if err = applyDeclarationQualifier(decl, qualifier, section); err != nil {
+			return nil, err
+		}
+	}
+
+	if section == "output" && decl.Kind == "eval" {
+		warnUnsupportedOutputType(primaryTokens[0])
+	}
+
+	return decl, nil
+}
+
+func splitDeclarationLineTokens(lineTokens []token) ([]token, [][]token, error) {
+	segments := splitTopLevelCommaSegments(lineTokens)
+
+	primary := trimDeclarationTokens(segments[0])
+	if len(primary) == 0 {
+		return nil, nil, fmt.Errorf("line %d: expected declaration", lineTokens[0].line)
+	}
+
+	if primary[0].typ == tokenIdent && primary[0].lit == "tuple" {
+		primarySegments := make([][]token, 0, len(segments))
+		primarySegments = append(primarySegments, segments[0])
+		qualifiers := make([][]token, 0, len(segments)-1)
+
+		for _, segment := range segments[1:] {
+			trimmed := trimDeclarationTokens(segment)
+			if len(trimmed) == 0 {
+				continue
+			}
+
+			if isDeclarationQualifierTokens(trimmed) {
+				qualifiers = append(qualifiers, trimmed)
+				continue
+			}
+
+			if len(qualifiers) != 0 {
+				return nil, nil, fmt.Errorf("line %d: unsupported declaration qualifier %q", trimmed[0].line, joinTokens(trimmed))
+			}
+
+			primarySegments = append(primarySegments, segment)
+		}
+
+		return joinDeclarationSegments(primarySegments), qualifiers, nil
+	}
+
+	qualifiers := make([][]token, 0, len(segments)-1)
+	for _, segment := range segments[1:] {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) == 0 {
+			continue
+		}
+		qualifiers = append(qualifiers, trimmed)
+	}
+
+	return primary, qualifiers, nil
+}
+
+func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("expected declaration")
+	}
+
+	if tokens[0].typ == tokenIdent && tokens[0].lit == "tuple" {
+		return parseTupleDeclaration(tokens)
+	}
+
+	decl := &Declaration{Kind: tokens[0].lit}
+	if len(tokens) == 1 && (decl.Kind == "stdout" || decl.Kind == "stdin") {
 		return decl, nil
 	}
 
-	if len(lineTokens) > 1 {
-		expr, err := parseExprTokens(lineTokens[1:])
+	if decl.Kind == "env" && isCallLikeDeclaration(tokens) {
+		name, err := parseDeclarationNameArg(tokens[2 : len(tokens)-1])
 		if err != nil {
-			return nil, err
+			return nil, wrapLineError(tokens[0].line, err)
+		}
+		decl.Name = name
+		return decl, nil
+	}
+
+	if decl.Kind == "eval" && isCallLikeDeclaration(tokens) {
+		if len(tokens) == 3 {
+			return nil, fmt.Errorf("line %d: eval requires an argument", tokens[0].line)
+		}
+		expr, err := parseExprTokens(tokens[2 : len(tokens)-1])
+		if err != nil {
+			return nil, wrapLineError(tokens[0].line, err)
+		}
+		decl.Expr = expr
+		return decl, nil
+	}
+
+	if len(tokens) == 2 && tokens[1].typ == tokenIdent {
+		decl.Name = tokens[1].lit
+		return decl, nil
+	}
+
+	if len(tokens) > 1 {
+		expr, err := parseExprTokens(tokens[1:])
+		if err != nil {
+			return nil, wrapLineError(tokens[0].line, err)
 		}
 		decl.Expr = expr
 	}
@@ -1378,17 +1750,114 @@ func (p *parser) parseDeclarationLine() (*Declaration, error) {
 	return decl, nil
 }
 
-func (p *parser) parseScript() (string, error) {
-	p.skipNewlines()
-	current := p.current()
-	if current.typ != tokenString {
-		return "", fmt.Errorf("line %d: expected script string", current.line)
+func applyDeclarationQualifier(decl *Declaration, tokens []token, section string) error {
+	if len(tokens) < 3 || tokens[0].typ != tokenIdent || tokens[1].typ != tokenColon {
+		return fmt.Errorf("line %d: unsupported declaration qualifier %q", tokens[0].line, joinTokens(tokens))
 	}
 
-	p.pos++
-	p.discardLineRemainder()
+	name := tokens[0]
+	valueTokens := tokens[2:]
+	if len(valueTokens) == 0 {
+		return fmt.Errorf("line %d: qualifier %q requires a value", name.line, name.lit)
+	}
 
-	return current.lit, nil
+	switch name.lit {
+	case "emit":
+		value, err := parseExprTokens(valueTokens)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		switch emitValue := value.(type) {
+		case StringExpr:
+			decl.Emit = emitValue.Value
+		case VarExpr:
+			if emitValue.Path != "" {
+				return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
+			}
+			decl.Emit = emitValue.Root
+		default:
+			return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
+		}
+	case "optional":
+		if len(valueTokens) == 1 && valueTokens[0].typ == tokenIdent {
+			switch valueTokens[0].lit {
+			case "true":
+				decl.Optional = true
+				return nil
+			case "false":
+				decl.Optional = false
+				return nil
+			}
+		}
+		value, err := parseExprTokens(valueTokens)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		boolValue, ok := value.(BoolExpr)
+		if !ok {
+			return fmt.Errorf("line %d: optional qualifier expects a boolean", name.line)
+		}
+		decl.Optional = boolValue.Value
+	case "topic":
+		if _, err := parseExprTokens(valueTokens); err != nil {
+			return wrapLineError(name.line, err)
+		}
+		if section == "output" {
+			warnUnsupportedOutputQualifier(name)
+		}
+	default:
+		return fmt.Errorf("line %d: unsupported declaration qualifier %q", name.line, name.lit)
+	}
+
+	return nil
+}
+
+func warnUnsupportedOutputType(name token) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported output type %q at line %d will not be translated\n", name.lit, name.line)
+}
+
+func (p *parser) parseScript() (string, error) {
+	body, err := p.parseRawSectionBody()
+	if err != nil {
+		return "", err
+	}
+
+	if body == "" {
+		return "", fmt.Errorf("line %d: expected script string", p.current().line)
+	}
+
+	return body, nil
+}
+
+func (p *parser) parseRawSectionBody() (string, error) {
+	p.skipNewlines()
+	current := p.current()
+	if current.typ == tokenString {
+		p.pos++
+		p.discardLineRemainder()
+		return current.lit, nil
+	}
+
+	lineTokens := p.readRawLineTokens()
+	if len(lineTokens) == 0 {
+		return "", fmt.Errorf("line %d: expected section body", current.line)
+	}
+
+	return p.rawTokenText(lineTokens), nil
+}
+
+func (p *parser) rawTokenText(tokens []token) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	start := tokens[0].start
+	end := tokens[len(tokens)-1].end
+	if start < 0 || end < start || end > len(p.source) {
+		return joinTokens(tokens)
+	}
+
+	return strings.TrimSpace(string(p.source[start:end]))
 }
 
 func (p *parser) parseDirective(proc *Process, name token) error {
@@ -1625,6 +2094,23 @@ func (p *parser) readLineTokens() []token {
 	return lineTokens
 }
 
+func (p *parser) readRawLineTokens() []token {
+	lineTokens := []token{}
+	for {
+		current := p.current()
+		if current.typ == tokenEOF || current.typ == tokenNewline {
+			break
+		}
+		lineTokens = append(lineTokens, current)
+		p.pos++
+	}
+	if p.current().typ == tokenNewline {
+		p.pos++
+	}
+
+	return lineTokens
+}
+
 func (p *parser) discardLineRemainder() {
 	for p.current().typ != tokenEOF && p.current().typ != tokenNewline && p.current().typ != tokenRBrace {
 		p.pos++
@@ -1698,7 +2184,7 @@ func Parse(r io.Reader) (*Workflow, error) {
 		return nil, err
 	}
 
-	return newParser(tokens).parseWorkflow()
+	return newParser(tokens, string(input)).parseWorkflow()
 }
 
 func parseMemoryValue(value string) (int, error) {

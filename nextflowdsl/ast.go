@@ -28,12 +28,24 @@ package nextflowdsl
 // Expr is a minimal Groovy expression node.
 type Expr interface{ expr() }
 
-// Declaration is a parsed input or output declaration.
-type Declaration struct {
+// TupleElement is one element within a tuple declaration.
+type TupleElement struct {
 	Kind string
 	Name string
 	Expr Expr
 	Raw  string
+	Emit string
+}
+
+// Declaration is a parsed input or output declaration.
+type Declaration struct {
+	Kind     string
+	Name     string
+	Expr     Expr
+	Raw      string
+	Emit     string
+	Optional bool
+	Elements []*TupleElement
 }
 
 // PublishDir holds a parsed publishDir directive.
@@ -50,6 +62,10 @@ type Process struct {
 	Input      []*Declaration
 	Output     []*Declaration
 	Script     string
+	Stub       string
+	Exec       string
+	Shell      string
+	When       string
 	Container  string
 	PublishDir []*PublishDir
 	ErrorStrat string
