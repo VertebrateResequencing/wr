@@ -779,19 +779,17 @@ func resolveArg(arg ChanExpr, scope []string, translated map[string]translatedCa
 
 func resolveTranslatedRef(name string, scope []string, translated map[string]translatedCall) (translatedCall, bool) {
 	parts := strings.Split(name, ".")
-	for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
-		key := strings.Join(parts[:prefixLen], ".")
-		if stage, ok := translated[key]; ok {
-			return stage, true
+	if len(scope) > 0 {
+		for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
+			key := scopedTargetKey(scope, strings.Join(parts[:prefixLen], "."))
+			if stage, ok := translated[key]; ok {
+				return stage, true
+			}
 		}
 	}
 
-	if len(scope) == 0 {
-		return translatedCall{}, false
-	}
-
 	for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
-		key := scopedTargetKey(scope, strings.Join(parts[:prefixLen], "."))
+		key := strings.Join(parts[:prefixLen], ".")
 		if stage, ok := translated[key]; ok {
 			return stage, true
 		}
