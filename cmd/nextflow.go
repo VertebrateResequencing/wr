@@ -509,22 +509,20 @@ func nextflowResumeMatch(existingJobs []*jobqueue.Job, plannedJob *jobqueue.Job)
 		return nil, nil
 	}
 
-	matchIndex := -1
 	for index, existingJob := range existingJobs {
 		if existingJob.Key() == plannedJob.Key() {
-			matchIndex = index
-			break
+			matchedJob := existingJobs[index]
+			remaining := append([]*jobqueue.Job{}, existingJobs[:index]...)
+			remaining = append(remaining, existingJobs[index+1:]...)
+
+			return matchedJob, remaining
 		}
 	}
-	if matchIndex == -1 {
-		matchIndex = 0
+	if len(existingJobs) == 1 {
+		return existingJobs[0], nil
 	}
 
-	matchedJob := existingJobs[matchIndex]
-	remaining := append([]*jobqueue.Job{}, existingJobs[:matchIndex]...)
-	remaining = append(remaining, existingJobs[matchIndex+1:]...)
-
-	return matchedJob, remaining
+	return nil, append([]*jobqueue.Job{}, existingJobs...)
 }
 
 func nextflowResumeAction(existingJob *jobqueue.Job) (bool, string, error) {
