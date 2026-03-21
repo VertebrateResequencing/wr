@@ -1557,6 +1557,23 @@ func TestNextflowResumeJobs(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(jobsToAdd, ShouldResemble, []*jobqueue.Job{job})
 		})
+
+		Convey("jobs with the same rep group but a different key are treated as missing", func() {
+			planned := &jobqueue.Job{
+				Cmd:        "echo hello",
+				RepGroup:   job.RepGroup,
+				Cwd:        "/tmp/nf-work/r1/A/2",
+				CwdMatters: true,
+			}
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{complete: []*jobqueue.Job{
+				{Cmd: "echo hello", RepGroup: job.RepGroup, State: jobqueue.JobStateComplete, Cwd: "/tmp/nf-work/r1/A/0", CwdMatters: true},
+				{Cmd: "echo hello", RepGroup: job.RepGroup, State: jobqueue.JobStateComplete, Cwd: "/tmp/nf-work/r1/A/1", CwdMatters: true},
+			}}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{planned})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldResemble, []*jobqueue.Job{planned})
+		})
 	})
 }
 
