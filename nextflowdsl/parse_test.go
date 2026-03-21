@@ -775,6 +775,193 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 	})
 }
 
+func TestParseHighPriorityOperators(t *testing.T) {
+	Convey("Parse handles E1 high-priority operators", t, func() {
+		Convey("branch parses as a closure operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.branch { foo: it > 5 }) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators, ShouldHaveLength, 1)
+			So(chain.Operators[0].Name, ShouldEqual, "branch")
+			So(chain.Operators[0].Closure, ShouldEqual, "foo: it > 5")
+		})
+
+		Convey("combine keeps one channel argument", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.combine(other)) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "combine")
+			So(chain.Operators[0].Channels, ShouldHaveLength, 1)
+			So(chain.Operators[0].Channels[0].(ChanRef).Name, ShouldEqual, "other")
+		})
+
+		Convey("concat keeps multiple channel arguments", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.concat(a, b)) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "concat")
+			So(chain.Operators[0].Channels, ShouldHaveLength, 2)
+			So(chain.Operators[0].Channels[0].(ChanRef).Name, ShouldEqual, "a")
+			So(chain.Operators[0].Channels[1].(ChanRef).Name, ShouldEqual, "b")
+		})
+
+		Convey("set parses as a closure operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.set { result }) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "set")
+			So(chain.Operators[0].Closure, ShouldEqual, "result")
+		})
+
+		Convey("view parses as a zero-arg operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.view()) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "view")
+		})
+
+		Convey("ifEmpty parses regular arguments", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.ifEmpty('default')) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "ifEmpty")
+			So(chain.Operators[0].Args, ShouldHaveLength, 1)
+			So(chain.Operators[0].Args[0].(StringExpr).Value, ShouldEqual, "default")
+		})
+
+		Convey("splitCsv parses named arguments", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.splitCsv(header: true)) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "splitCsv")
+			So(chain.Operators[0].Args, ShouldHaveLength, 1)
+		})
+
+		Convey("transpose parses as a zero-arg operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.transpose()) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "transpose")
+		})
+
+		Convey("flatten parses as a zero-arg operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.flatten()) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "flatten")
+		})
+
+		Convey("reduce parses as a closure operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.reduce { a, b -> a + b }) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "reduce")
+			So(chain.Operators[0].Closure, ShouldEqual, "a, b - > a + b")
+		})
+
+		Convey("collectFile parses named arguments", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.collectFile(name: 'output.txt')) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "collectFile")
+			So(chain.Operators[0].Args, ShouldHaveLength, 1)
+		})
+
+		Convey("tap parses as a closure operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.tap { branch_ch }) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "tap")
+			So(chain.Operators[0].Closure, ShouldEqual, "branch_ch")
+		})
+
+		Convey("dump parses named arguments", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.dump(tag: 'debug')) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "dump")
+			So(chain.Operators[0].Args, ShouldHaveLength, 1)
+		})
+
+		Convey("multiMap parses as a closure operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.multiMap { it -> foo: it; bar: it }) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "multiMap")
+			So(chain.Operators[0].Closure, ShouldEqual, "it - > foo: it; bar: it")
+		})
+
+		Convey("unique parses as a zero-arg operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.unique()) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "unique")
+		})
+
+		Convey("toList parses as a zero-arg operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.toList()) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "toList")
+		})
+
+		Convey("count parses as a zero-arg operator", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.count()) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "count")
+		})
+
+		Convey("unsupported operators still return a named error", func() {
+			_, err := Parse(strings.NewReader("workflow { foo(ch.subscribe { println it }) }"))
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unsupported operator: subscribe")
+		})
+
+		Convey("remaining listed operators are accepted", func() {
+			for _, source := range []string{
+				"workflow { foo(ch.splitFasta()) }",
+				"workflow { foo(ch.splitFastq()) }",
+				"workflow { foo(ch.distinct()) }",
+				"workflow { foo(ch.toSortedList()) }",
+			} {
+				wf, err := Parse(strings.NewReader(source))
+
+				So(err, ShouldBeNil)
+				So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+			}
+		})
+
+		Convey("tap also accepts channel arguments in parentheses", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.tap(side)) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "tap")
+			So(chain.Operators[0].Channels, ShouldHaveLength, 1)
+			So(chain.Operators[0].Channels[0].(ChanRef).Name, ShouldEqual, "side")
+		})
+	})
+}
+
 func mustChainExpr(expr ChanExpr) ChannelChain {
 	chain, ok := expr.(ChannelChain)
 	So(ok, ShouldBeTrue)

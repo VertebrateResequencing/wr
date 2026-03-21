@@ -42,16 +42,37 @@ var diskRE = regexp.MustCompile(`(?i)^([0-9]+)\s*(gb|g)$`)
 var timeRE = regexp.MustCompile(`(?i)^([0-9]+)(?:\s*\.\s*|\s+)?(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$`)
 
 var supportedChannelOperators = map[string]struct{}{
-	"collect":    {},
-	"filter":     {},
-	"first":      {},
-	"flatMap":    {},
-	"groupTuple": {},
-	"join":       {},
-	"last":       {},
-	"map":        {},
-	"mix":        {},
-	"take":       {},
+	"branch":      {},
+	"collect":     {},
+	"collectFile": {},
+	"combine":     {},
+	"concat":      {},
+	"count":       {},
+	"distinct":    {},
+	"dump":        {},
+	"filter":      {},
+	"first":       {},
+	"flatMap":     {},
+	"flatten":     {},
+	"groupTuple":  {},
+	"ifEmpty":     {},
+	"join":        {},
+	"last":        {},
+	"map":         {},
+	"mix":         {},
+	"multiMap":    {},
+	"reduce":      {},
+	"set":         {},
+	"splitCsv":    {},
+	"splitFasta": {},
+	"splitFastq": {},
+	"tap":         {},
+	"take":        {},
+	"toList":      {},
+	"toSortedList": {},
+	"transpose":   {},
+	"unique":      {},
+	"view":        {},
 }
 
 type tokenType int
@@ -1560,7 +1581,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 	}
 
 	switch name.lit {
-	case "join", "mix":
+	case "combine", "concat", "join", "mix", "tap":
 		channels := []ChanExpr{}
 		for {
 			channel, err := p.parseChanExpr(tokenComma, tokenRParen)

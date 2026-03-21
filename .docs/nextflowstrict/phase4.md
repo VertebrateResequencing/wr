@@ -24,5 +24,5 @@ warning if they affect job cardinality in ways the translator
 cannot handle; `view` and `dump` are no-ops. Covering all 18
 acceptance tests from E1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

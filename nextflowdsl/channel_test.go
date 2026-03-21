@@ -199,6 +199,35 @@ func TestResolveChannelD6(t *testing.T) {
 			So(resolveErr, ShouldBeNil)
 			So(items, ShouldResemble, []any{"a", "b", "c", "d"})
 		})
+
+		Convey("view and dump are resolved as no-op debug operators", func() {
+			items, err := ResolveChannel(ChannelChain{
+				Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+				Operators: []ChannelOperator{{Name: "view"}, {Name: "dump"}},
+			}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1, 2})
+		})
+
+		Convey("unsupported cardinality-changing operators warn and preserve the source items", func() {
+			var (
+				items  []any
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				items, err = ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+					Operators: []ChannelOperator{{Name: "count"}},
+				}, "/work")
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1, 2})
+			So(stderr, ShouldContainSubstring, "operator \"count\" may affect job cardinality")
+		})
 	})
 }
 
