@@ -324,11 +324,24 @@ func mustGetwd(t *testing.T) string {
 func (e *nextflowCommandTestEnv) executeRun(args ...string) error {
 	e.t.Helper()
 
+	_, err := e.executeRunWithOutput(args...)
+
+	return err
+}
+
+func (e *nextflowCommandTestEnv) executeRunWithOutput(args ...string) (string, error) {
+	e.t.Helper()
+
 	options := nextflowRunOptions{}
 	cmd := newNextflowRunCommand(&options)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
 	cmd.SetArgs(args)
 
-	return cmd.Execute()
+	err := cmd.Execute()
+
+	return buf.String(), err
 }
 
 func (e *nextflowCommandTestEnv) executeStatus(args ...string) (string, error) {
@@ -484,7 +497,7 @@ func TestNextflowRunCommand(t *testing.T) {
 
 			workflowPath := env.writeWorkflow("workflow.nf", simplePipelineWorkflow("hello", "echo $x"))
 
-			err := env.executeRun(workflowPath)
+			output, err := env.executeRunWithOutput(workflowPath)
 			So(err, ShouldBeNil)
 
 			jobs := env.jobsByRepGroupSubstring("nf.workflow.")
@@ -496,6 +509,7 @@ func TestNextflowRunCommand(t *testing.T) {
 
 			runID := strings.Split(jobs[0].RepGroup, ".")[2]
 			So(regexp.MustCompile("^[0-9a-f]{8,}$").MatchString(runID), ShouldBeTrue)
+			So(output, ShouldEqual, "Run ID: "+runID+"\n")
 			So(jobs[0].RepGroup, ShouldEqual, "nf.workflow."+runID+".A")
 			So(jobs[1].RepGroup, ShouldEqual, "nf.workflow."+runID+".B")
 			So(jobs[0].DepGroups, ShouldResemble, []string{"nf." + runID + ".A"})
@@ -508,8 +522,9 @@ func TestNextflowRunCommand(t *testing.T) {
 
 			workflowPath := env.writeWorkflow("workflow.nf", simplePipelineWorkflow("hello", "echo $x"))
 
-			err := env.executeRun("--run-id", "myrun", workflowPath)
+			output, err := env.executeRunWithOutput("--run-id", "myrun", workflowPath)
 			So(err, ShouldBeNil)
+			So(output, ShouldEqual, "")
 
 			jobs := env.jobsByRepGroupSubstring("nf.workflow.myrun")
 			So(jobs, ShouldHaveLength, 2)
