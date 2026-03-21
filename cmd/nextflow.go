@@ -336,6 +336,7 @@ func followNextflowWorkflow(
 ) error {
 	remaining := append([]*nextflowdsl.PendingStage(nil), pending...)
 	terminalSuccessPending := false
+	terminalPendingPending := false
 	displayedJobKeys := make(map[string]struct{})
 	if outputWriter == nil {
 		outputWriter = io.Discard
@@ -397,6 +398,7 @@ func followNextflowWorkflow(
 
 		if progressed {
 			terminalSuccessPending = false
+			terminalPendingPending = false
 			continue
 		}
 
@@ -414,11 +416,18 @@ func followNextflowWorkflow(
 
 				continue
 			}
+			if terminalPendingPending {
+				return fmt.Errorf("workflow %s has unresolved pending stages", tc.RunID)
+			}
 
-			return fmt.Errorf("workflow %s has unresolved pending stages", tc.RunID)
+			terminalPendingPending = true
+			nextflowSleep(pollInterval)
+
+			continue
 		}
 
 		terminalSuccessPending = false
+		terminalPendingPending = false
 		nextflowSleep(pollInterval)
 	}
 }
