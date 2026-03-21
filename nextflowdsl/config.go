@@ -28,7 +28,25 @@ package nextflowdsl
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 )
+
+var skippedTopLevelConfigScopes = map[string]struct{}{
+	"conda":        {},
+	"dag":          {},
+	"docker":       {},
+	"env":          {},
+	"executor":     {},
+	"manifest":     {},
+	"notification": {},
+	"report":       {},
+	"singularity":  {},
+	"timeline":     {},
+	"tower":        {},
+	"trace":        {},
+	"weblog":       {},
+}
 
 // ProcessDefaults holds default values for process directives.
 type ProcessDefaults struct {
@@ -58,6 +76,11 @@ func ParseConfig(r io.Reader) (*Config, error) {
 	return ParseConfigWithParams(r, nil)
 }
 
+// ParseConfigFromPath parses a nextflow.config file from disk.
+func ParseConfigFromPath(path string) (*Config, error) {
+	return ParseConfigFromPathWithParams(path, nil)
+}
+
 // ParseConfigWithParams parses a nextflow.config file with external params
 // available for evaluating params-backed process expressions.
 func ParseConfigWithParams(r io.Reader, externalParams map[string]any) (*Config, error) {
@@ -67,6 +90,22 @@ func ParseConfigWithParams(r io.Reader, externalParams map[string]any) (*Config,
 	}
 
 	tokens, err := lex(string(input))
+	if err != nil {
+		return nil, err
+	}
+
+	params, profileParams, err := newConfigParser(tokens).collectParams()
+	if err != nil {
+		return nil, err
+	}
+
+	return newConfigParser(tokens).parse(params, profileParams, externalParams)
+}
+
+// ParseConfigFromPathWithParams parses a nextflow.config file from disk with
+// external params available for evaluating params-backed process expressions.
+func ParseConfigFromPathWithParams(path string, externalParams map[string]any) (*Config, error) {
+	tokens, err := loadConfigTokens(path, map[string]struct{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +161,13 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 			}
 			cfg.Profiles = profiles
 		default:
+			skipped, err := p.skipUnknownTopLevelConfigScope()
+			if err != nil {
+				return nil, err
+			}
+			if skipped {
+				continue
+			}
 			return nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
 		}
 	}
@@ -162,6 +208,13 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 				profileParams[name] = MergeParams(profileParams[name], sectionParams)
 			}
 		default:
+			skipped, err := p.skipUnknownTopLevelConfigScope()
+			if err != nil {
+				return nil, nil, err
+			}
+			if skipped {
+				continue
+			}
 			return nil, nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
 		}
 	}
@@ -478,6 +531,21 @@ func (p *configParser) skipNamedBlock(name string) error {
 	return nil
 }
 
+func (p *configParser) skipUnknownTopLevelConfigScope() (bool, error) {
+	current := p.current()
+	if _, ok := skippedTopLevelConfigScopes[current.lit]; !ok {
+		return false, nil
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: skipping unsupported top-level config scope %q at line %d\n", current.lit, current.line)
+
+	if err := p.skipNamedBlock(current.lit); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 func (p *configParser) parseEnvBlock() (map[string]string, error) {
 	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
 		return nil, err
@@ -676,4 +744,71 @@ func (p *configParser) unclosedNamedBlockError(kind, name string) error {
 	}
 
 	return fmt.Errorf("line %d: expected } to close %s %q", line, kind, name)
+}
+
+func loadConfigTokens(path string, visited map[string]struct{}) ([]token, error) {
+	resolvedPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := visited[resolvedPath]; ok {
+		return nil, fmt.Errorf("circular includeConfig detected for %q", resolvedPath)
+	}
+
+	input, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", resolvedPath, err)
+	}
+
+	visited[resolvedPath] = struct{}{}
+	defer delete(visited, resolvedPath)
+
+	tokens, err := lex(string(input))
+	if err != nil {
+		return nil, err
+	}
+
+	return expandConfigIncludes(tokens, filepath.Dir(resolvedPath), visited)
+}
+
+func expandConfigIncludes(tokens []token, baseDir string, visited map[string]struct{}) ([]token, error) {
+	expanded := make([]token, 0, len(tokens))
+	depth := 0
+
+	for index := 0; index < len(tokens); index++ {
+		current := tokens[index]
+		if depth == 0 && current.typ == tokenIdent && current.lit == "includeConfig" {
+			if index+1 >= len(tokens) {
+				return nil, fmt.Errorf("line %d: expected includeConfig path", current.line)
+			}
+
+			pathToken := tokens[index+1]
+			if pathToken.typ != tokenString {
+				return nil, fmt.Errorf("line %d: expected includeConfig path string", pathToken.line)
+			}
+
+			includeTokens, err := loadConfigTokens(filepath.Join(baseDir, pathToken.lit), visited)
+			if err != nil {
+				return nil, err
+			}
+
+			expanded = append(expanded, includeTokens[:len(includeTokens)-1]...)
+			index++
+			continue
+		}
+
+		expanded = append(expanded, current)
+
+		switch current.typ {
+		case tokenLBrace:
+			depth++
+		case tokenRBrace:
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+
+	return expanded, nil
 }
