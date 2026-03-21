@@ -677,4 +677,3 @@ func (p *configParser) unclosedNamedBlockError(kind, name string) error {
 
 	return fmt.Errorf("line %d: expected } to close %s %q", line, kind, name)
 }
-
