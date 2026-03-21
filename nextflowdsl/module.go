@@ -99,8 +99,8 @@ func (r localResolver) Resolve(spec string) (string, error) {
 	switch {
 	case filepath.IsAbs(spec):
 		resolvedPath = filepath.Clean(spec)
-	case strings.HasPrefix(spec, "./"):
-		resolvedPath = filepath.Join(r.basePath, filepath.FromSlash(strings.TrimPrefix(spec, "./")))
+	case spec == "." || spec == ".." || strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../"):
+		resolvedPath = filepath.Join(r.basePath, filepath.FromSlash(spec))
 	default:
 		return "", fmt.Errorf("unsupported local module spec %q", spec)
 	}
