@@ -1123,9 +1123,21 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 			repGroupPrefix := nextflowRepGroupPrefix("nextflow-io/hello", "followrun")
 			jobs := env.jobsByRepGroupSubstring(repGroupPrefix)
 			So(jobs, ShouldHaveLength, 4)
+			outputs := make([]string, 0, len(jobs))
 			for _, job := range jobs {
 				So(job.State, ShouldEqual, jobqueue.JobStateComplete)
+
+				stdout, readErr := os.ReadFile(filepath.Join(job.Cwd, nfStdoutFile))
+				So(readErr, ShouldBeNil)
+				outputs = append(outputs, string(stdout))
 			}
+			sort.Strings(outputs)
+			So(outputs, ShouldResemble, []string{
+				"Bonjour world!\n",
+				"Ciao world!\n",
+				"Hello world!\n",
+				"Hola world!\n",
+			})
 
 			jq := env.connectClient()
 			defer func() {

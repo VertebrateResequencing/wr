@@ -90,6 +90,29 @@ func TestBuildCommandA1(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(string(stdout), ShouldEqual, "hello\n")
 		})
+
+		Convey("it interpolates process input variables before the shell executes quoted script text", func() {
+			cwd, err := os.Getwd()
+			So(err, ShouldBeNil)
+
+			tempDir := t.TempDir()
+			So(os.Chdir(tempDir), ShouldBeNil)
+			defer func() {
+				So(os.Chdir(cwd), ShouldBeNil)
+			}()
+
+			cmd, err := buildCommand(&Process{
+				Script: "echo '${x} world!'",
+				Input:  []*Declaration{{Name: "x", Kind: "val"}},
+			}, []string{"Bonjour"}, nil)
+
+			So(err, ShouldBeNil)
+			So(exec.Command("bash", "-c", cmd).Run(), ShouldBeNil)
+
+			stdout, err := os.ReadFile(filepath.Join(tempDir, nfStdoutFile))
+			So(err, ShouldBeNil)
+			So(string(stdout), ShouldEqual, "Bonjour world!\n")
+		})
 	})
 }
 
