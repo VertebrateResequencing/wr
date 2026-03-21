@@ -72,6 +72,30 @@ func TestGitHubResolver(t *testing.T) {
 			So(matches, ShouldNotBeEmpty)
 		})
 
+		Convey("missing cache roots are created before invoking git", func() {
+			cacheDir := filepath.Join(t.TempDir(), "nested", "cache")
+			cloneCalls := 0
+			githubResolverRunGit = func(dir string, args ...string) error {
+				cloneCalls++
+
+				info, err := os.Stat(dir)
+				So(err, ShouldBeNil)
+				So(info.IsDir(), ShouldBeTrue)
+				So(dir, ShouldEqual, cacheDir)
+
+				cachePath := filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)
+				So(os.MkdirAll(cachePath, 0o755), ShouldBeNil)
+
+				return os.WriteFile(filepath.Join(cachePath, "main.nf"), []byte("workflow {}\n"), 0o644)
+			}
+
+			path, err := NewGitHubResolver(cacheDir).Resolve("nextflow-io/hello")
+
+			So(err, ShouldBeNil)
+			So(cloneCalls, ShouldEqual, 1)
+			So(path, ShouldEqual, filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision))
+		})
+
 		Convey("populated cache avoids a second network fetch and returns the same path", func() {
 			modulePath := filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)
 			So(os.MkdirAll(modulePath, 0o755), ShouldBeNil)
