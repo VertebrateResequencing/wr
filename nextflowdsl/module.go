@@ -167,6 +167,9 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 	if err := os.MkdirAll(cachePath, 0o755); err != nil {
 		return "", fmt.Errorf("create module cache %q: %w", cachePath, err)
 	}
+	if err := os.MkdirAll(r.cacheDir, 0o755); err != nil {
+		return "", fmt.Errorf("create module cache root %q: %w", r.cacheDir, err)
+	}
 
 	args := []string{"clone", "--depth", "1"}
 	if explicitRevision {
