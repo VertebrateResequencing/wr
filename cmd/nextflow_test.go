@@ -52,6 +52,22 @@ func TestGenerateNextflowRunID(t *testing.T) {
 	})
 }
 
+func TestNextflowRemoteWorkflowName(t *testing.T) {
+	Convey("remote workflow names retain owner and repo to avoid collisions", t, func() {
+		name, ok := nextflowRemoteWorkflowName("nextflow-io/hello")
+
+		So(ok, ShouldBeTrue)
+		So(name, ShouldEqual, "nextflow-io/hello")
+	})
+
+	Convey("GitHub workflow URLs retain owner and repo to avoid collisions", t, func() {
+		name, ok := nextflowRemoteWorkflowName("https://github.com/nextflow-io/hello.git")
+
+		So(ok, ShouldBeTrue)
+		So(name, ShouldEqual, "nextflow-io/hello")
+	})
+}
+
 func TestReadCapturedOutput(t *testing.T) {
 	Convey("readCapturedOutput covers D1", t, func() {
 		tempDir := t.TempDir()
@@ -637,7 +653,7 @@ func TestNextflowRunCommand(t *testing.T) {
 			_, statErr = os.Stat(cacheEntry)
 			So(statErr, ShouldBeNil)
 
-			jobs := env.jobsByRepGroupSubstring("nf.hello.")
+			jobs := env.jobsByRepGroupSubstring("nf." + nextflowRepGroupToken("nextflow-io/hello") + ".")
 			So(jobs, ShouldHaveLength, 4)
 			So(jobs[0].RepGroup, ShouldContainSubstring, ".sayHello")
 
@@ -664,7 +680,7 @@ func TestNextflowRunCommand(t *testing.T) {
 			_, statErr := os.Stat(cacheEntry)
 			So(statErr, ShouldBeNil)
 
-			jobs := env.jobsByRepGroupSubstring("nf.hello.")
+			jobs := env.jobsByRepGroupSubstring("nf." + nextflowRepGroupToken("nextflow-io/hello") + ".")
 			So(jobs, ShouldHaveLength, 4)
 			So(jobs[0].RepGroup, ShouldContainSubstring, ".sayHello")
 		})

@@ -290,11 +290,11 @@ func nextflowRemoteWorkflowName(workflowArg string) (string, bool) {
 		}
 
 		parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
-		if len(parts) != 2 || parts[1] == "" {
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return "", false
 		}
 
-		return parts[1], true
+		return strings.Join(parts, "/"), true
 	}
 
 	parts := strings.Split(strings.Trim(spec, "/"), "/")
@@ -302,7 +302,7 @@ func nextflowRemoteWorkflowName(workflowArg string) (string, bool) {
 		return "", false
 	}
 
-	return parts[1], true
+	return strings.Join(parts, "/"), true
 }
 
 func nextflowWorkflowName(path string) string {
