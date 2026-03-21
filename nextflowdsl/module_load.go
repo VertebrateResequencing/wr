@@ -30,18 +30,106 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // LoadWorkflowFile parses a workflow file and resolves any imported modules
 // into a single merged AST ready for translation.
 func LoadWorkflowFile(path string, remoteResolver ModuleResolver) (*Workflow, error) {
-	absPath, err := filepath.Abs(path)
+	resolvedPath, _, err := ResolveWorkflowPath(path, remoteResolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve workflow path %s: %w", path, err)
+		return nil, err
 	}
 
 	loaded := make(map[string]*Workflow)
-	return loadWorkflowFile(absPath, remoteResolver, loaded)
+	return loadWorkflowFile(resolvedPath, remoteResolver, loaded)
+}
+
+// ResolveWorkflowPath resolves a top-level workflow identifier to a local
+// workflow entry file, using the remote resolver when the workflow is not
+// present locally.
+func ResolveWorkflowPath(path string, remoteResolver ModuleResolver) (resolvedPath string, resolvedRemotely bool, err error) {
+	localPath, localErr := resolveLocalWorkflowPath(path)
+	if localErr == nil {
+		return localPath, false, nil
+	}
+
+	if remoteResolver == nil {
+		return "", false, fmt.Errorf("resolve workflow path %s: %w", path, localErr)
+	}
+
+	remotePath, remoteErr := remoteResolver.Resolve(path)
+	if remoteErr != nil {
+		if looksLikeRemoteWorkflowSpec(path) {
+			return "", false, fmt.Errorf("resolve workflow path %s: %w", path, remoteErr)
+		}
+
+		return "", false, fmt.Errorf("resolve workflow path %s: %w", path, localErr)
+	}
+
+	entryPath, err := workflowEntryPath(remotePath)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve workflow path %s: %w", path, err)
+	}
+
+	return entryPath, true, nil
+}
+
+func resolveLocalWorkflowPath(path string) (string, error) {
+	resolvedPath := path
+	if !filepath.IsAbs(path) {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve workflow path %s: %w", path, err)
+		}
+
+		resolvedPath = absPath
+	}
+
+	return workflowEntryPath(resolvedPath)
+}
+
+func looksLikeRemoteWorkflowSpec(path string) bool {
+	spec, _, _ := strings.Cut(strings.TrimSpace(path), "@")
+	if spec == "" {
+		return false
+	}
+
+	if strings.HasPrefix(spec, "https://") || strings.HasPrefix(spec, "http://") {
+		return true
+	}
+
+	parts := strings.Split(strings.Trim(spec, "/"), "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && filepath.Ext(parts[1]) == ""
+}
+
+func workflowEntryPath(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("workflow path %q does not exist", path)
+		}
+
+		return "", fmt.Errorf("stat workflow path %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return path, nil
+	}
+
+	entryPath := filepath.Join(path, "main.nf")
+	entryInfo, err := os.Stat(entryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("workflow directory %q does not contain main.nf", path)
+		}
+
+		return "", fmt.Errorf("stat workflow entry %q: %w", entryPath, err)
+	}
+	if entryInfo.IsDir() {
+		return "", fmt.Errorf("workflow entry %q is a directory", entryPath)
+	}
+
+	return entryPath, nil
 }
 
 func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[string]*Workflow) (*Workflow, error) {

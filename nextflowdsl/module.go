@@ -28,6 +28,7 @@ package nextflowdsl
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +52,17 @@ var githubResolverRunGit = func(dir string, args ...string) error {
 	}
 
 	return nil
+}
+
+// SetGitHubResolverRunGitForTesting swaps the low-level git runner used by the
+// GitHub resolver and returns a restore function for tests.
+func SetGitHubResolverRunGitForTesting(runGit func(dir string, args ...string) error) func() {
+	previous := githubResolverRunGit
+	githubResolverRunGit = runGit
+
+	return func() {
+		githubResolverRunGit = previous
+	}
 }
 
 // ModuleResolver fetches module source and returns a local path.
@@ -179,6 +191,11 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 
 func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitRevision bool, err error) {
 	repoSpec, revisionSpec, hasRevision := strings.Cut(spec, "@")
+	repoSpec, err = normalizeGitHubRepoSpec(repoSpec)
+	if err != nil {
+		return "", "", "", false, err
+	}
+
 	parts := strings.Split(repoSpec, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", false, fmt.Errorf("unsupported GitHub module spec %q", spec)
@@ -235,6 +252,28 @@ func hasNextflowModuleFiles(path string) (bool, error) {
 
 func githubModuleURL(owner, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+}
+
+func normalizeGitHubRepoSpec(spec string) (string, error) {
+	if !strings.HasPrefix(spec, "https://") && !strings.HasPrefix(spec, "http://") {
+		return spec, nil
+	}
+
+	parsed, err := url.Parse(spec)
+	if err != nil {
+		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
+	}
+	if !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
+	}
+
+	trimmedPath := strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/")
+	parts := strings.Split(trimmedPath, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
+	}
+
+	return parts[0] + "/" + parts[1], nil
 }
 
 func defaultGitHubModuleCacheDir() string {
