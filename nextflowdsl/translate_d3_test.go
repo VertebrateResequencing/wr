@@ -155,6 +155,40 @@ func TestTranslateD3(t *testing.T) {
 			So(result.Jobs[2].RepGroup, ShouldEqual, "nf.mywf.r1.qc.merge")
 			So(result.Jobs[2].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.qc.sort"})
 		})
+
+		Convey("subworkflow take inputs and emit outputs are wired for downstream consumers", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					d3Process("sort", "echo $reads", []*Declaration{{Kind: "val", Name: "reads"}}, []*Declaration{{Kind: "val", Name: "out"}}),
+					d3Process("merge", "echo $reads", []*Declaration{{Kind: "val", Name: "reads"}}, nil),
+				},
+				SubWFs: []*SubWorkflow{{
+					Name: "prep",
+					Body: &WorkflowBlock{
+						Take: []string{"reads_ch"},
+						Calls: []*Call{{
+							Target: "sort",
+							Args:   []ChanExpr{ChanRef{Name: "reads_ch"}},
+						}},
+						Emit: []*WFEmit{{Name: "sorted", Expr: "sort.out"}},
+					},
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "prep", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "hello"}}}}},
+					{Target: "merge", Args: []ChanExpr{ChanRef{Name: "prep.out.sorted"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[0].RepGroup, ShouldEqual, "nf.mywf.r1.prep.sort")
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "export reads='hello'")
+			So(result.Jobs[1].RepGroup, ShouldEqual, "nf.mywf.r1.merge")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export reads='hello'")
+			So(result.Jobs[1].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.prep.sort"})
+		})
 	})
 }
 

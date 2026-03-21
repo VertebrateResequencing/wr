@@ -759,6 +759,15 @@ type translatedCall struct {
 	pending       bool
 }
 
+func cloneTranslatedCall(value translatedCall) translatedCall {
+	value.depGroups = cloneStrings(value.depGroups)
+	value.outputPaths = cloneStrings(value.outputPaths)
+	value.emitOutputs = cloneEmittedOutputs(value.emitOutputs)
+	value.items = cloneChannelItems(value.items)
+
+	return value
+}
+
 type bindingSet struct {
 	bindings  []string
 	values    []any
@@ -945,6 +954,151 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 	return jobs, nil
 }
 
+func bindSubworkflowInputs(
+	call *Call,
+	subwf *SubWorkflow,
+	scope []string,
+	nextScope []string,
+	translated map[string]translatedCall,
+	cwd string,
+) error {
+	if subwf == nil || subwf.Body == nil || len(subwf.Body.Take) == 0 {
+		if len(call.Args) == 0 {
+			return nil
+		}
+
+		return fmt.Errorf("subworkflow %q does not declare take inputs", call.Target)
+	}
+
+	if len(call.Args) != len(subwf.Body.Take) {
+		return fmt.Errorf("subworkflow %q expects %d input(s), got %d", call.Target, len(subwf.Body.Take), len(call.Args))
+	}
+
+	for index, takeName := range subwf.Body.Take {
+		stage, err := translatedCallForSubworkflowArg(call.Args[index], scope, translated, cwd)
+		if err != nil {
+			return fmt.Errorf("subworkflow %q input %q: %w", call.Target, takeName, err)
+		}
+
+		translated[scopedTargetKey(nextScope, takeName)] = stage
+	}
+
+	return nil
+}
+
+func translatedCallForSubworkflowArg(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) (translatedCall, error) {
+	if ref, ok := arg.(ChanRef); ok {
+		stage, found := resolveTranslatedOutput(ref.Name, scope, translated)
+		if !found {
+			return translatedCall{}, fmt.Errorf("unknown upstream reference %q", ref.Name)
+		}
+
+		return cloneTranslatedCall(stage), nil
+	}
+
+	items, err := resolveTranslatedChannelItems(arg, scope, translated, cwd)
+	if err == nil {
+		stage := translatedCall{items: cloneChannelItems(items)}
+		for _, item := range items {
+			stage.depGroups = appendUniqueStrings(stage.depGroups, item.depGroups)
+		}
+
+		return stage, nil
+	}
+
+	paths, depGroups, resolveErr := resolveArg(arg, scope, translated)
+	if resolveErr != nil {
+		return translatedCall{}, resolveErr
+	}
+
+	stage := translatedCall{
+		depGroups:   cloneStrings(depGroups),
+		outputPaths: cloneStrings(paths),
+	}
+	if len(paths) > 0 || len(depGroups) > 0 {
+		stage.items = []channelItem{{value: channelItemValue(paths), depGroups: cloneStrings(depGroups)}}
+	}
+
+	return stage, nil
+}
+
+func bindSubworkflowOutputs(
+	call *Call,
+	subwf *SubWorkflow,
+	nextScope []string,
+	translated map[string]translatedCall,
+	cwd string,
+) error {
+	if subwf == nil || subwf.Body == nil || len(subwf.Body.Emit) == 0 {
+		return nil
+	}
+
+	synthetic := translatedCall{emitOutputs: map[string]emittedOutput{}}
+	for _, emit := range subwf.Body.Emit {
+		if emit == nil {
+			continue
+		}
+
+		referenceText := emit.Expr
+		if referenceText == "" {
+			referenceText = emit.Name
+		}
+
+		expr, err := parseChanExprText(referenceText)
+		if err != nil {
+			return fmt.Errorf("subworkflow %q emit %q: %w", call.Target, emit.Name, err)
+		}
+
+		stage, err := translatedCallForSubworkflowArg(expr, nextScope, translated, cwd)
+		if err != nil {
+			return fmt.Errorf("subworkflow %q emit %q: %w", call.Target, emit.Name, err)
+		}
+
+		labelOutput := emittedOutput{
+			outputPaths: cloneStrings(stage.outputPaths),
+			items:       cloneChannelItems(stage.items),
+		}
+		synthetic.emitOutputs[emit.Name] = labelOutput
+		synthetic.outputPaths = appendUniqueStrings(synthetic.outputPaths, labelOutput.outputPaths)
+		synthetic.items = append(synthetic.items, cloneChannelItems(stage.items)...)
+		synthetic.depGroups = appendUniqueStrings(synthetic.depGroups, stage.depGroups)
+		if synthetic.depGroup == "" {
+			synthetic.depGroup = stage.depGroup
+		}
+		if synthetic.repGroup == "" {
+			synthetic.repGroup = stage.repGroup
+		}
+		synthetic.dynamicOutput = synthetic.dynamicOutput || stage.dynamicOutput
+		synthetic.pending = synthetic.pending || stage.pending
+	}
+
+	if len(synthetic.emitOutputs) == 0 {
+		return nil
+	}
+
+	translated[scopedTargetKey(nextScope[:len(nextScope)-1], call.Target)] = synthetic
+
+	return nil
+}
+
+func parseChanExprText(text string) (ChanExpr, error) {
+	tokens, err := lex(text)
+	if err != nil {
+		return nil, err
+	}
+
+	parser := newParser(tokens, text)
+	expr, err := parser.parseChanExpr(tokenEOF)
+	if err != nil {
+		return nil, err
+	}
+	if parser.current().typ != tokenEOF {
+		return nil, fmt.Errorf("line %d: unexpected token %q", parser.current().line, parser.current().lit)
+	}
+
+	return expr, nil
+}
+
 func translateBlock(
 	block *WorkflowBlock,
 	scope []string,
@@ -1021,7 +1175,13 @@ func translateBlock(
 		}
 
 		nextScope := append(append([]string{}, scope...), call.Target)
+		if err := bindSubworkflowInputs(call, subwf, scope, nextScope, translated, tc.Cwd); err != nil {
+			return err
+		}
 		if err := translateBlock(subwf.Body, nextScope, processes, subworkflows, translated, defaults, params, tc, result); err != nil {
+			return err
+		}
+		if err := bindSubworkflowOutputs(call, subwf, nextScope, translated, tc.Cwd); err != nil {
 			return err
 		}
 	}
@@ -1922,11 +2082,7 @@ func cloneTranslatedCalls(translated map[string]translatedCall) map[string]trans
 
 	clone := make(map[string]translatedCall, len(translated))
 	for key, value := range translated {
-		value.depGroups = cloneStrings(value.depGroups)
-		value.outputPaths = cloneStrings(value.outputPaths)
-		value.emitOutputs = cloneEmittedOutputs(value.emitOutputs)
-		value.items = cloneChannelItems(value.items)
-		clone[key] = value
+		clone[key] = cloneTranslatedCall(value)
 	}
 
 	return clone
