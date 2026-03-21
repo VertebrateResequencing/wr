@@ -533,7 +533,16 @@ func nextflowResumeMatch(existingJobs []*jobqueue.Job, plannedJob *jobqueue.Job)
 		}
 	}
 	if len(existingJobs) == 1 {
-		return existingJobs[0], nil
+		existingJob := existingJobs[0]
+		if existingJob.CwdMatters || plannedJob.CwdMatters {
+			if existingJob.CwdMatters && plannedJob.CwdMatters && filepath.Clean(existingJob.Cwd) == filepath.Clean(plannedJob.Cwd) {
+				return existingJob, nil
+			}
+
+			return nil, append([]*jobqueue.Job{}, existingJobs...)
+		}
+
+		return existingJob, nil
 	}
 
 	return nil, append([]*jobqueue.Job{}, existingJobs...)
