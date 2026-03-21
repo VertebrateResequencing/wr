@@ -83,7 +83,12 @@ func (e *nextflowCommandTestEnv) writeText(name, content string) string {
 	e.t.Helper()
 
 	path := filepath.Join(mustGetwd(e.t), name)
-	err := os.WriteFile(path, []byte(content), 0o644)
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err != nil {
+		e.t.Fatalf("create parent directory for %s: %v", name, err)
+	}
+
+	err = os.WriteFile(path, []byte(content), 0o644)
 	if err != nil {
 		e.t.Fatalf("write %s: %v", name, err)
 	}
@@ -335,6 +340,67 @@ func TestNextflowRunCommand(t *testing.T) {
 			So(jobs[0].Cmd, ShouldContainSubstring, "/profile")
 		})
 
+		Convey("local imported processes are resolved before translation", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("imported_process.nf", "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n")
+			env.writeText("modules/helper.nf", "process helper {\nscript: 'echo imported'\n}\n")
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.imported_process.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].RepGroup, ShouldContainSubstring, ".helper")
+		})
+
+		Convey("aliased imported processes use the aliased call target", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("imported_alias.nf", "include { helper as aliased } from './modules/helper.nf'\nworkflow { aliased() }\n")
+			env.writeText("modules/helper.nf", "process helper {\nscript: 'echo imported'\n}\n")
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.imported_alias.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].RepGroup, ShouldContainSubstring, ".aliased")
+		})
+
+		Convey("imported subworkflows bring their internal process dependencies", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("imported_subworkflow.nf", "include { pack } from './modules/pack.nf'\nworkflow { pack() }\n")
+			env.writeText("modules/pack.nf", "process helper {\nscript: 'echo imported'\n}\nworkflow pack {\nhelper()\n}\n")
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.imported_subworkflow.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].RepGroup, ShouldContainSubstring, ".pack.helper")
+		})
+
+		Convey("aliased imports rewrite internal channel references inside imported subworkflows", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("imported_alias_refs.nf", "include { helper as aliased ; pack } from './modules/pack.nf'\nworkflow { pack() }\n")
+			env.writeText("modules/pack.nf", "process helper {\noutput: val 'hello'\nscript: 'echo hello'\n}\nprocess consumer {\ninput: val x\nscript: 'echo $x'\n}\nworkflow pack {\nhelper()\nconsumer(helper.out)\n}\n")
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.imported_alias_refs.")
+			So(jobs, ShouldHaveLength, 2)
+			So(jobs[0].RepGroup+jobs[1].RepGroup, ShouldContainSubstring, ".aliased")
+			So(jobs[0].RepGroup+jobs[1].RepGroup, ShouldContainSubstring, ".pack.consumer")
+		})
+
 		Convey("missing workflow files return an error naming the missing path", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
@@ -385,6 +451,21 @@ func TestNextflowRunCommand(t *testing.T) {
 			jobs := env.jobsByRepGroupSubstring("nf.nested.")
 			So(jobs, ShouldHaveLength, 1)
 			So(jobs[0].Cmd, ShouldContainSubstring, "/data/b.fq")
+		})
+
+		Convey("numeric CLI params keep numeric semantics for directive arithmetic", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("numeric_cli.nf", singleProcessWorkflow("echo hello"))
+			configPath := env.writeText("nextflow.config", "params { cpus = 1 }\nprocess { cpus = params.cpus * 2 }")
+
+			err := env.executeRun("--config", configPath, "--param", "cpus=4", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.numeric_cli.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Requirements.Cores, ShouldEqual, 8)
 		})
 	})
 }
@@ -475,6 +556,20 @@ func TestNextflowStatusCommand(t *testing.T) {
 			counts := statusCounts(output)
 			So(counts, ShouldContainKey, "alpha")
 			So(counts, ShouldNotContainKey, "beta")
+		})
+
+		Convey("it handles dotted workflow names and run ids", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			env.addJob(newStatusTestJob("nf."+nextflowRepGroupToken("rna.seq")+"."+nextflowRepGroupToken("2026.03")+".align", "echo dotted"))
+
+			output, err := env.executeStatus("--workflow", "rna.seq", "--run-id", "2026.03")
+			So(err, ShouldBeNil)
+
+			counts := statusCounts(output)
+			So(counts, ShouldContainKey, "align")
+			So(counts["align"], ShouldResemble, []string{"1", "0", "0", "0", "1"})
 		})
 	})
 }
@@ -774,6 +869,14 @@ func TestNextflowResumeJobs(t *testing.T) {
 			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
 			So(err, ShouldBeNil)
 			So(jobsToAdd, ShouldBeEmpty)
+		})
+
+		Convey("lost jobs are re-added", func() {
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{incomplete: []*jobqueue.Job{{Cmd: "echo old", RepGroup: job.RepGroup, State: jobqueue.JobStateLost}}}}}
+
+			jobsToAdd, err := nextflowResumeJobs(queue, "nf.resume.r1.", []*jobqueue.Job{job})
+			So(err, ShouldBeNil)
+			So(jobsToAdd, ShouldResemble, []*jobqueue.Job{job})
 		})
 	})
 }

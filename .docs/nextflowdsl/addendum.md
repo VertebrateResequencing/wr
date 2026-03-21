@@ -59,6 +59,7 @@
 ### Phase 4 Items 4.2-4.5
 
 - D2 requires resolving relative `publishDir` paths against the workflow file directory, but the spec’s `TranslateConfig` shape does not include a workflow-path field. The implementation added `WorkflowPath` so that behavior is expressible.
+- D1 describes downstream jobs referencing upstream outputs at translate time, while D4 classifies all `path` and `file` outputs as pending. The implementation interprets D1 static translation as applying to `val`-only DAG edges, and keeps literal `path` outputs in the `Pending` flow as required by D4.
 - D4 and D5 combine cleanly only if the caller invokes `TranslatePending` after all awaited dep groups are complete. The current `CompletedJob` contract does not itself prove completeness for multi-job fanout; it relies on the follow-loop calling discipline.
 - D5 does not define what should happen when multiple fanout inputs on one process expand to different cardinalities. The implementation returns an error instead of inventing zip or cartesian semantics.
 

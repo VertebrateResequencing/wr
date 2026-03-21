@@ -100,5 +100,22 @@ func TestParseConfig(t *testing.T) {
 			So(cfg.Process, ShouldNotBeNil)
 			So(cfg.Process.Cpus, ShouldEqual, 8)
 		})
+
+		Convey("process settings can use params-backed expressions defined later in the config", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { cpus = params.cpus * 2 }\nparams { cpus = 4 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Process, ShouldNotBeNil)
+			So(cfg.Process.Cpus, ShouldEqual, 8)
+		})
+
+		Convey("profile process settings can use params-backed expressions defined later in the profile", func() {
+			cfg, err := ParseConfig(strings.NewReader("profiles { test { process { cpus = params.cpus * 2 } params { cpus = 4 } } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Profiles, ShouldContainKey, "test")
+			So(cfg.Profiles["test"].Process, ShouldNotBeNil)
+			So(cfg.Profiles["test"].Process.Cpus, ShouldEqual, 8)
+		})
 	})
 }

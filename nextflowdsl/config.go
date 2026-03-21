@@ -55,6 +55,12 @@ type Config struct {
 
 // ParseConfig parses a nextflow.config file.
 func ParseConfig(r io.Reader) (*Config, error) {
+	return ParseConfigWithParams(r, nil)
+}
+
+// ParseConfigWithParams parses a nextflow.config file with external params
+// available for evaluating params-backed process expressions.
+func ParseConfigWithParams(r io.Reader, externalParams map[string]any) (*Config, error) {
 	input, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
@@ -65,7 +71,12 @@ func ParseConfig(r io.Reader) (*Config, error) {
 		return nil, err
 	}
 
-	return newConfigParser(tokens).parse()
+	params, profileParams, err := newConfigParser(tokens).collectParams()
+	if err != nil {
+		return nil, err
+	}
+
+	return newConfigParser(tokens).parse(params, profileParams, externalParams)
 }
 
 type configParser struct {
@@ -77,7 +88,7 @@ func newConfigParser(tokens []token) *configParser {
 	return &configParser{tokens: tokens}
 }
 
-func (p *configParser) parse() (*Config, error) {
+func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[string]map[string]any, externalParams map[string]any) (*Config, error) {
 	cfg := &Config{}
 
 	for {
@@ -97,21 +108,61 @@ func (p *configParser) parse() (*Config, error) {
 			if err != nil {
 				return nil, err
 			}
-			cfg.Params = params
+			cfg.Params = MergeParams(cfg.Params, params)
 		case "process":
-			process, err := p.parseProcessBlock(cfg.Params)
+			process, err := p.parseProcessBlock(MergeParams(knownParams, externalParams))
 			if err != nil {
 				return nil, err
 			}
 			cfg.Process = process
 		case "profiles":
-			profiles, err := p.parseProfilesBlock()
+			profiles, err := p.parseProfilesBlock(knownParams, knownProfileParams, externalParams)
 			if err != nil {
 				return nil, err
 			}
 			cfg.Profiles = profiles
 		default:
 			return nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
+		}
+	}
+}
+
+func (p *configParser) collectParams() (map[string]any, map[string]map[string]any, error) {
+	params := map[string]any{}
+	profileParams := map[string]map[string]any{}
+
+	for {
+		p.skipSeparators()
+		current := p.current()
+		if current.typ == tokenEOF {
+			return params, profileParams, nil
+		}
+
+		if current.typ != tokenIdent {
+			return nil, nil, fmt.Errorf("line %d: unexpected token %q", current.line, current.lit)
+		}
+
+		switch current.lit {
+		case "params":
+			sectionParams, err := p.parseParamsBlock()
+			if err != nil {
+				return nil, nil, err
+			}
+			params = MergeParams(params, sectionParams)
+		case "process":
+			if err := p.skipNamedBlock("process"); err != nil {
+				return nil, nil, err
+			}
+		case "profiles":
+			sectionProfiles, err := p.collectProfileParams()
+			if err != nil {
+				return nil, nil, err
+			}
+			for name, sectionParams := range sectionProfiles {
+				profileParams[name] = MergeParams(profileParams[name], sectionParams)
+			}
+		default:
+			return nil, nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
 		}
 	}
 }
@@ -250,7 +301,7 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 	return nil
 }
 
-func (p *configParser) parseProfilesBlock() (map[string]*Profile, error) {
+func (p *configParser) parseProfilesBlock(baseParams map[string]any, knownProfileParams map[string]map[string]any, externalParams map[string]any) (map[string]*Profile, error) {
 	if _, err := p.expectIdent("profiles"); err != nil {
 		return nil, err
 	}
@@ -271,7 +322,7 @@ func (p *configParser) parseProfilesBlock() (map[string]*Profile, error) {
 			p.pos++
 			return profiles, nil
 		case tokenIdent:
-			profile, err := p.parseProfile()
+			profile, err := p.parseProfile(baseParams, knownProfileParams[current.lit], externalParams)
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +333,81 @@ func (p *configParser) parseProfilesBlock() (map[string]*Profile, error) {
 	}
 }
 
-func (p *configParser) parseProfile() (*Profile, error) {
+func (p *configParser) collectProfileParams() (map[string]map[string]any, error) {
+	if _, err := p.expectIdent("profiles"); err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return nil, err
+	}
+
+	profiles := map[string]map[string]any{}
+	for {
+		p.skipSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			return nil, p.unclosedBlockError("profiles")
+		case tokenRBrace:
+			p.pos++
+			return profiles, nil
+		case tokenIdent:
+			params, err := p.collectProfileParamsBlock()
+			if err != nil {
+				return nil, err
+			}
+			profiles[current.lit] = MergeParams(profiles[current.lit], params)
+		default:
+			return nil, fmt.Errorf("line %d: expected profile name", current.line)
+		}
+	}
+}
+
+func (p *configParser) collectProfileParamsBlock() (map[string]any, error) {
+	name, err := p.expectType(tokenIdent, "profile name")
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = p.expectType(tokenLBrace, "{"); err != nil {
+		return nil, err
+	}
+
+	params := map[string]any{}
+	for {
+		p.skipSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			return nil, p.unclosedNamedBlockError("profile", name.lit)
+		case tokenRBrace:
+			p.pos++
+			return params, nil
+		case tokenIdent:
+			switch current.lit {
+			case "params":
+				profileParams, parseErr := p.parseParamsBlock()
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				params = MergeParams(params, profileParams)
+			case "process":
+				if err := p.skipNamedBlock("process"); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, fmt.Errorf("line %d: unsupported profile section %q", current.line, current.lit)
+			}
+		default:
+			return nil, fmt.Errorf("line %d: expected profile section", current.line)
+		}
+	}
+}
+
+func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[string]any, externalParams map[string]any) (*Profile, error) {
 	name, err := p.expectType(tokenIdent, "profile name")
 	if err != nil {
 		return nil, err
@@ -310,9 +435,9 @@ func (p *configParser) parseProfile() (*Profile, error) {
 				if parseErr != nil {
 					return nil, parseErr
 				}
-				profile.Params = params
+				profile.Params = MergeParams(profile.Params, params)
 			case "process":
-				process, parseErr := p.parseProcessBlock(profile.Params)
+				process, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams))
 				if parseErr != nil {
 					return nil, parseErr
 				}
@@ -324,6 +449,33 @@ func (p *configParser) parseProfile() (*Profile, error) {
 			return nil, fmt.Errorf("line %d: expected profile section", current.line)
 		}
 	}
+}
+
+func (p *configParser) skipNamedBlock(name string) error {
+	if _, err := p.expectIdent(name); err != nil {
+		return err
+	}
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return err
+	}
+
+	depth := 1
+	for depth > 0 {
+		current := p.current()
+		if current.typ == tokenEOF {
+			return p.unclosedBlockError(name)
+		}
+
+		switch current.typ {
+		case tokenLBrace:
+			depth++
+		case tokenRBrace:
+			depth--
+		}
+		p.pos++
+	}
+
+	return nil
 }
 
 func (p *configParser) parseEnvBlock() (map[string]string, error) {
