@@ -317,7 +317,7 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 		selectedNames[finalName] = struct{}{}
 	}
 
-	return &Workflow{Processes: selectedProcesses, SubWFs: selectedSubWFs}, nil
+	return &Workflow{Processes: selectedProcesses, SubWFs: selectedSubWFs, Functions: cloneFuncDefs(moduleWF.Functions)}, nil
 }
 
 func importedName(name string, importNode *Import) string {
@@ -349,6 +349,7 @@ func cloneWorkflow(wf *Workflow) *Workflow {
 		SubWFs:    cloneSubWorkflows(wf.SubWFs, nil),
 		Imports:   imports,
 		EntryWF:   cloneWorkflowBlock(wf.EntryWF, nil),
+		Functions: cloneFuncDefs(wf.Functions),
 	}
 }
 
@@ -423,6 +424,8 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 	}
 
 	clonedCalls := make([]*Call, 0, len(block.Calls))
+	clonedTake := append([]string{}, block.Take...)
+	clonedEmit := make([]*WFEmit, 0, len(block.Emit))
 	for _, call := range block.Calls {
 		if call == nil {
 			continue
@@ -437,7 +440,15 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 		clonedCalls = append(clonedCalls, &Call{Target: target, Args: cloneChanExprs(call.Args, renameTargets)})
 	}
 
-	return &WorkflowBlock{Calls: clonedCalls}
+	for _, emit := range block.Emit {
+		if emit == nil {
+			continue
+		}
+
+		clonedEmit = append(clonedEmit, &WFEmit{Name: emit.Name, Expr: emit.Expr})
+	}
+
+	return &WorkflowBlock{Calls: clonedCalls, Take: clonedTake, Emit: clonedEmit}
 }
 
 func cloneDeclarations(declarations []*Declaration) []*Declaration {
@@ -447,6 +458,19 @@ func cloneDeclarations(declarations []*Declaration) []*Declaration {
 			continue
 		}
 		cloned = append(cloned, &Declaration{Kind: declaration.Kind, Name: declaration.Name, Expr: declaration.Expr, Raw: declaration.Raw})
+	}
+
+	return cloned
+}
+
+func cloneFuncDefs(funcDefs []*FuncDef) []*FuncDef {
+	cloned := make([]*FuncDef, 0, len(funcDefs))
+	for _, funcDef := range funcDefs {
+		if funcDef == nil {
+			continue
+		}
+
+		cloned = append(cloned, &FuncDef{Name: funcDef.Name, Params: append([]string{}, funcDef.Params...), Body: funcDef.Body})
 	}
 
 	return cloned

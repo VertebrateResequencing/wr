@@ -592,7 +592,7 @@ func newParser(tokens []token, source string) *parser {
 }
 
 func (p *parser) parseWorkflow() (*Workflow, error) {
-	wf := &Workflow{Processes: []*Process{}, SubWFs: []*SubWorkflow{}, Imports: []*Import{}}
+	wf := &Workflow{Processes: []*Process{}, SubWFs: []*SubWorkflow{}, Imports: []*Import{}, Functions: []*FuncDef{}}
 
 	for {
 		p.skipNewlines()
@@ -607,6 +607,15 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 				return nil, err
 			}
 			wf.Imports = append(wf.Imports, importNode)
+			continue
+		}
+
+		if current.typ == tokenIdent && current.lit == "def" {
+			funcDef, err := p.parseFunctionDef()
+			if err != nil {
+				return nil, err
+			}
+			wf.Functions = append(wf.Functions, funcDef)
 			continue
 		}
 
@@ -632,6 +641,13 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			continue
 		}
 
+		if p.isTopLevelOutputBlockStart() {
+			if err := p.parseTopLevelOutputBlock(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
 		if p.skipFeatureFlagAssignment() {
 			continue
 		}
@@ -645,6 +661,116 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 
 		return nil, fmt.Errorf("line %d: unexpected token %q", current.line, current.lit)
 	}
+}
+
+func (p *parser) isTopLevelOutputBlockStart() bool {
+	current := p.current()
+	if current.typ != tokenIdent || current.lit != "output" {
+		return false
+	}
+
+	for offset := 1; ; offset++ {
+		next := p.peekN(offset)
+		switch next.typ {
+		case tokenNewline:
+			continue
+		case tokenLBrace:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func (p *parser) parseFunctionDef() (*FuncDef, error) {
+	if _, err := p.expectIdent("def"); err != nil {
+		return nil, err
+	}
+
+	name, err := p.expectType(tokenIdent, "function name")
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = p.expectType(tokenLParen, "("); err != nil {
+		return nil, err
+	}
+
+	params := make([]string, 0)
+	for {
+		p.skipNewlines()
+		current := p.current()
+		if current.typ == tokenRParen {
+			p.pos++
+			break
+		}
+
+		param, err := p.expectType(tokenIdent, "function parameter")
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, param.lit)
+
+		p.skipNewlines()
+		switch p.current().typ {
+		case tokenComma:
+			p.pos++
+		case tokenRParen:
+			p.pos++
+			goto parseBody
+		default:
+			return nil, fmt.Errorf("line %d: expected , or )", p.current().line)
+		}
+	}
+
+parseBody:
+	p.skipNewlines()
+	openBrace, err := p.expectType(tokenLBrace, "{")
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := p.parseRawBraceBody(openBrace, fmt.Sprintf("function %q", name.lit))
+	if err != nil {
+		return nil, err
+	}
+
+	return &FuncDef{Name: name.lit, Params: params, Body: body}, nil
+}
+
+func (p *parser) parseTopLevelOutputBlock() error {
+	if _, err := p.expectIdent("output"); err != nil {
+		return err
+	}
+
+	p.skipNewlines()
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return err
+	}
+
+	depth := 1
+	for depth > 0 {
+		current := p.current()
+		if current.typ == tokenEOF {
+			line := p.previous().line
+			if line == 0 {
+				line = current.line
+			}
+
+			return fmt.Errorf("line %d: expected } to close output block", line)
+		}
+
+		switch current.typ {
+		case tokenLBrace:
+			depth++
+		case tokenRBrace:
+			depth--
+		}
+
+		p.pos++
+	}
+
+	return nil
 }
 
 func (p *parser) skipFeatureFlagAssignment() bool {
@@ -798,7 +924,8 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 		p.localScopes = p.localScopes[:len(p.localScopes)-1]
 	}()
 
-	block := &WorkflowBlock{Calls: []*Call{}}
+	block := &WorkflowBlock{Calls: []*Call{}, Take: []string{}, Emit: []*WFEmit{}}
+	section := "main"
 
 	for {
 		p.skipWorkflowSeparators()
@@ -816,19 +943,137 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			return block, nil
 		}
 
-		if current.typ == tokenIdent && p.peek().typ == tokenAssign {
-			if err := p.parseChannelAssignment(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF); err != nil {
-				return nil, err
+		if current.typ == tokenIdent && p.peek().typ == tokenColon {
+			if !isWorkflowBlockSection(current.lit) {
+				if section == "publish" {
+					p.readWorkflowPublishLineTokens()
+					continue
+				}
+
+				return nil, fmt.Errorf("line %d: unsupported workflow section %q", current.line, current.lit)
 			}
+
+			section = current.lit
+			p.pos += 2
+			p.skipWorkflowSeparators()
 			continue
 		}
 
-		calls, err := p.parseWorkflowStatement()
-		if err != nil {
-			return nil, err
+		switch section {
+		case "take":
+			take, err := p.parseWorkflowTakeLine()
+			if err != nil {
+				return nil, err
+			}
+			block.Take = append(block.Take, take...)
+		case "emit":
+			emit, err := p.parseWorkflowEmitLine()
+			if err != nil {
+				return nil, err
+			}
+			block.Emit = append(block.Emit, emit)
+		case "publish":
+			p.readWorkflowPublishLineTokens()
+		case "main":
+			if current.typ == tokenIdent && p.peek().typ == tokenAssign {
+				if err := p.parseChannelAssignment(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
+			calls, err := p.parseWorkflowStatement()
+			if err != nil {
+				return nil, err
+			}
+			block.Calls = append(block.Calls, calls...)
+		default:
+			return nil, fmt.Errorf("line %d: unsupported workflow section %q", current.line, section)
 		}
-		block.Calls = append(block.Calls, calls...)
 	}
+}
+
+func isWorkflowBlockSection(name string) bool {
+	switch name {
+	case "take", "main", "emit", "publish":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *parser) parseWorkflowTakeLine() ([]string, error) {
+	lineTokens := p.readLineTokens()
+	if len(lineTokens) == 0 {
+		return nil, fmt.Errorf("line %d: expected workflow take declaration", p.current().line)
+	}
+
+	segments := splitTopLevelCommaSegments(lineTokens)
+	take := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) == 0 {
+			continue
+		}
+		take = append(take, p.rawTokenText(trimmed))
+	}
+
+	if len(take) == 0 {
+		return nil, fmt.Errorf("line %d: expected workflow take declaration", lineTokens[0].line)
+	}
+
+	return take, nil
+}
+
+func (p *parser) parseWorkflowEmitLine() (*WFEmit, error) {
+	lineTokens := p.readLineTokens()
+	if len(lineTokens) == 0 {
+		return nil, fmt.Errorf("line %d: expected workflow emit declaration", p.current().line)
+	}
+
+	assignIndex := -1
+	parenDepth := 0
+	braceDepth := 0
+	for index, tok := range lineTokens {
+		switch tok.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenAssign:
+			if parenDepth == 0 && braceDepth == 0 {
+				assignIndex = index
+				goto parseAssign
+			}
+		}
+	}
+
+parseAssign:
+
+	if assignIndex == -1 {
+		trimmed := trimDeclarationTokens(lineTokens)
+		if len(trimmed) == 0 {
+			return nil, fmt.Errorf("line %d: expected workflow emit declaration", lineTokens[0].line)
+		}
+
+		return &WFEmit{Name: p.rawTokenText(trimmed)}, nil
+	}
+
+	nameTokens := trimDeclarationTokens(lineTokens[:assignIndex])
+	exprTokens := trimDeclarationTokens(lineTokens[assignIndex+1:])
+	if len(nameTokens) == 0 || len(exprTokens) == 0 {
+		return nil, fmt.Errorf("line %d: expected workflow emit declaration", lineTokens[0].line)
+	}
+
+	return &WFEmit{Name: p.rawTokenText(nameTokens), Expr: p.rawTokenText(exprTokens)}, nil
 }
 
 func (p *parser) parseWorkflowStatement() ([]*Call, error) {
@@ -1846,6 +2091,34 @@ func (p *parser) parseRawSectionBody() (string, error) {
 	return p.rawTokenText(lineTokens), nil
 }
 
+func (p *parser) parseRawBraceBody(openBrace token, description string) (string, error) {
+	start := openBrace.end
+	depth := 1
+
+	for {
+		current := p.current()
+		switch current.typ {
+		case tokenEOF:
+			return "", fmt.Errorf("line %d: expected } to close %s", openBrace.line, description)
+		case tokenLBrace:
+			depth++
+		case tokenRBrace:
+			depth--
+			if depth == 0 {
+				end := current.start
+				p.pos++
+				if start < 0 || end < start || end > len(p.source) {
+					return "", nil
+				}
+
+				return strings.TrimSpace(string(p.source[start:end])), nil
+			}
+		}
+
+		p.pos++
+	}
+}
+
 func (p *parser) rawTokenText(tokens []token) string {
 	if len(tokens) == 0 {
 		return ""
@@ -2086,6 +2359,45 @@ func (p *parser) readLineTokens() []token {
 		}
 		lineTokens = append(lineTokens, current)
 		p.pos++
+	}
+	if p.current().typ == tokenNewline {
+		p.pos++
+	}
+
+	return lineTokens
+}
+
+func (p *parser) readWorkflowPublishLineTokens() []token {
+	lineTokens := []token{}
+	braceDepth := 0
+	parenDepth := 0
+
+	for {
+		current := p.current()
+		if current.typ == tokenEOF {
+			break
+		}
+		if braceDepth == 0 && parenDepth == 0 && (current.typ == tokenNewline || current.typ == tokenRBrace) {
+			break
+		}
+
+		lineTokens = append(lineTokens, current)
+		p.pos++
+
+		switch current.typ {
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		}
 	}
 	if p.current().typ == tokenNewline {
 		p.pos++
