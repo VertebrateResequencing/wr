@@ -32,6 +32,25 @@ func TestCloneChanExpr(t *testing.T) {
 	})
 }
 
+func TestLoadWorkflowFileRewritesAliasedWorkflowEmitRefs(t *testing.T) {
+	Convey("LoadWorkflowFile rewrites workflow emit references for aliased imported processes", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+		moduleDir := filepath.Join(tempDir, "modules")
+		modulePath := filepath.Join(moduleDir, "pack.nf")
+
+		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte("include { helper as aliased ; pack } from './modules/pack.nf'\nworkflow { pack() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte("process helper {\noutput:\nval 'hello', emit: greeting\nscript:\n'echo hello'\n}\nworkflow pack {\nhelper()\nemit:\nresult = helper.out.greeting\n}\n"), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.SubWFs, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Emit[0].Expr, ShouldEqual, "aliased.out.greeting")
+	})
+}
+
 func TestLoadWorkflowFileRejectsImportCycles(t *testing.T) {
 	Convey("LoadWorkflowFile returns an error for cyclic module includes", t, func() {
 		tempDir := t.TempDir()
