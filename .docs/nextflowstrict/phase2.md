@@ -20,8 +20,8 @@ in `nextflowdsl/ast.go`. Parse and store each section's body as
 raw text; emit a stderr warning for sections not yet translatable.
 Covering all 6 acceptance tests from A4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: A5 - Additional I/O types and qualifiers
 
@@ -34,8 +34,8 @@ and `topic:` output qualifiers. Add `Emit` (string), `Optional`
 (bool) fields to `Declaration` in `nextflowdsl/ast.go`. Covering
 all 5 acceptance tests from A5.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: A1 - Tuple input/output declarations
 
@@ -49,5 +49,5 @@ with arbitrary element counts, `emit:` and `optional:` qualifiers
 on tuple lines, and `arity:` qualifier acceptance. Covering all 9
 acceptance tests from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

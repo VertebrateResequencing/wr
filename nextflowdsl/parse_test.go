@@ -26,6 +26,8 @@
 package nextflowdsl
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -117,6 +119,99 @@ func TestParseLexerHardening(t *testing.T) {
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "unterminated comment")
+		})
+	})
+}
+
+func TestParseTupleDeclarations(t *testing.T) {
+	Convey("Parse handles A1 tuple input and output declarations", t, func() {
+		Convey("tuple inputs capture val and path elements", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\ntuple val(id), path(reads)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "tuple")
+			So(wf.Processes[0].Input[0].Elements, ShouldHaveLength, 2)
+			So(wf.Processes[0].Input[0].Elements[0].Kind, ShouldEqual, "val")
+			So(wf.Processes[0].Input[0].Elements[0].Name, ShouldEqual, "id")
+			So(wf.Processes[0].Input[0].Elements[1].Kind, ShouldEqual, "path")
+			So(wf.Processes[0].Input[0].Elements[1].Name, ShouldEqual, "reads")
+		})
+
+		Convey("tuple outputs capture string path expressions", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\ntuple val(id), path(\"${id}.bam\")\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "tuple")
+			So(wf.Processes[0].Output[0].Elements, ShouldHaveLength, 2)
+			So(wf.Processes[0].Output[0].Elements[0].Kind, ShouldEqual, "val")
+			So(wf.Processes[0].Output[0].Elements[0].Name, ShouldEqual, "id")
+			So(wf.Processes[0].Output[0].Elements[1].Kind, ShouldEqual, "path")
+			stringExpr, ok := wf.Processes[0].Output[0].Elements[1].Expr.(StringExpr)
+			So(ok, ShouldBeTrue)
+			So(stringExpr.Value, ShouldEqual, "${id}.bam")
+		})
+
+		Convey("tuple inputs accept arbitrary element counts", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\ntuple val(id), path(r1), path(r2)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Elements, ShouldHaveLength, 3)
+		})
+
+		Convey("emit qualifiers are stored on simple output declarations", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\npath '*.bam', emit: bam\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Emit, ShouldEqual, "bam")
+		})
+
+		Convey("tuple outputs preserve line-level emit qualifiers", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\ntuple val(id), path('*.bam'), emit: aligned\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Emit, ShouldEqual, "aligned")
+			So(wf.Processes[0].Output[0].Elements, ShouldHaveLength, 2)
+		})
+
+		Convey("optional qualifiers are stored on simple output declarations", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\npath 'out.txt', optional: true\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Optional, ShouldBeTrue)
+		})
+
+		Convey("env inputs capture the variable name", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\nenv(MY_VAR)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "env")
+			So(wf.Processes[0].Input[0].Name, ShouldEqual, "MY_VAR")
+		})
+
+		Convey("stdin inputs are recognised", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\nstdin\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "stdin")
+		})
+
+		Convey("tuple inputs accept arity qualifiers on path elements without error", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\ntuple val(meta), path('reads/*', arity: '1..*')\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "tuple")
+			So(wf.Processes[0].Input[0].Elements, ShouldHaveLength, 2)
+			So(wf.Processes[0].Input[0].Elements[1].Kind, ShouldEqual, "path")
 		})
 	})
 }
@@ -534,4 +629,220 @@ func intExprValue(expr Expr) int {
 	So(ok, ShouldBeTrue)
 
 	return intExpr.Value
+}
+
+func TestParseAdditionalProcessSections(t *testing.T) {
+	Convey("Parse handles A4 additional process sections", t, func() {
+		Convey("stub sections are stored as raw text", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nstub: 'echo stub'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Stub, ShouldEqual, "echo stub")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
+		})
+
+		Convey("script and stub sections can coexist", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nscript: 'echo real'\nstub: 'echo stub'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Script, ShouldEqual, "echo real")
+			So(wf.Processes[0].Stub, ShouldEqual, "echo stub")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
+		})
+
+		Convey("exec sections are stored as raw text", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nexec: \"println 'hello'\"\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Exec, ShouldEqual, "println 'hello'")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"exec\"")
+		})
+
+		Convey("shell sections are stored as raw text", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nshell: 'echo !{var}'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Shell, ShouldEqual, "echo !{var}")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"shell\"")
+		})
+
+		Convey("when sections are stored as raw text", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nwhen: params.run_step\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].When, ShouldEqual, "params.run_step")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"when\"")
+		})
+
+		Convey("bare section bodies preserve raw text and realistic punctuation", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nstub: touch stub.txt && echo ${params.prefix}\nexec: println params.run_step ? 'go' : 'stop'\nshell: echo !{sample_id} && touch out.txt\nwhen: params.run_step && meta.id != 'skip'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Stub, ShouldEqual, "touch stub.txt && echo ${params.prefix}")
+			So(wf.Processes[0].Exec, ShouldEqual, "println params.run_step ? 'go' : 'stop'")
+			So(wf.Processes[0].Shell, ShouldEqual, "echo !{sample_id} && touch out.txt")
+			So(wf.Processes[0].When, ShouldEqual, "params.run_step && meta.id != 'skip'")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"exec\"")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"shell\"")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"when\"")
+		})
+
+		Convey("input, output, script, stub, and when sections all parse together", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\ninput:\nval sample\noutput:\npath 'out.txt'\nscript:\n'echo hello'\nstub:\ntouch stub.txt && echo ${params.prefix}\nwhen:\nparams.run_step\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Script, ShouldEqual, "echo hello")
+			So(wf.Processes[0].Stub, ShouldEqual, "touch stub.txt && echo ${params.prefix}")
+			So(wf.Processes[0].When, ShouldEqual, "params.run_step")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"when\"")
+		})
+	})
+}
+
+func TestParseAdditionalIOTypesAndQualifiers(t *testing.T) {
+	Convey("Parse handles A5 additional I/O types and qualifiers", t, func() {
+		Convey("stdout outputs are recognised", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\nstdout\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "stdout")
+			So(wf.Processes[0].Output[0].Name, ShouldEqual, "")
+		})
+
+		Convey("env outputs capture the variable name", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\nenv(MY_VAR)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "env")
+			So(wf.Processes[0].Output[0].Name, ShouldEqual, "MY_VAR")
+		})
+
+		Convey("eval outputs parse and emit a warning because translation is unsupported", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\noutput:\neval(\"hostname\")\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "eval")
+			So(stderr, ShouldContainSubstring, "unsupported output type \"eval\"")
+		})
+
+		Convey("topic qualifiers are accepted and warned as non-translatable", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\noutput:\npath '*.bam', topic: 'aligned'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "path")
+			So(stderr, ShouldContainSubstring, "unsupported output qualifier \"topic\"")
+		})
+
+		Convey("emit and optional qualifiers are parsed on the same output line", func() {
+			wf, err := Parse(strings.NewReader("process foo {\noutput:\npath 'out.txt', emit: result, optional: true\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "path")
+			So(wf.Processes[0].Output[0].Emit, ShouldEqual, "result")
+			So(wf.Processes[0].Output[0].Optional, ShouldBeTrue)
+		})
+	})
+}
+
+func captureParseStderr(run func()) string {
+	original := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	os.Stderr = writer
+	run()
+	_ = writer.Close()
+	os.Stderr = original
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		panic(err)
+	}
+	_ = reader.Close()
+
+	return strings.TrimSpace(string(output))
 }
