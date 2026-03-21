@@ -135,6 +135,42 @@ func TestTranslateD4(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(result.Pending, ShouldBeEmpty)
 			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldNotContainSubstring, "/work/nf-work/r1/PRODUCE/")
+		})
+
+		Convey("val outputs propagate known input values into downstream commands", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:       "PRODUCE",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "val", Name: "token"}},
+						Script:     "echo $token",
+						Output:     []*Declaration{{Kind: "val", Name: "token"}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "CONSUME",
+						Directives: map[string]Expr{},
+						Script:     "echo $token",
+						Input:      []*Declaration{{Kind: "val", Name: "token"}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "hello"}}}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Pending, ShouldBeEmpty)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export token='hello'")
 		})
 
 		Convey("TranslatePending preserves per-item fanout for multiple completed jobs sharing a rep group", func() {

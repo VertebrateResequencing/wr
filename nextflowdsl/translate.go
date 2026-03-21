@@ -27,6 +27,7 @@ package nextflowdsl
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -531,10 +532,79 @@ func translateProcessCall(
 		stage.depGroups = append(stage.depGroups, depGroup)
 		paths := outputPaths(proc, cwd)
 		stage.outputPaths = append(stage.outputPaths, paths...)
-		stage.items = append(stage.items, channelItem{value: channelItemValue(paths), depGroups: []string{depGroup}})
+		stage.items = append(stage.items, channelItem{value: outputValue(proc, bindingSet.bindings, params, paths), depGroups: []string{depGroup}})
 	}
 
 	return jobs, stage, nil
+}
+
+func outputValue(proc *Process, bindings []string, params map[string]any, fallbackPaths []string) any {
+	if proc == nil || len(proc.Output) == 0 {
+		return channelItemValue(fallbackPaths)
+	}
+
+	values := make([]any, 0, len(proc.Output))
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+		if decl.Kind == "path" || decl.Kind == "file" {
+			continue
+		}
+
+		if value, ok := staticOutputValue(proc, decl, bindings, params); ok {
+			values = append(values, value)
+		}
+	}
+
+	if len(values) == 0 {
+		return channelItemValue(fallbackPaths)
+	}
+	if len(values) == 1 {
+		return values[0]
+	}
+
+	return values
+}
+
+func staticOutputValue(proc *Process, decl *Declaration, bindings []string, params map[string]any) (any, bool) {
+	vars := outputVars(proc, bindings, params)
+
+	if decl.Expr != nil {
+		value, err := EvalExpr(decl.Expr, vars)
+		if err == nil {
+			return value, true
+		}
+	}
+
+	if decl.Name != "" {
+		if value, ok := vars[decl.Name]; ok {
+			return value, true
+		}
+	}
+
+	if len(bindings) == 1 {
+		return bindings[0], true
+	}
+	if decl.Kind == "val" {
+		return "", true
+	}
+
+	return nil, false
+}
+
+func outputVars(proc *Process, bindings []string, params map[string]any) map[string]any {
+	vars := make(map[string]any)
+	if len(params) > 0 {
+		vars["params"] = params
+	}
+	for index, binding := range bindings {
+		if index < len(proc.Input) && proc.Input[index] != nil && proc.Input[index].Name != "" {
+			vars[proc.Input[index].Name] = binding
+		}
+	}
+
+	return vars
 }
 
 func resolveBindings(call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
@@ -762,11 +832,15 @@ func scopedIndexedDepGroup(runID string, scope []string, processName string, ite
 }
 
 func scopedRepGroup(workflowName, runID string, scope []string, processName string) string {
-	parts := []string{"nf", workflowName, runID}
+	parts := []string{"nf", repGroupToken(workflowName), repGroupToken(runID)}
 	parts = append(parts, scope...)
 	parts = append(parts, processName)
 
 	return strings.Join(parts, ".")
+}
+
+func repGroupToken(value string) string {
+	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
 }
 
 func buildRequirements(proc *Process, defaults *ProcessDefaults, params map[string]any) (*scheduler.Requirements, error) {
@@ -1180,6 +1254,8 @@ func hasDynamicOutputs(proc *Process) bool {
 		return false
 	}
 
+	// D4 classifies all path/file outputs as dynamic, so only val-only edges can
+	// stay fully materialized in the initial D1 translation pass.
 	for _, decl := range proc.Output {
 		if decl == nil {
 			continue

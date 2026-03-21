@@ -30,9 +30,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -115,25 +117,9 @@ func runNextflowWorkflow(workflowArg string, options nextflowRunOptions) error {
 		return fmt.Errorf("resolve workflow path %s: %w", workflowArg, err)
 	}
 
-	workflowFile, err := os.Open(workflowPath)
-	if err != nil {
-		return fmt.Errorf("open workflow %s: %w", workflowArg, err)
-	}
-	defer func() {
-		_ = workflowFile.Close()
-	}()
-
-	wf, err := nextflowdsl.Parse(workflowFile)
+	wf, err := nextflowdsl.LoadWorkflowFile(workflowPath, nextflowdsl.NewGitHubResolver(""))
 	if err != nil {
 		return err
-	}
-
-	var cfg *nextflowdsl.Config
-	if options.configPath != "" {
-		cfg, err = loadNextflowConfig(options.configPath)
-		if err != nil {
-			return err
-		}
 	}
 
 	fileParams := map[string]any(nil)
@@ -147,6 +133,14 @@ func runNextflowWorkflow(workflowArg string, options nextflowRunOptions) error {
 	cliParams, err := parseNextflowCLIParams(options.paramAssignments)
 	if err != nil {
 		return err
+	}
+
+	var cfg *nextflowdsl.Config
+	if options.configPath != "" {
+		cfg, err = loadNextflowConfig(options.configPath, nextflowdsl.MergeParams(fileParams, cliParams))
+		if err != nil {
+			return err
+		}
 	}
 
 	cwd, err := os.Getwd()
@@ -193,7 +187,7 @@ func runNextflowWorkflow(workflowArg string, options nextflowRunOptions) error {
 	return followNextflowWorkflow(jq, nextflowRepGroupPrefix(translateConfig.WorkflowName, translateConfig.RunID), result.Pending, translateConfig, options.pollInterval)
 }
 
-func loadNextflowConfig(path string) (*nextflowdsl.Config, error) {
+func loadNextflowConfig(path string, externalParams map[string]any) (*nextflowdsl.Config, error) {
 	configFile, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open config %s: %w", path, err)
@@ -202,7 +196,7 @@ func loadNextflowConfig(path string) (*nextflowdsl.Config, error) {
 		_ = configFile.Close()
 	}()
 
-	cfg, err := nextflowdsl.ParseConfig(configFile)
+	cfg, err := nextflowdsl.ParseConfigWithParams(configFile, externalParams)
 	if err != nil {
 		return nil, err
 	}
@@ -219,13 +213,13 @@ func parseNextflowCLIParams(assignments []string) (map[string]any, error) {
 			return nil, fmt.Errorf("invalid --param %q: expected KEY=VALUE", assignment)
 		}
 
-		assignNextflowCLIParam(params, strings.Split(key, "."), value)
+		assignNextflowCLIParam(params, strings.Split(key, "."), parseNextflowCLIParamValue(value))
 	}
 
 	return params, nil
 }
 
-func assignNextflowCLIParam(params map[string]any, path []string, value string) {
+func assignNextflowCLIParam(params map[string]any, path []string, value any) {
 	current := params
 	for index, part := range path {
 		if index == len(path)-1 {
@@ -241,6 +235,23 @@ func assignNextflowCLIParam(params map[string]any, path []string, value string) 
 
 		current = next
 	}
+}
+
+func parseNextflowCLIParamValue(value string) any {
+	if value == "true" {
+		return true
+	}
+	if value == "false" {
+		return false
+	}
+	if intValue, err := strconv.Atoi(value); err == nil {
+		return intValue
+	}
+	if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+		return floatValue
+	}
+
+	return value
 }
 
 func generateNextflowRunID(workflowPath string) string {
@@ -446,16 +457,17 @@ func nextflowResumeAction(existingJob *jobqueue.Job) (bool, string, error) {
 		jobqueue.JobStateDependent,
 		jobqueue.JobStateDelayed,
 		jobqueue.JobStateReady,
-		jobqueue.JobStateReserved,
-		jobqueue.JobStateLost:
+		jobqueue.JobStateReserved:
 		return false, "", nil
+	case jobqueue.JobStateLost:
+		return true, "", nil
 	default:
 		return true, "", nil
 	}
 }
 
 func nextflowRepGroupPrefix(workflowName, runID string) string {
-	return fmt.Sprintf("nf.%s.%s.", workflowName, runID)
+	return fmt.Sprintf("nf.%s.%s.", nextflowRepGroupToken(workflowName), nextflowRepGroupToken(runID))
 }
 
 func newNextflowStatusCommand(options *nextflowStatusOptions) *cobra.Command {
@@ -558,7 +570,16 @@ func parseNextflowRepGroup(repGroup string) (nextflowRepGroup, bool) {
 		return nextflowRepGroup{}, false
 	}
 
-	return nextflowRepGroup{workflow: parts[1], runID: parts[2], process: process}, true
+	workflow, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return nextflowRepGroup{}, false
+	}
+	runID, err := url.PathUnescape(parts[2])
+	if err != nil {
+		return nextflowRepGroup{}, false
+	}
+
+	return nextflowRepGroup{workflow: workflow, runID: runID, process: process}, true
 }
 
 func findNextflowStatusJobs(jq *jobqueue.Client, options nextflowStatusOptions) ([]*jobqueue.Job, error) {
@@ -591,14 +612,18 @@ func findNextflowStatusJobs(jq *jobqueue.Client, options nextflowStatusOptions) 
 
 func nextflowStatusPrefix(options nextflowStatusOptions) string {
 	if options.workflow != "" && options.runID != "" {
-		return fmt.Sprintf("nf.%s.%s.", options.workflow, options.runID)
+		return fmt.Sprintf("nf.%s.%s.", nextflowRepGroupToken(options.workflow), nextflowRepGroupToken(options.runID))
 	}
 
 	if options.workflow != "" {
-		return fmt.Sprintf("nf.%s.", options.workflow)
+		return fmt.Sprintf("nf.%s.", nextflowRepGroupToken(options.workflow))
 	}
 
 	return "nf."
+}
+
+func nextflowRepGroupToken(value string) string {
+	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
 }
 
 type nextflowJobQuerier interface {

@@ -52,6 +52,7 @@ func TestTranslateD6(t *testing.T) {
 			mergeJobs := jobsWithReqGroup(result.Jobs, "nf.merge")
 			So(mergeJobs, ShouldHaveLength, 1)
 			So(mergeJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.upstream.0", "nf.r1.upstream.1", "nf.r1.upstream.2"})
+			So(mergeJobs[0].Cmd, ShouldContainSubstring, "export reads='1 2 3'")
 		})
 
 		Convey("first keeps only the first upstream item", func() {
@@ -72,6 +73,7 @@ func TestTranslateD6(t *testing.T) {
 			peekJobs := jobsWithReqGroup(result.Jobs, "nf.peek")
 			So(peekJobs, ShouldHaveLength, 1)
 			So(peekJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.upstream.0"})
+			So(peekJobs[0].Cmd, ShouldContainSubstring, "export reads='1'")
 		})
 
 		Convey("groupTuple creates one downstream job per group key", func() {

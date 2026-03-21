@@ -26,10 +26,14 @@
 package nextflowdsl
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -173,4 +177,183 @@ func TestTranslate(t *testing.T) {
 		So(jobs[0].Dependencies, ShouldNotBeNil)
 		So(jobs[0].Cmd, ShouldContainSubstring, "produced.txt")
 	})
+
+	Convey("Translate covers D1 acceptance details for resources and behaviors", t, func() {
+		Convey("a static A -> B pipeline produces deterministic cwd, deps, and output references", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{Name: "A", Script: "echo hello", Output: []*Declaration{{Kind: "val", Name: "out"}}},
+					{Name: "B", Script: "echo $reads", Input: []*Declaration{{Kind: "val", Name: "reads"}}},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Pending, ShouldBeEmpty)
+			So(result.Jobs[0].DepGroups, ShouldResemble, []string{"nf.r1.A"})
+			So(result.Jobs[0].RepGroup, ShouldEqual, "nf.mywf.r1.A")
+			So(result.Jobs[0].ReqGroup, ShouldEqual, "nf.A")
+			So(result.Jobs[0].CwdMatters, ShouldBeTrue)
+			So(result.Jobs[0].Cwd, ShouldEqual, "/work/nf-work/r1/A")
+			So(result.Jobs[1].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.A"})
+			So(result.Jobs[1].RepGroup, ShouldEqual, "nf.mywf.r1.B")
+			So(result.Jobs[1].ReqGroup, ShouldEqual, "nf.B")
+			So(result.Jobs[1].CwdMatters, ShouldBeTrue)
+			So(result.Jobs[1].Cwd, ShouldEqual, "/work/nf-work/r1/B")
+			So(result.Jobs[1].Cmd, ShouldNotContainSubstring, "/work/nf-work/r1/A/")
+		})
+
+		Convey("literal path outputs remain pending until upstream completion is known", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{Name: "A", Script: "echo hello", Output: []*Declaration{{Kind: "path", Expr: StringExpr{Value: "out.txt"}}}},
+					{Name: "B", Script: "cat $reads", Input: []*Declaration{{Kind: "path", Name: "reads"}}},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldHaveLength, 1)
+			So(result.Jobs[0].RepGroup, ShouldEqual, "nf.mywf.r1.A")
+			So(result.Pending[0].AwaitDepGrps, ShouldResemble, []string{"nf.r1.A"})
+		})
+
+		Convey("resource directives and defaults map to requirements", func() {
+			wf := &Workflow{Processes: []*Process{{Name: "A", Script: "echo hi", Directives: map[string]Expr{"cpus": IntExpr{Value: 4}, "memory": IntExpr{Value: 8192}, "time": IntExpr{Value: 120}, "disk": IntExpr{Value: 10}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs[0].Requirements.Cores, ShouldEqual, 4)
+			So(result.Jobs[0].Requirements.RAM, ShouldEqual, 8192)
+			So(result.Jobs[0].Requirements.Time, ShouldEqual, 2*time.Hour)
+			So(result.Jobs[0].Requirements.Disk, ShouldEqual, 10)
+			So(result.Jobs[0].Override, ShouldEqual, 0)
+
+			defaulted, err := Translate(&Workflow{Processes: []*Process{{Name: "B", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "B"}}}}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(defaulted.Jobs[0].Requirements.Cores, ShouldEqual, 1)
+			So(defaulted.Jobs[0].Requirements.RAM, ShouldEqual, 128)
+			So(defaulted.Jobs[0].Requirements.Time, ShouldEqual, time.Hour)
+			So(defaulted.Jobs[0].Requirements.Disk, ShouldEqual, 1)
+			So(defaulted.Jobs[0].Override, ShouldEqual, 0)
+		})
+
+		Convey("container runtime selection and absence are translated correctly", func() {
+			wf := &Workflow{Processes: []*Process{{Name: "A", Script: "echo hi", Container: "ubuntu:22.04"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
+
+			singularity, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "singularity"})
+			So(err, ShouldBeNil)
+			So(singularity.Jobs[0].WithSingularity, ShouldEqual, "ubuntu:22.04")
+			So(singularity.Jobs[0].WithDocker, ShouldEqual, "")
+
+			docker, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "docker"})
+			So(err, ShouldBeNil)
+			So(docker.Jobs[0].WithDocker, ShouldEqual, "ubuntu:22.04")
+
+			bare, err := Translate(&Workflow{Processes: []*Process{{Name: "B", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "B"}}}}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "docker"})
+			So(err, ShouldBeNil)
+			So(bare.Jobs[0].WithDocker, ShouldEqual, "")
+			So(bare.Jobs[0].WithSingularity, ShouldEqual, "")
+		})
+
+		Convey("maxForks, errorStrategy, env, params substitution, and config defaults are applied", func() {
+			stderr := captureTranslateStderr(func() {
+				wf := &Workflow{Processes: []*Process{{
+					Name:       "proc",
+					Script:     "echo ${params.input}",
+					Directives: map[string]Expr{"cpus": UnsupportedExpr{Text: "task.input.size() < 10 ? 1 : 4"}, "memory": IntExpr{Value: 8192}},
+					MaxForks:   5,
+					ErrorStrat: "finish",
+					Env:        map[string]string{"MY_VAR": "hello"},
+				}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "proc"}}}}
+
+				cfg := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{"big": {Process: &ProcessDefaults{Cpus: 8}}}}
+				result, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"input": "/data"}, Profile: "big"})
+				So(err, ShouldBeNil)
+				So(result.Jobs, ShouldHaveLength, 1)
+				So(result.Jobs[0].LimitGroups, ShouldResemble, []string{"proc:5"})
+				So(result.Jobs[0].Retries, ShouldEqual, 0)
+				So(result.Jobs[0].Requirements.Cores, ShouldEqual, 8)
+				So(result.Jobs[0].Requirements.RAM, ShouldEqual, 8192)
+				So(result.Jobs[0].Cmd, ShouldContainSubstring, "/data")
+				So(result.Jobs[0].EnvOverride, ShouldNotBeEmpty)
+				So(result.Jobs[0].Behaviours, ShouldBeEmpty)
+			})
+
+			So(stderr, ShouldContainSubstring, "unsupported errorStrategy \"finish\"")
+			So(stderr, ShouldContainSubstring, "falling back for cpus directive with unsupported expression \"task.input.size() < 10 ? 1 : 4\"")
+
+			retry := &Workflow{Processes: []*Process{{Name: "retry", Script: "echo hi", ErrorStrat: "retry", MaxRetries: 3}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "retry"}}}}
+			retryResult, err := Translate(retry, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(retryResult.Jobs[0].Retries, ShouldEqual, 3)
+
+			ignore := &Workflow{Processes: []*Process{{Name: "ignore", Script: "echo hi", ErrorStrat: "ignore"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "ignore"}}}}
+			ignoreResult, err := Translate(ignore, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(ignoreResult.Jobs[0].Retries, ShouldEqual, 0)
+			So(ignoreResult.Jobs[0].Behaviours, ShouldHaveLength, 1)
+			So(ignoreResult.Jobs[0].Behaviours[0].Do, ShouldEqual, jobqueue.Remove)
+
+			cfgDefaults := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{"big": {Process: &ProcessDefaults{Cpus: 8}}}}
+			defaultResult, err := Translate(&Workflow{Processes: []*Process{{Name: "defaulted", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "defaulted"}}}}, cfgDefaults, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(defaultResult.Jobs[0].Requirements.Cores, ShouldEqual, 2)
+
+			profileResult, err := Translate(&Workflow{Processes: []*Process{{Name: "profiled", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "profiled"}}}}, cfgDefaults, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "big"})
+			So(err, ShouldBeNil)
+			So(profileResult.Jobs[0].Requirements.Cores, ShouldEqual, 8)
+		})
+
+		Convey("three-step and diamond DAGs wire dependencies correctly", func() {
+			sequential := &Workflow{Processes: []*Process{{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "B", Script: "echo $reads", Input: []*Declaration{{Kind: "val", Name: "reads"}}, Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "C", Script: "echo $reads", Input: []*Declaration{{Kind: "val", Name: "reads"}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}}, {Target: "C", Args: []ChanExpr{ChanRef{Name: "B.out"}}}}}}
+
+			result, err := Translate(sequential, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 3)
+			So(result.Pending, ShouldBeEmpty)
+			So(result.Jobs[0].RepGroup, ShouldEqual, "nf.wf.r1.A")
+			So(result.Jobs[1].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.A"})
+			So(result.Jobs[1].RepGroup, ShouldEqual, "nf.wf.r1.B")
+			So(result.Jobs[2].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.B"})
+			So(result.Jobs[2].RepGroup, ShouldEqual, "nf.wf.r1.C")
+
+			diamond := &Workflow{Processes: []*Process{{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "B", Script: "echo b", Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "C", Script: "echo $left $right", Input: []*Declaration{{Kind: "val", Name: "left"}, {Kind: "val", Name: "right"}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B"}, {Target: "C", Args: []ChanExpr{ChanRef{Name: "A.out"}, ChanRef{Name: "B.out"}}}}}}
+
+			diamondResult, err := Translate(diamond, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(diamondResult.Jobs, ShouldHaveLength, 3)
+			So(diamondResult.Pending, ShouldBeEmpty)
+			So(diamondResult.Jobs[0].RepGroup, ShouldEqual, "nf.wf.r1.A")
+			So(diamondResult.Jobs[1].RepGroup, ShouldEqual, "nf.wf.r1.B")
+			So(diamondResult.Jobs[2].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.A", "nf.r1.B"})
+			So(diamondResult.Jobs[2].Cwd, ShouldEqual, "/work/nf-work/r1/C")
+		})
+	})
+}
+
+func captureTranslateStderr(run func()) string {
+	original := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	os.Stderr = writer
+	run()
+	_ = writer.Close()
+	os.Stderr = original
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		panic(err)
+	}
+	_ = reader.Close()
+
+	return strings.TrimSpace(string(output))
 }

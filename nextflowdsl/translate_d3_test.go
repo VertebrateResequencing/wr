@@ -67,6 +67,7 @@ func TestTranslateD3(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(result.Jobs, ShouldHaveLength, 1)
 			So(result.Jobs[0].RepGroup, ShouldEqual, "nf.mywf.r1.prep.trim")
+			So(result.Jobs[0].ReqGroup, ShouldEqual, "nf.trim")
 			So(result.Jobs[0].DepGroups, ShouldContain, "nf.r1.prep.trim")
 			So(result.Jobs[0].Cwd, ShouldEqual, "/work/nf-work/r1/prep/trim")
 		})
@@ -121,10 +122,13 @@ func TestTranslateD3(t *testing.T) {
 			qcSort := result.Jobs[1]
 			qcMerge := result.Jobs[2]
 
+			So(alignSort.ReqGroup, ShouldEqual, "nf.sort")
 			So(alignSort.DepGroups, ShouldContain, "nf.r1.align.sort")
 			So(alignSort.Cwd, ShouldEqual, "/work/nf-work/r1/align/sort")
+			So(qcSort.ReqGroup, ShouldEqual, "nf.sort")
 			So(qcSort.DepGroups, ShouldContain, "nf.r1.qc.sort")
 			So(qcSort.Cwd, ShouldEqual, "/work/nf-work/r1/qc/sort")
+			So(qcMerge.ReqGroup, ShouldEqual, "nf.merge")
 			So(qcMerge.Dependencies.DepGroups(), ShouldContain, "nf.r1.align.sort")
 		})
 	})
