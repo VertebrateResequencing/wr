@@ -102,6 +102,10 @@ func lex(input string) ([]token, error) {
 			for l.peek() != 0 && l.peek() != '\n' {
 				l.next()
 			}
+		case r == '/' && l.peekN(1) == '*':
+			if err := l.skipBlockComment(); err != nil {
+				return nil, err
+			}
 		case r == '#' && !l.lineHasContent:
 			for l.peek() != 0 && l.peek() != '\n' {
 				l.next()
@@ -231,6 +235,28 @@ func (l *lexer) next() rune {
 	}
 
 	return r
+}
+
+func (l *lexer) skipBlockComment() error {
+	line := l.line
+
+	l.next()
+	l.next()
+
+	for {
+		r := l.peek()
+		if r == 0 {
+			return fmt.Errorf("line %d: unterminated comment", line)
+		}
+
+		if r == '*' && l.peekN(1) == '/' {
+			l.next()
+			l.next()
+			return nil
+		}
+
+		l.next()
+	}
 }
 
 func (l *lexer) readString() (token, error) {
@@ -370,6 +396,10 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			continue
 		}
 
+		if p.skipFeatureFlagAssignment() {
+			continue
+		}
+
 		if current.typ == tokenIdent && p.peek().typ == tokenAssign {
 			if err := p.parseChannelAssignment(tokenNewline, tokenEOF); err != nil {
 				return nil, err
@@ -379,6 +409,59 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 
 		return nil, fmt.Errorf("line %d: unexpected token %q", current.line, current.lit)
 	}
+}
+
+func (p *parser) skipFeatureFlagAssignment() bool {
+	if !p.isFeatureFlagAssignmentStart() {
+		return false
+	}
+
+	for {
+		current := p.current()
+		if current.typ == tokenEOF || current.typ == tokenNewline {
+			break
+		}
+		p.pos++
+	}
+
+	if p.current().typ == tokenNewline {
+		p.pos++
+	}
+
+	return true
+}
+
+func (p *parser) isFeatureFlagAssignmentStart() bool {
+	if p.current().typ != tokenIdent || p.current().lit != "nextflow" {
+		return false
+	}
+
+	index := p.pos + 1
+	if index+3 >= len(p.tokens) {
+		return false
+	}
+
+	if p.tokens[index].typ != tokenDot || p.tokens[index+1].typ != tokenIdent {
+		return false
+	}
+
+	section := p.tokens[index+1].lit
+	if section != "enable" && section != "preview" {
+		return false
+	}
+
+	index += 2
+	segments := 0
+	for index+1 < len(p.tokens) && p.tokens[index].typ == tokenDot && p.tokens[index+1].typ == tokenIdent {
+		segments++
+		index += 2
+	}
+
+	if segments == 0 || index >= len(p.tokens) {
+		return false
+	}
+
+	return p.tokens[index].typ == tokenAssign
 }
 
 func (p *parser) parseImport() (*Import, error) {

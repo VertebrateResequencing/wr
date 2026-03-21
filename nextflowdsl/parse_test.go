@@ -70,6 +70,57 @@ func TestParseImports(t *testing.T) {
 	})
 }
 
+func TestParseLexerHardening(t *testing.T) {
+	Convey("Parse handles A6 lexer hardening", t, func() {
+		Convey("shebang lines are ignored before a process", func() {
+			wf, err := Parse(strings.NewReader("#!/usr/bin/env nextflow\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("single-line block comments are ignored", func() {
+			wf, err := Parse(strings.NewReader("/* block comment */\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("multi-line block comments are ignored", func() {
+			wf, err := Parse(strings.NewReader("/* multi\nline\ncomment */\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("nextflow enable flags are skipped", func() {
+			wf, err := Parse(strings.NewReader("nextflow.enable.dsl = 2\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("nextflow preview flags are skipped", func() {
+			wf, err := Parse(strings.NewReader("nextflow.preview.recursion = true\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("unterminated block comments return a targeted error", func() {
+			_, err := Parse(strings.NewReader("/* unclosed block comment"))
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unterminated comment")
+		})
+	})
+}
+
 func TestParseProcessDefinitions(t *testing.T) {
 	Convey("Parse handles A1 process definitions", t, func() {
 		Convey("basic process with input, output, and script", func() {
