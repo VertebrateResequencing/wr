@@ -160,6 +160,22 @@ func TestLocalResolver(t *testing.T) {
 			So(resolvedPath, ShouldEqual, modulePath)
 		})
 
+		Convey("parent-directory relative specs resolve against the base path", func() {
+			parentDir := t.TempDir()
+			resolver := NewLocalResolver(filepath.Join(parentDir, "workflows", "subdir"))
+			modulePath := filepath.Join(parentDir, "modules", "foo.nf")
+			err := os.MkdirAll(filepath.Dir(modulePath), 0o755)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(modulePath, []byte("process foo {}\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			resolvedPath, err := resolver.Resolve("../../modules/foo.nf")
+
+			So(err, ShouldBeNil)
+			So(resolvedPath, ShouldEqual, modulePath)
+		})
+
 		Convey("absolute specs resolve to the absolute path", func() {
 			absoluteDir := t.TempDir()
 			absolutePath := filepath.Join(absoluteDir, "foo.nf")
