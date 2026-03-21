@@ -26,6 +26,8 @@
 package nextflowdsl
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -116,6 +118,203 @@ func TestParseConfig(t *testing.T) {
 			So(cfg.Profiles, ShouldContainKey, "test")
 			So(cfg.Profiles["test"].Process, ShouldNotBeNil)
 			So(cfg.Profiles["test"].Process.Cpus, ShouldEqual, 8)
+		})
+
+		Convey("unknown top-level docker scopes are skipped with a warning", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader("docker { enabled = true }\nparams { x = 1 }"))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg.Params["x"], ShouldEqual, 1)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"docker\"")
+		})
+
+		Convey("unknown top-level manifest scopes are skipped with a warning", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader("manifest { name = 'test' }"))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"manifest\"")
+		})
+
+		Convey("unknown top-level env scopes are skipped with a warning", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader("env { FOO = 'bar' }"))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"env\"")
+		})
+
+		Convey("unknown top-level singularity scopes are skipped with a warning", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader("singularity { enabled = true }"))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"singularity\"")
+		})
+
+		Convey("unknown top-level timeline and report scopes are skipped with warnings", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader("timeline { enabled = true }\nreport { enabled = true }"))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"timeline\"")
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"report\"")
+		})
+
+		Convey("ParseConfigFromPath loads params from an included config", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "nextflow.config")
+			includePath := filepath.Join(dir, "base.config")
+
+			err := os.WriteFile(includePath, []byte("params { input = '/data' }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mainPath, []byte("includeConfig 'base.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			cfg, parseErr := ParseConfigFromPath(mainPath)
+
+			So(parseErr, ShouldBeNil)
+			So(cfg.Params["input"], ShouldEqual, "/data")
+		})
+
+		Convey("included config params override earlier parent params and merge new keys", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "nextflow.config")
+			includePath := filepath.Join(dir, "base.config")
+
+			err := os.WriteFile(includePath, []byte("params { x = 2 ; y = 3 }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mainPath, []byte("params { x = 1 }\nincludeConfig 'base.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			cfg, parseErr := ParseConfigFromPath(mainPath)
+
+			So(parseErr, ShouldBeNil)
+			So(cfg.Params["x"], ShouldEqual, 2)
+			So(cfg.Params["y"], ShouldEqual, 3)
+		})
+
+		Convey("missing included config returns an error mentioning the missing path", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "nextflow.config")
+
+			err := os.WriteFile(mainPath, []byte("includeConfig 'missing.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			_, parseErr := ParseConfigFromPath(mainPath)
+
+			So(parseErr, ShouldNotBeNil)
+			So(parseErr.Error(), ShouldContainSubstring, "missing.config")
+		})
+
+		Convey("circular includeConfig directives return an error", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "a.config")
+			includePath := filepath.Join(dir, "b.config")
+
+			err := os.WriteFile(mainPath, []byte("includeConfig 'b.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(includePath, []byte("includeConfig 'a.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			_, parseErr := ParseConfigFromPath(mainPath)
+
+			So(parseErr, ShouldNotBeNil)
+			So(parseErr.Error(), ShouldContainSubstring, "circular includeConfig")
+		})
+
+		Convey("nested includeConfig paths resolve relative to the including file", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "nextflow.config")
+			nestedDir := filepath.Join(dir, "sub")
+			nestedPath := filepath.Join(nestedDir, "nested.config")
+			deepPath := filepath.Join(nestedDir, "deep.config")
+
+			err := os.MkdirAll(nestedDir, 0o755)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(deepPath, []byte("params { answer = 42 }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(nestedPath, []byte("includeConfig 'deep.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mainPath, []byte("includeConfig 'sub/nested.config'\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			cfg, parseErr := ParseConfigFromPath(mainPath)
+
+			So(parseErr, ShouldBeNil)
+			So(cfg.Params["answer"], ShouldEqual, 42)
+		})
+
+		Convey("ParseConfigFromPath preserves included params while skipping unknown top-level scopes", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "nextflow.config")
+			includePath := filepath.Join(dir, "x.config")
+
+			err := os.WriteFile(includePath, []byte("params { a = 1 }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mainPath, []byte("includeConfig 'x.config'\ndocker { enabled = true }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			var (
+				cfg    *Config
+				parseErr error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, parseErr = ParseConfigFromPath(mainPath)
+			})
+
+			So(parseErr, ShouldBeNil)
+			So(cfg.Params["a"], ShouldEqual, 1)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"docker\"")
 		})
 	})
 }

@@ -21,8 +21,8 @@ warning instead of returning an error. Use the existing
 `skipNamedBlock` helper or equivalent. Covering all 6 acceptance
 tests from D2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 5.2: D1 - Parse and follow includeConfig directives
 
@@ -35,5 +35,5 @@ paths relative to the including file's directory. Detect circular
 includes via a visited-path set. Parse included files and merge
 results. Covering all 5 acceptance tests from D1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
