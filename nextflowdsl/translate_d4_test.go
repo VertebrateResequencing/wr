@@ -261,14 +261,14 @@ func TestTranslateD4(t *testing.T) {
 
 			firstPath := writeOutput(result.Jobs[0])
 
-			completed, ready, err := CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0]})
+			completed, ready, err := CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0]}, nil)
 			So(err, ShouldBeNil)
 			So(ready, ShouldBeFalse)
 			So(completed, ShouldBeNil)
 
 			secondPath := writeOutput(result.Jobs[1])
 
-			completed, ready, err = CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0], result.Jobs[1]})
+			completed, ready, err = CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0], result.Jobs[1]}, nil)
 			So(err, ShouldBeNil)
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 2)
@@ -311,12 +311,117 @@ func TestTranslateD4(t *testing.T) {
 			So(result.Pending, ShouldHaveLength, 1)
 			So(os.WriteFile(absOutput, []byte("ok"), 0o644), ShouldBeNil)
 
-			completed, ready, err := CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0]})
+			completed, ready, err := CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0]}, nil)
 
 			So(err, ShouldBeNil)
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 1)
 			So(completed[0].OutputPaths, ShouldResemble, []string{absOutput})
+		})
+
+		Convey("downstream pending stages wait until all jobs in an upstream pending rep group finish", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:       "PRODUCE",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "val", Name: "token"}},
+						Script:     "touch produced.txt",
+						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "CONSUME",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cp $reads consumed.txt",
+						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "consumed.txt"}}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "REPORT",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cat $reads",
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+					{Target: "REPORT", Args: []ChanExpr{ChanRef{Name: "CONSUME.out"}}},
+				}},
+			}
+
+			baseDir := t.TempDir()
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Pending, ShouldHaveLength, 2)
+
+			writeOutput := func(job *jobqueue.Job, name string) string {
+				So(os.MkdirAll(job.Cwd, 0o755), ShouldBeNil)
+				outputPath := filepath.Join(job.Cwd, name)
+				So(os.WriteFile(outputPath, []byte("ok"), 0o644), ShouldBeNil)
+
+				return outputPath
+			}
+
+			cloneJob := func(job *jobqueue.Job) *jobqueue.Job {
+				return &jobqueue.Job{
+					Cmd:          job.Cmd,
+					Cwd:          job.Cwd,
+					CwdMatters:   job.CwdMatters,
+					RepGroup:     job.RepGroup,
+					ReqGroup:     job.ReqGroup,
+					Override:     job.Override,
+					DepGroups:    append([]string{}, job.DepGroups...),
+					Dependencies: append(jobqueue.Dependencies{}, job.Dependencies...),
+					Behaviours:   append(jobqueue.Behaviours{}, job.Behaviours...),
+					State:        job.State,
+					Exitcode:     job.Exitcode,
+				}
+			}
+
+			produceOutputs := []CompletedJob{}
+			for _, job := range result.Jobs {
+				produceOutputs = append(produceOutputs, CompletedJob{
+					RepGrp:      job.RepGroup,
+					OutputPaths: []string{writeOutput(job, "produced.txt")},
+					ExitCode:    0,
+				})
+			}
+
+			consumeJobs, err := TranslatePending(result.Pending[0], produceOutputs, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			So(err, ShouldBeNil)
+			So(consumeJobs, ShouldHaveLength, 2)
+
+			consumeComplete := []*jobqueue.Job{cloneJob(consumeJobs[0])}
+			consumeComplete[0].State = jobqueue.JobStateComplete
+			consumeComplete[0].Exitcode = 0
+			writeOutput(consumeComplete[0], "consumed.txt")
+
+			consumeIncomplete := []*jobqueue.Job{cloneJob(consumeJobs[1])}
+			consumeIncomplete[0].State = jobqueue.JobStateRunning
+
+			completed, ready, err := CompletedJobsForPending(result.Pending[1], consumeComplete, consumeIncomplete)
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeFalse)
+			So(completed, ShouldBeNil)
+
+			consumeComplete = append(consumeComplete, cloneJob(consumeJobs[1]))
+			consumeComplete[1].State = jobqueue.JobStateComplete
+			consumeComplete[1].Exitcode = 0
+			writeOutput(consumeComplete[1], "consumed.txt")
+
+			completed, ready, err = CompletedJobsForPending(result.Pending[1], consumeComplete, nil)
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeTrue)
+			So(completed, ShouldHaveLength, 2)
 		})
 	})
 }

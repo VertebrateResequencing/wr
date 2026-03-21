@@ -369,7 +369,7 @@ func followNextflowWorkflow(
 		progressed := false
 		nextPending := remaining[:0]
 		for _, stage := range remaining {
-			completed, ready, completedErr := nextflowdsl.CompletedJobsForPending(stage, completeJobs)
+			completed, ready, completedErr := nextflowdsl.CompletedJobsForPending(stage, completeJobs, incompleteJobs)
 			if completedErr != nil {
 				return completedErr
 			}

@@ -83,7 +83,7 @@ func completedOutputPathsForJob(pending *PendingStage, repGrp string, job *jobqu
 		return nil, fmt.Errorf("missing translated stage for rep group %q", repGrp)
 	}
 
-	patterns := outputPatternsForCwd(stage.outputPaths, job.Cwd)
+	patterns := outputPatternsForCwd(stage.outputPaths, stage.baseCwd, job.Cwd)
 	if len(patterns) == 0 {
 		return nil, fmt.Errorf("missing output patterns for rep group %q in %q", repGrp, job.Cwd)
 	}
@@ -104,10 +104,11 @@ func completedOutputPathsForJob(pending *PendingStage, repGrp string, job *jobqu
 	return resolved, nil
 }
 
-func outputPatternsForCwd(patterns []string, cwd string) []string {
+func outputPatternsForCwd(patterns []string, baseCwd, cwd string) []string {
 	filtered := make([]string, 0, len(patterns))
 	absolute := make([]string, 0, len(patterns))
 	cleanCwd := filepath.Clean(cwd)
+	cleanBaseCwd := filepath.Clean(baseCwd)
 
 	for _, pattern := range patterns {
 		cleanPattern := filepath.Clean(pattern)
@@ -121,10 +122,36 @@ func outputPatternsForCwd(patterns []string, cwd string) []string {
 	}
 
 	if len(filtered) == 0 {
+		if cleanBaseCwd != "." && cleanBaseCwd != "" && cleanBaseCwd != cleanCwd {
+			remapped := remapOutputPatterns(patterns, cleanBaseCwd, cleanCwd)
+			if len(remapped) > 0 {
+				return remapped
+			}
+		}
+
 		return absolute
 	}
 
 	return filtered
+}
+
+func remapOutputPatterns(patterns []string, fromCwd, toCwd string) []string {
+	remapped := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		cleanPattern := filepath.Clean(pattern)
+		if !strings.HasPrefix(cleanPattern, fromCwd+string(os.PathSeparator)) {
+			continue
+		}
+
+		relPath, err := filepath.Rel(fromCwd, cleanPattern)
+		if err != nil {
+			continue
+		}
+
+		remapped = append(remapped, filepath.Join(toCwd, relPath))
+	}
+
+	return remapped
 }
 
 func expandCompletedOutputPattern(pattern string) ([]string, error) {
@@ -168,13 +195,14 @@ type PendingStage struct {
 
 // CompletedJobsForPending builds completed upstream job records for a pending
 // stage from concrete wr jobs that have already finished successfully.
-func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job) ([]CompletedJob, bool, error) {
+func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job, incompleteJobs []*jobqueue.Job) ([]CompletedJob, bool, error) {
 	if pending == nil {
 		return nil, false, fmt.Errorf("pending stage is nil")
 	}
 
 	jobsByRepGrp := make(map[string][]*jobqueue.Job)
 	jobsByDepGrp := make(map[string]*jobqueue.Job)
+	incompleteByRepGrp := make(map[string]struct{})
 
 	for _, job := range jobs {
 		if job == nil {
@@ -187,8 +215,22 @@ func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job) ([]Com
 		}
 	}
 
+	for _, job := range incompleteJobs {
+		if job == nil {
+			continue
+		}
+
+		incompleteByRepGrp[job.RepGroup] = struct{}{}
+	}
+
 	for _, depGrp := range pending.AwaitDepGrps {
 		if _, ok := jobsByDepGrp[depGrp]; !ok {
+			return nil, false, nil
+		}
+	}
+
+	for _, repGrp := range pending.awaitRepGrps {
+		if _, ok := incompleteByRepGrp[repGrp]; ok {
 			return nil, false, nil
 		}
 	}
@@ -242,6 +284,7 @@ type translatedCall struct {
 	depGroup      string
 	depGroups     []string
 	repGroup      string
+	baseCwd       string
 	outputPaths   []string
 	items         []channelItem
 	dynamicOutput bool
@@ -425,12 +468,14 @@ func translateBlock(
 			if err != nil {
 				return err
 			}
-			if len(awaitDepGrps) > 0 {
+			if len(awaitDepGrps) > 0 || len(awaitRepGrps) > 0 {
+				repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
 				depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
 				translated[scopedTargetKey(scope, call.Target)] = translatedCall{
 					depGroup:      depGroup,
 					depGroups:     []string{depGroup},
-					repGroup:      scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name),
+					repGroup:      repGroup,
+					baseCwd:       deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name),
 					outputPaths:   outputPaths(proc, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)),
 					items:         []channelItem{{value: channelItemValue(outputPaths(proc, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name))), depGroups: []string{depGroup}}},
 					dynamicOutput: hasDynamicOutputs(proc),
@@ -502,6 +547,7 @@ func translateProcessCall(
 	repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
 	reqGroup := fmt.Sprintf("nf.%s", proc.Name)
 	indexed := len(bindingSets) > 1
+	stage.baseCwd = deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
 
 	for index, bindingSet := range bindingSets {
 		cwd := deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
@@ -1195,7 +1241,7 @@ func detectPendingInputs(call *Call, scope []string, translated map[string]trans
 			seenRepGrps[repGrp] = struct{}{}
 		}
 	}
-	if len(awaitDepGrps) == 0 {
+	if len(awaitDepGrps) == 0 && len(awaitRepGrps) == 0 {
 		return nil, nil, nil
 	}
 
@@ -1211,6 +1257,9 @@ func detectPendingArg(arg ChanExpr, scope []string, translated map[string]transl
 		}
 		if !stage.dynamicOutput && !stage.pending {
 			return nil, nil, nil
+		}
+		if stage.pending {
+			return nil, []string{stage.repGroup}, nil
 		}
 
 		deps := cloneStrings(stage.depGroups)
