@@ -439,7 +439,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "flatMap")
-			So(chain.Operators[0].Closure, ShouldContainSubstring, "split")
+			So(chain.Operators[0].Closure, ShouldEqual, "it.split(',')")
 		})
 
 		Convey("last parses as a zero-arg operator", func() {

@@ -1070,7 +1070,7 @@ func (p *parser) parseClosureBody() (string, error) {
 		p.pos++
 	}
 
-	return strings.TrimSpace(joinTokens(tokens)), nil
+	return strings.TrimSpace(renderClosureTokens(tokens)), nil
 }
 
 func joinTokens(tokens []token) string {
@@ -1089,6 +1089,31 @@ func joinTokens(tokens []token) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func renderClosureTokens(tokens []token) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	for index, tok := range tokens {
+		if index > 0 && needsSpaceBetween(tokens[index-1], tok) {
+			builder.WriteByte(' ')
+		}
+
+		builder.WriteString(renderClosureToken(tok))
+	}
+
+	return builder.String()
+}
+
+func renderClosureToken(tok token) string {
+	if tok.typ != tokenString {
+		return tok.lit
+	}
+
+	return "'" + strings.ReplaceAll(tok.lit, "'", "\\'") + "'"
 }
 
 func (p *parser) parseDottedIdent() string {

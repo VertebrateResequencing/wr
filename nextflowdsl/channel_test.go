@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -184,6 +185,19 @@ func TestResolveChannelD6(t *testing.T) {
 				[]any{"a", []any{1, 2}},
 				[]any{"b", []any{3}},
 			})
+		})
+
+		Convey("parsed flatMap closures remain executable after parsing", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('a,b', 'c,d').flatMap { it.split(',') }) }"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+
+			items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
+
+			So(resolveErr, ShouldBeNil)
+			So(items, ShouldResemble, []any{"a", "b", "c", "d"})
 		})
 	})
 }
