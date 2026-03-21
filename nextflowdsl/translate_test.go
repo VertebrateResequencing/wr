@@ -28,6 +28,7 @@ package nextflowdsl
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,6 +69,26 @@ func TestBuildCommandA1(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(cmd, ShouldEqual, "{ echo hi; } > .nf-stdout 2> .nf-stderr")
+		})
+
+		Convey("it executes indented multi-line scripts without emitting a stray terminator line", func() {
+			cwd, err := os.Getwd()
+			So(err, ShouldBeNil)
+
+			tempDir := t.TempDir()
+			So(os.Chdir(tempDir), ShouldBeNil)
+			defer func() {
+				So(os.Chdir(cwd), ShouldBeNil)
+			}()
+
+			cmd, err := buildCommand(&Process{Script: "\n    echo hello\n    "}, nil, nil)
+
+			So(err, ShouldBeNil)
+			So(exec.Command("bash", "-c", cmd).Run(), ShouldBeNil)
+
+			stdout, err := os.ReadFile(filepath.Join(tempDir, nfStdoutFile))
+			So(err, ShouldBeNil)
+			So(string(stdout), ShouldEqual, "hello\n")
 		})
 	})
 }

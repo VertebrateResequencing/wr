@@ -1105,6 +1105,38 @@ type fakeNextflowSnapshot struct {
 
 func TestNextflowRunCommandFollow(t *testing.T) {
 	Convey("wr nextflow run --follow covers E2", t, func() {
+		Convey("remote hello workflows with indented triple-quoted scripts complete instead of burying jobs", func() {
+			homeDir := t.TempDir()
+			t.Setenv("HOME", homeDir)
+			cloneCalls, restoreGit := stubGitHubWorkflowDownload(t, homeDir, "nextflow-io", "hello")
+			defer restoreGit()
+
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workerDone := runReservedJobsInBackground(env, 4)
+			err := env.executeRun("--run-id", "followrun", "--follow", "--poll-interval", "20ms", "nextflow-io/hello")
+			So(err, ShouldBeNil)
+			So(<-workerDone, ShouldBeNil)
+			So(*cloneCalls, ShouldEqual, 1)
+
+			repGroupPrefix := nextflowRepGroupPrefix("nextflow-io/hello", "followrun")
+			jobs := env.jobsByRepGroupSubstring(repGroupPrefix)
+			So(jobs, ShouldHaveLength, 4)
+			for _, job := range jobs {
+				So(job.State, ShouldEqual, jobqueue.JobStateComplete)
+			}
+
+			jq := env.connectClient()
+			defer func() {
+				So(jq.Disconnect(), ShouldBeNil)
+			}()
+
+			buriedJobs, buriedErr := jq.GetByRepGroup(repGroupPrefix, true, 0, jobqueue.JobStateBuried, false, false)
+			So(buriedErr, ShouldBeNil)
+			So(buriedJobs, ShouldBeEmpty)
+		})
+
 		Convey("the command path follows dynamic workflows using the requested poll interval", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
