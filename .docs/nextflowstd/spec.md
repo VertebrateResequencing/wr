@@ -254,7 +254,7 @@ queried jobs to `printJobsOutput()` for multi-instance detection.
 2. Given a complete job with RepGroup `nf.mywf.r1.prepare` and CWD
    containing `.nf-stdout` = `"done\n"`, when `status --output
    --run-id r1` executes, then output after the count table contains
-   `[prepare]\n  done\n`.
+   `[prepare] done\n`.
 3. Given a buried job with `.nf-stderr` = `"failed\n"`, when
    `status --output --run-id r1` executes, then the stderr content
    appears with label `[prepare] (stderr)`.
@@ -268,6 +268,9 @@ queried jobs to `printJobsOutput()` for multi-instance detection.
 6. Given no complete or buried jobs with output files, when
    `status --output --run-id r1` executes, then only the count table
    is printed (no extra output section).
+7. Given a complete job whose `.nf-stdout` exceeds 1 MB, when
+   `status --output --run-id r1` executes, then the displayed output
+   includes the trailing `[... output truncated ...]` indicator.
 7. Given a `.nf-stdout` larger than 1 MB, when `status --output`
    reads it, then the displayed content is truncated to 1 MB with
    `[... output truncated ...]` appended.

@@ -67,6 +67,7 @@ type nextflowRunOptions struct {
 type nextflowStatusOptions struct {
 	runID    string
 	workflow string
+	Output   bool
 }
 
 var (
@@ -561,12 +562,17 @@ func newNextflowStatusCommand(options *nextflowStatusOptions) *cobra.Command {
 
 	cmd.Flags().StringVarP(&options.runID, "run-id", "r", "", "filter to a specific workflow run id")
 	cmd.Flags().StringVarP(&options.workflow, "workflow", "w", "", "filter to a specific workflow name")
+	cmd.Flags().BoolVarP(&options.Output, "output", "o", false, "display captured output for complete and buried jobs")
 	cmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 
 	return cmd
 }
 
 func runNextflowStatus(w io.Writer, options nextflowStatusOptions) error {
+	if options.Output && options.runID == "" {
+		return fmt.Errorf("--output requires --run-id")
+	}
+
 	jq := connect(time.Duration(timeoutint) * time.Second)
 	defer func() {
 		err := jq.Disconnect()
@@ -604,7 +610,24 @@ func runNextflowStatus(w io.Writer, options nextflowStatusOptions) error {
 		}
 	}
 
-	return tw.Flush()
+	if err = tw.Flush(); err != nil {
+		return err
+	}
+
+	if !options.Output {
+		return nil
+	}
+
+	terminalJobs := make([]*jobqueue.Job, 0, len(jobs))
+	for _, job := range jobs {
+		if job.State != jobqueue.JobStateComplete && job.State != jobqueue.JobStateBuried {
+			continue
+		}
+
+		terminalJobs = append(terminalJobs, job)
+	}
+
+	return printJobsOutput(w, terminalJobs, jobs, nfOutputMaxBytes)
 }
 
 func aggregateNextflowProcessCounts(jobs []*jobqueue.Job) map[string]nextflowProcessCounts {

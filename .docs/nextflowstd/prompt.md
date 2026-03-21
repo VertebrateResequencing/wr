@@ -51,13 +51,15 @@ process/index headers.
 - All Nextflow process commands are wrapped unconditionally — no opt-in config.
 - During `--follow`, output is displayed once when a job transitions to complete
   (not on every poll, not incrementally).
-- `nextflow status --output` prints stdout then stderr, each labeled with
-  `[processName (index)]` headers.
+- `nextflow status --output` prints stdout then stderr using the shared
+  D2/D3 formatter: single-line content stays inline with the label, while
+  multi-line content uses a header line with 2-space-indented content below.
 - Empty or missing `.nf-stdout`/`.nf-stderr` files are silently skipped.
 - Single-instance processes omit the index: `[processName]` not
   `[processName (0)]`. Multi-instance processes include it: `[processName (1)]`.
 - `--output` requires `--run-id`; error if used without it.
-- Multi-line output uses a header line on its own, with content indented below.
+- Single-line output uses `[processName] content`; multi-line output uses a
+  header line on its own with content indented below.
 - Output files are truncated at 1 MB per file to guard against huge output.
 - Process name and instance index are extracted from the job's RepGroup using
   the existing parseNextflowRepGroup() function.
@@ -74,9 +76,9 @@ process/index headers.
 - The shell wrapping uses `{ <script>; } > .nf-stdout 2> .nf-stderr` with no
   additional error handling — the group construct preserves the exit code.
 - During `--follow`, both stdout and stderr are displayed for newly completed
-  jobs (same format: header + indented content).
-- `--follow` uses the same multi-line formatting as `status --output` (header
-  line, then 2-space-indented content below).
+  jobs using the same shared formatter as `status --output`.
+- `--follow` uses the same inline-for-single-line and indented-for-multi-line
+  formatting rules as `status --output`.
 - Files containing only whitespace are treated as empty and silently skipped.
 - Output from failed/buried jobs is also displayed, not just successful ones.
 - Process name comes from RepGroup via parseNextflowRepGroup(); instance index
