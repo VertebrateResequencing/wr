@@ -389,6 +389,10 @@ func cloneProcess(proc *Process, name string) *Process {
 		Input:      cloneDeclarations(proc.Input),
 		Output:     cloneDeclarations(proc.Output),
 		Script:     proc.Script,
+		Stub:       proc.Stub,
+		Exec:       proc.Exec,
+		Shell:      proc.Shell,
+		When:       proc.When,
 		Container:  proc.Container,
 		PublishDir: publishDirs,
 		ErrorStrat: proc.ErrorStrat,
@@ -457,7 +461,34 @@ func cloneDeclarations(declarations []*Declaration) []*Declaration {
 		if declaration == nil {
 			continue
 		}
-		cloned = append(cloned, &Declaration{Kind: declaration.Kind, Name: declaration.Name, Expr: declaration.Expr, Raw: declaration.Raw})
+		cloned = append(cloned, &Declaration{
+			Kind:     declaration.Kind,
+			Name:     declaration.Name,
+			Expr:     declaration.Expr,
+			Raw:      declaration.Raw,
+			Emit:     declaration.Emit,
+			Optional: declaration.Optional,
+			Elements: cloneTupleElements(declaration.Elements),
+		})
+	}
+
+	return cloned
+}
+
+func cloneTupleElements(elements []*TupleElement) []*TupleElement {
+	cloned := make([]*TupleElement, 0, len(elements))
+	for _, element := range elements {
+		if element == nil {
+			continue
+		}
+
+		cloned = append(cloned, &TupleElement{
+			Kind: element.Kind,
+			Name: element.Name,
+			Expr: element.Expr,
+			Raw:  element.Raw,
+			Emit: element.Emit,
+		})
 	}
 
 	return cloned
