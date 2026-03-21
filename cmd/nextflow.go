@@ -205,15 +205,7 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 }
 
 func loadNextflowConfig(path string, externalParams map[string]any) (*nextflowdsl.Config, error) {
-	configFile, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("open config %s: %w", path, err)
-	}
-	defer func() {
-		_ = configFile.Close()
-	}()
-
-	cfg, err := nextflowdsl.ParseConfigWithParams(configFile, externalParams)
+	cfg, err := nextflowdsl.ParseConfigFromPathWithParams(path, externalParams)
 	if err != nil {
 		return nil, err
 	}

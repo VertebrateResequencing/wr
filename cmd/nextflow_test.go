@@ -548,6 +548,22 @@ func TestNextflowRunCommand(t *testing.T) {
 			So(jobs[0].Cmd, ShouldContainSubstring, "/cfg")
 		})
 
+		Convey("config includeConfig directives are applied when running workflows", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("config_include.nf", singleProcessWorkflow("cat ${params.input}"))
+			configPath := env.writeText("configs/nextflow.config", "includeConfig 'base.config'\n")
+			env.writeText("configs/base.config", "params { input = '/included' }\n")
+
+			err := env.executeRun("--config", configPath, workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.config_include.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/included")
+		})
+
 		Convey("params files override config params", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
