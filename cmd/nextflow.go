@@ -308,6 +308,12 @@ func nextflowRemoteWorkflowName(workflowArg string) (string, bool) {
 func nextflowWorkflowName(path string) string {
 	base := filepath.Base(path)
 	trimmed := strings.TrimSuffix(base, filepath.Ext(base))
+	if strings.EqualFold(trimmed, "main") {
+		parent := filepath.Base(filepath.Dir(path))
+		if parent != "" && parent != "." && parent != string(filepath.Separator) {
+			return parent
+		}
+	}
 	if trimmed == "" {
 		return base
 	}
