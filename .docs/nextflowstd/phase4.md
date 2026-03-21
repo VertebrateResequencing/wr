@@ -22,5 +22,5 @@ queried jobs for multi-instance detection. Depends on phases 1
 and 2. Can run in parallel with phase 3. Covering all 7
 acceptance tests from C1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

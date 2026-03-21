@@ -403,6 +403,31 @@ func (e *nextflowCommandTestEnv) waitForRepGroupState(repGroup string, state job
 	return nil
 }
 
+func (e *nextflowCommandTestEnv) waitForRepGroupStateCount(repGroup string, state jobqueue.JobState, count int) []*jobqueue.Job {
+	e.t.Helper()
+
+	jq := e.connectClient()
+	defer func() {
+		if err := jq.Disconnect(); err != nil {
+			e.t.Fatalf("disconnect jobqueue client: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs, err := jq.GetByRepGroup(repGroup, false, 0, state, false, false)
+		if err == nil && len(jobs) == count {
+			return jobs
+		}
+
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	e.t.Fatalf("timed out waiting for %s to reach %s count %d", repGroup, state, count)
+
+	return nil
+}
+
 func (e *nextflowCommandTestEnv) jobsByRepGroupSubstring(repGroup string) []*jobqueue.Job {
 	e.t.Helper()
 
@@ -883,6 +908,126 @@ func TestNextflowStatusCommand(t *testing.T) {
 			So(counts, ShouldContainKey, "align")
 			So(counts["align"], ShouldResemble, []string{"1", "0", "0", "0", "1"})
 		})
+
+		Convey("it rejects --output without --run-id", func() {
+			options := nextflowStatusOptions{}
+			cmd := newNextflowStatusCommand(&options)
+			cmd.SetArgs([]string{"--output"})
+
+			err := cmd.Execute()
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "--output requires --run-id")
+		})
+
+		Convey("it prints captured stdout for completed jobs after the count table", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			completeClient, completeJob := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.prepare", "true"))
+			So(completeClient.Execute(context.Background(), completeJob, "bash"), ShouldBeNil)
+			So(completeClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.prepare", jobqueue.JobStateComplete)
+			So(os.WriteFile(filepath.Join(completeJob.Cwd, nfStdoutFile), []byte("done\n"), 0o644), ShouldBeNil)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			So(output, ShouldContainSubstring, "Process")
+			So(output, ShouldContainSubstring, "[prepare] done\n")
+		})
+
+		Convey("it prints captured stderr for buried jobs", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			buriedClient, buriedJob := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.prepare", "false"))
+			So(buriedClient.Execute(context.Background(), buriedJob, "bash"), ShouldNotBeNil)
+			So(buriedClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.prepare", jobqueue.JobStateBuried)
+			So(os.WriteFile(filepath.Join(buriedJob.Cwd, nfStderrFile), []byte("failed\n"), 0o644), ShouldBeNil)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			So(output, ShouldContainSubstring, "[prepare] (stderr) failed\n")
+		})
+
+		Convey("it omits output for running jobs", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			runningClient, runningJob := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.prepare", "sleep 2"))
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- runningClient.Execute(context.Background(), runningJob, "bash")
+				_ = runningClient.Disconnect()
+			}()
+
+			path := filepath.Join(runningJob.Cwd, nfStdoutFile)
+			writeErr := os.WriteFile(path, []byte("still running\n"), 0o644)
+			So(writeErr, ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.prepare", jobqueue.JobStateRunning)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			So(output, ShouldNotContainSubstring, "still running")
+			So(<-errCh, ShouldBeNil)
+		})
+
+		Convey("it prints multi-instance completed jobs with indexed labels in process order", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			job1Client, job1 := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.align", "echo one >/dev/null", "align", "1"))
+			So(job1Client.Execute(context.Background(), job1, "bash"), ShouldBeNil)
+			So(job1Client.Disconnect(), ShouldBeNil)
+			job0Client, job0 := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.align", "echo zero >/dev/null", "align", "0"))
+			So(job0Client.Execute(context.Background(), job0, "bash"), ShouldBeNil)
+			So(job0Client.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupStateCount("nf.mywf.r1.align", jobqueue.JobStateComplete, 2)
+			So(os.WriteFile(filepath.Join(job1.Cwd, nfStdoutFile), []byte("one\n"), 0o644), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(job0.Cwd, nfStdoutFile), []byte("zero\n"), 0o644), ShouldBeNil)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			So(strings.Index(output, "[align (0)] zero\n"), ShouldBeLessThan, strings.Index(output, "[align (1)] one\n"))
+		})
+
+		Convey("it prints only the count table when no terminal jobs have captured output", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			completeClient, completeJob := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.prepare", "true"))
+			So(completeClient.Execute(context.Background(), completeJob, "bash"), ShouldBeNil)
+			So(completeClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.prepare", jobqueue.JobStateComplete)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			So(strings.TrimSpace(output), ShouldEqual, "Process  Pending  Running  Complete  Buried  Total\nprepare  0        0        1         0       1")
+		})
+
+		Convey("it truncates large captured stdout output", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			payload := strings.Repeat("x", int(nfOutputMaxBytes)+128)
+			completeClient, completeJob := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.prepare", "true"))
+			So(completeClient.Execute(context.Background(), completeJob, "bash"), ShouldBeNil)
+			So(completeClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.prepare", jobqueue.JobStateComplete)
+			writeErr := os.WriteFile(filepath.Join(completeJob.Cwd, nfStdoutFile), []byte(payload), 0o644)
+			So(writeErr, ShouldBeNil)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			So(output, ShouldContainSubstring, "[... output truncated ...]")
+		})
 	})
 }
 
@@ -910,6 +1055,24 @@ func statusCounts(output string) map[string][]string {
 	}
 
 	return rows
+}
+
+func newStatusTestJobWithCwd(t *testing.T, repGroup, cmd string, cwdParts ...string) *jobqueue.Job {
+	t.Helper()
+
+	cwd := t.TempDir()
+	if len(cwdParts) > 0 {
+		cwd = filepath.Join(append([]string{cwd}, cwdParts...)...)
+		err := os.MkdirAll(cwd, 0o755)
+		if err != nil {
+			t.Fatalf("create cwd for %s: %v", repGroup, err)
+		}
+	}
+
+	job := newStatusTestJob(repGroup, cmd)
+	job.Cwd = cwd
+
+	return job
 }
 
 type fakeNextflowSnapshot struct {
