@@ -190,7 +190,7 @@ func runNextflowWorkflow(workflowArg string, options nextflowRunOptions) error {
 		return nil
 	}
 
-	return followNextflowWorkflow(jq, nextflowRepGroupPrefix(translateConfig.WorkflowName, translateConfig.RunID), result.Pending, translateConfig, options.pollInterval)
+	return followNextflowWorkflow(jq, nextflowRepGroupPrefix(translateConfig.WorkflowName, translateConfig.RunID), result.Pending, translateConfig, options.pollInterval, os.Stdout)
 }
 
 func loadNextflowConfig(path string, externalParams map[string]any) (*nextflowdsl.Config, error) {
@@ -314,14 +314,49 @@ func nextflowWorkflowName(path string) string {
 	return trimmed
 }
 
-func followNextflowWorkflow(jq nextflowJobManager, repGroupPrefix string, pending []*nextflowdsl.PendingStage, tc nextflowdsl.TranslateConfig, pollInterval time.Duration) error {
+func followNextflowWorkflow(
+	jq nextflowJobManager,
+	repGroupPrefix string,
+	pending []*nextflowdsl.PendingStage,
+	tc nextflowdsl.TranslateConfig,
+	pollInterval time.Duration,
+	outputWriter io.Writer,
+) error {
 	remaining := append([]*nextflowdsl.PendingStage(nil), pending...)
 	terminalSuccessPending := false
+	displayedJobKeys := make(map[string]struct{})
+	if outputWriter == nil {
+		outputWriter = io.Discard
+	}
 
 	for {
 		completeJobs, buriedJobs, incompleteJobs, err := nextflowWorkflowJobs(jq, repGroupPrefix)
 		if err != nil {
 			return err
+		}
+
+		allKnownJobs := make([]*jobqueue.Job, 0, len(completeJobs)+len(buriedJobs)+len(incompleteJobs))
+		allKnownJobs = append(allKnownJobs, completeJobs...)
+		allKnownJobs = append(allKnownJobs, buriedJobs...)
+		allKnownJobs = append(allKnownJobs, incompleteJobs...)
+
+		newlyTerminalJobs := make([]*jobqueue.Job, 0, len(completeJobs)+len(buriedJobs))
+		for _, terminalJobs := range [][]*jobqueue.Job{completeJobs, buriedJobs} {
+			for _, job := range terminalJobs {
+				key := job.Key()
+				if _, ok := displayedJobKeys[key]; ok {
+					continue
+				}
+
+				newlyTerminalJobs = append(newlyTerminalJobs, job)
+			}
+		}
+
+		if err = printJobsOutput(outputWriter, newlyTerminalJobs, allKnownJobs, nfOutputMaxBytes); err != nil {
+			return err
+		}
+		for _, job := range newlyTerminalJobs {
+			displayedJobKeys[job.Key()] = struct{}{}
 		}
 
 		progressed := false
