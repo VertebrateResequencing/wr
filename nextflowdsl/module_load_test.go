@@ -50,3 +50,63 @@ func TestLoadWorkflowFileRejectsImportCycles(t *testing.T) {
 		So(err.Error(), ShouldContainSubstring, "workflow import cycle detected")
 	})
 }
+
+func TestLoadWorkflowFilePreservesClonedProcessFields(t *testing.T) {
+	Convey("LoadWorkflowFile preserves parsed process fields required by nextflowstrict translation", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+
+		workflow := `process demo {
+input:
+tuple val(id), path(reads)
+output:
+tuple val(id), path("${id}.bam"), emit: aligned, optional: true
+script:
+'touch ${id}.bam'
+stub:
+'echo stub'
+exec:
+"println 'exec'"
+shell:
+'echo !{id}'
+when:
+'params.run_demo'
+}
+workflow {
+demo()
+}
+`
+
+		So(os.WriteFile(workflowPath, []byte(workflow), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.Processes, ShouldHaveLength, 1)
+
+		proc := wf.Processes[0]
+		So(proc.Input, ShouldHaveLength, 1)
+		So(proc.Input[0].Kind, ShouldEqual, "tuple")
+		So(proc.Input[0].Elements, ShouldHaveLength, 2)
+		So(proc.Input[0].Elements[0].Kind, ShouldEqual, "val")
+		So(proc.Input[0].Elements[0].Name, ShouldEqual, "id")
+		So(proc.Input[0].Elements[1].Kind, ShouldEqual, "path")
+		So(proc.Input[0].Elements[1].Name, ShouldEqual, "reads")
+
+		So(proc.Output, ShouldHaveLength, 1)
+		So(proc.Output[0].Kind, ShouldEqual, "tuple")
+		So(proc.Output[0].Emit, ShouldEqual, "aligned")
+		So(proc.Output[0].Optional, ShouldBeTrue)
+		So(proc.Output[0].Elements, ShouldHaveLength, 2)
+		So(proc.Output[0].Elements[0].Kind, ShouldEqual, "val")
+		So(proc.Output[0].Elements[0].Name, ShouldEqual, "id")
+		So(proc.Output[0].Elements[1].Kind, ShouldEqual, "path")
+		stringExpr, ok := proc.Output[0].Elements[1].Expr.(StringExpr)
+		So(ok, ShouldBeTrue)
+		So(stringExpr.Value, ShouldEqual, "${id}.bam")
+
+		So(proc.Stub, ShouldEqual, "echo stub")
+		So(proc.Exec, ShouldEqual, "println 'exec'")
+		So(proc.Shell, ShouldEqual, "echo !{id}")
+		So(proc.When, ShouldEqual, "params.run_demo")
+	})
+}
