@@ -112,12 +112,13 @@ func runNextflowWorkflow(workflowArg string, options nextflowRunOptions) error {
 		return fmt.Errorf("unsupported container runtime %q", options.containerRuntime)
 	}
 
-	workflowPath, err := filepath.Abs(workflowArg)
+	resolver := nextflowdsl.NewGitHubResolver("")
+	workflowPath, resolvedRemotely, err := nextflowdsl.ResolveWorkflowPath(workflowArg, resolver)
 	if err != nil {
-		return fmt.Errorf("resolve workflow path %s: %w", workflowArg, err)
+		return err
 	}
 
-	wf, err := nextflowdsl.LoadWorkflowFile(workflowPath, nextflowdsl.NewGitHubResolver(""))
+	wf, err := nextflowdsl.LoadWorkflowFile(workflowPath, resolver)
 	if err != nil {
 		return err
 	}
@@ -155,7 +156,7 @@ func runNextflowWorkflow(workflowArg string, options nextflowRunOptions) error {
 
 	translateConfig := nextflowdsl.TranslateConfig{
 		RunID:            runID,
-		WorkflowName:     nextflowWorkflowName(workflowPath),
+		WorkflowName:     nextflowResolvedWorkflowName(workflowArg, workflowPath, resolvedRemotely),
 		WorkflowPath:     workflowPath,
 		Cwd:              cwd,
 		ContainerRuntime: options.containerRuntime,
@@ -258,6 +259,44 @@ func generateNextflowRunID(workflowPath string) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", workflowPath, time.Now().UnixNano())))
 
 	return hex.EncodeToString(sum[:8])
+}
+
+func nextflowResolvedWorkflowName(workflowArg, workflowPath string, resolvedRemotely bool) string {
+	if resolvedRemotely {
+		if repoName, ok := nextflowRemoteWorkflowName(workflowArg); ok {
+			return repoName
+		}
+	}
+
+	return nextflowWorkflowName(workflowPath)
+}
+
+func nextflowRemoteWorkflowName(workflowArg string) (string, bool) {
+	spec, _, _ := strings.Cut(strings.TrimSpace(workflowArg), "@")
+	if spec == "" {
+		return "", false
+	}
+
+	if strings.HasPrefix(spec, "https://") || strings.HasPrefix(spec, "http://") {
+		parsed, err := url.Parse(spec)
+		if err != nil || !strings.EqualFold(parsed.Host, "github.com") {
+			return "", false
+		}
+
+		parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
+		if len(parts) != 2 || parts[1] == "" {
+			return "", false
+		}
+
+		return parts[1], true
+	}
+
+	parts := strings.Split(strings.Trim(spec, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || filepath.Ext(parts[1]) != "" {
+		return "", false
+	}
+
+	return parts[1], true
 }
 
 func nextflowWorkflowName(path string) string {
@@ -440,7 +479,6 @@ func nextflowResumeMatch(existingJobs []*jobqueue.Job, plannedJob *jobqueue.Job)
 
 	return matchedJob, remaining
 }
-
 
 func nextflowResumeAction(existingJob *jobqueue.Job) (bool, string, error) {
 	if existingJob == nil {

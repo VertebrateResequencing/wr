@@ -120,6 +120,24 @@ func TestGitHubResolver(t *testing.T) {
 			So(path, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", "main"))
 			So(strings.Contains(path, string(filepath.Separator)+"main"), ShouldBeTrue)
 		})
+
+		Convey("GitHub workflow URLs normalize to owner/repo cache keys", func() {
+			cloneCalls := 0
+			githubResolverRunGit = func(dir string, args ...string) error {
+				cloneCalls++
+				So(dir, ShouldEqual, cacheDir)
+				So(args, ShouldResemble, []string{"clone", "--depth", "1", "https://github.com/nextflow-io/hello.git", filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)})
+				So(os.MkdirAll(filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision), 0o755), ShouldBeNil)
+
+				return os.WriteFile(filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision, "main.nf"), []byte("workflow {}\n"), 0o644)
+			}
+
+			path, err := NewGitHubResolver(cacheDir).Resolve("https://github.com/nextflow-io/hello")
+
+			So(err, ShouldBeNil)
+			So(cloneCalls, ShouldEqual, 1)
+			So(path, ShouldEqual, filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision))
+		})
 	})
 }
 

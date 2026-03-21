@@ -102,6 +102,10 @@ func lex(input string) ([]token, error) {
 			for l.peek() != 0 && l.peek() != '\n' {
 				l.next()
 			}
+		case r == '#' && !l.lineHasContent:
+			for l.peek() != 0 && l.peek() != '\n' {
+				l.next()
+			}
 		case r == '{':
 			tokens = append(tokens, token{typ: tokenLBrace, lit: "{", line: l.line, col: l.col})
 			l.next()
@@ -184,10 +188,11 @@ func parseParamsPath(tokens []token) (string, bool) {
 }
 
 type lexer struct {
-	input []rune
-	pos   int
-	line  int
-	col   int
+	input          []rune
+	pos            int
+	line           int
+	col            int
+	lineHasContent bool
 }
 
 func (l *lexer) peek() rune {
@@ -217,8 +222,12 @@ func (l *lexer) next() rune {
 	if r == '\n' {
 		l.line++
 		l.col = 1
+		l.lineHasContent = false
 	} else {
 		l.col++
+		if r != ' ' && r != '\t' && r != '\r' {
+			l.lineHasContent = true
+		}
 	}
 
 	return r
@@ -495,12 +504,63 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			continue
 		}
 
+		calls, err := p.parseWorkflowStatement()
+		if err != nil {
+			return nil, err
+		}
+		block.Calls = append(block.Calls, calls...)
+	}
+}
+
+func (p *parser) parseWorkflowStatement() ([]*Call, error) {
+	if p.current().typ == tokenIdent && p.peek().typ == tokenLParen {
 		call, err := p.parseCall()
 		if err != nil {
 			return nil, err
 		}
-		block.Calls = append(block.Calls, call)
+
+		return []*Call{call}, nil
 	}
+
+	expr, err := p.parseChanExpr(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF)
+	if err != nil {
+		return nil, err
+	}
+
+	return desugarWorkflowPipe(expr)
+}
+
+func desugarWorkflowPipe(expr ChanExpr) ([]*Call, error) {
+	pipe, ok := expr.(PipeExpr)
+	if !ok {
+		return nil, fmt.Errorf("workflow statements must be calls or channel pipelines")
+	}
+	if len(pipe.Stages) < 2 {
+		return nil, fmt.Errorf("workflow pipelines require at least one process stage")
+	}
+
+	input := pipe.Stages[0]
+	calls := make([]*Call, 0, len(pipe.Stages)-1)
+	for stageIndex, stage := range pipe.Stages[1:] {
+		target, ok := stage.(ChanRef)
+		if !ok {
+			return nil, fmt.Errorf("workflow pipe stage %d must be a bare identifier", stageIndex+2)
+		}
+
+		if target.Name == "view" && stageIndex == len(pipe.Stages)-2 {
+			break
+		}
+
+		call := &Call{Target: target.Name, Args: []ChanExpr{input}}
+		calls = append(calls, call)
+		input = ChanRef{Name: target.Name + ".out"}
+	}
+
+	if len(calls) == 0 {
+		return nil, fmt.Errorf("workflow pipelines require at least one runnable process stage")
+	}
+
+	return calls, nil
 }
 
 func (p *parser) parseCall() (*Call, error) {

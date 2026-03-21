@@ -30,6 +30,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -401,6 +402,57 @@ func TestNextflowRunCommand(t *testing.T) {
 			So(jobs[0].RepGroup+jobs[1].RepGroup, ShouldContainSubstring, ".pack.consumer")
 		})
 
+		Convey("remote owner/repo workflow identifiers resolve through the GitHub download path", func() {
+			homeDir := t.TempDir()
+			t.Setenv("HOME", homeDir)
+			cacheEntry := filepath.Join(homeDir, ".wr", "nextflow_modules", "nextflow-io", "hello", "HEAD", "main.nf")
+			_, statErr := os.Stat(cacheEntry)
+			So(os.IsNotExist(statErr), ShouldBeTrue)
+
+			cloneCalls, restoreGit := stubGitHubWorkflowDownload(t, homeDir, "nextflow-io", "hello")
+			defer restoreGit()
+
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			err := env.executeRun("nextflow-io/hello")
+			So(err, ShouldBeNil)
+			So(*cloneCalls, ShouldEqual, 1)
+			_, statErr = os.Stat(cacheEntry)
+			So(statErr, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.hello.")
+			So(jobs, ShouldHaveLength, 4)
+			So(jobs[0].RepGroup, ShouldContainSubstring, ".sayHello")
+
+			commands := []string{jobs[0].Cmd, jobs[1].Cmd, jobs[2].Cmd, jobs[3].Cmd}
+			So(strings.Join(commands, "\n"), ShouldContainSubstring, "Bonjour")
+			So(strings.Join(commands, "\n"), ShouldContainSubstring, "Ciao")
+			So(strings.Join(commands, "\n"), ShouldContainSubstring, "Hello")
+			So(strings.Join(commands, "\n"), ShouldContainSubstring, "Hola")
+		})
+
+		Convey("remote GitHub workflow URLs resolve through the GitHub download path", func() {
+			homeDir := t.TempDir()
+			t.Setenv("HOME", homeDir)
+			cacheEntry := filepath.Join(homeDir, ".wr", "nextflow_modules", "nextflow-io", "hello", "HEAD", "main.nf")
+			cloneCalls, restoreGit := stubGitHubWorkflowDownload(t, homeDir, "nextflow-io", "hello")
+			defer restoreGit()
+
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			err := env.executeRun("https://github.com/nextflow-io/hello")
+			So(err, ShouldBeNil)
+			So(*cloneCalls, ShouldEqual, 1)
+			_, statErr := os.Stat(cacheEntry)
+			So(statErr, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.hello.")
+			So(jobs, ShouldHaveLength, 4)
+			So(jobs[0].RepGroup, ShouldContainSubstring, ".sayHello")
+		})
+
 		Convey("missing workflow files return an error naming the missing path", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
@@ -478,6 +530,75 @@ func simplePipelineWorkflow(outputValue, consumerScript string) string {
 
 func singleProcessWorkflow(script string) string {
 	return "process A {\nscript: '" + script + "'\n}\nworkflow { A() }\n"
+}
+
+func stubGitHubWorkflowDownload(t *testing.T, homeDir, owner, repo string) (*int, func()) {
+	t.Helper()
+
+	cloneCalls := 0
+	cacheDir := filepath.Join(homeDir, ".wr", "nextflow_modules")
+	restore := nextflowdsl.SetGitHubResolverRunGitForTesting(func(dir string, args ...string) error {
+		t.Helper()
+
+		cloneCalls++
+		cachePath := filepath.Join(cacheDir, owner, repo, "HEAD")
+		expectedArgs := []string{"clone", "--depth", "1", "https://github.com/" + owner + "/" + repo + ".git", cachePath}
+		if dir != cacheDir {
+			t.Fatalf("clone dir = %q, want %q", dir, cacheDir)
+		}
+		if !reflect.DeepEqual(args, expectedArgs) {
+			t.Fatalf("clone args = %v, want %v", args, expectedArgs)
+		}
+
+		writeDownloadedGitHubWorkflow(t, cachePath)
+
+		return nil
+	})
+
+	return &cloneCalls, restore
+}
+
+func writeDownloadedGitHubWorkflow(t *testing.T, repoPath string) {
+	t.Helper()
+
+	files := map[string]string{
+		"README.md":        "# nextflow-io/hello\n\nA minimal greeting workflow used by the command integration tests.\n",
+		"nextflow.config": "manifest { name = 'nextflow-io/hello' }\n",
+		"main.nf":          remoteHelloWorkflow(),
+	}
+
+	for name, content := range files {
+		path := filepath.Join(repoPath, name)
+		err := os.MkdirAll(filepath.Dir(path), 0o755)
+		if err != nil {
+			t.Fatalf("create downloaded workflow parent for %s: %v", name, err)
+		}
+
+		err = os.WriteFile(path, []byte(content), 0o644)
+		if err != nil {
+			t.Fatalf("write downloaded workflow file %s: %v", name, err)
+		}
+	}
+}
+
+func remoteHelloWorkflow() string {
+	return "#!/usr/bin/env nextflow\n\n" +
+		"// downloaded from github.com/nextflow-io/hello\n\n" +
+		"process sayHello {\n" +
+		"    input:\n" +
+		"    val x\n\n" +
+		"    output:\n" +
+		"  \n" +
+		" stdout\n\n" +
+		"    script:\n" +
+		"    \"\"\"\n" +
+		"    echo '${x} world!'\n" +
+		"    \"\"\"\n" +
+		"}\n\n" +
+		"workflow {\n" +
+		"   \n" +
+		"Channel.of('Bonjour', 'Ciao', 'Hello', 'Hola') | sayHello | view\n" +
+		"}\n"
 }
 
 func TestNextflowStatusCommand(t *testing.T) {
@@ -1165,4 +1286,10 @@ func removeJobsByKey(jobs []*jobqueue.Job, keys map[string]struct{}) ([]*jobqueu
 	}
 
 	return filtered, removed
+}
+
+func remoteWorkflowEntrypoint(script string) string {
+	return "#!/usr/bin/env nextflow\n" +
+		"// downloaded GitHub workflow entrypoint\n" +
+		singleProcessWorkflow(script)
 }
