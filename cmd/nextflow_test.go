@@ -28,6 +28,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -985,7 +986,7 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 
 			sleeps, restoreSleep := withFakeNextflowSleep(queue)
 			defer restoreSleep()
-			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 100*time.Millisecond)
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 100*time.Millisecond, io.Discard)
 
 			So(err, ShouldBeNil)
 			So(queue.added, ShouldHaveLength, 1)
@@ -1005,7 +1006,7 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 
 			_, restoreSleep := withFakeNextflowSleep(queue)
 			defer restoreSleep()
-			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 100*time.Millisecond)
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 100*time.Millisecond, io.Discard)
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "buried")
@@ -1023,7 +1024,7 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 
 			sleeps, restoreSleep := withFakeNextflowSleep(queue)
 			defer restoreSleep()
-			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, time.Second)
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, time.Second, io.Discard)
 
 			So(err, ShouldBeNil)
 			So(*sleeps, ShouldResemble, []time.Duration{time.Second, time.Second, time.Second})
@@ -1133,6 +1134,188 @@ func TestNextflowRunCommandResumeDeleted(t *testing.T) {
 		jobs := env.jobsByRepGroupSubstring("nf.resume_deleted.r1")
 		So(jobs, ShouldHaveLength, 2)
 		env.waitForRepGroupState("nf.resume_deleted.r1.B", jobqueue.JobStateComplete)
+	})
+}
+
+func TestFollowNextflowWorkflowOutput(t *testing.T) {
+	Convey("followNextflowWorkflow covers B1", t, func() {
+		const repGroupPrefix = "nf.wf.r1."
+
+		newJob := func(tempDir, process, cwdSuffix string, state jobqueue.JobState) *jobqueue.Job {
+			cwd := filepath.Join(tempDir, cwdSuffix)
+			err := os.MkdirAll(cwd, 0o755)
+			So(err, ShouldBeNil)
+
+			return &jobqueue.Job{
+				Cmd:      "echo " + filepath.ToSlash(cwdSuffix),
+				RepGroup: repGroupPrefix + process,
+				Cwd:      cwd,
+				State:    state,
+			}
+		}
+
+		writeOutput := func(job *jobqueue.Job, name, content string) {
+			err := os.WriteFile(filepath.Join(job.Cwd, name), []byte(content), 0o644)
+			So(err, ShouldBeNil)
+		}
+
+		runFollow := func(queue *fakeNextflowQueue, writer io.Writer) error {
+			tc := nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: "wf"}
+			sleeps, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+
+			err := followNextflowWorkflow(queue, repGroupPrefix, nil, tc, 25*time.Millisecond, writer)
+			So(*sleeps, ShouldNotBeNil)
+
+			return err
+		}
+
+		Convey("single-instance completed jobs print captured stdout", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "sayHello", "sayHello", jobqueue.JobStateComplete)
+			writeOutput(job, nfStdoutFile, "Hello world!\n")
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{complete: []*jobqueue.Job{job}},
+				{complete: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[sayHello] Hello world!\n")
+		})
+
+		Convey("multi-line stdout is indented under its own header", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "sayHello", "sayHello", jobqueue.JobStateComplete)
+			writeOutput(job, nfStdoutFile, "line1\nline2\n")
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{complete: []*jobqueue.Job{job}},
+				{complete: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[sayHello]\n  line1\n  line2\n")
+		})
+
+		Convey("jobs with no captured files print nothing", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "sayHello", "sayHello", jobqueue.JobStateComplete)
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{complete: []*jobqueue.Job{job}},
+				{complete: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "")
+		})
+
+		Convey("whitespace-only stdout is ignored", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "sayHello", "sayHello", jobqueue.JobStateComplete)
+			writeOutput(job, nfStdoutFile, "   \n")
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{complete: []*jobqueue.Job{job}},
+				{complete: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "")
+		})
+
+		Convey("buried jobs still display captured output before follow fails", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "sayHello", "sayHello", jobqueue.JobStateBuried)
+			writeOutput(job, nfStdoutFile, "buried output\n")
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{buried: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "buried")
+			So(out.String(), ShouldEqual, "[sayHello] buried output\n")
+		})
+
+		Convey("multi-instance labels use all known jobs across poll iterations", func() {
+			tempDir := t.TempDir()
+			job0 := newJob(tempDir, "sayHello", filepath.Join("sayHello", "0"), jobqueue.JobStateComplete)
+			job1 := newJob(tempDir, "sayHello", filepath.Join("sayHello", "1"), jobqueue.JobStateComplete)
+			writeOutput(job0, nfStdoutFile, "zero\n")
+			writeOutput(job1, nfStdoutFile, "one\n")
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job0, job1})[0], cloneJobs([]*jobqueue.Job{job0, job1})[1]}},
+				{complete: []*jobqueue.Job{job0}, incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job1})[0]}},
+				{complete: []*jobqueue.Job{job0, job1}},
+				{complete: []*jobqueue.Job{job0, job1}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[sayHello (0)] zero\n[sayHello (1)] one\n")
+		})
+
+		Convey("stderr is printed after stdout with a stderr-specific label", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "processName", "processName", jobqueue.JobStateComplete)
+			writeOutput(job, nfStdoutFile, "out\n")
+			writeOutput(job, nfStderrFile, "error msg\n")
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{complete: []*jobqueue.Job{job}},
+				{complete: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[processName] out\n[processName] (stderr) error msg\n")
+		})
+
+		Convey("stdout larger than 1 MB is truncated with the marker", func() {
+			tempDir := t.TempDir()
+			job := newJob(tempDir, "sayHello", "sayHello", jobqueue.JobStateComplete)
+			writeOutput(job, nfStdoutFile, strings.Repeat("x", int(nfOutputMaxBytes)+128))
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{cloneJobs([]*jobqueue.Job{job})[0]}},
+				{complete: []*jobqueue.Job{job}},
+				{complete: []*jobqueue.Job{job}},
+			}}
+
+			var out bytes.Buffer
+			err := runFollow(queue, &out)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldContainSubstring, "[... output truncated ...]")
+		})
 	})
 }
 

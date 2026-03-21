@@ -21,5 +21,5 @@ from phase 2. Multi-instance detection uses all known jobs
 (complete + buried + incomplete). Depends on phases 1 and 2.
 Covering all 8 acceptance tests from B1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
