@@ -42,7 +42,9 @@ func LoadWorkflowFile(path string, remoteResolver ModuleResolver) (*Workflow, er
 	}
 
 	loaded := make(map[string]*Workflow)
-	return loadWorkflowFile(resolvedPath, remoteResolver, loaded)
+	loading := make(map[string]struct{})
+
+	return loadWorkflowFile(resolvedPath, remoteResolver, loaded, loading)
 }
 
 // ResolveWorkflowPath resolves a top-level workflow identifier to a local
@@ -132,10 +134,16 @@ func workflowEntryPath(path string) (string, error) {
 	return entryPath, nil
 }
 
-func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[string]*Workflow) (*Workflow, error) {
+func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[string]*Workflow, loading map[string]struct{}) (*Workflow, error) {
 	if wf, ok := loaded[path]; ok {
 		return cloneWorkflow(wf), nil
 	}
+	if _, ok := loading[path]; ok {
+		return nil, fmt.Errorf("workflow import cycle detected at %q", path)
+	}
+
+	loading[path] = struct{}{}
+	defer delete(loading, path)
 
 	workflowFile, err := os.Open(path)
 	if err != nil {
@@ -157,7 +165,7 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 	}
 
 	for _, importNode := range wf.Imports {
-		moduleWF, err := loadImportedWorkflow(path, importNode, remoteResolver, loaded)
+		moduleWF, err := loadImportedWorkflow(path, importNode, remoteResolver, loaded, loading)
 		if err != nil {
 			return nil, err
 		}
@@ -176,7 +184,13 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 	return merged, nil
 }
 
-func loadImportedWorkflow(parentPath string, importNode *Import, remoteResolver ModuleResolver, loaded map[string]*Workflow) (*Workflow, error) {
+func loadImportedWorkflow(
+	parentPath string,
+	importNode *Import,
+	remoteResolver ModuleResolver,
+	loaded map[string]*Workflow,
+	loading map[string]struct{},
+) (*Workflow, error) {
 	resolver := NewChainResolver(NewLocalResolver(filepath.Dir(parentPath)), remoteResolver)
 	resolvedPath, err := resolver.Resolve(importNode.Source)
 	if err != nil {
@@ -190,7 +204,7 @@ func loadImportedWorkflow(parentPath string, importNode *Import, remoteResolver 
 
 	moduleWF := &Workflow{}
 	for _, moduleFile := range moduleFiles {
-		loadedWorkflow, err := loadWorkflowFile(moduleFile, remoteResolver, loaded)
+		loadedWorkflow, err := loadWorkflowFile(moduleFile, remoteResolver, loaded, loading)
 		if err != nil {
 			return nil, err
 		}
