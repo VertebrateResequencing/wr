@@ -66,6 +66,12 @@ func TestNextflowRemoteWorkflowName(t *testing.T) {
 		So(ok, ShouldBeTrue)
 		So(name, ShouldEqual, "nextflow-io/hello")
 	})
+
+	Convey("local main.nf workflows use the containing directory name", t, func() {
+		name := nextflowWorkflowName(filepath.Join("/tmp", "demo-workflow", "main.nf"))
+
+		So(name, ShouldEqual, "demo-workflow")
+	})
 }
 
 func TestReadCapturedOutput(t *testing.T) {
