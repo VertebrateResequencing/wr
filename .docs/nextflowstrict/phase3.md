@@ -22,8 +22,8 @@ section labels inside workflow blocks. Add `Take []string`,
 struct to `nextflowdsl/ast.go`. Covering all 5 acceptance tests
 from A2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.2: A3 - Function definitions [parallel with 3.1, 3.3]
 
@@ -36,8 +36,8 @@ field to `Workflow` and the `FuncDef` struct to
 evaluated at translate time. Covering all 3 acceptance tests
 from A3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.3: A7 - Top-level output block [parallel with 3.1, 3.2]
 
@@ -48,8 +48,8 @@ top-level `output { ... }` blocks (including nested braces).
 The block is parsed and discarded since wr handles output via
 publishDir. Covering all 3 acceptance tests from A7.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

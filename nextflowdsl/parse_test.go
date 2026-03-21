@@ -216,6 +216,78 @@ func TestParseTupleDeclarations(t *testing.T) {
 	})
 }
 
+func TestParseTopLevelOutputBlocks(t *testing.T) {
+	Convey("Parse handles A7 top-level output blocks", t, func() {
+		Convey("top-level output blocks are skipped before later definitions", func() {
+			wf, err := Parse(strings.NewReader("output { samples { path 'fastq' } }\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("empty top-level output blocks parse without producing processes", func() {
+			wf, err := Parse(strings.NewReader("output { }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 0)
+		})
+
+		Convey("nested top-level output blocks are skipped with balanced braces", func() {
+			wf, err := Parse(strings.NewReader("output { deeply { nested { block { } } } }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 0)
+		})
+
+		Convey("top-level assignments named output still parse as channel assignments", func() {
+			wf, err := Parse(strings.NewReader("output = Channel.of(1,2,3)\nworkflow { foo(output) }"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "of")
+			So(factory.Args, ShouldHaveLength, 3)
+		})
+	})
+}
+
+func TestParseFunctionDefinitions(t *testing.T) {
+	Convey("Parse handles A3 top-level function definitions", t, func() {
+		Convey("functions with parameters are stored on the workflow AST", func() {
+			wf, err := Parse(strings.NewReader("def greet(name) { return \"hello ${name}\" }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Functions, ShouldHaveLength, 1)
+			So(wf.Functions[0].Name, ShouldEqual, "greet")
+			So(wf.Functions[0].Params, ShouldResemble, []string{"name"})
+		})
+
+		Convey("functions and processes can coexist at top level", func() {
+			wf, err := Parse(strings.NewReader("def add(a, b) { a + b }\nprocess foo {\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Functions, ShouldHaveLength, 1)
+			So(wf.Functions[0].Name, ShouldEqual, "add")
+			So(wf.Functions[0].Params, ShouldResemble, []string{"a", "b"})
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("functions without parameters record an empty parameter list", func() {
+			wf, err := Parse(strings.NewReader("def noParams() { 42 }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Functions, ShouldHaveLength, 1)
+			So(wf.Functions[0].Name, ShouldEqual, "noParams")
+			So(wf.Functions[0].Params, ShouldResemble, []string{})
+		})
+	})
+}
+
 func TestParseProcessDefinitions(t *testing.T) {
 	Convey("Parse handles A1 process definitions", t, func() {
 		Convey("basic process with input, output, and script", func() {
@@ -334,6 +406,92 @@ func TestParseProcessDefinitions(t *testing.T) {
 
 func TestParseWorkflowBlocks(t *testing.T) {
 	Convey("Parse handles A2 workflow blocks", t, func() {
+		Convey("named workflows capture take, main, and emit sections", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\ntake:\nreads_ch\nmain:\nBWA(reads_ch)\nemit:\nbam = BWA.out.bam\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Name, ShouldEqual, "ALIGN")
+			So(wf.SubWFs[0].Body, ShouldNotBeNil)
+			So(wf.SubWFs[0].Body.Take, ShouldResemble, []string{"reads_ch"})
+			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Emit[0].Name, ShouldEqual, "bam")
+			So(wf.SubWFs[0].Body.Emit[0].Expr, ShouldEqual, "BWA.out.bam")
+		})
+
+		Convey("take sections can list multiple channels", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\ntake:\nch1\nch2\nmain:\nBWA(ch1, ch2)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Take, ShouldResemble, []string{"ch1", "ch2"})
+		})
+
+		Convey("main sections populate calls without take or emit", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Take, ShouldBeEmpty)
+			So(wf.SubWFs[0].Body.Emit, ShouldBeEmpty)
+			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+		})
+
+		Convey("emit sections accept bare channel names", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\nemit:\nresult_ch\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Emit[0].Name, ShouldEqual, "result_ch")
+			So(wf.SubWFs[0].Body.Emit[0].Expr, ShouldEqual, "")
+		})
+
+		Convey("publish sections are accepted without affecting main calls", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nbam = 'results'\nemit:\nresult_ch\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+		})
+
+		Convey("publish sections accept colon-style property lines without opening new sections", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nenabled: true\npath: 'results'\nmode: 'copy'\nemit:\nresult_ch\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Emit[0].Name, ShouldEqual, "result_ch")
+		})
+
+		Convey("publish sections skip inline closure values without terminating the workflow block", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nsaveAs: { filename -> \"${filename}.bam\" }\nemit:\nresult_ch\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Emit[0].Name, ShouldEqual, "result_ch")
+		})
+
+		Convey("publish inline closures still allow later top-level content to parse", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nsaveAs: { filename -> \"${filename}.bam\" }\nemit:\nresult_ch\n}\nprocess done {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "done")
+		})
+
 		Convey("entry workflow records ordered calls", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch) ; bar(foo.out) }"))
 

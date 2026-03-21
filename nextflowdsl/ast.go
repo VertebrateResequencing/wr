@@ -83,9 +83,17 @@ type Call struct {
 	Args   []ChanExpr
 }
 
+// WFEmit represents one workflow emit declaration.
+type WFEmit struct {
+	Name string
+	Expr string
+}
+
 // WorkflowBlock is the body of a workflow block.
 type WorkflowBlock struct {
 	Calls []*Call
+	Take  []string
+	Emit  []*WFEmit
 }
 
 // SubWorkflow is a named workflow block calling processes or other workflows.
@@ -101,6 +109,13 @@ type Import struct {
 	Alias  map[string]string
 }
 
+// FuncDef stores a parsed top-level function definition.
+type FuncDef struct {
+	Name   string
+	Params []string
+	Body   string
+}
+
 // Workflow is the top-level AST for a parsed .nf file.
 type Workflow struct {
 	Name      string
@@ -108,6 +123,7 @@ type Workflow struct {
 	SubWFs    []*SubWorkflow
 	Imports   []*Import
 	EntryWF   *WorkflowBlock
+	Functions []*FuncDef
 }
 
 // ChanRef stores a named channel reference.
