@@ -59,6 +59,176 @@ type TranslateConfig struct {
 	Profile          string
 }
 
+func cloneEmittedOutputs(outputs map[string]emittedOutput) map[string]emittedOutput {
+	if len(outputs) == 0 {
+		return nil
+	}
+
+	clone := make(map[string]emittedOutput, len(outputs))
+	for label, output := range outputs {
+		clone[label] = emittedOutput{
+			outputPaths: cloneStrings(output.outputPaths),
+			items:       cloneChannelItems(output.items),
+		}
+	}
+
+	return clone
+}
+
+func resolveCompletedOutputValue(template any, completedPaths []string) any {
+	switch value := template.(type) {
+	case []any:
+		resolved := make([]any, len(value))
+		for index, element := range value {
+			resolved[index] = resolveCompletedOutputValue(element, completedPaths)
+		}
+
+		return resolved
+	case []string:
+		return channelItemValue(completedPaths)
+	case string:
+		matched := matchCompletedOutputPaths(value, completedPaths)
+		if len(matched) == 0 {
+			return value
+		}
+
+		return channelItemValue(matched)
+	default:
+		return cloneChannelValue(value)
+	}
+}
+
+func matchCompletedOutputPaths(pattern string, completedPaths []string) []string {
+	cleanPattern := filepath.Clean(pattern)
+	hasGlob := strings.ContainsAny(cleanPattern, "*?[")
+	basePattern := filepath.Base(cleanPattern)
+	baseHasGlob := strings.ContainsAny(basePattern, "*?[")
+	matched := make([]string, 0, len(completedPaths))
+
+	for _, candidate := range completedPaths {
+		cleanCandidate := filepath.Clean(candidate)
+		baseCandidate := filepath.Base(cleanCandidate)
+		if cleanCandidate == cleanPattern {
+			matched = append(matched, candidate)
+			continue
+		}
+		if hasGlob {
+			ok, err := filepath.Match(cleanPattern, cleanCandidate)
+			if err == nil && ok {
+				matched = append(matched, candidate)
+				continue
+			}
+		}
+
+		if baseCandidate == basePattern {
+			matched = append(matched, candidate)
+			continue
+		}
+		if !baseHasGlob {
+			continue
+		}
+
+		ok, err := filepath.Match(basePattern, baseCandidate)
+		if err == nil && ok {
+			matched = append(matched, candidate)
+		}
+	}
+
+	return matched
+}
+
+func matchCompletedOutputPathsForPatterns(patterns []string, completedPaths []string) []string {
+	if len(patterns) == 0 || len(completedPaths) == 0 {
+		return nil
+	}
+
+	matched := []string{}
+	for _, pattern := range patterns {
+		matched = appendUniqueStrings(matched, matchCompletedOutputPaths(pattern, completedPaths))
+	}
+
+	return matched
+}
+
+func inputDeclarationForArg(proc *Process, index int) *Declaration {
+	if proc == nil || index < 0 || index >= len(proc.Input) {
+		return nil
+	}
+
+	return proc.Input[index]
+}
+
+func resolveTranslatedOutput(name string, scope []string, translated map[string]translatedCall) (translatedCall, bool) {
+	stageName, emitLabel, hasEmitLabel := emitOutputReference(name)
+	lookupName := name
+	if hasEmitLabel {
+		lookupName = stageName
+	}
+
+	stage, ok := resolveTranslatedRef(lookupName, scope, translated)
+	if !ok {
+		return translatedCall{}, false
+	}
+	if !hasEmitLabel {
+		return stage, true
+	}
+
+	emitted, ok := stage.emitOutputs[emitLabel]
+	if !ok {
+		warnf("nextflowdsl: emit label %q not found for %s; falling back to full outputs\n", emitLabel, name)
+
+		return stage, true
+	}
+
+	stage.outputPaths = cloneStrings(emitted.outputPaths)
+	stage.items = cloneChannelItems(emitted.items)
+
+	return stage, true
+}
+
+func emitOutputReference(name string) (string, string, bool) {
+	parts := strings.Split(name, ".")
+	if len(parts) < 3 || parts[len(parts)-2] != "out" {
+		return "", "", false
+	}
+
+	stageName := strings.Join(parts[:len(parts)-2], ".")
+	emitLabel := parts[len(parts)-1]
+	if stageName == "" || emitLabel == "" {
+		return "", "", false
+	}
+
+	return stageName, emitLabel, true
+}
+
+func bindingsForInputDeclaration(decl *Declaration, resolved bindingSet) ([]string, error) {
+	if decl == nil || decl.Kind != "tuple" {
+		if len(resolved.bindings) == 0 {
+			return []string{""}, nil
+		}
+
+		return cloneStrings(resolved.bindings), nil
+	}
+
+	values := []any{}
+	if len(resolved.values) > 0 {
+		values = channelTuple(resolved.values[0])
+	}
+	if len(values) == 0 && len(resolved.bindings) > 0 {
+		values = channelTuple(resolved.bindings[0])
+	}
+	if len(values) != len(decl.Elements) {
+		return nil, fmt.Errorf("tuple input expected %d values, got %d", len(decl.Elements), len(values))
+	}
+
+	bindings := make([]string, 0, len(values))
+	for _, value := range values {
+		bindings = append(bindings, itemBinding(value))
+	}
+
+	return bindings, nil
+}
+
 func renderScript(proc *Process, bindings []string, params map[string]any) (string, error) {
 	script, err := SubstituteParams(proc.Script, params)
 	if err != nil {
@@ -106,12 +276,257 @@ func interpolateKnownScriptVars(script string, vars map[string]any) (string, err
 	return builder.String(), nil
 }
 
+func flattenedInputDeclarations(proc *Process) []*Declaration {
+	if proc == nil || len(proc.Input) == 0 {
+		return nil
+	}
+
+	flat := make([]*Declaration, 0, len(proc.Input))
+	for _, decl := range proc.Input {
+		if decl == nil {
+			flat = append(flat, nil)
+			continue
+		}
+		if decl.Kind != "tuple" || len(decl.Elements) == 0 {
+			flat = append(flat, decl)
+			continue
+		}
+
+		for _, element := range decl.Elements {
+			if element == nil {
+				flat = append(flat, nil)
+				continue
+			}
+			flat = append(flat, &Declaration{Kind: element.Kind, Name: element.Name, Expr: element.Expr, Raw: element.Raw, Emit: element.Emit})
+		}
+	}
+
+	return flat
+}
+
 func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
 	job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
 		When: jobqueue.OnExit,
 		Do:   jobqueue.Run,
 		Arg:  fmt.Sprintf(`for f in %s %s; do if [ -f "$f" ] && ! grep -qP '\S' "$f"; then rm -f "$f"; fi; done`, nfStdoutFile, nfStderrFile),
 	})
+}
+
+func resolvedOutputPattern(expr Expr, name string, vars map[string]any, cwd string) (string, bool) {
+	pattern := ""
+	if expr != nil {
+		value, err := EvalExpr(expr, vars)
+		if err == nil {
+			pattern = fmt.Sprint(value)
+		} else if stringExpr, ok := expr.(StringExpr); ok {
+			pattern = stringExpr.Value
+		}
+	}
+	if pattern == "" && name != "" {
+		if value, ok := vars[name]; ok {
+			pattern = fmt.Sprint(value)
+		} else {
+			pattern = name
+		}
+	}
+	if pattern == "" {
+		return "", false
+	}
+
+	cleanPath := filepath.Clean(pattern)
+	if filepath.IsAbs(cleanPath) {
+		return cleanPath, true
+	}
+
+	return filepath.Join(cwd, cleanPath), true
+}
+
+func tupleOutputValue(proc *Process, decl *Declaration, bindings []string, params map[string]any, cwd string) (any, bool) {
+	if decl == nil || decl.Kind != "tuple" || len(decl.Elements) == 0 {
+		return nil, false
+	}
+
+	values := make([]any, 0, len(decl.Elements))
+	vars := outputVars(proc, bindings, params)
+	for _, element := range decl.Elements {
+		if element == nil {
+			continue
+		}
+
+		switch element.Kind {
+		case "path", "file":
+			pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, pattern)
+		default:
+			value, ok := staticOutputValue(proc, &Declaration{Kind: element.Kind, Name: element.Name, Expr: element.Expr, Raw: element.Raw, Emit: element.Emit}, bindings, params)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, value)
+		}
+	}
+
+	if len(values) == 0 {
+		return nil, false
+	}
+
+	return values, true
+}
+
+func mergeEmittedOutputs(existing map[string]emittedOutput, incoming map[string]emittedOutput) map[string]emittedOutput {
+	if len(incoming) == 0 {
+		return existing
+	}
+	if existing == nil {
+		existing = map[string]emittedOutput{}
+	}
+
+	for label, output := range incoming {
+		current := existing[label]
+		current.outputPaths = appendUniqueStrings(current.outputPaths, output.outputPaths)
+		current.items = append(current.items, cloneChannelItems(output.items)...)
+		existing[label] = current
+	}
+
+	return existing
+}
+
+func emitOutputsForProcess(proc *Process, bindings []string, params map[string]any, cwd, depGroup string) map[string]emittedOutput {
+	if proc == nil || len(proc.Output) == 0 {
+		return nil
+	}
+
+	outputs := map[string]emittedOutput{}
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+
+		addEmittedOutput(outputs, decl.Emit, proc, decl, bindings, params, cwd, depGroup)
+		if decl.Kind != "tuple" {
+			continue
+		}
+
+		for _, element := range decl.Elements {
+			if element == nil || element.Emit == "" {
+				continue
+			}
+
+			addEmittedOutput(outputs, element.Emit, proc, &Declaration{Kind: element.Kind, Name: element.Name, Expr: element.Expr, Raw: element.Raw, Emit: element.Emit}, bindings, params, cwd, depGroup)
+		}
+	}
+
+	if len(outputs) == 0 {
+		return nil
+	}
+
+	return outputs
+}
+
+func addEmittedOutput(outputs map[string]emittedOutput, label string, proc *Process, decl *Declaration, bindings []string, params map[string]any, cwd, depGroup string) {
+	if label == "" || decl == nil {
+		return
+	}
+
+	current := outputs[label]
+	paths := outputPathsForDeclaration(proc, decl, bindings, params, cwd)
+	current.outputPaths = appendUniqueStrings(current.outputPaths, paths)
+	if value, ok := outputValueForDeclaration(proc, decl, bindings, params, cwd, paths); ok {
+		current.items = append(current.items, channelItem{value: value, depGroups: []string{depGroup}})
+	}
+	outputs[label] = current
+}
+
+func outputPathsForDeclaration(proc *Process, decl *Declaration, bindings []string, params map[string]any, cwd string) []string {
+	if decl == nil {
+		return nil
+	}
+
+	vars := outputVars(proc, bindings, params)
+	paths := []string{}
+	switch decl.Kind {
+	case "path", "file":
+		pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
+		if ok {
+			return []string{pattern}
+		}
+	case "tuple":
+		for _, element := range decl.Elements {
+			if element == nil || (element.Kind != "path" && element.Kind != "file") {
+				continue
+			}
+
+			pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
+			if ok {
+				paths = append(paths, pattern)
+			}
+		}
+	}
+
+	return paths
+}
+
+func outputValueForDeclaration(proc *Process, decl *Declaration, bindings []string, params map[string]any, cwd string, fallbackPaths []string) (any, bool) {
+	if decl == nil {
+		return nil, false
+	}
+
+	switch decl.Kind {
+	case "tuple":
+		return tupleOutputValue(proc, decl, bindings, params, cwd)
+	case "path", "file":
+		if len(fallbackPaths) == 0 {
+			return nil, false
+		}
+
+		return channelItemValue(fallbackPaths), true
+	default:
+		return staticOutputValue(proc, decl, bindings, params)
+	}
+}
+
+func hasDynamicOutputsForStage(proc *Process, outputPatterns []string) bool {
+	if proc == nil {
+		return false
+	}
+
+	hasTuplePaths := false
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+		if decl.Kind == "path" || decl.Kind == "file" {
+			return true
+		}
+		if decl.Kind != "tuple" {
+			continue
+		}
+		for _, element := range decl.Elements {
+			if element != nil && (element.Kind == "path" || element.Kind == "file") {
+				hasTuplePaths = true
+				break
+			}
+		}
+	}
+	if !hasTuplePaths {
+		return false
+	}
+
+	for _, pattern := range outputPatterns {
+		if strings.ContainsAny(pattern, "*?[") || strings.Contains(pattern, "${") {
+			return true
+		}
+	}
+
+	return false
+}
+
+type emittedOutput struct {
+	outputPaths []string
+	items       []channelItem
 }
 
 func translatedCallForRepGroup(translated map[string]translatedCall, repGrp string) (translatedCall, bool) {
@@ -338,6 +753,7 @@ type translatedCall struct {
 	repGroup      string
 	baseCwd       string
 	outputPaths   []string
+	emitOutputs   map[string]emittedOutput
 	items         []channelItem
 	dynamicOutput bool
 	pending       bool
@@ -345,6 +761,7 @@ type translatedCall struct {
 
 type bindingSet struct {
 	bindings  []string
+	values    []any
 	depGroups []string
 }
 
@@ -471,17 +888,50 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 		}
 
 		matches := completedItemsByRepGrp[stage.repGroup]
+		templates := cloneChannelItems(stage.items)
+		emitTemplates := cloneEmittedOutputs(stage.emitOutputs)
 		stage.items = make([]channelItem, 0, len(matches))
+		stage.emitOutputs = nil
 		for index, match := range matches {
 			itemDeps := cloneStrings(deps)
 			if len(deps) == len(matches) {
 				itemDeps = []string{deps[index]}
 			}
 
+			itemValue := channelItemValue(match.OutputPaths)
+			if len(templates) > 0 {
+				templateIndex := index
+				if templateIndex >= len(templates) {
+					templateIndex = len(templates) - 1
+				}
+				itemValue = resolveCompletedOutputValue(templates[templateIndex].value, match.OutputPaths)
+			}
+
 			stage.items = append(stage.items, channelItem{
-				value:     channelItemValue(match.OutputPaths),
+				value:     itemValue,
 				depGroups: itemDeps,
 			})
+
+			for label, emitted := range emitTemplates {
+				emittedPaths := matchCompletedOutputPathsForPatterns(emitted.outputPaths, match.OutputPaths)
+				emittedValue := channelItemValue(emittedPaths)
+				if len(emitted.items) > 0 {
+					templateIndex := index
+					if templateIndex >= len(emitted.items) {
+						templateIndex = len(emitted.items) - 1
+					}
+					emittedValue = resolveCompletedOutputValue(emitted.items[templateIndex].value, emittedPaths)
+				}
+
+				if stage.emitOutputs == nil {
+					stage.emitOutputs = map[string]emittedOutput{}
+				}
+
+				labelOutput := stage.emitOutputs[label]
+				labelOutput.outputPaths = appendUniqueStrings(labelOutput.outputPaths, emittedPaths)
+				labelOutput.items = append(labelOutput.items, channelItem{value: emittedValue, depGroups: itemDeps})
+				stage.emitOutputs[label] = labelOutput
+			}
 		}
 		stage.pending = false
 		translated[name] = stage
@@ -523,13 +973,15 @@ func translateBlock(
 			if len(awaitDepGrps) > 0 || len(awaitRepGrps) > 0 {
 				repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
 				depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
+				placeholderPaths := outputPaths(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name))
 				translated[scopedTargetKey(scope, call.Target)] = translatedCall{
 					depGroup:      depGroup,
 					depGroups:     []string{depGroup},
 					repGroup:      repGroup,
 					baseCwd:       deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name),
-					outputPaths:   outputPaths(proc, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)),
-					items:         []channelItem{{value: channelItemValue(outputPaths(proc, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name))), depGroups: []string{depGroup}}},
+					outputPaths:   placeholderPaths,
+					emitOutputs:   emitOutputsForProcess(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name), depGroup),
+					items:         []channelItem{{value: outputValue(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name), placeholderPaths), depGroups: []string{depGroup}}},
 					dynamicOutput: hasDynamicOutputs(proc),
 					pending:       true,
 				}
@@ -556,7 +1008,7 @@ func translateBlock(
 			}
 
 			stage.repGroup = jobs[0].RepGroup
-			stage.dynamicOutput = hasDynamicOutputs(proc)
+			stage.dynamicOutput = hasDynamicOutputsForStage(proc, stage.outputPaths)
 			translated[scopedTargetKey(scope, call.Target)] = stage
 			result.Jobs = append(result.Jobs, jobs...)
 
@@ -586,7 +1038,7 @@ func translateProcessCall(
 	params map[string]any,
 	tc TranslateConfig,
 ) ([]*jobqueue.Job, translatedCall, error) {
-	bindingSets, err := resolveBindings(call, scope, translated, tc.Cwd)
+	bindingSets, err := resolveBindings(proc, call, scope, translated, tc.Cwd)
 	if err != nil {
 		return nil, translatedCall{}, err
 	}
@@ -648,15 +1100,16 @@ func translateProcessCall(
 			stage.depGroup = depGroup
 		}
 		stage.depGroups = append(stage.depGroups, depGroup)
-		paths := outputPaths(proc, cwd)
+		paths := outputPaths(proc, bindingSet.bindings, params, cwd)
 		stage.outputPaths = append(stage.outputPaths, paths...)
-		stage.items = append(stage.items, channelItem{value: outputValue(proc, bindingSet.bindings, params, paths), depGroups: []string{depGroup}})
+		stage.items = append(stage.items, channelItem{value: outputValue(proc, bindingSet.bindings, params, cwd, paths), depGroups: []string{depGroup}})
+		stage.emitOutputs = mergeEmittedOutputs(stage.emitOutputs, emitOutputsForProcess(proc, bindingSet.bindings, params, cwd, depGroup))
 	}
 
 	return jobs, stage, nil
 }
 
-func outputValue(proc *Process, bindings []string, params map[string]any, fallbackPaths []string) any {
+func outputValue(proc *Process, bindings []string, params map[string]any, cwd string, fallbackPaths []string) any {
 	if proc == nil || len(proc.Output) == 0 {
 		return channelItemValue(fallbackPaths)
 	}
@@ -664,6 +1117,12 @@ func outputValue(proc *Process, bindings []string, params map[string]any, fallba
 	values := make([]any, 0, len(proc.Output))
 	for _, decl := range proc.Output {
 		if decl == nil {
+			continue
+		}
+		if decl.Kind == "tuple" {
+			if value, ok := tupleOutputValue(proc, decl, bindings, params, cwd); ok {
+				values = append(values, value)
+			}
 			continue
 		}
 		if decl.Kind == "path" || decl.Kind == "file" {
@@ -716,23 +1175,25 @@ func outputVars(proc *Process, bindings []string, params map[string]any) map[str
 	if len(params) > 0 {
 		vars["params"] = params
 	}
+	inputs := flattenedInputDeclarations(proc)
 	for index, binding := range bindings {
-		if index < len(proc.Input) && proc.Input[index] != nil && proc.Input[index].Name != "" {
-			vars[proc.Input[index].Name] = binding
+		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
+			vars[inputs[index].Name] = binding
 		}
 	}
 
 	return vars
 }
 
-func resolveBindings(call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
+func resolveBindings(proc *Process, call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
 	if call == nil || len(call.Args) == 0 {
 		return []bindingSet{{}}, nil
 	}
 
-	plans := []bindingSet{{bindings: make([]string, len(call.Args))}}
+	plans := []bindingSet{{}}
 
 	for index, arg := range call.Args {
+		decl := inputDeclarationForArg(proc, index)
 		resolved, err := resolveBindingArg(arg, scope, translated, cwd)
 		if err != nil {
 			return nil, err
@@ -746,17 +1207,24 @@ func resolveBindings(call *Call, scope []string, translated map[string]translate
 			case len(plans) == 1:
 				expanded := make([]bindingSet, len(resolved.items))
 				for itemIndex, item := range resolved.items {
+					bindings, bindErr := bindingsForInputDeclaration(decl, item)
+					if bindErr != nil {
+						return nil, bindErr
+					}
 					expanded[itemIndex] = bindingSet{
-						bindings:  cloneStrings(plans[0].bindings),
+						bindings:  append(cloneStrings(plans[0].bindings), bindings...),
 						depGroups: cloneStrings(plans[0].depGroups),
 					}
-					expanded[itemIndex].bindings[index] = item.bindings[0]
 					expanded[itemIndex].depGroups = appendUniqueStrings(expanded[itemIndex].depGroups, item.depGroups)
 				}
 				plans = expanded
 			case len(plans) == len(resolved.items):
 				for itemIndex, item := range resolved.items {
-					plans[itemIndex].bindings[index] = item.bindings[0]
+					bindings, bindErr := bindingsForInputDeclaration(decl, item)
+					if bindErr != nil {
+						return nil, bindErr
+					}
+					plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
 					plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, item.depGroups)
 				}
 			default:
@@ -768,12 +1236,24 @@ func resolveBindings(call *Call, scope []string, translated map[string]translate
 
 		binding := ""
 		depGroups := []string{}
+		bindings := []string{binding}
 		if len(resolved.items) > 0 {
-			binding = resolved.items[0].bindings[0]
+			var bindErr error
+			bindings, bindErr = bindingsForInputDeclaration(decl, resolved.items[0])
+			if bindErr != nil {
+				return nil, bindErr
+			}
+			if len(bindings) > 0 {
+				binding = bindings[0]
+			}
 			depGroups = resolved.items[0].depGroups
 		}
 		for itemIndex := range plans {
-			plans[itemIndex].bindings[index] = binding
+			if len(bindings) == 0 {
+				plans[itemIndex].bindings = append(plans[itemIndex].bindings, binding)
+				continue
+			}
+			plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
 			plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, depGroups)
 		}
 	}
@@ -790,6 +1270,7 @@ func resolveBindingArg(arg ChanExpr, scope []string, translated map[string]trans
 			for _, item := range items {
 				resolvedItems = append(resolvedItems, bindingSet{
 					bindings:  []string{itemBinding(item.value)},
+					values:    []any{cloneChannelValue(item.value)},
 					depGroups: cloneStrings(item.depGroups),
 				})
 			}
@@ -805,18 +1286,28 @@ func resolveBindingArg(arg ChanExpr, scope []string, translated map[string]trans
 	if len(paths) > 1 && len(deps) > 1 {
 		items := make([]bindingSet, 0, len(paths))
 		for _, path := range paths {
-			items = append(items, bindingSet{bindings: []string{path}, depGroups: cloneStrings(deps)})
+			items = append(items, bindingSet{bindings: []string{path}, values: []any{path}, depGroups: cloneStrings(deps)})
 		}
 
 		return resolvedArg{items: items, fanout: true}, nil
 	}
 
-	return resolvedArg{items: []bindingSet{{bindings: []string{strings.Join(paths, " ")}, depGroups: deps}}}, nil
+	value := any(strings.Join(paths, " "))
+	switch len(paths) {
+	case 0:
+		value = ""
+	case 1:
+		value = paths[0]
+	default:
+		value = cloneStrings(paths)
+	}
+
+	return resolvedArg{items: []bindingSet{{bindings: []string{strings.Join(paths, " ")}, values: []any{value}, depGroups: deps}}}, nil
 }
 
 func resolveTranslatedChannelItems(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) ([]channelItem, error) {
 	return resolveChannelItems(arg, cwd, func(ref ChanRef) ([]channelItem, error) {
-		stage, ok := resolveTranslatedRef(ref.Name, scope, translated)
+		stage, ok := resolveTranslatedOutput(ref.Name, scope, translated)
 		if !ok {
 			return nil, fmt.Errorf("unknown upstream reference %q", ref.Name)
 		}
@@ -836,7 +1327,7 @@ func resolveTranslatedChannelItems(arg ChanExpr, scope []string, translated map[
 func resolveArg(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
 	switch expr := arg.(type) {
 	case ChanRef:
-		stage, ok := resolveTranslatedRef(expr.Name, scope, translated)
+		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
 		}
@@ -1101,14 +1592,15 @@ func buildCommand(proc *Process, bindings []string, params map[string]any) (stri
 	}
 	body := script
 
+	inputs := flattenedInputDeclarations(proc)
 	prefixes := make([]string, 0, len(bindings))
 	for index, binding := range bindings {
 		if binding == "" {
 			continue
 		}
 		name := fmt.Sprintf("NF_INPUT_%d", index+1)
-		if index < len(proc.Input) && proc.Input[index] != nil && proc.Input[index].Name != "" {
-			name = proc.Input[index].Name
+		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
+			name = inputs[index].Name
 		}
 		prefixes = append(prefixes, fmt.Sprintf("export %s=%s", name, shellQuote(binding)))
 	}
@@ -1130,20 +1622,31 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func outputPaths(proc *Process, cwd string) []string {
+func outputPaths(proc *Process, bindings []string, params map[string]any, cwd string) []string {
+	vars := outputVars(proc, bindings, params)
 	paths := []string{}
 	for _, decl := range proc.Output {
-		if decl == nil || (decl.Kind != "path" && decl.Kind != "file") {
+		if decl == nil {
 			continue
 		}
-		if stringExpr, ok := decl.Expr.(StringExpr); ok {
-			cleanPath := filepath.Clean(stringExpr.Value)
-			if filepath.IsAbs(cleanPath) {
-				paths = append(paths, cleanPath)
-				continue
-			}
 
-			paths = append(paths, filepath.Join(cwd, cleanPath))
+		switch decl.Kind {
+		case "path", "file":
+			pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
+			if ok {
+				paths = append(paths, pattern)
+			}
+		case "tuple":
+			for _, element := range decl.Elements {
+				if element == nil || (element.Kind != "path" && element.Kind != "file") {
+					continue
+				}
+
+				pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
+				if ok {
+					paths = append(paths, pattern)
+				}
+			}
 		}
 	}
 	if len(paths) > 0 {
@@ -1310,7 +1813,7 @@ func detectPendingInputs(call *Call, scope []string, translated map[string]trans
 func detectPendingArg(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
 	switch expr := arg.(type) {
 	case ChanRef:
-		stage, ok := resolveTranslatedRef(expr.Name, scope, translated)
+		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
 		}
@@ -1384,8 +1887,6 @@ func hasDynamicOutputs(proc *Process) bool {
 		return false
 	}
 
-	// D4 classifies all path/file outputs as dynamic, so only val-only edges can
-	// stay fully materialized in the initial D1 translation pass.
 	for _, decl := range proc.Output {
 		if decl == nil {
 			continue
@@ -1407,6 +1908,7 @@ func cloneTranslatedCalls(translated map[string]translatedCall) map[string]trans
 	for key, value := range translated {
 		value.depGroups = cloneStrings(value.depGroups)
 		value.outputPaths = cloneStrings(value.outputPaths)
+		value.emitOutputs = cloneEmittedOutputs(value.emitOutputs)
 		value.items = cloneChannelItems(value.items)
 		clone[key] = value
 	}
