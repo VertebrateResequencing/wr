@@ -162,6 +162,34 @@ func TestGitHubResolver(t *testing.T) {
 			So(cloneCalls, ShouldEqual, 1)
 			So(path, ShouldEqual, filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision))
 		})
+
+		Convey("path traversal segments are rejected before touching the cache", func() {
+			cloneCalls := 0
+			githubResolverRunGit = func(string, ...string) error {
+				cloneCalls++
+				return nil
+			}
+
+			_, err := NewGitHubResolver(cacheDir).Resolve("owner/..")
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unsupported GitHub module spec")
+			So(cloneCalls, ShouldEqual, 0)
+		})
+
+		Convey("GitHub URLs with traversal segments are rejected before touching the cache", func() {
+			cloneCalls := 0
+			githubResolverRunGit = func(string, ...string) error {
+				cloneCalls++
+				return nil
+			}
+
+			_, err := NewGitHubResolver(cacheDir).Resolve("https://github.com/../hello")
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unsupported GitHub module spec")
+			So(cloneCalls, ShouldEqual, 0)
+		})
 	})
 }
 

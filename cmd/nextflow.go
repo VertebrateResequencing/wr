@@ -303,7 +303,7 @@ func nextflowRemoteWorkflowName(workflowArg string) (string, bool) {
 	}
 
 	parts := strings.Split(strings.Trim(spec, "/"), "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || filepath.Ext(parts[1]) != "" {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", false
 	}
 
