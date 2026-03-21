@@ -151,6 +151,27 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "/results/")
 		})
+
+		Convey("tuple path outputs are also published", func() {
+			wf := newPublishWorkflow()
+			wf.Processes[0].Output = []*Declaration{{
+				Kind: "tuple",
+				Elements: []*TupleElement{
+					{Kind: "val", Name: "sample"},
+					{Kind: "path", Expr: StringExpr{Value: "out.txt"}},
+					{Kind: "file", Expr: StringExpr{Value: "out.bai"}},
+				},
+			}}
+			wf.Processes[0].PublishDir = []*PublishDir{{Path: "/results", Mode: "copy"}}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			commands := onSuccessRunCommands(result.Jobs[0])
+			So(commands, ShouldHaveLength, 1)
+			So(commands[0], ShouldContainSubstring, "out.txt")
+			So(commands[0], ShouldContainSubstring, "out.bai")
+		})
 	})
 }
 

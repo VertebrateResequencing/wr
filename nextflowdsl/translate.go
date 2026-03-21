@@ -1741,16 +1741,32 @@ func publishDirSources(proc *Process) []string {
 
 	sources := make([]string, 0, len(proc.Output))
 	for _, decl := range proc.Output {
-		if decl == nil || (decl.Kind != "path" && decl.Kind != "file") {
+		if decl == nil {
 			continue
 		}
 
-		stringExpr, ok := decl.Expr.(StringExpr)
-		if !ok || stringExpr.Value == "" {
-			continue
-		}
+		switch decl.Kind {
+		case "path", "file":
+			stringExpr, ok := decl.Expr.(StringExpr)
+			if !ok || stringExpr.Value == "" {
+				continue
+			}
 
-		sources = append(sources, filepath.Clean(stringExpr.Value))
+			sources = appendUniqueStrings(sources, []string{filepath.Clean(stringExpr.Value)})
+		case "tuple":
+			for _, element := range decl.Elements {
+				if element == nil || (element.Kind != "path" && element.Kind != "file") {
+					continue
+				}
+
+				stringExpr, ok := element.Expr.(StringExpr)
+				if !ok || stringExpr.Value == "" {
+					continue
+				}
+
+				sources = appendUniqueStrings(sources, []string{filepath.Clean(stringExpr.Value)})
+			}
+		}
 	}
 
 	return sources
