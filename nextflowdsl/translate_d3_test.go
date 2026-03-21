@@ -131,6 +131,30 @@ func TestTranslateD3(t *testing.T) {
 			So(qcMerge.ReqGroup, ShouldEqual, "nf.merge")
 			So(qcMerge.Dependencies.DepGroups(), ShouldContain, "nf.r1.align.sort")
 		})
+
+		Convey("subworkflow-local references shadow top-level stages with the same name", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					d3Process("sort", "echo top", nil, []*Declaration{{Kind: "val", Name: "out"}}),
+					d3Process("merge", "echo $input", []*Declaration{{Kind: "val", Name: "input"}}, nil),
+				},
+				SubWFs: []*SubWorkflow{{
+					Name: "qc",
+					Body: &WorkflowBlock{Calls: []*Call{
+						{Target: "sort"},
+						{Target: "merge", Args: []ChanExpr{ChanRef{Name: "sort.out"}}},
+					}},
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "sort"}, {Target: "qc"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 3)
+			So(result.Jobs[2].RepGroup, ShouldEqual, "nf.mywf.r1.qc.merge")
+			So(result.Jobs[2].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.qc.sort"})
+		})
 	})
 }
 
