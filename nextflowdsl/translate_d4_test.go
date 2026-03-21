@@ -28,6 +28,7 @@ package nextflowdsl
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -274,6 +275,67 @@ func TestTranslateD4(t *testing.T) {
 			So(completed, ShouldHaveLength, 2)
 			So(completed[0].OutputPaths, ShouldResemble, []string{firstPath})
 			So(completed[1].OutputPaths, ShouldResemble, []string{secondPath})
+		})
+
+		Convey("CompletedJobsForPending preserves numeric fanout ordering for 10 or more indexed jobs", func() {
+			values := make([]Expr, 0, 12)
+			for i := range 12 {
+				values = append(values, StringExpr{Value: strconv.Itoa(i)})
+			}
+
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:       "PRODUCE",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "val", Name: "token"}},
+						Script:     "touch produced.txt",
+						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "CONSUME",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cat $reads",
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: values}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			baseDir := t.TempDir()
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 12)
+			So(result.Pending, ShouldHaveLength, 1)
+
+			for _, job := range result.Jobs {
+				So(os.MkdirAll(job.Cwd, 0o755), ShouldBeNil)
+				So(os.WriteFile(filepath.Join(job.Cwd, "produced.txt"), []byte("ok"), 0o644), ShouldBeNil)
+			}
+
+			completed, ready, err := CompletedJobsForPending(result.Pending[0], result.Jobs, nil)
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeTrue)
+			So(completed, ShouldHaveLength, 12)
+
+			jobs, err := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 12)
+
+			for i, job := range jobs {
+				expectedPath := filepath.Join(baseDir, "nf-work", "r1", "PRODUCE", strconv.Itoa(i), "produced.txt")
+				expectedDep := "nf.r1.PRODUCE." + strconv.Itoa(i)
+				So(job.Cmd, ShouldContainSubstring, expectedPath)
+				So(job.Dependencies.DepGroups(), ShouldResemble, []string{expectedDep})
+			}
 		})
 
 		Convey("CompletedJobsForPending preserves absolute output paths outside the job cwd", func() {

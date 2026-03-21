@@ -243,6 +243,11 @@ func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job, incomp
 		}
 
 		sort.Slice(matchedJobs, func(i, j int) bool {
+			leftParent, leftIndex, leftIndexed := indexedCwd(matchedJobs[i].Cwd)
+			rightParent, rightIndex, rightIndexed := indexedCwd(matchedJobs[j].Cwd)
+			if leftIndexed && rightIndexed && leftParent == rightParent && leftIndex != rightIndex {
+				return leftIndex < rightIndex
+			}
 			if matchedJobs[i].Cwd != matchedJobs[j].Cwd {
 				return matchedJobs[i].Cwd < matchedJobs[j].Cwd
 			}
@@ -1377,6 +1382,16 @@ func cloneParams(params map[string]any) map[string]any {
 	}
 
 	return clone
+}
+
+func indexedCwd(cwd string) (string, int, bool) {
+	cleaned := filepath.Clean(cwd)
+	index, err := strconv.Atoi(filepath.Base(cleaned))
+	if err != nil {
+		return "", 0, false
+	}
+
+	return filepath.Dir(cleaned), index, true
 }
 
 func itemBinding(item any) string {
