@@ -103,25 +103,32 @@ func matchCompletedOutputPaths(pattern string, completedPaths []string) []string
 	hasGlob := strings.ContainsAny(cleanPattern, "*?[")
 	basePattern := filepath.Base(cleanPattern)
 	baseHasGlob := strings.ContainsAny(basePattern, "*?[")
-	matched := make([]string, 0, len(completedPaths))
+	patternHasDir := cleanPattern != basePattern
+	directMatches := make([]string, 0, len(completedPaths))
+	fallbackMatches := make([]string, 0, len(completedPaths))
 
 	for _, candidate := range completedPaths {
 		cleanCandidate := filepath.Clean(candidate)
 		baseCandidate := filepath.Base(cleanCandidate)
 		if cleanCandidate == cleanPattern {
-			matched = append(matched, candidate)
+			directMatches = append(directMatches, candidate)
 			continue
 		}
 		if hasGlob {
 			ok, err := filepath.Match(cleanPattern, cleanCandidate)
 			if err == nil && ok {
-				matched = append(matched, candidate)
+				directMatches = append(directMatches, candidate)
 				continue
 			}
 		}
 
+		if patternHasDir && relativePatternMatches(cleanPattern, cleanCandidate, hasGlob) {
+			directMatches = append(directMatches, candidate)
+			continue
+		}
+
 		if baseCandidate == basePattern {
-			matched = append(matched, candidate)
+			fallbackMatches = append(fallbackMatches, candidate)
 			continue
 		}
 		if !baseHasGlob {
@@ -130,11 +137,46 @@ func matchCompletedOutputPaths(pattern string, completedPaths []string) []string
 
 		ok, err := filepath.Match(basePattern, baseCandidate)
 		if err == nil && ok {
-			matched = append(matched, candidate)
+			fallbackMatches = append(fallbackMatches, candidate)
+		}
+	}
+	if len(directMatches) > 0 {
+		return directMatches
+	}
+	if !patternHasDir || baseHasGlob || len(fallbackMatches) == 1 {
+		return fallbackMatches
+	}
+
+	return nil
+}
+
+func relativePatternMatches(pattern, candidate string, hasGlob bool) bool {
+	if filepath.IsAbs(pattern) {
+		return false
+	}
+
+	trimmed := strings.TrimPrefix(candidate, string(filepath.Separator))
+	if trimmed == candidate {
+		return false
+	}
+
+	parts := strings.Split(trimmed, string(filepath.Separator))
+	for index := range parts {
+		suffix := filepath.Join(parts[index:]...)
+		if !hasGlob {
+			if suffix == pattern {
+				return true
+			}
+			continue
+		}
+
+		ok, err := filepath.Match(pattern, suffix)
+		if err == nil && ok {
+			return true
 		}
 	}
 
-	return matched
+	return false
 }
 
 func matchCompletedOutputPathsForPatterns(patterns []string, completedPaths []string) []string {

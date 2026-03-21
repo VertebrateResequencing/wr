@@ -116,6 +116,40 @@ func TestBuildCommandA1(t *testing.T) {
 	})
 }
 
+func TestMatchCompletedOutputPaths(t *testing.T) {
+	Convey("matchCompletedOutputPaths only falls back to basenames for simple relative patterns", t, func() {
+		completed := []string{
+			"/work/task/alpha/result.txt",
+			"/work/task/beta/result.txt",
+			"/work/task/gamma/other.txt",
+		}
+
+		Convey("simple file names still match absolute completed paths by basename", func() {
+			matched := matchCompletedOutputPaths("result.txt", completed)
+
+			So(matched, ShouldResemble, []string{
+				"/work/task/alpha/result.txt",
+				"/work/task/beta/result.txt",
+			})
+		})
+
+		Convey("patterns with directory components do not match unrelated basenames", func() {
+			matched := matchCompletedOutputPaths("alpha/result.txt", completed)
+
+			So(matched, ShouldResemble, []string{"/work/task/alpha/result.txt"})
+		})
+
+		Convey("glob patterns with directory components still match on the full cleaned path", func() {
+			matched := matchCompletedOutputPaths("/work/task/*/result.txt", completed)
+
+			So(matched, ShouldResemble, []string{
+				"/work/task/alpha/result.txt",
+				"/work/task/beta/result.txt",
+			})
+		})
+	})
+}
+
 func TestTranslateA2(t *testing.T) {
 	Convey("Translate adds an on-exit cleanup behaviour for empty capture files", t, func() {
 		wf := &Workflow{
