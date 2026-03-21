@@ -27,14 +27,39 @@ package nextflowdsl
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
+var unsupportedCardinalityOperators = map[string]struct{}{
+	"branch":       {},
+	"collectFile":  {},
+	"combine":      {},
+	"concat":       {},
+	"count":        {},
+	"distinct":     {},
+	"flatten":      {},
+	"ifEmpty":      {},
+	"multiMap":     {},
+	"reduce":       {},
+	"splitCsv":     {},
+	"splitFasta":   {},
+	"splitFastq":   {},
+	"toList":       {},
+	"toSortedList": {},
+	"transpose":    {},
+	"unique":       {},
+}
+
 type channelItem struct {
 	value     any
 	depGroups []string
+}
+
+func warnUnsupportedCardinalityOperator(name string) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: operator %q may affect job cardinality in unsupported ways and will be treated as a pass-through\n", name)
 }
 
 type channelResolver func(ChanRef) ([]channelItem, error)
@@ -258,7 +283,14 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return joined, nil
 	case "groupTuple":
 		return groupTupleItems(items), nil
+	case "dump", "set", "tap", "view":
+		return cloneChannelItems(items), nil
 	default:
+		if _, ok := unsupportedCardinalityOperators[operator.Name]; ok {
+			warnUnsupportedCardinalityOperator(operator.Name)
+			return cloneChannelItems(items), nil
+		}
+
 		return nil, fmt.Errorf("unsupported channel operator %q", operator.Name)
 	}
 }
