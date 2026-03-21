@@ -21,8 +21,8 @@ missing, empty, whitespace-only files or read errors. Truncates
 to `maxBytes` with `"[... output truncated ...]"` indicator.
 Covering all 5 acceptance tests from D1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 2.2: D2 - formatJobOutput and jobOutputLabel [parallel with 2.1]
 
@@ -34,8 +34,8 @@ spec'd single-line and multi-line output formats. Labels use
 `[process]` or `[process (index)]` depending on multi-instance.
 Covering all 10 acceptance tests from D2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -55,5 +55,5 @@ process name alphabetically then by index. Uses `allJobs` for
 multi-instance detection. Depends on items 2.1 and 2.2.
 Covering all 4 acceptance tests from D3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

@@ -44,7 +44,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const nextflowDefaultPollInterval = 5 * time.Second
+const (
+	nextflowDefaultPollInterval       = 5 * time.Second
+	nfStdoutFile                      = ".nf-stdout"
+	nfStderrFile                      = ".nf-stderr"
+	nfOutputMaxBytes            int64 = 1 << 20
+)
 
 var nextflowSleep = time.Sleep
 
@@ -679,6 +684,166 @@ type nextflowRepGroup struct {
 	workflow string
 	runID    string
 	process  string
+}
+
+func printJobsOutput(w io.Writer, displayJobs []*jobqueue.Job, allJobs []*jobqueue.Job, maxBytes int64) error {
+	type jobOutput struct {
+		process  string
+		index    int
+		hasIndex bool
+		text     string
+		cwd      string
+	}
+
+	processCounts := make(map[string]int)
+	for _, job := range allJobs {
+		parsed, ok := parseNextflowRepGroup(job.RepGroup)
+		if !ok {
+			continue
+		}
+
+		processCounts[parsed.process]++
+	}
+
+	outputs := make([]jobOutput, 0, len(displayJobs))
+	for _, job := range displayJobs {
+		parsed, ok := parseNextflowRepGroup(job.RepGroup)
+		if !ok {
+			continue
+		}
+
+		stdout, err := readCapturedOutput(filepath.Join(job.Cwd, nfStdoutFile), maxBytes)
+		if err != nil {
+			return err
+		}
+		stderr, err := readCapturedOutput(filepath.Join(job.Cwd, nfStderrFile), maxBytes)
+		if err != nil {
+			return err
+		}
+
+		formatted := formatJobOutput(jobOutputLabel(parsed.process, job.Cwd, processCounts[parsed.process] > 1), stdout, stderr)
+		if formatted == "" {
+			continue
+		}
+
+		index, hasIndex := instanceIndexFromCwd(job.Cwd)
+		outputs = append(outputs, jobOutput{
+			process:  parsed.process,
+			index:    index,
+			hasIndex: hasIndex,
+			text:     formatted,
+			cwd:      job.Cwd,
+		})
+	}
+
+	sort.Slice(outputs, func(i, j int) bool {
+		if outputs[i].process != outputs[j].process {
+			return outputs[i].process < outputs[j].process
+		}
+		if outputs[i].hasIndex && outputs[j].hasIndex && outputs[i].index != outputs[j].index {
+			return outputs[i].index < outputs[j].index
+		}
+		if outputs[i].hasIndex != outputs[j].hasIndex {
+			return outputs[i].hasIndex
+		}
+
+		return outputs[i].cwd < outputs[j].cwd
+	})
+
+	for _, output := range outputs {
+		if _, err := io.WriteString(w, output.text); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func readCapturedOutput(path string, maxBytes int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", nil
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return "", nil
+	}
+
+	truncated := int64(len(data)) > maxBytes
+	if truncated {
+		data = data[:maxBytes]
+	}
+
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return "", nil
+	}
+
+	output := string(data)
+	if truncated {
+		output += "\n[... output truncated ...]"
+	}
+
+	return output, nil
+}
+
+func formatJobOutput(label string, stdout, stderr string) string {
+	var builder strings.Builder
+	writeJobOutputSection(&builder, label, stdout)
+	writeJobOutputSection(&builder, label+" (stderr)", stderr)
+
+	return builder.String()
+}
+
+func writeJobOutputSection(builder *strings.Builder, label, content string) {
+	if content == "" {
+		return
+	}
+
+	trimmed := strings.TrimSuffix(content, "\n")
+	if trimmed == "" {
+		return
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) == 1 {
+		builder.WriteString(label)
+		builder.WriteString(" ")
+		builder.WriteString(lines[0])
+		builder.WriteString("\n")
+
+		return
+	}
+
+	builder.WriteString(label)
+	builder.WriteString("\n")
+	for _, line := range lines {
+		builder.WriteString("  ")
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
+}
+
+func jobOutputLabel(process string, cwd string, isMultiInstance bool) string {
+	if isMultiInstance {
+		if index, ok := instanceIndexFromCwd(cwd); ok {
+			return fmt.Sprintf("[%s (%d)]", process, index)
+		}
+	}
+
+	return fmt.Sprintf("[%s]", process)
+}
+
+func instanceIndexFromCwd(cwd string) (int, bool) {
+	index, err := strconv.Atoi(filepath.Base(filepath.Clean(cwd)))
+	if err != nil {
+		return 0, false
+	}
+
+	return index, true
 }
 
 type nextflowProcessCounts struct {

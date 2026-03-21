@@ -51,6 +51,196 @@ func TestGenerateNextflowRunID(t *testing.T) {
 	})
 }
 
+func TestReadCapturedOutput(t *testing.T) {
+	Convey("readCapturedOutput covers D1", t, func() {
+		tempDir := t.TempDir()
+
+		Convey("missing files return an empty result", func() {
+			output, err := readCapturedOutput(filepath.Join(tempDir, "missing"), 1<<20)
+
+			So(err, ShouldBeNil)
+			So(output, ShouldEqual, "")
+		})
+
+		Convey("non-empty files are returned as-is", func() {
+			path := filepath.Join(tempDir, "stdout.txt")
+			err := os.WriteFile(path, []byte("hello\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			output, readErr := readCapturedOutput(path, 1<<20)
+
+			So(readErr, ShouldBeNil)
+			So(output, ShouldEqual, "hello\n")
+		})
+
+		Convey("empty files are ignored", func() {
+			path := filepath.Join(tempDir, "empty.txt")
+			err := os.WriteFile(path, nil, 0o644)
+			So(err, ShouldBeNil)
+
+			output, readErr := readCapturedOutput(path, 1<<20)
+
+			So(readErr, ShouldBeNil)
+			So(output, ShouldEqual, "")
+		})
+
+		Convey("whitespace-only files are ignored", func() {
+			path := filepath.Join(tempDir, "whitespace.txt")
+			err := os.WriteFile(path, []byte("  \n\t\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			output, readErr := readCapturedOutput(path, 1<<20)
+
+			So(readErr, ShouldBeNil)
+			So(output, ShouldEqual, "")
+		})
+
+		Convey("files larger than maxBytes are truncated with an indicator", func() {
+			path := filepath.Join(tempDir, "large.txt")
+			content := strings.Repeat("x", 2*(1<<20))
+			err := os.WriteFile(path, []byte(content), 0o644)
+			So(err, ShouldBeNil)
+
+			output, readErr := readCapturedOutput(path, 1<<20)
+
+			So(readErr, ShouldBeNil)
+			So(len(output), ShouldEqual, (1<<20)+len("\n[... output truncated ...]"))
+			So(strings.HasSuffix(output, "[... output truncated ...]"), ShouldBeTrue)
+		})
+
+		Convey("file read errors are treated as empty output", func() {
+			path := filepath.Join(tempDir, "not-a-file")
+			err := os.Mkdir(path, 0o755)
+			So(err, ShouldBeNil)
+
+			output, readErr := readCapturedOutput(path, 1<<20)
+
+			So(readErr, ShouldBeNil)
+			So(output, ShouldEqual, "")
+		})
+	})
+}
+
+func TestNextflowOutputFormattingHelpers(t *testing.T) {
+	Convey("D2 output formatting helpers match the spec", t, func() {
+		Convey("formatJobOutput renders single-line stdout inline with the label", func() {
+			So(formatJobOutput("[P]", "one line\n", ""), ShouldEqual, "[P] one line\n")
+		})
+
+		Convey("formatJobOutput renders multi-line stdout under an indented header", func() {
+			So(formatJobOutput("[P]", "a\nb\n", ""), ShouldEqual, "[P]\n  a\n  b\n")
+		})
+
+		Convey("formatJobOutput prints stdout before stderr for single-line content", func() {
+			So(formatJobOutput("[P]", "out\n", "err\n"), ShouldEqual, "[P] out\n[P] (stderr) err\n")
+		})
+
+		Convey("formatJobOutput renders stderr-only output with the stderr suffix", func() {
+			So(formatJobOutput("[P]", "", "err\n"), ShouldEqual, "[P] (stderr) err\n")
+		})
+
+		Convey("formatJobOutput returns an empty string when both streams are empty", func() {
+			So(formatJobOutput("[P]", "", ""), ShouldEqual, "")
+		})
+
+		Convey("formatJobOutput renders multi-line stderr with its own header", func() {
+			So(formatJobOutput("[P]", "a\nb\n", "c\nd\n"), ShouldEqual, "[P]\n  a\n  b\n[P] (stderr)\n  c\n  d\n")
+		})
+
+		Convey("jobOutputLabel omits the index for single-instance processes", func() {
+			So(jobOutputLabel("sayHello", "/w/nf-work/r1/sayHello", false), ShouldEqual, "[sayHello]")
+		})
+
+		Convey("jobOutputLabel includes the cwd-derived index for multi-instance processes", func() {
+			So(jobOutputLabel("sayHello", "/w/nf-work/r1/sayHello/2", true), ShouldEqual, "[sayHello (2)]")
+		})
+
+		Convey("instanceIndexFromCwd extracts a trailing numeric path segment", func() {
+			index, ok := instanceIndexFromCwd("/w/nf-work/r1/proc/3")
+			So(ok, ShouldBeTrue)
+			So(index, ShouldEqual, 3)
+		})
+
+		Convey("instanceIndexFromCwd reports no index when the cwd has no trailing number", func() {
+			index, ok := instanceIndexFromCwd("/w/nf-work/r1/proc")
+			So(ok, ShouldBeFalse)
+			So(index, ShouldEqual, 0)
+		})
+	})
+}
+
+func TestPrintJobsOutput(t *testing.T) {
+	Convey("D3 printJobsOutput matches the spec", t, func() {
+		makeJob := func(tempDir, process, cwdSuffix string) *jobqueue.Job {
+			cwd := filepath.Join(tempDir, cwdSuffix)
+			err := os.MkdirAll(cwd, 0o755)
+			So(err, ShouldBeNil)
+
+			return &jobqueue.Job{
+				RepGroup: "nf.wf.r1." + process,
+				Cwd:      cwd,
+			}
+		}
+
+		writeOutput := func(job *jobqueue.Job, name, content string) {
+			err := os.WriteFile(filepath.Join(job.Cwd, name), []byte(content), 0o644)
+			So(err, ShouldBeNil)
+		}
+
+		Convey("output is grouped by process name alphabetically", func() {
+			tempDir := t.TempDir()
+			beta := makeJob(tempDir, "beta", "beta")
+			alpha := makeJob(tempDir, "alpha", "alpha")
+			writeOutput(beta, ".nf-stdout", "b\n")
+			writeOutput(alpha, ".nf-stdout", "a\n")
+
+			var out bytes.Buffer
+			err := printJobsOutput(&out, []*jobqueue.Job{beta, alpha}, []*jobqueue.Job{beta, alpha}, 1<<20)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[alpha] a\n[beta] b\n")
+		})
+
+		Convey("jobs with the same process are ordered by instance index", func() {
+			tempDir := t.TempDir()
+			align1 := makeJob(tempDir, "align", filepath.Join("align", "1"))
+			align0 := makeJob(tempDir, "align", filepath.Join("align", "0"))
+			writeOutput(align1, ".nf-stdout", "one\n")
+			writeOutput(align0, ".nf-stdout", "zero\n")
+
+			var out bytes.Buffer
+			err := printJobsOutput(&out, []*jobqueue.Job{align1, align0}, []*jobqueue.Job{align1, align0}, 1<<20)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[align (0)] zero\n[align (1)] one\n")
+		})
+
+		Convey("jobs with no captured output are skipped", func() {
+			tempDir := t.TempDir()
+			job := makeJob(tempDir, "align", filepath.Join("align", "0"))
+
+			var out bytes.Buffer
+			err := printJobsOutput(&out, []*jobqueue.Job{job}, []*jobqueue.Job{job}, 1<<20)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "")
+		})
+
+		Convey("multi-instance detection uses allJobs rather than displayJobs", func() {
+			tempDir := t.TempDir()
+			align0 := makeJob(tempDir, "align", filepath.Join("align", "0"))
+			align1 := makeJob(tempDir, "align", filepath.Join("align", "1"))
+			writeOutput(align0, ".nf-stdout", "zero\n")
+
+			var out bytes.Buffer
+			err := printJobsOutput(&out, []*jobqueue.Job{align0}, []*jobqueue.Job{align0, align1}, 1<<20)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[align (0)] zero\n")
+		})
+	})
+}
+
 type nextflowCommandTestEnv struct {
 	t      *testing.T
 	server *jobqueue.Server
@@ -562,9 +752,9 @@ func writeDownloadedGitHubWorkflow(t *testing.T, repoPath string) {
 	t.Helper()
 
 	files := map[string]string{
-		"README.md":        "# nextflow-io/hello\n\nA minimal greeting workflow used by the command integration tests.\n",
+		"README.md":       "# nextflow-io/hello\n\nA minimal greeting workflow used by the command integration tests.\n",
 		"nextflow.config": "manifest { name = 'nextflow-io/hello' }\n",
-		"main.nf":          remoteHelloWorkflow(),
+		"main.nf":         remoteHelloWorkflow(),
 	}
 
 	for name, content := range files {
