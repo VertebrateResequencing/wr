@@ -117,6 +117,9 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 	if options.containerRuntime != "docker" && options.containerRuntime != "singularity" {
 		return fmt.Errorf("unsupported container runtime %q", options.containerRuntime)
 	}
+	if options.profile != "" && options.configPath == "" {
+		return fmt.Errorf("--profile requires --config")
+	}
 	if outputWriter == nil {
 		outputWriter = io.Discard
 	}

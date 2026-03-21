@@ -610,6 +610,17 @@ func TestNextflowRunCommand(t *testing.T) {
 			So(jobs[0].Cmd, ShouldContainSubstring, "/profile")
 		})
 
+		Convey("profiles require an explicit config path so selection is not silently ignored", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("profile_requires_config.nf", singleProcessWorkflow("echo hello"))
+
+			err := env.executeRun("--profile", "test", workflowPath)
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "--profile requires --config")
+		})
+
 		Convey("local imported processes are resolved before translation", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
