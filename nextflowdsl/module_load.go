@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -449,10 +450,23 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 			continue
 		}
 
-		clonedEmit = append(clonedEmit, &WFEmit{Name: emit.Name, Expr: emit.Expr})
+		clonedEmit = append(clonedEmit, &WFEmit{Name: emit.Name, Expr: cloneWorkflowEmitExpr(emit.Expr, renameTargets)})
 	}
 
 	return &WorkflowBlock{Calls: clonedCalls, Take: clonedTake, Emit: clonedEmit}
+}
+
+func cloneWorkflowEmitExpr(expression string, renameTargets map[string]string) string {
+	if expression == "" || len(renameTargets) == 0 {
+		return expression
+	}
+
+	parsed, err := parseChanExprText(expression)
+	if err != nil {
+		return expression
+	}
+
+	return renderChanExpr(cloneChanExpr(parsed, renameTargets))
 }
 
 func cloneDeclarations(declarations []*Declaration) []*Declaration {
@@ -552,6 +566,93 @@ func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExp
 		return PipeExpr{Stages: cloneChanExprs(value.Stages, renameTargets)}
 	default:
 		return expression
+	}
+}
+
+func renderChanExpr(expression ChanExpr) string {
+	switch value := expression.(type) {
+	case ChanRef:
+		return value.Name
+	case ChannelFactory:
+		args := make([]string, 0, len(value.Args))
+		for _, arg := range value.Args {
+			args = append(args, renderExpr(arg))
+		}
+
+		return fmt.Sprintf("Channel.%s(%s)", value.Name, strings.Join(args, ", "))
+	case ChannelChain:
+		var builder strings.Builder
+		builder.WriteString(renderChanExpr(value.Source))
+		for _, operator := range value.Operators {
+			builder.WriteByte('.')
+			builder.WriteString(operator.Name)
+			switch {
+			case operator.Closure != "":
+				builder.WriteString(" {")
+				if operator.Closure != "" {
+					builder.WriteByte(' ')
+					builder.WriteString(operator.Closure)
+					builder.WriteByte(' ')
+				}
+				builder.WriteByte('}')
+			case len(operator.Channels) > 0:
+				parts := make([]string, 0, len(operator.Channels))
+				for _, channel := range operator.Channels {
+					parts = append(parts, renderChanExpr(channel))
+				}
+				builder.WriteByte('(')
+				builder.WriteString(strings.Join(parts, ", "))
+				builder.WriteByte(')')
+			default:
+				parts := make([]string, 0, len(operator.Args))
+				for _, arg := range operator.Args {
+					parts = append(parts, renderExpr(arg))
+				}
+				builder.WriteByte('(')
+				builder.WriteString(strings.Join(parts, ", "))
+				builder.WriteByte(')')
+			}
+		}
+
+		return builder.String()
+	case PipeExpr:
+		parts := make([]string, 0, len(value.Stages))
+		for _, stage := range value.Stages {
+			parts = append(parts, renderChanExpr(stage))
+		}
+
+		return strings.Join(parts, " | ")
+	default:
+		return ""
+	}
+}
+
+func renderExpr(expression Expr) string {
+	switch value := expression.(type) {
+	case IntExpr:
+		return strconv.Itoa(value.Value)
+	case StringExpr:
+		return strconv.Quote(value.Value)
+	case ParamsExpr:
+		return "params." + value.Path
+	case BoolExpr:
+		if value.Value {
+			return "true"
+		}
+
+		return "false"
+	case VarExpr:
+		if value.Path == "" {
+			return value.Root
+		}
+
+		return value.Root + "." + value.Path
+	case BinaryExpr:
+		return renderExpr(value.Left) + " " + value.Op + " " + renderExpr(value.Right)
+	case UnsupportedExpr:
+		return value.Text
+	default:
+		return ""
 	}
 }
 
