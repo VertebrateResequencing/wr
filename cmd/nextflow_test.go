@@ -268,6 +268,12 @@ type nextflowCommandTestEnv struct {
 	t      *testing.T
 	server *jobqueue.Server
 	undo   func()
+	token  []byte
+
+	managerAddrPath   string
+	managerHostPort   string
+	managerCAFile     string
+	managerCertDomain string
 }
 
 func newNextflowCommandTestEnv(t *testing.T) *nextflowCommandTestEnv {
@@ -279,7 +285,21 @@ func newNextflowCommandTestEnv(t *testing.T) *nextflowCommandTestEnv {
 	initConfig()
 	timeoutint = 2
 
-	return &nextflowCommandTestEnv{t: t, server: server, undo: undo}
+	token, err := os.ReadFile(config.ManagerTokenFile)
+	if err != nil {
+		t.Fatalf("read manager token file: %v", err)
+	}
+
+	return &nextflowCommandTestEnv{
+		t:                 t,
+		server:            server,
+		undo:              undo,
+		token:             token,
+		managerAddrPath:   filepath.Join(filepath.Dir(config.ManagerTokenFile), "manager.addr"),
+		managerHostPort:   config.ManagerHost + ":" + config.ManagerPort,
+		managerCAFile:     caFile,
+		managerCertDomain: config.ManagerCertDomain,
+	}
 }
 
 func (e *nextflowCommandTestEnv) cleanup() {
@@ -362,7 +382,29 @@ func (e *nextflowCommandTestEnv) executeStatus(args ...string) (string, error) {
 func (e *nextflowCommandTestEnv) connectClient() *jobqueue.Client {
 	e.t.Helper()
 
-	return connect(2 * time.Second)
+	connectWithAddr := func(serverAddr string) (*jobqueue.Client, error) {
+		return jobqueue.Connect(serverAddr, e.managerCAFile, e.managerCertDomain, e.token, 2*time.Second)
+	}
+
+	serverAddr := e.managerHostPort
+	if addrBytes, err := os.ReadFile(e.managerAddrPath); err == nil {
+		serverAddr = string(addrBytes)
+	}
+
+	jq, err := connectWithAddr(serverAddr)
+	if err == nil {
+		return jq
+	}
+	if serverAddr != e.managerHostPort {
+		jq, err = connectWithAddr(e.managerHostPort)
+		if err == nil {
+			return jq
+		}
+	}
+
+	e.t.Fatalf("connect jobqueue client: %v", err)
+
+	return nil
 }
 
 func (e *nextflowCommandTestEnv) addJob(job *jobqueue.Job) {
@@ -466,7 +508,7 @@ func (e *nextflowCommandTestEnv) waitForRepGroupStateCount(repGroup string, stat
 func (e *nextflowCommandTestEnv) jobsByRepGroupSubstring(repGroup string) []*jobqueue.Job {
 	e.t.Helper()
 
-	jq := connect(2 * time.Second)
+	jq := e.connectClient()
 	defer func() {
 		if err := jq.Disconnect(); err != nil {
 			e.t.Fatalf("disconnect jobqueue client: %v", err)
@@ -1300,6 +1342,25 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(*sleeps, ShouldResemble, []time.Duration{time.Second, time.Second, time.Second})
 		})
+
+		Convey("a transient empty snapshot is retried before unresolved pending stages are reported", func() {
+			queue, pending, tc, producer := newNextflowFollowScenario(t, "transient_empty", "cat $reads > consumed.txt")
+			queue.completeAfterAdd = true
+			queue.snapshots = []fakeNextflowSnapshot{
+				{incomplete: []*jobqueue.Job{producer}},
+				{},
+				{complete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+			}
+
+			sleeps, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+			err := followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), pending, tc, 75*time.Millisecond, io.Discard)
+
+			So(err, ShouldBeNil)
+			So(queue.added, ShouldHaveLength, 1)
+			So(*sleeps, ShouldResemble, []time.Duration{75 * time.Millisecond, 75 * time.Millisecond, 75 * time.Millisecond, 75 * time.Millisecond})
+		})
 	})
 }
 
@@ -1334,6 +1395,7 @@ func TestNextflowRunCommandResumeComplete(t *testing.T) {
 		workerDone := runReservedJobsInBackground(env, 2)
 		So(env.executeRun("--run-id", "r1", "--follow", "--poll-interval", "20ms", workflowPath), ShouldBeNil)
 		So(<-workerDone, ShouldBeNil)
+		env.waitForRepGroupState("nf.resume_complete.r1.B", jobqueue.JobStateComplete)
 
 		jobsBefore := env.jobsByRepGroupSubstring("nf.resume_complete.r1")
 		So(jobsBefore, ShouldHaveLength, 2)
