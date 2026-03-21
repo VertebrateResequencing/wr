@@ -1068,6 +1068,13 @@ func buildCommand(proc *Process, bindings []string, params map[string]any) (stri
 	if len(prefixes) > 0 {
 		body = strings.Join(append(prefixes, script), "\n")
 	}
+	body = strings.TrimRight(body, " \t\r")
+	if strings.TrimSpace(body) == "" {
+		body = ":"
+	}
+	if strings.HasSuffix(body, "\n") {
+		return fmt.Sprintf("{ %s} > %s 2> %s", body, nfStdoutFile, nfStderrFile), nil
+	}
 
 	return fmt.Sprintf("{ %s; } > %s 2> %s", body, nfStdoutFile, nfStderrFile), nil
 }
