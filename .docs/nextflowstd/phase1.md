@@ -18,8 +18,8 @@ process command with `{ ...; } > .nf-stdout 2> .nf-stderr`. The
 group construct preserves exit code. Handle both the no-bindings and
 with-bindings cases. Covering all 4 acceptance tests from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Cleanup behaviour for empty capture files
 
@@ -31,5 +31,5 @@ Add an OnExit Run behaviour to every Nextflow process job in
 being complete (wrapping must exist for cleanup to be meaningful).
 Covering all 1 acceptance test from A2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

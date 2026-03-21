@@ -37,6 +37,72 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestBuildCommandA1(t *testing.T) {
+	Convey("buildCommand wraps process scripts to capture stdout and stderr", t, func() {
+		Convey("it wraps a script with no input bindings", func() {
+			cmd, err := buildCommand(&Process{Script: "echo hello"}, nil, nil)
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldEqual, "{ echo hello; } > .nf-stdout 2> .nf-stderr")
+		})
+
+		Convey("it wraps a script with input bindings after exporting them", func() {
+			cmd, err := buildCommand(&Process{
+				Script: "cat $reads",
+				Input:  []*Declaration{{Name: "reads"}},
+			}, []string{"/data/a.fq"}, nil)
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldEqual, "{ export reads='/data/a.fq'\ncat $reads; } > .nf-stdout 2> .nf-stderr")
+		})
+
+		Convey("it preserves multi-line scripts inside the wrapped group", func() {
+			cmd, err := buildCommand(&Process{Script: "line1\nline2"}, nil, nil)
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldEqual, "{ line1\nline2; } > .nf-stdout 2> .nf-stderr")
+		})
+
+		Convey("it substitutes params before wrapping the command", func() {
+			cmd, err := buildCommand(&Process{Script: "echo ${params.greeting}"}, nil, map[string]any{"greeting": "hi"})
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldEqual, "{ echo hi; } > .nf-stdout 2> .nf-stderr")
+		})
+	})
+}
+
+func TestTranslateA2(t *testing.T) {
+	Convey("Translate adds an on-exit cleanup behaviour for empty capture files", t, func() {
+		wf := &Workflow{
+			Processes: []*Process{{
+				Name:   "ALIGN",
+				Script: "echo hello",
+			}},
+			EntryWF: &WorkflowBlock{
+				Calls: []*Call{{Target: "ALIGN"}},
+			},
+		}
+
+		result, err := Translate(wf, nil, TranslateConfig{
+			RunID:        "run123",
+			WorkflowName: "main",
+			Cwd:          "/tmp/workdir",
+		})
+
+		So(err, ShouldBeNil)
+		So(result, ShouldNotBeNil)
+		So(result.Jobs, ShouldHaveLength, 1)
+		So(result.Jobs[0].Behaviours, ShouldHaveLength, 1)
+		So(result.Jobs[0].Behaviours[0].When, ShouldEqual, jobqueue.OnExit)
+		So(result.Jobs[0].Behaviours[0].Do, ShouldEqual, jobqueue.Run)
+		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, ".nf-stdout")
+		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, ".nf-stderr")
+		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, "grep")
+		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, "rm")
+	})
+}
+
 func TestTranslate(t *testing.T) {
 	Convey("Translate creates a single deterministic job for a basic process call", t, func() {
 		wf := &Workflow{
@@ -284,7 +350,7 @@ func TestTranslate(t *testing.T) {
 				So(result.Jobs[0].Requirements.RAM, ShouldEqual, 8192)
 				So(result.Jobs[0].Cmd, ShouldContainSubstring, "/data")
 				So(result.Jobs[0].EnvOverride, ShouldNotBeEmpty)
-				So(result.Jobs[0].Behaviours, ShouldBeEmpty)
+				So(result.Jobs[0].Behaviours, ShouldHaveLength, 1)
 			})
 
 			So(stderr, ShouldContainSubstring, "unsupported errorStrategy \"finish\"")
@@ -299,7 +365,7 @@ func TestTranslate(t *testing.T) {
 			ignoreResult, err := Translate(ignore, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 			So(err, ShouldBeNil)
 			So(ignoreResult.Jobs[0].Retries, ShouldEqual, 0)
-			So(ignoreResult.Jobs[0].Behaviours, ShouldHaveLength, 1)
+			So(ignoreResult.Jobs[0].Behaviours, ShouldHaveLength, 2)
 			So(ignoreResult.Jobs[0].Behaviours[0].Do, ShouldEqual, jobqueue.Remove)
 
 			cfgDefaults := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{"big": {Process: &ProcessDefaults{Cpus: 8}}}}

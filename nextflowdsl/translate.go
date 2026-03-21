@@ -44,6 +44,8 @@ const (
 	defaultMemory = 128
 	defaultTime   = 60
 	defaultDisk   = 1
+	nfStdoutFile  = ".nf-stdout"
+	nfStderrFile  = ".nf-stderr"
 )
 
 // TranslateConfig controls how the AST is translated to wr jobs.
@@ -55,6 +57,14 @@ type TranslateConfig struct {
 	ContainerRuntime string
 	Params           map[string]any
 	Profile          string
+}
+
+func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
+	job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
+		When: jobqueue.OnExit,
+		Do:   jobqueue.Run,
+		Arg:  fmt.Sprintf(`for f in %s %s; do if [ -f "$f" ] && ! grep -qP '\S' "$f"; then rm -f "$f"; fi; done`, nfStdoutFile, nfStderrFile),
+	})
 }
 
 func translatedCallForRepGroup(translated map[string]translatedCall, repGrp string) (translatedCall, bool) {
@@ -520,6 +530,7 @@ func translateProcessCall(
 			return nil, translatedCall{}, cmdErr
 		}
 		job.Cmd = cmd
+		applyCaptureCleanupBehaviour(job)
 
 		if err = applyPublishDirBehaviours(job, proc, params, tc); err != nil {
 			return nil, translatedCall{}, err
@@ -983,9 +994,7 @@ func buildCommand(proc *Process, bindings []string, params map[string]any) (stri
 	if err != nil {
 		return "", err
 	}
-	if len(bindings) == 0 {
-		return script, nil
-	}
+	body := script
 
 	prefixes := make([]string, 0, len(bindings))
 	for index, binding := range bindings {
@@ -998,11 +1007,11 @@ func buildCommand(proc *Process, bindings []string, params map[string]any) (stri
 		}
 		prefixes = append(prefixes, fmt.Sprintf("export %s=%s", name, shellQuote(binding)))
 	}
-	if len(prefixes) == 0 {
-		return script, nil
+	if len(prefixes) > 0 {
+		body = strings.Join(append(prefixes, script), "\n")
 	}
 
-	return strings.Join(append(prefixes, script), "\n"), nil
+	return fmt.Sprintf("{ %s; } > %s 2> %s", body, nfStdoutFile, nfStderrFile), nil
 }
 
 func shellQuote(value string) string {
