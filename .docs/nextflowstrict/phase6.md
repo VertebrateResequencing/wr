@@ -21,8 +21,8 @@ the job's `Cmd` exports `id='sampleA'` and `reads='/data/a.fq'`
 from a 2-element upstream list. Existing non-tuple input behaviour
 must be preserved. Covering all 3 acceptance tests from B1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.2: B2 - Tuple output path wiring
 
@@ -34,8 +34,8 @@ from tuple output declarations into the output path list in
 are marked as pending; val-only tuple outputs are static.
 Covering all 3 acceptance tests from B2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.3: B3 - Tuple output in TranslatePending
 
@@ -47,8 +47,8 @@ each element's pattern against completed output paths. Downstream
 jobs receive resolved file references from tuple outputs.
 Covering all 2 acceptance tests from B3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.4: C1 - Parse and resolve emit labels
 
@@ -64,5 +64,5 @@ resolution in `TranslatePending` as well, filtering completed
 paths by the emit label's pattern. Covering all 3 acceptance
 tests from C1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

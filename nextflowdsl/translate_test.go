@@ -147,6 +147,565 @@ func TestTranslateA2(t *testing.T) {
 	})
 }
 
+func TestTranslateB1(t *testing.T) {
+	Convey("Translate binds tuple inputs element-by-element from upstream channel items", t, func() {
+		Convey("tuple val/path inputs export each element individually", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "PRODUCE",
+						Script: "echo hi",
+						Input: []*Declaration{
+							{Kind: "val", Name: "id"},
+							{Kind: "path", Name: "reads"},
+						},
+						Output: []*Declaration{
+							{Kind: "val", Name: "id"},
+							{Kind: "val", Name: "reads"},
+						},
+					},
+					{
+						Name:   "CONSUME",
+						Script: "echo ${id} ${reads}",
+						Input: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "path", Name: "reads"},
+							},
+						}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}, ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "/data/s1.fq"}}}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export id='s1'")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export reads='/data/s1.fq'")
+		})
+
+		Convey("tuple inputs with three elements export all tuple members", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "PRODUCE",
+						Script: "echo hi",
+						Input: []*Declaration{
+							{Kind: "val", Name: "id"},
+							{Kind: "path", Name: "r1"},
+							{Kind: "path", Name: "r2"},
+						},
+						Output: []*Declaration{
+							{Kind: "val", Name: "id"},
+							{Kind: "val", Name: "r1"},
+							{Kind: "val", Name: "r2"},
+						},
+					},
+					{
+						Name:   "CONSUME",
+						Script: "echo ${id} ${r1} ${r2}",
+						Input: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "path", Name: "r1"},
+								{Kind: "path", Name: "r2"},
+							},
+						}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}},
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "/data/r1.fq"}}},
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "/data/r2.fq"}}},
+					}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export id='s1'")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export r1='/data/r1.fq'")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export r2='/data/r2.fq'")
+		})
+
+		Convey("non-tuple val inputs keep existing export behaviour", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "PRODUCE",
+						Script: "echo hi",
+						Input:  []*Declaration{{Kind: "val", Name: "x"}},
+						Output: []*Declaration{{Kind: "val", Name: "x"}},
+					},
+					{
+						Name:   "CONSUME",
+						Script: "echo ${x}",
+						Input:  []*Declaration{{Kind: "val", Name: "x"}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export x='s1'")
+		})
+	})
+}
+
+func TestTranslateB2(t *testing.T) {
+	Convey("Translate wires tuple output path elements into downstream translation", t, func() {
+		Convey("tuple outputs with resolved path elements expose those paths to downstream tuple inputs", func() {
+			proc := &Process{
+				Name:   "A",
+				Script: "touch ${id}.bam",
+				Input:  []*Declaration{{Kind: "val", Name: "id"}},
+				Output: []*Declaration{{
+					Kind: "tuple",
+					Elements: []*TupleElement{
+						{Kind: "val", Name: "id"},
+						{Kind: "path", Expr: StringExpr{Value: "${id}.bam"}},
+					},
+				}},
+			}
+
+			jobs, stage, err := translateProcessCall(proc, &Call{Target: "A", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}}, nil, nil, &ProcessDefaults{}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(stage.outputPaths, ShouldResemble, []string{"/work/nf-work/r1/A/s1.bam"})
+
+			wf := &Workflow{
+				Processes: []*Process{
+					proc,
+					{
+						Name:   "B",
+						Script: "echo ${id} ${reads}",
+						Input: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "path", Name: "reads"},
+							},
+						}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "A", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}},
+					{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Pending, ShouldBeEmpty)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export id='s1'")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export reads='/work/nf-work/r1/A/s1.bam'")
+		})
+
+		Convey("tuple outputs with glob path elements keep downstream stages pending", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "A",
+						Script: "touch a.bam b.bam",
+						Input:  []*Declaration{{Kind: "val", Name: "id"}},
+						Output: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "path", Expr: StringExpr{Value: "*.bam"}},
+							},
+						}},
+					},
+					{
+						Name:   "B",
+						Script: "echo ${id} ${reads}",
+						Input: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "path", Name: "reads"},
+							},
+						}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "A", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}},
+					{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldHaveLength, 1)
+			So(result.Pending[0].AwaitDepGrps, ShouldResemble, []string{"nf.r1.A"})
+		})
+
+		Convey("val-only tuple outputs remain static", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "A",
+						Script: "echo ${id} ${count}",
+						Input: []*Declaration{
+							{Kind: "val", Name: "id"},
+							{Kind: "val", Name: "count"},
+						},
+						Output: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "val", Name: "count"},
+							},
+						}},
+					},
+					{
+						Name:   "B",
+						Script: "echo ${id} ${count}",
+						Input: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "id"},
+								{Kind: "val", Name: "count"},
+							},
+						}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "A", Args: []ChanExpr{
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}},
+						ChannelFactory{Name: "value", Args: []Expr{IntExpr{Value: 2}}},
+					}},
+					{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Pending, ShouldBeEmpty)
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export id='s1'")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "export count='2'")
+		})
+	})
+}
+
+func TestTranslateB3(t *testing.T) {
+	Convey("TranslatePending resolves tuple output path elements from completed paths", t, func() {
+		Convey("tuple outputs with concrete path patterns expose resolved files to downstream tuple inputs", func() {
+			produce := &Process{
+				Name:   "A",
+				Script: "touch ${id}.bam",
+				Input:  []*Declaration{{Kind: "val", Name: "id"}},
+				Output: []*Declaration{{
+					Kind: "tuple",
+					Elements: []*TupleElement{
+						{Kind: "val", Name: "id"},
+						{Kind: "path", Expr: StringExpr{Value: "${id}.bam"}},
+					},
+				}},
+			}
+
+			consume := &Process{
+				Name:   "B",
+				Script: "echo ${reads}",
+				Input: []*Declaration{{
+					Kind: "tuple",
+					Elements: []*TupleElement{
+						{Kind: "val", Name: "id"},
+						{Kind: "path", Name: "reads"},
+					},
+				}},
+			}
+
+			_, stage, err := translateProcessCall(
+				produce,
+				&Call{Target: "A", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}},
+				nil,
+				nil,
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+			stage.repGroup = "nf.wf.r1.A"
+
+			jobs, err := TranslatePending(&PendingStage{
+				Process:      consume,
+				call:         &Call{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+				defaults:     &ProcessDefaults{},
+				translated:   map[string]translatedCall{"A": stage},
+				awaitRepGrps: []string{"nf.wf.r1.A"},
+			}, []CompletedJob{{
+				RepGrp:      "nf.wf.r1.A",
+				OutputPaths: []string{"/work/s1.bam"},
+				ExitCode:    0,
+			}}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "export reads='/work/s1.bam'")
+		})
+
+		Convey("tuple outputs with glob path patterns expose all resolved files to downstream tuple inputs", func() {
+			produce := &Process{
+				Name:   "A",
+				Script: "touch a.bam b.bam",
+				Input:  []*Declaration{{Kind: "val", Name: "id"}},
+				Output: []*Declaration{{
+					Kind: "tuple",
+					Elements: []*TupleElement{
+						{Kind: "val", Name: "id"},
+						{Kind: "path", Expr: StringExpr{Value: "*.bam"}},
+					},
+				}},
+			}
+
+			consume := &Process{
+				Name:   "B",
+				Script: "echo ${reads}",
+				Input: []*Declaration{{
+					Kind: "tuple",
+					Elements: []*TupleElement{
+						{Kind: "val", Name: "id"},
+						{Kind: "path", Name: "reads"},
+					},
+				}},
+			}
+
+			_, stage, err := translateProcessCall(
+				produce,
+				&Call{Target: "A", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}},
+				nil,
+				nil,
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+			stage.repGroup = "nf.wf.r1.A"
+
+			jobs, err := TranslatePending(&PendingStage{
+				Process:      consume,
+				call:         &Call{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+				defaults:     &ProcessDefaults{},
+				translated:   map[string]translatedCall{"A": stage},
+				awaitRepGrps: []string{"nf.wf.r1.A"},
+			}, []CompletedJob{{
+				RepGrp:      "nf.wf.r1.A",
+				OutputPaths: []string{"/work/a.bam", "/work/b.bam"},
+				ExitCode:    0,
+			}}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/work/a.bam")
+			So(jobs[0].Cmd, ShouldContainSubstring, "/work/b.bam")
+		})
+	})
+}
+
+func TestTranslateC1(t *testing.T) {
+	Convey("emit labels resolve specific process outputs", t, func() {
+		Convey("translateProcessCall binds only the matching emit-labelled output for process.out.label", func() {
+			produce := &Process{
+				Name:   "A",
+				Script: "touch sample.bam sample.bai",
+				Output: []*Declaration{
+					{Kind: "path", Expr: StringExpr{Value: "*.bam"}, Emit: "bam"},
+					{Kind: "path", Expr: StringExpr{Value: "*.bai"}, Emit: "idx"},
+				},
+			}
+
+			consume := &Process{
+				Name:   "B",
+				Script: "echo ${reads}",
+				Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+			}
+
+			_, stage, err := translateProcessCall(
+				produce,
+				&Call{Target: "A"},
+				nil,
+				nil,
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+
+			jobs, _, err := translateProcessCall(
+				consume,
+				&Call{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out.bam"}}},
+				nil,
+				map[string]translatedCall{"A": stage},
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/work/nf-work/r1/A/*.bam")
+			So(jobs[0].Cmd, ShouldNotContainSubstring, "/work/nf-work/r1/A/*.bai")
+		})
+
+		Convey("TranslatePending filters completed paths by the referenced emit label", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "A",
+						Script: "touch sample.bam sample.bai",
+						Output: []*Declaration{
+							{Kind: "path", Expr: StringExpr{Value: "*.bam"}, Emit: "bam"},
+							{Kind: "path", Expr: StringExpr{Value: "*.bai"}, Emit: "idx"},
+						},
+					},
+					{
+						Name:   "B",
+						Script: "echo ${reads}",
+						Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out.bam"}}}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldHaveLength, 1)
+
+			jobs, err := TranslatePending(result.Pending[0], []CompletedJob{{
+				RepGrp:      "nf.wf.r1.A",
+				OutputPaths: []string{"/work/sample.bam", "/work/sample.bai"},
+				ExitCode:    0,
+			}}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "export reads='/work/sample.bam'")
+			So(jobs[0].Cmd, ShouldNotContainSubstring, "/work/sample.bai")
+		})
+
+		Convey("process.out preserves full-output behaviour when no emit labels are defined", func() {
+			produce := &Process{
+				Name:   "A",
+				Script: "touch sample.bam sample.bai",
+				Output: []*Declaration{
+					{Kind: "path", Expr: StringExpr{Value: "*.bam"}},
+					{Kind: "path", Expr: StringExpr{Value: "*.bai"}},
+				},
+			}
+
+			consume := &Process{
+				Name:   "B",
+				Script: "echo ${reads}",
+				Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+			}
+
+			_, stage, err := translateProcessCall(
+				produce,
+				&Call{Target: "A"},
+				nil,
+				nil,
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+
+			jobs, _, err := translateProcessCall(
+				consume,
+				&Call{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+				nil,
+				map[string]translatedCall{"A": stage},
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "/work/nf-work/r1/A/*.bam /work/nf-work/r1/A/*.bai")
+		})
+
+		Convey("missing emit labels fall back to full outputs with a warning", func() {
+			produce := &Process{
+				Name:   "A",
+				Script: "touch sample.bam sample.bai",
+				Output: []*Declaration{
+					{Kind: "path", Expr: StringExpr{Value: "*.bam"}, Emit: "bam"},
+					{Kind: "path", Expr: StringExpr{Value: "*.bai"}, Emit: "idx"},
+				},
+			}
+
+			consume := &Process{
+				Name:   "B",
+				Script: "echo ${reads}",
+				Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+			}
+
+			_, stage, err := translateProcessCall(
+				produce,
+				&Call{Target: "A"},
+				nil,
+				nil,
+				&ProcessDefaults{},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
+
+			So(err, ShouldBeNil)
+
+			stderr := captureTranslateStderr(func() {
+				jobs, _, callErr := translateProcessCall(
+					consume,
+					&Call{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out.missing"}}},
+					nil,
+					map[string]translatedCall{"A": stage},
+					&ProcessDefaults{},
+					nil,
+					TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+				)
+
+				So(callErr, ShouldBeNil)
+				So(jobs, ShouldHaveLength, 1)
+				So(jobs[0].Cmd, ShouldContainSubstring, "/work/nf-work/r1/A/*.bam /work/nf-work/r1/A/*.bai")
+			})
+
+			So(stderr, ShouldContainSubstring, "emit label")
+			So(stderr, ShouldContainSubstring, "A.out.missing")
+		})
+	})
+}
+
 func TestTranslate(t *testing.T) {
 	Convey("Translate creates a single deterministic job for a basic process call", t, func() {
 		wf := &Workflow{
