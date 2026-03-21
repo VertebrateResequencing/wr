@@ -59,6 +59,53 @@ type TranslateConfig struct {
 	Profile          string
 }
 
+func renderScript(proc *Process, bindings []string, params map[string]any) (string, error) {
+	script, err := SubstituteParams(proc.Script, params)
+	if err != nil {
+		return "", err
+	}
+
+	return interpolateKnownScriptVars(script, outputVars(proc, bindings, params))
+}
+
+func interpolateKnownScriptVars(script string, vars map[string]any) (string, error) {
+	if len(vars) == 0 {
+		return script, nil
+	}
+
+	matches := groovyInterpolationPattern.FindAllStringSubmatchIndex(script, -1)
+	if len(matches) == 0 {
+		return script, nil
+	}
+
+	var builder strings.Builder
+	last := 0
+
+	for _, match := range matches {
+		builder.WriteString(script[last:match[0]])
+
+		exprText := strings.TrimSpace(script[match[2]:match[3]])
+		root, _, _ := strings.Cut(exprText, ".")
+		if _, ok := vars[root]; !ok {
+			builder.WriteString(script[match[0]:match[1]])
+			last = match[1]
+			continue
+		}
+
+		resolved, err := resolveInterpolation(exprText, vars)
+		if err != nil {
+			return "", err
+		}
+
+		builder.WriteString(fmt.Sprint(resolved))
+		last = match[1]
+	}
+
+	builder.WriteString(script[last:])
+
+	return builder.String(), nil
+}
+
 func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
 	job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
 		When: jobqueue.OnExit,
@@ -1048,7 +1095,7 @@ func applyEnv(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults) error
 }
 
 func buildCommand(proc *Process, bindings []string, params map[string]any) (string, error) {
-	script, err := SubstituteParams(proc.Script, params)
+	script, err := renderScript(proc, bindings, params)
 	if err != nil {
 		return "", err
 	}
