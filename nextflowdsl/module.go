@@ -203,6 +203,9 @@ func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitR
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", false, fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
+	if !isValidGitHubRepoPathPart(parts[0]) || !isValidGitHubRepoPathPart(parts[1]) {
+		return "", "", "", false, fmt.Errorf("unsupported GitHub module spec %q", spec)
+	}
 
 	if hasRevision {
 		if revisionSpec == "" {
@@ -216,6 +219,10 @@ func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitR
 	}
 
 	return parts[0], parts[1], defaultGitHubModuleRevision, false, nil
+}
+
+func isValidGitHubRepoPathPart(part string) bool {
+	return part != "." && part != ".."
 }
 
 func hasNextflowModuleFiles(path string) (bool, error) {

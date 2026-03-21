@@ -60,11 +60,28 @@ func TestNextflowRemoteWorkflowName(t *testing.T) {
 		So(name, ShouldEqual, "nextflow-io/hello")
 	})
 
+	Convey("remote workflow names allow dotted repo names", t, func() {
+		name, ok := nextflowRemoteWorkflowName("nextflow-io/hello.world")
+
+		So(ok, ShouldBeTrue)
+		So(name, ShouldEqual, "nextflow-io/hello.world")
+	})
+
 	Convey("GitHub workflow URLs retain owner and repo to avoid collisions", t, func() {
 		name, ok := nextflowRemoteWorkflowName("https://github.com/nextflow-io/hello.git")
 
 		So(ok, ShouldBeTrue)
 		So(name, ShouldEqual, "nextflow-io/hello")
+	})
+
+	Convey("resolved remote workflow names do not fall back to the cache revision for dotted repos", t, func() {
+		name := nextflowResolvedWorkflowName(
+			"nextflow-io/hello.world",
+			filepath.Join("/tmp", "cache", "nextflow-io", "hello.world", "HEAD", "main.nf"),
+			true,
+		)
+
+		So(name, ShouldEqual, "nextflow-io/hello.world")
 	})
 
 	Convey("local main.nf workflows use the containing directory name", t, func() {
