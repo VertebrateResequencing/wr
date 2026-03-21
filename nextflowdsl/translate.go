@@ -106,13 +106,22 @@ func completedOutputPathsForJob(pending *PendingStage, repGrp string, job *jobqu
 
 func outputPatternsForCwd(patterns []string, cwd string) []string {
 	filtered := make([]string, 0, len(patterns))
+	absolute := make([]string, 0, len(patterns))
 	cleanCwd := filepath.Clean(cwd)
 
 	for _, pattern := range patterns {
 		cleanPattern := filepath.Clean(pattern)
 		if cleanPattern == cleanCwd || strings.HasPrefix(cleanPattern, cleanCwd+string(os.PathSeparator)) {
 			filtered = append(filtered, pattern)
+			continue
 		}
+		if filepath.IsAbs(cleanPattern) {
+			absolute = append(absolute, pattern)
+		}
+	}
+
+	if len(filtered) == 0 {
+		return absolute
 	}
 
 	return filtered
@@ -1023,7 +1032,13 @@ func outputPaths(proc *Process, cwd string) []string {
 			continue
 		}
 		if stringExpr, ok := decl.Expr.(StringExpr); ok {
-			paths = append(paths, filepath.Join(cwd, filepath.Clean(stringExpr.Value)))
+			cleanPath := filepath.Clean(stringExpr.Value)
+			if filepath.IsAbs(cleanPath) {
+				paths = append(paths, cleanPath)
+				continue
+			}
+
+			paths = append(paths, filepath.Join(cwd, cleanPath))
 		}
 	}
 	if len(paths) > 0 {

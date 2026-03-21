@@ -275,5 +275,48 @@ func TestTranslateD4(t *testing.T) {
 			So(completed[0].OutputPaths, ShouldResemble, []string{firstPath})
 			So(completed[1].OutputPaths, ShouldResemble, []string{secondPath})
 		})
+
+		Convey("CompletedJobsForPending preserves absolute output paths outside the job cwd", func() {
+			absDir := t.TempDir()
+			absOutput := filepath.Join(absDir, "out.txt")
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:       "PRODUCE",
+						Directives: map[string]Expr{},
+						Script:     "touch " + absOutput,
+						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: absOutput}}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "CONSUME",
+						Directives: map[string]Expr{},
+						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cat $reads",
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE"},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldHaveLength, 1)
+			So(os.WriteFile(absOutput, []byte("ok"), 0o644), ShouldBeNil)
+
+			completed, ready, err := CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0]})
+
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeTrue)
+			So(completed, ShouldHaveLength, 1)
+			So(completed[0].OutputPaths, ShouldResemble, []string{absOutput})
+		})
 	})
 }
