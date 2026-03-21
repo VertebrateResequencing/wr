@@ -20,5 +20,5 @@ multi-line and unterminated detection), and `nextflow.enable.*` /
 for all subsequent parsing phases. Covering all 6 acceptance tests
 from A6.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
