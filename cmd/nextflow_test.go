@@ -1629,7 +1629,7 @@ func translatedPendingJobs(t *testing.T, workflowPath, runID string, completed *
 		return nil, os.ErrInvalid
 	}
 
-	completedJobs, ready, err := nextflowdsl.CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{completed})
+	completedJobs, ready, err := nextflowdsl.CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{completed}, nil)
 	if err != nil {
 		return nil, err
 	}
