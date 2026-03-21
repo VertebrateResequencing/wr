@@ -152,6 +152,26 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			So(commands[0], ShouldContainSubstring, "/results/")
 		})
 
+		Convey("patternless publishDir copies dynamically resolved output paths", func() {
+			wf := newPublishWorkflow()
+			wf.Processes[0].Output = []*Declaration{{Kind: "path", Expr: StringExpr{Value: "${params.sample}.txt"}}}
+			wf.Processes[0].Script = "echo hi > ${params.sample}.txt"
+			wf.Processes[0].PublishDir = []*PublishDir{{Path: "/results", Mode: "copy"}}
+
+			result, err := Translate(wf, nil, TranslateConfig{
+				RunID:        "r1",
+				WorkflowName: "mywf",
+				Cwd:          "/work",
+				Params:       map[string]any{"sample": "sampleA"},
+			})
+
+			So(err, ShouldBeNil)
+			commands := onSuccessRunCommands(result.Jobs[0])
+			So(commands, ShouldHaveLength, 1)
+			So(commands[0], ShouldContainSubstring, "/work/nf-work/r1/publish/sampleA.txt")
+			So(commands[0], ShouldContainSubstring, "/results/")
+		})
+
 		Convey("tuple path outputs are also published", func() {
 			wf := newPublishWorkflow()
 			wf.Processes[0].Output = []*Declaration{{

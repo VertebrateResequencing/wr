@@ -1251,7 +1251,7 @@ func translateProcessCall(
 		job.Cmd = cmd
 		applyCaptureCleanupBehaviour(job)
 
-		if err = applyPublishDirBehaviours(job, proc, params, tc); err != nil {
+		if err = applyPublishDirBehaviours(job, proc, bindingSet.bindings, params, tc, cwd); err != nil {
 			return nil, translatedCall{}, err
 		}
 
@@ -1816,7 +1816,7 @@ func outputPaths(proc *Process, bindings []string, params map[string]any, cwd st
 	return []string{cwd + string(os.PathSeparator)}
 }
 
-func applyPublishDirBehaviours(job *jobqueue.Job, proc *Process, params map[string]any, tc TranslateConfig) error {
+func applyPublishDirBehaviours(job *jobqueue.Job, proc *Process, bindings []string, params map[string]any, tc TranslateConfig, cwd string) error {
 	if len(proc.PublishDir) == 0 {
 		return nil
 	}
@@ -1826,7 +1826,7 @@ func applyPublishDirBehaviours(job *jobqueue.Job, proc *Process, params map[stri
 			continue
 		}
 
-		command, err := buildPublishDirCommand(proc, directive, params, tc)
+		command, err := buildPublishDirCommand(proc, directive, bindings, params, tc, cwd)
 		if err != nil {
 			return err
 		}
@@ -1844,7 +1844,7 @@ func applyPublishDirBehaviours(job *jobqueue.Job, proc *Process, params map[stri
 	return nil
 }
 
-func buildPublishDirCommand(proc *Process, directive *PublishDir, params map[string]any, tc TranslateConfig) (string, error) {
+func buildPublishDirCommand(proc *Process, directive *PublishDir, bindings []string, params map[string]any, tc TranslateConfig, cwd string) (string, error) {
 	target, err := resolvePublishDirTarget(directive.Path, params, tc)
 	if err != nil {
 		return "", err
@@ -1861,7 +1861,7 @@ func buildPublishDirCommand(proc *Process, directive *PublishDir, params map[str
 		}, " && "), nil
 	}
 
-	sources := publishDirSources(proc)
+	sources := publishDirSources(proc, bindings, params, cwd)
 	if len(sources) == 0 {
 		return mkdir, nil
 	}
@@ -1894,11 +1894,12 @@ func publishDirActionCommand(mode, source, target string) string {
 	}
 }
 
-func publishDirSources(proc *Process) []string {
+func publishDirSources(proc *Process, bindings []string, params map[string]any, cwd string) []string {
 	if len(proc.Output) == 0 {
 		return nil
 	}
 
+	vars := outputVars(proc, bindings, params)
 	sources := make([]string, 0, len(proc.Output))
 	for _, decl := range proc.Output {
 		if decl == nil {
@@ -1907,24 +1908,24 @@ func publishDirSources(proc *Process) []string {
 
 		switch decl.Kind {
 		case "path", "file":
-			stringExpr, ok := decl.Expr.(StringExpr)
-			if !ok || stringExpr.Value == "" {
+			pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
+			if !ok || pattern == "" {
 				continue
 			}
 
-			sources = appendUniqueStrings(sources, []string{filepath.Clean(stringExpr.Value)})
+			sources = appendUniqueStrings(sources, []string{pattern})
 		case "tuple":
 			for _, element := range decl.Elements {
 				if element == nil || (element.Kind != "path" && element.Kind != "file") {
 					continue
 				}
 
-				stringExpr, ok := element.Expr.(StringExpr)
-				if !ok || stringExpr.Value == "" {
+				pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
+				if !ok || pattern == "" {
 					continue
 				}
 
-				sources = appendUniqueStrings(sources, []string{filepath.Clean(stringExpr.Value)})
+				sources = appendUniqueStrings(sources, []string{pattern})
 			}
 		}
 	}
