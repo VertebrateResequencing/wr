@@ -23,7 +23,8 @@ list `[]`, empty map `[:]`, and subscript access `list[0]` /
 `map['key']`. Covering all 8 acceptance tests from D4.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.2: D2 - Comparison and logical operators [parallel with 1.1, 1.3]
 
@@ -36,7 +37,8 @@ for comparison and logical operators, and `UnaryExpr` for `!`.
 Covering all 11 acceptance tests from D2.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.3: D6 - Cast expressions [parallel with 1.1, 1.2]
 
@@ -50,7 +52,8 @@ Unknown casts produce `UnsupportedExpr`. Covering all 3
 acceptance tests from D6.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -71,7 +74,8 @@ other `task.*` property resolution, and null-safe property access
 `x?.property`. Covering all 6 acceptance tests from D5.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.5: D3 - Method calls on strings and lists [parallel with 1.4]
 
@@ -89,7 +93,8 @@ stub that returns `UnsupportedExpr` for now. Covering all 19
 acceptance tests from D3 (test 19 deferred to Phase 6).
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -110,4 +115,5 @@ list/map are falsy). Depends on D2 for condition evaluation and
 D5 for null truthiness. Covering all 6 acceptance tests from D1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

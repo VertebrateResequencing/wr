@@ -288,6 +288,272 @@ func TestParseFunctionDefinitions(t *testing.T) {
 	})
 }
 
+func TestParseComparisonAndLogicalExpressions(t *testing.T) {
+	Convey("parseExprTokens handles D2 comparison and logical operators", t, func() {
+		Convey("comparison operators parse as binary expressions", func() {
+			cases := []struct {
+				name   string
+				source string
+				op     string
+				left   Expr
+				right  Expr
+			}{
+				{name: "equal", source: "1 == 1", op: "==", left: IntExpr{Value: 1}, right: IntExpr{Value: 1}},
+				{name: "not equal", source: "1 != 2", op: "!=", left: IntExpr{Value: 1}, right: IntExpr{Value: 2}},
+				{name: "greater equal", source: "3 >= 3", op: ">=", left: IntExpr{Value: 3}, right: IntExpr{Value: 3}},
+				{name: "less equal", source: "2 <= 3", op: "<=", left: IntExpr{Value: 2}, right: IntExpr{Value: 3}},
+			}
+
+			for _, testCase := range cases {
+				tokens, err := lex(testCase.source)
+
+				So(err, ShouldBeNil)
+				expr, err := parseExprTokens(tokens[:len(tokens)-1])
+
+				So(err, ShouldBeNil)
+				So(expr, ShouldResemble, BinaryExpr{Left: testCase.left, Op: testCase.op, Right: testCase.right})
+			}
+		})
+
+		Convey("logical operators respect precedence and unary negation", func() {
+			tokens, err := lex("1 == 1 && 2 > 1 || !false")
+
+			So(err, ShouldBeNil)
+			expr, err := parseExprTokens(tokens[:len(tokens)-1])
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{
+				Left: BinaryExpr{
+					Left:  BinaryExpr{Left: IntExpr{Value: 1}, Op: "==", Right: IntExpr{Value: 1}},
+					Op:    "&&",
+					Right: BinaryExpr{Left: IntExpr{Value: 2}, Op: ">", Right: IntExpr{Value: 1}},
+				},
+				Op:    "||",
+				Right: UnaryExpr{Op: "!", Operand: BoolExpr{Value: false}},
+			})
+		})
+
+		Convey("parsed process directives keep comparison and logical ASTs", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nwhen: !false && 1 == 1\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].When, ShouldEqual, "!false && 1 == 1")
+		})
+	})
+}
+
+func TestParseD6CastExpressions(t *testing.T) {
+	Convey("Parse handles D6 cast expressions", t, func() {
+		Convey("string literals cast to Integer are parsed into CastExpr", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ncpus '42' as Integer\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			castExpr, ok := wf.Processes[0].Directives["cpus"].(CastExpr)
+			So(ok, ShouldBeTrue)
+			So(castExpr.TypeName, ShouldEqual, "Integer")
+			operand, ok := castExpr.Operand.(StringExpr)
+			So(ok, ShouldBeTrue)
+			So(operand.Value, ShouldEqual, "42")
+		})
+
+		Convey("integer literals cast to String are parsed into CastExpr", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ncpus 42 as String\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			castExpr, ok := wf.Processes[0].Directives["cpus"].(CastExpr)
+			So(ok, ShouldBeTrue)
+			So(castExpr.TypeName, ShouldEqual, "String")
+			operand, ok := castExpr.Operand.(IntExpr)
+			So(ok, ShouldBeTrue)
+			So(operand.Value, ShouldEqual, 42)
+		})
+	})
+}
+
+func TestParseD1TernaryAndElvisExpressions(t *testing.T) {
+	Convey("Parse handles D1 ternary and elvis operators", t, func() {
+		Convey("ternary expressions produce a TernaryExpr with a condition", func() {
+			expr, err := parseTestExpr("task.attempt > 1 ? '16 GB' : '8 GB'")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, TernaryExpr{
+				Cond:  BinaryExpr{Left: VarExpr{Root: "task", Path: "attempt"}, Op: ">", Right: IntExpr{Value: 1}},
+				True:  StringExpr{Value: "16 GB"},
+				False: StringExpr{Value: "8 GB"},
+			})
+		})
+
+		Convey("elvis expressions produce a TernaryExpr without a condition", func() {
+			expr, err := parseTestExpr("x ?: 'default'")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, TernaryExpr{
+				True:  VarExpr{Root: "x"},
+				False: StringExpr{Value: "default"},
+			})
+		})
+	})
+}
+
+func TestParseD3MethodCalls(t *testing.T) {
+	Convey("Parse handles D3 method calls on strings and lists", t, func() {
+		Convey("receiver method calls parse into MethodCallExpr", func() {
+			expr, err := parseTestExpr("'  hello  '.trim()")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MethodCallExpr{
+				Receiver: StringExpr{Value: "  hello  "},
+				Method:   "trim",
+				Args:     []Expr{},
+			})
+		})
+
+		Convey("method calls with arguments keep parsed argument expressions", func() {
+			expr, err := parseTestExpr("'hello'.replace('l', 'r')")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MethodCallExpr{
+				Receiver: StringExpr{Value: "hello"},
+				Method:   "replace",
+				Args: []Expr{
+					StringExpr{Value: "l"},
+					StringExpr{Value: "r"},
+				},
+			})
+		})
+
+		Convey("method chaining nests MethodCallExpr receivers", func() {
+			expr, err := parseTestExpr("'hello'.trim().toUpperCase()")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MethodCallExpr{
+				Receiver: MethodCallExpr{
+					Receiver: StringExpr{Value: "hello"},
+					Method:   "trim",
+					Args:     []Expr{},
+				},
+				Method: "toUpperCase",
+				Args:   []Expr{},
+			})
+		})
+
+		Convey("list receivers remain valid method-call receivers", func() {
+			expr, err := parseTestExpr("[1, 2, 3].size()")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MethodCallExpr{
+				Receiver: ListExpr{Elements: []Expr{
+					IntExpr{Value: 1},
+					IntExpr{Value: 2},
+					IntExpr{Value: 3},
+				}},
+				Method: "size",
+				Args:   []Expr{},
+			})
+		})
+
+		Convey("trailing closure syntax is preserved as a deferred collect argument", func() {
+			expr, err := parseTestExpr("[1, 2, 3].collect { it * 2 }")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MethodCallExpr{
+				Receiver: ListExpr{Elements: []Expr{
+					IntExpr{Value: 1},
+					IntExpr{Value: 2},
+					IntExpr{Value: 3},
+				}},
+				Method: "collect",
+				Args:   []Expr{UnsupportedExpr{Text: "{ it * 2 }"}},
+			})
+		})
+	})
+}
+
+func TestParseD5Expressions(t *testing.T) {
+	Convey("Parse handles D5 null literal and null-safe navigation", t, func() {
+		Convey("null literals produce a NullExpr", func() {
+			expr, err := parseTestExpr("null")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldHaveSameTypeAs, NullExpr{})
+		})
+
+		Convey("task references remain dotted variable expressions", func() {
+			expr, err := parseTestExpr("task.attempt")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, VarExpr{Root: "task", Path: "attempt"})
+		})
+
+		Convey("null-safe property access produces a NullSafeExpr", func() {
+			expr, err := parseTestExpr("x?.property")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, NullSafeExpr{Receiver: VarExpr{Root: "x"}, Property: "property"})
+		})
+	})
+}
+
+func TestParseD4Expressions(t *testing.T) {
+	Convey("Parse handles D4 list and map literals", t, func() {
+		Convey("list literals produce a ListExpr", func() {
+			expr, err := parseTestExpr("[1, 2, 3]")
+
+			So(err, ShouldBeNil)
+			listExpr, ok := expr.(ListExpr)
+			So(ok, ShouldBeTrue)
+			So(listExpr.Elements, ShouldHaveLength, 3)
+			So(listExpr.Elements[0], ShouldResemble, IntExpr{Value: 1})
+			So(listExpr.Elements[1], ShouldResemble, IntExpr{Value: 2})
+			So(listExpr.Elements[2], ShouldResemble, IntExpr{Value: 3})
+		})
+
+		Convey("map literals produce a MapExpr", func() {
+			expr, err := parseTestExpr("[a: 1, b: 2]")
+
+			So(err, ShouldBeNil)
+			mapExpr, ok := expr.(MapExpr)
+			So(ok, ShouldBeTrue)
+			So(mapExpr.Keys, ShouldResemble, []Expr{
+				StringExpr{Value: "a"},
+				StringExpr{Value: "b"},
+			})
+			So(mapExpr.Values, ShouldResemble, []Expr{
+				IntExpr{Value: 1},
+				IntExpr{Value: 2},
+			})
+		})
+
+		Convey("empty map literals are distinguished from empty lists", func() {
+			expr, err := parseTestExpr("[:]")
+
+			So(err, ShouldBeNil)
+			_, ok := expr.(MapExpr)
+			So(ok, ShouldBeTrue)
+		})
+
+		Convey("subscript access produces an IndexExpr", func() {
+			expr, err := parseTestExpr("list[0]")
+
+			So(err, ShouldBeNil)
+			indexExpr, ok := expr.(IndexExpr)
+			So(ok, ShouldBeTrue)
+			So(indexExpr.Receiver, ShouldResemble, VarExpr{Root: "list"})
+			So(indexExpr.Index, ShouldResemble, IntExpr{Value: 0})
+		})
+	})
+}
+
+func parseTestExpr(input string) (Expr, error) {
+	tokens, err := lex(input)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseExprTokens(tokens[:len(tokens)-1])
+}
+
 func TestParseProcessDefinitions(t *testing.T) {
 	Convey("Parse handles A1 process definitions", t, func() {
 		Convey("basic process with input, output, and script", func() {
@@ -300,7 +566,6 @@ func TestParseProcessDefinitions(t *testing.T) {
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
 			So(wf.Processes[0].Script, ShouldEqual, "echo hello")
 		})
-
 		Convey("cpus, memory, and time directives are normalised", func() {
 			wf, err := Parse(strings.NewReader("process foo {\ncpus 4\nmemory '8 GB'\ntime '2.h'\nscript: 'echo hello'\n}"))
 
@@ -309,7 +574,6 @@ func TestParseProcessDefinitions(t *testing.T) {
 			So(intExprValue(wf.Processes[0].Directives["memory"]), ShouldEqual, 8192)
 			So(intExprValue(wf.Processes[0].Directives["time"]), ShouldEqual, 120)
 		})
-
 		Convey("container directive populates the container field", func() {
 			wf, err := Parse(strings.NewReader("process foo {\ncontainer 'ubuntu:22.04'\nscript: 'echo hello'\n}"))
 

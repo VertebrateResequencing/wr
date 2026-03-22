@@ -647,8 +647,41 @@ func renderExpr(expression Expr) string {
 		}
 
 		return value.Root + "." + value.Path
+	case UnaryExpr:
+		return value.Op + renderExpr(value.Operand)
 	case BinaryExpr:
 		return renderExpr(value.Left) + " " + value.Op + " " + renderExpr(value.Right)
+	case TernaryExpr:
+		if value.Cond == nil {
+			return renderExpr(value.True) + " ?: " + renderExpr(value.False)
+		}
+
+		return renderExpr(value.Cond) + " ? " + renderExpr(value.True) + " : " + renderExpr(value.False)
+	case MethodCallExpr:
+		parts := make([]string, 0, len(value.Args))
+		for _, arg := range value.Args {
+			parts = append(parts, renderExpr(arg))
+		}
+
+		return renderExpr(value.Receiver) + "." + value.Method + "(" + strings.Join(parts, ", ") + ")"
+	case IndexExpr:
+		return renderExpr(value.Receiver) + "[" + renderExpr(value.Index) + "]"
+	case ListExpr:
+		parts := make([]string, 0, len(value.Elements))
+		for _, element := range value.Elements {
+			parts = append(parts, renderExpr(element))
+		}
+
+		return "[" + strings.Join(parts, ", ") + "]"
+	case MapExpr:
+		parts := make([]string, 0, len(value.Keys))
+		for index, key := range value.Keys {
+			parts = append(parts, renderExpr(key)+": "+renderExpr(value.Values[index]))
+		}
+
+		return "[" + strings.Join(parts, ", ") + "]"
+	case CastExpr:
+		return renderExpr(value.Operand) + " as " + value.TypeName
 	case UnsupportedExpr:
 		return value.Text
 	default:

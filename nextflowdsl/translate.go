@@ -271,6 +271,23 @@ func bindingsForInputDeclaration(decl *Declaration, resolved bindingSet) ([]stri
 	return bindings, nil
 }
 
+func exprVarsWithTask(params map[string]any, task map[string]any) map[string]any {
+	if len(params) == 0 && len(task) == 0 {
+		return nil
+	}
+
+	vars := make(map[string]any, 2)
+	if len(params) != 0 {
+		vars["params"] = params
+	}
+
+	if len(task) != 0 {
+		vars["task"] = task
+	}
+
+	return vars
+}
+
 func renderScript(proc *Process, bindings []string, params map[string]any) (string, error) {
 	script, err := SubstituteParams(proc.Script, params)
 	if err != nil {
@@ -1654,20 +1671,25 @@ func repGroupToken(value string) string {
 
 func buildRequirements(proc *Process, defaults *ProcessDefaults, params map[string]any) (*scheduler.Requirements, error) {
 	req := &scheduler.Requirements{}
+	task := map[string]any{"attempt": 1}
 
-	cpus, err := resolveDirectiveInt("cpus", proc.Directives["cpus"], params, intDefault(defaults.Cpus, defaultCPUs))
+	cpus, err := resolveDirectiveInt("cpus", proc.Directives["cpus"], params, intDefault(defaults.Cpus, defaultCPUs), task)
 	if err != nil {
 		return nil, err
 	}
-	memory, err := resolveDirectiveInt("memory", proc.Directives["memory"], params, intDefault(defaults.Memory, defaultMemory))
+	task["cpus"] = cpus
+
+	memory, err := resolveDirectiveInt("memory", proc.Directives["memory"], params, intDefault(defaults.Memory, defaultMemory), task)
 	if err != nil {
 		return nil, err
 	}
-	timeMinutes, err := resolveDirectiveInt("time", proc.Directives["time"], params, intDefault(defaults.Time, defaultTime))
+	task["memory"] = memory
+
+	timeMinutes, err := resolveDirectiveInt("time", proc.Directives["time"], params, intDefault(defaults.Time, defaultTime), task)
 	if err != nil {
 		return nil, err
 	}
-	disk, err := resolveDirectiveInt("disk", proc.Directives["disk"], params, intDefault(defaults.Disk, defaultDisk))
+	disk, err := resolveDirectiveInt("disk", proc.Directives["disk"], params, intDefault(defaults.Disk, defaultDisk), task)
 	if err != nil {
 		return nil, err
 	}
@@ -1682,7 +1704,7 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, params map[stri
 	return req, nil
 }
 
-func resolveDirectiveInt(name string, expr Expr, params map[string]any, fallback int) (int, error) {
+func resolveDirectiveInt(name string, expr Expr, params map[string]any, fallback int, task map[string]any) (int, error) {
 	if expr == nil {
 		return fallback, nil
 	}
@@ -1691,9 +1713,13 @@ func resolveDirectiveInt(name string, expr Expr, params map[string]any, fallback
 		return fallback, nil
 	}
 
-	value, err := EvalExpr(expr, exprVars(params))
+	value, err := EvalExpr(expr, exprVarsWithTask(params, task))
 	if err != nil {
 		return 0, err
+	}
+	if unsupported, ok := value.(UnsupportedExpr); ok {
+		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
+		return fallback, nil
 	}
 
 	intValue, ok := value.(int)
