@@ -91,7 +91,7 @@ func TestTranslateD6(t *testing.T) {
 				},
 			}
 
-			jobs, _, err := translateProcessCall(d6Process("foo", []*Declaration{{Kind: "val", Name: "group"}}, nil, "echo $group"), call, nil, translated, &ProcessDefaults{}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			jobs, _, err := translateProcessCall(d6Process("foo", []*Declaration{{Kind: "val", Name: "group"}}, nil, "echo $group"), call, nil, translated, &ProcessDefaults{}, nil, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 2)
@@ -127,7 +127,7 @@ func TestTranslateD6(t *testing.T) {
 				"ch2": {items: []channelItem{{value: 3, depGroups: []string{"nf.r1.right.0"}}, {value: 4, depGroups: []string{"nf.r1.right.1"}}, {value: 5, depGroups: []string{"nf.r1.right.2"}}}},
 			}
 
-			jobs, _, err := translateProcessCall(d6Process("bar", []*Declaration{{Kind: "val", Name: "x"}}, nil, "echo $x"), call, nil, translated, &ProcessDefaults{}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			jobs, _, err := translateProcessCall(d6Process("bar", []*Declaration{{Kind: "val", Name: "x"}}, nil, "echo $x"), call, nil, translated, &ProcessDefaults{}, nil, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 5)
