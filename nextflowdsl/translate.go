@@ -2044,7 +2044,7 @@ func applyContainer(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults,
 	switch runtime {
 	case "docker":
 		job.WithDocker = container
-	case "singularity":
+	case "singularity", "apptainer":
 		job.WithSingularity = container
 	}
 }

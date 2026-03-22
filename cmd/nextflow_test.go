@@ -987,6 +987,22 @@ func TestNextflowRunCommandContainerRuntimeDefaults(t *testing.T) {
 			So(jobs[0].WithDocker, ShouldEqual, "")
 			So(jobs[0].WithSingularity, ShouldEqual, "ubuntu:22.04")
 		})
+
+		Convey("apptainer config defaults reuse singularity-backed job execution", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("config_apptainer_runtime.nf", "process A {\ncontainer 'ubuntu:22.04'\nscript: 'echo hello'\n}\nworkflow { A() }\n")
+			configPath := env.writeText("nextflow.config", "apptainer { enabled = true }\n")
+
+			err := env.executeRun("--config", configPath, workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.config_apptainer_runtime.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].WithDocker, ShouldEqual, "")
+			So(jobs[0].WithSingularity, ShouldEqual, "ubuntu:22.04")
+		})
 	})
 }
 
