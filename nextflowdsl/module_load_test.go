@@ -89,6 +89,57 @@ func TestLoadWorkflowFilePreservesImportedProcessLabels(t *testing.T) {
 	})
 }
 
+func TestLoadWorkflowFilePreservesImportedWorkflowConditions(t *testing.T) {
+	Convey("LoadWorkflowFile preserves conditional blocks on imported workflows", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+		moduleDir := filepath.Join(tempDir, "modules")
+		modulePath := filepath.Join(moduleDir, "helper.nf")
+
+		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte("process A {\nscript:\n'echo a'\n}\nprocess B {\nscript:\n'echo b'\n}\nworkflow helper {\nif( params.choice == 'a' ) {\nA()\n} else {\nB()\n}\n}\n"), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.SubWFs, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body, ShouldNotBeNil)
+		So(wf.SubWFs[0].Body.Conditions, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Conditions[0].Condition, ShouldEqual, "params.choice == 'a'")
+		So(wf.SubWFs[0].Body.Conditions[0].Body, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Conditions[0].Body[0].Target, ShouldEqual, "A")
+		So(wf.SubWFs[0].Body.Conditions[0].ElseBody, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Conditions[0].ElseBody[0].Target, ShouldEqual, "B")
+	})
+}
+
+func TestLoadWorkflowFilePreservesImportedClosureParams(t *testing.T) {
+	Convey("LoadWorkflowFile preserves parsed closure parameters in imported channel operators", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+		moduleDir := filepath.Join(tempDir, "modules")
+		modulePath := filepath.Join(moduleDir, "helper.nf")
+
+		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte("process sink {\ninput:\nval x\nscript:\n'echo ${x}'\n}\nworkflow helper {\nsink(Channel.of([id: 'a'], [id: 'b']).map { item -> item.id })\n}\n"), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.SubWFs, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body, ShouldNotBeNil)
+		So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+
+		chain, ok := wf.SubWFs[0].Body.Calls[0].Args[0].(ChannelChain)
+		So(ok, ShouldBeTrue)
+		So(chain.Operators, ShouldHaveLength, 1)
+		So(chain.Operators[0].Name, ShouldEqual, "map")
+		So(chain.Operators[0].ClosureExpr, ShouldNotBeNil)
+		So(chain.Operators[0].ClosureExpr.Params, ShouldResemble, []string{"item"})
+		So(chain.Operators[0].ClosureExpr.Body, ShouldEqual, "item.id")
+	})
+}
+
 func TestLoadWorkflowFilePreservesClonedProcessFields(t *testing.T) {
 	Convey("LoadWorkflowFile preserves parsed process fields required by nextflowstrict translation", t, func() {
 		tempDir := t.TempDir()
