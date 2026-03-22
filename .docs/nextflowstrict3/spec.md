@@ -8,15 +8,16 @@ any syntactically valid DSL2 workflow file (excluding v25.10+
 typed-process syntax) parses without error and translates
 correctly where applicable.
 
-Changes span 15 gaps: missing process directives, `each`/`eval`
-I/O qualifiers, Groovy operator/expression extensions, statement
-types, `params {}` block syntax, enum/record types, output block
-parsing, workflow block sections, pipe operator, variable
-assignments in workflow main, channel operator implementations,
-config scope handling, dynamic directives, and `each`
-cross-product translation.
+Changes span 15 gaps: missing process directives, `each`
+input qualifier, `eval` output qualifier, Groovy
+operator/expression extensions, statement types, `params {}`
+block syntax, enum/record types, output block parsing,
+workflow block sections, pipe operator, variable assignments
+in workflow main, channel operator implementations, config
+scope handling, dynamic directives, and `each` cross-product
+translation.
 
-All changes confined to `nextflowdsl/` and `cmd/` packages.
+All changes confined to the `nextflowdsl/` package.
 Constructs that cannot be meaningfully translated produce
 warnings, never parse failures.
 
@@ -252,14 +253,15 @@ type Config struct {
 ### Groovy/eval changes (groovy.go)
 
 - `evalBinaryExpr`: add `%`, `in`, `=~`/`==~`, `..`/`..<`,
-  `**` evaluation. Warn on `<=>`, bitwise, shift operators.
-- `evalUnaryExpr`: add `~` (bitwise NOT).
+  `**`, `&`, `^`, `|`, `<<`, `>>`, `>>>` evaluation. Warn on
+  `<=>` and `instanceof` only.
+- `evalUnaryExpr`: add `~` (bitwise NOT), fully evaluated.
 - New: `evalInExpr`, `evalRegexExpr`, `evalRangeExpr`,
   `evalSpreadExpr`.
-- `evalMethodCallExpr`: add `collect`, `findAll`, `find`,
-  `any`, `every`, `join`, `unique`, `sort`, `plus`,
-  `minus`, `multiply`, `tokenize`, `matches`, `replaceAll`,
-  `take`, `drop` for common patterns.
+- `evalMethodCallExpr`: add `findAll`, `find`, `any`,
+  `every`, `join`, `unique`, `sort`, `plus`, `minus`,
+  `multiply`, `tokenize`, `matches`, `replaceAll`, `take`,
+  `drop` for common patterns.
 
 ### Channel changes (channel.go)
 
@@ -270,12 +272,18 @@ Implement real resolution for operators currently in
 - `flatten()`: flatten nested lists.
 - `transpose([by: n])`: un-group tuples.
 - `unique()` / `distinct()`: deduplication.
-- `branch { criteria }`: passthrough with warning (all items
-  to single channel).
-- `multiMap { criteria }`: passthrough with warning.
+- `branch { criteria }`: real implementation via PendingStage.
+  At runtime, evaluate closure against each completed item,
+  route to named output channels with distinct dep_grps.
+- `multiMap { criteria }`: real implementation via PendingStage.
+  Evaluate closure to produce one item per named output channel,
+  each with distinct dep_grp.
 - `splitCsv`, `splitJson`, `splitText`, `splitFasta`,
-  `splitFastq`: TranslatePending with warning (data-dependent).
-- `collectFile`: TranslatePending with warning.
+  `splitFastq`: real implementation via PendingStage. Read
+  actual file data at runtime, split into N concrete items,
+  create downstream jobs per chunk.
+- `collectFile`: real implementation via PendingStage. Collect
+  completed items into a file, produce single downstream item.
 - `ifEmpty(value)`: return items if non-empty, else `[value]`.
 - `toList()` / `toSortedList()`: collect to single list item.
 - `count([filter])`: single item with count.
@@ -293,6 +301,23 @@ Implement real resolution for operators currently in
   beyond new operator support in groovy.go.
 - `eval` output: append eval command to script wrapper,
   capture stdout into named variable.
+- `onComplete` translation: create a final wr job whose
+  DepGroups list all workflow-stage dep_grps, so it runs only
+  after every stage finishes. Job body executes the parsed
+  onComplete block as a shell script.
+- `onError` translation: create a polling wr job with a
+  time-based limit group. It checks for buried/failed jobs
+  via wr client API. If none found and workflow still running,
+  resubmits itself. On terminal error state, executes the
+  onError body.
+- `scratch` directive: wrap job command to create temp dir,
+  run script there, copy outputs back.
+- `storeDir` directive: check if outputs exist at path before
+  running; skip if present, else run and copy to storeDir.
+- `conda` directive: prepend `conda activate <env> &&` to
+  job command.
+- `spack` directive: prepend `spack load <pkg> &&` to job
+  command.
 
 ---
 
@@ -388,6 +413,54 @@ section-label position).
     `Directives["shell"]` is non-nil and `Shell` (section
     field) is empty.
 
+### A2: Translate scratch, storeDir, conda, and spack directives
+
+As a developer, I want `scratch`, `storeDir`, `conda`, and
+`spack` directives translated into job command wrappers, so
+that jobs execute in the correct environment.
+
+- `scratch true` or `scratch '/path'`: wrap the job command to
+  create a temp directory (or use the specified path), run the
+  script there, and copy outputs back to the original CWD.
+  `scratch false` or absent: no wrapper.
+- `storeDir '/path'`: check if outputs exist at that path
+  before running. If yes, skip execution (job succeeds
+  immediately). Otherwise run normally and copy outputs to
+  storeDir.
+- `conda 'env'`: prepend `conda activate <env> &&` to the
+  job command.
+- `spack 'pkg'`: prepend `spack load <pkg> &&` to the job
+  command.
+
+**Package:** `nextflowdsl/`
+**File:** `nextflowdsl/translate.go`
+**Test file:** `nextflowdsl/translate_test.go`
+
+**Acceptance tests:**
+
+1. Given process with `scratch true`, when translated, then job
+   `Cmd` creates a temp directory, runs the script there, and
+   copies outputs back.
+2. Given process with `scratch '/tmp/work'`, when translated,
+   then job `Cmd` uses `/tmp/work` as the scratch directory.
+3. Given process with `scratch false`, when translated, then
+   job `Cmd` has no scratch wrapper (same as no directive).
+4. Given process with `storeDir '/data/cache'` and output
+   `path 'result.txt'`, when translated, then job `Cmd`
+   checks if `/data/cache/result.txt` exists and skips
+   execution if so.
+5. Given process with `storeDir '/data/cache'` where outputs
+   do not exist, when translated, then job `Cmd` runs normally
+   and copies outputs to `/data/cache/`.
+6. Given process with `conda 'samtools=1.17'`, when translated,
+   then job `Cmd` starts with
+   `conda activate samtools=1.17 &&`.
+7. Given process with `spack 'samtools@1.17'`, when translated,
+   then job `Cmd` starts with `spack load samtools@1.17 &&`.
+8. Given process with both `conda` and `scratch`, when
+   translated, then `conda activate` precedes the scratch
+   wrapper in `Cmd`.
+
 ---
 
 ## B. `each` Input Qualifier
@@ -428,7 +501,7 @@ and each-channel items is executed.
 
 At translate time, enumerate the Cartesian product of regular
 input items and each-channel items. Each combination gets a
-unique CWD: `{base}/nf-work/{runId}/{proc}/{itemIdx}_{eachIdx}`.
+unique CWD: `{base}/nf-work/{runId}/{process}/{regIdx}_{eachIdx}`.
 All resulting jobs share the same dep_grp for downstream wiring.
 
 **Package:** `nextflowdsl/`
@@ -455,7 +528,7 @@ All resulting jobs share the same dep_grp for downstream wiring.
 
 ## C. `eval` Output Qualifier
 
-### C1: Parse and translate `eval` output
+### C1: Translate `eval` output
 
 As a developer, I want `eval(command)` output declarations
 translated by appending the command to the script and capturing
@@ -581,11 +654,13 @@ constructs do not error.
 ### D3: Evaluate common operators
 
 As a developer, I want `%`, `in`/`!in`, `=~`/`==~`, `..`/`..<`,
-spread-dot, and `**` evaluated, so that directive expressions
-using these work at translate time.
+spread-dot, `**`, bitwise (`&`, `^`, `|`, `~`), and shift
+(`<<`, `>>`, `>>>`) operators evaluated, so that directive
+expressions using these work at translate time.
 
-Operators that cannot be meaningfully evaluated (`<=>`, bitwise,
-shift, `instanceof`) return `UnsupportedExpr` with a warning.
+Bitwise and shift operators are trivial one-line Go int
+operations and are fully evaluated. Only `<=>` (spaceship)
+and `instanceof` return `UnsupportedExpr` with a warning.
 
 **Package:** `nextflowdsl/`
 **File:** `nextflowdsl/groovy.go`
@@ -617,6 +692,14 @@ shift, `instanceof`) return `UnsupportedExpr` with a warning.
 13. Given `2 ** 0`, when evaluated, then result is 1.
 14. Given `10 % 0`, when evaluated, then error mentions division
     by zero.
+15. Given `0xFF & 0x0F`, when evaluated, then result is 15.
+16. Given `0xFF ^ 0x0F`, when evaluated, then result is 240.
+17. Given `0x01 | 0x10`, when evaluated, then result is 17.
+18. Given `~0`, when evaluated, then result is -1.
+19. Given `1 << 4`, when evaluated, then result is 16.
+20. Given `256 >> 2`, when evaluated, then result is 64.
+21. Given `-1 >>> 24`, when evaluated, then result is 255
+    (unsigned right shift, treating as uint32).
 
 ### D4: Evaluate additional string/list methods
 
@@ -710,6 +793,49 @@ matching logic handles these keywords without tripping up.
    text and no error.
 9. Given closure `{ item -> if (item == null) return null;
    item.trim() }`, when parsed, then no error.
+
+### E2: Evaluate simple statement types in closures and functions
+
+As a developer, I want simple `return`, `for`, `try/catch`, and
+`switch/case` statements evaluated or warned on at translate
+time, so that closures and functions containing these produce
+correct results or clear diagnostics.
+
+- Simple `return expr` in a closure: evaluate the return value
+  as the closure result when the `return` is the only exit path
+  or guarded by a simple `if`.
+- Simple `for (x in coll) { ... }` in a function body: evaluate
+  accumulation patterns (e.g. summing, collecting into a list).
+- `try/catch` in a closure evaluated at translate time: emit a
+  warning ("try/catch not supported in static evaluation"),
+  do not crash.
+- `switch/case` in expression context: emit a warning
+  ("switch/case not supported in static evaluation"), do not
+  crash.
+
+**Package:** `nextflowdsl/`
+**File:** `nextflowdsl/groovy.go`
+**Test file:** `nextflowdsl/groovy_test.go`
+
+**Acceptance tests:**
+
+1. Given `[1, null, 3].findAll { x -> if (x == null) return
+   false; return x > 0 }`, when evaluated, then result is
+   `[1, 3]`.
+2. Given `[null, 'a', null, 'b'].collect { x -> if (x == null)
+   return 'N/A'; return x.toUpperCase() }`, when evaluated,
+   then result is `["N/A", "A", "N/A", "B"]`.
+3. Given function `def total(items) { def sum = 0; for (x in
+   items) { sum += x }; return sum }` called with `[1,2,3]`,
+   when evaluated, then result is 6.
+4. Given closure `{ x -> try { risky(x) } catch (Exception e) {
+   0 } }` evaluated at translate time in a `map` operator, then
+   a warning containing "try/catch" is emitted and evaluation
+   does not crash.
+5. Given closure `{ x -> switch(x) { case 1: 'one'; default:
+   'other' } }` evaluated at translate time, then a warning
+   containing "switch" is emitted and evaluation does not
+   crash.
 
 ---
 
@@ -851,11 +977,11 @@ as `WFPublish` entries on `WorkflowBlock`.
 3. Given workflow with no `publish:` section, when parsed, then
    `Publish` is empty.
 
-### I2: Parse `onComplete:` and `onError:` in workflow blocks
+### I2: Parse and translate `onComplete:`/`onError:` in workflow blocks
 
 As a developer, I want `onComplete:` and `onError:` sections
-in workflow blocks parsed and stored, so that pipelines using
-lifecycle hooks inside workflow blocks do not error.
+in workflow blocks parsed, stored, and translated into wr jobs,
+so that lifecycle hooks execute at the right time.
 
 These are distinct from the top-level `workflow.onComplete {}`
 handlers (already handled). Inside a named workflow block:
@@ -867,12 +993,22 @@ workflow FOO {
 }
 ```
 
-Store raw body text. Emit warning that wr does not support
-lifecycle hooks.
+**onComplete translation:** Create a final wr job whose
+DepGroups list all workflow-stage dep_grps, so it runs only
+when every stage finishes. The job body executes the parsed
+onComplete block as a shell script.
+
+**onError translation:** Create a polling wr job that uses
+a time-based limit group. It checks for buried/failed jobs
+via the wr client API. If none found and the workflow is
+still running, the job resubmits itself. When a terminal
+error state is detected, it executes the onError body.
 
 **Package:** `nextflowdsl/`
-**File:** `nextflowdsl/parse.go`
-**Test file:** `nextflowdsl/parse_test.go`
+**File:** `nextflowdsl/parse.go` (parsing),
+`nextflowdsl/translate.go` (translation)
+**Test file:** `nextflowdsl/parse_test.go`,
+`nextflowdsl/translate_test.go`
 
 **Acceptance tests:**
 
@@ -884,6 +1020,17 @@ lifecycle hooks.
    parsed, then both `Calls` and `OnComplete` are populated.
 4. Given workflow with no lifecycle sections, when parsed, then
    `OnComplete` and `OnError` are empty.
+5. Given workflow with 2 process stages and `onComplete:` body,
+   when translated, then a final job is created whose DepGroups
+   include the dep_grps of both process stages.
+6. Given the onComplete job from test 5, then its `Cmd` contains
+   the parsed onComplete body text as a shell script.
+7. Given workflow with `onError:` body and 2 process stages,
+   when translated, then a polling job is created that uses
+   a time-based limit group.
+8. Given the onError polling job, then its `Cmd` contains logic
+   to check for buried/failed jobs and execute the onError body
+   when a terminal error state is detected.
 
 ---
 
@@ -952,9 +1099,11 @@ Verify it works for the above patterns.
    the filtered channel chain.
 4. Given workflow `main:\nx = 42\nFOO(ch)`, when parsed, then
    `x = 42` is silently ignored and `FOO` call parsed correctly.
-5. Given `include { FOO } from 'plugin/nf-hello'`, when parsed,
-   then import parsed with `Source` == `"plugin/nf-hello"` and
-   a warning emitted (JVM plugins not supported).
+
+Note: Plugin includes (`include { FOO } from 'plugin/nf-hello'`)
+are already handled by include parsing (prior spec). The parser
+accepts `plugin/` prefixed sources and emits a warning that JVM
+plugins are not supported.
 
 ---
 
@@ -1014,16 +1163,32 @@ implementations in `applyChannelOperator`.
     Channel.of([1,'x'],[1,'y'],[2,'z']), by: 0)`, when
     resolved, then result has 3 items: `[1,'a','x']`,
     `[1,'a','y']`, `[2,'b','z']`.
+18. Given `Channel.of([1,['a','b']],[2,['c']]).transpose(
+    by: 1)`, when resolved, then result has 3 items:
+    `[1,'a']`, `[1,'b']`, `[2,'c']`.
 
-### L2: Data-dependent operators as TranslatePending
+### L2: Data-dependent operators via PendingStage
 
-As a developer, I want `splitCsv`, `splitJson`, `splitText`,
-`splitFasta`, `splitFastq`, `collectFile`, `branch`, and
-`multiMap` to produce TranslatePending when cardinality is
-unknown, so that translation does not crash.
+As a developer, I want `branch`, `multiMap`, `splitCsv`,
+`splitJson`, `splitText`, `splitFasta`, `splitFastq`, and
+`collectFile` to produce real results via PendingStage at
+runtime, so that downstream jobs receive correctly routed/split
+items.
 
-These operators pass through items at compile time with a
-warning. At runtime, `TranslatePending` resolves actual items.
+These operators use PendingStage to defer resolution until
+upstream jobs complete and real data is available:
+- `branch { criteria }`: PendingStage evaluates the branch
+  closure against each completed item at runtime, routing
+  items to named output channels each with a distinct dep_grp.
+- `multiMap { criteria }`: PendingStage evaluates the multiMap
+  closure to produce one item per named output channel, each
+  with a distinct dep_grp.
+- `splitCsv`, `splitJson`, `splitText`, `splitFasta`,
+  `splitFastq`: PendingStage reads actual file data at runtime
+  and splits into N concrete items, creating downstream jobs
+  per chunk.
+- `collectFile`: PendingStage collects completed items into a
+  file and produces a single downstream item.
 
 **Package:** `nextflowdsl/`
 **File:** `nextflowdsl/channel.go`
@@ -1031,23 +1196,32 @@ warning. At runtime, `TranslatePending` resolves actual items.
 
 **Acceptance tests:**
 
-1. Given `ch.splitCsv(header: true)`, when resolved, then items
-   pass through unchanged and a warning is emitted.
-2. Given `ch.splitFasta(by: 1)`, when resolved, then items pass
-   through unchanged and a warning is emitted.
-3. Given `ch.branch { small: it < 10; big: it >= 10 }`, when
-   resolved, then items pass through (all to single channel)
-   and a warning is emitted.
-4. Given `ch.collectFile(name: 'out.txt')`, when resolved, then
-   items pass through and a warning is emitted.
-5. Given `ch.multiMap { it -> foo: it; bar: it }`, when
-   resolved, then items pass through and a warning is emitted.
-6. Given `ch.splitJson(path: 'data')`, when resolved, then
-   items pass through unchanged and a warning is emitted.
-7. Given `ch.splitText(by: 10)`, when resolved, then items
-   pass through unchanged and a warning is emitted.
-8. Given `ch.splitFastq(by: 1, pe: true)`, when resolved,
-   then items pass through unchanged and a warning is emitted.
+1. Given `ch.branch { small: it < 10; big: it >= 10 }` with
+   items `[3, 15, 7, 20]`, when resolved at runtime via
+   PendingStage, then `small` channel gets `[3, 7]` and `big`
+   channel gets `[15, 20]`, each with distinct dep_grps.
+2. Given `ch.multiMap { it -> foo: it * 2; bar: it + 1 }` with
+   items `[5]`, when resolved at runtime via PendingStage, then
+   `foo` channel gets `[10]` and `bar` channel gets `[6]`, each
+   with distinct dep_grps.
+3. Given `ch.splitCsv(header: true)` with a CSV file containing
+   3 data rows, when resolved at runtime via PendingStage, then
+   result has 3 items, one per row.
+4. Given `ch.splitFasta(by: 1)` with a FASTA file containing
+   2 sequences, when resolved at runtime via PendingStage, then
+   result has 2 items.
+5. Given `ch.collectFile(name: 'out.txt')` with 3 upstream
+   items, when resolved at runtime via PendingStage, then result
+   has 1 item pointing to the collected file.
+6. Given `ch.splitJson(path: 'data')` with a JSON file, when
+   resolved at runtime via PendingStage, then items are
+   extracted from the specified path.
+7. Given `ch.splitText(by: 10)` with a file of 25 lines, when
+   resolved at runtime via PendingStage, then result has 3
+   chunks (10, 10, 5 lines).
+8. Given `ch.splitFastq(by: 1, pe: true)` with paired-end
+   reads, when resolved at runtime via PendingStage, then
+   result has items per read pair.
 
 ---
 
@@ -1211,15 +1385,16 @@ Add all missing directives to accepted set. Independent of
 Phases 1-2 (directives are stored as expressions, not evaluated
 at parse time).
 
-### Phase 4: Input/Output Parsing (B1, C1 parse, E1, F1, G1, G2)
+### Phase 4: Input/Output Parsing (B1, E1, E2, F1, G1, G2)
 
-B1 (`each` parsing), E1 (statement types), F1 (`params {}`
-block), G1 (enum), G2 (record). Can be parallel within phase.
-Depends on Phase 1 for expression parsing.
+B1 (`each` parsing), E1 (statement types), E2 (evaluate
+simple statements), F1 (`params {}` block), G1 (enum), G2
+(record). Can be parallel within phase. E2 depends on Phases
+1-2 for expression parsing and evaluation.
 
-### Phase 5: Workflow Block Sections (H1, I1, I2, J1, K1)
+### Phase 5: Workflow Block Sections (H1, I1, I2 parse, J1, K1)
 
-H1 (output block storage), I1 (publish), I2
+H1 (output block storage), I1 (publish), I2 parse
 (onComplete/onError), J1 (pipe verification), K1 (variable
 assignment tracking). Mostly verification of existing behaviour
 plus minor extensions. Can be parallel.
@@ -1227,7 +1402,10 @@ plus minor extensions. Can be parallel.
 ### Phase 6: Channel Operator Implementation (L1, L2)
 
 Implement real resolution for cardinality-changing operators.
-Depends on Phase 2 for closure evaluation in `reduce`.
+Implement `branch`, `multiMap`, `splitCsv`, `splitJson`,
+`splitText`, `splitFasta`, `splitFastq`, and `collectFile` via
+PendingStage for runtime resolution. Depends on Phase 2 for
+closure evaluation in `reduce` and branch/multiMap closures.
 
 ### Phase 7: Config Extensions (M1, M2)
 
@@ -1236,11 +1414,13 @@ Parse `executor {}` with extraction, add remaining scopes
 `timeline`, `tower`, `trace`, `wave`, `weblog`). No
 dependencies on other phases.
 
-### Phase 8: Translation (B2, C1 translate, N1, O1)
+### Phase 8: Translation (A2, B2, C1, I2 translate, N1, O1)
 
-B2 (`each` cross-product), C1 (`eval` output translation), N1
-(dynamic directive closures), O1 (cross-product CWD). Depends on
-Phases 4 and 6.
+A2 (scratch/storeDir/conda/spack directive wrappers), B2
+(`each` cross-product), C1 (`eval` output translation), I2
+(onComplete/onError job translation), N1 (dynamic directive
+closures), O1 (cross-product CWD). Depends on Phases 4, 5,
+and 6.
 
 ---
 
@@ -1278,7 +1458,9 @@ Phases 4 and 6.
    `flatten`, `transpose`, `unique`, `distinct`, `ifEmpty`,
    `toList`, `toSortedList`, `count`, `reduce` move from
    warning-only to real implementations. `branch`, `multiMap`,
-   `splitCsv`, etc. remain passthrough with warnings.
+   `splitCsv`, `splitJson`, `splitText`, `splitFasta`,
+   `splitFastq`, and `collectFile` are real implementations
+   via PendingStage (runtime resolution with actual data).
 10. **Backward compatibility.** All existing tests must pass.
     New directives go into the existing `Directives` map. No
     changes to `Process` struct layout for existing fields.
@@ -1295,3 +1477,15 @@ Phases 4 and 6.
     a future spec if needed.
 15. **Cross-product CWD.** `{regIdx}_{eachIdx}` suffix ensures
     unique working directories per combination.
+16. **onComplete/onError translation.** `onComplete` becomes a
+    final wr job depending on all workflow-stage dep_grps.
+    `onError` becomes a polling wr job with time-based limit
+    group that checks for buried/failed jobs and resubmits
+    itself until a terminal state is reached.
+17. **Directive translation for scratch/storeDir/conda/spack.**
+    `scratch` wraps command with temp-dir creation and output
+    copy-back. `storeDir` adds output-existence check and skip
+    logic. `conda`/`spack` prepend activation/load commands.
+18. **Bitwise/shift fully evaluated.** `&`, `^`, `|`, `~`,
+    `<<`, `>>`, `>>>` are trivial one-line Go int operations.
+    Only `<=>` (spaceship) and `instanceof` emit warnings.

@@ -1,6 +1,6 @@
 # Phase 4: Input/Output Parsing
 
-Ref: [spec.md](spec.md) sections B1, C1 parse, E1, F1, G1, G2
+Ref: [spec.md](spec.md) sections B1, E1, E2, F1, G1, G2
 
 ## Instructions
 
@@ -11,7 +11,7 @@ subagents with the `go-implementor` and `go-reviewer` skills.
 
 ### Batch 1 (parallel)
 
-#### Item 4.1: B1 - Parse `each` input declarations [parallel with 4.2, 4.3, 4.4, 4.5, 4.6]
+#### Item 4.1: B1 - Parse `each` input declarations [parallel with 4.2, 4.3, 4.4, 4.5]
 
 spec.md section: B1
 
@@ -25,19 +25,7 @@ from B1.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 4.2: C1 - Verify `eval` output parsing [parallel with 4.1, 4.3, 4.4, 4.5, 4.6]
-
-spec.md section: C1
-
-Parsing of `eval(command)` output declarations already exists
-from prior spec (A5). Verify existing parse behaviour handles
-`eval('hostname')` and similar patterns. Add parse-level tests
-if missing. The translation work for C1 is in Phase 8.
-
-- [ ] implemented
-- [ ] reviewed
-
-#### Item 4.3: E1 - Parse skippable statement types [parallel with 4.1, 4.2, 4.4, 4.5, 4.6]
+#### Item 4.2: E1 - Parse skippable statement types [parallel with 4.1, 4.3, 4.4, 4.5]
 
 spec.md section: E1
 
@@ -53,7 +41,22 @@ acceptance tests from E1.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 4.4: F1 - Parse `params {}` block [parallel with 4.1, 4.2, 4.3, 4.5, 4.6]
+#### Item 4.3: E2 - Evaluate simple statement types [parallel with 4.1, 4.2, 4.4, 4.5]
+
+spec.md section: E2
+
+Implement evaluation of simple statement types in closures and
+function bodies called at translate time. Handle `return` in
+closures (used by `findAll`/`collect`/`map`), simple `for`
+loops with accumulation patterns, and emit warnings for complex
+unsupported statements (`try/catch`, `switch/case`) encountered
+during evaluation. Depends on Phases 1-2 for expression parsing
+and evaluation. Covering all 5 acceptance tests from E2.
+
+- [ ] implemented
+- [ ] reviewed
+
+#### Item 4.4: F1 - Parse `params {}` block [parallel with 4.1, 4.2, 4.3, 4.5]
 
 spec.md section: F1
 
@@ -68,7 +71,7 @@ Covering all 6 acceptance tests from F1.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 4.5: G1 - Parse enum definitions [parallel with 4.1, 4.2, 4.3, 4.4, 4.6]
+#### Item 4.5: G1 - Parse enum definitions [parallel with 4.1, 4.2, 4.3, 4.4]
 
 spec.md section: G1
 
@@ -82,7 +85,9 @@ from G1.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 4.6: G2 - Parse record definitions [parallel with 4.1, 4.2, 4.3, 4.4, 4.5]
+### Batch 2 (parallel, after batch 1 is reviewed)
+
+#### Item 4.6: G2 - Parse record definitions
 
 spec.md section: G2
 
@@ -94,8 +99,3 @@ from G2.
 
 - [ ] implemented
 - [ ] reviewed
-
-For parallel batch items, use separate subagents per item.
-Launch review subagents using the `go-reviewer` skill
-(review all items in the batch together in a single review
-pass).
