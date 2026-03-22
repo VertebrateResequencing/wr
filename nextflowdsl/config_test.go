@@ -75,6 +75,7 @@ func TestParseConfig(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(cfg, ShouldNotBeNil)
+			So(cfg.Env, ShouldBeNil)
 			So(cfg.Params, ShouldBeNil)
 			So(cfg.Process, ShouldBeNil)
 			So(cfg.Profiles, ShouldBeNil)
@@ -121,19 +122,11 @@ func TestParseConfig(t *testing.T) {
 		})
 
 		Convey("unknown top-level docker scopes are skipped with a warning", func() {
-			var (
-				cfg    *Config
-				err    error
-				stderr string
-			)
-
-			stderr = captureParseStderr(func() {
-				cfg, err = ParseConfig(strings.NewReader("docker { enabled = true }\nparams { x = 1 }"))
-			})
+			cfg, err := ParseConfig(strings.NewReader("docker { enabled = true }\nparams { x = 1 }"))
 
 			So(err, ShouldBeNil)
 			So(cfg.Params["x"], ShouldEqual, 1)
-			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"docker\"")
+			So(cfg.ContainerEngine, ShouldEqual, "docker")
 		})
 
 		Convey("unknown top-level manifest scopes are skipped with a warning", func() {
@@ -152,36 +145,54 @@ func TestParseConfig(t *testing.T) {
 			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"manifest\"")
 		})
 
-		Convey("unknown top-level env scopes are skipped with a warning", func() {
-			var (
-				cfg    *Config
-				err    error
-				stderr string
-			)
-
-			stderr = captureParseStderr(func() {
-				cfg, err = ParseConfig(strings.NewReader("env { FOO = 'bar' }"))
-			})
+		Convey("top-level env scopes populate Config.Env", func() {
+			cfg, err := ParseConfig(strings.NewReader("env { FOO = 'bar' ; BAZ = 'qux' }"))
 
 			So(err, ShouldBeNil)
 			So(cfg, ShouldNotBeNil)
-			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"env\"")
+			So(cfg.Env, ShouldResemble, map[string]string{"FOO": "bar", "BAZ": "qux"})
+		})
+
+		Convey("top-level env scopes merge with other supported sections", func() {
+			cfg, err := ParseConfig(strings.NewReader("env { FOO = 'bar' }\nparams { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Env, ShouldResemble, map[string]string{"FOO": "bar"})
+			So(cfg.Params["x"], ShouldEqual, 1)
 		})
 
 		Convey("unknown top-level singularity scopes are skipped with a warning", func() {
-			var (
-				cfg    *Config
-				err    error
-				stderr string
-			)
-
-			stderr = captureParseStderr(func() {
-				cfg, err = ParseConfig(strings.NewReader("singularity { enabled = true }"))
-			})
+			cfg, err := ParseConfig(strings.NewReader("singularity { enabled = true }"))
 
 			So(err, ShouldBeNil)
 			So(cfg, ShouldNotBeNil)
-			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"singularity\"")
+			So(cfg.ContainerEngine, ShouldEqual, "singularity")
+		})
+
+		Convey("top-level apptainer scopes populate the container engine", func() {
+			cfg, err := ParseConfig(strings.NewReader("apptainer { enabled = true }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.ContainerEngine, ShouldEqual, "apptainer")
+		})
+
+		Convey("container engine remains empty when container scopes are absent or disabled", func() {
+			cfg, err := ParseConfig(strings.NewReader("docker { enabled = false }\nsingularity { enabled = false }\nparams { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Params["x"], ShouldEqual, 1)
+			So(cfg.ContainerEngine, ShouldEqual, "")
+		})
+
+		Convey("last enabled container scope wins when multiple scopes are defined", func() {
+			cfg, err := ParseConfig(strings.NewReader("docker { enabled = true }\nsingularity { enabled = true }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.ContainerEngine, ShouldEqual, "singularity")
 		})
 
 		Convey("unknown top-level timeline and report scopes are skipped with warnings", func() {
@@ -302,19 +313,189 @@ func TestParseConfig(t *testing.T) {
 			err = os.WriteFile(mainPath, []byte("includeConfig 'x.config'\ndocker { enabled = true }\n"), 0o644)
 			So(err, ShouldBeNil)
 
-			var (
-				cfg    *Config
-				parseErr error
-				stderr string
-			)
-
-			stderr = captureParseStderr(func() {
-				cfg, parseErr = ParseConfigFromPath(mainPath)
-			})
+			cfg, parseErr := ParseConfigFromPath(mainPath)
 
 			So(parseErr, ShouldBeNil)
 			So(cfg.Params["a"], ShouldEqual, 1)
-			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"docker\"")
+			So(cfg.ContainerEngine, ShouldEqual, "docker")
+		})
+	})
+}
+
+func TestParseConfigEnvScope(t *testing.T) {
+	Convey("ParseConfig handles G1 env scopes", t, func() {
+		Convey("env blocks populate Config.Env", func() {
+			cfg, err := ParseConfig(strings.NewReader("env { FOO = 'bar' ; BAZ = 'qux' }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Env, ShouldResemble, map[string]string{"FOO": "bar", "BAZ": "qux"})
+		})
+
+		Convey("missing env blocks leave Config.Env empty", func() {
+			cfg, err := ParseConfig(strings.NewReader("params { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Env, ShouldBeNil)
+		})
+
+		Convey("env blocks merge with other supported sections", func() {
+			cfg, err := ParseConfig(strings.NewReader("env { FOO = 'bar' }\nparams { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Env, ShouldResemble, map[string]string{"FOO": "bar"})
+			So(cfg.Params["x"], ShouldEqual, 1)
+		})
+	})
+}
+
+func TestParseConfigContainerScopes(t *testing.T) {
+	Convey("ParseConfig handles G3 container scopes", t, func() {
+		Convey("docker enabled scopes set the container engine", func() {
+			cfg, err := ParseConfig(strings.NewReader("docker { enabled = true }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.ContainerEngine, ShouldEqual, "docker")
+		})
+
+		Convey("singularity enabled scopes set the container engine", func() {
+			cfg, err := ParseConfig(strings.NewReader("singularity { enabled = true }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.ContainerEngine, ShouldEqual, "singularity")
+		})
+
+		Convey("apptainer enabled scopes set the container engine", func() {
+			cfg, err := ParseConfig(strings.NewReader("apptainer { enabled = true }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.ContainerEngine, ShouldEqual, "apptainer")
+		})
+
+		Convey("disabled or absent container scopes leave the engine empty", func() {
+			cfg, err := ParseConfig(strings.NewReader("docker { enabled = false }\nsingularity { enabled = false }\nparams { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Params["x"], ShouldEqual, 1)
+			So(cfg.ContainerEngine, ShouldEqual, "")
+		})
+
+		Convey("the last enabled container scope wins", func() {
+			cfg, err := ParseConfig(strings.NewReader("docker { enabled = true }\nsingularity { enabled = true }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.ContainerEngine, ShouldEqual, "singularity")
+		})
+
+		Convey("ParseConfigFromPath preserves included params while capturing container scopes", func() {
+			dir := t.TempDir()
+			mainPath := filepath.Join(dir, "nextflow.config")
+			includePath := filepath.Join(dir, "x.config")
+
+			err := os.WriteFile(includePath, []byte("params { a = 1 }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mainPath, []byte("includeConfig 'x.config'\ndocker { enabled = true }\n"), 0o644)
+			So(err, ShouldBeNil)
+
+			cfg, parseErr := ParseConfigFromPath(mainPath)
+
+			So(parseErr, ShouldBeNil)
+			So(cfg.Params["a"], ShouldEqual, 1)
+			So(cfg.ContainerEngine, ShouldEqual, "docker")
+		})
+	})
+}
+
+func TestParseConfigSelectors(t *testing.T) {
+	Convey("ParseConfig handles A2 process selectors", t, func() {
+		Convey("process withLabel selectors are parsed into Config.Selectors", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { withLabel: 'big_mem' { cpus = 8 } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Selectors, ShouldHaveLength, 1)
+			So(cfg.Selectors[0].Kind, ShouldEqual, "withLabel")
+			So(cfg.Selectors[0].Pattern, ShouldEqual, "big_mem")
+			So(cfg.Selectors[0].Settings, ShouldNotBeNil)
+			So(cfg.Selectors[0].Settings.Cpus, ShouldEqual, 8)
+		})
+
+		Convey("process withName selectors parse resource settings", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { withName: 'ALIGN' { memory = '32 GB' } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Selectors, ShouldHaveLength, 1)
+			So(cfg.Selectors[0].Kind, ShouldEqual, "withName")
+			So(cfg.Selectors[0].Pattern, ShouldEqual, "ALIGN")
+			So(cfg.Selectors[0].Settings, ShouldNotBeNil)
+			So(cfg.Selectors[0].Settings.Memory, ShouldEqual, 32768)
+		})
+
+		Convey("process selectors preserve declaration order", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { withLabel: 'small' { cpus = 1 } ; withLabel: 'big' { cpus = 16 } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Selectors, ShouldHaveLength, 2)
+			So(cfg.Selectors[0].Pattern, ShouldEqual, "small")
+			So(cfg.Selectors[0].Settings.Cpus, ShouldEqual, 1)
+			So(cfg.Selectors[1].Pattern, ShouldEqual, "big")
+			So(cfg.Selectors[1].Settings.Cpus, ShouldEqual, 16)
+		})
+
+		Convey("process selectors preserve regex-prefixed patterns as text", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { withName: '~ALIGN.*' { cpus = 4 } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Selectors, ShouldHaveLength, 1)
+			So(cfg.Selectors[0].Pattern, ShouldEqual, "~ALIGN.*")
+			So(cfg.Selectors[0].Settings.Cpus, ShouldEqual, 4)
+		})
+
+		Convey("generic process defaults and selectors coexist", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { cpus = 2 ; withLabel: 'big' { cpus = 16 } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Process, ShouldNotBeNil)
+			So(cfg.Process.Cpus, ShouldEqual, 2)
+			So(cfg.Selectors, ShouldHaveLength, 1)
+			So(cfg.Selectors[0].Settings.Cpus, ShouldEqual, 16)
+		})
+
+		Convey("selector settings populate all supported process defaults", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { withLabel: 'big' { memory = '64 GB' ; time = '2h' ; container = 'ubuntu:22.04' ; env { FOO = 'bar' } } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Selectors, ShouldHaveLength, 1)
+			So(cfg.Selectors[0].Settings, ShouldNotBeNil)
+			So(cfg.Selectors[0].Settings.Memory, ShouldEqual, 65536)
+			So(cfg.Selectors[0].Settings.Time, ShouldEqual, 120)
+			So(cfg.Selectors[0].Settings.Container, ShouldEqual, "ubuntu:22.04")
+			So(cfg.Selectors[0].Settings.Env, ShouldResemble, map[string]string{"FOO": "bar"})
+		})
+	})
+}
+
+func TestParseConfigNestedSelectors(t *testing.T) {
+	Convey("ParseConfig handles L1 nested process selectors", t, func() {
+		Convey("nested withLabel and withName selectors are stored as an outer selector with an inner selector", func() {
+			cfg, err := ParseConfig(strings.NewReader("process { withLabel: 'big' { withName: 'ALIGN' { cpus = 32 } } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Selectors, ShouldHaveLength, 1)
+			So(cfg.Selectors[0].Kind, ShouldEqual, "withLabel")
+			So(cfg.Selectors[0].Pattern, ShouldEqual, "big")
+			So(cfg.Selectors[0].Inner, ShouldNotBeNil)
+			So(cfg.Selectors[0].Inner.Kind, ShouldEqual, "withName")
+			So(cfg.Selectors[0].Inner.Pattern, ShouldEqual, "ALIGN")
+			So(cfg.Selectors[0].Inner.Settings, ShouldNotBeNil)
+			So(cfg.Selectors[0].Inner.Settings.Cpus, ShouldEqual, 32)
 		})
 	})
 }
