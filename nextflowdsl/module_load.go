@@ -296,18 +296,7 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 			return nil, fmt.Errorf("module %q does not export %q", importNode.Source, name)
 		}
 
-		for _, call := range subwf.Body.Calls {
-			if call == nil {
-				continue
-			}
-			if _, ok := processes[call.Target]; ok {
-				queue = append(queue, call.Target)
-				continue
-			}
-			if _, ok := subworkflows[call.Target]; ok {
-				queue = append(queue, call.Target)
-			}
-		}
+		queue = append(queue, workflowDependencyTargets(subwf.Body, processes, subworkflows)...)
 
 		finalName := importedName(name, importNode)
 		if _, exists := selectedNames[finalName]; exists {
@@ -319,6 +308,65 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 	}
 
 	return &Workflow{Processes: selectedProcesses, SubWFs: selectedSubWFs, Functions: cloneFuncDefs(moduleWF.Functions)}, nil
+}
+
+func workflowDependencyTargets(block *WorkflowBlock, processes map[string]*Process, subworkflows map[string]*SubWorkflow) []string {
+	if block == nil {
+		return nil
+	}
+
+	targets := make([]string, 0, len(block.Calls))
+	appendTargets := func(calls []*Call) {
+		for _, call := range calls {
+			if call == nil {
+				continue
+			}
+			if _, ok := processes[call.Target]; ok {
+				targets = append(targets, call.Target)
+				continue
+			}
+			if _, ok := subworkflows[call.Target]; ok {
+				targets = append(targets, call.Target)
+			}
+		}
+	}
+
+	appendTargets(block.Calls)
+	for _, condition := range block.Conditions {
+		targets = append(targets, ifBlockDependencyTargets(condition, processes, subworkflows)...)
+	}
+
+	return targets
+}
+
+func ifBlockDependencyTargets(block *IfBlock, processes map[string]*Process, subworkflows map[string]*SubWorkflow) []string {
+	if block == nil {
+		return nil
+	}
+
+	targets := make([]string, 0, len(block.Body)+len(block.ElseBody))
+	appendTargets := func(calls []*Call) {
+		for _, call := range calls {
+			if call == nil {
+				continue
+			}
+			if _, ok := processes[call.Target]; ok {
+				targets = append(targets, call.Target)
+				continue
+			}
+			if _, ok := subworkflows[call.Target]; ok {
+				targets = append(targets, call.Target)
+			}
+		}
+	}
+
+	appendTargets(block.Body)
+	appendTargets(block.ElseBody)
+	for _, elseIf := range block.ElseIf {
+		targets = append(targets, ifBlockDependencyTargets(elseIf, processes, subworkflows)...)
+	}
+
+	return targets
 }
 
 func importedName(name string, importNode *Import) string {

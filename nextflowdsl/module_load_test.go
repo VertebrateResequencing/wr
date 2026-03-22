@@ -102,6 +102,9 @@ func TestLoadWorkflowFilePreservesImportedWorkflowConditions(t *testing.T) {
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)
 		So(err, ShouldBeNil)
+		So(wf.Processes, ShouldHaveLength, 2)
+		So(wf.Processes[0].Name, ShouldEqual, "A")
+		So(wf.Processes[1].Name, ShouldEqual, "B")
 		So(wf.SubWFs, ShouldHaveLength, 1)
 		So(wf.SubWFs[0].Body, ShouldNotBeNil)
 		So(wf.SubWFs[0].Body.Conditions, ShouldHaveLength, 1)
