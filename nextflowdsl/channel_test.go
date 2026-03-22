@@ -89,6 +89,58 @@ func TestResolveChannelD5(t *testing.T) {
 			So(emptyErr, ShouldBeNil)
 			So(emptyItems, ShouldBeEmpty)
 		})
+
+		Convey("Channel.fromList expands list items like Channel.of", func() {
+			items, err := ResolveChannel(ChannelFactory{Name: "fromList", Args: []Expr{ListExpr{Elements: []Expr{
+				IntExpr{Value: 1},
+				IntExpr{Value: 2},
+				IntExpr{Value: 3},
+			}}}}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1, 2, 3})
+		})
+
+		Convey("Channel.from resolves like Channel.of and warns that it is deprecated", func() {
+			var (
+				items  []any
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				items, err = ResolveChannel(ChannelFactory{Name: "from", Args: []Expr{
+					IntExpr{Value: 1},
+					IntExpr{Value: 2},
+					IntExpr{Value: 3},
+				}}, "/work")
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1, 2, 3})
+			So(stderr, ShouldContainSubstring, "deprecated channel factory \"from\"")
+		})
+
+		Convey("non-translatable factories warn and resolve to empty channels", func() {
+			for _, factoryName := range []string{"fromSRA", "topic", "watchPath", "fromLineage", "interval"} {
+				name := factoryName
+				Convey(name, func() {
+					var (
+						items  []any
+						err    error
+						stderr string
+					)
+
+					stderr = captureParseStderr(func() {
+						items, err = ResolveChannel(ChannelFactory{Name: name, Args: []Expr{StringExpr{Value: "ignored"}}}, "/work")
+					})
+
+					So(err, ShouldBeNil)
+					So(items, ShouldBeEmpty)
+					So(stderr, ShouldContainSubstring, fmt.Sprintf("channel factory %q cannot be translated", name))
+				})
+			}
+		})
 	})
 }
 
@@ -227,6 +279,150 @@ func TestResolveChannelD6(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(items, ShouldResemble, []any{1, 2})
 			So(stderr, ShouldContainSubstring, "operator \"count\" may affect job cardinality")
+		})
+
+		Convey("cross produces the Cartesian product across both channels", func() {
+			resolver := func(ref ChanRef) ([]channelItem, error) {
+				switch ref.Name {
+				case "left":
+					return []channelItem{{value: 1}, {value: 2}, {value: 3}}, nil
+				case "right":
+					return []channelItem{{value: "a"}, {value: "b"}}, nil
+				default:
+					return nil, fmt.Errorf("unknown ref %s", ref.Name)
+				}
+			}
+
+			items, err := resolveChannelItems(ChannelChain{
+				Source:    ChanRef{Name: "left"},
+				Operators: []ChannelOperator{{Name: "cross", Channels: []ChanExpr{ChanRef{Name: "right"}}}},
+			}, "/work", resolver)
+
+			So(err, ShouldBeNil)
+			So(channelItemValues(items), ShouldResemble, []any{
+				[]any{1, "a"},
+				[]any{1, "b"},
+				[]any{2, "a"},
+				[]any{2, "b"},
+				[]any{3, "a"},
+				[]any{3, "b"},
+			})
+		})
+
+		Convey("buffer groups items according to the requested size", func() {
+			items, err := ResolveChannel(ChannelChain{
+				Source: ChannelFactory{Name: "of", Args: []Expr{
+					IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 4}, IntExpr{Value: 5},
+					IntExpr{Value: 6}, IntExpr{Value: 7}, IntExpr{Value: 8}, IntExpr{Value: 9}, IntExpr{Value: 10},
+				}},
+				Operators: []ChannelOperator{{
+					Name: "buffer",
+					Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "size"}}, Values: []Expr{IntExpr{Value: 3}}}},
+				}},
+			}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{
+				[]any{1, 2, 3},
+				[]any{4, 5, 6},
+				[]any{7, 8, 9},
+				[]any{10},
+			})
+		})
+
+		Convey("collate groups items into fixed-size chunks", func() {
+			items, err := ResolveChannel(ChannelChain{
+				Source: ChannelFactory{Name: "of", Args: []Expr{
+					IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 4}, IntExpr{Value: 5},
+					IntExpr{Value: 6}, IntExpr{Value: 7}, IntExpr{Value: 8}, IntExpr{Value: 9}, IntExpr{Value: 10},
+				}},
+				Operators: []ChannelOperator{{Name: "collate", Args: []Expr{IntExpr{Value: 5}}}},
+			}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{
+				[]any{1, 2, 3, 4, 5},
+				[]any{6, 7, 8, 9, 10},
+			})
+		})
+
+		Convey("min reduces a channel to its minimum item", func() {
+			items, err := ResolveChannel(ChannelChain{
+				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 4}, IntExpr{Value: 1}, IntExpr{Value: 5}}},
+				Operators: []ChannelOperator{{Name: "min"}},
+			}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1})
+		})
+
+		Convey("max reduces a channel to its maximum item", func() {
+			items, err := ResolveChannel(ChannelChain{
+				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 4}, IntExpr{Value: 1}, IntExpr{Value: 5}}},
+				Operators: []ChannelOperator{{Name: "max"}},
+			}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{5})
+		})
+
+		Convey("sum reduces a channel to the total of its items", func() {
+			items, err := ResolveChannel(ChannelChain{
+				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
+				Operators: []ChannelOperator{{Name: "sum"}},
+			}, "/work")
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{6})
+		})
+
+		Convey("splitJson warns and preserves the source item count", func() {
+			var (
+				items  []any
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				items, err = ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 4}, IntExpr{Value: 5},
+					}},
+					Operators: []ChannelOperator{{Name: "splitJson"}},
+				}, "/work")
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1, 2, 3, 4, 5})
+			So(stderr, ShouldContainSubstring, "operator \"splitJson\" may affect job cardinality")
+		})
+
+		Convey("merge warns and preserves the source item count", func() {
+			resolver := func(ref ChanRef) ([]channelItem, error) {
+				switch ref.Name {
+				case "left":
+					return []channelItem{{value: 1}, {value: 2}, {value: 3}, {value: 4}, {value: 5}}, nil
+				case "right":
+					return []channelItem{{value: "a"}, {value: "b"}, {value: "c"}}, nil
+				default:
+					return nil, fmt.Errorf("unknown ref %s", ref.Name)
+				}
+			}
+
+			var stderr string
+			items := []channelItem{}
+			var err error
+
+			stderr = captureParseStderr(func() {
+				items, err = resolveChannelItems(ChannelChain{
+					Source:    ChanRef{Name: "left"},
+					Operators: []ChannelOperator{{Name: "merge", Channels: []ChanExpr{ChanRef{Name: "right"}}}},
+				}, "/work", resolver)
+			})
+
+			So(err, ShouldBeNil)
+			So(channelItemValues(items), ShouldResemble, []any{1, 2, 3, 4, 5})
+			So(stderr, ShouldContainSubstring, "operator \"merge\" may affect job cardinality")
 		})
 	})
 }
