@@ -42,12 +42,19 @@ var diskRE = regexp.MustCompile(`(?i)^([0-9]+)\s*(gb|g)$`)
 var timeRE = regexp.MustCompile(`(?i)^([0-9]+)(?:\s*\.\s*|\s+)?(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$`)
 
 var supportedChannelOperators = map[string]struct{}{
+	"buffer":       {},
 	"branch":       {},
+	"collate":      {},
 	"collect":      {},
 	"collectFile":  {},
 	"combine":      {},
 	"concat":       {},
 	"count":        {},
+	"countFasta":   {},
+	"countFastq":   {},
+	"countJson":    {},
+	"countLines":   {},
+	"cross":        {},
 	"distinct":     {},
 	"dump":         {},
 	"filter":       {},
@@ -59,20 +66,45 @@ var supportedChannelOperators = map[string]struct{}{
 	"join":         {},
 	"last":         {},
 	"map":          {},
+	"max":          {},
+	"merge":        {},
+	"min":          {},
 	"mix":          {},
 	"multiMap":     {},
+	"randomSample": {},
 	"reduce":       {},
 	"set":          {},
 	"splitCsv":     {},
 	"splitFasta":   {},
 	"splitFastq":   {},
+	"splitJson":    {},
+	"splitText":    {},
+	"subscribe":    {},
+	"sum":          {},
 	"tap":          {},
 	"take":         {},
+	"toInteger":    {},
 	"toList":       {},
 	"toSortedList": {},
 	"transpose":    {},
+	"until":        {},
 	"unique":       {},
 	"view":         {},
+}
+
+var supportedChannelFactories = map[string]struct{}{
+	"empty":         {},
+	"from":          {},
+	"fromFilePairs": {},
+	"fromLineage":   {},
+	"fromList":      {},
+	"fromPath":      {},
+	"fromSRA":       {},
+	"interval":      {},
+	"of":            {},
+	"topic":         {},
+	"value":         {},
+	"watchPath":     {},
 }
 
 type tokenType int
@@ -2052,6 +2084,9 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, ok := supportedChannelFactories[name.lit]; !ok {
+		return nil, fmt.Errorf("line %d: unsupported factory: %s", name.line, name.lit)
+	}
 	if _, err = p.expectType(tokenLParen, "("); err != nil {
 		return nil, err
 	}
@@ -2281,6 +2316,9 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 			return ChannelOperator{}, err
 		}
 		operator.Closure = closure
+		if isDeprecatedChannelOperator(name.lit) {
+			warnDeprecatedChannelOperator(name)
+		}
 		return operator, nil
 	case tokenLParen:
 		channels, args, err := p.parseChannelOperatorArgs(name)
@@ -2289,10 +2327,26 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 		}
 		operator.Channels = channels
 		operator.Args = args
+		if isDeprecatedChannelOperator(name.lit) {
+			warnDeprecatedChannelOperator(name)
+		}
 		return operator, nil
 	default:
 		return ChannelOperator{}, fmt.Errorf("line %d: expected operator invocation", p.current().line)
 	}
+}
+
+func isDeprecatedChannelOperator(name string) bool {
+	switch name {
+	case "countFasta", "countFastq", "countJson", "countLines":
+		return true
+	default:
+		return false
+	}
+}
+
+func warnDeprecatedChannelOperator(name token) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel operator %q at line %d parsed for compatibility\n", name.lit, name.line)
 }
 
 func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error) {
@@ -2306,7 +2360,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 	}
 
 	switch name.lit {
-	case "combine", "concat", "join", "mix", "tap":
+	case "combine", "concat", "cross", "join", "merge", "mix", "tap":
 		channels := []ChanExpr{}
 		for {
 			channel, err := p.parseChanExpr(tokenComma, tokenRParen)
@@ -2445,7 +2499,9 @@ func (p *parser) parseDottedIdent() string {
 func (p *parser) readExprTokens(terminators ...tokenType) ([]token, error) {
 	start := p.current()
 	tokens := []token{}
-	depth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
 
 	for {
 		current := p.current()
@@ -2456,17 +2512,35 @@ func (p *parser) readExprTokens(terminators ...tokenType) ([]token, error) {
 			return tokens, nil
 		}
 
-		if depth == 0 && hasTokenType(terminators, current.typ) {
+		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && hasTokenType(terminators, current.typ) {
 			if len(tokens) == 0 {
 				return nil, fmt.Errorf("line %d: expected expression", current.line)
 			}
 			return tokens, nil
 		}
 
-		if current.typ == tokenLParen {
-			depth++
-		} else if current.typ == tokenRParen && depth > 0 {
-			depth--
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
 		}
 
 		tokens = append(tokens, current)

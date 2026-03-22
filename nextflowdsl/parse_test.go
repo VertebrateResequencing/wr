@@ -1121,6 +1121,92 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "hello")
 		})
 
+		Convey("Channel.fromList parses a list literal argument", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromList([1,2,3])) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "fromList")
+			So(factory.Args, ShouldHaveLength, 1)
+
+			listExpr, ok := factory.Args[0].(ListExpr)
+			So(ok, ShouldBeTrue)
+			So(listExpr.Elements, ShouldHaveLength, 3)
+			So(listExpr.Elements[0], ShouldResemble, IntExpr{Value: 1})
+			So(listExpr.Elements[1], ShouldResemble, IntExpr{Value: 2})
+			So(listExpr.Elements[2], ShouldResemble, IntExpr{Value: 3})
+		})
+
+		Convey("Channel.from parses variadic literal arguments", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.from(1,2,3)) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "from")
+			So(factory.Args, ShouldHaveLength, 3)
+			So(intExprValue(factory.Args[0]), ShouldEqual, 1)
+			So(intExprValue(factory.Args[1]), ShouldEqual, 2)
+			So(intExprValue(factory.Args[2]), ShouldEqual, 3)
+		})
+
+		Convey("Channel.fromSRA parses as a recognized factory", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromSRA('SRR1234')) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "fromSRA")
+			So(factory.Args, ShouldHaveLength, 1)
+			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "SRR1234")
+		})
+
+		Convey("Channel.topic parses as a recognized factory", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.topic('myTopic')) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "topic")
+			So(factory.Args, ShouldHaveLength, 1)
+			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "myTopic")
+		})
+
+		Convey("Channel.watchPath parses its glob argument", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.watchPath('/data/*.fq')) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "watchPath")
+			So(factory.Args, ShouldHaveLength, 1)
+			So(factory.Args[0], ShouldHaveSameTypeAs, StringExpr{})
+			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "/data/*.fq")
+		})
+
+		Convey("Channel.interval parses an integer argument", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.interval(100)) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "interval")
+			So(factory.Args, ShouldHaveLength, 1)
+			So(intExprValue(factory.Args[0]), ShouldEqual, 100)
+		})
+
+		Convey("Channel.fromLineage parses as a recognized factory", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromLineage('query')) }"))
+
+			So(err, ShouldBeNil)
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "fromLineage")
+			So(factory.Args, ShouldHaveLength, 1)
+			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "query")
+		})
+
 		Convey("filter and collect chains preserve both operators", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.filter { it > 5 }.collect()) }"))
 
@@ -1207,12 +1293,79 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			So(chain.Operators[0].Args, ShouldHaveLength, 1)
 			So(intExprValue(chain.Operators[0].Args[0]), ShouldEqual, 3)
 		})
+	})
+}
 
-		Convey("unsupported operators return a named error", func() {
-			_, err := Parse(strings.NewReader("workflow { foo(ch.buffer(size: 3)) }"))
+func TestParsePhase4B1ChannelOperators(t *testing.T) {
+	Convey("Parse handles Phase 4 B1 additional channel operators", t, func() {
+		Convey("new operators parse with expected arguments, channels, and closures", func() {
+			testCases := []struct {
+				name            string
+				source          string
+				expectName      string
+				expectArgs      int
+				expectChannels  int
+				expectClosure   string
+				expectFirstInt  int
+				expectFirstChan string
+			}{
+				{name: "cross", source: "workflow { foo(ch.cross(other)) }", expectName: "cross", expectChannels: 1, expectFirstChan: "other"},
+				{name: "splitJson", source: "workflow { foo(ch.splitJson()) }", expectName: "splitJson"},
+				{name: "splitText", source: "workflow { foo(ch.splitText(by: 1000)) }", expectName: "splitText", expectArgs: 1},
+				{name: "buffer", source: "workflow { foo(ch.buffer(size: 3)) }", expectName: "buffer", expectArgs: 1},
+				{name: "collate", source: "workflow { foo(ch.collate(5)) }", expectName: "collate", expectArgs: 1, expectFirstInt: 5},
+				{name: "until", source: "workflow { foo(ch.until { it == 'DONE' }) }", expectName: "until", expectClosure: "it == 'DONE'"},
+				{name: "subscribe", source: "workflow { foo(ch.subscribe { println it }) }", expectName: "subscribe", expectClosure: "println it"},
+				{name: "sum", source: "workflow { foo(ch.sum()) }", expectName: "sum"},
+				{name: "min", source: "workflow { foo(ch.min()) }", expectName: "min"},
+				{name: "max", source: "workflow { foo(ch.max()) }", expectName: "max"},
+				{name: "randomSample", source: "workflow { foo(ch.randomSample(10)) }", expectName: "randomSample", expectArgs: 1, expectFirstInt: 10},
+				{name: "merge", source: "workflow { foo(ch.merge(other)) }", expectName: "merge", expectChannels: 1, expectFirstChan: "other"},
+				{name: "toInteger", source: "workflow { foo(ch.toInteger()) }", expectName: "toInteger"},
+			}
 
-			So(err, ShouldNotBeNil)
-			So(err.Error(), ShouldContainSubstring, "unsupported operator: buffer")
+			for _, testCase := range testCases {
+				wf, err := Parse(strings.NewReader(testCase.source))
+
+				So(err, ShouldBeNil)
+				chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+				So(chain.Operators, ShouldHaveLength, 1)
+				So(chain.Operators[0].Name, ShouldEqual, testCase.expectName)
+				So(chain.Operators[0].Args, ShouldHaveLength, testCase.expectArgs)
+				So(chain.Operators[0].Channels, ShouldHaveLength, testCase.expectChannels)
+				So(chain.Operators[0].Closure, ShouldEqual, testCase.expectClosure)
+
+				if testCase.expectFirstInt != 0 {
+					So(intExprValue(chain.Operators[0].Args[0]), ShouldEqual, testCase.expectFirstInt)
+				}
+
+				if testCase.expectFirstChan != "" {
+					channel, ok := chain.Operators[0].Channels[0].(ChanRef)
+					So(ok, ShouldBeTrue)
+					So(channel.Name, ShouldEqual, testCase.expectFirstChan)
+				}
+			}
+		})
+
+		Convey("deprecated count operators parse and emit warnings", func() {
+			for _, operatorName := range []string{"countFasta", "countFastq", "countJson", "countLines"} {
+				var (
+					wf     *Workflow
+					err    error
+					stderr string
+				)
+
+				stderr = captureParseStderr(func() {
+					wf, err = Parse(strings.NewReader("workflow { foo(ch." + operatorName + "()) }"))
+				})
+
+				So(err, ShouldBeNil)
+				chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+				So(chain.Operators, ShouldHaveLength, 1)
+				So(chain.Operators[0].Name, ShouldEqual, operatorName)
+				So(stderr, ShouldContainSubstring, "deprecated")
+				So(stderr, ShouldContainSubstring, operatorName)
+			}
 		})
 	})
 }
@@ -1372,10 +1525,10 @@ func TestParseHighPriorityOperators(t *testing.T) {
 		})
 
 		Convey("unsupported operators still return a named error", func() {
-			_, err := Parse(strings.NewReader("workflow { foo(ch.subscribe { println it }) }"))
+			_, err := Parse(strings.NewReader("workflow { foo(ch.bogus()) }"))
 
 			So(err, ShouldNotBeNil)
-			So(err.Error(), ShouldContainSubstring, "unsupported operator: subscribe")
+			So(err.Error(), ShouldContainSubstring, "unsupported operator: bogus")
 		})
 
 		Convey("remaining listed operators are accepted", func() {

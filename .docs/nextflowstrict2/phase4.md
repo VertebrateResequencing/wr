@@ -25,7 +25,8 @@ expression parsing of operator arguments. Covering all 17
 acceptance tests from B1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.2: C1 - Parse additional channel factories [parallel with 4.1]
 
@@ -39,7 +40,8 @@ completed in Phase 5. Covering 7 parsing acceptance tests
 from C1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
