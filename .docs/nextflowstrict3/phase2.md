@@ -16,12 +16,13 @@ subagents with the `go-implementor` and `go-reviewer` skills.
 spec.md section: D3
 
 Implement evaluation of `%`, `**`, `in`/`!in`, `=~`/`==~`,
-`..`/`..<`, and spread-dot (`*.`) in groovy.go. Add
+`..`/`..<`, spread-dot (`*.`), bitwise (`&`, `^`, `|`, `~`),
+and shift (`<<`, `>>`, `>>>`) in groovy.go. Add
 `evalInExpr`, `evalRegexExpr`, `evalRangeExpr`,
-`evalSpreadExpr` functions. Operators that cannot be
-meaningfully evaluated (`<=>`, bitwise, shift, `instanceof`)
-return `UnsupportedExpr` with a warning. Covering all 14
-acceptance tests from D3.
+`evalSpreadExpr` functions. Bitwise and shift operators are
+fully evaluated as trivial one-line Go int operations. Only
+`<=>` (spaceship) and `instanceof` return `UnsupportedExpr`
+with a warning. Covering all 21 acceptance tests from D3.
 
 - [ ] implemented
 - [ ] reviewed

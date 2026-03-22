@@ -157,8 +157,10 @@ Missing sections in workflow blocks:
 - `onComplete:` — statements executed on workflow completion
 - `onError:` — statements executed on workflow error
 
-These need parsing and storage. Translation can emit warnings for
-`onComplete`/`onError` since wr doesn't have lifecycle hooks.
+These need parsing and storage. `onComplete` is translated to a
+dep_grp-dependent final job that runs after all workflow stages finish.
+`onError` is translated to a polling job with limit groups that detects
+buried/failed jobs.
 
 ### GAP 10: Pipe operator in workflow bodies
 
@@ -267,9 +269,9 @@ channel. This is a cross-product expansion in `translate.go`.
 - Cardinality modelling: compile-time for simple operators (flatten,
   unique, concat, count); TranslatePending with warnings for data-dependent
   operators (splitCsv, splitFasta, etc.) and combine with unknown keys.
-- Groovy evaluation scope: implement `%`, `in`/`!in`, `=~`/`==~`, `..`/`..<`
-  ranges, and common closure patterns. Other operators (`**`, `<=>`, bitwise,
-  `instanceof`, shift) need parsing only; evaluation emits warnings.
+- Groovy evaluation scope: implement `%`, `**`, `in`/`!in`, `=~`/`==~`,
+  `..`/`..<` ranges, spread-dot, and all bitwise/shift operators. Only
+  `<=>` (spaceship) and `instanceof` emit warnings.
 - Error handling: parse-permissive. Accept anything that looks like valid
   Nextflow, warn liberally, only fail on tokeniser errors. Unknown
   directives, statement types, and operators should never cause parse errors.
@@ -286,8 +288,10 @@ channel. This is a cross-product expansion in `translate.go`.
   don't validate types at translate time. Last-seen wins if both
   `params {}` and `params.x = y` exist.
 - Groovy operators: parse ALL operators so files never fail to parse.
-  Evaluate where possible (`%`, `in`, `=~`, ranges, spread-dot etc.),
-  warn on operators that can't be meaningfully evaluated.
+  Evaluate where possible (`%`, `in`, `=~`, ranges, spread-dot etc.).
+  Bitwise and shift operators (`&`, `^`, `|`, `~`, `<<`, `>>`, `>>>`)
+  are trivial one-line Go operations and MUST be fully evaluated, not
+  warned on. Only `<=>` (spaceship) and `instanceof` warrant warnings.
 - Unsupported statement types (try/catch, for/while, switch/case, assert,
   throw): parse and store as AST nodes. Translator evaluates simple cases
   (e.g. simple for loops, return statements), warns on complex ones.
@@ -300,9 +304,17 @@ channel. This is a cross-product expansion in `translate.go`.
 - `params {}` block vs legacy `params.x = y`: last-seen wins. If block
   syntax appears after legacy assignments, block values override; if legacy
   appears after block, legacy overrides.
-- `branch` operator: parse fully but warn; emit all items to a single
-  channel (current pass-through behaviour). No separate dep groups per
-  branch.
+- `branch` operator: implement via PendingStage — at runtime, evaluate
+  the branch closure against each completed item and route to the
+  matching named output channel, each with a distinct dep_grp. NOT a
+  passthrough warning — real routing.
+- `multiMap` operator: implement via PendingStage — evaluate the multiMap
+  closure to produce one item per named output channel, each with a
+  distinct dep_grp.
+- `splitCsv`, `splitFasta`, `splitFastq`, `splitText`, `splitJson`:
+  implement via PendingStage — at runtime, read the actual file/data and
+  split into N concrete items, creating N downstream jobs per chunk. NOT
+  passthrough with warning — real splitting.
 - Acceptance tests use synthetic minimal test cases, not real nf-core
   snippets.
 - Parameter override precedence: CLI > config > script (matching existing
@@ -332,3 +344,25 @@ channel. This is a cross-product expansion in `translate.go`.
 - Backward compatibility: all existing tests must continue to pass.
 - The spec should be organised into logical sections (A, B, C, ...) with
   user stories and acceptance tests for each gap.
+- `onComplete` translation: create a final wr job whose DepGroups list
+  all workflow-stage dep_grps, so it runs only after every stage finishes.
+  The job body executes the parsed onComplete block as a shell script.
+- `onError` translation: create a polling wr job that uses a time-based
+  limit group. It checks for buried/failed jobs. If none found and
+  workflow still running, it resubmits itself. When it detects a terminal
+  error state, it executes the onError body. This gives wr lifecycle-hook
+  semantics without native support.
+- Directive translation for `scratch`: when `scratch true` or
+  `scratch '/tmp'`, wrap the job command to create a temp directory, run
+  the script there, and copy outputs back. When `scratch false` or
+  absent, no wrapper.
+- Directive translation for `storeDir`: when `storeDir '/path'`, check
+  if outputs exist at that path before running. If they do, skip
+  execution (job succeeds immediately). Otherwise run normally and copy
+  outputs to storeDir.
+- Directive translation for `conda`/`spack`: prepend `conda activate
+  <env>` or `spack load <pkg>` to the job command. Warn if the tool
+  is not available at runtime.
+- `collectFile` operator: implement via PendingStage — at runtime,
+  collect completed items into a file and produce a single downstream
+  item pointing to that file.

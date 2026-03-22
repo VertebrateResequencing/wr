@@ -1,6 +1,6 @@
 # Phase 5: Workflow Block Sections
 
-Ref: [spec.md](spec.md) sections H1, I1, I2, J1, K1
+Ref: [spec.md](spec.md) sections H1, I1, I2 parse, J1, K1
 
 ## Instructions
 
@@ -37,15 +37,16 @@ discarding them. Covering all 3 acceptance tests from I1.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 5.3: I2 - Parse `onComplete:` and `onError:` in workflow blocks [parallel with 5.1, 5.2, 5.4, 5.5]
+#### Item 5.3: I2 parse - Parse `onComplete:` and `onError:` in workflow blocks [parallel with 5.1, 5.2, 5.4, 5.5]
 
 spec.md section: I2
 
 Add `OnComplete string` and `OnError string` fields to
 `WorkflowBlock` in ast.go. Modify `parseWorkflowBlock` in
 parse.go to accept `onComplete:` and `onError:` sections,
-storing raw body text. Emit warning that wr does not support
-lifecycle hooks. Covering all 4 acceptance tests from I2.
+storing raw body text. Translation of these sections into wr
+jobs is handled in Phase 8. Covering acceptance tests 1-4
+from I2 (parse-level tests only).
 
 - [ ] implemented
 - [ ] reviewed
@@ -70,8 +71,7 @@ Extend `parseChannelAssignment` in parse.go to track plain
 variable assignments whose RHS is a channel expression
 (`Channel.*`), process output reference (`*.out`, `*.out.*`),
 or a known channel variable. Plain assignments (`x = 42`)
-silently ignored. Also handle `include` from `plugin/` sources
-with a warning. Covering all 5 acceptance tests from K1.
+silently ignored. Covering all 4 acceptance tests from K1.
 
 - [ ] implemented
 - [ ] reviewed
