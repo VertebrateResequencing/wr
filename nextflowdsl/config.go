@@ -35,13 +35,10 @@ import (
 var skippedTopLevelConfigScopes = map[string]struct{}{
 	"conda":        {},
 	"dag":          {},
-	"docker":       {},
-	"env":          {},
 	"executor":     {},
 	"manifest":     {},
 	"notification": {},
 	"report":       {},
-	"singularity":  {},
 	"timeline":     {},
 	"tower":        {},
 	"trace":        {},
@@ -58,6 +55,14 @@ type ProcessDefaults struct {
 	Env       map[string]string
 }
 
+// ProcessSelector holds directive overrides for a process selector.
+type ProcessSelector struct {
+	Kind     string
+	Pattern  string
+	Settings *ProcessDefaults
+	Inner    *ProcessSelector
+}
+
 // Profile holds profile-scoped config overrides.
 type Profile struct {
 	Process *ProcessDefaults
@@ -66,9 +71,12 @@ type Profile struct {
 
 // Config holds parsed Nextflow configuration.
 type Config struct {
-	Params   map[string]any
-	Profiles map[string]*Profile
-	Process  *ProcessDefaults
+	Params          map[string]any
+	Profiles        map[string]*Profile
+	Process         *ProcessDefaults
+	Selectors       []*ProcessSelector
+	ContainerEngine string
+	Env             map[string]string
 }
 
 // ParseConfig parses a nextflow.config file.
@@ -118,6 +126,11 @@ func ParseConfigFromPathWithParams(path string, externalParams map[string]any) (
 	return newConfigParser(tokens).parse(params, profileParams, externalParams)
 }
 
+type processBlock struct {
+	defaults  *ProcessDefaults
+	selectors []*ProcessSelector
+}
+
 type configParser struct {
 	tokens []token
 	pos    int
@@ -142,6 +155,18 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 		}
 
 		switch current.lit {
+		case "apptainer", "docker", "singularity":
+			engine, err := p.parseContainerScope(current.lit)
+			if err != nil {
+				return nil, err
+			}
+			cfg.ContainerEngine = engine
+		case "env":
+			env, err := p.parseTopLevelEnvBlock()
+			if err != nil {
+				return nil, err
+			}
+			cfg.Env = env
 		case "params":
 			params, err := p.parseParamsBlock()
 			if err != nil {
@@ -149,11 +174,12 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 			}
 			cfg.Params = MergeParams(cfg.Params, params)
 		case "process":
-			process, err := p.parseProcessBlock(MergeParams(knownParams, externalParams))
+			block, err := p.parseProcessBlock(MergeParams(knownParams, externalParams), true)
 			if err != nil {
 				return nil, err
 			}
-			cfg.Process = process
+			cfg.Process = block.defaults
+			cfg.Selectors = block.selectors
 		case "profiles":
 			profiles, err := p.parseProfilesBlock(knownParams, knownProfileParams, externalParams)
 			if err != nil {
@@ -189,6 +215,14 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 		}
 
 		switch current.lit {
+		case "apptainer", "docker", "singularity":
+			if err := p.skipNamedBlock(current.lit); err != nil {
+				return nil, nil, err
+			}
+		case "env":
+			if err := p.skipNamedBlock("env"); err != nil {
+				return nil, nil, err
+			}
 		case "params":
 			sectionParams, err := p.parseParamsBlock()
 			if err != nil {
@@ -252,7 +286,7 @@ func (p *configParser) parseParamsBlock() (map[string]any, error) {
 	}
 }
 
-func (p *configParser) parseProcessBlock(params map[string]any) (*ProcessDefaults, error) {
+func (p *configParser) parseProcessBlock(params map[string]any, allowSelectors bool) (*processBlock, error) {
 	if _, err := p.expectIdent("process"); err != nil {
 		return nil, err
 	}
@@ -261,18 +295,111 @@ func (p *configParser) parseProcessBlock(params map[string]any) (*ProcessDefault
 		return nil, err
 	}
 
+	return p.parseProcessSettingsBlock(params, allowSelectors, "process")
+}
+
+func (p *configParser) parseProcessSettingsBlock(params map[string]any, allowSelectors bool, blockName string) (*processBlock, error) {
 	defaults := &ProcessDefaults{}
+	var selectors []*ProcessSelector
+
 	for {
 		p.skipSeparators()
 		current := p.current()
 
 		switch current.typ {
 		case tokenEOF:
-			return nil, p.unclosedBlockError("process")
+			return nil, p.unclosedBlockError(blockName)
 		case tokenRBrace:
 			p.pos++
-			return defaults, nil
+			return &processBlock{defaults: defaults, selectors: selectors}, nil
 		case tokenIdent:
+			if allowSelectors && isProcessSelectorName(current.lit) {
+				selector, err := p.parseProcessSelector(params)
+				if err != nil {
+					return nil, err
+				}
+
+				selectors = append(selectors, selector)
+
+				continue
+			}
+
+			if err := p.parseProcessAssignment(defaults, params); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("line %d: expected process setting", current.line)
+		}
+	}
+}
+
+func isProcessSelectorName(name string) bool {
+	return name == "withLabel" || name == "withName"
+}
+
+func (p *configParser) parseProcessSelector(params map[string]any) (*ProcessSelector, error) {
+	return p.parseProcessSelectorWithDepth(params, 1)
+}
+
+func (p *configParser) parseProcessSelectorWithDepth(params map[string]any, remainingDepth int) (*ProcessSelector, error) {
+	name := p.current()
+	p.pos++
+
+	if _, err := p.expectType(tokenColon, ":"); err != nil {
+		return nil, err
+	}
+
+	value, err := p.parseValue(nil, tokenLBrace)
+	if err != nil {
+		return nil, wrapLineError(name.line, err)
+	}
+
+	pattern, ok := value.(string)
+	if !ok {
+		return nil, fmt.Errorf("line %d: %s expects a string literal pattern", name.line, name.lit)
+	}
+
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return nil, err
+	}
+
+	defaults := &ProcessDefaults{}
+	var inner *ProcessSelector
+
+	for {
+		p.skipSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			return nil, p.unclosedBlockError(name.lit)
+		case tokenRBrace:
+			p.pos++
+			return &ProcessSelector{
+				Kind:     name.lit,
+				Pattern:  pattern,
+				Settings: defaults,
+				Inner:    inner,
+			}, nil
+		case tokenIdent:
+			if isProcessSelectorName(current.lit) {
+				if remainingDepth == 0 {
+					return nil, fmt.Errorf("line %d: nested process selectors may only be one level deep", current.line)
+				}
+
+				if inner != nil {
+					return nil, fmt.Errorf("line %d: selector %s may contain only one nested selector", current.line, name.lit)
+				}
+
+				var err error
+				inner, err = p.parseProcessSelectorWithDepth(params, remainingDepth-1)
+				if err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+
 			if err := p.parseProcessAssignment(defaults, params); err != nil {
 				return nil, err
 			}
@@ -490,11 +617,11 @@ func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[s
 				}
 				profile.Params = MergeParams(profile.Params, params)
 			case "process":
-				process, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams))
+				block, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams), false)
 				if parseErr != nil {
 					return nil, parseErr
 				}
-				profile.Process = process
+				profile.Process = block.defaults
 			default:
 				return nil, fmt.Errorf("line %d: unsupported profile section %q", current.line, current.lit)
 			}
@@ -574,6 +701,60 @@ func (p *configParser) parseEnvBlock() (map[string]string, error) {
 			env[current.lit] = stringValue
 		default:
 			return nil, fmt.Errorf("line %d: expected environment variable name", current.line)
+		}
+	}
+}
+
+func (p *configParser) parseTopLevelEnvBlock() (map[string]string, error) {
+	if _, err := p.expectIdent("env"); err != nil {
+		return nil, err
+	}
+
+	return p.parseEnvBlock()
+}
+
+func (p *configParser) parseContainerScope(scopeName string) (string, error) {
+	if _, err := p.expectIdent(scopeName); err != nil {
+		return "", err
+	}
+
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return "", err
+	}
+
+	enabled := false
+	for {
+		p.skipSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			return "", p.unclosedBlockError(scopeName)
+		case tokenRBrace:
+			p.pos++
+			if enabled {
+				return scopeName, nil
+			}
+
+			return "", nil
+		case tokenIdent:
+			value, err := p.parseAssignmentValue()
+			if err != nil {
+				return "", err
+			}
+
+			if current.lit != "enabled" {
+				return "", fmt.Errorf("line %d: unsupported %s setting %q", current.line, scopeName, current.lit)
+			}
+
+			boolValue, ok := value.(bool)
+			if !ok {
+				return "", fmt.Errorf("line %d: %s enabled expects a boolean value", current.line, scopeName)
+			}
+
+			enabled = boolValue
+		default:
+			return "", fmt.Errorf("line %d: expected %s setting", current.line, scopeName)
 		}
 	}
 }
