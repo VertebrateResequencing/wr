@@ -1,6 +1,6 @@
 # Phase 8: Translation
 
-Ref: [spec.md](spec.md) sections A2, B2, C1, I2 translate,
+Ref: [spec.md](spec.md) sections A2, A3, B2, C1, I2 translate,
 N1, O1
 
 ## Instructions
@@ -12,7 +12,7 @@ subagents with the `go-implementor` and `go-reviewer` skills.
 
 ### Batch 1 (parallel)
 
-#### Item 8.1: A2 - Translate scratch, storeDir, conda, spack [parallel with 8.2, 8.3, 8.4, 8.5]
+#### Item 8.1: A2 - Translate scratch, storeDir, conda, spack [parallel with 8.2, 8.3, 8.4, 8.5, 8.6]
 
 spec.md section: A2
 
@@ -29,7 +29,7 @@ from A2.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 8.2: B2 - Translate `each` cross-product [parallel with 8.1, 8.3, 8.4, 8.5]
+#### Item 8.2: B2 - Translate `each` cross-product [parallel with 8.1, 8.3, 8.4, 8.5, 8.6]
 
 spec.md section: B2
 
@@ -45,7 +45,7 @@ acceptance tests from B2.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 8.3: C1 - Translate `eval` output [parallel with 8.1, 8.2, 8.4, 8.5]
+#### Item 8.3: C1 - Translate `eval` output [parallel with 8.1, 8.2, 8.4, 8.5, 8.6]
 
 spec.md section: C1
 
@@ -58,7 +58,7 @@ and `eval` outputs. Covering all 3 acceptance tests from C1.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 8.4: I2 translate - Translate onComplete/onError [parallel with 8.1, 8.2, 8.3, 8.5]
+#### Item 8.4: I2 translate - Translate onComplete/onError [parallel with 8.1, 8.2, 8.3, 8.5, 8.6]
 
 spec.md section: I2
 
@@ -76,17 +76,38 @@ tests 5-8 from I2.
 - [ ] implemented
 - [ ] reviewed
 
-#### Item 8.5: N1 - Evaluate dynamic directive closures [parallel with 8.1, 8.2, 8.3, 8.4]
+#### Item 8.5: N1 - Evaluate dynamic directive closures [parallel with 8.1, 8.2, 8.3, 8.4, 8.6]
 
 spec.md section: N1
 
 Extend directive evaluation in translate.go to detect
 `ClosureExpr` in directive values, unwrap the closure body, and
-evaluate with `task.*` defaults (`task.attempt = 1`, etc.).
+evaluate with `task.*` defaults (`task.attempt = 1`,
+`task.cpus = 1`, `task.memory = 0`, `task.exitStatus = 0`).
 Handles `memory { 2048 * task.attempt }`, `cpus { params.cpus
-?: 4 }`, and `errorStrategy { ... }` patterns. Existing
-`resolveDirectiveInt` infrastructure extended. Covering all 5
-acceptance tests from N1.
+?: 4 }`, `cpus { task.cpus * 2 }`, and `errorStrategy { ... }`
+patterns. Existing `resolveDirectiveInt` infrastructure
+extended. Covering all 6 acceptance tests from N1.
+
+- [ ] implemented
+- [ ] reviewed
+
+#### Item 8.6: A3 - Translate clusterOptions, containerOptions, maxErrors, queue, shell [parallel with 8.1, 8.2, 8.3, 8.4, 8.5]
+
+spec.md section: A3
+
+Implement directive translation in translate.go for
+`clusterOptions`, `containerOptions`, `maxErrors`, `queue`,
+and `shell`. `clusterOptions` sets
+`Requirements.Other["scheduler_misc"]` to the string value.
+`containerOptions` appends extra flags to the container run
+command. `maxErrors` creates a time-based limit group polling
+job that monitors buried job count for the process; when
+threshold exceeded, buries remaining jobs; removes itself at
+terminal state. `queue` sets
+`Requirements.Other["scheduler_queue"]`. `shell` sets env var
+`RunnerExecShell` in the job. Covering all 11 acceptance tests
+from A3.
 
 - [ ] implemented
 - [ ] reviewed
@@ -98,7 +119,7 @@ pass).
 
 ### Batch 2 (parallel, after batch 1 is reviewed)
 
-#### Item 8.6: O1 - Cross-product CWD and dep_grp structure
+#### Item 8.7: O1 - Cross-product CWD and dep_grp structure
 
 spec.md section: O1
 

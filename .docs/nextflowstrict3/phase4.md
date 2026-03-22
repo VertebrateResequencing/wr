@@ -45,13 +45,17 @@ acceptance tests from E1.
 
 spec.md section: E2
 
-Implement evaluation of simple statement types in closures and
-function bodies called at translate time. Handle `return` in
-closures (used by `findAll`/`collect`/`map`), simple `for`
-loops with accumulation patterns, and emit warnings for complex
-unsupported statements (`try/catch`, `switch/case`) encountered
-during evaluation. Depends on Phases 1-2 for expression parsing
-and evaluation. Covering all 5 acceptance tests from E2.
+Implement evaluation of statement types in closures and function
+bodies called at translate time. Handle `return` in closures
+(used by `findAll`/`collect`/`map`), simple `for` loops with
+accumulation patterns. Fully evaluate `try/catch`: try body
+executed; on error, first matching catch clause evaluated;
+finally runs unconditionally; return last expression value.
+Fully evaluate `switch/case`: evaluate switch expression, match
+case values (equality or regex via `=~`), return matched branch;
+`default` is fallback. Depends on Phases 1-2 for expression
+parsing and evaluation. Covering all 8 acceptance tests
+from E2.
 
 - [ ] implemented
 - [ ] reviewed

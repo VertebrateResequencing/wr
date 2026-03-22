@@ -17,12 +17,15 @@ spec.md section: D3
 
 Implement evaluation of `%`, `**`, `in`/`!in`, `=~`/`==~`,
 `..`/`..<`, spread-dot (`*.`), bitwise (`&`, `^`, `|`, `~`),
-and shift (`<<`, `>>`, `>>>`) in groovy.go. Add
-`evalInExpr`, `evalRegexExpr`, `evalRangeExpr`,
-`evalSpreadExpr` functions. Bitwise and shift operators are
-fully evaluated as trivial one-line Go int operations. Only
-`<=>` (spaceship) and `instanceof` return `UnsupportedExpr`
-with a warning. Covering all 21 acceptance tests from D3.
+shift (`<<`, `>>`, `>>>`), `<=>` (spaceship), and
+`instanceof` in groovy.go. Add `evalInExpr`, `evalRegexExpr`,
+`evalRangeExpr`, `evalSpreadExpr` functions. All operators
+are fully evaluated: bitwise and shift as trivial one-line Go
+int operations; `<=>` compares operands and returns -1/0/1;
+`instanceof` checks Go runtime type against a Groovy type
+name map (String→string, Integer→int/int64, List→[]any,
+Map→map[string]any, Boolean→bool) and returns bool.
+Covering all 30 acceptance tests from D3.
 
 - [ ] implemented
 - [ ] reviewed
