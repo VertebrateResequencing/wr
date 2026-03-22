@@ -53,13 +53,183 @@ var unsupportedCardinalityOperators = map[string]struct{}{
 	"unique":       {},
 }
 
+var warningOnlyChannelOperators = map[string]struct{}{
+	"merge":        {},
+	"randomSample": {},
+	"splitJson":    {},
+	"splitText":    {},
+	"subscribe":    {},
+	"toInteger":    {},
+	"until":        {},
+}
+
 type channelItem struct {
 	value     any
 	depGroups []string
 }
 
+func resolveChannelLiteralItems(args []Expr) ([]channelItem, error) {
+	items := make([]channelItem, 0, len(args))
+	for _, arg := range args {
+		value, err := EvalExpr(arg, nil)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, channelItem{value: value})
+	}
+
+	return items, nil
+}
+
+func resolveChannelFromListItems(args []Expr) ([]channelItem, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("Channel.fromList expects 1 argument, got %d", len(args))
+	}
+
+	value, err := EvalExpr(args[0], nil)
+	if err != nil {
+		return nil, err
+	}
+
+	values := flattenChannelValues(value)
+	items := make([]channelItem, 0, len(values))
+	for _, item := range values {
+		items = append(items, channelItem{value: item})
+	}
+
+	return items, nil
+}
+
+func warnDeprecatedChannelFactory(name string) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel factory %q resolved as Channel.of for compatibility\n", name)
+}
+
+func warnUntranslatableChannelFactory(name string) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: channel factory %q cannot be translated at compile time and will resolve to an empty channel\n", name)
+}
+
+func resolveChunkSize(args []Expr, operatorName, namedArg string) (int, error) {
+	if len(args) != 1 {
+		return 0, fmt.Errorf("%s expects 1 argument, got %d", operatorName, len(args))
+	}
+
+	value, err := EvalExpr(args[0], nil)
+	if err != nil {
+		return 0, err
+	}
+
+	size, err := coerceChunkSize(value, namedArg)
+	if err != nil {
+		return 0, fmt.Errorf("%s %w", operatorName, err)
+	}
+	if size <= 0 {
+		return 0, fmt.Errorf("%s expects a positive chunk size", operatorName)
+	}
+
+	return size, nil
+}
+
+func coerceChunkSize(value any, namedArg string) (int, error) {
+	switch typed := value.(type) {
+	case int:
+		return typed, nil
+	case map[string]any:
+		raw, ok := typed[namedArg]
+		if !ok {
+			return 0, fmt.Errorf("expects %q to be set", namedArg)
+		}
+
+		size, ok := raw.(int)
+		if !ok {
+			return 0, fmt.Errorf("expects %q to be an integer", namedArg)
+		}
+
+		return size, nil
+	default:
+		return 0, fmt.Errorf("expects an integer chunk size")
+	}
+}
+
 func warnUnsupportedCardinalityOperator(name string) {
 	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: operator %q may affect job cardinality in unsupported ways and will be treated as a pass-through\n", name)
+}
+
+func crossChannelItems(left, right []channelItem) []channelItem {
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+
+	crossed := make([]channelItem, 0, len(left)*len(right))
+	for _, leftItem := range left {
+		for _, rightItem := range right {
+			crossed = append(crossed, channelItem{
+				value:     []any{cloneChannelValue(leftItem.value), cloneChannelValue(rightItem.value)},
+				depGroups: appendUniqueStrings(cloneStrings(leftItem.depGroups), rightItem.depGroups),
+			})
+		}
+	}
+
+	return crossed
+}
+
+func chunkChannelItems(items []channelItem, size int) []channelItem {
+	if len(items) == 0 {
+		return nil
+	}
+
+	chunked := make([]channelItem, 0, (len(items)+size-1)/size)
+	for start := 0; start < len(items); start += size {
+		end := start + size
+		if end > len(items) {
+			end = len(items)
+		}
+
+		values := make([]any, 0, end-start)
+		deps := []string{}
+		for _, item := range items[start:end] {
+			values = append(values, cloneChannelValue(item.value))
+			deps = appendUniqueStrings(deps, item.depGroups)
+		}
+
+		chunked = append(chunked, channelItem{value: values, depGroups: deps})
+	}
+
+	return chunked
+}
+
+func reduceChannelItems(items []channelItem, pick func(current, candidate any) (any, error)) ([]channelItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	reduced := cloneChannelValue(items[0].value)
+	for _, item := range items[1:] {
+		var err error
+		reduced, err = pick(reduced, item.value)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return []channelItem{{value: reduced, depGroups: unionChannelDepGroups(items)}}, nil
+}
+
+func sumChannelItems(items []channelItem) ([]channelItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	total := 0
+	for _, item := range items {
+		value, ok := item.value.(int)
+		if !ok {
+			return nil, fmt.Errorf("sum expects integer channel items")
+		}
+
+		total += value
+	}
+
+	return []channelItem{{value: total, depGroups: unionChannelDepGroups(items)}}, nil
 }
 
 type channelResolver func(ChanRef) ([]channelItem, error)
@@ -117,16 +287,13 @@ func resolveChannelItems(ce ChanExpr, cwd string, resolver channelResolver) ([]c
 func resolveChannelFactoryItems(factory ChannelFactory, cwd string) ([]channelItem, error) {
 	switch factory.Name {
 	case "of":
-		items := make([]channelItem, 0, len(factory.Args))
-		for _, arg := range factory.Args {
-			value, err := EvalExpr(arg, nil)
-			if err != nil {
-				return nil, err
-			}
-			items = append(items, channelItem{value: value})
-		}
+		return resolveChannelLiteralItems(factory.Args)
+	case "from":
+		warnDeprecatedChannelFactory(factory.Name)
 
-		return items, nil
+		return resolveChannelLiteralItems(factory.Args)
+	case "fromList":
+		return resolveChannelFromListItems(factory.Args)
 	case "value":
 		if len(factory.Args) != 1 {
 			return nil, fmt.Errorf("Channel.value expects 1 argument, got %d", len(factory.Args))
@@ -178,6 +345,10 @@ func resolveChannelFactoryItems(factory ChannelFactory, cwd string) ([]channelIt
 		}
 
 		return items, nil
+	case "fromLineage", "fromSRA", "interval", "topic", "watchPath":
+		warnUntranslatableChannelFactory(factory.Name)
+
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported channel factory %q", factory.Name)
 	}
@@ -270,6 +441,17 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		}
 
 		return mixed, nil
+	case "cross":
+		crossed := cloneChannelItems(items)
+		for _, other := range operator.Channels {
+			resolved, err := resolveChannelItems(other, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+			crossed = crossChannelItems(crossed, resolved)
+		}
+
+		return crossed, nil
 	case "join":
 		joined := cloneChannelItems(items)
 		for _, other := range operator.Channels {
@@ -283,9 +465,34 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return joined, nil
 	case "groupTuple":
 		return groupTupleItems(items), nil
+	case "buffer":
+		size, err := resolveChunkSize(operator.Args, "buffer", "size")
+		if err != nil {
+			return nil, err
+		}
+
+		return chunkChannelItems(items, size), nil
+	case "collate":
+		size, err := resolveChunkSize(operator.Args, "collate", "size")
+		if err != nil {
+			return nil, err
+		}
+
+		return chunkChannelItems(items, size), nil
+	case "min":
+		return reduceChannelItems(items, minChannelValue)
+	case "max":
+		return reduceChannelItems(items, maxChannelValue)
+	case "sum":
+		return sumChannelItems(items)
 	case "dump", "set", "tap", "view":
 		return cloneChannelItems(items), nil
 	default:
+		if _, ok := warningOnlyChannelOperators[operator.Name]; ok {
+			warnUnsupportedCardinalityOperator(operator.Name)
+			return cloneChannelItems(items), nil
+		}
+
 		if _, ok := unsupportedCardinalityOperators[operator.Name]; ok {
 			warnUnsupportedCardinalityOperator(operator.Name)
 			return cloneChannelItems(items), nil
@@ -649,4 +856,49 @@ func filePairGroupKey(path string) string {
 	}
 
 	return filepath.Join(filepath.Dir(path), base)
+}
+
+func minChannelValue(current, candidate any) (any, error) {
+	less, err := channelValueLess(candidate, current)
+	if err != nil {
+		return nil, err
+	}
+	if less {
+		return cloneChannelValue(candidate), nil
+	}
+
+	return cloneChannelValue(current), nil
+}
+
+func maxChannelValue(current, candidate any) (any, error) {
+	less, err := channelValueLess(current, candidate)
+	if err != nil {
+		return nil, err
+	}
+	if less {
+		return cloneChannelValue(candidate), nil
+	}
+
+	return cloneChannelValue(current), nil
+}
+
+func channelValueLess(left, right any) (bool, error) {
+	switch leftValue := left.(type) {
+	case int:
+		rightValue, ok := right.(int)
+		if !ok {
+			return false, fmt.Errorf("cannot compare %T and %T", left, right)
+		}
+
+		return leftValue < rightValue, nil
+	case string:
+		rightValue, ok := right.(string)
+		if !ok {
+			return false, fmt.Errorf("cannot compare %T and %T", left, right)
+		}
+
+		return leftValue < rightValue, nil
+	default:
+		return false, fmt.Errorf("unsupported comparable channel item %T", left)
+	}
 }

@@ -25,7 +25,8 @@ Depends on B1 from Phase 4 for operator parsing. Covering all 8
 acceptance tests from B2.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.2: C1 - Resolve additional channel factories [parallel with 5.1]
 
@@ -40,7 +41,8 @@ Depends on C1 parsing from Phase 4. Covering the 3 remaining
 resolution acceptance tests from C1 (tests 2, 4, 6).
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
