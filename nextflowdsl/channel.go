@@ -26,6 +26,7 @@
 package nextflowdsl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,6 +107,10 @@ func warnDeprecatedChannelFactory(name string) {
 
 func warnUntranslatableChannelFactory(name string) {
 	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: channel factory %q cannot be translated at compile time and will resolve to an empty channel\n", name)
+}
+
+func warnUnsupportedChannelClosure(closure string) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: closure %q could not be evaluated at compile time and will be treated as a pass-through\n", closure)
 }
 
 func resolveChunkSize(args []Expr, operatorName, namedArg string) (int, error) {
@@ -395,8 +400,13 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 	case "filter":
 		filtered := make([]channelItem, 0, len(items))
 		for _, item := range items {
-			keep, err := evalChannelClosureBool(operator.Closure, item.value)
+			keep, err := evalChannelClosureBool(operator, item.value)
 			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+					return cloneChannelItems(items), nil
+				}
+
 				return nil, err
 			}
 			if keep {
@@ -408,8 +418,13 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 	case "map":
 		mapped := make([]channelItem, 0, len(items))
 		for _, item := range items {
-			value, err := evalChannelClosure(operator.Closure, item.value)
+			value, err := evalChannelClosure(operator, item.value)
 			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+					return cloneChannelItems(items), nil
+				}
+
 				return nil, err
 			}
 			mapped = append(mapped, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
@@ -419,8 +434,13 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 	case "flatMap":
 		flattened := []channelItem{}
 		for _, item := range items {
-			value, err := evalChannelClosure(operator.Closure, item.value)
+			value, err := evalChannelClosure(operator, item.value)
 			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+					return cloneChannelItems(items), nil
+				}
+
 				return nil, err
 			}
 
@@ -520,69 +540,26 @@ func unionChannelDepGroups(items []channelItem) []string {
 	return deps
 }
 
-func evalChannelClosureBool(closure string, value any) (bool, error) {
-	resolved, err := evalChannelClosure(closure, value)
+func evalChannelClosureBool(operator ChannelOperator, value any) (bool, error) {
+	resolved, err := evalChannelClosure(operator, value)
 	if err != nil {
 		return false, err
 	}
 
-	keep, ok := resolved.(bool)
-	if !ok {
-		return false, fmt.Errorf("closure %q did not evaluate to a boolean", closure)
-	}
-
-	return keep, nil
+	return isTruthy(resolved), nil
 }
 
-func evalChannelClosure(closure string, value any) (any, error) {
-	closure = strings.TrimSpace(closure)
+func evalChannelClosure(operator ChannelOperator, value any) (any, error) {
+	if operator.ClosureExpr != nil {
+		return evalSimpleClosure(*operator.ClosureExpr, value, nil)
+	}
+
+	closure := strings.TrimSpace(operator.Closure)
 	if closure == "" {
 		return value, nil
 	}
 
-	if delimiter, ok := splitClosureDelimiter(closure); ok {
-		return strings.Split(fmt.Sprint(value), delimiter), nil
-	}
-
-	tokens, err := lex(closure)
-	if err != nil {
-		return nil, err
-	}
-
-	exprTokens := make([]token, 0, len(tokens))
-	for _, tok := range tokens {
-		if tok.typ == tokenEOF || tok.typ == tokenNewline {
-			continue
-		}
-		exprTokens = append(exprTokens, tok)
-	}
-	if len(exprTokens) == 0 {
-		return value, nil
-	}
-
-	expr, err := parseExprTokens(exprTokens)
-	if err != nil {
-		return nil, err
-	}
-
-	return EvalExpr(expr, map[string]any{"it": cloneChannelValue(value)})
-}
-
-func splitClosureDelimiter(closure string) (string, bool) {
-	if !strings.HasPrefix(closure, "it.split(") || !strings.HasSuffix(closure, ")") {
-		return "", false
-	}
-
-	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(closure, "it.split("), ")"))
-	if len(inner) < 2 {
-		return "", false
-	}
-	quote := inner[0]
-	if (quote != '\'' && quote != '"') || inner[len(inner)-1] != quote {
-		return "", false
-	}
-
-	return inner[1 : len(inner)-1], true
+	return evalSimpleClosure(ClosureExpr{Body: closure}, value, nil)
 }
 
 func flattenChannelValues(value any) []any {
@@ -901,4 +878,12 @@ func channelValueLess(left, right any) (bool, error) {
 	default:
 		return false, fmt.Errorf("unsupported comparable channel item %T", left)
 	}
+}
+
+func (operator ChannelOperator) ClosureExprOrText() string {
+	if operator.ClosureExpr != nil {
+		return operator.ClosureExpr.Body
+	}
+
+	return operator.Closure
 }

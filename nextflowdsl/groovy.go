@@ -26,6 +26,7 @@
 package nextflowdsl
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -34,6 +35,50 @@ import (
 )
 
 var groovyInterpolationPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+var errUnsupportedClosure = errors.New("unsupported closure")
+
+func cloneEvalVars(vars map[string]any) map[string]any {
+	if len(vars) == 0 {
+		return map[string]any{}
+	}
+
+	cloned := make(map[string]any, len(vars))
+	for key, value := range vars {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+func closureTupleValues(value any) ([]any, bool) {
+	switch typed := value.(type) {
+	case []any:
+		return cloneChannelSlice(typed), true
+	case []string:
+		values := make([]any, 0, len(typed))
+		for _, item := range typed {
+			values = append(values, item)
+		}
+
+		return values, true
+	}
+
+	refValue := reflect.ValueOf(value)
+	if !refValue.IsValid() {
+		return nil, false
+	}
+	if refValue.Kind() != reflect.Array && refValue.Kind() != reflect.Slice {
+		return nil, false
+	}
+
+	values := make([]any, 0, refValue.Len())
+	for index := range refValue.Len() {
+		values = append(values, refValue.Index(index).Interface())
+	}
+
+	return values, true
+}
 
 func resolveInterpolation(exprText string, vars map[string]any) (any, error) {
 	parts := strings.Split(exprText, ".")
@@ -74,6 +119,123 @@ func interpolateGroovyString(value string, vars map[string]any) (string, error) 
 	builder.WriteString(value[last:])
 
 	return builder.String(), nil
+}
+
+func bindClosureVars(vars map[string]any, closure ClosureExpr, value any) (map[string]any, error) {
+	scope := cloneEvalVars(vars)
+	if len(closure.Params) == 0 {
+		scope["it"] = cloneChannelValue(value)
+		return scope, nil
+	}
+
+	if len(closure.Params) == 1 {
+		scope[closure.Params[0]] = cloneChannelValue(value)
+		return scope, nil
+	}
+
+	values, ok := closureTupleValues(value)
+	if !ok {
+		return nil, fmt.Errorf("closure expects %d parameters but item is %T", len(closure.Params), value)
+	}
+	if len(values) < len(closure.Params) {
+		return nil, fmt.Errorf("closure expects %d parameters but item has %d values", len(closure.Params), len(values))
+	}
+
+	for index, name := range closure.Params {
+		scope[name] = cloneChannelValue(values[index])
+	}
+
+	return scope, nil
+}
+
+func evalListCollectMethod(expr MethodCallExpr, receiver []any, vars map[string]any) (any, error) {
+	if err := requireMethodExprArgCount(expr.Method, expr.Args, 1); err != nil {
+		return nil, err
+	}
+
+	closure, ok := expr.Args[0].(ClosureExpr)
+	if !ok {
+		return UnsupportedExpr{Text: renderExpr(expr)}, nil
+	}
+
+	collected := make([]any, 0, len(receiver))
+	for _, item := range receiver {
+		value, err := evalSimpleClosure(closure, item, vars)
+		if err != nil {
+			if errors.Is(err, errUnsupportedClosure) {
+				return UnsupportedExpr{Text: renderExpr(expr)}, nil
+			}
+
+			return nil, err
+		}
+
+		collected = append(collected, value)
+	}
+
+	return collected, nil
+}
+
+func requireMethodExprArgCount(method string, args []Expr, counts ...int) error {
+	for _, count := range counts {
+		if len(args) == count {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unsupported %s() arity %d", method, len(args))
+}
+
+func evalSimpleClosure(closure ClosureExpr, value any, vars map[string]any) (any, error) {
+	body := strings.TrimSpace(closure.Body)
+	if body == "" {
+		return cloneChannelValue(value), nil
+	}
+
+	tokens, err := lex(body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, body)
+	}
+
+	exprTokens := make([]token, 0, len(tokens))
+	for _, tok := range tokens {
+		if tok.typ == tokenEOF || tok.typ == tokenNewline {
+			continue
+		}
+
+		exprTokens = append(exprTokens, tok)
+	}
+	if len(exprTokens) == 0 {
+		return cloneChannelValue(value), nil
+	}
+
+	expr, err := parseExprTokens(exprTokens)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, body)
+	}
+
+	if unsupported, ok := expr.(UnsupportedExpr); ok {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, unsupported.Text)
+	}
+
+	scope, err := bindClosureVars(vars, closure, value)
+	if err != nil {
+		return nil, err
+	}
+
+	resolved, err := EvalExpr(expr, scope)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "unsupported ") {
+			return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, body)
+		}
+
+		return nil, err
+	}
+
+	if unsupported, ok := resolved.(UnsupportedExpr); ok {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, unsupported.Text)
+	}
+
+	return resolved, nil
 }
 
 func resolveExprPath(root, path string, vars map[string]any) (any, error) {
@@ -306,21 +468,24 @@ func evalMethodCallExpr(expr MethodCallExpr, vars map[string]any) (any, error) {
 		return nil, err
 	}
 
-	if expr.Method == "collect" {
-		if _, ok := receiver.([]any); ok {
-			return UnsupportedExpr{Text: renderExpr(expr)}, nil
-		}
-	}
-
-	args, err := evalExprArgs(expr.Args, vars)
-	if err != nil {
-		return nil, err
-	}
-
 	switch typed := receiver.(type) {
 	case string:
+		args, err := evalExprArgs(expr.Args, vars)
+		if err != nil {
+			return nil, err
+		}
+
 		return evalStringMethodCall(typed, expr.Method, args)
 	case []any:
+		if expr.Method == "collect" {
+			return evalListCollectMethod(expr, typed, vars)
+		}
+
+		args, err := evalExprArgs(expr.Args, vars)
+		if err != nil {
+			return nil, err
+		}
+
 		return evalListMethodCall(typed, expr.Method, args)
 	default:
 		return nil, fmt.Errorf("unsupported method receiver %T", receiver)
@@ -713,6 +878,8 @@ func EvalExpr(expr any, vars map[string]any) (any, error) {
 		return evalNullSafeExpr(value, vars)
 	case MethodCallExpr:
 		return evalMethodCallExpr(value, vars)
+	case ClosureExpr:
+		return value, nil
 	case UnsupportedExpr:
 		return nil, fmt.Errorf("unsupported expression %q", value.Text)
 	case BoolExpr:

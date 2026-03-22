@@ -146,6 +146,90 @@ func TestResolveChannelD5(t *testing.T) {
 
 func TestResolveChannelD6(t *testing.T) {
 	Convey("ResolveChannel handles D6 operator resolution", t, func() {
+		Convey("H2 simple closures evaluate during channel resolution", func() {
+			Convey("map binds named parameters to channel items", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						MapExpr{Keys: []Expr{StringExpr{Value: "id"}}, Values: []Expr{StringExpr{Value: "a"}}},
+						MapExpr{Keys: []Expr{StringExpr{Value: "id"}}, Values: []Expr{StringExpr{Value: "b"}}},
+						MapExpr{Keys: []Expr{StringExpr{Value: "id"}}, Values: []Expr{StringExpr{Value: "c"}}},
+					}},
+					Operators: []ChannelOperator{{
+						Name:        "map",
+						Closure:     "item.id",
+						ClosureExpr: &ClosureExpr{Params: []string{"item"}, Body: "item.id"},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{"a", "b", "c"})
+			})
+
+			Convey("filter excludes falsy results from implicit it closures", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1},
+						IntExpr{Value: 5},
+						IntExpr{Value: 2},
+						IntExpr{Value: 7},
+					}},
+					Operators: []ChannelOperator{{
+						Name:        "filter",
+						Closure:     "it > 3",
+						ClosureExpr: &ClosureExpr{Body: "it > 3"},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{5, 7})
+			})
+
+			Convey("map replaces items with the evaluated closure result", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1},
+						IntExpr{Value: 2},
+						IntExpr{Value: 3},
+					}},
+					Operators: []ChannelOperator{{
+						Name:        "map",
+						Closure:     "it * 2",
+						ClosureExpr: &ClosureExpr{Body: "it * 2"},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{2, 4, 6})
+			})
+
+			Convey("unsupported closures fall back to passthrough with a warning", func() {
+				var (
+					items  []any
+					err    error
+					stderr string
+				)
+
+				stderr = captureParseStderr(func() {
+					items, err = ResolveChannel(ChannelChain{
+						Source: ChannelFactory{Name: "of", Args: []Expr{
+							IntExpr{Value: 1},
+							IntExpr{Value: 2},
+							IntExpr{Value: 3},
+						}},
+						Operators: []ChannelOperator{{
+							Name:        "map",
+							Closure:     "println it; it * 2",
+							ClosureExpr: &ClosureExpr{Body: "println it; it * 2"},
+						}},
+					}, "/work")
+				})
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{1, 2, 3})
+				So(stderr, ShouldContainSubstring, "closure \"println it; it * 2\" could not be evaluated")
+			})
+		})
+
 		Convey("collect, first, last, take, filter, map, and flatMap transform factory items", func() {
 			collectItems, collectErr := ResolveChannel(ChannelChain{
 				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},

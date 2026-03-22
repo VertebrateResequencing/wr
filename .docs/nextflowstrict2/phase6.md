@@ -23,8 +23,8 @@ recognise `{ params -> body }` syntax, multi-parameter
 expression parsing infrastructure. Covering all 4 acceptance
 tests from H1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 6.2: E1 - Parse if/else in workflow blocks [parallel with 6.1]
 
@@ -37,8 +37,8 @@ Extend workflow block parsing in parse.go to handle `if`,
 and calls within each branch. Depends on Phase 1 for expression
 parsing. Covering all 4 acceptance tests from E1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -61,5 +61,5 @@ Also wire up D3's `collect` list method (test D3.19) now that
 closure evaluation is available. Depends on H1 (item 6.1) for
 closure parsing. Covering all 4 acceptance tests from H2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

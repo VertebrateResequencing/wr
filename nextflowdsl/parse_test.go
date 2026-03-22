@@ -464,7 +464,7 @@ func TestParseD3MethodCalls(t *testing.T) {
 					IntExpr{Value: 3},
 				}},
 				Method: "collect",
-				Args:   []Expr{UnsupportedExpr{Text: "{ it * 2 }"}},
+				Args:   []Expr{ClosureExpr{Params: []string{}, Body: "it * 2"}},
 			})
 		})
 	})
@@ -1069,11 +1069,81 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "Bonjour")
 			So(factory.Args[3].(StringExpr).Value, ShouldEqual, "Hola")
 		})
+
+		Convey("workflow if blocks capture conditions and calls", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nif (params.aligner == 'bwa') {\nBWA(reads)\n}\n}\n"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Conditions, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].Condition, ShouldContainSubstring, "params.aligner == 'bwa'")
+			So(wf.EntryWF.Conditions[0].Body, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].Body[0].Target, ShouldEqual, "BWA")
+		})
+
+		Convey("workflow if else blocks capture both branches", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nif (x) {\nA(ch)\n} else {\nB(ch)\n}\n}\n"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Conditions, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].Body, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].Body[0].Target, ShouldEqual, "A")
+			So(wf.EntryWF.Conditions[0].ElseBody, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].ElseBody[0].Target, ShouldEqual, "B")
+		})
+
+		Convey("workflow else if chains are captured separately from else bodies", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nif (x) {\nA(ch)\n} else if (y) {\nB(ch)\n} else {\nC(ch)\n}\n}\n"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Conditions, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].ElseIf, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].ElseIf[0].Condition, ShouldEqual, "y")
+			So(wf.EntryWF.Conditions[0].ElseIf[0].Body, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].ElseIf[0].Body[0].Target, ShouldEqual, "B")
+			So(wf.EntryWF.Conditions[0].ElseBody, ShouldHaveLength, 1)
+			So(wf.EntryWF.Conditions[0].ElseBody[0].Target, ShouldEqual, "C")
+		})
+
+		Convey("workflow blocks without conditionals keep an empty Conditions slice", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nA(ch)\n}\n"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Conditions, ShouldResemble, []*IfBlock{})
+		})
 	})
 }
 
 func TestParseChannelFactoriesAndOperators(t *testing.T) {
 	Convey("Parse handles A3 channel factories and operators", t, func() {
+		Convey("closures capture explicit and implicit parameters", func() {
+			testCases := []struct {
+				name   string
+				source string
+				params []string
+				body   string
+			}{
+				{name: "single explicit param", source: "workflow { foo(ch.map { item -> item.id }) }", params: []string{"item"}, body: "item.id"},
+				{name: "multiple explicit params", source: "workflow { foo(ch.filter { a, b -> a > b }) }", params: []string{"a", "b"}, body: "a > b"},
+				{name: "implicit it", source: "workflow { foo(ch.map { it * 2 }) }", params: []string{}, body: "it * 2"},
+				{name: "explicit empty params", source: "workflow { foo(ch.map { -> 42 }) }", params: []string{}, body: "42"},
+			}
+
+			for _, testCase := range testCases {
+				wf, err := Parse(strings.NewReader(testCase.source))
+
+				So(err, ShouldBeNil)
+				chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+				So(chain.Operators, ShouldHaveLength, 1)
+				So(chain.Operators[0].ClosureExpr, ShouldNotBeNil)
+				So(chain.Operators[0].ClosureExpr.Params, ShouldResemble, testCase.params)
+				So(chain.Operators[0].ClosureExpr.Body, ShouldEqual, testCase.body)
+			}
+		})
+
 		Convey("Channel.of chained to map parses as a factory with one operator", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.of(1,2,3).map { it * 2 }) }"))
 
