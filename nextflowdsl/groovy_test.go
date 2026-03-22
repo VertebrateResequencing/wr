@@ -249,6 +249,13 @@ func TestEvalExprD2ComparisonAndLogicalOperators(t *testing.T) {
 				So(result, ShouldEqual, testCase.expected)
 			}
 		})
+
+		Convey("unary minus negates integer operands", func() {
+			result, err := EvalExpr(UnaryExpr{Op: "-", Operand: IntExpr{Value: 7}}, nil)
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, -7)
+		})
 	})
 }
 

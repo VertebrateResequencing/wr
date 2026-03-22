@@ -303,6 +303,13 @@ func evalUnaryExpr(expr UnaryExpr, vars map[string]any) (any, error) {
 		}
 
 		return !value, nil
+	case "-":
+		value, ok := operand.(int)
+		if !ok {
+			return nil, fmt.Errorf("unsupported unary operand %T", operand)
+		}
+
+		return -value, nil
 	default:
 		return nil, fmt.Errorf("unsupported unary operator %q", expr.Op)
 	}

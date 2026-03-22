@@ -333,6 +333,16 @@ func TestParseComparisonAndLogicalExpressions(t *testing.T) {
 			})
 		})
 
+		Convey("unary minus parses as a UnaryExpr", func() {
+			tokens, err := lex("-1")
+
+			So(err, ShouldBeNil)
+			expr, err := parseExprTokens(tokens[:len(tokens)-1])
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, UnaryExpr{Op: "-", Operand: IntExpr{Value: 1}})
+		})
+
 		Convey("parsed process directives keep comparison and logical ASTs", func() {
 			wf, err := Parse(strings.NewReader("process foo {\nwhen: !false && 1 == 1\nscript: 'echo hello'\n}"))
 
