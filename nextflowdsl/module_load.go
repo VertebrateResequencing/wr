@@ -459,7 +459,57 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 		clonedEmit = append(clonedEmit, &WFEmit{Name: emit.Name, Expr: cloneWorkflowEmitExpr(emit.Expr, renameTargets)})
 	}
 
-	return &WorkflowBlock{Calls: clonedCalls, Take: clonedTake, Emit: clonedEmit}
+	return &WorkflowBlock{Calls: clonedCalls, Take: clonedTake, Emit: clonedEmit, Conditions: cloneIfBlocks(block.Conditions, renameTargets)}
+}
+
+func cloneIfBlocks(blocks []*IfBlock, renameTargets map[string]string) []*IfBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	cloned := make([]*IfBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block == nil {
+			continue
+		}
+
+		cloned = append(cloned, cloneIfBlock(block, renameTargets))
+	}
+
+	return cloned
+}
+
+func cloneIfBlock(block *IfBlock, renameTargets map[string]string) *IfBlock {
+	if block == nil {
+		return nil
+	}
+
+	cloneCalls := func(calls []*Call) []*Call {
+		cloned := make([]*Call, 0, len(calls))
+		for _, call := range calls {
+			if call == nil {
+				continue
+			}
+
+			target := call.Target
+			if renameTargets != nil {
+				if renamed, ok := renameTargets[target]; ok {
+					target = renamed
+				}
+			}
+
+			cloned = append(cloned, &Call{Target: target, Args: cloneChanExprs(call.Args, renameTargets)})
+		}
+
+		return cloned
+	}
+
+	return &IfBlock{
+		Condition: block.Condition,
+		Body:      cloneCalls(block.Body),
+		ElseIf:    cloneIfBlocks(block.ElseIf, renameTargets),
+		ElseBody:  cloneCalls(block.ElseBody),
+	}
 }
 
 func cloneWorkflowEmitExpr(expression string, renameTargets map[string]string) string {
@@ -559,11 +609,19 @@ func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExp
 	case ChannelChain:
 		operators := make([]ChannelOperator, 0, len(value.Operators))
 		for _, operator := range value.Operators {
+			var closureExpr *ClosureExpr
+			if operator.ClosureExpr != nil {
+				clonedClosure := *operator.ClosureExpr
+				clonedClosure.Params = append([]string{}, operator.ClosureExpr.Params...)
+				closureExpr = &clonedClosure
+			}
+
 			operators = append(operators, ChannelOperator{
-				Name:     operator.Name,
-				Args:     append([]Expr{}, operator.Args...),
-				Channels: cloneChanExprs(operator.Channels, renameTargets),
-				Closure:  operator.Closure,
+				Name:        operator.Name,
+				Args:        append([]Expr{}, operator.Args...),
+				Channels:    cloneChanExprs(operator.Channels, renameTargets),
+				Closure:     operator.Closure,
+				ClosureExpr: closureExpr,
 			})
 		}
 
