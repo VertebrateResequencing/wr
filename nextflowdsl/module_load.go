@@ -178,6 +178,10 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 
 		merged.Processes = append(merged.Processes, selected.Processes...)
 		merged.SubWFs = append(merged.SubWFs, selected.SubWFs...)
+		merged.Enums = append(merged.Enums, selected.Enums...)
+		merged.Records = append(merged.Records, cloneRecordDefs(selected.Records)...)
+		merged.ParamBlock = append(merged.ParamBlock, cloneParamDecls(selected.ParamBlock)...)
+		merged.OutputBlock = mergeOutputBlocks(merged.OutputBlock, selected.OutputBlock)
 	}
 
 	loaded[path] = cloneWorkflow(merged)
@@ -212,6 +216,10 @@ func loadImportedWorkflow(
 
 		moduleWF.Processes = append(moduleWF.Processes, cloneProcesses(loadedWorkflow.Processes)...)
 		moduleWF.SubWFs = append(moduleWF.SubWFs, cloneSubWorkflows(loadedWorkflow.SubWFs, nil)...)
+		moduleWF.Enums = append(moduleWF.Enums, cloneEnumDefs(loadedWorkflow.Enums)...)
+		moduleWF.Records = append(moduleWF.Records, cloneRecordDefs(loadedWorkflow.Records)...)
+		moduleWF.ParamBlock = append(moduleWF.ParamBlock, cloneParamDecls(loadedWorkflow.ParamBlock)...)
+		moduleWF.OutputBlock = mergeOutputBlocks(moduleWF.OutputBlock, loadedWorkflow.OutputBlock)
 	}
 
 	return moduleWF, nil
@@ -307,7 +315,15 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 		selectedNames[finalName] = struct{}{}
 	}
 
-	return &Workflow{Processes: selectedProcesses, SubWFs: selectedSubWFs, Functions: cloneFuncDefs(moduleWF.Functions)}, nil
+	return &Workflow{
+		Processes:   selectedProcesses,
+		SubWFs:      selectedSubWFs,
+		Functions:   cloneFuncDefs(moduleWF.Functions),
+		Enums:       cloneEnumDefs(moduleWF.Enums),
+		OutputBlock: moduleWF.OutputBlock,
+		ParamBlock:  cloneParamDecls(moduleWF.ParamBlock),
+		Records:     cloneRecordDefs(moduleWF.Records),
+	}, nil
 }
 
 func workflowDependencyTargets(block *WorkflowBlock, processes map[string]*Process, subworkflows map[string]*SubWorkflow) []string {
@@ -393,12 +409,16 @@ func cloneWorkflow(wf *Workflow) *Workflow {
 	}
 
 	return &Workflow{
-		Name:      wf.Name,
-		Processes: cloneProcesses(wf.Processes),
-		SubWFs:    cloneSubWorkflows(wf.SubWFs, nil),
-		Imports:   imports,
-		EntryWF:   cloneWorkflowBlock(wf.EntryWF, nil),
-		Functions: cloneFuncDefs(wf.Functions),
+		Name:        wf.Name,
+		Processes:   cloneProcesses(wf.Processes),
+		SubWFs:      cloneSubWorkflows(wf.SubWFs, nil),
+		Imports:     imports,
+		EntryWF:     cloneWorkflowBlock(wf.EntryWF, nil),
+		Functions:   cloneFuncDefs(wf.Functions),
+		Enums:       cloneEnumDefs(wf.Enums),
+		OutputBlock: wf.OutputBlock,
+		ParamBlock:  cloneParamDecls(wf.ParamBlock),
+		Records:     cloneRecordDefs(wf.Records),
 	}
 }
 
@@ -507,7 +527,86 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 		clonedEmit = append(clonedEmit, &WFEmit{Name: emit.Name, Expr: cloneWorkflowEmitExpr(emit.Expr, renameTargets)})
 	}
 
-	return &WorkflowBlock{Calls: clonedCalls, Take: clonedTake, Emit: clonedEmit, Conditions: cloneIfBlocks(block.Conditions, renameTargets)}
+	clonedPublish := make([]*WFPublish, 0, len(block.Publish))
+	for _, publish := range block.Publish {
+		if publish == nil {
+			continue
+		}
+
+		clonedPublish = append(clonedPublish, &WFPublish{Target: publish.Target, Source: cloneWorkflowEmitExpr(publish.Source, renameTargets)})
+	}
+
+	return &WorkflowBlock{
+		Calls:      clonedCalls,
+		Take:       clonedTake,
+		Emit:       clonedEmit,
+		Publish:    clonedPublish,
+		OnComplete: block.OnComplete,
+		OnError:    block.OnError,
+		Conditions: cloneIfBlocks(block.Conditions, renameTargets),
+	}
+}
+
+func cloneEnumDefs(enumDefs []*EnumDef) []*EnumDef {
+	cloned := make([]*EnumDef, 0, len(enumDefs))
+	for _, enumDef := range enumDefs {
+		if enumDef == nil {
+			continue
+		}
+
+		cloned = append(cloned, &EnumDef{Name: enumDef.Name, Values: append([]string{}, enumDef.Values...)})
+	}
+
+	return cloned
+}
+
+func cloneParamDecls(paramDecls []*ParamDecl) []*ParamDecl {
+	cloned := make([]*ParamDecl, 0, len(paramDecls))
+	for _, paramDecl := range paramDecls {
+		if paramDecl == nil {
+			continue
+		}
+
+		cloned = append(cloned, &ParamDecl{Name: paramDecl.Name, Type: paramDecl.Type, Default: paramDecl.Default})
+	}
+
+	return cloned
+}
+
+func cloneRecordDefs(recordDefs []*RecordDef) []*RecordDef {
+	cloned := make([]*RecordDef, 0, len(recordDefs))
+	for _, recordDef := range recordDefs {
+		if recordDef == nil {
+			continue
+		}
+
+		fields := make([]*RecordField, 0, len(recordDef.Fields))
+		for _, field := range recordDef.Fields {
+			if field == nil {
+				continue
+			}
+
+			fields = append(fields, &RecordField{Name: field.Name, Type: field.Type, Default: field.Default})
+		}
+
+		cloned = append(cloned, &RecordDef{Name: recordDef.Name, Fields: fields})
+	}
+
+	return cloned
+}
+
+func mergeOutputBlocks(existing, incoming string) string {
+	existing = strings.TrimSpace(existing)
+	incoming = strings.TrimSpace(incoming)
+
+	switch {
+	case existing == "":
+		return incoming
+	case incoming == "":
+		return existing
+	default:
+		return existing + "\n" + incoming
+	}
 }
 
 func cloneIfBlocks(blocks []*IfBlock, renameTargets map[string]string) []*IfBlock {
@@ -585,6 +684,7 @@ func cloneDeclarations(declarations []*Declaration) []*Declaration {
 			Expr:     declaration.Expr,
 			Raw:      declaration.Raw,
 			Emit:     declaration.Emit,
+			Each:     declaration.Each,
 			Optional: declaration.Optional,
 			Elements: cloneTupleElements(declaration.Elements),
 		})
@@ -652,6 +752,8 @@ func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExp
 		}
 
 		return ChanRef{Name: name}
+	case NamedChannelRef:
+		return NamedChannelRef{Source: cloneChanExpr(value.Source, renameTargets), Label: value.Label}
 	case ChannelFactory:
 		return ChannelFactory{Name: value.Name, Args: append([]Expr{}, value.Args...)}
 	case ChannelChain:
@@ -685,6 +787,8 @@ func renderChanExpr(expression ChanExpr) string {
 	switch value := expression.(type) {
 	case ChanRef:
 		return value.Name
+	case NamedChannelRef:
+		return renderChanExpr(value.Source) + "." + value.Label
 	case ChannelFactory:
 		args := make([]string, 0, len(value.Args))
 		for _, arg := range value.Args {

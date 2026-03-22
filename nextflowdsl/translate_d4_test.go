@@ -338,6 +338,84 @@ func TestTranslateD4(t *testing.T) {
 			}
 		})
 
+		Convey("CompletedJobsForPending preserves numeric cross-product ordering beyond single digits", func() {
+			modes := make([]Expr, 0, 12)
+			for i := range 12 {
+				modes = append(modes, StringExpr{Value: strconv.Itoa(i)})
+			}
+
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:       "PRODUCE",
+						Directives: map[string]any{},
+						Input: []*Declaration{
+							{Kind: "val", Name: "sample"},
+							{Kind: "val", Name: "mode", Each: true},
+						},
+						Script: "touch ${mode}.txt",
+						Output: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "mode"},
+								{Kind: "path", Expr: StringExpr{Value: "*.txt"}},
+							},
+						}},
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+					{
+						Name:       "CONSUME",
+						Directives: map[string]any{},
+						Input: []*Declaration{{
+							Kind: "tuple",
+							Elements: []*TupleElement{
+								{Kind: "val", Name: "mode"},
+								{Kind: "path", Name: "reads"},
+							},
+						}},
+						Script:     "echo ${mode} ${reads}",
+						Env:        map[string]string{},
+						PublishDir: []*PublishDir{},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "sampleA"}}},
+						ChannelFactory{Name: "of", Args: modes},
+					}},
+					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
+				}},
+			}
+
+			baseDir := t.TempDir()
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 12)
+			So(result.Pending, ShouldHaveLength, 1)
+
+			for i, job := range result.Jobs {
+				So(os.MkdirAll(job.Cwd, 0o755), ShouldBeNil)
+				So(os.WriteFile(filepath.Join(job.Cwd, strconv.Itoa(i)+".txt"), []byte("ok"), 0o644), ShouldBeNil)
+			}
+
+			completed, ready, err := CompletedJobsForPending(result.Pending[0], result.Jobs, nil)
+			So(err, ShouldBeNil)
+			So(ready, ShouldBeTrue)
+			So(completed, ShouldHaveLength, 12)
+
+			jobs, err := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 12)
+
+			for i, job := range jobs {
+				expectedPath := filepath.Join(baseDir, "nf-work", "r1", "PRODUCE", "0_"+strconv.Itoa(i), strconv.Itoa(i)+".txt")
+				So(job.Cmd, ShouldContainSubstring, "export mode='"+strconv.Itoa(i)+"'")
+				So(job.Cmd, ShouldContainSubstring, "export reads='"+expectedPath+"'")
+			}
+		})
+
 		Convey("CompletedJobsForPending preserves absolute output paths outside the job cwd", func() {
 			absDir := t.TempDir()
 			absOutput := filepath.Join(absDir, "out.txt")
@@ -484,6 +562,12 @@ func TestTranslateD4(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 2)
+
+			reportJobs, err := TranslatePending(result.Pending[1], completed, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			So(err, ShouldBeNil)
+			So(reportJobs, ShouldHaveLength, 2)
+			So(reportJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.CONSUME.0"})
+			So(reportJobs[1].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.CONSUME.1"})
 		})
 	})
 }

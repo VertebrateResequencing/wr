@@ -35,13 +35,13 @@ import (
 var skippedTopLevelConfigScopes = map[string]struct{}{
 	"conda":        {},
 	"dag":          {},
-	"executor":     {},
 	"manifest":     {},
 	"notification": {},
 	"report":       {},
 	"timeline":     {},
 	"tower":        {},
 	"trace":        {},
+	"wave":         {},
 	"weblog":       {},
 }
 
@@ -68,6 +68,7 @@ type Profile struct {
 	Process *ProcessDefaults
 	Selectors []*ProcessSelector
 	Params  map[string]any
+	Executor map[string]any
 }
 
 // Config holds parsed Nextflow configuration.
@@ -76,6 +77,7 @@ type Config struct {
 	Profiles        map[string]*Profile
 	Process         *ProcessDefaults
 	Selectors       []*ProcessSelector
+	Executor        map[string]any
 	ContainerEngine string
 	Env             map[string]string
 }
@@ -168,6 +170,12 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 				return nil, err
 			}
 			cfg.Env = env
+		case "executor":
+			executor, err := p.parseExecutorBlock()
+			if err != nil {
+				return nil, err
+			}
+			cfg.Executor = MergeParams(cfg.Executor, executor)
 		case "params":
 			params, err := p.parseParamsBlock()
 			if err != nil {
@@ -222,6 +230,10 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 			}
 		case "env":
 			if err := p.skipNamedBlock("env"); err != nil {
+				return nil, nil, err
+			}
+		case "executor":
+			if err := p.skipNamedBlock("executor"); err != nil {
 				return nil, nil, err
 			}
 		case "params":
@@ -575,6 +587,10 @@ func (p *configParser) collectProfileParamsBlock() (map[string]any, error) {
 					return nil, parseErr
 				}
 				params = MergeParams(params, profileParams)
+			case "executor":
+				if err := p.skipNamedBlock("executor"); err != nil {
+					return nil, err
+				}
 			case "process":
 				if err := p.skipNamedBlock("process"); err != nil {
 					return nil, err
@@ -617,6 +633,12 @@ func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[s
 					return nil, parseErr
 				}
 				profile.Params = MergeParams(profile.Params, params)
+			case "executor":
+				executor, parseErr := p.parseExecutorBlock()
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				profile.Executor = MergeParams(profile.Executor, executor)
 			case "process":
 				block, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams), true)
 				if parseErr != nil {
@@ -713,6 +735,54 @@ func (p *configParser) parseTopLevelEnvBlock() (map[string]string, error) {
 	}
 
 	return p.parseEnvBlock()
+}
+
+func (p *configParser) parseExecutorBlock() (map[string]any, error) {
+	if _, err := p.expectIdent("executor"); err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return nil, err
+	}
+
+	executor := map[string]any{}
+	for {
+		p.skipSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			return nil, p.unclosedBlockError("executor")
+		case tokenRBrace:
+			p.pos++
+			return executor, nil
+		case tokenIdent:
+			value, err := p.parseAssignmentValue()
+			if err != nil {
+				return nil, err
+			}
+
+			switch current.lit {
+			case "name", "queue", "clusterOptions":
+				stringValue, ok := value.(string)
+				if !ok {
+					return nil, fmt.Errorf("line %d: executor %s expects a string literal", current.line, current.lit)
+				}
+				executor[current.lit] = stringValue
+			case "queueSize":
+				intValue, ok := value.(int)
+				if !ok {
+					return nil, fmt.Errorf("line %d: executor queueSize expects an integer value", current.line)
+				}
+				executor[current.lit] = intValue
+			default:
+				executor[current.lit] = value
+			}
+		default:
+			return nil, fmt.Errorf("line %d: expected executor setting", current.line)
+		}
+	}
 }
 
 func (p *configParser) parseContainerScope(scopeName string) (string, error) {

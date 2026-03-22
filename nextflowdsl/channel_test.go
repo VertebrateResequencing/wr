@@ -133,7 +133,7 @@ func TestResolveChannelD5(t *testing.T) {
 
 					stderr = captureParseStderr(func() {
 						items, err = ResolveChannel(ChannelChain{
-							Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
+							Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
 							Operators: []ChannelOperator{{Name: name}},
 						}, "/work")
 					})
@@ -363,7 +363,7 @@ func TestResolveChannelD6(t *testing.T) {
 
 		Convey("view and dump are resolved as no-op debug operators", func() {
 			items, err := ResolveChannel(ChannelChain{
-				Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
 				Operators: []ChannelOperator{{Name: "view"}, {Name: "dump"}},
 			}, "/work")
 
@@ -371,23 +371,278 @@ func TestResolveChannelD6(t *testing.T) {
 			So(items, ShouldResemble, []any{1, 2})
 		})
 
-		Convey("unsupported cardinality-changing operators warn and preserve the source items", func() {
-			var (
-				items  []any
-				err    error
-				stderr string
-			)
+		Convey("L1 cardinality-changing operators resolve with real semantics", func() {
+			Convey("combine computes a Cartesian product", func() {
+				resolver := func(ref ChanRef) ([]channelItem, error) {
+					switch ref.Name {
+					case "ch1":
+						return []channelItem{{value: 1}, {value: 2}}, nil
+					case "ch2":
+						return []channelItem{{value: "a"}, {value: "b"}, {value: "c"}}, nil
+					default:
+						return nil, fmt.Errorf("unknown ref %s", ref.Name)
+					}
+				}
 
-			stderr = captureParseStderr(func() {
-				items, err = ResolveChannel(ChannelChain{
-					Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
-					Operators: []ChannelOperator{{Name: "count"}},
-				}, "/work")
+				items, err := resolveChannelItems(ChannelChain{
+					Source:    ChanRef{Name: "ch1"},
+					Operators: []ChannelOperator{{Name: "combine", Channels: []ChanExpr{ChanRef{Name: "ch2"}}}},
+				}, "/work", resolver)
+
+				So(err, ShouldBeNil)
+				So(channelItemValues(items), ShouldResemble, []any{
+					[]any{1, "a"}, []any{1, "b"}, []any{1, "c"},
+					[]any{2, "a"}, []any{2, "b"}, []any{2, "c"},
+				})
 			})
 
-			So(err, ShouldBeNil)
-			So(items, ShouldResemble, []any{1, 2})
-			So(stderr, ShouldContainSubstring, "operator \"count\" may affect job cardinality")
+			Convey("concat appends source and other channels in order", func() {
+				resolver := func(ref ChanRef) ([]channelItem, error) {
+					switch ref.Name {
+					case "ch1":
+						return []channelItem{{value: 1}, {value: 2}}, nil
+					case "ch2":
+						return []channelItem{{value: 3}, {value: 4}, {value: 5}}, nil
+					default:
+						return nil, fmt.Errorf("unknown ref %s", ref.Name)
+					}
+				}
+
+				items, err := resolveChannelItems(ChannelChain{
+					Source:    ChanRef{Name: "ch1"},
+					Operators: []ChannelOperator{{Name: "concat", Channels: []ChanExpr{ChanRef{Name: "ch2"}}}},
+				}, "/work", resolver)
+
+				So(err, ShouldBeNil)
+				So(channelItemValues(items), ShouldResemble, []any{1, 2, 3, 4, 5})
+			})
+
+			Convey("flatten expands nested list values into individual items", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						ListExpr{Elements: []Expr{IntExpr{Value: 1}, ListExpr{Elements: []Expr{IntExpr{Value: 2}, IntExpr{Value: 3}}}}},
+						ListExpr{Elements: []Expr{IntExpr{Value: 4}, IntExpr{Value: 5}}},
+					}},
+					Operators: []ChannelOperator{{Name: "flatten"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{1, 2, 3, 4, 5})
+			})
+
+			Convey("unique preserves tuple uniqueness across all items", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						ListExpr{Elements: []Expr{IntExpr{Value: 1}, StringExpr{Value: "a"}}},
+						ListExpr{Elements: []Expr{IntExpr{Value: 1}, StringExpr{Value: "b"}}},
+						ListExpr{Elements: []Expr{IntExpr{Value: 2}, StringExpr{Value: "c"}}},
+					}},
+					Operators: []ChannelOperator{{Name: "unique"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{[]any{1, "a"}, []any{1, "b"}, []any{2, "c"}})
+			})
+
+			Convey("unique removes duplicate scalar items while preserving order", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 1}, IntExpr{Value: 3}, IntExpr{Value: 2},
+					}},
+					Operators: []ChannelOperator{{Name: "unique"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{1, 2, 3})
+			})
+
+			Convey("distinct removes only consecutive duplicates", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1}, IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 1},
+					}},
+					Operators: []ChannelOperator{{Name: "distinct"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{1, 2, 3, 1})
+			})
+
+			Convey("ifEmpty supplies a default item for empty channels", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source:    ChannelFactory{Name: "empty"},
+					Operators: []ChannelOperator{{Name: "ifEmpty", Args: []Expr{StringExpr{Value: "default"}}}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{"default"})
+			})
+
+			Convey("ifEmpty keeps original items when the channel is non-empty", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+					Operators: []ChannelOperator{{Name: "ifEmpty", Args: []Expr{StringExpr{Value: "default"}}}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{1, 2})
+			})
+
+			Convey("toList collects items into a single list item", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 2}}},
+					Operators: []ChannelOperator{{Name: "toList"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{[]any{3, 1, 2}})
+			})
+
+			Convey("toSortedList collects and sorts items", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 2}}},
+					Operators: []ChannelOperator{{Name: "toSortedList"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{[]any{1, 2, 3}})
+			})
+
+			Convey("count returns the number of items as a singleton channel", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
+					Operators: []ChannelOperator{{Name: "count"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{3})
+			})
+
+			Convey("count supports a filter argument", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 2}, IntExpr{Value: 4},
+					}},
+					Operators: []ChannelOperator{{Name: "count", Args: []Expr{IntExpr{Value: 2}}}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{2})
+			})
+
+			Convey("reduce folds items using the supplied closure", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3},
+					}},
+					Operators: []ChannelOperator{{
+						Name:        "reduce",
+						Closure:     "a + v",
+						ClosureExpr: &ClosureExpr{Params: []string{"a", "v"}, Body: "a + v"},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{6})
+			})
+
+			Convey("reduce supports an initial accumulator argument", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3},
+					}},
+					Operators: []ChannelOperator{{
+						Name: "reduce",
+						Args: []Expr{
+							IntExpr{Value: 10},
+							ClosureExpr{Params: []string{"a", "v"}, Body: "a + v"},
+						},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{16})
+			})
+
+			Convey("toFloat parses and resolves as a pass-through conversion", func() {
+				wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('1.5', '2.5').toFloat()) }"))
+
+				So(err, ShouldBeNil)
+				items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
+
+				So(resolveErr, ShouldBeNil)
+				So(items, ShouldResemble, []any{"1.5", "2.5"})
+			})
+
+			Convey("toLong parses and resolves as a pass-through conversion", func() {
+				wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('100', '200').toLong()) }"))
+
+				So(err, ShouldBeNil)
+				items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
+
+				So(resolveErr, ShouldBeNil)
+				So(items, ShouldResemble, []any{"100", "200"})
+			})
+
+			Convey("toDouble parses and resolves as a pass-through conversion", func() {
+				wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('1.5', '2.5').toDouble()) }"))
+
+				So(err, ShouldBeNil)
+				items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
+
+				So(resolveErr, ShouldBeNil)
+				So(items, ShouldResemble, []any{"1.5", "2.5"})
+			})
+
+			Convey("transpose expands nested list elements into separate items", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						ListExpr{Elements: []Expr{IntExpr{Value: 1}, ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+						ListExpr{Elements: []Expr{IntExpr{Value: 2}, ListExpr{Elements: []Expr{StringExpr{Value: "c"}}}}},
+					}},
+					Operators: []ChannelOperator{{Name: "transpose"}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{[]any{1, "a"}, []any{1, "b"}, []any{2, "c"}})
+			})
+
+			Convey("combine supports keyed cross-products via by", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						ListExpr{Elements: []Expr{IntExpr{Value: 1}, StringExpr{Value: "a"}}},
+						ListExpr{Elements: []Expr{IntExpr{Value: 2}, StringExpr{Value: "b"}}},
+					}},
+					Operators: []ChannelOperator{{
+						Name: "combine",
+						Channels: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{
+							ListExpr{Elements: []Expr{IntExpr{Value: 1}, StringExpr{Value: "x"}}},
+							ListExpr{Elements: []Expr{IntExpr{Value: 1}, StringExpr{Value: "y"}}},
+							ListExpr{Elements: []Expr{IntExpr{Value: 2}, StringExpr{Value: "z"}}},
+						}}},
+						Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}}, Values: []Expr{IntExpr{Value: 0}}}},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{[]any{1, "a", "x"}, []any{1, "a", "y"}, []any{2, "b", "z"}})
+			})
+
+			Convey("transpose supports explicit by indexes", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						ListExpr{Elements: []Expr{IntExpr{Value: 1}, ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+						ListExpr{Elements: []Expr{IntExpr{Value: 2}, ListExpr{Elements: []Expr{StringExpr{Value: "c"}}}}},
+					}},
+					Operators: []ChannelOperator{{
+						Name: "transpose",
+						Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}}, Values: []Expr{IntExpr{Value: 1}}}},
+					}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{[]any{1, "a"}, []any{1, "b"}, []any{2, "c"}})
+			})
 		})
 
 		Convey("cross produces the Cartesian product across both channels", func() {
@@ -485,27 +740,6 @@ func TestResolveChannelD6(t *testing.T) {
 			So(items, ShouldResemble, []any{6})
 		})
 
-		Convey("splitJson warns and preserves the source item count", func() {
-			var (
-				items  []any
-				err    error
-				stderr string
-			)
-
-			stderr = captureParseStderr(func() {
-				items, err = ResolveChannel(ChannelChain{
-					Source: ChannelFactory{Name: "of", Args: []Expr{
-						IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 4}, IntExpr{Value: 5},
-					}},
-					Operators: []ChannelOperator{{Name: "splitJson"}},
-				}, "/work")
-			})
-
-			So(err, ShouldBeNil)
-			So(items, ShouldResemble, []any{1, 2, 3, 4, 5})
-			So(stderr, ShouldContainSubstring, "operator \"splitJson\" may affect job cardinality")
-		})
-
 		Convey("merge warns and preserves the source item count", func() {
 			resolver := func(ref ChanRef) ([]channelItem, error) {
 				switch ref.Name {
@@ -543,7 +777,7 @@ func TestResolveChannelD6(t *testing.T) {
 
 			stderr = captureParseStderr(func() {
 				items, err = ResolveChannel(ChannelChain{
-					Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
+					Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
 					Operators: []ChannelOperator{{Name: "toInteger"}},
 				}, "/work")
 			})
@@ -551,6 +785,144 @@ func TestResolveChannelD6(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(items, ShouldResemble, []any{1, 2, 3})
 			So(stderr, ShouldContainSubstring, "deprecated channel operator \"toInteger\"")
+		})
+	})
+}
+
+func TestPendingChannelOperatorsL2(t *testing.T) {
+	Convey("L2 data-dependent operators resolve concrete runtime items", t, func() {
+		Convey("branch routes completed items into named output channels with distinct dep groups", func() {
+			result, err := resolveBranchChannelItems([]channelItem{
+				{value: 3, depGroups: []string{"up"}},
+				{value: 15, depGroups: []string{"up"}},
+				{value: 7, depGroups: []string{"up"}},
+				{value: 20, depGroups: []string{"up"}},
+			}, ChannelOperator{
+				Name:        "branch",
+				Closure:     "small: it < 10; big: it >= 10",
+				ClosureExpr: &ClosureExpr{Body: "small: it < 10; big: it >= 10"},
+			})
+
+			So(err, ShouldBeNil)
+			So(channelItemValues(result.items["small"]), ShouldResemble, []any{3, 7})
+			So(channelItemValues(result.items["big"]), ShouldResemble, []any{15, 20})
+			So(result.items["small"][0].depGroups[0], ShouldNotEqual, result.items["big"][0].depGroups[0])
+		})
+
+		Convey("multiMap emits one concrete item per named output channel", func() {
+			result, err := resolveMultiMapChannelItems([]channelItem{{value: 5, depGroups: []string{"up"}}}, ChannelOperator{
+				Name:        "multiMap",
+				Closure:     "it -> foo: it * 2; bar: it + 1",
+				ClosureExpr: &ClosureExpr{Params: []string{"it"}, Body: "foo: it * 2; bar: it + 1"},
+			})
+
+			So(err, ShouldBeNil)
+			So(channelItemValues(result.items["foo"]), ShouldResemble, []any{10})
+			So(channelItemValues(result.items["bar"]), ShouldResemble, []any{6})
+			So(result.items["foo"][0].depGroups[0], ShouldNotEqual, result.items["bar"][0].depGroups[0])
+		})
+
+		Convey("splitCsv reads file data and emits one item per row", func() {
+			path := filepath.Join(t.TempDir(), "data.csv")
+			So(os.WriteFile(path, []byte("id,name\n1,alpha\n2,beta\n3,gamma\n"), 0o600), ShouldBeNil)
+
+			items, err := splitCSVChannelItems([]channelItem{{value: path}}, ChannelOperator{
+				Name: "splitCsv",
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "header"}}, Values: []Expr{BoolExpr{Value: true}}}},
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldHaveLength, 3)
+			So(items[0].value, ShouldResemble, map[string]any{"id": "1", "name": "alpha"})
+			So(items[2].value, ShouldResemble, map[string]any{"id": "3", "name": "gamma"})
+		})
+
+		Convey("splitFasta reads sequences and emits one item per chunk", func() {
+			path := filepath.Join(t.TempDir(), "reads.fa")
+			So(os.WriteFile(path, []byte(">seq1\nACGT\n>seq2\nTGCA\n"), 0o600), ShouldBeNil)
+
+			items, err := splitFASTAChannelItems([]channelItem{{value: path}}, ChannelOperator{
+				Name: "splitFasta",
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}}, Values: []Expr{IntExpr{Value: 1}}}},
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldHaveLength, 2)
+			So(items[0].value, ShouldEqual, ">seq1\nACGT")
+			So(items[1].value, ShouldEqual, ">seq2\nTGCA")
+		})
+
+		Convey("collectFile writes completed items into a single collected file", func() {
+			workDir := t.TempDir()
+			items, err := collectFileChannelItems([]channelItem{{value: "alpha"}, {value: "beta"}, {value: "gamma"}}, ChannelOperator{
+				Name: "collectFile",
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "name"}}, Values: []Expr{StringExpr{Value: "out.txt"}}}},
+			}, workDir)
+
+			So(err, ShouldBeNil)
+			So(items, ShouldHaveLength, 1)
+			So(items[0].value, ShouldEqual, filepath.Join(workDir, "out.txt"))
+
+			content, readErr := os.ReadFile(filepath.Join(workDir, "out.txt"))
+			So(readErr, ShouldBeNil)
+			So(string(content), ShouldEqual, "alpha\nbeta\ngamma\n")
+		})
+
+		Convey("splitJson extracts items from the requested path", func() {
+			path := filepath.Join(t.TempDir(), "data.json")
+			So(os.WriteFile(path, []byte(`{"data":[{"id":1},{"id":2}]}`), 0o600), ShouldBeNil)
+
+			items, err := splitJSONChannelItems([]channelItem{{value: path}}, ChannelOperator{
+				Name: "splitJson",
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "path"}}, Values: []Expr{StringExpr{Value: "data"}}}},
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldHaveLength, 2)
+			So(items[0].value, ShouldResemble, map[string]any{"id": float64(1)})
+			So(items[1].value, ShouldResemble, map[string]any{"id": float64(2)})
+		})
+
+		Convey("splitText chunks file lines according to the requested size", func() {
+			lines := make([]string, 0, 25)
+			for i := 1; i <= 25; i++ {
+				lines = append(lines, fmt.Sprintf("line-%d", i))
+			}
+
+			path := filepath.Join(t.TempDir(), "data.txt")
+			So(os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600), ShouldBeNil)
+
+			items, err := splitTextChannelItems([]channelItem{{value: path}}, ChannelOperator{
+				Name: "splitText",
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}}, Values: []Expr{IntExpr{Value: 10}}}},
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldHaveLength, 3)
+			So(strings.Split(items[0].value.(string), "\n"), ShouldHaveLength, 10)
+			So(strings.Split(items[1].value.(string), "\n"), ShouldHaveLength, 10)
+			So(strings.Split(items[2].value.(string), "\n"), ShouldHaveLength, 5)
+		})
+
+		Convey("splitFastq pairs reads and emits one item per read pair", func() {
+			workDir := t.TempDir()
+			left := filepath.Join(workDir, "r1.fq")
+			right := filepath.Join(workDir, "r2.fq")
+			So(os.WriteFile(left, []byte("@r1/1\nACGT\n+\n!!!!\n@r2/1\nTGCA\n+\n####\n"), 0o600), ShouldBeNil)
+			So(os.WriteFile(right, []byte("@r1/2\nTTTT\n+\n$$$$\n@r2/2\nCCCC\n+\n%%%%\n"), 0o600), ShouldBeNil)
+
+			items, err := splitFASTQChannelItems([]channelItem{{value: []string{left, right}}}, ChannelOperator{
+				Name: "splitFastq",
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}, StringExpr{Value: "pe"}}, Values: []Expr{IntExpr{Value: 1}, BoolExpr{Value: true}}}},
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldHaveLength, 2)
+			firstPair, ok := items[0].value.([]any)
+			So(ok, ShouldBeTrue)
+			So(firstPair, ShouldHaveLength, 2)
+			So(firstPair[0], ShouldEqual, "@r1/1\nACGT\n+\n!!!!")
+			So(firstPair[1], ShouldEqual, "@r1/2\nTTTT\n+\n$$$$")
 		})
 	})
 }

@@ -29,5 +29,5 @@ directive parsing to accept any `Expr` (including
 non-string expressions. Covering all 30 acceptance tests
 from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

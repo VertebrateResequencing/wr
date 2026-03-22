@@ -223,6 +223,49 @@ func TestParseConfig(t *testing.T) {
 			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config scope \"report\"")
 		})
 
+		Convey("M2 remaining standard Nextflow config scopes parse without error", func() {
+			testCases := []struct {
+				name          string
+				input         string
+				expectedParam string
+				expectedValue any
+			}{
+				{
+					name:          "wave scopes do not block later params parsing",
+					input:         "wave { enabled = true }\nparams { x = 1 }",
+					expectedParam: "x",
+					expectedValue: 1,
+				},
+				{name: "tower scopes parse without error", input: "tower { enabled = true }"},
+				{name: "conda scopes parse without error", input: "conda { enabled = true }"},
+				{name: "dag scopes parse without error", input: "dag { overwrite = true }"},
+				{name: "manifest scopes parse without error", input: "manifest { name = 'my-pipeline' }"},
+				{name: "notification scopes parse without error", input: "notification { enabled = true }"},
+				{name: "report scopes parse without error", input: "report { enabled = true }"},
+				{name: "timeline scopes parse without error", input: "timeline { enabled = true }"},
+				{name: "trace scopes parse without error", input: "trace { enabled = true }"},
+				{name: "weblog scopes parse without error", input: "weblog { url = 'http://example.com' }"},
+				{
+					name:  "all standard remaining scopes parse together without error",
+					input: "conda {}\ndag {}\nmanifest {}\nnotification {}\nreport {}\ntimeline {}\ntower {}\ntrace {}\nwave {}\nweblog {}",
+				},
+			}
+
+			for _, testCase := range testCases {
+				testCase := testCase
+				Convey(testCase.name, func() {
+					cfg, err := ParseConfig(strings.NewReader(testCase.input))
+
+					So(err, ShouldBeNil)
+					So(cfg, ShouldNotBeNil)
+					if testCase.expectedParam != "" {
+						So(cfg.Params, ShouldContainKey, testCase.expectedParam)
+						So(cfg.Params[testCase.expectedParam], ShouldEqual, testCase.expectedValue)
+					}
+				})
+			}
+		})
+
 		Convey("ParseConfigFromPath loads params from an included config", func() {
 			dir := t.TempDir()
 			mainPath := filepath.Join(dir, "nextflow.config")
@@ -507,6 +550,49 @@ func TestParseConfigNestedSelectors(t *testing.T) {
 			So(cfg.Selectors[0].Inner.Pattern, ShouldEqual, "ALIGN")
 			So(cfg.Selectors[0].Inner.Settings, ShouldNotBeNil)
 			So(cfg.Selectors[0].Inner.Settings.Cpus, ShouldEqual, 32)
+		})
+	})
+}
+
+func TestParseConfigExecutorScope(t *testing.T) {
+	Convey("ParseConfig handles M1 executor scopes", t, func() {
+		Convey("top-level executor blocks capture name, queueSize, and clusterOptions", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { name = 'slurm'; queueSize = 100; clusterOptions = '--account=mylab' }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldResemble, map[string]any{"name": "slurm", "queueSize": 100, "clusterOptions": "--account=mylab"})
+		})
+
+		Convey("top-level executor blocks capture queue settings", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { queue = 'long' }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldResemble, map[string]any{"queue": "long"})
+		})
+
+		Convey("missing executor blocks leave Config.Executor empty", func() {
+			cfg, err := ParseConfig(strings.NewReader("params { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldBeNil)
+		})
+
+		Convey("profile-scoped executor blocks are retained alongside top-level executor config", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { name = 'local' }\nprofiles { hpc { executor { name = 'slurm' } } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldResemble, map[string]any{"name": "local"})
+			So(cfg.Profiles, ShouldContainKey, "hpc")
+			So(cfg.Profiles["hpc"].Executor, ShouldResemble, map[string]any{"name": "slurm"})
+		})
+
+		Convey("executor blocks preserve additional supported Nextflow settings", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { name = 'local'; submitRateLimit = '1 sec' }\nprofiles { hpc { executor { name = 'slurm'; pollInterval = '30 sec'; queueSize = 16 } } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldResemble, map[string]any{"name": "local", "submitRateLimit": "1 sec"})
+			So(cfg.Profiles, ShouldContainKey, "hpc")
+			So(cfg.Profiles["hpc"].Executor, ShouldResemble, map[string]any{"name": "slurm", "pollInterval": "30 sec", "queueSize": 16})
 		})
 	})
 }

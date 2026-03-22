@@ -216,12 +216,61 @@ func TestParseTupleDeclarations(t *testing.T) {
 	})
 }
 
+func TestParseEachInputDeclarations(t *testing.T) {
+	Convey("Parse handles B1 each input declarations", t, func() {
+		Convey("each val inputs set kind, name, and each flag", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\neach val(x)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "val")
+			So(wf.Processes[0].Input[0].Name, ShouldEqual, "x")
+			So(wf.Processes[0].Input[0].Each, ShouldBeTrue)
+		})
+
+		Convey("each path inputs set kind, name, and each flag", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\neach path(genome)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "path")
+			So(wf.Processes[0].Input[0].Name, ShouldEqual, "genome")
+			So(wf.Processes[0].Input[0].Each, ShouldBeTrue)
+		})
+
+		Convey("mixed regular and each inputs preserve each flag per declaration", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\nval(id)\neach val(x)\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input, ShouldHaveLength, 2)
+			So(wf.Processes[0].Input[0].Each, ShouldBeFalse)
+			So(wf.Processes[0].Input[1].Each, ShouldBeTrue)
+		})
+
+		Convey("bare each inputs default to val declarations", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ninput:\neach x\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input, ShouldHaveLength, 1)
+			So(wf.Processes[0].Input[0].Kind, ShouldEqual, "val")
+			So(wf.Processes[0].Input[0].Name, ShouldEqual, "x")
+			So(wf.Processes[0].Input[0].Each, ShouldBeTrue)
+		})
+	})
+}
+
 func TestParseTopLevelOutputBlocks(t *testing.T) {
 	Convey("Parse handles A7 top-level output blocks", t, func() {
-		Convey("top-level output blocks are skipped before later definitions", func() {
+		Convey("H1 stores raw top-level output block content before later definitions", func() {
 			wf, err := Parse(strings.NewReader("output { samples { path 'fastq' } }\nprocess foo {\nscript: 'echo hi'\n}"))
 
 			So(err, ShouldBeNil)
+			So(wf.OutputBlock, ShouldNotEqual, "")
+			So(wf.OutputBlock, ShouldContainSubstring, "samples")
 			So(wf.Processes, ShouldHaveLength, 1)
 			So(wf.Processes[0].Name, ShouldEqual, "foo")
 		})
@@ -230,14 +279,25 @@ func TestParseTopLevelOutputBlocks(t *testing.T) {
 			wf, err := Parse(strings.NewReader("output { }"))
 
 			So(err, ShouldBeNil)
+			So(wf.OutputBlock, ShouldEqual, "")
 			So(wf.Processes, ShouldHaveLength, 0)
 		})
 
-		Convey("nested top-level output blocks are skipped with balanced braces", func() {
-			wf, err := Parse(strings.NewReader("output { deeply { nested { block { } } } }"))
+		Convey("H1 stores nested top-level output block bodies with balanced braces", func() {
+			wf, err := Parse(strings.NewReader("output { samples { path 'fastq'; index { path 'index.csv' } } }"))
 
 			So(err, ShouldBeNil)
+			So(wf.OutputBlock, ShouldNotEqual, "")
+			So(wf.OutputBlock, ShouldContainSubstring, "index")
 			So(wf.Processes, ShouldHaveLength, 0)
+		})
+
+		Convey("H1 leaves OutputBlock empty when no top-level output block exists", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.OutputBlock, ShouldEqual, "")
+			So(wf.Processes, ShouldHaveLength, 1)
 		})
 
 		Convey("top-level assignments named output still parse as channel assignments", func() {
@@ -251,6 +311,163 @@ func TestParseTopLevelOutputBlocks(t *testing.T) {
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "of")
 			So(factory.Args, ShouldHaveLength, 3)
+		})
+	})
+}
+
+func TestParseParamsBlocks(t *testing.T) {
+	Convey("Parse handles F1 params blocks", t, func() {
+		paramValue := func(decl *ParamDecl) any {
+			if decl == nil || decl.Default == nil {
+				return nil
+			}
+
+			value, err := EvalExpr(decl.Default, nil)
+
+			So(err, ShouldBeNil)
+
+			return value
+		}
+
+		paramByName := func(block []*ParamDecl, name string) *ParamDecl {
+			for _, decl := range block {
+				if decl != nil && decl.Name == name {
+					return decl
+				}
+			}
+
+			return nil
+		}
+
+		Convey("simple params block assignments populate ParamBlock defaults", func() {
+			wf, err := Parse(strings.NewReader("params { input = '/data' }"))
+
+			So(err, ShouldBeNil)
+			So(wf.ParamBlock, ShouldHaveLength, 1)
+			So(wf.ParamBlock[0].Name, ShouldEqual, "input")
+			So(wf.ParamBlock[0].Type, ShouldEqual, "")
+			So(paramValue(wf.ParamBlock[0]), ShouldEqual, "/data")
+		})
+
+		Convey("typed params declarations store type annotations and optional defaults", func() {
+			wf, err := Parse(strings.NewReader("params { input: Path; save: Boolean = false }"))
+
+			So(err, ShouldBeNil)
+			So(wf.ParamBlock, ShouldHaveLength, 2)
+
+			input := paramByName(wf.ParamBlock, "input")
+			So(input, ShouldNotBeNil)
+			So(input.Type, ShouldEqual, "Path")
+			So(input.Default, ShouldBeNil)
+
+			save := paramByName(wf.ParamBlock, "save")
+			So(save, ShouldNotBeNil)
+			So(save.Type, ShouldEqual, "Boolean")
+			So(paramValue(save), ShouldBeFalse)
+		})
+
+		Convey("params blocks override earlier legacy params assignments", func() {
+			wf, err := Parse(strings.NewReader("params.x = 1\nparams { x = 2 }"))
+
+			So(err, ShouldBeNil)
+			So(wf.ParamBlock, ShouldHaveLength, 1)
+			So(wf.ParamBlock[0].Name, ShouldEqual, "x")
+			So(paramValue(wf.ParamBlock[0]), ShouldEqual, 2)
+		})
+
+		Convey("legacy params assignments override earlier params block values", func() {
+			wf, err := Parse(strings.NewReader("params { x = 1 }\nparams.x = 2"))
+
+			So(err, ShouldBeNil)
+			So(wf.ParamBlock, ShouldHaveLength, 1)
+			So(wf.ParamBlock[0].Name, ShouldEqual, "x")
+			So(paramValue(wf.ParamBlock[0]), ShouldEqual, 2)
+		})
+
+		Convey("empty params blocks parse without declarations", func() {
+			wf, err := Parse(strings.NewReader("params { }"))
+
+			So(err, ShouldBeNil)
+			So(wf.ParamBlock, ShouldHaveLength, 0)
+		})
+
+		Convey("nested params blocks flatten names with dotted paths", func() {
+			wf, err := Parse(strings.NewReader("params { nested { x = 1 } }"))
+
+			So(err, ShouldBeNil)
+			So(wf.ParamBlock, ShouldHaveLength, 1)
+			So(wf.ParamBlock[0].Name, ShouldEqual, "nested.x")
+			So(paramValue(wf.ParamBlock[0]), ShouldEqual, 1)
+		})
+	})
+}
+
+func TestParseEnumDefinitions(t *testing.T) {
+	Convey("Parse handles G1 enum definitions", t, func() {
+		Convey("enum definitions are stored with their values", func() {
+			wf, err := Parse(strings.NewReader("enum Day { MONDAY, TUESDAY, WEDNESDAY }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Enums, ShouldHaveLength, 1)
+			So(wf.Enums[0].Name, ShouldEqual, "Day")
+			So(wf.Enums[0].Values, ShouldResemble, []string{"MONDAY", "TUESDAY", "WEDNESDAY"})
+		})
+
+		Convey("enum definitions can be followed by processes", func() {
+			wf, err := Parse(strings.NewReader("enum Day { MONDAY, TUESDAY }\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Enums, ShouldHaveLength, 1)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("empty enum definitions parse without values", func() {
+			wf, err := Parse(strings.NewReader("enum Empty { }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Enums, ShouldHaveLength, 1)
+			So(wf.Enums[0].Name, ShouldEqual, "Empty")
+			So(wf.Enums[0].Values, ShouldResemble, []string{})
+		})
+	})
+}
+
+func TestParseRecordDefinitions(t *testing.T) {
+	Convey("Parse handles G2 record definitions", t, func() {
+		Convey("record definitions are stored with their fields", func() {
+			wf, err := Parse(strings.NewReader("record FastqPair { id: String; fastq_1: Path }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Records, ShouldHaveLength, 1)
+			So(wf.Records[0].Name, ShouldEqual, "FastqPair")
+			So(wf.Records[0].Fields, ShouldHaveLength, 2)
+			So(wf.Records[0].Fields[0].Name, ShouldEqual, "id")
+			So(wf.Records[0].Fields[0].Type, ShouldEqual, "String")
+			So(wf.Records[0].Fields[1].Name, ShouldEqual, "fastq_1")
+			So(wf.Records[0].Fields[1].Type, ShouldEqual, "Path")
+		})
+
+		Convey("record field defaults parse as expressions", func() {
+			wf, err := Parse(strings.NewReader("record Cfg { threads: Integer = 4 }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Records, ShouldHaveLength, 1)
+			So(wf.Records[0].Fields, ShouldHaveLength, 1)
+
+			value, evalErr := EvalExpr(wf.Records[0].Fields[0].Default, nil)
+
+			So(evalErr, ShouldBeNil)
+			So(value, ShouldEqual, 4)
+		})
+
+		Convey("record definitions can be followed by processes", func() {
+			wf, err := Parse(strings.NewReader("record Cfg { threads: Integer = 4 }\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Records, ShouldHaveLength, 1)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
 		})
 	})
 }
@@ -381,6 +598,206 @@ func TestParseD6CastExpressions(t *testing.T) {
 	})
 }
 
+func TestParseWorkflowPublishSectionsI1(t *testing.T) {
+	Convey("Parse handles I1 workflow publish assignments", t, func() {
+		Convey("single publish assignments are stored as target source pairs", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\npublish:\nmessages = messages\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish[0].Target, ShouldEqual, "messages")
+			So(wf.SubWFs[0].Body.Publish[0].Source, ShouldEqual, "messages")
+		})
+
+		Convey("multiple publish assignments preserve order", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\npublish:\na = ch_a\nb = ch_b\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish, ShouldHaveLength, 2)
+			So(wf.SubWFs[0].Body.Publish[0].Target, ShouldEqual, "a")
+			So(wf.SubWFs[0].Body.Publish[0].Source, ShouldEqual, "ch_a")
+			So(wf.SubWFs[0].Body.Publish[1].Target, ShouldEqual, "b")
+			So(wf.SubWFs[0].Body.Publish[1].Source, ShouldEqual, "ch_b")
+		})
+
+		Convey("workflow blocks without publish sections keep an empty publish list", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish, ShouldBeEmpty)
+		})
+	})
+}
+
+func TestParseE1SkippableStatementTypes(t *testing.T) {
+	Convey("Parse handles E1 skippable statement types", t, func() {
+		Convey("function bodies with E1 statements parse and preserve raw bodies", func() {
+			testCases := []struct {
+				name         string
+				source       string
+				expectedBody string
+			}{
+				{
+					name:         "assert and return",
+					source:       "def check(x) { assert x > 0 : 'must be positive'\nreturn x }",
+					expectedBody: "assert x > 0 : 'must be positive'\nreturn x",
+				},
+				{
+					name:         "try catch",
+					source:       "def safe(x) { try { risky(x) } catch (Exception e) { log.warn(e) } }",
+					expectedBody: "try { risky(x) } catch (Exception e) { log.warn(e) }",
+				},
+				{
+					name:         "for in loop",
+					source:       "def loop(items) { for (x in items) { println x } }",
+					expectedBody: "for (x in items) { println x }",
+				},
+				{
+					name:         "while loop",
+					source:       "def wait(n) { while (n > 0) { n = n - 1 } }",
+					expectedBody: "while (n > 0) { n = n - 1 }",
+				},
+				{
+					name:         "switch case",
+					source:       "def label(x) { switch (x) { case 1: 'one'; break; case 2: 'two'; break; default: 'other' } }",
+					expectedBody: "switch (x) { case 1: 'one'; break; case 2: 'two'; break; default: 'other' }",
+				},
+				{
+					name:         "throw",
+					source:       "def fail() { throw new RuntimeException('fail') }",
+					expectedBody: "throw new RuntimeException('fail')",
+				},
+				{
+					name:         "bare return",
+					source:       "def answer() { return 42 }",
+					expectedBody: "return 42",
+				},
+			}
+
+			for _, testCase := range testCases {
+				wf, err := Parse(strings.NewReader(testCase.source))
+
+				So(err, ShouldBeNil)
+				So(wf.Functions, ShouldHaveLength, 1)
+				So(wf.Functions[0].Body, ShouldEqual, testCase.expectedBody)
+			}
+		})
+
+		Convey("process script sections preserve raw bodies containing E1 statements", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nscript: 'for (x in items) { println x }'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Script, ShouldEqual, "for (x in items) { println x }")
+		})
+
+		Convey("closure bodies with E1 statements parse without error", func() {
+			testCases := []struct {
+				name         string
+				source       string
+				expectedBody string
+			}{
+				{
+					name:         "guarded return",
+					source:       "{ item -> if (item == null) return null; item.trim() }",
+					expectedBody: "if (item == null) return null; item.trim()",
+				},
+				{
+					name:         "assert and return",
+					source:       "{ item -> assert item != null : 'missing'; return item }",
+					expectedBody: "assert item != null: 'missing'; return item",
+				},
+				{
+					name:         "try catch finally",
+					source:       "{ item -> try { risky(item) } catch (Exception e) { log.warn(e) } finally { cleanup() } }",
+					expectedBody: "try { risky(item) } catch (Exception e) { log.warn(e) } finally { cleanup() }",
+				},
+				{
+					name:         "for in loop",
+					source:       "{ items -> for (x in items) { println x }; return items }",
+					expectedBody: "for (x in items) { println x }; return items",
+				},
+				{
+					name:         "while loop",
+					source:       "{ n -> while (n > 0) { return n }; return 0 }",
+					expectedBody: "while (n > 0) { return n }; return 0",
+				},
+				{
+					name:         "switch case",
+					source:       "{ x -> switch (x) { case 1: 'one'; break; default: 'other' } }",
+					expectedBody: "switch (x) { case 1: 'one'; break; default: 'other' }",
+				},
+				{
+					name:         "throw",
+					source:       "{ -> throw new RuntimeException('fail') }",
+					expectedBody: "throw new RuntimeException('fail')",
+				},
+			}
+
+			for _, testCase := range testCases {
+				expr, err := parseTestExpr(testCase.source)
+
+				So(err, ShouldBeNil)
+
+				closure, ok := expr.(ClosureExpr)
+				So(ok, ShouldBeTrue)
+				So(closure.Body, ShouldEqual, testCase.expectedBody)
+			}
+		})
+	})
+}
+
+func TestParseD2MissingExpressionFeatures(t *testing.T) {
+	Convey("Parse handles D2 missing expression features", t, func() {
+		Convey("slashy strings parse into SlashyStringExpr", func() {
+			expr, err := parseTestExpr(`/foo\/bar/`)
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, SlashyStringExpr{Value: "foo/bar"})
+		})
+
+		Convey("new constructors with arguments parse into NewExpr", func() {
+			expr, err := parseTestExpr("new File('test.txt')")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, NewExpr{
+				ClassName: "File",
+				Args:      []Expr{StringExpr{Value: "test.txt"}},
+			})
+		})
+
+		Convey("new constructors without arguments parse into NewExpr", func() {
+			expr, err := parseTestExpr("new Date()")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, NewExpr{ClassName: "Date", Args: []Expr{}})
+		})
+
+		Convey("def tuple assignments parse into MultiAssignExpr", func() {
+			expr, err := parseTestExpr("def (x, y) = [1, 2]")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MultiAssignExpr{
+				Names: []string{"x", "y"},
+				Value: ListExpr{Elements: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+			})
+		})
+
+		Convey("tuple assignments without def parse into MultiAssignExpr", func() {
+			expr, err := parseTestExpr("(a, b) = someList")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, MultiAssignExpr{
+				Names: []string{"a", "b"},
+				Value: VarExpr{Root: "someList"},
+			})
+		})
+	})
+}
+
 func TestParseD1TernaryAndElvisExpressions(t *testing.T) {
 	Convey("Parse handles D1 ternary and elvis operators", t, func() {
 		Convey("ternary expressions produce a TernaryExpr with a condition", func() {
@@ -402,6 +819,148 @@ func TestParseD1TernaryAndElvisExpressions(t *testing.T) {
 				True:  VarExpr{Root: "x"},
 				False: StringExpr{Value: "default"},
 			})
+		})
+	})
+}
+
+func TestParseD1MissingOperators(t *testing.T) {
+	Convey("Parse handles D1 missing Groovy and Nextflow operators", t, func() {
+		Convey("modulo parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("10 % 3")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: IntExpr{Value: 10}, Op: "%", Right: IntExpr{Value: 3}})
+		})
+
+		Convey("power parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("2 ** 10")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: IntExpr{Value: 2}, Op: "**", Right: IntExpr{Value: 10}})
+		})
+
+		Convey("in parses as an InExpr", func() {
+			expr, err := parseTestExpr("x in ['a', 'b']")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, InExpr{
+				Left:  VarExpr{Root: "x"},
+				Right: ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}},
+			})
+		})
+
+		Convey("negated in parses as an InExpr", func() {
+			expr, err := parseTestExpr("x !in [1, 2]")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, InExpr{
+				Left:    VarExpr{Root: "x"},
+				Right:   ListExpr{Elements: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+				Negated: true,
+			})
+		})
+
+		Convey("instanceof operators parse without error", func() {
+			positive, err := parseTestExpr("x instanceof String")
+
+			So(err, ShouldBeNil)
+			So(positive, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "x"}, Op: "instanceof", Right: VarExpr{Root: "String"}})
+
+			negative, err := parseTestExpr("x !instanceof String")
+
+			So(err, ShouldBeNil)
+			So(negative, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "x"}, Op: "!instanceof", Right: VarExpr{Root: "String"}})
+		})
+
+		Convey("regex find parses as a RegexExpr", func() {
+			expr, err := parseTestExpr("name =~ /pattern/")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, RegexExpr{Left: VarExpr{Root: "name"}, Right: SlashyStringExpr{Value: "pattern"}})
+		})
+
+		Convey("regex match parses as a RegexExpr", func() {
+			expr, err := parseTestExpr("name ==~ /^[A-Z]+$/")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, RegexExpr{Left: VarExpr{Root: "name"}, Right: SlashyStringExpr{Value: "^[A-Z]+$"}, Full: true})
+		})
+
+		Convey("spaceship parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("a <=> b")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "a"}, Op: "<=>", Right: VarExpr{Root: "b"}})
+		})
+
+		Convey("inclusive ranges parse as a RangeExpr", func() {
+			expr, err := parseTestExpr("1..10")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, RangeExpr{Start: IntExpr{Value: 1}, End: IntExpr{Value: 10}})
+		})
+
+		Convey("exclusive ranges parse as a RangeExpr", func() {
+			expr, err := parseTestExpr("0..<5")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, RangeExpr{Start: IntExpr{Value: 0}, End: IntExpr{Value: 5}, Exclusive: true})
+		})
+
+		Convey("left shift parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("x << 2")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "x"}, Op: "<<", Right: IntExpr{Value: 2}})
+		})
+
+		Convey("right shift parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("x >> 1")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "x"}, Op: ">>", Right: IntExpr{Value: 1}})
+		})
+
+		Convey("unsigned right shift parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("x >>> 1")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "x"}, Op: ">>>", Right: IntExpr{Value: 1}})
+		})
+
+		Convey("bitwise and parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("a & b")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "a"}, Op: "&", Right: VarExpr{Root: "b"}})
+		})
+
+		Convey("bitwise xor parses as a BinaryExpr", func() {
+			expr, err := parseTestExpr("a ^ b")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "a"}, Op: "^", Right: VarExpr{Root: "b"}})
+		})
+
+		Convey("bitwise or parses as a BinaryExpr in expression contexts", func() {
+			expr, err := parseTestExpr("a | b")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, BinaryExpr{Left: VarExpr{Root: "a"}, Op: "|", Right: VarExpr{Root: "b"}})
+		})
+
+		Convey("bitwise not parses as a UnaryExpr", func() {
+			expr, err := parseTestExpr("~x")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, UnaryExpr{Op: "~", Operand: VarExpr{Root: "x"}})
+		})
+
+		Convey("spread-dot parses as a SpreadExpr", func() {
+			expr, err := parseTestExpr("items*.name")
+
+			So(err, ShouldBeNil)
+			So(expr, ShouldResemble, SpreadExpr{Receiver: VarExpr{Root: "items"}, Property: "name"})
 		})
 	})
 }
@@ -856,6 +1415,158 @@ func TestParseProcessDefinitions(t *testing.T) {
 	})
 }
 
+func TestParseA1RemainingProcessDirectives(t *testing.T) {
+	Convey("Parse accepts remaining A1 process directives", t, func() {
+		parseProcess := func(input string) (*Workflow, string, error) {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader(input))
+			})
+
+			return wf, stderr, err
+		}
+
+		Convey("newly accepted stored directives parse without errors", func() {
+			testCases := []struct {
+				name      string
+				directive string
+				source    string
+			}{
+				{name: "accelerator", directive: "accelerator", source: "process foo {\naccelerator 1, type: 'nvidia-tesla-v100'\nscript: 'echo hello'\n}"},
+				{name: "arch", directive: "arch", source: "process foo {\narch 'linux/x86_64'\nscript: 'echo hello'\n}"},
+				{name: "array", directive: "array", source: "process foo {\narray 100\nscript: 'echo hello'\n}"},
+				{name: "conda", directive: "conda", source: "process foo {\nconda 'samtools=1.17'\nscript: 'echo hello'\n}"},
+				{name: "containerOptions", directive: "containerOptions", source: "process foo {\ncontainerOptions '--gpus all'\nscript: 'echo hello'\n}"},
+				{name: "echo", directive: "echo", source: "process foo {\necho true\nscript: 'echo hello'\n}"},
+				{name: "ext", directive: "ext", source: "process foo {\next foo: 'bar'\nscript: 'echo hello'\n}"},
+				{name: "fair", directive: "fair", source: "process foo {\nfair true\nscript: 'echo hello'\n}"},
+				{name: "machineType", directive: "machineType", source: "process foo {\nmachineType 'n1-standard-8'\nscript: 'echo hello'\n}"},
+				{name: "maxErrors", directive: "maxErrors", source: "process foo {\nmaxErrors 5\nscript: 'echo hello'\n}"},
+				{name: "maxSubmitAwait", directive: "maxSubmitAwait", source: "process foo {\nmaxSubmitAwait '1h'\nscript: 'echo hello'\n}"},
+				{name: "penv", directive: "penv", source: "process foo {\npenv 'smp'\nscript: 'echo hello'\n}"},
+				{name: "pod", directive: "pod", source: "process foo {\npod [label: 'app', value: 'test']\nscript: 'echo hello'\n}"},
+				{name: "resourceLabels", directive: "resourceLabels", source: "process foo {\nresourceLabels region: 'eu-west-1'\nscript: 'echo hello'\n}"},
+				{name: "resourceLimits", directive: "resourceLimits", source: "process foo {\nresourceLimits cpus: 64, memory: '256.GB'\nscript: 'echo hello'\n}"},
+				{name: "spack", directive: "spack", source: "process foo {\nspack 'samtools@1.17'\nscript: 'echo hello'\n}"},
+			}
+
+			for _, testCase := range testCases {
+				testCase := testCase
+				Convey(testCase.name+" directives are stored and warned", func() {
+					wf, stderr, err := parseProcess(testCase.source)
+
+					So(err, ShouldBeNil)
+					So(wf.Processes, ShouldHaveLength, 1)
+					So(wf.Processes[0].Directives[testCase.directive], ShouldNotBeNil)
+					So(stderr, ShouldContainSubstring, "unsupported directive \""+testCase.directive+"\"")
+				})
+			}
+		})
+
+		Convey("additional stored directives parse without errors", func() {
+			testCases := []struct {
+				name      string
+				directive string
+				source    string
+			}{
+				{name: "stageInMode", directive: "stageInMode", source: "process foo {\nstageInMode 'copy'\nscript: 'echo hello'\n}"},
+				{name: "stageOutMode", directive: "stageOutMode", source: "process foo {\nstageOutMode 'move'\nscript: 'echo hello'\n}"},
+				{name: "clusterOptions", directive: "clusterOptions", source: "process foo {\nclusterOptions '--account=mylab'\nscript: 'echo hello'\n}"},
+				{name: "debug", directive: "debug", source: "process foo {\ndebug true\nscript: 'echo hello'\n}"},
+				{name: "executor", directive: "executor", source: "process foo {\nexecutor 'slurm'\nscript: 'echo hello'\n}"},
+				{name: "queue", directive: "queue", source: "process foo {\nqueue 'long'\nscript: 'echo hello'\n}"},
+				{name: "scratch", directive: "scratch", source: "process foo {\nscratch true\nscript: 'echo hello'\n}"},
+				{name: "secret", directive: "secret", source: "process foo {\nsecret 'MY_TOKEN'\nscript: 'echo hello'\n}"},
+				{name: "storeDir", directive: "storeDir", source: "process foo {\nstoreDir '/data/cache'\nscript: 'echo hello'\n}"},
+				{name: "shell", directive: "shell", source: "process foo {\nshell '/bin/bash', '-euo', 'pipefail'\nscript: 'echo hello'\n}"},
+			}
+
+			for _, testCase := range testCases {
+				testCase := testCase
+				Convey(testCase.name+" directives are stored and warned", func() {
+					wf, stderr, err := parseProcess(testCase.source)
+
+					So(err, ShouldBeNil)
+					So(wf.Processes, ShouldHaveLength, 1)
+					So(wf.Processes[0].Directives[testCase.directive], ShouldNotBeNil)
+					So(stderr, ShouldContainSubstring, "unsupported directive \""+testCase.directive+"\"")
+					if testCase.directive == "shell" {
+						So(wf.Processes[0].Shell, ShouldEqual, "")
+					}
+				})
+			}
+		})
+
+		Convey("all existing and newly accepted directives can coexist", func() {
+			wf, stderr, err := parseProcess("process foo {\ncpus 4\nmemory '8 GB'\ntime '2.h'\ndisk '10 GB'\ncontainer 'ubuntu:22.04'\nerrorStrategy 'retry'\nmaxRetries 2\nlabel 'big'\ntag 'sample'\nbeforeScript 'echo before'\nafterScript 'echo after'\nmodule 'samtools/1.17'\ncache 'lenient'\naccelerator 1, type: 'nvidia-tesla-v100'\narch 'linux/x86_64'\narray 100\nclusterOptions '--account=mylab'\nconda 'samtools=1.17'\ncontainerOptions '--gpus all'\ndebug true\necho true\nexecutor 'slurm'\next foo: 'bar'\nfair true\nmachineType 'n1-standard-8'\nmaxErrors 5\nmaxSubmitAwait '1h'\npenv 'smp'\npod [label: 'app', value: 'test']\nqueue 'long'\nresourceLabels region: 'eu-west-1'\nresourceLimits cpus: 64, memory: '256.GB'\nscratch true\nsecret 'MY_TOKEN'\nspack 'samtools@1.17'\nstageInMode 'copy'\nstageOutMode 'move'\nstoreDir '/data/cache'\nshell '/bin/bash', '-euo', 'pipefail'\nenv MY_VAR: 'value'\npublishDir '/results'\nscript: 'echo hello'\n}")
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(intExprValue(wf.Processes[0].Directives["cpus"]), ShouldEqual, 4)
+			So(wf.Processes[0].Container, ShouldEqual, "ubuntu:22.04")
+			So(wf.Processes[0].ErrorStrat, ShouldEqual, "retry")
+			So(wf.Processes[0].Directives["accelerator"], ShouldNotBeNil)
+			So(wf.Processes[0].Directives["shell"], ShouldNotBeNil)
+			So(wf.Processes[0].Env["MY_VAR"], ShouldEqual, "value")
+			So(wf.Processes[0].PublishDir, ShouldHaveLength, 1)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"accelerator\"")
+		})
+
+		Convey("unknown directives warn without failing", func() {
+			wf, stderr, err := parseProcess("process foo {\nfoobar 42\nscript: 'echo hello'\n}")
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			_, ok := wf.Processes[0].Directives["foobar"]
+			So(ok, ShouldBeFalse)
+			So(stderr, ShouldContainSubstring, "ignoring unsupported directive \"foobar\"")
+		})
+
+		Convey("stage sections are skipped without parse errors", func() {
+			wf, stderr, err := parseProcess("process foo {\nstage:\n'prepare artifacts'\nscript: 'echo hello'\n}")
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Script, ShouldEqual, "echo hello")
+			So(stderr, ShouldContainSubstring, "unsupported process section \"stage\"")
+		})
+
+		Convey("topic output qualifiers are accepted and warned", func() {
+			wf, stderr, err := parseProcess("process foo {\noutput:\npath '*.bam', topic: 'aligned'\nscript: 'echo hello'\n}")
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output, ShouldHaveLength, 1)
+			So(stderr, ShouldContainSubstring, "unsupported output qualifier \"topic\"")
+		})
+
+		Convey("dynamic container expressions fall back to Directives", func() {
+			wf, stderr, err := parseProcess("process foo {\ncontainer { 'ubuntu:22.04' }\nscript: 'echo hello'\n}")
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Container, ShouldEqual, "")
+			_, ok := wf.Processes[0].Directives["container"].(ClosureExpr)
+			So(ok, ShouldBeTrue)
+			So(stderr, ShouldEqual, "")
+		})
+
+		Convey("dynamic errorStrategy expressions fall back to Directives", func() {
+			wf, stderr, err := parseProcess("process foo {\nerrorStrategy { 'retry' }\nscript: 'echo hello'\n}")
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].ErrorStrat, ShouldEqual, "")
+			_, ok := wf.Processes[0].Directives["errorStrategy"].(ClosureExpr)
+			So(ok, ShouldBeTrue)
+			So(stderr, ShouldEqual, "")
+		})
+	})
+}
+
 func TestParseWorkflowBlocks(t *testing.T) {
 	Convey("Parse handles A2 workflow blocks", t, func() {
 		Convey("named workflows capture take, main, and emit sections", func() {
@@ -909,7 +1620,30 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(wf.SubWFs, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Publish, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish[0].Target, ShouldEqual, "bam")
+			So(wf.SubWFs[0].Body.Publish[0].Source, ShouldEqual, "'results'")
 			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
+		})
+
+		Convey("publish sections store multiple assignments in order", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\na = ch_a\nb = ch_b\nemit:\nresult_ch\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish, ShouldHaveLength, 2)
+			So(wf.SubWFs[0].Body.Publish[0].Target, ShouldEqual, "a")
+			So(wf.SubWFs[0].Body.Publish[0].Source, ShouldEqual, "ch_a")
+			So(wf.SubWFs[0].Body.Publish[1].Target, ShouldEqual, "b")
+			So(wf.SubWFs[0].Body.Publish[1].Source, ShouldEqual, "ch_b")
+		})
+
+		Convey("workflow blocks without publish sections keep an empty publish list", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\nemit:\nresult_ch\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Publish, ShouldBeEmpty)
 		})
 
 		Convey("publish sections accept colon-style property lines without opening new sections", func() {
@@ -919,6 +1653,7 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(wf.SubWFs, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Publish, ShouldBeEmpty)
 			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Emit[0].Name, ShouldEqual, "result_ch")
 		})
@@ -930,6 +1665,7 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(wf.SubWFs, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.Publish, ShouldBeEmpty)
 			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
 			So(wf.SubWFs[0].Body.Emit[0].Name, ShouldEqual, "result_ch")
 		})
@@ -942,6 +1678,43 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(wf.SubWFs[0].Body.Emit, ShouldHaveLength, 1)
 			So(wf.Processes, ShouldHaveLength, 1)
 			So(wf.Processes[0].Name, ShouldEqual, "done")
+		})
+
+		Convey("workflow blocks store onComplete section bodies", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nonComplete:\nprintln 'done'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.OnComplete, ShouldEqual, "println 'done'")
+			So(wf.SubWFs[0].Body.OnError, ShouldEqual, "")
+		})
+
+		Convey("workflow blocks store onError section bodies", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nonError:\nprintln 'failed'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.OnError, ShouldEqual, "println 'failed'")
+			So(wf.SubWFs[0].Body.OnComplete, ShouldEqual, "")
+		})
+
+		Convey("workflow blocks retain main calls alongside onComplete sections", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\nonComplete:\nprintln 'done'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.Calls[0].Target, ShouldEqual, "BWA")
+			So(wf.SubWFs[0].Body.OnComplete, ShouldEqual, "println 'done'")
+		})
+
+		Convey("workflow blocks without lifecycle sections leave them empty", func() {
+			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.SubWFs, ShouldHaveLength, 1)
+			So(wf.SubWFs[0].Body.OnComplete, ShouldEqual, "")
+			So(wf.SubWFs[0].Body.OnError, ShouldEqual, "")
 		})
 
 		Convey("entry workflow records ordered calls", func() {
@@ -1033,6 +1806,102 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(intExprValue(entrySharedFactory.Args[0]), ShouldEqual, 9)
 		})
 
+		Convey("workflow main tracks Channel factory assignments for later calls", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.fromPath('/data/*.fq')\nFOO(ch)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "fromPath")
+			So(factory.Args, ShouldHaveLength, 1)
+			glob, ok := factory.Args[0].(StringExpr)
+			So(ok, ShouldBeTrue)
+			So(glob.Value, ShouldEqual, "/data/*.fq")
+		})
+
+		Convey("workflow main tracks process output assignments for later calls", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nmain:\nALIGN(reads)\nresult = ALIGN.out.bam\nSORT(result)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 2)
+
+			ref, ok := wf.EntryWF.Calls[1].Args[0].(ChanRef)
+			So(ok, ShouldBeTrue)
+			So(ref.Name, ShouldEqual, "ALIGN.out.bam")
+		})
+
+		Convey("workflow main tracks assignments derived from known channel variables", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.of(1, 2, 3)\nfiltered = ch.filter { it > 0 }\nPROC(filtered)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+
+			chain, ok := wf.EntryWF.Calls[0].Args[0].(ChannelChain)
+			So(ok, ShouldBeTrue)
+			factory, ok := chain.Source.(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "of")
+			So(chain.Operators, ShouldHaveLength, 1)
+			So(chain.Operators[0].Name, ShouldEqual, "filter")
+			So(chain.Operators[0].Closure, ShouldEqual, "it > 0")
+		})
+
+		Convey("workflow main tracks named channel selections derived from known channel variables", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.of(1, 2, 3)\nbranches = ch.branch { small: it < 3; big: true }\nPROC(branches.small)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+
+			selected, ok := wf.EntryWF.Calls[0].Args[0].(NamedChannelRef)
+			So(ok, ShouldBeTrue)
+			So(selected.Label, ShouldEqual, "small")
+
+			chain, ok := selected.Source.(ChannelChain)
+			So(ok, ShouldBeTrue)
+			factory, ok := chain.Source.(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "of")
+			So(chain.Operators, ShouldHaveLength, 1)
+			So(chain.Operators[0].Name, ShouldEqual, "branch")
+		})
+
+		Convey("workflow main ignores plain non-channel assignments", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.of(1)\nx = 42\nFOO(ch)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "of")
+			So(factory.Args, ShouldHaveLength, 1)
+			So(intExprValue(factory.Args[0]), ShouldEqual, 1)
+		})
+
+		Convey("workflow main ignores scalar method calls on known channel variables", func() {
+			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.of(1, 2, 3)\nn = ch.size()\nFOO(n)\nBAR(ch)\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 2)
+
+			scalarRef, ok := wf.EntryWF.Calls[0].Args[0].(ChanRef)
+			So(ok, ShouldBeTrue)
+			So(scalarRef.Name, ShouldEqual, "n")
+
+			factory, ok := wf.EntryWF.Calls[1].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "of")
+			So(factory.Args, ShouldHaveLength, 3)
+		})
+
 		Convey("workflow call arguments can be inline channel factories", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromPath('/data/*.fq')) }"))
 
@@ -1078,6 +1947,56 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(factory.Args, ShouldHaveLength, 4)
 			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "Bonjour")
 			So(factory.Args[3].(StringExpr).Value, ShouldEqual, "Hola")
+		})
+
+		Convey("J1 multi-step pipelines chain process outputs into later stages", func() {
+			wf, err := Parse(strings.NewReader("workflow { Channel.of(1,2,3) | foo | bar }"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 2)
+			So(wf.EntryWF.Calls[0].Target, ShouldEqual, "foo")
+			So(wf.EntryWF.Calls[1].Target, ShouldEqual, "bar")
+
+			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
+			So(ok, ShouldBeTrue)
+			So(factory.Name, ShouldEqual, "of")
+			So(factory.Args, ShouldHaveLength, 3)
+
+			upstream, ok := wf.EntryWF.Calls[1].Args[0].(ChanRef)
+			So(ok, ShouldBeTrue)
+			So(upstream.Name, ShouldEqual, "foo.out")
+		})
+
+		Convey("J1 terminal view stages are treated as a no-op", func() {
+			wf, err := Parse(strings.NewReader("workflow { reads | ALIGN | SORT | view }"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 2)
+			So(wf.EntryWF.Calls[0].Target, ShouldEqual, "ALIGN")
+			So(wf.EntryWF.Calls[1].Target, ShouldEqual, "SORT")
+
+			reads, ok := wf.EntryWF.Calls[0].Args[0].(ChanRef)
+			So(ok, ShouldBeTrue)
+			So(reads.Name, ShouldEqual, "reads")
+
+			sortedInput, ok := wf.EntryWF.Calls[1].Args[0].(ChanRef)
+			So(ok, ShouldBeTrue)
+			So(sortedInput.Name, ShouldEqual, "ALIGN.out")
+		})
+
+		Convey("J1 single-stage pipelines desugar into one call", func() {
+			wf, err := Parse(strings.NewReader("workflow { ch | process_a }"))
+
+			So(err, ShouldBeNil)
+			So(wf.EntryWF, ShouldNotBeNil)
+			So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+			So(wf.EntryWF.Calls[0].Target, ShouldEqual, "process_a")
+
+			input, ok := wf.EntryWF.Calls[0].Args[0].(ChanRef)
+			So(ok, ShouldBeTrue)
+			So(input.Name, ShouldEqual, "ch")
 		})
 
 		Convey("workflow if blocks capture conditions and calls", func() {
@@ -1555,6 +2474,17 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			So(chain.Operators[0].Channels[0].(ChanRef).Name, ShouldEqual, "other")
 		})
 
+		Convey("combine accepts a trailing by named argument", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(ch.combine(other, by: 0)) }"))
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators[0].Name, ShouldEqual, "combine")
+			So(chain.Operators[0].Channels, ShouldHaveLength, 1)
+			So(chain.Operators[0].Channels[0].(ChanRef).Name, ShouldEqual, "other")
+			So(chain.Operators[0].Args, ShouldHaveLength, 1)
+		})
+
 		Convey("concat keeps multiple channel arguments", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.concat(a, b)) }"))
 
@@ -1685,6 +2615,19 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			So(err, ShouldBeNil)
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "count")
+		})
+
+		Convey("type conversion pass-through operators parse as zero-arg operators", func() {
+			for _, source := range []string{
+				"workflow { foo(ch.toLong()) }",
+				"workflow { foo(ch.toFloat()) }",
+				"workflow { foo(ch.toDouble()) }",
+			} {
+				wf, err := Parse(strings.NewReader(source))
+
+				So(err, ShouldBeNil)
+				So(wf.EntryWF.Calls, ShouldHaveLength, 1)
+			}
 		})
 
 		Convey("unsupported operators still return a named error", func() {
@@ -1885,7 +2828,7 @@ func TestParseAdditionalIOTypesAndQualifiers(t *testing.T) {
 			So(wf.Processes[0].Output[0].Name, ShouldEqual, "MY_VAR")
 		})
 
-		Convey("eval outputs parse and emit a warning because translation is unsupported", func() {
+		Convey("eval outputs parse without an unsupported translation warning", func() {
 			var (
 				wf     *Workflow
 				err    error
@@ -1899,7 +2842,7 @@ func TestParseAdditionalIOTypesAndQualifiers(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
 			So(wf.Processes[0].Output[0].Kind, ShouldEqual, "eval")
-			So(stderr, ShouldContainSubstring, "unsupported output type \"eval\"")
+			So(stderr, ShouldEqual, "")
 		})
 
 		Convey("topic qualifiers are accepted and warned as non-translatable", func() {

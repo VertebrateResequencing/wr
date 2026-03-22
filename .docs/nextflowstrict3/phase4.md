@@ -22,8 +22,8 @@ and bare `each x` (equivalent to `each val(x)`). Set
 `Declaration.Each = true`. Covering all 4 acceptance tests
 from B1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.2: E1 - Parse skippable statement types [parallel with 4.1, 4.3, 4.4, 4.5]
 
@@ -38,8 +38,8 @@ Add statement AST node types (`AssertStmt`, `ThrowStmt`,
 must handle these keywords gracefully. Covering all 9
 acceptance tests from E1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.3: E2 - Evaluate simple statement types [parallel with 4.1, 4.2, 4.4, 4.5]
 
@@ -57,8 +57,8 @@ case values (equality or regex via `=~`), return matched branch;
 parsing and evaluation. Covering all 8 acceptance tests
 from E2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.4: F1 - Parse `params {}` block [parallel with 4.1, 4.2, 4.3, 4.5]
 
@@ -72,8 +72,8 @@ blocks (`params { nested { x = 1 } }` as `"nested.x"`).
 Last-seen-wins for `params {}` vs `params.x` overrides.
 Covering all 6 acceptance tests from F1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.5: G1 - Parse enum definitions [parallel with 4.1, 4.2, 4.3, 4.4]
 
@@ -86,8 +86,8 @@ ast.go. Parse `enum Name { VALUE1, VALUE2, ... }` in
 evaluation (groovy.go). Covering all 4 acceptance tests
 from G1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Batch 2 (parallel, after batch 1 is reviewed)
 
@@ -101,5 +101,5 @@ Add `RecordDef`, `RecordField` structs and
 `parseTopLevel` in parse.go. Covering all 3 acceptance tests
 from G2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
