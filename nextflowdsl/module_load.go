@@ -371,7 +371,7 @@ func cloneProcess(proc *Process, name string) *Process {
 		return nil
 	}
 
-	directives := make(map[string]Expr, len(proc.Directives))
+	directives := make(map[string]any, len(proc.Directives))
 	for key, value := range proc.Directives {
 		directives[key] = value
 	}
@@ -385,21 +385,27 @@ func cloneProcess(proc *Process, name string) *Process {
 	}
 
 	return &Process{
-		Name:       name,
-		Directives: directives,
-		Input:      cloneDeclarations(proc.Input),
-		Output:     cloneDeclarations(proc.Output),
-		Script:     proc.Script,
-		Stub:       proc.Stub,
-		Exec:       proc.Exec,
-		Shell:      proc.Shell,
-		When:       proc.When,
-		Container:  proc.Container,
-		PublishDir: publishDirs,
-		ErrorStrat: proc.ErrorStrat,
-		MaxRetries: proc.MaxRetries,
-		MaxForks:   proc.MaxForks,
-		Env:        cloneEnv(proc.Env),
+		Name:         name,
+		Labels:       append([]string{}, proc.Labels...),
+		Tag:          proc.Tag,
+		BeforeScript: proc.BeforeScript,
+		AfterScript:  proc.AfterScript,
+		Module:       proc.Module,
+		Cache:        proc.Cache,
+		Directives:   directives,
+		Input:        cloneDeclarations(proc.Input),
+		Output:       cloneDeclarations(proc.Output),
+		Script:       proc.Script,
+		Stub:         proc.Stub,
+		Exec:         proc.Exec,
+		Shell:        proc.Shell,
+		When:         proc.When,
+		Container:    proc.Container,
+		PublishDir:   publishDirs,
+		ErrorStrat:   proc.ErrorStrat,
+		MaxRetries:   proc.MaxRetries,
+		MaxForks:     proc.MaxForks,
+		Env:          cloneEnv(proc.Env),
 	}
 }
 

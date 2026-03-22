@@ -188,7 +188,7 @@ func TestTranslateD5TaskReferences(t *testing.T) {
 				Processes: []*Process{{
 					Name:       "A",
 					Script:     "echo hi",
-					Directives: map[string]Expr{"cpus": BinaryExpr{Left: VarExpr{Root: "task", Path: "attempt"}, Op: "*", Right: IntExpr{Value: 2}}},
+					Directives: map[string]any{"cpus": BinaryExpr{Left: VarExpr{Root: "task", Path: "attempt"}, Op: "*", Right: IntExpr{Value: 2}}},
 				}},
 				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
 			}
@@ -205,7 +205,7 @@ func TestTranslateD5TaskReferences(t *testing.T) {
 				Processes: []*Process{{
 					Name:   "A",
 					Script: "echo hi",
-					Directives: map[string]Expr{
+					Directives: map[string]any{
 						"cpus":   IntExpr{Value: 4},
 						"memory": BinaryExpr{Left: VarExpr{Root: "task", Path: "cpus"}, Op: "*", Right: IntExpr{Value: 1024}},
 					},
@@ -226,7 +226,7 @@ func TestTranslateD5TaskReferences(t *testing.T) {
 				Processes: []*Process{{
 					Name:   "A",
 					Script: "echo hi",
-					Directives: map[string]Expr{
+					Directives: map[string]any{
 						"memory": IntExpr{Value: 2048},
 						"disk":   BinaryExpr{Left: VarExpr{Root: "task", Path: "memory"}, Op: "/", Right: IntExpr{Value: 1024}},
 					},
@@ -632,7 +632,7 @@ func TestTranslateD6UnsupportedCastDirectiveFallback(t *testing.T) {
 			wf := &Workflow{Processes: []*Process{{
 				Name:       "proc",
 				Script:     "echo hi",
-				Directives: map[string]Expr{"cpus": CastExpr{Operand: StringExpr{Value: "4"}, TypeName: "Duration"}},
+				Directives: map[string]any{"cpus": CastExpr{Operand: StringExpr{Value: "4"}, TypeName: "Duration"}},
 			}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "proc"}}}}
 
 			cfg := &Config{Process: &ProcessDefaults{Cpus: 8}}
@@ -1012,7 +1012,7 @@ func TestTranslate(t *testing.T) {
 		})
 
 		Convey("resource directives and defaults map to requirements", func() {
-			wf := &Workflow{Processes: []*Process{{Name: "A", Script: "echo hi", Directives: map[string]Expr{"cpus": IntExpr{Value: 4}, "memory": IntExpr{Value: 8192}, "time": IntExpr{Value: 120}, "disk": IntExpr{Value: 10}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
+			wf := &Workflow{Processes: []*Process{{Name: "A", Script: "echo hi", Directives: map[string]any{"cpus": IntExpr{Value: 4}, "memory": IntExpr{Value: 8192}, "time": IntExpr{Value: 120}, "disk": IntExpr{Value: 10}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
@@ -1055,7 +1055,7 @@ func TestTranslate(t *testing.T) {
 				wf := &Workflow{Processes: []*Process{{
 					Name:       "proc",
 					Script:     "echo ${params.input}",
-					Directives: map[string]Expr{"cpus": UnsupportedExpr{Text: "task.input.size() < 10 ? 1 : 4"}, "memory": IntExpr{Value: 8192}},
+					Directives: map[string]any{"cpus": UnsupportedExpr{Text: "task.input.size() < 10 ? 1 : 4"}, "memory": IntExpr{Value: 8192}},
 					MaxForks:   5,
 					ErrorStrat: "finish",
 					Env:        map[string]string{"MY_VAR": "hello"},

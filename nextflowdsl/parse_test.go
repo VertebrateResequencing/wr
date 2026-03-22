@@ -566,6 +566,28 @@ func TestParseProcessDefinitions(t *testing.T) {
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
 			So(wf.Processes[0].Script, ShouldEqual, "echo hello")
 		})
+
+		Convey("label directives populate Labels", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nlabel 'big_mem'\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Labels, ShouldResemble, []string{"big_mem"})
+		})
+
+		Convey("multiple label directives append in order", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nlabel 'big_mem'\nlabel 'long_time'\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Labels, ShouldResemble, []string{"big_mem", "long_time"})
+		})
+
+		Convey("processes without label directives keep an empty Labels slice", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Labels, ShouldResemble, []string{})
+		})
+
 		Convey("cpus, memory, and time directives are normalised", func() {
 			wf, err := Parse(strings.NewReader("process foo {\ncpus 4\nmemory '8 GB'\ntime '2.h'\nscript: 'echo hello'\n}"))
 
@@ -651,6 +673,162 @@ func TestParseProcessDefinitions(t *testing.T) {
 			So(intExprValue(wf.Processes[0].Directives["disk"]), ShouldEqual, 10)
 		})
 
+		Convey("tag directives populate Tag", func() {
+			wf, err := Parse(strings.NewReader("process foo {\ntag \"sample_${id}\"\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Tag, ShouldEqual, "sample_${id}")
+		})
+
+		Convey("beforeScript directives populate BeforeScript", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nbeforeScript 'module load samtools'\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].BeforeScript, ShouldEqual, "module load samtools")
+		})
+
+		Convey("afterScript directives populate AfterScript", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nafterScript 'cleanup.sh'\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].AfterScript, ShouldEqual, "cleanup.sh")
+		})
+
+		Convey("module directives populate Module", func() {
+			wf, err := Parse(strings.NewReader("process foo {\nmodule 'samtools/1.17'\nscript: 'echo hello'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Module, ShouldEqual, "samtools/1.17")
+		})
+
+		Convey("cache directives populate Cache", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\ncache 'lenient'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Cache, ShouldEqual, "lenient")
+			So(stderr, ShouldContainSubstring, "unsupported directive \"cache\"")
+		})
+
+		Convey("scratch directives are stored instead of ignored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nscratch true\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["scratch"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"scratch\"")
+		})
+
+		Convey("storeDir directives are stored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nstoreDir '/cache/outputs'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["storeDir"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"storeDir\"")
+		})
+
+		Convey("queue directives are stored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nqueue 'long'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["queue"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"queue\"")
+		})
+
+		Convey("debug directives are stored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\ndebug true\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["debug"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"debug\"")
+		})
+
+		Convey("clusterOptions directives are stored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nclusterOptions '--mem=8G'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["clusterOptions"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"clusterOptions\"")
+		})
+
+		Convey("executor directives are stored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nexecutor 'slurm'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["executor"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"executor\"")
+		})
+
+		Convey("secret directives are stored", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\nsecret 'MY_TOKEN'\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes[0].Directives["secret"], ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "unsupported directive \"secret\"")
+		})
+
 		Convey("legacy DSL1 into syntax is rejected", func() {
 			_, err := Parse(strings.NewReader("process foo {\noutput: stdout into result\nscript: 'echo hello'\n}"))
 
@@ -659,10 +837,10 @@ func TestParseProcessDefinitions(t *testing.T) {
 		})
 
 		Convey("unknown directives are ignored", func() {
-			wf, err := Parse(strings.NewReader("process foo {\nscratch true\nscript: 'echo hello'\n}"))
+			wf, err := Parse(strings.NewReader("process foo {\nunknownDirective true\nscript: 'echo hello'\n}"))
 
 			So(err, ShouldBeNil)
-			_, ok := wf.Processes[0].Directives["scratch"]
+			_, ok := wf.Processes[0].Directives["unknownDirective"]
 			So(ok, ShouldBeFalse)
 		})
 	})
@@ -1233,7 +1411,7 @@ func mustChainExpr(expr ChanExpr) ChannelChain {
 	return chain
 }
 
-func intExprValue(expr Expr) int {
+func intExprValue(expr any) int {
 	intExpr, ok := expr.(IntExpr)
 	So(ok, ShouldBeTrue)
 

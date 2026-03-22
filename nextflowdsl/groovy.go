@@ -683,7 +683,7 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 
 // EvalExpr evaluates a simple Groovy expression given a context of variable
 // bindings. Returns the result or an error.
-func EvalExpr(expr Expr, vars map[string]any) (any, error) {
+func EvalExpr(expr any, vars map[string]any) (any, error) {
 	switch value := expr.(type) {
 	case IntExpr:
 		return value.Value, nil

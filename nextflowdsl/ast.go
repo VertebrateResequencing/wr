@@ -57,21 +57,27 @@ type PublishDir struct {
 
 // Process is a Nextflow process definition.
 type Process struct {
-	Name       string
-	Directives map[string]Expr
-	Input      []*Declaration
-	Output     []*Declaration
-	Script     string
-	Stub       string
-	Exec       string
-	Shell      string
-	When       string
-	Container  string
-	PublishDir []*PublishDir
-	ErrorStrat string
-	MaxRetries int
-	MaxForks   int
-	Env        map[string]string
+	Name         string
+	Labels       []string
+	Tag          string
+	BeforeScript string
+	AfterScript  string
+	Module       string
+	Cache        string
+	Directives   map[string]any
+	Input        []*Declaration
+	Output       []*Declaration
+	Script       string
+	Stub         string
+	Exec         string
+	Shell        string
+	When         string
+	Container    string
+	PublishDir   []*PublishDir
+	ErrorStrat   string
+	MaxRetries   int
+	MaxForks     int
+	Env          map[string]string
 }
 
 // ChanExpr is a channel expression used in workflow invocations.
