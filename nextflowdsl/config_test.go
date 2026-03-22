@@ -121,6 +121,17 @@ func TestParseConfig(t *testing.T) {
 			So(cfg.Profiles["test"].Process.Cpus, ShouldEqual, 8)
 		})
 
+		Convey("profile process blocks retain selector overrides", func() {
+			cfg, err := ParseConfig(strings.NewReader("profiles { test { process { withLabel: 'big' { cpus = 8 } } } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Profiles, ShouldContainKey, "test")
+			So(cfg.Profiles["test"].Selectors, ShouldHaveLength, 1)
+			So(cfg.Profiles["test"].Selectors[0].Kind, ShouldEqual, "withLabel")
+			So(cfg.Profiles["test"].Selectors[0].Pattern, ShouldEqual, "big")
+			So(cfg.Profiles["test"].Selectors[0].Settings.Cpus, ShouldEqual, 8)
+		})
+
 		Convey("unknown top-level docker scopes are skipped with a warning", func() {
 			cfg, err := ParseConfig(strings.NewReader("docker { enabled = true }\nparams { x = 1 }"))
 

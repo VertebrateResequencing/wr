@@ -316,6 +316,34 @@ func TestTranslateA3(t *testing.T) {
 
 			So(job.Requirements.Cores, ShouldEqual, 2)
 		})
+
+		Convey("selected profiles append their selectors after global selectors", func() {
+			job := translateJob(&Process{Name: "ALIGN", Labels: []string{"big"}, Script: "echo hi"}, &Config{
+				Selectors: []*ProcessSelector{{Kind: "withLabel", Pattern: "big", Settings: &ProcessDefaults{Cpus: 8}}},
+				Profiles: map[string]*Profile{
+					"test": {
+						Selectors: []*ProcessSelector{{Kind: "withLabel", Pattern: "big", Settings: &ProcessDefaults{Cpus: 16}}},
+					},
+				},
+			})
+
+			result, err := Translate(&Workflow{
+				Processes: []*Process{{Name: "ALIGN", Labels: []string{"big"}, Script: "echo hi"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "ALIGN"}}},
+			}, &Config{
+				Selectors: []*ProcessSelector{{Kind: "withLabel", Pattern: "big", Settings: &ProcessDefaults{Cpus: 8}}},
+				Profiles: map[string]*Profile{
+					"test": {
+						Selectors: []*ProcessSelector{{Kind: "withLabel", Pattern: "big", Settings: &ProcessDefaults{Cpus: 16}}},
+					},
+				},
+			}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "test"})
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Cores, ShouldEqual, 16)
+
+			So(job.Requirements.Cores, ShouldEqual, 8)
+		})
 	})
 }
 

@@ -1221,7 +1221,7 @@ func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult,
 
 	params := mergeTranslateParams(cfg, tc)
 	defaults := effectiveDefaults(cfg, tc.Profile)
-	selectors := effectiveSelectors(cfg)
+	selectors := effectiveSelectors(cfg, tc.Profile)
 	translated := make(map[string]translatedCall, len(wf.EntryWF.Calls))
 
 	if err = translateBlock(wf.EntryWF, nil, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
@@ -2671,10 +2671,20 @@ func cloneDefaults(defaults *ProcessDefaults) *ProcessDefaults {
 	return clone
 }
 
-func effectiveSelectors(cfg *Config) []*ProcessSelector {
+func effectiveSelectors(cfg *Config, profileName string) []*ProcessSelector {
 	if cfg == nil {
 		return nil
 	}
 
-	return cloneSelectors(cfg.Selectors)
+	selectors := cloneSelectors(cfg.Selectors)
+	if profileName == "" || cfg.Profiles == nil {
+		return selectors
+	}
+
+	profile, ok := cfg.Profiles[profileName]
+	if !ok || len(profile.Selectors) == 0 {
+		return selectors
+	}
+
+	return append(selectors, cloneSelectors(profile.Selectors)...)
 }

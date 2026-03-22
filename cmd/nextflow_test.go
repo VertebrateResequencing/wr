@@ -668,6 +668,21 @@ func TestNextflowRunCommand(t *testing.T) {
 			So(jobs[0].Cmd, ShouldContainSubstring, "/profile")
 		})
 
+		Convey("selected profiles contribute process selectors", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("profile_selector.nf", "process ALIGN {\nlabel 'big'\nscript: 'echo hi'\n}\nworkflow { ALIGN() }\n")
+			configPath := env.writeText("nextflow.config", "profiles { test { process { withLabel: 'big' { cpus = 8 } } } }")
+
+			err := env.executeRun("--config", configPath, "--profile", "test", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.profile_selector.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Requirements.Cores, ShouldEqual, 8)
+		})
+
 		Convey("profiles require an explicit config path so selection is not silently ignored", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()

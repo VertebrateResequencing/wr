@@ -66,6 +66,7 @@ type ProcessSelector struct {
 // Profile holds profile-scoped config overrides.
 type Profile struct {
 	Process *ProcessDefaults
+	Selectors []*ProcessSelector
 	Params  map[string]any
 }
 
@@ -617,11 +618,12 @@ func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[s
 				}
 				profile.Params = MergeParams(profile.Params, params)
 			case "process":
-				block, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams), false)
+				block, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams), true)
 				if parseErr != nil {
 					return nil, parseErr
 				}
 				profile.Process = block.defaults
+				profile.Selectors = block.selectors
 			default:
 				return nil, fmt.Errorf("line %d: unsupported profile section %q", current.line, current.lit)
 			}
