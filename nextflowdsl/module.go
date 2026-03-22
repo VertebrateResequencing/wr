@@ -156,8 +156,12 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 	cachePath := filepath.Join(r.cacheDir, owner, repo, revision)
 	if ok, err := hasNextflowModuleFiles(cachePath); err != nil {
 		return "", err
-	} else if ok {
+	} else if ok && explicitRevision {
 		return cachePath, nil
+	} else if ok {
+		if err := githubResolverRunGit(cachePath, "pull", "--ff-only"); err == nil {
+			return cachePath, nil
+		}
 	}
 
 	if err := os.RemoveAll(cachePath); err != nil {

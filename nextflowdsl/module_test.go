@@ -96,21 +96,42 @@ func TestGitHubResolver(t *testing.T) {
 			So(path, ShouldEqual, filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision))
 		})
 
-		Convey("populated cache avoids a second network fetch and returns the same path", func() {
+		Convey("populated HEAD cache is refreshed before reuse", func() {
 			modulePath := filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)
 			So(os.MkdirAll(modulePath, 0o755), ShouldBeNil)
 			So(os.WriteFile(filepath.Join(modulePath, "cached.nf"), []byte("workflow {}\n"), 0o644), ShouldBeNil)
 
-			cloneCalls := 0
-			githubResolverRunGit = func(string, ...string) error {
-				cloneCalls++
+			gitCalls := 0
+			githubResolverRunGit = func(dir string, args ...string) error {
+				gitCalls++
+				So(dir, ShouldEqual, modulePath)
+				So(args, ShouldResemble, []string{"pull", "--ff-only"})
+
 				return nil
 			}
 
 			path, err := NewGitHubResolver(cacheDir).Resolve("nextflow-io/hello")
 
 			So(err, ShouldBeNil)
-			So(cloneCalls, ShouldEqual, 0)
+			So(gitCalls, ShouldEqual, 1)
+			So(path, ShouldEqual, modulePath)
+		})
+
+		Convey("populated explicit revision cache avoids a second network fetch and returns the same path", func() {
+			modulePath := filepath.Join(cacheDir, "owner", "repo", "main")
+			So(os.MkdirAll(modulePath, 0o755), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(modulePath, "cached.nf"), []byte("workflow {}\n"), 0o644), ShouldBeNil)
+
+			gitCalls := 0
+			githubResolverRunGit = func(string, ...string) error {
+				gitCalls++
+				return nil
+			}
+
+			path, err := NewGitHubResolver(cacheDir).Resolve("owner/repo@main")
+
+			So(err, ShouldBeNil)
+			So(gitCalls, ShouldEqual, 0)
 			So(path, ShouldEqual, modulePath)
 		})
 
