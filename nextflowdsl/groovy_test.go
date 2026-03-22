@@ -463,20 +463,18 @@ func TestEvalExprD3MethodCalls(t *testing.T) {
 			}
 		})
 
-		Convey("collect currently returns UnsupportedExpr until closure evaluation lands", func() {
+		Convey("collect applies simple closures to each list item", func() {
 			result, err := EvalExpr(MethodCallExpr{
 				Receiver: ListExpr{Elements: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
 				Method:   "collect",
-				Args:     []Expr{UnsupportedExpr{Text: "{ it * 2 }"}},
+				Args:     []Expr{ClosureExpr{Body: "it * 2"}},
 			}, nil)
 
 			So(err, ShouldBeNil)
-			unsupported, ok := result.(UnsupportedExpr)
-			So(ok, ShouldBeTrue)
-			So(unsupported.Text, ShouldContainSubstring, ".collect")
+			So(result, ShouldResemble, []any{2, 4, 6})
 		})
 
-		Convey("parsed trailing-closure collect calls remain deferred", func() {
+		Convey("parsed trailing-closure collect calls evaluate end to end", func() {
 			expr, err := parseTestExpr("[1, 2, 3].collect { it * 2 }")
 
 			So(err, ShouldBeNil)
@@ -484,9 +482,7 @@ func TestEvalExprD3MethodCalls(t *testing.T) {
 			result, err := EvalExpr(expr, nil)
 
 			So(err, ShouldBeNil)
-			unsupported, ok := result.(UnsupportedExpr)
-			So(ok, ShouldBeTrue)
-			So(unsupported.Text, ShouldContainSubstring, ".collect")
+			So(result, ShouldResemble, []any{2, 4, 6})
 		})
 	})
 }

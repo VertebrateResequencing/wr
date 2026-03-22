@@ -686,6 +686,12 @@ func renderExpr(expression Expr) string {
 		}
 
 		return "[" + strings.Join(parts, ", ") + "]"
+	case ClosureExpr:
+		if len(value.Params) == 0 {
+			return "{ " + value.Body + " }"
+		}
+
+		return "{ " + strings.Join(value.Params, ", ") + " -> " + value.Body + " }"
 	case CastExpr:
 		return renderExpr(value.Operand) + " as " + value.TypeName
 	case UnsupportedExpr:

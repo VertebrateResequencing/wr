@@ -355,6 +355,45 @@ func parseTernaryExprTokens(tokens []token) (Expr, error) {
 	return nil, nil
 }
 
+func splitClosureArrowTokens(tokens []token) ([]token, []token, bool) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index := 0; index < len(tokens)-1; index++ {
+		current := tokens[index]
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		}
+
+		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && current.typ == tokenSymbol && current.lit == "-" && tokens[index+1].typ == tokenSymbol && tokens[index+1].lit == ">" {
+			return tokens[:index], tokens[index+2:], true
+		}
+	}
+
+	return nil, tokens, false
+}
+
 func parseComparisonExprTokens(tokens []token) (Expr, error) {
 	if expr, err := parseBinaryExprTokens(tokens, []string{">", "<", ">=", "<="}, parseAdditiveExprTokens); expr != nil || err != nil {
 		return expr, err
@@ -393,6 +432,46 @@ func findTrailingBraceStart(tokens []token) (int, bool) {
 	}
 
 	return 0, false
+}
+
+func parseClosureExpr(tokens []token) (ClosureExpr, error) {
+	if len(tokens) < 2 || tokens[0].typ != tokenLBrace || tokens[len(tokens)-1].typ != tokenRBrace {
+		return ClosureExpr{}, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	return parseClosureInnerTokens(tokens[1 : len(tokens)-1])
+}
+
+func parseClosureInnerTokens(tokens []token) (ClosureExpr, error) {
+	trimmed := trimDeclarationTokens(tokens)
+	paramsTokens, bodyTokens, hasArrow := splitClosureArrowTokens(trimmed)
+	if !hasArrow {
+		bodyTokens = trimmed
+	}
+
+	bodyTokens = trimDeclarationTokens(bodyTokens)
+	if len(bodyTokens) == 0 {
+		return ClosureExpr{}, fmt.Errorf("expected closure body")
+	}
+
+	params := []string{}
+	if hasArrow {
+		paramSegments := splitTopLevelCommaSegments(trimDeclarationTokens(paramsTokens))
+		for _, segment := range paramSegments {
+			trimmedSegment := trimDeclarationTokens(segment)
+			if len(trimmedSegment) == 0 {
+				continue
+			}
+
+			if len(trimmedSegment) != 1 || trimmedSegment[0].typ != tokenIdent {
+				return ClosureExpr{}, fmt.Errorf("unsupported closure parameters %q", expressionText(paramsTokens))
+			}
+
+			params = append(params, trimmedSegment[0].lit)
+		}
+	}
+
+	return ClosureExpr{Params: params, Body: strings.TrimSpace(renderClosureTokens(bodyTokens))}, nil
 }
 
 func isParenthesisedExpr(tokens []token) bool {
@@ -487,7 +566,12 @@ func parseTrailingClosureArgTokens(tokens []token) (Expr, []token, bool, error) 
 		return nil, nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
 	}
 
-	return UnsupportedExpr{Text: expressionText(tokens[start:])}, remaining, true, nil
+	closureExpr, err := parseClosureExpr(tokens[start:])
+	if err != nil {
+		return nil, nil, true, err
+	}
+
+	return closureExpr, remaining, true, nil
 }
 
 func parseMethodCallExprTokensWithTrailingArgs(tokens []token, trailingArgs []Expr, allowBareMethod bool) (Expr, bool, error) {
@@ -1073,6 +1157,13 @@ func parseCastExprTokens(tokens []token) (Expr, error) {
 func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 	if len(tokens) == 0 {
 		return nil, fmt.Errorf("expected expression")
+	}
+
+	if len(tokens) >= 2 && tokens[0].typ == tokenLBrace && tokens[len(tokens)-1].typ == tokenRBrace {
+		closureExpr, err := parseClosureExpr(tokens)
+		if err == nil {
+			return closureExpr, nil
+		}
 	}
 
 	if isParenthesisedExpr(tokens) {
@@ -1724,7 +1815,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 		p.localScopes = p.localScopes[:len(p.localScopes)-1]
 	}()
 
-	block := &WorkflowBlock{Calls: []*Call{}, Take: []string{}, Emit: []*WFEmit{}}
+	block := &WorkflowBlock{Calls: []*Call{}, Take: []string{}, Emit: []*WFEmit{}, Conditions: []*IfBlock{}}
 	section := "main"
 
 	for {
@@ -1775,6 +1866,15 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 		case "publish":
 			p.readWorkflowPublishLineTokens()
 		case "main":
+			if current.typ == tokenIdent && current.lit == "if" {
+				condition, err := p.parseWorkflowIfBlock()
+				if err != nil {
+					return nil, err
+				}
+				block.Conditions = append(block.Conditions, condition)
+				continue
+			}
+
 			if current.typ == tokenIdent && p.peek().typ == tokenAssign {
 				if err := p.parseChannelAssignment(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF); err != nil {
 					return nil, err
@@ -1815,6 +1915,7 @@ func (p *parser) parseWorkflowTakeLine() ([]string, error) {
 		if len(trimmed) == 0 {
 			continue
 		}
+
 		take = append(take, p.rawTokenText(trimmed))
 	}
 
@@ -1925,6 +2026,114 @@ func desugarWorkflowPipe(expr ChanExpr) ([]*Call, error) {
 	}
 
 	return calls, nil
+}
+
+func (p *parser) parseWorkflowIfBlock() (*IfBlock, error) {
+	condition, body, err := p.parseWorkflowIfClause()
+	if err != nil {
+		return nil, err
+	}
+
+	ifBlock := &IfBlock{Condition: condition, Body: body, ElseIf: []*IfBlock{}, ElseBody: []*Call{}}
+
+	for {
+		p.skipWorkflowSeparators()
+		if p.current().typ != tokenIdent || p.current().lit != "else" {
+			return ifBlock, nil
+		}
+
+		p.pos++
+		p.skipWorkflowSeparators()
+		if p.current().typ == tokenIdent && p.current().lit == "if" {
+			elseIfCondition, elseIfBody, parseErr := p.parseWorkflowIfClause()
+			if parseErr != nil {
+				return nil, parseErr
+			}
+
+			ifBlock.ElseIf = append(ifBlock.ElseIf, &IfBlock{Condition: elseIfCondition, Body: elseIfBody, ElseIf: []*IfBlock{}, ElseBody: []*Call{}})
+			continue
+		}
+
+		elseBody, parseErr := p.parseWorkflowBranchBody()
+		if parseErr != nil {
+			return nil, parseErr
+		}
+
+		ifBlock.ElseBody = elseBody
+		return ifBlock, nil
+	}
+}
+
+func (p *parser) parseWorkflowIfClause() (string, []*Call, error) {
+	ifTok, err := p.expectIdent("if")
+	if err != nil {
+		return "", nil, err
+	}
+
+	p.skipWorkflowSeparators()
+	if _, err = p.expectType(tokenLParen, "("); err != nil {
+		return "", nil, err
+	}
+
+	conditionTokens, err := p.readExprTokens(tokenRParen)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if _, err = p.expectType(tokenRParen, ")"); err != nil {
+		return "", nil, err
+	}
+
+	condition := p.rawTokenText(conditionTokens)
+	if condition == "" {
+		return "", nil, fmt.Errorf("line %d: expected workflow if condition", ifTok.line)
+	}
+
+	p.skipWorkflowSeparators()
+	body, err := p.parseWorkflowBranchBody()
+	if err != nil {
+		return "", nil, err
+	}
+
+	return condition, body, nil
+}
+
+func (p *parser) parseWorkflowBranchBody() ([]*Call, error) {
+	openBrace, err := p.expectType(tokenLBrace, "{")
+	if err != nil {
+		return nil, err
+	}
+
+	calls := []*Call{}
+	for {
+		p.skipWorkflowSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			return nil, fmt.Errorf("line %d: expected } to close workflow conditional", openBrace.line)
+		case tokenRBrace:
+			p.pos++
+			return calls, nil
+		}
+
+		if current.typ == tokenIdent && current.lit == "if" {
+			return nil, fmt.Errorf("line %d: nested workflow conditionals are not supported", current.line)
+		}
+
+		if current.typ == tokenIdent && p.peek().typ == tokenAssign {
+			if err := p.parseChannelAssignment(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		statementCalls, err := p.parseWorkflowStatement()
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, statementCalls...)
+	}
 }
 
 func (p *parser) parseCall() (*Call, error) {
@@ -2311,11 +2520,12 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 
 	switch p.current().typ {
 	case tokenLBrace:
-		closure, err := p.parseClosureBody()
+		closureExpr, closure, err := p.parseClosureBody()
 		if err != nil {
 			return ChannelOperator{}, err
 		}
 		operator.Closure = closure
+		operator.ClosureExpr = &closureExpr
 		if isDeprecatedChannelOperator(name.lit) {
 			warnDeprecatedChannelOperator(name)
 		}
@@ -2405,9 +2615,9 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 	}
 }
 
-func (p *parser) parseClosureBody() (string, error) {
+func (p *parser) parseClosureBody() (ClosureExpr, string, error) {
 	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
-		return "", err
+		return ClosureExpr{}, "", err
 	}
 
 	depth := 1
@@ -2415,7 +2625,7 @@ func (p *parser) parseClosureBody() (string, error) {
 	for depth > 0 {
 		current := p.current()
 		if current.typ == tokenEOF {
-			return "", fmt.Errorf("line %d: unterminated closure", current.line)
+			return ClosureExpr{}, "", fmt.Errorf("line %d: unterminated closure", current.line)
 		}
 
 		switch current.typ {
@@ -2434,7 +2644,12 @@ func (p *parser) parseClosureBody() (string, error) {
 		p.pos++
 	}
 
-	return strings.TrimSpace(renderClosureTokens(tokens)), nil
+	closureExpr, err := parseClosureInnerTokens(tokens)
+	if err != nil {
+		return ClosureExpr{}, "", err
+	}
+
+	return closureExpr, strings.TrimSpace(renderClosureTokens(tokens)), nil
 }
 
 func joinTokens(tokens []token) string {

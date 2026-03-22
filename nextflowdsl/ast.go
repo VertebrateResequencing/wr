@@ -95,11 +95,20 @@ type WFEmit struct {
 	Expr string
 }
 
+// IfBlock represents an if/else if/else in a workflow block.
+type IfBlock struct {
+	Condition string
+	Body      []*Call
+	ElseIf    []*IfBlock
+	ElseBody  []*Call
+}
+
 // WorkflowBlock is the body of a workflow block.
 type WorkflowBlock struct {
-	Calls []*Call
-	Take  []string
-	Emit  []*WFEmit
+	Calls      []*Call
+	Take       []string
+	Emit       []*WFEmit
+	Conditions []*IfBlock
 }
 
 // SubWorkflow is a named workflow block calling processes or other workflows.
@@ -147,12 +156,21 @@ type ChannelFactory struct {
 
 func (ChannelFactory) chanExpr() {}
 
+// ClosureExpr stores a parsed closure with parameters.
+type ClosureExpr struct {
+	Params []string
+	Body   string
+}
+
+func (ClosureExpr) expr() {}
+
 // ChannelOperator stores a supported channel operator invocation.
 type ChannelOperator struct {
-	Name     string
-	Args     []Expr
-	Channels []ChanExpr
-	Closure  string
+	Name        string
+	Args        []Expr
+	Channels    []ChanExpr
+	Closure     string
+	ClosureExpr *ClosureExpr
 }
 
 // ChannelChain stores a channel expression with chained operators.
