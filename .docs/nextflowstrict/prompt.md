@@ -219,7 +219,7 @@ Missing operators grouped by real-world frequency:
 **High priority (commonly used):**
 - `branch` — multi-output routing by condition
 - `combine` — cross product of two channels
-- `concat` — ordered concatenation  
+- `concat` — ordered concatenation
 - `set` — assign channel to variable
 - `view` — debugging/logging (should be no-op or warning for wr)
 - `ifEmpty` — default value for empty channels
@@ -261,7 +261,7 @@ don't cause parse errors. However, some have execution significance:
 **Should be actively handled:**
 - `tag` — useful for logging/identification
 - `label` — used for config-based resource selection
-- `conda` — alternative to container for environment management  
+- `conda` — alternative to container for environment management
 - `module` — environment modules
 - `scratch` — use local scratch disk
 - `storeDir` — persistent result caching
@@ -297,7 +297,7 @@ Our config parser handles `params {}`, `process {}`, and `profiles {}`. Missing:
 
 - `includeConfig 'path'` — include other config files (very common)
 - `docker { enabled = true }` scope
-- `singularity { enabled = true }` scope  
+- `singularity { enabled = true }` scope
 - `conda { enabled = true }` scope
 - `env {}` scope — environment variables
 - `manifest {}` scope — pipeline metadata
