@@ -181,6 +181,69 @@ func TestTranslateA2(t *testing.T) {
 	})
 }
 
+func TestTranslateD5TaskReferences(t *testing.T) {
+	Convey("Translate provides D5 task.* bindings for directive evaluation", t, func() {
+		Convey("task.attempt defaults to 1 during translation", func() {
+			wf := &Workflow{
+				Processes: []*Process{{
+					Name:       "A",
+					Script:     "echo hi",
+					Directives: map[string]Expr{"cpus": BinaryExpr{Left: VarExpr{Root: "task", Path: "attempt"}, Op: "*", Right: IntExpr{Value: 2}}},
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Cores, ShouldEqual, 2)
+		})
+
+		Convey("task.cpus is available while resolving memory", func() {
+			wf := &Workflow{
+				Processes: []*Process{{
+					Name:   "A",
+					Script: "echo hi",
+					Directives: map[string]Expr{
+						"cpus":   IntExpr{Value: 4},
+						"memory": BinaryExpr{Left: VarExpr{Root: "task", Path: "cpus"}, Op: "*", Right: IntExpr{Value: 1024}},
+					},
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Cores, ShouldEqual, 4)
+			So(result.Jobs[0].Requirements.RAM, ShouldEqual, 4096)
+		})
+
+		Convey("task.memory is available while resolving later directives", func() {
+			wf := &Workflow{
+				Processes: []*Process{{
+					Name:   "A",
+					Script: "echo hi",
+					Directives: map[string]Expr{
+						"memory": IntExpr{Value: 2048},
+						"disk":   BinaryExpr{Left: VarExpr{Root: "task", Path: "memory"}, Op: "/", Right: IntExpr{Value: 1024}},
+					},
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.RAM, ShouldEqual, 2048)
+			So(result.Jobs[0].Requirements.Disk, ShouldEqual, 2)
+		})
+	})
+}
+
 func TestTranslateB1(t *testing.T) {
 	Convey("Translate binds tuple inputs element-by-element from upstream channel items", t, func() {
 		Convey("tuple val/path inputs export each element individually", func() {
@@ -560,6 +623,27 @@ func TestTranslateB3(t *testing.T) {
 			So(jobs[0].Cmd, ShouldContainSubstring, "/work/a.bam")
 			So(jobs[0].Cmd, ShouldContainSubstring, "/work/b.bam")
 		})
+	})
+}
+
+func TestTranslateD6UnsupportedCastDirectiveFallback(t *testing.T) {
+	Convey("Translate falls back for directives with unsupported cast targets", t, func() {
+		stderr := captureTranslateStderr(func() {
+			wf := &Workflow{Processes: []*Process{{
+				Name:       "proc",
+				Script:     "echo hi",
+				Directives: map[string]Expr{"cpus": CastExpr{Operand: StringExpr{Value: "4"}, TypeName: "Duration"}},
+			}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "proc"}}}}
+
+			cfg := &Config{Process: &ProcessDefaults{Cpus: 8}}
+			result, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Cores, ShouldEqual, 8)
+		})
+
+		So(stderr, ShouldContainSubstring, "falling back for cpus directive with unsupported expression")
+		So(stderr, ShouldContainSubstring, "as Duration")
 	})
 }
 

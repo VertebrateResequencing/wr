@@ -209,6 +209,76 @@ type BinaryExpr struct {
 
 func (BinaryExpr) expr() {}
 
+// TernaryExpr stores a ternary or elvis expression.
+type TernaryExpr struct {
+	Cond  Expr
+	True  Expr
+	False Expr
+}
+
+func (TernaryExpr) expr() {}
+
+// UnaryExpr stores a unary operator expression.
+type UnaryExpr struct {
+	Op      string
+	Operand Expr
+}
+
+func (UnaryExpr) expr() {}
+
+// MethodCallExpr stores a method call on a receiver.
+type MethodCallExpr struct {
+	Receiver Expr
+	Method   string
+	Args     []Expr
+}
+
+func (MethodCallExpr) expr() {}
+
+// IndexExpr stores subscript access.
+type IndexExpr struct {
+	Receiver Expr
+	Index    Expr
+}
+
+func (IndexExpr) expr() {}
+
+// ListExpr stores a list literal.
+type ListExpr struct {
+	Elements []Expr
+}
+
+func (ListExpr) expr() {}
+
+// MapExpr stores a map literal.
+type MapExpr struct {
+	Keys   []Expr
+	Values []Expr
+}
+
+func (MapExpr) expr() {}
+
+// NullExpr stores a null literal.
+type NullExpr struct{}
+
+func (NullExpr) expr() {}
+
+// NullSafeExpr stores a null-safe property lookup.
+type NullSafeExpr struct {
+	Receiver Expr
+	Property string
+}
+
+func (NullSafeExpr) expr() {}
+
+// CastExpr stores a postfix type cast.
+type CastExpr struct {
+	Operand  Expr
+	TypeName string
+}
+
+func (CastExpr) expr() {}
+
 // UnsupportedExpr stores an expression that cannot be evaluated.
 type UnsupportedExpr struct {
 	Text string

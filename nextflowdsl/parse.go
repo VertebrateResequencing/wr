@@ -42,37 +42,37 @@ var diskRE = regexp.MustCompile(`(?i)^([0-9]+)\s*(gb|g)$`)
 var timeRE = regexp.MustCompile(`(?i)^([0-9]+)(?:\s*\.\s*|\s+)?(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$`)
 
 var supportedChannelOperators = map[string]struct{}{
-	"branch":      {},
-	"collect":     {},
-	"collectFile": {},
-	"combine":     {},
-	"concat":      {},
-	"count":       {},
-	"distinct":    {},
-	"dump":        {},
-	"filter":      {},
-	"first":       {},
-	"flatMap":     {},
-	"flatten":     {},
-	"groupTuple":  {},
-	"ifEmpty":     {},
-	"join":        {},
-	"last":        {},
-	"map":         {},
-	"mix":         {},
-	"multiMap":    {},
-	"reduce":      {},
-	"set":         {},
-	"splitCsv":    {},
-	"splitFasta": {},
-	"splitFastq": {},
-	"tap":         {},
-	"take":        {},
-	"toList":      {},
+	"branch":       {},
+	"collect":      {},
+	"collectFile":  {},
+	"combine":      {},
+	"concat":       {},
+	"count":        {},
+	"distinct":     {},
+	"dump":         {},
+	"filter":       {},
+	"first":        {},
+	"flatMap":      {},
+	"flatten":      {},
+	"groupTuple":   {},
+	"ifEmpty":      {},
+	"join":         {},
+	"last":         {},
+	"map":          {},
+	"mix":          {},
+	"multiMap":     {},
+	"reduce":       {},
+	"set":          {},
+	"splitCsv":     {},
+	"splitFasta":   {},
+	"splitFastq":   {},
+	"tap":          {},
+	"take":         {},
+	"toList":       {},
 	"toSortedList": {},
-	"transpose":   {},
-	"unique":      {},
-	"view":        {},
+	"transpose":    {},
+	"unique":       {},
+	"view":         {},
 }
 
 type tokenType int
@@ -165,14 +165,44 @@ func lex(input string) ([]token, error) {
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			tokens = append(tokens, token{typ: tokenSemicolon, lit: ";", line: line, col: col, start: start, end: l.pos})
+		case r == '!' && l.peekN(1) == '=':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "!=", line: line, col: col, start: start, end: l.pos})
+		case r == '=' && l.peekN(1) == '=':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "==", line: line, col: col, start: start, end: l.pos})
 		case r == '=':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			tokens = append(tokens, token{typ: tokenAssign, lit: "=", line: line, col: col, start: start, end: l.pos})
+		case r == '&' && l.peekN(1) == '&':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "&&", line: line, col: col, start: start, end: l.pos})
+		case r == '|' && l.peekN(1) == '|':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "||", line: line, col: col, start: start, end: l.pos})
 		case r == '|':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			tokens = append(tokens, token{typ: tokenPipe, lit: "|", line: line, col: col, start: start, end: l.pos})
+		case r == '>' && l.peekN(1) == '=':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: ">=", line: line, col: col, start: start, end: l.pos})
+		case r == '<' && l.peekN(1) == '=':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "<=", line: line, col: col, start: start, end: l.pos})
 		case isClosureSymbol(r):
 			start, line, col := l.pos, l.line, l.col
 			l.next()
@@ -210,6 +240,440 @@ func isIdentStart(r rune) bool {
 
 func warnUnsupportedOutputQualifier(name token) {
 	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported output qualifier %q at line %d will not be translated\n", name.lit, name.line)
+}
+
+func parseTernaryExprTokens(tokens []token) (Expr, error) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index, current := range tokens {
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			braceDepth--
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				bracketDepth--
+			}
+		}
+
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || current.lit != "?" || isNullSafeQuestion(tokens, index) {
+			continue
+		}
+
+		if index+1 < len(tokens) && tokens[index+1].typ == tokenColon {
+			trueTokens := tokens[:index]
+			falseTokens := tokens[index+2:]
+			if len(trueTokens) == 0 || len(falseTokens) == 0 {
+				return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+			}
+
+			trueExpr, err := parseLogicalOrExprTokens(trueTokens)
+			if err != nil {
+				return nil, err
+			}
+
+			falseExpr, err := parseExprTokens(falseTokens)
+			if err != nil {
+				return nil, err
+			}
+
+			return TernaryExpr{True: trueExpr, False: falseExpr}, nil
+		}
+
+		colonIndex := findTernaryColon(tokens, index+1)
+		if colonIndex == -1 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		condTokens := tokens[:index]
+		trueTokens := tokens[index+1 : colonIndex]
+		falseTokens := tokens[colonIndex+1:]
+		if len(condTokens) == 0 || len(trueTokens) == 0 || len(falseTokens) == 0 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		condExpr, err := parseLogicalOrExprTokens(condTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		trueExpr, err := parseExprTokens(trueTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		falseExpr, err := parseExprTokens(falseTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		return TernaryExpr{Cond: condExpr, True: trueExpr, False: falseExpr}, nil
+	}
+
+	return nil, nil
+}
+
+func parseComparisonExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{">", "<", ">=", "<="}, parseAdditiveExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseAdditiveExprTokens(tokens)
+}
+
+func findTrailingBraceStart(tokens []token) (int, bool) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth--
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				return index, true
+			}
+		case tokenRBrace:
+			braceDepth++
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+	}
+
+	return 0, false
+}
+
+func isParenthesisedExpr(tokens []token) bool {
+	if len(tokens) < 2 || tokens[0].typ != tokenLParen || tokens[len(tokens)-1].typ != tokenRParen {
+		return false
+	}
+
+	depth := 0
+	for index, tok := range tokens {
+		switch tok.typ {
+		case tokenLParen:
+			depth++
+		case tokenRParen:
+			depth--
+			if depth == 0 && index != len(tokens)-1 {
+				return false
+			}
+		}
+	}
+
+	return depth == 0
+}
+
+func parseNullSafeExprTokens(tokens []token) (Expr, bool, error) {
+	parenDepth := 0
+	bracketDepth := 0
+
+	for index := len(tokens) - 3; index >= 1; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+
+		if parenDepth != 0 || bracketDepth != 0 || current.typ != tokenSymbol || current.lit != "?" {
+			continue
+		}
+
+		if tokens[index+1].typ != tokenDot {
+			continue
+		}
+
+		property, ok := parsePropertyPathTokens(tokens[index+2:])
+		if !ok || index == 0 {
+			return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		receiver, err := parseExprTokens(tokens[:index])
+		if err != nil {
+			return nil, true, err
+		}
+
+		return NullSafeExpr{Receiver: receiver, Property: property}, true, nil
+	}
+
+	return nil, false, nil
+}
+
+func parseMethodCallExprTokens(tokens []token) (Expr, bool, error) {
+	if closureArg, remaining, ok, err := parseTrailingClosureArgTokens(tokens); ok || err != nil {
+		if err != nil {
+			return nil, true, err
+		}
+
+		return parseMethodCallExprTokensWithTrailingArgs(remaining, []Expr{closureArg}, true)
+	}
+
+	return parseMethodCallExprTokensWithTrailingArgs(tokens, nil, false)
+}
+
+func parseTrailingClosureArgTokens(tokens []token) (Expr, []token, bool, error) {
+	if len(tokens) == 0 || tokens[len(tokens)-1].typ != tokenRBrace {
+		return nil, nil, false, nil
+	}
+
+	start, ok := findTrailingBraceStart(tokens)
+	if !ok {
+		return nil, nil, false, nil
+	}
+
+	remaining := trimDeclarationTokens(tokens[:start])
+	if len(remaining) == 0 {
+		return nil, nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	return UnsupportedExpr{Text: expressionText(tokens[start:])}, remaining, true, nil
+}
+
+func parseMethodCallExprTokensWithTrailingArgs(tokens []token, trailingArgs []Expr, allowBareMethod bool) (Expr, bool, error) {
+	if len(tokens) < 5 || tokens[len(tokens)-1].typ != tokenRParen {
+		if !allowBareMethod || len(tokens) < 3 || tokens[len(tokens)-1].typ != tokenIdent || tokens[len(tokens)-2].typ != tokenDot {
+			return nil, false, nil
+		}
+
+		receiverTokens := tokens[:len(tokens)-2]
+		if len(receiverTokens) == 0 {
+			return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		receiver, err := parseExprTokens(receiverTokens)
+		if err != nil {
+			return nil, true, err
+		}
+
+		return MethodCallExpr{Receiver: receiver, Method: tokens[len(tokens)-1].lit, Args: trailingArgs}, true, nil
+	}
+
+	start, ok := findTrailingParenStart(tokens)
+	if !ok || start < 2 {
+		return nil, false, nil
+	}
+
+	if tokens[start-1].typ != tokenIdent || tokens[start-2].typ != tokenDot {
+		return nil, false, nil
+	}
+
+	receiverTokens := tokens[:start-2]
+	if len(receiverTokens) == 0 {
+		return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	receiver, err := parseExprTokens(receiverTokens)
+	if err != nil {
+		return nil, true, err
+	}
+
+	args := make([]Expr, 0)
+	argTokens := trimDeclarationTokens(tokens[start+1 : len(tokens)-1])
+	if len(argTokens) > 0 {
+		segments := splitTopLevelCommaSegments(argTokens)
+		args = make([]Expr, 0, len(segments))
+		for _, segment := range segments {
+			trimmed := trimDeclarationTokens(segment)
+			if len(trimmed) == 0 {
+				return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+			}
+
+			arg, parseErr := parseExprTokens(trimmed)
+			if parseErr != nil {
+				return nil, true, parseErr
+			}
+
+			args = append(args, arg)
+		}
+	}
+
+	args = append(args, trailingArgs...)
+
+	return MethodCallExpr{Receiver: receiver, Method: tokens[start-1].lit, Args: args}, true, nil
+}
+
+func parseIndexExprTokens(tokens []token) (Expr, bool, error) {
+	if len(tokens) < 4 || tokens[len(tokens)-1].typ != tokenSymbol || tokens[len(tokens)-1].lit != "]" {
+		return nil, false, nil
+	}
+
+	start, ok := findTrailingBracketStart(tokens)
+	if !ok || start == 0 {
+		return nil, false, nil
+	}
+
+	receiver, err := parseExprTokens(tokens[:start])
+	if err != nil {
+		return nil, true, err
+	}
+
+	indexTokens := tokens[start+1 : len(tokens)-1]
+	if len(indexTokens) == 0 {
+		return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	indexExpr, err := parseExprTokens(indexTokens)
+	if err != nil {
+		return nil, true, err
+	}
+
+	return IndexExpr{Receiver: receiver, Index: indexExpr}, true, nil
+}
+
+func findTrailingBracketStart(tokens []token) (int, bool) {
+	parenDepth := 0
+	bracketDepth := 0
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+				if bracketDepth == 0 && parenDepth == 0 {
+					return index, true
+				}
+			}
+		}
+	}
+
+	return 0, false
+}
+
+func parseCollectionExprTokens(tokens []token) (Expr, bool, error) {
+	if len(tokens) < 2 || tokens[0].typ != tokenSymbol || tokens[0].lit != "[" || tokens[len(tokens)-1].typ != tokenSymbol || tokens[len(tokens)-1].lit != "]" {
+		return nil, false, nil
+	}
+
+	inner := tokens[1 : len(tokens)-1]
+	if len(inner) == 0 {
+		return ListExpr{}, true, nil
+	}
+
+	if len(inner) == 1 && inner[0].typ == tokenColon {
+		return MapExpr{}, true, nil
+	}
+
+	segments := splitTopLevelCommaSegments(inner)
+	isMap := true
+	for _, segment := range segments {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) == 0 {
+			return nil, true, fmt.Errorf("expected expression")
+		}
+
+		if _, _, ok := splitTopLevelColonTokens(trimmed); !ok {
+			isMap = false
+			break
+		}
+	}
+
+	if !isMap {
+		elements := make([]Expr, 0, len(segments))
+		for _, segment := range segments {
+			trimmed := trimDeclarationTokens(segment)
+			element, err := parseExprTokens(trimmed)
+			if err != nil {
+				return nil, true, err
+			}
+
+			elements = append(elements, element)
+		}
+
+		return ListExpr{Elements: elements}, true, nil
+	}
+
+	keys := make([]Expr, 0, len(segments))
+	values := make([]Expr, 0, len(segments))
+	for _, segment := range segments {
+		trimmed := trimDeclarationTokens(segment)
+		keyTokens, valueTokens, ok := splitTopLevelColonTokens(trimmed)
+		if !ok || len(keyTokens) == 0 || len(valueTokens) == 0 {
+			return nil, true, fmt.Errorf("unsupported expression %q", expressionText(trimmed))
+		}
+
+		keyExpr, err := parseMapKeyExpr(keyTokens)
+		if err != nil {
+			return nil, true, err
+		}
+
+		valueExpr, err := parseExprTokens(valueTokens)
+		if err != nil {
+			return nil, true, err
+		}
+
+		keys = append(keys, keyExpr)
+		values = append(values, valueExpr)
+	}
+
+	return MapExpr{Keys: keys, Values: values}, true, nil
+}
+
+func splitTopLevelColonTokens(tokens []token) ([]token, []token, bool) {
+	parenDepth := 0
+	bracketDepth := 0
+
+	for index, current := range tokens {
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		case tokenColon:
+			if parenDepth == 0 && bracketDepth == 0 {
+				return tokens[:index], tokens[index+1:], true
+			}
+		}
+	}
+
+	return nil, nil, false
 }
 
 func parseParamsPath(tokens []token) (string, bool) {
@@ -347,18 +811,28 @@ func isCallLikeDeclaration(tokens []token) bool {
 func splitTopLevelCommaSegments(tokens []token) [][]token {
 	segments := make([][]token, 0, 1)
 	segmentStart := 0
-	depth := 0
+	parenDepth := 0
+	bracketDepth := 0
 
 	for index, tok := range tokens {
 		switch tok.typ {
 		case tokenLParen:
-			depth++
+			parenDepth++
 		case tokenRParen:
-			if depth > 0 {
-				depth--
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenSymbol:
+			switch tok.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
 			}
 		case tokenComma:
-			if depth == 0 {
+			if parenDepth == 0 && bracketDepth == 0 {
 				segments = append(segments, tokens[segmentStart:index])
 				segmentStart = index + 1
 			}
@@ -447,6 +921,279 @@ func applyTupleElementQualifier(element *TupleElement, tokens []token) error {
 
 func isDeclarationQualifierTokens(tokens []token) bool {
 	return len(tokens) >= 2 && tokens[0].typ == tokenIdent && tokens[1].typ == tokenColon
+}
+
+func parsePropertyPathTokens(tokens []token) (string, bool) {
+	if len(tokens) == 0 || tokens[0].typ != tokenIdent {
+		return "", false
+	}
+
+	parts := []string{tokens[0].lit}
+	for index := 1; index < len(tokens); index += 2 {
+		if tokens[index].typ != tokenDot {
+			return "", false
+		}
+
+		if index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
+			return "", false
+		}
+
+		parts = append(parts, tokens[index+1].lit)
+	}
+
+	return strings.Join(parts, "."), true
+}
+
+func parseLogicalOrExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"||"}, parseLogicalAndExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseLogicalAndExprTokens(tokens)
+}
+
+func parseEqualityExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"==", "!="}, parseComparisonExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseComparisonExprTokens(tokens)
+}
+
+func parseAdditiveExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"+", "-"}, parseMultiplicativeExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseMultiplicativeExprTokens(tokens)
+}
+
+func parseLogicalAndExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"&&"}, parseEqualityExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseEqualityExprTokens(tokens)
+}
+
+func parseMultiplicativeExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"*", "/"}, parseUnaryExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseUnaryExprTokens(tokens)
+}
+
+func parseUnaryExprTokens(tokens []token) (Expr, error) {
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("expected expression")
+	}
+
+	if tokens[0].typ == tokenSymbol && tokens[0].lit == "!" {
+		operand, err := parseUnaryExprTokens(tokens[1:])
+		if err != nil {
+			return nil, err
+		}
+
+		return UnaryExpr{Op: "!", Operand: operand}, nil
+	}
+
+	if expr, err := parseCastExprTokens(tokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parsePrimaryExprTokens(tokens)
+}
+
+func parseCastExprTokens(tokens []token) (Expr, error) {
+	depth := 0
+
+	for index := len(tokens) - 2; index >= 1; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			depth++
+		case tokenLParen:
+			depth--
+		}
+
+		if depth != 0 || current.typ != tokenIdent || current.lit != "as" {
+			continue
+		}
+
+		operandTokens := tokens[:index]
+		typeTokens := tokens[index+1:]
+		if len(operandTokens) == 0 || len(typeTokens) == 0 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		operand, err := parseUnaryExprTokens(operandTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		return CastExpr{Operand: operand, TypeName: expressionText(typeTokens)}, nil
+	}
+
+	return nil, nil
+}
+
+func parsePrimaryExprTokens(tokens []token) (Expr, error) {
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("expected expression")
+	}
+
+	if isParenthesisedExpr(tokens) {
+		return parseExprTokens(tokens[1 : len(tokens)-1])
+	}
+
+	if expr, ok, err := parseNullSafeExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
+	if expr, ok, err := parseMethodCallExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
+	if expr, ok, err := parseIndexExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
+	if expr, ok, err := parseCollectionExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
+	if len(tokens) == 1 && tokens[0].typ == tokenIdent {
+		switch tokens[0].lit {
+		case "true":
+			return BoolExpr{Value: true}, nil
+		case "false":
+			return BoolExpr{Value: false}, nil
+		case "null":
+			return NullExpr{}, nil
+		}
+	}
+
+	if paramsPath, ok := parseParamsPath(tokens); ok {
+		return ParamsExpr{Path: paramsPath}, nil
+	}
+
+	if variable, ok := parseVarExprTokens(tokens); ok {
+		return variable, nil
+	}
+
+	if len(tokens) != 1 {
+		return UnsupportedExpr{Text: expressionText(tokens)}, nil
+	}
+
+	tok := tokens[0]
+	switch tok.typ {
+	case tokenInt:
+		value, err := strconv.Atoi(tok.lit)
+		if err != nil {
+			return nil, err
+		}
+		return IntExpr{Value: value}, nil
+	case tokenString:
+		return StringExpr{Value: tok.lit}, nil
+	case tokenIdent:
+		switch tok.lit {
+		case "true":
+			return BoolExpr{Value: true}, nil
+		case "false":
+			return BoolExpr{Value: false}, nil
+		case "null":
+			return NullExpr{}, nil
+		default:
+			return StringExpr{Value: tok.lit}, nil
+		}
+	default:
+		return nil, fmt.Errorf("unsupported expression %q", joinTokens(tokens))
+	}
+}
+
+func parseMapKeyExpr(tokens []token) (Expr, error) {
+	trimmed := trimDeclarationTokens(tokens)
+	if len(trimmed) == 1 && trimmed[0].typ == tokenIdent {
+		return StringExpr{Value: trimmed[0].lit}, nil
+	}
+
+	return parseExprTokens(trimmed)
+}
+
+func findTrailingParenStart(tokens []token) (int, bool) {
+	parenDepth := 0
+	bracketDepth := 0
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+			if parenDepth == 0 && bracketDepth == 0 {
+				return index, true
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+	}
+
+	return 0, false
+}
+
+func findTernaryColon(tokens []token, start int) int {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	ternaryDepth := 0
+
+	for index := start; index < len(tokens); index++ {
+		current := tokens[index]
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			braceDepth--
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				bracketDepth--
+			case "?":
+				if !isNullSafeQuestion(tokens, index) {
+					ternaryDepth++
+				}
+			}
+		case tokenColon:
+			if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+				continue
+			}
+
+			if ternaryDepth == 0 {
+				return index
+			}
+
+			ternaryDepth--
+		}
+	}
+
+	return -1
+}
+
+func isNullSafeQuestion(tokens []token, index int) bool {
+	return index+1 < len(tokens) && tokens[index].typ == tokenSymbol && tokens[index].lit == "?" && tokens[index+1].typ == tokenDot
 }
 
 type lexer struct {
@@ -1343,83 +2090,61 @@ func parseExprTokens(tokens []token) (Expr, error) {
 		return nil, fmt.Errorf("expected expression")
 	}
 
-	if expr, ok, err := parseBinaryExprTokens(tokens); ok || err != nil {
+	if expr, err := parseTernaryExprTokens(tokens); expr != nil || err != nil {
 		return expr, err
 	}
 
-	if paramsPath, ok := parseParamsPath(tokens); ok {
-		return ParamsExpr{Path: paramsPath}, nil
-	}
+	return parseLogicalOrExprTokens(tokens)
+}
 
-	if variable, ok := parseVarExprTokens(tokens); ok {
-		return variable, nil
-	}
+func parseBinaryExprTokens(tokens []token, operators []string, operandParser func([]token) (Expr, error)) (Expr, error) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth--
+		case tokenRBrace:
+			braceDepth++
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
 
-	if len(tokens) != 1 {
-		return UnsupportedExpr{Text: expressionText(tokens)}, nil
-	}
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, operators) {
+			continue
+		}
 
-	tok := tokens[0]
-	switch tok.typ {
-	case tokenInt:
-		value, err := strconv.Atoi(tok.lit)
+		leftTokens := tokens[:index]
+		rightTokens := tokens[index+1:]
+		if len(leftTokens) == 0 || len(rightTokens) == 0 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		leftExpr, err := operandParser(leftTokens)
 		if err != nil {
 			return nil, err
 		}
-		return IntExpr{Value: value}, nil
-	case tokenString:
-		return StringExpr{Value: tok.lit}, nil
-	case tokenIdent:
-		switch tok.lit {
-		case "true":
-			return BoolExpr{Value: true}, nil
-		case "false":
-			return BoolExpr{Value: false}, nil
-		default:
-			return StringExpr{Value: tok.lit}, nil
+
+		rightExpr, err := operandParser(rightTokens)
+		if err != nil {
+			return nil, err
 		}
-	default:
-		return nil, fmt.Errorf("unsupported expression %q", joinTokens(tokens))
-	}
-}
 
-func parseBinaryExprTokens(tokens []token) (Expr, bool, error) {
-	for _, operators := range [][]string{{">", "<"}, {"+", "-"}, {"*", "/"}} {
-		depth := 0
-		for index := len(tokens) - 1; index >= 0; index-- {
-			current := tokens[index]
-			switch current.typ {
-			case tokenRParen:
-				depth++
-			case tokenLParen:
-				depth--
-			}
-
-			if depth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, operators) {
-				continue
-			}
-
-			leftTokens := tokens[:index]
-			rightTokens := tokens[index+1:]
-			if len(leftTokens) == 0 || len(rightTokens) == 0 {
-				return nil, false, fmt.Errorf("unsupported expression %q", expressionText(tokens))
-			}
-
-			leftExpr, err := parseExprTokens(leftTokens)
-			if err != nil {
-				return nil, true, err
-			}
-
-			rightExpr, err := parseExprTokens(rightTokens)
-			if err != nil {
-				return nil, true, err
-			}
-
-			return BinaryExpr{Left: leftExpr, Op: current.lit, Right: rightExpr}, true, nil
-		}
+		return BinaryExpr{Left: leftExpr, Op: current.lit, Right: rightExpr}, nil
 	}
 
-	return nil, false, nil
+	return nil, nil
 }
 
 func parseVarExprTokens(tokens []token) (Expr, bool) {
