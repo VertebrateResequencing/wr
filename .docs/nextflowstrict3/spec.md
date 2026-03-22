@@ -253,11 +253,18 @@ type Config struct {
 ### Groovy/eval changes (groovy.go)
 
 - `evalBinaryExpr`: add `%`, `in`, `=~`/`==~`, `..`/`..<`,
-  `**`, `&`, `^`, `|`, `<<`, `>>`, `>>>` evaluation. Warn on
-  `<=>` and `instanceof` only.
+  `**`, `&`, `^`, `|`, `<<`, `>>`, `>>>`, `<=>`, `instanceof`
+  evaluation. `<=>` compares operands, returns -1/0/1.
+  `instanceof` checks Go runtime type against a Groovy type
+  name map (String→string, Integer→int/int64, List→[]any,
+  Map→map[string]any, etc.), returns bool.
 - `evalUnaryExpr`: add `~` (bitwise NOT), fully evaluated.
 - New: `evalInExpr`, `evalRegexExpr`, `evalRangeExpr`,
   `evalSpreadExpr`.
+- `evalTryCatchStmt`: evaluate try body; if evaluation errors,
+  evaluate matched catch clause; finally runs unconditionally.
+- `evalSwitchStmt`: evaluate switch expression, match against
+  case values (equality or regex), return matched branch value.
 - `evalMethodCallExpr`: add `findAll`, `find`, `any`,
   `every`, `join`, `unique`, `sort`, `plus`, `minus`,
   `multiply`, `tokenize`, `matches`, `replaceAll`, `take`,
@@ -318,6 +325,19 @@ Implement real resolution for operators currently in
   job command.
 - `spack` directive: prepend `spack load <pkg> &&` to job
   command.
+- `clusterOptions` directive: set
+  `Requirements.Other["scheduler_misc"]` to the string value,
+  passing native scheduler options through.
+- `containerOptions` directive: append the string value to the
+  container run command (extra flags for docker/singularity).
+- `maxErrors` directive: create a time-based limit group polling
+  job that monitors buried job count for the process. When
+  buried count exceeds `maxErrors`, bury all remaining jobs for
+  that process. Polling job removes itself at terminal state.
+- `queue` directive: set
+  `Requirements.Other["scheduler_queue"]` to the string value.
+- `shell` directive: set env var `RunnerExecShell` to the
+  specified shell command in the job.
 
 ---
 
@@ -461,6 +481,77 @@ that jobs execute in the correct environment.
    translated, then `conda activate` precedes the scratch
    wrapper in `Cmd`.
 
+### A3: Translate clusterOptions, containerOptions, maxErrors, queue, and shell directives
+
+As a developer, I want `clusterOptions`, `containerOptions`,
+`maxErrors`, `queue`, and `shell` directives translated into
+wr job fields, so that jobs use the correct scheduler, container,
+and shell settings.
+
+- `clusterOptions '<options>'`: set
+  `Requirements.Other["scheduler_misc"]` to the string value.
+  This passes native scheduler arguments (e.g. bsub flags)
+  through to the scheduler.
+- `containerOptions '<options>'`: append the string value to
+  the container run command. For Singularity, add extra flags
+  to the `singularity exec` invocation. For Docker, add flags
+  to `docker run`.
+- `maxErrors <n>`: create a time-based limit group polling job
+  (like the onError pattern) that monitors buried job count for
+  the process. When the buried count exceeds `maxErrors`, bury
+  all remaining jobs for that process (closest match to
+  Nextflow's behaviour of stopping the process after N total
+  errors). The polling job removes itself when the process
+  reaches a terminal state (all jobs complete or all buried).
+- `queue '<name>'`: set
+  `Requirements.Other["scheduler_queue"]` to the string value.
+  The LSF scheduler uses this to select the submission queue.
+- `shell '<command>'`: set the environment variable
+  `RunnerExecShell` to the specified shell command in the job's
+  `Env`. The wr runner uses this to determine which shell
+  executes the script.
+
+**Package:** `nextflowdsl/`
+**File:** `nextflowdsl/translate.go`
+**Test file:** `nextflowdsl/translate_test.go`
+
+**Acceptance tests:**
+
+1. Given process with `clusterOptions '--account=mylab'`, when
+   translated, then
+   `Requirements.Other["scheduler_misc"]` == `"--account=mylab"`.
+2. Given process with
+   `clusterOptions '-q priority --exclusive'`, when translated,
+   then `Requirements.Other["scheduler_misc"]` ==
+   `"-q priority --exclusive"`.
+3. Given process with `containerOptions '--gpus all'`, when
+   translated with container `'ubuntu:latest'`, then job `Cmd`
+   includes `--gpus all` in the container invocation.
+4. Given process with `containerOptions '--bind /data'`, when
+   translated with Singularity container, then job `Cmd`
+   includes `--bind /data` in the singularity invocation.
+5. Given process with `maxErrors 3` producing 10 jobs, when
+   translated, then a polling job is created that monitors
+   buried job count and buries remaining jobs when count
+   exceeds 3.
+6. Given process with `maxErrors 3`, when the polling job
+   detects all process jobs are in terminal state (complete or
+   buried), then it removes itself.
+7. Given process with `queue 'long'`, when translated, then
+   `Requirements.Other["scheduler_queue"]` == `"long"`.
+8. Given process with `queue 'gpu,highpri'`, when translated,
+   then `Requirements.Other["scheduler_queue"]` ==
+   `"gpu,highpri"`.
+9. Given process with `shell '/bin/bash', '-euo', 'pipefail'`,
+   when translated, then job `Env` contains
+   `"RunnerExecShell=/bin/bash -euo pipefail"`.
+10. Given process with `shell '/bin/zsh'`, when translated,
+    then job `Env` contains `"RunnerExecShell=/bin/zsh"`.
+11. Given process with both `queue` and `clusterOptions`, when
+    translated, then both
+    `Requirements.Other["scheduler_queue"]` and
+    `Requirements.Other["scheduler_misc"]` are set.
+
 ---
 
 ## B. `each` Input Qualifier
@@ -520,9 +611,9 @@ All resulting jobs share the same dep_grp for downstream wiring.
    `id='A'` + `mode='y'`, etc.).
 3. Given process with no `each` inputs, when translated, then
    existing behaviour preserved (no cross-product).
-4. Given process with `input: each val(m1)\neach val(m2)` where
-   m1 has 2 items and m2 has 3 items and regular input has 1
-   item, when translated, then 6 jobs (1 x 2 x 3).
+4. Given process with `input: val(id)\neach val(m1)\neach
+   val(m2)` where id has 1 item, m1 has 2 items, and m2 has
+   3 items, when translated, then 6 jobs (1 x 2 x 3).
 
 ---
 
@@ -654,13 +745,18 @@ constructs do not error.
 ### D3: Evaluate common operators
 
 As a developer, I want `%`, `in`/`!in`, `=~`/`==~`, `..`/`..<`,
-spread-dot, `**`, bitwise (`&`, `^`, `|`, `~`), and shift
-(`<<`, `>>`, `>>>`) operators evaluated, so that directive
-expressions using these work at translate time.
+spread-dot, `**`, bitwise (`&`, `^`, `|`, `~`), shift
+(`<<`, `>>`, `>>>`), `<=>` (spaceship), and `instanceof`
+operators evaluated, so that directive expressions using these
+work at translate time.
 
 Bitwise and shift operators are trivial one-line Go int
-operations and are fully evaluated. Only `<=>` (spaceship)
-and `instanceof` return `UnsupportedExpr` with a warning.
+operations and are fully evaluated. `<=>` compares operands
+and returns -1 (less), 0 (equal), or 1 (greater). `instanceof`
+checks the Go runtime type of the left operand against a map
+of Groovy type names (String→string, Integer→int/int64,
+List→[]any, Map→map[string]any, Boolean→bool, etc.) and
+returns a bool.
 
 **Package:** `nextflowdsl/`
 **File:** `nextflowdsl/groovy.go`
@@ -700,6 +796,21 @@ and `instanceof` return `UnsupportedExpr` with a warning.
 20. Given `256 >> 2`, when evaluated, then result is 64.
 21. Given `-1 >>> 24`, when evaluated, then result is 255
     (unsigned right shift, treating as uint32).
+22. Given `3 <=> 5`, when evaluated, then result is -1.
+23. Given `5 <=> 5`, when evaluated, then result is 0.
+24. Given `7 <=> 2`, when evaluated, then result is 1.
+25. Given `'abc' <=> 'def'`, when evaluated, then result is -1
+    (string comparison).
+26. Given `'hello' instanceof String`, when evaluated, then
+    result is true.
+27. Given `42 instanceof Integer`, when evaluated, then result
+    is true.
+28. Given `[1,2] instanceof List`, when evaluated, then result
+    is true.
+29. Given `'hello' instanceof Integer`, when evaluated, then
+    result is false.
+30. Given `42 !instanceof String`, when evaluated, then result
+    is true.
 
 ### D4: Evaluate additional string/list methods
 
@@ -796,22 +907,23 @@ matching logic handles these keywords without tripping up.
 
 ### E2: Evaluate simple statement types in closures and functions
 
-As a developer, I want simple `return`, `for`, `try/catch`, and
-`switch/case` statements evaluated or warned on at translate
-time, so that closures and functions containing these produce
-correct results or clear diagnostics.
+As a developer, I want `return`, `for`, `try/catch`, and
+`switch/case` statements evaluated at translate time, so that
+closures and functions containing these produce correct results.
 
-- Simple `return expr` in a closure: evaluate the return value
-  as the closure result when the `return` is the only exit path
-  or guarded by a simple `if`.
-- Simple `for (x in coll) { ... }` in a function body: evaluate
+- `return expr` in a closure: evaluate the return value as the
+  closure result when the `return` is the only exit path or
+  guarded by a simple `if`.
+- `for (x in coll) { ... }` in a function body: evaluate
   accumulation patterns (e.g. summing, collecting into a list).
-- `try/catch` in a closure evaluated at translate time: emit a
-  warning ("try/catch not supported in static evaluation"),
-  do not crash.
-- `switch/case` in expression context: emit a warning
-  ("switch/case not supported in static evaluation"), do not
-  crash.
+- `try/catch` fully evaluated: evaluate the try body. If
+  evaluation produces an error, evaluate the first matching
+  catch clause body. The finally block (if present) runs
+  unconditionally. Return the last expression value.
+- `switch/case` fully evaluated: evaluate the switch expression,
+  match against each case value using equality (or regex via
+  `=~` for pattern cases). Return the value of the matched
+  branch. `default` is the fallback when no case matches.
 
 **Package:** `nextflowdsl/`
 **File:** `nextflowdsl/groovy.go`
@@ -828,14 +940,21 @@ correct results or clear diagnostics.
 3. Given function `def total(items) { def sum = 0; for (x in
    items) { sum += x }; return sum }` called with `[1,2,3]`,
    when evaluated, then result is 6.
-4. Given closure `{ x -> try { risky(x) } catch (Exception e) {
-   0 } }` evaluated at translate time in a `map` operator, then
-   a warning containing "try/catch" is emitted and evaluation
-   does not crash.
-5. Given closure `{ x -> switch(x) { case 1: 'one'; default:
-   'other' } }` evaluated at translate time, then a warning
-   containing "switch" is emitted and evaluation does not
-   crash.
+4. Given closure `{ x -> try { Integer.parseInt(x) } catch
+   (Exception e) { -1 } }` evaluated at translate time with
+   input `'abc'`, then result is -1 (catch clause evaluated).
+5. Given closure `{ x -> try { Integer.parseInt(x) } catch
+   (Exception e) { -1 } }` evaluated at translate time with
+   input `'42'`, then result is 42 (try body succeeds).
+6. Given closure `{ x -> switch(x) { case 1: 'one'; break;
+   case 2: 'two'; break; default: 'other' } }` evaluated with
+   input 1, then result is `'one'`.
+7. Given closure `{ x -> switch(x) { case 1: 'one'; break;
+   case 2: 'two'; break; default: 'other' } }` evaluated with
+   input 99, then result is `'other'` (default branch).
+8. Given closure `{ x -> switch(x) { case ~/^[A-Z]/: 'upper';
+   default: 'lower' } }` evaluated with input `'Hello'`, then
+   result is `'upper'` (regex case match).
 
 ---
 
@@ -942,8 +1061,8 @@ prior spec). Extend to store the raw body text in
 **Acceptance tests:**
 
 1. Given `output { samples { path 'fastq' } }`, when parsed,
-   then `OutputBlock` contains `"samples { path 'fastq' }"` (or
-   similar raw capture) and no error.
+   then `OutputBlock` is non-empty, contains the substring
+   `samples`, and no error.
 2. Given `output { samples { path 'fastq'; index { path
    'index.csv' } } }`, when parsed, then `OutputBlock` is
    non-empty and no error.
@@ -1020,17 +1139,21 @@ error state is detected, it executes the onError body.
    parsed, then both `Calls` and `OnComplete` are populated.
 4. Given workflow with no lifecycle sections, when parsed, then
    `OnComplete` and `OnError` are empty.
-5. Given workflow with 2 process stages and `onComplete:` body,
-   when translated, then a final job is created whose DepGroups
-   include the dep_grps of both process stages.
-6. Given the onComplete job from test 5, then its `Cmd` contains
-   the parsed onComplete body text as a shell script.
+5. Given workflow with 2 process stages and `onComplete:` body
+   `println 'workflow done'`, when translated, then a final job
+   is created whose DepGroups include the dep_grps of both
+   process stages.
+6. Given the onComplete job from test 5, then its `Cmd` wraps
+   the body as `echo 'workflow done'` (println translated to
+   echo).
 7. Given workflow with `onError:` body and 2 process stages,
    when translated, then a polling job is created that uses
-   a time-based limit group.
-8. Given the onError polling job, then its `Cmd` contains logic
-   to check for buried/failed jobs and execute the onError body
-   when a terminal error state is detected.
+   a time-based limit group and has a `Cmd` containing a
+   `wr status` invocation to check for buried jobs.
+8. Given the onError polling job, then its `Cmd` checks buried
+   job count via `wr status --buried`, and if buried jobs
+   exist, executes the onError body; otherwise re-adds itself
+   to poll again.
 
 ---
 
@@ -1311,6 +1434,8 @@ The existing `resolveDirectiveInt` already evaluates expressions
 with `task.attempt = 1` and other task defaults. Extend to
 handle closure-wrapped directives: detect `ClosureExpr` in
 directive value, unwrap, and evaluate the body with task vars.
+Default task variables: `task.attempt` = 1, `task.cpus` = 1,
+`task.memory` = 0 (bytes), `task.exitStatus` = 0.
 
 **Package:** `nextflowdsl/`
 **File:** `nextflowdsl/translate.go`
@@ -1326,13 +1451,16 @@ directive value, unwrap, and evaluate the body with task vars.
    `Requirements.Cores` == 4.
 3. Given process with `errorStrategy { task.exitStatus in
    [137,140] ? 'retry' : 'terminate' }`, when translated, then
-   `ErrorStrat` resolves to a string (either `"retry"` or
-   `"terminate"` depending on evaluation with defaults).
+   `ErrorStrat` resolves to `"terminate"` (default
+   `task.exitStatus = 0` is not in list).
 4. Given process with non-closure directive `cpus 4`, when
    translated, then existing behaviour preserved.
 5. Given process with `container { "image:${task.attempt}" }`,
    when translated, then container resolves to `"image:1"`
    (default `task.attempt = 1`).
+6. Given process with `cpus { task.cpus * 2 }` and default
+   `task.cpus = 1`, when translated, then
+   `Requirements.Cores` == 2.
 
 ---
 
@@ -1414,13 +1542,14 @@ Parse `executor {}` with extraction, add remaining scopes
 `timeline`, `tower`, `trace`, `wave`, `weblog`). No
 dependencies on other phases.
 
-### Phase 8: Translation (A2, B2, C1, I2 translate, N1, O1)
+### Phase 8: Translation (A2, A3, B2, C1, I2 translate, N1, O1)
 
-A2 (scratch/storeDir/conda/spack directive wrappers), B2
-(`each` cross-product), C1 (`eval` output translation), I2
-(onComplete/onError job translation), N1 (dynamic directive
-closures), O1 (cross-product CWD). Depends on Phases 4, 5,
-and 6.
+A2 (scratch/storeDir/conda/spack directive wrappers), A3
+(clusterOptions/containerOptions/maxErrors/queue/shell
+translation), B2 (`each` cross-product), C1 (`eval` output
+translation), I2 (onComplete/onError job translation), N1
+(dynamic directive closures), O1 (cross-product CWD). Depends
+on Phases 4, 5, and 6.
 
 ---
 
@@ -1486,6 +1615,24 @@ and 6.
     `scratch` wraps command with temp-dir creation and output
     copy-back. `storeDir` adds output-existence check and skip
     logic. `conda`/`spack` prepend activation/load commands.
-18. **Bitwise/shift fully evaluated.** `&`, `^`, `|`, `~`,
+18. **All operators fully evaluated.** `&`, `^`, `|`, `~`,
     `<<`, `>>`, `>>>` are trivial one-line Go int operations.
-    Only `<=>` (spaceship) and `instanceof` emit warnings.
+    `<=>` (spaceship) compares operands, returns -1/0/1.
+    `instanceof` checks Go runtime type against a Groovy type
+    name map, returns bool. No operators emit warnings.
+19. **try/catch and switch/case fully evaluated.** `try/catch`
+    evaluates the try body; on error, evaluates the first
+    matching catch clause; finally runs unconditionally.
+    `switch/case` evaluates the switch expression, matches case
+    values (equality or regex), returns the matched branch.
+20. **Directive translation for clusterOptions/queue.** Direct
+    mapping to `Requirements.Other` keys (`scheduler_misc`,
+    `scheduler_queue`) for native scheduler integration.
+21. **Directive translation for containerOptions.** Extra flags
+    appended to the container run command.
+22. **Directive translation for maxErrors.** Time-based limit
+    group polling job pattern (like onError) that monitors
+    buried job count and buries remaining process jobs when
+    threshold exceeded.
+23. **Directive translation for shell.** Sets env var
+    `RunnerExecShell` so the wr runner uses the specified shell.

@@ -270,8 +270,8 @@ channel. This is a cross-product expansion in `translate.go`.
   unique, concat, count); TranslatePending with warnings for data-dependent
   operators (splitCsv, splitFasta, etc.) and combine with unknown keys.
 - Groovy evaluation scope: implement `%`, `**`, `in`/`!in`, `=~`/`==~`,
-  `..`/`..<` ranges, spread-dot, and all bitwise/shift operators. Only
-  `<=>` (spaceship) and `instanceof` emit warnings.
+  `..`/`..<` ranges, spread-dot, and all bitwise/shift operators.
+  All operators fully evaluated (no warnings).
 - Error handling: parse-permissive. Accept anything that looks like valid
   Nextflow, warn liberally, only fail on tokeniser errors. Unknown
   directives, statement types, and operators should never cause parse errors.
@@ -291,10 +291,21 @@ channel. This is a cross-product expansion in `translate.go`.
   Evaluate where possible (`%`, `in`, `=~`, ranges, spread-dot etc.).
   Bitwise and shift operators (`&`, `^`, `|`, `~`, `<<`, `>>`, `>>>`)
   are trivial one-line Go operations and MUST be fully evaluated, not
-  warned on. Only `<=>` (spaceship) and `instanceof` warrant warnings.
-- Unsupported statement types (try/catch, for/while, switch/case, assert,
-  throw): parse and store as AST nodes. Translator evaluates simple cases
-  (e.g. simple for loops, return statements), warns on complex ones.
+  warned on. `<=>` (spaceship) is fully evaluated: compare operands,
+  return -1 (less), 0 (equal), or 1 (greater). `instanceof` is fully
+  evaluated: check the Go runtime type of the left operand against a
+  map of Groovy type names (String→string, Integer→int/int64,
+  List→[]any, Map→map[string]any, etc.), return bool.
+- Statement types (try/catch, for/while, switch/case, assert,
+  throw, return): parse and store as AST nodes. Translator evaluates
+  all simple cases. `return` evaluates its expression. `for` loops
+  evaluate accumulation patterns. `try/catch` is fully evaluated:
+  evaluate the try body; if evaluation errors, evaluate the first
+  matching catch clause body; finally block runs unconditionally;
+  return the last expression value. `switch/case` is fully evaluated:
+  evaluate the switch expression, match against case values
+  (equality or regex via `=~`), return the matched branch value;
+  `default` is the fallback. Assert, throw: warn only.
 - Config `executor {}` and other new scopes: parse and extract key fields
   (executor type, queue, clusterOptions). Store as raw `map[string]any`
   for potential scheduling hints.
@@ -366,3 +377,24 @@ channel. This is a cross-product expansion in `translate.go`.
 - `collectFile` operator: implement via PendingStage — at runtime,
   collect completed items into a file and produce a single downstream
   item pointing to that file.
+- Directive translation for `clusterOptions`: set
+  `Requirements.Other["scheduler_misc"]` to the string value. This
+  passes native scheduler options (e.g. bsub arguments) through to
+  the scheduler.
+- Directive translation for `containerOptions`: append the string
+  value to the container run command. E.g. for Singularity, add
+  extra flags to the singularity exec invocation.
+- Directive translation for `maxErrors`: create a time-based limit
+  group polling job (like the onError pattern). The polling job
+  checks whether the number of buried jobs for the process exceeds
+  `maxErrors`. If so, it buries all remaining jobs for that process
+  (closest match to Nextflow's maxErrors behaviour of stopping the
+  process). The polling job removes itself when the process reaches
+  a terminal state (all jobs complete or buried).
+- Directive translation for `queue`: set
+  `Requirements.Other["scheduler_queue"]` to the string value. The
+  LSF scheduler's `determineQueue()` uses this to select the queue.
+- Directive translation for `shell`: set the environment variable
+  `RunnerExecShell` to the specified shell command in the job. The
+  wr runner uses this to determine which shell to execute scripts
+  with.
