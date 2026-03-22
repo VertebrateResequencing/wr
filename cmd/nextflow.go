@@ -54,21 +54,32 @@ const (
 var nextflowSleep = time.Sleep
 
 type nextflowRunOptions struct {
-	configPath       string
-	paramsFilePath   string
-	paramAssignments []string
-	runID            string
-	containerRuntime string
+	configPath          string
+	paramsFilePath      string
+	paramAssignments    []string
+	runID               string
+	containerRuntime    string
 	containerRuntimeSet bool
-	follow           bool
-	pollInterval     time.Duration
-	profile          string
+	follow              bool
+	pollInterval        time.Duration
+	profile             string
 }
 
 type nextflowStatusOptions struct {
 	runID    string
 	workflow string
 	Output   bool
+}
+
+func normalizeNextflowContainerRuntime(runtime string) (string, error) {
+	switch runtime {
+	case "", "singularity", "apptainer":
+		return "singularity", nil
+	case "docker":
+		return "docker", nil
+	default:
+		return "", fmt.Errorf("unsupported container runtime %q", runtime)
+	}
 }
 
 var (
@@ -164,8 +175,9 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 	if containerRuntime == "" {
 		containerRuntime = "singularity"
 	}
-	if containerRuntime != "docker" && containerRuntime != "singularity" {
-		return fmt.Errorf("unsupported container runtime %q", containerRuntime)
+	containerRuntime, err = normalizeNextflowContainerRuntime(containerRuntime)
+	if err != nil {
+		return err
 	}
 
 	cwd, err := os.Getwd()
