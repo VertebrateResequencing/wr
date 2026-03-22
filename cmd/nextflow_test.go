@@ -694,6 +694,19 @@ func TestNextflowRunCommand(t *testing.T) {
 			So(err.Error(), ShouldContainSubstring, "--profile requires --config")
 		})
 
+		Convey("unknown selected profiles fail fast with the available profile names", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("profile_missing.nf", singleProcessWorkflow("echo hello"))
+			configPath := env.writeText("nextflow.config", "profiles { test { params { input = '/profile' } } other { params { input = '/other' } } }")
+
+			err := env.executeRun("--config", configPath, "--profile", "typo", workflowPath)
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unknown config profile \"typo\"")
+			So(err.Error(), ShouldContainSubstring, "available profiles: other, test")
+		})
+
 		Convey("local imported processes are resolved before translation", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
