@@ -163,7 +163,7 @@ func TestTranslateD6(t *testing.T) {
 func d6Process(name string, input []*Declaration, output []*Declaration, script string) *Process {
 	return &Process{
 		Name:       name,
-		Directives: map[string]Expr{},
+		Directives: map[string]any{},
 		Input:      input,
 		Output:     output,
 		Script:     script,

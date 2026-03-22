@@ -2490,7 +2490,8 @@ func (p *parser) parseProcess() (*Process, error) {
 
 	proc := &Process{
 		Name:       name.lit,
-		Directives: make(map[string]Expr),
+		Labels:     []string{},
+		Directives: make(map[string]any),
 		PublishDir: []*PublishDir{},
 		Env:        make(map[string]string),
 	}
@@ -2889,6 +2890,12 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 			return wrapLineError(name.line, err)
 		}
 		proc.Directives[name.lit] = expr
+	case "label":
+		value, err := parseDirectiveStringValue(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.Labels = append(proc.Labels, value)
 	case "container":
 		expr, err := parseDirectiveExpr(name.lit, args)
 		if err != nil {
@@ -2899,6 +2906,37 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 			return fmt.Errorf("line %d: container expects a string literal", name.line)
 		}
 		proc.Container = strExpr.Value
+	case "tag":
+		value, err := parseDirectiveText(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.Tag = value
+	case "beforeScript":
+		value, err := parseDirectiveStringValue(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.BeforeScript = value
+	case "afterScript":
+		value, err := parseDirectiveStringValue(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.AfterScript = value
+	case "module":
+		value, err := parseDirectiveStringValue(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.Module = value
+	case "cache":
+		value, err := parseDirectiveStringValue(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.Cache = value
+		warnStoredDirective(name)
 	case "maxForks":
 		value, err := parseIntValue(args)
 		if err != nil {
@@ -2933,6 +2971,13 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 			return wrapLineError(name.line, err)
 		}
 		proc.Env[key] = value
+	case "scratch", "storeDir", "queue", "clusterOptions", "executor", "debug", "secret":
+		expr, err := parseDirectiveExpr(name.lit, args)
+		if err != nil {
+			return wrapLineError(name.line, err)
+		}
+		proc.Directives[name.lit] = expr
+		warnStoredDirective(name)
 	default:
 		warnUnsupportedDirective(name)
 	}
@@ -2986,6 +3031,36 @@ func wrapLineError(line int, err error) error {
 	}
 
 	return fmt.Errorf("line %d: %w", line, err)
+}
+
+func parseDirectiveStringValue(name string, args []token) (string, error) {
+	expr, err := parseDirectiveExpr(name, args)
+	if err != nil {
+		return "", err
+	}
+
+	stringExpr, ok := expr.(StringExpr)
+	if !ok {
+		return "", fmt.Errorf("%s expects a string literal", name)
+	}
+
+	return stringExpr.Value, nil
+}
+
+func parseDirectiveText(name string, args []token) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("%s requires an argument", name)
+	}
+
+	if _, err := parseDirectiveExpr(name, args); err != nil {
+		return "", err
+	}
+
+	return expressionText(args), nil
+}
+
+func warnStoredDirective(name token) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported directive %q at line %d stored without translation support\n", name.lit, name.line)
 }
 
 func parseIntValue(tokens []token) (int, error) {

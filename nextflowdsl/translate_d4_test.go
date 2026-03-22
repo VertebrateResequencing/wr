@@ -42,7 +42,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "touch a.txt b.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "*.txt"}}},
 						Env:        map[string]string{},
@@ -50,7 +50,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "cat $reads",
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Env:        map[string]string{},
@@ -76,7 +76,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "touch result.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "result.txt"}}},
 						Env:        map[string]string{},
@@ -84,7 +84,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "cat $reads",
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Env:        map[string]string{},
@@ -110,7 +110,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "echo x",
 						Output:     []*Declaration{{Kind: "val", Name: "token"}},
 						Env:        map[string]string{},
@@ -118,7 +118,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "echo $token",
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Env:        map[string]string{},
@@ -144,7 +144,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Script:     "echo $token",
 						Output:     []*Declaration{{Kind: "val", Name: "token"}},
@@ -153,7 +153,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "echo $token",
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Env:        map[string]string{},
@@ -179,7 +179,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Script:     "touch produced.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
@@ -188,7 +188,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Script:     "cat $reads",
 						Env:        map[string]string{},
@@ -223,7 +223,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Script:     "touch produced.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
@@ -232,7 +232,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Script:     "cat $reads",
 						Env:        map[string]string{},
@@ -287,7 +287,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Script:     "touch produced.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
@@ -296,7 +296,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Script:     "cat $reads",
 						Env:        map[string]string{},
@@ -345,7 +345,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Script:     "touch " + absOutput,
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: absOutput}}},
 						Env:        map[string]string{},
@@ -353,7 +353,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Script:     "cat $reads",
 						Env:        map[string]string{},
@@ -386,7 +386,7 @@ func TestTranslateD4(t *testing.T) {
 				Processes: []*Process{
 					{
 						Name:       "PRODUCE",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "val", Name: "token"}},
 						Script:     "touch produced.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
@@ -395,7 +395,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "CONSUME",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Script:     "cp $reads consumed.txt",
 						Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "consumed.txt"}}},
@@ -404,7 +404,7 @@ func TestTranslateD4(t *testing.T) {
 					},
 					{
 						Name:       "REPORT",
-						Directives: map[string]Expr{},
+						Directives: map[string]any{},
 						Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 						Script:     "cat $reads",
 						Env:        map[string]string{},

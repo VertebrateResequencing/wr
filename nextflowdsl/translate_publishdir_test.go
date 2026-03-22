@@ -198,7 +198,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 func newPublishProcess() *Process {
 	return &Process{
 		Name:       "publish",
-		Directives: map[string]Expr{},
+		Directives: map[string]any{},
 		Output:     []*Declaration{{Kind: "path", Expr: StringExpr{Value: "out.txt"}}},
 		Script:     "echo hi > out.txt",
 		Env:        map[string]string{},

@@ -70,6 +70,25 @@ func TestLoadWorkflowFileRejectsImportCycles(t *testing.T) {
 	})
 }
 
+func TestLoadWorkflowFilePreservesImportedProcessLabels(t *testing.T) {
+	Convey("LoadWorkflowFile preserves labels on imported processes", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+		moduleDir := filepath.Join(tempDir, "modules")
+		modulePath := filepath.Join(moduleDir, "helper.nf")
+
+		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte("process helper {\nlabel 'big_mem'\nlabel 'long_time'\nscript:\n'echo hello'\n}\n"), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.Processes, ShouldHaveLength, 1)
+		So(wf.Processes[0].Name, ShouldEqual, "helper")
+		So(wf.Processes[0].Labels, ShouldResemble, []string{"big_mem", "long_time"})
+	})
+}
+
 func TestLoadWorkflowFilePreservesClonedProcessFields(t *testing.T) {
 	Convey("LoadWorkflowFile preserves parsed process fields required by nextflowstrict translation", t, func() {
 		tempDir := t.TempDir()
@@ -127,5 +146,6 @@ demo()
 		So(proc.Exec, ShouldEqual, "println 'exec'")
 		So(proc.Shell, ShouldEqual, "echo !{id}")
 		So(proc.When, ShouldEqual, "params.run_demo")
+		So(proc.Labels, ShouldResemble, []string{})
 	})
 }

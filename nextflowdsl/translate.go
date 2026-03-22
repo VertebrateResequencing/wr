@@ -1704,7 +1704,7 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, params map[stri
 	return req, nil
 }
 
-func resolveDirectiveInt(name string, expr Expr, params map[string]any, fallback int, task map[string]any) (int, error) {
+func resolveDirectiveInt(name string, expr any, params map[string]any, fallback int, task map[string]any) (int, error) {
 	if expr == nil {
 		return fallback, nil
 	}

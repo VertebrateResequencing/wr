@@ -25,7 +25,8 @@ expression evaluation of directive values. Covering all 12
 acceptance tests from F1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 2.2: A1 - Parse label directive on processes [parallel with 2.1]
 
@@ -38,7 +39,8 @@ directives are allowed per process. Covering all 3 acceptance
 tests from A1.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

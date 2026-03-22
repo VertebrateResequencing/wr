@@ -91,7 +91,7 @@ func d5Workflow(arg ChanExpr) *Workflow {
 	return &Workflow{
 		Processes: []*Process{{
 			Name:       "ALIGN",
-			Directives: map[string]Expr{},
+			Directives: map[string]any{},
 			Input:      []*Declaration{{Kind: "path", Name: "reads"}},
 			Script:     "echo $reads",
 			Env:        map[string]string{},

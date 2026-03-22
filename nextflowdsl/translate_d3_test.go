@@ -195,7 +195,7 @@ func TestTranslateD3(t *testing.T) {
 func d3Process(name, script string, input []*Declaration, output []*Declaration) *Process {
 	return &Process{
 		Name:       name,
-		Directives: map[string]Expr{},
+		Directives: map[string]any{},
 		Input:      input,
 		Output:     output,
 		Script:     script,
