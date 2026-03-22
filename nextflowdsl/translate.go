@@ -1196,10 +1196,35 @@ func mergeTranslateParams(cfg *Config, tc TranslateConfig) map[string]any {
 	return MergeParams(sources...)
 }
 
+func validateTranslateProfile(cfg *Config, profileName string) error {
+	if cfg == nil || profileName == "" {
+		return nil
+	}
+	if cfg.Profiles != nil {
+		if _, ok := cfg.Profiles[profileName]; ok {
+			return nil
+		}
+	}
+
+	available := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		available = append(available, name)
+	}
+	sort.Strings(available)
+	if len(available) == 0 {
+		return fmt.Errorf("unknown config profile %q: config does not define any profiles", profileName)
+	}
+
+	return fmt.Errorf("unknown config profile %q; available profiles: %s", profileName, strings.Join(available, ", "))
+}
+
 // Translate converts a parsed Workflow and config into wr jobs.
 func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult, error) {
 	if wf == nil {
 		return nil, fmt.Errorf("workflow is nil")
+	}
+	if err := validateTranslateProfile(cfg, tc.Profile); err != nil {
+		return nil, err
 	}
 
 	result := &TranslateResult{}

@@ -1469,6 +1469,32 @@ func TestTranslate(t *testing.T) {
 			So(diamondResult.Jobs[2].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.A", "nf.r1.B"})
 			So(diamondResult.Jobs[2].Cwd, ShouldEqual, "/work/nf-work/r1/C")
 		})
+
+		Convey("unknown selected profiles fail fast", func() {
+			wf := &Workflow{
+				Processes: []*Process{{Name: "proc", Script: "echo hi"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
+			}
+
+			_, err := Translate(wf, &Config{}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "missing"})
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unknown config profile \"missing\"")
+			So(err.Error(), ShouldContainSubstring, "config does not define any profiles")
+		})
+
+		Convey("unknown selected profiles list available names", func() {
+			wf := &Workflow{
+				Processes: []*Process{{Name: "proc", Script: "echo hi"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
+			}
+
+			_, err := Translate(wf, &Config{Profiles: map[string]*Profile{"alpha": {}, "beta": {}}}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "missing"})
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unknown config profile \"missing\"")
+			So(err.Error(), ShouldContainSubstring, "available profiles: alpha, beta")
+		})
 	})
 }
 
