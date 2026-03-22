@@ -1105,13 +1105,13 @@ func parseUnaryExprTokens(tokens []token) (Expr, error) {
 		return nil, fmt.Errorf("expected expression")
 	}
 
-	if tokens[0].typ == tokenSymbol && tokens[0].lit == "!" {
+	if tokens[0].typ == tokenSymbol && (tokens[0].lit == "!" || tokens[0].lit == "-") {
 		operand, err := parseUnaryExprTokens(tokens[1:])
 		if err != nil {
 			return nil, err
 		}
 
-		return UnaryExpr{Op: "!", Operand: operand}, nil
+		return UnaryExpr{Op: tokens[0].lit, Operand: operand}, nil
 	}
 
 	if expr, err := parseCastExprTokens(tokens); expr != nil || err != nil {
@@ -2431,7 +2431,10 @@ func parseBinaryExprTokens(tokens []token, operators []string, operandParser fun
 
 		leftTokens := tokens[:index]
 		rightTokens := tokens[index+1:]
-		if len(leftTokens) == 0 || len(rightTokens) == 0 {
+		if len(leftTokens) == 0 {
+			continue
+		}
+		if len(rightTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
 		}
 
