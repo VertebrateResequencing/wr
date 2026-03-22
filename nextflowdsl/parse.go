@@ -1520,6 +1520,13 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 		}
 
 		if current.typ == tokenIdent && current.lit == "workflow" {
+			if p.isWorkflowLifecycleHandlerStart() {
+				if err := p.parseWorkflowLifecycleHandler(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
 			name, block, err := p.parseWorkflowBlockDecl()
 			if err != nil {
 				return nil, err
@@ -1682,6 +1689,52 @@ func (p *parser) skipFeatureFlagAssignment() bool {
 	}
 
 	return true
+}
+
+func (p *parser) isWorkflowLifecycleHandlerStart() bool {
+	if p.current().typ != tokenIdent || p.current().lit != "workflow" {
+		return false
+	}
+
+	if p.peek().typ != tokenDot || p.peekN(2).typ != tokenIdent {
+		return false
+	}
+
+	switch p.peekN(2).lit {
+	case "onComplete", "onError":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *parser) parseWorkflowLifecycleHandler() error {
+	if _, err := p.expectIdent("workflow"); err != nil {
+		return err
+	}
+
+	if _, err := p.expectType(tokenDot, "."); err != nil {
+		return err
+	}
+
+	handler, err := p.expectType(tokenIdent, "workflow lifecycle handler")
+	if err != nil {
+		return err
+	}
+
+	if handler.lit != "onComplete" && handler.lit != "onError" {
+		return fmt.Errorf("line %d: unsupported workflow lifecycle handler %q", handler.line, handler.lit)
+	}
+
+	p.skipNewlines()
+	openBrace, err := p.expectType(tokenLBrace, "{")
+	if err != nil {
+		return err
+	}
+
+	_, err = p.parseRawBraceBody(openBrace, fmt.Sprintf("workflow.%s handler", handler.lit))
+
+	return err
 }
 
 func (p *parser) isFeatureFlagAssignmentStart() bool {
@@ -2228,6 +2281,10 @@ func (p *parser) parseChanStage(terminators ...tokenType) (ChanExpr, error) {
 		return nil, fmt.Errorf("line %d: expected channel expression", current.line)
 	}
 
+	if current.typ == tokenIdent && current.lit == "set" && p.peek().typ == tokenLBrace {
+		return nil, fmt.Errorf("line %d: DSL1-only construct: set { ... } channel assignment is not supported in DSL2", current.line)
+	}
+
 	var base ChanExpr
 	if current.typ == tokenIdent && current.lit == "Channel" && p.peek().typ == tokenDot {
 		factory, err := p.parseChannelFactory()
@@ -2292,6 +2349,9 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 	name, err := p.expectType(tokenIdent, "channel factory name")
 	if err != nil {
 		return nil, err
+	}
+	if name.lit == "create" {
+		return nil, fmt.Errorf("line %d: DSL1-only construct: Channel.create() is not supported in DSL2", name.line)
 	}
 	if _, ok := supportedChannelFactories[name.lit]; !ok {
 		return nil, fmt.Errorf("line %d: unsupported factory: %s", name.line, name.lit)
@@ -2527,7 +2587,7 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 		operator.Closure = closure
 		operator.ClosureExpr = &closureExpr
 		if isDeprecatedChannelOperator(name.lit) {
-			warnDeprecatedChannelOperator(name)
+			warnDeprecatedParsedChannelOperator(name)
 		}
 		return operator, nil
 	case tokenLParen:
@@ -2538,7 +2598,7 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 		operator.Channels = channels
 		operator.Args = args
 		if isDeprecatedChannelOperator(name.lit) {
-			warnDeprecatedChannelOperator(name)
+			warnDeprecatedParsedChannelOperator(name)
 		}
 		return operator, nil
 	default:
@@ -2548,14 +2608,14 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 
 func isDeprecatedChannelOperator(name string) bool {
 	switch name {
-	case "countFasta", "countFastq", "countJson", "countLines":
+	case "countFasta", "countFastq", "countJson", "countLines", "merge", "toInteger":
 		return true
 	default:
 		return false
 	}
 }
 
-func warnDeprecatedChannelOperator(name token) {
+func warnDeprecatedParsedChannelOperator(name token) {
 	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel operator %q at line %d parsed for compatibility\n", name.lit, name.line)
 }
 
