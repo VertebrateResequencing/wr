@@ -59,6 +59,7 @@ type nextflowRunOptions struct {
 	paramAssignments []string
 	runID            string
 	containerRuntime string
+	containerRuntimeSet bool
 	follow           bool
 	pollInterval     time.Duration
 	profile          string
@@ -96,7 +97,10 @@ func newNextflowRunCommand(options *nextflowRunOptions) *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runNextflowWorkflow(cmd.OutOrStdout(), args[0], *options)
+			runOptions := *options
+			runOptions.containerRuntimeSet = cmd.Flags().Changed("container-runtime")
+
+			return runNextflowWorkflow(cmd.OutOrStdout(), args[0], runOptions)
 		},
 	}
 
@@ -114,9 +118,6 @@ func newNextflowRunCommand(options *nextflowRunOptions) *cobra.Command {
 }
 
 func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nextflowRunOptions) error {
-	if options.containerRuntime != "docker" && options.containerRuntime != "singularity" {
-		return fmt.Errorf("unsupported container runtime %q", options.containerRuntime)
-	}
 	if options.profile != "" && options.configPath == "" {
 		return fmt.Errorf("--profile requires --config")
 	}
@@ -156,6 +157,17 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 		}
 	}
 
+	containerRuntime := options.containerRuntime
+	if !options.containerRuntimeSet && cfg != nil && cfg.ContainerEngine != "" {
+		containerRuntime = cfg.ContainerEngine
+	}
+	if containerRuntime == "" {
+		containerRuntime = "singularity"
+	}
+	if containerRuntime != "docker" && containerRuntime != "singularity" {
+		return fmt.Errorf("unsupported container runtime %q", containerRuntime)
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current working directory: %w", err)
@@ -172,7 +184,7 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 		WorkflowName:     nextflowResolvedWorkflowName(workflowArg, workflowPath, resolvedRemotely),
 		WorkflowPath:     workflowPath,
 		Cwd:              cwd,
-		ContainerRuntime: options.containerRuntime,
+		ContainerRuntime: containerRuntime,
 		Params:           nextflowdsl.MergeParams(fileParams, cliParams),
 		Profile:          options.profile,
 	}

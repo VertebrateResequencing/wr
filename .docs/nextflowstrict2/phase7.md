@@ -25,8 +25,8 @@ Integrate into `buildRequirements`. Depends on Phase 2 (A1) and
 Phase 3 (A2, L1). Covering all 8 acceptance tests from A3 plus
 L1 tests 2 and 3 (translate-time matching of nested selectors).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 7.2: G2 - Merge config env into jobs [parallel with 7.1, 7.3, 7.4]
 
@@ -38,8 +38,8 @@ config-level `env` for the same key (more specific wins).
 Depends on Phase 3 (G1) for env scope parsing. Covering all 3
 acceptance tests from G2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 7.3: E2 - Translate conditional blocks [parallel with 7.1, 7.2, 7.4]
 
@@ -53,8 +53,8 @@ branches emit with a warning using separate CWD subtrees
 and Phase 1 for expression evaluation. Covering all 4 acceptance
 tests from E2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 7.4: K1 - Config container auto-detect [parallel with 7.1, 7.2, 7.3]
 
@@ -67,8 +67,8 @@ default ("singularity") when neither config nor CLI provides a
 value. Depends on Phase 3 (G3) for container scope parsing.
 Covering all 3 acceptance tests from K1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -86,8 +86,8 @@ applies to the entire block as one unit. Depends on Phase 2
 (F1) for directive parsing. Covering all 4 acceptance tests
 from F2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 7.6: F3 - Translate module directive
 
@@ -101,5 +101,5 @@ wrapping (module load comes before beforeScript). Depends on
 Phase 2 (F1) for directive parsing and item 7.5 (F2) for
 command structure. Covering all 3 acceptance tests from F3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

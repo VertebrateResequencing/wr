@@ -657,7 +657,6 @@ func TestNextflowRunCommand(t *testing.T) {
 		Convey("selected profiles contribute their config-scoped params", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
-
 			workflowPath := env.writeWorkflow("profiled.nf", singleProcessWorkflow("cat ${params.input}"))
 			configPath := env.writeText("nextflow.config", "profiles { test { params { input = '/profile' } } }")
 
@@ -938,6 +937,57 @@ func remoteHelloWorkflow() string {
 		"   \n" +
 		"Channel.of('Bonjour', 'Ciao', 'Hello', 'Hola') | sayHello | view\n" +
 		"}\n"
+}
+
+func TestNextflowRunCommandContainerRuntimeDefaults(t *testing.T) {
+	Convey("K1 container runtime selection uses config defaults only when the CLI flag is unset", t, func() {
+		Convey("config container engine is used when no container-runtime flag is provided", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("config_docker_runtime.nf", "process A {\ncontainer 'ubuntu:22.04'\nscript: 'echo hello'\n}\nworkflow { A() }\n")
+			configPath := env.writeText("nextflow.config", "docker { enabled = true }\n")
+
+			err := env.executeRun("--config", configPath, workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.config_docker_runtime.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].WithDocker, ShouldEqual, "ubuntu:22.04")
+			So(jobs[0].WithSingularity, ShouldEqual, "")
+		})
+
+		Convey("container-runtime flag overrides the config container engine", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("config_cli_runtime.nf", "process A {\ncontainer 'ubuntu:22.04'\nscript: 'echo hello'\n}\nworkflow { A() }\n")
+			configPath := env.writeText("nextflow.config", "singularity { enabled = true }\n")
+
+			err := env.executeRun("--config", configPath, "--container-runtime", "docker", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.config_cli_runtime.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].WithDocker, ShouldEqual, "ubuntu:22.04")
+			So(jobs[0].WithSingularity, ShouldEqual, "")
+		})
+
+		Convey("containerized jobs default to singularity when neither config nor CLI sets a runtime", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("default_runtime.nf", "process A {\ncontainer 'ubuntu:22.04'\nscript: 'echo hello'\n}\nworkflow { A() }\n")
+
+			err := env.executeRun(workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.default_runtime.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].WithDocker, ShouldEqual, "")
+			So(jobs[0].WithSingularity, ShouldEqual, "ubuntu:22.04")
+		})
+	})
 }
 
 func TestNextflowStatusCommand(t *testing.T) {
@@ -1850,7 +1900,7 @@ func newNextflowFollowScenario(t *testing.T, workflowName, consumerScript string
 		Processes: []*nextflowdsl.Process{
 			{
 				Name:       "A",
-				Directives: map[string]nextflowdsl.Expr{},
+				Directives: map[string]any{},
 				Script:     "echo hello > produced.txt",
 				Output: []*nextflowdsl.Declaration{{
 					Kind: "path",
@@ -1861,7 +1911,7 @@ func newNextflowFollowScenario(t *testing.T, workflowName, consumerScript string
 			},
 			{
 				Name:       "B",
-				Directives: map[string]nextflowdsl.Expr{},
+				Directives: map[string]any{},
 				Input:      []*nextflowdsl.Declaration{{Kind: "path", Name: "reads"}},
 				Script:     consumerScript,
 				Env:        map[string]string{},

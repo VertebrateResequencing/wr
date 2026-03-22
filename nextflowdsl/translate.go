@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,11 @@ const (
 	defaultDisk   = 1
 	nfStdoutFile  = ".nf-stdout"
 	nfStderrFile  = ".nf-stderr"
+)
+
+const (
+	selectorSpecificityLabel = iota + 1
+	selectorSpecificityName
 )
 
 // TranslateConfig controls how the AST is translated to wr jobs.
@@ -271,6 +277,90 @@ func bindingsForInputDeclaration(decl *Declaration, resolved bindingSet) ([]stri
 	return bindings, nil
 }
 
+// MatchSelectors returns merged process defaults by applying matching selectors
+// in specificity order before process-level directives are evaluated.
+func MatchSelectors(proc *Process, base *ProcessDefaults, selectors []*ProcessSelector) *ProcessDefaults {
+	merged := cloneDefaults(base)
+	if proc == nil || len(selectors) == 0 {
+		return merged
+	}
+
+	matches := make([]selectorMatch, 0, len(selectors))
+	for _, selector := range selectors {
+		collectSelectorMatches(proc, selector, true, &matches)
+	}
+
+	for _, specificity := range []int{selectorSpecificityLabel, selectorSpecificityName} {
+		for _, match := range matches {
+			if match.specificity != specificity {
+				continue
+			}
+
+			merged = mergeDefaults(merged, match.settings)
+		}
+	}
+
+	return merged
+}
+
+func collectSelectorMatches(proc *Process, selector *ProcessSelector, matched bool, matches *[]selectorMatch) {
+	if !matched || proc == nil || selector == nil {
+		return
+	}
+
+	if !selectorMatchesProcess(selector, proc) {
+		return
+	}
+
+	if selector.Settings != nil {
+		*matches = append(*matches, selectorMatch{
+			specificity: selectorSpecificity(selector.Kind),
+			settings:    selector.Settings,
+		})
+	}
+
+	collectSelectorMatches(proc, selector.Inner, true, matches)
+}
+
+func selectorMatchesProcess(selector *ProcessSelector, proc *Process) bool {
+	if selector == nil || proc == nil {
+		return false
+	}
+
+	switch selector.Kind {
+	case "withLabel":
+		for _, label := range proc.Labels {
+			if selectorPatternMatches(selector.Pattern, label) {
+				return true
+			}
+		}
+
+		return false
+	case "withName":
+		return selectorPatternMatches(selector.Pattern, proc.Name)
+	default:
+		return false
+	}
+}
+
+func selectorPatternMatches(pattern, candidate string) bool {
+	if strings.HasPrefix(pattern, "~") {
+		matched, err := regexp.MatchString(pattern[1:], candidate)
+		return err == nil && matched
+	}
+
+	matched, err := filepath.Match(pattern, candidate)
+	return err == nil && matched
+}
+
+func selectorSpecificity(kind string) int {
+	if kind == "withName" {
+		return selectorSpecificityName
+	}
+
+	return selectorSpecificityLabel
+}
+
 func exprVarsWithTask(params map[string]any, task map[string]any) map[string]any {
 	if len(params) == 0 && len(task) == 0 {
 		return nil
@@ -361,6 +451,25 @@ func flattenedInputDeclarations(proc *Process) []*Declaration {
 	}
 
 	return flat
+}
+
+func moduleLoadLines(moduleDirective string) []string {
+	if strings.TrimSpace(moduleDirective) == "" {
+		return nil
+	}
+
+	modules := strings.Split(moduleDirective, ":")
+	lines := make([]string, 0, len(modules))
+	for _, module := range modules {
+		module = strings.TrimSpace(module)
+		if module == "" {
+			continue
+		}
+
+		lines = append(lines, "module load "+module)
+	}
+
+	return lines
 }
 
 func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
@@ -547,6 +656,234 @@ func outputValueForDeclaration(proc *Process, decl *Declaration, bindings []stri
 	}
 }
 
+func cloneSelectors(selectors []*ProcessSelector) []*ProcessSelector {
+	if len(selectors) == 0 {
+		return nil
+	}
+
+	clone := make([]*ProcessSelector, len(selectors))
+	copy(clone, selectors)
+
+	return clone
+}
+
+func translateConditionalBlock(
+	ifBlock *IfBlock,
+	index int,
+	scope []string,
+	processes map[string]*Process,
+	subworkflows map[string]*SubWorkflow,
+	translated map[string]translatedCall,
+	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
+	params map[string]any,
+	tc TranslateConfig,
+	result *TranslateResult,
+) error {
+	if ifBlock == nil {
+		return nil
+	}
+
+	selected, err := selectWorkflowConditionBranch(ifBlock, index, params)
+	if err == nil {
+		if selected == nil || len(selected.calls) == 0 {
+			return nil
+		}
+
+		return translateCalls(selected.calls, scope, processes, subworkflows, translated, defaults, selectors, params, tc, result)
+	}
+
+	warnf("nextflowdsl: unable to evaluate workflow condition %q, translating all branches\n", ifBlock.Condition)
+	for _, branch := range workflowConditionBranches(ifBlock, index) {
+		if len(branch.calls) == 0 {
+			continue
+		}
+
+		branchScope := append(append([]string{}, scope...), branch.scopeName)
+		if err := translateCalls(branch.calls, branchScope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func selectWorkflowConditionBranch(ifBlock *IfBlock, index int, params map[string]any) (*workflowConditionBranch, error) {
+	for _, branch := range workflowConditionBranches(ifBlock, index) {
+		if branch.condition == "" {
+			selected := branch
+
+			return &selected, nil
+		}
+
+		matched, err := evalWorkflowCondition(branch.condition, params)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			selected := branch
+
+			return &selected, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func workflowConditionBranches(ifBlock *IfBlock, index int) []workflowConditionBranch {
+	if ifBlock == nil {
+		return nil
+	}
+
+	branches := []workflowConditionBranch{{
+		scopeName: fmt.Sprintf("if_%d", index),
+		condition: ifBlock.Condition,
+		calls:     ifBlock.Body,
+	}}
+
+	for elseIfIndex, elseIf := range ifBlock.ElseIf {
+		if elseIf == nil {
+			continue
+		}
+
+		branches = append(branches, workflowConditionBranch{
+			scopeName: fmt.Sprintf("elseif_%d_%d", index, elseIfIndex),
+			condition: elseIf.Condition,
+			calls:     elseIf.Body,
+		})
+	}
+
+	branches = append(branches, workflowConditionBranch{
+		scopeName: fmt.Sprintf("else_%d", index),
+		calls:     ifBlock.ElseBody,
+	})
+
+	return branches
+}
+
+func evalWorkflowCondition(condition string, params map[string]any) (bool, error) {
+	expr, err := parseExprText(condition)
+	if err != nil {
+		return false, err
+	}
+
+	value, err := EvalExpr(expr, exprVarsWithTask(params, nil))
+	if err != nil {
+		return false, err
+	}
+
+	return isTruthy(value), nil
+}
+
+func parseExprText(text string) (Expr, error) {
+	tokens, err := lex(text)
+	if err != nil {
+		return nil, err
+	}
+
+	exprTokens := make([]token, 0, len(tokens))
+	for _, tok := range tokens {
+		if tok.typ == tokenEOF || tok.typ == tokenNewline {
+			continue
+		}
+
+		exprTokens = append(exprTokens, tok)
+	}
+	if len(exprTokens) == 0 {
+		return nil, fmt.Errorf("empty expression")
+	}
+
+	return parseExprTokens(exprTokens)
+}
+
+func translateCalls(
+	calls []*Call,
+	scope []string,
+	processes map[string]*Process,
+	subworkflows map[string]*SubWorkflow,
+	translated map[string]translatedCall,
+	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
+	params map[string]any,
+	tc TranslateConfig,
+	result *TranslateResult,
+) error {
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+
+		if proc, ok := processes[call.Target]; ok {
+			awaitDepGrps, awaitRepGrps, err := detectPendingInputs(call, scope, translated)
+			if err != nil {
+				return err
+			}
+			if len(awaitDepGrps) > 0 || len(awaitRepGrps) > 0 {
+				repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
+				depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
+				placeholderPaths := outputPaths(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name))
+				translated[scopedTargetKey(scope, call.Target)] = translatedCall{
+					depGroup:      depGroup,
+					depGroups:     []string{depGroup},
+					repGroup:      repGroup,
+					baseCwd:       deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name),
+					outputPaths:   placeholderPaths,
+					emitOutputs:   emitOutputsForProcess(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name), depGroup),
+					items:         []channelItem{{value: outputValue(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name), placeholderPaths), depGroups: []string{depGroup}}},
+					dynamicOutput: hasDynamicOutputs(proc),
+					pending:       true,
+				}
+				result.Pending = append(result.Pending, &PendingStage{
+					Process:      proc,
+					AwaitDepGrps: awaitDepGrps,
+					call:         call,
+					scope:        append([]string{}, scope...),
+					defaults:     cloneDefaults(defaults),
+					selectors:    cloneSelectors(selectors),
+					params:       cloneParams(params),
+					translated:   cloneTranslatedCalls(translated),
+					awaitRepGrps: cloneStrings(awaitRepGrps),
+				})
+
+				continue
+			}
+
+			jobs, stage, err := translateProcessCall(proc, call, scope, translated, defaults, selectors, params, tc)
+			if err != nil {
+				return err
+			}
+			if len(jobs) == 0 {
+				continue
+			}
+
+			stage.repGroup = jobs[0].RepGroup
+			stage.dynamicOutput = hasDynamicOutputsForStage(proc, stage.outputPaths)
+			translated[scopedTargetKey(scope, call.Target)] = stage
+			result.Jobs = append(result.Jobs, jobs...)
+
+			continue
+		}
+
+		subwf, ok := subworkflows[call.Target]
+		if !ok {
+			return fmt.Errorf("unknown process or subworkflow %q", call.Target)
+		}
+
+		nextScope := append(append([]string{}, scope...), call.Target)
+		if err := bindSubworkflowInputs(call, subwf, scope, nextScope, translated, tc.Cwd); err != nil {
+			return err
+		}
+		if err := translateBlock(subwf.Body, nextScope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+			return err
+		}
+		if err := bindSubworkflowOutputs(call, subwf, nextScope, translated, tc.Cwd); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func hasDynamicOutputsForStage(proc *Process, outputPatterns []string) bool {
 	if proc == nil {
 		return false
@@ -709,6 +1046,7 @@ type PendingStage struct {
 	call         *Call
 	scope        []string
 	defaults     *ProcessDefaults
+	selectors    []*ProcessSelector
 	params       map[string]any
 	translated   map[string]translatedCall
 	awaitRepGrps []string
@@ -883,9 +1221,10 @@ func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult,
 
 	params := mergeTranslateParams(cfg, tc)
 	defaults := effectiveDefaults(cfg, tc.Profile)
+	selectors := effectiveSelectors(cfg)
 	translated := make(map[string]translatedCall, len(wf.EntryWF.Calls))
 
-	if err = translateBlock(wf.EntryWF, nil, processes, subworkflows, translated, defaults, params, tc, result); err != nil {
+	if err = translateBlock(wf.EntryWF, nil, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
 		return nil, err
 	}
 
@@ -1005,7 +1344,16 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 		translated[name] = stage
 	}
 
-	jobs, _, err := translateProcessCall(pending.Process, pending.call, pending.scope, translated, cloneDefaults(pending.defaults), params, tc)
+	jobs, _, err := translateProcessCall(
+		pending.Process,
+		pending.call,
+		pending.scope,
+		translated,
+		cloneDefaults(pending.defaults),
+		cloneSelectors(pending.selectors),
+		params,
+		tc,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1165,6 +1513,7 @@ func translateBlock(
 	subworkflows map[string]*SubWorkflow,
 	translated map[string]translatedCall,
 	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
 	params map[string]any,
 	tc TranslateConfig,
 	result *TranslateResult,
@@ -1173,74 +1522,12 @@ func translateBlock(
 		return nil
 	}
 
-	for _, call := range block.Calls {
-		if call == nil {
-			continue
-		}
+	if err := translateCalls(block.Calls, scope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+		return err
+	}
 
-		if proc, ok := processes[call.Target]; ok {
-			awaitDepGrps, awaitRepGrps, err := detectPendingInputs(call, scope, translated)
-			if err != nil {
-				return err
-			}
-			if len(awaitDepGrps) > 0 || len(awaitRepGrps) > 0 {
-				repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
-				depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
-				placeholderPaths := outputPaths(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name))
-				translated[scopedTargetKey(scope, call.Target)] = translatedCall{
-					depGroup:      depGroup,
-					depGroups:     []string{depGroup},
-					repGroup:      repGroup,
-					baseCwd:       deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name),
-					outputPaths:   placeholderPaths,
-					emitOutputs:   emitOutputsForProcess(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name), depGroup),
-					items:         []channelItem{{value: outputValue(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name), placeholderPaths), depGroups: []string{depGroup}}},
-					dynamicOutput: hasDynamicOutputs(proc),
-					pending:       true,
-				}
-				result.Pending = append(result.Pending, &PendingStage{
-					Process:      proc,
-					AwaitDepGrps: awaitDepGrps,
-					call:         call,
-					scope:        append([]string{}, scope...),
-					defaults:     cloneDefaults(defaults),
-					params:       cloneParams(params),
-					translated:   cloneTranslatedCalls(translated),
-					awaitRepGrps: cloneStrings(awaitRepGrps),
-				})
-
-				continue
-			}
-
-			jobs, stage, err := translateProcessCall(proc, call, scope, translated, defaults, params, tc)
-			if err != nil {
-				return err
-			}
-			if len(jobs) == 0 {
-				continue
-			}
-
-			stage.repGroup = jobs[0].RepGroup
-			stage.dynamicOutput = hasDynamicOutputsForStage(proc, stage.outputPaths)
-			translated[scopedTargetKey(scope, call.Target)] = stage
-			result.Jobs = append(result.Jobs, jobs...)
-
-			continue
-		}
-
-		subwf, ok := subworkflows[call.Target]
-		if !ok {
-			return fmt.Errorf("unknown process or subworkflow %q", call.Target)
-		}
-
-		nextScope := append(append([]string{}, scope...), call.Target)
-		if err := bindSubworkflowInputs(call, subwf, scope, nextScope, translated, tc.Cwd); err != nil {
-			return err
-		}
-		if err := translateBlock(subwf.Body, nextScope, processes, subworkflows, translated, defaults, params, tc, result); err != nil {
-			return err
-		}
-		if err := bindSubworkflowOutputs(call, subwf, nextScope, translated, tc.Cwd); err != nil {
+	for index, ifBlock := range block.Conditions {
+		if err := translateConditionalBlock(ifBlock, index, scope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
 			return err
 		}
 	}
@@ -1254,6 +1541,7 @@ func translateProcessCall(
 	scope []string,
 	translated map[string]translatedCall,
 	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
 	params map[string]any,
 	tc TranslateConfig,
 ) ([]*jobqueue.Job, translatedCall, error) {
@@ -1290,7 +1578,7 @@ func translateProcessCall(
 			Override:     0,
 		}
 
-		requirements, reqErr := buildRequirements(proc, defaults, params)
+		requirements, reqErr := buildRequirements(proc, defaults, selectors, params)
 		if reqErr != nil {
 			return nil, translatedCall{}, reqErr
 		}
@@ -1669,7 +1957,9 @@ func repGroupToken(value string) string {
 	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
 }
 
-func buildRequirements(proc *Process, defaults *ProcessDefaults, params map[string]any) (*scheduler.Requirements, error) {
+func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any) (*scheduler.Requirements, error) {
+	defaults = MatchSelectors(proc, defaults, selectors)
+
 	req := &scheduler.Requirements{}
 	task := map[string]any{"attempt": 1}
 
@@ -1818,7 +2108,15 @@ func buildCommand(proc *Process, bindings []string, params map[string]any) (stri
 	if err != nil {
 		return "", err
 	}
-	body := script
+	bodyParts := make([]string, 0, 3)
+	if proc.BeforeScript != "" {
+		bodyParts = append(bodyParts, proc.BeforeScript)
+	}
+	bodyParts = append(bodyParts, script)
+	if proc.AfterScript != "" {
+		bodyParts = append(bodyParts, proc.AfterScript)
+	}
+	body := strings.Join(bodyParts, "\n")
 
 	inputs := flattenedInputDeclarations(proc)
 	prefixes := make([]string, 0, len(bindings))
@@ -1832,8 +2130,11 @@ func buildCommand(proc *Process, bindings []string, params map[string]any) (stri
 		}
 		prefixes = append(prefixes, fmt.Sprintf("export %s=%s", name, shellQuote(binding)))
 	}
-	if len(prefixes) > 0 {
-		body = strings.Join(append(prefixes, script), "\n")
+	commandParts := moduleLoadLines(proc.Module)
+	commandParts = append(commandParts, prefixes...)
+	commandParts = append(commandParts, body)
+	if len(commandParts) > 1 {
+		body = strings.Join(commandParts, "\n")
 	}
 	body = strings.TrimRight(body, " \t\r")
 	if strings.TrimSpace(body) == "" {
@@ -2247,6 +2548,17 @@ func depGroupsToDependencies(depGroups []string) jobqueue.Dependencies {
 	return dependencies
 }
 
+type selectorMatch struct {
+	specificity int
+	settings    *ProcessDefaults
+}
+
+type workflowConditionBranch struct {
+	scopeName string
+	condition string
+	calls     []*Call
+}
+
 func processIndex(processes []*Process) (map[string]*Process, error) {
 	indexed := make(map[string]*Process, len(processes))
 	for _, proc := range processes {
@@ -2290,6 +2602,9 @@ func validateScopedRepGroups(processes map[string]*Process, subworkflows map[str
 func effectiveDefaults(cfg *Config, profileName string) *ProcessDefaults {
 	defaults := cloneDefaults(nil)
 	if cfg != nil {
+		if len(cfg.Env) > 0 {
+			defaults = mergeDefaults(defaults, &ProcessDefaults{Env: cfg.Env})
+		}
 		defaults = mergeDefaults(defaults, cfg.Process)
 		if profileName != "" && cfg.Profiles != nil {
 			if profile, ok := cfg.Profiles[profileName]; ok {
@@ -2354,4 +2669,12 @@ func cloneDefaults(defaults *ProcessDefaults) *ProcessDefaults {
 	}
 
 	return clone
+}
+
+func effectiveSelectors(cfg *Config) []*ProcessSelector {
+	if cfg == nil {
+		return nil
+	}
+
+	return cloneSelectors(cfg.Selectors)
 }
