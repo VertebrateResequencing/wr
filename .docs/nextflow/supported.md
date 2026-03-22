@@ -1,8 +1,7 @@
 # Nextflow Features — Supported in wr
 
 Everything listed below is parsed without error AND translated to wr jobs
-(or stored/evaluated as appropriate). Items marked **(strict3)** are being
-added by the nextflowstrict3 spec implementation.
+(or stored/evaluated as appropriate).
 
 ## Pipeline Structure
 
@@ -13,9 +12,9 @@ added by the nextflowstrict3 spec implementation.
 - `includeConfig 'path'` — config file inclusion
 - Top-level function definitions (`def funcName(args) { ... }`)
 - `params.x = y` — legacy parameter assignment
-- `params {}` block syntax with typed declarations **(strict3)**
-- `enum` and `record` type definitions — parsed and stored **(strict3)**
-- `output {}` top-level block — parsed and stored **(strict3)**
+- `params {}` block syntax with typed declarations
+- `enum` and `record` type definitions — parsed and stored
+- `output {}` top-level block — parsed and stored
 
 ## Process Definitions
 
@@ -36,7 +35,7 @@ added by the nextflowstrict3 spec implementation.
 - `tuple val(x), path(y)` — tuple input with mixed qualifiers
 - `env(x)` — environment variable input
 - `stdin` — standard input
-- `each val(x)` / `each path(x)` — cross-product input **(strict3)**
+- `each val(x)` / `each path(x)` — cross-product input
 
 ### Output Qualifiers
 
@@ -45,7 +44,7 @@ added by the nextflowstrict3 spec implementation.
 - `tuple val(x), path(y)` — tuple output
 - `env(x)` — environment variable output
 - `stdout` — standard output capture
-- `eval('command')` — evaluate command and capture stdout **(strict3)**
+- `eval('command')` — evaluate command and capture stdout
 
 ### Output Modifiers
 
@@ -71,7 +70,7 @@ added by the nextflowstrict3 spec implementation.
 - `cache` — caching strategy
 - `env` — environment variables
 
-### Directives (Parsed and Stored, Translation Varies) **(strict3)**
+### Directives (Parsed and Stored, Translation Varies)
 
 All of the following are parsed without error and stored in the
 `Process.Directives` map:
@@ -101,7 +100,7 @@ All of the following are parsed without error and stored in the
 - `stageInMode` / `stageOutMode` — file staging modes
 - `storeDir` — permanent cache directory → skip-if-exists wrapper
 
-### Dynamic Directives **(strict3)**
+### Dynamic Directives
 
 Directives can use closures referencing `task.*` properties:
 
@@ -119,11 +118,11 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `take:` — input channel declarations
 - `main:` — process calls and channel wiring
 - `emit:` — output channel declarations
-- `publish:` — publish statements **(strict3)**
-- `onComplete:` — completion handler **(strict3)**
-- `onError:` — error handler **(strict3)**
-- Variable assignments in workflow main — channel tracking **(strict3)**
-- Pipe operator `|` — chaining calls **(strict3)**
+- `publish:` — publish statements
+- `onComplete:` — completion handler
+- `onError:` — error handler
+- Variable assignments in workflow main — channel tracking
+- Pipe operator `|` — chaining calls
 - `if/else` conditional blocks in workflow bodies
 - Process calls with positional arguments: `PROC(ch1, ch2)`
 - Sub-workflow calls: `SUBWF(ch1)`
@@ -146,44 +145,44 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `first()` — first item only
 - `last()` — last item only
 - `take(n)` — first N items
-- `unique()` — deduplicate **(strict3)**
-- `distinct()` — deduplicate consecutive **(strict3)**
+- `unique()` — deduplicate
+- `distinct()` — deduplicate consecutive
 
 ### Transforming
 
 - `map(closure)` — transform each item
 - `flatMap(closure)` — transform and flatten
-- `flatten()` — flatten nested structures **(strict3)**
+- `flatten()` — flatten nested structures
 - `collect()` — collect all items into one list
 - `groupTuple([by: n, size: n])` — group by key
-- `transpose([by: n])` — un-group tuples **(strict3)**
-- `toList()` — collect into list **(strict3)**
-- `toSortedList()` — collect into sorted list **(strict3)**
-- `reduce(acc, closure)` — fold/accumulate **(strict3)**
-- `count([filter])` — count items **(strict3)**
-- `ifEmpty(value)` — default for empty channel **(strict3)**
+- `transpose([by: n])` — un-group tuples
+- `toList()` — collect into list
+- `toSortedList()` — collect into sorted list
+- `reduce(acc, closure)` — fold/accumulate
+- `count([filter])` — count items
+- `ifEmpty(value)` — default for empty channel
 
 ### Combining
 
 - `mix(other)` — unordered merge
 - `join(other, [by: n, remainder: true])` — keyed join
-- `combine(other, [by: n])` — cross product **(strict3)**
-- `concat(ch1, ch2, ...)` — ordered concatenation **(strict3)**
+- `combine(other, [by: n])` — cross product
+- `concat(ch1, ch2, ...)` — ordered concatenation
 - `cross(other)` — cross product
 
 ### Splitting
 
-- `splitCsv([header: true, sep: char])` — CSV splitting **(strict3)**
-- `splitJson([path: '...'])` — JSON splitting **(strict3)**
-- `splitText([by: n])` — line-based text splitting **(strict3)**
-- `splitFasta([by: n, record: [...]])` — FASTA splitting **(strict3)**
-- `splitFastq([by: n, pe: true])` — FASTQ splitting **(strict3)**
-- `collectFile([name: '...'])` — collect items to file **(strict3)**
+- `splitCsv([header: true, sep: char])` — CSV splitting
+- `splitJson([path: '...'])` — JSON splitting
+- `splitText([by: n])` — line-based text splitting
+- `splitFasta([by: n, record: [...]])` — FASTA splitting
+- `splitFastq([by: n, pe: true])` — FASTQ splitting
+- `collectFile([name: '...'])` — collect items to file
 
 ### Routing
 
-- `branch { criteria }` — split into named outputs **(strict3)**
-- `multiMap { criteria }` — map to multiple outputs **(strict3)**
+- `branch { criteria }` — split into named outputs
+- `multiMap { criteria }` — map to multiple outputs
 
 ### Viewing/Debugging
 
@@ -202,21 +201,21 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 ### Operators
 
 - `+`, `-`, `*`, `/` — arithmetic
-- `%` — modulo **(strict3)**
-- `**` — exponentiation **(strict3)**
+- `%` — modulo
+- `**` — exponentiation
 - `==`, `!=`, `<`, `>`, `<=`, `>=` — comparison
-- `<=>` — spaceship (three-way comparison) **(strict3)**
+- `<=>` — spaceship (three-way comparison)
 - `&&`, `||`, `!` — logical
-- `&`, `^`, `|` — bitwise **(strict3)**
-- `~` — bitwise NOT **(strict3)**
-- `<<`, `>>`, `>>>` — shift **(strict3)**
-- `in`, `!in` — membership testing **(strict3)**
-- `instanceof`, `!instanceof` — type checking **(strict3)**
-- `=~` — regex find **(strict3)**
-- `==~` — regex full match **(strict3)**
-- `..` — inclusive range **(strict3)**
-- `..<` — exclusive range **(strict3)**
-- `*.property` — spread-dot **(strict3)**
+- `&`, `^`, `|` — bitwise
+- `~` — bitwise NOT
+- `<<`, `>>`, `>>>` — shift
+- `in`, `!in` — membership testing
+- `instanceof`, `!instanceof` — type checking
+- `=~` — regex find
+- `==~` — regex full match
+- `..` — inclusive range
+- `..<` — exclusive range
+- `*.property` — spread-dot
 - `?:` — elvis operator
 - `? :` — ternary conditional
 - `?.` — null-safe navigation
@@ -228,12 +227,12 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - Single-quoted strings
 - Double-quoted strings with `${interpolation}`
 - Triple-quoted strings (single and double)
-- Slashy strings `/pattern/` **(strict3)**
+- Slashy strings `/pattern/`
 - List literals `[1, 2, 3]`
 - Map literals `[key: value]`
 - Closure literals `{ args -> body }`
-- `new ClassName(args)` constructors — parsed **(strict3)**
-- `def (x, y) = [1, 2]` multi-variable assignment **(strict3)**
+- `new ClassName(args)` constructors — parsed
+- `def (x, y) = [1, 2]` multi-variable assignment
 - Index access `list[0]`, `map['key']`
 - Property access `obj.field`
 - Method call chaining `obj.method1().method2()`
@@ -247,29 +246,29 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `contains(str)`, `startsWith(prefix)`, `endsWith(suffix)`
 - `indexOf(str)`, `lastIndexOf(str)`
 - `replace(old, new)`
-- `replaceAll(pattern, replacement)` **(strict3)**
-- `matches(regex)` **(strict3)**
+- `replaceAll(pattern, replacement)`
+- `matches(regex)`
 - `split(regex)`, `tokenize(separators)`
 - `substring(start, [end])`
 - `toInteger()`, `toLong()`, `toDouble()`
-- `plus(str)`, `minus(str)`, `multiply(n)` **(strict3)**
+- `plus(str)`, `minus(str)`, `multiply(n)`
 
 ### List Methods
 
 - `size()`, `isEmpty()`
 - `get(index)`, `first()`, `last()`
-- `take(n)`, `drop(n)` **(strict3)**
-- `flatten()`, `reverse()` **(strict3)**
-- `sort()`, `unique()` **(strict3)**
+- `take(n)`, `drop(n)`
+- `flatten()`, `reverse()`
+- `sort()`, `unique()`
 - `min()`, `max()`, `sum()`
-- `join(separator)` **(strict3)**
+- `join(separator)`
 - `collect(closure)` — map
-- `findAll(closure)` **(strict3)**
-- `find(closure)` **(strict3)**
-- `any(closure)`, `every(closure)` **(strict3)**
+- `findAll(closure)`
+- `find(closure)`
+- `any(closure)`, `every(closure)`
 - `plus(item|list)`, `minus(item|list)`
-- `groupBy(closure)` **(strict3)**
-- `withIndex()`, `indexed()` **(strict3)**
+- `groupBy(closure)`
+- `withIndex()`, `indexed()`
 
 ### Map Methods
 
@@ -277,9 +276,9 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `get(key)`, `containsKey(key)`
 - `keySet()`, `values()`, `entrySet()`
 - `each(closure)`, `collect(closure)`
-- `subMap(keys)` **(strict3)**
+- `subMap(keys)`
 
-### Statement Types **(strict3)**
+### Statement Types
 
 - `if / else if / else` — conditional execution
 - `for (x in collection) { }` — iteration
@@ -299,7 +298,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `profiles {}` — named profile overrides
 - `docker {}` / `singularity {}` / `apptainer {}` — container engines
 - `env {}` — environment variables
-- `executor {}` — executor settings **(strict3)**
+- `executor {}` — executor settings
 
 ### Process Config Selectors
 
@@ -340,7 +339,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `Requirements.RAM` — from `memory` directive (MB)
 - `Requirements.Time` — from `time` directive
 - `Requirements.Disk` — from `disk` directive
-- `Requirements.Other` — scheduler-specific options **(strict3)**
+- `Requirements.Other` — scheduler-specific options
 - Container image and execution wrapping
 - `DepGroups` — dependency group wiring between processes
 - Retry behaviour from `errorStrategy` and `maxRetries`
@@ -348,13 +347,13 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `beforeScript` / `afterScript` wrapping
 - Environment module loading
 - Output publishing (copy/move/link to publishDir)
-- `each` cross-product expansion (N×M jobs) **(strict3)**
-- `eval` output appended to script **(strict3)**
-- `scratch` directory wrapping **(strict3)**
-- `storeDir` skip-if-exists wrapping **(strict3)**
-- `conda activate` / `spack load` prepending **(strict3)**
-- `onComplete` final job with all dep_grps **(strict3)**
-- `onError` polling monitor job **(strict3)**
+- `each` cross-product expansion (N×M jobs)
+- `eval` output appended to script
+- `scratch` directory wrapping
+- `storeDir` skip-if-exists wrapping
+- `conda activate` / `spack load` prepending
+- `onComplete` final job with all dep_grps
+- `onError` polling monitor job
 
 ### Dynamic Workflow Support
 
