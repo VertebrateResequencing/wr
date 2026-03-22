@@ -175,14 +175,18 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 		return "", fmt.Errorf("create module cache root %q: %w", r.cacheDir, err)
 	}
 
-	args := []string{"clone", "--depth", "1"}
+	args := []string{"clone", "--depth", "1", githubModuleURL(owner, repo), cachePath}
 	if explicitRevision {
-		args = append(args, "--branch", revision)
+		args = []string{"clone", githubModuleURL(owner, repo), cachePath}
 	}
-	args = append(args, githubModuleURL(owner, repo), cachePath)
 
 	if err := githubResolverRunGit(r.cacheDir, args...); err != nil {
 		return "", fmt.Errorf("fetch failure for %q: %w", spec, err)
+	}
+	if explicitRevision {
+		if err := githubResolverRunGit(cachePath, "checkout", revision); err != nil {
+			return "", fmt.Errorf("fetch failure for %q: %w", spec, err)
+		}
 	}
 
 	hasFiles, err := hasNextflowModuleFiles(cachePath)

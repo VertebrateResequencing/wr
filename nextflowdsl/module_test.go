@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -149,21 +150,63 @@ func TestGitHubResolver(t *testing.T) {
 
 		Convey("explicit revisions are included in the cache path and clone arguments", func() {
 			cloneCalls := 0
+			checkoutCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
-				cloneCalls++
-				So(dir, ShouldEqual, cacheDir)
-				So(args, ShouldResemble, []string{"clone", "--depth", "1", "--branch", "main", "https://github.com/owner/repo.git", filepath.Join(cacheDir, "owner", "repo", "main")})
-				So(os.MkdirAll(filepath.Join(cacheDir, "owner", "repo", "main"), 0o755), ShouldBeNil)
+				switch {
+				case reflect.DeepEqual(args, []string{"clone", "https://github.com/owner/repo.git", filepath.Join(cacheDir, "owner", "repo", "main")}):
+					cloneCalls++
+					So(dir, ShouldEqual, cacheDir)
+					So(os.MkdirAll(filepath.Join(cacheDir, "owner", "repo", "main"), 0o755), ShouldBeNil)
 
-				return os.WriteFile(filepath.Join(cacheDir, "owner", "repo", "main", "module.nf"), []byte("workflow {}\n"), 0o644)
+					return os.WriteFile(filepath.Join(cacheDir, "owner", "repo", "main", "module.nf"), []byte("workflow {}\n"), 0o644)
+				case reflect.DeepEqual(args, []string{"checkout", "main"}):
+					checkoutCalls++
+					So(dir, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", "main"))
+
+					return nil
+				default:
+					return fmt.Errorf("unexpected git args %v", args)
+				}
 			}
 
 			path, err := NewGitHubResolver(cacheDir).Resolve("owner/repo@main")
 
 			So(err, ShouldBeNil)
 			So(cloneCalls, ShouldEqual, 1)
+			So(checkoutCalls, ShouldEqual, 1)
 			So(path, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", "main"))
 			So(strings.Contains(path, string(filepath.Separator)+"main"), ShouldBeTrue)
+		})
+
+		Convey("explicit commit revisions are checked out after cloning", func() {
+			const revision = "0123456789abcdef0123456789abcdef01234567"
+
+			cloneCalls := 0
+			checkoutCalls := 0
+			githubResolverRunGit = func(dir string, args ...string) error {
+				switch {
+				case reflect.DeepEqual(args, []string{"clone", "https://github.com/owner/repo.git", filepath.Join(cacheDir, "owner", "repo", revision)}):
+					cloneCalls++
+					So(dir, ShouldEqual, cacheDir)
+					So(os.MkdirAll(filepath.Join(cacheDir, "owner", "repo", revision), 0o755), ShouldBeNil)
+
+					return os.WriteFile(filepath.Join(cacheDir, "owner", "repo", revision, "module.nf"), []byte("workflow {}\n"), 0o644)
+				case reflect.DeepEqual(args, []string{"checkout", revision}):
+					checkoutCalls++
+					So(dir, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", revision))
+
+					return nil
+				default:
+					return fmt.Errorf("unexpected git args %v", args)
+				}
+			}
+
+			path, err := NewGitHubResolver(cacheDir).Resolve("owner/repo@" + revision)
+
+			So(err, ShouldBeNil)
+			So(cloneCalls, ShouldEqual, 1)
+			So(checkoutCalls, ShouldEqual, 1)
+			So(path, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", revision))
 		})
 
 		Convey("GitHub workflow URLs normalize to owner/repo cache keys", func() {
