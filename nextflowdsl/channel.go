@@ -55,13 +55,20 @@ var unsupportedCardinalityOperators = map[string]struct{}{
 }
 
 var warningOnlyChannelOperators = map[string]struct{}{
-	"merge":        {},
 	"randomSample": {},
 	"splitJson":    {},
 	"splitText":    {},
 	"subscribe":    {},
-	"toInteger":    {},
 	"until":        {},
+}
+
+var deprecatedChannelOperators = map[string]struct{}{
+	"countFasta": {},
+	"countFastq": {},
+	"countJson":  {},
+	"countLines": {},
+	"merge":      {},
+	"toInteger":  {},
 }
 
 type channelItem struct {
@@ -153,6 +160,10 @@ func coerceChunkSize(value any, namedArg string) (int, error) {
 	default:
 		return 0, fmt.Errorf("expects an integer chunk size")
 	}
+}
+
+func warnDeprecatedChannelOperator(name string) {
+	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel operator %q resolved as a pass-through for compatibility\n", name)
 }
 
 func warnUnsupportedCardinalityOperator(name string) {
@@ -508,6 +519,11 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 	case "dump", "set", "tap", "view":
 		return cloneChannelItems(items), nil
 	default:
+		if _, ok := deprecatedChannelOperators[operator.Name]; ok {
+			warnDeprecatedChannelOperator(operator.Name)
+			return cloneChannelItems(items), nil
+		}
+
 		if _, ok := warningOnlyChannelOperators[operator.Name]; ok {
 			warnUnsupportedCardinalityOperator(operator.Name)
 			return cloneChannelItems(items), nil

@@ -121,6 +121,31 @@ func TestResolveChannelD5(t *testing.T) {
 			So(stderr, ShouldContainSubstring, "deprecated channel factory \"from\"")
 		})
 
+		Convey("deprecated count operators warn and preserve the source item count", func() {
+			for _, operatorName := range []string{"countFasta", "countFastq", "countJson", "countLines"} {
+				name := operatorName
+				Convey(name, func() {
+					var (
+						items  []any
+						err    error
+						stderr string
+					)
+
+					stderr = captureParseStderr(func() {
+						items, err = ResolveChannel(ChannelChain{
+							Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
+							Operators: []ChannelOperator{{Name: name}},
+						}, "/work")
+					})
+
+					So(err, ShouldBeNil)
+					So(items, ShouldResemble, []any{1, 2, 3})
+					So(stderr, ShouldContainSubstring, "deprecated channel operator")
+					So(stderr, ShouldContainSubstring, name)
+				})
+			}
+		})
+
 		Convey("non-translatable factories warn and resolve to empty channels", func() {
 			for _, factoryName := range []string{"fromSRA", "topic", "watchPath", "fromLineage", "interval"} {
 				name := factoryName
@@ -506,7 +531,26 @@ func TestResolveChannelD6(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(channelItemValues(items), ShouldResemble, []any{1, 2, 3, 4, 5})
-			So(stderr, ShouldContainSubstring, "operator \"merge\" may affect job cardinality")
+			So(stderr, ShouldContainSubstring, "deprecated channel operator \"merge\"")
+		})
+
+		Convey("toInteger warns and preserves the source item count", func() {
+			var (
+				items  []any
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				items, err = ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}},
+					Operators: []ChannelOperator{{Name: "toInteger"}},
+				}, "/work")
+			})
+
+			So(err, ShouldBeNil)
+			So(items, ShouldResemble, []any{1, 2, 3})
+			So(stderr, ShouldContainSubstring, "deprecated channel operator \"toInteger\"")
 		})
 	})
 }

@@ -22,8 +22,8 @@ storage needed -- these blocks are consumed and discarded.
 Depends on Phase 4 for general parsing infrastructure. Covering
 all 3 acceptance tests from I1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 8.2: J1 - Deprecated constructs with warnings [parallel with 8.1]
 
@@ -40,8 +40,8 @@ constructs produce errors: `Channel.create()` -> parse error,
 for operator/factory parsing. Covering all 5 acceptance tests
 from J1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

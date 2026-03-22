@@ -1114,6 +1114,29 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			So(wf.EntryWF, ShouldNotBeNil)
 			So(wf.EntryWF.Conditions, ShouldResemble, []*IfBlock{})
 		})
+
+		Convey("workflow.onComplete blocks are skipped without affecting process parsing", func() {
+			wf, err := Parse(strings.NewReader("workflow.onComplete { println 'Done' }\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("workflow.onError blocks are skipped without affecting process parsing", func() {
+			wf, err := Parse(strings.NewReader("workflow.onError { println 'Failed' }\nprocess foo {\nscript: 'echo hi'\n}"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Name, ShouldEqual, "foo")
+		})
+
+		Convey("workflow lifecycle handlers alone parse without producing processes", func() {
+			wf, err := Parse(strings.NewReader("workflow.onComplete { }\nworkflow.onError { }"))
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 0)
+		})
 	})
 }
 
@@ -1436,6 +1459,66 @@ func TestParsePhase4B1ChannelOperators(t *testing.T) {
 				So(stderr, ShouldContainSubstring, "deprecated")
 				So(stderr, ShouldContainSubstring, operatorName)
 			}
+		})
+	})
+}
+
+func TestParseJ1DeprecatedConstructs(t *testing.T) {
+	Convey("Parse handles J1 deprecated and DSL1-only constructs", t, func() {
+		Convey("Channel.create reports a DSL1-only parse error", func() {
+			wf, err := Parse(strings.NewReader("workflow { foo(Channel.create()) }"))
+
+			So(wf, ShouldBeNil)
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "DSL1-only construct")
+			So(err.Error(), ShouldContainSubstring, "Channel.create")
+		})
+
+		Convey("merge emits a deprecation warning while still parsing", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("workflow { foo(ch.merge(other)) }"))
+			})
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators, ShouldHaveLength, 1)
+			So(chain.Operators[0].Name, ShouldEqual, "merge")
+			So(stderr, ShouldContainSubstring, "deprecated")
+			So(stderr, ShouldContainSubstring, "merge")
+		})
+
+		Convey("toInteger emits a deprecation warning while still parsing", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("workflow { foo(ch.toInteger()) }"))
+			})
+
+			So(err, ShouldBeNil)
+			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
+			So(chain.Operators, ShouldHaveLength, 1)
+			So(chain.Operators[0].Name, ShouldEqual, "toInteger")
+			So(stderr, ShouldContainSubstring, "deprecated")
+			So(stderr, ShouldContainSubstring, "toInteger")
+		})
+
+		Convey("DSL1-style set channel assignment reports a DSL1-only parse error", func() {
+			wf, err := Parse(strings.NewReader("workflow { set { item } }"))
+
+			So(wf, ShouldBeNil)
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "DSL1-only construct")
+			So(err.Error(), ShouldContainSubstring, "set")
 		})
 	})
 }
