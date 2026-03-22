@@ -83,8 +83,11 @@ var supportedChannelOperators = map[string]struct{}{
 	"sum":          {},
 	"tap":          {},
 	"take":         {},
+	"toDouble":     {},
+	"toFloat":      {},
 	"toInteger":    {},
 	"toList":       {},
+	"toLong":       {},
 	"toSortedList": {},
 	"transpose":    {},
 	"until":        {},
@@ -129,12 +132,13 @@ const (
 )
 
 type token struct {
-	typ   tokenType
-	lit   string
-	line  int
-	col   int
-	start int
-	end   int
+	typ    tokenType
+	lit    string
+	line   int
+	col    int
+	start  int
+	end    int
+	slashy bool
 }
 
 func lex(input string) ([]token, error) {
@@ -161,6 +165,12 @@ func lex(input string) ([]token, error) {
 			if err := l.skipBlockComment(); err != nil {
 				return nil, err
 			}
+		case r == '/' && canStartSlashyString(tokens, l):
+			slashyTok, err := l.readSlashyString()
+			if err != nil {
+				return nil, err
+			}
+			tokens = append(tokens, slashyTok)
 		case r == '#' && !l.lineHasContent:
 			for l.peek() != 0 && l.peek() != '\n' {
 				l.next()
@@ -189,6 +199,17 @@ func lex(input string) ([]token, error) {
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			tokens = append(tokens, token{typ: tokenComma, lit: ",", line: line, col: col, start: start, end: l.pos})
+		case r == '.' && l.peekN(1) == '.' && l.peekN(2) == '<':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "..<", line: line, col: col, start: start, end: l.pos})
+		case r == '.' && l.peekN(1) == '.':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "..", line: line, col: col, start: start, end: l.pos})
 		case r == '.':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
@@ -197,11 +218,34 @@ func lex(input string) ([]token, error) {
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			tokens = append(tokens, token{typ: tokenSemicolon, lit: ";", line: line, col: col, start: start, end: l.pos})
+		case r == '!' && matchesKeywordOperator(l, "!instanceof"):
+			start, line, col := l.pos, l.line, l.col
+			for range len("!instanceof") {
+				l.next()
+			}
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "!instanceof", line: line, col: col, start: start, end: l.pos})
+		case r == '!' && matchesKeywordOperator(l, "!in"):
+			start, line, col := l.pos, l.line, l.col
+			for range len("!in") {
+				l.next()
+			}
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "!in", line: line, col: col, start: start, end: l.pos})
 		case r == '!' && l.peekN(1) == '=':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			l.next()
 			tokens = append(tokens, token{typ: tokenSymbol, lit: "!=", line: line, col: col, start: start, end: l.pos})
+		case r == '=' && l.peekN(1) == '=' && l.peekN(2) == '~':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "==~", line: line, col: col, start: start, end: l.pos})
+		case r == '=' && l.peekN(1) == '~':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "=~", line: line, col: col, start: start, end: l.pos})
 		case r == '=' && l.peekN(1) == '=':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
@@ -225,16 +269,48 @@ func lex(input string) ([]token, error) {
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			tokens = append(tokens, token{typ: tokenPipe, lit: "|", line: line, col: col, start: start, end: l.pos})
+		case r == '>' && l.peekN(1) == '>' && l.peekN(2) == '>':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: ">>>", line: line, col: col, start: start, end: l.pos})
+		case r == '>' && l.peekN(1) == '>':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: ">>", line: line, col: col, start: start, end: l.pos})
 		case r == '>' && l.peekN(1) == '=':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			l.next()
 			tokens = append(tokens, token{typ: tokenSymbol, lit: ">=", line: line, col: col, start: start, end: l.pos})
+		case r == '<' && l.peekN(1) == '=' && l.peekN(2) == '>':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "<=>", line: line, col: col, start: start, end: l.pos})
+		case r == '<' && l.peekN(1) == '<':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "<<", line: line, col: col, start: start, end: l.pos})
 		case r == '<' && l.peekN(1) == '=':
 			start, line, col := l.pos, l.line, l.col
 			l.next()
 			l.next()
 			tokens = append(tokens, token{typ: tokenSymbol, lit: "<=", line: line, col: col, start: start, end: l.pos})
+		case r == '*' && l.peekN(1) == '.':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "*.", line: line, col: col, start: start, end: l.pos})
+		case r == '*' && l.peekN(1) == '*':
+			start, line, col := l.pos, l.line, l.col
+			l.next()
+			l.next()
+			tokens = append(tokens, token{typ: tokenSymbol, lit: "**", line: line, col: col, start: start, end: l.pos})
 		case isClosureSymbol(r):
 			start, line, col := l.pos, l.line, l.col
 			l.next()
@@ -257,6 +333,17 @@ func lex(input string) ([]token, error) {
 	}
 }
 
+func matchesKeywordOperator(l *lexer, literal string) bool {
+	for index, expected := range literal {
+		if l.peekN(index) != expected {
+			return false
+		}
+	}
+
+	next := l.peekN(len(literal))
+	return !isIdentPart(next)
+}
+
 func isClosureSymbol(r rune) bool {
 	switch r {
 	case '*', '+', '-', '/', '<', '>', '?', '!', '&', '$', '%', '[', ']', '^', '~', '@', '\\':
@@ -270,8 +357,138 @@ func isIdentStart(r rune) bool {
 	return r == '_' || unicode.IsLetter(r)
 }
 
+func canStartSlashyString(tokens []token, l *lexer) bool {
+	if !hasClosingSlashyDelimiter(l) {
+		return false
+	}
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		prev := tokens[index]
+		if prev.typ == tokenNewline {
+			continue
+		}
+
+		switch prev.typ {
+		case tokenAssign, tokenLParen, tokenLBrace, tokenColon, tokenComma, tokenPipe, tokenSemicolon:
+			return true
+		case tokenSymbol:
+			switch prev.lit {
+			case "[", "!", "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "?", "^", "&", "~", "=~", "==~":
+				return true
+			}
+		case tokenIdent:
+			switch prev.lit {
+			case "return", "throw", "assert", "case", "in":
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return true
+}
+
+func hasClosingSlashyDelimiter(l *lexer) bool {
+	escaped := false
+	for offset := 1; ; offset++ {
+		r := l.peekN(offset)
+		if r == 0 || r == '\n' {
+			return false
+		}
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+
+		if r == '/' {
+			return true
+		}
+	}
+}
+
 func warnUnsupportedOutputQualifier(name token) {
 	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported output qualifier %q at line %d will not be translated\n", name.lit, name.line)
+}
+
+func parseMultiAssignExprTokens(tokens []token) (Expr, error) {
+	assignStart := 0
+	if tokens[0].typ == tokenIdent && tokens[0].lit == "def" {
+		assignStart = 1
+	}
+
+	if assignStart >= len(tokens) || tokens[assignStart].typ != tokenLParen {
+		return nil, nil
+	}
+
+	end, ok := findMatchingParenEnd(tokens, assignStart)
+	if !ok || end+1 >= len(tokens) || tokens[end+1].typ != tokenAssign {
+		return nil, nil
+	}
+
+	valueTokens := tokens[end+2:]
+	if len(valueTokens) == 0 {
+		return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	names, err := parseMultiAssignNames(tokens[assignStart+1 : end])
+	if err != nil {
+		return nil, err
+	}
+
+	value, err := parseExprTokens(valueTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	return MultiAssignExpr{Names: names, Value: value}, nil
+}
+
+func findMatchingParenEnd(tokens []token, start int) (int, bool) {
+	if start >= len(tokens) || tokens[start].typ != tokenLParen {
+		return 0, false
+	}
+
+	depth := 0
+	for index := start; index < len(tokens); index++ {
+		switch tokens[index].typ {
+		case tokenLParen:
+			depth++
+		case tokenRParen:
+			depth--
+			if depth == 0 {
+				return index, true
+			}
+		}
+	}
+
+	return 0, false
+}
+
+func parseMultiAssignNames(tokens []token) ([]string, error) {
+	segments := splitTopLevelCommaSegments(tokens)
+	names := make([]string, 0, len(segments))
+
+	for _, segment := range segments {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) != 1 || trimmed[0].typ != tokenIdent {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		names = append(names, trimmed[0].lit)
+	}
+
+	if len(names) == 0 {
+		return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	return names, nil
 }
 
 func parseTernaryExprTokens(tokens []token) (Expr, error) {
@@ -394,12 +611,281 @@ func splitClosureArrowTokens(tokens []token) ([]token, []token, bool) {
 	return nil, tokens, false
 }
 
-func parseComparisonExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{">", "<", ">=", "<="}, parseAdditiveExprTokens); expr != nil || err != nil {
+func parseKeywordComparisonExprTokens(tokens []token) (Expr, error) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth--
+		case tokenRBrace:
+			braceDepth++
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+			continue
+		}
+
+		if current.typ != tokenIdent && current.typ != tokenSymbol {
+			continue
+		}
+
+		if !stringInSlice(current.lit, []string{"in", "!in", "instanceof", "!instanceof"}) {
+			continue
+		}
+
+		leftTokens := tokens[:index]
+		rightTokens := tokens[index+1:]
+		if len(leftTokens) == 0 {
+			continue
+		}
+		if len(rightTokens) == 0 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		leftExpr, err := parseRangeExprTokens(leftTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		rightExpr, err := parseRangeExprTokens(rightTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		if current.lit == "in" || current.lit == "!in" {
+			return InExpr{Left: leftExpr, Right: rightExpr, Negated: current.lit == "!in"}, nil
+		}
+
+		return BinaryExpr{Left: leftExpr, Op: current.lit, Right: rightExpr}, nil
+	}
+
+	return nil, nil
+}
+
+func parseBitwiseOrExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"|"}, parseBitwiseXorExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseBitwiseXorExprTokens(tokens)
+}
+
+func parseBitwiseAndExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"&"}, parseEqualityExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseEqualityExprTokens(tokens)
+}
+
+func parseBitwiseXorExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"^"}, parseBitwiseAndExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseBitwiseAndExprTokens(tokens)
+}
+
+func isBinaryOperatorToken(tok token, operators []string) bool {
+	if !stringInSlice(tok.lit, operators) {
+		return false
+	}
+
+	switch tok.typ {
+	case tokenSymbol, tokenPipe, tokenIdent:
+		return true
+	default:
+		return false
+	}
+}
+
+func parsePowerExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"**"}, parseUnaryExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseUnaryExprTokens(tokens)
+}
+
+func parseRangeExprTokens(tokens []token) (Expr, error) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth--
+		case tokenRBrace:
+			braceDepth++
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, []string{"..", "..<"}) {
+			continue
+		}
+
+		leftTokens := tokens[:index]
+		rightTokens := tokens[index+1:]
+		if len(leftTokens) == 0 {
+			continue
+		}
+		if len(rightTokens) == 0 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		leftExpr, err := parseShiftExprTokens(leftTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		rightExpr, err := parseShiftExprTokens(rightTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		return RangeExpr{Start: leftExpr, End: rightExpr, Exclusive: current.lit == "..<"}, nil
+	}
+
+	return parseShiftExprTokens(tokens)
+}
+
+func parseShiftExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"<<", ">>", ">>>"}, parseAdditiveExprTokens); expr != nil || err != nil {
 		return expr, err
 	}
 
 	return parseAdditiveExprTokens(tokens)
+}
+
+func parseRegexExprTokens(tokens []token) (Expr, error) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index := len(tokens) - 1; index >= 0; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth--
+		case tokenRBrace:
+			braceDepth++
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, []string{"=~", "==~"}) {
+			continue
+		}
+
+		leftTokens := tokens[:index]
+		rightTokens := tokens[index+1:]
+		if len(leftTokens) == 0 {
+			continue
+		}
+		if len(rightTokens) == 0 {
+			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		leftExpr, err := parseComparisonExprTokens(leftTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		rightExpr, err := parseComparisonExprTokens(rightTokens)
+		if err != nil {
+			return nil, err
+		}
+
+		return RegexExpr{Left: leftExpr, Right: rightExpr, Full: current.lit == "==~"}, nil
+	}
+
+	return parseComparisonExprTokens(tokens)
+}
+
+func parseComparisonExprTokens(tokens []token) (Expr, error) {
+	if expr, err := parseKeywordComparisonExprTokens(tokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	if expr, err := parseBinaryExprTokens(tokens, []string{">", "<", ">=", "<=", "<=>"}, parseRangeExprTokens); expr != nil || err != nil {
+		return expr, err
+	}
+
+	return parseRangeExprTokens(tokens)
+}
+
+func parseNewExprTokens(tokens []token) (Expr, bool, error) {
+	if len(tokens) < 4 || tokens[0].typ != tokenIdent || tokens[0].lit != "new" || tokens[len(tokens)-1].typ != tokenRParen {
+		return nil, false, nil
+	}
+
+	start, ok := findTrailingParenStart(tokens)
+	if !ok || start < 2 {
+		return nil, false, nil
+	}
+
+	className, ok := parsePropertyPathTokens(tokens[1:start])
+	if !ok {
+		return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+	}
+
+	args := make([]Expr, 0)
+	argTokens := trimDeclarationTokens(tokens[start+1 : len(tokens)-1])
+	if len(argTokens) > 0 {
+		segments := splitTopLevelCommaSegments(argTokens)
+		args = make([]Expr, 0, len(segments))
+		for _, segment := range segments {
+			trimmed := trimDeclarationTokens(segment)
+			if len(trimmed) == 0 {
+				return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+			}
+
+			arg, err := parseExprTokens(trimmed)
+			if err != nil {
+				return nil, true, err
+			}
+
+			args = append(args, arg)
+		}
+	}
+
+	return NewExpr{ClassName: className, Args: args}, true, nil
 }
 
 func findTrailingBraceStart(tokens []token) (int, bool) {
@@ -534,6 +1020,46 @@ func parseNullSafeExprTokens(tokens []token) (Expr, bool, error) {
 		}
 
 		return NullSafeExpr{Receiver: receiver, Property: property}, true, nil
+	}
+
+	return nil, false, nil
+}
+
+func parseSpreadExprTokens(tokens []token) (Expr, bool, error) {
+	parenDepth := 0
+	bracketDepth := 0
+
+	for index := len(tokens) - 2; index >= 1; index-- {
+		current := tokens[index]
+		switch current.typ {
+		case tokenRParen:
+			parenDepth++
+		case tokenLParen:
+			parenDepth--
+		case tokenSymbol:
+			switch current.lit {
+			case "]":
+				bracketDepth++
+			case "[":
+				bracketDepth--
+			}
+		}
+
+		if parenDepth != 0 || bracketDepth != 0 || current.typ != tokenSymbol || current.lit != "*." {
+			continue
+		}
+
+		property, ok := parsePropertyPathTokens(tokens[index+1:])
+		if !ok {
+			return nil, true, fmt.Errorf("unsupported expression %q", expressionText(tokens))
+		}
+
+		receiver, err := parseExprTokens(tokens[:index])
+		if err != nil {
+			return nil, true, err
+		}
+
+		return SpreadExpr{Receiver: receiver, Property: property}, true, nil
 	}
 
 	return nil, false, nil
@@ -1069,11 +1595,11 @@ func parseLogicalOrExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseEqualityExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{"==", "!="}, parseComparisonExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"==", "!="}, parseRegexExprTokens); expr != nil || err != nil {
 		return expr, err
 	}
 
-	return parseComparisonExprTokens(tokens)
+	return parseRegexExprTokens(tokens)
 }
 
 func parseAdditiveExprTokens(tokens []token) (Expr, error) {
@@ -1085,19 +1611,19 @@ func parseAdditiveExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseLogicalAndExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{"&&"}, parseEqualityExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"&&"}, parseBitwiseOrExprTokens); expr != nil || err != nil {
 		return expr, err
 	}
 
-	return parseEqualityExprTokens(tokens)
+	return parseBitwiseOrExprTokens(tokens)
 }
 
 func parseMultiplicativeExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{"*", "/"}, parseUnaryExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(tokens, []string{"*", "/", "%"}, parsePowerExprTokens); expr != nil || err != nil {
 		return expr, err
 	}
 
-	return parseUnaryExprTokens(tokens)
+	return parsePowerExprTokens(tokens)
 }
 
 func parseUnaryExprTokens(tokens []token) (Expr, error) {
@@ -1105,7 +1631,7 @@ func parseUnaryExprTokens(tokens []token) (Expr, error) {
 		return nil, fmt.Errorf("expected expression")
 	}
 
-	if tokens[0].typ == tokenSymbol && (tokens[0].lit == "!" || tokens[0].lit == "-") {
+	if tokens[0].typ == tokenSymbol && (tokens[0].lit == "!" || tokens[0].lit == "-" || tokens[0].lit == "~") {
 		operand, err := parseUnaryExprTokens(tokens[1:])
 		if err != nil {
 			return nil, err
@@ -1159,6 +1685,10 @@ func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 		return nil, fmt.Errorf("expected expression")
 	}
 
+	if expr, ok, err := parseNewExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
 	if len(tokens) >= 2 && tokens[0].typ == tokenLBrace && tokens[len(tokens)-1].typ == tokenRBrace {
 		closureExpr, err := parseClosureExpr(tokens)
 		if err == nil {
@@ -1171,6 +1701,10 @@ func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 	}
 
 	if expr, ok, err := parseNullSafeExprTokens(tokens); ok || err != nil {
+		return expr, err
+	}
+
+	if expr, ok, err := parseSpreadExprTokens(tokens); ok || err != nil {
 		return expr, err
 	}
 
@@ -1218,6 +1752,9 @@ func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 		}
 		return IntExpr{Value: value}, nil
 	case tokenString:
+		if tok.slashy {
+			return SlashyStringExpr{Value: tok.lit}, nil
+		}
 		return StringExpr{Value: tok.lit}, nil
 	case tokenIdent:
 		switch tok.lit {
@@ -1317,6 +1854,19 @@ func findTernaryColon(tokens []token, start int) int {
 
 func isNullSafeQuestion(tokens []token, index int) bool {
 	return index+1 < len(tokens) && tokens[index].typ == tokenSymbol && tokens[index].lit == "?" && tokens[index+1].typ == tokenDot
+}
+
+func requiresKeywordParenSpacing(tok token) bool {
+	if tok.typ != tokenIdent {
+		return false
+	}
+
+	switch tok.lit {
+	case "catch", "for", "if", "switch", "while":
+		return true
+	default:
+		return false
+	}
 }
 
 type lexer struct {
@@ -1448,6 +1998,46 @@ func unescapeRune(r rune) rune {
 	}
 }
 
+func (l *lexer) readSlashyString() (token, error) {
+	line, col, start := l.line, l.col, l.pos
+	l.next()
+
+	var builder strings.Builder
+	escaped := false
+
+	for {
+		r := l.peek()
+		if r == 0 || r == '\n' {
+			return token{}, fmt.Errorf("line %d: unterminated slashy string literal", line)
+		}
+
+		if escaped {
+			if r != '/' {
+				builder.WriteRune('\\')
+			}
+			builder.WriteRune(r)
+			l.next()
+			escaped = false
+			continue
+		}
+
+		if r == '\\' {
+			l.next()
+			escaped = true
+			continue
+		}
+
+		if r == '/' {
+			l.next()
+			break
+		}
+
+		builder.WriteRune(l.next())
+	}
+
+	return token{typ: tokenString, lit: builder.String(), line: line, col: col, start: start, end: l.pos, slashy: true}, nil
+}
+
 func (l *lexer) readInt() token {
 	line, col, start := l.line, l.col, l.pos
 	for unicode.IsDigit(l.peek()) {
@@ -1483,7 +2073,7 @@ func newParser(tokens []token, source string) *parser {
 }
 
 func (p *parser) parseWorkflow() (*Workflow, error) {
-	wf := &Workflow{Processes: []*Process{}, SubWFs: []*SubWorkflow{}, Imports: []*Import{}, Functions: []*FuncDef{}}
+	wf := &Workflow{Processes: []*Process{}, SubWFs: []*SubWorkflow{}, Imports: []*Import{}, Functions: []*FuncDef{}, Enums: []*EnumDef{}, ParamBlock: []*ParamDecl{}, Records: []*RecordDef{}}
 
 	for {
 		p.skipNewlines()
@@ -1507,6 +2097,24 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 				return nil, err
 			}
 			wf.Functions = append(wf.Functions, funcDef)
+			continue
+		}
+
+		if current.typ == tokenIdent && current.lit == "enum" {
+			enumDef, err := p.parseEnumDef()
+			if err != nil {
+				return nil, err
+			}
+			wf.Enums = append(wf.Enums, enumDef)
+			continue
+		}
+
+		if current.typ == tokenIdent && current.lit == "record" {
+			recordDef, err := p.parseRecordDef()
+			if err != nil {
+				return nil, err
+			}
+			wf.Records = append(wf.Records, recordDef)
 			continue
 		}
 
@@ -1540,7 +2148,21 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 		}
 
 		if p.isTopLevelOutputBlockStart() {
-			if err := p.parseTopLevelOutputBlock(); err != nil {
+			if err := p.parseTopLevelOutputBlock(wf); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		if p.isTopLevelParamsBlockStart() {
+			if err := p.parseTopLevelParamsBlock(wf); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		if p.isTopLevelParamAssignmentStart() {
+			if err := p.parseTopLevelParamAssignment(wf); err != nil {
 				return nil, err
 			}
 			continue
@@ -1573,6 +2195,50 @@ func (p *parser) isTopLevelOutputBlockStart() bool {
 		case tokenNewline:
 			continue
 		case tokenLBrace:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func (p *parser) isTopLevelParamsBlockStart() bool {
+	current := p.current()
+	if current.typ != tokenIdent || current.lit != "params" {
+		return false
+	}
+
+	for offset := 1; ; offset++ {
+		next := p.peekN(offset)
+		switch next.typ {
+		case tokenNewline:
+			continue
+		case tokenLBrace:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func (p *parser) isTopLevelParamAssignmentStart() bool {
+	current := p.current()
+	if current.typ != tokenIdent || current.lit != "params" || p.peek().typ != tokenDot {
+		return false
+	}
+
+	for offset := 2; ; {
+		next := p.peekN(offset)
+		if next.typ != tokenIdent {
+			return false
+		}
+
+		offset++
+		next = p.peekN(offset)
+		switch next.typ {
+		case tokenDot:
+			offset++
+		case tokenAssign:
 			return true
 		default:
 			return false
@@ -1636,8 +2302,167 @@ parseBody:
 	return &FuncDef{Name: name.lit, Params: params, Body: body}, nil
 }
 
-func (p *parser) parseTopLevelOutputBlock() error {
+func (p *parser) parseEnumDef() (*EnumDef, error) {
+	if _, err := p.expectIdent("enum"); err != nil {
+		return nil, err
+	}
+
+	name, err := p.expectType(tokenIdent, "enum name")
+	if err != nil {
+		return nil, err
+	}
+
+	p.skipNewlines()
+	if _, err = p.expectType(tokenLBrace, "{"); err != nil {
+		return nil, err
+	}
+
+	values := make([]string, 0)
+	for {
+		p.skipNewlines()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			line := p.previous().line
+			if line == 0 {
+				line = current.line
+			}
+
+			return nil, fmt.Errorf("line %d: expected } to close enum %q", line, name.lit)
+		case tokenRBrace:
+			p.pos++
+			return &EnumDef{Name: name.lit, Values: values}, nil
+		case tokenComma:
+			p.pos++
+			continue
+		case tokenIdent:
+			values = append(values, current.lit)
+			p.pos++
+
+			p.skipNewlines()
+			switch p.current().typ {
+			case tokenComma, tokenRBrace:
+				continue
+			default:
+				return nil, fmt.Errorf("line %d: expected , or } after enum value", p.current().line)
+			}
+		default:
+			return nil, fmt.Errorf("line %d: expected enum value or }", current.line)
+		}
+	}
+}
+
+func (p *parser) parseRecordDef() (*RecordDef, error) {
+	if _, err := p.expectIdent("record"); err != nil {
+		return nil, err
+	}
+
+	name, err := p.expectType(tokenIdent, "record name")
+	if err != nil {
+		return nil, err
+	}
+
+	p.skipNewlines()
+	if _, err = p.expectType(tokenLBrace, "{"); err != nil {
+		return nil, err
+	}
+
+	fields := make([]*RecordField, 0)
+	for {
+		p.skipWorkflowSeparators()
+		current := p.current()
+
+		switch current.typ {
+		case tokenEOF:
+			line := p.previous().line
+			if line == 0 {
+				line = current.line
+			}
+
+			return nil, fmt.Errorf("line %d: expected } to close record %q", line, name.lit)
+		case tokenRBrace:
+			p.pos++
+			return &RecordDef{Name: name.lit, Fields: fields}, nil
+		case tokenComma:
+			p.pos++
+			continue
+		case tokenIdent:
+			field, parseErr := p.parseRecordField()
+			if parseErr != nil {
+				return nil, parseErr
+			}
+
+			fields = append(fields, field)
+		default:
+			return nil, fmt.Errorf("line %d: expected record field or }", current.line)
+		}
+	}
+}
+
+func (p *parser) parseRecordField() (*RecordField, error) {
+	name, err := p.expectType(tokenIdent, "record field name")
+	if err != nil {
+		return nil, err
+	}
+
+	p.skipNewlines()
+	if _, err = p.expectType(tokenColon, ":"); err != nil {
+		return nil, err
+	}
+
+	p.skipNewlines()
+	typeTokens := trimDeclarationTokens(p.readParamClauseTokens(true))
+	if len(typeTokens) == 0 {
+		return nil, fmt.Errorf("line %d: expected record field type", name.line)
+	}
+
+	field := &RecordField{Name: name.lit, Type: strings.TrimSpace(p.rawTokenText(typeTokens))}
+	if p.current().typ != tokenAssign {
+		return field, nil
+	}
+
+	p.pos++
+	p.skipNewlines()
+
+	valueTokens := trimDeclarationTokens(p.readParamClauseTokens(false))
+	if len(valueTokens) == 0 {
+		return nil, fmt.Errorf("line %d: expected record field default value", name.line)
+	}
+
+	value, err := parseExprTokens(valueTokens)
+	if err != nil {
+		return nil, wrapLineError(name.line, err)
+	}
+
+	field.Default = value
+
+	return field, nil
+}
+
+func (p *parser) parseTopLevelOutputBlock(wf *Workflow) error {
 	if _, err := p.expectIdent("output"); err != nil {
+		return err
+	}
+
+	p.skipNewlines()
+	openBrace, err := p.expectType(tokenLBrace, "{")
+	if err != nil {
+		return err
+	}
+
+	body, err := p.parseRawBraceBody(openBrace, "output block")
+	if err != nil {
+		return err
+	}
+
+	wf.OutputBlock = body
+
+	return nil
+}
+
+func (p *parser) parseTopLevelParamsBlock(wf *Workflow) error {
+	if _, err := p.expectIdent("params"); err != nil {
 		return err
 	}
 
@@ -1646,27 +2471,214 @@ func (p *parser) parseTopLevelOutputBlock() error {
 		return err
 	}
 
-	depth := 1
-	for depth > 0 {
+	return p.parseParamsBlockEntries(wf, "")
+}
+
+func (p *parser) parseParamsBlockEntries(wf *Workflow, prefix string) error {
+	for {
+		p.skipWorkflowSeparators()
+
 		current := p.current()
-		if current.typ == tokenEOF {
+		switch current.typ {
+		case tokenEOF:
 			line := p.previous().line
 			if line == 0 {
 				line = current.line
 			}
 
-			return fmt.Errorf("line %d: expected } to close output block", line)
+			return fmt.Errorf("line %d: expected } to close params block", line)
+		case tokenRBrace:
+			p.pos++
+			return nil
+		case tokenIdent:
+			name := current
+			p.pos++
+			p.skipNewlines()
+
+			if p.current().typ == tokenLBrace {
+				p.pos++
+
+				nestedPrefix := name.lit
+				if prefix != "" {
+					nestedPrefix = prefix + "." + name.lit
+				}
+
+				if err := p.parseParamsBlockEntries(wf, nestedPrefix); err != nil {
+					return err
+				}
+
+				continue
+			}
+
+			decl, err := p.parseParamDecl(prefix, name)
+			if err != nil {
+				return err
+			}
+
+			wf.ParamBlock = upsertParamDecl(wf.ParamBlock, decl)
+		default:
+			return fmt.Errorf("line %d: expected parameter name", current.line)
+		}
+	}
+}
+
+func upsertParamDecl(paramBlock []*ParamDecl, decl *ParamDecl) []*ParamDecl {
+	for index, existing := range paramBlock {
+		if existing != nil && existing.Name == decl.Name {
+			paramBlock[index] = decl
+			return paramBlock
+		}
+	}
+
+	return append(paramBlock, decl)
+}
+
+func (p *parser) parseParamDecl(prefix string, name token) (*ParamDecl, error) {
+	fullName := name.lit
+	if prefix != "" {
+		fullName = prefix + "." + name.lit
+	}
+
+	decl := &ParamDecl{Name: fullName}
+
+	switch p.current().typ {
+	case tokenColon:
+		p.pos++
+		p.skipNewlines()
+
+		typeTokens := trimDeclarationTokens(p.readParamClauseTokens(true))
+		if len(typeTokens) == 0 {
+			return nil, fmt.Errorf("line %d: expected parameter type", name.line)
 		}
 
+		decl.Type = strings.TrimSpace(p.rawTokenText(typeTokens))
+		if p.current().typ != tokenAssign {
+			return decl, nil
+		}
+
+		p.pos++
+		p.skipNewlines()
+		fallthrough
+	case tokenAssign:
+		if p.previous().typ != tokenAssign {
+			p.pos++
+			p.skipNewlines()
+		}
+
+		valueTokens := trimDeclarationTokens(p.readParamClauseTokens(false))
+		if len(valueTokens) == 0 {
+			return nil, fmt.Errorf("line %d: expected parameter default value", name.line)
+		}
+
+		value, err := parseExprTokens(valueTokens)
+		if err != nil {
+			return nil, wrapLineError(name.line, err)
+		}
+
+		decl.Default = value
+
+		return decl, nil
+	default:
+		return nil, fmt.Errorf("line %d: expected :, =, or { after parameter name %q", name.line, name.lit)
+	}
+}
+
+func (p *parser) readParamClauseTokens(stopAtAssign bool) []token {
+	clause := []token{}
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
+
+	for {
+		current := p.current()
+		if current.typ == tokenEOF {
+			break
+		}
+
+		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+			if current.typ == tokenNewline || current.typ == tokenSemicolon || current.typ == tokenRBrace {
+				break
+			}
+			if stopAtAssign && current.typ == tokenAssign {
+				break
+			}
+		}
+
+		clause = append(clause, current)
+		p.pos++
+
 		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
 		case tokenLBrace:
-			depth++
+			braceDepth++
 		case tokenRBrace:
-			depth--
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		}
+	}
+
+	return clause
+}
+
+func (p *parser) parseTopLevelParamAssignment(wf *Workflow) error {
+	if _, err := p.expectIdent("params"); err != nil {
+		return err
+	}
+
+	if _, err := p.expectType(tokenDot, "."); err != nil {
+		return err
+	}
+
+	parts := []string{}
+	for {
+		part, err := p.expectType(tokenIdent, "parameter name")
+		if err != nil {
+			return err
+		}
+
+		parts = append(parts, part.lit)
+		if p.current().typ != tokenDot {
+			break
 		}
 
 		p.pos++
 	}
+
+	if _, err := p.expectType(tokenAssign, "="); err != nil {
+		return err
+	}
+
+	p.skipNewlines()
+	valueTokens := trimDeclarationTokens(p.readParamClauseTokens(false))
+	if len(valueTokens) == 0 {
+		return fmt.Errorf("line %d: expected parameter default value", p.previous().line)
+	}
+
+	value, err := parseExprTokens(valueTokens)
+	if err != nil {
+		return wrapLineError(p.previous().line, err)
+	}
+
+	if p.current().typ == tokenNewline || p.current().typ == tokenSemicolon {
+		p.pos++
+	}
+
+	wf.ParamBlock = upsertParamDecl(wf.ParamBlock, &ParamDecl{Name: strings.Join(parts, "."), Default: value})
 
 	return nil
 }
@@ -1868,7 +2880,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 		p.localScopes = p.localScopes[:len(p.localScopes)-1]
 	}()
 
-	block := &WorkflowBlock{Calls: []*Call{}, Take: []string{}, Emit: []*WFEmit{}, Conditions: []*IfBlock{}}
+	block := &WorkflowBlock{Calls: []*Call{}, Take: []string{}, Emit: []*WFEmit{}, Publish: []*WFPublish{}, Conditions: []*IfBlock{}}
 	section := "main"
 
 	for {
@@ -1917,7 +2929,25 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			}
 			block.Emit = append(block.Emit, emit)
 		case "publish":
-			p.readWorkflowPublishLineTokens()
+			publish, err := p.parseWorkflowPublishLine()
+			if err != nil {
+				return nil, err
+			}
+			if publish != nil {
+				block.Publish = append(block.Publish, publish)
+			}
+		case "onComplete":
+			body, err := p.parseWorkflowRawSectionBody()
+			if err != nil {
+				return nil, err
+			}
+			block.OnComplete = body
+		case "onError":
+			body, err := p.parseWorkflowRawSectionBody()
+			if err != nil {
+				return nil, err
+			}
+			block.OnError = body
 		case "main":
 			if current.typ == tokenIdent && current.lit == "if" {
 				condition, err := p.parseWorkflowIfBlock()
@@ -1948,7 +2978,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 
 func isWorkflowBlockSection(name string) bool {
 	switch name {
-	case "take", "main", "emit", "publish":
+	case "take", "main", "emit", "publish", "onComplete", "onError":
 		return true
 	default:
 		return false
@@ -2028,6 +3058,109 @@ parseAssign:
 	}
 
 	return &WFEmit{Name: p.rawTokenText(nameTokens), Expr: p.rawTokenText(exprTokens)}, nil
+}
+
+func (p *parser) parseWorkflowPublishLine() (*WFPublish, error) {
+	lineTokens := p.readWorkflowPublishLineTokens()
+	if len(lineTokens) == 0 {
+		return nil, nil
+	}
+
+	assignIndex := -1
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
+	for index, tok := range lineTokens {
+		switch tok.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch tok.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		case tokenAssign:
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+				assignIndex = index
+				goto parseAssign
+			}
+		}
+	}
+
+parseAssign:
+	if assignIndex == -1 {
+		return nil, nil
+	}
+
+	targetTokens := trimDeclarationTokens(lineTokens[:assignIndex])
+	sourceTokens := trimDeclarationTokens(lineTokens[assignIndex+1:])
+	if len(targetTokens) == 0 || len(sourceTokens) == 0 {
+		return nil, fmt.Errorf("line %d: expected workflow publish assignment", lineTokens[0].line)
+	}
+
+	return &WFPublish{Target: p.rawTokenText(targetTokens), Source: p.rawTokenText(sourceTokens)}, nil
+}
+
+func (p *parser) parseWorkflowRawSectionBody() (string, error) {
+	start := p.pos
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
+
+	for {
+		current := p.current()
+		switch current.typ {
+		case tokenEOF:
+			line := p.previous().line
+			if line == 0 {
+				line = current.line
+			}
+
+			return "", fmt.Errorf("line %d: expected } to close workflow", line)
+		case tokenRBrace:
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+				return p.rawTokenText(p.tokens[start:p.pos]), nil
+			}
+			braceDepth--
+		case tokenLBrace:
+			braceDepth++
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenIdent:
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && p.peek().typ == tokenColon && isWorkflowBlockSection(current.lit) {
+				return p.rawTokenText(p.tokens[start:p.pos]), nil
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		}
+
+		p.pos++
+	}
 }
 
 func (p *parser) parseWorkflowStatement() ([]*Call, error) {
@@ -2234,12 +3367,22 @@ func (p *parser) parseChannelAssignment(terminators ...tokenType) error {
 		return err
 	}
 
-	value, err := p.parseChanExpr(terminators...)
+	valueTokens, err := p.readExprTokens(terminators...)
 	if err != nil {
 		return err
 	}
+
+	value, track, err := p.parseTrackedChannelAssignment(valueTokens)
+	if err != nil {
+		return err
+	}
+
 	if p.current().typ == tokenNewline || p.current().typ == tokenSemicolon {
 		p.pos++
+	}
+
+	if !track {
+		return nil
 	}
 
 	if scope := p.currentLocalScope(); scope != nil {
@@ -2250,6 +3393,178 @@ func (p *parser) parseChannelAssignment(terminators ...tokenType) error {
 	p.assignments[name.lit] = value
 
 	return nil
+}
+
+func (p *parser) parseTrackedChannelAssignment(tokens []token) (ChanExpr, bool, error) {
+	trimmed := trimDeclarationTokens(tokens)
+	if !p.isTrackedChannelAssignmentTokens(trimmed) {
+		return nil, false, nil
+	}
+
+	probeTokens := append([]token{}, trimmed...)
+	probeTokens = append(probeTokens, token{typ: tokenEOF})
+	probe := &parser{tokens: probeTokens, source: p.source, assignments: p.assignments, localScopes: p.localScopes}
+
+	value, err := probe.parseChanExpr(tokenEOF)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if probe.current().typ != tokenEOF {
+		return nil, false, fmt.Errorf("unsupported expression %q", expressionText(trimmed))
+	}
+
+	if !p.isTrackedChannelValue(value) {
+		return nil, false, nil
+	}
+
+	return value, true, nil
+}
+
+func (p *parser) isTrackedChannelAssignmentTokens(tokens []token) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+
+	if len(tokens) >= 3 && tokens[0].typ == tokenIdent && tokens[0].lit == "Channel" && tokens[1].typ == tokenDot && tokens[2].typ == tokenIdent {
+		return true
+	}
+	if hasTopLevelToken(tokens, tokenPipe, "") {
+		return true
+	}
+
+	name, consumed := leadingChannelAssignmentRef(tokens)
+	if name == "" {
+		return false
+	}
+
+	if consumed == len(tokens) {
+		return strings.Contains(name, ".out") || p.hasTrackedChannelName(name)
+	}
+
+	if consumed+2 >= len(tokens) || tokens[consumed].typ != tokenDot || tokens[consumed+1].typ != tokenIdent {
+		return false
+	}
+	if tokens[consumed+2].typ != tokenLParen && tokens[consumed+2].typ != tokenLBrace {
+		return false
+	}
+
+	if !strings.Contains(name, ".out") && !p.hasTrackedChannelName(name) {
+		return false
+	}
+
+	_, ok := supportedChannelOperators[tokens[consumed+1].lit]
+
+	return ok
+}
+
+func leadingChannelAssignmentRef(tokens []token) (string, int) {
+	if len(tokens) == 0 || tokens[0].typ != tokenIdent {
+		return "", 0
+	}
+
+	parts := []string{tokens[0].lit}
+	consumed := 1
+	for index := 1; index < len(tokens); index += 2 {
+		if tokens[index].typ != tokenDot {
+			break
+		}
+		if index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
+			break
+		}
+		if index+2 < len(tokens) && (tokens[index+2].typ == tokenLParen || tokens[index+2].typ == tokenLBrace) {
+			break
+		}
+
+		parts = append(parts, tokens[index+1].lit)
+		consumed = index + 2
+	}
+
+	return strings.Join(parts, "."), consumed
+}
+
+func leadingChannelAssignmentRefName(tokens []token) string {
+	name, _ := leadingChannelAssignmentRef(tokens)
+
+	return name
+}
+
+func hasTopLevelToken(tokens []token, typ tokenType, lit string) bool {
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
+
+	for _, tok := range tokens {
+		switch tok.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch tok.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		}
+
+		if parenDepth != 0 || braceDepth != 0 || bracketDepth != 0 {
+			continue
+		}
+		if tok.typ != typ {
+			continue
+		}
+		if lit != "" && tok.lit != lit {
+			continue
+		}
+
+		return true
+	}
+
+	return false
+}
+
+func (p *parser) isTrackedChannelValue(value ChanExpr) bool {
+	switch typed := value.(type) {
+	case ChannelFactory:
+		return true
+	case ChanRef:
+		return strings.Contains(typed.Name, ".out") || p.hasTrackedChannelName(typed.Name)
+	case NamedChannelRef:
+		return p.isTrackedChannelValue(typed.Source)
+	case ChannelChain:
+		return p.isTrackedChannelValue(typed.Source)
+	case PipeExpr:
+		if len(typed.Stages) == 0 {
+			return false
+		}
+
+		return p.isTrackedChannelValue(typed.Stages[0])
+	default:
+		return false
+	}
+}
+
+func (p *parser) hasTrackedChannelName(name string) bool {
+	_, ok := p.resolveAssignment(name)
+	if ok {
+		return true
+	}
+
+	_, ok = p.resolveNamedChannelSelection(name)
+
+	return ok
 }
 
 func (p *parser) parseChanExpr(terminators ...tokenType) (ChanExpr, error) {
@@ -2300,6 +3615,8 @@ func (p *parser) parseChanStage(terminators ...tokenType) (ChanExpr, error) {
 		name := p.parseChannelRefName()
 		if value, ok := p.resolveAssignment(name); ok {
 			base = value
+		} else if value, ok := p.resolveNamedChannelSelection(name); ok {
+			base = value
 		} else {
 			base = ChanRef{Name: name}
 		}
@@ -2336,6 +3653,30 @@ func (p *parser) resolveAssignment(name string) (ChanExpr, bool) {
 	value, ok := p.assignments[name]
 
 	return value, ok
+}
+
+func (p *parser) resolveNamedChannelSelection(name string) (ChanExpr, bool) {
+	parts := strings.Split(name, ".")
+	for prefixLen := len(parts) - 1; prefixLen >= 1; prefixLen-- {
+		baseName := strings.Join(parts[:prefixLen], ".")
+		label := strings.Join(parts[prefixLen:], ".")
+		if label == "" {
+			continue
+		}
+
+		value, ok := p.resolveAssignment(baseName)
+		if !ok {
+			continue
+		}
+
+		if ref, ok := value.(ChanRef); ok && strings.HasSuffix(ref.Name, ".out") {
+			return ChanRef{Name: ref.Name + "." + label}, true
+		}
+
+		return NamedChannelRef{Source: value, Label: label}, true
+	}
+
+	return nil, false
 }
 
 func (p *parser) parseChannelFactory() (ChanExpr, error) {
@@ -2394,6 +3735,10 @@ func parseExprTokens(tokens []token) (Expr, error) {
 		return nil, fmt.Errorf("expected expression")
 	}
 
+	if expr, err := parseMultiAssignExprTokens(tokens); expr != nil || err != nil {
+		return expr, err
+	}
+
 	if expr, err := parseTernaryExprTokens(tokens); expr != nil || err != nil {
 		return expr, err
 	}
@@ -2425,7 +3770,7 @@ func parseBinaryExprTokens(tokens []token, operators []string, operandParser fun
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, operators) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || !isBinaryOperatorToken(current, operators) {
 			continue
 		}
 
@@ -2499,7 +3844,7 @@ func needsSpaceBetween(prev, current token) bool {
 	}
 
 	if current.typ == tokenLParen {
-		return false
+		return requiresKeywordParenSpacing(prev)
 	}
 
 	if prev.typ == tokenLParen || current.typ == tokenRParen {
@@ -2633,7 +3978,54 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 	}
 
 	switch name.lit {
-	case "combine", "concat", "cross", "join", "merge", "mix", "tap":
+	case "combine":
+		channels := []ChanExpr{}
+		args := []Expr{}
+		for {
+			segmentTokens, err := p.readExprTokens(tokenComma, tokenRParen)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			trimmed := trimDeclarationTokens(segmentTokens)
+			if len(trimmed) == 0 {
+				return nil, nil, fmt.Errorf("line %d: expected combine argument", p.current().line)
+			}
+
+			if len(args) == 0 && !isDeclarationQualifierTokens(trimmed) {
+				probeTokens := append([]token{}, trimmed...)
+				probeTokens = append(probeTokens, token{typ: tokenEOF})
+				probe := &parser{tokens: probeTokens, source: p.source, assignments: p.assignments, localScopes: p.localScopes}
+
+				channel, parseErr := probe.parseChanExpr(tokenEOF)
+				if parseErr == nil && probe.current().typ == tokenEOF {
+					channels = append(channels, channel)
+				} else {
+					arg, argErr := parseExprTokens(trimmed)
+					if argErr != nil {
+						return nil, nil, wrapLineError(trimmed[0].line, argErr)
+					}
+					args = append(args, arg)
+				}
+			} else {
+				arg, err := parseExprTokens(trimmed)
+				if err != nil {
+					return nil, nil, wrapLineError(trimmed[0].line, err)
+				}
+				args = append(args, arg)
+			}
+
+			switch p.current().typ {
+			case tokenComma:
+				p.pos++
+			case tokenRParen:
+				p.pos++
+				return channels, args, nil
+			default:
+				return nil, nil, fmt.Errorf("line %d: expected , or )", p.current().line)
+			}
+		}
+	case "concat", "cross", "join", "merge", "mix", "tap":
 		channels := []ChanExpr{}
 		for {
 			channel, err := p.parseChanExpr(tokenComma, tokenRParen)
@@ -2753,6 +4145,10 @@ func renderClosureTokens(tokens []token) string {
 func renderClosureToken(tok token) string {
 	if tok.typ != tokenString {
 		return tok.lit
+	}
+
+	if tok.slashy {
+		return "/" + strings.ReplaceAll(tok.lit, "/", "\\/") + "/"
 	}
 
 	return "'" + strings.ReplaceAll(tok.lit, "'", "\\'") + "'"
@@ -2922,6 +4318,11 @@ func (p *parser) parseSection(proc *Process, label token) error {
 		}
 		proc.Shell = shell
 		warnUnsupportedProcessSection(label)
+	case "stage":
+		if _, err := p.parseRawSectionBody(); err != nil {
+			return err
+		}
+		warnUnsupportedProcessSection(label)
 	case "when":
 		when, err := p.parseRawSectionBody()
 		if err != nil {
@@ -2973,7 +4374,12 @@ func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 		}
 	}
 
-	primaryTokens, qualifierTokens, err := splitDeclarationLineTokens(lineTokens)
+	primaryLineTokens, each, err := normalizeEachDeclarationTokens(lineTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	primaryTokens, qualifierTokens, err := splitDeclarationLineTokens(primaryLineTokens)
 	if err != nil {
 		return nil, err
 	}
@@ -2982,6 +4388,7 @@ func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 	if err != nil {
 		return nil, err
 	}
+	decl.Each = each
 	decl.Raw = joinTokens(lineTokens)
 
 	for _, qualifier := range qualifierTokens {
@@ -2990,11 +4397,25 @@ func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 		}
 	}
 
-	if section == "output" && decl.Kind == "eval" {
-		warnUnsupportedOutputType(primaryTokens[0])
+	return decl, nil
+}
+
+func normalizeEachDeclarationTokens(tokens []token) ([]token, bool, error) {
+	if len(tokens) == 0 || tokens[0].typ != tokenIdent || tokens[0].lit != "each" {
+		return tokens, false, nil
 	}
 
-	return decl, nil
+	eachToken := tokens[0]
+	remaining := trimDeclarationTokens(tokens[1:])
+	if len(remaining) == 0 {
+		return nil, false, fmt.Errorf("line %d: each requires a declaration", eachToken.line)
+	}
+
+	if len(remaining) == 1 && remaining[0].typ == tokenIdent {
+		return []token{{typ: tokenIdent, lit: "val", line: eachToken.line, col: eachToken.col, start: eachToken.start, end: eachToken.end}, remaining[0]}, true, nil
+	}
+
+	return remaining, true, nil
 }
 
 func splitDeclarationLineTokens(lineTokens []token) ([]token, [][]token, error) {
@@ -3057,20 +4478,41 @@ func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
 		return decl, nil
 	}
 
-	if decl.Kind == "env" && isCallLikeDeclaration(tokens) {
-		name, err := parseDeclarationNameArg(tokens[2 : len(tokens)-1])
-		if err != nil {
-			return nil, wrapLineError(tokens[0].line, err)
+	if isCallLikeDeclaration(tokens) {
+		segments := splitTopLevelCommaSegments(tokens[2 : len(tokens)-1])
+		if len(segments) == 0 {
+			return nil, fmt.Errorf("line %d: %s requires an argument", tokens[0].line, decl.Kind)
 		}
-		decl.Name = name
-		return decl, nil
-	}
 
-	if decl.Kind == "eval" && isCallLikeDeclaration(tokens) {
-		if len(tokens) == 3 {
-			return nil, fmt.Errorf("line %d: eval requires an argument", tokens[0].line)
+		primary := trimDeclarationTokens(segments[0])
+		if len(primary) == 0 {
+			return nil, fmt.Errorf("line %d: %s requires an argument", tokens[0].line, decl.Kind)
 		}
-		expr, err := parseExprTokens(tokens[2 : len(tokens)-1])
+
+		if decl.Kind == "env" {
+			name, err := parseDeclarationNameArg(primary)
+			if err != nil {
+				return nil, wrapLineError(tokens[0].line, err)
+			}
+			decl.Name = name
+			return decl, nil
+		}
+
+		if decl.Kind == "eval" {
+			expr, err := parseExprTokens(primary)
+			if err != nil {
+				return nil, wrapLineError(tokens[0].line, err)
+			}
+			decl.Expr = expr
+			return decl, nil
+		}
+
+		if len(primary) == 1 && primary[0].typ == tokenIdent {
+			decl.Name = primary[0].lit
+			return decl, nil
+		}
+
+		expr, err := parseExprTokens(primary)
 		if err != nil {
 			return nil, wrapLineError(tokens[0].line, err)
 		}
@@ -3255,7 +4697,8 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 		}
 		strExpr, ok := expr.(StringExpr)
 		if !ok {
-			return fmt.Errorf("line %d: container expects a string literal", name.line)
+			proc.Directives[name.lit] = expr
+			break
 		}
 		proc.Container = strExpr.Value
 	case "tag":
@@ -3302,7 +4745,8 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 		}
 		strExpr, ok := expr.(StringExpr)
 		if !ok {
-			return fmt.Errorf("line %d: errorStrategy expects a string literal", name.line)
+			proc.Directives[name.lit] = expr
+			break
 		}
 		proc.ErrorStrat = strExpr.Value
 	case "maxRetries":
@@ -3323,7 +4767,7 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 			return wrapLineError(name.line, err)
 		}
 		proc.Env[key] = value
-	case "scratch", "storeDir", "queue", "clusterOptions", "executor", "debug", "secret":
+	case "accelerator", "arch", "array", "clusterOptions", "conda", "containerOptions", "debug", "echo", "executor", "ext", "fair", "machineType", "maxErrors", "maxSubmitAwait", "penv", "pod", "queue", "resourceLabels", "resourceLimits", "scratch", "secret", "shell", "spack", "stageInMode", "stageOutMode", "storeDir":
 		expr, err := parseDirectiveExpr(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
@@ -3525,13 +4969,45 @@ func (p *parser) skipWorkflowSeparators() {
 
 func (p *parser) readLineTokens() []token {
 	lineTokens := []token{}
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
+
 	for {
 		current := p.current()
-		if current.typ == tokenEOF || current.typ == tokenNewline || current.typ == tokenRBrace {
+		if current.typ == tokenEOF || current.typ == tokenNewline {
 			break
 		}
+		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && current.typ == tokenRBrace {
+			break
+		}
+
 		lineTokens = append(lineTokens, current)
 		p.pos++
+
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		}
 	}
 	if p.current().typ == tokenNewline {
 		p.pos++

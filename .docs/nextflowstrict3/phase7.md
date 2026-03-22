@@ -22,8 +22,8 @@ Extract `name`, `queueSize`, `queue`, and `clusterOptions`.
 Handle profile-scoped executor blocks. Covering all 4
 acceptance tests from M1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 7.2: M2 - Parse remaining config scopes [parallel with 7.1]
 
@@ -35,8 +35,8 @@ Add `conda`, `dag`, `manifest`, `notification`, `report`,
 Nextflow config scopes parse without error. `wave` is already
 handled. Covering all 11 acceptance tests from M2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

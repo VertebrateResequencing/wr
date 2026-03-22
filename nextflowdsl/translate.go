@@ -277,6 +277,22 @@ func bindingsForInputDeclaration(decl *Declaration, resolved bindingSet) ([]stri
 	return bindings, nil
 }
 
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+
+	return right
+}
+
+func deterministicEachCwd(base, runID string, scope []string, processName string, regularIndex, eachIndex int) string {
+	parts := []string{base, "nf-work", runID}
+	parts = append(parts, scope...)
+	parts = append(parts, processName, fmt.Sprintf("%d_%d", regularIndex, eachIndex))
+
+	return filepath.Clean(filepath.Join(parts...))
+}
+
 // MatchSelectors returns merged process defaults by applying matching selectors
 // in specificity order before process-level directives are evaluated.
 func MatchSelectors(proc *Process, base *ProcessDefaults, selectors []*ProcessSelector) *ProcessDefaults {
@@ -361,21 +377,158 @@ func selectorSpecificity(kind string) int {
 	return selectorSpecificityLabel
 }
 
+func defaultDirectiveTask() map[string]any {
+	return map[string]any{
+		"attempt":    1,
+		"cpus":       1,
+		"memory":     0,
+		"exitStatus": 0,
+	}
+}
+
+func resolveDirectiveValue(name string, expr any, params map[string]any, task map[string]any) (any, bool, error) {
+	if expr == nil {
+		return nil, false, nil
+	}
+	if unsupported, ok := expr.(UnsupportedExpr); ok {
+		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
+		return nil, true, nil
+	}
+
+	value, err := evalDirectiveExpr(expr, params, task)
+	if err != nil {
+		return nil, false, err
+	}
+	if unsupported, ok := value.(UnsupportedExpr); ok {
+		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
+		return nil, true, nil
+	}
+
+	return value, false, nil
+}
+
+func evalDirectiveExpr(expr any, params map[string]any, task map[string]any) (any, error) {
+	if closure, ok := expr.(ClosureExpr); ok {
+		if len(closure.Params) != 0 {
+			return UnsupportedExpr{Text: renderExpr(closure)}, nil
+		}
+
+		return evalStatementBody(closure.Body, cloneEvalVars(exprVarsWithTask(params, task)))
+	}
+
+	return EvalExpr(expr, exprVarsWithTask(params, task))
+}
+
 func exprVarsWithTask(params map[string]any, task map[string]any) map[string]any {
-	if len(params) == 0 && len(task) == 0 {
+	if params == nil && task == nil {
 		return nil
 	}
 
 	vars := make(map[string]any, 2)
-	if len(params) != 0 {
+	if params != nil {
 		vars["params"] = params
 	}
 
-	if len(task) != 0 {
+	if task != nil {
 		vars["task"] = task
 	}
 
 	return vars
+}
+
+func resolveDirectiveString(name string, expr any, params map[string]any, fallback string, task map[string]any) (string, error) {
+	if expr == nil {
+		return fallback, nil
+	}
+
+	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
+	if err != nil {
+		return "", err
+	}
+	if fallbackUsed {
+		return fallback, nil
+	}
+
+	stringValue, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s directive must evaluate to a string", name)
+	}
+
+	return stringValue, nil
+}
+
+func resolveShellDirective(expr any, params map[string]any) (string, error) {
+	value, fallbackUsed, err := resolveDirectiveValue("shell", expr, params, defaultDirectiveTask())
+	if err != nil {
+		return "", err
+	}
+	if fallbackUsed || value == nil {
+		return "", nil
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, part := range typed {
+			stringPart, ok := part.(string)
+			if !ok {
+				return "", fmt.Errorf("shell directive list entries must evaluate to strings")
+			}
+			parts = append(parts, stringPart)
+		}
+
+		return strings.Join(parts, " "), nil
+	default:
+		return "", fmt.Errorf("shell directive must evaluate to a string or list of strings")
+	}
+}
+
+func buildCommandBody(proc *Process, bindings []string, params map[string]any) (string, error) {
+	script, err := renderScript(proc, bindings, params)
+	if err != nil {
+		return "", err
+	}
+	bodyParts := make([]string, 0, 3)
+	if proc.BeforeScript != "" {
+		bodyParts = append(bodyParts, proc.BeforeScript)
+	}
+	bodyParts = append(bodyParts, script)
+	if proc.AfterScript != "" {
+		bodyParts = append(bodyParts, proc.AfterScript)
+	}
+	evalLines, err := evalOutputCaptureLines(proc, bindings, params)
+	if err != nil {
+		return "", err
+	}
+	bodyParts = append(bodyParts, evalLines...)
+	body := strings.Join(bodyParts, "\n")
+
+	inputs := flattenedInputDeclarations(proc)
+	prefixes := make([]string, 0, len(bindings))
+	for index, binding := range bindings {
+		if binding == "" {
+			continue
+		}
+		name := fmt.Sprintf("NF_INPUT_%d", index+1)
+		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
+			name = inputs[index].Name
+		}
+		prefixes = append(prefixes, fmt.Sprintf("export %s=%s", name, shellQuote(binding)))
+	}
+	commandParts := moduleLoadLines(proc.Module)
+	commandParts = append(commandParts, prefixes...)
+	commandParts = append(commandParts, body)
+	if len(commandParts) > 1 {
+		body = strings.Join(commandParts, "\n")
+	}
+	body = strings.TrimRight(body, " \t\r")
+	if strings.TrimSpace(body) == "" {
+		body = ":"
+	}
+
+	return body, nil
 }
 
 func renderScript(proc *Process, bindings []string, params map[string]any) (string, error) {
@@ -453,6 +606,55 @@ func flattenedInputDeclarations(proc *Process) []*Declaration {
 	return flat
 }
 
+func evalOutputCaptureLines(proc *Process, bindings []string, params map[string]any) ([]string, error) {
+	if proc == nil || len(proc.Output) == 0 {
+		return nil, nil
+	}
+
+	vars := outputVars(proc, bindings, params)
+	lines := make([]string, 0, len(proc.Output))
+	evalIndex := 0
+
+	for _, decl := range proc.Output {
+		if decl == nil || decl.Kind != "eval" {
+			continue
+		}
+
+		command, err := evalOutputCommand(decl, vars, evalIndex)
+		if err != nil {
+			return nil, err
+		}
+
+		lines = append(lines, fmt.Sprintf("__nf_eval_%d=$(%s)", evalIndex, command))
+		evalIndex++
+	}
+
+	return lines, nil
+}
+
+func evalOutputCommand(decl *Declaration, vars map[string]any, index int) (string, error) {
+	if decl == nil || decl.Expr == nil {
+		return "", fmt.Errorf("eval output %d requires an expression", index)
+	}
+
+	resolved, err := EvalExpr(decl.Expr, vars)
+	if err != nil {
+		return "", fmt.Errorf("resolve eval output %d: %w", index, err)
+	}
+
+	command, ok := resolved.(string)
+	if !ok {
+		return "", fmt.Errorf("eval output %d must resolve to a string", index)
+	}
+
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", fmt.Errorf("eval output %d must not be empty", index)
+	}
+
+	return command, nil
+}
+
 func moduleLoadLines(moduleDirective string) []string {
 	if strings.TrimSpace(moduleDirective) == "" {
 		return nil
@@ -470,6 +672,267 @@ func moduleLoadLines(moduleDirective string) []string {
 	}
 
 	return lines
+}
+
+func captureCommand(body, stdoutPath, stderrPath string) string {
+	if strings.HasSuffix(body, "\n") {
+		return fmt.Sprintf("{ %s} > %s 2> %s", body, stdoutPath, stderrPath)
+	}
+
+	return fmt.Sprintf("{ %s; } > %s 2> %s", body, stdoutPath, stderrPath)
+}
+
+func resolveScratchDirective(proc *Process, params map[string]any) (bool, string, error) {
+	if proc == nil {
+		return false, "", nil
+	}
+
+	value, fallbackUsed, err := resolveDirectiveValue("scratch", proc.Directives["scratch"], params, nil)
+	if err != nil {
+		return false, "", err
+	}
+	if fallbackUsed || value == nil {
+		return false, "", nil
+	}
+
+	switch resolved := value.(type) {
+	case bool:
+		return resolved, "", nil
+	case string:
+		resolved = strings.TrimSpace(resolved)
+		return resolved != "", resolved, nil
+	default:
+		return false, "", fmt.Errorf("scratch directive must evaluate to a boolean or string")
+	}
+}
+
+func wrapScratchCommand(body string, proc *Process, bindings []string, params map[string]any, scratchPath string) string {
+	patterns := outputPatterns(proc, bindings, params)
+	assignScratch := "nf_scratch_dir=$(mktemp -d)"
+	cleanup := "rm -rf -- \"$nf_scratch_dir\""
+	if scratchPath != "" {
+		assignScratch = fmt.Sprintf("nf_scratch_dir=%s", shellQuote(filepath.Clean(scratchPath)))
+		cleanup = ":"
+	}
+
+	copyBack := copyOutputCommands(patterns, "$nf_scratch_dir", "$nf_orig_dir", true, true)
+	if len(copyBack) == 0 {
+		copyBack = []string{":"}
+	}
+
+	lines := []string{
+		"nf_orig_dir=$PWD",
+		assignScratch,
+		"mkdir -p \"$nf_scratch_dir\"",
+		fmt.Sprintf("( cd \"$nf_scratch_dir\" || exit 1\n%s )", captureCommand(body, "\"$nf_orig_dir\"/"+nfStdoutFile, "\"$nf_orig_dir\"/"+nfStderrFile)),
+		"nf_status=$?",
+		"if [ \"$nf_status\" -eq 0 ]; then",
+	}
+	lines = append(lines, copyBack...)
+	lines = append(lines,
+		"fi",
+		cleanup,
+		"(exit \"$nf_status\")",
+	)
+
+	return strings.Join(lines, "\n")
+}
+
+func outputPatterns(proc *Process, bindings []string, params map[string]any) []string {
+	if proc == nil || len(proc.Output) == 0 {
+		return nil
+	}
+
+	vars := outputVars(proc, bindings, params)
+	patterns := []string{}
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+
+		switch decl.Kind {
+		case "path", "file":
+			pattern, ok := resolvedOutputPatternString(decl.Expr, decl.Name, vars)
+			if ok {
+				patterns = appendUniqueStrings(patterns, []string{pattern})
+			}
+		case "tuple":
+			for _, element := range decl.Elements {
+				if element == nil || (element.Kind != "path" && element.Kind != "file") {
+					continue
+				}
+
+				pattern, ok := resolvedOutputPatternString(element.Expr, element.Name, vars)
+				if ok {
+					patterns = appendUniqueStrings(patterns, []string{pattern})
+				}
+			}
+		}
+	}
+
+	return patterns
+}
+
+func resolvedOutputPatternString(expr Expr, name string, vars map[string]any) (string, bool) {
+	pattern := ""
+	if expr != nil {
+		value, err := EvalExpr(expr, vars)
+		if err == nil {
+			pattern = fmt.Sprint(value)
+		} else if stringExpr, ok := expr.(StringExpr); ok {
+			pattern = stringExpr.Value
+		}
+	}
+	if pattern == "" && name != "" {
+		if value, ok := vars[name]; ok {
+			pattern = fmt.Sprint(value)
+		} else {
+			pattern = name
+		}
+	}
+	if pattern == "" {
+		return "", false
+	}
+
+	return filepath.Clean(pattern), true
+}
+
+func copyOutputCommands(patterns []string, sourceBase, targetDir string, dynamicSource, dynamicTarget bool) []string {
+	commands := make([]string, 0, len(patterns)*2)
+	for _, pattern := range patterns {
+		sourcePattern := shellPatternFromBase(sourceBase, pattern)
+		target := shellQuote(targetDir)
+		if dynamicTarget {
+			target = fmt.Sprintf("\"%s\"", targetDir)
+		}
+		sourceCheck := shellQuote(sourcePattern)
+		sourceCopy := shellQuote(sourcePattern)
+		if dynamicSource {
+			sourceCheck = fmt.Sprintf("\"%s\"", sourcePattern)
+			sourceCopy = fmt.Sprintf("\"%s\"", sourcePattern)
+		}
+
+		if strings.ContainsAny(pattern, "*?[") {
+			commands = append(commands, fmt.Sprintf("if ( set -- %s; [ -e \"$1\" ] || [ -L \"$1\" ] ); then for path in %s; do cp -rf -- \"$path\" %s; done; fi", sourcePattern, sourcePattern, target))
+			continue
+		}
+
+		commands = append(commands, fmt.Sprintf("if [ -e %s ] || [ -L %s ]; then cp -rf -- %s %s; fi", sourceCheck, sourceCheck, sourceCopy, target))
+	}
+
+	return commands
+}
+
+func shellPatternFromBase(base, pattern string) string {
+	cleanPattern := filepath.Clean(pattern)
+	if filepath.IsAbs(cleanPattern) {
+		return cleanPattern
+	}
+
+	return filepath.Join(base, cleanPattern)
+}
+
+func prependEnvironmentDirectives(command string, proc *Process, params map[string]any) (string, error) {
+	if proc == nil {
+		return command, nil
+	}
+
+	prefixes := make([]string, 0, 2)
+	condaEnv, err := resolveDirectiveString("conda", proc.Directives["conda"], params, "", nil)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(condaEnv) != "" {
+		prefixes = append(prefixes, "conda activate "+condaEnv)
+	}
+
+	spackPkg, err := resolveDirectiveString("spack", proc.Directives["spack"], params, "", nil)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(spackPkg) != "" {
+		prefixes = append(prefixes, "spack load "+spackPkg)
+	}
+
+	if len(prefixes) == 0 {
+		return command, nil
+	}
+
+	prefixes = append(prefixes, command)
+
+	return strings.Join(prefixes, " && "), nil
+}
+
+func resolveStoreDirDirective(proc *Process, params map[string]any, launchCwd string) (string, bool, error) {
+	if proc == nil {
+		return "", false, nil
+	}
+
+	storeDir, err := resolveDirectiveString("storeDir", proc.Directives["storeDir"], params, "", nil)
+	if err != nil {
+		return "", false, err
+	}
+	storeDir = strings.TrimSpace(storeDir)
+	if storeDir == "" {
+		return "", false, nil
+	}
+	if filepath.IsAbs(storeDir) {
+		return filepath.Clean(storeDir), true, nil
+	}
+
+	return filepath.Clean(filepath.Join(launchCwd, storeDir)), true, nil
+}
+
+func wrapStoreDirCommand(command string, proc *Process, bindings []string, params map[string]any, cwd, storeDir string) string {
+	patterns := outputPatterns(proc, bindings, params)
+	existenceCheck := outputExistenceCondition(patterns, storeDir)
+	if existenceCheck == "" {
+		existenceCheck = "false"
+	}
+
+	copyFromStore := copyOutputCommands(patterns, storeDir, ensureTrailingSeparator(cwd), false, false)
+	if len(copyFromStore) == 0 {
+		copyFromStore = []string{":"}
+	}
+	copyToStore := copyOutputCommands(patterns, cwd, ensureTrailingSeparator(storeDir), false, false)
+	if len(copyToStore) == 0 {
+		copyToStore = []string{":"}
+	}
+
+	lines := []string{
+		fmt.Sprintf("mkdir -p %s", shellQuote(ensureTrailingSeparator(storeDir))),
+		fmt.Sprintf("if %s; then", existenceCheck),
+	}
+	lines = append(lines, copyFromStore...)
+	lines = append(lines,
+		"else",
+		command,
+		"nf_status=$?",
+		"if [ \"$nf_status\" -eq 0 ]; then",
+	)
+	lines = append(lines, copyToStore...)
+	lines = append(lines,
+		"fi",
+		"(exit \"$nf_status\")",
+		"fi",
+	)
+
+	return strings.Join(lines, "\n")
+}
+
+func outputExistenceCondition(patterns []string, storeDir string) string {
+	checks := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		storePattern := shellPatternFromBase(storeDir, pattern)
+		if strings.ContainsAny(pattern, "*?[") {
+			checks = append(checks, fmt.Sprintf("( set -- %s; [ -e \"$1\" ] || [ -L \"$1\" ] )", storePattern))
+			continue
+		}
+
+		checks = append(checks, fmt.Sprintf("[ -e %s ]", shellQuote(storePattern)))
+	}
+
+	return strings.Join(checks, " && ")
 }
 
 func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
@@ -665,6 +1128,70 @@ func cloneSelectors(selectors []*ProcessSelector) []*ProcessSelector {
 	copy(clone, selectors)
 
 	return clone
+}
+
+func workflowParamDefaults(wf *Workflow) (map[string]any, error) {
+	if wf == nil || len(wf.ParamBlock) == 0 {
+		return nil, nil
+	}
+
+	defaults := map[string]any{}
+	for _, decl := range wf.ParamBlock {
+		if decl == nil || decl.Default == nil {
+			continue
+		}
+
+		value, err := EvalExpr(decl.Default, exprVarsWithTask(defaults, nil))
+		if err != nil {
+			fallback, ok := workflowParamDefaultFallback(decl.Default)
+			if !ok {
+				return nil, fmt.Errorf("evaluate workflow param default %q: %w", decl.Name, err)
+			}
+
+			warnf("nextflowdsl: unable to evaluate workflow param default %q; using expression-text fallback %q\n", decl.Name, fallback)
+			value = fallback
+		}
+		if unsupported, ok := value.(UnsupportedExpr); ok {
+			warnf("nextflowdsl: unable to evaluate workflow param default %q; using expression-text fallback %q\n", decl.Name, unsupported.Text)
+			value = unsupported.Text
+		}
+
+		defaults = MergeParams(defaults, paramValueAtPath(decl.Name, normalizeParamValue(value)))
+	}
+
+	if len(defaults) == 0 {
+		return nil, nil
+	}
+
+	return defaults, nil
+}
+
+func workflowParamDefaultFallback(expr Expr) (string, bool) {
+	switch typed := expr.(type) {
+	case NewExpr:
+		return renderNewExpr(typed), true
+	default:
+		return "", false
+	}
+}
+
+func paramValueAtPath(path string, value any) map[string]any {
+	parts := strings.Split(path, ".")
+	root := map[string]any{}
+	current := root
+
+	for index, part := range parts {
+		if index == len(parts)-1 {
+			current[part] = value
+			break
+		}
+
+		next := map[string]any{}
+		current[part] = next
+		current = next
+	}
+
+	return root
 }
 
 func translateConditionalBlock(
@@ -920,6 +1447,402 @@ func hasDynamicOutputsForStage(proc *Process, outputPatterns []string) bool {
 	return false
 }
 
+func workflowBlockStageRepGroups(block *WorkflowBlock, scope []string, translated map[string]translatedCall) []string {
+	if block == nil {
+		return nil
+	}
+
+	repGroups := []string{}
+	for _, call := range block.Calls {
+		repGroups = appendUniqueStrings(repGroups, translatedCallRepGroups(scopedTargetKey(scope, call.Target), translated))
+	}
+
+	for index, ifBlock := range block.Conditions {
+		repGroups = appendUniqueStrings(repGroups, workflowConditionStageRepGroups(ifBlock, index, scope, translated))
+	}
+
+	return repGroups
+}
+
+func translatedCallRepGroups(key string, translated map[string]translatedCall) []string {
+	stage, ok := translated[key]
+	if !ok {
+		return nil
+	}
+
+	return translatedStageRepGroups(stage)
+}
+
+func translatedStageRepGroups(stage translatedCall) []string {
+	repGroups := cloneStrings(stage.repGroups)
+	if len(repGroups) == 0 && stage.repGroup != "" {
+		repGroups = []string{stage.repGroup}
+	}
+
+	return repGroups
+}
+
+func workflowConditionStageRepGroups(ifBlock *IfBlock, index int, scope []string, translated map[string]translatedCall) []string {
+	branches := workflowConditionBranches(ifBlock, index)
+	repGroups := []string{}
+	for _, branch := range branches {
+		branchScope := append(append([]string{}, scope...), branch.scopeName)
+		for _, call := range branch.calls {
+			repGroups = appendUniqueStrings(repGroups, translatedCallRepGroups(scopedTargetKey(scope, call.Target), translated))
+			repGroups = appendUniqueStrings(repGroups, translatedCallRepGroups(scopedTargetKey(branchScope, call.Target), translated))
+		}
+	}
+
+	return repGroups
+}
+
+func translateLifecycleHooks(
+	block *WorkflowBlock,
+	scope []string,
+	translated map[string]translatedCall,
+	params map[string]any,
+	tc TranslateConfig,
+	result *TranslateResult,
+) error {
+	if block == nil {
+		return nil
+	}
+
+	stageDepGroups := workflowBlockStageDepGroups(block, scope, translated)
+	stageRepGroups := workflowBlockStageRepGroups(block, scope, translated)
+
+	if strings.TrimSpace(block.OnComplete) != "" {
+		job, err := newWorkflowOnCompleteJob(block.OnComplete, stageDepGroups, scope, params, tc)
+		if err != nil {
+			return err
+		}
+		result.Jobs = append(result.Jobs, job)
+	}
+
+	if strings.TrimSpace(block.OnError) != "" {
+		job, err := newWorkflowOnErrorJob(block.OnError, stageRepGroups, scope, params, tc)
+		if err != nil {
+			return err
+		}
+		result.Jobs = append(result.Jobs, job)
+	}
+
+	return nil
+}
+
+func workflowBlockStageDepGroups(block *WorkflowBlock, scope []string, translated map[string]translatedCall) []string {
+	if block == nil {
+		return nil
+	}
+
+	depGroups := []string{}
+	for _, call := range block.Calls {
+		depGroups = appendUniqueStrings(depGroups, translatedCallDepGroups(scopedTargetKey(scope, call.Target), translated))
+	}
+
+	for index, ifBlock := range block.Conditions {
+		depGroups = appendUniqueStrings(depGroups, workflowConditionStageDepGroups(ifBlock, index, scope, translated))
+	}
+
+	return depGroups
+}
+
+func translatedCallDepGroups(key string, translated map[string]translatedCall) []string {
+	stage, ok := translated[key]
+	if !ok {
+		return nil
+	}
+
+	depGroups := cloneStrings(stage.depGroups)
+	if len(depGroups) == 0 && stage.depGroup != "" {
+		depGroups = []string{stage.depGroup}
+	}
+
+	return depGroups
+}
+
+func workflowConditionStageDepGroups(ifBlock *IfBlock, index int, scope []string, translated map[string]translatedCall) []string {
+	branches := workflowConditionBranches(ifBlock, index)
+	depGroups := []string{}
+	for _, branch := range branches {
+		branchScope := append(append([]string{}, scope...), branch.scopeName)
+		for _, call := range branch.calls {
+			depGroups = appendUniqueStrings(depGroups, translatedCallDepGroups(scopedTargetKey(scope, call.Target), translated))
+			depGroups = appendUniqueStrings(depGroups, translatedCallDepGroups(scopedTargetKey(branchScope, call.Target), translated))
+		}
+	}
+
+	return depGroups
+}
+
+func newWorkflowOnCompleteJob(rawBody string, stageDepGroups []string, scope []string, params map[string]any, tc TranslateConfig) (*jobqueue.Job, error) {
+	body, err := translateWorkflowHookBody(rawBody, params)
+	if err != nil {
+		return nil, err
+	}
+
+	job := &jobqueue.Job{
+		Cmd:          wrapWorkflowHookCommand(body),
+		Cwd:          deterministicCwd(tc.Cwd, tc.RunID, scope, "onComplete"),
+		CwdMatters:   true,
+		RepGroup:     scopedRepGroup(tc.WorkflowName, tc.RunID, scope, "onComplete"),
+		ReqGroup:     "nf.workflow.onComplete",
+		DepGroups:    []string{scopedDepGroup(tc.RunID, scope, "onComplete")},
+		Dependencies: depGroupsToDependencies(stageDepGroups),
+		Requirements: defaultWorkflowHookRequirements(),
+		Override:     0,
+	}
+	applyCaptureCleanupBehaviour(job)
+
+	return job, nil
+}
+
+func translateWorkflowHookBody(body string, params map[string]any) (string, error) {
+	resolved, err := SubstituteParams(strings.TrimSpace(body), params)
+	if err != nil {
+		return "", err
+	}
+
+	if resolved == "" {
+		return ":", nil
+	}
+
+	lines := strings.Split(resolved, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "println ") {
+			lines[index] = strings.Replace(line, "println ", "echo ", 1)
+			continue
+		}
+
+		lines[index] = strings.TrimRight(line, " \t\r")
+	}
+
+	translatedBody := strings.TrimSpace(strings.Join(lines, "\n"))
+	if translatedBody == "" {
+		return ":", nil
+	}
+
+	return translatedBody, nil
+}
+
+func wrapWorkflowHookCommand(body string) string {
+	body = strings.TrimRight(strings.TrimSpace(body), " \t\r")
+	if body == "" {
+		body = ":"
+	}
+
+	if strings.HasSuffix(body, "\n") {
+		return fmt.Sprintf("{ %s} > %s 2> %s", body, nfStdoutFile, nfStderrFile)
+	}
+
+	return fmt.Sprintf("{ %s; } > %s 2> %s", body, nfStdoutFile, nfStderrFile)
+}
+
+func defaultWorkflowHookRequirements() *scheduler.Requirements {
+	return &scheduler.Requirements{
+		Cores:    defaultCPUs,
+		CoresSet: true,
+		RAM:      defaultMemory,
+		Time:     time.Duration(defaultTime) * time.Minute,
+		Disk:     defaultDisk,
+		DiskSet:  true,
+	}
+}
+
+func newWorkflowOnErrorJob(rawBody string, stageRepGroups []string, scope []string, params map[string]any, tc TranslateConfig) (*jobqueue.Job, error) {
+	body, err := translateWorkflowHookBody(rawBody, params)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := buildWorkflowOnErrorCommand(body, stageRepGroups, scope, tc)
+	job := &jobqueue.Job{
+		Cmd:          cmd,
+		Cwd:          deterministicCwd(tc.Cwd, tc.RunID, scope, "onError"),
+		CwdMatters:   true,
+		RepGroup:     scopedRepGroup(tc.WorkflowName, tc.RunID, scope, "onError"),
+		ReqGroup:     "nf.workflow.onError",
+		DepGroups:    []string{scopedDepGroup(tc.RunID, scope, "onError")},
+		Requirements: defaultWorkflowHookRequirements(),
+		Override:     0,
+	}
+	applyCaptureCleanupBehaviour(job)
+
+	return job, nil
+}
+
+func buildWorkflowOnErrorCommand(body string, stageRepGroups []string, scope []string, tc TranslateConfig) string {
+	helperPath := ".wr-onerror-poll.sh"
+	helper := buildWorkflowOnErrorHelperScript(body, stageRepGroups, helperPath, scope, tc)
+	setup := strings.Join([]string{
+		fmt.Sprintf("cat <<'WR_NF_ONERROR' > %s", helperPath),
+		helper,
+		"WR_NF_ONERROR",
+		fmt.Sprintf("chmod +x %s", helperPath),
+		fmt.Sprintf("bash ./%s", helperPath),
+	}, "\n")
+
+	return wrapWorkflowHookCommand(setup)
+}
+
+func buildWorkflowOnErrorHelperScript(body string, stageRepGroups []string, helperPath string, scope []string, tc TranslateConfig) string {
+	jobCwd := deterministicCwd(tc.Cwd, tc.RunID, scope, "onError")
+	repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, "onError")
+	reqGroup := "nf.workflow.onError"
+	statusCmd := workflowHookStatusCommand("", stageRepGroups)
+	resubmitCmd := strings.Join([]string{
+		`next_limit=$(date -d '+1 minute' '+datetime < %Y-%m-%d %H:%M:%S')`,
+		fmt.Sprintf("wr add --cwd %s --cwd_matters --rep_grp %s --req_grp %s --limit_grps \"$next_limit\" %s", shellQuote(jobCwd), shellQuote(repGroup), shellQuote(reqGroup), shellQuote("bash ./"+helperPath)),
+	}, "\n        ")
+
+	bodyLines := indentLines(body, "    ")
+	if len(bodyLines) == 0 {
+		bodyLines = []string{"    :"}
+	}
+
+	lines := []string{
+		"#!/usr/bin/env bash",
+		"set -euo pipefail",
+		fmt.Sprintf("status_output=$( %s )", statusCmd),
+		`failure_count=$(printf '%s\n' "$status_output" | awk -F '\t' '$2 == "buried" || $2 == "lost" {count++} END {print count+0}')`,
+		`active_count=$(printf '%s\n' "$status_output" | awk -F '\t' '$2 != "" && $2 != "buried" && $2 != "complete" && $2 != "lost" {count++} END {print count+0}')`,
+		`if [ "$failure_count" -gt 0 ]; then`,
+	}
+	lines = append(lines, bodyLines...)
+	lines = append(lines,
+		"else",
+		`    if [ "$active_count" -gt 0 ]; then`,
+		"        "+resubmitCmd,
+		"    fi",
+		"fi",
+	)
+
+	return strings.Join(lines, "\n")
+}
+
+func workflowHookStatusCommand(flag string, stageRepGroups []string) string {
+	commands := make([]string, 0, len(stageRepGroups))
+	for _, repGroup := range stageRepGroups {
+		cmd := "wr status"
+		if flag != "" {
+			cmd += " " + flag
+		}
+
+		commands = append(commands, fmt.Sprintf("%s -i %s -o plain 2>/dev/null || true", cmd, shellQuote(repGroup)))
+	}
+	if len(commands) == 0 {
+		return "printf ''"
+	}
+
+	return fmt.Sprintf("{\n%s\n}", strings.Join(commands, "\n"))
+}
+
+func indentLines(body string, indent string) []string {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return nil
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	indented := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			indented = append(indented, indent)
+			continue
+		}
+
+		indented = append(indented, indent+strings.TrimSpace(line))
+	}
+
+	return indented
+}
+
+func newProcessMaxErrorsJob(proc *Process, repGroup string, scope []string, params map[string]any, tc TranslateConfig, totalJobs int) (*jobqueue.Job, error) {
+	if proc == nil || totalJobs == 0 {
+		return nil, nil
+	}
+
+	maxErrors, err := resolveDirectiveInt("maxErrors", proc.Directives["maxErrors"], params, 0, defaultDirectiveTask())
+	if err != nil {
+		return nil, err
+	}
+	if maxErrors <= 0 {
+		return nil, nil
+	}
+
+	helperScope := append(append([]string{}, scope...), proc.Name)
+	cmd := buildProcessMaxErrorsCommand(repGroup, proc.Name, maxErrors, helperScope, tc)
+	job := &jobqueue.Job{
+		Cmd:          cmd,
+		Cwd:          deterministicCwd(tc.Cwd, tc.RunID, helperScope, "maxErrors"),
+		CwdMatters:   true,
+		RepGroup:     scopedRepGroup(tc.WorkflowName, tc.RunID, helperScope, "maxErrors"),
+		ReqGroup:     fmt.Sprintf("nf.%s.maxErrors", proc.Name),
+		DepGroups:    []string{scopedDepGroup(tc.RunID, helperScope, "maxErrors")},
+		Requirements: defaultWorkflowHookRequirements(),
+		Override:     0,
+	}
+	applyCaptureCleanupBehaviour(job)
+
+	return job, nil
+}
+
+func buildProcessMaxErrorsCommand(processRepGroup, processName string, maxErrors int, scope []string, tc TranslateConfig) string {
+	helperPath := ".wr-maxerrors-poll.sh"
+	helper := buildProcessMaxErrorsHelperScript(processRepGroup, processName, maxErrors, helperPath, scope, tc)
+	setup := strings.Join([]string{
+		fmt.Sprintf("cat <<'WR_NF_MAXERRORS' > %s", helperPath),
+		helper,
+		"WR_NF_MAXERRORS",
+		fmt.Sprintf("chmod +x %s", helperPath),
+		fmt.Sprintf("bash ./%s", helperPath),
+	}, "\n")
+
+	return wrapWorkflowHookCommand(setup)
+}
+
+func buildProcessMaxErrorsHelperScript(processRepGroup, processName string, maxErrors int, helperPath string, scope []string, tc TranslateConfig) string {
+	jobCwd := deterministicCwd(tc.Cwd, tc.RunID, scope, "maxErrors")
+	repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, "maxErrors")
+	reqGroup := fmt.Sprintf("nf.%s.maxErrors", processName)
+	statusCmd := fmt.Sprintf("wr status -i %s -o plain 2>/dev/null || true", shellQuote(processRepGroup))
+	resubmitCmd := strings.Join([]string{
+		`next_limit=$(date -d '+1 minute' '+datetime < %Y-%m-%d %H:%M:%S')`,
+		fmt.Sprintf("wr add --cwd %s --cwd_matters --rep_grp %s --req_grp %s --limit_grps \"$next_limit\" %s", shellQuote(jobCwd), shellQuote(repGroup), shellQuote(reqGroup), shellQuote("bash ./"+helperPath)),
+	}, "\n        ")
+
+	lines := []string{
+		"#!/usr/bin/env bash",
+		"set -euo pipefail",
+		fmt.Sprintf("status_output=$( %s )", statusCmd),
+		`buried_count=$(printf '%s\n' "$status_output" | awk -F '\t' '$2 == "buried" {count++} END {print count+0}')`,
+		`active_count=$(printf '%s\n' "$status_output" | awk -F '\t' '$2 != "" && $2 != "buried" && $2 != "complete" && $2 != "lost" {count++} END {print count+0}')`,
+		fmt.Sprintf(`if [ "$buried_count" -gt %d ]; then`, maxErrors),
+		`    while IFS=$'\t' read -r job_id state; do`,
+		`        case "$state" in`,
+		`            running)`,
+		`                wr kill -i "$job_id" -y 2>/dev/null || true`,
+		`                ;;`,
+		`            lost)`,
+		`                wr kill --confirmdead -i "$job_id" -y 2>/dev/null || true`,
+		`                ;;`,
+		`            delayed|dependent|ready|reserved)`,
+		`                wr remove -i "$job_id" -y 2>/dev/null || true`,
+		`                ;;`,
+		`        esac`,
+		`    done <<< "$status_output"`,
+		`    if [ "$active_count" -gt 0 ]; then`,
+		"        " + resubmitCmd,
+		`    fi`,
+		`elif [ "$active_count" -gt 0 ]; then`,
+		"    " + resubmitCmd,
+		"fi",
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 type emittedOutput struct {
 	outputPaths []string
 	items       []channelItem
@@ -1102,10 +2025,12 @@ func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job, incomp
 		}
 
 		sort.Slice(matchedJobs, func(i, j int) bool {
-			leftParent, leftIndex, leftIndexed := indexedCwd(matchedJobs[i].Cwd)
-			rightParent, rightIndex, rightIndexed := indexedCwd(matchedJobs[j].Cwd)
-			if leftIndexed && rightIndexed && leftParent == rightParent && leftIndex != rightIndex {
-				return leftIndex < rightIndex
+			leftParent, leftIndexes, leftIndexed := indexedCwdOrder(matchedJobs[i].Cwd)
+			rightParent, rightIndexes, rightIndexed := indexedCwdOrder(matchedJobs[j].Cwd)
+			if leftIndexed && rightIndexed && leftParent == rightParent {
+				if cmp := compareIndexedSuffixes(leftIndexes, rightIndexes); cmp != 0 {
+					return cmp < 0
+				}
 			}
 			if matchedJobs[i].Cwd != matchedJobs[j].Cwd {
 				return matchedJobs[i].Cwd < matchedJobs[j].Cwd
@@ -1123,12 +2048,54 @@ func CompletedJobsForPending(pending *PendingStage, jobs []*jobqueue.Job, incomp
 			completed = append(completed, CompletedJob{
 				RepGrp:      repGrp,
 				OutputPaths: outputPaths,
+				DepGroups:   cloneStrings(job.DepGroups),
 				ExitCode:    job.Exitcode,
 			})
 		}
 	}
 
 	return completed, true, nil
+}
+
+func indexedCwdOrder(cwd string) (string, []int, bool) {
+	cleaned := filepath.Clean(cwd)
+	parts := strings.Split(filepath.Base(cleaned), "_")
+	indexes := make([]int, 0, len(parts))
+	for _, part := range parts {
+		index, err := strconv.Atoi(part)
+		if err != nil {
+			return "", nil, false
+		}
+
+		indexes = append(indexes, index)
+	}
+
+	return filepath.Dir(cleaned), indexes, true
+}
+
+func compareIndexedSuffixes(left, right []int) int {
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+
+	for index := range limit {
+		if left[index] < right[index] {
+			return -1
+		}
+		if left[index] > right[index] {
+			return 1
+		}
+	}
+
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+
+	return 0
 }
 
 // TranslateResult holds the output of Translate.
@@ -1141,6 +2108,7 @@ type TranslateResult struct {
 type CompletedJob struct {
 	RepGrp      string
 	OutputPaths []string
+	DepGroups   []string
 	ExitCode    int
 }
 
@@ -1148,6 +2116,7 @@ type translatedCall struct {
 	depGroup      string
 	depGroups     []string
 	repGroup      string
+	repGroups     []string
 	baseCwd       string
 	outputPaths   []string
 	emitOutputs   map[string]emittedOutput
@@ -1158,6 +2127,7 @@ type translatedCall struct {
 
 func cloneTranslatedCall(value translatedCall) translatedCall {
 	value.depGroups = cloneStrings(value.depGroups)
+	value.repGroups = cloneStrings(value.repGroups)
 	value.outputPaths = cloneStrings(value.outputPaths)
 	value.emitOutputs = cloneEmittedOutputs(value.emitOutputs)
 	value.items = cloneChannelItems(value.items)
@@ -1169,6 +2139,9 @@ type bindingSet struct {
 	bindings  []string
 	values    []any
 	depGroups []string
+	regularIx int
+	eachIx    int
+	hasEach   bool
 }
 
 type resolvedArg struct {
@@ -1176,8 +2149,15 @@ type resolvedArg struct {
 	fanout bool
 }
 
-func mergeTranslateParams(cfg *Config, tc TranslateConfig) map[string]any {
+func mergeTranslateParams(wf *Workflow, cfg *Config, tc TranslateConfig) (map[string]any, error) {
 	var sources []map[string]any
+	workflowDefaults, err := workflowParamDefaults(wf)
+	if err != nil {
+		return nil, err
+	}
+	if len(workflowDefaults) > 0 {
+		sources = append(sources, workflowDefaults)
+	}
 	if cfg != nil && len(cfg.Params) > 0 {
 		sources = append(sources, cfg.Params)
 	}
@@ -1186,14 +2166,25 @@ func mergeTranslateParams(cfg *Config, tc TranslateConfig) map[string]any {
 			sources = append(sources, profile.Params)
 		}
 	}
-	if len(tc.Params) > 0 {
+	if tc.Params != nil {
 		sources = append(sources, tc.Params)
 	}
 	if len(sources) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	return MergeParams(sources...)
+	return MergeParams(sources...), nil
+}
+
+func workflowPollingLimitGroup(t time.Time) string {
+	return fmt.Sprintf("datetime < %s", t.Format(time.DateTime))
+}
+
+func scopedRepGroupPrefix(workflowName, runID string, scope []string) string {
+	parts := []string{"nf", repGroupToken(workflowName), repGroupToken(runID)}
+	parts = append(parts, scope...)
+
+	return strings.Join(parts, ".")
 }
 
 func validateTranslateProfile(cfg *Config, profileName string) error {
@@ -1244,7 +2235,10 @@ func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult,
 		return nil, err
 	}
 
-	params := mergeTranslateParams(cfg, tc)
+	params, err := mergeTranslateParams(wf, cfg, tc)
+	if err != nil {
+		return nil, err
+	}
 	defaults := effectiveDefaults(cfg, tc.Profile)
 	selectors := effectiveSelectors(cfg, tc.Profile)
 	translated := make(map[string]translatedCall, len(wf.EntryWF.Calls))
@@ -1266,7 +2260,7 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 	}
 
 	params := cloneParams(pending.params)
-	if len(tc.Params) > 0 {
+	if tc.Params != nil {
 		params = MergeParams(params, tc.Params)
 	}
 
@@ -1276,6 +2270,7 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 		completedItemsByRepGrp[job.RepGrp] = append(completedItemsByRepGrp[job.RepGrp], CompletedJob{
 			RepGrp:      job.RepGrp,
 			OutputPaths: cloneStrings(job.OutputPaths),
+			DepGroups:   cloneStrings(job.DepGroups),
 			ExitCode:    job.ExitCode,
 		})
 
@@ -1284,12 +2279,14 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 			completedByRepGrp[job.RepGrp] = CompletedJob{
 				RepGrp:      job.RepGrp,
 				OutputPaths: cloneStrings(job.OutputPaths),
+				DepGroups:   cloneStrings(job.DepGroups),
 				ExitCode:    job.ExitCode,
 			}
 			continue
 		}
 
 		existing.OutputPaths = appendUniqueStrings(existing.OutputPaths, job.OutputPaths)
+		existing.DepGroups = appendUniqueStrings(existing.DepGroups, job.DepGroups)
 		if existing.ExitCode == 0 && job.ExitCode != 0 {
 			existing.ExitCode = job.ExitCode
 		}
@@ -1326,6 +2323,9 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 		stage.emitOutputs = nil
 		for index, match := range matches {
 			itemDeps := cloneStrings(deps)
+			if len(match.DepGroups) > 0 {
+				itemDeps = cloneStrings(match.DepGroups)
+			}
 			if len(deps) == len(matches) {
 				itemDeps = []string{deps[index]}
 			}
@@ -1465,7 +2465,10 @@ func bindSubworkflowOutputs(
 		return nil
 	}
 
-	synthetic := translatedCall{emitOutputs: map[string]emittedOutput{}}
+	synthetic := translatedCall{
+		emitOutputs: map[string]emittedOutput{},
+		repGroups:   workflowBlockStageRepGroups(subwf.Body, nextScope, translated),
+	}
 	for _, emit := range subwf.Body.Emit {
 		if emit == nil {
 			continue
@@ -1557,6 +2560,10 @@ func translateBlock(
 		}
 	}
 
+	if err := translateLifecycleHooks(block, scope, translated, params, tc, result); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -1588,7 +2595,9 @@ func translateProcessCall(
 	for index, bindingSet := range bindingSets {
 		cwd := deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
 		depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
-		if indexed {
+		if bindingSet.hasEach {
+			cwd = deterministicEachCwd(tc.Cwd, tc.RunID, scope, proc.Name, bindingSet.regularIx, bindingSet.eachIx)
+		} else if indexed {
 			cwd = deterministicIndexedCwd(tc.Cwd, tc.RunID, scope, proc.Name, index)
 			depGroup = scopedIndexedDepGroup(tc.RunID, scope, proc.Name, index)
 		}
@@ -1609,14 +2618,18 @@ func translateProcessCall(
 		}
 		job.Requirements = requirements
 
-		applyContainer(job, proc, defaults, tc.ContainerRuntime)
+		if err = applyContainer(job, proc, defaults, tc.ContainerRuntime, params); err != nil {
+			return nil, translatedCall{}, err
+		}
 		applyMaxForks(job, proc)
-		applyErrorStrategy(job, proc)
-		if err = applyEnv(job, proc, defaults); err != nil {
+		if err = applyErrorStrategy(job, proc, params); err != nil {
+			return nil, translatedCall{}, err
+		}
+		if err = applyEnv(job, proc, defaults, params); err != nil {
 			return nil, translatedCall{}, err
 		}
 
-		cmd, cmdErr := buildCommand(proc, bindingSet.bindings, params)
+		cmd, cmdErr := buildCommand(proc, bindingSet.bindings, params, cwd, tc.Cwd)
 		if cmdErr != nil {
 			return nil, translatedCall{}, cmdErr
 		}
@@ -1631,11 +2644,19 @@ func translateProcessCall(
 		if stage.depGroup == "" {
 			stage.depGroup = depGroup
 		}
-		stage.depGroups = append(stage.depGroups, depGroup)
+		stage.depGroups = appendUniqueStrings(stage.depGroups, []string{depGroup})
 		paths := outputPaths(proc, bindingSet.bindings, params, cwd)
 		stage.outputPaths = append(stage.outputPaths, paths...)
 		stage.items = append(stage.items, channelItem{value: outputValue(proc, bindingSet.bindings, params, cwd, paths), depGroups: []string{depGroup}})
 		stage.emitOutputs = mergeEmittedOutputs(stage.emitOutputs, emitOutputsForProcess(proc, bindingSet.bindings, params, cwd, depGroup))
+	}
+
+	maxErrorsJob, err := newProcessMaxErrorsJob(proc, repGroup, scope, params, tc, len(jobs))
+	if err != nil {
+		return nil, translatedCall{}, err
+	}
+	if maxErrorsJob != nil {
+		jobs = append(jobs, maxErrorsJob)
 	}
 
 	return jobs, stage, nil
@@ -1719,10 +2740,14 @@ func outputVars(proc *Process, bindings []string, params map[string]any) map[str
 
 func resolveBindings(proc *Process, call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
 	if call == nil || len(call.Args) == 0 {
-		return []bindingSet{{}}, nil
+		return []bindingSet{{regularIx: 0}}, nil
 	}
 
-	plans := []bindingSet{{}}
+	plans := []bindingSet{{regularIx: 0}}
+	eachArgs := make([]struct {
+		decl     *Declaration
+		resolved resolvedArg
+	}, 0, len(call.Args))
 
 	for index, arg := range call.Args {
 		decl := inputDeclarationForArg(proc, index)
@@ -1732,6 +2757,14 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 		}
 		if resolved.fanout && len(resolved.items) == 0 {
 			return nil, nil
+		}
+		if decl != nil && decl.Each {
+			eachArgs = append(eachArgs, struct {
+				decl     *Declaration
+				resolved resolvedArg
+			}{decl: decl, resolved: resolved})
+
+			continue
 		}
 
 		if resolved.fanout && len(resolved.items) > 1 {
@@ -1746,6 +2779,7 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 					expanded[itemIndex] = bindingSet{
 						bindings:  append(cloneStrings(plans[0].bindings), bindings...),
 						depGroups: cloneStrings(plans[0].depGroups),
+						regularIx: itemIndex,
 					}
 					expanded[itemIndex].depGroups = appendUniqueStrings(expanded[itemIndex].depGroups, item.depGroups)
 				}
@@ -1790,12 +2824,58 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 		}
 	}
 
+	if len(plans) == 0 {
+		return nil, nil
+	}
+
+	for _, eachArg := range eachArgs {
+		if eachArg.resolved.fanout && len(eachArg.resolved.items) == 0 {
+			return nil, nil
+		}
+
+		expanded := make([]bindingSet, 0, len(plans)*maxInt(1, len(eachArg.resolved.items)))
+		items := eachArg.resolved.items
+		if len(items) == 0 {
+			items = []bindingSet{{}}
+		}
+
+		for _, plan := range plans {
+			for _, item := range items {
+				bindings, bindErr := bindingsForInputDeclaration(eachArg.decl, item)
+				if bindErr != nil {
+					return nil, bindErr
+				}
+
+				nextPlan := bindingSet{
+					bindings:  append(cloneStrings(plan.bindings), bindings...),
+					depGroups: cloneStrings(plan.depGroups),
+					regularIx: plan.regularIx,
+					hasEach:   true,
+				}
+				nextPlan.depGroups = appendUniqueStrings(nextPlan.depGroups, item.depGroups)
+				expanded = append(expanded, nextPlan)
+			}
+		}
+
+		plans = expanded
+	}
+
+	eachIndexByRegular := map[int]int{}
+	for index := range plans {
+		if !plans[index].hasEach {
+			continue
+		}
+
+		plans[index].eachIx = eachIndexByRegular[plans[index].regularIx]
+		eachIndexByRegular[plans[index].regularIx]++
+	}
+
 	return plans, nil
 }
 
 func resolveBindingArg(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) (resolvedArg, error) {
 	switch arg.(type) {
-	case ChanRef, ChannelFactory, ChannelChain, PipeExpr:
+	case ChanRef, NamedChannelRef, ChannelFactory, ChannelChain, PipeExpr:
 		items, err := resolveTranslatedChannelItems(arg, scope, translated, cwd)
 		if err == nil {
 			resolvedItems := make([]bindingSet, 0, len(items))
@@ -1870,6 +2950,8 @@ func resolveArg(arg ChanExpr, scope []string, translated map[string]translatedCa
 		}
 
 		return cloneStrings(stage.outputPaths), deps, nil
+	case NamedChannelRef:
+		return resolveArg(expr.Source, scope, translated)
 	case ChannelChain:
 		return resolveArg(expr.Source, scope, translated)
 	case PipeExpr:
@@ -1986,7 +3068,7 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*Pr
 	defaults = MatchSelectors(proc, defaults, selectors)
 
 	req := &scheduler.Requirements{}
-	task := map[string]any{"attempt": 1}
+	task := defaultDirectiveTask()
 
 	cpus, err := resolveDirectiveInt("cpus", proc.Directives["cpus"], params, intDefault(defaults.Cpus, defaultCPUs), task)
 	if err != nil {
@@ -2016,6 +3098,30 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*Pr
 	req.Disk = disk
 	req.DiskSet = true
 
+	queue, err := resolveDirectiveString("queue", proc.Directives["queue"], params, "", task)
+	if err != nil {
+		return nil, err
+	}
+	if queue != "" {
+		if req.Other == nil {
+			req.Other = make(map[string]string)
+		}
+		req.Other["scheduler_queue"] = queue
+		req.OtherSet = true
+	}
+
+	clusterOptions, err := resolveDirectiveString("clusterOptions", proc.Directives["clusterOptions"], params, "", task)
+	if err != nil {
+		return nil, err
+	}
+	if clusterOptions != "" {
+		if req.Other == nil {
+			req.Other = make(map[string]string)
+		}
+		req.Other["scheduler_misc"] = clusterOptions
+		req.OtherSet = true
+	}
+
 	return req, nil
 }
 
@@ -2023,17 +3129,12 @@ func resolveDirectiveInt(name string, expr any, params map[string]any, fallback 
 	if expr == nil {
 		return fallback, nil
 	}
-	if unsupported, ok := expr.(UnsupportedExpr); ok {
-		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
-		return fallback, nil
-	}
 
-	value, err := EvalExpr(expr, exprVarsWithTask(params, task))
+	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
 	if err != nil {
 		return 0, err
 	}
-	if unsupported, ok := value.(UnsupportedExpr); ok {
-		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
+	if fallbackUsed {
 		return fallback, nil
 	}
 
@@ -2057,13 +3158,26 @@ func intDefault(value, fallback int) int {
 	return fallback
 }
 
-func applyContainer(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults, runtime string) {
+func applyContainer(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults, runtime string, params map[string]any) error {
 	container := proc.Container
+	resolved, err := resolveDirectiveString("container", proc.Directives["container"], params, container, defaultDirectiveTask())
+	if err != nil {
+		return err
+	}
+	container = resolved
 	if container == "" && defaults != nil {
 		container = defaults.Container
 	}
 	if container == "" {
-		return
+		return nil
+	}
+
+	containerOptions, err := resolveDirectiveString("containerOptions", proc.Directives["containerOptions"], params, "", defaultDirectiveTask())
+	if err != nil {
+		return err
+	}
+	if containerOptions != "" {
+		container = strings.TrimSpace(containerOptions + " " + container)
 	}
 
 	switch runtime {
@@ -2072,6 +3186,8 @@ func applyContainer(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults,
 	case "singularity", "apptainer":
 		job.WithSingularity = container
 	}
+
+	return nil
 }
 
 func applyMaxForks(job *jobqueue.Job, proc *Process) {
@@ -2080,8 +3196,13 @@ func applyMaxForks(job *jobqueue.Job, proc *Process) {
 	}
 }
 
-func applyErrorStrategy(job *jobqueue.Job, proc *Process) {
-	switch proc.ErrorStrat {
+func applyErrorStrategy(job *jobqueue.Job, proc *Process, params map[string]any) error {
+	errorStrategy, err := resolveDirectiveString("errorStrategy", proc.Directives["errorStrategy"], params, proc.ErrorStrat, defaultDirectiveTask())
+	if err != nil {
+		return err
+	}
+
+	switch errorStrategy {
 	case "", "terminate":
 		job.Retries = 0
 	case "retry":
@@ -2090,36 +3211,46 @@ func applyErrorStrategy(job *jobqueue.Job, proc *Process) {
 		job.Retries = 0
 		job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{When: jobqueue.OnFailure, Do: jobqueue.Remove})
 	default:
-		warnf("nextflowdsl: unsupported errorStrategy %q, using terminate semantics\n", proc.ErrorStrat)
+		warnf("nextflowdsl: unsupported errorStrategy %q, using terminate semantics\n", errorStrategy)
 		job.Retries = 0
 	}
+
+	return nil
 }
 
-func applyEnv(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults) error {
+func applyEnv(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults, params map[string]any) error {
 	defaultEnvSize := 0
 	if defaults != nil {
 		defaultEnvSize = len(defaults.Env)
 	}
 
-	env := make([]string, 0, len(proc.Env)+defaultEnvSize)
-	seen := map[string]struct{}{}
+	env := make([]string, 0, len(proc.Env)+defaultEnvSize+1)
+	positions := make(map[string]int, len(proc.Env)+defaultEnvSize+1)
 	if defaults != nil {
 		for key, value := range defaults.Env {
+			positions[key] = len(env)
 			env = append(env, key+"="+value)
-			seen[key] = struct{}{}
 		}
 	}
 	for key, value := range proc.Env {
-		if _, ok := seen[key]; ok {
-			for index, entry := range env {
-				if strings.HasPrefix(entry, key+"=") {
-					env[index] = key + "=" + value
-					break
-				}
-			}
+		if index, ok := positions[key]; ok {
+			env[index] = key + "=" + value
 			continue
 		}
+		positions[key] = len(env)
 		env = append(env, key+"="+value)
+	}
+
+	shellCommand, err := resolveShellDirective(proc.Directives["shell"], params)
+	if err != nil {
+		return err
+	}
+	if shellCommand != "" {
+		if index, ok := positions["RunnerExecShell"]; ok {
+			env[index] = "RunnerExecShell=" + shellCommand
+		} else {
+			env = append(env, "RunnerExecShell="+shellCommand)
+		}
 	}
 	if len(env) == 0 {
 		return nil
@@ -2128,48 +3259,35 @@ func applyEnv(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults) error
 	return job.EnvAddOverride(env)
 }
 
-func buildCommand(proc *Process, bindings []string, params map[string]any) (string, error) {
-	script, err := renderScript(proc, bindings, params)
+func buildCommand(proc *Process, bindings []string, params map[string]any, cwd string, launchCwd string) (string, error) {
+	body, err := buildCommandBody(proc, bindings, params)
 	if err != nil {
 		return "", err
 	}
-	bodyParts := make([]string, 0, 3)
-	if proc.BeforeScript != "" {
-		bodyParts = append(bodyParts, proc.BeforeScript)
-	}
-	bodyParts = append(bodyParts, script)
-	if proc.AfterScript != "" {
-		bodyParts = append(bodyParts, proc.AfterScript)
-	}
-	body := strings.Join(bodyParts, "\n")
 
-	inputs := flattenedInputDeclarations(proc)
-	prefixes := make([]string, 0, len(bindings))
-	for index, binding := range bindings {
-		if binding == "" {
-			continue
-		}
-		name := fmt.Sprintf("NF_INPUT_%d", index+1)
-		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
-			name = inputs[index].Name
-		}
-		prefixes = append(prefixes, fmt.Sprintf("export %s=%s", name, shellQuote(binding)))
+	executionCommand := captureCommand(body, nfStdoutFile, nfStderrFile)
+	scratchEnabled, scratchPath, err := resolveScratchDirective(proc, params)
+	if err != nil {
+		return "", err
 	}
-	commandParts := moduleLoadLines(proc.Module)
-	commandParts = append(commandParts, prefixes...)
-	commandParts = append(commandParts, body)
-	if len(commandParts) > 1 {
-		body = strings.Join(commandParts, "\n")
-	}
-	body = strings.TrimRight(body, " \t\r")
-	if strings.TrimSpace(body) == "" {
-		body = ":"
-	}
-	if strings.HasSuffix(body, "\n") {
-		return fmt.Sprintf("{ %s} > %s 2> %s", body, nfStdoutFile, nfStderrFile), nil
+	if scratchEnabled {
+		executionCommand = wrapScratchCommand(body, proc, bindings, params, scratchPath)
 	}
 
-	return fmt.Sprintf("{ %s; } > %s 2> %s", body, nfStdoutFile, nfStderrFile), nil
+	executionCommand, err = prependEnvironmentDirectives(executionCommand, proc, params)
+	if err != nil {
+		return "", err
+	}
+
+	storeDir, storeDirEnabled, err := resolveStoreDirDirective(proc, params, launchCwd)
+	if err != nil {
+		return "", err
+	}
+	if storeDirEnabled {
+		return wrapStoreDirCommand(executionCommand, proc, bindings, params, cwd, storeDir), nil
+	}
+
+	return executionCommand, nil
 }
 
 func shellQuote(value string) string {
@@ -2401,6 +3519,8 @@ func detectPendingArg(arg ChanExpr, scope []string, translated map[string]transl
 		}
 
 		return deps, []string{stage.repGroup}, nil
+	case NamedChannelRef:
+		return detectPendingArg(expr.Source, scope, translated)
 	case ChannelChain:
 		depGrps, repGrps, err := detectPendingArg(expr.Source, scope, translated)
 		if err != nil {
@@ -2508,13 +3628,12 @@ func cloneParams(params map[string]any) map[string]any {
 }
 
 func indexedCwd(cwd string) (string, int, bool) {
-	cleaned := filepath.Clean(cwd)
-	index, err := strconv.Atoi(filepath.Base(cleaned))
-	if err != nil {
+	parent, indexes, ok := indexedCwdOrder(cwd)
+	if !ok || len(indexes) != 1 {
 		return "", 0, false
 	}
 
-	return filepath.Dir(cleaned), index, true
+	return parent, indexes[0], true
 }
 
 func itemBinding(item any) string {

@@ -8,6 +8,55 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestLoadWorkflowFilePreservesImportedEnums(t *testing.T) {
+	Convey("LoadWorkflowFile preserves enum metadata from imported modules", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+		moduleDir := filepath.Join(tempDir, "modules")
+		modulePath := filepath.Join(moduleDir, "helper.nf")
+
+		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte("enum Day { MONDAY, TUESDAY }\nworkflow helper { }\n"), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.Enums, ShouldHaveLength, 1)
+		So(wf.Enums[0].Name, ShouldEqual, "Day")
+		So(wf.Enums[0].Values, ShouldResemble, []string{"MONDAY", "TUESDAY"})
+
+		resolved, evalErr := EvalExpr(VarExpr{Root: "Day", Path: "MONDAY"}, bindWorkflowEnumValues(nil, wf))
+		So(evalErr, ShouldBeNil)
+		So(resolved, ShouldEqual, "MONDAY")
+	})
+}
+
+func TestLoadWorkflowFilePreservesImportedWorkflowMetadata(t *testing.T) {
+	Convey("LoadWorkflowFile preserves imported workflow metadata added for strict parsing", t, func() {
+		tempDir := t.TempDir()
+		workflowPath := filepath.Join(tempDir, "main.nf")
+		moduleDir := filepath.Join(tempDir, "modules")
+		modulePath := filepath.Join(moduleDir, "helper.nf")
+
+		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte("output { samples { path 'results/*.txt' } }\nparams { input = '/data/default.txt' }\nrecord Sample { id: String; reads: Path }\nworkflow helper {\npublish:\nout = helper.out\nonComplete:\nprintln 'done'\nonError:\nprintln 'failed'\n}\n"), 0o644), ShouldBeNil)
+
+		wf, err := LoadWorkflowFile(workflowPath, nil)
+		So(err, ShouldBeNil)
+		So(wf.OutputBlock, ShouldContainSubstring, "results/*.txt")
+		So(wf.ParamBlock, ShouldHaveLength, 1)
+		So(wf.ParamBlock[0].Name, ShouldEqual, "input")
+		So(wf.Records, ShouldHaveLength, 1)
+		So(wf.Records[0].Name, ShouldEqual, "Sample")
+		So(wf.SubWFs, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Publish, ShouldHaveLength, 1)
+		So(wf.SubWFs[0].Body.Publish[0].Target, ShouldEqual, "out")
+		So(wf.SubWFs[0].Body.OnComplete, ShouldEqual, "println 'done'")
+		So(wf.SubWFs[0].Body.OnError, ShouldEqual, "println 'failed'")
+	})
+}
+
 func TestCloneChanExpr(t *testing.T) {
 	Convey("cloneChanExpr rewrites the most specific renamed reference first", t, func() {
 		cloned := cloneChanExpr(ChanRef{Name: "helper_impl.out"}, map[string]string{

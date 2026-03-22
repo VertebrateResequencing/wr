@@ -24,8 +24,8 @@ Nextflow operators: `%`, `**`, `in`/`!in`, `instanceof`/
 AST nodes as specified. Add AST node types to ast.go. Implement
 in parse.go, covering all 18 acceptance tests from D1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.2: D2 - Parse missing expression features [parallel with 1.1]
 
@@ -37,8 +37,8 @@ constructors as `NewExpr`, and multi-variable assignments
 Add AST node types to ast.go. Implement in parse.go, covering
 all 5 acceptance tests from D2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

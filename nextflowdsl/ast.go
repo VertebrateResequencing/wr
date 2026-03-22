@@ -44,6 +44,7 @@ type Declaration struct {
 	Expr     Expr
 	Raw      string
 	Emit     string
+	Each     bool
 	Optional bool
 	Elements []*TupleElement
 }
@@ -95,6 +96,12 @@ type WFEmit struct {
 	Expr string
 }
 
+// WFPublish represents one workflow publish assignment.
+type WFPublish struct {
+	Target string
+	Source string
+}
+
 // IfBlock represents an if/else if/else in a workflow block.
 type IfBlock struct {
 	Condition string
@@ -108,6 +115,9 @@ type WorkflowBlock struct {
 	Calls      []*Call
 	Take       []string
 	Emit       []*WFEmit
+	Publish    []*WFPublish
+	OnComplete string
+	OnError    string
 	Conditions []*IfBlock
 }
 
@@ -131,14 +141,44 @@ type FuncDef struct {
 	Body   string
 }
 
+// EnumDef stores a parsed top-level enum definition.
+type EnumDef struct {
+	Name   string
+	Values []string
+}
+
+// ParamDecl stores a typed parameter from a params block.
+type ParamDecl struct {
+	Name    string
+	Type    string
+	Default Expr
+}
+
+// RecordField stores one field in a parsed top-level record definition.
+type RecordField struct {
+	Name    string
+	Type    string
+	Default Expr
+}
+
+// RecordDef stores a parsed top-level record definition.
+type RecordDef struct {
+	Name   string
+	Fields []*RecordField
+}
+
 // Workflow is the top-level AST for a parsed .nf file.
 type Workflow struct {
-	Name      string
-	Processes []*Process
-	SubWFs    []*SubWorkflow
-	Imports   []*Import
-	EntryWF   *WorkflowBlock
-	Functions []*FuncDef
+	Name        string
+	Processes   []*Process
+	SubWFs      []*SubWorkflow
+	Imports     []*Import
+	EntryWF     *WorkflowBlock
+	Functions   []*FuncDef
+	Enums       []*EnumDef
+	OutputBlock string
+	ParamBlock  []*ParamDecl
+	Records     []*RecordDef
 }
 
 // ChanRef stores a named channel reference.
@@ -147,6 +187,14 @@ type ChanRef struct {
 }
 
 func (ChanRef) chanExpr() {}
+
+// NamedChannelRef stores a label-specific selection from a named channel result.
+type NamedChannelRef struct {
+	Source ChanExpr
+	Label  string
+}
+
+func (NamedChannelRef) chanExpr() {}
 
 // ChannelFactory stores a Channel.* factory call.
 type ChannelFactory struct {
@@ -163,6 +211,55 @@ type ClosureExpr struct {
 }
 
 func (ClosureExpr) expr() {}
+
+// AssertStmt stores an assert statement.
+type AssertStmt struct {
+	Expr    Expr
+	Message Expr
+}
+
+// ThrowStmt stores a throw statement.
+type ThrowStmt struct {
+	Expr Expr
+}
+
+// CatchClause stores one catch block in a try statement.
+type CatchClause struct {
+	TypeName string
+	VarName  string
+	Body     string
+}
+
+// TryCatchStmt stores a try/catch/finally statement.
+type TryCatchStmt struct {
+	TryBody      string
+	CatchClauses []CatchClause
+	FinallyBody  string
+}
+
+// ReturnStmt stores a return statement.
+type ReturnStmt struct {
+	Expr Expr
+}
+
+// ForStmt stores a for-in loop.
+type ForStmt struct {
+	VarName    string
+	Collection Expr
+	Body       string
+}
+
+// WhileStmt stores a while loop.
+type WhileStmt struct {
+	Condition Expr
+	Body      string
+}
+
+// SwitchStmt stores a switch statement.
+type SwitchStmt struct {
+	Expr string
+	Body string
+}
 
 // ChannelOperator stores a supported channel operator invocation.
 type ChannelOperator struct {
@@ -202,6 +299,13 @@ type StringExpr struct {
 
 func (StringExpr) expr() {}
 
+// SlashyStringExpr stores a slashy string literal.
+type SlashyStringExpr struct {
+	Value string
+}
+
+func (SlashyStringExpr) expr() {}
+
 // ParamsExpr stores a params.* reference.
 type ParamsExpr struct {
 	Path string
@@ -233,6 +337,33 @@ type BinaryExpr struct {
 
 func (BinaryExpr) expr() {}
 
+// InExpr stores an in or !in membership test.
+type InExpr struct {
+	Left    Expr
+	Right   Expr
+	Negated bool
+}
+
+func (InExpr) expr() {}
+
+// RegexExpr stores a =~ or ==~ regex match expression.
+type RegexExpr struct {
+	Left  Expr
+	Right Expr
+	Full  bool
+}
+
+func (RegexExpr) expr() {}
+
+// RangeExpr stores a Groovy range expression.
+type RangeExpr struct {
+	Start     Expr
+	End       Expr
+	Exclusive bool
+}
+
+func (RangeExpr) expr() {}
+
 // TernaryExpr stores a ternary or elvis expression.
 type TernaryExpr struct {
 	Cond  Expr
@@ -258,6 +389,22 @@ type MethodCallExpr struct {
 }
 
 func (MethodCallExpr) expr() {}
+
+// NewExpr stores a constructor call.
+type NewExpr struct {
+	ClassName string
+	Args      []Expr
+}
+
+func (NewExpr) expr() {}
+
+// SpreadExpr stores a spread-dot property access.
+type SpreadExpr struct {
+	Receiver Expr
+	Property string
+}
+
+func (SpreadExpr) expr() {}
 
 // IndexExpr stores subscript access.
 type IndexExpr struct {
@@ -302,6 +449,14 @@ type CastExpr struct {
 }
 
 func (CastExpr) expr() {}
+
+// MultiAssignExpr stores a multi-variable assignment.
+type MultiAssignExpr struct {
+	Names []string
+	Value Expr
+}
+
+func (MultiAssignExpr) expr() {}
 
 // UnsupportedExpr stores an expression that cannot be evaluated.
 type UnsupportedExpr struct {

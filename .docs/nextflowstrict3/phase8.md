@@ -26,8 +26,8 @@ prepends `spack load <pkg> &&`. Handle combined directives
 (e.g. conda + scratch). Covering all 8 acceptance tests
 from A2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 8.2: B2 - Translate `each` cross-product [parallel with 8.1, 8.3, 8.4, 8.5, 8.6]
 
@@ -42,8 +42,8 @@ the same dep_grp for downstream wiring. Depends on B1
 (Phase 4) for the `Each` flag on `Declaration`. Covering all 4
 acceptance tests from B2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 8.3: C1 - Translate `eval` output [parallel with 8.1, 8.2, 8.4, 8.5, 8.6]
 
@@ -55,8 +55,8 @@ translation in translate.go. For `eval('hostname')`, append
 gets a unique variable name. Handle processes with both `path`
 and `eval` outputs. Covering all 3 acceptance tests from C1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 8.4: I2 translate - Translate onComplete/onError [parallel with 8.1, 8.2, 8.3, 8.5, 8.6]
 
@@ -73,8 +73,8 @@ terminal error detection. Depends on I2 parse (Phase 5) for
 parsed `OnComplete`/`OnError` fields. Covering acceptance
 tests 5-8 from I2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 8.5: N1 - Evaluate dynamic directive closures [parallel with 8.1, 8.2, 8.3, 8.4, 8.6]
 
@@ -89,8 +89,8 @@ Handles `memory { 2048 * task.attempt }`, `cpus { params.cpus
 patterns. Existing `resolveDirectiveInt` infrastructure
 extended. Covering all 6 acceptance tests from N1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 8.6: A3 - Translate clusterOptions, containerOptions, maxErrors, queue, shell [parallel with 8.1, 8.2, 8.3, 8.4, 8.5]
 
@@ -109,8 +109,8 @@ terminal state. `queue` sets
 `RunnerExecShell` in the job. Covering all 11 acceptance tests
 from A3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
@@ -130,5 +130,5 @@ Verify all cross-product jobs share the same dep_grp
 that dep_grp. Depends on B2 (item 8.2). Covering all 3
 acceptance tests from O1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

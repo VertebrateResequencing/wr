@@ -195,16 +195,29 @@ func TestNextflowOutputFormattingHelpers(t *testing.T) {
 			So(jobOutputLabel("sayHello", "/w/nf-work/r1/sayHello/2", true), ShouldEqual, "[sayHello (2)]")
 		})
 
+		Convey("jobOutputLabel preserves cross-product indexes for each-expanded jobs", func() {
+			So(jobOutputLabel("sayHello", "/w/nf-work/r1/sayHello/0_1", true), ShouldEqual, "[sayHello (0_1)]")
+		})
+
 		Convey("instanceIndexFromCwd extracts a trailing numeric path segment", func() {
-			index, ok := instanceIndexFromCwd("/w/nf-work/r1/proc/3")
+			index, parts, ok := instanceIndexFromCwd("/w/nf-work/r1/proc/3")
 			So(ok, ShouldBeTrue)
-			So(index, ShouldEqual, 3)
+			So(index, ShouldEqual, "3")
+			So(parts, ShouldResemble, []int{3})
+		})
+
+		Convey("instanceIndexFromCwd extracts cross-product suffixes", func() {
+			index, parts, ok := instanceIndexFromCwd("/w/nf-work/r1/proc/2_10")
+			So(ok, ShouldBeTrue)
+			So(index, ShouldEqual, "2_10")
+			So(parts, ShouldResemble, []int{2, 10})
 		})
 
 		Convey("instanceIndexFromCwd reports no index when the cwd has no trailing number", func() {
-			index, ok := instanceIndexFromCwd("/w/nf-work/r1/proc")
+			index, parts, ok := instanceIndexFromCwd("/w/nf-work/r1/proc")
 			So(ok, ShouldBeFalse)
-			So(index, ShouldEqual, 0)
+			So(index, ShouldEqual, "")
+			So(parts, ShouldBeNil)
 		})
 	})
 }
@@ -253,6 +266,22 @@ func TestPrintJobsOutput(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(out.String(), ShouldEqual, "[align (0)] zero\n[align (1)] one\n")
+		})
+
+		Convey("cross-product jobs are ordered numerically by their indexed suffix", func() {
+			tempDir := t.TempDir()
+			align010 := makeJob(tempDir, "align", filepath.Join("align", "0_10"))
+			align02 := makeJob(tempDir, "align", filepath.Join("align", "0_2"))
+			align11 := makeJob(tempDir, "align", filepath.Join("align", "1_1"))
+			writeOutput(align010, ".nf-stdout", "ten\n")
+			writeOutput(align02, ".nf-stdout", "two\n")
+			writeOutput(align11, ".nf-stdout", "one-one\n")
+
+			var out bytes.Buffer
+			err := printJobsOutput(&out, []*jobqueue.Job{align010, align11, align02}, []*jobqueue.Job{align010, align11, align02}, 1<<20)
+
+			So(err, ShouldBeNil)
+			So(out.String(), ShouldEqual, "[align (0_2)] two\n[align (0_10)] ten\n[align (1_1)] one-one\n")
 		})
 
 		Convey("jobs with no captured output are skipped", func() {
@@ -1036,6 +1065,25 @@ func TestNextflowRunCommandContainerRuntimeDefaults(t *testing.T) {
 
 func TestNextflowStatusCommand(t *testing.T) {
 	Convey("wr nextflow status covers E4", t, func() {
+		Convey("it does not hide ordinary jobs just because their scoped process name matches a helper suffix", func() {
+			testCases := []string{
+				"nf.mywf.r1.onError",
+				"nf.mywf.r1.onComplete",
+				"nf.mywf.r1.SUBWF.onError",
+				"nf.mywf.r1.SUBWF.onComplete",
+				"nf.mywf.r1.SUBWF.maxErrors",
+			}
+
+			for _, repGroup := range testCases {
+				parsed, ok := parseNextflowRepGroup(repGroup)
+				So(ok, ShouldBeTrue)
+
+				hidden := nextflowStatusJobHidden(&jobqueue.Job{RepGroup: repGroup, ReqGroup: "nf.user.process"}, parsed)
+
+				So(hidden, ShouldBeFalse)
+			}
+		})
+
 		Convey("it aggregates pending, running, complete, and buried counts per process for a run id", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
@@ -1245,6 +1293,55 @@ func TestNextflowStatusCommand(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(output, ShouldContainSubstring, "[... output truncated ...]")
 		})
+
+		Convey("it hides internal lifecycle and maxErrors helper jobs from counts and output", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			completeClient, completeJob := env.addAndReserveJob(newStatusTestJobWithCwd(t, "nf.mywf.r1.align", "true", "align", "0"))
+			So(completeClient.Execute(context.Background(), completeJob, "bash"), ShouldBeNil)
+			So(completeClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.align", jobqueue.JobStateComplete)
+			So(os.WriteFile(filepath.Join(completeJob.Cwd, nfStdoutFile), []byte("visible\n"), 0o644), ShouldBeNil)
+
+			onComplete := newStatusTestJobWithCwd(t, "nf.mywf.r1.onComplete", "echo hidden-complete >/dev/null", "onComplete")
+			onComplete.ReqGroup = "nf.workflow.onComplete"
+			onCompleteClient, onCompleteJob := env.addAndReserveJob(onComplete)
+			So(onCompleteClient.Execute(context.Background(), onCompleteJob, "bash"), ShouldBeNil)
+			So(onCompleteClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.onComplete", jobqueue.JobStateComplete)
+			So(os.WriteFile(filepath.Join(onCompleteJob.Cwd, nfStdoutFile), []byte("hidden-complete\n"), 0o644), ShouldBeNil)
+
+			onError := newStatusTestJobWithCwd(t, "nf.mywf.r1.onError", "echo hidden-error >/dev/null", "onError")
+			onError.ReqGroup = "nf.workflow.onError"
+			onErrorClient, onErrorJob := env.addAndReserveJob(onError)
+			So(onErrorClient.Execute(context.Background(), onErrorJob, "bash"), ShouldBeNil)
+			So(onErrorClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.onError", jobqueue.JobStateComplete)
+			So(os.WriteFile(filepath.Join(onErrorJob.Cwd, nfStdoutFile), []byte("hidden-error\n"), 0o644), ShouldBeNil)
+
+			maxErrors := newStatusTestJobWithCwd(t, "nf.mywf.r1.align.maxErrors", "echo hidden-max-errors >/dev/null", "align", "maxErrors")
+			maxErrors.ReqGroup = "nf.align.maxErrors"
+			maxErrorsClient, maxErrorsJob := env.addAndReserveJob(maxErrors)
+			So(maxErrorsClient.Execute(context.Background(), maxErrorsJob, "bash"), ShouldBeNil)
+			So(maxErrorsClient.Disconnect(), ShouldBeNil)
+			env.waitForRepGroupState("nf.mywf.r1.align.maxErrors", jobqueue.JobStateComplete)
+			So(os.WriteFile(filepath.Join(maxErrorsJob.Cwd, nfStdoutFile), []byte("hidden-max-errors\n"), 0o644), ShouldBeNil)
+
+			output, err := env.executeStatus("--output", "--run-id", "r1")
+
+			So(err, ShouldBeNil)
+			counts := statusCounts(output)
+			So(counts, ShouldContainKey, "align")
+			So(counts["align"], ShouldResemble, []string{"0", "0", "1", "0", "1"})
+			So(counts, ShouldNotContainKey, "onComplete")
+			So(counts, ShouldNotContainKey, "onError")
+			So(counts, ShouldNotContainKey, "align.maxErrors")
+			So(output, ShouldContainSubstring, "[align] visible\n")
+			So(output, ShouldNotContainSubstring, "hidden-complete")
+			So(output, ShouldNotContainSubstring, "hidden-error")
+			So(output, ShouldNotContainSubstring, "hidden-max-errors")
+		})
 	})
 }
 
@@ -1290,6 +1387,33 @@ func newStatusTestJobWithCwd(t *testing.T, repGroup, cmd string, cwdParts ...str
 	job.Cwd = cwd
 
 	return job
+}
+
+func TestNextflowRunCommandPendingHelper(t *testing.T) {
+	Convey("wr nextflow run schedules background pending progression when --follow is false", t, func() {
+		env := newNextflowCommandTestEnv(t)
+		defer env.cleanup()
+
+		workflowPath := env.writeWorkflow("dynamic_pending_helper.nf", dynamicWorkflow("cat $reads > consumed.txt"))
+
+		err := env.executeRun("--run-id", "r1", workflowPath)
+		So(err, ShouldBeNil)
+
+		workflowJobs := env.jobsByRepGroupSubstring("nf.dynamic_pending_helper.r1")
+		So(workflowJobs, ShouldHaveLength, 1)
+		So(workflowJobs[0].RepGroup, ShouldEqual, "nf.dynamic_pending_helper.r1.A")
+
+		helperJobs := env.jobsByRepGroupSubstring(nextflowPendingHelperRepGroupPrefix("dynamic_pending_helper", "r1"))
+		So(helperJobs, ShouldHaveLength, 1)
+		So(helperJobs[0].RepGroup, ShouldEqual, nextflowPendingHelperRepGroup("dynamic_pending_helper", "r1"))
+		So(helperJobs[0].ReqGroup, ShouldEqual, "nextflow-follow-helper")
+		So(helperJobs[0].CwdMatters, ShouldBeTrue)
+		So(helperJobs[0].Cwd, ShouldEqual, mustGetwd(t))
+		So(helperJobs[0].Cmd, ShouldContainSubstring, "'wr' 'nextflow' 'run' '--follow'")
+		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--run-id' 'r1'")
+		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--poll-interval' '5s'")
+		So(helperJobs[0].Cmd, ShouldContainSubstring, nextflowShellQuote(workflowPath))
+	})
 }
 
 type fakeNextflowSnapshot struct {

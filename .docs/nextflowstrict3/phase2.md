@@ -27,8 +27,8 @@ name map (String→string, Integer→int/int64, List→[]any,
 Map→map[string]any, Boolean→bool) and returns bool.
 Covering all 30 acceptance tests from D3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 2.2: D4 - Evaluate additional string/list methods [parallel with 2.1]
 
@@ -40,8 +40,8 @@ Add method evaluation in `evalMethodCallExpr` for `matches`,
 and `drop`. Implement in groovy.go, covering all 15 acceptance
 tests from D4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

@@ -25,8 +25,8 @@ to fold items. Type-conversion operators (`toLong`, `toFloat`,
 `toDouble`) pass through like `toInteger`. Covering all 18
 acceptance tests from L1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 6.2: L2 - Implement data-dependent operators via PendingStage [parallel with 6.1]
 
@@ -46,8 +46,8 @@ downstream item. All use the existing PendingStage/
 TranslatePending infrastructure. Covering all 8 acceptance
 tests from L2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
