@@ -56,6 +56,9 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
+| SYN-deprecated-addParams | nf-0350-deprecations.md |
+| SYN-deprecated-when-section | nf-0350-deprecations.md |
+| SYN-deprecated-shell-section | nf-0350-deprecations.md |
 | SYN-deprecations | nf-0350-deprecations.md |
 
 ## nf-0400-groovy-methods.md — Groovy Methods & Imports
@@ -64,6 +67,7 @@ Use `00-audit.py` to validate consistency.
 |------------|----------|
 | METH-default-imports | nf-0400-groovy-methods.md |
 | METH-bag-plus | nf-0400-groovy-methods.md |
+| METH-bag-membership | nf-0400-groovy-methods.md |
 | METH-duration-toDays | nf-0400-groovy-methods.md |
 | METH-duration-toHours | nf-0400-groovy-methods.md |
 | METH-duration-toMillis | nf-0400-groovy-methods.md |
@@ -91,6 +95,7 @@ Use `00-audit.py` to validate consistency.
 | METH-list-plus | nf-0400-groovy-methods.md |
 | METH-list-multiply | nf-0400-groovy-methods.md |
 | METH-list-getAt | nf-0400-groovy-methods.md |
+| METH-list-membership | nf-0400-groovy-methods.md |
 | METH-list-collate | nf-0400-groovy-methods.md |
 | METH-list-find | nf-0400-groovy-methods.md |
 | METH-list-first | nf-0400-groovy-methods.md |
@@ -107,6 +112,7 @@ Use `00-audit.py` to validate consistency.
 | METH-list-withIndex | nf-0400-groovy-methods.md |
 | METH-map-plus | nf-0400-groovy-methods.md |
 | METH-map-getAt | nf-0400-groovy-methods.md |
+| METH-map-membership | nf-0400-groovy-methods.md |
 | METH-map-any | nf-0400-groovy-methods.md |
 | METH-map-containsKey | nf-0400-groovy-methods.md |
 | METH-map-containsValue | nf-0400-groovy-methods.md |
@@ -179,10 +185,14 @@ Use `00-audit.py` to validate consistency.
 | METH-record-subMap | nf-0400-groovy-methods.md |
 | METH-set-plus | nf-0400-groovy-methods.md |
 | METH-set-minus | nf-0400-groovy-methods.md |
+| METH-set-membership | nf-0400-groovy-methods.md |
 | METH-set-intersect | nf-0400-groovy-methods.md |
 | METH-string-plus | nf-0400-groovy-methods.md |
 | METH-string-multiply | nf-0400-groovy-methods.md |
 | METH-string-getAt | nf-0400-groovy-methods.md |
+| METH-string-bitwiseNegate | nf-0400-groovy-methods.md |
+| METH-string-find | nf-0400-groovy-methods.md |
+| METH-string-match | nf-0400-groovy-methods.md |
 | METH-string-contains | nf-0400-groovy-methods.md |
 | METH-string-endsWith | nf-0400-groovy-methods.md |
 | METH-string-execute | nf-0400-groovy-methods.md |
@@ -273,13 +283,34 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
-| INP-inputs | nf-1200-input-qualifiers.md |
+| INP-val | nf-1200-input-qualifiers.md |
+| INP-file | nf-1200-input-qualifiers.md |
+| INP-path | nf-1200-input-qualifiers.md |
+| INP-arity | nf-1200-input-qualifiers.md |
+| INP-name | nf-1200-input-qualifiers.md |
+| INP-stageAs | nf-1200-input-qualifiers.md |
+| INP-env | nf-1200-input-qualifiers.md |
+| INP-stdin | nf-1200-input-qualifiers.md |
+| INP-tuple | nf-1200-input-qualifiers.md |
 
 ## nf-1300-output-qualifiers.md — Output Qualifiers & Options
 
 | Feature ID | nf- file |
 |------------|----------|
-| OUT-outputs | nf-1300-output-qualifiers.md |
+| OUT-val | nf-1300-output-qualifiers.md |
+| OUT-file | nf-1300-output-qualifiers.md |
+| OUT-path | nf-1300-output-qualifiers.md |
+| OUT-arity | nf-1300-output-qualifiers.md |
+| OUT-followLinks | nf-1300-output-qualifiers.md |
+| OUT-glob | nf-1300-output-qualifiers.md |
+| OUT-hidden | nf-1300-output-qualifiers.md |
+| OUT-includeInputs | nf-1300-output-qualifiers.md |
+| OUT-maxDepth | nf-1300-output-qualifiers.md |
+| OUT-type | nf-1300-output-qualifiers.md |
+| OUT-env | nf-1300-output-qualifiers.md |
+| OUT-stdout | nf-1300-output-qualifiers.md |
+| OUT-eval | nf-1300-output-qualifiers.md |
+| OUT-tuple | nf-1300-output-qualifiers.md |
 
 ## nf-1400-dir-resources.md — Directives: Resources
 
@@ -602,4 +633,4 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 452 feature IDs across 29 files.**
+**Total: 483 feature IDs across 29 files.**

@@ -10,6 +10,9 @@
 ### METH-bag-plus
 `+ : (Bag<E>, Bag<E>) -> Bag<E>` — TODO: describe expected behaviour.
 
+### METH-bag-membership
+`in, !in : (E, Bag<E>) -> Boolean` — TODO: describe expected behaviour.
+
 ### METH-duration-toDays
 `toDays() -> Integer` — TODO: describe expected behaviour.
 
@@ -91,6 +94,9 @@
 ### METH-list-getAt
 `[] : (List<E>, Integer) -> E` — TODO: describe expected behaviour.
 
+### METH-list-membership
+`in, !in : (E, List<E>) -> Boolean` — TODO: describe expected behaviour.
+
 ### METH-list-collate
 `collate( size: Integer, keepRemainder: Boolean = true ) -> List<List<E>>` — TODO: describe expected behaviour.
 
@@ -138,6 +144,9 @@
 
 ### METH-map-getAt
 `[] : (Map<K,V>, K) -> V` — TODO: describe expected behaviour.
+
+### METH-map-membership
+`in, !in : (K, Map<K,V>) -> Boolean` — TODO: describe expected behaviour.
 
 ### METH-map-any
 `any( condition: (K,V) -> Boolean ) -> Boolean` — TODO: describe expected behaviour.
@@ -355,6 +364,9 @@
 ### METH-set-minus
 `- : (Set<E>, Iterable<E>) -> Set<E>` — TODO: describe expected behaviour.
 
+### METH-set-membership
+`in, !in : (E, Set<E>) -> Boolean` — TODO: describe expected behaviour.
+
 ### METH-set-intersect
 `intersect( right: Iterable<E> ) -> Set<E>` — TODO: describe expected behaviour.
 
@@ -366,6 +378,15 @@
 
 ### METH-string-getAt
 `[] : (String, Integer) -> char` — TODO: describe expected behaviour.
+
+### METH-string-bitwiseNegate
+`~ : (String) -> Pattern` — TODO: describe expected behaviour.
+
+### METH-string-find
+`=~ : (String, String) -> Matcher` — TODO: describe expected behaviour.
+
+### METH-string-match
+`==~ : (String, String) -> Boolean` — TODO: describe expected behaviour.
 
 ### METH-string-contains
 `contains( str: String ) -> Boolean` — TODO: describe expected behaviour.

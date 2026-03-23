@@ -16,11 +16,13 @@ For each feature ID in nf-1300-output-qualifiers.md, determine its classificatio
 
 ### Features to classify
 
-- OUT-outputs
+- OUT-val, OUT-file, OUT-path, OUT-arity, OUT-followLinks
+  OUT-glob, OUT-hidden, OUT-includeInputs, OUT-maxDepth, OUT-type
+  OUT-env, OUT-stdout, OUT-eval, OUT-tuple
 
 ### Output format
 
 ```
-OUT-outputs: SUPPORTED | reason
+OUT-val: SUPPORTED | reason
 ...
 ```
