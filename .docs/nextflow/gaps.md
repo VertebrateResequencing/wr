@@ -65,11 +65,30 @@ The `publishDir` directive currently supports `path`, `mode`, and
 - `enabled` — conditionally enable/disable publishing.
 - `failOnError` — fail the task if publishing fails.
 
+The cloud-only options (`tags`, `contentType`, `storageClass`) are not
+relevant to wr and are listed in `unsupported.md`.
+
 ## Channel Operators — Type Conversion
 
-The `toLong()`, `toFloat()`, and `toDouble()` channel operators are
-recognised and parsed without error, but they are no-ops — items pass
-through without actual type conversion. In real Nextflow these convert
-each channel item to the respective numeric type. If upstream items are
-already the correct type (common in practice) the end result is the
-same, but string-to-number conversion will not happen.
+The `toInteger()`, `toLong()`, `toFloat()`, and `toDouble()` channel
+operators are recognised and parsed without error, but they are no-ops —
+items pass through without actual type conversion. In real Nextflow these
+convert each channel item to the respective numeric type. If upstream
+items are already the correct type (common in practice) the end result
+is the same, but string-to-number conversion will not happen.
+
+## Channel Operators — `collate` Sliding Window
+
+The `collate(size)` operator is supported, but the two-argument
+`collate(size, step)` variant (sliding window) and the three-argument
+`collate(size, step, remainder)` variant are not implemented. Only the
+simple fixed-size chunking form works.
+
+## Container Config — `runOptions`
+
+The `docker.runOptions`, `singularity.runOptions`, and
+`apptainer.runOptions` config settings allow passing arbitrary flags to
+the container runtime (e.g. `--gpus all` for GPU access). Only the
+`enabled` flag is currently parsed from container config scopes. Adding
+`runOptions` support would be valuable for GPU and device-access
+workflows — the value could be appended to wr's container flags.

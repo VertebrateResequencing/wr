@@ -60,6 +60,7 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `container` — container image → wr container execution
 - `errorStrategy` — retry/ignore/terminate/finish behaviour
 - `maxRetries` — retry count
+- `maxErrors` — total error count limit → polling monitor job
 - `maxForks` — concurrency limit → wr limit groups
 - `publishDir` — output publishing (path, mode, pattern)
 - `label` — process labels for config selector matching
@@ -69,6 +70,14 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `module` — environment module loading
 - `cache` — caching strategy
 - `env` — environment variables
+- `clusterOptions` — native scheduler options → `Requirements.Other`
+- `queue` — scheduler queue → `Requirements.Other`
+- `containerOptions` — extra container flags → appended to container cmd
+- `conda` — Conda package spec → prepend `conda activate` to job
+- `spack` — Spack package spec → prepend `spack load` to job
+- `scratch` — temp directory wrapper → job command wrapping
+- `storeDir` — permanent cache directory → skip-if-exists wrapper
+- `shell` (directive) — custom shell binary → `RunnerExecShell` env var
 
 ### Directives (Parsed and Translated, Scheduler-Dependent)
 
@@ -76,32 +85,6 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `arch` — CPU architecture → LSF `-R "select[type==X86_64]"` (or `AARCH64`)
 - `ext` — custom key-value namespace; `task.ext.*` resolved in script interpolation
 - `fair` — output ordering → wr job priority (earlier items get higher priority)
-
-### Directives (Parsed and Stored, Translation Varies)
-
-All of the following are parsed without error and stored in the
-`Process.Directives` map:
-
-- `array` — job array size
-- `clusterOptions` — native scheduler options → `Requirements.Other`
-- `conda` — Conda package spec → prepend `conda activate` to job
-- `containerOptions` — extra container flags → appended to container cmd
-- `debug` / `echo` — stdout forwarding flag
-- `executor` — per-process executor override
-- `machineType` — cloud VM instance type
-- `maxErrors` — total error count limit → polling monitor job
-- `maxSubmitAwait` — queue wait timeout
-- `penv` — SGE parallel environment
-- `pod` — Kubernetes pod configuration
-- `queue` — scheduler queue → `Requirements.Other`
-- `resourceLabels` — cloud resource metadata
-- `resourceLimits` — resource caps
-- `scratch` — temp directory wrapper → job command wrapping
-- `secret` — secret environment variables
-- `shell` (directive) — custom shell binary → `RunnerExecShell` env var
-- `spack` — Spack package spec → prepend `spack load` to job
-- `stageInMode` / `stageOutMode` — file staging modes
-- `storeDir` — permanent cache directory → skip-if-exists wrapper
 
 ### Dynamic Directives
 
@@ -347,7 +330,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `params {}` — parameter defaults
 - `process {}` — process defaults and selectors
 - `profiles {}` — named profile overrides
-- `docker {}` / `singularity {}` / `apptainer {}` — container engines
+- `docker {}` / `singularity {}` / `apptainer {}` — `enabled` flag only
 - `env {}` — environment variables
 - `executor {}` — executor settings
 
@@ -386,7 +369,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - Aliased includes: `include { PROC as MY_PROC }`
 - Chained module resolution (local then remote)
 - Recursive include resolution
-- `addParams` / `params` on includes
+
 
 ## Translation to wr Jobs
 
