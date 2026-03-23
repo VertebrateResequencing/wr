@@ -61,17 +61,29 @@ func TestTranslateD1(t *testing.T) {
 		Convey("accelerator counts map to lsf GPU requirements", func() {
 			wf := parseWorkflow("process GPU {\naccelerator 1\nscript: 'echo hi'\n}\nworkflow {\nGPU()\n}\n")
 
-			result, stderr := translateWorkflow(wf, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"})
+			result, stderr := translateWorkflow(
+				wf,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"},
+			)
 
 			So(stderr, ShouldEqual, "")
 			So(result.Jobs, ShouldHaveLength, 1)
-			So(result.Jobs[0].Requirements.Other["scheduler_misc"], ShouldContainSubstring, "select[ngpus>0] rusage[ngpus_physical=1]")
+			So(
+				result.Jobs[0].Requirements.Other["scheduler_misc"],
+				ShouldContainSubstring,
+				"select[ngpus>0] rusage[ngpus_physical=1]",
+			)
 		})
 
 		Convey("accelerator type metadata leaves an informational warning and still maps gpu counts for lsf", func() {
-			wf := parseWorkflow("process GPU {\naccelerator 2, type: 'nvidia-tesla-v100'\nscript: 'echo hi'\n}\nworkflow {\nGPU()\n}\n")
+			wf := parseWorkflow(
+				"process GPU {\naccelerator 2, type: 'nvidia-tesla-v100'\nscript: 'echo hi'\n}\nworkflow {\nGPU()\n}\n",
+			)
 
-			result, stderr := translateWorkflow(wf, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"})
+			result, stderr := translateWorkflow(
+				wf,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"},
+			)
 
 			So(stderr, ShouldContainSubstring, "accelerator type")
 			So(stderr, ShouldContainSubstring, "nvidia-tesla-v100")
@@ -90,9 +102,14 @@ func TestTranslateD1(t *testing.T) {
 		})
 
 		Convey("accelerator requirements merge with existing clusterOptions for lsf", func() {
-			wf := parseWorkflow("process GPU {\naccelerator 1\nclusterOptions '--account=mylab'\nscript: 'echo hi'\n}\nworkflow {\nGPU()\n}\n")
+			wf := parseWorkflow(
+				"process GPU {\naccelerator 1\nclusterOptions '--account=mylab'\nscript: 'echo hi'\n}\nworkflow {\nGPU()\n}\n",
+			)
 
-			result, stderr := translateWorkflow(wf, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"})
+			result, stderr := translateWorkflow(
+				wf,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"},
+			)
 
 			So(stderr, ShouldEqual, "")
 			So(result.Jobs, ShouldHaveLength, 1)
@@ -104,18 +121,24 @@ func TestTranslateD1(t *testing.T) {
 
 func captureTranslateD1Stderr(run func()) string {
 	original := os.Stderr
+
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		panic(err)
 	}
+
 	os.Stderr = writer
+
 	run()
+
 	_ = writer.Close()
 	os.Stderr = original
+
 	output, err := io.ReadAll(reader)
 	if err != nil {
 		panic(err)
 	}
+
 	_ = reader.Close()
 
 	return strings.TrimSpace(string(output))

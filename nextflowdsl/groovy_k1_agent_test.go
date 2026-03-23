@@ -58,6 +58,7 @@ func TestEvalExprK1ConstructorsAgent(t *testing.T) {
 			result, err := EvalExpr(NewExpr{ClassName: "Date", Args: []Expr{}}, nil)
 
 			So(err, ShouldBeNil)
+
 			value, ok := result.(string)
 			So(ok, ShouldBeTrue)
 			So(value, ShouldNotBeBlank)
@@ -80,42 +81,57 @@ func TestEvalExprK1ConstructorsAgent(t *testing.T) {
 		Convey("new ArrayList copies slice input", func() {
 			original := []any{1, 2, 3}
 
-			result, err := EvalExpr(NewExpr{ClassName: "ArrayList", Args: []Expr{VarExpr{Root: "items"}}}, map[string]any{"items": original})
+			result, err := EvalExpr(
+				NewExpr{ClassName: "ArrayList", Args: []Expr{VarExpr{Root: "items"}}},
+				map[string]any{"items": original},
+			)
 
 			So(err, ShouldBeNil)
+
 			values, ok := result.([]any)
 			So(ok, ShouldBeTrue)
 			So(values, ShouldResemble, []any{1, 2, 3})
 
 			values[0] = 99
+
 			So(original, ShouldResemble, []any{1, 2, 3})
 		})
 
 		Convey("new HashMap copies map input", func() {
 			original := map[string]any{"a": 1, "b": 2}
 
-			result, err := EvalExpr(NewExpr{ClassName: "HashMap", Args: []Expr{VarExpr{Root: "mapping"}}}, map[string]any{"mapping": original})
+			result, err := EvalExpr(
+				NewExpr{ClassName: "HashMap", Args: []Expr{VarExpr{Root: "mapping"}}},
+				map[string]any{"mapping": original},
+			)
 
 			So(err, ShouldBeNil)
+
 			values, ok := result.(map[string]any)
 			So(ok, ShouldBeTrue)
 			So(values, ShouldResemble, map[string]any{"a": 1, "b": 2})
 
 			values["a"] = 99
+
 			So(original, ShouldResemble, map[string]any{"a": 1, "b": 2})
 		})
 
 		Convey("new LinkedHashMap copies map input", func() {
 			original := map[string]any{"x": "y"}
 
-			result, err := EvalExpr(NewExpr{ClassName: "LinkedHashMap", Args: []Expr{VarExpr{Root: "mapping"}}}, map[string]any{"mapping": original})
+			result, err := EvalExpr(
+				NewExpr{ClassName: "LinkedHashMap", Args: []Expr{VarExpr{Root: "mapping"}}},
+				map[string]any{"mapping": original},
+			)
 
 			So(err, ShouldBeNil)
+
 			values, ok := result.(map[string]any)
 			So(ok, ShouldBeTrue)
 			So(values, ShouldResemble, map[string]any{"x": "y"})
 
 			values["x"] = "z"
+
 			So(original, ShouldResemble, map[string]any{"x": "y"})
 		})
 
@@ -130,6 +146,7 @@ func TestEvalExprK1ConstructorsAgent(t *testing.T) {
 			result, err := EvalExpr(NewExpr{ClassName: "UnknownClass", Args: []Expr{}}, nil)
 
 			So(err, ShouldBeNil)
+
 			unsupported, ok := result.(UnsupportedExpr)
 			So(ok, ShouldBeTrue)
 			So(unsupported.Text, ShouldEqual, "new UnknownClass()")

@@ -51,7 +51,10 @@ func LoadWorkflowFile(path string, remoteResolver ModuleResolver) (*Workflow, er
 // ResolveWorkflowPath resolves a top-level workflow identifier to a local
 // workflow entry file, using the remote resolver when the workflow is not
 // present locally.
-func ResolveWorkflowPath(path string, remoteResolver ModuleResolver) (resolvedPath string, resolvedRemotely bool, err error) {
+func ResolveWorkflowPath(
+	path string,
+	remoteResolver ModuleResolver,
+) (resolvedPath string, resolvedRemotely bool, err error) {
 	localPath, localErr := resolveLocalWorkflowPath(path)
 	if localErr == nil {
 		return localPath, false, nil
@@ -103,6 +106,7 @@ func looksLikeRemoteWorkflowSpec(path string) bool {
 	}
 
 	parts := strings.Split(strings.Trim(spec, "/"), "/")
+
 	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && filepath.Ext(parts[1]) == ""
 }
 
@@ -115,11 +119,13 @@ func workflowEntryPath(path string) (string, error) {
 
 		return "", fmt.Errorf("stat workflow path %q: %w", path, err)
 	}
+
 	if !info.IsDir() {
 		return path, nil
 	}
 
 	entryPath := filepath.Join(path, "main.nf")
+
 	entryInfo, err := os.Stat(entryPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -128,6 +134,7 @@ func workflowEntryPath(path string) (string, error) {
 
 		return "", fmt.Errorf("stat workflow entry %q: %w", entryPath, err)
 	}
+
 	if entryInfo.IsDir() {
 		return "", fmt.Errorf("workflow entry %q is a directory", entryPath)
 	}
@@ -139,6 +146,7 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 	if wf, ok := loaded[path]; ok {
 		return cloneWorkflow(wf), nil
 	}
+
 	if _, ok := loading[path]; ok {
 		return nil, fmt.Errorf("workflow import cycle detected at %q", path)
 	}
@@ -150,6 +158,7 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 	if err != nil {
 		return nil, fmt.Errorf("open workflow %s: %w", path, err)
 	}
+
 	defer func() {
 		_ = workflowFile.Close()
 	}()
@@ -162,6 +171,7 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 	merged := cloneWorkflow(wf)
 	if len(wf.Imports) == 0 {
 		loaded[path] = cloneWorkflow(merged)
+
 		return merged, nil
 	}
 
@@ -197,6 +207,7 @@ func loadImportedWorkflow(
 	loading map[string]struct{},
 ) (*Workflow, error) {
 	resolver := NewChainResolver(NewLocalResolver(filepath.Dir(parentPath)), remoteResolver)
+
 	resolvedPath, err := resolver.Resolve(importNode.Source)
 	if err != nil {
 		return nil, err
@@ -208,6 +219,7 @@ func loadImportedWorkflow(
 	}
 
 	moduleWF := &Workflow{}
+
 	for _, moduleFile := range moduleFiles {
 		loadedWorkflow, err := loadWorkflowFile(moduleFile, remoteResolver, loaded, loading)
 		if err != nil {
@@ -236,13 +248,16 @@ func moduleWorkflowFiles(path string) ([]string, error) {
 	}
 
 	files := []string{}
+
 	walkErr := filepath.WalkDir(path, func(currentPath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
+
 		if entry.IsDir() {
 			return nil
 		}
+
 		if filepath.Ext(currentPath) == ".nf" {
 			files = append(files, currentPath)
 		}
@@ -252,6 +267,7 @@ func moduleWorkflowFiles(path string) ([]string, error) {
 	if walkErr != nil {
 		return nil, fmt.Errorf("scan module path %q: %w", path, walkErr)
 	}
+
 	if len(files) == 0 {
 		return nil, fmt.Errorf("module path %q did not contain any .nf files", path)
 	}
@@ -266,6 +282,7 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 	if err != nil {
 		return nil, err
 	}
+
 	subworkflows, err := subWorkflowIndex(moduleWF.SubWFs)
 	if err != nil {
 		return nil, err
@@ -282,9 +299,11 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 	for len(queue) > 0 {
 		name := queue[0]
 		queue = queue[1:]
+
 		if _, ok := visited[name]; ok {
 			continue
 		}
+
 		visited[name] = struct{}{}
 		if _, ok := requested[name]; !ok {
 			requested[name] = struct{}{}
@@ -296,6 +315,7 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 				selectedProcesses = append(selectedProcesses, cloneProcess(proc, finalName))
 				selectedNames[finalName] = struct{}{}
 			}
+
 			continue
 		}
 
@@ -337,10 +357,13 @@ func workflowDependencyTargets(block *WorkflowBlock, processes map[string]*Proce
 			if call == nil {
 				continue
 			}
+
 			if _, ok := processes[call.Target]; ok {
 				targets = append(targets, call.Target)
+
 				continue
 			}
+
 			if _, ok := subworkflows[call.Target]; ok {
 				targets = append(targets, call.Target)
 			}
@@ -348,6 +371,7 @@ func workflowDependencyTargets(block *WorkflowBlock, processes map[string]*Proce
 	}
 
 	appendTargets(block.Calls)
+
 	for _, condition := range block.Conditions {
 		targets = append(targets, ifBlockDependencyTargets(condition, processes, subworkflows)...)
 	}
@@ -366,10 +390,13 @@ func ifBlockDependencyTargets(block *IfBlock, processes map[string]*Process, sub
 			if call == nil {
 				continue
 			}
+
 			if _, ok := processes[call.Target]; ok {
 				targets = append(targets, call.Target)
+
 				continue
 			}
+
 			if _, ok := subworkflows[call.Target]; ok {
 				targets = append(targets, call.Target)
 			}
@@ -378,6 +405,7 @@ func ifBlockDependencyTargets(block *IfBlock, processes map[string]*Process, sub
 
 	appendTargets(block.Body)
 	appendTargets(block.ElseBody)
+
 	for _, elseIf := range block.ElseIf {
 		targets = append(targets, ifBlockDependencyTargets(elseIf, processes, subworkflows)...)
 	}
@@ -405,7 +433,12 @@ func cloneWorkflow(wf *Workflow) *Workflow {
 		if importNode == nil {
 			continue
 		}
-		imports = append(imports, &Import{Names: append([]string{}, importNode.Names...), Source: importNode.Source, Alias: cloneAliasMap(importNode.Alias)})
+
+		imports = append(imports, &Import{
+			Names:  append([]string{}, importNode.Names...),
+			Source: importNode.Source,
+			Alias:  cloneAliasMap(importNode.Alias),
+		})
 	}
 
 	return &Workflow{
@@ -428,6 +461,7 @@ func cloneProcesses(processes []*Process) []*Process {
 		if proc == nil {
 			continue
 		}
+
 		cloned = append(cloned, cloneProcess(proc, proc.Name))
 	}
 
@@ -449,7 +483,12 @@ func cloneProcess(proc *Process, name string) *Process {
 		if publishDir == nil {
 			continue
 		}
-		publishDirs = append(publishDirs, &PublishDir{Path: publishDir.Path, Pattern: publishDir.Pattern, Mode: publishDir.Mode})
+
+		publishDirs = append(publishDirs, &PublishDir{
+			Path:    publishDir.Path,
+			Pattern: publishDir.Pattern,
+			Mode:    publishDir.Mode,
+		})
 	}
 
 	return &Process{
@@ -483,6 +522,7 @@ func cloneSubWorkflows(subworkflows []*SubWorkflow, renameTargets map[string]str
 		if subwf == nil {
 			continue
 		}
+
 		cloned = append(cloned, cloneSubWorkflow(subwf, subwf.Name, renameTargets))
 	}
 
@@ -504,11 +544,13 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 
 	clonedCalls := make([]*Call, 0, len(block.Calls))
 	clonedTake := append([]string{}, block.Take...)
+
 	clonedEmit := make([]*WFEmit, 0, len(block.Emit))
 	for _, call := range block.Calls {
 		if call == nil {
 			continue
 		}
+
 		target := call.Target
 		if renameTargets != nil {
 			if renamed, ok := renameTargets[target]; ok {
@@ -533,7 +575,10 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 			continue
 		}
 
-		clonedPublish = append(clonedPublish, &WFPublish{Target: publish.Target, Source: cloneWorkflowEmitExpr(publish.Source, renameTargets)})
+		clonedPublish = append(clonedPublish, &WFPublish{
+			Target: publish.Target,
+			Source: cloneWorkflowEmitExpr(publish.Source, renameTargets),
+		})
 	}
 
 	return &WorkflowBlock{
@@ -678,6 +723,7 @@ func cloneDeclarations(declarations []*Declaration) []*Declaration {
 		if declaration == nil {
 			continue
 		}
+
 		cloned = append(cloned, &Declaration{
 			Kind:     declaration.Kind,
 			Name:     declaration.Name,
@@ -719,7 +765,11 @@ func cloneFuncDefs(funcDefs []*FuncDef) []*FuncDef {
 			continue
 		}
 
-		cloned = append(cloned, &FuncDef{Name: funcDef.Name, Params: append([]string{}, funcDef.Params...), Body: funcDef.Body})
+		cloned = append(cloned, &FuncDef{
+			Name:   funcDef.Name,
+			Params: append([]string{}, funcDef.Params...),
+			Body:   funcDef.Body,
+		})
 	}
 
 	return cloned
@@ -738,15 +788,20 @@ func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExp
 	switch value := expression.(type) {
 	case ChanRef:
 		name := value.Name
+
 		for _, original := range sortedRenameTargets(renameTargets) {
 			renamed := renameTargets[original]
+
 			prefix := original + "."
 			if name == original {
 				name = renamed
+
 				break
 			}
+
 			if len(name) > len(prefix) && name[:len(prefix)] == prefix {
 				name = renamed + name[len(original):]
+
 				break
 			}
 		}
@@ -760,6 +815,7 @@ func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExp
 		operators := make([]ChannelOperator, 0, len(value.Operators))
 		for _, operator := range value.Operators {
 			var closureExpr *ClosureExpr
+
 			if operator.ClosureExpr != nil {
 				clonedClosure := *operator.ClosureExpr
 				clonedClosure.Params = append([]string{}, operator.ClosureExpr.Params...)
@@ -799,23 +855,28 @@ func renderChanExpr(expression ChanExpr) string {
 	case ChannelChain:
 		var builder strings.Builder
 		builder.WriteString(renderChanExpr(value.Source))
+
 		for _, operator := range value.Operators {
 			builder.WriteByte('.')
 			builder.WriteString(operator.Name)
+
 			switch {
 			case operator.Closure != "":
 				builder.WriteString(" {")
+
 				if operator.Closure != "" {
 					builder.WriteByte(' ')
 					builder.WriteString(operator.Closure)
 					builder.WriteByte(' ')
 				}
+
 				builder.WriteByte('}')
 			case len(operator.Channels) > 0:
 				parts := make([]string, 0, len(operator.Channels))
 				for _, channel := range operator.Channels {
 					parts = append(parts, renderChanExpr(channel))
 				}
+
 				builder.WriteByte('(')
 				builder.WriteString(strings.Join(parts, ", "))
 				builder.WriteByte(')')
@@ -824,6 +885,7 @@ func renderChanExpr(expression ChanExpr) string {
 				for _, arg := range operator.Args {
 					parts = append(parts, renderExpr(arg))
 				}
+
 				builder.WriteByte('(')
 				builder.WriteString(strings.Join(parts, ", "))
 				builder.WriteByte(')')
@@ -916,6 +978,7 @@ func sortedRenameTargets(renameTargets map[string]string) []string {
 	for key := range renameTargets {
 		keys = append(keys, key)
 	}
+
 	sort.Slice(keys, func(i, j int) bool {
 		if len(keys[i]) != len(keys[j]) {
 			return len(keys[i]) > len(keys[j])

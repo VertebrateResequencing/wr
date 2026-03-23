@@ -36,7 +36,12 @@ func TestTranslateD3(t *testing.T) {
 		Convey("top-level processes keep their original identifiers after scoped translation support is added", func() {
 			wf := &Workflow{
 				Processes: []*Process{
-					d3Process("trim", "echo trimmed > out.txt", nil, []*Declaration{{Kind: "path", Expr: StringExpr{Value: "out.txt"}}}),
+					d3Process(
+						"trim",
+						"echo trimmed > out.txt",
+						nil,
+						[]*Declaration{{Kind: "path", Expr: StringExpr{Value: "out.txt"}}},
+					),
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "trim"}}},
 			}
@@ -53,7 +58,12 @@ func TestTranslateD3(t *testing.T) {
 		Convey("subworkflow processes are inlined with scoped rep groups, dep groups, and cwd", func() {
 			wf := &Workflow{
 				Processes: []*Process{
-					d3Process("trim", "echo trimmed > out.txt", nil, []*Declaration{{Kind: "path", Expr: StringExpr{Value: "out.txt"}}}),
+					d3Process(
+						"trim",
+						"echo trimmed > out.txt",
+						nil,
+						[]*Declaration{{Kind: "path", Expr: StringExpr{Value: "out.txt"}}},
+					),
 				},
 				SubWFs: []*SubWorkflow{{
 					Name: "prep",
@@ -159,7 +169,12 @@ func TestTranslateD3(t *testing.T) {
 		Convey("subworkflow take inputs and emit outputs are wired for downstream consumers", func() {
 			wf := &Workflow{
 				Processes: []*Process{
-					d3Process("sort", "echo $reads", []*Declaration{{Kind: "val", Name: "reads"}}, []*Declaration{{Kind: "val", Name: "out"}}),
+					d3Process(
+						"sort",
+						"echo $reads",
+						[]*Declaration{{Kind: "val", Name: "reads"}},
+						[]*Declaration{{Kind: "val", Name: "out"}},
+					),
 					d3Process("merge", "echo $reads", []*Declaration{{Kind: "val", Name: "reads"}}, nil),
 				},
 				SubWFs: []*SubWorkflow{{

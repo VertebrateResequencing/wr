@@ -48,6 +48,7 @@ func TestGitHubResolver(t *testing.T) {
 		cacheDir := t.TempDir()
 
 		originalRunner := githubResolverRunGit
+
 		Reset(func() {
 			githubResolverRunGit = originalRunner
 		})
@@ -56,8 +57,15 @@ func TestGitHubResolver(t *testing.T) {
 			cloneCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
 				cloneCalls++
+
 				So(dir, ShouldEqual, cacheDir)
-				So(args, ShouldResemble, []string{"clone", "--depth", "1", "https://github.com/nextflow-io/hello.git", filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)})
+				So(args, ShouldResemble, []string{
+					"clone",
+					"--depth",
+					"1",
+					"https://github.com/nextflow-io/hello.git",
+					filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision),
+				})
 				So(os.MkdirAll(filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision), 0o755), ShouldBeNil)
 
 				return os.WriteFile(filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision, "main.nf"), []byte("workflow {}\n"), 0o644)
@@ -74,7 +82,7 @@ func TestGitHubResolver(t *testing.T) {
 		})
 
 		Convey("missing cache roots are created before invoking git", func() {
-			cacheDir := filepath.Join(t.TempDir(), "nested", "cache")
+			nestedCacheDir := filepath.Join(t.TempDir(), "nested", "cache")
 			cloneCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
 				cloneCalls++
@@ -82,19 +90,19 @@ func TestGitHubResolver(t *testing.T) {
 				info, err := os.Stat(dir)
 				So(err, ShouldBeNil)
 				So(info.IsDir(), ShouldBeTrue)
-				So(dir, ShouldEqual, cacheDir)
+				So(dir, ShouldEqual, nestedCacheDir)
 
-				cachePath := filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)
+				cachePath := filepath.Join(nestedCacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)
 				So(os.MkdirAll(cachePath, 0o755), ShouldBeNil)
 
 				return os.WriteFile(filepath.Join(cachePath, "main.nf"), []byte("workflow {}\n"), 0o644)
 			}
 
-			path, err := NewGitHubResolver(cacheDir).Resolve("nextflow-io/hello")
+			path, err := NewGitHubResolver(nestedCacheDir).Resolve("nextflow-io/hello")
 
 			So(err, ShouldBeNil)
 			So(cloneCalls, ShouldEqual, 1)
-			So(path, ShouldEqual, filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision))
+			So(path, ShouldEqual, filepath.Join(nestedCacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision))
 		})
 
 		Convey("populated HEAD cache is refreshed before reuse", func() {
@@ -105,6 +113,7 @@ func TestGitHubResolver(t *testing.T) {
 			gitCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
 				gitCalls++
+
 				So(dir, ShouldEqual, modulePath)
 				So(args, ShouldResemble, []string{"pull", "--ff-only"})
 
@@ -126,6 +135,7 @@ func TestGitHubResolver(t *testing.T) {
 			gitCalls := 0
 			githubResolverRunGit = func(string, ...string) error {
 				gitCalls++
+
 				return nil
 			}
 
@@ -138,7 +148,7 @@ func TestGitHubResolver(t *testing.T) {
 
 		Convey("clone failures are reported as fetch failures", func() {
 			githubResolverRunGit = func(string, ...string) error {
-				return fmt.Errorf("repository not found")
+				return errors.New("repository not found")
 			}
 
 			_, err := NewGitHubResolver(cacheDir).Resolve("nonexistent/repo999")
@@ -153,14 +163,20 @@ func TestGitHubResolver(t *testing.T) {
 			checkoutCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
 				switch {
-				case reflect.DeepEqual(args, []string{"clone", "https://github.com/owner/repo.git", filepath.Join(cacheDir, "owner", "repo", "main")}):
+				case reflect.DeepEqual(args, []string{
+					"clone",
+					"https://github.com/owner/repo.git",
+					filepath.Join(cacheDir, "owner", "repo", "main"),
+				}):
 					cloneCalls++
+
 					So(dir, ShouldEqual, cacheDir)
 					So(os.MkdirAll(filepath.Join(cacheDir, "owner", "repo", "main"), 0o755), ShouldBeNil)
 
 					return os.WriteFile(filepath.Join(cacheDir, "owner", "repo", "main", "module.nf"), []byte("workflow {}\n"), 0o644)
 				case reflect.DeepEqual(args, []string{"checkout", "main"}):
 					checkoutCalls++
+
 					So(dir, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", "main"))
 
 					return nil
@@ -185,14 +201,20 @@ func TestGitHubResolver(t *testing.T) {
 			checkoutCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
 				switch {
-				case reflect.DeepEqual(args, []string{"clone", "https://github.com/owner/repo.git", filepath.Join(cacheDir, "owner", "repo", revision)}):
+				case reflect.DeepEqual(args, []string{
+					"clone",
+					"https://github.com/owner/repo.git",
+					filepath.Join(cacheDir, "owner", "repo", revision),
+				}):
 					cloneCalls++
+
 					So(dir, ShouldEqual, cacheDir)
 					So(os.MkdirAll(filepath.Join(cacheDir, "owner", "repo", revision), 0o755), ShouldBeNil)
 
 					return os.WriteFile(filepath.Join(cacheDir, "owner", "repo", revision, "module.nf"), []byte("workflow {}\n"), 0o644)
 				case reflect.DeepEqual(args, []string{"checkout", revision}):
 					checkoutCalls++
+
 					So(dir, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", revision))
 
 					return nil
@@ -209,12 +231,19 @@ func TestGitHubResolver(t *testing.T) {
 			So(path, ShouldEqual, filepath.Join(cacheDir, "owner", "repo", revision))
 		})
 
-		Convey("GitHub workflow URLs normalize to owner/repo cache keys", func() {
+		Convey("GitHub workflow URLs normalise to owner/repo cache keys", func() {
 			cloneCalls := 0
 			githubResolverRunGit = func(dir string, args ...string) error {
 				cloneCalls++
+
 				So(dir, ShouldEqual, cacheDir)
-				So(args, ShouldResemble, []string{"clone", "--depth", "1", "https://github.com/nextflow-io/hello.git", filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision)})
+				So(args, ShouldResemble, []string{
+					"clone",
+					"--depth",
+					"1",
+					"https://github.com/nextflow-io/hello.git",
+					filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision),
+				})
 				So(os.MkdirAll(filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision), 0o755), ShouldBeNil)
 
 				return os.WriteFile(filepath.Join(cacheDir, "nextflow-io", "hello", defaultGitHubModuleRevision, "main.nf"), []byte("workflow {}\n"), 0o644)
@@ -231,6 +260,7 @@ func TestGitHubResolver(t *testing.T) {
 			cloneCalls := 0
 			githubResolverRunGit = func(string, ...string) error {
 				cloneCalls++
+
 				return nil
 			}
 
@@ -245,6 +275,7 @@ func TestGitHubResolver(t *testing.T) {
 			cloneCalls := 0
 			githubResolverRunGit = func(string, ...string) error {
 				cloneCalls++
+
 				return nil
 			}
 
@@ -278,7 +309,7 @@ func TestLocalResolver(t *testing.T) {
 
 		Convey("parent-directory relative specs resolve against the base path", func() {
 			parentDir := t.TempDir()
-			resolver := NewLocalResolver(filepath.Join(parentDir, "workflows", "subdir"))
+			nestedResolver := NewLocalResolver(filepath.Join(parentDir, "workflows", "subdir"))
 			modulePath := filepath.Join(parentDir, "modules", "foo.nf")
 			err := os.MkdirAll(filepath.Dir(modulePath), 0o755)
 			So(err, ShouldBeNil)
@@ -286,7 +317,7 @@ func TestLocalResolver(t *testing.T) {
 			err = os.WriteFile(modulePath, []byte("process foo {}\n"), 0o644)
 			So(err, ShouldBeNil)
 
-			resolvedPath, err := resolver.Resolve("../../modules/foo.nf")
+			resolvedPath, err := nestedResolver.Resolve("../../modules/foo.nf")
 
 			So(err, ShouldBeNil)
 			So(resolvedPath, ShouldEqual, modulePath)
@@ -325,6 +356,7 @@ func TestChainResolver(t *testing.T) {
 			resolver := NewChainResolver(
 				ModuleResolverFunc(func(spec string) (string, error) {
 					localCalls++
+
 					So(spec, ShouldEqual, "./local.nf")
 
 					return "/work/local.nf", nil
@@ -351,12 +383,14 @@ func TestChainResolver(t *testing.T) {
 			resolver := NewChainResolver(
 				ModuleResolverFunc(func(spec string) (string, error) {
 					localCalls++
+
 					So(spec, ShouldEqual, "owner/repo")
 
 					return "", errors.New("unsupported local module spec")
 				}),
 				ModuleResolverFunc(func(spec string) (string, error) {
 					githubCalls++
+
 					So(spec, ShouldEqual, "owner/repo")
 
 					return "/cache/owner/repo/HEAD", nil

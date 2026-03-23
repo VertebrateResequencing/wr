@@ -140,7 +140,9 @@ func TestParseTupleDeclarations(t *testing.T) {
 		})
 
 		Convey("tuple outputs capture string path expressions", func() {
-			wf, err := Parse(strings.NewReader("process foo {\noutput:\ntuple val(id), path(\"${id}.bam\")\nscript: 'echo hello'\n}"))
+			source := "process foo {\noutput:\ntuple val(id), path(\"${id}.bam\")\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
@@ -155,7 +157,9 @@ func TestParseTupleDeclarations(t *testing.T) {
 		})
 
 		Convey("tuple inputs accept arbitrary element counts", func() {
-			wf, err := Parse(strings.NewReader("process foo {\ninput:\ntuple val(id), path(r1), path(r2)\nscript: 'echo hello'\n}"))
+			source := "process foo {\ninput:\ntuple val(id), path(r1), path(r2)\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Input, ShouldHaveLength, 1)
@@ -171,7 +175,9 @@ func TestParseTupleDeclarations(t *testing.T) {
 		})
 
 		Convey("tuple outputs preserve line-level emit qualifiers", func() {
-			wf, err := Parse(strings.NewReader("process foo {\noutput:\ntuple val(id), path('*.bam'), emit: aligned\nscript: 'echo hello'\n}"))
+			source := "process foo {\noutput:\ntuple val(id), path('*.bam'), emit: aligned\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
@@ -180,7 +186,9 @@ func TestParseTupleDeclarations(t *testing.T) {
 		})
 
 		Convey("optional qualifiers are stored on simple output declarations", func() {
-			wf, err := Parse(strings.NewReader("process foo {\noutput:\npath 'out.txt', optional: true\nscript: 'echo hello'\n}"))
+			source := "process foo {\noutput:\npath 'out.txt', optional: true\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
@@ -205,7 +213,9 @@ func TestParseTupleDeclarations(t *testing.T) {
 		})
 
 		Convey("tuple inputs accept arity qualifiers on path elements without error", func() {
-			wf, err := Parse(strings.NewReader("process foo {\ninput:\ntuple val(meta), path('reads/*', arity: '1..*')\nscript: 'echo hello'\n}"))
+			source := "process foo {\ninput:\ntuple val(meta), path('reads/*', arity: '1..*')\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Input, ShouldHaveLength, 1)
@@ -576,6 +586,7 @@ func TestParseD6CastExpressions(t *testing.T) {
 			wf, err := Parse(strings.NewReader("process foo {\ncpus '42' as Integer\nscript: 'echo hello'\n}"))
 
 			So(err, ShouldBeNil)
+
 			castExpr, ok := wf.Processes[0].Directives["cpus"].(CastExpr)
 			So(ok, ShouldBeTrue)
 			So(castExpr.TypeName, ShouldEqual, "Integer")
@@ -588,6 +599,7 @@ func TestParseD6CastExpressions(t *testing.T) {
 			wf, err := Parse(strings.NewReader("process foo {\ncpus 42 as String\nscript: 'echo hello'\n}"))
 
 			So(err, ShouldBeNil)
+
 			castExpr, ok := wf.Processes[0].Directives["cpus"].(CastExpr)
 			So(ok, ShouldBeTrue)
 			So(castExpr.TypeName, ShouldEqual, "String")
@@ -883,7 +895,11 @@ func TestParseD1MissingOperators(t *testing.T) {
 			expr, err := parseTestExpr("name ==~ /^[A-Z]+$/")
 
 			So(err, ShouldBeNil)
-			So(expr, ShouldResemble, RegexExpr{Left: VarExpr{Root: "name"}, Right: SlashyStringExpr{Value: "^[A-Z]+$"}, Full: true})
+			So(expr, ShouldResemble, RegexExpr{
+				Left:  VarExpr{Root: "name"},
+				Right: SlashyStringExpr{Value: "^[A-Z]+$"},
+				Full:  true,
+			})
 		})
 
 		Convey("spaceship parses as a BinaryExpr", func() {
@@ -1070,6 +1086,7 @@ func TestParseD4Expressions(t *testing.T) {
 			expr, err := parseTestExpr("[1, 2, 3]")
 
 			So(err, ShouldBeNil)
+
 			listExpr, ok := expr.(ListExpr)
 			So(ok, ShouldBeTrue)
 			So(listExpr.Elements, ShouldHaveLength, 3)
@@ -1082,6 +1099,7 @@ func TestParseD4Expressions(t *testing.T) {
 			expr, err := parseTestExpr("[a: 1, b: 2]")
 
 			So(err, ShouldBeNil)
+
 			mapExpr, ok := expr.(MapExpr)
 			So(ok, ShouldBeTrue)
 			So(mapExpr.Keys, ShouldResemble, []Expr{
@@ -1098,6 +1116,7 @@ func TestParseD4Expressions(t *testing.T) {
 			expr, err := parseTestExpr("[:]")
 
 			So(err, ShouldBeNil)
+
 			_, ok := expr.(MapExpr)
 			So(ok, ShouldBeTrue)
 		})
@@ -1106,6 +1125,7 @@ func TestParseD4Expressions(t *testing.T) {
 			expr, err := parseTestExpr("list[0]")
 
 			So(err, ShouldBeNil)
+
 			indexExpr, ok := expr.(IndexExpr)
 			So(ok, ShouldBeTrue)
 			So(indexExpr.Receiver, ShouldResemble, VarExpr{Root: "list"})
@@ -1197,7 +1217,9 @@ func TestParseProcessDefinitions(t *testing.T) {
 		})
 
 		Convey("publishDir stores pattern options", func() {
-			wf, err := Parse(strings.NewReader("process foo {\npublishDir '/results', pattern: '*.bam'\nscript: 'echo hello'\n}"))
+			source := "process foo {\npublishDir '/results', pattern: '*.bam'\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].PublishDir, ShouldHaveLength, 1)
@@ -1219,7 +1241,9 @@ func TestParseProcessDefinitions(t *testing.T) {
 		})
 
 		Convey("leading shebang lines are ignored", func() {
-			wf, err := Parse(strings.NewReader("#!/usr/bin/env nextflow\n# generated by remote entrypoint\nprocess foo {\nscript: 'echo hello'\n}\nworkflow { foo() }\n"))
+			source := "#!/usr/bin/env nextflow\n# generated by remote entrypoint\n" +
+				"process foo {\nscript: 'echo hello'\n}\nworkflow { foo() }\n"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes, ShouldHaveLength, 1)
@@ -1409,6 +1433,7 @@ func TestParseProcessDefinitions(t *testing.T) {
 			wf, err := Parse(strings.NewReader("process foo {\nunknownDirective true\nscript: 'echo hello'\n}"))
 
 			So(err, ShouldBeNil)
+
 			_, ok := wf.Processes[0].Directives["unknownDirective"]
 			So(ok, ShouldBeFalse)
 		})
@@ -1437,26 +1462,53 @@ func TestParseA1RemainingProcessDirectives(t *testing.T) {
 				directive string
 				source    string
 			}{
-				{name: "accelerator", directive: "accelerator", source: "process foo {\naccelerator 1, type: 'nvidia-tesla-v100'\nscript: 'echo hello'\n}"},
+				{
+					name:      "accelerator",
+					directive: "accelerator",
+					source:    "process foo {\naccelerator 1, type: 'nvidia-tesla-v100'\nscript: 'echo hello'\n}",
+				},
 				{name: "arch", directive: "arch", source: "process foo {\narch 'linux/x86_64'\nscript: 'echo hello'\n}"},
 				{name: "array", directive: "array", source: "process foo {\narray 100\nscript: 'echo hello'\n}"},
 				{name: "conda", directive: "conda", source: "process foo {\nconda 'samtools=1.17'\nscript: 'echo hello'\n}"},
-				{name: "containerOptions", directive: "containerOptions", source: "process foo {\ncontainerOptions '--gpus all'\nscript: 'echo hello'\n}"},
+				{
+					name:      "containerOptions",
+					directive: "containerOptions",
+					source:    "process foo {\ncontainerOptions '--gpus all'\nscript: 'echo hello'\n}",
+				},
 				{name: "echo", directive: "echo", source: "process foo {\necho true\nscript: 'echo hello'\n}"},
 				{name: "ext", directive: "ext", source: "process foo {\next foo: 'bar'\nscript: 'echo hello'\n}"},
 				{name: "fair", directive: "fair", source: "process foo {\nfair true\nscript: 'echo hello'\n}"},
-				{name: "machineType", directive: "machineType", source: "process foo {\nmachineType 'n1-standard-8'\nscript: 'echo hello'\n}"},
+				{
+					name:      "machineType",
+					directive: "machineType",
+					source:    "process foo {\nmachineType 'n1-standard-8'\nscript: 'echo hello'\n}",
+				},
 				{name: "maxErrors", directive: "maxErrors", source: "process foo {\nmaxErrors 5\nscript: 'echo hello'\n}"},
-				{name: "maxSubmitAwait", directive: "maxSubmitAwait", source: "process foo {\nmaxSubmitAwait '1h'\nscript: 'echo hello'\n}"},
+				{
+					name:      "maxSubmitAwait",
+					directive: "maxSubmitAwait",
+					source:    "process foo {\nmaxSubmitAwait '1h'\nscript: 'echo hello'\n}",
+				},
 				{name: "penv", directive: "penv", source: "process foo {\npenv 'smp'\nscript: 'echo hello'\n}"},
-				{name: "pod", directive: "pod", source: "process foo {\npod [label: 'app', value: 'test']\nscript: 'echo hello'\n}"},
-				{name: "resourceLabels", directive: "resourceLabels", source: "process foo {\nresourceLabels region: 'eu-west-1'\nscript: 'echo hello'\n}"},
-				{name: "resourceLimits", directive: "resourceLimits", source: "process foo {\nresourceLimits cpus: 64, memory: '256.GB'\nscript: 'echo hello'\n}"},
+				{
+					name:      "pod",
+					directive: "pod",
+					source:    "process foo {\npod [label: 'app', value: 'test']\nscript: 'echo hello'\n}",
+				},
+				{
+					name:      "resourceLabels",
+					directive: "resourceLabels",
+					source:    "process foo {\nresourceLabels region: 'eu-west-1'\nscript: 'echo hello'\n}",
+				},
+				{
+					name:      "resourceLimits",
+					directive: "resourceLimits",
+					source:    "process foo {\nresourceLimits cpus: 64, memory: '256.GB'\nscript: 'echo hello'\n}",
+				},
 				{name: "spack", directive: "spack", source: "process foo {\nspack 'samtools@1.17'\nscript: 'echo hello'\n}"},
 			}
 
 			for _, testCase := range testCases {
-				testCase := testCase
 				Convey(testCase.name+" directives are stored and warned", func() {
 					wf, stderr, err := parseProcess(testCase.source)
 
@@ -1474,20 +1526,35 @@ func TestParseA1RemainingProcessDirectives(t *testing.T) {
 				directive string
 				source    string
 			}{
-				{name: "stageInMode", directive: "stageInMode", source: "process foo {\nstageInMode 'copy'\nscript: 'echo hello'\n}"},
-				{name: "stageOutMode", directive: "stageOutMode", source: "process foo {\nstageOutMode 'move'\nscript: 'echo hello'\n}"},
-				{name: "clusterOptions", directive: "clusterOptions", source: "process foo {\nclusterOptions '--account=mylab'\nscript: 'echo hello'\n}"},
+				{
+					name:      "stageInMode",
+					directive: "stageInMode",
+					source:    "process foo {\nstageInMode 'copy'\nscript: 'echo hello'\n}",
+				},
+				{
+					name:      "stageOutMode",
+					directive: "stageOutMode",
+					source:    "process foo {\nstageOutMode 'move'\nscript: 'echo hello'\n}",
+				},
+				{
+					name:      "clusterOptions",
+					directive: "clusterOptions",
+					source:    "process foo {\nclusterOptions '--account=mylab'\nscript: 'echo hello'\n}",
+				},
 				{name: "debug", directive: "debug", source: "process foo {\ndebug true\nscript: 'echo hello'\n}"},
 				{name: "executor", directive: "executor", source: "process foo {\nexecutor 'slurm'\nscript: 'echo hello'\n}"},
 				{name: "queue", directive: "queue", source: "process foo {\nqueue 'long'\nscript: 'echo hello'\n}"},
 				{name: "scratch", directive: "scratch", source: "process foo {\nscratch true\nscript: 'echo hello'\n}"},
 				{name: "secret", directive: "secret", source: "process foo {\nsecret 'MY_TOKEN'\nscript: 'echo hello'\n}"},
 				{name: "storeDir", directive: "storeDir", source: "process foo {\nstoreDir '/data/cache'\nscript: 'echo hello'\n}"},
-				{name: "shell", directive: "shell", source: "process foo {\nshell '/bin/bash', '-euo', 'pipefail'\nscript: 'echo hello'\n}"},
+				{
+					name:      "shell",
+					directive: "shell",
+					source:    "process foo {\nshell '/bin/bash', '-euo', 'pipefail'\nscript: 'echo hello'\n}",
+				},
 			}
 
 			for _, testCase := range testCases {
-				testCase := testCase
 				Convey(testCase.name+" directives are stored and warned", func() {
 					wf, stderr, err := parseProcess(testCase.source)
 
@@ -1495,6 +1562,7 @@ func TestParseA1RemainingProcessDirectives(t *testing.T) {
 					So(wf.Processes, ShouldHaveLength, 1)
 					So(wf.Processes[0].Directives[testCase.directive], ShouldNotBeNil)
 					So(stderr, ShouldContainSubstring, "unsupported directive \""+testCase.directive+"\"")
+
 					if testCase.directive == "shell" {
 						So(wf.Processes[0].Shell, ShouldEqual, "")
 					}
@@ -1503,7 +1571,22 @@ func TestParseA1RemainingProcessDirectives(t *testing.T) {
 		})
 
 		Convey("all existing and newly accepted directives can coexist", func() {
-			wf, stderr, err := parseProcess("process foo {\ncpus 4\nmemory '8 GB'\ntime '2.h'\ndisk '10 GB'\ncontainer 'ubuntu:22.04'\nerrorStrategy 'retry'\nmaxRetries 2\nlabel 'big'\ntag 'sample'\nbeforeScript 'echo before'\nafterScript 'echo after'\nmodule 'samtools/1.17'\ncache 'lenient'\naccelerator 1, type: 'nvidia-tesla-v100'\narch 'linux/x86_64'\narray 100\nclusterOptions '--account=mylab'\nconda 'samtools=1.17'\ncontainerOptions '--gpus all'\ndebug true\necho true\nexecutor 'slurm'\next foo: 'bar'\nfair true\nmachineType 'n1-standard-8'\nmaxErrors 5\nmaxSubmitAwait '1h'\npenv 'smp'\npod [label: 'app', value: 'test']\nqueue 'long'\nresourceLabels region: 'eu-west-1'\nresourceLimits cpus: 64, memory: '256.GB'\nscratch true\nsecret 'MY_TOKEN'\nspack 'samtools@1.17'\nstageInMode 'copy'\nstageOutMode 'move'\nstoreDir '/data/cache'\nshell '/bin/bash', '-euo', 'pipefail'\nenv MY_VAR: 'value'\npublishDir '/results'\nscript: 'echo hello'\n}")
+			source := "process foo {\n" +
+				"cpus 4\nmemory '8 GB'\ntime '2.h'\ndisk '10 GB'\n" +
+				"container 'ubuntu:22.04'\nerrorStrategy 'retry'\nmaxRetries 2\n" +
+				"label 'big'\ntag 'sample'\nbeforeScript 'echo before'\n" +
+				"afterScript 'echo after'\nmodule 'samtools/1.17'\ncache 'lenient'\n" +
+				"accelerator 1, type: 'nvidia-tesla-v100'\narch 'linux/x86_64'\n" +
+				"array 100\nclusterOptions '--account=mylab'\nconda 'samtools=1.17'\n" +
+				"containerOptions '--gpus all'\ndebug true\necho true\nexecutor 'slurm'\n" +
+				"ext foo: 'bar'\nfair true\nmachineType 'n1-standard-8'\nmaxErrors 5\n" +
+				"maxSubmitAwait '1h'\npenv 'smp'\npod [label: 'app', value: 'test']\n" +
+				"queue 'long'\nresourceLabels region: 'eu-west-1'\n" +
+				"resourceLimits cpus: 64, memory: '256.GB'\nscratch true\nsecret 'MY_TOKEN'\n" +
+				"spack 'samtools@1.17'\nstageInMode 'copy'\nstageOutMode 'move'\n" +
+				"storeDir '/data/cache'\nshell '/bin/bash', '-euo', 'pipefail'\n" +
+				"env MY_VAR: 'value'\npublishDir '/results'\nscript: 'echo hello'\n}"
+			wf, stderr, err := parseProcess(source)
 
 			So(err, ShouldBeNil)
 			So(wf.Processes, ShouldHaveLength, 1)
@@ -1570,7 +1653,9 @@ func TestParseA1RemainingProcessDirectives(t *testing.T) {
 func TestParseWorkflowBlocks(t *testing.T) {
 	Convey("Parse handles A2 workflow blocks", t, func() {
 		Convey("named workflows capture take, main, and emit sections", func() {
-			wf, err := Parse(strings.NewReader("workflow ALIGN {\ntake:\nreads_ch\nmain:\nBWA(reads_ch)\nemit:\nbam = BWA.out.bam\n}"))
+			source := "workflow ALIGN {\ntake:\nreads_ch\nmain:\nBWA(reads_ch)\n" +
+				"emit:\nbam = BWA.out.bam\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1614,7 +1699,9 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("publish sections are accepted without affecting main calls", func() {
-			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nbam = 'results'\nemit:\nresult_ch\n}"))
+			source := "workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nbam = 'results'\n" +
+				"emit:\nresult_ch\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1627,7 +1714,9 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("publish sections store multiple assignments in order", func() {
-			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\na = ch_a\nb = ch_b\nemit:\nresult_ch\n}"))
+			source := "workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\na = ch_a\n" +
+				"b = ch_b\nemit:\nresult_ch\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1647,7 +1736,9 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("publish sections accept colon-style property lines without opening new sections", func() {
-			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nenabled: true\npath: 'results'\nmode: 'copy'\nemit:\nresult_ch\n}"))
+			source := "workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nenabled: true\n" +
+				"path: 'results'\nmode: 'copy'\nemit:\nresult_ch\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1659,7 +1750,9 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("publish sections skip inline closure values without terminating the workflow block", func() {
-			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nsaveAs: { filename -> \"${filename}.bam\" }\nemit:\nresult_ch\n}"))
+			source := "workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\n" +
+				"saveAs: { filename -> \"${filename}.bam\" }\nemit:\nresult_ch\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1671,7 +1764,10 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("publish inline closures still allow later top-level content to parse", func() {
-			wf, err := Parse(strings.NewReader("workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\nsaveAs: { filename -> \"${filename}.bam\" }\nemit:\nresult_ch\n}\nprocess done {\nscript: 'echo hi'\n}"))
+			source := "workflow ALIGN {\nmain:\nBWA(reads_ch)\npublish:\n" +
+				"saveAs: { filename -> \"${filename}.bam\" }\nemit:\nresult_ch\n}\n" +
+				"process done {\nscript: 'echo hi'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1775,7 +1871,10 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("workflow-body channel assignments are isolated per workflow block", func() {
-			wf, err := Parse(strings.NewReader("shared = Channel.of(9)\nworkflow named { local = Channel.of(1); foo(local, shared) }\nworkflow { bar(local, shared) }"))
+			source := "shared = Channel.of(9)\n" +
+				"workflow named { local = Channel.of(1); foo(local, shared) }\n" +
+				"workflow { bar(local, shared) }"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.SubWFs, ShouldHaveLength, 1)
@@ -1835,7 +1934,9 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("workflow main tracks assignments derived from known channel variables", func() {
-			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.of(1, 2, 3)\nfiltered = ch.filter { it > 0 }\nPROC(filtered)\n}"))
+			source := "workflow {\nmain:\nch = Channel.of(1, 2, 3)\n" +
+				"filtered = ch.filter { it > 0 }\nPROC(filtered)\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.EntryWF, ShouldNotBeNil)
@@ -1852,7 +1953,9 @@ func TestParseWorkflowBlocks(t *testing.T) {
 		})
 
 		Convey("workflow main tracks named channel selections derived from known channel variables", func() {
-			wf, err := Parse(strings.NewReader("workflow {\nmain:\nch = Channel.of(1, 2, 3)\nbranches = ch.branch { small: it < 3; big: true }\nPROC(branches.small)\n}"))
+			source := "workflow {\nmain:\nch = Channel.of(1, 2, 3)\n" +
+				"branches = ch.branch { small: it < 3; big: true }\nPROC(branches.small)\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.EntryWF, ShouldNotBeNil)
@@ -1922,19 +2025,25 @@ func TestParseWorkflowBlocks(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.of(1, 2) | flatten) }"))
 
 			So(err, ShouldBeNil)
+
 			pipeExpr, ok := wf.EntryWF.Calls[0].Args[0].(PipeExpr)
 			So(ok, ShouldBeTrue)
 			So(pipeExpr.Stages, ShouldHaveLength, 2)
 			first, ok := pipeExpr.Stages[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(first.Name, ShouldEqual, "of")
+
 			second, ok := pipeExpr.Stages[1].(ChanRef)
 			So(ok, ShouldBeTrue)
 			So(second.Name, ShouldEqual, "flatten")
 		})
 
 		Convey("workflow pipelines with bare process stages are desugared into calls", func() {
-			wf, err := Parse(strings.NewReader("#!/usr/bin/env nextflow\n\nprocess sayHello {\n    input:\n    val x\n\n    output:\n  \n stdout\n\n    script:\n    \"\"\"\n    echo '${x} world!'\n    \"\"\"\n}\n\nworkflow {\n   \nChannel.of('Bonjour', 'Ciao', 'Hello', 'Hola') | sayHello | view\n}\n"))
+			source := "#!/usr/bin/env nextflow\n\n" +
+				"process sayHello {\n    input:\n    val x\n\n    output:\n  \n stdout\n\n" +
+				"    script:\n    \"\"\"\n    echo '${x} world!'\n    \"\"\"\n}\n\n" +
+				"workflow {\n   \nChannel.of('Bonjour', 'Ciao', 'Hello', 'Hola') | sayHello | view\n}\n"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.EntryWF, ShouldNotBeNil)
@@ -2078,8 +2187,18 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 				params []string
 				body   string
 			}{
-				{name: "single explicit param", source: "workflow { foo(ch.map { item -> item.id }) }", params: []string{"item"}, body: "item.id"},
-				{name: "multiple explicit params", source: "workflow { foo(ch.filter { a, b -> a > b }) }", params: []string{"a", "b"}, body: "a > b"},
+				{
+					name:   "single explicit param",
+					source: "workflow { foo(ch.map { item -> item.id }) }",
+					params: []string{"item"},
+					body:   "item.id",
+				},
+				{
+					name:   "multiple explicit params",
+					source: "workflow { foo(ch.filter { a, b -> a > b }) }",
+					params: []string{"a", "b"},
+					body:   "a > b",
+				},
 				{name: "implicit it", source: "workflow { foo(ch.map { it * 2 }) }", params: []string{}, body: "it * 2"},
 				{name: "explicit empty params", source: "workflow { foo(ch.map { -> 42 }) }", params: []string{}, body: "42"},
 			}
@@ -2088,6 +2207,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 				wf, err := Parse(strings.NewReader(testCase.source))
 
 				So(err, ShouldBeNil)
+
 				chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 				So(chain.Operators, ShouldHaveLength, 1)
 				So(chain.Operators[0].ClosureExpr, ShouldNotBeNil)
@@ -2100,6 +2220,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.of(1,2,3).map { it * 2 }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			factory, ok := chain.Source.(ChannelFactory)
 			So(ok, ShouldBeTrue)
@@ -2114,6 +2235,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromFilePairs('/data/*_{1,2}.fq')) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "fromFilePairs")
@@ -2126,6 +2248,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.empty()) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "empty")
@@ -2136,6 +2259,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.value('hello')) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "value")
@@ -2147,6 +2271,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromList([1,2,3])) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "fromList")
@@ -2164,6 +2289,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.from(1,2,3)) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "from")
@@ -2173,10 +2299,11 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			So(intExprValue(factory.Args[2]), ShouldEqual, 3)
 		})
 
-		Convey("Channel.fromSRA parses as a recognized factory", func() {
+		Convey("Channel.fromSRA parses as a recognised factory", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromSRA('SRR1234')) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "fromSRA")
@@ -2184,10 +2311,11 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			So(factory.Args[0].(StringExpr).Value, ShouldEqual, "SRR1234")
 		})
 
-		Convey("Channel.topic parses as a recognized factory", func() {
+		Convey("Channel.topic parses as a recognised factory", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.topic('myTopic')) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "topic")
@@ -2199,6 +2327,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.watchPath('/data/*.fq')) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "watchPath")
@@ -2211,6 +2340,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.interval(100)) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "interval")
@@ -2218,10 +2348,11 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			So(intExprValue(factory.Args[0]), ShouldEqual, 100)
 		})
 
-		Convey("Channel.fromLineage parses as a recognized factory", func() {
+		Convey("Channel.fromLineage parses as a recognised factory", func() {
 			wf, err := Parse(strings.NewReader("workflow { foo(Channel.fromLineage('query')) }"))
 
 			So(err, ShouldBeNil)
+
 			factory, ok := wf.EntryWF.Calls[0].Args[0].(ChannelFactory)
 			So(ok, ShouldBeTrue)
 			So(factory.Name, ShouldEqual, "fromLineage")
@@ -2233,6 +2364,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.filter { it > 5 }.collect()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			ref, ok := chain.Source.(ChanRef)
 			So(ok, ShouldBeTrue)
@@ -2247,6 +2379,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.groupTuple()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "groupTuple")
@@ -2256,6 +2389,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.join(other)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "join")
@@ -2269,6 +2403,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.mix(a, b)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "mix")
@@ -2281,6 +2416,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.first()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "first")
@@ -2290,6 +2426,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.flatMap { it.split(',') }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "flatMap")
@@ -2300,6 +2437,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.last()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "last")
@@ -2309,6 +2447,7 @@ func TestParseChannelFactoriesAndOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.take(3)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "take")
@@ -2331,18 +2470,52 @@ func TestParsePhase4B1ChannelOperators(t *testing.T) {
 				expectFirstInt  int
 				expectFirstChan string
 			}{
-				{name: "cross", source: "workflow { foo(ch.cross(other)) }", expectName: "cross", expectChannels: 1, expectFirstChan: "other"},
+				{
+					name:            "cross",
+					source:          "workflow { foo(ch.cross(other)) }",
+					expectName:      "cross",
+					expectChannels:  1,
+					expectFirstChan: "other",
+				},
 				{name: "splitJson", source: "workflow { foo(ch.splitJson()) }", expectName: "splitJson"},
 				{name: "splitText", source: "workflow { foo(ch.splitText(by: 1000)) }", expectName: "splitText", expectArgs: 1},
 				{name: "buffer", source: "workflow { foo(ch.buffer(size: 3)) }", expectName: "buffer", expectArgs: 1},
-				{name: "collate", source: "workflow { foo(ch.collate(5)) }", expectName: "collate", expectArgs: 1, expectFirstInt: 5},
-				{name: "until", source: "workflow { foo(ch.until { it == 'DONE' }) }", expectName: "until", expectClosure: "it == 'DONE'"},
-				{name: "subscribe", source: "workflow { foo(ch.subscribe { println it }) }", expectName: "subscribe", expectClosure: "println it"},
+				{
+					name:           "collate",
+					source:         "workflow { foo(ch.collate(5)) }",
+					expectName:     "collate",
+					expectArgs:     1,
+					expectFirstInt: 5,
+				},
+				{
+					name:          "until",
+					source:        "workflow { foo(ch.until { it == 'DONE' }) }",
+					expectName:    "until",
+					expectClosure: "it == 'DONE'",
+				},
+				{
+					name:          "subscribe",
+					source:        "workflow { foo(ch.subscribe { println it }) }",
+					expectName:    "subscribe",
+					expectClosure: "println it",
+				},
 				{name: "sum", source: "workflow { foo(ch.sum()) }", expectName: "sum"},
 				{name: "min", source: "workflow { foo(ch.min()) }", expectName: "min"},
 				{name: "max", source: "workflow { foo(ch.max()) }", expectName: "max"},
-				{name: "randomSample", source: "workflow { foo(ch.randomSample(10)) }", expectName: "randomSample", expectArgs: 1, expectFirstInt: 10},
-				{name: "merge", source: "workflow { foo(ch.merge(other)) }", expectName: "merge", expectChannels: 1, expectFirstChan: "other"},
+				{
+					name:           "randomSample",
+					source:         "workflow { foo(ch.randomSample(10)) }",
+					expectName:     "randomSample",
+					expectArgs:     1,
+					expectFirstInt: 10,
+				},
+				{
+					name:            "merge",
+					source:          "workflow { foo(ch.merge(other)) }",
+					expectName:      "merge",
+					expectChannels:  1,
+					expectFirstChan: "other",
+				},
 				{name: "toInteger", source: "workflow { foo(ch.toInteger()) }", expectName: "toInteger"},
 			}
 
@@ -2350,6 +2523,7 @@ func TestParsePhase4B1ChannelOperators(t *testing.T) {
 				wf, err := Parse(strings.NewReader(testCase.source))
 
 				So(err, ShouldBeNil)
+
 				chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 				So(chain.Operators, ShouldHaveLength, 1)
 				So(chain.Operators[0].Name, ShouldEqual, testCase.expectName)
@@ -2382,6 +2556,7 @@ func TestParsePhase4B1ChannelOperators(t *testing.T) {
 				})
 
 				So(err, ShouldBeNil)
+
 				chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 				So(chain.Operators, ShouldHaveLength, 1)
 				So(chain.Operators[0].Name, ShouldEqual, operatorName)
@@ -2415,6 +2590,7 @@ func TestParseJ1DeprecatedConstructs(t *testing.T) {
 			})
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "merge")
@@ -2434,6 +2610,7 @@ func TestParseJ1DeprecatedConstructs(t *testing.T) {
 			})
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "toInteger")
@@ -2458,6 +2635,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.branch { foo: it > 5 }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators, ShouldHaveLength, 1)
 			So(chain.Operators[0].Name, ShouldEqual, "branch")
@@ -2468,6 +2646,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.combine(other)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "combine")
 			So(chain.Operators[0].Channels, ShouldHaveLength, 1)
@@ -2478,6 +2657,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.combine(other, by: 0)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "combine")
 			So(chain.Operators[0].Channels, ShouldHaveLength, 1)
@@ -2489,6 +2669,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.concat(a, b)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "concat")
 			So(chain.Operators[0].Channels, ShouldHaveLength, 2)
@@ -2500,6 +2681,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.set { result }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "set")
 			So(chain.Operators[0].Closure, ShouldEqual, "result")
@@ -2509,6 +2691,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.view()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "view")
 		})
@@ -2517,6 +2700,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.ifEmpty('default')) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "ifEmpty")
 			So(chain.Operators[0].Args, ShouldHaveLength, 1)
@@ -2527,6 +2711,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.splitCsv(header: true)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "splitCsv")
 			So(chain.Operators[0].Args, ShouldHaveLength, 1)
@@ -2536,6 +2721,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.transpose()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "transpose")
 		})
@@ -2544,6 +2730,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.flatten()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "flatten")
 		})
@@ -2552,6 +2739,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.reduce { a, b -> a + b }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "reduce")
 			So(chain.Operators[0].Closure, ShouldEqual, "a, b - > a + b")
@@ -2561,6 +2749,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.collectFile(name: 'output.txt')) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "collectFile")
 			So(chain.Operators[0].Args, ShouldHaveLength, 1)
@@ -2570,6 +2759,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.tap { branch_ch }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "tap")
 			So(chain.Operators[0].Closure, ShouldEqual, "branch_ch")
@@ -2579,6 +2769,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.dump(tag: 'debug')) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "dump")
 			So(chain.Operators[0].Args, ShouldHaveLength, 1)
@@ -2588,6 +2779,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.multiMap { it -> foo: it; bar: it }) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "multiMap")
 			So(chain.Operators[0].Closure, ShouldEqual, "it - > foo: it; bar: it")
@@ -2597,6 +2789,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.unique()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "unique")
 		})
@@ -2605,6 +2798,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.toList()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "toList")
 		})
@@ -2613,6 +2807,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.count()) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "count")
 		})
@@ -2655,6 +2850,7 @@ func TestParseHighPriorityOperators(t *testing.T) {
 			wf, err := Parse(strings.NewReader("workflow { foo(ch.tap(side)) }"))
 
 			So(err, ShouldBeNil)
+
 			chain := mustChainExpr(wf.EntryWF.Calls[0].Args[0])
 			So(chain.Operators[0].Name, ShouldEqual, "tap")
 			So(chain.Operators[0].Channels, ShouldHaveLength, 1)
@@ -2769,7 +2965,12 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 			)
 
 			stderr = captureParseStderr(func() {
-				wf, err = Parse(strings.NewReader("process foo {\nstub: touch stub.txt && echo ${params.prefix}\nexec: println params.run_step ? 'go' : 'stop'\nshell: echo !{sample_id} && touch out.txt\nwhen: params.run_step && meta.id != 'skip'\n}"))
+				source := "process foo {\n" +
+					"stub: touch stub.txt && echo ${params.prefix}\n" +
+					"exec: println params.run_step ? 'go' : 'stop'\n" +
+					"shell: echo !{sample_id} && touch out.txt\n" +
+					"when: params.run_step && meta.id != 'skip'\n}"
+				wf, err = Parse(strings.NewReader(source))
 			})
 
 			So(err, ShouldBeNil)
@@ -2791,7 +2992,10 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 			)
 
 			stderr = captureParseStderr(func() {
-				wf, err = Parse(strings.NewReader("process foo {\ninput:\nval sample\noutput:\npath 'out.txt'\nscript:\n'echo hello'\nstub:\ntouch stub.txt && echo ${params.prefix}\nwhen:\nparams.run_step\n}"))
+				source := "process foo {\ninput:\nval sample\noutput:\npath 'out.txt'\n" +
+					"script:\n'echo hello'\nstub:\ntouch stub.txt && echo ${params.prefix}\n" +
+					"when:\nparams.run_step\n}"
+				wf, err = Parse(strings.NewReader(source))
 			})
 
 			So(err, ShouldBeNil)
@@ -2852,7 +3056,9 @@ func TestParseAdditionalIOTypesAndQualifiers(t *testing.T) {
 			)
 
 			stderr = captureParseStderr(func() {
-				wf, err = Parse(strings.NewReader("process foo {\noutput:\npath '*.bam', topic: 'aligned'\nscript: 'echo hello'\n}"))
+				wf, err = Parse(strings.NewReader(
+					"process foo {\noutput:\npath '*.bam', topic: 'aligned'\nscript: 'echo hello'\n}",
+				))
 			})
 
 			So(err, ShouldBeNil)
@@ -2862,7 +3068,9 @@ func TestParseAdditionalIOTypesAndQualifiers(t *testing.T) {
 		})
 
 		Convey("emit and optional qualifiers are parsed on the same output line", func() {
-			wf, err := Parse(strings.NewReader("process foo {\noutput:\npath 'out.txt', emit: result, optional: true\nscript: 'echo hello'\n}"))
+			source := "process foo {\noutput:\npath 'out.txt', emit: result, optional: true\n" +
+				"script: 'echo hello'\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Output, ShouldHaveLength, 1)
@@ -2875,18 +3083,24 @@ func TestParseAdditionalIOTypesAndQualifiers(t *testing.T) {
 
 func captureParseStderr(run func()) string {
 	original := os.Stderr
+
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		panic(err)
 	}
+
 	os.Stderr = writer
+
 	run()
+
 	_ = writer.Close()
 	os.Stderr = original
+
 	output, err := io.ReadAll(reader)
 	if err != nil {
 		panic(err)
 	}
+
 	_ = reader.Close()
 
 	return strings.TrimSpace(string(output))

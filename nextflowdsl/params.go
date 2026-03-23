@@ -57,6 +57,7 @@ func MergeParams(sources ...map[string]any) map[string]any {
 
 func mergeParamValue(existing, incoming any) any {
 	existingMap, existingOK := existing.(map[string]any)
+
 	incomingMap, incomingOK := incoming.(map[string]any)
 	if !existingOK || !incomingOK {
 		return incoming
@@ -66,6 +67,7 @@ func mergeParamValue(existing, incoming any) any {
 	for key, value := range existingMap {
 		merged[key] = normalizeParamValue(value)
 	}
+
 	for key, value := range incomingMap {
 		merged[key] = mergeParamValue(merged[key], value)
 	}
@@ -81,6 +83,7 @@ func LoadParams(path string) (map[string]any, error) {
 	}
 
 	parser := detectParamsFormat(path, content)
+
 	params, err := parser(content)
 	if err != nil {
 		return nil, fmt.Errorf("load params %s: %w", path, err)
@@ -115,6 +118,7 @@ func SubstituteParams(s string, params map[string]any) (string, error) {
 	}
 
 	var builder strings.Builder
+
 	last := 0
 
 	for _, match := range interpolatedMatches {
@@ -133,6 +137,7 @@ func SubstituteParams(s string, params map[string]any) (string, error) {
 		}
 
 		builder.WriteString(fmt.Sprint(value))
+
 		last = match[1]
 	}
 
@@ -155,6 +160,7 @@ func replaceParamsMatches(s string, pattern *regexp.Regexp, params map[string]an
 	}
 
 	var builder strings.Builder
+
 	last := 0
 
 	for _, match := range matches {
@@ -166,6 +172,7 @@ func replaceParamsMatches(s string, pattern *regexp.Regexp, params map[string]an
 		}
 
 		ref := reference(s[match[0]:match[1]], groups)
+
 		value, err := resolveParamReference(ref, params)
 		if err != nil {
 			return "", err
@@ -174,7 +181,9 @@ func replaceParamsMatches(s string, pattern *regexp.Regexp, params map[string]an
 		if len(groups) > 1 {
 			builder.WriteString(groups[0])
 		}
+
 		builder.WriteString(fmt.Sprint(value))
+
 		last = match[1]
 	}
 
@@ -231,12 +240,12 @@ func normalizeParamsMap(params map[string]any) map[string]any {
 		return nil
 	}
 
-	normalized := make(map[string]any, len(params))
+	normalised := make(map[string]any, len(params))
 	for key, value := range params {
-		normalized[key] = normalizeParamValue(value)
+		normalised[key] = normalizeParamValue(value)
 	}
 
-	return normalized
+	return normalised
 }
 
 func normalizeParamValue(value any) any {
@@ -244,12 +253,12 @@ func normalizeParamValue(value any) any {
 	case map[string]any:
 		return normalizeParamsMap(typed)
 	case []any:
-		normalized := make([]any, len(typed))
+		normalised := make([]any, len(typed))
 		for index, item := range typed {
-			normalized[index] = normalizeParamValue(item)
+			normalised[index] = normalizeParamValue(item)
 		}
 
-		return normalized
+		return normalised
 	case json.Number:
 		if intValue, err := strconv.Atoi(typed.String()); err == nil {
 			return intValue

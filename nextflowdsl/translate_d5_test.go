@@ -57,7 +57,9 @@ func TestTranslateD5(t *testing.T) {
 				So(err, ShouldBeNil)
 			}
 
-			wf := d5Workflow(ChannelFactory{Name: "fromFilePairs", Args: []Expr{StringExpr{Value: filepath.Join(dataDir, "*_{1,2}.fq")}}})
+			wf := d5Workflow(ChannelFactory{Name: "fromFilePairs", Args: []Expr{
+				StringExpr{Value: filepath.Join(dataDir, "*_{1,2}.fq")},
+			}})
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: dataDir})
 
@@ -76,7 +78,9 @@ func TestTranslateD5(t *testing.T) {
 		})
 
 		Convey("Channel.fromPath with no matches creates zero jobs", func() {
-			wf := d5Workflow(ChannelFactory{Name: "fromPath", Args: []Expr{StringExpr{Value: filepath.Join(t.TempDir(), "*.fq")}}})
+			wf := d5Workflow(ChannelFactory{Name: "fromPath", Args: []Expr{
+				StringExpr{Value: filepath.Join(t.TempDir(), "*.fq")},
+			}})
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 

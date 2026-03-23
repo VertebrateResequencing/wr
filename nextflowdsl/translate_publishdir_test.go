@@ -50,6 +50,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "cp ")
@@ -64,6 +65,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "*.bam")
@@ -82,6 +84,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "/workflow/results/")
@@ -103,6 +106,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 2)
 			So(commands[0], ShouldContainSubstring, "/results/a/")
@@ -116,6 +120,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "ln ")
@@ -129,6 +134,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "mv ")
@@ -147,6 +153,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "/results/")
@@ -166,6 +173,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "/work/nf-work/r1/publish/sampleA.txt")
@@ -187,6 +195,7 @@ func TestTranslateD2PublishDir(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "mywf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			commands := onSuccessRunCommands(result.Jobs[0])
 			So(commands, ShouldHaveLength, 1)
 			So(commands[0], ShouldContainSubstring, "out.txt")

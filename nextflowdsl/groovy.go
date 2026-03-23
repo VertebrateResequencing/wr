@@ -229,6 +229,7 @@ func resultWithValue(value any) evalStatementResult {
 
 func evalStatementBlock(stmts []any, scope map[string]any) (evalStatementResult, error) {
 	result := evalStatementResult{}
+
 	for _, stmt := range stmts {
 		stmtResult, err := evalStatement(stmt, scope)
 		if err != nil {
@@ -243,6 +244,7 @@ func evalStatementBlock(stmts []any, scope map[string]any) (evalStatementResult,
 		if stmtResult.returned || stmtResult.broke {
 			result.returned = stmtResult.returned
 			result.broke = stmtResult.broke
+
 			return result, nil
 		}
 	}
@@ -272,6 +274,7 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		}
 
 		scope[typed.name] = cloneChannelValue(value)
+
 		return resultWithValue(value), nil
 	case evalAugAssignStmt:
 		current, ok := scope[typed.name]
@@ -290,6 +293,7 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		}
 
 		scope[typed.name] = cloneChannelValue(value)
+
 		return resultWithValue(value), nil
 	case evalReturnStmt:
 		value, err := EvalExpr(typed.expr, scope)
@@ -317,6 +321,7 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		if isTruthy(condition) {
 			return evalStatementBlock(typed.thenBody, scope)
 		}
+
 		if len(typed.elseBody) == 0 {
 			return evalStatementResult{}, nil
 		}
@@ -334,8 +339,10 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		}
 
 		result := evalStatementResult{}
+
 		for _, item := range items {
 			scope[typed.varName] = cloneChannelValue(item)
+
 			stmtResult, err := evalStatementBlock(typed.body, scope)
 			if err != nil {
 				return evalStatementResult{}, err
@@ -345,10 +352,13 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 				result.value = stmtResult.value
 				result.valueSet = true
 			}
+
 			if stmtResult.returned {
 				result.returned = true
+
 				return result, nil
 			}
+
 			if stmtResult.broke {
 				return result, nil
 			}
@@ -359,12 +369,14 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		result, execErr := evalStatementBlock(typed.tryBody, scope)
 		if execErr != nil {
 			handled := false
+
 			for _, clause := range typed.catchClauses {
 				if !matchesCatchClause(clause.typeName, execErr) {
 					continue
 				}
 
 				var previous any
+
 				hadPrevious := false
 				if clause.varName != "" {
 					previous, hadPrevious = scope[clause.varName]
@@ -381,8 +393,10 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 				}
 
 				handled = true
+
 				break
 			}
+
 			if !handled {
 				if len(typed.finallyBody) > 0 {
 					if _, finallyErr := evalStatementBlock(typed.finallyBody, scope); finallyErr != nil {
@@ -399,9 +413,11 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 			if err != nil {
 				return evalStatementResult{}, err
 			}
+
 			if finallyResult.returned || finallyResult.broke {
 				return finallyResult, nil
 			}
+
 			if finallyResult.valueSet && !result.returned {
 				result.value = finallyResult.value
 				result.valueSet = true
@@ -416,19 +432,22 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		}
 
 		for _, switchCase := range typed.cases {
-			matched, err := matchesSwitchCase(target, switchCase.expr, scope)
-			if err != nil {
-				return evalStatementResult{}, err
+			matched, matchErr := matchesSwitchCase(target, switchCase.expr, scope)
+			if matchErr != nil {
+				return evalStatementResult{}, matchErr
 			}
+
 			if !matched {
 				continue
 			}
 
-			result, err := evalStatementBlock(switchCase.body, scope)
-			if err != nil {
-				return evalStatementResult{}, err
+			result, evalErr := evalStatementBlock(switchCase.body, scope)
+			if evalErr != nil {
+				return evalStatementResult{}, evalErr
 			}
+
 			result.broke = false
+
 			return result, nil
 		}
 
@@ -440,7 +459,9 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		if err != nil {
 			return evalStatementResult{}, err
 		}
+
 		result.broke = false
+
 		return result, nil
 	default:
 		return evalStatementResult{}, fmt.Errorf("unsupported statement %T", stmt)
@@ -459,13 +480,14 @@ func evalStatementBody(body string, scope map[string]any) (any, error) {
 
 	result, err := evalStatementBlock(stmts, scope)
 	if err != nil {
-		var thrown *evalThrownException
+		var thrown *evalThrownError
 		if errors.As(err, &thrown) {
 			return nil, nil
 		}
 
 		return nil, err
 	}
+
 	if !result.valueSet {
 		return nil, nil
 	}
@@ -501,17 +523,17 @@ func newEvalStatementParser(tokens []token) *evalStatementParser {
 	return &evalStatementParser{tokens: trimmed}
 }
 
-type evalThrownException struct {
+type evalThrownError struct {
 	className string
 	message   string
 }
 
-func (e *evalThrownException) Error() string {
+func (e *evalThrownError) Error() string {
 	return e.message
 }
 
 func evalThrowStatement(expr Expr, vars map[string]any) error {
-	thrown := &evalThrownException{className: "Exception", message: "Exception"}
+	thrown := &evalThrownError{className: "Exception", message: "Exception"}
 
 	if newExpr, ok := expr.(NewExpr); ok {
 		thrown.className = shortConstructorName(newExpr.ClassName)
@@ -525,6 +547,7 @@ func evalThrowStatement(expr Expr, vars map[string]any) error {
 		} else {
 			thrown.message = thrown.className
 		}
+
 		warnf("nextflowdsl: warning: %s\n", thrown.message)
 
 		return thrown
@@ -556,6 +579,7 @@ func padStringMethod(receiver, method string, args []any, left bool) (any, error
 		if err != nil {
 			return nil, err
 		}
+
 		if pad == "" {
 			return nil, fmt.Errorf("%s() padding must not be empty", method)
 		}
@@ -651,11 +675,13 @@ func stripIndent(value string) string {
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			stripped = append(stripped, "")
+
 			continue
 		}
 
 		if indent > len(line) {
 			stripped = append(stripped, "")
+
 			continue
 		}
 
@@ -667,6 +693,7 @@ func stripIndent(value string) string {
 
 func leadingIndentWidth(line string) int {
 	width := 0
+
 	for _, r := range line {
 		if r != ' ' && r != '\t' {
 			break
@@ -810,6 +837,7 @@ func evalMapMethodCall(receiver any, method string, args []any, expr MethodCallE
 		}
 
 		grouped := make(map[any]any)
+
 		for _, entry := range entries {
 			key, err := evalSimpleClosure(closure, []any{entry.key, entry.value}, vars)
 			if err != nil {
@@ -885,6 +913,7 @@ func evalMapMethodCall(receiver any, method string, args []any, expr MethodCallE
 		}
 
 		merged := append([]mapEntry{}, entries...)
+
 		entryIndex := make(map[string]int, len(merged))
 		for index, entry := range merged {
 			entryIndex[entry.key] = index
@@ -893,6 +922,7 @@ func evalMapMethodCall(receiver any, method string, args []any, expr MethodCallE
 		for _, entry := range otherEntries {
 			if index, exists := entryIndex[entry.key]; exists {
 				merged[index] = mapEntry{key: entry.key, value: entry.value}
+
 				continue
 			}
 
@@ -945,11 +975,28 @@ func evalMapMethodCall(receiver any, method string, args []any, expr MethodCallE
 			return UnsupportedExpr{Text: renderExpr(expr)}, nil
 		}
 
+		var sortErr error
+
 		sorted := append([]mapEntry(nil), entries...)
 		sort.SliceStable(sorted, func(i, j int) bool {
-			less, _ := evalMapSortLess(closure, sorted[i], sorted[j], vars)
+			less, err := evalMapSortLess(closure, sorted[i], sorted[j], vars)
+			if err != nil {
+				sortErr = err
+
+				return false
+			}
+
 			return less
 		})
+
+		if sortErr != nil {
+			if errors.Is(sortErr, errUnsupportedClosure) {
+				return UnsupportedExpr{Text: renderExpr(expr)}, nil
+			}
+
+			return nil, sortErr
+		}
+
 		for index := 1; index < len(sorted); index++ {
 			if _, err := evalMapSortLess(closure, sorted[index-1], sorted[index], vars); err != nil {
 				return nil, err
@@ -1027,6 +1074,7 @@ func evalMapMethodCall(receiver any, method string, args []any, expr MethodCallE
 		}
 
 		_, ok := values[key]
+
 		return ok, nil
 	case "containsValue":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
@@ -1173,6 +1221,7 @@ func buildMapResult(entries []mapEntry, ordered bool) any {
 
 func newOrderedMap(entries []mapEntry) orderedMap {
 	clonedEntries := make([]mapEntry, 0, len(entries))
+
 	values := make(map[string]any, len(entries))
 	for _, entry := range entries {
 		clonedValue := cloneChannelValue(entry.value)
@@ -1275,6 +1324,7 @@ func evalNumberMethodCall(receiver any, method string, args []any) (any, error) 
 			if typed < 0 {
 				return -typed, nil
 			}
+
 			return typed, nil
 		case float64:
 			return math.Abs(typed), nil
@@ -1301,8 +1351,9 @@ func evalNumberMethodCall(receiver any, method string, args []any) (any, error) 
 		if err != nil {
 			return nil, err
 		}
+
 		if divisor == 0 {
-			return nil, fmt.Errorf("division by zero")
+			return nil, errors.New("division by zero")
 		}
 
 		switch typed := receiver.(type) {
@@ -1376,7 +1427,8 @@ func evalListMethodCallExpr(expr MethodCallExpr, receiver []any, vars map[string
 		return evalListCollectMethod(expr, receiver, vars)
 	case "any", "every", "findAll", "find":
 		return evalListClosurePredicateMethod(expr, receiver, vars)
-	case "inject", "groupBy", "countBy", "count", "collectMany", "collectEntries", "reverseEach", "eachWithIndex", "sum", "max", "min", "spread":
+	case "inject", "groupBy", "countBy", "count", "collectMany", "collectEntries",
+		"reverseEach", "eachWithIndex", "sum", "max", "min", "spread":
 		return evalListClosureMethod(expr, receiver, vars)
 	case "asType":
 		if err := requireMethodExprArgCount(expr.Method, expr.Args, 1); err != nil {
@@ -1386,6 +1438,7 @@ func evalListMethodCallExpr(expr MethodCallExpr, receiver []any, vars map[string
 		typeName, err := groovyTypeName(expr.Args[0])
 		if err != nil {
 			warnf("nextflowdsl: unsupported list asType(%s)\n", renderExpr(expr.Args[0]))
+
 			return UnsupportedExpr{Text: renderExpr(expr)}, nil
 		}
 
@@ -1394,6 +1447,7 @@ func evalListMethodCallExpr(expr MethodCallExpr, receiver []any, vars map[string
 			return evalListAsSet(receiver), nil
 		default:
 			warnf("nextflowdsl: unsupported list asType(%s)\n", typeName)
+
 			return UnsupportedExpr{Text: renderExpr(expr)}, nil
 		}
 	}
@@ -1452,6 +1506,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		}
 
 		grouped := make(map[any]any)
+
 		for _, item := range receiver {
 			key, err := evalSimpleClosure(closure, item, vars)
 			if err != nil {
@@ -1462,7 +1517,11 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 				return nil, err
 			}
 
-			current, _ := grouped[key].([]any)
+			current := []any{}
+			if existing, ok := grouped[key].([]any); ok {
+				current = existing
+			}
+
 			current = append(current, cloneChannelValue(item))
 			grouped[key] = current
 		}
@@ -1475,6 +1534,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		}
 
 		counted := make(map[any]any)
+
 		for _, item := range receiver {
 			key, err := evalSimpleClosure(closure, item, vars)
 			if err != nil {
@@ -1485,7 +1545,11 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 				return nil, err
 			}
 
-			count, _ := counted[key].(int)
+			count := 0
+			if existing, ok := counted[key].(int); ok {
+				count = existing
+			}
+
 			counted[key] = count + 1
 		}
 
@@ -1497,6 +1561,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 
 		if closure, ok := expr.Args[0].(ClosureExpr); ok {
 			count := 0
+
 			for _, item := range receiver {
 				matched, err := evalListClosurePredicate(closure, item, vars)
 				if err != nil {
@@ -1521,6 +1586,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		}
 
 		count := 0
+
 		for _, item := range receiver {
 			if reflect.DeepEqual(item, value) {
 				count++
@@ -1535,6 +1601,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		}
 
 		collected := make([]any, 0)
+
 		for _, item := range receiver {
 			value, err := evalSimpleClosure(closure, item, vars)
 			if err != nil {
@@ -1556,6 +1623,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		}
 
 		entries := make(map[any]any)
+
 		for _, item := range receiver {
 			value, err := evalSimpleClosure(closure, item, vars)
 			if err != nil {
@@ -1619,6 +1687,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		}
 
 		total := 0
+
 		if len(expr.Args) == 0 {
 			for _, item := range receiver {
 				value, err := requireIntegerOperand(item, expr.Method)
@@ -1660,6 +1729,7 @@ func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]
 		if err := requireMethodExprArgCount(expr.Method, expr.Args, 0, 1); err != nil {
 			return nil, err
 		}
+
 		if len(receiver) == 0 {
 			return nil, nil
 		}
@@ -1782,18 +1852,26 @@ func chooseListExtremum(method string, candidate, current any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
 	if !ok {
 		return false, fmt.Errorf("unsupported %s() operand %T", method, candidate)
 	}
 
-	better, _ := ordered.(bool)
+	better, ok := ordered.(bool)
+	if !ok {
+		return false, fmt.Errorf("unsupported %s() operand %T", method, candidate)
+	}
+
 	if method == "min" {
 		ordered, _, err = compareOrderedOperands(candidate, current, "<")
 		if err != nil {
 			return false, err
 		}
 
-		better, _ = ordered.(bool)
+		better, ok = ordered.(bool)
+		if !ok {
+			return false, fmt.Errorf("unsupported %s() operand %T", method, candidate)
+		}
 	}
 
 	return better, nil
@@ -1819,6 +1897,7 @@ func transposeList(receiver []any) (any, []any, bool, error) {
 
 	rows := make([][]any, 0, len(receiver))
 	width := -1
+
 	for _, item := range receiver {
 		row, ok := closureTupleValues(item)
 		if !ok {
@@ -1828,7 +1907,7 @@ func transposeList(receiver []any) (any, []any, bool, error) {
 		if width == -1 {
 			width = len(row)
 		} else if len(row) != width {
-			return nil, nil, false, fmt.Errorf("transpose() requires rows of equal length")
+			return nil, nil, false, errors.New("transpose() requires rows of equal length")
 		}
 
 		rows = append(rows, row)
@@ -1891,6 +1970,7 @@ func evalMultiAssignExpr(expr MultiAssignExpr, vars map[string]any) (any, error)
 	for index, name := range expr.Names {
 		if index < len(values) {
 			vars[name] = cloneChannelValue(values[index])
+
 			continue
 		}
 
@@ -1907,6 +1987,7 @@ func evalSharedClosure(closure ClosureExpr, value any, scope map[string]any) (an
 	}
 
 	tupleValues, hasTuple := closureTupleValues(value)
+
 	type previousValue struct {
 		value any
 		set   bool
@@ -1926,6 +2007,7 @@ func evalSharedClosure(closure ClosureExpr, value any, scope map[string]any) (an
 		if !hasTuple {
 			return nil, fmt.Errorf("closure expects %d parameters but item is %T", len(closure.Params), value)
 		}
+
 		if len(tupleValues) < len(closure.Params) {
 			return nil, fmt.Errorf("closure expects %d parameters but item has %d values", len(closure.Params), len(tupleValues))
 		}
@@ -1978,8 +2060,10 @@ type evalStatementParser struct {
 
 func (p *evalStatementParser) parseStatements() ([]any, error) {
 	stmts := make([]any, 0)
+
 	for {
 		p.skipSeparators()
+
 		if p.atEnd() {
 			return stmts, nil
 		}
@@ -2009,6 +2093,7 @@ func (p *evalStatementParser) parseStatement() (any, error) {
 			return p.parseSwitchStmt()
 		case "break":
 			p.pos++
+
 			return evalBreakStmt{}, nil
 		case "assert":
 			return p.parseAssertStmt()
@@ -2025,7 +2110,7 @@ func (p *evalStatementParser) parseStatement() (any, error) {
 
 	exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
 	if len(exprTokens) == 0 {
-		return nil, fmt.Errorf("expected expression")
+		return nil, errors.New("expected expression")
 	}
 
 	expr, err := parseExprTokens(exprTokens)
@@ -2038,6 +2123,7 @@ func (p *evalStatementParser) parseStatement() (any, error) {
 
 func (p *evalStatementParser) parseReturnStmt() (any, error) {
 	p.pos++
+
 	exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
 	if len(exprTokens) == 0 {
 		return evalReturnStmt{expr: NullExpr{}}, nil
@@ -2053,12 +2139,14 @@ func (p *evalStatementParser) parseReturnStmt() (any, error) {
 
 func (p *evalStatementParser) parseAssertStmt() (any, error) {
 	p.pos++
+
 	exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
 	if len(exprTokens) == 0 {
-		return nil, fmt.Errorf("expected assertion expression")
+		return nil, errors.New("expected assertion expression")
 	}
 
 	assertTokens, messageTokens := splitTokensOnTopLevelColon(exprTokens)
+
 	expr, err := parseExprTokens(assertTokens)
 	if err != nil {
 		return nil, err
@@ -2079,6 +2167,7 @@ func splitTokensOnTopLevelColon(tokens []token) ([]token, []token) {
 	parenDepth := 0
 	braceDepth := 0
 	bracketDepth := 0
+
 	for index, tok := range tokens {
 		switch tok.typ {
 		case tokenLParen:
@@ -2114,9 +2203,10 @@ func splitTokensOnTopLevelColon(tokens []token) ([]token, []token) {
 
 func (p *evalStatementParser) parseThrowStmt() (any, error) {
 	p.pos++
+
 	exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
 	if len(exprTokens) == 0 {
-		return nil, fmt.Errorf("expected throw expression")
+		return nil, errors.New("expected throw expression")
 	}
 
 	expr, err := parseExprTokens(exprTokens)
@@ -2129,6 +2219,7 @@ func (p *evalStatementParser) parseThrowStmt() (any, error) {
 
 func (p *evalStatementParser) parseIfStmt() (any, error) {
 	p.pos++
+
 	cond, err := p.parseParenExpr()
 	if err != nil {
 		return nil, err
@@ -2140,14 +2231,17 @@ func (p *evalStatementParser) parseIfStmt() (any, error) {
 	}
 
 	p.skipSeparators()
+
 	elseBody := []any(nil)
+
 	if !p.atEnd() && p.current().typ == tokenIdent && p.current().lit == "else" {
 		p.pos++
 		p.skipSeparators()
+
 		if !p.atEnd() && p.current().typ == tokenIdent && p.current().lit == "if" {
-			elseStmt, err := p.parseIfStmt()
-			if err != nil {
-				return nil, err
+			elseStmt, parseErr := p.parseIfStmt()
+			if parseErr != nil {
+				return nil, parseErr
 			}
 
 			elseBody = []any{elseStmt}
@@ -2164,6 +2258,7 @@ func (p *evalStatementParser) parseIfStmt() (any, error) {
 
 func (p *evalStatementParser) parseForStmt() (any, error) {
 	p.pos++
+
 	loopTokens, err := p.readWrappedTokens(tokenLParen, tokenRParen)
 	if err != nil {
 		return nil, err
@@ -2173,6 +2268,7 @@ func (p *evalStatementParser) parseForStmt() (any, error) {
 	parenDepth := 0
 	braceDepth := 0
 	bracketDepth := 0
+
 	for index, tok := range loopTokens {
 		switch tok.typ {
 		case tokenLParen:
@@ -2194,20 +2290,24 @@ func (p *evalStatementParser) parseForStmt() (any, error) {
 
 		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && tok.typ == tokenIdent && tok.lit == "in" {
 			inIndex = index
+
 			break
 		}
 	}
+
 	if inIndex <= 0 || inIndex >= len(loopTokens)-1 {
 		return nil, fmt.Errorf("unsupported expression %q", expressionText(loopTokens))
 	}
 
 	leftTokens := trimDeclarationTokens(loopTokens[:inIndex])
 	if len(leftTokens) == 0 {
-		return nil, fmt.Errorf("expected loop variable")
+		return nil, errors.New("expected loop variable")
 	}
+
 	if leftTokens[0].typ == tokenIdent && leftTokens[0].lit == "def" {
 		leftTokens = trimDeclarationTokens(leftTokens[1:])
 	}
+
 	if len(leftTokens) != 1 || leftTokens[0].typ != tokenIdent {
 		return nil, fmt.Errorf("unsupported expression %q", expressionText(loopTokens))
 	}
@@ -2227,27 +2327,32 @@ func (p *evalStatementParser) parseForStmt() (any, error) {
 
 func (p *evalStatementParser) parseTryStmt() (any, error) {
 	p.pos++
+
 	tryBody, err := p.parseSingleOrBlock()
 	if err != nil {
 		return nil, err
 	}
 
 	p.skipSeparators()
+
 	catchClauses := make([]evalCatchStmt, 0)
+
 	for !p.atEnd() && p.current().typ == tokenIdent && p.current().lit == "catch" {
 		p.pos++
-		catchTokens, err := p.readWrappedTokens(tokenLParen, tokenRParen)
-		if err != nil {
-			return nil, err
+
+		catchTokens, readErr := p.readWrappedTokens(tokenLParen, tokenRParen)
+		if readErr != nil {
+			return nil, readErr
 		}
 
 		trimmed := trimDeclarationTokens(catchTokens)
 		if len(trimmed) == 0 {
-			return nil, fmt.Errorf("expected catch clause")
+			return nil, errors.New("expected catch clause")
 		}
 
 		varName := ""
-		typeName := "Exception"
+		typeName := ""
+
 		if len(trimmed) == 1 {
 			typeName = trimmed[0].lit
 		} else {
@@ -2260,18 +2365,21 @@ func (p *evalStatementParser) parseTryStmt() (any, error) {
 			}
 		}
 
-		body, err := p.parseSingleOrBlock()
-		if err != nil {
-			return nil, err
+		body, parseErr := p.parseSingleOrBlock()
+		if parseErr != nil {
+			return nil, parseErr
 		}
 
 		catchClauses = append(catchClauses, evalCatchStmt{typeName: typeName, varName: varName, body: body})
+
 		p.skipSeparators()
 	}
 
 	finallyBody := []any(nil)
+
 	if !p.atEnd() && p.current().typ == tokenIdent && p.current().lit == "finally" {
 		p.pos++
+
 		finallyBody, err = p.parseSingleOrBlock()
 		if err != nil {
 			return nil, err
@@ -2283,6 +2391,7 @@ func (p *evalStatementParser) parseTryStmt() (any, error) {
 
 func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 	p.pos++
+
 	expr, err := p.parseParenExpr()
 	if err != nil {
 		return nil, err
@@ -2294,11 +2403,13 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 	}
 
 	stmt := evalSwitchStmt{expr: expr, cases: make([]evalSwitchCase, 0)}
+
 	index := 0
 	for index < len(bodyTokens) {
 		for index < len(bodyTokens) && (bodyTokens[index].typ == tokenNewline || bodyTokens[index].typ == tokenSemicolon) {
 			index++
 		}
+
 		if index >= len(bodyTokens) {
 			break
 		}
@@ -2307,14 +2418,17 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 		if label.typ != tokenIdent || (label.lit != "case" && label.lit != "default") {
 			return nil, fmt.Errorf("unsupported switch clause %q", label.lit)
 		}
+
 		index++
 
 		var caseExpr Expr
+
 		if label.lit == "case" {
 			clauseStart := index
 			parenDepth := 0
 			braceDepth := 0
 			bracketDepth := 0
+
 			for index < len(bodyTokens) {
 				current := bodyTokens[index]
 				switch current.typ {
@@ -2341,8 +2455,9 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 
 				index++
 			}
+
 			if index >= len(bodyTokens) || bodyTokens[index].typ != tokenColon {
-				return nil, fmt.Errorf("expected : after switch case")
+				return nil, errors.New("expected : after switch case")
 			}
 
 			caseExpr, err = parseExprTokens(trimDeclarationTokens(bodyTokens[clauseStart:index]))
@@ -2352,14 +2467,16 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 		}
 
 		if index >= len(bodyTokens) || bodyTokens[index].typ != tokenColon {
-			return nil, fmt.Errorf("expected : after switch clause")
+			return nil, errors.New("expected : after switch clause")
 		}
+
 		index++
 
 		branchStart := index
 		parenDepth := 0
 		braceDepth := 0
 		bracketDepth := 0
+
 		for index < len(bodyTokens) {
 			current := bodyTokens[index]
 			switch current.typ {
@@ -2380,7 +2497,8 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 				}
 			}
 
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && current.typ == tokenIdent && (current.lit == "case" || current.lit == "default") {
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
+				current.typ == tokenIdent && (current.lit == "case" || current.lit == "default") {
 				break
 			}
 
@@ -2408,20 +2526,22 @@ func (p *evalStatementParser) parseAssignmentStmt(declare bool) (any, error) {
 	}
 
 	if p.atEnd() || p.current().typ != tokenIdent {
-		return nil, fmt.Errorf("expected assignment target")
+		return nil, errors.New("expected assignment target")
 	}
+
 	name := p.current().lit
 	p.pos++
 
 	if p.atEnd() {
-		return nil, fmt.Errorf("expected assignment operator")
+		return nil, errors.New("expected assignment operator")
 	}
 
 	if p.current().typ == tokenAssign {
 		p.pos++
+
 		exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
 		if len(exprTokens) == 0 {
-			return nil, fmt.Errorf("expected expression")
+			return nil, errors.New("expected expression")
 		}
 
 		expr, err := parseExprTokens(exprTokens)
@@ -2435,9 +2555,10 @@ func (p *evalStatementParser) parseAssignmentStmt(declare bool) (any, error) {
 	if p.current().typ == tokenSymbol && p.peek().typ == tokenAssign {
 		op := p.current().lit
 		p.pos += 2
+
 		exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
 		if len(exprTokens) == 0 {
-			return nil, fmt.Errorf("expected expression")
+			return nil, errors.New("expected expression")
 		}
 
 		expr, err := parseExprTokens(exprTokens)
@@ -2448,13 +2569,14 @@ func (p *evalStatementParser) parseAssignmentStmt(declare bool) (any, error) {
 		return evalAugAssignStmt{name: name, op: op, expr: expr}, nil
 	}
 
-	return nil, fmt.Errorf("expected assignment operator")
+	return nil, errors.New("expected assignment operator")
 }
 
 func (p *evalStatementParser) parseSingleOrBlock() ([]any, error) {
 	p.skipSeparators()
+
 	if p.atEnd() {
-		return nil, fmt.Errorf("expected statement")
+		return nil, errors.New("expected statement")
 	}
 
 	if p.current().typ == tokenLBrace {
@@ -2483,22 +2605,25 @@ func (p *evalStatementParser) parseParenExpr() (Expr, error) {
 	return parseExprTokens(trimDeclarationTokens(tokens))
 }
 
-func (p *evalStatementParser) readWrappedTokens(open, close tokenType) ([]token, error) {
+func (p *evalStatementParser) readWrappedTokens(open, closeType tokenType) ([]token, error) {
 	if p.atEnd() || p.current().typ != open {
 		return nil, fmt.Errorf("expected %s", p.current().lit)
 	}
 
 	depth := 0
+
 	start := p.pos + 1
 	for p.pos < len(p.tokens) {
 		current := p.tokens[p.pos]
-		if current.typ == open {
+		switch current.typ {
+		case open:
 			depth++
-		} else if current.typ == close {
+		case closeType:
 			depth--
 			if depth == 0 {
 				inner := append([]token{}, p.tokens[start:p.pos]...)
 				p.pos++
+
 				return inner, nil
 			}
 		}
@@ -2506,7 +2631,7 @@ func (p *evalStatementParser) readWrappedTokens(open, close tokenType) ([]token,
 		p.pos++
 	}
 
-	return nil, fmt.Errorf("unterminated block")
+	return nil, errors.New("unterminated block")
 }
 
 func (p *evalStatementParser) readStatementExprTokens() []token {
@@ -2514,9 +2639,11 @@ func (p *evalStatementParser) readStatementExprTokens() []token {
 	parenDepth := 0
 	braceDepth := 0
 	bracketDepth := 0
+
 	for p.pos < len(p.tokens) {
 		current := p.tokens[p.pos]
-		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && (current.typ == tokenNewline || current.typ == tokenSemicolon) {
+		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
+			(current.typ == tokenNewline || current.typ == tokenSemicolon) {
 			break
 		}
 
@@ -2554,6 +2681,7 @@ func (p *evalStatementParser) startsAssignment() bool {
 	if p.atEnd() || p.current().typ != tokenIdent {
 		return false
 	}
+
 	if p.peek().typ == tokenAssign {
 		return true
 	}
@@ -2613,6 +2741,7 @@ func evalAssertStatement(expr Expr, message Expr, vars map[string]any) error {
 	}
 
 	messageText := "Assertion failed"
+
 	if message != nil {
 		resolved, messageErr := EvalExpr(message, vars)
 		if messageErr == nil && resolved != nil {
@@ -2645,7 +2774,9 @@ func isCompileTimeConstantExpr(expr Expr) bool {
 	case RegexExpr:
 		return isCompileTimeConstantExpr(typed.Left) && isCompileTimeConstantExpr(typed.Right)
 	case TernaryExpr:
-		return isCompileTimeConstantExpr(typed.Cond) && isCompileTimeConstantExpr(typed.True) && isCompileTimeConstantExpr(typed.False)
+		return isCompileTimeConstantExpr(typed.Cond) &&
+			isCompileTimeConstantExpr(typed.True) &&
+			isCompileTimeConstantExpr(typed.False)
 	case CastExpr:
 		return isCompileTimeConstantExpr(typed.Operand)
 	case ListExpr:
@@ -2662,6 +2793,7 @@ func isCompileTimeConstantExpr(expr Expr) bool {
 				return false
 			}
 		}
+
 		for _, value := range typed.Values {
 			if !isCompileTimeConstantExpr(value) {
 				return false
@@ -2682,6 +2814,7 @@ func bindWorkflowEnumValues(vars map[string]any, wf *Workflow) map[string]any {
 	}
 
 	bound := cloneEvalVars(vars)
+
 	enumValues := make(map[string]map[string]struct{}, len(wf.Enums))
 	for _, enumDef := range wf.Enums {
 		if enumDef == nil {
@@ -2703,8 +2836,9 @@ func bindWorkflowEnumValues(vars map[string]any, wf *Workflow) map[string]any {
 
 func evalSimpleFuncDef(funcDef *FuncDef, args []any, vars map[string]any) (any, error) {
 	if funcDef == nil {
-		return nil, fmt.Errorf("nil function")
+		return nil, errors.New("nil function")
 	}
+
 	if len(args) != len(funcDef.Params) {
 		return nil, fmt.Errorf("function %q expects %d arguments, got %d", funcDef.Name, len(funcDef.Params), len(args))
 	}
@@ -2900,6 +3034,7 @@ func evalRangeExpr(expr RangeExpr, vars map[string]any) (any, error) {
 	}
 
 	step := 1
+
 	limit := end
 	if start > end {
 		step = -1
@@ -2932,7 +3067,7 @@ func evalSpreadExpr(expr SpreadExpr, vars map[string]any) (any, error) {
 
 	refValue := reflect.ValueOf(receiver)
 	if !refValue.IsValid() {
-		return nil, fmt.Errorf("unsupported spread receiver <nil>")
+		return nil, errors.New("unsupported spread receiver <nil>")
 	}
 
 	if refValue.Kind() != reflect.Array && refValue.Kind() != reflect.Slice {
@@ -2944,6 +3079,7 @@ func evalSpreadExpr(expr SpreadExpr, vars map[string]any) (any, error) {
 		item := refValue.Index(index).Interface()
 		if item == nil {
 			values = append(values, nil)
+
 			continue
 		}
 
@@ -3033,11 +3169,13 @@ func evalStaticMethodCall(className, method string, args []any) (any, bool, erro
 			switch typed := args[0].(type) {
 			case string:
 				value, err := strconv.Atoi(typed)
+
 				return value, true, err
 			case int:
 				return typed, true, nil
 			default:
 				value, err := strconv.Atoi(fmt.Sprint(typed))
+
 				return value, true, err
 			}
 		}
@@ -3084,6 +3222,7 @@ func matchesGroovyType(value any, typeName string) bool {
 	switch typeName {
 	case "String":
 		_, ok := value.(string)
+
 		return ok
 	case "Integer":
 		switch value.(type) {
@@ -3098,19 +3237,23 @@ func matchesGroovyType(value any, typeName string) bool {
 		}
 
 		refValue := reflect.ValueOf(value)
+
 		return refValue.IsValid() && (refValue.Kind() == reflect.Array || refValue.Kind() == reflect.Slice)
 	case "Map":
 		if _, ok := value.(map[string]any); ok {
 			return true
 		}
+
 		if _, ok := value.(orderedMap); ok {
 			return true
 		}
 
 		refValue := reflect.ValueOf(value)
+
 		return refValue.IsValid() && refValue.Kind() == reflect.Map && refValue.Type().Key().Kind() == reflect.String
 	case "Boolean":
 		_, ok := value.(bool)
+
 		return ok
 	default:
 		return false
@@ -3124,10 +3267,11 @@ func resolvePropertyPath(current any, property string, allowNil bool) (any, erro
 				return nil, nil
 			}
 
-			return nil, fmt.Errorf("invalid value")
+			return nil, errors.New("invalid value")
 		}
 
 		var err error
+
 		current, err = lookupVariablePart(current, part)
 		if err != nil {
 			return nil, err
@@ -3154,6 +3298,7 @@ func containsValue(container, needle any) (bool, error) {
 		}
 
 		_, exists := typed[key]
+
 		return exists, nil
 	case orderedMap:
 		key, ok := needle.(string)
@@ -3162,6 +3307,7 @@ func containsValue(container, needle any) (bool, error) {
 		}
 
 		_, exists := typed.values[key]
+
 		return exists, nil
 	case string:
 		value, ok := needle.(string)
@@ -3174,7 +3320,7 @@ func containsValue(container, needle any) (bool, error) {
 
 	refValue := reflect.ValueOf(container)
 	if !refValue.IsValid() {
-		return false, fmt.Errorf("unsupported membership target <nil>")
+		return false, errors.New("unsupported membership target <nil>")
 	}
 
 	if refValue.Kind() != reflect.Array && refValue.Kind() != reflect.Slice {
@@ -3218,6 +3364,7 @@ func compareOrdering[T ~int | ~string](left, right T) int {
 	if left < right {
 		return -1
 	}
+
 	if left > right {
 		return 1
 	}
@@ -3238,6 +3385,7 @@ func requireIntegerOperand(value any, operator string) (int, error) {
 	case int64:
 		return int(typed), nil
 	case uint:
+		//nolint:gosec // The result is represented as int throughout the evaluator API.
 		return int(typed), nil
 	case uint8:
 		return int(typed), nil
@@ -3246,6 +3394,7 @@ func requireIntegerOperand(value any, operator string) (int, error) {
 	case uint32:
 		return int(typed), nil
 	case uint64:
+		//nolint:gosec // The result is represented as int throughout the evaluator API.
 		return int(typed), nil
 	default:
 		return 0, fmt.Errorf("unsupported arithmetic operand %T for %q", value, operator)
@@ -3391,6 +3540,7 @@ func powInt(base, exponent int) (any, error) {
 	}
 
 	result := 1
+
 	for exponent > 0 {
 		if exponent%2 == 1 {
 			result *= base
@@ -3433,6 +3583,7 @@ func closureTupleValues(value any) ([]any, bool) {
 	if !refValue.IsValid() {
 		return nil, false
 	}
+
 	if refValue.Kind() != reflect.Array && refValue.Kind() != reflect.Slice {
 		return nil, false
 	}
@@ -3466,18 +3617,21 @@ func interpolateGroovyString(value string, vars map[string]any) (string, error) 
 	}
 
 	var builder strings.Builder
+
 	last := 0
 
 	for _, match := range matches {
 		builder.WriteString(value[last:match[0]])
 
 		exprText := strings.TrimSpace(value[match[2]:match[3]])
+
 		resolved, err := resolveInterpolation(exprText, vars)
 		if err != nil {
 			return "", err
 		}
 
 		builder.WriteString(fmt.Sprint(resolved))
+
 		last = match[1]
 	}
 
@@ -3490,11 +3644,13 @@ func bindClosureVars(vars map[string]any, closure ClosureExpr, value any) (map[s
 	scope := cloneEvalVars(vars)
 	if len(closure.Params) == 0 {
 		scope["it"] = cloneChannelValue(value)
+
 		return scope, nil
 	}
 
 	if len(closure.Params) == 1 {
 		scope[closure.Params[0]] = cloneChannelValue(value)
+
 		return scope, nil
 	}
 
@@ -3502,6 +3658,7 @@ func bindClosureVars(vars map[string]any, closure ClosureExpr, value any) (map[s
 	if !ok {
 		return nil, fmt.Errorf("closure expects %d parameters but item is %T", len(closure.Params), value)
 	}
+
 	if len(values) < len(closure.Params) {
 		return nil, fmt.Errorf("closure expects %d parameters but item has %d values", len(closure.Params), len(values))
 	}
@@ -3587,6 +3744,7 @@ func resolveExprPath(root, path string, vars map[string]any) (any, error) {
 		if value, ok := resolveEnumExprPath(root, path, vars); ok {
 			return value, nil
 		}
+
 		if root == "params" {
 			return nil, nil
 		}
@@ -3600,6 +3758,7 @@ func resolveExprPath(root, path string, vars map[string]any) (any, error) {
 
 	for _, part := range strings.Split(path, ".") {
 		var err error
+
 		current, err = lookupVariablePart(current, part)
 		if err != nil {
 			if root == "params" {
@@ -3784,7 +3943,7 @@ func evalIndexExpr(expr IndexExpr, vars map[string]any) (any, error) {
 
 	refValue := reflect.ValueOf(receiver)
 	if !refValue.IsValid() {
-		return nil, fmt.Errorf("unsupported index target <nil>")
+		return nil, errors.New("unsupported index target <nil>")
 	}
 
 	if refValue.Kind() == reflect.Slice || refValue.Kind() == reflect.Array {
@@ -4054,6 +4213,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		parts := strings.Split(receiver, delim)
+
 		values := make([]any, 0, len(parts))
 		for _, part := range parts {
 			values = append(values, part)
@@ -4066,6 +4226,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		delimiters := " \t\r\n"
+
 		if len(args) == 1 {
 			parsedDelimiters, err := requireStringArg(method, args[0])
 			if err != nil {
@@ -4078,6 +4239,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		parts := strings.FieldsFunc(receiver, func(r rune) bool {
 			return strings.ContainsRune(delimiters, r)
 		})
+
 		values := make([]any, 0, len(parts))
 		for _, part := range parts {
 			values = append(values, part)
@@ -4093,8 +4255,9 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		if err != nil {
 			return nil, err
 		}
+
 		if count < 0 {
-			return nil, fmt.Errorf("multiply count must be non-negative")
+			return nil, errors.New("multiply count must be non-negative")
 		}
 
 		return strings.Repeat(receiver, count), nil
@@ -4117,7 +4280,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		if start < 0 || end < start || end > len(receiver) {
-			return nil, fmt.Errorf("substring indices out of range")
+			return nil, errors.New("substring indices out of range")
 		}
 
 		return receiver[start:end], nil
@@ -4125,7 +4288,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		return padStringMethod(receiver, method, args, true)
 	case "padRight":
 		return padStringMethod(receiver, method, args, false)
-	case "capitalize":
+	case "capitalise":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, err
 		}
@@ -4173,6 +4336,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		lines := splitStringLines(receiver)
+
 		values := make([]any, 0, len(lines))
 		for _, line := range lines {
 			values = append(values, line)
@@ -4213,6 +4377,7 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		lines := splitStringLines(receiver)
+
 		results := make([]any, 0, len(lines))
 		for _, line := range lines {
 			result, err := evalSimpleClosure(closure, line, nil)
@@ -4260,8 +4425,9 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, nil, false, err
 		}
+
 		if len(receiver) == 0 {
-			return nil, nil, false, fmt.Errorf("first() on empty list")
+			return nil, nil, false, errors.New("first() on empty list")
 		}
 
 		return receiver[0], nil, false, nil
@@ -4269,8 +4435,9 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, nil, false, err
 		}
+
 		if len(receiver) == 0 {
-			return nil, nil, false, fmt.Errorf("last() on empty list")
+			return nil, nil, false, errors.New("last() on empty list")
 		}
 
 		return receiver[len(receiver)-1], nil, false, nil
@@ -4322,10 +4489,28 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		}
 
 		sorted := cloneChannelSlice(receiver)
+
+		var sortErr error
+
 		sort.Slice(sorted, func(i, j int) bool {
-			less, _ := lessSortableValue(sorted[i], sorted[j])
+			if sortErr != nil {
+				return false
+			}
+
+			less, err := lessSortableValue(sorted[i], sorted[j])
+			if err != nil {
+				sortErr = err
+
+				return false
+			}
+
 			return less
 		})
+
+		if sortErr != nil {
+			return nil, nil, false, sortErr
+		}
+
 		for index := 1; index < len(sorted); index++ {
 			if _, err := lessSortableValue(sorted[index-1], sorted[index]); err != nil {
 				return nil, nil, false, err
@@ -4377,9 +4562,11 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err != nil {
 			return nil, nil, false, err
 		}
+
 		if count < 0 {
-			return nil, nil, false, fmt.Errorf("take count must be non-negative")
+			return nil, nil, false, errors.New("take count must be non-negative")
 		}
+
 		if count > len(receiver) {
 			count = len(receiver)
 		}
@@ -4394,9 +4581,11 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err != nil {
 			return nil, nil, false, err
 		}
+
 		if count < 0 {
-			return nil, nil, false, fmt.Errorf("drop count must be non-negative")
+			return nil, nil, false, errors.New("drop count must be non-negative")
 		}
+
 		if count > len(receiver) {
 			count = len(receiver)
 		}
@@ -4423,6 +4612,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, nil, false, err
 		}
+
 		if len(receiver) == 0 {
 			return nil, nil, false, nil
 		}
@@ -4432,6 +4622,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, nil, false, err
 		}
+
 		if len(receiver) <= 1 {
 			return []any{}, nil, false, nil
 		}
@@ -4441,6 +4632,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, nil, false, err
 		}
+
 		if len(receiver) == 0 {
 			return []any{}, nil, false, nil
 		}
@@ -4450,11 +4642,13 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err := requireMethodArgCount(method, args, 0); err != nil {
 			return nil, nil, false, err
 		}
+
 		if len(receiver) == 0 {
 			return nil, []any{}, true, nil
 		}
 
 		updated := cloneChannelSlice(receiver[:len(receiver)-1])
+
 		return cloneChannelValue(receiver[len(receiver)-1]), updated, true, nil
 	case "push", "add":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
@@ -4462,6 +4656,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		}
 
 		updated := append(cloneChannelSlice(receiver), cloneChannelValue(args[0]))
+
 		return updated, updated, true, nil
 	case "addAll":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
@@ -4475,6 +4670,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 
 		updated := cloneChannelSlice(receiver)
 		updated = append(updated, cloneChannelSlice(other)...)
+
 		return updated, updated, true, nil
 	case "remove":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
@@ -4485,6 +4681,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		if err != nil {
 			return nil, nil, false, err
 		}
+
 		if index < 0 || index >= len(receiver) {
 			return nil, nil, false, fmt.Errorf("remove index %d out of range", index)
 		}
@@ -4492,6 +4689,7 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 		updated := make([]any, 0, len(receiver)-1)
 		updated = append(updated, cloneChannelSlice(receiver[:index])...)
 		updated = append(updated, cloneChannelSlice(receiver[index+1:])...)
+
 		return cloneChannelValue(receiver[index]), updated, true, nil
 	case "contains":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
@@ -4552,7 +4750,11 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, []any, 
 
 		return reversed, nil, false, nil
 	case "collect":
-		return UnsupportedExpr{Text: renderExpr(MethodCallExpr{Receiver: UnsupportedExpr{Text: renderValueForUnsupported(receiver)}, Method: method, Args: renderArgsForUnsupported(args)})}, nil, false, nil
+		return UnsupportedExpr{Text: renderExpr(MethodCallExpr{
+			Receiver: UnsupportedExpr{Text: renderValueForUnsupported(receiver)},
+			Method:   method,
+			Args:     renderArgsForUnsupported(args),
+		})}, nil, false, nil
 	default:
 		return nil, nil, false, fmt.Errorf("unsupported list method %q", method)
 	}
@@ -4607,18 +4809,20 @@ func lookupVariablePart(current any, part string) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("missing key %q", part)
 		}
+
 		return value, nil
 	case orderedMap:
 		value, ok := typed.values[part]
 		if !ok {
 			return nil, fmt.Errorf("missing key %q", part)
 		}
+
 		return value, nil
 	}
 
 	refValue := reflect.ValueOf(current)
 	if !refValue.IsValid() {
-		return nil, fmt.Errorf("invalid value")
+		return nil, errors.New("invalid value")
 	}
 
 	if refValue.Kind() == reflect.Map && refValue.Type().Key().Kind() == reflect.String {
@@ -4626,6 +4830,7 @@ func lookupVariablePart(current any, part string) (any, error) {
 		if !result.IsValid() {
 			return nil, fmt.Errorf("missing key %q", part)
 		}
+
 		return result.Interface(), nil
 	}
 
@@ -4644,6 +4849,7 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		if !leftBool {
 			return false, nil
 		}
@@ -4664,6 +4870,7 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		if leftBool {
 			return true, nil
 		}
@@ -4706,8 +4913,8 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 		}
 	}
 
-	if result, ok, err := compareOrderedOperands(left, right, expr.Op); ok || err != nil {
-		return result, err
+	if result, ok, compareErr := compareOrderedOperands(left, right, expr.Op); ok || compareErr != nil {
+		return result, compareErr
 	}
 
 	leftInt, err := requireIntegerOperand(left, expr.Op)
@@ -4729,12 +4936,13 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 		return leftInt * rightInt, nil
 	case "/":
 		if rightInt == 0 {
-			return nil, fmt.Errorf("division by zero")
+			return nil, errors.New("division by zero")
 		}
+
 		return leftInt / rightInt, nil
 	case "%":
 		if rightInt == 0 {
-			return nil, fmt.Errorf("division by zero")
+			return nil, errors.New("division by zero")
 		}
 
 		return leftInt % rightInt, nil
@@ -4748,21 +4956,22 @@ func evalBinaryExpr(expr BinaryExpr, vars map[string]any) (any, error) {
 		return leftInt | rightInt, nil
 	case "<<":
 		if rightInt < 0 {
-			return nil, fmt.Errorf("negative shift count")
+			return nil, errors.New("negative shift count")
 		}
 
 		return leftInt << uint(rightInt), nil
 	case ">>":
 		if rightInt < 0 {
-			return nil, fmt.Errorf("negative shift count")
+			return nil, errors.New("negative shift count")
 		}
 
 		return leftInt >> uint(rightInt), nil
 	case ">>>":
 		if rightInt < 0 {
-			return nil, fmt.Errorf("negative shift count")
+			return nil, errors.New("negative shift count")
 		}
 
+		//nolint:gosec // Unsigned right shift matches Groovy semantics for evaluator arithmetic.
 		return int(uint32(leftInt) >> uint(rightInt)), nil
 	case ">":
 		return leftInt > rightInt, nil
@@ -4826,7 +5035,7 @@ func EvalExpr(expr any, vars map[string]any) (any, error) {
 	case BoolExpr:
 		return value.Value, nil
 	case nil:
-		return nil, fmt.Errorf("unsupported expression <nil>")
+		return nil, errors.New("unsupported expression <nil>")
 	default:
 		return nil, fmt.Errorf("unsupported expression %T", expr)
 	}

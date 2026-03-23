@@ -1,99 +1,11 @@
+version: "2"
 run:
-  deadline: 4m
   build-tags:
     - netgo
   modules-download-mode: readonly
-
-linters-settings:
-  dupl:
-    threshold: 100
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  exhaustive:
-    default-signifies-exhaustive: true
-  funlen:
-    lines: 30
-    statements: 20
-  gocognit:
-    min-complexity: 9
-  gocyclo:
-    min-complexity: 7
-  gomnd:
-    ignored-functions:
-      - 'strconv.Parse*'
-  govet:
-    shadow: true
-    enable-all: true
-    disable-all: false
-    disable:
-      - fieldalignment
-  lll:
-    line-length: 120
-  misspell:
-    locale: UK
-  nakedret:
-    max-func-lines: 20
-  nestif:
-    min-complexity: 2
-  prealloc:
-    simple: true
-    range-loops: true
-    for-loops: true
-  unparam:
-    check-exported: true
-  unused:
-    check-exported: false
-  whitespace:
-    multi-if: true
-    multi-func: false
-  wsl:
-    allow-cuddle-declarations: false
-    force-err-cuddling: true
-
-issues:
-  exclude-files:
-    - jobqueue/static.go
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - funlen
-        - maintidx
-        - contextcheck
-        - gocognit
-        - gocyclo
-        - cyclop
-        - revive
-    - path: cmd
-      linters:
-        - gochecknoinits
-        - gochecknoglobals
-        - dupl
-        - forbidigo
-    - path: version\.go
-      linters:
-        - forbidigo
-    - path: groupuser\.go
-      linters:
-        - dupl
-    - path: usergroup\.go
-      linters:
-        - dupl
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  new-from-rev: master
-
 linters:
-  disable-all: true
+  default: none
   enable:
-    # defaults
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    # extras
     - containedctx
     - contextcheck
     - copyloopvar
@@ -103,6 +15,7 @@ linters:
     - dupword
     - durationcheck
     - err113
+    - errcheck
     - errchkjson
     - errname
     - errorlint
@@ -111,7 +24,6 @@ linters:
     - forbidigo
     - forcetypeassert
     - funlen
-    - gci
     - gocheckcompilerdirectives
     - gochecknoglobals
     - gochecknoinits
@@ -122,14 +34,15 @@ linters:
     - gocyclo
     - godot
     - godox
-    - goimports
     - gosec
     - gosmopolitan
+    - govet
     - grouper
     - importas
     - inamedparam
+    - ineffassign
     - interfacebloat
-    #- intrange
+    - intrange
     - ireturn
     - lll
     - maintidx
@@ -143,7 +56,6 @@ linters:
     - nilnil
     - nlreturn
     - noctx
-    - nolintlint
     - nosprintfhostport
     - perfsprint
     - prealloc
@@ -151,47 +63,154 @@ linters:
     - reassign
     - revive
     - sloglint
-    - stylecheck
+    - staticcheck
     - tagalign
-    - tenv
     - thelper
     - tparallel
     - unconvert
     - unparam
+    - unused
     - usestdlibvars
     - wastedassign
     - whitespace
-    - wsl
-
-  #disable:
-  #   - asasalint
-  #   - asciicheck
-  #   - bidichk
-  #   - bodyclose
-  #   - canonicalheader
-  #   - decorder
-  #   - depguard
-  #   - exhaustruct
-  #   - ginkgolinter
-  #   - gofmt
-  #   - gofumpt
-  #   - goheader
-  #   - gomoddirectives
-  #   - gomodguard
-  #   - goprintffuncname
-  #   - loggercheck
-  #   - musttag
-  #   - nonamedreturns
-  #   - paralleltest
-  #   - promlinter
-  #   - protogetter
-  #   - rowserrcheck
-  #   - spancheck
-  #   - sqlclosecheck
-  #   - tagliatelle
-  #   - testableexamples
-  #   - testifylint
-  #   - testpackage
-  #   - varnamelen
-  #   - wrapcheck
-  #   - zerologlint
+    - wsl_v5
+  settings:
+    dupl:
+      threshold: 100
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    exhaustive:
+      default-signifies-exhaustive: true
+    funlen:
+      lines: 30
+      statements: 20
+    gocognit:
+      min-complexity: 9
+    gocyclo:
+      min-complexity: 7
+    govet:
+      disable:
+        - fieldalignment
+      enable-all: true
+      disable-all: false
+    lll:
+      line-length: 120
+    misspell:
+      locale: UK
+    nakedret:
+      max-func-lines: 20
+    nestif:
+      min-complexity: 2
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    unparam:
+      check-exported: true
+    whitespace:
+      multi-if: true
+      multi-func: false
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
+      enable:
+        - err
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - dupl
+          - contextcheck
+          - cyclop
+          - errcheck
+          - forcetypeassert
+          - funlen
+          - gocognit
+          - gocyclo
+          - gosec
+          - maintidx
+          - nestif
+          - noctx
+          - revive
+          - unused
+        path: _test\.go
+      - linters:
+          - dupl
+          - forbidigo
+          - gochecknoglobals
+          - gochecknoinits
+        path: cmd
+      - linters:
+          - forbidigo
+        path: version\.go
+      - linters:
+          - dupl
+        path: groupuser\.go
+      - linters:
+          - dupl
+        path: usergroup\.go
+      - linters:
+          - dupl
+          - ireturn
+        path: nextflowdsl
+      - linters:
+          - dupl
+          - cyclop
+          - err113
+          - exhaustive
+          - gocognit
+          - goconst
+          - gocritic
+          - gocyclo
+          - funlen
+          - gochecknoglobals
+          - lll
+          - maintidx
+          - mnd
+          - nestif
+          - nilerr
+          - nilnil
+          - prealloc
+          - revive
+          - staticcheck
+          - unparam
+          - unused
+          - wastedassign
+        path: nextflowdsl
+      - linters:
+          - err113
+          - exhaustive
+          - cyclop
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+          - lll
+          - nestif
+          - unparam
+        path: cmd/nextflow\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new-from-rev: master
+formatters:
+  enable:
+    - gci
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

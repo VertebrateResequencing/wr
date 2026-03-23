@@ -37,39 +37,79 @@ func TestTranslateD6(t *testing.T) {
 		Convey("collect collapses indexed upstream jobs into one downstream job with all dependencies", func() {
 			wf := &Workflow{
 				Processes: []*Process{
-					d6Process("upstream", []*Declaration{{Kind: "val", Name: "x"}}, []*Declaration{{Kind: "val", Name: "out"}}, "echo $x"),
+					d6Process(
+						"upstream",
+						[]*Declaration{{Kind: "val", Name: "x"}},
+						[]*Declaration{{Kind: "val", Name: "out"}},
+						"echo $x",
+					),
 					d6Process("merge", []*Declaration{{Kind: "val", Name: "reads"}}, nil, "echo $reads"),
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "upstream", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}}}},
-					{Target: "merge", Args: []ChanExpr{ChannelChain{Source: ChanRef{Name: "upstream.out"}, Operators: []ChannelOperator{{Name: "collect"}}}}},
+					{
+						Target: "upstream",
+						Args: []ChanExpr{ChannelFactory{
+							Name: "of",
+							Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}},
+						}},
+					},
+					{
+						Target: "merge",
+						Args: []ChanExpr{ChannelChain{
+							Source:    ChanRef{Name: "upstream.out"},
+							Operators: []ChannelOperator{{Name: "collect"}},
+						}},
+					},
 				}},
 			}
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			mergeJobs := jobsWithReqGroup(result.Jobs, "nf.merge")
 			So(mergeJobs, ShouldHaveLength, 1)
-			So(mergeJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.upstream.0", "nf.r1.upstream.1", "nf.r1.upstream.2"})
+			So(
+				mergeJobs[0].Dependencies.DepGroups(),
+				ShouldResemble,
+				[]string{"nf.r1.upstream.0", "nf.r1.upstream.1", "nf.r1.upstream.2"},
+			)
 			So(mergeJobs[0].Cmd, ShouldContainSubstring, "export reads='1 2 3'")
 		})
 
 		Convey("first keeps only the first upstream item", func() {
 			wf := &Workflow{
 				Processes: []*Process{
-					d6Process("upstream", []*Declaration{{Kind: "val", Name: "x"}}, []*Declaration{{Kind: "val", Name: "out"}}, "echo $x"),
+					d6Process(
+						"upstream",
+						[]*Declaration{{Kind: "val", Name: "x"}},
+						[]*Declaration{{Kind: "val", Name: "out"}},
+						"echo $x",
+					),
 					d6Process("peek", []*Declaration{{Kind: "val", Name: "reads"}}, nil, "echo $reads"),
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "upstream", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}}}}},
-					{Target: "peek", Args: []ChanExpr{ChannelChain{Source: ChanRef{Name: "upstream.out"}, Operators: []ChannelOperator{{Name: "first"}}}}},
+					{
+						Target: "upstream",
+						Args: []ChanExpr{ChannelFactory{
+							Name: "of",
+							Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}},
+						}},
+					},
+					{
+						Target: "peek",
+						Args: []ChanExpr{ChannelChain{
+							Source:    ChanRef{Name: "upstream.out"},
+							Operators: []ChannelOperator{{Name: "first"}},
+						}},
+					},
 				}},
 			}
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			peekJobs := jobsWithReqGroup(result.Jobs, "nf.peek")
 			So(peekJobs, ShouldHaveLength, 1)
 			So(peekJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.upstream.0"})
@@ -77,7 +117,10 @@ func TestTranslateD6(t *testing.T) {
 		})
 
 		Convey("groupTuple creates one downstream job per group key", func() {
-			call := &Call{Target: "foo", Args: []ChanExpr{ChannelChain{Source: ChanRef{Name: "pairs"}, Operators: []ChannelOperator{{Name: "groupTuple"}}}}}
+			call := &Call{Target: "foo", Args: []ChanExpr{ChannelChain{
+				Source:    ChanRef{Name: "pairs"},
+				Operators: []ChannelOperator{{Name: "groupTuple"}},
+			}}}
 			translated := map[string]translatedCall{
 				"pairs": {
 					items: []channelItem{
@@ -91,12 +134,29 @@ func TestTranslateD6(t *testing.T) {
 				},
 			}
 
-			jobs, _, err := translateProcessCall(d6Process("foo", []*Declaration{{Kind: "val", Name: "group"}}, nil, "echo $group"), call, nil, translated, &ProcessDefaults{}, nil, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			jobs, _, err := translateProcessCall(
+				d6Process("foo", []*Declaration{{Kind: "val", Name: "group"}}, nil, "echo $group"),
+				call,
+				nil,
+				translated,
+				&ProcessDefaults{},
+				nil,
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 2)
-			So(jobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.upstream.0", "nf.r1.upstream.1", "nf.r1.upstream.2"})
-			So(jobs[1].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.upstream.3", "nf.r1.upstream.4", "nf.r1.upstream.5"})
+			So(
+				jobs[0].Dependencies.DepGroups(),
+				ShouldResemble,
+				[]string{"nf.r1.upstream.0", "nf.r1.upstream.1", "nf.r1.upstream.2"},
+			)
+			So(
+				jobs[1].Dependencies.DepGroups(),
+				ShouldResemble,
+				[]string{"nf.r1.upstream.3", "nf.r1.upstream.4", "nf.r1.upstream.5"},
+			)
 		})
 
 		Convey("filter reduces downstream job count to matching items", func() {
@@ -105,7 +165,16 @@ func TestTranslateD6(t *testing.T) {
 				EntryWF: &WorkflowBlock{Calls: []*Call{{
 					Target: "foo",
 					Args: []ChanExpr{ChannelChain{
-						Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 4}, IntExpr{Value: 5}}},
+						Source: ChannelFactory{
+							Name: "of",
+							Args: []Expr{
+								IntExpr{Value: 1},
+								IntExpr{Value: 2},
+								IntExpr{Value: 3},
+								IntExpr{Value: 4},
+								IntExpr{Value: 5},
+							},
+						},
 						Operators: []ChannelOperator{{Name: "filter", Closure: "it > 3"}},
 					}},
 				}}},
@@ -114,6 +183,7 @@ func TestTranslateD6(t *testing.T) {
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			fooJobs := jobsWithReqGroup(result.Jobs, "nf.foo")
 			So(fooJobs, ShouldHaveLength, 2)
 			So(fooJobs[0].Cmd, ShouldContainSubstring, "export x='4'")
@@ -121,13 +191,35 @@ func TestTranslateD6(t *testing.T) {
 		})
 
 		Convey("mix merges both input channels into downstream fanout", func() {
-			call := &Call{Target: "bar", Args: []ChanExpr{ChannelChain{Source: ChanRef{Name: "ch1"}, Operators: []ChannelOperator{{Name: "mix", Channels: []ChanExpr{ChanRef{Name: "ch2"}}}}}}}
+			call := &Call{Target: "bar", Args: []ChanExpr{ChannelChain{
+				Source: ChanRef{Name: "ch1"},
+				Operators: []ChannelOperator{{
+					Name:     "mix",
+					Channels: []ChanExpr{ChanRef{Name: "ch2"}},
+				}},
+			}}}
 			translated := map[string]translatedCall{
-				"ch1": {items: []channelItem{{value: 1, depGroups: []string{"nf.r1.left.0"}}, {value: 2, depGroups: []string{"nf.r1.left.1"}}}},
-				"ch2": {items: []channelItem{{value: 3, depGroups: []string{"nf.r1.right.0"}}, {value: 4, depGroups: []string{"nf.r1.right.1"}}, {value: 5, depGroups: []string{"nf.r1.right.2"}}}},
+				"ch1": {items: []channelItem{
+					{value: 1, depGroups: []string{"nf.r1.left.0"}},
+					{value: 2, depGroups: []string{"nf.r1.left.1"}},
+				}},
+				"ch2": {items: []channelItem{
+					{value: 3, depGroups: []string{"nf.r1.right.0"}},
+					{value: 4, depGroups: []string{"nf.r1.right.1"}},
+					{value: 5, depGroups: []string{"nf.r1.right.2"}},
+				}},
 			}
 
-			jobs, _, err := translateProcessCall(d6Process("bar", []*Declaration{{Kind: "val", Name: "x"}}, nil, "echo $x"), call, nil, translated, &ProcessDefaults{}, nil, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			jobs, _, err := translateProcessCall(
+				d6Process("bar", []*Declaration{{Kind: "val", Name: "x"}}, nil, "echo $x"),
+				call,
+				nil,
+				translated,
+				&ProcessDefaults{},
+				nil,
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 5)
@@ -145,13 +237,20 @@ func TestTranslateD6(t *testing.T) {
 				EntryWF: &WorkflowBlock{Calls: []*Call{
 					{Target: "A"},
 					{Target: "B"},
-					{Target: "C", Args: []ChanExpr{ChannelChain{Source: ChanRef{Name: "A.out"}, Operators: []ChannelOperator{{Name: "mix", Channels: []ChanExpr{ChanRef{Name: "B.out"}}}}}}},
+					{Target: "C", Args: []ChanExpr{ChannelChain{
+						Source: ChanRef{Name: "A.out"},
+						Operators: []ChannelOperator{{
+							Name:     "mix",
+							Channels: []ChanExpr{ChanRef{Name: "B.out"}},
+						}},
+					}}},
 				}},
 			}
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
 			So(err, ShouldBeNil)
+
 			cJobs := jobsWithReqGroup(result.Jobs, "nf.C")
 			So(cJobs, ShouldHaveLength, 2)
 			So(cJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.A"})
@@ -174,6 +273,7 @@ func d6Process(name string, input []*Declaration, output []*Declaration, script 
 
 func jobsWithReqGroup(jobs []*jobqueue.Job, reqGroup string) []*jobqueue.Job {
 	filtered := []*jobqueue.Job{}
+
 	for _, job := range jobs {
 		if job.ReqGroup == reqGroup {
 			filtered = append(filtered, job)
