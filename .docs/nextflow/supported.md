@@ -35,7 +35,7 @@ behaviour as real Nextflow.
 - `path(x)` / `file(x)` — file input (file is deprecated alias)
 - `tuple val(x), path(y)` — tuple input with mixed qualifiers
 - `env(x)` — environment variable input
-- `stdin` — standard input
+- `stdin` — standard input (exported as env var, not piped to process stdin)
 - `each val(x)` / `each path(x)` — cross-product input (generates separate jobs per each-value)
 
 ### Output Qualifiers
@@ -43,7 +43,7 @@ behaviour as real Nextflow.
 - `val(x)` — value output
 - `path('pattern')` / `file('pattern')` — file output
 - `tuple val(x), path(y)` — tuple output
-- `env(x)` — environment variable output
+- `env(x)` — environment variable output (statically resolved; not captured at runtime)
 - `stdout` — standard output capture
 - `eval('command')` — evaluate command and capture stdout
 
@@ -106,8 +106,8 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `main:` — process calls and channel wiring
 - `emit:` — output channel declarations
 - `publish:` — publish statements wired to `output {}` block targets
-- `onComplete:` — completion handler (body stored as raw text)
-- `onError:` — error handler (body stored as raw text)
+- `onComplete:` — completion handler → translated to a job that runs after all stages
+- `onError:` — error handler → translated to a polling job that detects failures
 - Variable assignments in workflow main — channel tracking
 - Pipe operator `|` — chaining calls
 - `if/else` conditional blocks in workflow bodies
@@ -142,10 +142,10 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `flatMap(closure)` — transform and flatten
 - `flatten()` — flatten nested structures
 - `collect()` — collect all items into one list
-- `groupTuple([by: n, size: n])` — group by key
+- `groupTuple()` — group by first element of each tuple
 - `transpose([by: n])` — un-group tuples
 - `toList()` — collect into list
-- `toSortedList()` — collect into sorted list
+- `toSortedList()` — collect into sorted list (natural ordering only; no comparator)
 - `reduce(acc, closure)` — fold/accumulate
 - `count([filter])` — count items
 - `ifEmpty(value)` — default for empty channel
@@ -153,17 +153,17 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 ### Combining
 
 - `mix(other)` — unordered merge
-- `join(other, [by: n, remainder: true])` — keyed join
+- `join(other)` — keyed join by first element
 - `combine(other, [by: n])` — cross product
 - `concat(ch1, ch2, ...)` — ordered concatenation
 - `cross(other)` — cross product
 
 ### Splitting
 
-- `splitCsv([header: true, sep: char])` — CSV splitting
+- `splitCsv([header: true])` — CSV splitting (comma delimiter)
 - `splitJson([path: '...'])` — JSON splitting
 - `splitText([by: n])` — line-based text splitting
-- `splitFasta([by: n, record: [...]])` — FASTA splitting
+- `splitFasta([by: n])` — FASTA splitting
 - `splitFastq([by: n, pe: true])` — FASTQ splitting
 - `collectFile([name: '...'])` — collect items to file
 
@@ -174,10 +174,10 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 
 ### Viewing/Debugging
 
-- `view()` / `view(closure)` — print items
-- `dump()` — debug output
-- `tap(closure)` — side-effect without consuming
-- `set()` — bind to variable
+- `view()` / `view(closure)` — pass-through (items preserved, no console output)
+- `dump()` — pass-through (items preserved, no debug output)
+- `tap(closure)` — pass-through (items preserved, no side-channel)
+- `set()` — pass-through (items preserved)
 
 ### Grouping
 
@@ -190,7 +190,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 
 ### Aggregation
 
-- `min()` / `max()` — extremes
+- `min()` / `max()` — extremes (int and string comparison only; no closures/comparators)
 - `sum()` — sum items
 
 ## Expression / Groovy Evaluation
