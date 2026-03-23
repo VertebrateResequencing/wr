@@ -14,7 +14,7 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `params.x = y` — legacy parameter assignment
 - `params {}` block syntax with typed declarations
 - `enum` and `record` type definitions — parsed and stored
-- `output {}` top-level block — parsed and stored
+- `output {}` top-level block — parsed, publish targets extracted and wired
 
 ## Process Definitions
 
@@ -23,10 +23,10 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `input:` — input declarations
 - `output:` — output declarations with emit labels
 - `script:` — shell script body with Nextflow interpolation
-- `when:` — conditional guard expression (parsed, stored)
-- `stub:` — stub script for dry-run mode (parsed, stored)
+- `when:` — conditional guard expression; evaluated at runtime to skip process when false
+- `stub:` — stub script for dry-run mode; used as job command when `--stub-run` flag set
 - `exec:` — Groovy exec block (parsed, stored; not translated)
-- `shell:` — alternative script with `!{var}` interpolation (parsed, stored)
+- `shell:` — alternative script with `!{var}` interpolation resolved, `${...}` left for bash
 
 ### Input Qualifiers
 
@@ -58,7 +58,7 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `time` — time limit → wr `Requirements.Time`
 - `disk` — disk requirement → wr `Requirements.Disk`
 - `container` — container image → wr container execution
-- `errorStrategy` — retry/ignore/terminate behaviour
+- `errorStrategy` — retry/ignore/terminate/finish behaviour
 - `maxRetries` — retry count
 - `maxForks` — concurrency limit → wr limit groups
 - `publishDir` — output publishing (path, mode, pattern, saveAs)
@@ -70,21 +70,24 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `cache` — caching strategy
 - `env` — environment variables
 
+### Directives (Parsed and Translated, Scheduler-Dependent)
+
+- `accelerator` — GPU type/count → LSF `-R "select[ngpus>0] rusage[ngpus_physical=N]"`
+- `arch` — CPU architecture → LSF `-R "select[type==X86_64]"` (or `AARCH64`)
+- `ext` — custom key-value namespace; `task.ext.*` resolved in script interpolation
+- `fair` — output ordering → wr job priority (earlier items get higher priority)
+
 ### Directives (Parsed and Stored, Translation Varies)
 
 All of the following are parsed without error and stored in the
 `Process.Directives` map:
 
-- `accelerator` — GPU requests (type, count)
-- `arch` — CPU architecture specification
 - `array` — job array size
 - `clusterOptions` — native scheduler options → `Requirements.Other`
 - `conda` — Conda package spec → prepend `conda activate` to job
 - `containerOptions` — extra container flags → appended to container cmd
 - `debug` / `echo` — stdout forwarding flag
 - `executor` — per-process executor override
-- `ext` — custom key-value metadata namespace
-- `fair` — output ordering guarantee
 - `machineType` — cloud VM instance type
 - `maxErrors` — total error count limit → polling monitor job
 - `maxSubmitAwait` — queue wait timeout
@@ -118,7 +121,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `take:` — input channel declarations
 - `main:` — process calls and channel wiring
 - `emit:` — output channel declarations
-- `publish:` — publish statements
+- `publish:` — publish statements wired to `output {}` block targets
 - `onComplete:` — completion handler
 - `onError:` — error handler
 - Variable assignments in workflow main — channel tracking
@@ -136,6 +139,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `Channel.fromPath(pattern)` — files matching glob
 - `Channel.fromFilePairs(pattern)` — paired files (e.g. `*_{1,2}.fastq`)
 - `Channel.fromList(list)` — from list items
+- `Channel.from(items...)` — deprecated alias for `Channel.of`
 
 ## Channel Operators
 
@@ -191,6 +195,15 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `tap(closure)` — side-effect without consuming
 - `set()` — bind to variable
 
+### Grouping
+
+- `buffer(size: n)` — group items into fixed-size sublists
+- `collate(n)` — group items into fixed-size chunks
+
+### Sampling
+
+- `randomSample(n, [seed])` — random sample of N items from channel
+
 ### Aggregation
 
 - `min()` / `max()` — extremes
@@ -231,8 +244,8 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - List literals `[1, 2, 3]`
 - Map literals `[key: value]`
 - Closure literals `{ args -> body }`
-- `new ClassName(args)` constructors — parsed
-- `def (x, y) = [1, 2]` multi-variable assignment
+- `new ClassName(args)` constructors — evaluated (File, URL, Date, BigDecimal, BigInteger, ArrayList, HashMap, LinkedHashMap, Random)
+- `def (x, y) = [1, 2]` multi-variable assignment — destructured from list
 - Index access `list[0]`, `map['key']`
 - Property access `obj.field`
 - Method call chaining `obj.method1().method2()`
@@ -243,40 +256,76 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `trim()`, `strip()`
 - `size()`, `length()`
 - `toLowerCase()`, `toUpperCase()`
+- `capitalize()`, `uncapitalize()`
 - `contains(str)`, `startsWith(prefix)`, `endsWith(suffix)`
 - `indexOf(str)`, `lastIndexOf(str)`
 - `replace(old, new)`
-- `replaceAll(pattern, replacement)`
+- `replaceAll(pattern, replacement)`, `replaceFirst(pattern, replacement)`
 - `matches(regex)`
 - `split(regex)`, `tokenize(separators)`
 - `substring(start, [end])`
-- `toInteger()`, `toLong()`, `toDouble()`
+- `padLeft(n, [char])`, `padRight(n, [char])`
+- `stripIndent()`
+- `readLines()`
+- `count(str)` — count occurrences
+- `eachLine(closure)` — iterate lines
+- `toInteger()`, `toLong()`, `toDouble()`, `toBigDecimal()`
+- `toBoolean()`
+- `isNumber()`, `isInteger()`, `isLong()`, `isDouble()`, `isBigDecimal()`
 - `plus(str)`, `minus(str)`, `multiply(n)`
 
 ### List Methods
 
 - `size()`, `isEmpty()`
 - `get(index)`, `first()`, `last()`
+- `head()`, `tail()`, `init()`
 - `take(n)`, `drop(n)`
 - `flatten()`, `reverse()`
-- `sort()`, `unique()`
-- `min()`, `max()`, `sum()`
+- `sort()`, `unique()`, `toSet()`
+- `min()`, `max()`, `sum()` — with optional closure
 - `join(separator)`
 - `collect(closure)` — map
+- `collectMany(closure)` — flatMap
+- `collectEntries(closure)` — list to map
 - `findAll(closure)`
 - `find(closure)`
 - `any(closure)`, `every(closure)`
+- `count(value|closure)` — count matching elements
+- `countBy(closure)` — count into map by key
 - `plus(item|list)`, `minus(item|list)`
+- `add(item)`, `addAll(items)`, `push(item)`, `pop()`
+- `remove(index)`
+- `contains(item)`
+- `intersect(other)`, `disjoint(other)`
 - `groupBy(closure)`
+- `inject(init, closure)` — fold/reduce
 - `withIndex()`, `indexed()`
+- `eachWithIndex(closure)`, `reverseEach(closure)`
+- `transpose()` — transpose list of lists
+- `asType(Class)` — type conversion (e.g. Set)
+- `spread(closure)` — apply closure to each element
 
 ### Map Methods
 
 - `size()`, `isEmpty()`
-- `get(key)`, `containsKey(key)`
+- `get(key)`, `getOrDefault(key, default)`
+- `containsKey(key)`, `containsValue(val)`
 - `keySet()`, `values()`, `entrySet()`
 - `each(closure)`, `collect(closure)`
+- `findAll(closure)`, `find(closure)`
+- `any(closure)`, `every(closure)`
+- `groupBy(closure)`, `collectEntries(closure)`
+- `plus(other_map)`, `minus(keys)`
+- `sort(closure)`
+- `inject(init, closure)` — fold entries
 - `subMap(keys)`
+
+### Number Methods
+
+- `abs()` — absolute value
+- `round()` — round to nearest integer
+- `intdiv(n)` — integer division
+- `toInteger()`, `toLong()`, `toDouble()`, `toBigDecimal()`
 
 ### Statement Types
 
@@ -286,8 +335,8 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `switch / case / default` — multi-way branching
 - `try / catch / finally` — error handling
 - `return expr` — early return
-- `assert expr : 'message'` — assertions (warns only)
-- `throw new Exception('...')` — error raising (warns only)
+- `assert expr : 'message'` — assertions evaluated; emit warning when false
+- `throw new Exception('...')` — error raising; emit warning with message
 
 ## Configuration
 
@@ -308,10 +357,17 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 ### Process Config Settings Extracted
 
 - `cpus`, `memory`, `time`, `disk`
-- `container`
-- `errorStrategy`, `maxRetries`
+- `container`, `containerOptions`
+- `errorStrategy`, `maxRetries`, `maxForks`
 - `publishDir`
 - `env`
+- `queue`, `clusterOptions`
+- `accelerator`, `arch`
+- `ext` (key-value namespace)
+- `shell`, `beforeScript`, `afterScript`
+- `cache`, `scratch`, `storeDir`
+- `module`, `conda`, `spack`
+- `fair`, `tag`
 
 ### Parameter Resolution
 
@@ -354,6 +410,15 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `conda activate` / `spack load` prepending
 - `onComplete` final job with all dep_grps
 - `onError` polling monitor job
+- `stub` body substitution (when `--stub-run` flag is set)
+- `when:` guard evaluation — skip jobs when guard is false
+- `accelerator` → LSF GPU resource requirements
+- `arch` → LSF architecture constraint
+- `ext` / `task.ext.*` resolution in script interpolation
+- `fair` → wr job priority ordering
+- `errorStrategy 'finish'` → limit group set to 0 on failure
+- `publish:` + `output {}` block → output copying to target paths
+- Index file generation for `output {}` targets with `index`
 
 ### Dynamic Workflow Support
 
