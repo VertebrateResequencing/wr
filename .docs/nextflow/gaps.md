@@ -3,6 +3,29 @@
 These Nextflow features are not yet covered in `supported.md`,
 `unsupported.md`, or `future.md`. They could potentially be implemented.
 
+## Input Qualifiers
+
+### `stdin`
+
+The `stdin` input qualifier is parsed but not correctly translated.
+In real Nextflow, `stdin` pipes the input value to the process's
+standard input. Our implementation does not pipe to stdin — the
+value is only available through variable interpolation. Scripts that
+read from standard input (e.g. `read line`, `cat`) will not receive
+the expected data.
+
+## Output Qualifiers
+
+### `env(x)` — Runtime Capture
+
+The `env(x)` output qualifier is parsed and falls through to static
+variable lookup. In real Nextflow, `env(FOO)` captures the value of
+the shell environment variable `FOO` **after the script runs**. Our
+implementation resolves `x` at translate time using the input binding
+value, so the output is whatever the variable was set to before
+execution — not the runtime value. Scripts that compute and export new
+environment variables will have wrong output values.
+
 ## Groovy Statements
 
 ### `while` loops
@@ -84,6 +107,19 @@ The `publishDir` directive currently supports `path`, `mode`, and
 The cloud-only options (`tags`, `contentType`, `storageClass`) are not
 relevant to wr and are listed in `unsupported.md`.
 
+## Channel Operators — `cross` Behaviour
+
+In Nextflow, `cross(other)` emits every pairwise combination of two
+channels **for which the pair has a matching key**. By default the key
+is the first element of each tuple (or the value itself for non-tuple
+items). An optional closure can be provided to customise the matching
+key.
+
+In our implementation, `cross` produces a **full Cartesian product** —
+every left item is paired with every right item regardless of keys.
+This gives incorrect results when items from the two channels have
+different first elements. Custom key closures are also not supported.
+
 ## Channel Operators — Type Conversion
 
 The `toInteger()`, `toLong()`, `toFloat()`, and `toDouble()` channel
@@ -93,12 +129,16 @@ convert each channel item to the respective numeric type. If upstream
 items are already the correct type (common in practice) the end result
 is the same, but string-to-number conversion will not happen.
 
-## Channel Operators — `collate` Sliding Window
+## Channel Operators — `collate` Variants
 
 The `collate(size)` operator is supported, but the two-argument
-`collate(size, step)` variant (sliding window) and the three-argument
+`collate(size, step)` sliding-window variant and the three-argument
 `collate(size, step, remainder)` variant are not implemented. Only the
 simple fixed-size chunking form works.
+
+The `collate(size, remainder)` form (basic chunking with explicit
+remainder control, where `remainder=false` discards trailing items)
+is also not supported — only the one-argument form is accepted.
 
 ## Channel Operators — `buffer` Variants
 
@@ -121,27 +161,33 @@ default/simple case but the option has no effect:
 
 ### Combining / Grouping
 
-- `groupTuple([by: n])` — `by` and `size` are ignored; always groups by
-  the first tuple element (index 0).
-- `join([by: n, remainder: true])` — `by` and `remainder` are ignored;
-  always joins by first element; unmatched items are dropped.
-- `cross([by: n])` — `by` is ignored; always does full Cartesian product.
+- `groupTuple([by: n])` — `by`, `size`, `remainder`, and `sort` are ignored;
+  always groups by the first tuple element (index 0).
+- `join([by: n, remainder: true])` — `by`, `remainder`, `failOnDuplicate`, and
+  `failOnMismatch` are ignored; always joins by first element; unmatched items
+  are dropped.
+- `combine([by: n])` — `by` IS supported and correctly used for key-based
+  combining. The `flatMap` option is not applicable.
 
 ### Splitting
 
-- `splitCsv([sep: ','])` — `sep`, `strip`, `skip`, `limit` are ignored;
-  always uses comma as delimiter.
-- `splitFasta([record: [...]])` — `record`, `size`, `limit`, `pe`,
-  `compress`, `file`, `elem` are ignored; only `by` (chunk count) works.
+- `splitCsv([sep: ','])` — `sep`, `strip`, `skip`, `limit`, `quote`,
+  `charset`, and `decompress` are ignored; always uses comma as delimiter.
+  `header` and `by` are supported.
+- `splitFasta([record: [...]])` — `record`, `size`, `limit`, `compress`,
+  `decompress`, `file`, `elem`, and `charset` are ignored; only `by` (chunk
+  count) works.
 - `splitText([keepHeader: true])` — `keepHeader`, `limit`, `charset`,
-  `compress`, `file`, `elem` are ignored; only `by` (line count) works.
-- `splitFastq([record: [...]])` — `record`, `limit`, `compress`, `file`,
-  `elem` are ignored; `by` and `pe` work.
+  `compress`, `decompress`, `file`, and `elem` are ignored; only `by` (line
+  count) works.
+- `splitFastq([record: [...]])` — `record`, `limit`, `compress`, `decompress`,
+  `file`, `elem`, and `charset` are ignored; `by` and `pe` work.
+- `splitJson([limit: n])` — `limit` is ignored; `path` is supported.
 
 ### Collecting
 
 - `collectFile([sort: true])` — `sort`, `seed`, `newLine`, `storeDir`,
-  `tempDir`, `keepHeader`, `skip` are ignored; only `name` works.
+  `tempDir`, `keepHeader`, `skip`, and `cache` are ignored; only `name` works.
 
 ### Aggregation
 
@@ -149,15 +195,21 @@ default/simple case but the option has no effect:
   ignored; only natural int/string comparison is supported.
 - `toSortedList { comparator }` — comparator is ignored; only natural
   ordering of int/string.
+- `collect { closure }` — closures are ignored at the channel operator level;
+  items are always collected without transformation. The `flat` and `sort`
+  named options are also ignored.
+- `transpose([remainder: true])` — `remainder` is ignored; incomplete tuples
+  are silently dropped. The `by` option IS supported.
 
 ## Channel Factory Options — Silently Ignored
 
 - `Channel.fromPath(pattern, [type: 'file'])` — `type`, `checkIfExists`,
-  `maxDepth`, `hidden`, `followLinks` are ignored; only the glob pattern
-  is used.
+  `maxDepth`, `hidden`, `followLinks`, `relative`, and `glob` are ignored;
+  only the glob pattern is used.
 - `Channel.fromFilePairs(pattern, [size: 2])` — `size`, `flat`,
-  `checkIfExists` are ignored; always groups by filename stem, any number
-  of matching files per group.
+  `checkIfExists`, `hidden`, `maxDepth`, `followLinks`, and `type` are
+  ignored; always groups by filename stem, any number of matching files
+  per group.
 
 ## Container Config — `runOptions`
 
