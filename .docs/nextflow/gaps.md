@@ -3,6 +3,15 @@
 These Nextflow features are not yet covered in `supported.md`,
 `unsupported.md`, or `future.md`. They could potentially be implemented.
 
+## Groovy Statements
+
+### `while` loops
+
+The `WhileStmt` AST type exists but the parser and evaluator do not
+implement it — a `while (cond) { ... }` loop will cause a parse error.
+`for` loops and recursion cover most use-cases in practice, but `while`
+does appear in some bespoke pipelines.
+
 ## Config Scopes
 
 ### `workflow`
@@ -84,6 +93,19 @@ The `collate(size)` operator is supported, but the two-argument
 `collate(size, step, remainder)` variant are not implemented. Only the
 simple fixed-size chunking form works.
 
+## Channel Operators — `buffer` Variants
+
+The `buffer(size: n)` operator is supported for fixed-size grouping.
+The following variants are not implemented:
+
+- `buffer(closingCondition)` — buffer until a closure returns true.
+- `buffer(openingCondition, closingCondition)` — start and stop buffering
+  based on conditions.
+- `buffer(size: n, skip: m)` — fixed-size buffer with step/skip.
+- `buffer(size: n, remainder: true)` — include trailing partial buffer.
+
+These require runtime closure evaluation against individual items.
+
 ## Container Config — `runOptions`
 
 The `docker.runOptions`, `singularity.runOptions`, and
@@ -92,3 +114,36 @@ the container runtime (e.g. `--gpus all` for GPU access). Only the
 `enabled` flag is currently parsed from container config scopes. Adding
 `runOptions` support would be valuable for GPU and device-access
 workflows — the value could be appended to wr's container flags.
+
+## Global Nextflow Functions
+
+Nextflow defines several global functions that can be called in
+expressions and closures. The following are not implemented:
+
+- `file(path)` / `files(pattern)` — file locator functions; used in
+  `params` declarations and workflow bodies.
+- `groupKey(key, size)` — creates a group key for `groupTuple` early
+  release; occasionally used in nf-core.
+- `branchCriteria { ... }` / `multiMapCriteria { ... }` — reusable
+  criteria for `branch`/`multiMap` operators.
+- `sendMail(...)` — send email notifications from pipeline code.
+- `sleep(ms)` — pause execution.
+
+`println` in process scripts is converted to `echo` for shell execution,
+but it is not available as a callable Groovy function in expressions.
+
+## File/Path Methods
+
+File and Path objects (from `new File(path)` or `file(path)`) support
+many methods in Groovy/Nextflow that are not evaluated:
+
+- `.text` / `.getText()` — read file contents
+- `.baseName` — filename without extension
+- `.name` — filename
+- `.extension` — file extension
+- `.parent` — parent directory path
+- `.exists()` — check existence
+- `.isFile()` / `.isDirectory()` — type checks
+- `.readLines()` — read lines into list
+
+These appear in bespoke pipelines but are uncommon in nf-core modules.

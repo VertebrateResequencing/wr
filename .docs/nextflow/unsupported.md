@@ -1,9 +1,7 @@
 # Nextflow Features — Unsupported in wr
 
-These Nextflow features are either parsed without error but never translated
-to wr jobs, or are irrelevant to wr's architecture. They are impossible to
-support in wr's execution model, inapplicable to wr's architecture, or
-deprecated by Nextflow itself.
+These Nextflow features are either impossible to support in wr's execution
+model, inapplicable to wr's architecture, or deprecated by Nextflow itself.
 
 ## Process Sections
 

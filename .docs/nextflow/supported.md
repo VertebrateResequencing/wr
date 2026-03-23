@@ -1,7 +1,8 @@
 # Nextflow Features — Supported in wr
 
 Everything listed below is parsed without error AND translated to wr jobs
-(or stored/evaluated as appropriate).
+(or stored/evaluated as appropriate) with the same practical end-result
+behaviour as real Nextflow.
 
 ## Pipeline Structure
 
@@ -24,9 +25,9 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `input:` — input declarations
 - `output:` — output declarations with emit labels
 - `script:` — shell script body with Nextflow interpolation
-- `when:` — conditional guard expression; evaluated at runtime to skip process when false
+- `when:` — conditional guard expression; evaluated to skip process when false (deprecated by Nextflow but supported)
 - `stub:` — stub script for dry-run mode; used as job command when `--stub-run` flag set
-- `shell:` — alternative script with `!{var}` interpolation resolved, `${...}` left for bash
+- `shell:` — alternative script with `!{var}` interpolation resolved, `${...}` left for bash (deprecated by Nextflow but supported)
 
 ### Input Qualifiers
 
@@ -35,7 +36,7 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `tuple val(x), path(y)` — tuple input with mixed qualifiers
 - `env(x)` — environment variable input
 - `stdin` — standard input
-- `each val(x)` / `each path(x)` — cross-product input
+- `each val(x)` / `each path(x)` — cross-product input (generates separate jobs per each-value)
 
 ### Output Qualifiers
 
@@ -62,13 +63,13 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `maxRetries` — retry count
 - `maxErrors` — total error count limit → polling monitor job
 - `maxForks` — concurrency limit → wr limit groups
-- `publishDir` — output publishing (path, mode, pattern)
+- `publishDir` — output publishing (`path`, `mode`, `pattern` options)
 - `label` — process labels for config selector matching
 - `tag` — job name substitution tag
 - `beforeScript` — pre-execution command prepended to job
 - `afterScript` — post-execution command appended to job
 - `module` — environment module loading
-- `cache` — caching strategy
+- `cache` — caching strategy (`true`/`false`/`'deep'`/`'lenient'`)
 - `env` — environment variables
 - `clusterOptions` — native scheduler options → `Requirements.Other`
 - `queue` — scheduler queue → `Requirements.Other`
@@ -105,8 +106,8 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `main:` — process calls and channel wiring
 - `emit:` — output channel declarations
 - `publish:` — publish statements wired to `output {}` block targets
-- `onComplete:` — completion handler
-- `onError:` — error handler
+- `onComplete:` — completion handler (body stored as raw text)
+- `onError:` — error handler (body stored as raw text)
 - Variable assignments in workflow main — channel tracking
 - Pipe operator `|` — chaining calls
 - `if/else` conditional blocks in workflow bodies
@@ -181,7 +182,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 ### Grouping
 
 - `buffer(size: n)` — group items into fixed-size sublists
-- `collate(n)` — group items into fixed-size chunks
+- `collate(n)` — group items into fixed-size chunks (one-argument form only)
 
 ### Sampling
 
@@ -192,221 +193,83 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `min()` / `max()` — extremes
 - `sum()` — sum items
 
-## Groovy Statement Evaluation
+## Expression / Groovy Evaluation
+
+### Statements
 
 - `if (cond) { } else if (cond) { } else { }` — conditional execution
 - `for (x in collection) { }` — iteration over lists, ranges, maps
 - `try { } catch (Type e) { } finally { }` — exception handling with typed catches
 - `switch (val) { case X: ...; default: ... }` — multi-branch dispatch
-- `assert condition` / `assert condition, message` — assertion check
-- `throw expression` — raise exception
-- `return value` — function return
-- `break` — loop / switch exit
-- `x = expr` — variable assignment
-- `x += expr`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=` — augmented assignment
-
-## Groovy Expression Evaluation
+- `assert condition : 'message'` — assertion with optional message
+- `throw new Exception('msg')` — throw exceptions
+- `def x = value` / `def (a, b) = [1, 2]` — variable declarations (including multi-assign)
+- `return value` — explicit return from function/closure
 
 ### Operators
 
-- `+`, `-`, `*`, `/` — arithmetic
-- `%` — modulo
-- `**` — exponentiation
-- `==`, `!=`, `<`, `>`, `<=`, `>=` — comparison
-- `<=>` — spaceship (three-way comparison)
-- `&&`, `||`, `!` — logical
-- `&`, `^`, `|` — bitwise
-- `~` — bitwise NOT
-- `<<`, `>>`, `>>>` — shift
-- `in`, `!in` — membership testing
-- `instanceof`, `!instanceof` — type checking
-- `=~` — regex find
-- `==~` — regex full match
-- `..` — inclusive range
-- `..<` — exclusive range
-- `*.property` — spread-dot
-- `?:` — elvis operator
-- `? :` — ternary conditional
-- `?.` — null-safe navigation
-- `as` — type cast
+- Arithmetic: `+`, `-`, `*`, `/`, `%`, `**` (power)
+- Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`, `<=>` (spaceship)
+- Logical: `&&`, `||`, `!`
+- Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`
+- Regex: `=~` (find), `==~` (match)
+- Membership: `in`, `!in`
+- Type: `instanceof`, `!instanceof`, `as` (cast)
+- Range: `..` (inclusive), `..<` (right-exclusive)
+- Ternary: `cond ? a : b`
+- Elvis: `value ?: default`
+- Null-safe navigation: `obj?.prop`
+- Spread: `list*.prop`
 
-### Literals and Expressions
+### String Methods (~30)
 
-- Integer, float, boolean, null literals
-- Single-quoted strings
-- Double-quoted strings with `${interpolation}`
-- Triple-quoted strings (single and double)
-- Slashy strings `/pattern/`
-- List literals `[1, 2, 3]`
-- Map literals `[key: value]`
-- Closure literals `{ args -> body }`
-- `new ClassName(args)` constructors — evaluated (File, URL, Date, BigDecimal, BigInteger, ArrayList, HashMap, LinkedHashMap, Random)
-- `def (x, y) = [1, 2]` multi-variable assignment — destructured from list
-- Index access `list[0]`, `map['key']`
-- Property access `obj.field`
-- Method call chaining `obj.method1().method2()`
-- `params.key` parameter references
+`trim`, `size`, `length`, `toLowerCase`, `toUpperCase`, `contains`,
+`startsWith`, `endsWith`, `replace`, `replaceAll`, `replaceFirst`,
+`split`, `tokenize`, `substring`, `padLeft`, `padRight`, `capitalize`,
+`stripIndent`, `readLines`, `count`, `isNumber`, `isInteger`, `isLong`,
+`isDouble`, `isBigDecimal`, `toBoolean`, `toInteger`, `toLong`,
+`multiply`, `eachLine`
 
-### String Methods
+### List Methods (~43)
 
-- `trim()`, `strip()`
-- `size()`, `length()`
-- `toLowerCase()`, `toUpperCase()`
-- `capitalize()`, `uncapitalize()`
-- `contains(str)`, `startsWith(prefix)`, `endsWith(suffix)`
-- `indexOf(str)`, `lastIndexOf(str)`
-- `replace(old, new)`
-- `replaceAll(pattern, replacement)`, `replaceFirst(pattern, replacement)`
-- `matches(regex)`
-- `split(regex)`, `tokenize(separators)`
-- `substring(start, [end])`
-- `padLeft(n, [char])`, `padRight(n, [char])`
-- `stripIndent()`
-- `readLines()`
-- `count(str)` — count occurrences
-- `eachLine(closure)` — iterate lines
-- `toInteger()`, `toLong()`, `toDouble()`, `toBigDecimal()`
-- `toBoolean()`
-- `isNumber()`, `isInteger()`, `isLong()`, `isDouble()`, `isBigDecimal()`
-- `plus(str)`, `minus(str)`, `multiply(n)`
+`size`, `isEmpty`, `first`, `last`, `head`, `tail`, `init`, `flatten`,
+`join`, `unique`, `sort`, `reverse`, `contains`, `intersect`, `disjoint`,
+`toSet`, `plus`, `minus`, `take`, `drop`, `withIndex`, `indexed`,
+`transpose`, `pop`, `push`, `add`, `addAll`, `remove`, `any`, `every`,
+`find`, `findAll`, `inject`, `groupBy`, `countBy`, `count`,
+`collectMany`, `collectEntries`, `reverseEach`, `eachWithIndex`, `sum`,
+`max`, `min`
 
-### List Methods
+### Map Methods (~20)
 
-- `size()`, `isEmpty()`
-- `get(index)`, `first()`, `last()`
-- `head()`, `tail()`, `init()`
-- `take(n)`, `drop(n)`
-- `flatten()`, `reverse()`
-- `sort()`, `unique()`, `toSet()`
-- `min()`, `max()`, `sum()` — with optional closure
-- `join(separator)`
-- `collect(closure)` — map
-- `collectMany(closure)` — flatMap
-- `collectEntries(closure)` — list to map
-- `findAll(closure)`
-- `find(closure)`
-- `any(closure)`, `every(closure)`
-- `count(value|closure)` — count matching elements
-- `countBy(closure)` — count into map by key
-- `plus(item|list)`, `minus(item|list)`
-- `add(item)`, `addAll(items)`, `push(item)`, `pop()`
-- `remove(index)`
-- `contains(item)`
-- `intersect(other)`, `disjoint(other)`
-- `groupBy(closure)`
-- `inject(init, closure)` — fold/reduce
-- `withIndex()`, `indexed()`
-- `eachWithIndex(closure)`, `reverseEach(closure)`
-- `transpose()` — transpose list of lists
-- `asType(Class)` — type conversion (e.g. Set)
-- `spread(closure)` — apply closure to each element
-
-### Map Methods
-
-- `size()`, `isEmpty()`
-- `get(key)`, `getOrDefault(key, default)`
-- `containsKey(key)`, `containsValue(val)`
-- `keySet()`, `values()`, `entrySet()`
-- `each(closure)`, `collect(closure)`
-- `findAll(closure)`, `find(closure)`
-- `any(closure)`, `every(closure)`
-- `groupBy(closure)`, `collectEntries(closure)`
-- `plus(other_map)`, `minus(keys)`
-- `sort(closure)`
-- `inject(init, closure)` — fold entries
-- `subMap(keys)`
+`size`, `isEmpty`, `keySet`, `values`, `containsKey`, `containsValue`,
+`subMap`, `getOrDefault`, `find`, `findAll`, `any`, `every`, `groupBy`,
+`collectEntries`, `collect`, `each`, `plus`, `minus`, `sort`, `inject`
 
 ### Number Methods
 
-- `abs()` — absolute value
-- `round()` — round to nearest integer
-- `intdiv(n)` — integer division
-- `toInteger()`, `toLong()`, `toDouble()`, `toBigDecimal()`
+`abs`, `round`, `intdiv`, `toInteger`, `toLong`, `toDouble`,
+`toBigDecimal`
 
-## Configuration
+### Constructor Calls
 
-### Scopes Parsed
+`new File(path)`, `new URL(url)`, `new Date()`, `new BigDecimal(v)`,
+`new BigInteger(v)`, `new ArrayList(list)`, `new HashMap(map)`,
+`new LinkedHashMap(map)`, `new Random()`
 
-- `params {}` — parameter defaults
-- `process {}` — process defaults and selectors
-- `profiles {}` — named profile overrides
-- `docker {}` / `singularity {}` / `apptainer {}` — `enabled` flag only
+## Config Parsing
+
+### Scopes Parsed and Applied
+
+- `params {}` — pipeline parameters
+- `process {}` — process directive defaults
+- `process.withLabel('pattern') {}` / `process.withName('pattern') {}` — selectors
 - `env {}` — environment variables
 - `executor {}` — executor settings
+- `profiles { name { ... } }` — profile-scoped overrides
+- `docker { enabled = true }` / `singularity { enabled = true }` / `apptainer { enabled = true }` — container engine toggle (only `enabled` setting parsed)
 
-### Process Config Selectors
+### Scopes Silently Skipped
 
-- `withLabel:` — match by process label
-- `withName:` — match by process name
-
-### Process Config Settings Extracted
-
-- `cpus`, `memory`, `time`, `disk`
-- `container`, `containerOptions`
-- `errorStrategy`, `maxRetries`, `maxForks`
-- `publishDir`
-- `env`
-- `queue`, `clusterOptions`
-- `accelerator`, `arch`
-- `ext` (key-value namespace)
-- `shell`, `beforeScript`, `afterScript`
-- `cache`, `scratch`, `storeDir`
-- `module`, `conda`, `spack`
-- `fair`, `tag`
-
-### Parameter Resolution
-
-- `params.x = value` in config and workflow files
-- `-params-file` JSON/YAML parameter files
-- CLI parameter overrides
-- Precedence: CLI > config > script
-- Nested parameter access: `params.db.path`
-
-## Module System
-
-- Local includes: `include { PROC } from './module'`
-- GitHub includes: `include { PROC } from 'owner/repo'`
-- Aliased includes: `include { PROC as MY_PROC }`
-- Chained module resolution (local then remote)
-- Recursive include resolution
-
-
-## Translation to wr Jobs
-
-### Job Properties Set
-
-- `Cmd` — shell command from script body with interpolation
-- `Requirements.Cores` — from `cpus` directive
-- `Requirements.RAM` — from `memory` directive (MB)
-- `Requirements.Time` — from `time` directive
-- `Requirements.Disk` — from `disk` directive
-- `Requirements.Other` — scheduler-specific options
-- Container image and execution wrapping
-- `DepGroups` — dependency group wiring between processes
-- Retry behaviour from `errorStrategy` and `maxRetries`
-- Limit groups from `maxForks`
-- `beforeScript` / `afterScript` wrapping
-- Environment module loading
-- Output publishing (copy/move/link to publishDir)
-- `each` cross-product expansion (N×M jobs)
-- `eval` output appended to script
-- `scratch` directory wrapping
-- `storeDir` skip-if-exists wrapping
-- `conda activate` / `spack load` prepending
-- `onComplete` final job with all dep_grps
-- `onError` polling monitor job
-- `stub` body substitution (when `--stub-run` flag is set)
-- `when:` guard evaluation — skip jobs when guard is false
-- `accelerator` → LSF GPU resource requirements
-- `arch` → LSF architecture constraint
-- `ext` / `task.ext.*` resolution in script interpolation
-- `fair` → wr job priority ordering
-- `errorStrategy 'finish'` → limit group set to 0 on failure
-- `publish:` + `output {}` block → output copying to target paths
-- Index file generation for `output {}` targets with `index`
-
-### Dynamic Workflow Support
-
-- `TranslatePending` mechanism for runtime-dependent operations
-- Data-dependent channel operators create pending stages
-- Runtime job creation from pending stages
+- `conda`, `dag`, `manifest`, `notification`, `report`, `timeline`,
+  `tower`, `trace`, `wave`, `weblog` — platform features not relevant to wr
