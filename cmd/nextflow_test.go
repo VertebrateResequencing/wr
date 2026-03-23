@@ -621,6 +621,21 @@ func TestNextflowRunCommand(t *testing.T) {
 			}
 		})
 
+		Convey("stub-run submits stub bodies for processes that define them", func() {
+			env := newNextflowCommandTestEnv(t)
+			defer env.cleanup()
+
+			workflowPath := env.writeWorkflow("stubbed.nf", "process A {\nscript: 'real_cmd'\nstub: 'touch out.txt'\n}\nworkflow { A() }\n")
+
+			err := env.executeRun("--stub-run", workflowPath)
+			So(err, ShouldBeNil)
+
+			jobs := env.jobsByRepGroupSubstring("nf.stubbed.")
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldContainSubstring, "touch out.txt")
+			So(jobs[0].Cmd, ShouldNotContainSubstring, "real_cmd")
+		})
+
 		Convey("config params are applied to translated job commands", func() {
 			env := newNextflowCommandTestEnv(t)
 			defer env.cleanup()
@@ -1413,6 +1428,20 @@ func TestNextflowRunCommandPendingHelper(t *testing.T) {
 		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--run-id' 'r1'")
 		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--poll-interval' '5s'")
 		So(helperJobs[0].Cmd, ShouldContainSubstring, nextflowShellQuote(workflowPath))
+	})
+
+	Convey("pending helper preserves the stub-run flag when re-invoking wr nextflow run", t, func() {
+		env := newNextflowCommandTestEnv(t)
+		defer env.cleanup()
+
+		workflowPath := env.writeWorkflow("dynamic_stub_helper.nf", dynamicWorkflow("cat $reads > consumed.txt"))
+
+		err := env.executeRun("--run-id", "r1", "--stub-run", workflowPath)
+		So(err, ShouldBeNil)
+
+		helperJobs := env.jobsByRepGroupSubstring(nextflowPendingHelperRepGroupPrefix("dynamic_stub_helper", "r1"))
+		So(helperJobs, ShouldHaveLength, 1)
+		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--stub-run'")
 	})
 }
 

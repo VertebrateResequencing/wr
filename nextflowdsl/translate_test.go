@@ -141,6 +141,67 @@ func TestBuildCommandA1(t *testing.T) {
 	})
 }
 
+func TestBuildCommandB1(t *testing.T) {
+	Convey("buildCommand handles B1 shell section interpolation", t, func() {
+		Convey("shell string sections interpolate ! expressions and leave bash variables untouched", func() {
+			cmd, err := buildCommand(&Process{
+				Shell: "echo !{name} ${BASH_VAR}",
+				Input: []*Declaration{{Name: "name", Kind: "val"}},
+			}, []string{"Alice"}, nil, "/work", "/work")
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldContainSubstring, "echo Alice ${BASH_VAR}")
+		})
+
+		Convey("shell string sections can resolve params expressions without touching bash variables", func() {
+			cmd, err := buildCommand(&Process{Shell: "echo !{params.outdir} ${BASH_VAR}"}, nil, map[string]any{"outdir": "/data"}, "/work", "/work")
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldContainSubstring, "echo /data ${BASH_VAR}")
+		})
+
+		Convey("shell list sections use the declared interpreter and flags instead of the default strict header", func() {
+			cmd, err := buildCommand(&Process{
+				Shell: "['bash', '-ue', '!{cmd}']",
+				Input: []*Declaration{{Name: "cmd", Kind: "val"}},
+			}, []string{"ls -la"}, nil, "/work", "/work")
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldContainSubstring, "bash -ue -c 'ls -la'")
+			So(cmd, ShouldNotContainSubstring, "set -euo pipefail")
+		})
+
+		Convey("shell sections without ! expressions preserve bash interpolation syntax verbatim", func() {
+			cmd, err := buildCommand(&Process{Shell: "echo ${BASH_VAR}"}, nil, nil, "/work", "/work")
+
+			So(err, ShouldBeNil)
+			So(cmd, ShouldContainSubstring, "echo ${BASH_VAR}")
+		})
+
+		Convey("shell sections override script sections during translation", func() {
+			wf := &Workflow{
+				Processes: []*Process{{
+					Name:   "SHELL_ONLY",
+					Script: "echo wrong",
+					Shell:  "echo !{name}",
+					Input:  []*Declaration{{Name: "name", Kind: "val"}},
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{
+					Target: "SHELL_ONLY",
+					Args:   []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "Alice"}}}},
+				}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "echo Alice")
+			So(result.Jobs[0].Cmd, ShouldNotContainSubstring, "echo wrong")
+		})
+	})
+}
+
 func TestMatchCompletedOutputPaths(t *testing.T) {
 	Convey("matchCompletedOutputPaths only falls back to basenames for simple relative patterns", t, func() {
 		completed := []string{
@@ -203,6 +264,75 @@ func TestTranslateA2(t *testing.T) {
 		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, ".nf-stderr")
 		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, "grep")
 		So(result.Jobs[0].Behaviours[0].Arg, ShouldContainSubstring, "rm")
+	})
+}
+
+func TestTranslateA1StubRun(t *testing.T) {
+	Convey("Translate uses stub sections for A1 when stub-run is enabled", t, func() {
+		translateWorkflow := func(processes ...*Process) *TranslateResult {
+			calls := make([]*Call, 0, len(processes))
+			for _, proc := range processes {
+				calls = append(calls, &Call{Target: proc.Name})
+			}
+
+			result, err := Translate(&Workflow{
+				Processes: processes,
+				EntryWF:   &WorkflowBlock{Calls: calls},
+			}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", StubRun: true})
+			So(err, ShouldBeNil)
+
+			return result
+		}
+
+		Convey("processes with non-empty stubs use the stub body instead of the script", func() {
+			result := translateWorkflow(&Process{
+				Name:   "STUBBED",
+				Script: "real_cmd",
+				Stub:   "touch out.txt",
+			})
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "touch out.txt")
+			So(result.Jobs[0].Cmd, ShouldNotContainSubstring, "real_cmd")
+		})
+
+		Convey("processes without stubs fall back to their script bodies", func() {
+			result := translateWorkflow(&Process{
+				Name:   "SCRIPTONLY",
+				Script: "real_cmd",
+			})
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "real_cmd")
+		})
+
+		Convey("stub sections are ignored when stub-run is disabled", func() {
+			result, err := Translate(&Workflow{
+				Processes: []*Process{{
+					Name:   "REAL",
+					Script: "real_cmd",
+					Stub:   "touch out.txt",
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "REAL"}}},
+			}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "real_cmd")
+			So(result.Jobs[0].Cmd, ShouldNotContainSubstring, "touch out.txt")
+		})
+
+		Convey("mixed workflows only swap the processes that define stubs", func() {
+			result := translateWorkflow(
+				&Process{Name: "A", Script: "real_a", Stub: "stub_a"},
+				&Process{Name: "B", Script: "real_b"},
+			)
+
+			So(result.Jobs, ShouldHaveLength, 2)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "stub_a")
+			So(result.Jobs[0].Cmd, ShouldNotContainSubstring, "real_a")
+			So(result.Jobs[1].Cmd, ShouldContainSubstring, "real_b")
+		})
 	})
 }
 
