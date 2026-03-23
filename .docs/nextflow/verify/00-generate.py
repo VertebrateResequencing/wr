@@ -682,7 +682,7 @@ def cmd_coverage(_args):
 
         # Check heading-mode files: find headings not claimed
         heading_configs = [c for c in configs
-                          if c.get("extract_mode", "headings") == "headings"]
+                           if c.get("extract_mode", "headings") == "headings"]
         if heading_configs:
             unclaimed = []
             for level, text in headings:
