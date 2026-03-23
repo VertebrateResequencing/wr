@@ -374,8 +374,8 @@ expressions and closures. The following are not implemented:
   for shell execution, but none are available as callable Groovy
   functions in expressions or closures.
 - `env(name)` — returns the value of an environment variable from the
-  launch environment. New in Nextflow 25.04. Different from `Channel.env`
-  (a channel factory). May appear in config files and parameter defaults.
+  launch environment. New in Nextflow 25.04. May appear in config files
+  and parameter defaults.
 - `tuple(args...)` — creates a tuple (list) from its arguments. Used in
   `map` closures and workflow wiring as an alternative to list literals.
 - `record([options])` — creates a typed record instance from named
@@ -437,3 +437,32 @@ resolution error. nf-core pipelines increasingly use `nf-schema`
 (formerly `nf-validation`) for parameter validation. The plugin code
 itself cannot be executed (it runs in the JVM), but recognising the
 include and silently skipping it would prevent parse failures.
+
+## Include Clauses — Deprecated `addParams` / `params`
+
+Nextflow's deprecated `addParams` and `params` include clauses are not
+parsed:
+
+```groovy
+include { PROC } from './module' addParams(key: 'value')
+include { PROC } from './module' params(key: 'value')
+```
+
+These cause parse errors. They are deprecated by Nextflow (since DSL2)
+but may appear in older pipeline code. The fix would be to parse and
+silently discard the clause.
+
+## Global Constants — `secrets`
+
+The `secrets` global constant (a map of secrets defined via
+`nextflow.config` or the Seqera Platform) is not defined. Referencing
+it causes an "unknown variable" error. Since wr has no secret management
+system, implementing this is not straightforward — see `unsupported.md`
+for the related `secret` directive.
+
+## Global Functions — `exit()`
+
+The deprecated `exit(message)` function (replaced by `error()`) is not
+implemented. Calling it causes an evaluation error. Some older pipelines
+may still use it. The fix would be to treat it as an alias for `error()`
+or simply terminate translation with the given message.

@@ -53,16 +53,6 @@ Very rare — new feature, experimental.
 
 Would need to be implemented alongside `Channel.topic` support.
 
-### `Channel.env`
-
-Creates a channel from one or more environment variable values. New in
-Nextflow 25.04. Very rare — most pipelines pass env vars through params.
-
-Not yet handled by the channel factory resolver — encountering it causes
-an "unsupported channel factory" parse error. Could be implemented by
-reading the specified environment variables at translate time and creating
-value channels from them.
-
 ## Groovy Methods
 
 Additional Groovy/Java stdlib methods beyond the ~30 most commonly used
