@@ -5,7 +5,8 @@
 ## Types and Literals
 
 ### SYN-int
-Integer literals: `1`, `0x1F`, `0b1010`, `1_000_000`. Type is `int` or `long`.
+Integer literals: `1`, `0x1F` (hex), `0b1010` (binary), `031` (octal),
+`1_000_000` (underscore separators). Type is `int` or `long`.
 
 ### SYN-float
 Floating-point literals: `1.5`, `1.5e10`, `1.5G` (BigDecimal).

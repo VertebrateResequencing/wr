@@ -37,7 +37,7 @@ heading has a covering feature ID and every feature ID maps to a heading.
 |---------|--------------|----------|
 | Variable declaration | SYN-var-def, SYN-multi-assign, SYN-scoping | nf-0100, nf-0300 |
 | Assignment | STMT-assign | nf-0300 |
-| Expression statement | — (implicit, covered by expressions) | — |
+| Expression statement | STMT-expr-statement | nf-0300 |
 | assert | STMT-assert | nf-0300 |
 | if/else | STMT-if | nf-0300 |
 | return | STMT-return | nf-0300 |
@@ -199,9 +199,24 @@ heading has a covering feature ID and every feature ID maps to a heading.
 Covered by nf-3000 through nf-3500. See those files for individual
 operator Feature IDs (CO-*).
 
-## channel.html
+## channel.html — Channel factories
 
-Covered by nf-2500. See that file for individual factory Feature IDs (CF-*).
+| Heading | Feature ID(s) | nf- file |
+|---------|--------------|----------|
+| Channel.of | CF-of | nf-2500 |
+| Channel.value | CF-value | nf-2500 |
+| Channel.empty | CF-empty | nf-2500 |
+| Channel.from (deprecated) | CF-from | nf-2500 |
+| Channel.fromList | CF-fromList | nf-2500 |
+| Channel.fromPath | CF-fromPath | nf-2500 |
+| Channel.fromPath options | CF-fromPath | nf-2500 |
+| Channel.fromFilePairs | CF-fromFilePairs | nf-2500 |
+| Channel.fromSRA | CF-fromSRA | nf-2500 |
+| Channel.watchPath | CF-watchPath | nf-2500 |
+| Channel.interval | CF-interval | nf-2500 |
+| Channel.topic | CF-topic | nf-2500 |
+| Channel.fromLineage | CF-fromLineage | nf-2500 |
+| channel.STOP | CF-STOP | nf-2500 |
 
 ## config.html
 

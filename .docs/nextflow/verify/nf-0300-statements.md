@@ -8,6 +8,27 @@
 
 ## Features
 
+### STMT-assign
+Assignment statements: simple assignment `v = 42`, index assignment
+`list[0] = 'first'`, property assignment `map.key = 'value'`,
+multi-assignment `(x, y) = [1, 2]`.
+```groovy
+v = 42
+list[0] = 'first'
+map.key = 'value'
+(x, y) = [1, 2]
+```
+
+### STMT-expr-statement
+Any expression can stand alone as a statement (expression statement).
+This includes bare method calls, property accesses, and operator
+expressions used solely for side effects.
+```groovy
+println 'hello'          // method call as statement
+channel.of(1,2,3)        // factory call as statement
+x++                      // postfix as statement
+```
+
 ### STMT-if
 `if`/`else if`/`else` blocks:
 ```groovy

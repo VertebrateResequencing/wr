@@ -18,6 +18,7 @@ For each feature ID in nf-0300-statements.md, determine its classification.
 
 ### Features to classify
 
+- STMT-assign, STMT-expr-statement
 - STMT-if, STMT-if-else, STMT-if-elseif
 - STMT-for-in, STMT-for-range
 - STMT-while

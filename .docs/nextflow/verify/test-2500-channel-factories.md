@@ -19,7 +19,8 @@ For each feature ID in nf-2500-channel-factories.md, determine its classificatio
 - CF-of, CF-from, CF-fromList, CF-value, CF-empty,
   CF-fromPath, CF-fromPath-glob, CF-fromPath-opts,
   CF-fromFilePairs, CF-fromFilePairs-opts,
-  CF-fromSRA, CF-watchPath, CF-topic, CF-interval, CF-fromLineage
+  CF-fromSRA, CF-STOP,
+  CF-watchPath, CF-topic, CF-interval, CF-fromLineage
 
 ### Output format
 

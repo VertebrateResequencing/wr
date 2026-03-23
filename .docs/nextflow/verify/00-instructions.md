@@ -227,8 +227,11 @@ all items from a large reference page in one pass.
 
 ### Phase 5: Validate
 
-9. Run `bash .docs/nextflow/verify/00-validate.sh` to check for orphaned or
-   missing feature IDs.
+9. Run `python3 .docs/nextflow/verify/00-audit.py --verbose` to check for
+   orphaned, missing, or structurally inconsistent feature IDs. The audit
+   checks: nf↔test cross-references, nf↔manifest coverage, and test file
+   completeness. Optionally add `--fetch` to also check live Nextflow docs
+   for missing content.
 10. Fix any discrepancies before declaring the file set complete.
 
 ### Key principles
