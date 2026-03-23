@@ -22,8 +22,8 @@ field to `TranslateConfig` in `nextflowdsl/translate.go`. When
 without stubs fall back to their script. Covering all 4
 acceptance tests from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 2.2: B1 - `!{expr}` interpolation for shell sections [parallel with 2.1]
 
@@ -38,8 +38,8 @@ first element is interpreter, middle are flags, last is script
 body). List form replaces the default `set -euo pipefail`
 header. Covering all 5 acceptance tests from B1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

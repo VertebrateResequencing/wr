@@ -59,6 +59,7 @@ type nextflowRunOptions struct {
 	paramsFilePath      string
 	paramAssignments    []string
 	runID               string
+	stubRun             bool
 	containerRuntime    string
 	containerRuntimeSet bool
 	follow              bool
@@ -120,6 +121,7 @@ func newNextflowRunCommand(options *nextflowRunOptions) *cobra.Command {
 	cmd.Flags().StringVarP(&options.paramsFilePath, "params-file", "p", "", "path to params JSON/YAML")
 	cmd.Flags().StringArrayVarP(&options.paramAssignments, "param", "P", nil, "override a workflow param as KEY=VALUE")
 	cmd.Flags().StringVar(&options.runID, "run-id", "", "explicit workflow run id")
+	cmd.Flags().BoolVar(&options.stubRun, "stub-run", false, "use stub section instead of script")
 	cmd.Flags().StringVar(&options.containerRuntime, "container-runtime", "singularity", "container runtime to use: docker or singularity")
 	cmd.Flags().BoolVarP(&options.follow, "follow", "f", false, "follow dynamic workflow progression")
 	cmd.Flags().DurationVar(&options.pollInterval, "poll-interval", nextflowDefaultPollInterval, "polling interval when following")
@@ -197,6 +199,7 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 		WorkflowName:     nextflowResolvedWorkflowName(workflowArg, workflowPath, resolvedRemotely),
 		WorkflowPath:     workflowPath,
 		Cwd:              cwd,
+		StubRun:          options.stubRun,
 		ContainerRuntime: containerRuntime,
 		Params:           nextflowdsl.MergeParams(fileParams, cliParams),
 		Profile:          options.profile,
@@ -692,6 +695,9 @@ func nextflowPendingHelperCommand(workflowArg string, options nextflowRunOptions
 		options.pollInterval.String(),
 		"--container-runtime",
 		containerRuntime,
+	}
+	if options.stubRun {
+		args = append(args, "--stub-run")
 	}
 	if options.configPath != "" {
 		args = append(args, "--config", options.configPath)

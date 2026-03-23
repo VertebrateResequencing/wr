@@ -54,12 +54,15 @@ const (
 	selectorSpecificityName
 )
 
+var shellSectionInterpolationPattern = regexp.MustCompile(`!\{([^}]+)\}`)
+
 // TranslateConfig controls how the AST is translated to wr jobs.
 type TranslateConfig struct {
 	RunID            string
 	WorkflowName     string
 	WorkflowPath     string
 	Cwd              string
+	StubRun          bool
 	ContainerRuntime string
 	Params           map[string]any
 	Profile          string
@@ -532,12 +535,137 @@ func buildCommandBody(proc *Process, bindings []string, params map[string]any) (
 }
 
 func renderScript(proc *Process, bindings []string, params map[string]any) (string, error) {
+	if strings.TrimSpace(proc.Shell) != "" {
+		return renderShellSection(proc, bindings, params)
+	}
+
 	script, err := SubstituteParams(proc.Script, params)
 	if err != nil {
 		return "", err
 	}
 
 	return interpolateKnownScriptVars(script, outputVars(proc, bindings, params))
+}
+
+func renderShellSection(proc *Process, bindings []string, params map[string]any) (string, error) {
+	vars := outputVars(proc, bindings, params)
+	section := strings.TrimSpace(proc.Shell)
+	if section == "" {
+		return "", nil
+	}
+
+	if strings.HasPrefix(section, "[") {
+		return renderShellSectionList(section, vars)
+	}
+
+	interpolated, err := interpolateShellSection(section, vars)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.Join([]string{"set -euo pipefail", interpolated}, "\n"), nil
+}
+
+func renderShellSectionList(section string, vars map[string]any) (string, error) {
+	expr, err := parseShellSectionExpr(section)
+	if err != nil {
+		return "", err
+	}
+
+	resolved, err := EvalExpr(expr, vars)
+	if err != nil {
+		return "", err
+	}
+
+	parts, ok := resolved.([]any)
+	if !ok {
+		return "", fmt.Errorf("shell section list must evaluate to a list")
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("shell section list must not be empty")
+	}
+
+	stringParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		stringPart, ok := part.(string)
+		if !ok {
+			return "", fmt.Errorf("shell section list entries must evaluate to strings")
+		}
+		stringParts = append(stringParts, stringPart)
+	}
+
+	scriptBody, err := interpolateShellSection(stringParts[len(stringParts)-1], vars)
+	if err != nil {
+		return "", err
+	}
+
+	command := append([]string{}, stringParts[:len(stringParts)-1]...)
+	command = append(command, "-c", shellQuote(scriptBody))
+
+	return strings.Join(command, " "), nil
+}
+
+func parseShellSectionExpr(section string) (Expr, error) {
+	tokens, err := lex(section)
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := trimDeclarationTokens(tokens)
+	if len(trimmed) > 0 && trimmed[len(trimmed)-1].typ == tokenEOF {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("expected shell section expression")
+	}
+
+	return parseExprTokens(trimmed)
+}
+
+// interpolateShellSection replaces !{expr} with evaluated values, leaving
+// ${...} sequences untouched.
+func interpolateShellSection(shell string, vars map[string]any) (string, error) {
+	matches := shellSectionInterpolationPattern.FindAllStringSubmatchIndex(shell, -1)
+	if len(matches) == 0 {
+		return shell, nil
+	}
+
+	var builder strings.Builder
+	last := 0
+
+	for _, match := range matches {
+		builder.WriteString(shell[last:match[0]])
+
+		exprText := strings.TrimSpace(shell[match[2]:match[3]])
+		resolved, err := evalShellInterpolationExpr(exprText, vars)
+		if err != nil {
+			return "", err
+		}
+
+		builder.WriteString(fmt.Sprint(resolved))
+		last = match[1]
+	}
+
+	builder.WriteString(shell[last:])
+
+	return builder.String(), nil
+}
+
+func evalShellInterpolationExpr(exprText string, vars map[string]any) (any, error) {
+	expr, err := parseShellSectionExpr(exprText)
+	if err != nil {
+		return nil, err
+	}
+
+	resolved, err := EvalExpr(expr, vars)
+	if err != nil {
+		return nil, err
+	}
+	if unsupported, ok := resolved.(UnsupportedExpr); ok {
+		return nil, fmt.Errorf("unsupported shell interpolation %q", unsupported.Text)
+	}
+
+	return resolved, nil
 }
 
 func interpolateKnownScriptVars(script string, vars map[string]any) (string, error) {
@@ -2591,6 +2719,12 @@ func translateProcessCall(
 	reqGroup := fmt.Sprintf("nf.%s", proc.Name)
 	indexed := len(bindingSets) > 1
 	stage.baseCwd = deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
+	procForCommand := proc
+	if tc.StubRun && proc != nil && proc.Stub != "" {
+		stubProc := *proc
+		stubProc.Script = proc.Stub
+		procForCommand = &stubProc
+	}
 
 	for index, bindingSet := range bindingSets {
 		cwd := deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
@@ -2629,7 +2763,7 @@ func translateProcessCall(
 			return nil, translatedCall{}, err
 		}
 
-		cmd, cmdErr := buildCommand(proc, bindingSet.bindings, params, cwd, tc.Cwd)
+		cmd, cmdErr := buildCommand(procForCommand, bindingSet.bindings, params, cwd, tc.Cwd)
 		if cmdErr != nil {
 			return nil, translatedCall{}, cmdErr
 		}
