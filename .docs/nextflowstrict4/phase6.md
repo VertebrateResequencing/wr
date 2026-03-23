@@ -21,8 +21,8 @@ target. Only static string paths supported; closure-valued
 paths produce a warning and the target is skipped. Covering
 all 5 acceptance tests from N1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.2: N2 - Translate `publish:` wiring with output targets (after 6.1)
 
@@ -37,5 +37,5 @@ job that writes a TSV index file. Warn if publish references a
 target not in the output block. Covering all 4 acceptance tests
 from N2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
