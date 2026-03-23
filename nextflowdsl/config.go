@@ -639,6 +639,14 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 	return nil
 }
 
+func exprVars(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+
+	return map[string]any{"params": params}
+}
+
 func normalizeConfigPublishDirs(value any) ([]*PublishDir, error) {
 	switch typed := value.(type) {
 	case string:
@@ -1148,14 +1156,6 @@ func exprToValue(expr Expr, vars map[string]any) (any, error) {
 
 		return resolved, nil
 	}
-}
-
-func exprVars(params map[string]any) map[string]any {
-	if len(params) == 0 {
-		return nil
-	}
-
-	return map[string]any{"params": params}
 }
 
 func (p *configParser) readExprTokens(terminators ...tokenType) ([]token, error) {

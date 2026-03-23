@@ -91,17 +91,6 @@ var (
 	nextflowStatusCmd = newNextflowStatusCommand(&nextflowStatusOpts)
 )
 
-func normalizeNextflowContainerRuntime(runtime string) (string, error) {
-	switch runtime {
-	case "", "singularity", "apptainer":
-		return "singularity", nil
-	case "docker":
-		return "docker", nil
-	default:
-		return "", fmt.Errorf("unsupported container runtime %q", runtime)
-	}
-}
-
 func init() {
 	RootCmd.AddCommand(nextflowCmd)
 	nextflowCmd.AddCommand(nextflowRunCmd)
@@ -285,15 +274,6 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 	)
 }
 
-func loadNextflowConfig(path string, externalParams map[string]any) (*nextflowdsl.Config, error) {
-	cfg, err := nextflowdsl.ParseConfigFromPathWithParams(path, externalParams)
-	if err != nil {
-		return nil, err
-	}
-
-	return cfg, nil
-}
-
 func parseNextflowCLIParams(assignments []string) (map[string]any, error) {
 	params := make(map[string]any)
 
@@ -347,6 +327,26 @@ func parseNextflowCLIParamValue(value string) any {
 	}
 
 	return value
+}
+
+func loadNextflowConfig(path string, externalParams map[string]any) (*nextflowdsl.Config, error) {
+	cfg, err := nextflowdsl.ParseConfigFromPathWithParams(path, externalParams)
+	if err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func normalizeNextflowContainerRuntime(runtime string) (string, error) {
+	switch runtime {
+	case "", "singularity", "apptainer":
+		return "singularity", nil
+	case "docker":
+		return "docker", nil
+	default:
+		return "", fmt.Errorf("unsupported container runtime %q", runtime)
+	}
 }
 
 func generateNextflowRunID(workflowPath string) string {
@@ -409,6 +409,130 @@ func nextflowWorkflowName(path string) string {
 	}
 
 	return trimmed
+}
+
+func addNextflowJobs(jq nextflowJobManager, repGroupPrefix string, jobs []*jobqueue.Job) error {
+	jobsToAdd, err := nextflowResumeJobs(jq, repGroupPrefix, jobs)
+	if err != nil {
+		return err
+	}
+
+	if len(jobsToAdd) == 0 {
+		return nil
+	}
+
+	_, _, err = jq.Add(jobsToAdd, nil, true)
+
+	return err
+}
+
+func nextflowResumeJobs(jq nextflowJobManager, repGroupPrefix string, jobs []*jobqueue.Job) ([]*jobqueue.Job, error) {
+	if len(jobs) == 0 {
+		return nil, nil
+	}
+
+	existingJobs, err := jq.GetByRepGroupMatch(repGroupPrefix, jobqueue.RepGroupMatchPrefix, 0, "", false, false)
+	if err != nil {
+		return nil, err
+	}
+
+	existingByRepGroup := make(map[string][]*jobqueue.Job, len(existingJobs))
+	for _, job := range existingJobs {
+		existingByRepGroup[job.RepGroup] = append(existingByRepGroup[job.RepGroup], job)
+	}
+
+	jobsToAdd := make([]*jobqueue.Job, 0, len(jobs))
+	for _, job := range jobs {
+		matchedJob, remaining := nextflowResumeMatch(existingByRepGroup[job.RepGroup], job)
+		existingByRepGroup[job.RepGroup] = remaining
+
+		shouldAdd, deleteKey, resumeErr := nextflowResumeAction(matchedJob)
+		if resumeErr != nil {
+			return nil, resumeErr
+		}
+
+		if deleteKey != "" {
+			deleted, deleteErr := jq.Delete([]*jobqueue.JobEssence{{JobKey: deleteKey}})
+			if deleteErr != nil {
+				return nil, deleteErr
+			}
+
+			if deleted == 0 {
+				return nil, fmt.Errorf("failed to delete buried job %s during resume", job.RepGroup)
+			}
+		}
+
+		if shouldAdd {
+			jobsToAdd = append(jobsToAdd, job)
+		}
+	}
+
+	return jobsToAdd, nil
+}
+
+func nextflowResumeMatch(existingJobs []*jobqueue.Job, plannedJob *jobqueue.Job) (*jobqueue.Job, []*jobqueue.Job) {
+	if len(existingJobs) == 0 {
+		return nil, nil
+	}
+
+	for index, existingJob := range existingJobs {
+		if existingJob.Key() == plannedJob.Key() {
+			matchedJob := existingJobs[index]
+			remaining := append([]*jobqueue.Job{}, existingJobs[:index]...)
+			remaining = append(remaining, existingJobs[index+1:]...)
+
+			return matchedJob, remaining
+		}
+	}
+
+	if len(existingJobs) == 1 {
+		existingJob := existingJobs[0]
+		if existingJob.CwdMatters || plannedJob.CwdMatters {
+			if existingJob.CwdMatters &&
+				plannedJob.CwdMatters &&
+				filepath.Clean(existingJob.Cwd) == filepath.Clean(plannedJob.Cwd) {
+				return existingJob, nil
+			}
+
+			return nil, append([]*jobqueue.Job{}, existingJobs...)
+		}
+
+		return existingJob, nil
+	}
+
+	return nil, append([]*jobqueue.Job{}, existingJobs...)
+}
+
+func nextflowResumeAction(existingJob *jobqueue.Job) (bool, string, error) {
+	if existingJob == nil {
+		return true, "", nil
+	}
+
+	switch existingJob.State {
+	case jobqueue.JobStateBuried:
+		return true, existingJob.Key(), nil
+	case jobqueue.JobStateDeleted:
+		return true, "", nil
+	case jobqueue.JobStateComplete,
+		jobqueue.JobStateRunning,
+		jobqueue.JobStateDependent,
+		jobqueue.JobStateDelayed,
+		jobqueue.JobStateReady,
+		jobqueue.JobStateReserved:
+		return false, "", nil
+	case jobqueue.JobStateLost:
+		return true, "", nil
+	default:
+		return true, "", nil
+	}
+}
+
+func nextflowRepGroupPrefix(workflowName, runID string) string {
+	return fmt.Sprintf("nf.%s.%s.", nextflowRepGroupToken(workflowName), nextflowRepGroupToken(runID))
+}
+
+func nextflowRepGroupToken(value string) string {
+	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
 }
 
 func followNextflowWorkflow(
@@ -597,124 +721,214 @@ func nextflowWorkflowJobs(
 	return completeJobs, buriedJobs, activeIncompleteJobs, nil
 }
 
-func addNextflowJobs(jq nextflowJobManager, repGroupPrefix string, jobs []*jobqueue.Job) error {
-	jobsToAdd, err := nextflowResumeJobs(jq, repGroupPrefix, jobs)
+func printJobsOutput(w io.Writer, displayJobs []*jobqueue.Job, allJobs []*jobqueue.Job, maxBytes int64) error {
+	type jobOutput struct {
+		process   string
+		indexText string
+		indexKey  []int
+		hasIndex  bool
+		text      string
+		cwd       string
+	}
+
+	processCounts := make(map[string]int)
+
+	for _, job := range allJobs {
+		parsed, ok := parseNextflowRepGroup(job.RepGroup)
+		if !ok {
+			continue
+		}
+
+		processCounts[parsed.process]++
+	}
+
+	outputs := make([]jobOutput, 0, len(displayJobs))
+	for _, job := range displayJobs {
+		parsed, ok := parseNextflowRepGroup(job.RepGroup)
+		if !ok {
+			continue
+		}
+
+		stdout, err := readCapturedOutput(filepath.Join(job.Cwd, nfStdoutFile), maxBytes)
+		if err != nil {
+			return err
+		}
+
+		stderr, err := readCapturedOutput(filepath.Join(job.Cwd, nfStderrFile), maxBytes)
+		if err != nil {
+			return err
+		}
+
+		formatted := formatJobOutput(
+			jobOutputLabel(parsed.process, job.Cwd, processCounts[parsed.process] > 1),
+			stdout,
+			stderr,
+		)
+		if formatted == "" {
+			continue
+		}
+
+		indexText, indexKey, hasIndex := instanceIndexFromCwd(job.Cwd)
+		outputs = append(outputs, jobOutput{
+			process:   parsed.process,
+			indexText: indexText,
+			indexKey:  indexKey,
+			hasIndex:  hasIndex,
+			text:      formatted,
+			cwd:       job.Cwd,
+		})
+	}
+
+	sort.Slice(outputs, func(i, j int) bool {
+		if outputs[i].process != outputs[j].process {
+			return outputs[i].process < outputs[j].process
+		}
+
+		if outputs[i].hasIndex && outputs[j].hasIndex {
+			if cmp := compareInstanceIndexKeys(outputs[i].indexKey, outputs[j].indexKey); cmp != 0 {
+				return cmp < 0
+			}
+		}
+
+		if outputs[i].hasIndex != outputs[j].hasIndex {
+			return outputs[i].hasIndex
+		}
+
+		return outputs[i].cwd < outputs[j].cwd
+	})
+
+	for _, output := range outputs {
+		if _, err := io.WriteString(w, output.text); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func parseNextflowRepGroup(repGroup string) (nextflowRepGroup, bool) {
+	parts := strings.Split(repGroup, ".")
+	if len(parts) < 4 || parts[0] != "nf" {
+		return nextflowRepGroup{}, false
+	}
+
+	process := strings.Join(parts[3:], ".")
+	if process == "" {
+		return nextflowRepGroup{}, false
+	}
+
+	workflow, err := url.PathUnescape(parts[1])
 	if err != nil {
-		return err
+		return nextflowRepGroup{}, false
 	}
 
-	if len(jobsToAdd) == 0 {
-		return nil
-	}
-
-	_, _, err = jq.Add(jobsToAdd, nil, true)
-
-	return err
-}
-
-func nextflowResumeJobs(jq nextflowJobManager, repGroupPrefix string, jobs []*jobqueue.Job) ([]*jobqueue.Job, error) {
-	if len(jobs) == 0 {
-		return nil, nil
-	}
-
-	existingJobs, err := jq.GetByRepGroupMatch(repGroupPrefix, jobqueue.RepGroupMatchPrefix, 0, "", false, false)
+	runID, err := url.PathUnescape(parts[2])
 	if err != nil {
-		return nil, err
+		return nextflowRepGroup{}, false
 	}
 
-	existingByRepGroup := make(map[string][]*jobqueue.Job, len(existingJobs))
-	for _, job := range existingJobs {
-		existingByRepGroup[job.RepGroup] = append(existingByRepGroup[job.RepGroup], job)
-	}
-
-	jobsToAdd := make([]*jobqueue.Job, 0, len(jobs))
-	for _, job := range jobs {
-		matchedJob, remaining := nextflowResumeMatch(existingByRepGroup[job.RepGroup], job)
-		existingByRepGroup[job.RepGroup] = remaining
-
-		shouldAdd, deleteKey, resumeErr := nextflowResumeAction(matchedJob)
-		if resumeErr != nil {
-			return nil, resumeErr
-		}
-
-		if deleteKey != "" {
-			deleted, deleteErr := jq.Delete([]*jobqueue.JobEssence{{JobKey: deleteKey}})
-			if deleteErr != nil {
-				return nil, deleteErr
-			}
-
-			if deleted == 0 {
-				return nil, fmt.Errorf("failed to delete buried job %s during resume", job.RepGroup)
-			}
-		}
-
-		if shouldAdd {
-			jobsToAdd = append(jobsToAdd, job)
-		}
-	}
-
-	return jobsToAdd, nil
+	return nextflowRepGroup{workflow: workflow, runID: runID, process: process}, true
 }
 
-func nextflowResumeMatch(existingJobs []*jobqueue.Job, plannedJob *jobqueue.Job) (*jobqueue.Job, []*jobqueue.Job) {
-	if len(existingJobs) == 0 {
-		return nil, nil
+func readCapturedOutput(path string, maxBytes int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", nil
 	}
 
-	for index, existingJob := range existingJobs {
-		if existingJob.Key() == plannedJob.Key() {
-			matchedJob := existingJobs[index]
-			remaining := append([]*jobqueue.Job{}, existingJobs[:index]...)
-			remaining = append(remaining, existingJobs[index+1:]...)
+	defer func() {
+		_ = file.Close()
+	}()
 
-			return matchedJob, remaining
-		}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return "", nil
 	}
 
-	if len(existingJobs) == 1 {
-		existingJob := existingJobs[0]
-		if existingJob.CwdMatters || plannedJob.CwdMatters {
-			if existingJob.CwdMatters &&
-				plannedJob.CwdMatters &&
-				filepath.Clean(existingJob.Cwd) == filepath.Clean(plannedJob.Cwd) {
-				return existingJob, nil
-			}
-
-			return nil, append([]*jobqueue.Job{}, existingJobs...)
-		}
-
-		return existingJob, nil
+	truncated := int64(len(data)) > maxBytes
+	if truncated {
+		data = data[:maxBytes]
 	}
 
-	return nil, append([]*jobqueue.Job{}, existingJobs...)
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return "", nil
+	}
+
+	output := string(data)
+	if truncated {
+		output += "\n[... output truncated ...]"
+	}
+
+	return output, nil
 }
 
-func nextflowResumeAction(existingJob *jobqueue.Job) (bool, string, error) {
-	if existingJob == nil {
-		return true, "", nil
+func formatJobOutput(label string, stdout, stderr string) string {
+	var builder strings.Builder
+	writeJobOutputSection(&builder, label, stdout)
+	writeJobOutputSection(&builder, label+" (stderr)", stderr)
+
+	return builder.String()
+}
+
+func writeJobOutputSection(builder *strings.Builder, label, content string) {
+	if content == "" {
+		return
 	}
 
-	switch existingJob.State {
-	case jobqueue.JobStateBuried:
-		return true, existingJob.Key(), nil
-	case jobqueue.JobStateDeleted:
-		return true, "", nil
-	case jobqueue.JobStateComplete,
-		jobqueue.JobStateRunning,
-		jobqueue.JobStateDependent,
-		jobqueue.JobStateDelayed,
-		jobqueue.JobStateReady,
-		jobqueue.JobStateReserved:
-		return false, "", nil
-	case jobqueue.JobStateLost:
-		return true, "", nil
-	default:
-		return true, "", nil
+	trimmed := strings.TrimSuffix(content, "\n")
+	if trimmed == "" {
+		return
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) == 1 {
+		builder.WriteString(label)
+		builder.WriteString(" ")
+		builder.WriteString(lines[0])
+		builder.WriteString("\n")
+
+		return
+	}
+
+	builder.WriteString(label)
+	builder.WriteString("\n")
+
+	for _, line := range lines {
+		builder.WriteString("  ")
+		builder.WriteString(line)
+		builder.WriteString("\n")
 	}
 }
 
-func nextflowRepGroupPrefix(workflowName, runID string) string {
-	return fmt.Sprintf("nf.%s.%s.", nextflowRepGroupToken(workflowName), nextflowRepGroupToken(runID))
+func jobOutputLabel(process string, cwd string, isMultiInstance bool) string {
+	if isMultiInstance {
+		if indexText, _, ok := instanceIndexFromCwd(cwd); ok {
+			return fmt.Sprintf("[%s (%s)]", process, indexText)
+		}
+	}
+
+	return fmt.Sprintf("[%s]", process)
+}
+
+func instanceIndexFromCwd(cwd string) (string, []int, bool) {
+	base := filepath.Base(filepath.Clean(cwd))
+
+	parts := strings.Split(base, "_")
+	if len(parts) == 0 {
+		return "", nil, false
+	}
+
+	indexes := make([]int, 0, len(parts))
+	for _, part := range parts {
+		index, err := strconv.Atoi(part)
+		if err != nil {
+			return "", nil, false
+		}
+
+		indexes = append(indexes, index)
+	}
+
+	return base, indexes, true
 }
 
 func compareInstanceIndexKeys(left, right []int) int {
@@ -1003,30 +1217,6 @@ func aggregateNextflowProcessCounts(jobs []*jobqueue.Job) map[string]nextflowPro
 	return counts
 }
 
-func parseNextflowRepGroup(repGroup string) (nextflowRepGroup, bool) {
-	parts := strings.Split(repGroup, ".")
-	if len(parts) < 4 || parts[0] != "nf" {
-		return nextflowRepGroup{}, false
-	}
-
-	process := strings.Join(parts[3:], ".")
-	if process == "" {
-		return nextflowRepGroup{}, false
-	}
-
-	workflow, err := url.PathUnescape(parts[1])
-	if err != nil {
-		return nextflowRepGroup{}, false
-	}
-
-	runID, err := url.PathUnescape(parts[2])
-	if err != nil {
-		return nextflowRepGroup{}, false
-	}
-
-	return nextflowRepGroup{workflow: workflow, runID: runID, process: process}, true
-}
-
 func findNextflowStatusJobs(jq *jobqueue.Client, options nextflowStatusOptions) ([]*jobqueue.Job, error) {
 	prefix := nextflowStatusPrefix(options)
 
@@ -1091,10 +1281,6 @@ func nextflowStatusPrefix(options nextflowStatusOptions) string {
 	return "nf."
 }
 
-func nextflowRepGroupToken(value string) string {
-	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
-}
-
 type nextflowJobQuerier interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (int, int, error)
 	GetByRepGroupMatch(
@@ -1125,192 +1311,6 @@ type nextflowRepGroup struct {
 	workflow string
 	runID    string
 	process  string
-}
-
-func printJobsOutput(w io.Writer, displayJobs []*jobqueue.Job, allJobs []*jobqueue.Job, maxBytes int64) error {
-	type jobOutput struct {
-		process   string
-		indexText string
-		indexKey  []int
-		hasIndex  bool
-		text      string
-		cwd       string
-	}
-
-	processCounts := make(map[string]int)
-
-	for _, job := range allJobs {
-		parsed, ok := parseNextflowRepGroup(job.RepGroup)
-		if !ok {
-			continue
-		}
-
-		processCounts[parsed.process]++
-	}
-
-	outputs := make([]jobOutput, 0, len(displayJobs))
-	for _, job := range displayJobs {
-		parsed, ok := parseNextflowRepGroup(job.RepGroup)
-		if !ok {
-			continue
-		}
-
-		stdout, err := readCapturedOutput(filepath.Join(job.Cwd, nfStdoutFile), maxBytes)
-		if err != nil {
-			return err
-		}
-
-		stderr, err := readCapturedOutput(filepath.Join(job.Cwd, nfStderrFile), maxBytes)
-		if err != nil {
-			return err
-		}
-
-		formatted := formatJobOutput(
-			jobOutputLabel(parsed.process, job.Cwd, processCounts[parsed.process] > 1),
-			stdout,
-			stderr,
-		)
-		if formatted == "" {
-			continue
-		}
-
-		indexText, indexKey, hasIndex := instanceIndexFromCwd(job.Cwd)
-		outputs = append(outputs, jobOutput{
-			process:   parsed.process,
-			indexText: indexText,
-			indexKey:  indexKey,
-			hasIndex:  hasIndex,
-			text:      formatted,
-			cwd:       job.Cwd,
-		})
-	}
-
-	sort.Slice(outputs, func(i, j int) bool {
-		if outputs[i].process != outputs[j].process {
-			return outputs[i].process < outputs[j].process
-		}
-
-		if outputs[i].hasIndex && outputs[j].hasIndex {
-			if cmp := compareInstanceIndexKeys(outputs[i].indexKey, outputs[j].indexKey); cmp != 0 {
-				return cmp < 0
-			}
-		}
-
-		if outputs[i].hasIndex != outputs[j].hasIndex {
-			return outputs[i].hasIndex
-		}
-
-		return outputs[i].cwd < outputs[j].cwd
-	})
-
-	for _, output := range outputs {
-		if _, err := io.WriteString(w, output.text); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func readCapturedOutput(path string, maxBytes int64) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", nil
-	}
-
-	defer func() {
-		_ = file.Close()
-	}()
-
-	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
-	if err != nil {
-		return "", nil
-	}
-
-	truncated := int64(len(data)) > maxBytes
-	if truncated {
-		data = data[:maxBytes]
-	}
-
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return "", nil
-	}
-
-	output := string(data)
-	if truncated {
-		output += "\n[... output truncated ...]"
-	}
-
-	return output, nil
-}
-
-func formatJobOutput(label string, stdout, stderr string) string {
-	var builder strings.Builder
-	writeJobOutputSection(&builder, label, stdout)
-	writeJobOutputSection(&builder, label+" (stderr)", stderr)
-
-	return builder.String()
-}
-
-func writeJobOutputSection(builder *strings.Builder, label, content string) {
-	if content == "" {
-		return
-	}
-
-	trimmed := strings.TrimSuffix(content, "\n")
-	if trimmed == "" {
-		return
-	}
-
-	lines := strings.Split(trimmed, "\n")
-	if len(lines) == 1 {
-		builder.WriteString(label)
-		builder.WriteString(" ")
-		builder.WriteString(lines[0])
-		builder.WriteString("\n")
-
-		return
-	}
-
-	builder.WriteString(label)
-	builder.WriteString("\n")
-
-	for _, line := range lines {
-		builder.WriteString("  ")
-		builder.WriteString(line)
-		builder.WriteString("\n")
-	}
-}
-
-func jobOutputLabel(process string, cwd string, isMultiInstance bool) string {
-	if isMultiInstance {
-		if indexText, _, ok := instanceIndexFromCwd(cwd); ok {
-			return fmt.Sprintf("[%s (%s)]", process, indexText)
-		}
-	}
-
-	return fmt.Sprintf("[%s]", process)
-}
-
-func instanceIndexFromCwd(cwd string) (string, []int, bool) {
-	base := filepath.Base(filepath.Clean(cwd))
-
-	parts := strings.Split(base, "_")
-	if len(parts) == 0 {
-		return "", nil, false
-	}
-
-	indexes := make([]int, 0, len(parts))
-	for _, part := range parts {
-		index, err := strconv.Atoi(part)
-		if err != nil {
-			return "", nil, false
-		}
-
-		indexes = append(indexes, index)
-	}
-
-	return base, indexes, true
 }
 
 type nextflowProcessCounts struct {

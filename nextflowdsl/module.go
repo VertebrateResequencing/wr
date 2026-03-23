@@ -235,10 +235,6 @@ func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitR
 	return parts[0], parts[1], defaultGitHubModuleRevision, false, nil
 }
 
-func isValidGitHubRepoPathPart(part string) bool {
-	return part != "." && part != ".."
-}
-
 func hasNextflowModuleFiles(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -281,6 +277,10 @@ func hasNextflowModuleFiles(path string) (bool, error) {
 
 func githubModuleURL(owner, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+}
+
+func isValidGitHubRepoPathPart(part string) bool {
+	return part != "." && part != ".."
 }
 
 func normalizeGitHubRepoSpec(spec string) (string, error) {

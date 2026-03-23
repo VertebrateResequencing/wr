@@ -142,6 +142,59 @@ func workflowEntryPath(path string) (string, error) {
 	return entryPath, nil
 }
 
+func cloneAliasMap(alias map[string]string) map[string]string {
+	if len(alias) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]string, len(alias))
+	for key, value := range alias {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+func moduleWorkflowFiles(path string) ([]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat module path %q: %w", path, err)
+	}
+
+	if !info.IsDir() {
+		return []string{path}, nil
+	}
+
+	files := []string{}
+
+	walkErr := filepath.WalkDir(path, func(currentPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if entry.IsDir() {
+			return nil
+		}
+
+		if filepath.Ext(currentPath) == ".nf" {
+			files = append(files, currentPath)
+		}
+
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("scan module path %q: %w", path, walkErr)
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("module path %q did not contain any .nf files", path)
+	}
+
+	sort.Strings(files)
+
+	return files, nil
+}
+
 func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[string]*Workflow, loading map[string]struct{}) (*Workflow, error) {
 	if wf, ok := loaded[path]; ok {
 		return cloneWorkflow(wf), nil
@@ -199,6 +252,38 @@ func loadWorkflowFile(path string, remoteResolver ModuleResolver, loaded map[str
 	return merged, nil
 }
 
+func cloneWorkflow(wf *Workflow) *Workflow {
+	if wf == nil {
+		return nil
+	}
+
+	imports := make([]*Import, 0, len(wf.Imports))
+	for _, importNode := range wf.Imports {
+		if importNode == nil {
+			continue
+		}
+
+		imports = append(imports, &Import{
+			Names:  append([]string{}, importNode.Names...),
+			Source: importNode.Source,
+			Alias:  cloneAliasMap(importNode.Alias),
+		})
+	}
+
+	return &Workflow{
+		Name:        wf.Name,
+		Processes:   cloneProcesses(wf.Processes),
+		SubWFs:      cloneSubWorkflows(wf.SubWFs, nil),
+		Imports:     imports,
+		EntryWF:     cloneWorkflowBlock(wf.EntryWF, nil),
+		Functions:   cloneFuncDefs(wf.Functions),
+		Enums:       cloneEnumDefs(wf.Enums),
+		OutputBlock: wf.OutputBlock,
+		ParamBlock:  cloneParamDecls(wf.ParamBlock),
+		Records:     cloneRecordDefs(wf.Records),
+	}
+}
+
 func loadImportedWorkflow(
 	parentPath string,
 	importNode *Import,
@@ -235,46 +320,6 @@ func loadImportedWorkflow(
 	}
 
 	return moduleWF, nil
-}
-
-func moduleWorkflowFiles(path string) ([]string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat module path %q: %w", path, err)
-	}
-
-	if !info.IsDir() {
-		return []string{path}, nil
-	}
-
-	files := []string{}
-
-	walkErr := filepath.WalkDir(path, func(currentPath string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-
-		if entry.IsDir() {
-			return nil
-		}
-
-		if filepath.Ext(currentPath) == ".nf" {
-			files = append(files, currentPath)
-		}
-
-		return nil
-	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("scan module path %q: %w", path, walkErr)
-	}
-
-	if len(files) == 0 {
-		return nil, fmt.Errorf("module path %q did not contain any .nf files", path)
-	}
-
-	sort.Strings(files)
-
-	return files, nil
 }
 
 func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflow, error) {
@@ -346,6 +391,131 @@ func selectImportedDefinitions(moduleWF *Workflow, importNode *Import) (*Workflo
 	}, nil
 }
 
+func importedName(name string, importNode *Import) string {
+	if importNode != nil && importNode.Alias != nil {
+		if alias, ok := importNode.Alias[name]; ok {
+			return alias
+		}
+	}
+
+	return name
+}
+
+func cloneProcesses(processes []*Process) []*Process {
+	cloned := make([]*Process, 0, len(processes))
+	for _, proc := range processes {
+		if proc == nil {
+			continue
+		}
+
+		cloned = append(cloned, cloneProcess(proc, proc.Name))
+	}
+
+	return cloned
+}
+
+func cloneProcess(proc *Process, name string) *Process {
+	if proc == nil {
+		return nil
+	}
+
+	directives := make(map[string]any, len(proc.Directives))
+	for key, value := range proc.Directives {
+		directives[key] = value
+	}
+
+	publishDirs := make([]*PublishDir, 0, len(proc.PublishDir))
+	for _, publishDir := range proc.PublishDir {
+		if publishDir == nil {
+			continue
+		}
+
+		publishDirs = append(publishDirs, &PublishDir{
+			Path:    publishDir.Path,
+			Pattern: publishDir.Pattern,
+			Mode:    publishDir.Mode,
+		})
+	}
+
+	return &Process{
+		Name:         name,
+		Labels:       append([]string{}, proc.Labels...),
+		Tag:          proc.Tag,
+		BeforeScript: proc.BeforeScript,
+		AfterScript:  proc.AfterScript,
+		Module:       proc.Module,
+		Cache:        proc.Cache,
+		Directives:   directives,
+		Input:        cloneDeclarations(proc.Input),
+		Output:       cloneDeclarations(proc.Output),
+		Script:       proc.Script,
+		Stub:         proc.Stub,
+		Exec:         proc.Exec,
+		Shell:        proc.Shell,
+		When:         proc.When,
+		Container:    proc.Container,
+		PublishDir:   publishDirs,
+		ErrorStrat:   proc.ErrorStrat,
+		MaxRetries:   proc.MaxRetries,
+		MaxForks:     proc.MaxForks,
+		Env:          cloneEnv(proc.Env),
+	}
+}
+
+func cloneDeclarations(declarations []*Declaration) []*Declaration {
+	cloned := make([]*Declaration, 0, len(declarations))
+	for _, declaration := range declarations {
+		if declaration == nil {
+			continue
+		}
+
+		cloned = append(cloned, &Declaration{
+			Kind:     declaration.Kind,
+			Name:     declaration.Name,
+			Expr:     declaration.Expr,
+			Raw:      declaration.Raw,
+			Emit:     declaration.Emit,
+			Each:     declaration.Each,
+			Optional: declaration.Optional,
+			Elements: cloneTupleElements(declaration.Elements),
+		})
+	}
+
+	return cloned
+}
+
+func cloneTupleElements(elements []*TupleElement) []*TupleElement {
+	cloned := make([]*TupleElement, 0, len(elements))
+	for _, element := range elements {
+		if element == nil {
+			continue
+		}
+
+		cloned = append(cloned, &TupleElement{
+			Kind: element.Kind,
+			Name: element.Name,
+			Expr: element.Expr,
+			Raw:  element.Raw,
+			Emit: element.Emit,
+		})
+	}
+
+	return cloned
+}
+
+func cloneEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]string, len(env))
+	for key, value := range env {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
 func workflowDependencyTargets(block *WorkflowBlock, processes map[string]*Process, subworkflows map[string]*SubWorkflow) []string {
 	if block == nil {
 		return nil
@@ -411,109 +581,6 @@ func ifBlockDependencyTargets(block *IfBlock, processes map[string]*Process, sub
 	}
 
 	return targets
-}
-
-func importedName(name string, importNode *Import) string {
-	if importNode != nil && importNode.Alias != nil {
-		if alias, ok := importNode.Alias[name]; ok {
-			return alias
-		}
-	}
-
-	return name
-}
-
-func cloneWorkflow(wf *Workflow) *Workflow {
-	if wf == nil {
-		return nil
-	}
-
-	imports := make([]*Import, 0, len(wf.Imports))
-	for _, importNode := range wf.Imports {
-		if importNode == nil {
-			continue
-		}
-
-		imports = append(imports, &Import{
-			Names:  append([]string{}, importNode.Names...),
-			Source: importNode.Source,
-			Alias:  cloneAliasMap(importNode.Alias),
-		})
-	}
-
-	return &Workflow{
-		Name:        wf.Name,
-		Processes:   cloneProcesses(wf.Processes),
-		SubWFs:      cloneSubWorkflows(wf.SubWFs, nil),
-		Imports:     imports,
-		EntryWF:     cloneWorkflowBlock(wf.EntryWF, nil),
-		Functions:   cloneFuncDefs(wf.Functions),
-		Enums:       cloneEnumDefs(wf.Enums),
-		OutputBlock: wf.OutputBlock,
-		ParamBlock:  cloneParamDecls(wf.ParamBlock),
-		Records:     cloneRecordDefs(wf.Records),
-	}
-}
-
-func cloneProcesses(processes []*Process) []*Process {
-	cloned := make([]*Process, 0, len(processes))
-	for _, proc := range processes {
-		if proc == nil {
-			continue
-		}
-
-		cloned = append(cloned, cloneProcess(proc, proc.Name))
-	}
-
-	return cloned
-}
-
-func cloneProcess(proc *Process, name string) *Process {
-	if proc == nil {
-		return nil
-	}
-
-	directives := make(map[string]any, len(proc.Directives))
-	for key, value := range proc.Directives {
-		directives[key] = value
-	}
-
-	publishDirs := make([]*PublishDir, 0, len(proc.PublishDir))
-	for _, publishDir := range proc.PublishDir {
-		if publishDir == nil {
-			continue
-		}
-
-		publishDirs = append(publishDirs, &PublishDir{
-			Path:    publishDir.Path,
-			Pattern: publishDir.Pattern,
-			Mode:    publishDir.Mode,
-		})
-	}
-
-	return &Process{
-		Name:         name,
-		Labels:       append([]string{}, proc.Labels...),
-		Tag:          proc.Tag,
-		BeforeScript: proc.BeforeScript,
-		AfterScript:  proc.AfterScript,
-		Module:       proc.Module,
-		Cache:        proc.Cache,
-		Directives:   directives,
-		Input:        cloneDeclarations(proc.Input),
-		Output:       cloneDeclarations(proc.Output),
-		Script:       proc.Script,
-		Stub:         proc.Stub,
-		Exec:         proc.Exec,
-		Shell:        proc.Shell,
-		When:         proc.When,
-		Container:    proc.Container,
-		PublishDir:   publishDirs,
-		ErrorStrat:   proc.ErrorStrat,
-		MaxRetries:   proc.MaxRetries,
-		MaxForks:     proc.MaxForks,
-		Env:          cloneEnv(proc.Env),
-	}
 }
 
 func cloneSubWorkflows(subworkflows []*SubWorkflow, renameTargets map[string]string) []*SubWorkflow {
@@ -592,172 +659,6 @@ func cloneWorkflowBlock(block *WorkflowBlock, renameTargets map[string]string) *
 	}
 }
 
-func cloneEnumDefs(enumDefs []*EnumDef) []*EnumDef {
-	cloned := make([]*EnumDef, 0, len(enumDefs))
-	for _, enumDef := range enumDefs {
-		if enumDef == nil {
-			continue
-		}
-
-		cloned = append(cloned, &EnumDef{Name: enumDef.Name, Values: append([]string{}, enumDef.Values...)})
-	}
-
-	return cloned
-}
-
-func cloneParamDecls(paramDecls []*ParamDecl) []*ParamDecl {
-	cloned := make([]*ParamDecl, 0, len(paramDecls))
-	for _, paramDecl := range paramDecls {
-		if paramDecl == nil {
-			continue
-		}
-
-		cloned = append(cloned, &ParamDecl{Name: paramDecl.Name, Type: paramDecl.Type, Default: paramDecl.Default})
-	}
-
-	return cloned
-}
-
-func cloneRecordDefs(recordDefs []*RecordDef) []*RecordDef {
-	cloned := make([]*RecordDef, 0, len(recordDefs))
-	for _, recordDef := range recordDefs {
-		if recordDef == nil {
-			continue
-		}
-
-		fields := make([]*RecordField, 0, len(recordDef.Fields))
-		for _, field := range recordDef.Fields {
-			if field == nil {
-				continue
-			}
-
-			fields = append(fields, &RecordField{Name: field.Name, Type: field.Type, Default: field.Default})
-		}
-
-		cloned = append(cloned, &RecordDef{Name: recordDef.Name, Fields: fields})
-	}
-
-	return cloned
-}
-
-func mergeOutputBlocks(existing, incoming string) string {
-	existing = strings.TrimSpace(existing)
-	incoming = strings.TrimSpace(incoming)
-
-	switch {
-	case existing == "":
-		return incoming
-	case incoming == "":
-		return existing
-	default:
-		return existing + "\n" + incoming
-	}
-}
-
-func cloneIfBlocks(blocks []*IfBlock, renameTargets map[string]string) []*IfBlock {
-	if len(blocks) == 0 {
-		return nil
-	}
-
-	cloned := make([]*IfBlock, 0, len(blocks))
-	for _, block := range blocks {
-		if block == nil {
-			continue
-		}
-
-		cloned = append(cloned, cloneIfBlock(block, renameTargets))
-	}
-
-	return cloned
-}
-
-func cloneIfBlock(block *IfBlock, renameTargets map[string]string) *IfBlock {
-	if block == nil {
-		return nil
-	}
-
-	cloneCalls := func(calls []*Call) []*Call {
-		cloned := make([]*Call, 0, len(calls))
-		for _, call := range calls {
-			if call == nil {
-				continue
-			}
-
-			target := call.Target
-			if renameTargets != nil {
-				if renamed, ok := renameTargets[target]; ok {
-					target = renamed
-				}
-			}
-
-			cloned = append(cloned, &Call{Target: target, Args: cloneChanExprs(call.Args, renameTargets)})
-		}
-
-		return cloned
-	}
-
-	return &IfBlock{
-		Condition: block.Condition,
-		Body:      cloneCalls(block.Body),
-		ElseIf:    cloneIfBlocks(block.ElseIf, renameTargets),
-		ElseBody:  cloneCalls(block.ElseBody),
-	}
-}
-
-func cloneWorkflowEmitExpr(expression string, renameTargets map[string]string) string {
-	if expression == "" || len(renameTargets) == 0 {
-		return expression
-	}
-
-	parsed, err := parseChanExprText(expression)
-	if err != nil {
-		return expression
-	}
-
-	return renderChanExpr(cloneChanExpr(parsed, renameTargets))
-}
-
-func cloneDeclarations(declarations []*Declaration) []*Declaration {
-	cloned := make([]*Declaration, 0, len(declarations))
-	for _, declaration := range declarations {
-		if declaration == nil {
-			continue
-		}
-
-		cloned = append(cloned, &Declaration{
-			Kind:     declaration.Kind,
-			Name:     declaration.Name,
-			Expr:     declaration.Expr,
-			Raw:      declaration.Raw,
-			Emit:     declaration.Emit,
-			Each:     declaration.Each,
-			Optional: declaration.Optional,
-			Elements: cloneTupleElements(declaration.Elements),
-		})
-	}
-
-	return cloned
-}
-
-func cloneTupleElements(elements []*TupleElement) []*TupleElement {
-	cloned := make([]*TupleElement, 0, len(elements))
-	for _, element := range elements {
-		if element == nil {
-			continue
-		}
-
-		cloned = append(cloned, &TupleElement{
-			Kind: element.Kind,
-			Name: element.Name,
-			Expr: element.Expr,
-			Raw:  element.Raw,
-			Emit: element.Emit,
-		})
-	}
-
-	return cloned
-}
-
 func cloneFuncDefs(funcDefs []*FuncDef) []*FuncDef {
 	cloned := make([]*FuncDef, 0, len(funcDefs))
 	for _, funcDef := range funcDefs {
@@ -775,68 +676,17 @@ func cloneFuncDefs(funcDefs []*FuncDef) []*FuncDef {
 	return cloned
 }
 
-func cloneChanExprs(expressions []ChanExpr, renameTargets map[string]string) []ChanExpr {
-	cloned := make([]ChanExpr, 0, len(expressions))
-	for _, expression := range expressions {
-		cloned = append(cloned, cloneChanExpr(expression, renameTargets))
+func cloneEnumDefs(enumDefs []*EnumDef) []*EnumDef {
+	cloned := make([]*EnumDef, 0, len(enumDefs))
+	for _, enumDef := range enumDefs {
+		if enumDef == nil {
+			continue
+		}
+
+		cloned = append(cloned, &EnumDef{Name: enumDef.Name, Values: append([]string{}, enumDef.Values...)})
 	}
 
 	return cloned
-}
-
-func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExpr {
-	switch value := expression.(type) {
-	case ChanRef:
-		name := value.Name
-
-		for _, original := range sortedRenameTargets(renameTargets) {
-			renamed := renameTargets[original]
-
-			prefix := original + "."
-			if name == original {
-				name = renamed
-
-				break
-			}
-
-			if len(name) > len(prefix) && name[:len(prefix)] == prefix {
-				name = renamed + name[len(original):]
-
-				break
-			}
-		}
-
-		return ChanRef{Name: name}
-	case NamedChannelRef:
-		return NamedChannelRef{Source: cloneChanExpr(value.Source, renameTargets), Label: value.Label}
-	case ChannelFactory:
-		return ChannelFactory{Name: value.Name, Args: append([]Expr{}, value.Args...)}
-	case ChannelChain:
-		operators := make([]ChannelOperator, 0, len(value.Operators))
-		for _, operator := range value.Operators {
-			var closureExpr *ClosureExpr
-
-			if operator.ClosureExpr != nil {
-				clonedClosure := *operator.ClosureExpr
-				clonedClosure.Params = append([]string{}, operator.ClosureExpr.Params...)
-				closureExpr = &clonedClosure
-			}
-
-			operators = append(operators, ChannelOperator{
-				Name:        operator.Name,
-				Args:        append([]Expr{}, operator.Args...),
-				Channels:    cloneChanExprs(operator.Channels, renameTargets),
-				Closure:     operator.Closure,
-				ClosureExpr: closureExpr,
-			})
-		}
-
-		return ChannelChain{Source: cloneChanExpr(value.Source, renameTargets), Operators: operators}
-	case PipeExpr:
-		return PipeExpr{Stages: cloneChanExprs(value.Stages, renameTargets)}
-	default:
-		return expression
-	}
 }
 
 func renderChanExpr(expression ChanExpr) string {
@@ -973,6 +823,74 @@ func renderExpr(expression Expr) string {
 	}
 }
 
+func cloneWorkflowEmitExpr(expression string, renameTargets map[string]string) string {
+	if expression == "" || len(renameTargets) == 0 {
+		return expression
+	}
+
+	parsed, err := parseChanExprText(expression)
+	if err != nil {
+		return expression
+	}
+
+	return renderChanExpr(cloneChanExpr(parsed, renameTargets))
+}
+
+func cloneChanExpr(expression ChanExpr, renameTargets map[string]string) ChanExpr {
+	switch value := expression.(type) {
+	case ChanRef:
+		name := value.Name
+
+		for _, original := range sortedRenameTargets(renameTargets) {
+			renamed := renameTargets[original]
+
+			prefix := original + "."
+			if name == original {
+				name = renamed
+
+				break
+			}
+
+			if len(name) > len(prefix) && name[:len(prefix)] == prefix {
+				name = renamed + name[len(original):]
+
+				break
+			}
+		}
+
+		return ChanRef{Name: name}
+	case NamedChannelRef:
+		return NamedChannelRef{Source: cloneChanExpr(value.Source, renameTargets), Label: value.Label}
+	case ChannelFactory:
+		return ChannelFactory{Name: value.Name, Args: append([]Expr{}, value.Args...)}
+	case ChannelChain:
+		operators := make([]ChannelOperator, 0, len(value.Operators))
+		for _, operator := range value.Operators {
+			var closureExpr *ClosureExpr
+
+			if operator.ClosureExpr != nil {
+				clonedClosure := *operator.ClosureExpr
+				clonedClosure.Params = append([]string{}, operator.ClosureExpr.Params...)
+				closureExpr = &clonedClosure
+			}
+
+			operators = append(operators, ChannelOperator{
+				Name:        operator.Name,
+				Args:        append([]Expr{}, operator.Args...),
+				Channels:    cloneChanExprs(operator.Channels, renameTargets),
+				Closure:     operator.Closure,
+				ClosureExpr: closureExpr,
+			})
+		}
+
+		return ChannelChain{Source: cloneChanExpr(value.Source, renameTargets), Operators: operators}
+	case PipeExpr:
+		return PipeExpr{Stages: cloneChanExprs(value.Stages, renameTargets)}
+	default:
+		return expression
+	}
+}
+
 func sortedRenameTargets(renameTargets map[string]string) []string {
 	keys := make([]string, 0, len(renameTargets))
 	for key := range renameTargets {
@@ -990,28 +908,110 @@ func sortedRenameTargets(renameTargets map[string]string) []string {
 	return keys
 }
 
-func cloneEnv(env map[string]string) map[string]string {
-	if len(env) == 0 {
-		return nil
-	}
-
-	cloned := make(map[string]string, len(env))
-	for key, value := range env {
-		cloned[key] = value
+func cloneChanExprs(expressions []ChanExpr, renameTargets map[string]string) []ChanExpr {
+	cloned := make([]ChanExpr, 0, len(expressions))
+	for _, expression := range expressions {
+		cloned = append(cloned, cloneChanExpr(expression, renameTargets))
 	}
 
 	return cloned
 }
 
-func cloneAliasMap(alias map[string]string) map[string]string {
-	if len(alias) == 0 {
+func cloneIfBlocks(blocks []*IfBlock, renameTargets map[string]string) []*IfBlock {
+	if len(blocks) == 0 {
 		return nil
 	}
 
-	cloned := make(map[string]string, len(alias))
-	for key, value := range alias {
-		cloned[key] = value
+	cloned := make([]*IfBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block == nil {
+			continue
+		}
+
+		cloned = append(cloned, cloneIfBlock(block, renameTargets))
 	}
 
 	return cloned
+}
+
+func cloneIfBlock(block *IfBlock, renameTargets map[string]string) *IfBlock {
+	if block == nil {
+		return nil
+	}
+
+	cloneCalls := func(calls []*Call) []*Call {
+		cloned := make([]*Call, 0, len(calls))
+		for _, call := range calls {
+			if call == nil {
+				continue
+			}
+
+			target := call.Target
+			if renameTargets != nil {
+				if renamed, ok := renameTargets[target]; ok {
+					target = renamed
+				}
+			}
+
+			cloned = append(cloned, &Call{Target: target, Args: cloneChanExprs(call.Args, renameTargets)})
+		}
+
+		return cloned
+	}
+
+	return &IfBlock{
+		Condition: block.Condition,
+		Body:      cloneCalls(block.Body),
+		ElseIf:    cloneIfBlocks(block.ElseIf, renameTargets),
+		ElseBody:  cloneCalls(block.ElseBody),
+	}
+}
+
+func cloneParamDecls(paramDecls []*ParamDecl) []*ParamDecl {
+	cloned := make([]*ParamDecl, 0, len(paramDecls))
+	for _, paramDecl := range paramDecls {
+		if paramDecl == nil {
+			continue
+		}
+
+		cloned = append(cloned, &ParamDecl{Name: paramDecl.Name, Type: paramDecl.Type, Default: paramDecl.Default})
+	}
+
+	return cloned
+}
+
+func cloneRecordDefs(recordDefs []*RecordDef) []*RecordDef {
+	cloned := make([]*RecordDef, 0, len(recordDefs))
+	for _, recordDef := range recordDefs {
+		if recordDef == nil {
+			continue
+		}
+
+		fields := make([]*RecordField, 0, len(recordDef.Fields))
+		for _, field := range recordDef.Fields {
+			if field == nil {
+				continue
+			}
+
+			fields = append(fields, &RecordField{Name: field.Name, Type: field.Type, Default: field.Default})
+		}
+
+		cloned = append(cloned, &RecordDef{Name: recordDef.Name, Fields: fields})
+	}
+
+	return cloned
+}
+
+func mergeOutputBlocks(existing, incoming string) string {
+	existing = strings.TrimSpace(existing)
+	incoming = strings.TrimSpace(incoming)
+
+	switch {
+	case existing == "":
+		return incoming
+	case incoming == "":
+		return existing
+	default:
+		return existing + "\n" + incoming
+	}
 }
