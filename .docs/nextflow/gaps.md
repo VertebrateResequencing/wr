@@ -14,18 +14,29 @@ value is only available through variable interpolation. Scripts that
 read from standard input (e.g. `read line`, `cat`) will not receive
 the expected data.
 
-### `env(x)` — Not a Real Environment Export
-
-The `env(x)` input qualifier is parsed and the received value is made
-available for Nextflow script interpolation (e.g. `echo $x` in the
-script block resolves to the value). However, in real Nextflow,
-`env FOO` exports the variable as a real shell environment variable
-(via `export FOO=value` prepended to the script). Our implementation
-does not export it — tools or subprocesses that read `$FOO` from the
-process environment (rather than through Nextflow string interpolation)
-will not see the value.
-
 ## Output Qualifiers
+
+### `stdout` — Runtime Content Not Forwarded
+
+Process stdout IS captured to a `.nf-stdout` file (the script is wrapped
+as `{ cmd; } > .nf-stdout`). However, the content of `.nf-stdout` is not
+read back and passed as a channel value to downstream processes. In real
+Nextflow, `output: stdout` emits the text content of stdout to the output
+channel. Our implementation falls through to a static variable lookup at
+translate time, which produces no meaningful value. Downstream processes
+will not receive the actual stdout text.
+
+### `eval('command')` — Runtime Result Not Forwarded
+
+The eval output command IS executed in the job shell (appended as
+`__nf_eval_0=$(command)`). However, the captured result stored in
+`__nf_eval_0` is not read back and passed as a channel value to
+downstream processes. In real Nextflow, `output: eval('hostname')` emits
+the text output of `hostname` to the output channel. Our implementation
+resolves the eval expression at translate time via `staticOutputValue`,
+which returns the command string literal (e.g. `"hostname"`) rather than
+the command's runtime output (e.g. `"myserver"`). Downstream processes
+will receive the command text, not the result.
 
 ### `env(x)` — Runtime Capture
 
@@ -36,6 +47,24 @@ implementation resolves `x` at translate time using the input binding
 value, so the output is whatever the variable was set to before
 execution — not the runtime value. Scripts that compute and export new
 environment variables will have wrong output values.
+
+## Directives
+
+### `cache` — Parsed but Not Used
+
+The `cache` directive is parsed and resolved from config defaults, but
+the resolved value is never used during job building. wr's job scheduler
+has its own caching/deduplication logic that is not influenced by this
+directive. Setting `cache false` to disable caching, or `cache 'deep'`
+for content-based caching, has no effect.
+
+### `tag` — Parsed but Not Used for Job Naming
+
+The `tag` directive is parsed and resolved from config defaults, but
+the resolved value is not used for wr job naming. wr's `RepGroup` (job
+name) is always derived from the process name and workflow scope. In
+real Nextflow, `tag` customises the task display name in logs and
+reports.
 
 ## Groovy Statements
 
@@ -117,6 +146,22 @@ The `publishDir` directive currently supports `path`, `mode`, and
 
 The cloud-only options (`tags`, `contentType`, `storageClass`) are not
 relevant to wr and are listed in `unsupported.md`.
+
+## publishDir Modes — Incorrect Behaviour
+
+The `publishDir` `mode` option has the following issues:
+
+- `'link'` — In Nextflow this creates a **hard link** (`ln`).
+  Our implementation uses `ln -sfn` which creates a **symbolic link**.
+  This is a bug — the behaviour differs from real Nextflow.
+- `'symlink'` — In Nextflow this creates a symbolic link.
+  Our implementation silently falls through to `cp -rf` (copy).
+- `'rellink'` — In Nextflow this creates a relative symbolic link.
+  Our implementation silently falls through to `cp -rf` (copy).
+- `'copyNoFollow'` — In Nextflow this copies without following symlinks.
+  Our implementation silently falls through to `cp -rf` (standard copy).
+
+Only `'copy'` (default) and `'move'` work correctly.
 
 ## Channel Operators — `cross` Behaviour
 

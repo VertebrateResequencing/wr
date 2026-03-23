@@ -38,16 +38,15 @@ behaviour as real Nextflow.
 
 - `val(x)` — value input
 - `path(x)` / `file(x)` — file input (file is deprecated alias)
+- `env(x)` — environment input (value exported as `export x=value` in the job shell)
 - `tuple val(x), path(y)` — tuple input with mixed qualifiers
 - `each val(x)` / `each path(x)` — cross-product input (generates separate jobs per each-value)
 
 ### Output Qualifiers
 
-- `val(x)` — value output
+- `val(x)` — value output (resolved at translate time via static variable lookup)
 - `path('pattern')` / `file('pattern')` — file output
 - `tuple val(x), path(y)` — tuple output
-- `stdout` — standard output capture
-- `eval('command')` — evaluate command and capture stdout
 
 ### Output Modifiers
 
@@ -65,13 +64,13 @@ behaviour as real Nextflow.
 - `maxRetries` — retry count
 - `maxErrors` — total error count limit → polling monitor job
 - `maxForks` — concurrency limit → wr limit groups
-- `publishDir` — output publishing (`path`, `mode`, `pattern` options)
+- `publishDir` — output publishing (`path`, `mode`, `pattern` options; modes `copy` and `move` work correctly; mode `link` creates a symbolic link instead of a hard link — see `gaps.md`)
 - `label` — process labels for config selector matching
-- `tag` — job name substitution tag
+- `tag` — parsed and resolved from config defaults (not used for wr job naming — see `gaps.md`)
 - `beforeScript` — pre-execution command prepended to job
 - `afterScript` — post-execution command appended to job
 - `module` — environment module loading
-- `cache` — caching strategy (`true`/`false`/`'deep'`/`'lenient'`)
+- `cache` — parsed and resolved from config defaults (value not used by wr's job scheduler — see `gaps.md`)
 - `env` — environment variables
 - `clusterOptions` — native scheduler options → `Requirements.Other`
 - `queue` — scheduler queue → `Requirements.Other`
