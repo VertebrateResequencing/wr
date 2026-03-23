@@ -998,6 +998,104 @@ func TestTranslateA3(t *testing.T) {
 	})
 }
 
+func TestTranslateF1(t *testing.T) {
+	Convey("Translate resolves F1 task.ext interpolations from merged process and config ext maps", t, func() {
+		translateJob := func(proc *Process, cfg *Config, args ...ChanExpr) *jobqueue.Job {
+			wf := &Workflow{
+				Processes: []*Process{proc},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: proc.Name, Args: args}}},
+			}
+
+			result, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+
+			return result.Jobs[0]
+		}
+
+		Convey("process-level ext values interpolate into scripts", func() {
+			job := translateJob(&Process{
+				Name:   "EXT_ARGS",
+				Script: "cmd ${task.ext.args}",
+				Directives: map[string]any{"ext": MapExpr{
+					Keys:   []Expr{StringExpr{Value: "args"}},
+					Values: []Expr{StringExpr{Value: "--verbose"}},
+				}},
+			}, nil)
+
+			So(job.Cmd, ShouldContainSubstring, "cmd --verbose")
+		})
+
+		Convey("missing ext values interpolate as empty strings", func() {
+			job := translateJob(&Process{Name: "EXT_EMPTY", Script: "cmd ${task.ext.args}", Directives: map[string]any{}}, nil)
+
+			So(job.Cmd, ShouldContainSubstring, "cmd")
+			So(job.Cmd, ShouldNotContainSubstring, "${task.ext.args}")
+		})
+
+		Convey("selector-scoped ext overrides process-level ext", func() {
+			job := translateJob(&Process{
+				Name:   "EXT_SELECTOR",
+				Labels: []string{"foo"},
+				Script: "cmd ${task.ext.args}",
+				Directives: map[string]any{"ext": MapExpr{
+					Keys:   []Expr{StringExpr{Value: "args"}},
+					Values: []Expr{StringExpr{Value: "--verbose"}},
+				}},
+			}, &Config{Selectors: []*ProcessSelector{{
+				Kind:     "withLabel",
+				Pattern:  "foo",
+				Settings: &ProcessDefaults{Ext: map[string]any{"args": "--quiet"}},
+			}}})
+
+			So(job.Cmd, ShouldContainSubstring, "cmd --quiet")
+		})
+
+		Convey("closure-valued ext entries evaluate against structured input bindings", func() {
+			job := translateJob(&Process{
+				Name:   "EXT_CLOSURE",
+				Script: "cmd ${task.ext.prefix}",
+				Input:  []*Declaration{{Name: "meta", Kind: "val"}},
+				Directives: map[string]any{"ext": MapExpr{
+					Keys:   []Expr{StringExpr{Value: "prefix"}},
+					Values: []Expr{ClosureExpr{Body: "meta.id"}},
+				}},
+			}, nil, ChannelFactory{Name: "value", Args: []Expr{MapExpr{
+				Keys:   []Expr{StringExpr{Value: "id"}},
+				Values: []Expr{StringExpr{Value: "sample1"}},
+			}}})
+
+			So(job.Cmd, ShouldContainSubstring, "cmd sample1")
+		})
+
+		Convey("multiple ext keys interpolate independently", func() {
+			job := translateJob(&Process{
+				Name:   "EXT_MULTI",
+				Script: "cmd ${task.ext.args} ${task.ext.args2}",
+				Directives: map[string]any{"ext": MapExpr{
+					Keys:   []Expr{StringExpr{Value: "args"}, StringExpr{Value: "args2"}},
+					Values: []Expr{StringExpr{Value: "--a"}, StringExpr{Value: "--b"}},
+				}},
+			}, nil)
+
+			So(job.Cmd, ShouldContainSubstring, "cmd --a --b")
+		})
+
+		Convey("config defaults override process-level ext values", func() {
+			job := translateJob(&Process{
+				Name:   "EXT_DEFAULTS",
+				Script: "cmd ${task.ext.args}",
+				Directives: map[string]any{"ext": MapExpr{
+					Keys:   []Expr{StringExpr{Value: "args"}},
+					Values: []Expr{StringExpr{Value: "--quiet"}},
+				}},
+			}, &Config{Process: &ProcessDefaults{Ext: map[string]any{"args": "--verbose"}}})
+
+			So(job.Cmd, ShouldContainSubstring, "cmd --verbose")
+		})
+	})
+}
+
 func TestTranslateF2(t *testing.T) {
 	Convey("Translate wraps process commands with beforeScript and afterScript", t, func() {
 		translateJob := func(proc *Process, tc TranslateConfig) *jobqueue.Job {
@@ -1662,6 +1760,128 @@ func TestTranslateB3(t *testing.T) {
 			So(jobs, ShouldHaveLength, 1)
 			So(jobs[0].Cmd, ShouldContainSubstring, "/work/a.bam")
 			So(jobs[0].Cmd, ShouldContainSubstring, "/work/b.bam")
+		})
+	})
+}
+
+func TestTranslateJ1ProcessConfigDefaults(t *testing.T) {
+	translateWithConfig := func(proc *Process, cfg *Config, tc TranslateConfig, args ...ChanExpr) *TranslateResult {
+		wf := &Workflow{
+			Processes: []*Process{proc},
+			EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: proc.Name, Args: args}}},
+		}
+
+		result, err := Translate(wf, cfg, tc)
+		So(err, ShouldBeNil)
+
+		return result
+	}
+
+	Convey("Translate applies J1 config process defaults and selector overrides", t, func() {
+		baseCfg := TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"}
+
+		Convey("config errorStrategy defaults propagate to processes without a local setting", func() {
+			proc := &Process{Name: "RETRY", Script: "echo hi"}
+			cfg := &Config{Process: &ProcessDefaults{ErrorStrategy: "retry", MaxRetries: 2}}
+
+			result := translateWithConfig(proc, cfg, baseCfg)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Retries, ShouldEqual, 2)
+		})
+
+		Convey("config ext defaults resolve task.ext references", func() {
+			proc := &Process{Name: "EXT", Script: "cmd ${task.ext.args}"}
+			cfg := &Config{Process: &ProcessDefaults{Ext: map[string]any{"args": "--verbose"}}}
+
+			result := translateWithConfig(proc, cfg, baseCfg)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "cmd --verbose")
+		})
+
+		Convey("selector-scoped accelerator defaults apply to matching labelled processes", func() {
+			proc := &Process{Name: "GPU", Script: "echo hi", Labels: []string{"gpu"}}
+			cfg := &Config{Selectors: []*ProcessSelector{{Kind: "withLabel", Pattern: "gpu", Settings: &ProcessDefaults{Accelerator: 1}}}}
+
+			result := translateWithConfig(proc, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"})
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Other["scheduler_misc"], ShouldContainSubstring, "select[ngpus>0] rusage[ngpus_physical=1]")
+		})
+
+		Convey("process-level queue directives override config defaults", func() {
+			proc := &Process{Name: "QUEUE", Script: "echo hi", Directives: map[string]any{"queue": StringExpr{Value: "short"}}}
+			cfg := &Config{Process: &ProcessDefaults{Queue: "long"}}
+
+			result := translateWithConfig(proc, cfg, baseCfg)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Other["scheduler_queue"], ShouldEqual, "short")
+		})
+
+		Convey("config maxForks defaults apply when the process has no local value", func() {
+			proc := &Process{Name: "FORKS", Script: "echo hi"}
+			cfg := &Config{Process: &ProcessDefaults{MaxForks: 4}}
+
+			result := translateWithConfig(proc, cfg, baseCfg)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].LimitGroups, ShouldResemble, []string{"FORKS:4"})
+		})
+
+		Convey("selector ext defaults override config ext defaults for matching processes", func() {
+			proc := &Process{Name: "FOO", Script: "cmd ${task.ext.args}"}
+			cfg := &Config{
+				Process: &ProcessDefaults{Ext: map[string]any{"args": "--a"}},
+				Selectors: []*ProcessSelector{{
+					Kind:    "withName",
+					Pattern: "FOO",
+					Settings: &ProcessDefaults{
+						Ext: map[string]any{"args": "--b"},
+					},
+				}},
+			}
+
+			result := translateWithConfig(proc, cfg, baseCfg)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Cmd, ShouldContainSubstring, "cmd --b")
+		})
+
+		Convey("config fair defaults assign descending priorities by input index", func() {
+			proc := &Process{
+				Name:   "FAIR",
+				Script: "echo $x",
+				Input:  []*Declaration{{Kind: "val", Name: "x"}},
+			}
+			cfg := &Config{Process: &ProcessDefaults{Fair: true}}
+
+			result := translateWithConfig(proc, cfg, baseCfg,
+				ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}, StringExpr{Value: "c"}}},
+			)
+
+			So(result.Jobs, ShouldHaveLength, 3)
+			So(result.Jobs[0].Priority, ShouldEqual, 255)
+			So(result.Jobs[1].Priority, ShouldEqual, 254)
+			So(result.Jobs[2].Priority, ShouldEqual, 253)
+		})
+
+		Convey("selector queue defaults override both process-level and config defaults", func() {
+			proc := &Process{Name: "FOO", Script: "echo hi", Directives: map[string]any{"queue": StringExpr{Value: "short"}}}
+			cfg := &Config{
+				Process: &ProcessDefaults{Queue: "long"},
+				Selectors: []*ProcessSelector{{
+					Kind:     "withName",
+					Pattern:  "FOO",
+					Settings: &ProcessDefaults{Queue: "priority"},
+				}},
+			}
+
+			result := translateWithConfig(proc, cfg, baseCfg)
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Other["scheduler_queue"], ShouldEqual, "priority")
 		})
 	})
 }
@@ -2357,7 +2577,7 @@ func TestTranslate(t *testing.T) {
 				So(stderr, ShouldEqual, "")
 			})
 
-				Convey("workflow param defaults evaluate supported Date constructors", func() {
+			Convey("workflow param defaults evaluate supported Date constructors", func() {
 				wf := &Workflow{
 					Processes: []*Process{{Name: "proc", Script: "echo ${params.generated}"}},
 					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},

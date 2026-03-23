@@ -26,8 +26,8 @@ interpolation, resolve `${task.ext.args}` and other
 empty string if not found. Covering all 6 acceptance tests
 from F1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.2: J1 - Extend config parsing for all directive types [parallel with 3.1]
 
@@ -44,8 +44,8 @@ the typed set go into `ProcessDefaults.Directives` catch-all.
 Apply config defaults at translate time; selector-scoped values
 override defaults. Covering all 8 acceptance tests from J1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
