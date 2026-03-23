@@ -4,6 +4,9 @@
 
 ## Features
 
+### SYN-variable
+`Variable` — TODO: describe expected behaviour.
+
 ### SYN-number
 `Number` — TODO: describe expected behaviour.
 
@@ -27,6 +30,9 @@
 
 ### SYN-ternary-expression
 `Ternary expression` — TODO: describe expected behaviour.
+
+### SYN-parentheses
+`Parentheses` — TODO: describe expected behaviour.
 
 ### SYN-precedence
 `Precedence` — TODO: describe expected behaviour.

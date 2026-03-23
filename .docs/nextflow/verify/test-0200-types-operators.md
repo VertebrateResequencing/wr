@@ -16,12 +16,13 @@ For each feature ID in nf-0200-types-operators.md, determine its classification.
 
 ### Features to classify
 
-- SYN-number, SYN-boolean, SYN-null, SYN-list, SYN-map
-  SYN-unary-expressions, SYN-binary-expressions, SYN-ternary-expression, SYN-precedence
+- SYN-variable, SYN-number, SYN-boolean, SYN-null, SYN-list
+  SYN-map, SYN-unary-expressions, SYN-binary-expressions, SYN-ternary-expression, SYN-parentheses
+  SYN-precedence
 
 ### Output format
 
 ```
-SYN-number: SUPPORTED | reason
+SYN-variable: SUPPORTED | reason
 ...
 ```
