@@ -42,7 +42,7 @@ Channel.fromPath('/data/*.fq')
 Channel.fromPath('/data/**/*.fq', glob: true)
 ```
 Options: `glob` (default: true), `type` ('file'|'dir'|'any'), `hidden`,
-`maxDepth`, `followLinks`, `checkIfExists`.
+`maxDepth`, `followLinks`, `checkIfExists`, `relative` (return relative paths).
 
 ### CF-fromFilePairs
 `Channel.fromFilePairs(pattern, [options])` — emit `[key, [file1, file2]]`
@@ -56,6 +56,8 @@ Options: `size` (default: 2), `flat`, `checkIfExists`, `followLinks`,
 ### CF-fromSRA
 `Channel.fromSRA(accession, [options])` — fetch data from NCBI SRA.
 Requires network access and NCBI API credentials.
+Options: `apiKey` (NCBI API key), `cache` (enable caching), `max` (max records),
+`protocol` ('ftp' or 'http'), `retryPolicy` (retry configuration).
 
 ### CF-watchPath
 `Channel.watchPath(pattern, event)` — watch filesystem for changes.
@@ -64,6 +66,13 @@ Events: `'create'`, `'modify'`, `'delete'`. Produces an infinite channel.
 ### CF-interval
 `Channel.interval(duration)` — emit incrementing integers at regular intervals.
 Duration in milliseconds. Produces an infinite channel.
+
+### CF-STOP
+`channel.STOP` — sentinel value used to explicitly stop a channel. Can be
+emitted from operators like `flatMap` or `map` to terminate downstream.
+```groovy
+Channel.of(1,2,3).map { it == 2 ? Channel.STOP : it }
+```
 
 ### CF-topic
 `Channel.topic(name)` — create/subscribe to a named channel topic.
