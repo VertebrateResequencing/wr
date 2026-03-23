@@ -144,7 +144,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `toList()` — collect into list
 - `toSortedList()` — collect into sorted list (natural ordering only; no comparator)
 - `reduce(acc, closure)` — fold/accumulate
-- `count()` — count items (closure predicates also supported)
+- `count()` — count items (closure predicates and literal values also supported)
 - `ifEmpty(value)` — default for empty channel
 
 ### Combining
