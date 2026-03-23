@@ -195,12 +195,6 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `tap(closure)` — side-effect without consuming
 - `set()` — bind to variable
 
-### Type Conversion (Pass-through)
-
-- `toLong()` — pass-through (no runtime conversion)
-- `toFloat()` — pass-through
-- `toDouble()` — pass-through
-
 ### Grouping
 
 - `buffer(size: n)` — group items into fixed-size sublists
