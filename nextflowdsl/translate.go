@@ -2222,6 +2222,7 @@ func translateConditionalBlock(
 	processes map[string]*Process,
 	subworkflows map[string]*SubWorkflow,
 	translated map[string]translatedCall,
+	outputTargets map[string]*OutputTarget,
 	defaults *ProcessDefaults,
 	selectors []*ProcessSelector,
 	params map[string]any,
@@ -2238,7 +2239,7 @@ func translateConditionalBlock(
 			return nil
 		}
 
-		return translateCalls(selected.calls, scope, processes, subworkflows, translated, defaults, selectors, params, tc, result)
+		return translateCalls(selected.calls, scope, processes, subworkflows, translated, outputTargets, defaults, selectors, params, tc, result)
 	}
 
 	warnf("nextflowdsl: unable to evaluate workflow condition %q, translating all branches\n", ifBlock.Condition)
@@ -2248,7 +2249,7 @@ func translateConditionalBlock(
 		}
 
 		branchScope := append(append([]string{}, scope...), branch.scopeName)
-		if err := translateCalls(branch.calls, branchScope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+		if err := translateCalls(branch.calls, branchScope, processes, subworkflows, translated, outputTargets, defaults, selectors, params, tc, result); err != nil {
 			return err
 		}
 	}
@@ -2350,6 +2351,7 @@ func translateCalls(
 	processes map[string]*Process,
 	subworkflows map[string]*SubWorkflow,
 	translated map[string]translatedCall,
+	outputTargets map[string]*OutputTarget,
 	defaults *ProcessDefaults,
 	selectors []*ProcessSelector,
 	params map[string]any,
@@ -2421,7 +2423,7 @@ func translateCalls(
 		if err := bindSubworkflowInputs(call, subwf, scope, nextScope, translated, tc.Cwd); err != nil {
 			return err
 		}
-		if err := translateBlock(subwf.Body, nextScope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+		if err := translateBlock(subwf.Body, nextScope, processes, subworkflows, translated, outputTargets, defaults, selectors, params, tc, result); err != nil {
 			return err
 		}
 		if err := bindSubworkflowOutputs(call, subwf, nextScope, translated, tc.Cwd); err != nil {
@@ -2572,6 +2574,220 @@ func workflowConditionStageRepGroups(ifBlock *IfBlock, index int, scope []string
 	}
 
 	return repGroups
+}
+
+func translateWorkflowPublishes(
+	block *WorkflowBlock,
+	scope []string,
+	translated map[string]translatedCall,
+	outputTargets map[string]*OutputTarget,
+	params map[string]any,
+	tc TranslateConfig,
+	result *TranslateResult,
+) error {
+	if block == nil || len(block.Publish) == 0 {
+		return nil
+	}
+
+	for _, publish := range block.Publish {
+		if publish == nil {
+			continue
+		}
+
+		target, ok := outputTargets[publish.Target]
+		if !ok || target == nil {
+			warnf("nextflowdsl: publish target %q not found in output block; skipping publish\n", publish.Target)
+			continue
+		}
+
+		expr, err := parseChanExprText(publish.Source)
+		if err != nil {
+			return fmt.Errorf("workflow publish %q: %w", publish.Target, err)
+		}
+
+		stage, err := translatedCallForSubworkflowArg(expr, scope, translated, tc.Cwd)
+		if err != nil {
+			return fmt.Errorf("workflow publish %q: %w", publish.Target, err)
+		}
+
+		entries, err := attachWorkflowPublishBehaviours(result.Jobs, stage, target, params, tc)
+		if err != nil {
+			return fmt.Errorf("workflow publish %q: %w", publish.Target, err)
+		}
+
+		if target.IndexPath == "" {
+			continue
+		}
+
+		job, err := newWorkflowPublishIndexJob(publish.Target, target.IndexPath, entries, scope, params, tc)
+		if err != nil {
+			return fmt.Errorf("workflow publish %q index: %w", publish.Target, err)
+		}
+		if job != nil {
+			result.Jobs = append(result.Jobs, job)
+		}
+	}
+
+	return nil
+}
+
+func attachWorkflowPublishBehaviours(jobs []*jobqueue.Job, stage translatedCall, target *OutputTarget, params map[string]any, tc TranslateConfig) ([]workflowPublishIndexEntry, error) {
+	resolvedTarget, err := resolvePublishDirTarget(target.Path, params, tc)
+	if err != nil {
+		return nil, err
+	}
+
+	targetDir := ensureTrailingSeparator(resolvedTarget)
+	jobsByDepGroup := make(map[string]*jobqueue.Job, len(jobs))
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+
+		for _, depGroup := range job.DepGroups {
+			jobsByDepGroup[depGroup] = job
+		}
+	}
+
+	entries := []workflowPublishIndexEntry{}
+	items := sourceItemsForWorkflowPublish(stage)
+	if len(items) == 0 {
+		items = []channelItem{{value: cloneStrings(stage.outputPaths), depGroups: workflowPublishStageDepGroups(stage)}}
+	}
+
+	for _, item := range items {
+		sources := workflowPublishSourcesForItem(item, stage)
+		if len(sources) == 0 {
+			continue
+		}
+
+		command := buildWorkflowPublishCommand(sources, targetDir)
+		depGroups := cloneStrings(item.depGroups)
+		if len(depGroups) == 0 {
+			depGroups = workflowPublishStageDepGroups(stage)
+		}
+
+		for _, depGroup := range depGroups {
+			job, ok := jobsByDepGroup[depGroup]
+			if !ok {
+				continue
+			}
+
+			job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
+				When: jobqueue.OnSuccess,
+				Do:   jobqueue.Run,
+				Arg:  command,
+			})
+
+			for _, source := range sources {
+				entries = append(entries, workflowPublishIndexEntry{
+					depGroup:    depGroup,
+					source:      source,
+					destination: filepath.Join(targetDir, filepath.Base(filepath.Clean(source))),
+				})
+			}
+
+			break
+		}
+	}
+
+	return entries, nil
+}
+
+func sourceItemsForWorkflowPublish(stage translatedCall) []channelItem {
+	if len(stage.items) == 0 {
+		return nil
+	}
+
+	return cloneChannelItems(stage.items)
+}
+
+func workflowPublishStageDepGroups(stage translatedCall) []string {
+	depGroups := cloneStrings(stage.depGroups)
+	if len(depGroups) == 0 && stage.depGroup != "" {
+		depGroups = []string{stage.depGroup}
+	}
+
+	return depGroups
+}
+
+func workflowPublishSourcesForItem(item channelItem, stage translatedCall) []string {
+	sources := collectWorkflowPublishSources(item.value, stage.outputPaths)
+	if len(sources) > 0 {
+		return sources
+	}
+
+	return cloneStrings(stage.outputPaths)
+}
+
+func collectWorkflowPublishSources(value any, candidates []string) []string {
+	sources := []string{}
+	switch typed := value.(type) {
+	case string:
+		sources = appendUniqueStrings(sources, matchCompletedOutputPaths(typed, candidates))
+	case []string:
+		for _, item := range typed {
+			sources = appendUniqueStrings(sources, collectWorkflowPublishSources(item, candidates))
+		}
+	case []any:
+		for _, item := range typed {
+			sources = appendUniqueStrings(sources, collectWorkflowPublishSources(item, candidates))
+		}
+	}
+
+	return sources
+}
+
+func buildWorkflowPublishCommand(sources []string, targetDir string) string {
+	commands := make([]string, 0, len(sources)+1)
+	commands = append(commands, fmt.Sprintf("mkdir -p %s", shellQuote(targetDir)))
+	for _, source := range sources {
+		commands = append(commands, publishDirActionCommand("copy", shellQuote(source), targetDir))
+	}
+
+	return strings.Join(commands, " && ")
+}
+
+func newWorkflowPublishIndexJob(targetName, indexPath string, entries []workflowPublishIndexEntry, scope []string, params map[string]any, tc TranslateConfig) (*jobqueue.Job, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	depGroups := []string{}
+	for _, entry := range entries {
+		depGroups = appendUniqueStrings(depGroups, []string{entry.depGroup})
+	}
+
+	indexTarget, err := resolvePublishDirTarget(indexPath, params, tc)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := buildWorkflowPublishIndexCommand(indexTarget, entries)
+	jobName := fmt.Sprintf("publish_%s_index", targetName)
+	job := &jobqueue.Job{
+		Cmd:          wrapWorkflowHookCommand(cmd),
+		Cwd:          deterministicCwd(tc.Cwd, tc.RunID, scope, jobName),
+		CwdMatters:   true,
+		RepGroup:     scopedRepGroup(tc.WorkflowName, tc.RunID, scope, jobName),
+		ReqGroup:     "nf.workflow.publish",
+		DepGroups:    []string{scopedDepGroup(tc.RunID, scope, jobName)},
+		Dependencies: depGroupsToDependencies(depGroups),
+		Requirements: defaultWorkflowHookRequirements(),
+		Override:     0,
+	}
+	applyCaptureCleanupBehaviour(job)
+
+	return job, nil
+}
+
+func buildWorkflowPublishIndexCommand(indexTarget string, entries []workflowPublishIndexEntry) string {
+	commands := []string{fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(indexTarget))), fmt.Sprintf(": > %s", shellQuote(indexTarget))}
+	for _, entry := range entries {
+		commands = append(commands, fmt.Sprintf("printf '%s\t%s\\n' %s %s >> %s", "%s", "%s", shellQuote(entry.source), shellQuote(entry.destination), shellQuote(indexTarget)))
+	}
+
+	return strings.Join(commands, "\n")
 }
 
 func translateLifecycleHooks(
@@ -2919,6 +3135,199 @@ func buildProcessMaxErrorsHelperScript(processRepGroup, processName string, maxE
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+type workflowPublishIndexEntry struct {
+	depGroup    string
+	source      string
+	destination string
+}
+
+// OutputTarget represents a parsed target from the output {} block.
+type OutputTarget struct {
+	Name      string
+	Path      string
+	IndexPath string
+}
+
+func parseOutputTarget(name string, tokens []token) (*OutputTarget, error) {
+	target := &OutputTarget{Name: name}
+
+	for pos := 0; pos < len(tokens); {
+		pos = skipOutputBlockSeparators(tokens, pos)
+		if pos >= len(tokens) {
+			break
+		}
+
+		if tokens[pos].typ != tokenIdent {
+			return nil, fmt.Errorf("expected property name in output target %q, found %q", name, tokens[pos].lit)
+		}
+
+		property := tokens[pos].lit
+		pos++
+		pos = skipOutputBlockSeparators(tokens, pos)
+
+		switch property {
+		case "path":
+			valueTokens, next := consumeOutputBlockValue(tokens, pos)
+			path, supported, err := parseOutputStaticPath(name, "path", valueTokens)
+			if err != nil {
+				return nil, err
+			}
+			if !supported {
+				return nil, nil
+			}
+
+			target.Path = path
+			pos = next
+		case "index":
+			if pos >= len(tokens) || tokens[pos].typ != tokenLBrace {
+				return nil, fmt.Errorf("expected block body for output target %q index", name)
+			}
+
+			end, err := findOutputBlockClosingBrace(tokens, pos)
+			if err != nil {
+				return nil, err
+			}
+
+			indexPath, supported, err := parseOutputIndexPath(name, tokens[pos+1:end])
+			if err != nil {
+				return nil, err
+			}
+			if !supported {
+				return nil, nil
+			}
+
+			target.IndexPath = indexPath
+			pos = end + 1
+		default:
+			if pos < len(tokens) && tokens[pos].typ == tokenLBrace {
+				end, err := findOutputBlockClosingBrace(tokens, pos)
+				if err != nil {
+					return nil, err
+				}
+
+				pos = end + 1
+				continue
+			}
+
+			_, pos = consumeOutputBlockValue(tokens, pos)
+		}
+	}
+
+	if target.Path == "" {
+		return nil, nil
+	}
+
+	return target, nil
+}
+
+func parseOutputTargetMap(rawOutputBlock string) (map[string]*OutputTarget, error) {
+	targets, err := ParseOutputBlock(rawOutputBlock)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+
+	indexed := make(map[string]*OutputTarget, len(targets))
+	for _, target := range targets {
+		if target == nil {
+			continue
+		}
+
+		indexed[target.Name] = target
+	}
+
+	return indexed, nil
+}
+
+// ParseOutputBlock extracts named targets from a raw output block body string.
+func ParseOutputBlock(body string) ([]*OutputTarget, error) {
+	targets := make([]*OutputTarget, 0)
+	if strings.TrimSpace(body) == "" {
+		return targets, nil
+	}
+
+	rawTokens, err := lex(body)
+	if err != nil {
+		return nil, err
+	}
+
+	tokens := make([]token, 0, len(rawTokens))
+	for _, tok := range rawTokens {
+		if tok.typ == tokenEOF {
+			continue
+		}
+
+		tokens = append(tokens, tok)
+	}
+
+	for pos := 0; pos < len(tokens); {
+		pos = skipOutputBlockSeparators(tokens, pos)
+		if pos >= len(tokens) {
+			break
+		}
+
+		if tokens[pos].typ != tokenIdent {
+			return nil, fmt.Errorf("expected output target name, found %q", tokens[pos].lit)
+		}
+
+		name := tokens[pos].lit
+		pos++
+		pos = skipOutputBlockSeparators(tokens, pos)
+		if pos >= len(tokens) || tokens[pos].typ != tokenLBrace {
+			return nil, fmt.Errorf("expected block body for output target %q", name)
+		}
+
+		end, err := findOutputBlockClosingBrace(tokens, pos)
+		if err != nil {
+			return nil, err
+		}
+
+		target, err := parseOutputTarget(name, tokens[pos+1:end])
+		if err != nil {
+			return nil, err
+		}
+		if target != nil {
+			targets = append(targets, target)
+		}
+
+		pos = end + 1
+	}
+
+	return targets, nil
+}
+
+func skipOutputBlockSeparators(tokens []token, pos int) int {
+	for pos < len(tokens) {
+		typ := tokens[pos].typ
+		if typ != tokenNewline && typ != tokenSemicolon {
+			break
+		}
+
+		pos++
+	}
+
+	return pos
+}
+
+func findOutputBlockClosingBrace(tokens []token, start int) (int, error) {
+	depth := 0
+	for index := start; index < len(tokens); index++ {
+		switch tokens[index].typ {
+		case tokenLBrace:
+			depth++
+		case tokenRBrace:
+			depth--
+			if depth == 0 {
+				return index, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("unterminated output block")
 }
 
 type emittedOutput struct {
@@ -3311,6 +3720,112 @@ func mergeTranslateParams(wf *Workflow, cfg *Config, tc TranslateConfig) (map[st
 	return MergeParams(sources...), nil
 }
 
+func parseOutputIndexPath(name string, tokens []token) (string, bool, error) {
+	for pos := 0; pos < len(tokens); {
+		pos = skipOutputBlockSeparators(tokens, pos)
+		if pos >= len(tokens) {
+			break
+		}
+
+		if tokens[pos].typ != tokenIdent {
+			return "", false, fmt.Errorf("expected property name in output target %q index block, found %q", name, tokens[pos].lit)
+		}
+
+		property := tokens[pos].lit
+		pos++
+		pos = skipOutputBlockSeparators(tokens, pos)
+
+		if property == "path" {
+			valueTokens, _ := consumeOutputBlockValue(tokens, pos)
+
+			return parseOutputStaticPath(name, "index path", valueTokens)
+		}
+
+		if pos < len(tokens) && tokens[pos].typ == tokenLBrace {
+			end, err := findOutputBlockClosingBrace(tokens, pos)
+			if err != nil {
+				return "", false, err
+			}
+
+			pos = end + 1
+			continue
+		}
+
+		_, pos = consumeOutputBlockValue(tokens, pos)
+	}
+
+	return "", true, nil
+}
+
+func consumeOutputBlockValue(tokens []token, start int) ([]token, int) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	end := start
+
+loop:
+	for end < len(tokens) {
+		current := tokens[end]
+		if (current.typ == tokenNewline || current.typ == tokenSemicolon) && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+			break
+		}
+
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				break loop
+			}
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		}
+
+		end++
+	}
+
+	return trimDeclarationTokens(tokens[start:end]), skipOutputBlockSeparators(tokens, end)
+}
+
+func parseOutputStaticPath(name, property string, tokens []token) (string, bool, error) {
+	trimmed := trimDeclarationTokens(tokens)
+	if len(trimmed) == 0 {
+		return "", false, fmt.Errorf("expected %s value for output target %q", property, name)
+	}
+
+	expr, err := parseExprTokens(trimmed)
+	if err != nil {
+		return "", false, err
+	}
+
+	switch value := expr.(type) {
+	case StringExpr:
+		return value.Value, true, nil
+	case ClosureExpr:
+		warnf("nextflowdsl: output target %q has closure-valued %s %q; skipping target\n", name, property, renderExpr(value))
+	default:
+		warnf("nextflowdsl: output target %q has non-static %s %q; skipping target\n", name, property, renderExpr(value))
+	}
+
+	return "", false, nil
+}
+
 func processWithMergedExt(proc *Process, defaults *ProcessDefaults) (*Process, error) {
 	if proc == nil {
 		return nil, nil
@@ -3401,9 +3916,13 @@ func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult,
 	}
 	defaults := effectiveDefaults(cfg, tc.Profile)
 	selectors := effectiveSelectors(cfg, tc.Profile)
+	outputTargets, err := parseOutputTargetMap(wf.OutputBlock)
+	if err != nil {
+		return nil, err
+	}
 	translated := make(map[string]translatedCall, len(wf.EntryWF.Calls))
 
-	if err = translateBlock(wf.EntryWF, nil, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+	if err = translateBlock(wf.EntryWF, nil, processes, subworkflows, translated, outputTargets, defaults, selectors, params, tc, result); err != nil {
 		return nil, err
 	}
 
@@ -3715,6 +4234,7 @@ func translateBlock(
 	processes map[string]*Process,
 	subworkflows map[string]*SubWorkflow,
 	translated map[string]translatedCall,
+	outputTargets map[string]*OutputTarget,
 	defaults *ProcessDefaults,
 	selectors []*ProcessSelector,
 	params map[string]any,
@@ -3725,14 +4245,18 @@ func translateBlock(
 		return nil
 	}
 
-	if err := translateCalls(block.Calls, scope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+	if err := translateCalls(block.Calls, scope, processes, subworkflows, translated, outputTargets, defaults, selectors, params, tc, result); err != nil {
 		return err
 	}
 
 	for index, ifBlock := range block.Conditions {
-		if err := translateConditionalBlock(ifBlock, index, scope, processes, subworkflows, translated, defaults, selectors, params, tc, result); err != nil {
+		if err := translateConditionalBlock(ifBlock, index, scope, processes, subworkflows, translated, outputTargets, defaults, selectors, params, tc, result); err != nil {
 			return err
 		}
+	}
+
+	if err := translateWorkflowPublishes(block, scope, translated, outputTargets, params, tc, result); err != nil {
+		return err
 	}
 
 	if err := translateLifecycleHooks(block, scope, translated, params, tc, result); err != nil {
