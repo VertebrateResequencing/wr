@@ -12,6 +12,13 @@ implement it — a `while (cond) { ... }` loop will cause a parse error.
 `for` loops and recursion cover most use-cases in practice, but `while`
 does appear in some bespoke pipelines.
 
+### `continue` statement
+
+The `continue` keyword is not implemented — no AST type, parser rule, or
+evaluator handling exists. A `continue` in a `for` loop will cause a
+parse error. Most loops do not need `continue` but it appears in some
+bespoke pipelines.
+
 ## Config Scopes
 
 ### `workflow`
@@ -106,6 +113,52 @@ The following variants are not implemented:
 
 These require runtime closure evaluation against individual items.
 
+## Channel Operator Options — Silently Ignored
+
+Several channel operators accept named options that are parsed without
+error but silently ignored during evaluation. The operator works for the
+default/simple case but the option has no effect:
+
+### Combining / Grouping
+
+- `groupTuple([by: n])` — `by` and `size` are ignored; always groups by
+  the first tuple element (index 0).
+- `join([by: n, remainder: true])` — `by` and `remainder` are ignored;
+  always joins by first element; unmatched items are dropped.
+- `cross([by: n])` — `by` is ignored; always does full Cartesian product.
+
+### Splitting
+
+- `splitCsv([sep: ','])` — `sep`, `strip`, `skip`, `limit` are ignored;
+  always uses comma as delimiter.
+- `splitFasta([record: [...]])` — `record`, `size`, `limit`, `pe`,
+  `compress`, `file`, `elem` are ignored; only `by` (chunk count) works.
+- `splitText([keepHeader: true])` — `keepHeader`, `limit`, `charset`,
+  `compress`, `file`, `elem` are ignored; only `by` (line count) works.
+- `splitFastq([record: [...]])` — `record`, `limit`, `compress`, `file`,
+  `elem` are ignored; `by` and `pe` work.
+
+### Collecting
+
+- `collectFile([sort: true])` — `sort`, `seed`, `newLine`, `storeDir`,
+  `tempDir`, `keepHeader`, `skip` are ignored; only `name` works.
+
+### Aggregation
+
+- `min { closure }` / `max { closure }` — closures and comparators are
+  ignored; only natural int/string comparison is supported.
+- `toSortedList { comparator }` — comparator is ignored; only natural
+  ordering of int/string.
+
+## Channel Factory Options — Silently Ignored
+
+- `Channel.fromPath(pattern, [type: 'file'])` — `type`, `checkIfExists`,
+  `maxDepth`, `hidden`, `followLinks` are ignored; only the glob pattern
+  is used.
+- `Channel.fromFilePairs(pattern, [size: 2])` — `size`, `flat`,
+  `checkIfExists` are ignored; always groups by filename stem, any number
+  of matching files per group.
+
 ## Container Config — `runOptions`
 
 The `docker.runOptions`, `singularity.runOptions`, and
@@ -114,6 +167,49 @@ the container runtime (e.g. `--gpus all` for GPU access). Only the
 `enabled` flag is currently parsed from container config scopes. Adding
 `runOptions` support would be valuable for GPU and device-access
 workflows — the value could be appended to wr's container flags.
+
+## Groovy Evaluator — Built-in Variables
+
+Nextflow defines several implicit variables that are available in
+expressions, closures, and process scripts. None of these are defined
+in the Groovy evaluator — referencing them will fail with "unknown
+variable":
+
+- `baseDir` / `projectDir` — pipeline project directory
+- `launchDir` — directory where `nextflow run` was invoked
+- `moduleDir` — directory of the current module file
+- `workDir` — pipeline work directory
+- `workflow.projectDir`, `workflow.launchDir`, `workflow.workDir` —
+  same values via the workflow namespace
+- `workflow.resume`, `workflow.sessionId`, `workflow.runName` — run metadata
+- `nextflow.version` — Nextflow version string
+
+These are commonly used in nf-core config files for paths like
+`"${projectDir}/assets/schema.json"`.
+
+## Groovy Evaluator — `log` Namespace
+
+`log.info()`, `log.warn()`, and `log.error()` are not implemented.
+These are used in nf-core pipelines for user-facing messages (e.g.
+parameter validation summaries). They are display-only and do not
+affect pipeline logic, but their absence causes evaluation errors
+if encountered in config or workflow scope Groovy code.
+
+## `task` Object — Missing Properties
+
+The `task` object is available in dynamic directives with 4 properties:
+`attempt`, `cpus`, `memory`, `exitStatus`. The following properties from
+real Nextflow are not defined:
+
+- `disk` — disk requirement
+- `time` — time limit
+- `workDir` — task working directory
+- `name` — task name
+- `hash` — task hash
+- `index` — task index
+- `process` — process name
+
+`task.ext.*` IS supported as a nested map namespace.
 
 ## Global Nextflow Functions
 
@@ -126,11 +222,14 @@ expressions and closures. The following are not implemented:
   release; occasionally used in nf-core.
 - `branchCriteria { ... }` / `multiMapCriteria { ... }` — reusable
   criteria for `branch`/`multiMap` operators.
+- `error(msg)` — terminate pipeline with an error message; used in
+  parameter validation and branch defaults.
+- `print(text)` / `println(text)` / `printf(fmt, args...)` — console
+  output functions. `println` in process scripts is converted to `echo`
+  for shell execution, but none are available as callable Groovy
+  functions in expressions or closures.
 - `sendMail(...)` — send email notifications from pipeline code.
 - `sleep(ms)` — pause execution.
-
-`println` in process scripts is converted to `echo` for shell execution,
-but it is not available as a callable Groovy function in expressions.
 
 ## File/Path Methods
 
