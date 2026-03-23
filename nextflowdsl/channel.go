@@ -69,6 +69,208 @@ type channelItem struct {
 	depGroups []string
 }
 
+func cloneChannelItem(item channelItem) channelItem {
+	return channelItem{value: cloneChannelValue(item.value), depGroups: cloneStrings(item.depGroups)}
+}
+
+func selectNamedChannelItems(items []channelItem, label string) []channelItem {
+	selected := make([]channelItem, 0, len(items))
+	for _, item := range items {
+		for _, depGroup := range item.depGroups {
+			if depGroup == label || strings.HasSuffix(depGroup, "."+label) {
+				selected = append(selected, cloneChannelItem(item))
+
+				break
+			}
+		}
+	}
+
+	return selected
+}
+
+func resolveChannelFactoryItems(factory ChannelFactory, cwd string) ([]channelItem, error) {
+	switch factory.Name {
+	case "of":
+		return resolveChannelLiteralItems(factory.Args)
+	case "from":
+		warnDeprecatedChannelFactory(factory.Name)
+
+		return resolveChannelLiteralItems(factory.Args)
+	case "fromList":
+		return resolveChannelFromListItems(factory.Args)
+	case "value":
+		if len(factory.Args) != 1 {
+			return nil, fmt.Errorf("Channel.value expects 1 argument, got %d", len(factory.Args))
+		}
+
+		value, err := EvalExpr(factory.Args[0], nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return []channelItem{{value: value}}, nil
+	case "empty":
+		if len(factory.Args) != 0 {
+			return nil, fmt.Errorf("Channel.empty expects 0 arguments, got %d", len(factory.Args))
+		}
+
+		return nil, nil
+	case "fromPath":
+		pattern, err := resolveChannelPattern(factory.Args, cwd, "Channel.fromPath")
+		if err != nil {
+			return nil, err
+		}
+
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+
+		items := make([]channelItem, 0, len(matches))
+		for _, match := range matches {
+			items = append(items, channelItem{value: filepath.Clean(match)})
+		}
+
+		return items, nil
+	case "fromFilePairs":
+		pattern, err := resolveChannelPattern(factory.Args, cwd, "Channel.fromFilePairs")
+		if err != nil {
+			return nil, err
+		}
+
+		values, err := resolveFilePairs(pattern)
+		if err != nil {
+			return nil, err
+		}
+
+		items := make([]channelItem, 0, len(values))
+		for _, value := range values {
+			items = append(items, channelItem{value: value})
+		}
+
+		return items, nil
+	case "fromLineage", "fromSRA", "interval", "topic", "watchPath":
+		warnUntranslatableChannelFactory(factory.Name)
+
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported channel factory %q", factory.Name)
+	}
+}
+
+func warnDeprecatedChannelFactory(name string) {
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: deprecated channel factory %q resolved as Channel.of for compatibility\n",
+		name,
+	)
+}
+
+func resolveChannelPattern(args []Expr, cwd, name string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("%s expects 1 argument, got %d", name, len(args))
+	}
+
+	value, err := EvalExpr(args[0], nil)
+	if err != nil {
+		return "", err
+	}
+
+	pattern, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s expects a string glob", name)
+	}
+
+	if filepath.IsAbs(pattern) {
+		return filepath.Clean(pattern), nil
+	}
+
+	return filepath.Join(cwd, pattern), nil
+}
+
+func resolveFilePairs(pattern string) ([]any, error) {
+	expanded := expandBracePatterns(pattern)
+	grouped := make(map[string][]string)
+	keys := make([]string, 0)
+	seenPaths := make(map[string]struct{})
+
+	for _, candidate := range expanded {
+		matches, err := filepath.Glob(candidate)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, match := range matches {
+			cleaned := filepath.Clean(match)
+			if _, seen := seenPaths[cleaned]; seen {
+				continue
+			}
+
+			seenPaths[cleaned] = struct{}{}
+
+			key := filePairGroupKey(cleaned)
+			if _, ok := grouped[key]; !ok {
+				keys = append(keys, key)
+			}
+
+			grouped[key] = append(grouped[key], cleaned)
+		}
+	}
+
+	sort.Strings(keys)
+
+	items := make([]any, 0, len(keys))
+	for _, key := range keys {
+		matches := grouped[key]
+		sort.Strings(matches)
+		items = append(items, cloneStrings(matches))
+	}
+
+	return items, nil
+}
+
+func expandBracePatterns(pattern string) []string {
+	start := strings.IndexByte(pattern, '{')
+	if start == -1 {
+		return []string{pattern}
+	}
+
+	end := strings.IndexByte(pattern[start:], '}')
+	if end == -1 {
+		return []string{pattern}
+	}
+
+	end += start
+
+	prefix := pattern[:start]
+	suffix := pattern[end+1:]
+	parts := strings.Split(pattern[start+1:end], ",")
+
+	patterns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		patterns = append(patterns, prefix+strings.TrimSpace(part)+suffix)
+	}
+
+	return patterns
+}
+
+func filePairGroupKey(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if index := strings.LastIndex(base, "_"); index >= 0 {
+		base = base[:index]
+	}
+
+	return filepath.Join(filepath.Dir(path), base)
+}
+
+func warnUntranslatableChannelFactory(name string) {
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: channel factory %q cannot be translated at compile time and will resolve to an empty channel\n",
+		name,
+	)
+}
+
 func resolveChannelLiteralItems(args []Expr) ([]channelItem, error) {
 	items := make([]channelItem, 0, len(args))
 	for _, arg := range args {
@@ -103,35 +305,362 @@ func resolveChannelFromListItems(args []Expr) ([]channelItem, error) {
 	return items, nil
 }
 
-func selectNamedChannelItems(items []channelItem, label string) []channelItem {
-	selected := make([]channelItem, 0, len(items))
-	for _, item := range items {
-		for _, depGroup := range item.depGroups {
-			if depGroup == label || strings.HasSuffix(depGroup, "."+label) {
-				selected = append(selected, cloneChannelItem(item))
-
-				break
-			}
+func flattenChannelValues(value any) []any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case []any:
+		flattened := make([]any, 0, len(typed))
+		for _, item := range typed {
+			flattened = append(flattened, cloneChannelValue(item))
 		}
+
+		return flattened
+	case []string:
+		flattened := make([]any, 0, len(typed))
+		for _, item := range typed {
+			flattened = append(flattened, item)
+		}
+
+		return flattened
+	default:
+		return []any{typed}
+	}
+}
+
+func cloneChannelValue(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		return cloneChannelSlice(typed)
+	case []string:
+		return cloneStrings(typed)
+	case orderedMap:
+		return newOrderedMap(typed.entries)
+	default:
+		return typed
+	}
+}
+
+func cloneChannelSlice(values []any) []any {
+	if len(values) == 0 {
+		return nil
 	}
 
-	return selected
+	cloned := make([]any, len(values))
+	for index, value := range values {
+		cloned[index] = cloneChannelValue(value)
+	}
+
+	return cloned
 }
 
-func warnDeprecatedChannelFactory(name string) {
-	_, _ = fmt.Fprintf(
-		os.Stderr,
-		"nextflowdsl: deprecated channel factory %q resolved as Channel.of for compatibility\n",
-		name,
-	)
-}
+func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd string, resolver channelResolver) ([]channelItem, error) {
+	switch operator.Name {
+	case "branch":
+		result, err := resolveBranchChannelItems(items, operator)
+		if err != nil {
+			return nil, err
+		}
 
-func warnUntranslatableChannelFactory(name string) {
-	_, _ = fmt.Fprintf(
-		os.Stderr,
-		"nextflowdsl: channel factory %q cannot be translated at compile time and will resolve to an empty channel\n",
-		name,
-	)
+		return flattenNamedChannelItems(result), nil
+	case "collect":
+		return []channelItem{{value: collectChannelValues(items), depGroups: unionChannelDepGroups(items)}}, nil
+	case "collectFile":
+		return collectFileChannelItems(items, operator, cwd)
+	case "first":
+		if len(items) == 0 {
+			return nil, nil
+		}
+
+		return cloneChannelItems(items[:1]), nil
+	case "last":
+		if len(items) == 0 {
+			return nil, nil
+		}
+
+		return cloneChannelItems(items[len(items)-1:]), nil
+	case "take":
+		if len(operator.Args) != 1 {
+			return nil, fmt.Errorf("take expects 1 argument, got %d", len(operator.Args))
+		}
+
+		count, err := EvalExpr(operator.Args[0], nil)
+		if err != nil {
+			return nil, err
+		}
+
+		limit, ok := count.(int)
+		if !ok {
+			return nil, errors.New("take expects an integer argument")
+		}
+
+		if limit <= 0 {
+			return nil, nil
+		}
+
+		if limit > len(items) {
+			limit = len(items)
+		}
+
+		return cloneChannelItems(items[:limit]), nil
+	case "filter":
+		filtered := make([]channelItem, 0, len(items))
+		for _, item := range items {
+			keep, err := evalChannelClosureBool(operator, item.value)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+
+					return cloneChannelItems(items), nil
+				}
+
+				return nil, err
+			}
+
+			if keep {
+				filtered = append(filtered, cloneChannelItem(item))
+			}
+		}
+
+		return filtered, nil
+	case "map":
+		mapped := make([]channelItem, 0, len(items))
+		for _, item := range items {
+			value, err := evalChannelClosure(operator, item.value)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+
+					return cloneChannelItems(items), nil
+				}
+
+				return nil, err
+			}
+
+			mapped = append(mapped, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
+		}
+
+		return mapped, nil
+	case "flatMap":
+		flattened := []channelItem{}
+
+		for _, item := range items {
+			value, err := evalChannelClosure(operator, item.value)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+
+					return cloneChannelItems(items), nil
+				}
+
+				return nil, err
+			}
+
+			for _, mapped := range flattenChannelValues(value) {
+				flattened = append(flattened, channelItem{value: mapped, depGroups: cloneStrings(item.depGroups)})
+			}
+		}
+
+		return flattened, nil
+	case "multiMap":
+		result, err := resolveMultiMapChannelItems(items, operator)
+		if err != nil {
+			return nil, err
+		}
+
+		return flattenNamedChannelItems(result), nil
+	case "combine":
+		combined := cloneChannelItems(items)
+
+		byIndex, err := resolveOperatorByIndex(operator)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, other := range operator.Channels {
+			resolved, err := resolveChannelItems(other, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+
+			combined, err = combineChannelItems(combined, resolved, byIndex)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		return combined, nil
+	case "concat":
+		concatenated := cloneChannelItems(items)
+
+		for _, other := range operator.Channels {
+			resolved, err := resolveChannelItems(other, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+
+			concatenated = concatChannelItems(concatenated, resolved)
+		}
+
+		return concatenated, nil
+	case "flatten":
+		flattened := []channelItem{}
+
+		for _, item := range items {
+			for _, value := range flattenSliceValue(item.value) {
+				flattened = append(flattened, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
+			}
+		}
+
+		return flattened, nil
+	case "unique":
+		return uniqueChannelItems(items), nil
+	case "distinct":
+		return distinctChannelItems(items), nil
+	case "ifEmpty":
+		if len(items) != 0 {
+			return cloneChannelItems(items), nil
+		}
+
+		if len(operator.Args) != 1 {
+			return nil, fmt.Errorf("ifEmpty expects 1 argument, got %d", len(operator.Args))
+		}
+
+		value, err := EvalExpr(operator.Args[0], nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return []channelItem{{value: value}}, nil
+	case "toList":
+		return []channelItem{{value: collectChannelValues(items), depGroups: unionChannelDepGroups(items)}}, nil
+	case "toSortedList":
+		sorted, err := sortedChannelValues(items)
+		if err != nil {
+			return nil, err
+		}
+
+		return []channelItem{{value: sorted, depGroups: unionChannelDepGroups(items)}}, nil
+	case "count":
+		return countChannelItems(items, operator)
+	case "randomSample":
+		return randomSampleChannelItems(items, operator)
+	case "reduce":
+		seed, hasSeed, closure, err := reduceOperatorSeedAndClosure(operator)
+		if err != nil {
+			return nil, err
+		}
+
+		if hasSeed {
+			items = append([]channelItem{{value: seed}}, items...)
+		}
+
+		return reduceChannelItems(items, func(current, candidate any) (any, error) {
+			return evalChannelClosure(ChannelOperator{ClosureExpr: &closure}, []any{current, candidate})
+		})
+	case "transpose":
+		byIndex, err := resolveOperatorByIndex(operator)
+		if err != nil {
+			return nil, err
+		}
+
+		return transposeChannelItems(items, byIndex)
+	case "toLong", "toFloat", "toDouble":
+		return cloneChannelItems(items), nil
+	case "mix":
+		mixed := cloneChannelItems(items)
+
+		for _, other := range operator.Channels {
+			resolved, err := resolveChannelItems(other, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+
+			mixed = append(mixed, cloneChannelItems(resolved)...)
+		}
+
+		return mixed, nil
+	case "cross":
+		crossed := cloneChannelItems(items)
+
+		for _, other := range operator.Channels {
+			resolved, err := resolveChannelItems(other, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+
+			crossed = crossChannelItems(crossed, resolved)
+		}
+
+		return crossed, nil
+	case "join":
+		joined := cloneChannelItems(items)
+
+		for _, other := range operator.Channels {
+			resolved, err := resolveChannelItems(other, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+
+			joined = joinChannelItems(joined, resolved)
+		}
+
+		return joined, nil
+	case "groupTuple":
+		return groupTupleItems(items), nil
+	case "buffer":
+		size, err := resolveChunkSize(operator.Args, "buffer", "size")
+		if err != nil {
+			return nil, err
+		}
+
+		return chunkChannelItems(items, size), nil
+	case "collate":
+		size, err := resolveChunkSize(operator.Args, "collate", "size")
+		if err != nil {
+			return nil, err
+		}
+
+		return chunkChannelItems(items, size), nil
+	case "min":
+		return reduceChannelItems(items, minChannelValue)
+	case "max":
+		return reduceChannelItems(items, maxChannelValue)
+	case "sum":
+		return sumChannelItems(items)
+	case "splitCsv":
+		return splitCSVChannelItems(items, operator)
+	case "splitFasta":
+		return splitFASTAChannelItems(items, operator)
+	case "splitFastq":
+		return splitFASTQChannelItems(items, operator)
+	case "splitJson":
+		return splitJSONChannelItems(items, operator)
+	case "splitText":
+		return splitTextChannelItems(items, operator)
+	case "dump", "set", "tap", "view":
+		return cloneChannelItems(items), nil
+	default:
+		if _, ok := deprecatedChannelOperators[operator.Name]; ok {
+			warnDeprecatedChannelOperator(operator.Name)
+
+			return cloneChannelItems(items), nil
+		}
+
+		if _, ok := warningOnlyChannelOperators[operator.Name]; ok {
+			warnUnsupportedCardinalityOperator(operator.Name)
+
+			return cloneChannelItems(items), nil
+		}
+
+		if _, ok := unsupportedCardinalityOperators[operator.Name]; ok {
+			warnUnsupportedCardinalityOperator(operator.Name)
+
+			return cloneChannelItems(items), nil
+		}
+
+		return nil, fmt.Errorf("unsupported channel operator %q", operator.Name)
+	}
 }
 
 func resolveBranchChannelItems(items []channelItem, operator ChannelOperator) (namedChannelResult, error) {
@@ -316,6 +845,28 @@ func labelScopedDepGroups(depGroups []string, label string) []string {
 	}
 
 	return labelled
+}
+
+func evalChannelClosureBool(operator ChannelOperator, value any) (bool, error) {
+	resolved, err := evalChannelClosure(operator, value)
+	if err != nil {
+		return false, err
+	}
+
+	return isTruthy(resolved), nil
+}
+
+func evalChannelClosure(operator ChannelOperator, value any) (any, error) {
+	if operator.ClosureExpr != nil {
+		return evalSimpleClosure(*operator.ClosureExpr, value, nil)
+	}
+
+	closure := strings.TrimSpace(operator.Closure)
+	if closure == "" {
+		return value, nil
+	}
+
+	return evalSimpleClosure(ClosureExpr{Body: closure}, value, nil)
 }
 
 func warnUnsupportedChannelClosure(closure string) {
@@ -568,6 +1119,48 @@ func stringOption(value any, name string) (string, error) {
 	return typed, nil
 }
 
+func resolveChannelItems(ce ChanExpr, cwd string, resolver channelResolver) ([]channelItem, error) {
+	switch expr := ce.(type) {
+	case ChanRef:
+		if resolver == nil {
+			return nil, fmt.Errorf("channel reference %q cannot be resolved at translate time", expr.Name)
+		}
+
+		return resolver(expr)
+	case NamedChannelRef:
+		items, err := resolveChannelItems(expr.Source, cwd, resolver)
+		if err != nil {
+			return nil, err
+		}
+
+		return selectNamedChannelItems(items, expr.Label), nil
+	case ChannelFactory:
+		return resolveChannelFactoryItems(expr, cwd)
+	case ChannelChain:
+		items, err := resolveChannelItems(expr.Source, cwd, resolver)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, operator := range expr.Operators {
+			items, err = applyChannelOperator(items, operator, cwd, resolver)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		return items, nil
+	case PipeExpr:
+		if len(expr.Stages) != 1 {
+			return nil, errors.New("pipe expressions require D6 translation support")
+		}
+
+		return resolveChannelItems(expr.Stages[0], cwd, resolver)
+	default:
+		return nil, fmt.Errorf("channel expression %T cannot be resolved at translate time", ce)
+	}
+}
+
 func combineChannelItems(left, right []channelItem, byIndex *int) ([]channelItem, error) {
 	combined := make([]channelItem, 0, len(left)*len(right))
 	for _, leftItem := range left {
@@ -611,6 +1204,22 @@ func resolveChannelKey(value any, byIndex int) (any, error) {
 	}
 
 	return cloneChannelValue(tuple[byIndex]), nil
+}
+
+func channelTuple(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return cloneChannelSlice(typed)
+	case []string:
+		row := make([]any, 0, len(typed))
+		for _, item := range typed {
+			row = append(row, item)
+		}
+
+		return row
+	default:
+		return []any{cloneChannelValue(typed)}
+	}
 }
 
 func combineChannelValues(left, right any, byIndex *int) any {
@@ -719,6 +1328,15 @@ func sortedChannelValues(items []channelItem) ([]any, error) {
 	}
 
 	return sorted, nil
+}
+
+func collectChannelValues(items []channelItem) []any {
+	values := make([]any, 0, len(items))
+	for _, item := range items {
+		values = append(values, cloneChannelValue(item.value))
+	}
+
+	return values
 }
 
 func countChannelItems(items []channelItem, operator ChannelOperator) ([]channelItem, error) {
@@ -855,6 +1473,37 @@ func randomSampleOperatorArgs(operator ChannelOperator) (int, int64, bool, error
 	return count, int64(seed), true, nil
 }
 
+func cloneChannelItems(items []channelItem) []channelItem {
+	if len(items) == 0 {
+		return nil
+	}
+
+	cloned := make([]channelItem, len(items))
+	for index, item := range items {
+		cloned[index] = cloneChannelItem(item)
+	}
+
+	return cloned
+}
+
+func reduceChannelItems(items []channelItem, pick func(current, candidate any) (any, error)) ([]channelItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	reduced := cloneChannelValue(items[0].value)
+	for _, item := range items[1:] {
+		var err error
+
+		reduced, err = pick(reduced, item.value)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return []channelItem{{value: reduced, depGroups: unionChannelDepGroups(items)}}, nil
+}
+
 func transposeChannelItems(items []channelItem, byIndex *int) ([]channelItem, error) {
 	transposed := []channelItem{}
 
@@ -940,6 +1589,116 @@ func crossChannelItems(left, right []channelItem) []channelItem {
 	return crossed
 }
 
+func joinChannelItems(left, right []channelItem) []channelItem {
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+
+	rightByKey := make(map[string][]channelItem)
+
+	for _, item := range right {
+		key := channelItemKey(item)
+		rightByKey[key] = append(rightByKey[key], cloneChannelItem(item))
+	}
+
+	joined := []channelItem{}
+
+	for _, item := range left {
+		matches := rightByKey[channelItemKey(item)]
+		for _, match := range matches {
+			joined = append(joined, channelItem{
+				value:     joinChannelValues(item.value, match.value),
+				depGroups: appendUniqueStrings(cloneStrings(item.depGroups), match.depGroups),
+			})
+		}
+	}
+
+	return joined
+}
+
+func joinChannelValues(left, right any) any {
+	leftTuple := channelTuple(left)
+
+	rightTuple := channelTuple(right)
+	if len(rightTuple) == 0 {
+		return leftTuple
+	}
+
+	joined := make([]any, 0, len(leftTuple)+len(rightTuple))
+
+	joined = append(joined, cloneChannelSlice(leftTuple)...)
+	if len(leftTuple) > 0 && len(rightTuple) > 0 && fmt.Sprint(leftTuple[0]) == fmt.Sprint(rightTuple[0]) {
+		joined = append(joined, cloneChannelSlice(rightTuple[1:])...)
+	} else {
+		joined = append(joined, cloneChannelSlice(rightTuple)...)
+	}
+
+	return joined
+}
+
+func channelItemKey(item channelItem) string {
+	row := channelTuple(item.value)
+	if len(row) == 0 {
+		return ""
+	}
+
+	return fmt.Sprint(row[0])
+}
+
+func groupTupleItems(items []channelItem) []channelItem {
+	if len(items) == 0 {
+		return nil
+	}
+
+	type groupedTuple struct {
+		rows      [][]any
+		depGroups []string
+	}
+
+	grouped := make(map[string]*groupedTuple)
+	keys := []string{}
+
+	for _, item := range items {
+		row := channelTuple(item.value)
+		key := fmt.Sprint(row[0])
+
+		entry, ok := grouped[key]
+		if !ok {
+			entry = &groupedTuple{}
+			grouped[key] = entry
+			keys = append(keys, key)
+		}
+
+		entry.rows = append(entry.rows, row)
+		entry.depGroups = appendUniqueStrings(entry.depGroups, item.depGroups)
+	}
+
+	result := make([]channelItem, 0, len(keys))
+	for _, key := range keys {
+		entry := grouped[key]
+		columns := make([][]any, 0)
+
+		for _, row := range entry.rows {
+			for index := 1; index < len(row); index++ {
+				for len(columns) < index {
+					columns = append(columns, []any{})
+				}
+
+				columns[index-1] = append(columns[index-1], cloneChannelValue(row[index]))
+			}
+		}
+
+		groupedValue := []any{cloneChannelValue(entry.rows[0][0])}
+		for _, column := range columns {
+			groupedValue = append(groupedValue, column)
+		}
+
+		result = append(result, channelItem{value: groupedValue, depGroups: cloneStrings(entry.depGroups)})
+	}
+
+	return result
+}
+
 func chunkChannelItems(items []channelItem, size int) []channelItem {
 	if len(items) == 0 {
 		return nil
@@ -966,24 +1725,6 @@ func chunkChannelItems(items []channelItem, size int) []channelItem {
 	return chunked
 }
 
-func reduceChannelItems(items []channelItem, pick func(current, candidate any) (any, error)) ([]channelItem, error) {
-	if len(items) == 0 {
-		return nil, nil
-	}
-
-	reduced := cloneChannelValue(items[0].value)
-	for _, item := range items[1:] {
-		var err error
-
-		reduced, err = pick(reduced, item.value)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return []channelItem{{value: reduced, depGroups: unionChannelDepGroups(items)}}, nil
-}
-
 func sumChannelItems(items []channelItem) ([]channelItem, error) {
 	if len(items) == 0 {
 		return nil, nil
@@ -1001,6 +1742,15 @@ func sumChannelItems(items []channelItem) ([]channelItem, error) {
 	}
 
 	return []channelItem{{value: total, depGroups: unionChannelDepGroups(items)}}, nil
+}
+
+func unionChannelDepGroups(items []channelItem) []string {
+	deps := []string{}
+	for _, item := range items {
+		deps = appendUniqueStrings(deps, item.depGroups)
+	}
+
+	return deps
 }
 
 func splitCSVChannelItems(items []channelItem, operator ChannelOperator) ([]channelItem, error) {
@@ -1606,756 +2356,6 @@ func ResolveChannel(ce ChanExpr, cwd string) ([]any, error) {
 	}
 
 	return values, nil
-}
-
-func resolveChannelItems(ce ChanExpr, cwd string, resolver channelResolver) ([]channelItem, error) {
-	switch expr := ce.(type) {
-	case ChanRef:
-		if resolver == nil {
-			return nil, fmt.Errorf("channel reference %q cannot be resolved at translate time", expr.Name)
-		}
-
-		return resolver(expr)
-	case NamedChannelRef:
-		items, err := resolveChannelItems(expr.Source, cwd, resolver)
-		if err != nil {
-			return nil, err
-		}
-
-		return selectNamedChannelItems(items, expr.Label), nil
-	case ChannelFactory:
-		return resolveChannelFactoryItems(expr, cwd)
-	case ChannelChain:
-		items, err := resolveChannelItems(expr.Source, cwd, resolver)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, operator := range expr.Operators {
-			items, err = applyChannelOperator(items, operator, cwd, resolver)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		return items, nil
-	case PipeExpr:
-		if len(expr.Stages) != 1 {
-			return nil, errors.New("pipe expressions require D6 translation support")
-		}
-
-		return resolveChannelItems(expr.Stages[0], cwd, resolver)
-	default:
-		return nil, fmt.Errorf("channel expression %T cannot be resolved at translate time", ce)
-	}
-}
-
-func resolveChannelFactoryItems(factory ChannelFactory, cwd string) ([]channelItem, error) {
-	switch factory.Name {
-	case "of":
-		return resolveChannelLiteralItems(factory.Args)
-	case "from":
-		warnDeprecatedChannelFactory(factory.Name)
-
-		return resolveChannelLiteralItems(factory.Args)
-	case "fromList":
-		return resolveChannelFromListItems(factory.Args)
-	case "value":
-		if len(factory.Args) != 1 {
-			return nil, fmt.Errorf("Channel.value expects 1 argument, got %d", len(factory.Args))
-		}
-
-		value, err := EvalExpr(factory.Args[0], nil)
-		if err != nil {
-			return nil, err
-		}
-
-		return []channelItem{{value: value}}, nil
-	case "empty":
-		if len(factory.Args) != 0 {
-			return nil, fmt.Errorf("Channel.empty expects 0 arguments, got %d", len(factory.Args))
-		}
-
-		return nil, nil
-	case "fromPath":
-		pattern, err := resolveChannelPattern(factory.Args, cwd, "Channel.fromPath")
-		if err != nil {
-			return nil, err
-		}
-
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, err
-		}
-
-		items := make([]channelItem, 0, len(matches))
-		for _, match := range matches {
-			items = append(items, channelItem{value: filepath.Clean(match)})
-		}
-
-		return items, nil
-	case "fromFilePairs":
-		pattern, err := resolveChannelPattern(factory.Args, cwd, "Channel.fromFilePairs")
-		if err != nil {
-			return nil, err
-		}
-
-		values, err := resolveFilePairs(pattern)
-		if err != nil {
-			return nil, err
-		}
-
-		items := make([]channelItem, 0, len(values))
-		for _, value := range values {
-			items = append(items, channelItem{value: value})
-		}
-
-		return items, nil
-	case "fromLineage", "fromSRA", "interval", "topic", "watchPath":
-		warnUntranslatableChannelFactory(factory.Name)
-
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("unsupported channel factory %q", factory.Name)
-	}
-}
-
-func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd string, resolver channelResolver) ([]channelItem, error) {
-	switch operator.Name {
-	case "branch":
-		result, err := resolveBranchChannelItems(items, operator)
-		if err != nil {
-			return nil, err
-		}
-
-		return flattenNamedChannelItems(result), nil
-	case "collect":
-		return []channelItem{{value: collectChannelValues(items), depGroups: unionChannelDepGroups(items)}}, nil
-	case "collectFile":
-		return collectFileChannelItems(items, operator, cwd)
-	case "first":
-		if len(items) == 0 {
-			return nil, nil
-		}
-
-		return cloneChannelItems(items[:1]), nil
-	case "last":
-		if len(items) == 0 {
-			return nil, nil
-		}
-
-		return cloneChannelItems(items[len(items)-1:]), nil
-	case "take":
-		if len(operator.Args) != 1 {
-			return nil, fmt.Errorf("take expects 1 argument, got %d", len(operator.Args))
-		}
-
-		count, err := EvalExpr(operator.Args[0], nil)
-		if err != nil {
-			return nil, err
-		}
-
-		limit, ok := count.(int)
-		if !ok {
-			return nil, errors.New("take expects an integer argument")
-		}
-
-		if limit <= 0 {
-			return nil, nil
-		}
-
-		if limit > len(items) {
-			limit = len(items)
-		}
-
-		return cloneChannelItems(items[:limit]), nil
-	case "filter":
-		filtered := make([]channelItem, 0, len(items))
-		for _, item := range items {
-			keep, err := evalChannelClosureBool(operator, item.value)
-			if err != nil {
-				if errors.Is(err, errUnsupportedClosure) {
-					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
-
-					return cloneChannelItems(items), nil
-				}
-
-				return nil, err
-			}
-
-			if keep {
-				filtered = append(filtered, cloneChannelItem(item))
-			}
-		}
-
-		return filtered, nil
-	case "map":
-		mapped := make([]channelItem, 0, len(items))
-		for _, item := range items {
-			value, err := evalChannelClosure(operator, item.value)
-			if err != nil {
-				if errors.Is(err, errUnsupportedClosure) {
-					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
-
-					return cloneChannelItems(items), nil
-				}
-
-				return nil, err
-			}
-
-			mapped = append(mapped, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
-		}
-
-		return mapped, nil
-	case "flatMap":
-		flattened := []channelItem{}
-
-		for _, item := range items {
-			value, err := evalChannelClosure(operator, item.value)
-			if err != nil {
-				if errors.Is(err, errUnsupportedClosure) {
-					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
-
-					return cloneChannelItems(items), nil
-				}
-
-				return nil, err
-			}
-
-			for _, mapped := range flattenChannelValues(value) {
-				flattened = append(flattened, channelItem{value: mapped, depGroups: cloneStrings(item.depGroups)})
-			}
-		}
-
-		return flattened, nil
-	case "multiMap":
-		result, err := resolveMultiMapChannelItems(items, operator)
-		if err != nil {
-			return nil, err
-		}
-
-		return flattenNamedChannelItems(result), nil
-	case "combine":
-		combined := cloneChannelItems(items)
-
-		byIndex, err := resolveOperatorByIndex(operator)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, other := range operator.Channels {
-			resolved, err := resolveChannelItems(other, cwd, resolver)
-			if err != nil {
-				return nil, err
-			}
-
-			combined, err = combineChannelItems(combined, resolved, byIndex)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		return combined, nil
-	case "concat":
-		concatenated := cloneChannelItems(items)
-
-		for _, other := range operator.Channels {
-			resolved, err := resolveChannelItems(other, cwd, resolver)
-			if err != nil {
-				return nil, err
-			}
-
-			concatenated = concatChannelItems(concatenated, resolved)
-		}
-
-		return concatenated, nil
-	case "flatten":
-		flattened := []channelItem{}
-
-		for _, item := range items {
-			for _, value := range flattenSliceValue(item.value) {
-				flattened = append(flattened, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
-			}
-		}
-
-		return flattened, nil
-	case "unique":
-		return uniqueChannelItems(items), nil
-	case "distinct":
-		return distinctChannelItems(items), nil
-	case "ifEmpty":
-		if len(items) != 0 {
-			return cloneChannelItems(items), nil
-		}
-
-		if len(operator.Args) != 1 {
-			return nil, fmt.Errorf("ifEmpty expects 1 argument, got %d", len(operator.Args))
-		}
-
-		value, err := EvalExpr(operator.Args[0], nil)
-		if err != nil {
-			return nil, err
-		}
-
-		return []channelItem{{value: value}}, nil
-	case "toList":
-		return []channelItem{{value: collectChannelValues(items), depGroups: unionChannelDepGroups(items)}}, nil
-	case "toSortedList":
-		sorted, err := sortedChannelValues(items)
-		if err != nil {
-			return nil, err
-		}
-
-		return []channelItem{{value: sorted, depGroups: unionChannelDepGroups(items)}}, nil
-	case "count":
-		return countChannelItems(items, operator)
-	case "randomSample":
-		return randomSampleChannelItems(items, operator)
-	case "reduce":
-		seed, hasSeed, closure, err := reduceOperatorSeedAndClosure(operator)
-		if err != nil {
-			return nil, err
-		}
-
-		if hasSeed {
-			items = append([]channelItem{{value: seed}}, items...)
-		}
-
-		return reduceChannelItems(items, func(current, candidate any) (any, error) {
-			return evalChannelClosure(ChannelOperator{ClosureExpr: &closure}, []any{current, candidate})
-		})
-	case "transpose":
-		byIndex, err := resolveOperatorByIndex(operator)
-		if err != nil {
-			return nil, err
-		}
-
-		return transposeChannelItems(items, byIndex)
-	case "toLong", "toFloat", "toDouble":
-		return cloneChannelItems(items), nil
-	case "mix":
-		mixed := cloneChannelItems(items)
-
-		for _, other := range operator.Channels {
-			resolved, err := resolveChannelItems(other, cwd, resolver)
-			if err != nil {
-				return nil, err
-			}
-
-			mixed = append(mixed, cloneChannelItems(resolved)...)
-		}
-
-		return mixed, nil
-	case "cross":
-		crossed := cloneChannelItems(items)
-
-		for _, other := range operator.Channels {
-			resolved, err := resolveChannelItems(other, cwd, resolver)
-			if err != nil {
-				return nil, err
-			}
-
-			crossed = crossChannelItems(crossed, resolved)
-		}
-
-		return crossed, nil
-	case "join":
-		joined := cloneChannelItems(items)
-
-		for _, other := range operator.Channels {
-			resolved, err := resolveChannelItems(other, cwd, resolver)
-			if err != nil {
-				return nil, err
-			}
-
-			joined = joinChannelItems(joined, resolved)
-		}
-
-		return joined, nil
-	case "groupTuple":
-		return groupTupleItems(items), nil
-	case "buffer":
-		size, err := resolveChunkSize(operator.Args, "buffer", "size")
-		if err != nil {
-			return nil, err
-		}
-
-		return chunkChannelItems(items, size), nil
-	case "collate":
-		size, err := resolveChunkSize(operator.Args, "collate", "size")
-		if err != nil {
-			return nil, err
-		}
-
-		return chunkChannelItems(items, size), nil
-	case "min":
-		return reduceChannelItems(items, minChannelValue)
-	case "max":
-		return reduceChannelItems(items, maxChannelValue)
-	case "sum":
-		return sumChannelItems(items)
-	case "splitCsv":
-		return splitCSVChannelItems(items, operator)
-	case "splitFasta":
-		return splitFASTAChannelItems(items, operator)
-	case "splitFastq":
-		return splitFASTQChannelItems(items, operator)
-	case "splitJson":
-		return splitJSONChannelItems(items, operator)
-	case "splitText":
-		return splitTextChannelItems(items, operator)
-	case "dump", "set", "tap", "view":
-		return cloneChannelItems(items), nil
-	default:
-		if _, ok := deprecatedChannelOperators[operator.Name]; ok {
-			warnDeprecatedChannelOperator(operator.Name)
-
-			return cloneChannelItems(items), nil
-		}
-
-		if _, ok := warningOnlyChannelOperators[operator.Name]; ok {
-			warnUnsupportedCardinalityOperator(operator.Name)
-
-			return cloneChannelItems(items), nil
-		}
-
-		if _, ok := unsupportedCardinalityOperators[operator.Name]; ok {
-			warnUnsupportedCardinalityOperator(operator.Name)
-
-			return cloneChannelItems(items), nil
-		}
-
-		return nil, fmt.Errorf("unsupported channel operator %q", operator.Name)
-	}
-}
-
-func collectChannelValues(items []channelItem) []any {
-	values := make([]any, 0, len(items))
-	for _, item := range items {
-		values = append(values, cloneChannelValue(item.value))
-	}
-
-	return values
-}
-
-func unionChannelDepGroups(items []channelItem) []string {
-	deps := []string{}
-	for _, item := range items {
-		deps = appendUniqueStrings(deps, item.depGroups)
-	}
-
-	return deps
-}
-
-func evalChannelClosureBool(operator ChannelOperator, value any) (bool, error) {
-	resolved, err := evalChannelClosure(operator, value)
-	if err != nil {
-		return false, err
-	}
-
-	return isTruthy(resolved), nil
-}
-
-func evalChannelClosure(operator ChannelOperator, value any) (any, error) {
-	if operator.ClosureExpr != nil {
-		return evalSimpleClosure(*operator.ClosureExpr, value, nil)
-	}
-
-	closure := strings.TrimSpace(operator.Closure)
-	if closure == "" {
-		return value, nil
-	}
-
-	return evalSimpleClosure(ClosureExpr{Body: closure}, value, nil)
-}
-
-func flattenChannelValues(value any) []any {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case []any:
-		flattened := make([]any, 0, len(typed))
-		for _, item := range typed {
-			flattened = append(flattened, cloneChannelValue(item))
-		}
-
-		return flattened
-	case []string:
-		flattened := make([]any, 0, len(typed))
-		for _, item := range typed {
-			flattened = append(flattened, item)
-		}
-
-		return flattened
-	default:
-		return []any{typed}
-	}
-}
-
-func joinChannelItems(left, right []channelItem) []channelItem {
-	if len(left) == 0 || len(right) == 0 {
-		return nil
-	}
-
-	rightByKey := make(map[string][]channelItem)
-
-	for _, item := range right {
-		key := channelItemKey(item)
-		rightByKey[key] = append(rightByKey[key], cloneChannelItem(item))
-	}
-
-	joined := []channelItem{}
-
-	for _, item := range left {
-		matches := rightByKey[channelItemKey(item)]
-		for _, match := range matches {
-			joined = append(joined, channelItem{
-				value:     joinChannelValues(item.value, match.value),
-				depGroups: appendUniqueStrings(cloneStrings(item.depGroups), match.depGroups),
-			})
-		}
-	}
-
-	return joined
-}
-
-func groupTupleItems(items []channelItem) []channelItem {
-	if len(items) == 0 {
-		return nil
-	}
-
-	type groupedTuple struct {
-		rows      [][]any
-		depGroups []string
-	}
-
-	grouped := make(map[string]*groupedTuple)
-	keys := []string{}
-
-	for _, item := range items {
-		row := channelTuple(item.value)
-		key := fmt.Sprint(row[0])
-
-		entry, ok := grouped[key]
-		if !ok {
-			entry = &groupedTuple{}
-			grouped[key] = entry
-			keys = append(keys, key)
-		}
-
-		entry.rows = append(entry.rows, row)
-		entry.depGroups = appendUniqueStrings(entry.depGroups, item.depGroups)
-	}
-
-	result := make([]channelItem, 0, len(keys))
-	for _, key := range keys {
-		entry := grouped[key]
-		columns := make([][]any, 0)
-
-		for _, row := range entry.rows {
-			for index := 1; index < len(row); index++ {
-				for len(columns) < index {
-					columns = append(columns, []any{})
-				}
-
-				columns[index-1] = append(columns[index-1], cloneChannelValue(row[index]))
-			}
-		}
-
-		groupedValue := []any{cloneChannelValue(entry.rows[0][0])}
-		for _, column := range columns {
-			groupedValue = append(groupedValue, column)
-		}
-
-		result = append(result, channelItem{value: groupedValue, depGroups: cloneStrings(entry.depGroups)})
-	}
-
-	return result
-}
-
-func channelItemKey(item channelItem) string {
-	row := channelTuple(item.value)
-	if len(row) == 0 {
-		return ""
-	}
-
-	return fmt.Sprint(row[0])
-}
-
-func joinChannelValues(left, right any) any {
-	leftTuple := channelTuple(left)
-
-	rightTuple := channelTuple(right)
-	if len(rightTuple) == 0 {
-		return leftTuple
-	}
-
-	joined := make([]any, 0, len(leftTuple)+len(rightTuple))
-
-	joined = append(joined, cloneChannelSlice(leftTuple)...)
-	if len(leftTuple) > 0 && len(rightTuple) > 0 && fmt.Sprint(leftTuple[0]) == fmt.Sprint(rightTuple[0]) {
-		joined = append(joined, cloneChannelSlice(rightTuple[1:])...)
-	} else {
-		joined = append(joined, cloneChannelSlice(rightTuple)...)
-	}
-
-	return joined
-}
-
-func channelTuple(value any) []any {
-	switch typed := value.(type) {
-	case []any:
-		return cloneChannelSlice(typed)
-	case []string:
-		row := make([]any, 0, len(typed))
-		for _, item := range typed {
-			row = append(row, item)
-		}
-
-		return row
-	default:
-		return []any{cloneChannelValue(typed)}
-	}
-}
-
-func cloneChannelItems(items []channelItem) []channelItem {
-	if len(items) == 0 {
-		return nil
-	}
-
-	cloned := make([]channelItem, len(items))
-	for index, item := range items {
-		cloned[index] = cloneChannelItem(item)
-	}
-
-	return cloned
-}
-
-func cloneChannelItem(item channelItem) channelItem {
-	return channelItem{value: cloneChannelValue(item.value), depGroups: cloneStrings(item.depGroups)}
-}
-
-func cloneChannelValue(value any) any {
-	switch typed := value.(type) {
-	case []any:
-		return cloneChannelSlice(typed)
-	case []string:
-		return cloneStrings(typed)
-	case orderedMap:
-		return newOrderedMap(typed.entries)
-	default:
-		return typed
-	}
-}
-
-func cloneChannelSlice(values []any) []any {
-	if len(values) == 0 {
-		return nil
-	}
-
-	cloned := make([]any, len(values))
-	for index, value := range values {
-		cloned[index] = cloneChannelValue(value)
-	}
-
-	return cloned
-}
-
-func resolveChannelPattern(args []Expr, cwd, name string) (string, error) {
-	if len(args) != 1 {
-		return "", fmt.Errorf("%s expects 1 argument, got %d", name, len(args))
-	}
-
-	value, err := EvalExpr(args[0], nil)
-	if err != nil {
-		return "", err
-	}
-
-	pattern, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("%s expects a string glob", name)
-	}
-
-	if filepath.IsAbs(pattern) {
-		return filepath.Clean(pattern), nil
-	}
-
-	return filepath.Join(cwd, pattern), nil
-}
-
-func resolveFilePairs(pattern string) ([]any, error) {
-	expanded := expandBracePatterns(pattern)
-	grouped := make(map[string][]string)
-	keys := make([]string, 0)
-	seenPaths := make(map[string]struct{})
-
-	for _, candidate := range expanded {
-		matches, err := filepath.Glob(candidate)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, match := range matches {
-			cleaned := filepath.Clean(match)
-			if _, seen := seenPaths[cleaned]; seen {
-				continue
-			}
-
-			seenPaths[cleaned] = struct{}{}
-
-			key := filePairGroupKey(cleaned)
-			if _, ok := grouped[key]; !ok {
-				keys = append(keys, key)
-			}
-
-			grouped[key] = append(grouped[key], cleaned)
-		}
-	}
-
-	sort.Strings(keys)
-
-	items := make([]any, 0, len(keys))
-	for _, key := range keys {
-		matches := grouped[key]
-		sort.Strings(matches)
-		items = append(items, cloneStrings(matches))
-	}
-
-	return items, nil
-}
-
-func expandBracePatterns(pattern string) []string {
-	start := strings.IndexByte(pattern, '{')
-	if start == -1 {
-		return []string{pattern}
-	}
-
-	end := strings.IndexByte(pattern[start:], '}')
-	if end == -1 {
-		return []string{pattern}
-	}
-
-	end += start
-
-	prefix := pattern[:start]
-	suffix := pattern[end+1:]
-	parts := strings.Split(pattern[start+1:end], ",")
-
-	patterns := make([]string, 0, len(parts))
-	for _, part := range parts {
-		patterns = append(patterns, prefix+strings.TrimSpace(part)+suffix)
-	}
-
-	return patterns
-}
-
-func filePairGroupKey(path string) string {
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if index := strings.LastIndex(base, "_"); index >= 0 {
-		base = base[:index]
-	}
-
-	return filepath.Join(filepath.Dir(path), base)
 }
 
 func minChannelValue(current, candidate any) (any, error) {

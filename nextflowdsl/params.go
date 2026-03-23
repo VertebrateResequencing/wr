@@ -75,6 +75,67 @@ func mergeParamValue(existing, incoming any) any {
 	return merged
 }
 
+func parseJSONParams(content []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+
+	var params map[string]any
+	if err := decoder.Decode(&params); err != nil {
+		return nil, err
+	}
+
+	return normalizeParamsMap(params), nil
+}
+
+func parseYAMLParams(content []byte) (map[string]any, error) {
+	var params map[string]any
+	if err := yaml.Unmarshal(content, &params); err != nil {
+		return nil, err
+	}
+
+	return normalizeParamsMap(params), nil
+}
+
+func normalizeParamsMap(params map[string]any) map[string]any {
+	if params == nil {
+		return nil
+	}
+
+	normalised := make(map[string]any, len(params))
+	for key, value := range params {
+		normalised[key] = normalizeParamValue(value)
+	}
+
+	return normalised
+}
+
+func normalizeParamValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return normalizeParamsMap(typed)
+	case []any:
+		normalised := make([]any, len(typed))
+		for index, item := range typed {
+			normalised[index] = normalizeParamValue(item)
+		}
+
+		return normalised
+	case json.Number:
+		if intValue, err := strconv.Atoi(typed.String()); err == nil {
+			return intValue
+		}
+
+		floatValue, err := typed.Float64()
+		if err != nil {
+			return typed.String()
+		}
+
+		return floatValue
+	default:
+		return typed
+	}
+}
+
 // LoadParams reads a JSON or YAML params file.
 func LoadParams(path string) (map[string]any, error) {
 	content, err := os.ReadFile(path)
@@ -212,65 +273,4 @@ func resolveParamReference(reference string, params map[string]any) (any, error)
 	}
 
 	return current, nil
-}
-
-func parseJSONParams(content []byte) (map[string]any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.UseNumber()
-
-	var params map[string]any
-	if err := decoder.Decode(&params); err != nil {
-		return nil, err
-	}
-
-	return normalizeParamsMap(params), nil
-}
-
-func parseYAMLParams(content []byte) (map[string]any, error) {
-	var params map[string]any
-	if err := yaml.Unmarshal(content, &params); err != nil {
-		return nil, err
-	}
-
-	return normalizeParamsMap(params), nil
-}
-
-func normalizeParamsMap(params map[string]any) map[string]any {
-	if params == nil {
-		return nil
-	}
-
-	normalised := make(map[string]any, len(params))
-	for key, value := range params {
-		normalised[key] = normalizeParamValue(value)
-	}
-
-	return normalised
-}
-
-func normalizeParamValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return normalizeParamsMap(typed)
-	case []any:
-		normalised := make([]any, len(typed))
-		for index, item := range typed {
-			normalised[index] = normalizeParamValue(item)
-		}
-
-		return normalised
-	case json.Number:
-		if intValue, err := strconv.Atoi(typed.String()); err == nil {
-			return intValue
-		}
-
-		floatValue, err := typed.Float64()
-		if err != nil {
-			return typed.String()
-		}
-
-		return floatValue
-	default:
-		return typed
-	}
 }

@@ -1590,10 +1590,10 @@ func TestNextflowRunCommandPendingHelper(t *testing.T) {
 	})
 }
 
-type fakeNextflowSnapshot struct {
-	complete   []*jobqueue.Job
-	buried     []*jobqueue.Job
-	incomplete []*jobqueue.Job
+func dynamicWorkflow(consumerScript string) string {
+	return "process A {\noutput: path 'produced.txt'\nscript: 'echo hello > produced.txt'\n}\n" +
+		"process B {\ninput: path reads\nscript: '" + consumerScript + "'\n}\n" +
+		"workflow { A(); B(A.out) }\n"
 }
 
 func TestNextflowRunCommandFollow(t *testing.T) {
@@ -1970,6 +1970,111 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 	})
 }
 
+func newNextflowFollowScenario(
+	t *testing.T,
+	workflowName, consumerScript string,
+) (*fakeNextflowQueue, []*nextflowdsl.PendingStage, nextflowdsl.TranslateConfig, *jobqueue.Job) {
+	t.Helper()
+
+	baseDir := t.TempDir()
+	wf := &nextflowdsl.Workflow{
+		Processes: []*nextflowdsl.Process{
+			{
+				Name:       "A",
+				Directives: map[string]any{},
+				Script:     "echo hello > produced.txt",
+				Output: []*nextflowdsl.Declaration{{
+					Kind: "path",
+					Expr: nextflowdsl.StringExpr{Value: "produced.txt"},
+				}},
+				Env:        map[string]string{},
+				PublishDir: []*nextflowdsl.PublishDir{},
+			},
+			{
+				Name:       "B",
+				Directives: map[string]any{},
+				Input:      []*nextflowdsl.Declaration{{Kind: "path", Name: "reads"}},
+				Script:     consumerScript,
+				Env:        map[string]string{},
+				PublishDir: []*nextflowdsl.PublishDir{},
+			},
+		},
+		EntryWF: &nextflowdsl.WorkflowBlock{Calls: []*nextflowdsl.Call{
+			{Target: "A"},
+			{Target: "B", Args: []nextflowdsl.ChanExpr{nextflowdsl.ChanRef{Name: "A.out"}}},
+		}},
+	}
+
+	tc := nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: workflowName, Cwd: baseDir}
+
+	result, err := nextflowdsl.Translate(wf, nil, tc)
+	if err != nil {
+		t.Fatalf("translate follow scenario: %v", err)
+	}
+
+	if len(result.Jobs) != 1 || len(result.Pending) != 1 {
+		t.Fatalf("unexpected follow scenario shape: jobs=%d pending=%d", len(result.Jobs), len(result.Pending))
+	}
+
+	producer := cloneJobs(result.Jobs)[0]
+
+	producer.State = jobqueue.JobStateComplete
+	if err = os.MkdirAll(producer.Cwd, 0o755); err != nil {
+		t.Fatalf("create producer cwd: %v", err)
+	}
+
+	if err = os.WriteFile(filepath.Join(producer.Cwd, "produced.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write producer output: %v", err)
+	}
+
+	queue := &fakeNextflowQueue{}
+
+	return queue, result.Pending, tc, producer
+}
+
+func cloneJobs(jobs []*jobqueue.Job) []*jobqueue.Job {
+	cloned := make([]*jobqueue.Job, 0, len(jobs))
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+
+		cloned = append(cloned, &jobqueue.Job{
+			Cmd:             job.Cmd,
+			Cwd:             job.Cwd,
+			CwdMatters:      job.CwdMatters,
+			LimitGroups:     append([]string{}, job.LimitGroups...),
+			RepGroup:        job.RepGroup,
+			ReqGroup:        job.ReqGroup,
+			Requirements:    job.Requirements,
+			Override:        job.Override,
+			Retries:         job.Retries,
+			DepGroups:       append([]string{}, job.DepGroups...),
+			Dependencies:    job.Dependencies,
+			WithDocker:      job.WithDocker,
+			WithSingularity: job.WithSingularity,
+			State:           job.State,
+			Exitcode:        job.Exitcode,
+		})
+	}
+
+	return cloned
+}
+
+func withFakeNextflowSleep(queue *fakeNextflowQueue) (*[]time.Duration, func()) {
+	sleeps := []time.Duration{}
+	previousSleep := nextflowSleep
+	nextflowSleep = func(delay time.Duration) {
+		sleeps = append(sleeps, delay)
+
+		queue.advance()
+	}
+
+	return &sleeps, func() {
+		nextflowSleep = previousSleep
+	}
+}
+
 func TestNextflowRunCommandResumeMissing(t *testing.T) {
 	Convey("resume skips completed upstream work and adds missing downstream jobs", t, func() {
 		env := newNextflowCommandTestEnv(t)
@@ -2074,6 +2179,94 @@ func TestNextflowRunCommandResumeDeleted(t *testing.T) {
 		So(jobs, ShouldHaveLength, 2)
 		env.waitForRepGroupState("nf.resume_deleted.r1.B", jobqueue.JobStateComplete)
 	})
+}
+
+func translatedPendingJobs(t *testing.T, workflowPath, runID string, completed *jobqueue.Job) ([]*jobqueue.Job, error) {
+	t.Helper()
+
+	workflowFile, err := os.Open(workflowPath)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = workflowFile.Close()
+	}()
+
+	wf, err := nextflowdsl.Parse(workflowFile)
+	if err != nil {
+		return nil, err
+	}
+
+	tc := nextflowdsl.TranslateConfig{
+		RunID:        runID,
+		WorkflowName: nextflowWorkflowName(workflowPath),
+		WorkflowPath: workflowPath,
+		Cwd:          mustGetwd(t),
+	}
+
+	result, err := nextflowdsl.Translate(wf, nil, tc)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(result.Pending) != 1 {
+		return nil, os.ErrInvalid
+	}
+
+	completedJobs, ready, err := nextflowdsl.CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{completed}, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if !ready {
+		return nil, os.ErrNotExist
+	}
+
+	return nextflowdsl.TranslatePending(result.Pending[0], completedJobs, tc)
+}
+
+func runReservedJobsInBackground(env *nextflowCommandTestEnv, count int) <-chan error {
+	result := make(chan error, 1)
+
+	go func() {
+		result <- executeReservedJobs(env, count)
+	}()
+
+	return result
+}
+
+func executeReservedJobs(env *nextflowCommandTestEnv, count int) error {
+	jq := env.connectClient()
+
+	defer func() {
+		if err := jq.Disconnect(); err != nil {
+			env.t.Fatalf("disconnect jobqueue client: %v", err)
+		}
+	}()
+
+	for range count {
+		job, err := jq.Reserve(5 * time.Second)
+		if err != nil {
+			return err
+		}
+
+		if job == nil {
+			return os.ErrDeadlineExceeded
+		}
+
+		if err = jq.Execute(context.Background(), job, "bash"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type fakeNextflowSnapshot struct {
+	complete   []*jobqueue.Job
+	buried     []*jobqueue.Job
+	incomplete []*jobqueue.Job
 }
 
 func TestFollowNextflowWorkflowOutput(t *testing.T) {
@@ -2382,199 +2575,6 @@ func TestNextflowResumeJobs(t *testing.T) {
 	})
 }
 
-func dynamicWorkflow(consumerScript string) string {
-	return "process A {\noutput: path 'produced.txt'\nscript: 'echo hello > produced.txt'\n}\n" +
-		"process B {\ninput: path reads\nscript: '" + consumerScript + "'\n}\n" +
-		"workflow { A(); B(A.out) }\n"
-}
-
-func executeReservedJobs(env *nextflowCommandTestEnv, count int) error {
-	jq := env.connectClient()
-
-	defer func() {
-		if err := jq.Disconnect(); err != nil {
-			env.t.Fatalf("disconnect jobqueue client: %v", err)
-		}
-	}()
-
-	for range count {
-		job, err := jq.Reserve(5 * time.Second)
-		if err != nil {
-			return err
-		}
-
-		if job == nil {
-			return os.ErrDeadlineExceeded
-		}
-
-		if err = jq.Execute(context.Background(), job, "bash"); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func runReservedJobsInBackground(env *nextflowCommandTestEnv, count int) <-chan error {
-	result := make(chan error, 1)
-
-	go func() {
-		result <- executeReservedJobs(env, count)
-	}()
-
-	return result
-}
-
-func translatedPendingJobs(t *testing.T, workflowPath, runID string, completed *jobqueue.Job) ([]*jobqueue.Job, error) {
-	t.Helper()
-
-	workflowFile, err := os.Open(workflowPath)
-	if err != nil {
-		return nil, err
-	}
-
-	defer func() {
-		_ = workflowFile.Close()
-	}()
-
-	wf, err := nextflowdsl.Parse(workflowFile)
-	if err != nil {
-		return nil, err
-	}
-
-	tc := nextflowdsl.TranslateConfig{
-		RunID:        runID,
-		WorkflowName: nextflowWorkflowName(workflowPath),
-		WorkflowPath: workflowPath,
-		Cwd:          mustGetwd(t),
-	}
-
-	result, err := nextflowdsl.Translate(wf, nil, tc)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(result.Pending) != 1 {
-		return nil, os.ErrInvalid
-	}
-
-	completedJobs, ready, err := nextflowdsl.CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{completed}, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if !ready {
-		return nil, os.ErrNotExist
-	}
-
-	return nextflowdsl.TranslatePending(result.Pending[0], completedJobs, tc)
-}
-
-func newNextflowFollowScenario(
-	t *testing.T,
-	workflowName, consumerScript string,
-) (*fakeNextflowQueue, []*nextflowdsl.PendingStage, nextflowdsl.TranslateConfig, *jobqueue.Job) {
-	t.Helper()
-
-	baseDir := t.TempDir()
-	wf := &nextflowdsl.Workflow{
-		Processes: []*nextflowdsl.Process{
-			{
-				Name:       "A",
-				Directives: map[string]any{},
-				Script:     "echo hello > produced.txt",
-				Output: []*nextflowdsl.Declaration{{
-					Kind: "path",
-					Expr: nextflowdsl.StringExpr{Value: "produced.txt"},
-				}},
-				Env:        map[string]string{},
-				PublishDir: []*nextflowdsl.PublishDir{},
-			},
-			{
-				Name:       "B",
-				Directives: map[string]any{},
-				Input:      []*nextflowdsl.Declaration{{Kind: "path", Name: "reads"}},
-				Script:     consumerScript,
-				Env:        map[string]string{},
-				PublishDir: []*nextflowdsl.PublishDir{},
-			},
-		},
-		EntryWF: &nextflowdsl.WorkflowBlock{Calls: []*nextflowdsl.Call{
-			{Target: "A"},
-			{Target: "B", Args: []nextflowdsl.ChanExpr{nextflowdsl.ChanRef{Name: "A.out"}}},
-		}},
-	}
-
-	tc := nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: workflowName, Cwd: baseDir}
-
-	result, err := nextflowdsl.Translate(wf, nil, tc)
-	if err != nil {
-		t.Fatalf("translate follow scenario: %v", err)
-	}
-
-	if len(result.Jobs) != 1 || len(result.Pending) != 1 {
-		t.Fatalf("unexpected follow scenario shape: jobs=%d pending=%d", len(result.Jobs), len(result.Pending))
-	}
-
-	producer := cloneJobs(result.Jobs)[0]
-
-	producer.State = jobqueue.JobStateComplete
-	if err = os.MkdirAll(producer.Cwd, 0o755); err != nil {
-		t.Fatalf("create producer cwd: %v", err)
-	}
-
-	if err = os.WriteFile(filepath.Join(producer.Cwd, "produced.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatalf("write producer output: %v", err)
-	}
-
-	queue := &fakeNextflowQueue{}
-
-	return queue, result.Pending, tc, producer
-}
-
-func cloneJobs(jobs []*jobqueue.Job) []*jobqueue.Job {
-	cloned := make([]*jobqueue.Job, 0, len(jobs))
-	for _, job := range jobs {
-		if job == nil {
-			continue
-		}
-
-		cloned = append(cloned, &jobqueue.Job{
-			Cmd:             job.Cmd,
-			Cwd:             job.Cwd,
-			CwdMatters:      job.CwdMatters,
-			LimitGroups:     append([]string{}, job.LimitGroups...),
-			RepGroup:        job.RepGroup,
-			ReqGroup:        job.ReqGroup,
-			Requirements:    job.Requirements,
-			Override:        job.Override,
-			Retries:         job.Retries,
-			DepGroups:       append([]string{}, job.DepGroups...),
-			Dependencies:    job.Dependencies,
-			WithDocker:      job.WithDocker,
-			WithSingularity: job.WithSingularity,
-			State:           job.State,
-			Exitcode:        job.Exitcode,
-		})
-	}
-
-	return cloned
-}
-
-func withFakeNextflowSleep(queue *fakeNextflowQueue) (*[]time.Duration, func()) {
-	sleeps := []time.Duration{}
-	previousSleep := nextflowSleep
-	nextflowSleep = func(delay time.Duration) {
-		sleeps = append(sleeps, delay)
-
-		queue.advance()
-	}
-
-	return &sleeps, func() {
-		nextflowSleep = previousSleep
-	}
-}
-
 type fakeNextflowQueue struct {
 	snapshots         []fakeNextflowSnapshot
 	index             int
@@ -2643,6 +2643,23 @@ func (f *fakeNextflowQueue) Delete(jes []*jobqueue.JobEssence) (int, error) {
 	}
 
 	return deleted, nil
+}
+
+func removeJobsByKey(jobs []*jobqueue.Job, keys map[string]struct{}) ([]*jobqueue.Job, int) {
+	filtered := make([]*jobqueue.Job, 0, len(jobs))
+	removed := 0
+
+	for _, job := range jobs {
+		if _, ok := keys[job.Key()]; ok {
+			removed++
+
+			continue
+		}
+
+		filtered = append(filtered, job)
+	}
+
+	return filtered, removed
 }
 
 func (f *fakeNextflowQueue) GetOrSetLimitGroup(group string) (int, error) {
@@ -2726,23 +2743,6 @@ func (f *fakeNextflowQueue) advance() {
 	if f.index < len(f.snapshots)-1 {
 		f.index++
 	}
-}
-
-func removeJobsByKey(jobs []*jobqueue.Job, keys map[string]struct{}) ([]*jobqueue.Job, int) {
-	filtered := make([]*jobqueue.Job, 0, len(jobs))
-	removed := 0
-
-	for _, job := range jobs {
-		if _, ok := keys[job.Key()]; ok {
-			removed++
-
-			continue
-		}
-
-		filtered = append(filtered, job)
-	}
-
-	return filtered, removed
 }
 
 func remoteWorkflowEntrypoint(script string) string {

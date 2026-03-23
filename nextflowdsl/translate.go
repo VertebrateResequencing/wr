@@ -75,6 +75,238 @@ type TranslateConfig struct {
 	Profile          string
 }
 
+// TranslatePending resolves a pending stage into concrete jobs from completed upstream jobs.
+func TranslatePending(pending *PendingStage, completed []CompletedJob, tc TranslateConfig) ([]*jobqueue.Job, error) {
+	if pending == nil || pending.Process == nil {
+		return nil, errors.New("pending stage is nil")
+	}
+
+	if pending.call == nil {
+		return nil, errors.New("pending stage has no call context")
+	}
+
+	params := cloneParams(pending.params)
+	if tc.Params != nil {
+		params = MergeParams(params, tc.Params)
+	}
+
+	completedByRepGrp := make(map[string]CompletedJob, len(completed))
+
+	completedItemsByRepGrp := make(map[string][]CompletedJob, len(completed))
+	for _, job := range completed {
+		completedItemsByRepGrp[job.RepGrp] = append(completedItemsByRepGrp[job.RepGrp], CompletedJob{
+			RepGrp:      job.RepGrp,
+			OutputPaths: cloneStrings(job.OutputPaths),
+			DepGroups:   cloneStrings(job.DepGroups),
+			ExitCode:    job.ExitCode,
+		})
+
+		existing, ok := completedByRepGrp[job.RepGrp]
+		if !ok {
+			completedByRepGrp[job.RepGrp] = CompletedJob{
+				RepGrp:      job.RepGrp,
+				OutputPaths: cloneStrings(job.OutputPaths),
+				DepGroups:   cloneStrings(job.DepGroups),
+				ExitCode:    job.ExitCode,
+			}
+
+			continue
+		}
+
+		existing.OutputPaths = appendUniqueStrings(existing.OutputPaths, job.OutputPaths)
+
+		existing.DepGroups = appendUniqueStrings(existing.DepGroups, job.DepGroups)
+		if existing.ExitCode == 0 && job.ExitCode != 0 {
+			existing.ExitCode = job.ExitCode
+		}
+
+		completedByRepGrp[job.RepGrp] = existing
+	}
+
+	for _, repGrp := range pending.awaitRepGrps {
+		job, ok := completedByRepGrp[repGrp]
+		if !ok {
+			return nil, fmt.Errorf("missing completed job for %q", repGrp)
+		}
+
+		if job.ExitCode != 0 {
+			return nil, fmt.Errorf("completed job %q exited with code %d", repGrp, job.ExitCode)
+		}
+	}
+
+	translated := cloneTranslatedCalls(pending.translated)
+	for name, stage := range translated {
+		job, ok := completedByRepGrp[stage.repGroup]
+		if !ok {
+			continue
+		}
+
+		stage.outputPaths = cloneStrings(job.OutputPaths)
+
+		deps := cloneStrings(stage.depGroups)
+		if len(deps) == 0 && stage.depGroup != "" {
+			deps = []string{stage.depGroup}
+		}
+
+		matches := completedItemsByRepGrp[stage.repGroup]
+		templates := cloneChannelItems(stage.items)
+		emitTemplates := cloneEmittedOutputs(stage.emitOutputs)
+		stage.items = make([]channelItem, 0, len(matches))
+		stage.emitOutputs = nil
+
+		for index, match := range matches {
+			itemDeps := cloneStrings(deps)
+			if len(match.DepGroups) > 0 {
+				itemDeps = cloneStrings(match.DepGroups)
+			}
+
+			if len(deps) == len(matches) {
+				itemDeps = []string{deps[index]}
+			}
+
+			itemValue := channelItemValue(match.OutputPaths)
+
+			if len(templates) > 0 {
+				templateIndex := index
+				if templateIndex >= len(templates) {
+					templateIndex = len(templates) - 1
+				}
+
+				itemValue = resolveCompletedOutputValue(templates[templateIndex].value, match.OutputPaths)
+			}
+
+			stage.items = append(stage.items, channelItem{
+				value:     itemValue,
+				depGroups: itemDeps,
+			})
+
+			for label, emitted := range emitTemplates {
+				emittedPaths := matchCompletedOutputPathsForPatterns(emitted.outputPaths, match.OutputPaths)
+				emittedValue := channelItemValue(emittedPaths)
+
+				if len(emitted.items) > 0 {
+					templateIndex := index
+					if templateIndex >= len(emitted.items) {
+						templateIndex = len(emitted.items) - 1
+					}
+
+					emittedValue = resolveCompletedOutputValue(emitted.items[templateIndex].value, emittedPaths)
+				}
+
+				if stage.emitOutputs == nil {
+					stage.emitOutputs = map[string]emittedOutput{}
+				}
+
+				labelOutput := stage.emitOutputs[label]
+				labelOutput.outputPaths = appendUniqueStrings(labelOutput.outputPaths, emittedPaths)
+				labelOutput.items = append(labelOutput.items, channelItem{value: emittedValue, depGroups: itemDeps})
+				stage.emitOutputs[label] = labelOutput
+			}
+		}
+
+		stage.pending = false
+		translated[name] = stage
+	}
+
+	bindingSets, err := resolveBindings(pending.Process, pending.call, pending.scope, translated, tc.Cwd)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(bindingSets) == 0 {
+		return nil, nil
+	}
+
+	bindingSets, err = filterWhenBindingSets(pending.Process, bindingSets, params)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(bindingSets) == 0 {
+		return nil, nil
+	}
+
+	jobs, _, err := translateProcessBindingSets(
+		pending.Process,
+		bindingSets,
+		pending.scope,
+		cloneDefaults(pending.defaults),
+		cloneSelectors(pending.selectors),
+		params,
+		tc,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
+}
+
+func cloneParams(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+
+	clone := make(map[string]any, len(params))
+	for key, value := range params {
+		clone[key] = value
+	}
+
+	return clone
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	clone := make([]string, len(values))
+	copy(clone, values)
+
+	return clone
+}
+
+func appendUniqueStrings(existing []string, values []string) []string {
+	seen := make(map[string]struct{}, len(existing))
+	for _, value := range existing {
+		seen[value] = struct{}{}
+	}
+
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+
+		existing = append(existing, value)
+		seen[value] = struct{}{}
+	}
+
+	return existing
+}
+
+func cloneTranslatedCalls(translated map[string]translatedCall) map[string]translatedCall {
+	if len(translated) == 0 {
+		return nil
+	}
+
+	clone := make(map[string]translatedCall, len(translated))
+	for key, value := range translated {
+		clone[key] = cloneTranslatedCall(value)
+	}
+
+	return clone
+}
+
+func cloneTranslatedCall(value translatedCall) translatedCall {
+	value.depGroups = cloneStrings(value.depGroups)
+	value.repGroups = cloneStrings(value.repGroups)
+	value.outputPaths = cloneStrings(value.outputPaths)
+	value.emitOutputs = cloneEmittedOutputs(value.emitOutputs)
+	value.items = cloneChannelItems(value.items)
+
+	return value
+}
+
 func cloneEmittedOutputs(outputs map[string]emittedOutput) map[string]emittedOutput {
 	if len(outputs) == 0 {
 		return nil
@@ -89,6 +321,18 @@ func cloneEmittedOutputs(outputs map[string]emittedOutput) map[string]emittedOut
 	}
 
 	return clone
+}
+
+func channelItemValue(paths []string) any {
+	if len(paths) == 0 {
+		return ""
+	}
+
+	if len(paths) == 1 {
+		return paths[0]
+	}
+
+	return cloneStrings(paths)
 }
 
 func resolveCompletedOutputValue(template any, completedPaths []string) any {
@@ -218,12 +462,251 @@ func matchCompletedOutputPathsForPatterns(patterns []string, completedPaths []st
 	return matched
 }
 
+func resolveBindings(proc *Process, call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
+	if call == nil || len(call.Args) == 0 {
+		return []bindingSet{{regularIx: 0}}, nil
+	}
+
+	plans := []bindingSet{{regularIx: 0}}
+	eachArgs := make([]struct {
+		decl     *Declaration
+		resolved resolvedArg
+	}, 0, len(call.Args))
+
+	for index, arg := range call.Args {
+		decl := inputDeclarationForArg(proc, index)
+
+		resolved, err := resolveBindingArg(arg, scope, translated, cwd)
+		if err != nil {
+			return nil, err
+		}
+
+		if resolved.fanout && len(resolved.items) == 0 {
+			return nil, nil
+		}
+
+		if decl != nil && decl.Each {
+			eachArgs = append(eachArgs, struct {
+				decl     *Declaration
+				resolved resolvedArg
+			}{decl: decl, resolved: resolved})
+
+			continue
+		}
+
+		if resolved.fanout && len(resolved.items) > 1 {
+			switch {
+			case len(plans) == 1:
+				expanded := make([]bindingSet, len(resolved.items))
+				for itemIndex, item := range resolved.items {
+					bindings, bindErr := bindingsForInputDeclaration(decl, item)
+					if bindErr != nil {
+						return nil, bindErr
+					}
+
+					expanded[itemIndex] = bindingSet{
+						bindings:  append(cloneStrings(plans[0].bindings), bindings...),
+						values:    append(cloneChannelSlice(plans[0].values), cloneChannelSlice(item.values)...),
+						depGroups: cloneStrings(plans[0].depGroups),
+						regularIx: itemIndex,
+					}
+					expanded[itemIndex].depGroups = appendUniqueStrings(expanded[itemIndex].depGroups, item.depGroups)
+				}
+
+				plans = expanded
+			case len(plans) == len(resolved.items):
+				for itemIndex, item := range resolved.items {
+					bindings, bindErr := bindingsForInputDeclaration(decl, item)
+					if bindErr != nil {
+						return nil, bindErr
+					}
+
+					plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
+					plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(item.values)...)
+					plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, item.depGroups)
+				}
+			default:
+				return nil, fmt.Errorf("channel cardinality mismatch for process %q", call.Target)
+			}
+
+			continue
+		}
+
+		binding := ""
+		values := []any{}
+		depGroups := []string{}
+		bindings := []string{binding}
+
+		if len(resolved.items) > 0 {
+			var bindErr error
+
+			bindings, bindErr = bindingsForInputDeclaration(decl, resolved.items[0])
+			if bindErr != nil {
+				return nil, bindErr
+			}
+
+			if len(bindings) > 0 {
+				binding = bindings[0]
+			}
+
+			values = cloneChannelSlice(resolved.items[0].values)
+			depGroups = resolved.items[0].depGroups
+		}
+
+		for itemIndex := range plans {
+			if len(bindings) == 0 {
+				plans[itemIndex].bindings = append(plans[itemIndex].bindings, binding)
+				plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(values)...)
+
+				continue
+			}
+
+			plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
+			plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(values)...)
+			plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, depGroups)
+		}
+	}
+
+	if len(plans) == 0 {
+		return nil, nil
+	}
+
+	for _, eachArg := range eachArgs {
+		if eachArg.resolved.fanout && len(eachArg.resolved.items) == 0 {
+			return nil, nil
+		}
+
+		expanded := make([]bindingSet, 0, len(plans)*maxInt(1, len(eachArg.resolved.items)))
+
+		items := eachArg.resolved.items
+		if len(items) == 0 {
+			items = []bindingSet{{}}
+		}
+
+		for _, plan := range plans {
+			for _, item := range items {
+				bindings, bindErr := bindingsForInputDeclaration(eachArg.decl, item)
+				if bindErr != nil {
+					return nil, bindErr
+				}
+
+				nextPlan := bindingSet{
+					bindings:  append(cloneStrings(plan.bindings), bindings...),
+					values:    append(cloneChannelSlice(plan.values), cloneChannelSlice(item.values)...),
+					depGroups: cloneStrings(plan.depGroups),
+					regularIx: plan.regularIx,
+					hasEach:   true,
+				}
+				nextPlan.depGroups = appendUniqueStrings(nextPlan.depGroups, item.depGroups)
+				expanded = append(expanded, nextPlan)
+			}
+		}
+
+		plans = expanded
+	}
+
+	eachIndexByRegular := map[int]int{}
+
+	for index := range plans {
+		if !plans[index].hasEach {
+			continue
+		}
+
+		plans[index].eachIx = eachIndexByRegular[plans[index].regularIx]
+		eachIndexByRegular[plans[index].regularIx]++
+	}
+
+	return plans, nil
+}
+
 func inputDeclarationForArg(proc *Process, index int) *Declaration {
 	if proc == nil || index < 0 || index >= len(proc.Input) {
 		return nil
 	}
 
 	return proc.Input[index]
+}
+
+func resolveBindingArg(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) (resolvedArg, error) {
+	switch arg.(type) {
+	case ChanRef, NamedChannelRef, ChannelFactory, ChannelChain, PipeExpr:
+		items, err := resolveTranslatedChannelItems(arg, scope, translated, cwd)
+		if err == nil {
+			resolvedItems := make([]bindingSet, 0, len(items))
+			for _, item := range items {
+				resolvedItems = append(resolvedItems, bindingSet{
+					bindings:  []string{itemBinding(item.value)},
+					values:    []any{cloneChannelValue(item.value)},
+					depGroups: cloneStrings(item.depGroups),
+				})
+			}
+
+			return resolvedArg{items: resolvedItems, fanout: true}, nil
+		}
+	}
+
+	paths, deps, err := resolveArg(arg, scope, translated)
+	if err != nil {
+		return resolvedArg{}, err
+	}
+
+	if len(paths) > 1 && len(deps) > 1 {
+		items := make([]bindingSet, 0, len(paths))
+		for _, path := range paths {
+			items = append(items, bindingSet{bindings: []string{path}, values: []any{path}, depGroups: cloneStrings(deps)})
+		}
+
+		return resolvedArg{items: items, fanout: true}, nil
+	}
+
+	var value any
+
+	switch len(paths) {
+	case 0:
+		value = ""
+	case 1:
+		value = paths[0]
+	default:
+		value = cloneStrings(paths)
+	}
+
+	return resolvedArg{items: []bindingSet{{
+		bindings:  []string{strings.Join(paths, " ")},
+		values:    []any{value},
+		depGroups: deps,
+	}}}, nil
+}
+
+func resolveTranslatedChannelItems(
+	arg ChanExpr,
+	scope []string,
+	translated map[string]translatedCall,
+	cwd string,
+) ([]channelItem, error) {
+	return resolveChannelItems(arg, cwd, func(ref ChanRef) ([]channelItem, error) {
+		stage, ok := resolveTranslatedOutput(ref.Name, scope, translated)
+		if !ok {
+			return nil, fmt.Errorf("unknown upstream reference %q", ref.Name)
+		}
+
+		if stage.skipped {
+			return nil, nil
+		}
+
+		if len(stage.items) > 0 {
+			return cloneChannelItems(stage.items), nil
+		}
+
+		deps := cloneStrings(stage.depGroups)
+		if len(deps) == 0 && stage.depGroup != "" {
+			deps = []string{stage.depGroup}
+		}
+
+		return []channelItem{{
+			value:     channelItemValue(stage.outputPaths),
+			depGroups: deps,
+		}}, nil
+	})
 }
 
 func resolveTranslatedOutput(name string, scope []string, translated map[string]translatedCall) (translatedCall, bool) {
@@ -270,6 +753,120 @@ func emitOutputReference(name string) (string, string, bool) {
 	}
 
 	return stageName, emitLabel, true
+}
+
+func resolveTranslatedRef(name string, scope []string, translated map[string]translatedCall) (translatedCall, bool) {
+	parts := strings.Split(name, ".")
+	if len(scope) > 0 {
+		for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
+			key := scopedTargetKey(scope, strings.Join(parts[:prefixLen], "."))
+			if stage, ok := translated[key]; ok {
+				return stage, true
+			}
+		}
+	}
+
+	for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
+		key := strings.Join(parts[:prefixLen], ".")
+		if stage, ok := translated[key]; ok {
+			return stage, true
+		}
+	}
+
+	return translatedCall{}, false
+}
+
+func scopedTargetKey(scope []string, target string) string {
+	if len(scope) == 0 {
+		return target
+	}
+
+	parts := append(append([]string{}, scope...), target)
+
+	return strings.Join(parts, ".")
+}
+
+func warnf(format string, args ...any) {
+	_, _ = fmt.Fprintf(os.Stderr, format, args...)
+}
+
+func itemBinding(item any) string {
+	switch value := item.(type) {
+	case []string:
+		return strings.Join(value, " ")
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, part := range value {
+			parts = append(parts, itemBinding(part))
+		}
+
+		return strings.Join(parts, " ")
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+func resolveArg(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
+	switch expr := arg.(type) {
+	case ChanRef:
+		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
+		}
+
+		if stage.skipped {
+			return nil, nil, nil
+		}
+
+		deps := cloneStrings(stage.depGroups)
+		if len(deps) == 0 && stage.depGroup != "" {
+			deps = []string{stage.depGroup}
+		}
+
+		return cloneStrings(stage.outputPaths), deps, nil
+	case NamedChannelRef:
+		return resolveArg(expr.Source, scope, translated)
+	case ChannelChain:
+		return resolveArg(expr.Source, scope, translated)
+	case PipeExpr:
+		paths := []string{}
+		deps := []string{}
+		seenPaths := map[string]struct{}{}
+		seenDeps := map[string]struct{}{}
+
+		for _, stage := range expr.Stages {
+			stagePaths, stageDeps, err := resolveArg(stage, scope, translated)
+			if err != nil {
+				if _, ok := stage.(ChanRef); ok {
+					continue
+				}
+
+				return nil, nil, err
+			}
+
+			for _, path := range stagePaths {
+				if _, ok := seenPaths[path]; ok {
+					continue
+				}
+
+				paths = append(paths, path)
+				seenPaths[path] = struct{}{}
+			}
+
+			for _, dep := range stageDeps {
+				if _, ok := seenDeps[dep]; ok {
+					continue
+				}
+
+				deps = append(deps, dep)
+				seenDeps[dep] = struct{}{}
+			}
+		}
+
+		return paths, deps, nil
+	default:
+		return nil, nil, nil
+	}
 }
 
 func bindingsForInputDeclaration(decl *Declaration, resolved bindingSet) ([]string, error) {
@@ -333,6 +930,67 @@ func filterWhenBindingSets(proc *Process, bindingSets []bindingSet, params map[s
 	return filtered, nil
 }
 
+func outputVarsWithValues(proc *Process, bindings []string, values []any, params map[string]any) map[string]any {
+	vars := make(map[string]any)
+	if len(params) > 0 {
+		vars["params"] = params
+	}
+
+	inputs := flattenedInputDeclarations(proc)
+	for index, binding := range bindings {
+		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
+			if index < len(values) {
+				vars[inputs[index].Name] = cloneChannelValue(values[index])
+
+				continue
+			}
+
+			vars[inputs[index].Name] = binding
+		}
+	}
+
+	return vars
+}
+
+func flattenedInputDeclarations(proc *Process) []*Declaration {
+	if proc == nil || len(proc.Input) == 0 {
+		return nil
+	}
+
+	flat := make([]*Declaration, 0, len(proc.Input))
+	for _, decl := range proc.Input {
+		if decl == nil {
+			flat = append(flat, nil)
+
+			continue
+		}
+
+		if decl.Kind != "tuple" || len(decl.Elements) == 0 {
+			flat = append(flat, decl)
+
+			continue
+		}
+
+		for _, element := range decl.Elements {
+			if element == nil {
+				flat = append(flat, nil)
+
+				continue
+			}
+
+			flat = append(flat, &Declaration{
+				Kind: element.Kind,
+				Name: element.Name,
+				Expr: element.Expr,
+				Raw:  element.Raw,
+				Emit: element.Emit,
+			})
+		}
+	}
+
+	return flat
+}
+
 // EvalWhenGuard evaluates a process when: expression with the given input
 // bindings and params.
 func EvalWhenGuard(whenExpr string, bindings map[string]any, params map[string]any) (bool, error) {
@@ -360,6 +1018,28 @@ func EvalWhenGuard(whenExpr string, bindings map[string]any, params map[string]a
 	}
 
 	return isTruthy(value), nil
+}
+
+func parseExprText(text string) (Expr, error) {
+	tokens, err := lex(text)
+	if err != nil {
+		return nil, err
+	}
+
+	exprTokens := make([]token, 0, len(tokens))
+	for _, tok := range tokens {
+		if tok.typ == tokenEOF || tok.typ == tokenNewline {
+			continue
+		}
+
+		exprTokens = append(exprTokens, tok)
+	}
+
+	if len(exprTokens) == 0 {
+		return nil, errors.New("empty expression")
+	}
+
+	return parseExprTokens(exprTokens)
 }
 
 func translateProcessBindingSets(
@@ -485,6 +1165,26 @@ func translateProcessBindingSets(
 	}
 
 	return jobs, stage, nil
+}
+
+func scopedRepGroup(workflowName, runID string, scope []string, processName string) string {
+	parts := []string{"nf", repGroupToken(workflowName), repGroupToken(runID)}
+	parts = append(parts, scope...)
+	parts = append(parts, processName)
+
+	return strings.Join(parts, ".")
+}
+
+func repGroupToken(value string) string {
+	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
+}
+
+func deterministicCwd(base, runID string, scope []string, processName string) string {
+	parts := []string{base, "nf-work", runID}
+	parts = append(parts, scope...)
+	parts = append(parts, processName)
+
+	return filepath.Clean(filepath.Join(parts...))
 }
 
 func processWithConfigDefaults(proc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any) (*Process, error) {
@@ -779,6 +1479,126 @@ func applyProcessDefaults(proc *Process, defaults *ProcessDefaults, params map[s
 	return nil
 }
 
+func resolveDirectiveString(
+	name string,
+	expr any,
+	params map[string]any,
+	fallback string,
+	task map[string]any,
+) (string, error) {
+	if expr == nil {
+		return fallback, nil
+	}
+
+	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
+	if err != nil {
+		return "", err
+	}
+
+	if fallbackUsed {
+		return fallback, nil
+	}
+
+	stringValue, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s directive must evaluate to a string", name)
+	}
+
+	return stringValue, nil
+}
+
+func resolveDirectiveValue(name string, expr any, params map[string]any, task map[string]any) (any, bool, error) {
+	if expr == nil {
+		return nil, false, nil
+	}
+
+	if unsupported, ok := expr.(UnsupportedExpr); ok {
+		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
+
+		return nil, true, nil
+	}
+
+	value, err := evalDirectiveExpr(expr, params, task)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if unsupported, ok := value.(UnsupportedExpr); ok {
+		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
+
+		return nil, true, nil
+	}
+
+	return value, false, nil
+}
+
+func evalDirectiveExpr(expr any, params map[string]any, task map[string]any) (any, error) {
+	switch typed := expr.(type) {
+	case nil:
+		return nil, nil
+	case string, int, bool, float64, []any, []string, map[string]any:
+		return typed, nil
+	}
+
+	if closure, ok := expr.(ClosureExpr); ok {
+		if len(closure.Params) != 0 {
+			return UnsupportedExpr{Text: renderExpr(closure)}, nil
+		}
+
+		return evalStatementBody(closure.Body, cloneEvalVars(exprVarsWithTask(params, task)))
+	}
+
+	return EvalExpr(expr, exprVarsWithTask(params, task))
+}
+
+func exprVarsWithTask(params map[string]any, task map[string]any) map[string]any {
+	if params == nil && task == nil {
+		return nil
+	}
+
+	vars := make(map[string]any, 2)
+	if params != nil {
+		vars["params"] = params
+	}
+
+	if task != nil {
+		vars["task"] = task
+	}
+
+	return vars
+}
+
+func defaultDirectiveTask() map[string]any {
+	return map[string]any{
+		"attempt":    1,
+		"cpus":       1,
+		"memory":     0,
+		"exitStatus": 0,
+	}
+}
+
+func resolveDirectiveInt(name string, expr any, params map[string]any, fallback int, task map[string]any) (int, error) {
+	if expr == nil {
+		return fallback, nil
+	}
+
+	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
+	if err != nil {
+		return 0, err
+	}
+
+	if fallbackUsed {
+		return fallback, nil
+	}
+
+	intValue, ok := value.(int)
+	if !ok {
+		return 0, fmt.Errorf("%s directive must evaluate to an integer", name)
+	}
+
+	return intValue, nil
+}
+
 func extDirectiveSourceMap(raw any) (map[string]any, error) {
 	switch typed := raw.(type) {
 	case nil:
@@ -855,38 +1675,34 @@ func mergeExtValues(base map[string]any, override map[string]any) map[string]any
 	return merged
 }
 
-func deterministicEachCwd(base, runID string, scope []string, processName string, regularIndex, eachIndex int) string {
-	parts := []string{base, "nf-work", runID}
-	parts = append(parts, scope...)
-	parts = append(parts, processName, fmt.Sprintf("%d_%d", regularIndex, eachIndex))
-
-	return filepath.Clean(filepath.Join(parts...))
-}
-
-// MatchSelectors returns merged process defaults by applying matching selectors
-// in specificity order before process-level directives are evaluated.
-func MatchSelectors(proc *Process, base *ProcessDefaults, selectors []*ProcessSelector) *ProcessDefaults {
-	merged := cloneDefaults(base)
-	if proc == nil || len(selectors) == 0 {
-		return merged
+func resolveShellDirective(expr any, params map[string]any) (string, error) {
+	value, fallbackUsed, err := resolveDirectiveValue("shell", expr, params, defaultDirectiveTask())
+	if err != nil {
+		return "", err
 	}
 
-	matches := make([]selectorMatch, 0, len(selectors))
-	for _, selector := range selectors {
-		collectSelectorMatches(proc, selector, true, &matches)
+	if fallbackUsed || value == nil {
+		return "", nil
 	}
 
-	for _, specificity := range []int{selectorSpecificityLabel, selectorSpecificityName} {
-		for _, match := range matches {
-			if match.specificity != specificity {
-				continue
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, part := range typed {
+			stringPart, ok := part.(string)
+			if !ok {
+				return "", errors.New("shell directive list entries must evaluate to strings")
 			}
 
-			merged = mergeDefaults(merged, match.settings)
+			parts = append(parts, stringPart)
 		}
-	}
 
-	return merged
+		return strings.Join(parts, " "), nil
+	default:
+		return "", errors.New("shell directive must evaluate to a string or list of strings")
+	}
 }
 
 func collectSelectorMatches(proc *Process, selector *ProcessSelector, matched bool, matches *[]selectorMatch) {
@@ -949,132 +1765,384 @@ func selectorSpecificity(kind string) int {
 	return selectorSpecificityLabel
 }
 
-func defaultDirectiveTask() map[string]any {
-	return map[string]any{
-		"attempt":    1,
-		"cpus":       1,
-		"memory":     0,
-		"exitStatus": 0,
-	}
+func scopedDepGroup(runID string, scope []string, processName string) string {
+	parts := []string{"nf", runID}
+	parts = append(parts, scope...)
+	parts = append(parts, processName)
+
+	return strings.Join(parts, ".")
 }
 
-func resolveDirectiveValue(name string, expr any, params map[string]any, task map[string]any) (any, bool, error) {
-	if expr == nil {
-		return nil, false, nil
-	}
+func deterministicEachCwd(base, runID string, scope []string, processName string, regularIndex, eachIndex int) string {
+	parts := []string{base, "nf-work", runID}
+	parts = append(parts, scope...)
+	parts = append(parts, processName, fmt.Sprintf("%d_%d", regularIndex, eachIndex))
 
-	if unsupported, ok := expr.(UnsupportedExpr); ok {
-		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
-
-		return nil, true, nil
-	}
-
-	value, err := evalDirectiveExpr(expr, params, task)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if unsupported, ok := value.(UnsupportedExpr); ok {
-		warnf("nextflowdsl: falling back for %s directive with unsupported expression %q\n", name, unsupported.Text)
-
-		return nil, true, nil
-	}
-
-	return value, false, nil
+	return filepath.Clean(filepath.Join(parts...))
 }
 
-func evalDirectiveExpr(expr any, params map[string]any, task map[string]any) (any, error) {
-	switch typed := expr.(type) {
-	case nil:
-		return nil, nil
-	case string, int, bool, float64, []any, []string, map[string]any:
-		return typed, nil
-	}
+func deterministicIndexedCwd(base, runID string, scope []string, processName string, itemIndex int) string {
+	parts := []string{base, "nf-work", runID}
+	parts = append(parts, scope...)
+	parts = append(parts, processName, strconv.Itoa(itemIndex))
 
-	if closure, ok := expr.(ClosureExpr); ok {
-		if len(closure.Params) != 0 {
-			return UnsupportedExpr{Text: renderExpr(closure)}, nil
-		}
-
-		return evalStatementBody(closure.Body, cloneEvalVars(exprVarsWithTask(params, task)))
-	}
-
-	return EvalExpr(expr, exprVarsWithTask(params, task))
+	return filepath.Clean(filepath.Join(parts...))
 }
 
-func exprVarsWithTask(params map[string]any, task map[string]any) map[string]any {
-	if params == nil && task == nil {
+func scopedIndexedDepGroup(runID string, scope []string, processName string, itemIndex int) string {
+	parts := []string{"nf", runID}
+	parts = append(parts, scope...)
+	parts = append(parts, processName, strconv.Itoa(itemIndex))
+
+	return strings.Join(parts, ".")
+}
+
+func depGroupsToDependencies(depGroups []string) jobqueue.Dependencies {
+	if len(depGroups) == 0 {
 		return nil
 	}
 
-	vars := make(map[string]any, 2)
-	if params != nil {
-		vars["params"] = params
+	dependencies := make(jobqueue.Dependencies, 0, len(depGroups))
+	for _, depGroup := range depGroups {
+		dependencies = append(dependencies, jobqueue.NewDepGroupDependency(depGroup))
 	}
 
-	if task != nil {
-		vars["task"] = task
-	}
-
-	return vars
+	return dependencies
 }
 
-func resolveDirectiveString(
-	name string,
-	expr any,
-	params map[string]any,
-	fallback string,
-	task map[string]any,
-) (string, error) {
-	if expr == nil {
-		return fallback, nil
+func buildRequirements(proc *Process, effectiveProc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any, schedulerName string) (*scheduler.Requirements, error) {
+	req := &scheduler.Requirements{}
+	task := defaultDirectiveTask()
+
+	legacyDefaults := MatchSelectors(proc, defaults, selectors)
+	if effectiveProc == nil {
+		effectiveProc = proc
 	}
 
-	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
+	cpus, err := resolveDirectiveInt(
+		"cpus",
+		proc.Directives["cpus"],
+		params,
+		intDefault(legacyDefaults.Cpus, defaultCPUs),
+		task,
+	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	if fallbackUsed {
-		return fallback, nil
-	}
+	task["cpus"] = cpus
 
-	stringValue, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("%s directive must evaluate to a string", name)
-	}
-
-	return stringValue, nil
-}
-
-func resolveShellDirective(expr any, params map[string]any) (string, error) {
-	value, fallbackUsed, err := resolveDirectiveValue("shell", expr, params, defaultDirectiveTask())
+	memory, err := resolveDirectiveInt(
+		"memory",
+		proc.Directives["memory"],
+		params,
+		intDefault(legacyDefaults.Memory, defaultMemory),
+		task,
+	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	if fallbackUsed || value == nil {
-		return "", nil
+	task["memory"] = memory
+
+	timeMinutes, err := resolveDirectiveInt(
+		"time",
+		proc.Directives["time"],
+		params,
+		intDefault(legacyDefaults.Time, defaultTime),
+		task,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	switch typed := value.(type) {
-	case string:
-		return typed, nil
-	case []any:
-		parts := make([]string, 0, len(typed))
-		for _, part := range typed {
-			stringPart, ok := part.(string)
-			if !ok {
-				return "", errors.New("shell directive list entries must evaluate to strings")
-			}
+	disk, err := resolveDirectiveInt(
+		"disk",
+		proc.Directives["disk"],
+		params,
+		intDefault(legacyDefaults.Disk, defaultDisk),
+		task,
+	)
+	if err != nil {
+		return nil, err
+	}
 
-			parts = append(parts, stringPart)
+	req.Cores = float64(cpus)
+	req.CoresSet = true
+	req.RAM = memory
+	req.Time = time.Duration(timeMinutes) * time.Minute
+	req.Disk = disk
+	req.DiskSet = true
+
+	queue, err := resolveDirectiveString("queue", effectiveProc.Directives["queue"], params, "", task)
+	if err != nil {
+		return nil, err
+	}
+
+	if queue != "" {
+		if req.Other == nil {
+			req.Other = make(map[string]string)
 		}
 
-		return strings.Join(parts, " "), nil
-	default:
-		return "", errors.New("shell directive must evaluate to a string or list of strings")
+		req.Other["scheduler_queue"] = queue
+		req.OtherSet = true
 	}
+
+	clusterOptions, err := resolveDirectiveString(
+		"clusterOptions",
+		effectiveProc.Directives["clusterOptions"],
+		params,
+		"",
+		task,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if clusterOptions != "" {
+		if req.Other == nil {
+			req.Other = make(map[string]string)
+		}
+
+		req.Other["scheduler_misc"] = clusterOptions
+		req.OtherSet = true
+	}
+
+	acceleratorOptions, err := resolveAcceleratorOptions(effectiveProc, params, schedulerName)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Other = appendSchedulerRequirement(req.Other, "scheduler_misc", acceleratorOptions)
+
+	archOptions, err := resolveArchOptions(effectiveProc, params, schedulerName)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Other = appendSchedulerRequirement(req.Other, "scheduler_misc", archOptions)
+	if len(req.Other) > 0 {
+		req.OtherSet = true
+	}
+
+	return req, nil
+}
+
+// MatchSelectors returns merged process defaults by applying matching selectors
+// in specificity order before process-level directives are evaluated.
+func MatchSelectors(proc *Process, base *ProcessDefaults, selectors []*ProcessSelector) *ProcessDefaults {
+	merged := cloneDefaults(base)
+	if proc == nil || len(selectors) == 0 {
+		return merged
+	}
+
+	matches := make([]selectorMatch, 0, len(selectors))
+	for _, selector := range selectors {
+		collectSelectorMatches(proc, selector, true, &matches)
+	}
+
+	for _, specificity := range []int{selectorSpecificityLabel, selectorSpecificityName} {
+		for _, match := range matches {
+			if match.specificity != specificity {
+				continue
+			}
+
+			merged = mergeDefaults(merged, match.settings)
+		}
+	}
+
+	return merged
+}
+
+func cloneDefaults(defaults *ProcessDefaults) *ProcessDefaults {
+	if defaults == nil {
+		return &ProcessDefaults{}
+	}
+
+	clone := &ProcessDefaults{
+		Cpus:             defaults.Cpus,
+		Memory:           defaults.Memory,
+		Time:             defaults.Time,
+		Disk:             defaults.Disk,
+		Container:        defaults.Container,
+		ErrorStrategy:    cloneExtValue(defaults.ErrorStrategy),
+		MaxRetries:       cloneExtValue(defaults.MaxRetries),
+		MaxForks:         cloneExtValue(defaults.MaxForks),
+		PublishDir:       clonePublishDirs(defaults.PublishDir),
+		Queue:            cloneExtValue(defaults.Queue),
+		ClusterOptions:   cloneExtValue(defaults.ClusterOptions),
+		Ext:              cloneExtMap(defaults.Ext),
+		ContainerOptions: cloneExtValue(defaults.ContainerOptions),
+		Accelerator:      cloneExtValue(defaults.Accelerator),
+		Arch:             cloneExtValue(defaults.Arch),
+		Shell:            cloneExtValue(defaults.Shell),
+		BeforeScript:     cloneExtValue(defaults.BeforeScript),
+		AfterScript:      cloneExtValue(defaults.AfterScript),
+		Cache:            cloneExtValue(defaults.Cache),
+		Scratch:          cloneExtValue(defaults.Scratch),
+		StoreDir:         cloneExtValue(defaults.StoreDir),
+		Module:           cloneExtValue(defaults.Module),
+		Conda:            cloneExtValue(defaults.Conda),
+		Spack:            cloneExtValue(defaults.Spack),
+		Fair:             cloneExtValue(defaults.Fair),
+		Tag:              cloneExtValue(defaults.Tag),
+	}
+	if len(defaults.Directives) > 0 {
+		clone.Directives = make(map[string]any, len(defaults.Directives))
+		for key, value := range defaults.Directives {
+			clone.Directives[key] = cloneExtValue(value)
+		}
+	}
+
+	if len(defaults.Env) > 0 {
+		clone.Env = make(map[string]string, len(defaults.Env))
+		for key, value := range defaults.Env {
+			clone.Env[key] = value
+		}
+	}
+
+	return clone
+}
+
+func mergeDefaults(base *ProcessDefaults, override *ProcessDefaults) *ProcessDefaults {
+	merged := cloneDefaults(base)
+	if override == nil {
+		return merged
+	}
+
+	if override.Cpus != 0 {
+		merged.Cpus = override.Cpus
+	}
+
+	if override.Memory != 0 {
+		merged.Memory = override.Memory
+	}
+
+	if override.Time != 0 {
+		merged.Time = override.Time
+	}
+
+	if override.Disk != 0 {
+		merged.Disk = override.Disk
+	}
+
+	if override.Container != "" {
+		merged.Container = override.Container
+	}
+
+	if override.ErrorStrategy != nil {
+		merged.ErrorStrategy = cloneExtValue(override.ErrorStrategy)
+	}
+
+	if override.MaxRetries != nil {
+		merged.MaxRetries = cloneExtValue(override.MaxRetries)
+	}
+
+	if override.MaxForks != nil {
+		merged.MaxForks = cloneExtValue(override.MaxForks)
+	}
+
+	if len(override.PublishDir) > 0 {
+		merged.PublishDir = clonePublishDirs(override.PublishDir)
+	}
+
+	if override.Queue != nil {
+		merged.Queue = cloneExtValue(override.Queue)
+	}
+
+	if override.ClusterOptions != nil {
+		merged.ClusterOptions = cloneExtValue(override.ClusterOptions)
+	}
+
+	if len(override.Ext) > 0 {
+		merged.Ext = mergeExtValues(merged.Ext, override.Ext)
+	}
+
+	if override.ContainerOptions != nil {
+		merged.ContainerOptions = cloneExtValue(override.ContainerOptions)
+	}
+
+	if override.Accelerator != nil {
+		merged.Accelerator = cloneExtValue(override.Accelerator)
+	}
+
+	if override.Arch != nil {
+		merged.Arch = cloneExtValue(override.Arch)
+	}
+
+	if override.Shell != nil {
+		merged.Shell = cloneExtValue(override.Shell)
+	}
+
+	if override.BeforeScript != nil {
+		merged.BeforeScript = cloneExtValue(override.BeforeScript)
+	}
+
+	if override.AfterScript != nil {
+		merged.AfterScript = cloneExtValue(override.AfterScript)
+	}
+
+	if override.Cache != nil {
+		merged.Cache = cloneExtValue(override.Cache)
+	}
+
+	if override.Scratch != nil {
+		merged.Scratch = cloneExtValue(override.Scratch)
+	}
+
+	if override.StoreDir != nil {
+		merged.StoreDir = cloneExtValue(override.StoreDir)
+	}
+
+	if override.Module != nil {
+		merged.Module = cloneExtValue(override.Module)
+	}
+
+	if override.Conda != nil {
+		merged.Conda = cloneExtValue(override.Conda)
+	}
+
+	if override.Spack != nil {
+		merged.Spack = cloneExtValue(override.Spack)
+	}
+
+	if override.Fair != nil {
+		merged.Fair = cloneExtValue(override.Fair)
+	}
+
+	if override.Tag != nil {
+		merged.Tag = cloneExtValue(override.Tag)
+	}
+
+	if len(override.Directives) > 0 {
+		if merged.Directives == nil {
+			merged.Directives = make(map[string]any, len(override.Directives))
+		}
+
+		for key, value := range override.Directives {
+			merged.Directives[key] = cloneExtValue(value)
+		}
+	}
+
+	if len(override.Env) > 0 {
+		if merged.Env == nil {
+			merged.Env = make(map[string]string, len(override.Env))
+		}
+
+		for key, value := range override.Env {
+			merged.Env[key] = value
+		}
+	}
+
+	return merged
+}
+
+func intDefault(value, fallback int) int {
+	if value != 0 {
+		return value
+	}
+
+	return fallback
 }
 
 func resolveAcceleratorOptions(proc *Process, params map[string]any, schedulerName string) (string, error) {
@@ -1279,6 +2347,56 @@ func resolveArchOptions(proc *Process, params map[string]any, schedulerName stri
 	}
 }
 
+func applyContainer(job *jobqueue.Job, proc *Process, runtime string, params map[string]any) error {
+	container := proc.Container
+
+	resolved, err := resolveDirectiveString(
+		"container",
+		proc.Directives["container"],
+		params,
+		container,
+		defaultDirectiveTask(),
+	)
+	if err != nil {
+		return err
+	}
+
+	container = resolved
+	if container == "" {
+		return nil
+	}
+
+	containerOptions, err := resolveDirectiveString(
+		"containerOptions",
+		proc.Directives["containerOptions"],
+		params,
+		"",
+		defaultDirectiveTask(),
+	)
+	if err != nil {
+		return err
+	}
+
+	if containerOptions != "" {
+		container = strings.TrimSpace(containerOptions + " " + container)
+	}
+
+	switch runtime {
+	case "docker":
+		job.WithDocker = container
+	case "singularity", "apptainer":
+		job.WithSingularity = container
+	}
+
+	return nil
+}
+
+func applyMaxForks(job *jobqueue.Job, proc *Process) {
+	if proc.MaxForks > 0 {
+		appendLimitGroup(job, fmt.Sprintf("%s:%d", proc.Name, proc.MaxForks))
+	}
+}
+
 func appendLimitGroup(job *jobqueue.Job, limitGroup string) {
 	if limitGroup == "" || slices.Contains(job.LimitGroups, limitGroup) {
 		return
@@ -1355,6 +2473,65 @@ func resolveErrorStrategy(proc *Process, params map[string]any) (string, error) 
 
 func finishStrategyLimitGroup(processName, runID string) string {
 	return fmt.Sprintf("nf-finish-%s-%s", repGroupToken(processName), repGroupToken(runID))
+}
+
+func applyErrorStrategy(job *jobqueue.Job, proc *Process, params map[string]any) error {
+	errorStrategy, err := resolveErrorStrategy(proc, params)
+	if err != nil {
+		return err
+	}
+
+	switch errorStrategy {
+	case "", "finish", "terminate":
+		job.Retries = 0
+	case "retry":
+		//nolint:gosec // MaxRetries is validated by directive parsing before being stored on the process.
+		job.Retries = uint8(proc.MaxRetries)
+	case "ignore":
+		job.Retries = 0
+		job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{When: jobqueue.OnFailure, Do: jobqueue.Remove})
+	default:
+		warnf("nextflowdsl: unsupported errorStrategy %q, using terminate semantics\n", errorStrategy)
+
+		job.Retries = 0
+	}
+
+	return nil
+}
+
+func applyEnv(job *jobqueue.Job, proc *Process, params map[string]any) error {
+	env := make([]string, 0, len(proc.Env)+1)
+
+	positions := make(map[string]int, len(proc.Env)+1)
+	for key, value := range proc.Env {
+		if index, ok := positions[key]; ok {
+			env[index] = key + "=" + value
+
+			continue
+		}
+
+		positions[key] = len(env)
+		env = append(env, key+"="+value)
+	}
+
+	shellCommand, err := resolveShellDirective(proc.Directives["shell"], params)
+	if err != nil {
+		return err
+	}
+
+	if shellCommand != "" {
+		if index, ok := positions["RunnerExecShell"]; ok {
+			env[index] = "RunnerExecShell=" + shellCommand
+		} else {
+			env = append(env, "RunnerExecShell="+shellCommand)
+		}
+	}
+
+	if len(env) == 0 {
+		return nil
+	}
+
+	return job.EnvAddOverride(env)
 }
 
 func buildCommandWithValues(proc *Process, bindings []string, values []any, params map[string]any, cwd string, launchCwd string) (string, error) {
@@ -1485,26 +2662,8 @@ func renderShellSection(proc *Process, bindings []string, params map[string]any)
 	return strings.Join([]string{"set -euo pipefail", interpolated}, "\n"), nil
 }
 
-func outputVarsWithValues(proc *Process, bindings []string, values []any, params map[string]any) map[string]any {
-	vars := make(map[string]any)
-	if len(params) > 0 {
-		vars["params"] = params
-	}
-
-	inputs := flattenedInputDeclarations(proc)
-	for index, binding := range bindings {
-		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
-			if index < len(values) {
-				vars[inputs[index].Name] = cloneChannelValue(values[index])
-
-				continue
-			}
-
-			vars[inputs[index].Name] = binding
-		}
-	}
-
-	return vars
+func outputVars(proc *Process, bindings []string, params map[string]any) map[string]any {
+	return outputVarsWithValues(proc, bindings, nil, params)
 }
 
 func renderShellSectionList(section string, vars map[string]any) (string, error) {
@@ -1614,6 +2773,10 @@ func evalShellInterpolationExpr(exprText string, vars map[string]any) (any, erro
 	}
 
 	return resolved, nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func resolveExtDirectiveWithValues(proc *Process, defaults *ProcessDefaults, bindings []string, values []any, params map[string]any) (map[string]any, error) {
@@ -1741,45 +2904,6 @@ func interpolateKnownScriptVars(script string, vars map[string]any, extValues ma
 	builder.WriteString(script[last:])
 
 	return builder.String(), nil
-}
-
-func flattenedInputDeclarations(proc *Process) []*Declaration {
-	if proc == nil || len(proc.Input) == 0 {
-		return nil
-	}
-
-	flat := make([]*Declaration, 0, len(proc.Input))
-	for _, decl := range proc.Input {
-		if decl == nil {
-			flat = append(flat, nil)
-
-			continue
-		}
-
-		if decl.Kind != "tuple" || len(decl.Elements) == 0 {
-			flat = append(flat, decl)
-
-			continue
-		}
-
-		for _, element := range decl.Elements {
-			if element == nil {
-				flat = append(flat, nil)
-
-				continue
-			}
-
-			flat = append(flat, &Declaration{
-				Kind: element.Kind,
-				Name: element.Name,
-				Expr: element.Expr,
-				Raw:  element.Raw,
-				Emit: element.Emit,
-			})
-		}
-	}
-
-	return flat
 }
 
 func taskExtInterpolationValue(exprText string, extValues map[string]any) string {
@@ -2179,6 +3303,14 @@ func outputExistenceCondition(patterns []string, storeDir string) string {
 	return strings.Join(checks, " && ")
 }
 
+func ensureTrailingSeparator(path string) string {
+	if strings.HasSuffix(path, string(os.PathSeparator)) {
+		return path
+	}
+
+	return path + string(os.PathSeparator)
+}
+
 func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
 	job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
 		When: jobqueue.OnExit,
@@ -2189,6 +3321,42 @@ func applyCaptureCleanupBehaviour(job *jobqueue.Job) {
 			nfStderrFile,
 		),
 	})
+}
+
+func outputPaths(proc *Process, bindings []string, params map[string]any, cwd string) []string {
+	vars := outputVars(proc, bindings, params)
+	paths := []string{}
+
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+
+		switch decl.Kind {
+		case "path", "file":
+			pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
+			if ok {
+				paths = append(paths, pattern)
+			}
+		case "tuple":
+			for _, element := range decl.Elements {
+				if element == nil || (element.Kind != "path" && element.Kind != "file") {
+					continue
+				}
+
+				pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
+				if ok {
+					paths = append(paths, pattern)
+				}
+			}
+		}
+	}
+
+	if len(paths) > 0 {
+		return paths
+	}
+
+	return []string{cwd + string(os.PathSeparator)}
 }
 
 func resolvedOutputPattern(expr Expr, name string, vars map[string]any, cwd string) (string, bool) {
@@ -2221,6 +3389,45 @@ func resolvedOutputPattern(expr Expr, name string, vars map[string]any, cwd stri
 	}
 
 	return filepath.Join(cwd, cleanPath), true
+}
+
+func outputValue(proc *Process, bindings []string, params map[string]any, cwd string, fallbackPaths []string) any {
+	if proc == nil || len(proc.Output) == 0 {
+		return channelItemValue(fallbackPaths)
+	}
+
+	values := make([]any, 0, len(proc.Output))
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+
+		if decl.Kind == "tuple" {
+			if value, ok := tupleOutputValue(proc, decl, bindings, params, cwd); ok {
+				values = append(values, value)
+			}
+
+			continue
+		}
+
+		if decl.Kind == "path" || decl.Kind == "file" {
+			continue
+		}
+
+		if value, ok := staticOutputValue(proc, decl, bindings, params); ok {
+			values = append(values, value)
+		}
+	}
+
+	if len(values) == 0 {
+		return channelItemValue(fallbackPaths)
+	}
+
+	if len(values) == 1 {
+		return values[0]
+	}
+
+	return values
 }
 
 func tupleOutputValue(proc *Process, decl *Declaration, bindings []string, params map[string]any, cwd string) (any, bool) {
@@ -2265,6 +3472,33 @@ func tupleOutputValue(proc *Process, decl *Declaration, bindings []string, param
 	}
 
 	return values, true
+}
+
+func staticOutputValue(proc *Process, decl *Declaration, bindings []string, params map[string]any) (any, bool) {
+	vars := outputVars(proc, bindings, params)
+
+	if decl.Expr != nil {
+		value, err := EvalExpr(decl.Expr, vars)
+		if err == nil {
+			return value, true
+		}
+	}
+
+	if decl.Name != "" {
+		if value, ok := vars[decl.Name]; ok {
+			return value, true
+		}
+	}
+
+	if len(bindings) == 1 {
+		return bindings[0], true
+	}
+
+	if decl.Kind == "val" {
+		return "", true
+	}
+
+	return nil, false
 }
 
 func mergeEmittedOutputs(
@@ -2421,6 +3655,39 @@ func cloneSelectors(selectors []*ProcessSelector) []*ProcessSelector {
 	return clone
 }
 
+func mergeTranslateParams(wf *Workflow, cfg *Config, tc TranslateConfig) (map[string]any, error) {
+	var sources []map[string]any
+
+	workflowDefaults, err := workflowParamDefaults(wf)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(workflowDefaults) > 0 {
+		sources = append(sources, workflowDefaults)
+	}
+
+	if cfg != nil && len(cfg.Params) > 0 {
+		sources = append(sources, cfg.Params)
+	}
+
+	if cfg != nil && tc.Profile != "" && cfg.Profiles != nil {
+		if profile, ok := cfg.Profiles[tc.Profile]; ok && len(profile.Params) > 0 {
+			sources = append(sources, profile.Params)
+		}
+	}
+
+	if tc.Params != nil {
+		sources = append(sources, tc.Params)
+	}
+
+	if len(sources) == 0 {
+		return nil, nil
+	}
+
+	return MergeParams(sources...), nil
+}
+
 func workflowParamDefaults(wf *Workflow) (map[string]any, error) {
 	if wf == nil || len(wf.ParamBlock) == 0 {
 		return nil, nil
@@ -2494,6 +3761,69 @@ func paramValueAtPath(path string, value any) map[string]any {
 	}
 
 	return root
+}
+
+func translateBlock(
+	block *WorkflowBlock,
+	scope []string,
+	processes map[string]*Process,
+	subworkflows map[string]*SubWorkflow,
+	translated map[string]translatedCall,
+	outputTargets map[string]*OutputTarget,
+	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
+	params map[string]any,
+	tc TranslateConfig,
+	result *TranslateResult,
+) error {
+	if block == nil {
+		return nil
+	}
+
+	if err := translateCalls(
+		block.Calls,
+		scope,
+		processes,
+		subworkflows,
+		translated,
+		outputTargets,
+		defaults,
+		selectors,
+		params,
+		tc,
+		result,
+	); err != nil {
+		return err
+	}
+
+	for index, ifBlock := range block.Conditions {
+		if err := translateConditionalBlock(
+			ifBlock,
+			index,
+			scope,
+			processes,
+			subworkflows,
+			translated,
+			outputTargets,
+			defaults,
+			selectors,
+			params,
+			tc,
+			result,
+		); err != nil {
+			return err
+		}
+	}
+
+	if err := translateWorkflowPublishes(block, scope, translated, outputTargets, params, tc, result); err != nil {
+		return err
+	}
+
+	if err := translateLifecycleHooks(block, scope, translated, params, tc, result); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func translateConditionalBlock(
@@ -2635,28 +3965,6 @@ func evalWorkflowCondition(condition string, params map[string]any) (bool, error
 	return isTruthy(value), nil
 }
 
-func parseExprText(text string) (Expr, error) {
-	tokens, err := lex(text)
-	if err != nil {
-		return nil, err
-	}
-
-	exprTokens := make([]token, 0, len(tokens))
-	for _, tok := range tokens {
-		if tok.typ == tokenEOF || tok.typ == tokenNewline {
-			continue
-		}
-
-		exprTokens = append(exprTokens, tok)
-	}
-
-	if len(exprTokens) == 0 {
-		return nil, errors.New("empty expression")
-	}
-
-	return parseExprTokens(exprTokens)
-}
-
 func translateCalls(
 	calls []*Call,
 	scope []string,
@@ -2767,6 +4075,147 @@ func translateCalls(
 	return nil
 }
 
+func detectPendingInputs(call *Call, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
+	if call == nil || len(call.Args) == 0 {
+		return nil, nil, nil
+	}
+
+	awaitDepGrps := []string{}
+	awaitRepGrps := []string{}
+	seenDepGrps := make(map[string]struct{})
+	seenRepGrps := make(map[string]struct{})
+
+	for _, arg := range call.Args {
+		depGrps, repGrps, err := detectPendingArg(arg, scope, translated)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for _, depGrp := range depGrps {
+			if _, seen := seenDepGrps[depGrp]; seen {
+				continue
+			}
+
+			awaitDepGrps = append(awaitDepGrps, depGrp)
+			seenDepGrps[depGrp] = struct{}{}
+		}
+
+		for _, repGrp := range repGrps {
+			if _, seen := seenRepGrps[repGrp]; seen {
+				continue
+			}
+
+			awaitRepGrps = append(awaitRepGrps, repGrp)
+			seenRepGrps[repGrp] = struct{}{}
+		}
+	}
+
+	if len(awaitDepGrps) == 0 && len(awaitRepGrps) == 0 {
+		return nil, nil, nil
+	}
+
+	return awaitDepGrps, awaitRepGrps, nil
+}
+
+func detectPendingArg(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
+	switch expr := arg.(type) {
+	case ChanRef:
+		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
+		}
+
+		if stage.skipped {
+			return nil, nil, nil
+		}
+
+		if !stage.dynamicOutput && !stage.pending {
+			return nil, nil, nil
+		}
+
+		if stage.pending {
+			return nil, []string{stage.repGroup}, nil
+		}
+
+		deps := cloneStrings(stage.depGroups)
+		if len(deps) == 0 && stage.depGroup != "" {
+			deps = []string{stage.depGroup}
+		}
+
+		return deps, []string{stage.repGroup}, nil
+	case NamedChannelRef:
+		return detectPendingArg(expr.Source, scope, translated)
+	case ChannelChain:
+		if channelChainWaitsForAllItems(expr) {
+			repGrps, err := translatedChannelExprRepGroups(expr, scope, translated)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			if len(repGrps) > 0 {
+				return nil, repGrps, nil
+			}
+		}
+
+		depGrps, repGrps, err := detectPendingArg(expr.Source, scope, translated)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for _, operator := range expr.Operators {
+			for _, channel := range operator.Channels {
+				channelDepGrps, channelRepGrps, channelErr := detectPendingArg(channel, scope, translated)
+				if channelErr != nil {
+					return nil, nil, channelErr
+				}
+
+				depGrps = appendUniqueStrings(depGrps, channelDepGrps)
+				repGrps = appendUniqueStrings(repGrps, channelRepGrps)
+			}
+		}
+
+		return depGrps, repGrps, nil
+	case PipeExpr:
+		depGrps := []string{}
+		repGrps := []string{}
+		seenDepGrps := make(map[string]struct{})
+		seenRepGrps := make(map[string]struct{})
+
+		for _, stage := range expr.Stages {
+			stageDepGrps, stageRepGrps, err := detectPendingArg(stage, scope, translated)
+			if err != nil {
+				if _, ok := stage.(ChanRef); ok {
+					continue
+				}
+
+				return nil, nil, err
+			}
+
+			for _, depGrp := range stageDepGrps {
+				if _, seen := seenDepGrps[depGrp]; seen {
+					continue
+				}
+
+				depGrps = append(depGrps, depGrp)
+				seenDepGrps[depGrp] = struct{}{}
+			}
+
+			for _, repGrp := range stageRepGrps {
+				if _, seen := seenRepGrps[repGrp]; seen {
+					continue
+				}
+
+				repGrps = append(repGrps, repGrp)
+				seenRepGrps[repGrp] = struct{}{}
+			}
+		}
+
+		return depGrps, repGrps, nil
+	default:
+		return nil, nil, nil
+	}
+}
+
 func channelChainWaitsForAllItems(expr ChannelChain) bool {
 	for _, operator := range expr.Operators {
 		if operator.Name == "randomSample" {
@@ -2828,6 +4277,51 @@ func translatedChannelExprRepGroups(arg ChanExpr, scope []string, translated map
 	}
 }
 
+func translatedStageRepGroups(stage translatedCall) []string {
+	repGroups := cloneStrings(stage.repGroups)
+	if len(repGroups) == 0 && stage.repGroup != "" {
+		repGroups = []string{stage.repGroup}
+	}
+
+	return repGroups
+}
+
+func hasDynamicOutputs(proc *Process) bool {
+	if proc == nil {
+		return false
+	}
+
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+
+		if decl.Kind == "path" || decl.Kind == "file" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func translateProcessCall(
+	proc *Process,
+	call *Call,
+	scope []string,
+	translated map[string]translatedCall,
+	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
+	params map[string]any,
+	tc TranslateConfig,
+) ([]*jobqueue.Job, translatedCall, error) {
+	bindingSets, err := resolveBindings(proc, call, scope, translated, tc.Cwd)
+	if err != nil {
+		return nil, translatedCall{}, err
+	}
+
+	return translateProcessBindingSets(proc, bindingSets, scope, defaults, selectors, params, tc)
+}
+
 func hasDynamicOutputsForStage(proc *Process, outputPatterns []string) bool {
 	if proc == nil {
 		return false
@@ -2870,6 +4364,139 @@ func hasDynamicOutputsForStage(proc *Process, outputPatterns []string) bool {
 	return false
 }
 
+func bindSubworkflowInputs(
+	call *Call,
+	subwf *SubWorkflow,
+	scope []string,
+	nextScope []string,
+	translated map[string]translatedCall,
+	cwd string,
+) error {
+	if subwf == nil || subwf.Body == nil || len(subwf.Body.Take) == 0 {
+		if len(call.Args) == 0 {
+			return nil
+		}
+
+		return fmt.Errorf("subworkflow %q does not declare take inputs", call.Target)
+	}
+
+	if len(call.Args) != len(subwf.Body.Take) {
+		return fmt.Errorf("subworkflow %q expects %d input(s), got %d", call.Target, len(subwf.Body.Take), len(call.Args))
+	}
+
+	for index, takeName := range subwf.Body.Take {
+		stage, err := translatedCallForSubworkflowArg(call.Args[index], scope, translated, cwd)
+		if err != nil {
+			return fmt.Errorf("subworkflow %q input %q: %w", call.Target, takeName, err)
+		}
+
+		translated[scopedTargetKey(nextScope, takeName)] = stage
+	}
+
+	return nil
+}
+
+func translatedCallForSubworkflowArg(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) (translatedCall, error) {
+	if ref, ok := arg.(ChanRef); ok {
+		stage, found := resolveTranslatedOutput(ref.Name, scope, translated)
+		if !found {
+			return translatedCall{}, fmt.Errorf("unknown upstream reference %q", ref.Name)
+		}
+
+		return cloneTranslatedCall(stage), nil
+	}
+
+	items, err := resolveTranslatedChannelItems(arg, scope, translated, cwd)
+	if err == nil {
+		stage := translatedCall{items: cloneChannelItems(items)}
+		for _, item := range items {
+			stage.depGroups = appendUniqueStrings(stage.depGroups, item.depGroups)
+		}
+
+		return stage, nil
+	}
+
+	paths, depGroups, resolveErr := resolveArg(arg, scope, translated)
+	if resolveErr != nil {
+		return translatedCall{}, resolveErr
+	}
+
+	stage := translatedCall{
+		depGroups:   cloneStrings(depGroups),
+		outputPaths: cloneStrings(paths),
+	}
+	if len(paths) > 0 || len(depGroups) > 0 {
+		stage.items = []channelItem{{value: channelItemValue(paths), depGroups: cloneStrings(depGroups)}}
+	}
+
+	return stage, nil
+}
+
+func bindSubworkflowOutputs(
+	call *Call,
+	subwf *SubWorkflow,
+	nextScope []string,
+	translated map[string]translatedCall,
+	cwd string,
+) error {
+	if subwf == nil || subwf.Body == nil || len(subwf.Body.Emit) == 0 {
+		return nil
+	}
+
+	synthetic := translatedCall{
+		emitOutputs: map[string]emittedOutput{},
+		repGroups:   workflowBlockStageRepGroups(subwf.Body, nextScope, translated),
+	}
+	for _, emit := range subwf.Body.Emit {
+		if emit == nil {
+			continue
+		}
+
+		referenceText := emit.Expr
+		if referenceText == "" {
+			referenceText = emit.Name
+		}
+
+		expr, err := parseChanExprText(referenceText)
+		if err != nil {
+			return fmt.Errorf("subworkflow %q emit %q: %w", call.Target, emit.Name, err)
+		}
+
+		stage, err := translatedCallForSubworkflowArg(expr, nextScope, translated, cwd)
+		if err != nil {
+			return fmt.Errorf("subworkflow %q emit %q: %w", call.Target, emit.Name, err)
+		}
+
+		labelOutput := emittedOutput{
+			outputPaths: cloneStrings(stage.outputPaths),
+			items:       cloneChannelItems(stage.items),
+		}
+		synthetic.emitOutputs[emit.Name] = labelOutput
+		synthetic.outputPaths = appendUniqueStrings(synthetic.outputPaths, labelOutput.outputPaths)
+		synthetic.items = append(synthetic.items, cloneChannelItems(stage.items)...)
+
+		synthetic.depGroups = appendUniqueStrings(synthetic.depGroups, stage.depGroups)
+		if synthetic.depGroup == "" {
+			synthetic.depGroup = stage.depGroup
+		}
+
+		if synthetic.repGroup == "" {
+			synthetic.repGroup = stage.repGroup
+		}
+
+		synthetic.dynamicOutput = synthetic.dynamicOutput || stage.dynamicOutput
+		synthetic.pending = synthetic.pending || stage.pending
+	}
+
+	if len(synthetic.emitOutputs) == 0 {
+		return nil
+	}
+
+	translated[scopedTargetKey(nextScope[:len(nextScope)-1], call.Target)] = synthetic
+
+	return nil
+}
+
 func workflowBlockStageRepGroups(block *WorkflowBlock, scope []string, translated map[string]translatedCall) []string {
 	if block == nil {
 		return nil
@@ -2896,15 +4523,6 @@ func translatedCallRepGroups(key string, translated map[string]translatedCall) [
 	return translatedStageRepGroups(stage)
 }
 
-func translatedStageRepGroups(stage translatedCall) []string {
-	repGroups := cloneStrings(stage.repGroups)
-	if len(repGroups) == 0 && stage.repGroup != "" {
-		repGroups = []string{stage.repGroup}
-	}
-
-	return repGroups
-}
-
 func workflowConditionStageRepGroups(
 	ifBlock *IfBlock,
 	index int,
@@ -2929,6 +4547,26 @@ func workflowConditionStageRepGroups(
 	}
 
 	return repGroups
+}
+
+func parseChanExprText(text string) (ChanExpr, error) {
+	tokens, err := lex(text)
+	if err != nil {
+		return nil, err
+	}
+
+	parser := newParser(tokens, text)
+
+	expr, err := parser.parseChanExpr(tokenEOF)
+	if err != nil {
+		return nil, err
+	}
+
+	if parser.current().typ != tokenEOF {
+		return nil, fmt.Errorf("line %d: unexpected token %q", parser.current().line, parser.current().lit)
+	}
+
+	return expr, nil
 }
 
 func translateWorkflowPublishes(
@@ -3119,6 +4757,17 @@ func buildWorkflowPublishCommand(sources []string, targetDir string) string {
 	return strings.Join(commands, " && ")
 }
 
+func publishDirActionCommand(mode, source, target string) string {
+	switch mode {
+	case "link":
+		return fmt.Sprintf("ln -sfn -- %s %s", source, shellQuote(target))
+	case "move":
+		return fmt.Sprintf("mv -f -- %s %s", source, shellQuote(target))
+	default:
+		return fmt.Sprintf("cp -rf -- %s %s", source, shellQuote(target))
+	}
+}
+
 func newWorkflowPublishIndexJob(
 	targetName string,
 	indexPath string,
@@ -3173,6 +4822,30 @@ func buildWorkflowPublishIndexCommand(indexTarget string, entries []workflowPubl
 	}
 
 	return strings.Join(commands, "\n")
+}
+
+func wrapWorkflowHookCommand(body string) string {
+	body = strings.TrimRight(strings.TrimSpace(body), " \t\r")
+	if body == "" {
+		body = ":"
+	}
+
+	if strings.HasSuffix(body, "\n") {
+		return fmt.Sprintf("{ %s} > %s 2> %s", body, nfStdoutFile, nfStderrFile)
+	}
+
+	return fmt.Sprintf("{ %s; } > %s 2> %s", body, nfStdoutFile, nfStderrFile)
+}
+
+func defaultWorkflowHookRequirements() *scheduler.Requirements {
+	return &scheduler.Requirements{
+		Cores:    defaultCPUs,
+		CoresSet: true,
+		RAM:      defaultMemory,
+		Time:     time.Duration(defaultTime) * time.Minute,
+		Disk:     defaultDisk,
+		DiskSet:  true,
+	}
 }
 
 func translateLifecycleHooks(
@@ -3326,30 +4999,6 @@ func translateWorkflowHookBody(body string, params map[string]any) (string, erro
 	return translatedBody, nil
 }
 
-func wrapWorkflowHookCommand(body string) string {
-	body = strings.TrimRight(strings.TrimSpace(body), " \t\r")
-	if body == "" {
-		body = ":"
-	}
-
-	if strings.HasSuffix(body, "\n") {
-		return fmt.Sprintf("{ %s} > %s 2> %s", body, nfStdoutFile, nfStderrFile)
-	}
-
-	return fmt.Sprintf("{ %s; } > %s 2> %s", body, nfStdoutFile, nfStderrFile)
-}
-
-func defaultWorkflowHookRequirements() *scheduler.Requirements {
-	return &scheduler.Requirements{
-		Cores:    defaultCPUs,
-		CoresSet: true,
-		RAM:      defaultMemory,
-		Time:     time.Duration(defaultTime) * time.Minute,
-		Disk:     defaultDisk,
-		DiskSet:  true,
-	}
-}
-
 func newWorkflowOnErrorJob(
 	rawBody string,
 	stageRepGroups []string,
@@ -3480,6 +5129,143 @@ func indentLines(body string, indent string) []string {
 	}
 
 	return indented
+}
+
+func applyPublishDirBehaviours(
+	job *jobqueue.Job,
+	proc *Process,
+	bindings []string,
+	params map[string]any,
+	tc TranslateConfig,
+	cwd string,
+) error {
+	if len(proc.PublishDir) == 0 {
+		return nil
+	}
+
+	for _, directive := range proc.PublishDir {
+		if directive == nil {
+			continue
+		}
+
+		command, err := buildPublishDirCommand(proc, directive, bindings, params, tc, cwd)
+		if err != nil {
+			return err
+		}
+
+		if command == "" {
+			continue
+		}
+
+		job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
+			When: jobqueue.OnSuccess,
+			Do:   jobqueue.Run,
+			Arg:  command,
+		})
+	}
+
+	return nil
+}
+
+func buildPublishDirCommand(
+	proc *Process,
+	directive *PublishDir,
+	bindings []string,
+	params map[string]any,
+	tc TranslateConfig,
+	cwd string,
+) (string, error) {
+	target, err := resolvePublishDirTarget(directive.Path, params, tc)
+	if err != nil {
+		return "", err
+	}
+
+	target = ensureTrailingSeparator(target)
+	mkdir := "mkdir -p " + shellQuote(target)
+
+	if directive.Pattern != "" {
+		return strings.Join([]string{
+			mkdir,
+			"shopt -s nullglob",
+			fmt.Sprintf(
+				"for path in %s; do %s; done",
+				directive.Pattern,
+				publishDirActionCommand(directive.Mode, "$path", target),
+			),
+		}, " && "), nil
+	}
+
+	sources := publishDirSources(proc, bindings, params, cwd)
+	if len(sources) == 0 {
+		return mkdir, nil
+	}
+
+	commands := make([]string, 0, len(sources)+1)
+
+	commands = append(commands, mkdir)
+	for _, source := range sources {
+		commands = append(commands, publishDirActionCommand(directive.Mode, shellQuote(source), target))
+	}
+
+	return strings.Join(commands, " && "), nil
+}
+
+func publishDirSources(proc *Process, bindings []string, params map[string]any, cwd string) []string {
+	if len(proc.Output) == 0 {
+		return nil
+	}
+
+	vars := outputVars(proc, bindings, params)
+
+	sources := make([]string, 0, len(proc.Output))
+	for _, decl := range proc.Output {
+		if decl == nil {
+			continue
+		}
+
+		switch decl.Kind {
+		case "path", "file":
+			pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
+			if !ok || pattern == "" {
+				continue
+			}
+
+			sources = appendUniqueStrings(sources, []string{pattern})
+		case "tuple":
+			for _, element := range decl.Elements {
+				if element == nil || (element.Kind != "path" && element.Kind != "file") {
+					continue
+				}
+
+				pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
+				if !ok || pattern == "" {
+					continue
+				}
+
+				sources = appendUniqueStrings(sources, []string{pattern})
+			}
+		}
+	}
+
+	return sources
+}
+
+func resolvePublishDirTarget(path string, params map[string]any, tc TranslateConfig) (string, error) {
+	resolved, err := SubstituteParams(path, params)
+	if err != nil {
+		return "", err
+	}
+
+	if filepath.IsAbs(resolved) {
+		return filepath.Clean(resolved), nil
+	}
+
+	base := tc.Cwd
+	if tc.WorkflowPath != "" {
+		base = filepath.Dir(tc.WorkflowPath)
+	}
+
+	return filepath.Clean(filepath.Join(base, resolved)), nil
 }
 
 func newProcessMaxErrorsJob(
@@ -3796,6 +5582,20 @@ func findOutputBlockClosingBrace(tokens []token, start int) (int, error) {
 type emittedOutput struct {
 	outputPaths []string
 	items       []channelItem
+}
+
+type translatedCall struct {
+	depGroup      string
+	depGroups     []string
+	repGroup      string
+	repGroups     []string
+	baseCwd       string
+	outputPaths   []string
+	emitOutputs   map[string]emittedOutput
+	items         []channelItem
+	dynamicOutput bool
+	pending       bool
+	skipped       bool
 }
 
 func translatedCallForRepGroup(translated map[string]translatedCall, repGrp string) (translatedCall, bool) {
@@ -4121,36 +5921,75 @@ type TranslateResult struct {
 	Pending []*PendingStage
 }
 
+// Translate converts a parsed Workflow and config into wr jobs.
+func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult, error) {
+	if wf == nil {
+		return nil, errors.New("workflow is nil")
+	}
+
+	if err := validateTranslateProfile(cfg, tc.Profile); err != nil {
+		return nil, err
+	}
+
+	result := &TranslateResult{}
+	if wf.EntryWF == nil {
+		return result, nil
+	}
+
+	processes, err := processIndex(wf.Processes)
+	if err != nil {
+		return nil, err
+	}
+
+	subworkflows, err := subWorkflowIndex(wf.SubWFs)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = validateScopedRepGroups(processes, subworkflows); err != nil {
+		return nil, err
+	}
+
+	params, err := mergeTranslateParams(wf, cfg, tc)
+	if err != nil {
+		return nil, err
+	}
+
+	defaults := effectiveDefaults(cfg, tc.Profile)
+	selectors := effectiveSelectors(cfg, tc.Profile)
+
+	outputTargets, err := parseOutputTargetMap(wf.OutputBlock)
+	if err != nil {
+		return nil, err
+	}
+
+	translated := make(map[string]translatedCall, len(wf.EntryWF.Calls))
+
+	if err = translateBlock(
+		wf.EntryWF,
+		nil,
+		processes,
+		subworkflows,
+		translated,
+		outputTargets,
+		defaults,
+		selectors,
+		params,
+		tc,
+		result,
+	); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // CompletedJob holds completed upstream job information.
 type CompletedJob struct {
 	RepGrp      string
 	OutputPaths []string
 	DepGroups   []string
 	ExitCode    int
-}
-
-type translatedCall struct {
-	depGroup      string
-	depGroups     []string
-	repGroup      string
-	repGroups     []string
-	baseCwd       string
-	outputPaths   []string
-	emitOutputs   map[string]emittedOutput
-	items         []channelItem
-	dynamicOutput bool
-	pending       bool
-	skipped       bool
-}
-
-func cloneTranslatedCall(value translatedCall) translatedCall {
-	value.depGroups = cloneStrings(value.depGroups)
-	value.repGroups = cloneStrings(value.repGroups)
-	value.outputPaths = cloneStrings(value.outputPaths)
-	value.emitOutputs = cloneEmittedOutputs(value.emitOutputs)
-	value.items = cloneChannelItems(value.items)
-
-	return value
 }
 
 type bindingSet struct {
@@ -4167,37 +6006,15 @@ type resolvedArg struct {
 	fanout bool
 }
 
-func mergeTranslateParams(wf *Workflow, cfg *Config, tc TranslateConfig) (map[string]any, error) {
-	var sources []map[string]any
+type selectorMatch struct {
+	specificity int
+	settings    *ProcessDefaults
+}
 
-	workflowDefaults, err := workflowParamDefaults(wf)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(workflowDefaults) > 0 {
-		sources = append(sources, workflowDefaults)
-	}
-
-	if cfg != nil && len(cfg.Params) > 0 {
-		sources = append(sources, cfg.Params)
-	}
-
-	if cfg != nil && tc.Profile != "" && cfg.Profiles != nil {
-		if profile, ok := cfg.Profiles[tc.Profile]; ok && len(profile.Params) > 0 {
-			sources = append(sources, profile.Params)
-		}
-	}
-
-	if tc.Params != nil {
-		sources = append(sources, tc.Params)
-	}
-
-	if len(sources) == 0 {
-		return nil, nil
-	}
-
-	return MergeParams(sources...), nil
+type workflowConditionBranch struct {
+	scopeName string
+	condition string
+	calls     []*Call
 }
 
 func parseOutputIndexPath(name string, tokens []token) (string, bool, error) {
@@ -4371,1178 +6188,6 @@ func validateTranslateProfile(cfg *Config, profileName string) error {
 	return fmt.Errorf("unknown config profile %q; available profiles: %s", profileName, strings.Join(available, ", "))
 }
 
-// Translate converts a parsed Workflow and config into wr jobs.
-func Translate(wf *Workflow, cfg *Config, tc TranslateConfig) (*TranslateResult, error) {
-	if wf == nil {
-		return nil, errors.New("workflow is nil")
-	}
-
-	if err := validateTranslateProfile(cfg, tc.Profile); err != nil {
-		return nil, err
-	}
-
-	result := &TranslateResult{}
-	if wf.EntryWF == nil {
-		return result, nil
-	}
-
-	processes, err := processIndex(wf.Processes)
-	if err != nil {
-		return nil, err
-	}
-
-	subworkflows, err := subWorkflowIndex(wf.SubWFs)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = validateScopedRepGroups(processes, subworkflows); err != nil {
-		return nil, err
-	}
-
-	params, err := mergeTranslateParams(wf, cfg, tc)
-	if err != nil {
-		return nil, err
-	}
-
-	defaults := effectiveDefaults(cfg, tc.Profile)
-	selectors := effectiveSelectors(cfg, tc.Profile)
-
-	outputTargets, err := parseOutputTargetMap(wf.OutputBlock)
-	if err != nil {
-		return nil, err
-	}
-
-	translated := make(map[string]translatedCall, len(wf.EntryWF.Calls))
-
-	if err = translateBlock(
-		wf.EntryWF,
-		nil,
-		processes,
-		subworkflows,
-		translated,
-		outputTargets,
-		defaults,
-		selectors,
-		params,
-		tc,
-		result,
-	); err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// TranslatePending resolves a pending stage into concrete jobs from completed upstream jobs.
-func TranslatePending(pending *PendingStage, completed []CompletedJob, tc TranslateConfig) ([]*jobqueue.Job, error) {
-	if pending == nil || pending.Process == nil {
-		return nil, errors.New("pending stage is nil")
-	}
-
-	if pending.call == nil {
-		return nil, errors.New("pending stage has no call context")
-	}
-
-	params := cloneParams(pending.params)
-	if tc.Params != nil {
-		params = MergeParams(params, tc.Params)
-	}
-
-	completedByRepGrp := make(map[string]CompletedJob, len(completed))
-
-	completedItemsByRepGrp := make(map[string][]CompletedJob, len(completed))
-	for _, job := range completed {
-		completedItemsByRepGrp[job.RepGrp] = append(completedItemsByRepGrp[job.RepGrp], CompletedJob{
-			RepGrp:      job.RepGrp,
-			OutputPaths: cloneStrings(job.OutputPaths),
-			DepGroups:   cloneStrings(job.DepGroups),
-			ExitCode:    job.ExitCode,
-		})
-
-		existing, ok := completedByRepGrp[job.RepGrp]
-		if !ok {
-			completedByRepGrp[job.RepGrp] = CompletedJob{
-				RepGrp:      job.RepGrp,
-				OutputPaths: cloneStrings(job.OutputPaths),
-				DepGroups:   cloneStrings(job.DepGroups),
-				ExitCode:    job.ExitCode,
-			}
-
-			continue
-		}
-
-		existing.OutputPaths = appendUniqueStrings(existing.OutputPaths, job.OutputPaths)
-
-		existing.DepGroups = appendUniqueStrings(existing.DepGroups, job.DepGroups)
-		if existing.ExitCode == 0 && job.ExitCode != 0 {
-			existing.ExitCode = job.ExitCode
-		}
-
-		completedByRepGrp[job.RepGrp] = existing
-	}
-
-	for _, repGrp := range pending.awaitRepGrps {
-		job, ok := completedByRepGrp[repGrp]
-		if !ok {
-			return nil, fmt.Errorf("missing completed job for %q", repGrp)
-		}
-
-		if job.ExitCode != 0 {
-			return nil, fmt.Errorf("completed job %q exited with code %d", repGrp, job.ExitCode)
-		}
-	}
-
-	translated := cloneTranslatedCalls(pending.translated)
-	for name, stage := range translated {
-		job, ok := completedByRepGrp[stage.repGroup]
-		if !ok {
-			continue
-		}
-
-		stage.outputPaths = cloneStrings(job.OutputPaths)
-
-		deps := cloneStrings(stage.depGroups)
-		if len(deps) == 0 && stage.depGroup != "" {
-			deps = []string{stage.depGroup}
-		}
-
-		matches := completedItemsByRepGrp[stage.repGroup]
-		templates := cloneChannelItems(stage.items)
-		emitTemplates := cloneEmittedOutputs(stage.emitOutputs)
-		stage.items = make([]channelItem, 0, len(matches))
-		stage.emitOutputs = nil
-
-		for index, match := range matches {
-			itemDeps := cloneStrings(deps)
-			if len(match.DepGroups) > 0 {
-				itemDeps = cloneStrings(match.DepGroups)
-			}
-
-			if len(deps) == len(matches) {
-				itemDeps = []string{deps[index]}
-			}
-
-			itemValue := channelItemValue(match.OutputPaths)
-
-			if len(templates) > 0 {
-				templateIndex := index
-				if templateIndex >= len(templates) {
-					templateIndex = len(templates) - 1
-				}
-
-				itemValue = resolveCompletedOutputValue(templates[templateIndex].value, match.OutputPaths)
-			}
-
-			stage.items = append(stage.items, channelItem{
-				value:     itemValue,
-				depGroups: itemDeps,
-			})
-
-			for label, emitted := range emitTemplates {
-				emittedPaths := matchCompletedOutputPathsForPatterns(emitted.outputPaths, match.OutputPaths)
-				emittedValue := channelItemValue(emittedPaths)
-
-				if len(emitted.items) > 0 {
-					templateIndex := index
-					if templateIndex >= len(emitted.items) {
-						templateIndex = len(emitted.items) - 1
-					}
-
-					emittedValue = resolveCompletedOutputValue(emitted.items[templateIndex].value, emittedPaths)
-				}
-
-				if stage.emitOutputs == nil {
-					stage.emitOutputs = map[string]emittedOutput{}
-				}
-
-				labelOutput := stage.emitOutputs[label]
-				labelOutput.outputPaths = appendUniqueStrings(labelOutput.outputPaths, emittedPaths)
-				labelOutput.items = append(labelOutput.items, channelItem{value: emittedValue, depGroups: itemDeps})
-				stage.emitOutputs[label] = labelOutput
-			}
-		}
-
-		stage.pending = false
-		translated[name] = stage
-	}
-
-	bindingSets, err := resolveBindings(pending.Process, pending.call, pending.scope, translated, tc.Cwd)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(bindingSets) == 0 {
-		return nil, nil
-	}
-
-	bindingSets, err = filterWhenBindingSets(pending.Process, bindingSets, params)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(bindingSets) == 0 {
-		return nil, nil
-	}
-
-	jobs, _, err := translateProcessBindingSets(
-		pending.Process,
-		bindingSets,
-		pending.scope,
-		cloneDefaults(pending.defaults),
-		cloneSelectors(pending.selectors),
-		params,
-		tc,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return jobs, nil
-}
-
-func bindSubworkflowInputs(
-	call *Call,
-	subwf *SubWorkflow,
-	scope []string,
-	nextScope []string,
-	translated map[string]translatedCall,
-	cwd string,
-) error {
-	if subwf == nil || subwf.Body == nil || len(subwf.Body.Take) == 0 {
-		if len(call.Args) == 0 {
-			return nil
-		}
-
-		return fmt.Errorf("subworkflow %q does not declare take inputs", call.Target)
-	}
-
-	if len(call.Args) != len(subwf.Body.Take) {
-		return fmt.Errorf("subworkflow %q expects %d input(s), got %d", call.Target, len(subwf.Body.Take), len(call.Args))
-	}
-
-	for index, takeName := range subwf.Body.Take {
-		stage, err := translatedCallForSubworkflowArg(call.Args[index], scope, translated, cwd)
-		if err != nil {
-			return fmt.Errorf("subworkflow %q input %q: %w", call.Target, takeName, err)
-		}
-
-		translated[scopedTargetKey(nextScope, takeName)] = stage
-	}
-
-	return nil
-}
-
-func translatedCallForSubworkflowArg(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) (translatedCall, error) {
-	if ref, ok := arg.(ChanRef); ok {
-		stage, found := resolveTranslatedOutput(ref.Name, scope, translated)
-		if !found {
-			return translatedCall{}, fmt.Errorf("unknown upstream reference %q", ref.Name)
-		}
-
-		return cloneTranslatedCall(stage), nil
-	}
-
-	items, err := resolveTranslatedChannelItems(arg, scope, translated, cwd)
-	if err == nil {
-		stage := translatedCall{items: cloneChannelItems(items)}
-		for _, item := range items {
-			stage.depGroups = appendUniqueStrings(stage.depGroups, item.depGroups)
-		}
-
-		return stage, nil
-	}
-
-	paths, depGroups, resolveErr := resolveArg(arg, scope, translated)
-	if resolveErr != nil {
-		return translatedCall{}, resolveErr
-	}
-
-	stage := translatedCall{
-		depGroups:   cloneStrings(depGroups),
-		outputPaths: cloneStrings(paths),
-	}
-	if len(paths) > 0 || len(depGroups) > 0 {
-		stage.items = []channelItem{{value: channelItemValue(paths), depGroups: cloneStrings(depGroups)}}
-	}
-
-	return stage, nil
-}
-
-func bindSubworkflowOutputs(
-	call *Call,
-	subwf *SubWorkflow,
-	nextScope []string,
-	translated map[string]translatedCall,
-	cwd string,
-) error {
-	if subwf == nil || subwf.Body == nil || len(subwf.Body.Emit) == 0 {
-		return nil
-	}
-
-	synthetic := translatedCall{
-		emitOutputs: map[string]emittedOutput{},
-		repGroups:   workflowBlockStageRepGroups(subwf.Body, nextScope, translated),
-	}
-	for _, emit := range subwf.Body.Emit {
-		if emit == nil {
-			continue
-		}
-
-		referenceText := emit.Expr
-		if referenceText == "" {
-			referenceText = emit.Name
-		}
-
-		expr, err := parseChanExprText(referenceText)
-		if err != nil {
-			return fmt.Errorf("subworkflow %q emit %q: %w", call.Target, emit.Name, err)
-		}
-
-		stage, err := translatedCallForSubworkflowArg(expr, nextScope, translated, cwd)
-		if err != nil {
-			return fmt.Errorf("subworkflow %q emit %q: %w", call.Target, emit.Name, err)
-		}
-
-		labelOutput := emittedOutput{
-			outputPaths: cloneStrings(stage.outputPaths),
-			items:       cloneChannelItems(stage.items),
-		}
-		synthetic.emitOutputs[emit.Name] = labelOutput
-		synthetic.outputPaths = appendUniqueStrings(synthetic.outputPaths, labelOutput.outputPaths)
-		synthetic.items = append(synthetic.items, cloneChannelItems(stage.items)...)
-
-		synthetic.depGroups = appendUniqueStrings(synthetic.depGroups, stage.depGroups)
-		if synthetic.depGroup == "" {
-			synthetic.depGroup = stage.depGroup
-		}
-
-		if synthetic.repGroup == "" {
-			synthetic.repGroup = stage.repGroup
-		}
-
-		synthetic.dynamicOutput = synthetic.dynamicOutput || stage.dynamicOutput
-		synthetic.pending = synthetic.pending || stage.pending
-	}
-
-	if len(synthetic.emitOutputs) == 0 {
-		return nil
-	}
-
-	translated[scopedTargetKey(nextScope[:len(nextScope)-1], call.Target)] = synthetic
-
-	return nil
-}
-
-func parseChanExprText(text string) (ChanExpr, error) {
-	tokens, err := lex(text)
-	if err != nil {
-		return nil, err
-	}
-
-	parser := newParser(tokens, text)
-
-	expr, err := parser.parseChanExpr(tokenEOF)
-	if err != nil {
-		return nil, err
-	}
-
-	if parser.current().typ != tokenEOF {
-		return nil, fmt.Errorf("line %d: unexpected token %q", parser.current().line, parser.current().lit)
-	}
-
-	return expr, nil
-}
-
-func translateBlock(
-	block *WorkflowBlock,
-	scope []string,
-	processes map[string]*Process,
-	subworkflows map[string]*SubWorkflow,
-	translated map[string]translatedCall,
-	outputTargets map[string]*OutputTarget,
-	defaults *ProcessDefaults,
-	selectors []*ProcessSelector,
-	params map[string]any,
-	tc TranslateConfig,
-	result *TranslateResult,
-) error {
-	if block == nil {
-		return nil
-	}
-
-	if err := translateCalls(
-		block.Calls,
-		scope,
-		processes,
-		subworkflows,
-		translated,
-		outputTargets,
-		defaults,
-		selectors,
-		params,
-		tc,
-		result,
-	); err != nil {
-		return err
-	}
-
-	for index, ifBlock := range block.Conditions {
-		if err := translateConditionalBlock(
-			ifBlock,
-			index,
-			scope,
-			processes,
-			subworkflows,
-			translated,
-			outputTargets,
-			defaults,
-			selectors,
-			params,
-			tc,
-			result,
-		); err != nil {
-			return err
-		}
-	}
-
-	if err := translateWorkflowPublishes(block, scope, translated, outputTargets, params, tc, result); err != nil {
-		return err
-	}
-
-	if err := translateLifecycleHooks(block, scope, translated, params, tc, result); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func translateProcessCall(
-	proc *Process,
-	call *Call,
-	scope []string,
-	translated map[string]translatedCall,
-	defaults *ProcessDefaults,
-	selectors []*ProcessSelector,
-	params map[string]any,
-	tc TranslateConfig,
-) ([]*jobqueue.Job, translatedCall, error) {
-	bindingSets, err := resolveBindings(proc, call, scope, translated, tc.Cwd)
-	if err != nil {
-		return nil, translatedCall{}, err
-	}
-
-	return translateProcessBindingSets(proc, bindingSets, scope, defaults, selectors, params, tc)
-}
-
-func outputValue(proc *Process, bindings []string, params map[string]any, cwd string, fallbackPaths []string) any {
-	if proc == nil || len(proc.Output) == 0 {
-		return channelItemValue(fallbackPaths)
-	}
-
-	values := make([]any, 0, len(proc.Output))
-	for _, decl := range proc.Output {
-		if decl == nil {
-			continue
-		}
-
-		if decl.Kind == "tuple" {
-			if value, ok := tupleOutputValue(proc, decl, bindings, params, cwd); ok {
-				values = append(values, value)
-			}
-
-			continue
-		}
-
-		if decl.Kind == "path" || decl.Kind == "file" {
-			continue
-		}
-
-		if value, ok := staticOutputValue(proc, decl, bindings, params); ok {
-			values = append(values, value)
-		}
-	}
-
-	if len(values) == 0 {
-		return channelItemValue(fallbackPaths)
-	}
-
-	if len(values) == 1 {
-		return values[0]
-	}
-
-	return values
-}
-
-func staticOutputValue(proc *Process, decl *Declaration, bindings []string, params map[string]any) (any, bool) {
-	vars := outputVars(proc, bindings, params)
-
-	if decl.Expr != nil {
-		value, err := EvalExpr(decl.Expr, vars)
-		if err == nil {
-			return value, true
-		}
-	}
-
-	if decl.Name != "" {
-		if value, ok := vars[decl.Name]; ok {
-			return value, true
-		}
-	}
-
-	if len(bindings) == 1 {
-		return bindings[0], true
-	}
-
-	if decl.Kind == "val" {
-		return "", true
-	}
-
-	return nil, false
-}
-
-func outputVars(proc *Process, bindings []string, params map[string]any) map[string]any {
-	return outputVarsWithValues(proc, bindings, nil, params)
-}
-
-func resolveBindings(proc *Process, call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
-	if call == nil || len(call.Args) == 0 {
-		return []bindingSet{{regularIx: 0}}, nil
-	}
-
-	plans := []bindingSet{{regularIx: 0}}
-	eachArgs := make([]struct {
-		decl     *Declaration
-		resolved resolvedArg
-	}, 0, len(call.Args))
-
-	for index, arg := range call.Args {
-		decl := inputDeclarationForArg(proc, index)
-
-		resolved, err := resolveBindingArg(arg, scope, translated, cwd)
-		if err != nil {
-			return nil, err
-		}
-
-		if resolved.fanout && len(resolved.items) == 0 {
-			return nil, nil
-		}
-
-		if decl != nil && decl.Each {
-			eachArgs = append(eachArgs, struct {
-				decl     *Declaration
-				resolved resolvedArg
-			}{decl: decl, resolved: resolved})
-
-			continue
-		}
-
-		if resolved.fanout && len(resolved.items) > 1 {
-			switch {
-			case len(plans) == 1:
-				expanded := make([]bindingSet, len(resolved.items))
-				for itemIndex, item := range resolved.items {
-					bindings, bindErr := bindingsForInputDeclaration(decl, item)
-					if bindErr != nil {
-						return nil, bindErr
-					}
-
-					expanded[itemIndex] = bindingSet{
-						bindings:  append(cloneStrings(plans[0].bindings), bindings...),
-						values:    append(cloneChannelSlice(plans[0].values), cloneChannelSlice(item.values)...),
-						depGroups: cloneStrings(plans[0].depGroups),
-						regularIx: itemIndex,
-					}
-					expanded[itemIndex].depGroups = appendUniqueStrings(expanded[itemIndex].depGroups, item.depGroups)
-				}
-
-				plans = expanded
-			case len(plans) == len(resolved.items):
-				for itemIndex, item := range resolved.items {
-					bindings, bindErr := bindingsForInputDeclaration(decl, item)
-					if bindErr != nil {
-						return nil, bindErr
-					}
-
-					plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
-					plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(item.values)...)
-					plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, item.depGroups)
-				}
-			default:
-				return nil, fmt.Errorf("channel cardinality mismatch for process %q", call.Target)
-			}
-
-			continue
-		}
-
-		binding := ""
-		values := []any{}
-		depGroups := []string{}
-		bindings := []string{binding}
-
-		if len(resolved.items) > 0 {
-			var bindErr error
-
-			bindings, bindErr = bindingsForInputDeclaration(decl, resolved.items[0])
-			if bindErr != nil {
-				return nil, bindErr
-			}
-
-			if len(bindings) > 0 {
-				binding = bindings[0]
-			}
-
-			values = cloneChannelSlice(resolved.items[0].values)
-			depGroups = resolved.items[0].depGroups
-		}
-
-		for itemIndex := range plans {
-			if len(bindings) == 0 {
-				plans[itemIndex].bindings = append(plans[itemIndex].bindings, binding)
-				plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(values)...)
-
-				continue
-			}
-
-			plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
-			plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(values)...)
-			plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, depGroups)
-		}
-	}
-
-	if len(plans) == 0 {
-		return nil, nil
-	}
-
-	for _, eachArg := range eachArgs {
-		if eachArg.resolved.fanout && len(eachArg.resolved.items) == 0 {
-			return nil, nil
-		}
-
-		expanded := make([]bindingSet, 0, len(plans)*maxInt(1, len(eachArg.resolved.items)))
-
-		items := eachArg.resolved.items
-		if len(items) == 0 {
-			items = []bindingSet{{}}
-		}
-
-		for _, plan := range plans {
-			for _, item := range items {
-				bindings, bindErr := bindingsForInputDeclaration(eachArg.decl, item)
-				if bindErr != nil {
-					return nil, bindErr
-				}
-
-				nextPlan := bindingSet{
-					bindings:  append(cloneStrings(plan.bindings), bindings...),
-					values:    append(cloneChannelSlice(plan.values), cloneChannelSlice(item.values)...),
-					depGroups: cloneStrings(plan.depGroups),
-					regularIx: plan.regularIx,
-					hasEach:   true,
-				}
-				nextPlan.depGroups = appendUniqueStrings(nextPlan.depGroups, item.depGroups)
-				expanded = append(expanded, nextPlan)
-			}
-		}
-
-		plans = expanded
-	}
-
-	eachIndexByRegular := map[int]int{}
-
-	for index := range plans {
-		if !plans[index].hasEach {
-			continue
-		}
-
-		plans[index].eachIx = eachIndexByRegular[plans[index].regularIx]
-		eachIndexByRegular[plans[index].regularIx]++
-	}
-
-	return plans, nil
-}
-
-func resolveBindingArg(arg ChanExpr, scope []string, translated map[string]translatedCall, cwd string) (resolvedArg, error) {
-	switch arg.(type) {
-	case ChanRef, NamedChannelRef, ChannelFactory, ChannelChain, PipeExpr:
-		items, err := resolveTranslatedChannelItems(arg, scope, translated, cwd)
-		if err == nil {
-			resolvedItems := make([]bindingSet, 0, len(items))
-			for _, item := range items {
-				resolvedItems = append(resolvedItems, bindingSet{
-					bindings:  []string{itemBinding(item.value)},
-					values:    []any{cloneChannelValue(item.value)},
-					depGroups: cloneStrings(item.depGroups),
-				})
-			}
-
-			return resolvedArg{items: resolvedItems, fanout: true}, nil
-		}
-	}
-
-	paths, deps, err := resolveArg(arg, scope, translated)
-	if err != nil {
-		return resolvedArg{}, err
-	}
-
-	if len(paths) > 1 && len(deps) > 1 {
-		items := make([]bindingSet, 0, len(paths))
-		for _, path := range paths {
-			items = append(items, bindingSet{bindings: []string{path}, values: []any{path}, depGroups: cloneStrings(deps)})
-		}
-
-		return resolvedArg{items: items, fanout: true}, nil
-	}
-
-	var value any
-
-	switch len(paths) {
-	case 0:
-		value = ""
-	case 1:
-		value = paths[0]
-	default:
-		value = cloneStrings(paths)
-	}
-
-	return resolvedArg{items: []bindingSet{{
-		bindings:  []string{strings.Join(paths, " ")},
-		values:    []any{value},
-		depGroups: deps,
-	}}}, nil
-}
-
-func resolveTranslatedChannelItems(
-	arg ChanExpr,
-	scope []string,
-	translated map[string]translatedCall,
-	cwd string,
-) ([]channelItem, error) {
-	return resolveChannelItems(arg, cwd, func(ref ChanRef) ([]channelItem, error) {
-		stage, ok := resolveTranslatedOutput(ref.Name, scope, translated)
-		if !ok {
-			return nil, fmt.Errorf("unknown upstream reference %q", ref.Name)
-		}
-
-		if stage.skipped {
-			return nil, nil
-		}
-
-		if len(stage.items) > 0 {
-			return cloneChannelItems(stage.items), nil
-		}
-
-		deps := cloneStrings(stage.depGroups)
-		if len(deps) == 0 && stage.depGroup != "" {
-			deps = []string{stage.depGroup}
-		}
-
-		return []channelItem{{
-			value:     channelItemValue(stage.outputPaths),
-			depGroups: deps,
-		}}, nil
-	})
-}
-
-func resolveArg(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
-	switch expr := arg.(type) {
-	case ChanRef:
-		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
-		}
-
-		if stage.skipped {
-			return nil, nil, nil
-		}
-
-		deps := cloneStrings(stage.depGroups)
-		if len(deps) == 0 && stage.depGroup != "" {
-			deps = []string{stage.depGroup}
-		}
-
-		return cloneStrings(stage.outputPaths), deps, nil
-	case NamedChannelRef:
-		return resolveArg(expr.Source, scope, translated)
-	case ChannelChain:
-		return resolveArg(expr.Source, scope, translated)
-	case PipeExpr:
-		paths := []string{}
-		deps := []string{}
-		seenPaths := map[string]struct{}{}
-		seenDeps := map[string]struct{}{}
-
-		for _, stage := range expr.Stages {
-			stagePaths, stageDeps, err := resolveArg(stage, scope, translated)
-			if err != nil {
-				if _, ok := stage.(ChanRef); ok {
-					continue
-				}
-
-				return nil, nil, err
-			}
-
-			for _, path := range stagePaths {
-				if _, ok := seenPaths[path]; ok {
-					continue
-				}
-
-				paths = append(paths, path)
-				seenPaths[path] = struct{}{}
-			}
-
-			for _, dep := range stageDeps {
-				if _, ok := seenDeps[dep]; ok {
-					continue
-				}
-
-				deps = append(deps, dep)
-				seenDeps[dep] = struct{}{}
-			}
-		}
-
-		return paths, deps, nil
-	default:
-		return nil, nil, nil
-	}
-}
-
-func resolveTranslatedRef(name string, scope []string, translated map[string]translatedCall) (translatedCall, bool) {
-	parts := strings.Split(name, ".")
-	if len(scope) > 0 {
-		for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
-			key := scopedTargetKey(scope, strings.Join(parts[:prefixLen], "."))
-			if stage, ok := translated[key]; ok {
-				return stage, true
-			}
-		}
-	}
-
-	for prefixLen := len(parts); prefixLen >= 1; prefixLen-- {
-		key := strings.Join(parts[:prefixLen], ".")
-		if stage, ok := translated[key]; ok {
-			return stage, true
-		}
-	}
-
-	return translatedCall{}, false
-}
-
-func scopedTargetKey(scope []string, target string) string {
-	if len(scope) == 0 {
-		return target
-	}
-
-	parts := append(append([]string{}, scope...), target)
-
-	return strings.Join(parts, ".")
-}
-
-func deterministicCwd(base, runID string, scope []string, processName string) string {
-	parts := []string{base, "nf-work", runID}
-	parts = append(parts, scope...)
-	parts = append(parts, processName)
-
-	return filepath.Clean(filepath.Join(parts...))
-}
-
-func deterministicIndexedCwd(base, runID string, scope []string, processName string, itemIndex int) string {
-	parts := []string{base, "nf-work", runID}
-	parts = append(parts, scope...)
-	parts = append(parts, processName, strconv.Itoa(itemIndex))
-
-	return filepath.Clean(filepath.Join(parts...))
-}
-
-func scopedDepGroup(runID string, scope []string, processName string) string {
-	parts := []string{"nf", runID}
-	parts = append(parts, scope...)
-	parts = append(parts, processName)
-
-	return strings.Join(parts, ".")
-}
-
-func scopedIndexedDepGroup(runID string, scope []string, processName string, itemIndex int) string {
-	parts := []string{"nf", runID}
-	parts = append(parts, scope...)
-	parts = append(parts, processName, strconv.Itoa(itemIndex))
-
-	return strings.Join(parts, ".")
-}
-
-func scopedRepGroup(workflowName, runID string, scope []string, processName string) string {
-	parts := []string{"nf", repGroupToken(workflowName), repGroupToken(runID)}
-	parts = append(parts, scope...)
-	parts = append(parts, processName)
-
-	return strings.Join(parts, ".")
-}
-
-func repGroupToken(value string) string {
-	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
-}
-
-func buildRequirements(proc *Process, effectiveProc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any, schedulerName string) (*scheduler.Requirements, error) {
-	req := &scheduler.Requirements{}
-	task := defaultDirectiveTask()
-
-	legacyDefaults := MatchSelectors(proc, defaults, selectors)
-	if effectiveProc == nil {
-		effectiveProc = proc
-	}
-
-	cpus, err := resolveDirectiveInt(
-		"cpus",
-		proc.Directives["cpus"],
-		params,
-		intDefault(legacyDefaults.Cpus, defaultCPUs),
-		task,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	task["cpus"] = cpus
-
-	memory, err := resolveDirectiveInt(
-		"memory",
-		proc.Directives["memory"],
-		params,
-		intDefault(legacyDefaults.Memory, defaultMemory),
-		task,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	task["memory"] = memory
-
-	timeMinutes, err := resolveDirectiveInt(
-		"time",
-		proc.Directives["time"],
-		params,
-		intDefault(legacyDefaults.Time, defaultTime),
-		task,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	disk, err := resolveDirectiveInt(
-		"disk",
-		proc.Directives["disk"],
-		params,
-		intDefault(legacyDefaults.Disk, defaultDisk),
-		task,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Cores = float64(cpus)
-	req.CoresSet = true
-	req.RAM = memory
-	req.Time = time.Duration(timeMinutes) * time.Minute
-	req.Disk = disk
-	req.DiskSet = true
-
-	queue, err := resolveDirectiveString("queue", effectiveProc.Directives["queue"], params, "", task)
-	if err != nil {
-		return nil, err
-	}
-
-	if queue != "" {
-		if req.Other == nil {
-			req.Other = make(map[string]string)
-		}
-
-		req.Other["scheduler_queue"] = queue
-		req.OtherSet = true
-	}
-
-	clusterOptions, err := resolveDirectiveString(
-		"clusterOptions",
-		effectiveProc.Directives["clusterOptions"],
-		params,
-		"",
-		task,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if clusterOptions != "" {
-		if req.Other == nil {
-			req.Other = make(map[string]string)
-		}
-
-		req.Other["scheduler_misc"] = clusterOptions
-		req.OtherSet = true
-	}
-
-	acceleratorOptions, err := resolveAcceleratorOptions(effectiveProc, params, schedulerName)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Other = appendSchedulerRequirement(req.Other, "scheduler_misc", acceleratorOptions)
-
-	archOptions, err := resolveArchOptions(effectiveProc, params, schedulerName)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Other = appendSchedulerRequirement(req.Other, "scheduler_misc", archOptions)
-	if len(req.Other) > 0 {
-		req.OtherSet = true
-	}
-
-	return req, nil
-}
-
-func intDefault(value, fallback int) int {
-	if value != 0 {
-		return value
-	}
-
-	return fallback
-}
-
-func resolveDirectiveInt(name string, expr any, params map[string]any, fallback int, task map[string]any) (int, error) {
-	if expr == nil {
-		return fallback, nil
-	}
-
-	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
-	if err != nil {
-		return 0, err
-	}
-
-	if fallbackUsed {
-		return fallback, nil
-	}
-
-	intValue, ok := value.(int)
-	if !ok {
-		return 0, fmt.Errorf("%s directive must evaluate to an integer", name)
-	}
-
-	return intValue, nil
-}
-
-func warnf(format string, args ...any) {
-	_, _ = fmt.Fprintf(os.Stderr, format, args...)
-}
-
-func applyContainer(job *jobqueue.Job, proc *Process, runtime string, params map[string]any) error {
-	container := proc.Container
-
-	resolved, err := resolveDirectiveString(
-		"container",
-		proc.Directives["container"],
-		params,
-		container,
-		defaultDirectiveTask(),
-	)
-	if err != nil {
-		return err
-	}
-
-	container = resolved
-	if container == "" {
-		return nil
-	}
-
-	containerOptions, err := resolveDirectiveString(
-		"containerOptions",
-		proc.Directives["containerOptions"],
-		params,
-		"",
-		defaultDirectiveTask(),
-	)
-	if err != nil {
-		return err
-	}
-
-	if containerOptions != "" {
-		container = strings.TrimSpace(containerOptions + " " + container)
-	}
-
-	switch runtime {
-	case "docker":
-		job.WithDocker = container
-	case "singularity", "apptainer":
-		job.WithSingularity = container
-	}
-
-	return nil
-}
-
-func applyMaxForks(job *jobqueue.Job, proc *Process) {
-	if proc.MaxForks > 0 {
-		appendLimitGroup(job, fmt.Sprintf("%s:%d", proc.Name, proc.MaxForks))
-	}
-}
-
-func applyErrorStrategy(job *jobqueue.Job, proc *Process, params map[string]any) error {
-	errorStrategy, err := resolveErrorStrategy(proc, params)
-	if err != nil {
-		return err
-	}
-
-	switch errorStrategy {
-	case "", "finish", "terminate":
-		job.Retries = 0
-	case "retry":
-		//nolint:gosec // MaxRetries is validated by directive parsing before being stored on the process.
-		job.Retries = uint8(proc.MaxRetries)
-	case "ignore":
-		job.Retries = 0
-		job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{When: jobqueue.OnFailure, Do: jobqueue.Remove})
-	default:
-		warnf("nextflowdsl: unsupported errorStrategy %q, using terminate semantics\n", errorStrategy)
-
-		job.Retries = 0
-	}
-
-	return nil
-}
-
-func applyEnv(job *jobqueue.Job, proc *Process, params map[string]any) error {
-	env := make([]string, 0, len(proc.Env)+1)
-
-	positions := make(map[string]int, len(proc.Env)+1)
-	for key, value := range proc.Env {
-		if index, ok := positions[key]; ok {
-			env[index] = key + "=" + value
-
-			continue
-		}
-
-		positions[key] = len(env)
-		env = append(env, key+"="+value)
-	}
-
-	shellCommand, err := resolveShellDirective(proc.Directives["shell"], params)
-	if err != nil {
-		return err
-	}
-
-	if shellCommand != "" {
-		if index, ok := positions["RunnerExecShell"]; ok {
-			env[index] = "RunnerExecShell=" + shellCommand
-		} else {
-			env = append(env, "RunnerExecShell="+shellCommand)
-		}
-	}
-
-	if len(env) == 0 {
-		return nil
-	}
-
-	return job.EnvAddOverride(env)
-}
-
 func buildCommand(
 	proc *Process,
 	bindings []string,
@@ -5553,398 +6198,6 @@ func buildCommand(
 	return buildCommandWithValues(proc, bindings, nil, params, cwd, launchCwd)
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-}
-
-func outputPaths(proc *Process, bindings []string, params map[string]any, cwd string) []string {
-	vars := outputVars(proc, bindings, params)
-	paths := []string{}
-
-	for _, decl := range proc.Output {
-		if decl == nil {
-			continue
-		}
-
-		switch decl.Kind {
-		case "path", "file":
-			pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
-			if ok {
-				paths = append(paths, pattern)
-			}
-		case "tuple":
-			for _, element := range decl.Elements {
-				if element == nil || (element.Kind != "path" && element.Kind != "file") {
-					continue
-				}
-
-				pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
-				if ok {
-					paths = append(paths, pattern)
-				}
-			}
-		}
-	}
-
-	if len(paths) > 0 {
-		return paths
-	}
-
-	return []string{cwd + string(os.PathSeparator)}
-}
-
-func applyPublishDirBehaviours(
-	job *jobqueue.Job,
-	proc *Process,
-	bindings []string,
-	params map[string]any,
-	tc TranslateConfig,
-	cwd string,
-) error {
-	if len(proc.PublishDir) == 0 {
-		return nil
-	}
-
-	for _, directive := range proc.PublishDir {
-		if directive == nil {
-			continue
-		}
-
-		command, err := buildPublishDirCommand(proc, directive, bindings, params, tc, cwd)
-		if err != nil {
-			return err
-		}
-
-		if command == "" {
-			continue
-		}
-
-		job.Behaviours = append(job.Behaviours, &jobqueue.Behaviour{
-			When: jobqueue.OnSuccess,
-			Do:   jobqueue.Run,
-			Arg:  command,
-		})
-	}
-
-	return nil
-}
-
-func buildPublishDirCommand(
-	proc *Process,
-	directive *PublishDir,
-	bindings []string,
-	params map[string]any,
-	tc TranslateConfig,
-	cwd string,
-) (string, error) {
-	target, err := resolvePublishDirTarget(directive.Path, params, tc)
-	if err != nil {
-		return "", err
-	}
-
-	target = ensureTrailingSeparator(target)
-	mkdir := "mkdir -p " + shellQuote(target)
-
-	if directive.Pattern != "" {
-		return strings.Join([]string{
-			mkdir,
-			"shopt -s nullglob",
-			fmt.Sprintf(
-				"for path in %s; do %s; done",
-				directive.Pattern,
-				publishDirActionCommand(directive.Mode, "$path", target),
-			),
-		}, " && "), nil
-	}
-
-	sources := publishDirSources(proc, bindings, params, cwd)
-	if len(sources) == 0 {
-		return mkdir, nil
-	}
-
-	commands := make([]string, 0, len(sources)+1)
-
-	commands = append(commands, mkdir)
-	for _, source := range sources {
-		commands = append(commands, publishDirActionCommand(directive.Mode, shellQuote(source), target))
-	}
-
-	return strings.Join(commands, " && "), nil
-}
-
-func ensureTrailingSeparator(path string) string {
-	if strings.HasSuffix(path, string(os.PathSeparator)) {
-		return path
-	}
-
-	return path + string(os.PathSeparator)
-}
-
-func publishDirActionCommand(mode, source, target string) string {
-	switch mode {
-	case "link":
-		return fmt.Sprintf("ln -sfn -- %s %s", source, shellQuote(target))
-	case "move":
-		return fmt.Sprintf("mv -f -- %s %s", source, shellQuote(target))
-	default:
-		return fmt.Sprintf("cp -rf -- %s %s", source, shellQuote(target))
-	}
-}
-
-func publishDirSources(proc *Process, bindings []string, params map[string]any, cwd string) []string {
-	if len(proc.Output) == 0 {
-		return nil
-	}
-
-	vars := outputVars(proc, bindings, params)
-
-	sources := make([]string, 0, len(proc.Output))
-	for _, decl := range proc.Output {
-		if decl == nil {
-			continue
-		}
-
-		switch decl.Kind {
-		case "path", "file":
-			pattern, ok := resolvedOutputPattern(decl.Expr, decl.Name, vars, cwd)
-			if !ok || pattern == "" {
-				continue
-			}
-
-			sources = appendUniqueStrings(sources, []string{pattern})
-		case "tuple":
-			for _, element := range decl.Elements {
-				if element == nil || (element.Kind != "path" && element.Kind != "file") {
-					continue
-				}
-
-				pattern, ok := resolvedOutputPattern(element.Expr, element.Name, vars, cwd)
-				if !ok || pattern == "" {
-					continue
-				}
-
-				sources = appendUniqueStrings(sources, []string{pattern})
-			}
-		}
-	}
-
-	return sources
-}
-
-func resolvePublishDirTarget(path string, params map[string]any, tc TranslateConfig) (string, error) {
-	resolved, err := SubstituteParams(path, params)
-	if err != nil {
-		return "", err
-	}
-
-	if filepath.IsAbs(resolved) {
-		return filepath.Clean(resolved), nil
-	}
-
-	base := tc.Cwd
-	if tc.WorkflowPath != "" {
-		base = filepath.Dir(tc.WorkflowPath)
-	}
-
-	return filepath.Clean(filepath.Join(base, resolved)), nil
-}
-
-func detectPendingInputs(call *Call, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
-	if call == nil || len(call.Args) == 0 {
-		return nil, nil, nil
-	}
-
-	awaitDepGrps := []string{}
-	awaitRepGrps := []string{}
-	seenDepGrps := make(map[string]struct{})
-	seenRepGrps := make(map[string]struct{})
-
-	for _, arg := range call.Args {
-		depGrps, repGrps, err := detectPendingArg(arg, scope, translated)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		for _, depGrp := range depGrps {
-			if _, seen := seenDepGrps[depGrp]; seen {
-				continue
-			}
-
-			awaitDepGrps = append(awaitDepGrps, depGrp)
-			seenDepGrps[depGrp] = struct{}{}
-		}
-
-		for _, repGrp := range repGrps {
-			if _, seen := seenRepGrps[repGrp]; seen {
-				continue
-			}
-
-			awaitRepGrps = append(awaitRepGrps, repGrp)
-			seenRepGrps[repGrp] = struct{}{}
-		}
-	}
-
-	if len(awaitDepGrps) == 0 && len(awaitRepGrps) == 0 {
-		return nil, nil, nil
-	}
-
-	return awaitDepGrps, awaitRepGrps, nil
-}
-
-func detectPendingArg(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, []string, error) {
-	switch expr := arg.(type) {
-	case ChanRef:
-		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
-		}
-
-		if stage.skipped {
-			return nil, nil, nil
-		}
-
-		if !stage.dynamicOutput && !stage.pending {
-			return nil, nil, nil
-		}
-
-		if stage.pending {
-			return nil, []string{stage.repGroup}, nil
-		}
-
-		deps := cloneStrings(stage.depGroups)
-		if len(deps) == 0 && stage.depGroup != "" {
-			deps = []string{stage.depGroup}
-		}
-
-		return deps, []string{stage.repGroup}, nil
-	case NamedChannelRef:
-		return detectPendingArg(expr.Source, scope, translated)
-	case ChannelChain:
-		if channelChainWaitsForAllItems(expr) {
-			repGrps, err := translatedChannelExprRepGroups(expr, scope, translated)
-			if err != nil {
-				return nil, nil, err
-			}
-
-			if len(repGrps) > 0 {
-				return nil, repGrps, nil
-			}
-		}
-
-		depGrps, repGrps, err := detectPendingArg(expr.Source, scope, translated)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		for _, operator := range expr.Operators {
-			for _, channel := range operator.Channels {
-				channelDepGrps, channelRepGrps, channelErr := detectPendingArg(channel, scope, translated)
-				if channelErr != nil {
-					return nil, nil, channelErr
-				}
-
-				depGrps = appendUniqueStrings(depGrps, channelDepGrps)
-				repGrps = appendUniqueStrings(repGrps, channelRepGrps)
-			}
-		}
-
-		return depGrps, repGrps, nil
-	case PipeExpr:
-		depGrps := []string{}
-		repGrps := []string{}
-		seenDepGrps := make(map[string]struct{})
-		seenRepGrps := make(map[string]struct{})
-
-		for _, stage := range expr.Stages {
-			stageDepGrps, stageRepGrps, err := detectPendingArg(stage, scope, translated)
-			if err != nil {
-				if _, ok := stage.(ChanRef); ok {
-					continue
-				}
-
-				return nil, nil, err
-			}
-
-			for _, depGrp := range stageDepGrps {
-				if _, seen := seenDepGrps[depGrp]; seen {
-					continue
-				}
-
-				depGrps = append(depGrps, depGrp)
-				seenDepGrps[depGrp] = struct{}{}
-			}
-
-			for _, repGrp := range stageRepGrps {
-				if _, seen := seenRepGrps[repGrp]; seen {
-					continue
-				}
-
-				repGrps = append(repGrps, repGrp)
-				seenRepGrps[repGrp] = struct{}{}
-			}
-		}
-
-		return depGrps, repGrps, nil
-	default:
-		return nil, nil, nil
-	}
-}
-
-func hasDynamicOutputs(proc *Process) bool {
-	if proc == nil {
-		return false
-	}
-
-	for _, decl := range proc.Output {
-		if decl == nil {
-			continue
-		}
-
-		if decl.Kind == "path" || decl.Kind == "file" {
-			return true
-		}
-	}
-
-	return false
-}
-
-func cloneTranslatedCalls(translated map[string]translatedCall) map[string]translatedCall {
-	if len(translated) == 0 {
-		return nil
-	}
-
-	clone := make(map[string]translatedCall, len(translated))
-	for key, value := range translated {
-		clone[key] = cloneTranslatedCall(value)
-	}
-
-	return clone
-}
-
-func cloneStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-
-	clone := make([]string, len(values))
-	copy(clone, values)
-
-	return clone
-}
-
-func cloneParams(params map[string]any) map[string]any {
-	if len(params) == 0 {
-		return nil
-	}
-
-	clone := make(map[string]any, len(params))
-	for key, value := range params {
-		clone[key] = value
-	}
-
-	return clone
-}
-
 func indexedCwd(cwd string) (string, int, bool) {
 	parent, indexes, ok := indexedCwdOrder(cwd)
 	if !ok || len(indexes) != 1 {
@@ -5952,76 +6205,6 @@ func indexedCwd(cwd string) (string, int, bool) {
 	}
 
 	return parent, indexes[0], true
-}
-
-func itemBinding(item any) string {
-	switch value := item.(type) {
-	case []string:
-		return strings.Join(value, " ")
-	case []any:
-		parts := make([]string, 0, len(value))
-		for _, part := range value {
-			parts = append(parts, itemBinding(part))
-		}
-
-		return strings.Join(parts, " ")
-	default:
-		return fmt.Sprint(value)
-	}
-}
-
-func channelItemValue(paths []string) any {
-	if len(paths) == 0 {
-		return ""
-	}
-
-	if len(paths) == 1 {
-		return paths[0]
-	}
-
-	return cloneStrings(paths)
-}
-
-func appendUniqueStrings(existing []string, values []string) []string {
-	seen := make(map[string]struct{}, len(existing))
-	for _, value := range existing {
-		seen[value] = struct{}{}
-	}
-
-	for _, value := range values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-
-		existing = append(existing, value)
-		seen[value] = struct{}{}
-	}
-
-	return existing
-}
-
-func depGroupsToDependencies(depGroups []string) jobqueue.Dependencies {
-	if len(depGroups) == 0 {
-		return nil
-	}
-
-	dependencies := make(jobqueue.Dependencies, 0, len(depGroups))
-	for _, depGroup := range depGroups {
-		dependencies = append(dependencies, jobqueue.NewDepGroupDependency(depGroup))
-	}
-
-	return dependencies
-}
-
-type selectorMatch struct {
-	specificity int
-	settings    *ProcessDefaults
-}
-
-type workflowConditionBranch struct {
-	scopeName string
-	condition string
-	calls     []*Call
 }
 
 func processIndex(processes []*Process) (map[string]*Process, error) {
@@ -6085,189 +6268,6 @@ func effectiveDefaults(cfg *Config, profileName string) *ProcessDefaults {
 	}
 
 	return defaults
-}
-
-func mergeDefaults(base *ProcessDefaults, override *ProcessDefaults) *ProcessDefaults {
-	merged := cloneDefaults(base)
-	if override == nil {
-		return merged
-	}
-
-	if override.Cpus != 0 {
-		merged.Cpus = override.Cpus
-	}
-
-	if override.Memory != 0 {
-		merged.Memory = override.Memory
-	}
-
-	if override.Time != 0 {
-		merged.Time = override.Time
-	}
-
-	if override.Disk != 0 {
-		merged.Disk = override.Disk
-	}
-
-	if override.Container != "" {
-		merged.Container = override.Container
-	}
-
-	if override.ErrorStrategy != nil {
-		merged.ErrorStrategy = cloneExtValue(override.ErrorStrategy)
-	}
-
-	if override.MaxRetries != nil {
-		merged.MaxRetries = cloneExtValue(override.MaxRetries)
-	}
-
-	if override.MaxForks != nil {
-		merged.MaxForks = cloneExtValue(override.MaxForks)
-	}
-
-	if len(override.PublishDir) > 0 {
-		merged.PublishDir = clonePublishDirs(override.PublishDir)
-	}
-
-	if override.Queue != nil {
-		merged.Queue = cloneExtValue(override.Queue)
-	}
-
-	if override.ClusterOptions != nil {
-		merged.ClusterOptions = cloneExtValue(override.ClusterOptions)
-	}
-
-	if len(override.Ext) > 0 {
-		merged.Ext = mergeExtValues(merged.Ext, override.Ext)
-	}
-
-	if override.ContainerOptions != nil {
-		merged.ContainerOptions = cloneExtValue(override.ContainerOptions)
-	}
-
-	if override.Accelerator != nil {
-		merged.Accelerator = cloneExtValue(override.Accelerator)
-	}
-
-	if override.Arch != nil {
-		merged.Arch = cloneExtValue(override.Arch)
-	}
-
-	if override.Shell != nil {
-		merged.Shell = cloneExtValue(override.Shell)
-	}
-
-	if override.BeforeScript != nil {
-		merged.BeforeScript = cloneExtValue(override.BeforeScript)
-	}
-
-	if override.AfterScript != nil {
-		merged.AfterScript = cloneExtValue(override.AfterScript)
-	}
-
-	if override.Cache != nil {
-		merged.Cache = cloneExtValue(override.Cache)
-	}
-
-	if override.Scratch != nil {
-		merged.Scratch = cloneExtValue(override.Scratch)
-	}
-
-	if override.StoreDir != nil {
-		merged.StoreDir = cloneExtValue(override.StoreDir)
-	}
-
-	if override.Module != nil {
-		merged.Module = cloneExtValue(override.Module)
-	}
-
-	if override.Conda != nil {
-		merged.Conda = cloneExtValue(override.Conda)
-	}
-
-	if override.Spack != nil {
-		merged.Spack = cloneExtValue(override.Spack)
-	}
-
-	if override.Fair != nil {
-		merged.Fair = cloneExtValue(override.Fair)
-	}
-
-	if override.Tag != nil {
-		merged.Tag = cloneExtValue(override.Tag)
-	}
-
-	if len(override.Directives) > 0 {
-		if merged.Directives == nil {
-			merged.Directives = make(map[string]any, len(override.Directives))
-		}
-
-		for key, value := range override.Directives {
-			merged.Directives[key] = cloneExtValue(value)
-		}
-	}
-
-	if len(override.Env) > 0 {
-		if merged.Env == nil {
-			merged.Env = make(map[string]string, len(override.Env))
-		}
-
-		for key, value := range override.Env {
-			merged.Env[key] = value
-		}
-	}
-
-	return merged
-}
-
-func cloneDefaults(defaults *ProcessDefaults) *ProcessDefaults {
-	if defaults == nil {
-		return &ProcessDefaults{}
-	}
-
-	clone := &ProcessDefaults{
-		Cpus:             defaults.Cpus,
-		Memory:           defaults.Memory,
-		Time:             defaults.Time,
-		Disk:             defaults.Disk,
-		Container:        defaults.Container,
-		ErrorStrategy:    cloneExtValue(defaults.ErrorStrategy),
-		MaxRetries:       cloneExtValue(defaults.MaxRetries),
-		MaxForks:         cloneExtValue(defaults.MaxForks),
-		PublishDir:       clonePublishDirs(defaults.PublishDir),
-		Queue:            cloneExtValue(defaults.Queue),
-		ClusterOptions:   cloneExtValue(defaults.ClusterOptions),
-		Ext:              cloneExtMap(defaults.Ext),
-		ContainerOptions: cloneExtValue(defaults.ContainerOptions),
-		Accelerator:      cloneExtValue(defaults.Accelerator),
-		Arch:             cloneExtValue(defaults.Arch),
-		Shell:            cloneExtValue(defaults.Shell),
-		BeforeScript:     cloneExtValue(defaults.BeforeScript),
-		AfterScript:      cloneExtValue(defaults.AfterScript),
-		Cache:            cloneExtValue(defaults.Cache),
-		Scratch:          cloneExtValue(defaults.Scratch),
-		StoreDir:         cloneExtValue(defaults.StoreDir),
-		Module:           cloneExtValue(defaults.Module),
-		Conda:            cloneExtValue(defaults.Conda),
-		Spack:            cloneExtValue(defaults.Spack),
-		Fair:             cloneExtValue(defaults.Fair),
-		Tag:              cloneExtValue(defaults.Tag),
-	}
-	if len(defaults.Directives) > 0 {
-		clone.Directives = make(map[string]any, len(defaults.Directives))
-		for key, value := range defaults.Directives {
-			clone.Directives[key] = cloneExtValue(value)
-		}
-	}
-
-	if len(defaults.Env) > 0 {
-		clone.Env = make(map[string]string, len(defaults.Env))
-		for key, value := range defaults.Env {
-			clone.Env[key] = value
-		}
-	}
-
-	return clone
 }
 
 func effectiveSelectors(cfg *Config, profileName string) []*ProcessSelector {
