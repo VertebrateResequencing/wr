@@ -36,6 +36,12 @@ For each SYN-* feature in nf-0100-syntax-basics.md:
 - SYN-closure
 - SYN-closure-params
 - SYN-gstring-lazy
+- SYN-feature-flag
+- SYN-constructor
+- SYN-named-args
+- SYN-index-expr
+- SYN-property-expr
+- SYN-scoping
 
 ### Output format
 

@@ -58,13 +58,25 @@ params.input = '/data/reads.fq'
 ```
 
 ### PARAM-block
-Parameter block:
+Parameter block (legacy):
 ```groovy
 params {
     input = '/data/reads.fq'
     output = './results'
 }
 ```
+
+### PARAM-typed-block
+Typed params block (new syntax). Each parameter has a name, type, and
+optional default value:
+```groovy
+params {
+    input: Path
+    save_intermeds: Boolean = false
+}
+```
+Only one params block may be defined per script. Types are resolved against
+the standard library type system.
 
 ### PARAM-cli
 Command-line parameter override: `--input /other/path`.
