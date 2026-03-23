@@ -16,11 +16,12 @@ For each feature ID in nf-1100-process-sections.md, determine its classification
 
 ### Features to classify
 
-- PSEC-inputs-and-outputs-legacy, PSEC-inputs, PSEC-generic-options, PSEC-directives
+- PSEC-script, PSEC-exec, PSEC-stub, PSEC-inputs-and-outputs-legacy, PSEC-inputs
+  PSEC-generic-options, PSEC-directives
 
 ### Output format
 
 ```
-PSEC-inputs-and-outputs-legacy: SUPPORTED | reason
+PSEC-script: SUPPORTED | reason
 ...
 ```

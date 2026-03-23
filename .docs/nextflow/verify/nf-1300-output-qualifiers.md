@@ -13,26 +13,26 @@
 ### OUT-path
 `path( pattern, [options] )` — TODO: describe expected behaviour.
 
-### OUT-arity
-`arity` — TODO: describe expected behaviour.
+### OUT-path-arity
+`path.arity` — TODO: describe expected behaviour.
 
-### OUT-followLinks
-`followLinks` — TODO: describe expected behaviour.
+### OUT-path-followLinks
+`path.followLinks` — TODO: describe expected behaviour.
 
-### OUT-glob
-`glob` — TODO: describe expected behaviour.
+### OUT-path-glob
+`path.glob` — TODO: describe expected behaviour.
 
-### OUT-hidden
-`hidden` — TODO: describe expected behaviour.
+### OUT-path-hidden
+`path.hidden` — TODO: describe expected behaviour.
 
-### OUT-includeInputs
-`includeInputs` — TODO: describe expected behaviour.
+### OUT-path-includeInputs
+`path.includeInputs` — TODO: describe expected behaviour.
 
-### OUT-maxDepth
-`maxDepth` — TODO: describe expected behaviour.
+### OUT-path-maxDepth
+`path.maxDepth` — TODO: describe expected behaviour.
 
-### OUT-type
-`type` — TODO: describe expected behaviour.
+### OUT-path-type
+`path.type` — TODO: describe expected behaviour.
 
 ### OUT-env
 `env( name )` — TODO: describe expected behaviour.

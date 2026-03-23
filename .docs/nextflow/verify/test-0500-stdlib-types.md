@@ -16,15 +16,15 @@ For each feature ID in nf-0500-stdlib-types.md, determine its classification.
 
 ### Features to classify
 
-- TYPE-bage, TYPE-boolean, TYPE-channele, TYPE-duration, TYPE-float
-  TYPE-integer, TYPE-iterablee, TYPE-liste, TYPE-mapkv, TYPE-memoryunit
+- TYPE-bag, TYPE-boolean, TYPE-channel, TYPE-duration, TYPE-float
+  TYPE-integer, TYPE-iterable, TYPE-list, TYPE-map, TYPE-memoryunit
   TYPE-path, TYPE-operations, TYPE-filesystem-attributes, TYPE-reading, TYPE-writing
-  TYPE-filesystem-operations, TYPE-splitting-files, TYPE-record, TYPE-sete, TYPE-string
-  TYPE-tuple, TYPE-valuev, TYPE-versionnumber
+  TYPE-filesystem-operations, TYPE-splitting-files, TYPE-record, TYPE-set, TYPE-string
+  TYPE-tuple, TYPE-value, TYPE-versionnumber
 
 ### Output format
 
 ```
-TYPE-bage: SUPPORTED | reason
+TYPE-bag: SUPPORTED | reason
 ...
 ```

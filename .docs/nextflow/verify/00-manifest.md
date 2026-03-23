@@ -82,21 +82,31 @@ Use `00-audit.py` to validate consistency.
 | METH-iterable-findAll | nf-0400-groovy-methods.md |
 | METH-iterable-groupBy | nf-0400-groovy-methods.md |
 | METH-iterable-inject | nf-0400-groovy-methods.md |
+| METH-iterable-inject-3 | nf-0400-groovy-methods.md |
 | METH-iterable-isEmpty | nf-0400-groovy-methods.md |
 | METH-iterable-join | nf-0400-groovy-methods.md |
 | METH-iterable-max | nf-0400-groovy-methods.md |
+| METH-iterable-max-1 | nf-0400-groovy-methods.md |
+| METH-iterable-max-2 | nf-0400-groovy-methods.md |
 | METH-iterable-min | nf-0400-groovy-methods.md |
+| METH-iterable-min-1 | nf-0400-groovy-methods.md |
+| METH-iterable-min-2 | nf-0400-groovy-methods.md |
 | METH-iterable-size | nf-0400-groovy-methods.md |
 | METH-iterable-sum | nf-0400-groovy-methods.md |
+| METH-iterable-sum-1 | nf-0400-groovy-methods.md |
 | METH-iterable-toList | nf-0400-groovy-methods.md |
 | METH-iterable-toSet | nf-0400-groovy-methods.md |
 | METH-iterable-toSorted | nf-0400-groovy-methods.md |
+| METH-iterable-toSorted-1 | nf-0400-groovy-methods.md |
+| METH-iterable-toSorted-2 | nf-0400-groovy-methods.md |
 | METH-iterable-toUnique | nf-0400-groovy-methods.md |
+| METH-iterable-toUnique-2 | nf-0400-groovy-methods.md |
 | METH-list-plus | nf-0400-groovy-methods.md |
 | METH-list-multiply | nf-0400-groovy-methods.md |
 | METH-list-getAt | nf-0400-groovy-methods.md |
 | METH-list-membership | nf-0400-groovy-methods.md |
 | METH-list-collate | nf-0400-groovy-methods.md |
+| METH-list-collate-3 | nf-0400-groovy-methods.md |
 | METH-list-find | nf-0400-groovy-methods.md |
 | METH-list-first | nf-0400-groovy-methods.md |
 | METH-list-getIndices | nf-0400-groovy-methods.md |
@@ -163,11 +173,12 @@ Use `00-audit.py` to validate consistency.
 | METH-path-mkdir | nf-0400-groovy-methods.md |
 | METH-path-mkdirs | nf-0400-groovy-methods.md |
 | METH-path-mklink | nf-0400-groovy-methods.md |
-| METH-path-hard | nf-0400-groovy-methods.md |
-| METH-path-overwrite | nf-0400-groovy-methods.md |
+| METH-path-mklink-hard | nf-0400-groovy-methods.md |
+| METH-path-mklink-overwrite | nf-0400-groovy-methods.md |
 | METH-path-moveTo | nf-0400-groovy-methods.md |
 | METH-path-renameTo | nf-0400-groovy-methods.md |
 | METH-path-setPermissions | nf-0400-groovy-methods.md |
+| METH-path-setPermissions-3 | nf-0400-groovy-methods.md |
 | METH-path-eachFile | nf-0400-groovy-methods.md |
 | METH-path-eachFileRecurse | nf-0400-groovy-methods.md |
 | METH-path-listDirectory | nf-0400-groovy-methods.md |
@@ -197,6 +208,7 @@ Use `00-audit.py` to validate consistency.
 | METH-string-endsWith | nf-0400-groovy-methods.md |
 | METH-string-execute | nf-0400-groovy-methods.md |
 | METH-string-indexOf | nf-0400-groovy-methods.md |
+| METH-string-indexOf-2 | nf-0400-groovy-methods.md |
 | METH-string-isBlank | nf-0400-groovy-methods.md |
 | METH-string-isEmpty | nf-0400-groovy-methods.md |
 | METH-string-isDouble | nf-0400-groovy-methods.md |
@@ -204,6 +216,7 @@ Use `00-audit.py` to validate consistency.
 | METH-string-isInteger | nf-0400-groovy-methods.md |
 | METH-string-isLong | nf-0400-groovy-methods.md |
 | METH-string-lastIndexOf | nf-0400-groovy-methods.md |
+| METH-string-lastIndexOf-2 | nf-0400-groovy-methods.md |
 | METH-string-length | nf-0400-groovy-methods.md |
 | METH-string-md5 | nf-0400-groovy-methods.md |
 | METH-string-replace | nf-0400-groovy-methods.md |
@@ -216,6 +229,7 @@ Use `00-audit.py` to validate consistency.
 | METH-string-stripLeading | nf-0400-groovy-methods.md |
 | METH-string-stripTrailing | nf-0400-groovy-methods.md |
 | METH-string-substring | nf-0400-groovy-methods.md |
+| METH-string-substring-2 | nf-0400-groovy-methods.md |
 | METH-string-toBoolean | nf-0400-groovy-methods.md |
 | METH-string-toDouble | nf-0400-groovy-methods.md |
 | METH-string-toFloat | nf-0400-groovy-methods.md |
@@ -229,24 +243,38 @@ Use `00-audit.py` to validate consistency.
 | METH-value-map | nf-0400-groovy-methods.md |
 | METH-value-subscribe | nf-0400-groovy-methods.md |
 | METH-value-view | nf-0400-groovy-methods.md |
+| METH-value-view-1 | nf-0400-groovy-methods.md |
 | METH-versionnumber-getMajor | nf-0400-groovy-methods.md |
 | METH-versionnumber-getMinor | nf-0400-groovy-methods.md |
 | METH-versionnumber-getPatch | nf-0400-groovy-methods.md |
 | METH-versionnumber-matches | nf-0400-groovy-methods.md |
 
+## nf-0450-groovy-imports.md — Groovy & Java Imports
+
+| Feature ID | nf- file |
+|------------|----------|
+| METH-groovy-lang | nf-0450-groovy-imports.md |
+| METH-groovy-util | nf-0450-groovy-imports.md |
+| METH-java-io | nf-0450-groovy-imports.md |
+| METH-java-lang | nf-0450-groovy-imports.md |
+| METH-java-math-BigDecimal | nf-0450-groovy-imports.md |
+| METH-java-math-BigInteger | nf-0450-groovy-imports.md |
+| METH-java-net | nf-0450-groovy-imports.md |
+| METH-java-util | nf-0450-groovy-imports.md |
+
 ## nf-0500-stdlib-types.md — Standard Library Types
 
 | Feature ID | nf- file |
 |------------|----------|
-| TYPE-bage | nf-0500-stdlib-types.md |
+| TYPE-bag | nf-0500-stdlib-types.md |
 | TYPE-boolean | nf-0500-stdlib-types.md |
-| TYPE-channele | nf-0500-stdlib-types.md |
+| TYPE-channel | nf-0500-stdlib-types.md |
 | TYPE-duration | nf-0500-stdlib-types.md |
 | TYPE-float | nf-0500-stdlib-types.md |
 | TYPE-integer | nf-0500-stdlib-types.md |
-| TYPE-iterablee | nf-0500-stdlib-types.md |
-| TYPE-liste | nf-0500-stdlib-types.md |
-| TYPE-mapkv | nf-0500-stdlib-types.md |
+| TYPE-iterable | nf-0500-stdlib-types.md |
+| TYPE-list | nf-0500-stdlib-types.md |
+| TYPE-map | nf-0500-stdlib-types.md |
 | TYPE-memoryunit | nf-0500-stdlib-types.md |
 | TYPE-path | nf-0500-stdlib-types.md |
 | TYPE-operations | nf-0500-stdlib-types.md |
@@ -256,10 +284,10 @@ Use `00-audit.py` to validate consistency.
 | TYPE-filesystem-operations | nf-0500-stdlib-types.md |
 | TYPE-splitting-files | nf-0500-stdlib-types.md |
 | TYPE-record | nf-0500-stdlib-types.md |
-| TYPE-sete | nf-0500-stdlib-types.md |
+| TYPE-set | nf-0500-stdlib-types.md |
 | TYPE-string | nf-0500-stdlib-types.md |
 | TYPE-tuple | nf-0500-stdlib-types.md |
-| TYPE-valuev | nf-0500-stdlib-types.md |
+| TYPE-value | nf-0500-stdlib-types.md |
 | TYPE-versionnumber | nf-0500-stdlib-types.md |
 
 ## nf-1000-includes-params.md — Includes & Parameters
@@ -274,6 +302,9 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
+| PSEC-script | nf-1100-process-sections.md |
+| PSEC-exec | nf-1100-process-sections.md |
+| PSEC-stub | nf-1100-process-sections.md |
 | PSEC-inputs-and-outputs-legacy | nf-1100-process-sections.md |
 | PSEC-inputs | nf-1100-process-sections.md |
 | PSEC-generic-options | nf-1100-process-sections.md |
@@ -286,9 +317,9 @@ Use `00-audit.py` to validate consistency.
 | INP-val | nf-1200-input-qualifiers.md |
 | INP-file | nf-1200-input-qualifiers.md |
 | INP-path | nf-1200-input-qualifiers.md |
-| INP-arity | nf-1200-input-qualifiers.md |
-| INP-name | nf-1200-input-qualifiers.md |
-| INP-stageAs | nf-1200-input-qualifiers.md |
+| INP-path-arity | nf-1200-input-qualifiers.md |
+| INP-path-name | nf-1200-input-qualifiers.md |
+| INP-path-stageAs | nf-1200-input-qualifiers.md |
 | INP-env | nf-1200-input-qualifiers.md |
 | INP-stdin | nf-1200-input-qualifiers.md |
 | INP-tuple | nf-1200-input-qualifiers.md |
@@ -300,13 +331,13 @@ Use `00-audit.py` to validate consistency.
 | OUT-val | nf-1300-output-qualifiers.md |
 | OUT-file | nf-1300-output-qualifiers.md |
 | OUT-path | nf-1300-output-qualifiers.md |
-| OUT-arity | nf-1300-output-qualifiers.md |
-| OUT-followLinks | nf-1300-output-qualifiers.md |
-| OUT-glob | nf-1300-output-qualifiers.md |
-| OUT-hidden | nf-1300-output-qualifiers.md |
-| OUT-includeInputs | nf-1300-output-qualifiers.md |
-| OUT-maxDepth | nf-1300-output-qualifiers.md |
-| OUT-type | nf-1300-output-qualifiers.md |
+| OUT-path-arity | nf-1300-output-qualifiers.md |
+| OUT-path-followLinks | nf-1300-output-qualifiers.md |
+| OUT-path-glob | nf-1300-output-qualifiers.md |
+| OUT-path-hidden | nf-1300-output-qualifiers.md |
+| OUT-path-includeInputs | nf-1300-output-qualifiers.md |
+| OUT-path-maxDepth | nf-1300-output-qualifiers.md |
+| OUT-path-type | nf-1300-output-qualifiers.md |
 | OUT-env | nf-1300-output-qualifiers.md |
 | OUT-stdout | nf-1300-output-qualifiers.md |
 | OUT-eval | nf-1300-output-qualifiers.md |
@@ -573,12 +604,12 @@ Use `00-audit.py` to validate consistency.
 | BV-error | nf-4500-builtins.md |
 | BV-exit | nf-4500-builtins.md |
 | BV-file | nf-4500-builtins.md |
-| BV-checkIfExists | nf-4500-builtins.md |
-| BV-followLinks | nf-4500-builtins.md |
-| BV-glob | nf-4500-builtins.md |
-| BV-hidden | nf-4500-builtins.md |
-| BV-maxDepth | nf-4500-builtins.md |
-| BV-type | nf-4500-builtins.md |
+| BV-file-checkIfExists | nf-4500-builtins.md |
+| BV-file-followLinks | nf-4500-builtins.md |
+| BV-file-glob | nf-4500-builtins.md |
+| BV-file-hidden | nf-4500-builtins.md |
+| BV-file-maxDepth | nf-4500-builtins.md |
+| BV-file-type | nf-4500-builtins.md |
 | BV-files | nf-4500-builtins.md |
 | BV-groupKey | nf-4500-builtins.md |
 | BV-multiMapCriteria | nf-4500-builtins.md |
@@ -607,8 +638,8 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-exitStatus | nf-4500-builtins.md |
 | BV-workflow-failOnIgnore | nf-4500-builtins.md |
 | BV-workflow-fusion | nf-4500-builtins.md |
-| BV-workflow-enabled | nf-4500-builtins.md |
-| BV-workflow-version | nf-4500-builtins.md |
+| BV-workflow-fusion-enabled | nf-4500-builtins.md |
+| BV-workflow-fusion-version | nf-4500-builtins.md |
 | BV-workflow-homeDir | nf-4500-builtins.md |
 | BV-workflow-launchDir | nf-4500-builtins.md |
 | BV-workflow-manifest | nf-4500-builtins.md |
@@ -629,8 +660,9 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-success | nf-4500-builtins.md |
 | BV-workflow-userName | nf-4500-builtins.md |
 | BV-workflow-wave | nf-4500-builtins.md |
+| BV-workflow-wave-enabled | nf-4500-builtins.md |
 | BV-workflow-workDir | nf-4500-builtins.md |
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 483 feature IDs across 29 files.**
+**Total: 510 feature IDs across 30 files.**

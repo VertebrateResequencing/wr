@@ -16,8 +16,8 @@ For each feature ID in nf-1200-input-qualifiers.md, determine its classification
 
 ### Features to classify
 
-- INP-val, INP-file, INP-path, INP-arity, INP-name
-  INP-stageAs, INP-env, INP-stdin, INP-tuple
+- INP-val, INP-file, INP-path, INP-path-arity, INP-path-name
+  INP-path-stageAs, INP-env, INP-stdin, INP-tuple
 
 ### Output format
 

@@ -55,6 +55,9 @@
 ### METH-iterable-inject
 `inject( accumulator: (E,E) -> E ) -> E` — TODO: describe expected behaviour.
 
+### METH-iterable-inject-3
+`inject( initialValue: R, accumulator: (R,E) -> R ) -> R` — TODO: describe expected behaviour.
+
 ### METH-iterable-isEmpty
 `isEmpty() -> Boolean` — TODO: describe expected behaviour.
 
@@ -64,14 +67,29 @@
 ### METH-iterable-max
 `max() -> E` — TODO: describe expected behaviour.
 
+### METH-iterable-max-1
+`max( comparator: (E) -> R ) -> E` — TODO: describe expected behaviour.
+
+### METH-iterable-max-2
+`max( comparator: (E,E) -> Integer ) -> E` — TODO: describe expected behaviour.
+
 ### METH-iterable-min
 `min() -> E` — TODO: describe expected behaviour.
+
+### METH-iterable-min-1
+`min( comparator: (E) -> R ) -> E` — TODO: describe expected behaviour.
+
+### METH-iterable-min-2
+`min( comparator: (E,E) -> Integer ) -> E` — TODO: describe expected behaviour.
 
 ### METH-iterable-size
 `size() -> Integer` — TODO: describe expected behaviour.
 
 ### METH-iterable-sum
 `sum() -> E` — TODO: describe expected behaviour.
+
+### METH-iterable-sum-1
+`sum( transform: (E) -> R ) -> R` — TODO: describe expected behaviour.
 
 ### METH-iterable-toList
 `toList() -> List<E>` — TODO: describe expected behaviour.
@@ -82,8 +100,17 @@
 ### METH-iterable-toSorted
 `toSorted() -> List<E>` — TODO: describe expected behaviour.
 
+### METH-iterable-toSorted-1
+`toSorted( comparator: (E) -> R ) -> List<E>` — TODO: describe expected behaviour.
+
+### METH-iterable-toSorted-2
+`toSorted( comparator: (E,E) -> Integer ) -> List<E>` — TODO: describe expected behaviour.
+
 ### METH-iterable-toUnique
 `toUnique() -> Iterable<E>` — TODO: describe expected behaviour.
+
+### METH-iterable-toUnique-2
+`toUnique( comparator: (E,E) -> Integer ) -> Iterable<E>` — TODO: describe expected behaviour.
 
 ### METH-list-plus
 `+ : (List<E>, List<E>) -> List<E>` — TODO: describe expected behaviour.
@@ -99,6 +126,9 @@
 
 ### METH-list-collate
 `collate( size: Integer, keepRemainder: Boolean = true ) -> List<List<E>>` — TODO: describe expected behaviour.
+
+### METH-list-collate-3
+`collate( size: Integer, step: Integer, keepRemainder: Boolean = true ) -> List<List<E>>` — TODO: describe expected behaviour.
 
 ### METH-list-find
 `find( condition: (E) -> Boolean ) -> E` — TODO: describe expected behaviour.
@@ -298,11 +328,11 @@
 ### METH-path-mklink
 `mklink( linkName: String, [options] ) -> Path` — TODO: describe expected behaviour.
 
-### METH-path-hard
-`hard: Boolean` — TODO: describe expected behaviour.
+### METH-path-mklink-hard
+`mklink.hard: Boolean` — TODO: describe expected behaviour.
 
-### METH-path-overwrite
-`overwrite: Boolean` — TODO: describe expected behaviour.
+### METH-path-mklink-overwrite
+`mklink.overwrite: Boolean` — TODO: describe expected behaviour.
 
 ### METH-path-moveTo
 `moveTo( target: Path )` — TODO: describe expected behaviour.
@@ -312,6 +342,9 @@
 
 ### METH-path-setPermissions
 `setPermissions( permissions: String ) -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-setPermissions-3
+`setPermissions( owner: Integer, group: Integer, other: Integer ) -> Boolean` — TODO: describe expected behaviour.
 
 ### METH-path-eachFile
 `eachFile( action: (Path) -> () )` — TODO: describe expected behaviour.
@@ -400,6 +433,9 @@
 ### METH-string-indexOf
 `indexOf( str: String ) -> Integer` — TODO: describe expected behaviour.
 
+### METH-string-indexOf-2
+`indexOf( str: String, fromIndex: Integer ) -> Integer` — TODO: describe expected behaviour.
+
 ### METH-string-isBlank
 `isBlank() -> Boolean` — TODO: describe expected behaviour.
 
@@ -420,6 +456,9 @@
 
 ### METH-string-lastIndexOf
 `lastIndexOf( str: String ) -> Integer` — TODO: describe expected behaviour.
+
+### METH-string-lastIndexOf-2
+`lastIndexOf( str: String, fromIndex: Integer ) -> Integer` — TODO: describe expected behaviour.
 
 ### METH-string-length
 `length() -> Integer` — TODO: describe expected behaviour.
@@ -456,6 +495,9 @@
 
 ### METH-string-substring
 `substring( beginIndex: Integer ) -> String` — TODO: describe expected behaviour.
+
+### METH-string-substring-2
+`substring( beginIndex: Integer, endIndex: Integer ) -> String` — TODO: describe expected behaviour.
 
 ### METH-string-toBoolean
 `toBoolean() -> Boolean` — TODO: describe expected behaviour.
@@ -495,6 +537,9 @@
 
 ### METH-value-view
 `view() -> Value<V>` — TODO: describe expected behaviour.
+
+### METH-value-view-1
+`view( transform: (V) -> String ) -> Value<V>` — TODO: describe expected behaviour.
 
 ### METH-versionnumber-getMajor
 `getMajor() -> String` — TODO: describe expected behaviour.

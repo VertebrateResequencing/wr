@@ -117,6 +117,18 @@ PAGES_CONFIG = [
         ],
     },
     {
+        "url": "https://nextflow.io/docs/latest/reference/stdlib-groovy.html",
+        "files": [
+            {
+                "number": "0450", "slug": "groovy-imports",
+                "title": "Groovy & Java Imports",
+                "prefix": "METH",
+                "extract_mode": "li",
+                "li_filter": r'^(?:java|groovy)\.',
+            },
+        ],
+    },
+    {
         "url": "https://nextflow.io/docs/latest/reference/stdlib-namespaces.html",
         "files": [
             {
@@ -144,6 +156,14 @@ PAGES_CONFIG = [
                 "heading_exact": ["Inputs and outputs (legacy)",
                                   "Inputs", "Generic options",
                                   "Directives"],
+                "manual_features": [
+                    ("PSEC-script",
+                     "script: section of a process definition"),
+                    ("PSEC-exec",
+                     "exec: section of a process definition"),
+                    ("PSEC-stub",
+                     "stub: section of a process definition"),
+                ],
             },
             {
                 "number": "1200", "slug": "input-qualifiers",
@@ -381,12 +401,16 @@ class PageContentExtractor(HTMLParser):
         self._parent_h3 = ""     # most recent H3 text
         self._skip = {"script", "style", "nav", "footer"}
         self._skip_depth = 0
+        self._dl_depth = 0       # <dl> nesting depth
+        self._dt_at_depth = {}   # depth → most recent DT name
 
     def handle_starttag(self, tag, attrs):
         if tag in self._skip:
             self._skip_depth += 1
         if self._skip_depth > 0:
             return
+        if tag == "dl":
+            self._dl_depth += 1
         m = re.match(r'^h([1-6])$', tag)
         if m:
             self._in_tag = "heading"
@@ -402,6 +426,11 @@ class PageContentExtractor(HTMLParser):
     def handle_endtag(self, tag):
         if tag in self._skip:
             self._skip_depth -= 1
+        if tag == "dl" and self._skip_depth == 0:
+            for d in list(self._dt_at_depth):
+                if d > self._dl_depth:
+                    del self._dt_at_depth[d]
+            self._dl_depth = max(0, self._dl_depth - 1)
         if self._in_tag == "heading" and re.match(r'^h[1-6]$', tag):
             text = "".join(self._cur).strip()
             if text:
@@ -415,6 +444,16 @@ class PageContentExtractor(HTMLParser):
         elif self._in_tag == "dt" and tag == "dt":
             text = "".join(self._cur).strip()
             if text:
+                # Track this DT's name at current depth for nesting
+                name_m = re.match(r'([a-zA-Z_]\w*)', text)
+                if name_m:
+                    self._dt_at_depth[self._dl_depth] = name_m.group(1)
+                # Prefix nested DTs with parent name
+                if self._dl_depth > 1:
+                    parent = self._dt_at_depth.get(
+                        self._dl_depth - 1, '')
+                    if parent:
+                        text = f"{parent}.{text}"
                 self.dt_items.append(
                     (self._parent_h2, self._parent_h3, text))
             self._in_tag = None
@@ -454,8 +493,10 @@ def heading_to_feature_id(heading_text, prefix):
         'Error strategy' → PREFIX-error-strategy
         'stageInMode'    → PREFIX-stageInMode
     """
-    # Clean backticks, parens, angle brackets
-    clean = re.sub(r'[`<>()\[\]]', '', heading_text).strip()
+    # Strip generic type params as a unit first: Bag<E> → Bag
+    clean = re.sub(r'<[^>]*>', '', heading_text)
+    # Then strip remaining special chars
+    clean = re.sub(r'[`()\[\]]', '', clean).strip()
 
     # If it's already camelCase or a single known word, use as-is
     if re.match(r'^[a-z][a-zA-Z0-9]*$', clean):
@@ -494,6 +535,21 @@ _OP_MAP = {
 }
 
 
+def li_to_feature_id(li_text, prefix):
+    """Convert a <li> import package name to a feature ID.
+
+    'java.io.*'           → PREFIX-java-io
+    'java.math.BigDecimal' → PREFIX-java-math-BigDecimal
+    """
+    clean = li_text.strip()
+    clean = re.sub(r'\.\*$', '', clean)  # Strip wildcard
+    name = clean.replace('.', '-')
+    name = re.sub(r'[^a-zA-Z0-9-]', '', name)
+    if name:
+        return f"{prefix}-{name}"
+    return None
+
+
 def dt_to_feature_id(dt_text, prefix, section_slug=""):
     """Convert a <dt> definition term to a feature ID.
 
@@ -515,11 +571,14 @@ def dt_to_feature_id(dt_text, prefix, section_slug=""):
         slug = re.sub(r'[^a-zA-Z0-9-]', '', slug)
         return f"{prefix}-{slug}"
 
-    # Dotted property: 'task.attempt', 'workflow.manifest'
-    dot_match = re.match(r'^[a-zA-Z_]+\.([a-zA-Z_][a-zA-Z0-9_]*)$', clean)
-    if dot_match:
-        name = dot_match.group(1)
-        if section_slug:
+    # Dotted property: 'task.attempt', 'fusion.enabled: boolean'
+    dotted_match = re.match(r'^([a-zA-Z_]\w+(?:\.[a-zA-Z_]\w+)+)', clean)
+    if dotted_match:
+        dotted = dotted_match.group(1)
+        name = dotted.replace('.', '-')
+        if section_slug and name.startswith(section_slug + '-'):
+            return f"{prefix}-{name}"
+        elif section_slug:
             return f"{prefix}-{section_slug}-{name}"
         return f"{prefix}-{name}"
 
@@ -791,7 +850,7 @@ def cmd_coverage(_args):
 def extract_features(headings, dt_items, li_items, file_conf):
     """Extract feature IDs from page content for a specific file config.
 
-    Dispatches based on extract_mode: headings (default), dt, dt_sectioned.
+    Dispatches based on extract_mode: headings, dt, dt_sectioned, li.
     """
     mode = file_conf.get("extract_mode", "headings")
     features = []
@@ -812,8 +871,25 @@ def extract_features(headings, dt_items, li_items, file_conf):
     elif mode == "dt_sectioned":
         features.extend(
             _extract_from_dt_sectioned(dt_items, file_conf, seen_ids))
+    elif mode == "li":
+        features.extend(
+            _extract_from_li(li_items, file_conf, seen_ids))
 
     return features
+
+
+def _disambiguate_overload(fid, dt_text):
+    """Append parameter count to disambiguate method overloads."""
+    paren_idx = dt_text.find('(')
+    if paren_idx < 0:
+        return None
+    close_idx = dt_text.find(')', paren_idx)
+    if close_idx <= paren_idx:
+        return None
+    params = dt_text[paren_idx + 1:close_idx].strip()
+    nparams = len([p for p in params.split(',')
+                   if p.strip()]) if params else 0
+    return f"{fid}-{nparams}"
 
 
 def _extract_from_headings(headings, file_conf, seen_ids):
@@ -859,6 +935,8 @@ def _extract_from_dt_flat(dt_items, file_conf, seen_ids):
 
     for _section, _h3, text in dt_items:
         fid = dt_to_feature_id(text, prefix)
+        if fid and fid in seen_ids:
+            fid = _disambiguate_overload(fid, text)
         if fid and fid not in seen_ids:
             seen_ids.add(fid)
             features.append((fid, text, 3))
@@ -897,6 +975,25 @@ def _extract_from_dt_sectioned(dt_items, file_conf, seen_ids):
             section_slug = clean_section_slug(section_h2)
 
         fid = dt_to_feature_id(text, dt_prefix, section_slug)
+        if fid and fid in seen_ids:
+            fid = _disambiguate_overload(fid, text)
+        if fid and fid not in seen_ids:
+            seen_ids.add(fid)
+            features.append((fid, text, 3))
+
+    return features
+
+
+def _extract_from_li(li_items, file_conf, seen_ids):
+    """Extract features from <li> items, optionally filtered by regex."""
+    prefix = file_conf["prefix"]
+    li_filter = file_conf.get("li_filter")
+    features = []
+
+    for _section, text in li_items:
+        if li_filter and not re.search(li_filter, text):
+            continue
+        fid = li_to_feature_id(text, prefix)
         if fid and fid not in seen_ids:
             seen_ids.add(fid)
             features.append((fid, text, 3))
@@ -946,6 +1043,7 @@ NF_TO_IMPL = {
     "0200": ["impl-01-parse.md", "impl-08-groovy.md"],
     "0300": ["impl-08-groovy.md"],
     "0400": ["impl-08-groovy.md"],
+    "0450": ["impl-08-groovy.md"],
     "0500": ["impl-08-groovy.md"],
     "1000": ["impl-10-modules-params.md", "impl-01-parse.md"],
     "1100": ["impl-01-parse.md", "impl-04-translate-jobs.md"],

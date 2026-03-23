@@ -4,6 +4,15 @@
 
 ## Features
 
+### PSEC-script
+`script: section of a process definition` — TODO: describe expected behaviour.
+
+### PSEC-exec
+`exec: section of a process definition` — TODO: describe expected behaviour.
+
+### PSEC-stub
+`stub: section of a process definition` — TODO: describe expected behaviour.
+
 ### PSEC-inputs-and-outputs-legacy
 `Inputs and outputs (legacy)` — TODO: describe expected behaviour.
 
