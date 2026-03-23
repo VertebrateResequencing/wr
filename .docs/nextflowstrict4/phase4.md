@@ -25,8 +25,8 @@ a warning. Merge with existing `clusterOptions`. Depends on J1
 for config-level `accelerator` values. Covering all 4
 acceptance tests from D1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.2: E1 - Map `arch` to LSF cluster options [parallel with 4.1, 4.3, 4.4]
 
@@ -40,8 +40,8 @@ Map `arch` directive to LSF architecture selection in
 LSF, store with a warning. Depends on J1 for config-level
 `arch` values. Covering all 3 acceptance tests from E1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.3: G1 - Map `fair` to job priority [parallel with 4.1, 4.2, 4.4]
 
@@ -54,8 +54,8 @@ with `fair false` or no `fair` directive use default priority 0.
 Depends on J1 for config-level `fair` values. Covering all 3
 acceptance tests from G1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.4: I1 - Translate `errorStrategy 'finish'` [parallel with 4.1, 4.2, 4.3]
 
@@ -71,8 +71,8 @@ to prevent new jobs from starting. Other processes continue
 independently. Depends on J1 for config-level `errorStrategy`
 values. Covering all 4 acceptance tests from I1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

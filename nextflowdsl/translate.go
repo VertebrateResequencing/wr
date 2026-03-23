@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +56,8 @@ const (
 )
 
 var shellSectionInterpolationPattern = regexp.MustCompile(`!\{([^}]+)\}`)
+
+var acceleratorDirectiveTextPattern = regexp.MustCompile(`^\s*(\d+)\s*(?:,\s*type\s*:\s*(?:['"]([^'"]+)['"]|([^,\s]+)))?\s*$`)
 
 // TranslateConfig controls how the AST is translated to wr jobs.
 type TranslateConfig struct {
@@ -809,11 +812,11 @@ func resolveShellDirective(expr any, params map[string]any) (string, error) {
 }
 
 func resolveAcceleratorOptions(proc *Process, params map[string]any, schedulerName string) (string, error) {
-	value, fallbackUsed, err := resolveDirectiveValue("accelerator", proc.Directives["accelerator"], params, defaultDirectiveTask())
+	count, acceleratorType, present, err := resolveAcceleratorDirective(proc.Directives["accelerator"], params)
 	if err != nil {
 		return "", err
 	}
-	if fallbackUsed || value == nil {
+	if !present {
 		return "", nil
 	}
 	if schedulerName != "lsf" {
@@ -821,15 +824,141 @@ func resolveAcceleratorOptions(proc *Process, params map[string]any, schedulerNa
 		return "", nil
 	}
 
-	count, ok := value.(int)
-	if !ok {
-		return "", fmt.Errorf("accelerator directive must evaluate to an integer")
+	if acceleratorType != "" {
+		warnf("nextflowdsl: accelerator type %q is informational only for lsf scheduling\n", acceleratorType)
 	}
 	if count <= 0 {
 		return "", nil
 	}
 
 	return fmt.Sprintf(`-R "select[ngpus>0] rusage[ngpus_physical=%d]"`, count), nil
+}
+
+func resolveAcceleratorDirective(expr any, params map[string]any) (int, string, bool, error) {
+	if expr == nil {
+		return 0, "", false, nil
+	}
+
+	if unsupported, ok := expr.(UnsupportedExpr); ok {
+		count, acceleratorType, err := parseAcceleratorDirectiveText(unsupported.Text)
+		if err != nil {
+			warnf("nextflowdsl: falling back for accelerator directive with unsupported expression %q\n", unsupported.Text)
+			return 0, "", false, nil
+		}
+
+		return count, acceleratorType, true, nil
+	}
+
+	value, fallbackUsed, err := resolveDirectiveValue("accelerator", expr, params, defaultDirectiveTask())
+	if err != nil {
+		return 0, "", false, err
+	}
+	if fallbackUsed || value == nil {
+		return 0, "", false, nil
+	}
+
+	count, acceleratorType, err := acceleratorDirectiveParts(value)
+	if err != nil {
+		return 0, "", false, err
+	}
+
+	return count, acceleratorType, true, nil
+}
+
+func parseAcceleratorDirectiveText(text string) (int, string, error) {
+	matches := acceleratorDirectiveTextPattern.FindStringSubmatch(text)
+	if matches == nil {
+		return 0, "", fmt.Errorf("unsupported accelerator directive %q", text)
+	}
+
+	count, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, "", fmt.Errorf("accelerator directive must evaluate to an integer")
+	}
+
+	acceleratorType := matches[2]
+	if acceleratorType == "" {
+		acceleratorType = matches[3]
+	}
+
+	return count, acceleratorType, nil
+}
+
+func acceleratorDirectiveParts(value any) (int, string, error) {
+	switch typed := value.(type) {
+	case int:
+		return typed, "", nil
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, "", fmt.Errorf("accelerator directive must evaluate to an integer")
+		}
+
+		return int(typed), "", nil
+	case []any:
+		if len(typed) == 0 {
+			return 0, "", nil
+		}
+
+		count, acceleratorType, err := acceleratorDirectiveParts(typed[0])
+		if err != nil {
+			return 0, "", err
+		}
+
+		for _, element := range typed[1:] {
+			typeName, err := acceleratorDirectiveType(element)
+			if err != nil {
+				return 0, "", err
+			}
+			if typeName != "" {
+				acceleratorType = typeName
+			}
+		}
+
+		return count, acceleratorType, nil
+	case map[string]any:
+		countValue, hasCount := typed["count"]
+		if !hasCount {
+			countValue = typed["value"]
+		}
+		if !hasCount && countValue == nil {
+			countValue = typed["num"]
+		}
+
+		count, _, err := acceleratorDirectiveParts(countValue)
+		if err != nil {
+			return 0, "", err
+		}
+
+		acceleratorType, err := acceleratorDirectiveType(typed)
+		if err != nil {
+			return 0, "", err
+		}
+
+		return count, acceleratorType, nil
+	default:
+		return 0, "", fmt.Errorf("accelerator directive must evaluate to an integer")
+	}
+}
+
+func acceleratorDirectiveType(value any) (string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return "", nil
+	case map[string]any:
+		typeValue, ok := typed["type"]
+		if !ok || typeValue == nil {
+			return "", nil
+		}
+
+		typeName, ok := typeValue.(string)
+		if !ok {
+			return "", fmt.Errorf("accelerator type must evaluate to a string")
+		}
+
+		return typeName, nil
+	default:
+		return "", nil
+	}
 }
 
 func appendSchedulerRequirement(other map[string]string, key, option string) map[string]string {
@@ -874,6 +1003,14 @@ func resolveArchOptions(proc *Process, params map[string]any, schedulerName stri
 	return fmt.Sprintf(`-R "select[type==%s]"`, archName), nil
 }
 
+func appendLimitGroup(job *jobqueue.Job, limitGroup string) {
+	if limitGroup == "" || slices.Contains(job.LimitGroups, limitGroup) {
+		return
+	}
+
+	job.LimitGroups = append(job.LimitGroups, limitGroup)
+}
+
 func applyFairPriority(job *jobqueue.Job, proc *Process, index int, params map[string]any) {
 	fair, err := resolveDirectiveBool("fair", proc.Directives["fair"], params, false, defaultDirectiveTask())
 	if err != nil || !fair {
@@ -906,6 +1043,26 @@ func resolveDirectiveBool(name string, expr any, params map[string]any, fallback
 	}
 
 	return boolValue, nil
+}
+
+func applyFinishStrategyLimitGroup(job *jobqueue.Job, proc *Process, params map[string]any, runID string) error {
+	errorStrategy, err := resolveErrorStrategy(proc, params)
+	if err != nil {
+		return err
+	}
+	if errorStrategy == "finish" {
+		appendLimitGroup(job, finishStrategyLimitGroup(proc.Name, runID))
+	}
+
+	return nil
+}
+
+func resolveErrorStrategy(proc *Process, params map[string]any) (string, error) {
+	return resolveDirectiveString("errorStrategy", proc.Directives["errorStrategy"], params, proc.ErrorStrat, defaultDirectiveTask())
+}
+
+func finishStrategyLimitGroup(processName, runID string) string {
+	return fmt.Sprintf("nf-finish-%s-%s", repGroupToken(processName), repGroupToken(runID))
 }
 
 func buildCommandWithValues(proc *Process, bindings []string, values []any, params map[string]any, cwd string, launchCwd string) (string, error) {
@@ -3368,6 +3525,9 @@ func translateProcessCall(
 		}
 		applyMaxForks(job, effectiveProc)
 		applyFairPriority(job, effectiveProc, index, params)
+		if err = applyFinishStrategyLimitGroup(job, effectiveProc, params, tc.RunID); err != nil {
+			return nil, translatedCall{}, err
+		}
 		if err = applyErrorStrategy(job, effectiveProc, params); err != nil {
 			return nil, translatedCall{}, err
 		}
@@ -3948,18 +4108,18 @@ func applyContainer(job *jobqueue.Job, proc *Process, runtime string, params map
 
 func applyMaxForks(job *jobqueue.Job, proc *Process) {
 	if proc.MaxForks > 0 {
-		job.LimitGroups = []string{fmt.Sprintf("%s:%d", proc.Name, proc.MaxForks)}
+		appendLimitGroup(job, fmt.Sprintf("%s:%d", proc.Name, proc.MaxForks))
 	}
 }
 
 func applyErrorStrategy(job *jobqueue.Job, proc *Process, params map[string]any) error {
-	errorStrategy, err := resolveDirectiveString("errorStrategy", proc.Directives["errorStrategy"], params, proc.ErrorStrat, defaultDirectiveTask())
+	errorStrategy, err := resolveErrorStrategy(proc, params)
 	if err != nil {
 		return err
 	}
 
 	switch errorStrategy {
-	case "", "terminate":
+	case "", "finish", "terminate":
 		job.Retries = 0
 	case "retry":
 		job.Retries = uint8(proc.MaxRetries)

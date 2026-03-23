@@ -1886,6 +1886,90 @@ func TestTranslateJ1ProcessConfigDefaults(t *testing.T) {
 	})
 }
 
+func TestTranslateG1FairDirectivePriority(t *testing.T) {
+	translateProcess := func(proc *Process, args ...ChanExpr) *TranslateResult {
+		wf := &Workflow{
+			Processes: []*Process{proc},
+			EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: proc.Name, Args: args}}},
+		}
+
+		result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+		So(err, ShouldBeNil)
+
+		return result
+	}
+
+	makeOfArgs := func(count int) []Expr {
+		args := make([]Expr, 0, count)
+		for i := range count {
+			args = append(args, IntExpr{Value: i})
+		}
+
+		return args
+	}
+
+	inputProcess := func(name string, fair any) *Process {
+		proc := &Process{
+			Name:   name,
+			Script: "echo $x",
+			Input:  []*Declaration{{Kind: "val", Name: "x"}},
+		}
+		if fair != nil {
+			proc.Directives = map[string]any{"fair": fair}
+		}
+
+		return proc
+	}
+
+	Convey("Translate maps G1 fair directives to job priorities", t, func() {
+		Convey("fair true assigns descending priorities by input index", func() {
+			result := translateProcess(
+				inputProcess("FAIR_TRUE", true),
+				ChannelFactory{Name: "of", Args: []Expr{
+					StringExpr{Value: "a"},
+					StringExpr{Value: "b"},
+					StringExpr{Value: "c"},
+				}},
+			)
+
+			So(result.Jobs, ShouldHaveLength, 3)
+			So(result.Jobs[0].Priority, ShouldEqual, 255)
+			So(result.Jobs[1].Priority, ShouldEqual, 254)
+			So(result.Jobs[2].Priority, ShouldEqual, 253)
+		})
+
+		Convey("fair true clamps priorities at one after index 254", func() {
+			result := translateProcess(
+				inputProcess("FAIR_CLAMP", true),
+				ChannelFactory{Name: "of", Args: makeOfArgs(300)},
+			)
+
+			So(result.Jobs, ShouldHaveLength, 300)
+			So(result.Jobs[254].Priority, ShouldEqual, 1)
+			So(result.Jobs[255].Priority, ShouldEqual, 1)
+			So(result.Jobs[299].Priority, ShouldEqual, 1)
+		})
+
+		Convey("fair false or absent leaves priority at the default zero", func() {
+			falseResult := translateProcess(
+				inputProcess("FAIR_FALSE", false),
+				ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}},
+			)
+			absentResult := translateProcess(
+				inputProcess("FAIR_ABSENT", nil),
+				ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}},
+			)
+
+			So(falseResult.Jobs, ShouldHaveLength, 2)
+			So(falseResult.Jobs[0].Priority, ShouldEqual, 0)
+			So(falseResult.Jobs[1].Priority, ShouldEqual, 0)
+			So(absentResult.Jobs, ShouldHaveLength, 2)
+			So(absentResult.Jobs[0].Priority, ShouldEqual, 0)
+			So(absentResult.Jobs[1].Priority, ShouldEqual, 0)
+		})
+	})
+}
+
 func TestTranslateD6UnsupportedCastDirectiveFallback(t *testing.T) {
 	Convey("Translate falls back for directives with unsupported cast targets", t, func() {
 		stderr := captureTranslateStderr(func() {
@@ -2448,7 +2532,7 @@ func TestTranslate(t *testing.T) {
 					Script:     "echo ${params.input}",
 					Directives: map[string]any{"cpus": UnsupportedExpr{Text: "task.input.size() < 10 ? 1 : 4"}, "memory": IntExpr{Value: 8192}},
 					MaxForks:   5,
-					ErrorStrat: "finish",
+					ErrorStrat: "terminate",
 					Env:        map[string]string{"MY_VAR": "hello"},
 				}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "proc"}}}}
 
@@ -2465,7 +2549,6 @@ func TestTranslate(t *testing.T) {
 				So(result.Jobs[0].Behaviours, ShouldHaveLength, 1)
 			})
 
-			So(stderr, ShouldContainSubstring, "unsupported errorStrategy \"finish\"")
 			So(stderr, ShouldContainSubstring, "falling back for cpus directive with unsupported expression \"task.input.size() < 10 ? 1 : 4\"")
 
 			retry := &Workflow{Processes: []*Process{{Name: "retry", Script: "echo hi", ErrorStrat: "retry", MaxRetries: 3}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "retry"}}}}
@@ -2488,6 +2571,32 @@ func TestTranslate(t *testing.T) {
 			profileResult, err := Translate(&Workflow{Processes: []*Process{{Name: "profiled", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "profiled"}}}}, cfgDefaults, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "big"})
 			So(err, ShouldBeNil)
 			So(profileResult.Jobs[0].Requirements.Cores, ShouldEqual, 8)
+		})
+
+		Convey("errorStrategy finish assigns a unique per-process finish limit group", func() {
+			wf := &Workflow{
+				Processes: []*Process{{Name: "proc", Script: "echo hi", ErrorStrat: "finish"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].LimitGroups, ShouldContain, finishStrategyLimitGroup("proc", "r1"))
+		})
+
+		Convey("terminate does not assign a finish limit group", func() {
+			wf := &Workflow{
+				Processes: []*Process{{Name: "proc", Script: "echo hi", ErrorStrat: "terminate"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].LimitGroups, ShouldNotContain, finishStrategyLimitGroup("proc", "r1"))
 		})
 
 		Convey("config env is merged into job env overrides", func() {
@@ -2749,6 +2858,61 @@ func TestTranslateE2(t *testing.T) {
 			So(result.Jobs, ShouldHaveLength, 1)
 			So(result.Jobs[0].RepGroup, ShouldEqual, "nf.wf.r1.A")
 			So(result.Jobs[0].Cwd, ShouldEqual, "/work/nf-work/r1/A")
+		})
+	})
+}
+
+func TestTranslateE1ArchDirectiveMapping(t *testing.T) {
+	translateResult := func(proc *Process, tc TranslateConfig) *TranslateResult {
+		wf := &Workflow{
+			Processes: []*Process{proc},
+			EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: proc.Name}}},
+		}
+
+		result, err := Translate(wf, nil, tc)
+		So(err, ShouldBeNil)
+
+		return result
+	}
+
+	baseCfg := TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"}
+
+	Convey("Translate maps E1 arch directives to scheduler requirements", t, func() {
+		Convey("linux/x86_64 appends the LSF x86_64 selector", func() {
+			result := translateResult(&Process{
+				Name:       "proc",
+				Script:     "echo hi",
+				Directives: map[string]any{"arch": StringExpr{Value: "linux/x86_64"}},
+			}, TranslateConfig{RunID: baseCfg.RunID, WorkflowName: baseCfg.WorkflowName, Cwd: baseCfg.Cwd, Scheduler: "lsf"})
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Other["scheduler_misc"], ShouldContainSubstring, `select[type==X86_64]`)
+		})
+
+		Convey("linux/aarch64 appends the LSF aarch64 selector", func() {
+			result := translateResult(&Process{
+				Name:       "proc",
+				Script:     "echo hi",
+				Directives: map[string]any{"arch": StringExpr{Value: "linux/aarch64"}},
+			}, TranslateConfig{RunID: baseCfg.RunID, WorkflowName: baseCfg.WorkflowName, Cwd: baseCfg.Cwd, Scheduler: "lsf"})
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Other["scheduler_misc"], ShouldContainSubstring, `select[type==AARCH64]`)
+		})
+
+		Convey("non-LSF schedulers warn and do not emit LSF scheduler_misc options", func() {
+			var result *TranslateResult
+			stderr := captureTranslateStderr(func() {
+				result = translateResult(&Process{
+					Name:       "proc",
+					Script:     "echo hi",
+					Directives: map[string]any{"arch": StringExpr{Value: "linux/x86_64"}},
+				}, baseCfg)
+			})
+
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Jobs[0].Requirements.Other["scheduler_misc"], ShouldEqual, "")
+			So(stderr, ShouldContainSubstring, "arch directive is only applied for lsf scheduling")
 		})
 	})
 }
