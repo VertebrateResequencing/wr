@@ -14,6 +14,17 @@ value is only available through variable interpolation. Scripts that
 read from standard input (e.g. `read line`, `cat`) will not receive
 the expected data.
 
+### `env(x)` — Not a Real Environment Export
+
+The `env(x)` input qualifier is parsed and the received value is made
+available for Nextflow script interpolation (e.g. `echo $x` in the
+script block resolves to the value). However, in real Nextflow,
+`env FOO` exports the variable as a real shell environment variable
+(via `export FOO=value` prepended to the script). Our implementation
+does not export it — tools or subprocesses that read `$FOO` from the
+process environment (rather than through Nextflow string interpolation)
+will not see the value.
+
 ## Output Qualifiers
 
 ### `env(x)` — Runtime Capture
@@ -129,6 +140,30 @@ convert each channel item to the respective numeric type. If upstream
 items are already the correct type (common in practice) the end result
 is the same, but string-to-number conversion will not happen.
 
+## Channel Operators — Missing Closure/Condition Variants
+
+Several channel operators accept closure or condition arguments in
+Nextflow that are not implemented. The basic (no-argument) form works
+correctly but the closure/condition variants silently fall back to
+default behaviour or error:
+
+- `filter(literal)` / `filter(regex)` / `filter(Type)` — only closure
+  predicates work; literal, regex, and type-qualifier filter criteria
+  are not evaluated and items pass through unfiltered.
+- `first(condition)` — only `first()` with no arguments works; regex,
+  type-qualifier, and predicate conditions are not supported.
+- `unique { closure }` — the closure to transform items before
+  uniqueness comparison is ignored; only raw value comparison is used.
+- `distinct { closure }` — the closure to transform items before
+  consecutive-duplicate comparison is ignored; only raw value
+  comparison is used.
+- `sum { closure }` — the closure to transform items before summation
+  is not supported. Additionally, `sum()` only works on integer items
+  — floating-point and other numeric types will error.
+- `count(literal)` / `count(regex)` / `count(Type)` — only closure
+  predicates and the no-argument form work; literal, regex, and
+  type-qualifier criteria are not evaluated.
+
 ## Channel Operators — `collate` Variants
 
 The `collate(size)` operator is supported, but the two-argument
@@ -235,6 +270,8 @@ variable":
   same values via the workflow namespace
 - `workflow.resume`, `workflow.sessionId`, `workflow.runName` — run metadata
 - `nextflow.version` — Nextflow version string
+- `nextflow.build` — Nextflow build number
+- `nextflow.timestamp` — Nextflow build timestamp
 
 These are commonly used in nf-core config files for paths like
 `"${projectDir}/assets/schema.json"`.
@@ -280,6 +317,9 @@ expressions and closures. The following are not implemented:
   output functions. `println` in process scripts is converted to `echo`
   for shell execution, but none are available as callable Groovy
   functions in expressions or closures.
+- `env(name)` — returns the value of an environment variable from the
+  launch environment. New in Nextflow 25.04. Different from `Channel.env`
+  (a channel factory). May appear in config files and parameter defaults.
 - `sendMail(...)` — send email notifications from pipeline code.
 - `sleep(ms)` — pause execution.
 

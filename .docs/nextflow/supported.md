@@ -34,7 +34,6 @@ behaviour as real Nextflow.
 - `val(x)` — value input
 - `path(x)` / `file(x)` — file input (file is deprecated alias)
 - `tuple val(x), path(y)` — tuple input with mixed qualifiers
-- `env(x)` — environment variable input (value available for script interpolation; not exported as a real shell environment variable)
 - `each val(x)` / `each path(x)` — cross-product input (generates separate jobs per each-value)
 
 ### Output Qualifiers
