@@ -1,4 +1,4 @@
-# Test: Operators — Splitting
+# Test: Operators: Splitting
 
 **Spec files:** nf-3300-operators-splitting.md
 **Impl files:** impl-02-channel-operators.md
@@ -9,29 +9,19 @@ For each feature ID in nf-3300-operators-splitting.md, determine its classificat
 
 ### Checklist
 
-1. Check applyChannelOperator switch for split operators
-2. Check splitCSVChannelItems, splitFASTAChannelItems, etc.
-3. Verify option support (header, by, sep, etc.)
-4. Classify per 00-instructions.md criteria
+1. Read nf-3300-operators-splitting.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- CO-splitCsv, CO-splitCsv-header, CO-splitCsv-sep, CO-splitCsv-by,
-  CO-splitCsv-strip, CO-splitCsv-charset
-- CO-splitJson, CO-splitJson-path
-- CO-splitText, CO-splitText-by, CO-splitText-file, CO-splitText-elem,
-  CO-splitText-keepHeader, CO-splitText-charset, CO-splitText-compress,
-  CO-splitText-decompress
-- CO-splitFasta, CO-splitFasta-by, CO-splitFasta-file, CO-splitFasta-record,
-  CO-splitFasta-size, CO-splitFasta-elem
-- CO-splitFastq, CO-splitFastq-by, CO-splitFastq-pe,
-  CO-splitFastq-file, CO-splitFastq-record, CO-splitFastq-elem
-- CO-collectFile, CO-collectFile-name, CO-collectFile-storeDir,
-  CO-collectFile-sort, CO-collectFile-seed, CO-collectFile-newLine
+- CO-countFasta, CO-countFastq, CO-countJson, CO-countLines, CO-splitCsv
+  CO-splitFasta, CO-splitFastq, CO-splitJson, CO-splitText
 
 ### Output format
 
 ```
-CO-splitCsv: SUPPORTED | reason
+CO-countFasta: SUPPORTED | reason
 ...
 ```

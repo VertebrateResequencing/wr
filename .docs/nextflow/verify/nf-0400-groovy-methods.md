@@ -1,292 +1,488 @@
-# Groovy Methods
+# Groovy Methods & Imports
 
-**Source:** https://nextflow.io/docs/latest/reference/stdlib.html,
-https://nextflow.io/docs/latest/reference/stdlib-groovy.html
+**Source:** https://nextflow.io/docs/latest/reference/stdlib-types.html
 
-## Default Imports
+## Features
 
 ### METH-default-imports
-Classes imported by default in Nextflow scripts:
-- `groovy.lang.*`
-- `groovy.util.*`
-- `java.io.*`
-- `java.lang.*`
-- `java.math.BigDecimal`
-- `java.math.BigInteger`
-- `java.net.*`
-- `java.util.*`
+`Default import packages (groovy.lang.*, java.io.*, etc.)` — TODO: describe expected behaviour.
 
-All other classes must use their fully-qualified name (e.g. `groovy.json.JsonOutput`).
+### METH-bag-plus
+`+ : (Bag<E>, Bag<E>) -> Bag<E>` — TODO: describe expected behaviour.
 
-## String Methods
+### METH-duration-toDays
+`toDays() -> Integer` — TODO: describe expected behaviour.
 
-### METH-str-size
-`str.size()` / `str.length()` — returns string length.
+### METH-duration-toHours
+`toHours() -> Integer` — TODO: describe expected behaviour.
 
-### METH-str-trim
-`str.trim()` — removes leading/trailing whitespace.
+### METH-duration-toMillis
+`toMillis() -> Integer` — TODO: describe expected behaviour.
 
-### METH-str-strip
-`str.strip()` — like trim but Unicode-aware.
+### METH-duration-toMinutes
+`toMinutes() -> Integer` — TODO: describe expected behaviour.
 
-### METH-str-contains
-`str.contains(sub)` — true if `sub` is found.
+### METH-duration-toSeconds
+`toSeconds() -> Integer` — TODO: describe expected behaviour.
 
-### METH-str-startsWith
-`str.startsWith(prefix)` — true if starts with prefix.
+### METH-iterable-any
+`any( condition: (E) -> Boolean ) -> Boolean` — TODO: describe expected behaviour.
 
-### METH-str-endsWith
-`str.endsWith(suffix)` — true if ends with suffix.
+### METH-iterable-collect
+`collect( transform: (E) -> R ) -> Iterable<R>` — TODO: describe expected behaviour.
 
-### METH-str-indexOf
-`str.indexOf(sub)` — index of first occurrence, -1 if not found.
+### METH-iterable-collectMany
+`collectMany( transform: (E) -> Iterable<R> ) -> Iterable<R>` — TODO: describe expected behaviour.
 
-### METH-str-replace
-`str.replace(old, new)` / `str.replaceAll(regex, replacement)`.
+### METH-iterable-contains
+`contains( value: E ) -> Boolean` — TODO: describe expected behaviour.
 
-### METH-str-split
-`str.split(regex)` — splits into array by regex delimiter.
+### METH-iterable-each
+`each( action: (E) -> () )` — TODO: describe expected behaviour.
 
-### METH-str-tokenize
-`str.tokenize(delimiters)` — splits into list by character delimiters.
+### METH-iterable-every
+`every( condition: (E) -> Boolean ) -> Boolean` — TODO: describe expected behaviour.
 
-### METH-str-toUpperCase
-`str.toUpperCase()` / `str.toLowerCase()`.
+### METH-iterable-findAll
+`findAll( condition: (E) -> Boolean ) -> Iterable<E>` — TODO: describe expected behaviour.
 
-### METH-str-substring
-`str.substring(start)` / `str.substring(start, end)`.
+### METH-iterable-groupBy
+`groupBy( transform: (E) -> K ) -> Map<K,Iterable<E>>` — TODO: describe expected behaviour.
 
-### METH-str-matches
-`str.matches(regex)` — true if entire string matches regex.
+### METH-iterable-inject
+`inject( accumulator: (E,E) -> E ) -> E` — TODO: describe expected behaviour.
 
-### METH-str-toInteger
-`str.toInteger()` / `str.toLong()` / `str.toFloat()` / `str.toDouble()`.
+### METH-iterable-isEmpty
+`isEmpty() -> Boolean` — TODO: describe expected behaviour.
 
-### METH-str-padLeft
-`str.padLeft(n)` / `str.padRight(n)`.
+### METH-iterable-join
+`join( separator: String = '' ) -> String` — TODO: describe expected behaviour.
 
-### METH-str-reverse
-`str.reverse()` — reverses the string.
+### METH-iterable-max
+`max() -> E` — TODO: describe expected behaviour.
 
-### METH-str-take
-`str.take(n)` / `str.drop(n)` — first/remaining n characters.
+### METH-iterable-min
+`min() -> E` — TODO: describe expected behaviour.
 
-### METH-str-isInteger
-`str.isInteger()` / `str.isLong()` / `str.isFloat()` / `str.isDouble()`.
+### METH-iterable-size
+`size() -> Integer` — TODO: describe expected behaviour.
 
-### METH-str-multiply
-`str.multiply(n)` or `str * n` — repeat n times.
+### METH-iterable-sum
+`sum() -> E` — TODO: describe expected behaviour.
 
-### METH-str-readLines
-`str.readLines()` — splits by newline into list.
+### METH-iterable-toList
+`toList() -> List<E>` — TODO: describe expected behaviour.
 
-### METH-str-stripIndent
-`str.stripIndent()` — removes common leading whitespace.
+### METH-iterable-toSet
+`toSet() -> Set<E>` — TODO: describe expected behaviour.
 
-## Collection Methods (List)
+### METH-iterable-toSorted
+`toSorted() -> List<E>` — TODO: describe expected behaviour.
 
-### METH-list-size
-`list.size()` — element count.
-
-### METH-list-first
-`list.first()` / `list.last()` — first/last element.
-
-### METH-list-get
-`list.get(index)` or `list[index]` — element at index. Negative indices.
-
-### METH-list-contains
-`list.contains(element)` — true if present.
-
-### METH-list-sort
-`list.sort()` / `list.sort { it.prop }` — sort in place or by closure.
-
-### METH-list-collect
-`list.collect { transform }` — like map, returns transformed list.
-
-### METH-list-find
-`list.find { condition }` — first matching element.
-
-### METH-list-findAll
-`list.findAll { condition }` — all matching elements.
-
-### METH-list-any
-`list.any { condition }` — true if any element matches.
-
-### METH-list-every
-`list.every { condition }` — true if all match.
-
-### METH-list-each
-`list.each { action }` — iterate with side effects.
-
-### METH-list-flatten
-`list.flatten()` — deep flatten nested lists.
-
-### METH-list-unique
-`list.unique()` — remove duplicates.
-
-### METH-list-join
-`list.join(separator)` — join into string.
-
-### METH-list-sum
-`list.sum()` / `list.sum { transform }` — sum elements.
-
-### METH-list-min
-`list.min()` / `list.max()` — minimum/maximum.
-
-### METH-list-count
-`list.count(element)` / `list.count { condition }`.
-
-### METH-list-groupBy
-`list.groupBy { key }` — group into map.
-
-### METH-list-collectEntries
-`list.collectEntries { [key, value] }` — list to map.
-
-### METH-list-inject
-`list.inject(initial) { acc, v -> ... }` — fold/reduce.
-
-### METH-list-withIndex
-`list.withIndex()` — `[[elem, 0], [elem, 1], ...]`.
-
-### METH-list-indexed
-`list.indexed()` — `[0: elem, 1: elem, ...]`.
-
-### METH-list-take
-`list.take(n)` / `list.drop(n)` — first n / remaining after n.
+### METH-iterable-toUnique
+`toUnique() -> Iterable<E>` — TODO: describe expected behaviour.
 
 ### METH-list-plus
-`list.plus(other)` / `list + other` — concatenation.
+`+ : (List<E>, List<E>) -> List<E>` — TODO: describe expected behaviour.
 
-### METH-list-minus
-`list.minus(other)` / `list - other` — subtraction.
+### METH-list-multiply
+`* : (List<E>, Integer) -> List<E>` — TODO: describe expected behaviour.
 
-### METH-list-reverse
-`list.reverse()` — reversed copy.
-
-### METH-list-transpose
-`list.transpose()` — transpose list of lists.
-
-### METH-list-combinations
-`list.combinations()` — all combinations.
-
-### METH-list-subsequences
-`list.subsequences()` — all subsequences.
+### METH-list-getAt
+`[] : (List<E>, Integer) -> E` — TODO: describe expected behaviour.
 
 ### METH-list-collate
-`list.collate(n)` — group into sublists of n.
+`collate( size: Integer, keepRemainder: Boolean = true ) -> List<List<E>>` — TODO: describe expected behaviour.
 
-## Map Methods
+### METH-list-find
+`find( condition: (E) -> Boolean ) -> E` — TODO: describe expected behaviour.
 
-### METH-map-size
-`map.size()` — entry count.
+### METH-list-first
+`first() -> E` — TODO: describe expected behaviour.
 
-### METH-map-keySet
-`map.keySet()` / `map.values()` / `map.entrySet()`.
+### METH-list-getIndices
+`getIndices() -> List<Integer>` — TODO: describe expected behaviour.
 
-### METH-map-containsKey
-`map.containsKey(key)` / `map.containsValue(value)`.
+### METH-list-head
+`head() -> E` — TODO: describe expected behaviour.
 
-### METH-map-get
-`map.get(key)` / `map.get(key, default)` / `map[key]` / `map.key`.
+### METH-list-indexOf
+`indexOf( value: E ) -> Integer` — TODO: describe expected behaviour.
 
-### METH-map-each
-`map.each { k, v -> ... }` / `map.each { entry -> ... }`.
+### METH-list-init
+`init() -> List<E>` — TODO: describe expected behaviour.
 
-### METH-map-collect
-`map.collect { k, v -> ... }` — map entries to list.
+### METH-list-last
+`last() -> E` — TODO: describe expected behaviour.
 
-### METH-map-find
-`map.find { k, v -> condition }` — first matching entry.
+### METH-list-reverse
+`reverse() -> List<E>` — TODO: describe expected behaviour.
 
-### METH-map-findAll
-`map.findAll { k, v -> condition }` — matching entries.
+### METH-list-subList
+`subList( fromIndex: Integer, toIndex: Integer ) -> List<E>` — TODO: describe expected behaviour.
 
-### METH-map-groupBy
-`map.groupBy { k, v -> groupKey }`.
+### METH-list-tail
+`tail() -> List<E>` — TODO: describe expected behaviour.
 
-### METH-map-subMap
-`map.subMap(keys)` — subset of map.
+### METH-list-take
+`take( n: Integer ) -> List<E>` — TODO: describe expected behaviour.
+
+### METH-list-takeWhile
+`takeWhile( condition: (E) -> Boolean ) -> List<E>` — TODO: describe expected behaviour.
+
+### METH-list-withIndex
+`withIndex() -> List<(E,Integer)>` — TODO: describe expected behaviour.
 
 ### METH-map-plus
-`map + otherMap` — merge.
+`+ : (Map<K,V>, Map<K,V>) -> Map<K,V>` — TODO: describe expected behaviour.
 
-## Number Methods
+### METH-map-getAt
+`[] : (Map<K,V>, K) -> V` — TODO: describe expected behaviour.
 
-### METH-num-abs
-`n.abs()` — absolute value.
+### METH-map-any
+`any( condition: (K,V) -> Boolean ) -> Boolean` — TODO: describe expected behaviour.
 
-### METH-num-round
-`n.round()` / `n.round(places)`.
+### METH-map-containsKey
+`containsKey( key: K ) -> Boolean` — TODO: describe expected behaviour.
 
-### METH-num-toInteger
-`n.toInteger()` / `n.toLong()` / `n.toFloat()` / `n.toDouble()`.
+### METH-map-containsValue
+`containsValue( value: V ) -> Boolean` — TODO: describe expected behaviour.
 
-### METH-num-intdiv
-`n.intdiv(d)` — integer division.
+### METH-map-each
+`each( action: (K,V) -> () )` — TODO: describe expected behaviour.
 
-### METH-num-times
-`n.times { i -> ... }` — repeat n times.
+### METH-map-entrySet
+`entrySet() -> Set<(K,V)>` — TODO: describe expected behaviour.
 
-### METH-num-upto
-`n.upto(m) { i -> ... }` / `n.downto(m) { i -> ... }`.
+### METH-map-every
+`every( condition: (K,V) -> Boolean ) -> Boolean` — TODO: describe expected behaviour.
 
-## File/Path Methods
+### METH-map-isEmpty
+`isEmpty() -> Boolean` — TODO: describe expected behaviour.
 
-### METH-file-text
-`file.text` — read entire file as string.
+### METH-map-keySet
+`keySet() -> Set<K>` — TODO: describe expected behaviour.
 
-### METH-file-readLines
-`file.readLines()` — list of lines.
+### METH-map-size
+`size() -> Integer` — TODO: describe expected behaviour.
 
-### METH-file-baseName
-`file.baseName` — filename without extension.
+### METH-map-subMap
+`subMap( keys: Iterable<K> ) -> Map<K,V>` — TODO: describe expected behaviour.
 
-### METH-file-name
-`file.name` / `file.getName()` — filename with extension.
+### METH-map-values
+`values() -> Bag<V>` — TODO: describe expected behaviour.
 
-### METH-file-simpleName
-`file.simpleName` — name without any extensions.
+### METH-memoryunit-toBytes
+`toBytes() -> Integer` — TODO: describe expected behaviour.
 
-### METH-file-extension
-`file.extension` — file extension.
+### METH-memoryunit-toGiga
+`toGiga() -> Integer` — TODO: describe expected behaviour.
 
-### METH-file-parent
-`file.parent` / `file.getParent()` — parent directory.
+### METH-memoryunit-toKilo
+`toKilo() -> Integer` — TODO: describe expected behaviour.
 
-### METH-file-exists
-`file.exists()` — true if file exists.
+### METH-memoryunit-toMega
+`toMega() -> Integer` — TODO: describe expected behaviour.
 
-### METH-file-isFile
-`file.isFile()` / `file.isDirectory()` / `file.isEmpty()`.
+### METH-memoryunit-toUnit
+`toUnit( unit: String ) -> Integer` — TODO: describe expected behaviour.
 
-### METH-file-size
-`file.size()` — file size in bytes.
+### METH-path-divide
+`/ : (Path, String) -> Path` — TODO: describe expected behaviour.
 
-### METH-file-toAbsolutePath
-`file.toAbsolutePath()` / `file.toRealPath()`.
+### METH-path-leftShift
+`<< : (Path, String)` — TODO: describe expected behaviour.
 
-## Constructors
+### METH-path-baseName
+`baseName: String` — TODO: describe expected behaviour.
 
-### METH-new-File
-`new File(path)` — create File object.
+### METH-path-extension
+`extension: String` — TODO: describe expected behaviour.
 
-### METH-new-URL
-`new URL(urlString)` — create URL object (note: usually `file()` is preferred).
+### METH-path-name
+`name: String` — TODO: describe expected behaviour.
 
-### METH-new-Date
-`new Date()` — current date.
+### METH-path-parent
+`parent: Path` — TODO: describe expected behaviour.
 
-### METH-new-Random
-`new Random()` / `new Random(seed)` — random number generator.
+### METH-path-scheme
+`scheme: String` — TODO: describe expected behaviour.
 
-### METH-new-ArrayList
-`new ArrayList(collection)` — create ArrayList.
+### METH-path-simpleName
+`simpleName: String` — TODO: describe expected behaviour.
 
-### METH-new-HashMap
-`new HashMap(map)` / `new LinkedHashMap()` — create Map.
+### METH-path-exists
+`exists() -> Boolean` — TODO: describe expected behaviour.
 
-### METH-new-BigDecimal
-`new BigDecimal(value)`.
+### METH-path-isDirectory
+`isDirectory() -> Boolean` — TODO: describe expected behaviour.
 
-### METH-new-BigInteger
-`new BigInteger(value)`.
+### METH-path-isEmpty
+`isEmpty() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-isFile
+`isFile() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-isHidden
+`isHidden() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-isLink
+`isLink() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-lastModified
+`lastModified() -> Integer` — TODO: describe expected behaviour.
+
+### METH-path-relativize
+`relativize(other: Path) -> Path` — TODO: describe expected behaviour.
+
+### METH-path-resolve
+`resolve(other: String) -> Path` — TODO: describe expected behaviour.
+
+### METH-path-resolveSibling
+`resolveSibling(other: String) -> Path` — TODO: describe expected behaviour.
+
+### METH-path-size
+`size() -> Integer` — TODO: describe expected behaviour.
+
+### METH-path-toUriString
+`toUriString() -> String` — TODO: describe expected behaviour.
+
+### METH-path-eachLine
+`eachLine( action: (String) -> () )` — TODO: describe expected behaviour.
+
+### METH-path-getText
+`getText() -> String` — TODO: describe expected behaviour.
+
+### METH-path-readLines
+`readLines() -> List<String>` — TODO: describe expected behaviour.
+
+### METH-path-withReader
+`withReader( action: (BufferedReader) -> () )` — TODO: describe expected behaviour.
+
+### METH-path-append
+`append( text: String )` — TODO: describe expected behaviour.
+
+### METH-path-setText
+`setText( text: String )` — TODO: describe expected behaviour.
+
+### METH-path-write
+`write( text: String )` — TODO: describe expected behaviour.
+
+### METH-path-copyTo
+`copyTo( target: Path )` — TODO: describe expected behaviour.
+
+### METH-path-delete
+`delete() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-deleteDir
+`deleteDir() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-getPermissions
+`getPermissions() -> String` — TODO: describe expected behaviour.
+
+### METH-path-mkdir
+`mkdir() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-mkdirs
+`mkdirs() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-mklink
+`mklink( linkName: String, [options] ) -> Path` — TODO: describe expected behaviour.
+
+### METH-path-hard
+`hard: Boolean` — TODO: describe expected behaviour.
+
+### METH-path-overwrite
+`overwrite: Boolean` — TODO: describe expected behaviour.
+
+### METH-path-moveTo
+`moveTo( target: Path )` — TODO: describe expected behaviour.
+
+### METH-path-renameTo
+`renameTo( target: String ) -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-setPermissions
+`setPermissions( permissions: String ) -> Boolean` — TODO: describe expected behaviour.
+
+### METH-path-eachFile
+`eachFile( action: (Path) -> () )` — TODO: describe expected behaviour.
+
+### METH-path-eachFileRecurse
+`eachFileRecurse( action: (Path) -> () )` — TODO: describe expected behaviour.
+
+### METH-path-listDirectory
+`listDirectory() -> Iterable<Path>` — TODO: describe expected behaviour.
+
+### METH-path-listFiles
+`listFiles() -> Iterable<Path>` — TODO: describe expected behaviour.
+
+### METH-path-countFasta
+`countFasta() -> Integer` — TODO: describe expected behaviour.
+
+### METH-path-countFastq
+`countFastq() -> Integer` — TODO: describe expected behaviour.
+
+### METH-path-countJson
+`countJson() -> Integer` — TODO: describe expected behaviour.
+
+### METH-path-countLines
+`countLines() -> Integer` — TODO: describe expected behaviour.
+
+### METH-path-splitCsv
+`splitCsv() -> List<?>` — TODO: describe expected behaviour.
+
+### METH-path-splitFasta
+`splitFasta() -> List<?>` — TODO: describe expected behaviour.
+
+### METH-path-splitFastq
+`splitFastq() -> List<?>` — TODO: describe expected behaviour.
+
+### METH-path-splitJson
+`splitJson() -> List<?>` — TODO: describe expected behaviour.
+
+### METH-path-splitText
+`splitText() -> List<String>` — TODO: describe expected behaviour.
+
+### METH-record-plus
+`+ : (Record, Record) -> Record` — TODO: describe expected behaviour.
+
+### METH-record-subMap
+`subMap( keys: Iterable<String> ) -> Record` — TODO: describe expected behaviour.
+
+### METH-set-plus
+`+ : (Set<E>, Iterable<E>) -> Set<E>` — TODO: describe expected behaviour.
+
+### METH-set-minus
+`- : (Set<E>, Iterable<E>) -> Set<E>` — TODO: describe expected behaviour.
+
+### METH-set-intersect
+`intersect( right: Iterable<E> ) -> Set<E>` — TODO: describe expected behaviour.
+
+### METH-string-plus
+`+ : (String, String) -> String` — TODO: describe expected behaviour.
+
+### METH-string-multiply
+`* : (String, Integer) -> String` — TODO: describe expected behaviour.
+
+### METH-string-getAt
+`[] : (String, Integer) -> char` — TODO: describe expected behaviour.
+
+### METH-string-contains
+`contains( str: String ) -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-endsWith
+`endsWith( suffix: String ) -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-execute
+`execute() -> Process` — TODO: describe expected behaviour.
+
+### METH-string-indexOf
+`indexOf( str: String ) -> Integer` — TODO: describe expected behaviour.
+
+### METH-string-isBlank
+`isBlank() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-isEmpty
+`isEmpty() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-isDouble
+`isDouble() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-isFloat
+`isFloat() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-isInteger
+`isInteger() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-isLong
+`isLong() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-lastIndexOf
+`lastIndexOf( str: String ) -> Integer` — TODO: describe expected behaviour.
+
+### METH-string-length
+`length() -> Integer` — TODO: describe expected behaviour.
+
+### METH-string-md5
+`md5() -> String` — TODO: describe expected behaviour.
+
+### METH-string-replace
+`replace( target: String, replacement: String ) -> String` — TODO: describe expected behaviour.
+
+### METH-string-replaceAll
+`replaceAll( regex: String, replacement: String ) -> String` — TODO: describe expected behaviour.
+
+### METH-string-replaceFirst
+`replaceFirst( regex: String, replacement: String ) -> String` — TODO: describe expected behaviour.
+
+### METH-string-sha256
+`sha256() -> String` — TODO: describe expected behaviour.
+
+### METH-string-startsWith
+`startsWith( prefix: String ) -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-strip
+`strip() -> String` — TODO: describe expected behaviour.
+
+### METH-string-stripIndent
+`stripIndent() -> String` — TODO: describe expected behaviour.
+
+### METH-string-stripLeading
+`stripLeading() -> String` — TODO: describe expected behaviour.
+
+### METH-string-stripTrailing
+`stripTrailing() -> String` — TODO: describe expected behaviour.
+
+### METH-string-substring
+`substring( beginIndex: Integer ) -> String` — TODO: describe expected behaviour.
+
+### METH-string-toBoolean
+`toBoolean() -> Boolean` — TODO: describe expected behaviour.
+
+### METH-string-toDouble
+`toDouble() -> Float` — TODO: describe expected behaviour.
+
+### METH-string-toFloat
+`toFloat() -> Float` — TODO: describe expected behaviour.
+
+### METH-string-toInteger
+`toInteger() -> Integer` — TODO: describe expected behaviour.
+
+### METH-string-toLong
+`toLong() -> Integer` — TODO: describe expected behaviour.
+
+### METH-string-toLowerCase
+`toLowerCase() -> String` — TODO: describe expected behaviour.
+
+### METH-string-toUpperCase
+`toUpperCase() -> String` — TODO: describe expected behaviour.
+
+### METH-string-tokenize
+`tokenize( delimiters: String ) -> List<String>` — TODO: describe expected behaviour.
+
+### METH-tuple-getAt
+`[] : (Tuple, Integer) -> ?` — TODO: describe expected behaviour.
+
+### METH-value-flatMap
+`flatMap( transform: (V) -> Iterable<R> ) -> Channel<R>` — TODO: describe expected behaviour.
+
+### METH-value-map
+`map( transform: (V) -> R ) -> Value<R>` — TODO: describe expected behaviour.
+
+### METH-value-subscribe
+`subscribe( action: (V) -> () )` — TODO: describe expected behaviour.
+
+### METH-value-view
+`view() -> Value<V>` — TODO: describe expected behaviour.
+
+### METH-versionnumber-getMajor
+`getMajor() -> String` — TODO: describe expected behaviour.
+
+### METH-versionnumber-getMinor
+`getMinor() -> String` — TODO: describe expected behaviour.
+
+### METH-versionnumber-getPatch
+`getPatch() -> String` — TODO: describe expected behaviour.
+
+### METH-versionnumber-matches
+`matches( condition: String ) -> Boolean` — TODO: describe expected behaviour.

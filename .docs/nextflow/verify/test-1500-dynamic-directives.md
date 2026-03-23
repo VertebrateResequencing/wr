@@ -9,21 +9,19 @@ For each feature ID in nf-1500-dynamic-directives.md, determine its classificati
 
 ### Checklist
 
-1. Check resolveDirectiveValue/evalDirectiveExpr (translate.go) for dynamic evaluation
-2. Check defaultDirectiveTask() for available task properties
-3. Check interpolateKnownScriptVars for task.* in scripts
-4. Classify per 00-instructions.md criteria
+1. Read nf-1500-dynamic-directives.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- DIR-dynamic
-- BV-task-cpus, BV-task-memory, BV-task-time, BV-task-disk,
-  BV-task-attempt, BV-task-name, BV-task-process, BV-task-index,
-  BV-task-hash, BV-task-workDir, BV-task-container, BV-task-ext
+- BV-task-attempt, BV-task-exitStatus, BV-task-hash, BV-task-index, BV-task-name
+  BV-task-previousException, BV-task-previousTrace, BV-task-process, BV-task-workDir
 
 ### Output format
 
 ```
-DIR-dynamic: SUPPORTED | reason
+BV-task-attempt: SUPPORTED | reason
 ...
 ```

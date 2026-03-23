@@ -1,187 +1,218 @@
-# Built-in Variables and Global Functions
+# Built-in Variables, Functions and Namespaces
 
-**Source:** https://nextflow.io/docs/latest/reference/stdlib.html,
-https://nextflow.io/docs/latest/script.html
+**Source:** https://nextflow.io/docs/latest/reference/stdlib-namespaces.html
 
-## Built-in Variables
+## Features
 
 ### BV-baseDir
-`baseDir` — alias for `projectDir`.
-
-### BV-projectDir
-`projectDir` — directory of the main script.
+`baseDir: Path` — TODO: describe expected behaviour.
 
 ### BV-launchDir
-`launchDir` — directory where `nextflow run` was invoked.
+`launchDir: Path` — TODO: describe expected behaviour.
 
 ### BV-moduleDir
-`moduleDir` — directory of the current module script.
+`moduleDir: Path` — TODO: describe expected behaviour.
+
+### BV-params
+`params` — TODO: describe expected behaviour.
+
+### BV-projectDir
+`projectDir: Path` — TODO: describe expected behaviour.
+
+### BV-secrets
+`secrets: Map<String,String>` — TODO: describe expected behaviour.
 
 ### BV-workDir
-`workDir` — pipeline work directory (default: `./work`).
+`workDir: Path` — TODO: describe expected behaviour.
 
-## Workflow Object
+### BV-branchCriteria
+`branchCriteria( criteria: Closure ) -> Closure` — TODO: describe expected behaviour.
 
-### BV-workflow-projectDir
-`workflow.projectDir` — same as `projectDir`.
+### BV-env
+`env( name: String ) -> String` — TODO: describe expected behaviour.
 
-### BV-workflow-launchDir
-`workflow.launchDir` — same as `launchDir`.
+### BV-error
+`error( message: String = null )` — TODO: describe expected behaviour.
 
-### BV-workflow-workDir
-`workflow.workDir` — same as `workDir`.
+### BV-exit
+`exit( exitCode: int = 0, message: String = null )` — TODO: describe expected behaviour.
 
-### BV-workflow-profile
-`workflow.profile` — active profile name(s).
+### BV-file
+`file( filePattern: String, [options] ) -> Path` — TODO: describe expected behaviour.
 
-### BV-workflow-configFiles
-`workflow.configFiles` — list of config files used.
+### BV-checkIfExists
+`checkIfExists: boolean` — TODO: describe expected behaviour.
 
-### BV-workflow-runName
-`workflow.runName` — unique run name.
+### BV-followLinks
+`followLinks: boolean` — TODO: describe expected behaviour.
 
-### BV-workflow-sessionId
-`workflow.sessionId` — unique session ID.
+### BV-glob
+`glob: boolean` — TODO: describe expected behaviour.
 
-### BV-workflow-resume
-`workflow.resume` — true if pipeline was resumed.
+### BV-hidden
+`hidden: boolean` — TODO: describe expected behaviour.
 
-### BV-workflow-revision
-`workflow.revision` — pipeline Git revision.
+### BV-maxDepth
+`maxDepth: int` — TODO: describe expected behaviour.
 
-### BV-workflow-commitId
-`workflow.commitId` — pipeline Git commit ID.
+### BV-type
+`type: String` — TODO: describe expected behaviour.
 
-### BV-workflow-repository
-`workflow.repository` — pipeline Git URL.
+### BV-files
+`files( filePattern: String, [options] ) -> Iterable<Path>` — TODO: describe expected behaviour.
 
-### BV-workflow-scriptName
-`workflow.scriptName` — main script filename.
+### BV-groupKey
+`groupKey( key, size: int ) -> GroupKey` — TODO: describe expected behaviour.
 
-### BV-workflow-scriptFile
-`workflow.scriptFile` — main script absolute path.
+### BV-multiMapCriteria
+`multiMapCriteria( criteria: Closure ) -> Closure` — TODO: describe expected behaviour.
 
-### BV-workflow-start
-`workflow.start` — pipeline start timestamp.
+### BV-print
+`print( value )` — TODO: describe expected behaviour.
 
-### BV-workflow-complete
-`workflow.complete` — pipeline completion timestamp (onComplete only).
+### BV-printf
+`printf( format: String, values... )` — TODO: describe expected behaviour.
 
-### BV-workflow-success
-`workflow.success` — true if pipeline completed without errors (onComplete only).
+### BV-println
+`println( value )` — TODO: describe expected behaviour.
 
-### BV-workflow-failOnIgnore
-`workflow.failOnIgnore` — config setting for fail-on-ignore.
+### BV-sendMail
+`sendMail( [options] )` — TODO: describe expected behaviour.
 
-### BV-workflow-commandLine
-`workflow.commandLine` — command line as entered by the user.
+### BV-sleep
+`sleep( milliseconds: long )` — TODO: describe expected behaviour.
 
-### BV-workflow-container
-`workflow.container` — Docker image (or map of process→image) used by tasks.
+### BV-record
+`record( [options] ) -> Record` — TODO: describe expected behaviour.
 
-### BV-workflow-containerEngine
-`workflow.containerEngine` — name of the container engine (e.g. `docker`, `singularity`) or null.
-
-### BV-workflow-duration
-`workflow.duration` — elapsed time to complete (onComplete only).
-
-### BV-workflow-errorMessage
-`workflow.errorMessage` — error message of the failing task (onComplete/onError only).
-
-### BV-workflow-errorReport
-`workflow.errorReport` — detailed error report of the failing task (onComplete/onError only).
-
-### BV-workflow-exitStatus
-`workflow.exitStatus` — exit status of the failing task (onComplete/onError only).
-
-### BV-workflow-fusion
-`workflow.fusion.enabled` — whether Fusion is enabled. `workflow.fusion.version` — Fusion version.
-
-### BV-workflow-homeDir
-`workflow.homeDir` — user system home directory.
-
-### BV-workflow-manifest
-`workflow.manifest` — namespace corresponding to the `manifest` config scope.
-
-### BV-workflow-outputDir
-`workflow.outputDir` — pipeline output directory.
-
-### BV-workflow-preview
-`workflow.preview` — true if current run is a preview run.
-
-### BV-workflow-scriptId
-`workflow.scriptId` — main script unique hash ID.
-
-### BV-workflow-stubRun
-`workflow.stubRun` — true if current run is a stub-run execution.
-
-### BV-workflow-userName
-`workflow.userName` — user system account name.
-
-### BV-workflow-wave
-`workflow.wave.enabled` — whether Wave is enabled.
-
-## Nextflow Object
-
-### BV-nextflow-version
-`nextflow.version` — Nextflow version string.
-
-### BV-nextflow-build
-`nextflow.build` — build number.
-
-### BV-nextflow-timestamp
-`nextflow.timestamp` — build timestamp.
-
-## Log Namespace
-
-### BV-log-info
-`log.info(message)` — log informational message.
-
-### BV-log-warn
-`log.warn(message)` — log warning message.
+### BV-tuple
+`tuple( args... ) -> Tuple` — TODO: describe expected behaviour.
 
 ### BV-log-error
-`log.error(message)` — log error message.
+`error( message: String )` — TODO: describe expected behaviour.
 
-## Global Functions
+### BV-log-info
+`info( message: String )` — TODO: describe expected behaviour.
 
-### GF-file
-`file(path)` — create a Path object. `files(pattern)` — list matching files.
+### BV-log-warn
+`warn( message: String )` — TODO: describe expected behaviour.
 
-### GF-groupKey
-`groupKey(key, size)` — create group key for `groupTuple` early emission.
+### BV-nextflow-build
+`build: int` — TODO: describe expected behaviour.
 
-### GF-branchCriteria
-`branchCriteria { ... }` — create reusable `branch` criteria.
+### BV-nextflow-timestamp
+`timestamp: String` — TODO: describe expected behaviour.
 
-### GF-multiMapCriteria
-`multiMapCriteria { ... }` — create reusable `multiMap` criteria.
+### BV-nextflow-version
+`version: VersionNumber` — TODO: describe expected behaviour.
 
-### GF-error
-`error(message)` — throw an error and abort the pipeline.
+### BV-workflow-commandLine
+`commandLine: String` — TODO: describe expected behaviour.
 
-### GF-exit
-`exit(code)` — **deprecated** alias for `error`.
+### BV-workflow-commitId
+`commitId: String` — TODO: describe expected behaviour.
 
-### GF-println
-`print(value)` / `println(value)` / `printf(format, args...)`.
+### BV-workflow-complete
+`complete: OffsetDateTime` — TODO: describe expected behaviour.
 
-### GF-tuple
-`tuple(a, b, ...)` — create a tuple (list).
+### BV-workflow-configFiles
+`configFiles: List<Path>` — TODO: describe expected behaviour.
 
-### GF-env
-`env(name)` — read environment variable.
+### BV-workflow-container
+`container: String | Map<String,String>` — TODO: describe expected behaviour.
 
-### GF-sleep
-`sleep(milliseconds)` — pause execution.
+### BV-workflow-containerEngine
+`containerEngine: String` — TODO: describe expected behaviour.
 
-### GF-record
-`record([options])` — create a record from named arguments.
+### BV-workflow-duration
+`duration: Duration` — TODO: describe expected behaviour.
 
-### GF-sendMail
-`sendMail(to: ..., subject: ..., body: ...)` — send email notification.
+### BV-workflow-errorMessage
+`errorMessage: String` — TODO: describe expected behaviour.
 
-## Global Constants
+### BV-workflow-errorReport
+`errorReport: String` — TODO: describe expected behaviour.
 
-### GC-secrets
-`secrets` — `Map<String,String>` of pipeline secrets (since 24.02.0-edge).
+### BV-workflow-exitStatus
+`exitStatus: int` — TODO: describe expected behaviour.
+
+### BV-workflow-failOnIgnore
+`failOnIgnore: boolean` — TODO: describe expected behaviour.
+
+### BV-workflow-fusion
+`fusion` — TODO: describe expected behaviour.
+
+### BV-workflow-enabled
+`enabled: boolean` — TODO: describe expected behaviour.
+
+### BV-workflow-version
+`version: String` — TODO: describe expected behaviour.
+
+### BV-workflow-homeDir
+`homeDir: Path` — TODO: describe expected behaviour.
+
+### BV-workflow-launchDir
+`launchDir: Path` — TODO: describe expected behaviour.
+
+### BV-workflow-manifest
+`manifest` — TODO: describe expected behaviour.
+
+### BV-workflow-outputDir
+`outputDir: Path` — TODO: describe expected behaviour.
+
+### BV-workflow-preview
+`preview: boolean` — TODO: describe expected behaviour.
+
+### BV-workflow-profile
+`profile: String` — TODO: describe expected behaviour.
+
+### BV-workflow-projectDir
+`projectDir: Path` — TODO: describe expected behaviour.
+
+### BV-workflow-repository
+`repository: String` — TODO: describe expected behaviour.
+
+### BV-workflow-resume
+`resume: boolean` — TODO: describe expected behaviour.
+
+### BV-workflow-revision
+`revision: String` — TODO: describe expected behaviour.
+
+### BV-workflow-runName
+`runName: String` — TODO: describe expected behaviour.
+
+### BV-workflow-scriptFile
+`scriptFile: Path` — TODO: describe expected behaviour.
+
+### BV-workflow-scriptId
+`scriptId: String` — TODO: describe expected behaviour.
+
+### BV-workflow-scriptName
+`scriptName: String` — TODO: describe expected behaviour.
+
+### BV-workflow-sessionId
+`sessionId: UUID` — TODO: describe expected behaviour.
+
+### BV-workflow-start
+`start: OffsetDateTime` — TODO: describe expected behaviour.
+
+### BV-workflow-stubRun
+`stubRun: boolean` — TODO: describe expected behaviour.
+
+### BV-workflow-success
+`success: boolean` — TODO: describe expected behaviour.
+
+### BV-workflow-userName
+`userName: String` — TODO: describe expected behaviour.
+
+### BV-workflow-wave
+`wave` — TODO: describe expected behaviour.
+
+### BV-workflow-workDir
+`workDir: Path` — TODO: describe expected behaviour.
+
+### BV-workflow-onComplete
+`onComplete( action: Closure )` — TODO: describe expected behaviour.
+
+### BV-workflow-onError
+`onError( action: Closure )` — TODO: describe expected behaviour.

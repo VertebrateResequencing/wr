@@ -1,4 +1,4 @@
-# Test: Operators — Transforming
+# Test: Operators: Transforming
 
 **Spec files:** nf-3100-operators-transforming.md
 **Impl files:** impl-02-channel-operators.md
@@ -9,21 +9,21 @@ For each feature ID in nf-3100-operators-transforming.md, determine its classifi
 
 ### Checklist
 
-1. Check applyChannelOperator switch (channel.go line 357) for each operator
-2. Verify closure evaluation support
-3. Classify per 00-instructions.md criteria
+1. Read nf-3100-operators-transforming.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- CO-map, CO-flatMap, CO-flatten, CO-collect, CO-collect-closure,
-  CO-groupTuple, CO-groupTuple-by, CO-groupTuple-size,
-  CO-transpose, CO-transpose-by,
-  CO-toList, CO-toSortedList, CO-toSortedList-closure,
-  CO-reduce, CO-reduce-seed, CO-count, CO-count-filter, CO-ifEmpty
+- CO-buffer, CO-collate, CO-collect, CO-count, CO-flatMap
+  CO-flatten, CO-groupTuple, CO-map, CO-max, CO-min
+  CO-reduce, CO-sum, CO-toInteger, CO-toList, CO-toSortedList
+  CO-transpose
 
 ### Output format
 
 ```
-CO-map: SUPPORTED | reason
+CO-buffer: SUPPORTED | reason
 ...
 ```

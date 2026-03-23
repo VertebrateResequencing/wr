@@ -1,4 +1,4 @@
-# Test: Groovy Methods
+# Test: Groovy Methods & Imports
 
 **Spec files:** nf-0400-groovy-methods.md
 **Impl files:** impl-08-groovy.md
@@ -9,44 +9,50 @@ For each feature ID in nf-0400-groovy-methods.md, determine its classification.
 
 ### Checklist
 
-1. Check evalStringMethodCall (groovy.go line 1735) for METH-str-*
-2. Check evalListMethodCall (groovy.go line 3587) + evalListMethodCallExpr (2964) for METH-list-*
-3. Check evalMapMethodCall (groovy.go line 2257) for METH-map-*
-4. Check evalNumberMethodCall (groovy.go line 2853) for METH-num-*
-5. Check file/path method handling for METH-file-*
-6. Check evalNewExpr (groovy.go line 4087) for METH-new-*
-7. Classify per 00-instructions.md criteria
+1. Read nf-0400-groovy-methods.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
-### Features to classify (sample — full list in spec)
+### Features to classify
 
-String: METH-str-contains, METH-str-startsWith, METH-str-endsWith,
-METH-str-replace, METH-str-replaceAll, METH-str-split, METH-str-trim,
-METH-str-toUpperCase, METH-str-toLowerCase, METH-str-substring,
-METH-str-indexOf, METH-str-padLeft, METH-str-padRight, METH-str-capitalize,
-METH-str-size, METH-str-length, METH-str-matches, METH-str-tokenize,
-METH-str-stripIndent, METH-str-isNumber, METH-str-isInteger
-
-List: METH-list-add, METH-list-addAll, METH-list-remove, METH-list-get,
-METH-list-size, METH-list-contains, METH-list-isEmpty, METH-list-flatten,
-METH-list-collect, METH-list-find, METH-list-findAll, METH-list-each,
-METH-list-inject, METH-list-groupBy, METH-list-sort, METH-list-min,
-METH-list-max, METH-list-sum, METH-list-any, METH-list-every,
-METH-list-unique, METH-list-reverse, METH-list-first, METH-list-last,
-METH-list-take, METH-list-drop, METH-list-join
-
-Map: METH-map-get, METH-map-containsKey, METH-map-keySet, METH-map-values,
-METH-map-each, METH-map-collect, METH-map-find, METH-map-findAll,
-METH-map-sort, METH-map-subMap, METH-map-plus
-
-Number: METH-num-abs, METH-num-intdiv, METH-num-toInteger, METH-num-times
-
-Constructor: METH-new-File, METH-new-ArrayList, METH-new-HashMap,
-METH-new-BigDecimal, METH-new-BigInteger, METH-new-Date, METH-new-Random,
-METH-new-String
+- METH-default-imports, METH-bag-plus, METH-duration-toDays, METH-duration-toHours, METH-duration-toMillis
+  METH-duration-toMinutes, METH-duration-toSeconds, METH-iterable-any, METH-iterable-collect, METH-iterable-collectMany
+  METH-iterable-contains, METH-iterable-each, METH-iterable-every, METH-iterable-findAll, METH-iterable-groupBy
+  METH-iterable-inject, METH-iterable-isEmpty, METH-iterable-join, METH-iterable-max, METH-iterable-min
+  METH-iterable-size, METH-iterable-sum, METH-iterable-toList, METH-iterable-toSet, METH-iterable-toSorted
+  METH-iterable-toUnique, METH-list-plus, METH-list-multiply, METH-list-getAt, METH-list-collate
+  METH-list-find, METH-list-first, METH-list-getIndices, METH-list-head, METH-list-indexOf
+  METH-list-init, METH-list-last, METH-list-reverse, METH-list-subList, METH-list-tail
+  METH-list-take, METH-list-takeWhile, METH-list-withIndex, METH-map-plus, METH-map-getAt
+  METH-map-any, METH-map-containsKey, METH-map-containsValue, METH-map-each, METH-map-entrySet
+  METH-map-every, METH-map-isEmpty, METH-map-keySet, METH-map-size, METH-map-subMap
+  METH-map-values, METH-memoryunit-toBytes, METH-memoryunit-toGiga, METH-memoryunit-toKilo, METH-memoryunit-toMega
+  METH-memoryunit-toUnit, METH-path-divide, METH-path-leftShift, METH-path-baseName, METH-path-extension
+  METH-path-name, METH-path-parent, METH-path-scheme, METH-path-simpleName, METH-path-exists
+  METH-path-isDirectory, METH-path-isEmpty, METH-path-isFile, METH-path-isHidden, METH-path-isLink
+  METH-path-lastModified, METH-path-relativize, METH-path-resolve, METH-path-resolveSibling, METH-path-size
+  METH-path-toUriString, METH-path-eachLine, METH-path-getText, METH-path-readLines, METH-path-withReader
+  METH-path-append, METH-path-setText, METH-path-write, METH-path-copyTo, METH-path-delete
+  METH-path-deleteDir, METH-path-getPermissions, METH-path-mkdir, METH-path-mkdirs, METH-path-mklink
+  METH-path-hard, METH-path-overwrite, METH-path-moveTo, METH-path-renameTo, METH-path-setPermissions
+  METH-path-eachFile, METH-path-eachFileRecurse, METH-path-listDirectory, METH-path-listFiles, METH-path-countFasta
+  METH-path-countFastq, METH-path-countJson, METH-path-countLines, METH-path-splitCsv, METH-path-splitFasta
+  METH-path-splitFastq, METH-path-splitJson, METH-path-splitText, METH-record-plus, METH-record-subMap
+  METH-set-plus, METH-set-minus, METH-set-intersect, METH-string-plus, METH-string-multiply
+  METH-string-getAt, METH-string-contains, METH-string-endsWith, METH-string-execute, METH-string-indexOf
+  METH-string-isBlank, METH-string-isEmpty, METH-string-isDouble, METH-string-isFloat, METH-string-isInteger
+  METH-string-isLong, METH-string-lastIndexOf, METH-string-length, METH-string-md5, METH-string-replace
+  METH-string-replaceAll, METH-string-replaceFirst, METH-string-sha256, METH-string-startsWith, METH-string-strip
+  METH-string-stripIndent, METH-string-stripLeading, METH-string-stripTrailing, METH-string-substring, METH-string-toBoolean
+  METH-string-toDouble, METH-string-toFloat, METH-string-toInteger, METH-string-toLong, METH-string-toLowerCase
+  METH-string-toUpperCase, METH-string-tokenize, METH-tuple-getAt, METH-value-flatMap, METH-value-map
+  METH-value-subscribe, METH-value-view, METH-versionnumber-getMajor, METH-versionnumber-getMinor, METH-versionnumber-getPatch
+  METH-versionnumber-matches
 
 ### Output format
 
 ```
-METH-str-contains: SUPPORTED | reason
+METH-default-imports: SUPPORTED | reason
 ...
 ```

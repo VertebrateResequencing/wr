@@ -1,7 +1,7 @@
-# Test: Typed Process Sections
+# Test: Typed Process (Preview)
 
 **Spec files:** nf-1600-typed-process.md
-**Impl files:** impl-01-parse.md, impl-05-translate-directives.md
+**Impl files:** impl-04-translate-jobs.md
 
 ## Task
 
@@ -9,24 +9,18 @@ For each feature ID in nf-1600-typed-process.md, determine its classification.
 
 ### Checklist
 
-1. Check if typed input syntax (`: Type`) is parsed (impl-01-parse.md)
-2. Check if `stage:` section is parsed and translated
-3. Check if typed output functions (`env()`, `eval()`, `file()`, `files()`,
-   `stdout()`) are handled in translation
-4. Check if `topic:` section with `>>` syntax is parsed
-5. Classify per 00-instructions.md criteria
+1. Read nf-1600-typed-process.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- PSEC-typed-input
-- PSEC-stage, PSEC-stage-env, PSEC-stage-stageAs, PSEC-stage-stdin
-- PSEC-typed-output, PSEC-typed-output-env, PSEC-typed-output-eval,
-  PSEC-typed-output-file, PSEC-typed-output-files, PSEC-typed-output-stdout
-- PSEC-topic
+- PSEC-inputs-and-outputs-typed, PSEC-stage-directives, PSEC-outputs
 
 ### Output format
 
 ```
-PSEC-typed-input: FUTURE | reason
+PSEC-inputs-and-outputs-typed: SUPPORTED | reason
 ...
 ```

@@ -1,4 +1,4 @@
-# Test: Operators — Forking
+# Test: Operators: Forking
 
 **Spec files:** nf-3400-operators-forking.md
 **Impl files:** impl-02-channel-operators.md
@@ -9,17 +9,14 @@ For each feature ID in nf-3400-operators-forking.md, determine its classificatio
 
 ### Checklist
 
-1. Check applyChannelOperator switch for branch/multiMap
-2. Check resolveBranchChannelItems/resolveMultiMapChannelItems helpers
-3. Check set/tap handling (likely in workflow resolution, not operator switch)
-4. Classify per 00-instructions.md criteria
+1. Read nf-3400-operators-forking.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- CO-branch, CO-branch-criteria
-- CO-multiMap, CO-multiMap-criteria
-- CO-tap
-- CO-set
+- CO-branch, CO-ifEmpty, CO-multiMap, CO-set, CO-tap
 
 ### Output format
 
