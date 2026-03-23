@@ -64,3 +64,12 @@ The `publishDir` directive currently supports `path`, `mode`, and
 - `overwrite` — whether to overwrite existing files (default: `true`).
 - `enabled` — conditionally enable/disable publishing.
 - `failOnError` — fail the task if publishing fails.
+
+## Channel Operators — Type Conversion
+
+The `toLong()`, `toFloat()`, and `toDouble()` channel operators are
+recognised and parsed without error, but they are no-ops — items pass
+through without actual type conversion. In real Nextflow these convert
+each channel item to the respective numeric type. If upstream items are
+already the correct type (common in practice) the end result is the
+same, but string-to-number conversion will not happen.
