@@ -13,14 +13,14 @@
 ### INP-path
 `path( identifier | stageName )` — TODO: describe expected behaviour.
 
-### INP-arity
-`arity` — TODO: describe expected behaviour.
+### INP-path-arity
+`path.arity` — TODO: describe expected behaviour.
 
-### INP-name
-`name` — TODO: describe expected behaviour.
+### INP-path-name
+`path.name` — TODO: describe expected behaviour.
 
-### INP-stageAs
-`stageAs` — TODO: describe expected behaviour.
+### INP-path-stageAs
+`path.stageAs` — TODO: describe expected behaviour.
 
 ### INP-env
 `env( name )` — TODO: describe expected behaviour.

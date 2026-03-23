@@ -1,0 +1,27 @@
+# Test: Groovy & Java Imports
+
+**Spec files:** nf-0450-groovy-imports.md
+**Impl files:** impl-08-groovy.md
+
+## Task
+
+For each feature ID in nf-0450-groovy-imports.md, determine its classification.
+
+### Checklist
+
+1. Read nf-0450-groovy-imports.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
+
+### Features to classify
+
+- METH-groovy-lang, METH-groovy-util, METH-java-io, METH-java-lang, METH-java-math-BigDecimal
+  METH-java-math-BigInteger, METH-java-net, METH-java-util
+
+### Output format
+
+```
+METH-groovy-lang: SUPPORTED | reason
+...
+```

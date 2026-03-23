@@ -4,13 +4,13 @@
 
 ## Features
 
-### TYPE-bage
+### TYPE-bag
 `Bag<E>` — TODO: describe expected behaviour.
 
 ### TYPE-boolean
 `Boolean` — TODO: describe expected behaviour.
 
-### TYPE-channele
+### TYPE-channel
 `Channel<E>` — TODO: describe expected behaviour.
 
 ### TYPE-duration
@@ -22,13 +22,13 @@
 ### TYPE-integer
 `Integer` — TODO: describe expected behaviour.
 
-### TYPE-iterablee
+### TYPE-iterable
 `Iterable<E>` — TODO: describe expected behaviour.
 
-### TYPE-liste
+### TYPE-list
 `List<E>` — TODO: describe expected behaviour.
 
-### TYPE-mapkv
+### TYPE-map
 `Map<K,V>` — TODO: describe expected behaviour.
 
 ### TYPE-memoryunit
@@ -58,7 +58,7 @@
 ### TYPE-record
 `Record` — TODO: describe expected behaviour.
 
-### TYPE-sete
+### TYPE-set
 `Set<E>` — TODO: describe expected behaviour.
 
 ### TYPE-string
@@ -67,7 +67,7 @@
 ### TYPE-tuple
 `Tuple` — TODO: describe expected behaviour.
 
-### TYPE-valuev
+### TYPE-value
 `Value<V>` — TODO: describe expected behaviour.
 
 ### TYPE-versionnumber

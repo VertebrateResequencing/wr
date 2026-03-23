@@ -18,19 +18,19 @@ For each feature ID in nf-4500-builtins.md, determine its classification.
 
 - BV-baseDir, BV-launchDir, BV-moduleDir, BV-params, BV-projectDir
   BV-secrets, BV-workDir, BV-branchCriteria, BV-env, BV-error
-  BV-exit, BV-file, BV-checkIfExists, BV-followLinks, BV-glob
-  BV-hidden, BV-maxDepth, BV-type, BV-files, BV-groupKey
+  BV-exit, BV-file, BV-file-checkIfExists, BV-file-followLinks, BV-file-glob
+  BV-file-hidden, BV-file-maxDepth, BV-file-type, BV-files, BV-groupKey
   BV-multiMapCriteria, BV-print, BV-printf, BV-println, BV-sendMail
   BV-sleep, BV-record, BV-tuple, BV-log-error, BV-log-info
   BV-log-warn, BV-nextflow-build, BV-nextflow-timestamp, BV-nextflow-version, BV-workflow-commandLine
   BV-workflow-commitId, BV-workflow-complete, BV-workflow-configFiles, BV-workflow-container, BV-workflow-containerEngine
   BV-workflow-duration, BV-workflow-errorMessage, BV-workflow-errorReport, BV-workflow-exitStatus, BV-workflow-failOnIgnore
-  BV-workflow-fusion, BV-workflow-enabled, BV-workflow-version, BV-workflow-homeDir, BV-workflow-launchDir
+  BV-workflow-fusion, BV-workflow-fusion-enabled, BV-workflow-fusion-version, BV-workflow-homeDir, BV-workflow-launchDir
   BV-workflow-manifest, BV-workflow-outputDir, BV-workflow-preview, BV-workflow-profile, BV-workflow-projectDir
   BV-workflow-repository, BV-workflow-resume, BV-workflow-revision, BV-workflow-runName, BV-workflow-scriptFile
   BV-workflow-scriptId, BV-workflow-scriptName, BV-workflow-sessionId, BV-workflow-start, BV-workflow-stubRun
-  BV-workflow-success, BV-workflow-userName, BV-workflow-wave, BV-workflow-workDir, BV-workflow-onComplete
-  BV-workflow-onError
+  BV-workflow-success, BV-workflow-userName, BV-workflow-wave, BV-workflow-wave-enabled, BV-workflow-workDir
+  BV-workflow-onComplete, BV-workflow-onError
 
 ### Output format
 

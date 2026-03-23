@@ -40,23 +40,23 @@
 ### BV-file
 `file( filePattern: String, [options] ) -> Path` — TODO: describe expected behaviour.
 
-### BV-checkIfExists
-`checkIfExists: boolean` — TODO: describe expected behaviour.
+### BV-file-checkIfExists
+`file.checkIfExists: boolean` — TODO: describe expected behaviour.
 
-### BV-followLinks
-`followLinks: boolean` — TODO: describe expected behaviour.
+### BV-file-followLinks
+`file.followLinks: boolean` — TODO: describe expected behaviour.
 
-### BV-glob
-`glob: boolean` — TODO: describe expected behaviour.
+### BV-file-glob
+`file.glob: boolean` — TODO: describe expected behaviour.
 
-### BV-hidden
-`hidden: boolean` — TODO: describe expected behaviour.
+### BV-file-hidden
+`file.hidden: boolean` — TODO: describe expected behaviour.
 
-### BV-maxDepth
-`maxDepth: int` — TODO: describe expected behaviour.
+### BV-file-maxDepth
+`file.maxDepth: int` — TODO: describe expected behaviour.
 
-### BV-type
-`type: String` — TODO: describe expected behaviour.
+### BV-file-type
+`file.type: String` — TODO: describe expected behaviour.
 
 ### BV-files
 `files( filePattern: String, [options] ) -> Iterable<Path>` — TODO: describe expected behaviour.
@@ -142,11 +142,11 @@
 ### BV-workflow-fusion
 `fusion` — TODO: describe expected behaviour.
 
-### BV-workflow-enabled
-`enabled: boolean` — TODO: describe expected behaviour.
+### BV-workflow-fusion-enabled
+`fusion.enabled: boolean` — TODO: describe expected behaviour.
 
-### BV-workflow-version
-`version: String` — TODO: describe expected behaviour.
+### BV-workflow-fusion-version
+`fusion.version: String` — TODO: describe expected behaviour.
 
 ### BV-workflow-homeDir
 `homeDir: Path` — TODO: describe expected behaviour.
@@ -207,6 +207,9 @@
 
 ### BV-workflow-wave
 `wave` — TODO: describe expected behaviour.
+
+### BV-workflow-wave-enabled
+`wave.enabled: boolean` — TODO: describe expected behaviour.
 
 ### BV-workflow-workDir
 `workDir: Path` — TODO: describe expected behaviour.

@@ -16,8 +16,8 @@ For each feature ID in nf-1300-output-qualifiers.md, determine its classificatio
 
 ### Features to classify
 
-- OUT-val, OUT-file, OUT-path, OUT-arity, OUT-followLinks
-  OUT-glob, OUT-hidden, OUT-includeInputs, OUT-maxDepth, OUT-type
+- OUT-val, OUT-file, OUT-path, OUT-path-arity, OUT-path-followLinks
+  OUT-path-glob, OUT-path-hidden, OUT-path-includeInputs, OUT-path-maxDepth, OUT-path-type
   OUT-env, OUT-stdout, OUT-eval, OUT-tuple
 
 ### Output format
