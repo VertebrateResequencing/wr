@@ -160,9 +160,10 @@ default behaviour or error:
 - `sum { closure }` — the closure to transform items before summation
   is not supported. Additionally, `sum()` only works on integer items
   — floating-point and other numeric types will error.
-- `count(literal)` / `count(regex)` / `count(Type)` — only closure
-  predicates and the no-argument form work; literal, regex, and
-  type-qualifier criteria are not evaluated.
+- `count(regex)` / `count(Type)` — closure predicates, the no-argument
+  form, and literal value arguments all work correctly; regex and
+  type-qualifier criteria are not evaluated (the value is compared by
+  equality rather than pattern/type matching, so no items match).
 
 ## Channel Operators — `collate` Variants
 
