@@ -107,16 +107,45 @@ func detectParamsFormat(path string, content []byte) func([]byte) (map[string]an
 
 // SubstituteParams replaces params.KEY references in s with values from params.
 func SubstituteParams(s string, params map[string]any) (string, error) {
-	interpolated, err := replaceParamsMatches(s, interpolatedParamsRE, params, func(match string, groups []string) string {
-		return groups[0]
+	interpolatedMatches := interpolatedParamsRE.FindAllStringSubmatchIndex(s, -1)
+	if len(interpolatedMatches) == 0 {
+		return replaceParamsMatches(s, bareParamsRE, params, func(match string, groups []string) string {
+			return groups[1]
+		})
+	}
+
+	var builder strings.Builder
+	last := 0
+
+	for _, match := range interpolatedMatches {
+		prefix, err := replaceParamsMatches(s[last:match[0]], bareParamsRE, params, func(match string, groups []string) string {
+			return groups[1]
+		})
+		if err != nil {
+			return "", err
+		}
+
+		builder.WriteString(prefix)
+
+		value, err := resolveParamReference(s[match[2]:match[3]], params)
+		if err != nil {
+			return "", err
+		}
+
+		builder.WriteString(fmt.Sprint(value))
+		last = match[1]
+	}
+
+	suffix, err := replaceParamsMatches(s[last:], bareParamsRE, params, func(match string, groups []string) string {
+		return groups[1]
 	})
 	if err != nil {
 		return "", err
 	}
 
-	return replaceParamsMatches(interpolated, bareParamsRE, params, func(match string, groups []string) string {
-		return groups[1]
-	})
+	builder.WriteString(suffix)
+
+	return builder.String(), nil
 }
 
 func replaceParamsMatches(s string, pattern *regexp.Regexp, params map[string]any, reference func(string, []string) string) (string, error) {

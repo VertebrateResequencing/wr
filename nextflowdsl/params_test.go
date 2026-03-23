@@ -49,6 +49,16 @@ func TestParams(t *testing.T) {
 			So(result, ShouldEqual, "x.fq")
 		})
 
+		Convey("SubstituteParams does not recursively rewrite interpolated values", func() {
+			result, err := SubstituteParams("echo ${params.input}", map[string]any{
+				"input": "params.other",
+				"other": "rewritten",
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, "echo params.other")
+		})
+
 		Convey("SubstituteParams errors when a referenced param is missing", func() {
 			_, err := SubstituteParams("${params.missing}", map[string]any{"a": "1"})
 
