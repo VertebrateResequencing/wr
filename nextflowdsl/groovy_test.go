@@ -26,6 +26,8 @@
 package nextflowdsl
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -228,13 +230,89 @@ func TestEvalExprNewExpr(t *testing.T) {
 			So(result, ShouldEqual, "/tmp/out.txt")
 		})
 
-		Convey("unsupported constructors return an unsupported expression for caller fallback", func() {
+		Convey("Date constructors evaluate to non-empty strings", func() {
 			result, err := EvalExpr(NewExpr{ClassName: "Date", Args: []Expr{}}, nil)
 
 			So(err, ShouldBeNil)
-			unsupported, ok := result.(UnsupportedExpr)
+			value, ok := result.(string)
 			So(ok, ShouldBeTrue)
-			So(unsupported.Text, ShouldEqual, "new Date()")
+			So(value, ShouldNotBeBlank)
+		})
+	})
+}
+
+func TestEvalExprMultiAssignExpr(t *testing.T) {
+	Convey("EvalExpr handles L1 destructuring assignments", t, func() {
+		Convey("def assignments bind values by position", func() {
+			expr, err := parseTestExpr("def (x, y) = [1, 2]")
+
+			So(err, ShouldBeNil)
+
+			vars := map[string]any{}
+			result, err := EvalExpr(expr, vars)
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{1, 2})
+			So(vars["x"], ShouldEqual, 1)
+			So(vars["y"], ShouldEqual, 2)
+		})
+
+		Convey("non-def assignments bind all listed variables", func() {
+			expr, err := parseTestExpr("(a, b, c) = ['foo', 'bar', 'baz']")
+
+			So(err, ShouldBeNil)
+
+			vars := map[string]any{}
+			_, err = EvalExpr(expr, vars)
+
+			So(err, ShouldBeNil)
+			So(vars["a"], ShouldEqual, "foo")
+			So(vars["b"], ShouldEqual, "bar")
+			So(vars["c"], ShouldEqual, "baz")
+		})
+
+		Convey("short lists fill missing variables with nil", func() {
+			expr, err := parseTestExpr("def (x, y) = [1]")
+
+			So(err, ShouldBeNil)
+
+			vars := map[string]any{}
+			_, err = EvalExpr(expr, vars)
+
+			So(err, ShouldBeNil)
+			So(vars["x"], ShouldEqual, 1)
+			value, exists := vars["y"]
+			So(exists, ShouldBeTrue)
+			So(value, ShouldBeNil)
+		})
+
+		Convey("long lists ignore extra elements", func() {
+			expr, err := parseTestExpr("def (x) = [1, 2, 3]")
+
+			So(err, ShouldBeNil)
+
+			vars := map[string]any{}
+			_, err = EvalExpr(expr, vars)
+
+			So(err, ShouldBeNil)
+			So(vars["x"], ShouldEqual, 1)
+		})
+
+		Convey("destructuring uses the evaluated RHS result", func() {
+			result, err := evalSimpleFuncDef(&FuncDef{Name: "someFunc", Body: "return [10, 20]"}, nil, nil)
+
+			So(err, ShouldBeNil)
+
+			vars := map[string]any{"rhs": result}
+			assigned, err := evalMultiAssignExpr(MultiAssignExpr{
+				Names: []string{"a", "b"},
+				Value: VarExpr{Root: "rhs"},
+			}, vars)
+
+			So(err, ShouldBeNil)
+			So(assigned, ShouldResemble, []any{10, 20})
+			So(vars["a"], ShouldEqual, 10)
+			So(vars["b"], ShouldEqual, 20)
 		})
 	})
 }
@@ -608,6 +686,337 @@ func TestEvalExprD5NullAndTaskReferences(t *testing.T) {
 	})
 }
 
+func TestEvalExprM3MapMethods(t *testing.T) {
+	Convey("EvalExpr handles M3 map methods", t, func() {
+		evalParsed := func(input string) (any, error) {
+			expr, err := parseTestExpr(input)
+			So(err, ShouldBeNil)
+
+			return EvalExpr(expr, nil)
+		}
+
+		Convey("map predicate and selection methods evaluate end to end", func() {
+			result, err := evalParsed("[a:1, b:2, c:3].findAll { k, v -> v > 1 }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"b": 2, "c": 3})
+
+			result, err = evalParsed("[a:1, b:2].any { k, v -> v > 1 }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, true)
+
+			result, err = evalParsed("[a:1, b:2].every { k, v -> v > 0 }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, true)
+
+			result, err = evalParsed("[a:1, b:2].every { k, v -> v > 1 }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, false)
+
+			result, err = evalParsed("[a:1, b:2, c:3].find { k, v -> v == 2 }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"key": "b", "value": 2})
+
+			result, err = EvalExpr(MethodCallExpr{
+				Receiver: MapExpr{
+					Keys:   []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}},
+					Values: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}},
+				},
+				Method: "each",
+				Args:   []Expr{ClosureExpr{Params: []string{"k", "v"}, Body: ""}},
+			}, nil)
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"a": 1, "b": 2})
+		})
+
+		Convey("map transformation methods evaluate end to end", func() {
+			result, err := evalParsed("[a:1].plus([b:2])")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"a": 1, "b": 2})
+
+			result, err = evalParsed("[a:1, b:2, c:3].minus(['b'])")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"a": 1, "c": 3})
+
+			result, err = evalParsed("[a:1, b:2].collect { k, v -> \"${k}=${v}\" }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{"a=1", "b=2"})
+
+			result, err = evalParsed("[a:1, b:2].inject(0) { acc, k, v -> acc + v }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, 3)
+
+			result, err = evalParsed("[a:1, b:2, c:1].groupBy { k, v -> v }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[any]any{
+				1: map[string]any{"a": 1, "c": 1},
+				2: map[string]any{"b": 2},
+			})
+
+			result, err = evalParsed("[a:1, b:2].collectEntries { k, v -> [k, v * 2] }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"a": 2, "b": 4})
+		})
+
+		Convey("map inspection and lookup methods evaluate end to end", func() {
+			result, err := evalParsed("[a:1, b:2].size()")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, 2)
+
+			result, err = evalParsed("[:].isEmpty()")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, true)
+
+			result, err = evalParsed("[a:1, b:2].keySet()")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{"a", "b"})
+
+			result, err = evalParsed("[a:1, b:2].values()")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{1, 2})
+
+			result, err = evalParsed("[a:1, b:2].containsKey('a')")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, true)
+
+			result, err = evalParsed("[a:1, b:2].containsKey('c')")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, false)
+
+			result, err = evalParsed("[a:1, b:2].containsValue(2)")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, true)
+
+			result, err = evalParsed("[a:1, b:2].containsValue(3)")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, false)
+
+			result, err = evalParsed("[a:1, b:2, c:3].subMap(['a','c'])")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, map[string]any{"a": 1, "c": 3})
+
+			result, err = evalParsed("[a:1, b:2].getOrDefault('c', 99)")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, 99)
+
+			result, err = evalParsed("[a:1, b:2].getOrDefault('a', 99)")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, 1)
+		})
+
+		Convey("map sort evaluates comparator closures", func() {
+			result, err := evalParsed("[a:1, c:3, b:2].sort { a, b -> b.value <=> a.value }.keySet()")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{"c", "b", "a"})
+
+			result, err = evalParsed("[a:1, c:3, b:2].sort { a, b -> b.value <=> a.value }.collect { k, v -> \"${k}=${v}\" }")
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{"c=3", "b=2", "a=1"})
+		})
+	})
+}
+
+func TestEvalExprM2ListMethods(t *testing.T) {
+	Convey("EvalExpr handles M2 list methods", t, func() {
+		evalParsed := func(input string, vars map[string]any) (any, error) {
+			expr, err := parseTestExpr(input)
+			So(err, ShouldBeNil)
+
+			return EvalExpr(expr, vars)
+		}
+
+		Convey("core list transformation and query methods evaluate to the expected values", func() {
+			cases := []struct {
+				name     string
+				input    string
+				expected any
+			}{
+				{name: "inject", input: "[1,2,3].inject(0) { acc, v -> acc + v }", expected: 6},
+				{name: "withIndex", input: "['a','b'].withIndex()", expected: []any{[]any{"a", 0}, []any{"b", 1}}},
+				{name: "indexed", input: "['a','b'].indexed()", expected: []any{[]any{"a", 0}, []any{"b", 1}}},
+				{name: "groupBy", input: "[1,2,3,4].groupBy { it % 2 }", expected: map[any]any{0: []any{2, 4}, 1: []any{1, 3}}},
+				{name: "countBy", input: "['a','b','a','c'].countBy { it }", expected: map[any]any{"a": 2, "b": 1, "c": 1}},
+				{name: "count value", input: "[1,2,3].count(2)", expected: 1},
+				{name: "count closure", input: "[1,2,3].count { it > 1 }", expected: 2},
+				{name: "collectMany", input: "[[1,2],[3,4]].collectMany { it }", expected: []any{1, 2, 3, 4}},
+				{name: "collectEntries", input: "['a','b'].collectEntries { [it, it.toUpperCase()] }", expected: map[any]any{"a": "A", "b": "B"}},
+				{name: "transpose", input: "[[1,2],[3,4],[5,6]].transpose()", expected: []any{[]any{1, 3, 5}, []any{2, 4, 6}}},
+				{name: "head", input: "[1,2,3].head()", expected: 1},
+				{name: "tail", input: "[1,2,3].tail()", expected: []any{2, 3}},
+				{name: "init", input: "[1,2,3].init()", expected: []any{1, 2}},
+				{name: "contains true", input: "[1,2,3].contains(2)", expected: true},
+				{name: "contains false", input: "[1,2,3].contains(4)", expected: false},
+				{name: "intersect", input: "[1,2,3].intersect([2,3,4])", expected: []any{2, 3}},
+				{name: "disjoint true", input: "[1,2].disjoint([3,4])", expected: true},
+				{name: "disjoint false", input: "[1,2].disjoint([2,3])", expected: false},
+			}
+
+			for _, testCase := range cases {
+				result, err := evalParsed(testCase.input, nil)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldResemble, testCase.expected)
+			}
+		})
+
+		Convey("set, ordering, aggregation, and projection methods evaluate to the expected values", func() {
+			cases := []struct {
+				name     string
+				input    string
+				expected any
+			}{
+				{name: "toSet", input: "[1,2,2,3,3].toSet()", expected: []any{1, 2, 3}},
+				{name: "empty head", input: "[].head()", expected: nil},
+				{name: "reverse", input: "[1,2,3].reverse()", expected: []any{3, 2, 1}},
+				{name: "sum", input: "[1,2,3].sum()", expected: 6},
+				{name: "max", input: "[3,1,2].max()", expected: 3},
+				{name: "max closure", input: "['a','bb','ccc'].max { it.size() }", expected: "ccc"},
+				{name: "min", input: "[3,1,2].min()", expected: 1},
+				{name: "asType Set", input: "[1,2,2,3].asType(Set)", expected: []any{1, 2, 3}},
+				{name: "spread", input: "[1,2,3].spread { it * 2 }", expected: []any{2, 4, 6}},
+				{name: "sum closure", input: "[1,2,3].sum { it * 2 }", expected: 12},
+				{name: "min closure", input: "['ab','c','def'].min { it.size() }", expected: "c"},
+			}
+
+			for _, testCase := range cases {
+				result, err := evalParsed(testCase.input, nil)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldResemble, testCase.expected)
+			}
+		})
+
+		Convey("mutating list methods update variable receivers", func() {
+			Convey("pop removes and returns the last element", func() {
+				vars := map[string]any{"items": []any{1, 2, 3}}
+
+				result, err := evalParsed("items.pop()", vars)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldEqual, 3)
+				So(vars["items"], ShouldResemble, []any{1, 2})
+			})
+
+			Convey("push appends an item", func() {
+				vars := map[string]any{"items": []any{1, 2}}
+
+				result, err := evalParsed("items.push(3)", vars)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldResemble, []any{1, 2, 3})
+				So(vars["items"], ShouldResemble, []any{1, 2, 3})
+			})
+
+			Convey("add appends an item", func() {
+				vars := map[string]any{"items": []any{1, 2}}
+
+				result, err := evalParsed("items.add(3)", vars)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldResemble, []any{1, 2, 3})
+				So(vars["items"], ShouldResemble, []any{1, 2, 3})
+			})
+
+			Convey("addAll appends all items", func() {
+				vars := map[string]any{"items": []any{1}}
+
+				result, err := evalParsed("items.addAll([2,3])", vars)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldResemble, []any{1, 2, 3})
+				So(vars["items"], ShouldResemble, []any{1, 2, 3})
+			})
+
+			Convey("remove deletes the indexed element", func() {
+				vars := map[string]any{"items": []any{10, 20, 30}}
+
+				result, err := evalParsed("items.remove(1)", vars)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldEqual, 20)
+				So(vars["items"], ShouldResemble, []any{10, 30})
+			})
+		})
+
+		Convey("iteration methods preserve the original list while honoring closure order", func() {
+			Convey("reverseEach walks items in reverse order", func() {
+				vars := map[string]any{"expected": []any{3, 2, 1}}
+
+				var (
+					result any
+					err    error
+				)
+
+				stderr := captureGroovyEvalStderr(func() {
+					result, err = evalParsed("[1,2,3].reverseEach { assert expected.remove(0) == it; it * 2 }", vars)
+				})
+
+				So(err, ShouldBeNil)
+				So(stderr, ShouldEqual, "")
+				So(result, ShouldResemble, []any{1, 2, 3})
+			})
+
+			Convey("eachWithIndex passes value and index pairs in order", func() {
+				vars := map[string]any{"expected": []any{"0:a", "1:b"}}
+
+				var (
+					result any
+					err    error
+				)
+
+				stderr := captureGroovyEvalStderr(func() {
+					result, err = evalParsed("['a','b'].eachWithIndex { val, i -> assert expected.remove(0) == \"${i}:${val}\" }", vars)
+				})
+
+				So(err, ShouldBeNil)
+				So(stderr, ShouldEqual, "")
+				So(result, ShouldResemble, []any{"a", "b"})
+			})
+		})
+
+		Convey("unsupported asType targets emit a warning and return UnsupportedExpr", func() {
+			var (
+				result any
+				err    error
+			)
+
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalParsed("[1,2,3].asType(UnknownType)", nil)
+			})
+
+			So(err, ShouldBeNil)
+			unsupported, ok := result.(UnsupportedExpr)
+			So(ok, ShouldBeTrue)
+			So(unsupported.Text, ShouldEqual, "[1, 2, 3].asType(UnknownType)")
+			So(stderr, ShouldContainSubstring, "unsupported list asType(UnknownType)")
+		})
+	})
+}
+
 func TestEvalExprD3MethodCalls(t *testing.T) {
 	Convey("EvalExpr handles D3 method calls on strings and lists", t, func() {
 		Convey("string methods evaluate to the expected values", func() {
@@ -642,6 +1051,72 @@ func TestEvalExprD3MethodCalls(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(result, ShouldResemble, testCase.expected)
 			}
+		})
+
+		Convey("M1 string method acceptance tests evaluate to the expected values", func() {
+			cases := []struct {
+				name     string
+				expr     Expr
+				expected any
+			}{
+				{name: "replaceFirst", expr: MethodCallExpr{Receiver: StringExpr{Value: "hello123"}, Method: "replaceFirst", Args: []Expr{StringExpr{Value: "[0-9]+"}, StringExpr{Value: "X"}}}, expected: "helloX"},
+				{name: "padLeft with char", expr: MethodCallExpr{Receiver: StringExpr{Value: "42"}, Method: "padLeft", Args: []Expr{IntExpr{Value: 5}, StringExpr{Value: "0"}}}, expected: "00042"},
+				{name: "padLeft default", expr: MethodCallExpr{Receiver: StringExpr{Value: "42"}, Method: "padLeft", Args: []Expr{IntExpr{Value: 5}}}, expected: "   42"},
+				{name: "padRight", expr: MethodCallExpr{Receiver: StringExpr{Value: "hi"}, Method: "padRight", Args: []Expr{IntExpr{Value: 5}, StringExpr{Value: "."}}}, expected: "hi..."},
+				{name: "capitalize", expr: MethodCallExpr{Receiver: StringExpr{Value: "hello"}, Method: "capitalize", Args: []Expr{}}, expected: "Hello"},
+				{name: "uncapitalize", expr: MethodCallExpr{Receiver: StringExpr{Value: "Hello"}, Method: "uncapitalize", Args: []Expr{}}, expected: "hello"},
+				{name: "isNumber true", expr: MethodCallExpr{Receiver: StringExpr{Value: "123"}, Method: "isNumber", Args: []Expr{}}, expected: true},
+				{name: "isNumber false", expr: MethodCallExpr{Receiver: StringExpr{Value: "abc"}, Method: "isNumber", Args: []Expr{}}, expected: false},
+				{name: "isInteger true", expr: MethodCallExpr{Receiver: StringExpr{Value: "42"}, Method: "isInteger", Args: []Expr{}}, expected: true},
+				{name: "isInteger false", expr: MethodCallExpr{Receiver: StringExpr{Value: "3.14"}, Method: "isInteger", Args: []Expr{}}, expected: false},
+				{name: "isLong", expr: MethodCallExpr{Receiver: StringExpr{Value: "42"}, Method: "isLong", Args: []Expr{}}, expected: true},
+				{name: "isDouble", expr: MethodCallExpr{Receiver: StringExpr{Value: "3.14"}, Method: "isDouble", Args: []Expr{}}, expected: true},
+				{name: "isBigDecimal", expr: MethodCallExpr{Receiver: StringExpr{Value: "3.14"}, Method: "isBigDecimal", Args: []Expr{}}, expected: true},
+				{name: "toBoolean true", expr: MethodCallExpr{Receiver: StringExpr{Value: "true"}, Method: "toBoolean", Args: []Expr{}}, expected: true},
+				{name: "toBoolean false", expr: MethodCallExpr{Receiver: StringExpr{Value: "false"}, Method: "toBoolean", Args: []Expr{}}, expected: false},
+				{name: "stripIndent", expr: MethodCallExpr{Receiver: StringExpr{Value: "  line1\n  line2"}, Method: "stripIndent", Args: []Expr{}}, expected: "line1\nline2"},
+				{name: "readLines", expr: MethodCallExpr{Receiver: StringExpr{Value: "a\nb\nc"}, Method: "readLines", Args: []Expr{}}, expected: []any{"a", "b", "c"}},
+				{name: "count", expr: MethodCallExpr{Receiver: StringExpr{Value: "banana"}, Method: "count", Args: []Expr{StringExpr{Value: "an"}}}, expected: 2},
+				{name: "capitalize empty", expr: MethodCallExpr{Receiver: StringExpr{Value: ""}, Method: "capitalize", Args: []Expr{}}, expected: ""},
+				{name: "toLong", expr: MethodCallExpr{Receiver: StringExpr{Value: "100"}, Method: "toLong", Args: []Expr{}}, expected: int64(100)},
+				{name: "toDouble", expr: MethodCallExpr{Receiver: StringExpr{Value: "3.14"}, Method: "toDouble", Args: []Expr{}}, expected: float64(3.14)},
+				{name: "toBigDecimal", expr: MethodCallExpr{Receiver: StringExpr{Value: "3.14"}, Method: "toBigDecimal", Args: []Expr{}}, expected: float64(3.14)},
+			}
+
+			for _, testCase := range cases {
+				result, err := EvalExpr(testCase.expr, nil)
+
+				So(err, ShouldBeNil)
+				So(result, ShouldResemble, testCase.expected)
+			}
+		})
+
+		Convey("eachLine applies the closure to each line and collects the results", func() {
+			expr, err := parseTestExpr("'line1\\nline2\\nline3'.eachLine { it.toUpperCase() }")
+
+			So(err, ShouldBeNil)
+
+			result, err := EvalExpr(expr, nil)
+
+			So(err, ShouldBeNil)
+			So(result, ShouldResemble, []any{"LINE1", "LINE2", "LINE3"})
+		})
+
+		Convey("execute emits a warning and returns UnsupportedExpr", func() {
+			var (
+				result any
+				err    error
+			)
+
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = EvalExpr(MethodCallExpr{Receiver: StringExpr{Value: "hello"}, Method: "execute", Args: []Expr{}}, nil)
+			})
+
+			So(err, ShouldBeNil)
+			unsupported, ok := result.(UnsupportedExpr)
+			So(ok, ShouldBeTrue)
+			So(unsupported.Text, ShouldEqual, "hello.execute()")
+			So(stderr, ShouldContainSubstring, "execute()")
 		})
 
 		Convey("list methods evaluate to the expected values", func() {
@@ -804,4 +1279,121 @@ func TestEvalExprE2StatementBodies(t *testing.T) {
 			So(result, ShouldEqual, "upper")
 		})
 	})
+}
+
+func TestEvalExprO1AssertAndThrowStatements(t *testing.T) {
+	Convey("EvalExpr handles O1 assert and throw statements", t, func() {
+		Convey("assert true emits no warning", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("assert true", nil)
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(strings.TrimSpace(stderr), ShouldEqual, "")
+		})
+
+		Convey("assert false emits the default assertion warning", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("assert false", nil)
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(stderr, ShouldContainSubstring, "Assertion failed")
+			So(stderr, ShouldContainSubstring, "error")
+		})
+
+		Convey("assert false with a custom message emits that message", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("assert false : 'x must be positive'", nil)
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(stderr, ShouldContainSubstring, "x must be positive")
+		})
+
+		Convey("assert params.x > 0 passes without warnings when true", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("assert params.x > 0", map[string]any{
+					"params": map[string]any{"x": 5},
+				})
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(strings.TrimSpace(stderr), ShouldEqual, "")
+		})
+
+		Convey("assert params.x > 0 emits an error-level warning when compile-time false", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("assert params.x > 0", map[string]any{
+					"params": map[string]any{"x": -1},
+				})
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(stderr, ShouldContainSubstring, "Assertion failed")
+			So(stderr, ShouldContainSubstring, "error")
+		})
+
+		Convey("throw new RuntimeException emits a warning and is catchable", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("try { throw new RuntimeException('bad input') } catch (RuntimeException e) { return 'handled' }", nil)
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldEqual, "handled")
+			So(stderr, ShouldContainSubstring, "bad input")
+			So(stderr, ShouldContainSubstring, "warning")
+		})
+
+		Convey("throw new Exception outside try catch emits a warning without halting evaluation", func() {
+			var result any
+			var err error
+			stderr := captureGroovyEvalStderr(func() {
+				result, err = evalStatementBody("throw new Exception('msg')", nil)
+			})
+
+			So(err, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(stderr, ShouldContainSubstring, "msg")
+			So(stderr, ShouldContainSubstring, "warning")
+		})
+	})
+}
+
+func captureGroovyEvalStderr(run func()) string {
+	original := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return ""
+	}
+
+	os.Stderr = writer
+	run()
+	writer.Close()
+	os.Stderr = original
+
+	output, readErr := io.ReadAll(reader)
+	reader.Close()
+	if readErr != nil {
+		return ""
+	}
+
+	return string(output)
 }

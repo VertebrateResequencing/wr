@@ -1997,6 +1997,8 @@ func cloneChannelValue(value any) any {
 		return cloneChannelSlice(typed)
 	case []string:
 		return cloneStrings(typed)
+	case orderedMap:
+		return newOrderedMap(typed.entries)
 	default:
 		return typed
 	}

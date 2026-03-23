@@ -28,12 +28,16 @@ package nextflowdsl
 import (
 	"errors"
 	"fmt"
+	"math"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 )
 
 var groovyInterpolationPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -50,6 +54,101 @@ func looksLikeEnumExprPath(root, path string) bool {
 	first := root[0]
 
 	return first >= 'A' && first <= 'Z'
+}
+
+func evalStringConstructor(args []any) (any, bool, error) {
+	if len(args) != 1 {
+		return nil, false, nil
+	}
+
+	return fmt.Sprint(args[0]), true, nil
+}
+
+func evalDateConstructor(args []any) (any, bool, error) {
+	if len(args) != 0 {
+		return nil, false, nil
+	}
+
+	return time.Now().UTC().Format(time.RFC3339Nano), true, nil
+}
+
+func evalBigDecimalConstructor(args []any) (any, bool, error) {
+	if len(args) != 1 {
+		return nil, false, nil
+	}
+
+	value, err := strconv.ParseFloat(fmt.Sprint(args[0]), 64)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return value, true, nil
+}
+
+func evalBigIntegerConstructor(args []any) (any, bool, error) {
+	if len(args) != 1 {
+		return nil, false, nil
+	}
+
+	value, err := strconv.ParseInt(fmt.Sprint(args[0]), 10, 64)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return value, true, nil
+}
+
+func evalArrayListConstructor(args []any) (any, bool, error) {
+	if len(args) != 1 {
+		return nil, false, nil
+	}
+
+	value := reflect.ValueOf(args[0])
+	if !value.IsValid() {
+		return []any(nil), true, nil
+	}
+
+	kind := value.Kind()
+	if kind != reflect.Slice && kind != reflect.Array {
+		return nil, false, nil
+	}
+
+	items := make([]any, 0, value.Len())
+	for index := range value.Len() {
+		items = append(items, value.Index(index).Interface())
+	}
+
+	return items, true, nil
+}
+
+func evalMapConstructor(args []any) (any, bool, error) {
+	if len(args) != 1 {
+		return nil, false, nil
+	}
+
+	value := reflect.ValueOf(args[0])
+	if !value.IsValid() {
+		return map[string]any{}, true, nil
+	}
+
+	if value.Kind() != reflect.Map {
+		return nil, false, nil
+	}
+
+	copyMap := make(map[string]any, value.Len())
+	for _, key := range value.MapKeys() {
+		copyMap[fmt.Sprint(key.Interface())] = value.MapIndex(key).Interface()
+	}
+
+	return copyMap, true, nil
+}
+
+func evalRandomConstructor(args []any) (any, bool, error) {
+	if len(args) != 0 {
+		return nil, false, nil
+	}
+
+	return int64(0), true, nil
 }
 
 type evalExprStmt struct {
@@ -72,6 +171,15 @@ type evalReturnStmt struct {
 }
 
 type evalBreakStmt struct{}
+
+type evalAssertStmt struct {
+	expr    Expr
+	message Expr
+}
+
+type evalThrowStmt struct {
+	expr Expr
+}
 
 type evalIfStmt struct {
 	cond     Expr
@@ -192,6 +300,14 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		return evalStatementResult{value: value, valueSet: true, returned: true}, nil
 	case evalBreakStmt:
 		return evalStatementResult{broke: true}, nil
+	case evalAssertStmt:
+		if err := evalAssertStatement(typed.expr, typed.message, scope); err != nil {
+			return evalStatementResult{}, err
+		}
+
+		return evalStatementResult{}, nil
+	case evalThrowStmt:
+		return evalStatementResult{}, evalThrowStatement(typed.expr, scope)
 	case evalIfStmt:
 		condition, err := EvalExpr(typed.cond, scope)
 		if err != nil {
@@ -332,6 +448,10 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 }
 
 func evalStatementBody(body string, scope map[string]any) (any, error) {
+	if scope == nil {
+		scope = make(map[string]any)
+	}
+
 	stmts, err := parseEvalStatements(body)
 	if err != nil {
 		return nil, err
@@ -339,6 +459,11 @@ func evalStatementBody(body string, scope map[string]any) (any, error) {
 
 	result, err := evalStatementBlock(stmts, scope)
 	if err != nil {
+		var thrown *evalThrownException
+		if errors.As(err, &thrown) {
+			return nil, nil
+		}
+
 		return nil, err
 	}
 	if !result.valueSet {
@@ -374,6 +499,1476 @@ func newEvalStatementParser(tokens []token) *evalStatementParser {
 	}
 
 	return &evalStatementParser{tokens: trimmed}
+}
+
+type evalThrownException struct {
+	className string
+	message   string
+}
+
+func (e *evalThrownException) Error() string {
+	return e.message
+}
+
+func evalThrowStatement(expr Expr, vars map[string]any) error {
+	thrown := &evalThrownException{className: "Exception", message: "Exception"}
+
+	if newExpr, ok := expr.(NewExpr); ok {
+		thrown.className = shortConstructorName(newExpr.ClassName)
+		if len(newExpr.Args) > 0 {
+			message, err := EvalExpr(newExpr.Args[0], vars)
+			if err == nil && message != nil {
+				thrown.message = fmt.Sprint(message)
+			} else {
+				thrown.message = renderExpr(newExpr.Args[0])
+			}
+		} else {
+			thrown.message = thrown.className
+		}
+		warnf("nextflowdsl: warning: %s\n", thrown.message)
+
+		return thrown
+	}
+
+	value, err := EvalExpr(expr, vars)
+	if err == nil && value != nil {
+		thrown.message = fmt.Sprint(value)
+	}
+
+	warnf("nextflowdsl: warning: %s\n", thrown.message)
+
+	return thrown
+}
+
+func padStringMethod(receiver, method string, args []any, left bool) (any, error) {
+	if err := requireMethodArgCount(method, args, 1, 2); err != nil {
+		return nil, err
+	}
+
+	width, err := requireIntArg(method, args[0])
+	if err != nil {
+		return nil, err
+	}
+
+	pad := " "
+	if len(args) == 2 {
+		pad, err = requireStringArg(method, args[1])
+		if err != nil {
+			return nil, err
+		}
+		if pad == "" {
+			return nil, fmt.Errorf("%s() padding must not be empty", method)
+		}
+	}
+
+	if width <= len(receiver) {
+		return receiver, nil
+	}
+
+	padding := strings.Repeat(string([]rune(pad)[0]), width-len(receiver))
+	if left {
+		return padding + receiver, nil
+	}
+
+	return receiver + padding, nil
+}
+
+func capitalizeString(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	runes := []rune(value)
+	runes[0] = unicode.ToUpper(runes[0])
+
+	return string(runes)
+}
+
+func uncapitalizeString(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	runes := []rune(value)
+	runes[0] = unicode.ToLower(runes[0])
+
+	return string(runes)
+}
+
+func isNumericString(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+
+	_, err := strconv.ParseFloat(trimmed, 64)
+
+	return err == nil
+}
+
+func isIntegerString(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+
+	_, err := strconv.ParseInt(trimmed, 10, 64)
+
+	return err == nil
+}
+
+func isFloatString(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+
+	_, err := strconv.ParseFloat(trimmed, 64)
+
+	return err == nil
+}
+
+func stripIndent(value string) string {
+	lines := strings.Split(value, "\n")
+	indent := -1
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		width := leadingIndentWidth(line)
+		if indent == -1 || width < indent {
+			indent = width
+		}
+	}
+
+	if indent <= 0 {
+		return value
+	}
+
+	stripped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			stripped = append(stripped, "")
+			continue
+		}
+
+		if indent > len(line) {
+			stripped = append(stripped, "")
+			continue
+		}
+
+		stripped = append(stripped, line[indent:])
+	}
+
+	return strings.Join(stripped, "\n")
+}
+
+func leadingIndentWidth(line string) int {
+	width := 0
+	for _, r := range line {
+		if r != ' ' && r != '\t' {
+			break
+		}
+
+		width += len(string(r))
+	}
+
+	return width
+}
+
+func splitStringLines(value string) []string {
+	parts := strings.Split(value, "\n")
+	for index, line := range parts {
+		parts[index] = strings.TrimSuffix(line, "\r")
+	}
+
+	return parts
+}
+
+func evalMapMethodCall(receiver any, method string, args []any, expr MethodCallExpr, vars map[string]any) (any, error) {
+	entries, values, ordered, ok := mapReceiverParts(receiver)
+	if !ok {
+		return nil, fmt.Errorf("unsupported map receiver %T", receiver)
+	}
+
+	switch method {
+	case "findAll":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		filtered := make([]mapEntry, 0, len(entries))
+		for _, entry := range entries {
+			matched, err := evalMapPredicateClosure(closure, entry.key, entry.value, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			if matched {
+				filtered = append(filtered, mapEntry{key: entry.key, value: entry.value})
+			}
+		}
+
+		return buildMapResult(filtered, ordered), nil
+	case "find":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		for _, entry := range entries {
+			matched, err := evalMapPredicateClosure(closure, entry.key, entry.value, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			if matched {
+				return map[string]any{"key": entry.key, "value": cloneChannelValue(entry.value)}, nil
+			}
+		}
+
+		return nil, nil
+	case "any":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		for _, entry := range entries {
+			matched, err := evalMapPredicateClosure(closure, entry.key, entry.value, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			if matched {
+				return true, nil
+			}
+		}
+
+		return false, nil
+	case "every":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		for _, entry := range entries {
+			matched, err := evalMapPredicateClosure(closure, entry.key, entry.value, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			if !matched {
+				return false, nil
+			}
+		}
+
+		return true, nil
+	case "groupBy":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		grouped := make(map[any]any)
+		for _, entry := range entries {
+			key, err := evalSimpleClosure(closure, []any{entry.key, entry.value}, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			bucket, ok := grouped[key].(map[string]any)
+			if !ok {
+				bucket = make(map[string]any)
+			}
+
+			bucket[entry.key] = cloneChannelValue(entry.value)
+			grouped[key] = bucket
+		}
+
+		return grouped, nil
+	case "collectEntries":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		collected := make([]mapEntry, 0, len(entries))
+		for _, entry := range entries {
+			value, err := evalSimpleClosure(closure, []any{entry.key, entry.value}, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			key, entryValue, ok := collectEntryPair(value)
+			if !ok {
+				return nil, fmt.Errorf("unsupported %s() result %T", method, value)
+			}
+
+			keyString, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("unsupported %s() key %T", method, key)
+			}
+
+			collected = append(collected, mapEntry{key: keyString, value: entryValue})
+		}
+
+		return buildMapResult(collected, ordered), nil
+	case "plus":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		otherEntries, otherValues, _, ok := mapReceiverParts(args[0])
+		if !ok {
+			return nil, fmt.Errorf("unsupported %s() argument %T", method, args[0])
+		}
+
+		if !ordered {
+			merged := cloneStringAnyMap(values)
+			for key, value := range otherValues {
+				merged[key] = cloneChannelValue(value)
+			}
+
+			return merged, nil
+		}
+
+		merged := append([]mapEntry{}, entries...)
+		entryIndex := make(map[string]int, len(merged))
+		for index, entry := range merged {
+			entryIndex[entry.key] = index
+		}
+
+		for _, entry := range otherEntries {
+			if index, exists := entryIndex[entry.key]; exists {
+				merged[index] = mapEntry{key: entry.key, value: entry.value}
+				continue
+			}
+
+			entryIndex[entry.key] = len(merged)
+			merged = append(merged, mapEntry{key: entry.key, value: entry.value})
+		}
+
+		return buildMapResult(merged, true), nil
+	case "minus":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		keys, err := mapMethodKeysArg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+
+		if !ordered {
+			filtered := cloneStringAnyMap(values)
+			for _, key := range keys {
+				delete(filtered, key)
+			}
+
+			return filtered, nil
+		}
+
+		remove := make(map[string]struct{}, len(keys))
+		for _, key := range keys {
+			remove[key] = struct{}{}
+		}
+
+		filtered := make([]mapEntry, 0, len(entries))
+		for _, entry := range entries {
+			if _, exists := remove[entry.key]; exists {
+				continue
+			}
+
+			filtered = append(filtered, mapEntry{key: entry.key, value: entry.value})
+		}
+
+		return buildMapResult(filtered, true), nil
+	case "sort":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		sorted := append([]mapEntry(nil), entries...)
+		sort.SliceStable(sorted, func(i, j int) bool {
+			less, _ := evalMapSortLess(closure, sorted[i], sorted[j], vars)
+			return less
+		})
+		for index := 1; index < len(sorted); index++ {
+			if _, err := evalMapSortLess(closure, sorted[index-1], sorted[index], vars); err != nil {
+				return nil, err
+			}
+		}
+
+		return buildMapResult(sorted, true), nil
+	case "inject":
+		if err := requireMethodArgCount(method, args, 2); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[1].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		accumulator := args[0]
+		for _, entry := range entries {
+			value, err := evalSimpleClosure(closure, []any{accumulator, entry.key, entry.value}, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			accumulator = value
+		}
+
+		return accumulator, nil
+	case "size":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return len(values), nil
+	case "isEmpty":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return len(values) == 0, nil
+	case "keySet":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		keys := make([]any, 0, len(entries))
+		for _, entry := range entries {
+			keys = append(keys, entry.key)
+		}
+
+		return keys, nil
+	case "values":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		values := make([]any, 0, len(entries))
+		for _, entry := range entries {
+			values = append(values, cloneChannelValue(entry.value))
+		}
+
+		return values, nil
+	case "containsKey":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		key, err := requireStringArg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+
+		_, ok := values[key]
+		return ok, nil
+	case "containsValue":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		for _, entry := range entries {
+			if reflect.DeepEqual(entry.value, args[0]) {
+				return true, nil
+			}
+		}
+
+		return false, nil
+	case "subMap":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		keys, err := mapMethodKeysArg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+
+		result := make([]mapEntry, 0, len(keys))
+		for _, key := range keys {
+			value, ok := values[key]
+			if ok {
+				result = append(result, mapEntry{key: key, value: value})
+			}
+		}
+
+		return buildMapResult(result, ordered), nil
+	case "collect":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		collected := make([]any, 0, len(entries))
+		for _, entry := range entries {
+			value, err := evalSimpleClosure(closure, []any{entry.key, entry.value}, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			collected = append(collected, value)
+		}
+
+		return collected, nil
+	case "each":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		for _, entry := range entries {
+			_, err := evalSimpleClosure(closure, []any{entry.key, entry.value}, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+		}
+
+		return buildMapResult(entries, ordered), nil
+	case "getOrDefault":
+		if err := requireMethodArgCount(method, args, 2); err != nil {
+			return nil, err
+		}
+
+		key, err := requireStringArg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+
+		value, ok := values[key]
+		if ok {
+			return cloneChannelValue(value), nil
+		}
+
+		return cloneChannelValue(args[1]), nil
+	default:
+		return nil, fmt.Errorf("unsupported map method %q", method)
+	}
+}
+
+func mapReceiverParts(receiver any) ([]mapEntry, map[string]any, bool, bool) {
+	switch typed := receiver.(type) {
+	case map[string]any:
+		return sortedMapEntries(typed), typed, false, true
+	case orderedMap:
+		return append([]mapEntry{}, typed.entries...), typed.values, true, true
+	default:
+		return nil, nil, false, false
+	}
+}
+
+func sortedMapEntries(receiver map[string]any) []mapEntry {
+	keys := make([]string, 0, len(receiver))
+	for key := range receiver {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	entries := make([]mapEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, mapEntry{key: key, value: receiver[key]})
+	}
+
+	return entries
+}
+
+func evalMapPredicateClosure(closure ClosureExpr, key string, value any, vars map[string]any) (bool, error) {
+	result, err := evalSimpleClosure(closure, []any{key, value}, vars)
+	if err != nil {
+		return false, err
+	}
+
+	return isTruthy(result), nil
+}
+
+func buildMapResult(entries []mapEntry, ordered bool) any {
+	if ordered {
+		return newOrderedMap(entries)
+	}
+
+	return mapFromEntries(entries)
+}
+
+func newOrderedMap(entries []mapEntry) orderedMap {
+	clonedEntries := make([]mapEntry, 0, len(entries))
+	values := make(map[string]any, len(entries))
+	for _, entry := range entries {
+		clonedValue := cloneChannelValue(entry.value)
+		clonedEntries = append(clonedEntries, mapEntry{key: entry.key, value: clonedValue})
+		values[entry.key] = clonedValue
+	}
+
+	return orderedMap{values: values, entries: clonedEntries}
+}
+
+func mapFromEntries(entries []mapEntry) map[string]any {
+	values := make(map[string]any, len(entries))
+	for _, entry := range entries {
+		values[entry.key] = cloneChannelValue(entry.value)
+	}
+
+	return values
+}
+
+func collectEntryPair(value any) (any, any, bool) {
+	if pair, ok := value.([]any); ok && len(pair) >= 2 {
+		return pair[0], pair[1], true
+	}
+
+	if pair, ok := value.(map[string]any); ok && len(pair) == 1 {
+		for key, entryValue := range pair {
+			return key, entryValue, true
+		}
+	}
+
+	if pair, ok := value.(map[any]any); ok && len(pair) == 1 {
+		for key, entryValue := range pair {
+			return key, entryValue, true
+		}
+	}
+
+	return nil, nil, false
+}
+
+func cloneStringAnyMap(values map[string]any) map[string]any {
+	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		cloned[key] = cloneChannelValue(value)
+	}
+
+	return cloned
+}
+
+func mapMethodKeysArg(method string, value any) ([]string, error) {
+	switch typed := value.(type) {
+	case []any:
+		keys := make([]string, 0, len(typed))
+		for _, entry := range typed {
+			key, ok := entry.(string)
+			if !ok {
+				return nil, fmt.Errorf("unsupported %s() key %T", method, entry)
+			}
+
+			keys = append(keys, key)
+		}
+
+		return keys, nil
+	case []string:
+		return append([]string{}, typed...), nil
+	default:
+		return nil, fmt.Errorf("unsupported %s() argument %T", method, value)
+	}
+}
+
+func evalMapSortLess(closure ClosureExpr, left, right mapEntry, vars map[string]any) (bool, error) {
+	result, err := evalSimpleClosure(closure, []any{
+		map[string]any{"key": left.key, "value": left.value},
+		map[string]any{"key": right.key, "value": right.value},
+	}, vars)
+	if err != nil {
+		return false, err
+	}
+
+	switch typed := result.(type) {
+	case int:
+		return typed < 0, nil
+	case bool:
+		return typed, nil
+	default:
+		return false, fmt.Errorf("unsupported sort() result %T", result)
+	}
+}
+
+func evalNumberMethodCall(receiver any, method string, args []any) (any, error) {
+	switch method {
+	case "abs":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		switch typed := receiver.(type) {
+		case int:
+			return absInt(typed), nil
+		case int64:
+			if typed < 0 {
+				return -typed, nil
+			}
+			return typed, nil
+		case float64:
+			return math.Abs(typed), nil
+		}
+	case "round":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		switch typed := receiver.(type) {
+		case int:
+			return typed, nil
+		case int64:
+			return typed, nil
+		case float64:
+			return int(math.Round(typed)), nil
+		}
+	case "intdiv":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		divisor, err := requireNumberInt64Arg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+		if divisor == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+
+		switch typed := receiver.(type) {
+		case int:
+			return int(int64(typed) / divisor), nil
+		case int64:
+			return typed / divisor, nil
+		case float64:
+			return int(int64(typed) / divisor), nil
+		}
+	case "toInteger":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		switch typed := receiver.(type) {
+		case int:
+			return typed, nil
+		case int64:
+			return int(typed), nil
+		case float64:
+			return int(typed), nil
+		}
+	case "toLong":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		switch typed := receiver.(type) {
+		case int:
+			return int64(typed), nil
+		case int64:
+			return typed, nil
+		case float64:
+			return int64(typed), nil
+		}
+	case "toDouble", "toBigDecimal":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		switch typed := receiver.(type) {
+		case int:
+			return float64(typed), nil
+		case int64:
+			return float64(typed), nil
+		case float64:
+			return typed, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unsupported number method %q on %T", method, receiver)
+}
+
+func requireNumberInt64Arg(method string, value any) (int64, error) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), nil
+	case int64:
+		return typed, nil
+	case float64:
+		return int64(typed), nil
+	default:
+		return 0, fmt.Errorf("unsupported %s() argument %T", method, value)
+	}
+}
+
+func evalListMethodCallExpr(expr MethodCallExpr, receiver []any, vars map[string]any) (any, error) {
+	switch expr.Method {
+	case "collect":
+		return evalListCollectMethod(expr, receiver, vars)
+	case "any", "every", "findAll", "find":
+		return evalListClosurePredicateMethod(expr, receiver, vars)
+	case "inject", "groupBy", "countBy", "count", "collectMany", "collectEntries", "reverseEach", "eachWithIndex", "sum", "max", "min", "spread":
+		return evalListClosureMethod(expr, receiver, vars)
+	case "asType":
+		if err := requireMethodExprArgCount(expr.Method, expr.Args, 1); err != nil {
+			return nil, err
+		}
+
+		typeName, err := groovyTypeName(expr.Args[0])
+		if err != nil {
+			warnf("nextflowdsl: unsupported list asType(%s)\n", renderExpr(expr.Args[0]))
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		switch shortConstructorName(typeName) {
+		case "Set", "HashSet", "LinkedHashSet":
+			return evalListAsSet(receiver), nil
+		default:
+			warnf("nextflowdsl: unsupported list asType(%s)\n", typeName)
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+	}
+
+	args, err := evalExprArgs(expr.Args, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	result, updated, mutated, err := evalListMethodCall(receiver, expr.Method, args)
+	if err != nil {
+		return nil, err
+	}
+
+	if mutated {
+		assignListMethodReceiver(expr.Receiver, vars, updated)
+	}
+
+	return result, nil
+}
+
+func evalListClosureMethod(expr MethodCallExpr, receiver []any, vars map[string]any) (any, error) {
+	switch expr.Method {
+	case "inject":
+		if err := requireMethodExprArgCount(expr.Method, expr.Args, 2); err != nil {
+			return nil, err
+		}
+
+		initial, err := EvalExpr(expr.Args[0], vars)
+		if err != nil {
+			return nil, err
+		}
+
+		closure, ok := expr.Args[1].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: renderExpr(expr)}, nil
+		}
+
+		accumulator := initial
+		for _, item := range receiver {
+			accumulator, err = evalSimpleClosure(closure, []any{accumulator, item}, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+		}
+
+		return accumulator, nil
+	case "groupBy":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		grouped := make(map[any]any)
+		for _, item := range receiver {
+			key, err := evalSimpleClosure(closure, item, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			current, _ := grouped[key].([]any)
+			current = append(current, cloneChannelValue(item))
+			grouped[key] = current
+		}
+
+		return grouped, nil
+	case "countBy":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		counted := make(map[any]any)
+		for _, item := range receiver {
+			key, err := evalSimpleClosure(closure, item, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			count, _ := counted[key].(int)
+			counted[key] = count + 1
+		}
+
+		return counted, nil
+	case "count":
+		if err := requireMethodExprArgCount(expr.Method, expr.Args, 1); err != nil {
+			return nil, err
+		}
+
+		if closure, ok := expr.Args[0].(ClosureExpr); ok {
+			count := 0
+			for _, item := range receiver {
+				matched, err := evalListClosurePredicate(closure, item, vars)
+				if err != nil {
+					if errors.Is(err, errUnsupportedClosure) {
+						return UnsupportedExpr{Text: renderExpr(expr)}, nil
+					}
+
+					return nil, err
+				}
+
+				if matched {
+					count++
+				}
+			}
+
+			return count, nil
+		}
+
+		value, err := EvalExpr(expr.Args[0], vars)
+		if err != nil {
+			return nil, err
+		}
+
+		count := 0
+		for _, item := range receiver {
+			if reflect.DeepEqual(item, value) {
+				count++
+			}
+		}
+
+		return count, nil
+	case "collectMany":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		collected := make([]any, 0)
+		for _, item := range receiver {
+			value, err := evalSimpleClosure(closure, item, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			collected = append(collected, flattenOneLevel(value)...)
+		}
+
+		return collected, nil
+	case "collectEntries":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		entries := make(map[any]any)
+		for _, item := range receiver {
+			value, err := evalSimpleClosure(closure, item, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			key, entryValue, ok := collectEntryPair(value)
+			if !ok {
+				return nil, fmt.Errorf("unsupported collectEntries() value %T", value)
+			}
+
+			entries[key] = entryValue
+		}
+
+		return entries, nil
+	case "reverseEach":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		sharedScope := cloneEvalVars(vars)
+		for index := len(receiver) - 1; index >= 0; index-- {
+			_, err := evalSharedClosure(closure, receiver[index], sharedScope)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+		}
+
+		return cloneChannelSlice(receiver), nil
+	case "eachWithIndex":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		sharedScope := cloneEvalVars(vars)
+		for index, item := range receiver {
+			_, err := evalSharedClosure(closure, []any{item, index}, sharedScope)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+		}
+
+		return cloneChannelSlice(receiver), nil
+	case "sum":
+		if err := requireMethodExprArgCount(expr.Method, expr.Args, 0, 1); err != nil {
+			return nil, err
+		}
+
+		total := 0
+		if len(expr.Args) == 0 {
+			for _, item := range receiver {
+				value, err := requireIntegerOperand(item, expr.Method)
+				if err != nil {
+					return nil, err
+				}
+
+				total += value
+			}
+
+			return total, nil
+		}
+
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, item := range receiver {
+			value, err := evalSimpleClosure(closure, item, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			intValue, err := requireIntegerOperand(value, expr.Method)
+			if err != nil {
+				return nil, err
+			}
+
+			total += intValue
+		}
+
+		return total, nil
+	case "max", "min":
+		if err := requireMethodExprArgCount(expr.Method, expr.Args, 0, 1); err != nil {
+			return nil, err
+		}
+		if len(receiver) == 0 {
+			return nil, nil
+		}
+
+		best := cloneChannelValue(receiver[0])
+		bestScore := receiver[0]
+
+		if len(expr.Args) == 1 {
+			closure, err := requireListClosureArg(expr)
+			if err != nil {
+				return nil, err
+			}
+
+			value, err := evalSimpleClosure(closure, receiver[0], vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			bestScore = value
+			for _, item := range receiver[1:] {
+				value, err := evalSimpleClosure(closure, item, vars)
+				if err != nil {
+					if errors.Is(err, errUnsupportedClosure) {
+						return UnsupportedExpr{Text: renderExpr(expr)}, nil
+					}
+
+					return nil, err
+				}
+
+				better, err := chooseListExtremum(expr.Method, value, bestScore)
+				if err != nil {
+					return nil, err
+				}
+
+				if better {
+					best = cloneChannelValue(item)
+					bestScore = value
+				}
+			}
+
+			return best, nil
+		}
+
+		for _, item := range receiver[1:] {
+			better, err := chooseListExtremum(expr.Method, item, bestScore)
+			if err != nil {
+				return nil, err
+			}
+
+			if better {
+				best = cloneChannelValue(item)
+				bestScore = item
+			}
+		}
+
+		return best, nil
+	case "spread":
+		closure, err := requireListClosureArg(expr)
+		if err != nil {
+			return nil, err
+		}
+
+		collected := make([]any, 0, len(receiver))
+		for _, item := range receiver {
+			value, err := evalSimpleClosure(closure, item, vars)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: renderExpr(expr)}, nil
+				}
+
+				return nil, err
+			}
+
+			collected = append(collected, value)
+		}
+
+		return collected, nil
+	default:
+		return nil, fmt.Errorf("unsupported list closure method %q", expr.Method)
+	}
+}
+
+func requireListClosureArg(expr MethodCallExpr) (ClosureExpr, error) {
+	if err := requireMethodExprArgCount(expr.Method, expr.Args, 1); err != nil {
+		return ClosureExpr{}, err
+	}
+
+	closure, ok := expr.Args[0].(ClosureExpr)
+	if !ok {
+		return ClosureExpr{}, fmt.Errorf("unsupported %s() argument %T", expr.Method, expr.Args[0])
+	}
+
+	return closure, nil
+}
+
+func flattenOneLevel(value any) []any {
+	if slice, ok := value.([]any); ok {
+		return cloneChannelSlice(slice)
+	}
+
+	refValue := reflect.ValueOf(value)
+	if !refValue.IsValid() || (refValue.Kind() != reflect.Array && refValue.Kind() != reflect.Slice) {
+		return []any{value}
+	}
+
+	flattened := make([]any, 0, refValue.Len())
+	for index := range refValue.Len() {
+		flattened = append(flattened, refValue.Index(index).Interface())
+	}
+
+	return flattened
+}
+
+func chooseListExtremum(method string, candidate, current any) (bool, error) {
+	ordered, ok, err := compareOrderedOperands(candidate, current, ">")
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("unsupported %s() operand %T", method, candidate)
+	}
+
+	better, _ := ordered.(bool)
+	if method == "min" {
+		ordered, _, err = compareOrderedOperands(candidate, current, "<")
+		if err != nil {
+			return false, err
+		}
+
+		better, _ = ordered.(bool)
+	}
+
+	return better, nil
+}
+
+func evalListAsSet(receiver []any) []any {
+	set := make([]any, 0, len(receiver))
+	for _, item := range receiver {
+		if containsComparableValue(set, item) {
+			continue
+		}
+
+		set = append(set, cloneChannelValue(item))
+	}
+
+	return set
+}
+
+func transposeList(receiver []any) (any, []any, bool, error) {
+	if len(receiver) == 0 {
+		return []any{}, nil, false, nil
+	}
+
+	rows := make([][]any, 0, len(receiver))
+	width := -1
+	for _, item := range receiver {
+		row, ok := closureTupleValues(item)
+		if !ok {
+			return nil, nil, false, fmt.Errorf("unsupported transpose() item %T", item)
+		}
+
+		if width == -1 {
+			width = len(row)
+		} else if len(row) != width {
+			return nil, nil, false, fmt.Errorf("transpose() requires rows of equal length")
+		}
+
+		rows = append(rows, row)
+	}
+
+	transposed := make([]any, 0, width)
+	for column := range width {
+		rowValues := make([]any, 0, len(rows))
+		for _, row := range rows {
+			rowValues = append(rowValues, cloneChannelValue(row[column]))
+		}
+
+		transposed = append(transposed, rowValues)
+	}
+
+	return transposed, nil, false, nil
+}
+
+func assignListMethodReceiver(receiver Expr, vars map[string]any, updated []any) {
+	if vars == nil {
+		return
+	}
+
+	typed, ok := receiver.(VarExpr)
+	if !ok || typed.Path != "" {
+		return
+	}
+
+	vars[typed.Root] = cloneChannelSlice(updated)
+}
+
+func evalSupportedConstructor(expr NewExpr, args []any, evaluator func([]any) (any, bool, error)) (any, error) {
+	value, ok, err := evaluator(args)
+	if err != nil {
+		return nil, err
+	}
+
+	if ok {
+		return value, nil
+	}
+
+	return UnsupportedExpr{Text: renderNewExpr(expr)}, nil
+}
+
+func evalMultiAssignExpr(expr MultiAssignExpr, vars map[string]any) (any, error) {
+	value, err := EvalExpr(expr.Value, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	values, ok := closureTupleValues(value)
+	if !ok {
+		return nil, fmt.Errorf("unsupported multi-assignment value %T", value)
+	}
+
+	if vars == nil {
+		vars = map[string]any{}
+	}
+
+	for index, name := range expr.Names {
+		if index < len(values) {
+			vars[name] = cloneChannelValue(values[index])
+			continue
+		}
+
+		vars[name] = nil
+	}
+
+	return values, nil
+}
+
+func evalSharedClosure(closure ClosureExpr, value any, scope map[string]any) (any, error) {
+	body := strings.TrimSpace(closure.Body)
+	if body == "" {
+		return cloneChannelValue(value), nil
+	}
+
+	tupleValues, hasTuple := closureTupleValues(value)
+	type previousValue struct {
+		value any
+		set   bool
+	}
+
+	previous := make(map[string]previousValue)
+	bind := func(name string, value any) {
+		previous[name] = previousValue{value: scope[name], set: previous[name].set || hasKey(scope, name)}
+		scope[name] = cloneChannelValue(value)
+	}
+
+	if len(closure.Params) == 0 {
+		bind("it", value)
+	} else if len(closure.Params) == 1 {
+		bind(closure.Params[0], value)
+	} else {
+		if !hasTuple {
+			return nil, fmt.Errorf("closure expects %d parameters but item is %T", len(closure.Params), value)
+		}
+		if len(tupleValues) < len(closure.Params) {
+			return nil, fmt.Errorf("closure expects %d parameters but item has %d values", len(closure.Params), len(tupleValues))
+		}
+
+		for index, name := range closure.Params {
+			bind(name, tupleValues[index])
+		}
+	}
+
+	defer func() {
+		for name, prior := range previous {
+			if prior.set {
+				scope[name] = prior.value
+			} else {
+				delete(scope, name)
+			}
+		}
+	}()
+
+	resolved, err := evalStatementBody(body, scope)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "unsupported ") {
+			return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, body)
+		}
+
+		return nil, err
+	}
+
+	if unsupported, ok := resolved.(UnsupportedExpr); ok {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedClosure, unsupported.Text)
+	}
+
+	return resolved, nil
+}
+
+func hasKey(values map[string]any, key string) bool {
+	if values == nil {
+		return false
+	}
+
+	_, ok := values[key]
+
+	return ok
 }
 
 type evalStatementParser struct {
@@ -415,6 +2010,10 @@ func (p *evalStatementParser) parseStatement() (any, error) {
 		case "break":
 			p.pos++
 			return evalBreakStmt{}, nil
+		case "assert":
+			return p.parseAssertStmt()
+		case "throw":
+			return p.parseThrowStmt()
 		case "def":
 			return p.parseAssignmentStmt(true)
 		}
@@ -450,6 +2049,82 @@ func (p *evalStatementParser) parseReturnStmt() (any, error) {
 	}
 
 	return evalReturnStmt{expr: expr}, nil
+}
+
+func (p *evalStatementParser) parseAssertStmt() (any, error) {
+	p.pos++
+	exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
+	if len(exprTokens) == 0 {
+		return nil, fmt.Errorf("expected assertion expression")
+	}
+
+	assertTokens, messageTokens := splitTokensOnTopLevelColon(exprTokens)
+	expr, err := parseExprTokens(assertTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	var message Expr
+	if len(messageTokens) > 0 {
+		message, err = parseExprTokens(messageTokens)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return evalAssertStmt{expr: expr, message: message}, nil
+}
+
+func splitTokensOnTopLevelColon(tokens []token) ([]token, []token) {
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
+	for index, tok := range tokens {
+		switch tok.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch tok.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
+		case tokenColon:
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+				return trimDeclarationTokens(tokens[:index]), trimDeclarationTokens(tokens[index+1:])
+			}
+		}
+	}
+
+	return trimDeclarationTokens(tokens), nil
+}
+
+func (p *evalStatementParser) parseThrowStmt() (any, error) {
+	p.pos++
+	exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
+	if len(exprTokens) == 0 {
+		return nil, fmt.Errorf("expected throw expression")
+	}
+
+	expr, err := parseExprTokens(exprTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	return evalThrowStmt{expr: expr}, nil
 }
 
 func (p *evalStatementParser) parseIfStmt() (any, error) {
@@ -917,6 +2592,90 @@ func (p *evalStatementParser) peekN(offset int) token {
 	return p.tokens[index]
 }
 
+type mapEntry struct {
+	key   string
+	value any
+}
+
+type orderedMap struct {
+	values  map[string]any
+	entries []mapEntry
+}
+
+func evalAssertStatement(expr Expr, message Expr, vars map[string]any) error {
+	value, err := EvalExpr(expr, vars)
+	if err != nil {
+		return nil
+	}
+
+	if isTruthy(value) {
+		return nil
+	}
+
+	messageText := "Assertion failed"
+	if message != nil {
+		resolved, messageErr := EvalExpr(message, vars)
+		if messageErr == nil && resolved != nil {
+			messageText = fmt.Sprint(resolved)
+		}
+	}
+
+	level := "warning"
+	if isCompileTimeConstantExpr(expr) {
+		level = "error"
+	}
+
+	warnf("nextflowdsl: %s: %s\n", level, messageText)
+
+	return nil
+}
+
+func isCompileTimeConstantExpr(expr Expr) bool {
+	switch typed := expr.(type) {
+	case IntExpr, StringExpr, SlashyStringExpr, BoolExpr, NullExpr:
+		return true
+	case ParamsExpr:
+		return true
+	case UnaryExpr:
+		return isCompileTimeConstantExpr(typed.Operand)
+	case BinaryExpr:
+		return isCompileTimeConstantExpr(typed.Left) && isCompileTimeConstantExpr(typed.Right)
+	case InExpr:
+		return isCompileTimeConstantExpr(typed.Left) && isCompileTimeConstantExpr(typed.Right)
+	case RegexExpr:
+		return isCompileTimeConstantExpr(typed.Left) && isCompileTimeConstantExpr(typed.Right)
+	case TernaryExpr:
+		return isCompileTimeConstantExpr(typed.Cond) && isCompileTimeConstantExpr(typed.True) && isCompileTimeConstantExpr(typed.False)
+	case CastExpr:
+		return isCompileTimeConstantExpr(typed.Operand)
+	case ListExpr:
+		for _, element := range typed.Elements {
+			if !isCompileTimeConstantExpr(element) {
+				return false
+			}
+		}
+
+		return true
+	case MapExpr:
+		for _, key := range typed.Keys {
+			if !isCompileTimeConstantExpr(key) {
+				return false
+			}
+		}
+		for _, value := range typed.Values {
+			if !isCompileTimeConstantExpr(value) {
+				return false
+			}
+		}
+
+		return true
+	case IndexExpr:
+		return isCompileTimeConstantExpr(typed.Receiver) && isCompileTimeConstantExpr(typed.Index)
+	default:
+		return false
+	}
+}
+
 func bindWorkflowEnumValues(vars map[string]any, wf *Workflow) map[string]any {
 	if wf == nil || len(wf.Enums) == 0 {
 		return vars
@@ -1208,6 +2967,20 @@ func evalNewExpr(expr NewExpr, vars map[string]any) (any, error) {
 	switch shortConstructorName(expr.ClassName) {
 	case "File", "Path":
 		return evalPathConstructor(args)
+	case "URL":
+		return evalSupportedConstructor(expr, args, evalStringConstructor)
+	case "Date":
+		return evalSupportedConstructor(expr, args, evalDateConstructor)
+	case "BigDecimal":
+		return evalSupportedConstructor(expr, args, evalBigDecimalConstructor)
+	case "BigInteger":
+		return evalSupportedConstructor(expr, args, evalBigIntegerConstructor)
+	case "ArrayList":
+		return evalSupportedConstructor(expr, args, evalArrayListConstructor)
+	case "HashMap", "LinkedHashMap":
+		return evalSupportedConstructor(expr, args, evalMapConstructor)
+	case "Random":
+		return evalSupportedConstructor(expr, args, evalRandomConstructor)
 	default:
 		return UnsupportedExpr{Text: renderNewExpr(expr)}, nil
 	}
@@ -1330,6 +3103,9 @@ func matchesGroovyType(value any, typeName string) bool {
 		if _, ok := value.(map[string]any); ok {
 			return true
 		}
+		if _, ok := value.(orderedMap); ok {
+			return true
+		}
 
 		refValue := reflect.ValueOf(value)
 		return refValue.IsValid() && refValue.Kind() == reflect.Map && refValue.Type().Key().Kind() == reflect.String
@@ -1378,6 +3154,14 @@ func containsValue(container, needle any) (bool, error) {
 		}
 
 		_, exists := typed[key]
+		return exists, nil
+	case orderedMap:
+		key, ok := needle.(string)
+		if !ok {
+			return false, fmt.Errorf("unsupported membership operand %T", needle)
+		}
+
+		_, exists := typed.values[key]
 		return exists, nil
 	case string:
 		value, ok := needle.(string)
@@ -1984,6 +3768,18 @@ func evalIndexExpr(expr IndexExpr, vars map[string]any) (any, error) {
 		}
 
 		return value, nil
+	case orderedMap:
+		key, ok := index.(string)
+		if !ok {
+			return nil, fmt.Errorf("unsupported map index %T", index)
+		}
+
+		value, exists := typed.values[key]
+		if !exists {
+			return nil, fmt.Errorf("missing key %q", key)
+		}
+
+		return value, nil
 	}
 
 	refValue := reflect.ValueOf(receiver)
@@ -2057,20 +3853,29 @@ func evalMethodCallExpr(expr MethodCallExpr, vars map[string]any) (any, error) {
 		}
 
 		return evalStringMethodCall(typed, expr.Method, args)
-	case []any:
-		if expr.Method == "collect" {
-			return evalListCollectMethod(expr, typed, vars)
-		}
-		if expr.Method == "any" || expr.Method == "every" || expr.Method == "findAll" || expr.Method == "find" {
-			return evalListClosurePredicateMethod(expr, typed, vars)
-		}
-
+	case map[string]any:
 		args, err := evalExprArgs(expr.Args, vars)
 		if err != nil {
 			return nil, err
 		}
 
-		return evalListMethodCall(typed, expr.Method, args)
+		return evalMapMethodCall(typed, expr.Method, args, expr, vars)
+	case orderedMap:
+		args, err := evalExprArgs(expr.Args, vars)
+		if err != nil {
+			return nil, err
+		}
+
+		return evalMapMethodCall(typed, expr.Method, args, expr, vars)
+	case int, int64, float64:
+		args, err := evalExprArgs(expr.Args, vars)
+		if err != nil {
+			return nil, err
+		}
+
+		return evalNumberMethodCall(typed, expr.Method, args)
+	case []any:
+		return evalListMethodCallExpr(expr, typed, vars)
 	default:
 		return nil, fmt.Errorf("unsupported method receiver %T", receiver)
 	}
@@ -2192,6 +3997,34 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		return re.ReplaceAllString(receiver, replacement), nil
+	case "replaceFirst":
+		if err := requireMethodArgCount(method, args, 2); err != nil {
+			return nil, err
+		}
+
+		pattern, err := requireStringArg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+
+		replacement, err := requireStringArg(method, args[1])
+		if err != nil {
+			return nil, err
+		}
+
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+
+		match := re.FindStringSubmatchIndex(receiver)
+		if match == nil {
+			return receiver, nil
+		}
+
+		replaced := re.ExpandString(nil, replacement, receiver, match)
+
+		return receiver[:match[0]] + string(replaced) + receiver[match[1]:], nil
 	case "matches":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
 			return nil, err
@@ -2288,46 +4121,162 @@ func evalStringMethodCall(receiver string, method string, args []any) (any, erro
 		}
 
 		return receiver[start:end], nil
+	case "padLeft":
+		return padStringMethod(receiver, method, args, true)
+	case "padRight":
+		return padStringMethod(receiver, method, args, false)
+	case "capitalize":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return capitalizeString(receiver), nil
+	case "uncapitalize":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return uncapitalizeString(receiver), nil
+	case "isNumber":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return isNumericString(receiver), nil
+	case "isInteger", "isLong":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return isIntegerString(receiver), nil
+	case "isDouble", "isBigDecimal":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return isFloatString(receiver), nil
+	case "toBoolean":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return strings.EqualFold(strings.TrimSpace(receiver), "true"), nil
+	case "stripIndent":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return stripIndent(receiver), nil
+	case "readLines":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		lines := splitStringLines(receiver)
+		values := make([]any, 0, len(lines))
+		for _, line := range lines {
+			values = append(values, line)
+		}
+
+		return values, nil
+	case "count":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		needle, err := requireStringArg(method, args[0])
+		if err != nil {
+			return nil, err
+		}
+
+		return strings.Count(receiver, needle), nil
+	case "toLong":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return strconv.ParseInt(strings.TrimSpace(receiver), 10, 64)
+	case "toDouble", "toBigDecimal":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		return strconv.ParseFloat(strings.TrimSpace(receiver), 64)
+	case "eachLine":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, err
+		}
+
+		closure, ok := args[0].(ClosureExpr)
+		if !ok {
+			return UnsupportedExpr{Text: receiver + ".eachLine(...)"}, nil
+		}
+
+		lines := splitStringLines(receiver)
+		results := make([]any, 0, len(lines))
+		for _, line := range lines {
+			result, err := evalSimpleClosure(closure, line, nil)
+			if err != nil {
+				if errors.Is(err, errUnsupportedClosure) {
+					return UnsupportedExpr{Text: receiver + ".eachLine(...)"}, nil
+				}
+
+				return nil, err
+			}
+
+			results = append(results, result)
+		}
+
+		return results, nil
+	case "execute":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, err
+		}
+
+		text := receiver + ".execute()"
+		fmt.Fprintf(os.Stderr, "nextflowdsl: %s is not supported during Groovy evaluation\n", text)
+
+		return UnsupportedExpr{Text: text}, nil
 	default:
 		return nil, fmt.Errorf("unsupported string method %q", method)
 	}
 }
 
-func evalListMethodCall(receiver []any, method string, args []any) (any, error) {
+func evalListMethodCall(receiver []any, method string, args []any) (any, []any, bool, error) {
 	switch method {
 	case "size":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
-		return len(receiver), nil
+		return len(receiver), nil, false, nil
 	case "isEmpty":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
-		return len(receiver) == 0, nil
+		return len(receiver) == 0, nil, false, nil
 	case "first":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		if len(receiver) == 0 {
-			return nil, fmt.Errorf("first() on empty list")
+			return nil, nil, false, fmt.Errorf("first() on empty list")
 		}
 
-		return receiver[0], nil
+		return receiver[0], nil, false, nil
 	case "last":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		if len(receiver) == 0 {
-			return nil, fmt.Errorf("last() on empty list")
+			return nil, nil, false, fmt.Errorf("last() on empty list")
 		}
 
-		return receiver[len(receiver)-1], nil
+		return receiver[len(receiver)-1], nil, false, nil
 	case "flatten":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		flattened := make([]any, 0, len(receiver))
@@ -2335,15 +4284,15 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, error) 
 			flattened = append(flattened, flattenSliceValue(value)...)
 		}
 
-		return flattened, nil
+		return flattened, nil, false, nil
 	case "join":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		separator, err := requireStringArg(method, args[0])
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		parts := make([]string, 0, len(receiver))
@@ -2351,10 +4300,10 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, error) 
 			parts = append(parts, fmt.Sprint(item))
 		}
 
-		return strings.Join(parts, separator), nil
+		return strings.Join(parts, separator), nil, false, nil
 	case "unique":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		unique := make([]any, 0, len(receiver))
@@ -2366,10 +4315,10 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, error) 
 			unique = append(unique, cloneChannelValue(item))
 		}
 
-		return unique, nil
+		return unique, nil, false, nil
 	case "sort":
 		if err := requireMethodArgCount(method, args, 0); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		sorted := cloneChannelSlice(receiver)
@@ -2379,34 +4328,34 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, error) 
 		})
 		for index := 1; index < len(sorted); index++ {
 			if _, err := lessSortableValue(sorted[index-1], sorted[index]); err != nil {
-				return nil, err
+				return nil, nil, false, err
 			}
 		}
 
-		return sorted, nil
+		return sorted, nil, false, nil
 	case "plus":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		other, ok := args[0].([]any)
 		if !ok {
-			return nil, fmt.Errorf("unsupported %s() argument %T", method, args[0])
+			return nil, nil, false, fmt.Errorf("unsupported %s() argument %T", method, args[0])
 		}
 
 		combined := make([]any, 0, len(receiver)+len(other))
 		combined = append(combined, cloneChannelSlice(receiver)...)
 		combined = append(combined, cloneChannelSlice(other)...)
 
-		return combined, nil
+		return combined, nil, false, nil
 	case "minus":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		other, ok := args[0].([]any)
 		if !ok {
-			return nil, fmt.Errorf("unsupported %s() argument %T", method, args[0])
+			return nil, nil, false, fmt.Errorf("unsupported %s() argument %T", method, args[0])
 		}
 
 		filtered := make([]any, 0, len(receiver))
@@ -2418,45 +4367,194 @@ func evalListMethodCall(receiver []any, method string, args []any) (any, error) 
 			filtered = append(filtered, cloneChannelValue(item))
 		}
 
-		return filtered, nil
+		return filtered, nil, false, nil
 	case "take":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		count, err := requireIntArg(method, args[0])
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		if count < 0 {
-			return nil, fmt.Errorf("take count must be non-negative")
+			return nil, nil, false, fmt.Errorf("take count must be non-negative")
 		}
 		if count > len(receiver) {
 			count = len(receiver)
 		}
 
-		return cloneChannelSlice(receiver[:count]), nil
+		return cloneChannelSlice(receiver[:count]), nil, false, nil
 	case "drop":
 		if err := requireMethodArgCount(method, args, 1); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 
 		count, err := requireIntArg(method, args[0])
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		if count < 0 {
-			return nil, fmt.Errorf("drop count must be non-negative")
+			return nil, nil, false, fmt.Errorf("drop count must be non-negative")
 		}
 		if count > len(receiver) {
 			count = len(receiver)
 		}
 
-		return cloneChannelSlice(receiver[count:]), nil
+		return cloneChannelSlice(receiver[count:]), nil, false, nil
+	case "withIndex", "indexed":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+
+		indexed := make([]any, 0, len(receiver))
+		for index, item := range receiver {
+			indexed = append(indexed, []any{cloneChannelValue(item), index})
+		}
+
+		return indexed, nil, false, nil
+	case "transpose":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+
+		return transposeList(receiver)
+	case "head":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+		if len(receiver) == 0 {
+			return nil, nil, false, nil
+		}
+
+		return cloneChannelValue(receiver[0]), nil, false, nil
+	case "tail":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+		if len(receiver) <= 1 {
+			return []any{}, nil, false, nil
+		}
+
+		return cloneChannelSlice(receiver[1:]), nil, false, nil
+	case "init":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+		if len(receiver) == 0 {
+			return []any{}, nil, false, nil
+		}
+
+		return cloneChannelSlice(receiver[:len(receiver)-1]), nil, false, nil
+	case "pop":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+		if len(receiver) == 0 {
+			return nil, []any{}, true, nil
+		}
+
+		updated := cloneChannelSlice(receiver[:len(receiver)-1])
+		return cloneChannelValue(receiver[len(receiver)-1]), updated, true, nil
+	case "push", "add":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, nil, false, err
+		}
+
+		updated := append(cloneChannelSlice(receiver), cloneChannelValue(args[0]))
+		return updated, updated, true, nil
+	case "addAll":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, nil, false, err
+		}
+
+		other, ok := args[0].([]any)
+		if !ok {
+			return nil, nil, false, fmt.Errorf("unsupported %s() argument %T", method, args[0])
+		}
+
+		updated := cloneChannelSlice(receiver)
+		updated = append(updated, cloneChannelSlice(other)...)
+		return updated, updated, true, nil
+	case "remove":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, nil, false, err
+		}
+
+		index, err := requireIntArg(method, args[0])
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if index < 0 || index >= len(receiver) {
+			return nil, nil, false, fmt.Errorf("remove index %d out of range", index)
+		}
+
+		updated := make([]any, 0, len(receiver)-1)
+		updated = append(updated, cloneChannelSlice(receiver[:index])...)
+		updated = append(updated, cloneChannelSlice(receiver[index+1:])...)
+		return cloneChannelValue(receiver[index]), updated, true, nil
+	case "contains":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, nil, false, err
+		}
+
+		return containsComparableValue(receiver, args[0]), nil, false, nil
+	case "intersect":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, nil, false, err
+		}
+
+		other, ok := args[0].([]any)
+		if !ok {
+			return nil, nil, false, fmt.Errorf("unsupported %s() argument %T", method, args[0])
+		}
+
+		intersection := make([]any, 0)
+		for _, item := range receiver {
+			if containsComparableValue(other, item) && !containsComparableValue(intersection, item) {
+				intersection = append(intersection, cloneChannelValue(item))
+			}
+		}
+
+		return intersection, nil, false, nil
+	case "disjoint":
+		if err := requireMethodArgCount(method, args, 1); err != nil {
+			return nil, nil, false, err
+		}
+
+		other, ok := args[0].([]any)
+		if !ok {
+			return nil, nil, false, fmt.Errorf("unsupported %s() argument %T", method, args[0])
+		}
+
+		for _, item := range receiver {
+			if containsComparableValue(other, item) {
+				return false, nil, false, nil
+			}
+		}
+
+		return true, nil, false, nil
+	case "toSet":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+
+		return evalListAsSet(receiver), nil, false, nil
+	case "reverse":
+		if err := requireMethodArgCount(method, args, 0); err != nil {
+			return nil, nil, false, err
+		}
+
+		reversed := cloneChannelSlice(receiver)
+		for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+			reversed[left], reversed[right] = reversed[right], reversed[left]
+		}
+
+		return reversed, nil, false, nil
 	case "collect":
-		return UnsupportedExpr{Text: renderExpr(MethodCallExpr{Receiver: UnsupportedExpr{Text: renderValueForUnsupported(receiver)}, Method: method, Args: renderArgsForUnsupported(args)})}, nil
+		return UnsupportedExpr{Text: renderExpr(MethodCallExpr{Receiver: UnsupportedExpr{Text: renderValueForUnsupported(receiver)}, Method: method, Args: renderArgsForUnsupported(args)})}, nil, false, nil
 	default:
-		return nil, fmt.Errorf("unsupported list method %q", method)
+		return nil, nil, false, fmt.Errorf("unsupported list method %q", method)
 	}
 }
 
@@ -2506,6 +4604,12 @@ func lookupVariablePart(current any, part string) (any, error) {
 	switch typed := current.(type) {
 	case map[string]any:
 		value, ok := typed[part]
+		if !ok {
+			return nil, fmt.Errorf("missing key %q", part)
+		}
+		return value, nil
+	case orderedMap:
+		value, ok := typed.values[part]
 		if !ok {
 			return nil, fmt.Errorf("missing key %q", part)
 		}
@@ -2713,6 +4817,8 @@ func EvalExpr(expr any, vars map[string]any) (any, error) {
 		return evalMethodCallExpr(value, vars)
 	case NewExpr:
 		return evalNewExpr(value, vars)
+	case MultiAssignExpr:
+		return evalMultiAssignExpr(value, vars)
 	case ClosureExpr:
 		return value, nil
 	case UnsupportedExpr:
