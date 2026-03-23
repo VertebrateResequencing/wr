@@ -23,8 +23,8 @@ special-case `new File(path)`, `new URL(str)`, `new Date()`,
 constructors remain `UnsupportedExpr`. See spec for full
 constructor table, covering all 11 acceptance tests from K1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.2: L1 - Evaluate destructuring assignments [parallel with 1.1, 1.3, 1.4, 1.5, 1.6, 1.7]
 
@@ -36,8 +36,8 @@ RHS, assert list, assign by index. Short lists yield nil for
 missing vars; long lists ignore extras. Covering all 5
 acceptance tests from L1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.3: M1 - String methods [parallel with 1.1, 1.2, 1.4, 1.5, 1.6, 1.7]
 
@@ -51,8 +51,8 @@ Add to `evalStringMethodCall` in `nextflowdsl/groovy.go`:
 `execute` (warn-only). See spec for full method table,
 covering all 24 acceptance tests from M1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.4: M2 - List methods [parallel with 1.1, 1.2, 1.3, 1.5, 1.6, 1.7]
 
@@ -67,8 +67,8 @@ Add to list method evaluation in `nextflowdsl/groovy.go`:
 `spread`. See spec for full method table, covering all 37
 acceptance tests from M2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.5: M3 - Map methods [parallel with 1.1, 1.2, 1.3, 1.4, 1.6, 1.7]
 
@@ -83,8 +83,8 @@ Closure-based methods receive `(key, value)` pairs. See spec
 for full method table, covering all 24 acceptance tests from
 M3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.6: M4 - Number methods [parallel with 1.1, 1.2, 1.3, 1.4, 1.5, 1.7]
 
@@ -95,8 +95,8 @@ handle int/int64/float64 receivers: `abs`, `round`, `intdiv`,
 `toInteger`, `toLong`, `toDouble`, `toBigDecimal`. See spec for
 full method table, covering all 9 acceptance tests from M4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.7: O1 - Evaluate assert and throw statements [parallel with 1.1, 1.2, 1.3, 1.4, 1.5, 1.6]
 
@@ -110,8 +110,8 @@ warning with message. Never halt translation. Error-level
 only for compile-time-constant failures. Covering all 7
 acceptance tests from O1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

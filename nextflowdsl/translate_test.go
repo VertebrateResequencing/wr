@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -2226,7 +2227,7 @@ func TestTranslate(t *testing.T) {
 				So(stderr, ShouldEqual, "")
 			})
 
-			Convey("workflow param defaults warn and fall back for unsupported constructors instead of failing", func() {
+				Convey("workflow param defaults evaluate supported Date constructors", func() {
 				wf := &Workflow{
 					Processes: []*Process{{Name: "proc", Script: "echo ${params.generated}"}},
 					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
@@ -2242,8 +2243,11 @@ func TestTranslate(t *testing.T) {
 					So(err, ShouldBeNil)
 				})
 
-				So(stderr, ShouldContainSubstring, "workflow param default \"generated\"")
-				So(result.Jobs[0].Cmd, ShouldContainSubstring, "echo new Date()")
+				So(stderr, ShouldEqual, "")
+				So(result.Jobs[0].Cmd, ShouldNotContainSubstring, "new Date()")
+				matches, err := regexp.MatchString(`echo [0-9]{4}-[0-9]{2}-[0-9]{2}T`, result.Jobs[0].Cmd)
+				So(err, ShouldBeNil)
+				So(matches, ShouldBeTrue)
 			})
 		})
 
