@@ -5,82 +5,43 @@
 ## Features
 
 ### SYN-comments
-Line comments (`//`) and block comments (`/* */`).
+`Comments` — TODO: describe expected behaviour.
 
 ### SYN-shebang
-`#!/usr/bin/env nextflow` shebang line at script start.
-
-### SYN-var-def
-Variable declarations with `def`: `def x = 1`. Both typed and untyped.
-
-### SYN-multi-assign
-Multi-assignment: `def (a, b) = [1, 2]`.
-
-### SYN-closure
-Closure syntax: `{ -> body }`, `{ it -> body }`, `{ a, b -> body }`.
-Implicit `it` parameter. Closures as last argument.
-
-### SYN-function
-Function definitions: `def foo(x, y) { return x + y }`.
-Default parameter values. Return type inference.
-
-### SYN-gstring
-GString interpolation: `"hello ${name}"`, `"value $x"`.
-Lazy vs eager evaluation. Multi-line strings with `"""`.
-
-### SYN-slashy
-Slashy strings for regex: `~/pattern/`.
-
-### SYN-multiline
-Multi-line strings: triple-quoted `'''` and `"""`.
-
-### SYN-string-concat
-String concatenation with `+`.
+`Shebang` — TODO: describe expected behaviour.
 
 ### SYN-feature-flag
-Feature flag declaration at script top level:
-```groovy
-nextflow.preview.recursion = true
-nextflow.enable.dsl = 2
-```
-Target must be a valid feature flag name; source must be a literal.
+`Feature flag` — TODO: describe expected behaviour.
 
-### SYN-constructor
-Constructor call expression: `new TypeName(args)`. Supports
-fully-qualified (`new java.util.Date()`) and simple names (`new Date()`).
-The set of available types is defined by the standard library.
+### SYN-function
+`Function` — TODO: describe expected behaviour.
 
-### SYN-named-args
-Named arguments in function calls are collected into a map as the first
-positional argument:
-```groovy
-file('hello.txt', checkIfExists: true)
-// equivalent to:
-file([checkIfExists: true], 'hello.txt')
-```
-Argument name must be an identifier or string literal.
+### SYN-enum-type
+`Enum type` — TODO: describe expected behaviour.
 
-### SYN-index-expr
-Index expression: `myList[0]`, `myMap['key']`. The left expression and
-a right expression in square brackets.
+### SYN-record-type
+`Record type` — TODO: describe expected behaviour.
 
-### SYN-property-expr
-Property expression with dot (`.`), spread dot (`*.`), or safe dot (`?.`):
-```groovy
-myFile.text         // dot
-myFiles*.text       // spread: myFiles.collect { it.text }
-myFile?.text        // safe: null if myFile is null
-```
-Property can be an identifier or string literal.
+### SYN-variable-declaration
+`Variable declaration` — TODO: describe expected behaviour.
 
-### SYN-scoping
-Variable scoping rules:
-- Function/closure scope: parameters and locals exist for the call duration
-- Workflow sections: `take` inputs exist for the body; `main` vars exist
-  in `main`, `emit`, and `publish` sections.
-- Process sections: input vars exist for the entire body; `script`/`exec`/`stub`
-  vars exist only in their section, EXCEPT vars without `def` also exist
-  in `output:`.
-- `if`/`else` branches: vars declared inside exist only in that branch.
-- No redeclaration: a variable cannot be declared with the same name as
-  another variable in the same scope or enclosing scope.
+### SYN-string
+`String` — TODO: describe expected behaviour.
+
+### SYN-dynamic-string
+`Dynamic string` — TODO: describe expected behaviour.
+
+### SYN-closure
+`Closure` — TODO: describe expected behaviour.
+
+### SYN-index-expression
+`Index expression` — TODO: describe expected behaviour.
+
+### SYN-property-expression
+`Property expression` — TODO: describe expected behaviour.
+
+### SYN-function-call
+`Function call` — TODO: describe expected behaviour.
+
+### SYN-constructor-call
+`Constructor call` — TODO: describe expected behaviour.

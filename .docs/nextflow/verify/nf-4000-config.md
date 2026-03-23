@@ -1,166 +1,101 @@
-# Configuration Scopes
+# Configuration
 
 **Source:** https://nextflow.io/docs/latest/reference/config.html
 
-## Core Scopes
+## Features
 
-### CFG-unscoped
-Unscoped options (top-level, outside any scope):
-- `bucketDir` — remote work directory for hybrid workflows
-- `cleanup` — delete work files on success (default: `false`)
-- `outputDir` — pipeline output directory
-- `resume` — enable cached task re-use
-- `workDir` — pipeline work directory
-
-### CFG-params
-`params` scope — pipeline parameters.
-```groovy
-params {
-    input = '/data/reads.fq'
-    threads = 4
-}
-```
-
-### CFG-process
-`process` scope — default directives for all processes.
-```groovy
-process {
-    cpus = 2
-    memory = '4 GB'
-    withLabel: 'big_mem' { memory = '32 GB' }
-}
-```
-
-### CFG-env
-`env` scope — set environment variables for all tasks.
-```groovy
-env { PATH = '/custom/bin:$PATH' }
-```
-
-### CFG-executor
-`executor` scope — executor-specific settings.
-```groovy
-executor {
-    name = 'slurm'
-    queueSize = 100
-    submitRateLimit = '10 sec'
-}
-```
-
-### CFG-profiles
-`profiles` — named configuration profiles selectable with `-profile`.
-```groovy
-profiles {
-    standard { ... }
-    docker { docker.enabled = true }
-}
-```
-
-### CFG-selectors
-Process selectors in config:
-- `withLabel: '<pattern>'` — match processes by label
-- `withName: '<pattern>'` — match processes by name
-Patterns support `*` and `?` wildcards, also `!` negation.
-
-## Container Scopes
-
-### CFG-docker
-`docker` scope — Docker settings: `enabled`, `runOptions`, `temp`, etc.
-
-### CFG-singularity
-`singularity` scope — Singularity settings: `enabled`, `runOptions`, etc.
+### CFG-unscoped-options
+`Unscoped options` — TODO: describe expected behaviour.
 
 ### CFG-apptainer
-`apptainer` scope — Apptainer settings (fork of Singularity).
-
-### CFG-charliecloud
-`charliecloud` scope — Charliecloud settings.
-
-### CFG-podman
-`podman` scope — Podman settings.
-
-### CFG-sarus
-`sarus` scope — Sarus settings.
-
-### CFG-shifter
-`shifter` scope — Shifter settings.
-
-## Skippable Scopes (typically irrelevant to wr translation)
-
-### CFG-conda
-`conda` scope — global Conda settings.
-
-### CFG-dag
-`dag` scope — DAG visualisation settings.
-
-### CFG-manifest
-`manifest` scope — pipeline metadata (name, version, description, etc.).
-
-### CFG-notification
-`notification` scope — email notifications on completion.
-
-### CFG-report
-`report` scope — HTML execution report settings.
-
-### CFG-timeline
-`timeline` scope — timeline report settings.
-
-### CFG-tower
-`tower` scope — Nextflow Tower/Seqera Platform integration.
-
-### CFG-trace
-`trace` scope — trace report settings (CSV of task metrics).
-
-### CFG-wave
-`wave` scope — Wave container service settings.
-
-### CFG-weblog
-`weblog` scope — webhook logging settings.
-
-## Cloud/Platform Scopes
+`apptainer` — TODO: describe expected behaviour.
 
 ### CFG-aws
-`aws` scope — AWS-specific settings (Batch, S3, etc.).
+`aws` — TODO: describe expected behaviour.
 
 ### CFG-azure
-`azure` scope — Azure Batch settings.
+`azure` — TODO: describe expected behaviour.
 
-### CFG-google
-`google` scope — Google Cloud Batch/Life Sciences settings.
+### CFG-charliecloud
+`charliecloud` — TODO: describe expected behaviour.
 
-### CFG-k8s
-`k8s` scope — Kubernetes settings.
+### CFG-conda
+`conda` — TODO: describe expected behaviour.
 
-### CFG-mail
-`mail` scope — SMTP mail settings.
+### CFG-dag
+`dag` — TODO: describe expected behaviour.
 
-### CFG-seqera
-`seqera` scope — Seqera Platform settings.
+### CFG-docker
+`docker` — TODO: describe expected behaviour.
+
+### CFG-env
+`env` — TODO: describe expected behaviour.
+
+### CFG-executor
+`executor` — TODO: describe expected behaviour.
+
+### CFG-executor-specific-defaults
+`Executor-specific defaults` — TODO: describe expected behaviour.
+
+### CFG-executor-specific-configuration
+`Executor-specific configuration` — TODO: describe expected behaviour.
 
 ### CFG-fusion
-`fusion` scope — Fusion file system settings.
+`fusion` — TODO: describe expected behaviour.
+
+### CFG-google
+`google` — TODO: describe expected behaviour.
+
+### CFG-k8s
+`k8s` — TODO: describe expected behaviour.
 
 ### CFG-lineage
-`lineage` scope — data lineage settings.
+`lineage` — TODO: describe expected behaviour.
 
-### CFG-spack
-`spack` scope — global Spack settings.
+### CFG-mail
+`mail` — TODO: describe expected behaviour.
 
-## Special Scopes
+### CFG-manifest
+`manifest` — TODO: describe expected behaviour.
 
 ### CFG-nextflow
-`nextflow` scope — Nextflow engine settings.
+`nextflow` — TODO: describe expected behaviour.
 
-### CFG-workflow-scope
-`workflow` scope in config — workflow-level settings.
+### CFG-notification
+`notification` — TODO: describe expected behaviour.
 
-### CFG-feature-flags
-Feature flags via `nextflow.enable.*` and `nextflow.preview.*`:
-- `nextflow.enable.configProcessNamesValidation` — warn on unmatched withName selectors (deprecated)
-- `nextflow.enable.dsl` — DSL version (deprecated)
-- `nextflow.enable.moduleBinaries` — enable modules with binary scripts
-- `nextflow.enable.strict` — strict mode (deprecated)
-- `nextflow.preview.output` — workflow outputs (deprecated, now stable)
-- `nextflow.preview.recursion` — process/workflow recursion
-- `nextflow.preview.topic` — topic channels (deprecated, now stable)
-- `nextflow.preview.types` — typed processes
+### CFG-podman
+`podman` — TODO: describe expected behaviour.
+
+### CFG-report
+`report` — TODO: describe expected behaviour.
+
+### CFG-sarus
+`sarus` — TODO: describe expected behaviour.
+
+### CFG-seqera
+`seqera` — TODO: describe expected behaviour.
+
+### CFG-shifter
+`shifter` — TODO: describe expected behaviour.
+
+### CFG-singularity
+`singularity` — TODO: describe expected behaviour.
+
+### CFG-spack
+`spack` — TODO: describe expected behaviour.
+
+### CFG-timeline
+`timeline` — TODO: describe expected behaviour.
+
+### CFG-tower
+`tower` — TODO: describe expected behaviour.
+
+### CFG-trace
+`trace` — TODO: describe expected behaviour.
+
+### CFG-wave
+`wave` — TODO: describe expected behaviour.
+
+### CFG-workflow
+`workflow` — TODO: describe expected behaviour.

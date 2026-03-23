@@ -1,52 +1,32 @@
-# Dynamic Directives and Task Object
+# Dynamic Directives & Task Properties
 
-**Source:** https://nextflow.io/docs/latest/reference/process.html#task-properties,
-https://nextflow.io/docs/latest/process.html#dynamic-directives
+**Source:** https://nextflow.io/docs/latest/reference/process.html
 
-## Dynamic Directives
-
-### DIR-dynamic
-Any directive can be a closure that is evaluated at runtime:
-```groovy
-memory { 2.GB * task.attempt }
-errorStrategy { task.exitStatus == 137 ? 'retry' : 'terminate' }
-queue { task.attempt > 1 ? 'long' : 'short' }
-```
-The closure has access to the `task` object and `params`.
-
-## Task Object Properties
+## Features
 
 ### BV-task-attempt
-`task.attempt` — the current retry attempt number (starts at 1).
+`task.attempt` — TODO: describe expected behaviour.
 
 ### BV-task-exitStatus
-`task.exitStatus` — exit code of the task. Available in script/shell blocks and
-errorStrategy closures.
+`task.exitStatus` — TODO: describe expected behaviour.
 
 ### BV-task-hash
-`task.hash` — the unique task hash. Only in `exec:` blocks.
+`task.hash` — TODO: describe expected behaviour.
 
 ### BV-task-index
-`task.index` — process-level sequential task index.
+`task.index` — TODO: describe expected behaviour.
 
 ### BV-task-name
-`task.name` — the task name. Only in `exec:` blocks.
+`task.name` — TODO: describe expected behaviour.
 
 ### BV-task-previousException
-`task.previousException` — exception from previous attempt. Only when
-`task.attempt > 1`.
+`task.previousException` — TODO: describe expected behaviour.
 
 ### BV-task-previousTrace
-`task.previousTrace` — trace record from previous attempt. Only when
-`task.attempt > 1`.
+`task.previousTrace` — TODO: describe expected behaviour.
 
 ### BV-task-process
-`task.process` — the name of the process.
+`task.process` — TODO: describe expected behaviour.
 
 ### BV-task-workDir
-`task.workDir` — the task working directory path. Only in `exec:` blocks.
-
-### BV-task-directives
-Directive values accessible as `task.<directive>`:
-`task.cpus`, `task.memory`, `task.time`, `task.disk`, `task.container`,
-`task.ext`, `task.queue`, etc.
+`task.workDir` — TODO: describe expected behaviour.

@@ -1,7 +1,7 @@
 # Test: Process Sections
 
 **Spec files:** nf-1100-process-sections.md
-**Impl files:** impl-01-parse.md, impl-04-translate-jobs.md, impl-06-translate-command.md, impl-09-ast.md
+**Impl files:** impl-01-parse.md, impl-04-translate-jobs.md
 
 ## Task
 
@@ -9,19 +9,18 @@ For each feature ID in nf-1100-process-sections.md, determine its classification
 
 ### Checklist
 
-1. Check Process struct (ast.go) for field presence
-2. Check parseWorkflow (parse.go) for section parsing
-3. Check buildCommandBody/renderScript (translate.go) for execution
-4. Classify per 00-instructions.md criteria
+1. Read nf-1100-process-sections.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- PSEC-input, PSEC-output, PSEC-script, PSEC-shell, PSEC-exec,
-  PSEC-stub, PSEC-when
+- PSEC-inputs-and-outputs-legacy, PSEC-inputs, PSEC-generic-options, PSEC-directives
 
 ### Output format
 
 ```
-PSEC-input: SUPPORTED | reason
+PSEC-inputs-and-outputs-legacy: SUPPORTED | reason
 ...
 ```

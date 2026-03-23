@@ -1,7 +1,7 @@
-# Test: Directives — Publishing
+# Test: Directives: Publishing
 
 **Spec files:** nf-1430-dir-publishing.md
-**Impl files:** impl-06-translate-command.md, impl-07-config.md, impl-09-ast.md
+**Impl files:** impl-05-translate-directives.md
 
 ## Task
 
@@ -9,19 +9,14 @@ For each feature ID in nf-1430-dir-publishing.md, determine its classification.
 
 ### Checklist
 
-1. Check PublishDir struct (ast.go) for field support
-2. Check normalizeConfigPublishDirs (config.go) for config parsing
-3. Check translateProcessBindingSets (translate.go) for publish handling
-4. Classify per 00-instructions.md criteria
+1. Read nf-1430-dir-publishing.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- DIR-publishDir, DIR-publishDir-path, DIR-publishDir-mode,
-  DIR-publishDir-pattern, DIR-publishDir-overwrite,
-  DIR-publishDir-saveAs, DIR-publishDir-enabled, DIR-publishDir-tags,
-  DIR-publishDir-contentType, DIR-publishDir-failOnError,
-  DIR-publishDir-multiple
-- DIR-debug
+- DIR-publishDir, DIR-stageInMode, DIR-stageOutMode
 
 ### Output format
 

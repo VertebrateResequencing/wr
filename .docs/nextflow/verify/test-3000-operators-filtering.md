@@ -1,4 +1,4 @@
-# Test: Operators — Filtering
+# Test: Operators: Filtering
 
 **Spec files:** nf-3000-operators-filtering.md
 **Impl files:** impl-02-channel-operators.md
@@ -9,23 +9,19 @@ For each feature ID in nf-3000-operators-filtering.md, determine its classificat
 
 ### Checklist
 
-1. Check applyChannelOperator switch (channel.go line 357) for each operator
-2. Look for specific handling (e.g. filter with closure vs regex)
-3. Classify per 00-instructions.md criteria
+1. Read nf-3000-operators-filtering.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- CO-filter, CO-filter-closure, CO-filter-regex, CO-filter-type, CO-filter-literal
-- CO-first, CO-first-no-arg, CO-first-closure, CO-first-regex, CO-first-type
-- CO-last
-- CO-take
-- CO-unique, CO-unique-closure
-- CO-distinct
-- CO-until
+- CO-distinct, CO-filter, CO-first, CO-last, CO-randomSample
+  CO-take, CO-unique, CO-until
 
 ### Output format
 
 ```
-CO-filter: SUPPORTED | reason
+CO-distinct: SUPPORTED | reason
 ...
 ```

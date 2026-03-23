@@ -1,7 +1,7 @@
-# Test: Output Qualifiers
+# Test: Output Qualifiers & Options
 
 **Spec files:** nf-1300-output-qualifiers.md
-**Impl files:** impl-01-parse.md, impl-06-translate-command.md, impl-09-ast.md
+**Impl files:** impl-04-translate-jobs.md
 
 ## Task
 
@@ -9,20 +9,18 @@ For each feature ID in nf-1300-output-qualifiers.md, determine its classificatio
 
 ### Checklist
 
-1. Check Declaration struct (ast.go) for output kind support
-2. Check parse.go for output qualifier parsing (warnUnsupportedOutputQualifier etc.)
-3. Check evalOutputCaptureLines (translate.go) for output capture
-4. Classify per 00-instructions.md criteria
+1. Read nf-1300-output-qualifiers.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- OUT-val, OUT-path, OUT-path-glob, OUT-path-named, OUT-tuple,
-  OUT-env, OUT-stdout, OUT-eval, OUT-topic
-- OUT-opt-emit, OUT-opt-optional, OUT-opt-topic, OUT-opt-arity
+- OUT-outputs
 
 ### Output format
 
 ```
-OUT-val: SUPPORTED | reason
+OUT-outputs: SUPPORTED | reason
 ...
 ```

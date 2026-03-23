@@ -1,52 +1,28 @@
 # Test: Syntax Basics
 
 **Spec files:** nf-0100-syntax-basics.md
-**Impl files:** impl-01-parse.md
+**Impl files:** impl-01-parse.md, impl-08-groovy.md
 
 ## Task
 
-For each feature ID in the spec file, determine its classification by
-checking the implementation descriptions.
+For each feature ID in nf-0100-syntax-basics.md, determine its classification.
 
 ### Checklist
 
-For each SYN-* feature in nf-0100-syntax-basics.md:
-
-1. Find the corresponding implementation entry in impl-01-parse.md
-2. If the feature is mentioned as handled by a specific function → **check
-   that function exists** at the stated line in `nextflowdsl/parse.go`
-3. Classify:
-   - **SUPPORTED** — parser handles it AND downstream code evaluates it
-   - **PARSE_ERROR** — parser rejects it with a clear error
-   - **GAP** — parser accepts it but evaluation is incomplete/wrong
-   - **UNSUPPORTED** — parser silently ignores or produces wrong AST
-   - **FUTURE** — parser and evaluator don't address it at all
+1. Read nf-0100-syntax-basics.md to understand what Nextflow expects
+2. Read the impl files to find where to look in Go source
+3. Read the actual Go source code at the cited locations
+4. Classify each feature per 00-instructions.md criteria
 
 ### Features to classify
 
-- SYN-comments (line, block, doc)
-- SYN-string-single, SYN-string-double, SYN-string-triple-single,
-  SYN-string-triple-double, SYN-string-slashy, SYN-string-dollar-slashy
-- SYN-string-interp, SYN-string-interp-closure
-- SYN-string-concat
-- SYN-boolean
-- SYN-null
-- SYN-list-literal
-- SYN-map-literal
-- SYN-closure
-- SYN-closure-params
-- SYN-gstring-lazy
-- SYN-feature-flag
-- SYN-constructor
-- SYN-named-args
-- SYN-index-expr
-- SYN-property-expr
-- SYN-scoping
+- SYN-comments, SYN-shebang, SYN-feature-flag, SYN-function, SYN-enum-type
+  SYN-record-type, SYN-variable-declaration, SYN-string, SYN-dynamic-string, SYN-closure
+  SYN-index-expression, SYN-property-expression, SYN-function-call, SYN-constructor-call
 
 ### Output format
 
 ```
 SYN-comments: SUPPORTED | reason
-SYN-string-single: SUPPORTED | reason
 ...
 ```
