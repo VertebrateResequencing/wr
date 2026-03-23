@@ -26,6 +26,7 @@
 package nextflowdsl
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,7 +40,9 @@ var memoryRE = regexp.MustCompile(`(?i)^([0-9]+)\s*(gb|g|mb|m)$`)
 
 var diskRE = regexp.MustCompile(`(?i)^([0-9]+)\s*(gb|g)$`)
 
-var timeRE = regexp.MustCompile(`(?i)^([0-9]+)(?:\s*\.\s*|\s+)?(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$`)
+var timeRE = regexp.MustCompile(
+	`(?i)^([0-9]+)(?:\s*\.\s*|\s+)?(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$`,
+)
 
 var supportedChannelOperators = map[string]struct{}{
 	"buffer":       {},
@@ -150,6 +153,7 @@ func lex(input string) ([]token, error) {
 		switch {
 		case r == 0:
 			tokens = append(tokens, token{typ: tokenEOF, line: l.line, col: l.col})
+
 			return tokens, nil
 		case r == ' ' || r == '\t' || r == '\r':
 			l.next()
@@ -170,6 +174,7 @@ func lex(input string) ([]token, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			tokens = append(tokens, slashyTok)
 		case r == '#' && !l.lineHasContent:
 			for l.peek() != 0 && l.peek() != '\n' {
@@ -223,12 +228,14 @@ func lex(input string) ([]token, error) {
 			for range len("!instanceof") {
 				l.next()
 			}
+
 			tokens = append(tokens, token{typ: tokenSymbol, lit: "!instanceof", line: line, col: col, start: start, end: l.pos})
 		case r == '!' && matchesKeywordOperator(l, "!in"):
 			start, line, col := l.pos, l.line, l.col
 			for range len("!in") {
 				l.next()
 			}
+
 			tokens = append(tokens, token{typ: tokenSymbol, lit: "!in", line: line, col: col, start: start, end: l.pos})
 		case r == '!' && l.peekN(1) == '=':
 			start, line, col := l.pos, l.line, l.col
@@ -320,6 +327,7 @@ func lex(input string) ([]token, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			tokens = append(tokens, stringTok)
 		case unicode.IsDigit(r):
 			tokens = append(tokens, l.readInt())
@@ -341,6 +349,7 @@ func matchesKeywordOperator(l *lexer, literal string) bool {
 	}
 
 	next := l.peekN(len(literal))
+
 	return !isIdentPart(next)
 }
 
@@ -373,7 +382,8 @@ func canStartSlashyString(tokens []token, l *lexer) bool {
 			return true
 		case tokenSymbol:
 			switch prev.lit {
-			case "[", "!", "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "?", "^", "&", "~", "=~", "==~":
+			case "[", "!", "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==",
+				"!=", "&&", "||", "?", "^", "&", "~", "=~", "==~":
 				return true
 			}
 		case tokenIdent:
@@ -391,6 +401,7 @@ func canStartSlashyString(tokens []token, l *lexer) bool {
 
 func hasClosingSlashyDelimiter(l *lexer) bool {
 	escaped := false
+
 	for offset := 1; ; offset++ {
 		r := l.peekN(offset)
 		if r == 0 || r == '\n' {
@@ -399,11 +410,13 @@ func hasClosingSlashyDelimiter(l *lexer) bool {
 
 		if escaped {
 			escaped = false
+
 			continue
 		}
 
 		if r == '\\' {
 			escaped = true
+
 			continue
 		}
 
@@ -414,7 +427,12 @@ func hasClosingSlashyDelimiter(l *lexer) bool {
 }
 
 func warnUnsupportedOutputQualifier(name token) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported output qualifier %q at line %d will not be translated\n", name.lit, name.line)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: unsupported output qualifier %q at line %d will not be translated\n",
+		name.lit,
+		name.line,
+	)
 }
 
 func parseMultiAssignExprTokens(tokens []token) (Expr, error) {
@@ -456,6 +474,7 @@ func findMatchingParenEnd(tokens []token, start int) (int, bool) {
 	}
 
 	depth := 0
+
 	for index := start; index < len(tokens); index++ {
 		switch tokens[index].typ {
 		case tokenLParen:
@@ -515,12 +534,15 @@ func parseTernaryExprTokens(tokens []token) (Expr, error) {
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || current.lit != "?" || isNullSafeQuestion(tokens, index) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 ||
+			current.typ != tokenSymbol || current.lit != "?" ||
+			isNullSafeQuestion(tokens, index) {
 			continue
 		}
 
 		if index+1 < len(tokens) && tokens[index+1].typ == tokenColon {
 			trueTokens := tokens[:index]
+
 			falseTokens := tokens[index+2:]
 			if len(trueTokens) == 0 || len(falseTokens) == 0 {
 				return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
@@ -546,6 +568,7 @@ func parseTernaryExprTokens(tokens []token) (Expr, error) {
 
 		condTokens := tokens[:index]
 		trueTokens := tokens[index+1 : colonIndex]
+
 		falseTokens := tokens[colonIndex+1:]
 		if len(condTokens) == 0 || len(trueTokens) == 0 || len(falseTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
@@ -577,7 +600,7 @@ func splitClosureArrowTokens(tokens []token) ([]token, []token, bool) {
 	bracketDepth := 0
 	braceDepth := 0
 
-	for index := 0; index < len(tokens)-1; index++ {
+	for index := range len(tokens) - 1 {
 		current := tokens[index]
 		switch current.typ {
 		case tokenLParen:
@@ -603,7 +626,9 @@ func splitClosureArrowTokens(tokens []token) ([]token, []token, bool) {
 			}
 		}
 
-		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && current.typ == tokenSymbol && current.lit == "-" && tokens[index+1].typ == tokenSymbol && tokens[index+1].lit == ">" {
+		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 &&
+			current.typ == tokenSymbol && current.lit == "-" &&
+			tokens[index+1].typ == tokenSymbol && tokens[index+1].lit == ">" {
 			return tokens[:index], tokens[index+2:], true
 		}
 	}
@@ -650,9 +675,11 @@ func parseKeywordComparisonExprTokens(tokens []token) (Expr, error) {
 
 		leftTokens := tokens[:index]
 		rightTokens := tokens[index+1:]
+
 		if len(leftTokens) == 0 {
 			continue
 		}
+
 		if len(rightTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
 		}
@@ -747,15 +774,19 @@ func parseRangeExprTokens(tokens []token) (Expr, error) {
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, []string{"..", "..<"}) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 ||
+			current.typ != tokenSymbol ||
+			!stringInSlice(current.lit, []string{"..", "..<"}) {
 			continue
 		}
 
 		leftTokens := tokens[:index]
 		rightTokens := tokens[index+1:]
+
 		if len(leftTokens) == 0 {
 			continue
 		}
+
 		if len(rightTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
 		}
@@ -777,7 +808,11 @@ func parseRangeExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseShiftExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{"<<", ">>", ">>>"}, parseAdditiveExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(
+		tokens,
+		[]string{"<<", ">>", ">>>"},
+		parseAdditiveExprTokens,
+	); expr != nil || err != nil {
 		return expr, err
 	}
 
@@ -809,15 +844,19 @@ func parseRegexExprTokens(tokens []token) (Expr, error) {
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, []string{"=~", "==~"}) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 ||
+			current.typ != tokenSymbol ||
+			!stringInSlice(current.lit, []string{"=~", "==~"}) {
 			continue
 		}
 
 		leftTokens := tokens[:index]
 		rightTokens := tokens[index+1:]
+
 		if len(leftTokens) == 0 {
 			continue
 		}
+
 		if len(rightTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
 		}
@@ -843,7 +882,11 @@ func parseComparisonExprTokens(tokens []token) (Expr, error) {
 		return expr, err
 	}
 
-	if expr, err := parseBinaryExprTokens(tokens, []string{">", "<", ">=", "<=", "<=>"}, parseRangeExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(
+		tokens,
+		[]string{">", "<", ">=", "<=", "<=>"},
+		parseRangeExprTokens,
+	); expr != nil || err != nil {
 		return expr, err
 	}
 
@@ -851,7 +894,8 @@ func parseComparisonExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseNewExprTokens(tokens []token) (Expr, bool, error) {
-	if len(tokens) < 4 || tokens[0].typ != tokenIdent || tokens[0].lit != "new" || tokens[len(tokens)-1].typ != tokenRParen {
+	if len(tokens) < 4 || tokens[0].typ != tokenIdent ||
+		tokens[0].lit != "new" || tokens[len(tokens)-1].typ != tokenRParen {
 		return nil, false, nil
 	}
 
@@ -866,9 +910,11 @@ func parseNewExprTokens(tokens []token) (Expr, bool, error) {
 	}
 
 	args := make([]Expr, 0)
+
 	argTokens := trimDeclarationTokens(tokens[start+1 : len(tokens)-1])
 	if len(argTokens) > 0 {
 		segments := splitTopLevelCommaSegments(argTokens)
+
 		args = make([]Expr, 0, len(segments))
 		for _, segment := range segments {
 			trimmed := trimDeclarationTokens(segment)
@@ -930,6 +976,7 @@ func parseClosureExpr(tokens []token) (ClosureExpr, error) {
 
 func parseClosureInnerTokens(tokens []token) (ClosureExpr, error) {
 	trimmed := trimDeclarationTokens(tokens)
+
 	paramsTokens, bodyTokens, hasArrow := splitClosureArrowTokens(trimmed)
 	if !hasArrow {
 		bodyTokens = trimmed
@@ -937,10 +984,11 @@ func parseClosureInnerTokens(tokens []token) (ClosureExpr, error) {
 
 	bodyTokens = trimDeclarationTokens(bodyTokens)
 	if len(bodyTokens) == 0 {
-		return ClosureExpr{}, fmt.Errorf("expected closure body")
+		return ClosureExpr{}, errors.New("expected closure body")
 	}
 
 	params := []string{}
+
 	if hasArrow {
 		paramSegments := splitTopLevelCommaSegments(trimDeclarationTokens(paramsTokens))
 		for _, segment := range paramSegments {
@@ -966,6 +1014,7 @@ func isParenthesisedExpr(tokens []token) bool {
 	}
 
 	depth := 0
+
 	for index, tok := range tokens {
 		switch tok.typ {
 		case tokenLParen:
@@ -1102,7 +1151,8 @@ func parseTrailingClosureArgTokens(tokens []token) (Expr, []token, bool, error) 
 
 func parseMethodCallExprTokensWithTrailingArgs(tokens []token, trailingArgs []Expr, allowBareMethod bool) (Expr, bool, error) {
 	if len(tokens) < 5 || tokens[len(tokens)-1].typ != tokenRParen {
-		if !allowBareMethod || len(tokens) < 3 || tokens[len(tokens)-1].typ != tokenIdent || tokens[len(tokens)-2].typ != tokenDot {
+		if !allowBareMethod || len(tokens) < 3 ||
+			tokens[len(tokens)-1].typ != tokenIdent || tokens[len(tokens)-2].typ != tokenDot {
 			return nil, false, nil
 		}
 
@@ -1139,9 +1189,11 @@ func parseMethodCallExprTokensWithTrailingArgs(tokens []token, trailingArgs []Ex
 	}
 
 	args := make([]Expr, 0)
+
 	argTokens := trimDeclarationTokens(tokens[start+1 : len(tokens)-1])
 	if len(argTokens) > 0 {
 		segments := splitTopLevelCommaSegments(argTokens)
+
 		args = make([]Expr, 0, len(segments))
 		for _, segment := range segments {
 			trimmed := trimDeclarationTokens(segment)
@@ -1219,7 +1271,8 @@ func findTrailingBracketStart(tokens []token) (int, bool) {
 }
 
 func parseCollectionExprTokens(tokens []token) (Expr, bool, error) {
-	if len(tokens) < 2 || tokens[0].typ != tokenSymbol || tokens[0].lit != "[" || tokens[len(tokens)-1].typ != tokenSymbol || tokens[len(tokens)-1].lit != "]" {
+	if len(tokens) < 2 || tokens[0].typ != tokenSymbol || tokens[0].lit != "[" ||
+		tokens[len(tokens)-1].typ != tokenSymbol || tokens[len(tokens)-1].lit != "]" {
 		return nil, false, nil
 	}
 
@@ -1234,14 +1287,16 @@ func parseCollectionExprTokens(tokens []token) (Expr, bool, error) {
 
 	segments := splitTopLevelCommaSegments(inner)
 	isMap := true
+
 	for _, segment := range segments {
 		trimmed := trimDeclarationTokens(segment)
 		if len(trimmed) == 0 {
-			return nil, true, fmt.Errorf("expected expression")
+			return nil, true, errors.New("expected expression")
 		}
 
 		if _, _, ok := splitTopLevelColonTokens(trimmed); !ok {
 			isMap = false
+
 			break
 		}
 	}
@@ -1250,6 +1305,7 @@ func parseCollectionExprTokens(tokens []token) (Expr, bool, error) {
 		elements := make([]Expr, 0, len(segments))
 		for _, segment := range segments {
 			trimmed := trimDeclarationTokens(segment)
+
 			element, err := parseExprTokens(trimmed)
 			if err != nil {
 				return nil, true, err
@@ -1262,9 +1318,11 @@ func parseCollectionExprTokens(tokens []token) (Expr, bool, error) {
 	}
 
 	keys := make([]Expr, 0, len(segments))
+
 	values := make([]Expr, 0, len(segments))
 	for _, segment := range segments {
 		trimmed := trimDeclarationTokens(segment)
+
 		keyTokens, valueTokens, ok := splitTopLevelColonTokens(trimmed)
 		if !ok || len(keyTokens) == 0 || len(valueTokens) == 0 {
 			return nil, true, fmt.Errorf("unsupported expression %q", expressionText(trimmed))
@@ -1328,9 +1386,11 @@ func parseParamsPath(tokens []token) (string, bool) {
 		if tokens[index].typ != tokenDot {
 			return "", false
 		}
+
 		if index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
 			return "", false
 		}
+
 		parts = append(parts, tokens[index+1].lit)
 	}
 
@@ -1343,6 +1403,7 @@ func parseTupleDeclaration(tokens []token) (*Declaration, error) {
 	}
 
 	elementSegments := splitTopLevelCommaSegments(tokens[1:])
+
 	elements := make([]*TupleElement, 0, len(elementSegments))
 	for _, segment := range elementSegments {
 		trimmed := trimDeclarationTokens(segment)
@@ -1354,6 +1415,7 @@ func parseTupleDeclaration(tokens []token) (*Declaration, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		elements = append(elements, element)
 	}
 
@@ -1366,7 +1428,7 @@ func parseTupleDeclaration(tokens []token) (*Declaration, error) {
 
 func parseDeclarationNameArg(tokens []token) (string, error) {
 	if len(tokens) == 0 {
-		return "", fmt.Errorf("expected name")
+		return "", errors.New("expected name")
 	}
 
 	if len(tokens) == 1 && (tokens[0].typ == tokenIdent || tokens[0].typ == tokenString) {
@@ -1378,14 +1440,17 @@ func parseDeclarationNameArg(tokens []token) (string, error) {
 
 func joinDeclarationSegments(segments [][]token) []token {
 	joined := make([]token, 0)
+
 	for index, segment := range segments {
 		trimmed := trimDeclarationTokens(segment)
 		if len(trimmed) == 0 {
 			continue
 		}
+
 		if len(joined) != 0 && index > 0 {
 			joined = append(joined, token{typ: tokenComma, lit: ",", line: trimmed[0].line, col: trimmed[0].col})
 		}
+
 		joined = append(joined, trimmed...)
 	}
 
@@ -1394,7 +1459,7 @@ func joinDeclarationSegments(segments [][]token) []token {
 
 func parseTupleElement(tokens []token) (*TupleElement, error) {
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("expected tuple element")
+		return nil, errors.New("expected tuple element")
 	}
 
 	element := &TupleElement{Kind: tokens[0].lit, Raw: joinTokens(tokens)}
@@ -1422,6 +1487,7 @@ func parseTupleElement(tokens []token) (*TupleElement, error) {
 			if len(trimmed) == 0 {
 				continue
 			}
+
 			if err := applyTupleElementQualifier(element, trimmed); err != nil {
 				return nil, err
 			}
@@ -1432,6 +1498,7 @@ func parseTupleElement(tokens []token) (*TupleElement, error) {
 
 	if len(tokens) == 2 && tokens[1].typ == tokenIdent {
 		element.Name = tokens[1].lit
+
 		return element, nil
 	}
 
@@ -1440,6 +1507,7 @@ func parseTupleElement(tokens []token) (*TupleElement, error) {
 		if err != nil {
 			return nil, wrapLineError(tokens[0].line, err)
 		}
+
 		element.Expr = expr
 	}
 
@@ -1489,6 +1557,7 @@ func trimDeclarationTokens(tokens []token) []token {
 	for start < len(tokens) && tokens[start].typ == tokenNewline {
 		start++
 	}
+
 	end := len(tokens)
 	for end > start && tokens[end-1].typ == tokenNewline {
 		end--
@@ -1503,12 +1572,15 @@ func applyTupleElementPrimary(element *TupleElement, tokens []token) error {
 		if err != nil {
 			return err
 		}
+
 		element.Name = name
+
 		return nil
 	}
 
 	if len(tokens) == 1 && tokens[0].typ == tokenIdent {
 		element.Name = tokens[0].lit
+
 		return nil
 	}
 
@@ -1516,6 +1588,7 @@ func applyTupleElementPrimary(element *TupleElement, tokens []token) error {
 	if err != nil {
 		return err
 	}
+
 	element.Expr = expr
 
 	return nil
@@ -1527,6 +1600,7 @@ func applyTupleElementQualifier(element *TupleElement, tokens []token) error {
 	}
 
 	name := tokens[0]
+
 	valueTokens := tokens[2:]
 	if len(valueTokens) == 0 {
 		return fmt.Errorf("line %d: qualifier %q requires a value", name.line, name.lit)
@@ -1543,6 +1617,7 @@ func applyTupleElementQualifier(element *TupleElement, tokens []token) error {
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		switch emitValue := value.(type) {
 		case StringExpr:
 			element.Emit = emitValue.Value
@@ -1550,6 +1625,7 @@ func applyTupleElementQualifier(element *TupleElement, tokens []token) error {
 			if emitValue.Path != "" {
 				return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
 			}
+
 			element.Emit = emitValue.Root
 		default:
 			return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
@@ -1603,7 +1679,11 @@ func parseEqualityExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseAdditiveExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{"+", "-"}, parseMultiplicativeExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(
+		tokens,
+		[]string{"+", "-"},
+		parseMultiplicativeExprTokens,
+	); expr != nil || err != nil {
 		return expr, err
 	}
 
@@ -1619,7 +1699,11 @@ func parseLogicalAndExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseMultiplicativeExprTokens(tokens []token) (Expr, error) {
-	if expr, err := parseBinaryExprTokens(tokens, []string{"*", "/", "%"}, parsePowerExprTokens); expr != nil || err != nil {
+	if expr, err := parseBinaryExprTokens(
+		tokens,
+		[]string{"*", "/", "%"},
+		parsePowerExprTokens,
+	); expr != nil || err != nil {
 		return expr, err
 	}
 
@@ -1628,7 +1712,7 @@ func parseMultiplicativeExprTokens(tokens []token) (Expr, error) {
 
 func parseUnaryExprTokens(tokens []token) (Expr, error) {
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("expected expression")
+		return nil, errors.New("expected expression")
 	}
 
 	if tokens[0].typ == tokenSymbol && (tokens[0].lit == "!" || tokens[0].lit == "-" || tokens[0].lit == "~") {
@@ -1664,6 +1748,7 @@ func parseCastExprTokens(tokens []token) (Expr, error) {
 		}
 
 		operandTokens := tokens[:index]
+
 		typeTokens := tokens[index+1:]
 		if len(operandTokens) == 0 || len(typeTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
@@ -1682,7 +1767,7 @@ func parseCastExprTokens(tokens []token) (Expr, error) {
 
 func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("expected expression")
+		return nil, errors.New("expected expression")
 	}
 
 	if expr, ok, err := parseNewExprTokens(tokens); ok || err != nil {
@@ -1750,11 +1835,13 @@ func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		return IntExpr{Value: value}, nil
 	case tokenString:
 		if tok.slashy {
 			return SlashyStringExpr{Value: tok.lit}, nil
 		}
+
 		return StringExpr{Value: tok.lit}, nil
 	case tokenIdent:
 		switch tok.lit {
@@ -1853,7 +1940,9 @@ func findTernaryColon(tokens []token, start int) int {
 }
 
 func isNullSafeQuestion(tokens []token, index int) bool {
-	return index+1 < len(tokens) && tokens[index].typ == tokenSymbol && tokens[index].lit == "?" && tokens[index+1].typ == tokenDot
+	return index+1 < len(tokens) &&
+		tokens[index].typ == tokenSymbol && tokens[index].lit == "?" &&
+		tokens[index+1].typ == tokenDot
 }
 
 func requiresKeywordParenSpacing(tok token) bool {
@@ -1900,6 +1989,7 @@ func (l *lexer) next() rune {
 	}
 
 	r := l.input[l.pos]
+
 	l.pos++
 	if r == '\n' {
 		l.line++
@@ -1930,6 +2020,7 @@ func (l *lexer) skipBlockComment() error {
 		if r == '*' && l.peekN(1) == '/' {
 			l.next()
 			l.next()
+
 			return nil
 		}
 
@@ -1940,6 +2031,7 @@ func (l *lexer) skipBlockComment() error {
 func (l *lexer) readString() (token, error) {
 	quote := l.peek()
 	line, col, start := l.line, l.col, l.pos
+
 	triple := l.peekN(1) == quote && l.peekN(2) == quote
 	if triple {
 		l.next()
@@ -1950,6 +2042,7 @@ func (l *lexer) readString() (token, error) {
 	}
 
 	var builder strings.Builder
+
 	for {
 		r := l.peek()
 		if r == 0 {
@@ -1961,21 +2054,26 @@ func (l *lexer) readString() (token, error) {
 				l.next()
 				l.next()
 				l.next()
+
 				break
 			}
 		} else if r == quote {
 			l.next()
+
 			break
 		}
 
 		if r == '\\' && !triple {
 			l.next()
+
 			escaped := l.peek()
 			if escaped == 0 {
 				return token{}, fmt.Errorf("line %d: unterminated escape sequence", l.line)
 			}
+
 			builder.WriteRune(unescapeRune(escaped))
 			l.next()
+
 			continue
 		}
 
@@ -2003,6 +2101,7 @@ func (l *lexer) readSlashyString() (token, error) {
 	l.next()
 
 	var builder strings.Builder
+
 	escaped := false
 
 	for {
@@ -2015,27 +2114,41 @@ func (l *lexer) readSlashyString() (token, error) {
 			if r != '/' {
 				builder.WriteRune('\\')
 			}
+
 			builder.WriteRune(r)
 			l.next()
+
 			escaped = false
+
 			continue
 		}
 
 		if r == '\\' {
 			l.next()
+
 			escaped = true
+
 			continue
 		}
 
 		if r == '/' {
 			l.next()
+
 			break
 		}
 
 		builder.WriteRune(l.next())
 	}
 
-	return token{typ: tokenString, lit: builder.String(), line: line, col: col, start: start, end: l.pos, slashy: true}, nil
+	return token{
+		typ:    tokenString,
+		lit:    builder.String(),
+		line:   line,
+		col:    col,
+		start:  start,
+		end:    l.pos,
+		slashy: true,
+	}, nil
 }
 
 func (l *lexer) readInt() token {
@@ -2073,10 +2186,19 @@ func newParser(tokens []token, source string) *parser {
 }
 
 func (p *parser) parseWorkflow() (*Workflow, error) {
-	wf := &Workflow{Processes: []*Process{}, SubWFs: []*SubWorkflow{}, Imports: []*Import{}, Functions: []*FuncDef{}, Enums: []*EnumDef{}, ParamBlock: []*ParamDecl{}, Records: []*RecordDef{}}
+	wf := &Workflow{
+		Processes:  []*Process{},
+		SubWFs:     []*SubWorkflow{},
+		Imports:    []*Import{},
+		Functions:  []*FuncDef{},
+		Enums:      []*EnumDef{},
+		ParamBlock: []*ParamDecl{},
+		Records:    []*RecordDef{},
+	}
 
 	for {
 		p.skipNewlines()
+
 		current := p.current()
 		if current.typ == tokenEOF {
 			return wf, nil
@@ -2087,7 +2209,9 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			wf.Imports = append(wf.Imports, importNode)
+
 			continue
 		}
 
@@ -2096,7 +2220,9 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			wf.Functions = append(wf.Functions, funcDef)
+
 			continue
 		}
 
@@ -2105,7 +2231,9 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			wf.Enums = append(wf.Enums, enumDef)
+
 			continue
 		}
 
@@ -2114,7 +2242,9 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			wf.Records = append(wf.Records, recordDef)
+
 			continue
 		}
 
@@ -2123,7 +2253,9 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			wf.Processes = append(wf.Processes, proc)
+
 			continue
 		}
 
@@ -2132,6 +2264,7 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 				if err := p.parseWorkflowLifecycleHandler(); err != nil {
 					return nil, err
 				}
+
 				continue
 			}
 
@@ -2139,11 +2272,13 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			if name == "" {
 				wf.EntryWF = block
 			} else {
 				wf.SubWFs = append(wf.SubWFs, &SubWorkflow{Name: name, Body: block})
 			}
+
 			continue
 		}
 
@@ -2151,6 +2286,7 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err := p.parseTopLevelOutputBlock(wf); err != nil {
 				return nil, err
 			}
+
 			continue
 		}
 
@@ -2158,6 +2294,7 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err := p.parseTopLevelParamsBlock(wf); err != nil {
 				return nil, err
 			}
+
 			continue
 		}
 
@@ -2165,6 +2302,7 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err := p.parseTopLevelParamAssignment(wf); err != nil {
 				return nil, err
 			}
+
 			continue
 		}
 
@@ -2176,6 +2314,7 @@ func (p *parser) parseWorkflow() (*Workflow, error) {
 			if err := p.parseChannelAssignment(tokenNewline, tokenEOF); err != nil {
 				return nil, err
 			}
+
 			continue
 		}
 
@@ -2234,6 +2373,7 @@ func (p *parser) isTopLevelParamAssignmentStart() bool {
 		}
 
 		offset++
+
 		next = p.peekN(offset)
 		switch next.typ {
 		case tokenDot:
@@ -2261,26 +2401,32 @@ func (p *parser) parseFunctionDef() (*FuncDef, error) {
 	}
 
 	params := make([]string, 0)
+
 	for {
 		p.skipNewlines()
+
 		current := p.current()
 		if current.typ == tokenRParen {
 			p.pos++
+
 			break
 		}
 
-		param, err := p.expectType(tokenIdent, "function parameter")
-		if err != nil {
-			return nil, err
+		param, parseErr := p.expectType(tokenIdent, "function parameter")
+		if parseErr != nil {
+			return nil, parseErr
 		}
+
 		params = append(params, param.lit)
 
 		p.skipNewlines()
+
 		switch p.current().typ {
 		case tokenComma:
 			p.pos++
 		case tokenRParen:
 			p.pos++
+
 			goto parseBody
 		default:
 			return nil, fmt.Errorf("line %d: expected , or )", p.current().line)
@@ -2289,6 +2435,7 @@ func (p *parser) parseFunctionDef() (*FuncDef, error) {
 
 parseBody:
 	p.skipNewlines()
+
 	openBrace, err := p.expectType(tokenLBrace, "{")
 	if err != nil {
 		return nil, err
@@ -2313,11 +2460,13 @@ func (p *parser) parseEnumDef() (*EnumDef, error) {
 	}
 
 	p.skipNewlines()
+
 	if _, err = p.expectType(tokenLBrace, "{"); err != nil {
 		return nil, err
 	}
 
 	values := make([]string, 0)
+
 	for {
 		p.skipNewlines()
 		current := p.current()
@@ -2332,15 +2481,18 @@ func (p *parser) parseEnumDef() (*EnumDef, error) {
 			return nil, fmt.Errorf("line %d: expected } to close enum %q", line, name.lit)
 		case tokenRBrace:
 			p.pos++
+
 			return &EnumDef{Name: name.lit, Values: values}, nil
 		case tokenComma:
 			p.pos++
+
 			continue
 		case tokenIdent:
 			values = append(values, current.lit)
 			p.pos++
 
 			p.skipNewlines()
+
 			switch p.current().typ {
 			case tokenComma, tokenRBrace:
 				continue
@@ -2364,11 +2516,13 @@ func (p *parser) parseRecordDef() (*RecordDef, error) {
 	}
 
 	p.skipNewlines()
+
 	if _, err = p.expectType(tokenLBrace, "{"); err != nil {
 		return nil, err
 	}
 
 	fields := make([]*RecordField, 0)
+
 	for {
 		p.skipWorkflowSeparators()
 		current := p.current()
@@ -2383,9 +2537,11 @@ func (p *parser) parseRecordDef() (*RecordDef, error) {
 			return nil, fmt.Errorf("line %d: expected } to close record %q", line, name.lit)
 		case tokenRBrace:
 			p.pos++
+
 			return &RecordDef{Name: name.lit, Fields: fields}, nil
 		case tokenComma:
 			p.pos++
+
 			continue
 		case tokenIdent:
 			field, parseErr := p.parseRecordField()
@@ -2407,11 +2563,13 @@ func (p *parser) parseRecordField() (*RecordField, error) {
 	}
 
 	p.skipNewlines()
+
 	if _, err = p.expectType(tokenColon, ":"); err != nil {
 		return nil, err
 	}
 
 	p.skipNewlines()
+
 	typeTokens := trimDeclarationTokens(p.readParamClauseTokens(true))
 	if len(typeTokens) == 0 {
 		return nil, fmt.Errorf("line %d: expected record field type", name.line)
@@ -2446,6 +2604,7 @@ func (p *parser) parseTopLevelOutputBlock(wf *Workflow) error {
 	}
 
 	p.skipNewlines()
+
 	openBrace, err := p.expectType(tokenLBrace, "{")
 	if err != nil {
 		return err
@@ -2467,6 +2626,7 @@ func (p *parser) parseTopLevelParamsBlock(wf *Workflow) error {
 	}
 
 	p.skipNewlines()
+
 	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
 		return err
 	}
@@ -2489,6 +2649,7 @@ func (p *parser) parseParamsBlockEntries(wf *Workflow, prefix string) error {
 			return fmt.Errorf("line %d: expected } to close params block", line)
 		case tokenRBrace:
 			p.pos++
+
 			return nil
 		case tokenIdent:
 			name := current
@@ -2526,6 +2687,7 @@ func upsertParamDecl(paramBlock []*ParamDecl, decl *ParamDecl) []*ParamDecl {
 	for index, existing := range paramBlock {
 		if existing != nil && existing.Name == decl.Name {
 			paramBlock[index] = decl
+
 			return paramBlock
 		}
 	}
@@ -2558,6 +2720,7 @@ func (p *parser) parseParamDecl(prefix string, name token) (*ParamDecl, error) {
 
 		p.pos++
 		p.skipNewlines()
+
 		fallthrough
 	case tokenAssign:
 		if p.previous().typ != tokenAssign {
@@ -2599,6 +2762,7 @@ func (p *parser) readParamClauseTokens(stopAtAssign bool) []token {
 			if current.typ == tokenNewline || current.typ == tokenSemicolon || current.typ == tokenRBrace {
 				break
 			}
+
 			if stopAtAssign && current.typ == tokenAssign {
 				break
 			}
@@ -2645,6 +2809,7 @@ func (p *parser) parseTopLevelParamAssignment(wf *Workflow) error {
 	}
 
 	parts := []string{}
+
 	for {
 		part, err := p.expectType(tokenIdent, "parameter name")
 		if err != nil {
@@ -2652,6 +2817,7 @@ func (p *parser) parseTopLevelParamAssignment(wf *Workflow) error {
 		}
 
 		parts = append(parts, part.lit)
+
 		if p.current().typ != tokenDot {
 			break
 		}
@@ -2664,6 +2830,7 @@ func (p *parser) parseTopLevelParamAssignment(wf *Workflow) error {
 	}
 
 	p.skipNewlines()
+
 	valueTokens := trimDeclarationTokens(p.readParamClauseTokens(false))
 	if len(valueTokens) == 0 {
 		return fmt.Errorf("line %d: expected parameter default value", p.previous().line)
@@ -2693,6 +2860,7 @@ func (p *parser) skipFeatureFlagAssignment() bool {
 		if current.typ == tokenEOF || current.typ == tokenNewline {
 			break
 		}
+
 		p.pos++
 	}
 
@@ -2739,6 +2907,7 @@ func (p *parser) parseWorkflowLifecycleHandler() error {
 	}
 
 	p.skipNewlines()
+
 	openBrace, err := p.expectType(tokenLBrace, "{")
 	if err != nil {
 		return err
@@ -2769,6 +2938,7 @@ func (p *parser) isFeatureFlagAssignmentStart() bool {
 	}
 
 	index += 2
+
 	segments := 0
 	for index+1 < len(p.tokens) && p.tokens[index].typ == tokenDot && p.tokens[index+1].typ == tokenIdent {
 		segments++
@@ -2792,6 +2962,7 @@ func (p *parser) parseImport() (*Import, error) {
 	}
 
 	importNode := &Import{Names: []string{}, Alias: make(map[string]string)}
+
 	for {
 		p.skipNewlines()
 		current := p.current()
@@ -2803,7 +2974,9 @@ func (p *parser) parseImport() (*Import, error) {
 			if len(importNode.Names) == 0 {
 				return nil, fmt.Errorf("line %d: expected import name", current.line)
 			}
+
 			p.pos++
+
 			goto parseSource
 		case tokenIdent:
 			name := current.lit
@@ -2812,14 +2985,17 @@ func (p *parser) parseImport() (*Import, error) {
 
 			if p.current().typ == tokenIdent && p.current().lit == "as" {
 				p.pos++
+
 				alias, err := p.expectType(tokenIdent, "import alias")
 				if err != nil {
 					return nil, err
 				}
+
 				importNode.Alias[name] = alias.lit
 			}
 
 			p.skipNewlines()
+
 			switch p.current().typ {
 			case tokenSemicolon:
 				p.pos++
@@ -2834,9 +3010,11 @@ func (p *parser) parseImport() (*Import, error) {
 
 parseSource:
 	p.skipNewlines()
+
 	if p.current().typ != tokenIdent || p.current().lit != "from" {
 		return nil, fmt.Errorf("line %d: missing module source", p.current().line)
 	}
+
 	p.pos++
 	p.skipNewlines()
 
@@ -2856,6 +3034,7 @@ func (p *parser) parseWorkflowBlockDecl() (string, *WorkflowBlock, error) {
 	}
 
 	p.skipNewlines()
+
 	name := ""
 	if p.current().typ == tokenIdent {
 		name = p.current().lit
@@ -2876,11 +3055,18 @@ func (p *parser) parseWorkflowBlockDecl() (string, *WorkflowBlock, error) {
 
 func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 	p.localScopes = append(p.localScopes, make(map[string]ChanExpr))
+
 	defer func() {
 		p.localScopes = p.localScopes[:len(p.localScopes)-1]
 	}()
 
-	block := &WorkflowBlock{Calls: []*Call{}, Take: []string{}, Emit: []*WFEmit{}, Publish: []*WFPublish{}, Conditions: []*IfBlock{}}
+	block := &WorkflowBlock{
+		Calls:      []*Call{},
+		Take:       []string{},
+		Emit:       []*WFEmit{},
+		Publish:    []*WFPublish{},
+		Conditions: []*IfBlock{},
+	}
 	section := "main"
 
 	for {
@@ -2893,9 +3079,11 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			if line == 0 {
 				line = current.line
 			}
+
 			return nil, fmt.Errorf("line %d: expected } to close workflow", line)
 		case tokenRBrace:
 			p.pos++
+
 			return block, nil
 		}
 
@@ -2903,6 +3091,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			if !isWorkflowBlockSection(current.lit) {
 				if section == "publish" {
 					p.readWorkflowPublishLineTokens()
+
 					continue
 				}
 
@@ -2912,6 +3101,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			section = current.lit
 			p.pos += 2
 			p.skipWorkflowSeparators()
+
 			continue
 		}
 
@@ -2921,18 +3111,21 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			block.Take = append(block.Take, take...)
 		case "emit":
 			emit, err := p.parseWorkflowEmitLine()
 			if err != nil {
 				return nil, err
 			}
+
 			block.Emit = append(block.Emit, emit)
 		case "publish":
 			publish, err := p.parseWorkflowPublishLine()
 			if err != nil {
 				return nil, err
 			}
+
 			if publish != nil {
 				block.Publish = append(block.Publish, publish)
 			}
@@ -2941,12 +3134,14 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			block.OnComplete = body
 		case "onError":
 			body, err := p.parseWorkflowRawSectionBody()
 			if err != nil {
 				return nil, err
 			}
+
 			block.OnError = body
 		case "main":
 			if current.typ == tokenIdent && current.lit == "if" {
@@ -2954,7 +3149,9 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 				if err != nil {
 					return nil, err
 				}
+
 				block.Conditions = append(block.Conditions, condition)
+
 				continue
 			}
 
@@ -2962,6 +3159,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 				if err := p.parseChannelAssignment(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF); err != nil {
 					return nil, err
 				}
+
 				continue
 			}
 
@@ -2969,6 +3167,7 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			block.Calls = append(block.Calls, calls...)
 		default:
 			return nil, fmt.Errorf("line %d: unsupported workflow section %q", current.line, section)
@@ -2992,6 +3191,7 @@ func (p *parser) parseWorkflowTakeLine() ([]string, error) {
 	}
 
 	segments := splitTopLevelCommaSegments(lineTokens)
+
 	take := make([]string, 0, len(segments))
 	for _, segment := range segments {
 		trimmed := trimDeclarationTokens(segment)
@@ -3018,6 +3218,7 @@ func (p *parser) parseWorkflowEmitLine() (*WFEmit, error) {
 	assignIndex := -1
 	parenDepth := 0
 	braceDepth := 0
+
 	for index, tok := range lineTokens {
 		switch tok.typ {
 		case tokenLParen:
@@ -3035,6 +3236,7 @@ func (p *parser) parseWorkflowEmitLine() (*WFEmit, error) {
 		case tokenAssign:
 			if parenDepth == 0 && braceDepth == 0 {
 				assignIndex = index
+
 				goto parseAssign
 			}
 		}
@@ -3052,6 +3254,7 @@ parseAssign:
 	}
 
 	nameTokens := trimDeclarationTokens(lineTokens[:assignIndex])
+
 	exprTokens := trimDeclarationTokens(lineTokens[assignIndex+1:])
 	if len(nameTokens) == 0 || len(exprTokens) == 0 {
 		return nil, fmt.Errorf("line %d: expected workflow emit declaration", lineTokens[0].line)
@@ -3070,6 +3273,7 @@ func (p *parser) parseWorkflowPublishLine() (*WFPublish, error) {
 	parenDepth := 0
 	braceDepth := 0
 	bracketDepth := 0
+
 	for index, tok := range lineTokens {
 		switch tok.typ {
 		case tokenLParen:
@@ -3096,6 +3300,7 @@ func (p *parser) parseWorkflowPublishLine() (*WFPublish, error) {
 		case tokenAssign:
 			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
 				assignIndex = index
+
 				goto parseAssign
 			}
 		}
@@ -3107,6 +3312,7 @@ parseAssign:
 	}
 
 	targetTokens := trimDeclarationTokens(lineTokens[:assignIndex])
+
 	sourceTokens := trimDeclarationTokens(lineTokens[assignIndex+1:])
 	if len(targetTokens) == 0 || len(sourceTokens) == 0 {
 		return nil, fmt.Errorf("line %d: expected workflow publish assignment", lineTokens[0].line)
@@ -3135,6 +3341,7 @@ func (p *parser) parseWorkflowRawSectionBody() (string, error) {
 			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
 				return p.rawTokenText(p.tokens[start:p.pos]), nil
 			}
+
 			braceDepth--
 		case tokenLBrace:
 			braceDepth++
@@ -3145,7 +3352,8 @@ func (p *parser) parseWorkflowRawSectionBody() (string, error) {
 				parenDepth--
 			}
 		case tokenIdent:
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && p.peek().typ == tokenColon && isWorkflowBlockSection(current.lit) {
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
+				p.peek().typ == tokenColon && isWorkflowBlockSection(current.lit) {
 				return p.rawTokenText(p.tokens[start:p.pos]), nil
 			}
 		case tokenSymbol:
@@ -3184,13 +3392,15 @@ func (p *parser) parseWorkflowStatement() ([]*Call, error) {
 func desugarWorkflowPipe(expr ChanExpr) ([]*Call, error) {
 	pipe, ok := expr.(PipeExpr)
 	if !ok {
-		return nil, fmt.Errorf("workflow statements must be calls or channel pipelines")
+		return nil, errors.New("workflow statements must be calls or channel pipelines")
 	}
+
 	if len(pipe.Stages) < 2 {
-		return nil, fmt.Errorf("workflow pipelines require at least one process stage")
+		return nil, errors.New("workflow pipelines require at least one process stage")
 	}
 
 	input := pipe.Stages[0]
+
 	calls := make([]*Call, 0, len(pipe.Stages)-1)
 	for stageIndex, stage := range pipe.Stages[1:] {
 		target, ok := stage.(ChanRef)
@@ -3208,7 +3418,7 @@ func desugarWorkflowPipe(expr ChanExpr) ([]*Call, error) {
 	}
 
 	if len(calls) == 0 {
-		return nil, fmt.Errorf("workflow pipelines require at least one runnable process stage")
+		return nil, errors.New("workflow pipelines require at least one runnable process stage")
 	}
 
 	return calls, nil
@@ -3224,19 +3434,27 @@ func (p *parser) parseWorkflowIfBlock() (*IfBlock, error) {
 
 	for {
 		p.skipWorkflowSeparators()
+
 		if p.current().typ != tokenIdent || p.current().lit != "else" {
 			return ifBlock, nil
 		}
 
 		p.pos++
 		p.skipWorkflowSeparators()
+
 		if p.current().typ == tokenIdent && p.current().lit == "if" {
 			elseIfCondition, elseIfBody, parseErr := p.parseWorkflowIfClause()
 			if parseErr != nil {
 				return nil, parseErr
 			}
 
-			ifBlock.ElseIf = append(ifBlock.ElseIf, &IfBlock{Condition: elseIfCondition, Body: elseIfBody, ElseIf: []*IfBlock{}, ElseBody: []*Call{}})
+			ifBlock.ElseIf = append(ifBlock.ElseIf, &IfBlock{
+				Condition: elseIfCondition,
+				Body:      elseIfBody,
+				ElseIf:    []*IfBlock{},
+				ElseBody:  []*Call{},
+			})
+
 			continue
 		}
 
@@ -3246,6 +3464,7 @@ func (p *parser) parseWorkflowIfBlock() (*IfBlock, error) {
 		}
 
 		ifBlock.ElseBody = elseBody
+
 		return ifBlock, nil
 	}
 }
@@ -3257,6 +3476,7 @@ func (p *parser) parseWorkflowIfClause() (string, []*Call, error) {
 	}
 
 	p.skipWorkflowSeparators()
+
 	if _, err = p.expectType(tokenLParen, "("); err != nil {
 		return "", nil, err
 	}
@@ -3276,6 +3496,7 @@ func (p *parser) parseWorkflowIfClause() (string, []*Call, error) {
 	}
 
 	p.skipWorkflowSeparators()
+
 	body, err := p.parseWorkflowBranchBody()
 	if err != nil {
 		return "", nil, err
@@ -3291,6 +3512,7 @@ func (p *parser) parseWorkflowBranchBody() ([]*Call, error) {
 	}
 
 	calls := []*Call{}
+
 	for {
 		p.skipWorkflowSeparators()
 		current := p.current()
@@ -3300,6 +3522,7 @@ func (p *parser) parseWorkflowBranchBody() ([]*Call, error) {
 			return nil, fmt.Errorf("line %d: expected } to close workflow conditional", openBrace.line)
 		case tokenRBrace:
 			p.pos++
+
 			return calls, nil
 		}
 
@@ -3311,6 +3534,7 @@ func (p *parser) parseWorkflowBranchBody() ([]*Call, error) {
 			if err := p.parseChannelAssignment(tokenNewline, tokenSemicolon, tokenRBrace, tokenEOF); err != nil {
 				return nil, err
 			}
+
 			continue
 		}
 
@@ -3318,6 +3542,7 @@ func (p *parser) parseWorkflowBranchBody() ([]*Call, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		calls = append(calls, statementCalls...)
 	}
 }
@@ -3333,9 +3558,11 @@ func (p *parser) parseCall() (*Call, error) {
 	}
 
 	call := &Call{Target: target.lit}
+
 	for {
 		if p.current().typ == tokenRParen {
 			p.pos++
+
 			return call, nil
 		}
 
@@ -3343,6 +3570,7 @@ func (p *parser) parseCall() (*Call, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		call.Args = append(call.Args, arg)
 
 		switch p.current().typ {
@@ -3350,6 +3578,7 @@ func (p *parser) parseCall() (*Call, error) {
 			p.pos++
 		case tokenRParen:
 			p.pos++
+
 			return call, nil
 		default:
 			return nil, fmt.Errorf("line %d: expected , or )", p.current().line)
@@ -3387,6 +3616,7 @@ func (p *parser) parseChannelAssignment(terminators ...tokenType) error {
 
 	if scope := p.currentLocalScope(); scope != nil {
 		scope[name.lit] = value
+
 		return nil
 	}
 
@@ -3426,9 +3656,11 @@ func (p *parser) isTrackedChannelAssignmentTokens(tokens []token) bool {
 		return false
 	}
 
-	if len(tokens) >= 3 && tokens[0].typ == tokenIdent && tokens[0].lit == "Channel" && tokens[1].typ == tokenDot && tokens[2].typ == tokenIdent {
+	if len(tokens) >= 3 && tokens[0].typ == tokenIdent &&
+		tokens[0].lit == "Channel" && tokens[1].typ == tokenDot && tokens[2].typ == tokenIdent {
 		return true
 	}
+
 	if hasTopLevelToken(tokens, tokenPipe, "") {
 		return true
 	}
@@ -3445,6 +3677,7 @@ func (p *parser) isTrackedChannelAssignmentTokens(tokens []token) bool {
 	if consumed+2 >= len(tokens) || tokens[consumed].typ != tokenDot || tokens[consumed+1].typ != tokenIdent {
 		return false
 	}
+
 	if tokens[consumed+2].typ != tokenLParen && tokens[consumed+2].typ != tokenLBrace {
 		return false
 	}
@@ -3465,13 +3698,16 @@ func leadingChannelAssignmentRef(tokens []token) (string, int) {
 
 	parts := []string{tokens[0].lit}
 	consumed := 1
+
 	for index := 1; index < len(tokens); index += 2 {
 		if tokens[index].typ != tokenDot {
 			break
 		}
+
 		if index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
 			break
 		}
+
 		if index+2 < len(tokens) && (tokens[index+2].typ == tokenLParen || tokens[index+2].typ == tokenLBrace) {
 			break
 		}
@@ -3522,9 +3758,11 @@ func hasTopLevelToken(tokens []token, typ tokenType, lit string) bool {
 		if parenDepth != 0 || braceDepth != 0 || bracketDepth != 0 {
 			continue
 		}
+
 		if tok.typ != typ {
 			continue
 		}
+
 		if lit != "" && tok.lit != lit {
 			continue
 		}
@@ -3574,12 +3812,15 @@ func (p *parser) parseChanExpr(terminators ...tokenType) (ChanExpr, error) {
 	}
 
 	stages := []ChanExpr{stage}
+
 	for p.current().typ == tokenPipe {
 		p.pos++
+
 		nextStage, err := p.parseChanStage(terminators...)
 		if err != nil {
 			return nil, err
 		}
+
 		stages = append(stages, nextStage)
 	}
 
@@ -3601,11 +3842,13 @@ func (p *parser) parseChanStage(terminators ...tokenType) (ChanExpr, error) {
 	}
 
 	var base ChanExpr
+
 	if current.typ == tokenIdent && current.lit == "Channel" && p.peek().typ == tokenDot {
 		factory, err := p.parseChannelFactory()
 		if err != nil {
 			return nil, err
 		}
+
 		base = factory
 	} else {
 		if current.typ != tokenIdent {
@@ -3659,6 +3902,7 @@ func (p *parser) resolveNamedChannelSelection(name string) (ChanExpr, bool) {
 	parts := strings.Split(name, ".")
 	for prefixLen := len(parts) - 1; prefixLen >= 1; prefixLen-- {
 		baseName := strings.Join(parts[:prefixLen], ".")
+
 		label := strings.Join(parts[prefixLen:], ".")
 		if label == "" {
 			continue
@@ -3683,6 +3927,7 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 	if _, err := p.expectIdent("Channel"); err != nil {
 		return nil, err
 	}
+
 	if _, err := p.expectType(tokenDot, "."); err != nil {
 		return nil, err
 	}
@@ -3691,20 +3936,25 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if name.lit == "create" {
 		return nil, fmt.Errorf("line %d: DSL1-only construct: Channel.create() is not supported in DSL2", name.line)
 	}
+
 	if _, ok := supportedChannelFactories[name.lit]; !ok {
 		return nil, fmt.Errorf("line %d: unsupported factory: %s", name.line, name.lit)
 	}
+
 	if _, err = p.expectType(tokenLParen, "("); err != nil {
 		return nil, err
 	}
 
 	factory := ChannelFactory{Name: name.lit}
+
 	for {
 		if p.current().typ == tokenRParen {
 			p.pos++
+
 			return factory, nil
 		}
 
@@ -3712,10 +3962,12 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		expr, err := parseExprTokens(argTokens)
 		if err != nil {
 			return nil, wrapLineError(argTokens[0].line, err)
 		}
+
 		factory.Args = append(factory.Args, expr)
 
 		switch p.current().typ {
@@ -3723,6 +3975,7 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 			p.pos++
 		case tokenRParen:
 			p.pos++
+
 			return factory, nil
 		default:
 			return nil, fmt.Errorf("line %d: expected , or )", p.current().line)
@@ -3732,7 +3985,7 @@ func (p *parser) parseChannelFactory() (ChanExpr, error) {
 
 func parseExprTokens(tokens []token) (Expr, error) {
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("expected expression")
+		return nil, errors.New("expected expression")
 	}
 
 	if expr, err := parseMultiAssignExprTokens(tokens); expr != nil || err != nil {
@@ -3750,6 +4003,7 @@ func parseBinaryExprTokens(tokens []token, operators []string, operandParser fun
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
+
 	for index := len(tokens) - 1; index >= 0; index-- {
 		current := tokens[index]
 		switch current.typ {
@@ -3776,9 +4030,11 @@ func parseBinaryExprTokens(tokens []token, operators []string, operandParser fun
 
 		leftTokens := tokens[:index]
 		rightTokens := tokens[index+1:]
+
 		if len(leftTokens) == 0 {
 			continue
 		}
+
 		if len(rightTokens) == 0 {
 			return nil, fmt.Errorf("unsupported expression %q", expressionText(tokens))
 		}
@@ -3809,9 +4065,11 @@ func parseVarExprTokens(tokens []token) (Expr, bool) {
 		if tokens[index].typ != tokenDot {
 			return nil, false
 		}
+
 		if index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
 			return nil, false
 		}
+
 		parts = append(parts, tokens[index+1].lit)
 	}
 
@@ -3828,10 +4086,12 @@ func expressionText(tokens []token) string {
 	}
 
 	var builder strings.Builder
+
 	for index, tok := range tokens {
 		if index > 0 && needsSpaceBetween(tokens[index-1], tok) {
 			builder.WriteByte(' ')
 		}
+
 		builder.WriteString(tok.lit)
 	}
 
@@ -3913,6 +4173,7 @@ func (p *parser) parseChannelOperators(base ChanExpr) (ChanExpr, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		operators = append(operators, operator)
 	}
 
@@ -3932,22 +4193,28 @@ func (p *parser) parseChannelOperator(name token) (ChannelOperator, error) {
 		if err != nil {
 			return ChannelOperator{}, err
 		}
+
 		operator.Closure = closure
 		operator.ClosureExpr = &closureExpr
+
 		if isDeprecatedChannelOperator(name.lit) {
 			warnDeprecatedParsedChannelOperator(name)
 		}
+
 		return operator, nil
 	case tokenLParen:
 		channels, args, err := p.parseChannelOperatorArgs(name)
 		if err != nil {
 			return ChannelOperator{}, err
 		}
+
 		operator.Channels = channels
 		operator.Args = args
+
 		if isDeprecatedChannelOperator(name.lit) {
 			warnDeprecatedParsedChannelOperator(name)
 		}
+
 		return operator, nil
 	default:
 		return ChannelOperator{}, fmt.Errorf("line %d: expected operator invocation", p.current().line)
@@ -3964,7 +4231,12 @@ func isDeprecatedChannelOperator(name string) bool {
 }
 
 func warnDeprecatedParsedChannelOperator(name token) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel operator %q at line %d parsed for compatibility\n", name.lit, name.line)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: deprecated channel operator %q at line %d parsed for compatibility\n",
+		name.lit,
+		name.line,
+	)
 }
 
 func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error) {
@@ -3974,6 +4246,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 
 	if p.current().typ == tokenRParen {
 		p.pos++
+
 		return nil, nil, nil
 	}
 
@@ -3981,6 +4254,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 	case "combine":
 		channels := []ChanExpr{}
 		args := []Expr{}
+
 		for {
 			segmentTokens, err := p.readExprTokens(tokenComma, tokenRParen)
 			if err != nil {
@@ -4005,6 +4279,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 					if argErr != nil {
 						return nil, nil, wrapLineError(trimmed[0].line, argErr)
 					}
+
 					args = append(args, arg)
 				}
 			} else {
@@ -4012,6 +4287,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 				if err != nil {
 					return nil, nil, wrapLineError(trimmed[0].line, err)
 				}
+
 				args = append(args, arg)
 			}
 
@@ -4020,6 +4296,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 				p.pos++
 			case tokenRParen:
 				p.pos++
+
 				return channels, args, nil
 			default:
 				return nil, nil, fmt.Errorf("line %d: expected , or )", p.current().line)
@@ -4027,11 +4304,13 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 		}
 	case "concat", "cross", "join", "merge", "mix", "tap":
 		channels := []ChanExpr{}
+
 		for {
 			channel, err := p.parseChanExpr(tokenComma, tokenRParen)
 			if err != nil {
 				return nil, nil, err
 			}
+
 			channels = append(channels, channel)
 
 			switch p.current().typ {
@@ -4039,6 +4318,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 				p.pos++
 			case tokenRParen:
 				p.pos++
+
 				return channels, nil, nil
 			default:
 				return nil, nil, fmt.Errorf("line %d: expected , or )", p.current().line)
@@ -4046,15 +4326,18 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 		}
 	default:
 		args := []Expr{}
+
 		for {
 			argTokens, err := p.readExprTokens(tokenComma, tokenRParen)
 			if err != nil {
 				return nil, nil, err
 			}
+
 			arg, err := parseExprTokens(argTokens)
 			if err != nil {
 				return nil, nil, wrapLineError(argTokens[0].line, err)
 			}
+
 			args = append(args, arg)
 
 			switch p.current().typ {
@@ -4062,6 +4345,7 @@ func (p *parser) parseChannelOperatorArgs(name token) ([]ChanExpr, []Expr, error
 				p.pos++
 			case tokenRParen:
 				p.pos++
+
 				return nil, args, nil
 			default:
 				return nil, nil, fmt.Errorf("line %d: expected , or )", p.current().line)
@@ -4077,6 +4361,7 @@ func (p *parser) parseClosureBody() (ClosureExpr, string, error) {
 
 	depth := 1
 	tokens := []token{}
+
 	for depth > 0 {
 		current := p.current()
 		if current.typ == tokenEOF {
@@ -4086,6 +4371,7 @@ func (p *parser) parseClosureBody() (ClosureExpr, string, error) {
 		switch current.typ {
 		case tokenLBrace:
 			depth++
+
 			tokens = append(tokens, current)
 		case tokenRBrace:
 			depth--
@@ -4115,7 +4401,8 @@ func joinTokens(tokens []token) string {
 	parts := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
 		switch tok.typ {
-		case tokenLBrace, tokenRBrace, tokenLParen, tokenRParen, tokenColon, tokenComma, tokenDot, tokenSemicolon, tokenAssign, tokenPipe:
+		case tokenLBrace, tokenRBrace, tokenLParen, tokenRParen, tokenColon,
+			tokenComma, tokenDot, tokenSemicolon, tokenAssign, tokenPipe:
 			parts = append(parts, tok.lit)
 		default:
 			parts = append(parts, tok.lit)
@@ -4131,6 +4418,7 @@ func renderClosureTokens(tokens []token) string {
 	}
 
 	var builder strings.Builder
+
 	for index, tok := range tokens {
 		if index > 0 && needsSpaceBetween(tokens[index-1], tok) {
 			builder.WriteByte(' ')
@@ -4163,6 +4451,7 @@ func (p *parser) parseDottedIdent() string {
 		if p.current().typ != tokenIdent {
 			break
 		}
+
 		parts = append(parts, p.current().lit)
 		p.pos++
 	}
@@ -4183,6 +4472,7 @@ func (p *parser) readExprTokens(terminators ...tokenType) ([]token, error) {
 			if len(tokens) == 0 {
 				return nil, fmt.Errorf("line %d: expected expression", start.line)
 			}
+
 			return tokens, nil
 		}
 
@@ -4190,6 +4480,7 @@ func (p *parser) readExprTokens(terminators ...tokenType) ([]token, error) {
 			if len(tokens) == 0 {
 				return nil, fmt.Errorf("line %d: expected expression", current.line)
 			}
+
 			return tokens, nil
 		}
 
@@ -4246,6 +4537,7 @@ func (p *parser) parseProcess() (*Process, error) {
 
 	for {
 		p.skipNewlines()
+
 		current := p.current()
 		switch current.typ {
 		case tokenEOF:
@@ -4253,18 +4545,22 @@ func (p *parser) parseProcess() (*Process, error) {
 			if line == 0 {
 				line = current.line
 			}
+
 			return nil, fmt.Errorf("line %d: expected } to close process %q", line, proc.Name)
 		case tokenRBrace:
 			p.pos++
+
 			return proc, nil
 		case tokenIdent:
 			label := current
+
 			p.pos++
 			if p.current().typ == tokenColon {
 				p.pos++
 				if err := p.parseSection(proc, label); err != nil {
 					return nil, err
 				}
+
 				continue
 			}
 
@@ -4284,48 +4580,57 @@ func (p *parser) parseSection(proc *Process, label token) error {
 		if err != nil {
 			return err
 		}
+
 		proc.Input = append(proc.Input, decls...)
 	case "output":
 		decls, err := p.parseDeclarations(label.lit)
 		if err != nil {
 			return err
 		}
+
 		proc.Output = append(proc.Output, decls...)
 	case "script":
 		script, err := p.parseScript()
 		if err != nil {
 			return err
 		}
+
 		proc.Script = script
 	case "stub":
 		stub, err := p.parseRawSectionBody()
 		if err != nil {
 			return err
 		}
+
 		proc.Stub = stub
 	case "exec":
 		execBody, err := p.parseRawSectionBody()
 		if err != nil {
 			return err
 		}
+
 		proc.Exec = execBody
+
 		warnUnsupportedProcessSection(label)
 	case "shell":
 		shell, err := p.parseRawSectionBody()
 		if err != nil {
 			return err
 		}
+
 		proc.Shell = shell
 	case "stage":
 		if _, err := p.parseRawSectionBody(); err != nil {
 			return err
 		}
+
 		warnUnsupportedProcessSection(label)
 	case "when":
 		when, err := p.parseRawSectionBody()
 		if err != nil {
 			return err
 		}
+
 		proc.When = when
 	default:
 		return fmt.Errorf("line %d: unsupported section %q", label.line, label.lit)
@@ -4335,13 +4640,20 @@ func (p *parser) parseSection(proc *Process, label token) error {
 }
 
 func warnUnsupportedProcessSection(name token) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported process section %q at line %d will not be translated\n", name.lit, name.line)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: unsupported process section %q at line %d will not be translated\n",
+		name.lit,
+		name.line,
+	)
 }
 
 func (p *parser) parseDeclarations(section string) ([]*Declaration, error) {
 	decls := []*Declaration{}
+
 	for {
 		p.skipNewlines()
+
 		current := p.current()
 		if current.typ == tokenEOF || current.typ == tokenRBrace {
 			return decls, nil
@@ -4355,6 +4667,7 @@ func (p *parser) parseDeclarations(section string) ([]*Declaration, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		decls = append(decls, decl)
 	}
 }
@@ -4385,6 +4698,7 @@ func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	decl.Each = each
 	decl.Raw = joinTokens(lineTokens)
 
@@ -4403,13 +4717,21 @@ func normalizeEachDeclarationTokens(tokens []token) ([]token, bool, error) {
 	}
 
 	eachToken := tokens[0]
+
 	remaining := trimDeclarationTokens(tokens[1:])
 	if len(remaining) == 0 {
 		return nil, false, fmt.Errorf("line %d: each requires a declaration", eachToken.line)
 	}
 
 	if len(remaining) == 1 && remaining[0].typ == tokenIdent {
-		return []token{{typ: tokenIdent, lit: "val", line: eachToken.line, col: eachToken.col, start: eachToken.start, end: eachToken.end}, remaining[0]}, true, nil
+		return []token{{
+			typ:   tokenIdent,
+			lit:   "val",
+			line:  eachToken.line,
+			col:   eachToken.col,
+			start: eachToken.start,
+			end:   eachToken.end,
+		}, remaining[0]}, true, nil
 	}
 
 	return remaining, true, nil
@@ -4436,6 +4758,7 @@ func splitDeclarationLineTokens(lineTokens []token) ([]token, [][]token, error) 
 
 			if isDeclarationQualifierTokens(trimmed) {
 				qualifiers = append(qualifiers, trimmed)
+
 				continue
 			}
 
@@ -4455,6 +4778,7 @@ func splitDeclarationLineTokens(lineTokens []token) ([]token, [][]token, error) 
 		if len(trimmed) == 0 {
 			continue
 		}
+
 		qualifiers = append(qualifiers, trimmed)
 	}
 
@@ -4463,7 +4787,7 @@ func splitDeclarationLineTokens(lineTokens []token) ([]token, [][]token, error) 
 
 func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("expected declaration")
+		return nil, errors.New("expected declaration")
 	}
 
 	if tokens[0].typ == tokenIdent && tokens[0].lit == "tuple" {
@@ -4491,7 +4815,9 @@ func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
 			if err != nil {
 				return nil, wrapLineError(tokens[0].line, err)
 			}
+
 			decl.Name = name
+
 			return decl, nil
 		}
 
@@ -4500,12 +4826,15 @@ func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
 			if err != nil {
 				return nil, wrapLineError(tokens[0].line, err)
 			}
+
 			decl.Expr = expr
+
 			return decl, nil
 		}
 
 		if len(primary) == 1 && primary[0].typ == tokenIdent {
 			decl.Name = primary[0].lit
+
 			return decl, nil
 		}
 
@@ -4513,12 +4842,15 @@ func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
 		if err != nil {
 			return nil, wrapLineError(tokens[0].line, err)
 		}
+
 		decl.Expr = expr
+
 		return decl, nil
 	}
 
 	if len(tokens) == 2 && tokens[1].typ == tokenIdent {
 		decl.Name = tokens[1].lit
+
 		return decl, nil
 	}
 
@@ -4527,6 +4859,7 @@ func parseDeclarationPrimary(tokens []token) (*Declaration, error) {
 		if err != nil {
 			return nil, wrapLineError(tokens[0].line, err)
 		}
+
 		decl.Expr = expr
 	}
 
@@ -4539,6 +4872,7 @@ func applyDeclarationQualifier(decl *Declaration, tokens []token, section string
 	}
 
 	name := tokens[0]
+
 	valueTokens := tokens[2:]
 	if len(valueTokens) == 0 {
 		return fmt.Errorf("line %d: qualifier %q requires a value", name.line, name.lit)
@@ -4550,6 +4884,7 @@ func applyDeclarationQualifier(decl *Declaration, tokens []token, section string
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		switch emitValue := value.(type) {
 		case StringExpr:
 			decl.Emit = emitValue.Value
@@ -4557,6 +4892,7 @@ func applyDeclarationQualifier(decl *Declaration, tokens []token, section string
 			if emitValue.Path != "" {
 				return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
 			}
+
 			decl.Emit = emitValue.Root
 		default:
 			return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
@@ -4566,25 +4902,31 @@ func applyDeclarationQualifier(decl *Declaration, tokens []token, section string
 			switch valueTokens[0].lit {
 			case "true":
 				decl.Optional = true
+
 				return nil
 			case "false":
 				decl.Optional = false
+
 				return nil
 			}
 		}
+
 		value, err := parseExprTokens(valueTokens)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		boolValue, ok := value.(BoolExpr)
 		if !ok {
 			return fmt.Errorf("line %d: optional qualifier expects a boolean", name.line)
 		}
+
 		decl.Optional = boolValue.Value
 	case "topic":
 		if _, err := parseExprTokens(valueTokens); err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		if section == "output" {
 			warnUnsupportedOutputQualifier(name)
 		}
@@ -4596,7 +4938,12 @@ func applyDeclarationQualifier(decl *Declaration, tokens []token, section string
 }
 
 func warnUnsupportedOutputType(name token) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported output type %q at line %d will not be translated\n", name.lit, name.line)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: unsupported output type %q at line %d will not be translated\n",
+		name.lit,
+		name.line,
+	)
 }
 
 func (p *parser) parseScript() (string, error) {
@@ -4614,10 +4961,12 @@ func (p *parser) parseScript() (string, error) {
 
 func (p *parser) parseRawSectionBody() (string, error) {
 	p.skipNewlines()
+
 	current := p.current()
 	if current.typ == tokenString {
 		p.pos++
 		p.discardLineRemainder()
+
 		return current.lit, nil
 	}
 
@@ -4644,6 +4993,7 @@ func (p *parser) parseRawBraceBody(openBrace token, description string) (string,
 			depth--
 			if depth == 0 {
 				end := current.start
+
 				p.pos++
 				if start < 0 || end < start || end > len(p.source) {
 					return "", nil
@@ -4663,6 +5013,7 @@ func (p *parser) rawTokenText(tokens []token) string {
 	}
 
 	start := tokens[0].start
+
 	end := tokens[len(tokens)-1].end
 	if start < 0 || end < start || end > len(p.source) {
 		return joinTokens(tokens)
@@ -4680,95 +5031,114 @@ func (p *parser) parseDirective(proc *Process, name token) error {
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Directives[name.lit] = expr
 	case "label":
 		value, err := parseDirectiveStringValue(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Labels = append(proc.Labels, value)
 	case "container":
 		expr, err := parseDirectiveExpr(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		strExpr, ok := expr.(StringExpr)
 		if !ok {
 			proc.Directives[name.lit] = expr
+
 			break
 		}
+
 		proc.Container = strExpr.Value
 	case "tag":
 		value, err := parseDirectiveText(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Tag = value
 	case "beforeScript":
 		value, err := parseDirectiveStringValue(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.BeforeScript = value
 	case "afterScript":
 		value, err := parseDirectiveStringValue(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.AfterScript = value
 	case "module":
 		value, err := parseDirectiveStringValue(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Module = value
 	case "cache":
 		value, err := parseDirectiveStringValue(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Cache = value
+
 		warnStoredDirective(name)
 	case "maxForks":
 		value, err := parseIntValue(args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.MaxForks = value
 	case "errorStrategy":
 		expr, err := parseDirectiveExpr(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		strExpr, ok := expr.(StringExpr)
 		if !ok {
 			proc.Directives[name.lit] = expr
+
 			break
 		}
+
 		proc.ErrorStrat = strExpr.Value
 	case "maxRetries":
 		value, err := parseIntValue(args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.MaxRetries = value
 	case "publishDir":
 		publishDir, err := parsePublishDir(args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.PublishDir = append(proc.PublishDir, publishDir)
 	case "env":
 		key, value, err := parseEnv(args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Env[key] = value
 	case "accelerator", "arch", "array", "clusterOptions", "conda", "containerOptions", "debug", "echo", "executor", "ext", "fair", "machineType", "maxErrors", "maxSubmitAwait", "penv", "pod", "queue", "resourceLabels", "resourceLimits", "scratch", "secret", "shell", "spack", "stageInMode", "stageOutMode", "storeDir":
 		expr, err := parseDirectiveExpr(name.lit, args)
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+
 		proc.Directives[name.lit] = expr
 		warnStoredDirective(name)
 	default:
@@ -4795,18 +5165,21 @@ func parseDirectiveExpr(name string, args []token) (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
+
 			return IntExpr{Value: value}, nil
 		case "time":
 			value, err := parseTimeValue(stringExpr.Value)
 			if err != nil {
 				return nil, err
 			}
+
 			return IntExpr{Value: value}, nil
 		case "disk":
 			value, err := parseDiskValue(stringExpr.Value)
 			if err != nil {
 				return nil, err
 			}
+
 			return IntExpr{Value: value}, nil
 		}
 	}
@@ -4853,7 +5226,12 @@ func parseDirectiveText(name string, args []token) (string, error) {
 }
 
 func warnStoredDirective(name token) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: unsupported directive %q at line %d stored without translation support\n", name.lit, name.line)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: unsupported directive %q at line %d stored without translation support\n",
+		name.lit,
+		name.line,
+	)
 }
 
 func parseIntValue(tokens []token) (int, error) {
@@ -4864,7 +5242,7 @@ func parseIntValue(tokens []token) (int, error) {
 
 	intExpr, ok := expr.(IntExpr)
 	if !ok {
-		return 0, fmt.Errorf("expected integer value")
+		return 0, errors.New("expected integer value")
 	}
 
 	return intExpr.Value, nil
@@ -4872,7 +5250,7 @@ func parseIntValue(tokens []token) (int, error) {
 
 func parsePublishDir(tokens []token) (*PublishDir, error) {
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("publishDir requires a path")
+		return nil, errors.New("publishDir requires a path")
 	}
 
 	pathExpr, err := parseExprTokens([]token{tokens[0]})
@@ -4882,15 +5260,17 @@ func parsePublishDir(tokens []token) (*PublishDir, error) {
 
 	pathValue, ok := pathExpr.(StringExpr)
 	if !ok {
-		return nil, fmt.Errorf("publishDir path must be a string literal")
+		return nil, errors.New("publishDir path must be a string literal")
 	}
 
 	publishDir := &PublishDir{Path: pathValue.Value, Mode: "copy"}
+
 	index := 1
 	for index < len(tokens) {
 		if tokens[index].typ == tokenComma {
 			index++
 		}
+
 		if index >= len(tokens) {
 			break
 		}
@@ -4900,6 +5280,7 @@ func parsePublishDir(tokens []token) (*PublishDir, error) {
 		}
 
 		key := tokens[index].lit
+
 		valueExpr, err := parseExprTokens([]token{tokens[index+2]})
 		if err != nil {
 			return nil, err
@@ -4927,7 +5308,7 @@ func parsePublishDir(tokens []token) (*PublishDir, error) {
 
 func parseEnv(tokens []token) (string, string, error) {
 	if len(tokens) != 3 || tokens[0].typ != tokenIdent || tokens[1].typ != tokenColon {
-		return "", "", fmt.Errorf("env expects KEY: 'value'")
+		return "", "", errors.New("env expects KEY: 'value'")
 	}
 
 	valueExpr, err := parseExprTokens([]token{tokens[2]})
@@ -4937,7 +5318,7 @@ func parseEnv(tokens []token) (string, string, error) {
 
 	valueString, ok := valueExpr.(StringExpr)
 	if !ok {
-		return "", "", fmt.Errorf("env value must be a string literal")
+		return "", "", errors.New("env value must be a string literal")
 	}
 
 	return tokens[0].lit, valueString.Value, nil
@@ -4975,6 +5356,7 @@ func (p *parser) readLineTokens() []token {
 		if current.typ == tokenEOF || current.typ == tokenNewline {
 			break
 		}
+
 		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && current.typ == tokenRBrace {
 			break
 		}
@@ -5006,6 +5388,7 @@ func (p *parser) readLineTokens() []token {
 			}
 		}
 	}
+
 	if p.current().typ == tokenNewline {
 		p.pos++
 	}
@@ -5023,6 +5406,7 @@ func (p *parser) readWorkflowPublishLineTokens() []token {
 		if current.typ == tokenEOF {
 			break
 		}
+
 		if braceDepth == 0 && parenDepth == 0 && (current.typ == tokenNewline || current.typ == tokenRBrace) {
 			break
 		}
@@ -5045,6 +5429,7 @@ func (p *parser) readWorkflowPublishLineTokens() []token {
 			}
 		}
 	}
+
 	if p.current().typ == tokenNewline {
 		p.pos++
 	}
@@ -5054,14 +5439,17 @@ func (p *parser) readWorkflowPublishLineTokens() []token {
 
 func (p *parser) readRawLineTokens() []token {
 	lineTokens := []token{}
+
 	for {
 		current := p.current()
 		if current.typ == tokenEOF || current.typ == tokenNewline {
 			break
 		}
+
 		lineTokens = append(lineTokens, current)
 		p.pos++
 	}
+
 	if p.current().typ == tokenNewline {
 		p.pos++
 	}
@@ -5073,6 +5461,7 @@ func (p *parser) discardLineRemainder() {
 	for p.current().typ != tokenEOF && p.current().typ != tokenNewline && p.current().typ != tokenRBrace {
 		p.pos++
 	}
+
 	if p.current().typ == tokenNewline {
 		p.pos++
 	}
@@ -5083,6 +5472,7 @@ func (p *parser) expectType(expected tokenType, description string) (token, erro
 	if current.typ != expected {
 		return token{}, fmt.Errorf("line %d: expected %s", current.line, description)
 	}
+
 	p.pos++
 
 	return current, nil
@@ -5093,6 +5483,7 @@ func (p *parser) expectIdent(expected string) (token, error) {
 	if current.typ != tokenIdent || current.lit != expected {
 		return token{}, fmt.Errorf("line %d: expected %q", current.line, expected)
 	}
+
 	p.pos++
 
 	return current, nil

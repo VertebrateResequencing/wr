@@ -69,7 +69,13 @@ func TestBuildCommandA1(t *testing.T) {
 		})
 
 		Convey("it substitutes params before wrapping the command", func() {
-			cmd, err := buildCommand(&Process{Script: "echo ${params.greeting}"}, nil, map[string]any{"greeting": "hi"}, "/work", "/work")
+			cmd, err := buildCommand(
+				&Process{Script: "echo ${params.greeting}"},
+				nil,
+				map[string]any{"greeting": "hi"},
+				"/work",
+				"/work",
+			)
 
 			So(err, ShouldBeNil)
 			So(cmd, ShouldEqual, "{ echo hi; } > .nf-stdout 2> .nf-stderr")
@@ -104,6 +110,7 @@ func TestBuildCommandA1(t *testing.T) {
 
 			tempDir := t.TempDir()
 			So(os.Chdir(tempDir), ShouldBeNil)
+
 			defer func() {
 				So(os.Chdir(cwd), ShouldBeNil)
 			}()
@@ -124,6 +131,7 @@ func TestBuildCommandA1(t *testing.T) {
 
 			tempDir := t.TempDir()
 			So(os.Chdir(tempDir), ShouldBeNil)
+
 			defer func() {
 				So(os.Chdir(cwd), ShouldBeNil)
 			}()
@@ -156,7 +164,13 @@ func TestBuildCommandB1(t *testing.T) {
 		})
 
 		Convey("shell string sections can resolve params expressions without touching bash variables", func() {
-			cmd, err := buildCommand(&Process{Shell: "echo !{params.outdir} ${BASH_VAR}"}, nil, map[string]any{"outdir": "/data"}, "/work", "/work")
+			cmd, err := buildCommand(
+				&Process{Shell: "echo !{params.outdir} ${BASH_VAR}"},
+				nil,
+				map[string]any{"outdir": "/data"},
+				"/work",
+				"/work",
+			)
 
 			So(err, ShouldBeNil)
 			So(cmd, ShouldContainSubstring, "echo /data ${BASH_VAR}")
@@ -497,6 +511,7 @@ func TestTranslateA2DirectiveWrappers(t *testing.T) {
 
 			condaIndex := strings.Index(job.Cmd, "conda activate samtools=1.17")
 			scratchIndex := strings.Index(job.Cmd, "nf_scratch_dir=$(mktemp -d)")
+
 			So(condaIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(scratchIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(condaIndex, ShouldBeLessThan, scratchIndex)
@@ -614,7 +629,19 @@ func TestTranslateTupleOutputPathBinding(t *testing.T) {
 				}},
 			}
 
-			jobs, stage, err := translateProcessCall(proc, &Call{Target: "A", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}}}, nil, nil, &ProcessDefaults{}, nil, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			jobs, stage, err := translateProcessCall(
+				proc,
+				&Call{Target: "A", Args: []ChanExpr{ChannelFactory{
+					Name: "value",
+					Args: []Expr{StringExpr{Value: "s1"}},
+				}}},
+				nil,
+				nil,
+				&ProcessDefaults{},
+				nil,
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 1)
@@ -796,7 +823,12 @@ func TestTranslateI2(t *testing.T) {
 			wf := &Workflow{
 				Processes: []*Process{
 					{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}},
-					{Name: "B", Script: "echo b", Input: []*Declaration{{Kind: "val", Name: "in"}}, Output: []*Declaration{{Kind: "val", Name: "out"}}},
+					{
+						Name:   "B",
+						Script: "echo b",
+						Input:  []*Declaration{{Kind: "val", Name: "in"}},
+						Output: []*Declaration{{Kind: "val", Name: "out"}},
+					},
 				},
 				SubWFs: []*SubWorkflow{
 					{
@@ -1122,6 +1154,7 @@ func TestTranslateF2(t *testing.T) {
 
 			beforeIndex := strings.Index(job.Cmd, "module load samtools")
 			scriptIndex := strings.Index(job.Cmd, "samtools sort input.bam")
+
 			So(beforeIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(scriptIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(beforeIndex, ShouldBeLessThan, scriptIndex)
@@ -1136,6 +1169,7 @@ func TestTranslateF2(t *testing.T) {
 
 			scriptIndex := strings.Index(job.Cmd, "run.sh")
 			afterIndex := strings.Index(job.Cmd, "cleanup.sh")
+
 			So(scriptIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(afterIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(scriptIndex, ShouldBeLessThan, afterIndex)
@@ -1153,6 +1187,7 @@ func TestTranslateF2(t *testing.T) {
 			beforeIndex := strings.Index(job.Cmd, "setup.sh")
 			scriptIndex := strings.Index(job.Cmd, "main.sh")
 			afterIndex := strings.Index(job.Cmd, "teardown.sh")
+
 			So(beforeIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(scriptIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(afterIndex, ShouldBeGreaterThanOrEqualTo, 0)
@@ -1202,6 +1237,7 @@ func TestTranslateF3(t *testing.T) {
 			moduleIndex := strings.Index(job.Cmd, "module load samtools/1.17")
 			beforeIndex := strings.Index(job.Cmd, "setup.sh")
 			scriptIndex := strings.Index(job.Cmd, "samtools sort input.bam")
+
 			So(moduleIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(beforeIndex, ShouldBeGreaterThanOrEqualTo, 0)
 			So(scriptIndex, ShouldBeGreaterThanOrEqualTo, 0)
@@ -1236,9 +1272,13 @@ func TestTranslateD5TaskReferences(t *testing.T) {
 		Convey("task.attempt defaults to 1 during translation", func() {
 			wf := &Workflow{
 				Processes: []*Process{{
-					Name:       "A",
-					Script:     "echo hi",
-					Directives: map[string]any{"cpus": BinaryExpr{Left: VarExpr{Root: "task", Path: "attempt"}, Op: "*", Right: IntExpr{Value: 2}}},
+					Name:   "A",
+					Script: "echo hi",
+					Directives: map[string]any{"cpus": BinaryExpr{
+						Left:  VarExpr{Root: "task", Path: "attempt"},
+						Op:    "*",
+						Right: IntExpr{Value: 2},
+					}},
 				}},
 				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
 			}
@@ -1324,7 +1364,10 @@ func TestTranslateB1(t *testing.T) {
 					},
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}}, ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "/data/s1.fq"}}}}},
+					{Target: "PRODUCE", Args: []ChanExpr{
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "s1"}}},
+						ChannelFactory{Name: "value", Args: []Expr{StringExpr{Value: "/data/s1.fq"}}},
+					}},
 					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
 				}},
 			}
@@ -1418,40 +1461,44 @@ func TestTranslateB1(t *testing.T) {
 
 func TestTranslateB2(t *testing.T) {
 	Convey("Translate expands each inputs as a Cartesian product", t, func() {
-		Convey("regular inputs crossed with one each input create N x M jobs with unique CWDs and a shared dep group", func() {
-			wf := &Workflow{
-				Processes: []*Process{{
-					Name:   "ALIGN",
-					Script: "echo ${id} ${mode}",
-					Input: []*Declaration{
-						{Kind: "val", Name: "id"},
-						{Kind: "val", Name: "mode", Each: true},
-					},
-				}},
-				EntryWF: &WorkflowBlock{Calls: []*Call{{
-					Target: "ALIGN",
-					Args: []ChanExpr{
-						ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "A"}, StringExpr{Value: "B"}}},
-						ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "x"}, StringExpr{Value: "y"}, StringExpr{Value: "z"}}},
-					},
-				}}},
-			}
+		Convey(
+			"regular inputs crossed with one each input create N x M jobs with unique CWDs and a shared dep group",
+			func() {
+				wf := &Workflow{
+					Processes: []*Process{{
+						Name:   "ALIGN",
+						Script: "echo ${id} ${mode}",
+						Input: []*Declaration{
+							{Kind: "val", Name: "id"},
+							{Kind: "val", Name: "mode", Each: true},
+						},
+					}},
+					EntryWF: &WorkflowBlock{Calls: []*Call{{
+						Target: "ALIGN",
+						Args: []ChanExpr{
+							ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "A"}, StringExpr{Value: "B"}}},
+							ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "x"}, StringExpr{Value: "y"}, StringExpr{Value: "z"}}},
+						},
+					}}},
+				}
 
-			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+				result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
-			So(err, ShouldBeNil)
-			So(result.Pending, ShouldBeEmpty)
-			So(result.Jobs, ShouldHaveLength, 6)
-			So(result.Jobs[0].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/0_0")
-			So(result.Jobs[1].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/0_1")
-			So(result.Jobs[2].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/0_2")
-			So(result.Jobs[3].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/1_0")
-			So(result.Jobs[4].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/1_1")
-			So(result.Jobs[5].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/1_2")
-			for _, job := range result.Jobs {
-				So(job.DepGroups, ShouldResemble, []string{"nf.r1.ALIGN"})
-			}
-		})
+				So(err, ShouldBeNil)
+				So(result.Pending, ShouldBeEmpty)
+				So(result.Jobs, ShouldHaveLength, 6)
+				So(result.Jobs[0].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/0_0")
+				So(result.Jobs[1].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/0_1")
+				So(result.Jobs[2].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/0_2")
+				So(result.Jobs[3].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/1_0")
+				So(result.Jobs[4].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/1_1")
+				So(result.Jobs[5].Cwd, ShouldEqual, "/work/nf-work/r1/ALIGN/1_2")
+
+				for _, job := range result.Jobs {
+					So(job.DepGroups, ShouldResemble, []string{"nf.r1.ALIGN"})
+				}
+			},
+		)
 
 		Convey("job commands export every regular and each-input combination", func() {
 			wf := &Workflow{
@@ -1554,6 +1601,7 @@ func TestTranslateB2(t *testing.T) {
 			So(result.Jobs[0].Cmd, ShouldContainSubstring, "export m2='1'")
 			So(result.Jobs[5].Cmd, ShouldContainSubstring, "export m1='y'")
 			So(result.Jobs[5].Cmd, ShouldContainSubstring, "export m2='3'")
+
 			for _, job := range result.Jobs {
 				So(job.DepGroups, ShouldResemble, []string{"nf.r1.ALIGN"})
 			}
@@ -1584,7 +1632,11 @@ func TestTranslateO1(t *testing.T) {
 		}
 
 		Convey("cross-product jobs use the {regIdx}_{eachIdx} CWD suffix", func() {
-			result, err := Translate(newCrossProductWorkflow(), nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			result, err := Translate(
+				newCrossProductWorkflow(),
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 
 			So(err, ShouldBeNil)
 			So(result.Pending, ShouldBeEmpty)
@@ -1596,10 +1648,15 @@ func TestTranslateO1(t *testing.T) {
 		})
 
 		Convey("all cross-product jobs share the same dep group", func() {
-			result, err := Translate(newCrossProductWorkflow(), nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			result, err := Translate(
+				newCrossProductWorkflow(),
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 
 			So(err, ShouldBeNil)
 			So(result.Jobs, ShouldHaveLength, 4)
+
 			for _, job := range result.Jobs {
 				So(job.DepGroups, ShouldResemble, []string{"nf.r1.FOO"})
 			}
@@ -1640,6 +1697,7 @@ func TestTranslateO1(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(result.Pending, ShouldBeEmpty)
 			So(result.Jobs, ShouldHaveLength, 8)
+
 			for _, job := range result.Jobs[4:] {
 				So(job.Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.FOO"})
 			}
@@ -1687,6 +1745,7 @@ func TestTranslateB3(t *testing.T) {
 			)
 
 			So(err, ShouldBeNil)
+
 			stage.repGroup = "nf.wf.r1.A"
 
 			jobs, err := TranslatePending(&PendingStage{
@@ -1744,6 +1803,7 @@ func TestTranslateB3(t *testing.T) {
 			)
 
 			So(err, ShouldBeNil)
+
 			stage.repGroup = "nf.wf.r1.A"
 
 			jobs, err := TranslatePending(&PendingStage{
@@ -1804,12 +1864,24 @@ func TestTranslateJ1ProcessConfigDefaults(t *testing.T) {
 
 		Convey("selector-scoped accelerator defaults apply to matching labelled processes", func() {
 			proc := &Process{Name: "GPU", Script: "echo hi", Labels: []string{"gpu"}}
-			cfg := &Config{Selectors: []*ProcessSelector{{Kind: "withLabel", Pattern: "gpu", Settings: &ProcessDefaults{Accelerator: 1}}}}
+			cfg := &Config{Selectors: []*ProcessSelector{{
+				Kind:     "withLabel",
+				Pattern:  "gpu",
+				Settings: &ProcessDefaults{Accelerator: 1},
+			}}}
 
-			result := translateWithConfig(proc, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"})
+			result := translateWithConfig(
+				proc,
+				cfg,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Scheduler: "lsf"},
+			)
 
 			So(result.Jobs, ShouldHaveLength, 1)
-			So(result.Jobs[0].Requirements.Other["scheduler_misc"], ShouldContainSubstring, "select[ngpus>0] rusage[ngpus_physical=1]")
+			So(
+				result.Jobs[0].Requirements.Other["scheduler_misc"],
+				ShouldContainSubstring,
+				"select[ngpus>0] rusage[ngpus_physical=1]",
+			)
 		})
 
 		Convey("process-level queue directives override config defaults", func() {
@@ -2028,21 +2100,57 @@ func TestTranslateC1WhenGuard(t *testing.T) {
 				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "FILTER"}}},
 			}
 
-			allowed, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": true}})
+			allowed, err := Translate(
+				wf,
+				nil,
+				TranslateConfig{
+					RunID:        "r1",
+					WorkflowName: "wf",
+					Cwd:          "/work",
+					Params:       map[string]any{"run_step": true},
+				},
+			)
 			So(err, ShouldBeNil)
 			So(allowed.Jobs, ShouldBeEmpty)
 			So(allowed.Pending, ShouldHaveLength, 1)
 
-			jobs, err := TranslatePending(allowed.Pending[0], nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": true}})
+			jobs, err := TranslatePending(
+				allowed.Pending[0],
+				nil,
+				TranslateConfig{
+					RunID:        "r1",
+					WorkflowName: "wf",
+					Cwd:          "/work",
+					Params:       map[string]any{"run_step": true},
+				},
+			)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 1)
 
-			blocked, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			blocked, err := Translate(
+				wf,
+				nil,
+				TranslateConfig{
+					RunID:        "r1",
+					WorkflowName: "wf",
+					Cwd:          "/work",
+					Params:       map[string]any{"run_step": false},
+				},
+			)
 			So(err, ShouldBeNil)
 			So(blocked.Jobs, ShouldBeEmpty)
 			So(blocked.Pending, ShouldHaveLength, 1)
 
-			jobs, err = TranslatePending(blocked.Pending[0], nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			jobs, err = TranslatePending(
+				blocked.Pending[0],
+				nil,
+				TranslateConfig{
+					RunID:        "r1",
+					WorkflowName: "wf",
+					Cwd:          "/work",
+					Params:       map[string]any{"run_step": false},
+				},
+			)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldBeEmpty)
 		})
@@ -2068,10 +2176,23 @@ func TestTranslateC1WhenGuard(t *testing.T) {
 						Script: "cat $reads > consumed.txt",
 					},
 				},
-				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}}, {Target: "C", Args: []ChanExpr{ChanRef{Name: "B.out"}}}}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "A"},
+					{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+					{Target: "C", Args: []ChanExpr{ChanRef{Name: "B.out"}}},
+				}},
 			}
 
-			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			result, err := Translate(
+				wf,
+				nil,
+				TranslateConfig{
+					RunID:        "r1",
+					WorkflowName: "wf",
+					Cwd:          "/work",
+					Params:       map[string]any{"run_step": false},
+				},
+			)
 			So(err, ShouldBeNil)
 			So(result.Jobs, ShouldHaveLength, 1)
 			So(result.Pending, ShouldHaveLength, 2)
@@ -2087,7 +2208,16 @@ func TestTranslateC1WhenGuard(t *testing.T) {
 
 			So(MarkPendingStageSkipped(result.Pending[0], result.Pending[1:]), ShouldBeNil)
 
-			jobs, err = TranslatePending(result.Pending[1], nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			jobs, err = TranslatePending(
+				result.Pending[1],
+				nil,
+				TranslateConfig{
+					RunID:        "r1",
+					WorkflowName: "wf",
+					Cwd:          "/work",
+					Params:       map[string]any{"run_step": false},
+				},
+			)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldBeEmpty)
 		})
@@ -2452,6 +2582,7 @@ func TestTranslate(t *testing.T) {
 
 	Convey("Translate fans out static channel factories into indexed jobs", t, func() {
 		tmpDir := t.TempDir()
+
 		paths := []string{
 			filepath.Join(tmpDir, "a.txt"),
 			filepath.Join(tmpDir, "b.txt"),
@@ -2520,7 +2651,7 @@ func TestTranslate(t *testing.T) {
 		So(result.Pending, ShouldBeEmpty)
 	})
 
-	Convey("TranslatePending materializes dynamic downstream stages once outputs are known", t, func() {
+	Convey("TranslatePending materialises dynamic downstream stages once outputs are known", t, func() {
 		wf := &Workflow{
 			Processes: []*Process{
 				{
@@ -2615,29 +2746,46 @@ func TestTranslate(t *testing.T) {
 		completed := make([]CompletedJob, 0, 10)
 		for index := range 10 {
 			completed = append(completed, CompletedJob{
-				RepGrp:      "nf.main.run123.PRODUCE",
-				OutputPaths: []string{filepath.Join("/tmp/workdir", "nf-work", "run123", "PRODUCE", strconv.Itoa(index), "produced.txt")},
-				DepGroups:   []string{fmt.Sprintf("nf.run123.PRODUCE.%d", index)},
-				ExitCode:    0,
+				RepGrp: "nf.main.run123.PRODUCE",
+				OutputPaths: []string{filepath.Join(
+					"/tmp/workdir",
+					"nf-work",
+					"run123",
+					"PRODUCE",
+					strconv.Itoa(index),
+					"produced.txt",
+				)},
+				DepGroups: []string{fmt.Sprintf("nf.run123.PRODUCE.%d", index)},
+				ExitCode:  0,
 			})
 		}
 
-		first, firstErr := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "run123", WorkflowName: "main", Cwd: "/tmp/workdir"})
-		second, secondErr := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "run123", WorkflowName: "main", Cwd: "/tmp/workdir"})
+		first, firstErr := TranslatePending(
+			result.Pending[0],
+			completed,
+			TranslateConfig{RunID: "run123", WorkflowName: "main", Cwd: "/tmp/workdir"},
+		)
+		second, secondErr := TranslatePending(
+			result.Pending[0],
+			completed,
+			TranslateConfig{RunID: "run123", WorkflowName: "main", Cwd: "/tmp/workdir"},
+		)
 
 		So(firstErr, ShouldBeNil)
 		So(secondErr, ShouldBeNil)
 		So(first, ShouldHaveLength, 3)
 		So(second, ShouldHaveLength, 3)
+
 		for _, job := range first {
 			So(job.Cmd, ShouldContainSubstring, "produced.txt")
 		}
+
 		for index := range first {
 			So(second[index].Cmd, ShouldEqual, first[index].Cmd)
 		}
 	})
 
-	Convey("Translate covers D1 acceptance details for resources and behaviors", t, func() {
+	Convey("Translate covers D1 acceptance details for resources and behaviours", t, func() {
 		Convey("a static A -> B pipeline produces deterministic cwd, deps, and output references", func() {
 			wf := &Workflow{
 				Processes: []*Process{
@@ -2684,7 +2832,16 @@ func TestTranslate(t *testing.T) {
 		})
 
 		Convey("resource directives and defaults map to requirements", func() {
-			wf := &Workflow{Processes: []*Process{{Name: "A", Script: "echo hi", Directives: map[string]any{"cpus": IntExpr{Value: 4}, "memory": IntExpr{Value: 8192}, "time": IntExpr{Value: 120}, "disk": IntExpr{Value: 10}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
+			wf := &Workflow{Processes: []*Process{{
+				Name:   "A",
+				Script: "echo hi",
+				Directives: map[string]any{
+					"cpus":   IntExpr{Value: 4},
+					"memory": IntExpr{Value: 8192},
+					"time":   IntExpr{Value: 120},
+					"disk":   IntExpr{Value: 10},
+				},
+			}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
 
 			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 
@@ -2695,7 +2852,14 @@ func TestTranslate(t *testing.T) {
 			So(result.Jobs[0].Requirements.Disk, ShouldEqual, 10)
 			So(result.Jobs[0].Override, ShouldEqual, 0)
 
-			defaulted, err := Translate(&Workflow{Processes: []*Process{{Name: "B", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "B"}}}}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			defaulted, err := Translate(
+				&Workflow{
+					Processes: []*Process{{Name: "B", Script: "echo hi"}},
+					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "B"}}},
+				},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 			So(err, ShouldBeNil)
 			So(defaulted.Jobs[0].Requirements.Cores, ShouldEqual, 1)
 			So(defaulted.Jobs[0].Requirements.RAM, ShouldEqual, 128)
@@ -2705,18 +2869,36 @@ func TestTranslate(t *testing.T) {
 		})
 
 		Convey("container runtime selection and absence are translated correctly", func() {
-			wf := &Workflow{Processes: []*Process{{Name: "A", Script: "echo hi", Container: "ubuntu:22.04"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}}}
+			wf := &Workflow{
+				Processes: []*Process{{Name: "A", Script: "echo hi", Container: "ubuntu:22.04"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
+			}
 
-			singularity, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "singularity"})
+			singularity, err := Translate(
+				wf,
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "singularity"},
+			)
 			So(err, ShouldBeNil)
 			So(singularity.Jobs[0].WithSingularity, ShouldEqual, "ubuntu:22.04")
 			So(singularity.Jobs[0].WithDocker, ShouldEqual, "")
 
-			docker, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "docker"})
+			docker, err := Translate(
+				wf,
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "docker"},
+			)
 			So(err, ShouldBeNil)
 			So(docker.Jobs[0].WithDocker, ShouldEqual, "ubuntu:22.04")
 
-			bare, err := Translate(&Workflow{Processes: []*Process{{Name: "B", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "B"}}}}, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "docker"})
+			bare, err := Translate(
+				&Workflow{
+					Processes: []*Process{{Name: "B", Script: "echo hi"}},
+					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "B"}}},
+				},
+				nil,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", ContainerRuntime: "docker"},
+			)
 			So(err, ShouldBeNil)
 			So(bare.Jobs[0].WithDocker, ShouldEqual, "")
 			So(bare.Jobs[0].WithSingularity, ShouldEqual, "")
@@ -2725,16 +2907,31 @@ func TestTranslate(t *testing.T) {
 		Convey("maxForks, errorStrategy, env, params substitution, and config defaults are applied", func() {
 			stderr := captureTranslateStderr(func() {
 				wf := &Workflow{Processes: []*Process{{
-					Name:       "proc",
-					Script:     "echo ${params.input}",
-					Directives: map[string]any{"cpus": UnsupportedExpr{Text: "task.input.size() < 10 ? 1 : 4"}, "memory": IntExpr{Value: 8192}},
+					Name:   "proc",
+					Script: "echo ${params.input}",
+					Directives: map[string]any{
+						"cpus":   UnsupportedExpr{Text: "task.input.size() < 10 ? 1 : 4"},
+						"memory": IntExpr{Value: 8192},
+					},
 					MaxForks:   5,
 					ErrorStrat: "terminate",
 					Env:        map[string]string{"MY_VAR": "hello"},
 				}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "proc"}}}}
 
-				cfg := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{"big": {Process: &ProcessDefaults{Cpus: 8}}}}
-				result, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"input": "/data"}, Profile: "big"})
+				cfg := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{
+					"big": {Process: &ProcessDefaults{Cpus: 8}},
+				}}
+				result, err := Translate(
+					wf,
+					cfg,
+					TranslateConfig{
+						RunID:        "r1",
+						WorkflowName: "wf",
+						Cwd:          "/work",
+						Params:       map[string]any{"input": "/data"},
+						Profile:      "big",
+					},
+				)
 				So(err, ShouldBeNil)
 				So(result.Jobs, ShouldHaveLength, 1)
 				So(result.Jobs[0].LimitGroups, ShouldResemble, []string{"proc:5"})
@@ -2746,26 +2943,52 @@ func TestTranslate(t *testing.T) {
 				So(result.Jobs[0].Behaviours, ShouldHaveLength, 1)
 			})
 
-			So(stderr, ShouldContainSubstring, "falling back for cpus directive with unsupported expression \"task.input.size() < 10 ? 1 : 4\"")
+			So(
+				stderr,
+				ShouldContainSubstring,
+				"falling back for cpus directive with unsupported expression \"task.input.size() < 10 ? 1 : 4\"",
+			)
 
-			retry := &Workflow{Processes: []*Process{{Name: "retry", Script: "echo hi", ErrorStrat: "retry", MaxRetries: 3}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "retry"}}}}
+			retry := &Workflow{
+				Processes: []*Process{{Name: "retry", Script: "echo hi", ErrorStrat: "retry", MaxRetries: 3}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "retry"}}},
+			}
 			retryResult, err := Translate(retry, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 			So(err, ShouldBeNil)
 			So(retryResult.Jobs[0].Retries, ShouldEqual, 3)
 
-			ignore := &Workflow{Processes: []*Process{{Name: "ignore", Script: "echo hi", ErrorStrat: "ignore"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "ignore"}}}}
+			ignore := &Workflow{
+				Processes: []*Process{{Name: "ignore", Script: "echo hi", ErrorStrat: "ignore"}},
+				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "ignore"}}},
+			}
 			ignoreResult, err := Translate(ignore, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 			So(err, ShouldBeNil)
 			So(ignoreResult.Jobs[0].Retries, ShouldEqual, 0)
 			So(ignoreResult.Jobs[0].Behaviours, ShouldHaveLength, 2)
 			So(ignoreResult.Jobs[0].Behaviours[0].Do, ShouldEqual, jobqueue.Remove)
 
-			cfgDefaults := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{"big": {Process: &ProcessDefaults{Cpus: 8}}}}
-			defaultResult, err := Translate(&Workflow{Processes: []*Process{{Name: "defaulted", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "defaulted"}}}}, cfgDefaults, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+			cfgDefaults := &Config{Process: &ProcessDefaults{Cpus: 2}, Profiles: map[string]*Profile{
+				"big": {Process: &ProcessDefaults{Cpus: 8}},
+			}}
+			defaultResult, err := Translate(
+				&Workflow{
+					Processes: []*Process{{Name: "defaulted", Script: "echo hi"}},
+					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "defaulted"}}},
+				},
+				cfgDefaults,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"},
+			)
 			So(err, ShouldBeNil)
 			So(defaultResult.Jobs[0].Requirements.Cores, ShouldEqual, 2)
 
-			profileResult, err := Translate(&Workflow{Processes: []*Process{{Name: "profiled", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "profiled"}}}}, cfgDefaults, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "big"})
+			profileResult, err := Translate(
+				&Workflow{
+					Processes: []*Process{{Name: "profiled", Script: "echo hi"}},
+					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "profiled"}}},
+				},
+				cfgDefaults,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "big"},
+			)
 			So(err, ShouldBeNil)
 			So(profileResult.Jobs[0].Requirements.Cores, ShouldEqual, 8)
 		})
@@ -2798,7 +3021,10 @@ func TestTranslate(t *testing.T) {
 
 		Convey("config env is merged into job env overrides", func() {
 			Convey("config env applies when the process has no env directive", func() {
-				wf := &Workflow{Processes: []*Process{{Name: "proc", Script: "echo hi"}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "proc"}}}}
+				wf := &Workflow{
+					Processes: []*Process{{Name: "proc", Script: "echo hi"}},
+					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
+				}
 				cfg := &Config{Env: map[string]string{"FOO": "bar"}}
 
 				result, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
@@ -2829,6 +3055,7 @@ func TestTranslate(t *testing.T) {
 
 				result, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 				So(err, ShouldBeNil)
+
 				env := translatedJobEnv(result.Jobs[0])
 				So(env["A"], ShouldEqual, "override")
 				So(env["B"], ShouldEqual, "2")
@@ -2855,11 +3082,28 @@ func TestTranslate(t *testing.T) {
 					},
 				}
 
-				profileResult, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "prod"})
+				profileResult, err := Translate(
+					wf,
+					cfg,
+					TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "prod"},
+				)
 				So(err, ShouldBeNil)
 				So(profileResult.Jobs[0].Cmd, ShouldContainSubstring, "echo profile-default profile-nested")
 
-				explicitResult, err := Translate(wf, cfg, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "prod", Params: map[string]any{"input": "cli-default", "nested": map[string]any{"value": "cli-nested"}}})
+				explicitResult, err := Translate(
+					wf,
+					cfg,
+					TranslateConfig{
+						RunID:        "r1",
+						WorkflowName: "wf",
+						Cwd:          "/work",
+						Profile:      "prod",
+						Params: map[string]any{
+							"input":  "cli-default",
+							"nested": map[string]any{"value": "cli-nested"},
+						},
+					},
+				)
 				So(err, ShouldBeNil)
 				So(explicitResult.Jobs[0].Cmd, ShouldContainSubstring, "echo cli-default cli-nested")
 			})
@@ -2870,7 +3114,10 @@ func TestTranslate(t *testing.T) {
 					EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
 					ParamBlock: []*ParamDecl{
 						{Name: "base", Default: StringExpr{Value: "/tmp/results"}},
-						{Name: "outdir", Default: NewExpr{ClassName: "File", Args: []Expr{ParamsExpr{Path: "base"}, StringExpr{Value: "final"}}}},
+						{Name: "outdir", Default: NewExpr{
+							ClassName: "File",
+							Args:      []Expr{ParamsExpr{Path: "base"}, StringExpr{Value: "final"}},
+						}},
 					},
 				}
 
@@ -2893,8 +3140,10 @@ func TestTranslate(t *testing.T) {
 				}
 
 				var result *TranslateResult
+
 				stderr := captureTranslateStderr(func() {
 					var err error
+
 					result, err = Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 					So(err, ShouldBeNil)
 				})
@@ -2908,7 +3157,23 @@ func TestTranslate(t *testing.T) {
 		})
 
 		Convey("three-step and diamond DAGs wire dependencies correctly", func() {
-			sequential := &Workflow{Processes: []*Process{{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "B", Script: "echo $reads", Input: []*Declaration{{Kind: "val", Name: "reads"}}, Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "C", Script: "echo $reads", Input: []*Declaration{{Kind: "val", Name: "reads"}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}}, {Target: "C", Args: []ChanExpr{ChanRef{Name: "B.out"}}}}}}
+			sequential := &Workflow{
+				Processes: []*Process{
+					{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}},
+					{
+						Name:   "B",
+						Script: "echo $reads",
+						Input:  []*Declaration{{Kind: "val", Name: "reads"}},
+						Output: []*Declaration{{Kind: "val", Name: "out"}},
+					},
+					{Name: "C", Script: "echo $reads", Input: []*Declaration{{Kind: "val", Name: "reads"}}},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "A"},
+					{Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}},
+					{Target: "C", Args: []ChanExpr{ChanRef{Name: "B.out"}}},
+				}},
+			}
 
 			result, err := Translate(sequential, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 			So(err, ShouldBeNil)
@@ -2920,7 +3185,25 @@ func TestTranslate(t *testing.T) {
 			So(result.Jobs[2].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.B"})
 			So(result.Jobs[2].RepGroup, ShouldEqual, "nf.wf.r1.C")
 
-			diamond := &Workflow{Processes: []*Process{{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "B", Script: "echo b", Output: []*Declaration{{Kind: "val", Name: "out"}}}, {Name: "C", Script: "echo $left $right", Input: []*Declaration{{Kind: "val", Name: "left"}, {Kind: "val", Name: "right"}}}}, EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B"}, {Target: "C", Args: []ChanExpr{ChanRef{Name: "A.out"}, ChanRef{Name: "B.out"}}}}}}
+			diamond := &Workflow{
+				Processes: []*Process{
+					{Name: "A", Script: "echo a", Output: []*Declaration{{Kind: "val", Name: "out"}}},
+					{Name: "B", Script: "echo b", Output: []*Declaration{{Kind: "val", Name: "out"}}},
+					{
+						Name:   "C",
+						Script: "echo $left $right",
+						Input: []*Declaration{{Kind: "val", Name: "left"}, {
+							Kind: "val",
+							Name: "right",
+						}},
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{
+					{Target: "A"},
+					{Target: "B"},
+					{Target: "C", Args: []ChanExpr{ChanRef{Name: "A.out"}, ChanRef{Name: "B.out"}}},
+				}},
+			}
 
 			diamondResult, err := Translate(diamond, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 			So(err, ShouldBeNil)
@@ -2938,7 +3221,11 @@ func TestTranslate(t *testing.T) {
 				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
 			}
 
-			_, err := Translate(wf, &Config{}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "missing"})
+			_, err := Translate(
+				wf,
+				&Config{},
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "missing"},
+			)
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "unknown config profile \"missing\"")
@@ -2951,7 +3238,11 @@ func TestTranslate(t *testing.T) {
 				EntryWF:   &WorkflowBlock{Calls: []*Call{{Target: "proc"}}},
 			}
 
-			_, err := Translate(wf, &Config{Profiles: map[string]*Profile{"alpha": {}, "beta": {}}}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "missing"})
+			_, err := Translate(
+				wf,
+				&Config{Profiles: map[string]*Profile{"alpha": {}, "beta": {}}},
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Profile: "missing"},
+			)
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "unknown config profile \"missing\"")
@@ -3022,8 +3313,10 @@ func TestTranslateE2(t *testing.T) {
 			}
 
 			var result *TranslateResult
+
 			stderr := captureTranslateStderr(func() {
 				var err error
+
 				result, err = Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 				So(err, ShouldBeNil)
 			})
@@ -3044,8 +3337,10 @@ func TestTranslateE2(t *testing.T) {
 			}
 
 			var result *TranslateResult
+
 			stderr := captureTranslateStderr(func() {
 				var err error
+
 				result, err = Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 				So(err, ShouldBeNil)
 			})
@@ -3099,6 +3394,7 @@ func TestTranslateE1ArchDirectiveMapping(t *testing.T) {
 
 		Convey("non-LSF schedulers warn and do not emit LSF scheduler_misc options", func() {
 			var result *TranslateResult
+
 			stderr := captureTranslateStderr(func() {
 				result = translateResult(&Process{
 					Name:       "proc",
@@ -3116,18 +3412,24 @@ func TestTranslateE1ArchDirectiveMapping(t *testing.T) {
 
 func captureTranslateStderr(run func()) string {
 	original := os.Stderr
+
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		panic(err)
 	}
+
 	os.Stderr = writer
+
 	run()
+
 	_ = writer.Close()
 	os.Stderr = original
+
 	output, err := io.ReadAll(reader)
 	if err != nil {
 		panic(err)
 	}
+
 	_ = reader.Close()
 
 	return strings.TrimSpace(string(output))
@@ -3176,7 +3478,6 @@ func TestTranslateA3DirectiveTranslationDetails(t *testing.T) {
 				{name: "simple account flag", value: "--account=mylab", expected: "--account=mylab"},
 				{name: "multiple scheduler flags", value: "-q priority --exclusive", expected: "-q priority --exclusive"},
 			} {
-				testCase := testCase
 				Convey(testCase.name, func() {
 					result := translateResult(&Process{
 						Name:       "proc",
@@ -3199,7 +3500,6 @@ func TestTranslateA3DirectiveTranslationDetails(t *testing.T) {
 				{name: "single queue", value: "long", expected: "long"},
 				{name: "multiple queue names", value: "gpu,highpri", expected: "gpu,highpri"},
 			} {
-				testCase := testCase
 				Convey(testCase.name, func() {
 					result := translateResult(&Process{
 						Name:       "proc",
@@ -3327,6 +3627,7 @@ func TestTranslateA3DirectiveTranslationDetails(t *testing.T) {
 
 func translatedJobEnv(job *jobqueue.Job) map[string]string {
 	job.EnvCRetrieved = true
+
 	env, err := job.Env()
 	if err != nil {
 		panic(err)
@@ -3338,6 +3639,7 @@ func translatedJobEnv(job *jobqueue.Job) map[string]string {
 		if !ok {
 			continue
 		}
+
 		values[key] = value
 	}
 

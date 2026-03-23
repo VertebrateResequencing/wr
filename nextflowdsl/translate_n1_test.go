@@ -38,6 +38,7 @@ func TestParseOutputBlockN1(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		var targets []*OutputTarget
+
 		stderr := captureTranslateStderr(func() {
 			targets, err = ParseOutputBlock(wf.OutputBlock)
 		})

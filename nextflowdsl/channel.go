@@ -41,6 +41,11 @@ import (
 	"time"
 )
 
+const (
+	maxReduceArgs       = 2
+	ownerReadWritePerms = 0o600
+)
+
 var unsupportedCardinalityOperators = map[string]struct{}{
 	"reduce": {},
 }
@@ -71,6 +76,7 @@ func resolveChannelLiteralItems(args []Expr) ([]channelItem, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		items = append(items, channelItem{value: value})
 	}
 
@@ -88,6 +94,7 @@ func resolveChannelFromListItems(args []Expr) ([]channelItem, error) {
 	}
 
 	values := flattenChannelValues(value)
+
 	items := make([]channelItem, 0, len(values))
 	for _, item := range values {
 		items = append(items, channelItem{value: item})
@@ -102,6 +109,7 @@ func selectNamedChannelItems(items []channelItem, label string) []channelItem {
 		for _, depGroup := range item.depGroups {
 			if depGroup == label || strings.HasSuffix(depGroup, "."+label) {
 				selected = append(selected, cloneChannelItem(item))
+
 				break
 			}
 		}
@@ -111,11 +119,19 @@ func selectNamedChannelItems(items []channelItem, label string) []channelItem {
 }
 
 func warnDeprecatedChannelFactory(name string) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel factory %q resolved as Channel.of for compatibility\n", name)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: deprecated channel factory %q resolved as Channel.of for compatibility\n",
+		name,
+	)
 }
 
 func warnUntranslatableChannelFactory(name string) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: channel factory %q cannot be translated at compile time and will resolve to an empty channel\n", name)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: channel factory %q cannot be translated at compile time and will resolve to an empty channel\n",
+		name,
+	)
 }
 
 func resolveBranchChannelItems(items []channelItem, operator ChannelOperator) (namedChannelResult, error) {
@@ -124,7 +140,10 @@ func resolveBranchChannelItems(items []channelItem, operator ChannelOperator) (n
 		return namedChannelResult{}, err
 	}
 
-	result := namedChannelResult{labels: make([]string, 0, len(entries)), items: make(map[string][]channelItem, len(entries))}
+	result := namedChannelResult{
+		labels: make([]string, 0, len(entries)),
+		items:  make(map[string][]channelItem, len(entries)),
+	}
 	for _, entry := range entries {
 		result.labels = append(result.labels, entry.label)
 	}
@@ -137,9 +156,11 @@ func resolveBranchChannelItems(items []channelItem, operator ChannelOperator) (n
 
 		matchedLabel := ""
 		fallbackLabel := ""
+
 		for _, entry := range entries {
 			if entry.isFallback {
 				fallbackLabel = entry.label
+
 				continue
 			}
 
@@ -147,8 +168,10 @@ func resolveBranchChannelItems(items []channelItem, operator ChannelOperator) (n
 			if evalErr != nil {
 				return namedChannelResult{}, evalErr
 			}
+
 			if isTruthy(matched) {
 				matchedLabel = entry.label
+
 				break
 			}
 		}
@@ -156,6 +179,7 @@ func resolveBranchChannelItems(items []channelItem, operator ChannelOperator) (n
 		if matchedLabel == "" {
 			matchedLabel = fallbackLabel
 		}
+
 		if matchedLabel == "" {
 			continue
 		}
@@ -181,6 +205,7 @@ func parseNamedClosureEntries(operator ChannelOperator) ([]namedClosureEntry, er
 	}
 
 	tokens = trimDeclarationTokens(tokens)
+
 	paramsTokens, bodyTokens, hasArrow := splitClosureArrowTokens(tokens)
 	if hasArrow {
 		if len(trimDeclarationTokens(paramsTokens)) > 0 {
@@ -191,29 +216,38 @@ func parseNamedClosureEntries(operator ChannelOperator) ([]namedClosureEntry, er
 	}
 
 	entries := make([]namedClosureEntry, 0)
+
 	index := 0
 	for index < len(bodyTokens) {
-		for index < len(bodyTokens) && (bodyTokens[index].typ == tokenNewline || bodyTokens[index].typ == tokenSemicolon || bodyTokens[index].typ == tokenEOF) {
+		for index < len(bodyTokens) &&
+			(bodyTokens[index].typ == tokenNewline ||
+				bodyTokens[index].typ == tokenSemicolon ||
+				bodyTokens[index].typ == tokenEOF) {
 			index++
 		}
+
 		if index >= len(bodyTokens) {
 			break
 		}
+
 		if bodyTokens[index].typ != tokenIdent {
 			return nil, fmt.Errorf("%s expects named closure entries", operator.Name)
 		}
 
 		label := bodyTokens[index].lit
+
 		index++
 		if index >= len(bodyTokens) || bodyTokens[index].typ != tokenColon {
 			return nil, fmt.Errorf("%s expected ':' after %q", operator.Name, label)
 		}
+
 		index++
 
 		exprStart := index
 		parenDepth := 0
 		braceDepth := 0
 		bracketDepth := 0
+
 		for index < len(bodyTokens) {
 			current := bodyTokens[index]
 			switch current.typ {
@@ -234,9 +268,12 @@ func parseNamedClosureEntries(operator ChannelOperator) ([]namedClosureEntry, er
 				}
 			}
 
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && (current.typ == tokenNewline || current.typ == tokenSemicolon || current.typ == tokenEOF) {
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
+				(current.typ == tokenNewline || current.typ == tokenSemicolon || current.typ == tokenEOF) {
+
 				break
 			}
+
 			index++
 		}
 
@@ -282,7 +319,11 @@ func labelScopedDepGroups(depGroups []string, label string) []string {
 }
 
 func warnUnsupportedChannelClosure(closure string) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: closure %q could not be evaluated at compile time and will be treated as a pass-through\n", closure)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: closure %q could not be evaluated at compile time and will be treated as a pass-through\n",
+		closure,
+	)
 }
 
 func resolveMultiMapChannelItems(items []channelItem, operator ChannelOperator) (namedChannelResult, error) {
@@ -291,7 +332,10 @@ func resolveMultiMapChannelItems(items []channelItem, operator ChannelOperator) 
 		return namedChannelResult{}, err
 	}
 
-	result := namedChannelResult{labels: make([]string, 0, len(entries)), items: make(map[string][]channelItem, len(entries))}
+	result := namedChannelResult{
+		labels: make([]string, 0, len(entries)),
+		items:  make(map[string][]channelItem, len(entries)),
+	}
 	for _, entry := range entries {
 		result.labels = append(result.labels, entry.label)
 	}
@@ -332,6 +376,7 @@ func resolveOperatorByIndex(operator ChannelOperator) (*int, error) {
 		switch typed := value.(type) {
 		case int:
 			index := typed
+
 			return &index, nil
 		case map[string]any:
 			raw, ok := typed["by"]
@@ -359,9 +404,10 @@ func reduceOperatorSeedAndClosure(operator ChannelOperator) (any, bool, ClosureE
 		if operator.ClosureExpr != nil {
 			return nil, false, *operator.ClosureExpr, nil
 		}
+
 		closure := strings.TrimSpace(operator.Closure)
 		if closure == "" {
-			return nil, false, ClosureExpr{}, fmt.Errorf("reduce expects a closure")
+			return nil, false, ClosureExpr{}, errors.New("reduce expects a closure")
 		}
 
 		return nil, false, ClosureExpr{Body: closure}, nil
@@ -370,8 +416,8 @@ func reduceOperatorSeedAndClosure(operator ChannelOperator) (any, bool, ClosureE
 			return nil, false, closure, nil
 		}
 
-		return nil, false, ClosureExpr{}, fmt.Errorf("reduce expects a closure")
-	case 2:
+		return nil, false, ClosureExpr{}, errors.New("reduce expects a closure")
+	case maxReduceArgs:
 		seed, err := EvalExpr(operator.Args[0], nil)
 		if err != nil {
 			return nil, false, ClosureExpr{}, err
@@ -379,12 +425,12 @@ func reduceOperatorSeedAndClosure(operator ChannelOperator) (any, bool, ClosureE
 
 		closure, ok := operator.Args[1].(ClosureExpr)
 		if !ok {
-			return nil, false, ClosureExpr{}, fmt.Errorf("reduce expects a closure as the second argument")
+			return nil, false, ClosureExpr{}, errors.New("reduce expects a closure as the second argument")
 		}
 
 		return seed, true, closure, nil
 	default:
-		return nil, false, ClosureExpr{}, fmt.Errorf("reduce expects at most 2 arguments, got %d", len(operator.Args))
+		return nil, false, ClosureExpr{}, fmt.Errorf("reduce expects at most %d arguments, got %d", maxReduceArgs, len(operator.Args))
 	}
 }
 
@@ -402,6 +448,7 @@ func resolveChunkSize(args []Expr, operatorName, namedArg string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%s %w", operatorName, err)
 	}
+
 	if size <= 0 {
 		return 0, fmt.Errorf("%s expects a positive chunk size", operatorName)
 	}
@@ -426,16 +473,24 @@ func coerceChunkSize(value any, namedArg string) (int, error) {
 
 		return size, nil
 	default:
-		return 0, fmt.Errorf("expects an integer chunk size")
+		return 0, errors.New("expects an integer chunk size")
 	}
 }
 
 func warnDeprecatedChannelOperator(name string) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: deprecated channel operator %q resolved as a pass-through for compatibility\n", name)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: deprecated channel operator %q resolved as a pass-through for compatibility\n",
+		name,
+	)
 }
 
 func warnUnsupportedCardinalityOperator(name string) {
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: operator %q may affect job cardinality in unsupported ways and will be treated as a pass-through\n", name)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: operator %q may affect job cardinality in unsupported ways and will be treated as a pass-through\n",
+		name,
+	)
 }
 
 func flattenNamedChannelItems(result namedChannelResult) []channelItem {
@@ -476,7 +531,7 @@ func collectFileChannelItems(items []channelItem, operator ChannelOperator, cwd 
 		content += "\n"
 	}
 
-	if err := os.WriteFile(outputPath, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(outputPath, []byte(content), ownerReadWritePerms); err != nil {
 		return nil, err
 	}
 
@@ -487,6 +542,7 @@ func resolveOperatorOptions(operator ChannelOperator) (map[string]any, error) {
 	if len(operator.Args) == 0 {
 		return nil, nil
 	}
+
 	if len(operator.Args) != 1 {
 		return nil, fmt.Errorf("%s expects at most one argument", operator.Name)
 	}
@@ -495,6 +551,7 @@ func resolveOperatorOptions(operator ChannelOperator) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if options, ok := value.(map[string]any); ok {
 		return options, nil
 	}
@@ -515,6 +572,7 @@ func combineChannelItems(left, right []channelItem, byIndex *int) ([]channelItem
 	combined := make([]channelItem, 0, len(left)*len(right))
 	for _, leftItem := range left {
 		var leftKey any
+
 		if byIndex != nil {
 			key, err := resolveChannelKey(leftItem.value, *byIndex)
 			if err != nil {
@@ -530,6 +588,7 @@ func combineChannelItems(left, right []channelItem, byIndex *int) ([]channelItem
 				if err != nil {
 					return nil, err
 				}
+
 				if !reflect.DeepEqual(leftKey, rightKey) {
 					continue
 				}
@@ -559,9 +618,11 @@ func combineChannelValues(left, right any, byIndex *int) any {
 	rightTuple := channelTuple(right)
 
 	combined := make([]any, 0, len(leftTuple)+len(rightTuple))
+
 	combined = append(combined, cloneChannelSlice(leftTuple)...)
 	if byIndex == nil {
 		combined = append(combined, cloneChannelSlice(rightTuple)...)
+
 		return combined
 	}
 
@@ -594,6 +655,7 @@ func concatChannelItems(channels ...[]channelItem) []channelItem {
 
 func uniqueChannelItems(items []channelItem) []channelItem {
 	unique := make([]channelItem, 0, len(items))
+
 	seen := make([]any, 0, len(items))
 	for _, item := range items {
 		if containsComparableValue(seen, item.value) {
@@ -609,7 +671,9 @@ func uniqueChannelItems(items []channelItem) []channelItem {
 
 func distinctChannelItems(items []channelItem) []channelItem {
 	distinct := make([]channelItem, 0, len(items))
+
 	var previous any
+
 	havePrevious := false
 	for _, item := range items {
 		if havePrevious && reflect.DeepEqual(previous, item.value) {
@@ -626,10 +690,28 @@ func distinctChannelItems(items []channelItem) []channelItem {
 
 func sortedChannelValues(items []channelItem) ([]any, error) {
 	sorted := collectChannelValues(items)
+
+	var sortErr error
+
 	sort.Slice(sorted, func(i, j int) bool {
-		less, _ := lessSortableValue(sorted[i], sorted[j])
+		if sortErr != nil {
+			return false
+		}
+
+		less, err := lessSortableValue(sorted[i], sorted[j])
+		if err != nil {
+			sortErr = err
+
+			return false
+		}
+
 		return less
 	})
+
+	if sortErr != nil {
+		return nil, sortErr
+	}
+
 	for index := 1; index < len(sorted); index++ {
 		if _, err := lessSortableValue(sorted[index-1], sorted[index]); err != nil {
 			return nil, err
@@ -644,16 +726,19 @@ func countChannelItems(items []channelItem, operator ChannelOperator) ([]channel
 	if err != nil {
 		return nil, err
 	}
+
 	if !hasFilter {
 		return []channelItem{{value: len(items), depGroups: unionChannelDepGroups(items)}}, nil
 	}
 
 	matched := 0
+
 	for _, item := range items {
 		keep, err := channelOperatorMatches(filterArg, item.value)
 		if err != nil {
 			return nil, err
 		}
+
 		if keep {
 			matched++
 		}
@@ -700,22 +785,26 @@ func randomSampleChannelItems(items []channelItem, operator ChannelOperator) ([]
 	if err != nil {
 		return nil, err
 	}
+
 	if count <= 0 || len(items) == 0 {
 		return nil, nil
 	}
+
 	if count >= len(items) {
 		return cloneChannelItems(items), nil
 	}
 
 	indexes := make([]int, len(items))
-	for index := range len(items) {
+	for index := range items {
 		indexes[index] = index
 	}
 
 	var rng *rand.Rand
 	if seeded {
+		//nolint:gosec // Deterministic pseudo-random sampling is required when a seed is provided.
 		rng = rand.New(rand.NewSource(seed))
 	} else {
+		//nolint:gosec // This is non-cryptographic sampling for workflow semantics, not security.
 		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 
@@ -746,7 +835,7 @@ func randomSampleOperatorArgs(operator ChannelOperator) (int, int64, bool, error
 
 	count, ok := countValue.(int)
 	if !ok {
-		return 0, 0, false, fmt.Errorf("randomSample expects an integer sample size")
+		return 0, 0, false, errors.New("randomSample expects an integer sample size")
 	}
 
 	if len(operator.Args) == 1 {
@@ -760,7 +849,7 @@ func randomSampleOperatorArgs(operator ChannelOperator) (int, int64, bool, error
 
 	seed, ok := seedValue.(int)
 	if !ok {
-		return 0, 0, false, fmt.Errorf("randomSample expects an integer seed")
+		return 0, 0, false, errors.New("randomSample expects an integer seed")
 	}
 
 	return count, int64(seed), true, nil
@@ -768,6 +857,7 @@ func randomSampleOperatorArgs(operator ChannelOperator) (int, int64, bool, error
 
 func transposeChannelItems(items []channelItem, byIndex *int) ([]channelItem, error) {
 	transposed := []channelItem{}
+
 	for _, item := range items {
 		rows, err := transposeChannelItem(item, byIndex)
 		if err != nil {
@@ -782,6 +872,7 @@ func transposeChannelItems(items []channelItem, byIndex *int) ([]channelItem, er
 
 func transposeChannelItem(item channelItem, byIndex *int) ([]channelItem, error) {
 	tuple := channelTuple(item.value)
+
 	indices := []int{}
 	if byIndex != nil {
 		indices = append(indices, *byIndex)
@@ -799,8 +890,10 @@ func transposeChannelItem(item channelItem, byIndex *int) ([]channelItem, error)
 	}
 
 	rows := [][]any{cloneChannelSlice(tuple)}
+
 	for _, index := range indices {
 		expanded := [][]any{}
+
 		for _, row := range rows {
 			if index < 0 || index >= len(row) {
 				return nil, fmt.Errorf("transpose index %d out of range", index)
@@ -817,6 +910,7 @@ func transposeChannelItem(item channelItem, byIndex *int) ([]channelItem, error)
 				expanded = append(expanded, candidate)
 			}
 		}
+
 		rows = expanded
 	}
 
@@ -860,6 +954,7 @@ func chunkChannelItems(items []channelItem, size int) []channelItem {
 
 		values := make([]any, 0, end-start)
 		deps := []string{}
+
 		for _, item := range items[start:end] {
 			values = append(values, cloneChannelValue(item.value))
 			deps = appendUniqueStrings(deps, item.depGroups)
@@ -879,6 +974,7 @@ func reduceChannelItems(items []channelItem, pick func(current, candidate any) (
 	reduced := cloneChannelValue(items[0].value)
 	for _, item := range items[1:] {
 		var err error
+
 		reduced, err = pick(reduced, item.value)
 		if err != nil {
 			return nil, err
@@ -894,10 +990,11 @@ func sumChannelItems(items []channelItem) ([]channelItem, error) {
 	}
 
 	total := 0
+
 	for _, item := range items {
 		value, ok := item.value.(int)
 		if !ok {
-			return nil, fmt.Errorf("sum expects integer channel items")
+			return nil, errors.New("sum expects integer channel items")
 		}
 
 		total += value
@@ -929,6 +1026,7 @@ func splitCSVChannelItems(items []channelItem, operator ChannelOperator) ([]chan
 	}
 
 	result := []channelItem{}
+
 	for _, item := range items {
 		paths, err := channelItemPaths(item.value)
 		if err != nil {
@@ -940,6 +1038,7 @@ func splitCSVChannelItems(items []channelItem, operator ChannelOperator) ([]chan
 			if err != nil {
 				return nil, err
 			}
+
 			for _, row := range rows {
 				result = append(result, channelItem{value: row, depGroups: cloneStrings(item.depGroups)})
 			}
@@ -963,6 +1062,7 @@ func intOption(value any, name string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("expects %q to be an integer", name)
 	}
+
 	if typed <= 0 {
 		return 0, fmt.Errorf("expects %q to be positive", name)
 	}
@@ -983,6 +1083,7 @@ func channelItemPaths(value any) ([]string, error) {
 			if !ok {
 				return nil, fmt.Errorf("expected file path item, got %T", element)
 			}
+
 			paths = append(paths, path)
 		}
 
@@ -1000,15 +1101,18 @@ func splitCSVFile(path string, header bool, by int) ([]any, error) {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
+
 	records, err := reader.ReadAll()
 	if err != nil {
 		return nil, err
 	}
+
 	if len(records) == 0 {
 		return nil, nil
 	}
 
 	data := records
+
 	headers := []string{}
 	if header {
 		headers = cloneStrings(records[0])
@@ -1026,7 +1130,9 @@ func splitCSVFile(path string, header bool, by int) ([]any, error) {
 					row[name] = ""
 				}
 			}
+
 			rows = append(rows, row)
+
 			continue
 		}
 
@@ -1034,6 +1140,7 @@ func splitCSVFile(path string, header bool, by int) ([]any, error) {
 		for _, field := range record {
 			values = append(values, field)
 		}
+
 		rows = append(rows, values)
 	}
 
@@ -1051,10 +1158,12 @@ func chunkSplitValues(values []any, by int) []any {
 		if end > len(values) {
 			end = len(values)
 		}
+
 		chunk := make([]any, 0, end-start)
 		for _, value := range values[start:end] {
 			chunk = append(chunk, cloneJSONValue(value))
 		}
+
 		chunked = append(chunked, chunk)
 	}
 
@@ -1097,6 +1206,7 @@ func splitFASTAChannelItems(items []channelItem, operator ChannelOperator) ([]ch
 	}
 
 	result := []channelItem{}
+
 	for _, item := range items {
 		paths, err := channelItemPaths(item.value)
 		if err != nil {
@@ -1108,6 +1218,7 @@ func splitFASTAChannelItems(items []channelItem, operator ChannelOperator) ([]ch
 			if err != nil {
 				return nil, err
 			}
+
 			for _, chunk := range chunks {
 				result = append(result, channelItem{value: chunk, depGroups: cloneStrings(item.depGroups)})
 			}
@@ -1138,17 +1249,21 @@ func splitStructuredRecords(path string, startsRecord func(string) bool) ([]stri
 	scanner := bufio.NewScanner(file)
 	records := []string{}
 	current := []string{}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if startsRecord(line) && len(current) > 0 {
 			records = append(records, strings.Join(current, "\n"))
 			current = nil
 		}
+
 		current = append(current, line)
 	}
+
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
+
 	if len(current) > 0 {
 		records = append(records, strings.Join(current, "\n"))
 	}
@@ -1167,6 +1282,7 @@ func chunkStrings(values []string, by int) []string {
 		if end > len(values) {
 			end = len(values)
 		}
+
 		chunks = append(chunks, strings.Join(values[start:end], "\n"))
 	}
 
@@ -1196,11 +1312,13 @@ func splitFASTQChannelItems(items []channelItem, operator ChannelOperator) ([]ch
 	}
 
 	result := []channelItem{}
+
 	for _, item := range items {
 		chunks, err := splitFASTQValue(item.value, by, pairedEnd)
 		if err != nil {
 			return nil, err
 		}
+
 		for _, chunk := range chunks {
 			result = append(result, channelItem{value: chunk, depGroups: cloneStrings(item.depGroups)})
 		}
@@ -1217,19 +1335,21 @@ func splitFASTQValue(value any, by int, pairedEnd bool) ([]any, error) {
 
 	if pairedEnd {
 		if len(paths) != 2 {
-			return nil, fmt.Errorf("splitFastq with pe:true expects exactly 2 files")
+			return nil, errors.New("splitFastq with pe:true expects exactly 2 files")
 		}
 
 		left, err := splitFASTQFile(paths[0])
 		if err != nil {
 			return nil, err
 		}
+
 		right, err := splitFASTQFile(paths[1])
 		if err != nil {
 			return nil, err
 		}
+
 		if len(left) != len(right) {
-			return nil, fmt.Errorf("splitFastq paired files contain different read counts")
+			return nil, errors.New("splitFastq paired files contain different read counts")
 		}
 
 		pairs := make([]any, 0, len(left))
@@ -1241,11 +1361,13 @@ func splitFASTQValue(value any, by int, pairedEnd bool) ([]any, error) {
 	}
 
 	result := []any{}
+
 	for _, path := range paths {
 		records, err := splitFASTQFile(path)
 		if err != nil {
 			return nil, err
 		}
+
 		for _, chunk := range chunkStrings(records, by) {
 			result = append(result, chunk)
 		}
@@ -1263,27 +1385,34 @@ func splitFASTQFile(path string) ([]string, error) {
 
 	reader := bufio.NewReader(file)
 	records := []string{}
+
 	for {
 		lines := make([]string, 0, 4)
+
 		for range 4 {
 			line, err := reader.ReadString('\n')
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, err
 			}
+
 			line = strings.TrimRight(line, "\r\n")
 			if line != "" || !errors.Is(err, io.EOF) {
 				lines = append(lines, line)
 			}
+
 			if errors.Is(err, io.EOF) {
 				break
 			}
 		}
+
 		if len(lines) == 0 {
 			break
 		}
+
 		if len(lines) != 4 {
 			return nil, fmt.Errorf("invalid FASTQ record in %s", path)
 		}
+
 		records = append(records, strings.Join(lines, "\n"))
 	}
 
@@ -1305,6 +1434,7 @@ func splitJSONChannelItems(items []channelItem, operator ChannelOperator) ([]cha
 	}
 
 	result := []channelItem{}
+
 	for _, item := range items {
 		paths, err := channelItemPaths(item.value)
 		if err != nil {
@@ -1316,6 +1446,7 @@ func splitJSONChannelItems(items []channelItem, operator ChannelOperator) ([]cha
 			if err != nil {
 				return nil, err
 			}
+
 			for _, value := range values {
 				result = append(result, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
 			}
@@ -1332,8 +1463,8 @@ func splitJSONFile(path, valuePath string) ([]any, error) {
 	}
 
 	var decoded any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return nil, err
+	if unmarshalErr := json.Unmarshal(data, &decoded); unmarshalErr != nil {
+		return nil, unmarshalErr
 	}
 
 	selected, err := selectJSONPath(decoded, valuePath)
@@ -1359,6 +1490,7 @@ func selectJSONPath(value any, valuePath string) (any, error) {
 	}
 
 	current := value
+
 	for _, part := range strings.Split(valuePath, ".") {
 		if part == "" {
 			continue
@@ -1373,6 +1505,7 @@ func selectJSONPath(value any, valuePath string) (any, error) {
 		if !exists {
 			return nil, fmt.Errorf("json path %q not found", valuePath)
 		}
+
 		current = next
 	}
 
@@ -1394,6 +1527,7 @@ func splitTextChannelItems(items []channelItem, operator ChannelOperator) ([]cha
 	}
 
 	result := []channelItem{}
+
 	for _, item := range items {
 		paths, err := channelItemPaths(item.value)
 		if err != nil {
@@ -1405,6 +1539,7 @@ func splitTextChannelItems(items []channelItem, operator ChannelOperator) ([]cha
 			if err != nil {
 				return nil, err
 			}
+
 			for _, chunk := range chunks {
 				result = append(result, channelItem{value: chunk, depGroups: cloneStrings(item.depGroups)})
 			}
@@ -1422,10 +1557,12 @@ func splitTextFile(path string, by int) ([]string, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+
 	lines := []string{}
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
+
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
@@ -1436,6 +1573,7 @@ func splitTextFile(path string, by int) ([]string, error) {
 		if end > len(lines) {
 			end = len(lines)
 		}
+
 		chunks = append(chunks, strings.Join(lines[start:end], "\n"))
 	}
 
@@ -1503,7 +1641,7 @@ func resolveChannelItems(ce ChanExpr, cwd string, resolver channelResolver) ([]c
 		return items, nil
 	case PipeExpr:
 		if len(expr.Stages) != 1 {
-			return nil, fmt.Errorf("pipe expressions require D6 translation support")
+			return nil, errors.New("pipe expressions require D6 translation support")
 		}
 
 		return resolveChannelItems(expr.Stages[0], cwd, resolver)
@@ -1619,11 +1757,13 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 
 		limit, ok := count.(int)
 		if !ok {
-			return nil, fmt.Errorf("take expects an integer argument")
+			return nil, errors.New("take expects an integer argument")
 		}
+
 		if limit <= 0 {
 			return nil, nil
 		}
+
 		if limit > len(items) {
 			limit = len(items)
 		}
@@ -1636,11 +1776,13 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 			if err != nil {
 				if errors.Is(err, errUnsupportedClosure) {
 					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+
 					return cloneChannelItems(items), nil
 				}
 
 				return nil, err
 			}
+
 			if keep {
 				filtered = append(filtered, cloneChannelItem(item))
 			}
@@ -1654,22 +1796,26 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 			if err != nil {
 				if errors.Is(err, errUnsupportedClosure) {
 					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+
 					return cloneChannelItems(items), nil
 				}
 
 				return nil, err
 			}
+
 			mapped = append(mapped, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
 		}
 
 		return mapped, nil
 	case "flatMap":
 		flattened := []channelItem{}
+
 		for _, item := range items {
 			value, err := evalChannelClosure(operator, item.value)
 			if err != nil {
 				if errors.Is(err, errUnsupportedClosure) {
 					warnUnsupportedChannelClosure(strings.TrimSpace(operator.ClosureExprOrText()))
+
 					return cloneChannelItems(items), nil
 				}
 
@@ -1691,10 +1837,12 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return flattenNamedChannelItems(result), nil
 	case "combine":
 		combined := cloneChannelItems(items)
+
 		byIndex, err := resolveOperatorByIndex(operator)
 		if err != nil {
 			return nil, err
 		}
+
 		for _, other := range operator.Channels {
 			resolved, err := resolveChannelItems(other, cwd, resolver)
 			if err != nil {
@@ -1710,6 +1858,7 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return combined, nil
 	case "concat":
 		concatenated := cloneChannelItems(items)
+
 		for _, other := range operator.Channels {
 			resolved, err := resolveChannelItems(other, cwd, resolver)
 			if err != nil {
@@ -1722,6 +1871,7 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return concatenated, nil
 	case "flatten":
 		flattened := []channelItem{}
+
 		for _, item := range items {
 			for _, value := range flattenSliceValue(item.value) {
 				flattened = append(flattened, channelItem{value: value, depGroups: cloneStrings(item.depGroups)})
@@ -1737,6 +1887,7 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		if len(items) != 0 {
 			return cloneChannelItems(items), nil
 		}
+
 		if len(operator.Args) != 1 {
 			return nil, fmt.Errorf("ifEmpty expects 1 argument, got %d", len(operator.Args))
 		}
@@ -1765,6 +1916,7 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		if err != nil {
 			return nil, err
 		}
+
 		if hasSeed {
 			items = append([]channelItem{{value: seed}}, items...)
 		}
@@ -1783,33 +1935,39 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return cloneChannelItems(items), nil
 	case "mix":
 		mixed := cloneChannelItems(items)
+
 		for _, other := range operator.Channels {
 			resolved, err := resolveChannelItems(other, cwd, resolver)
 			if err != nil {
 				return nil, err
 			}
+
 			mixed = append(mixed, cloneChannelItems(resolved)...)
 		}
 
 		return mixed, nil
 	case "cross":
 		crossed := cloneChannelItems(items)
+
 		for _, other := range operator.Channels {
 			resolved, err := resolveChannelItems(other, cwd, resolver)
 			if err != nil {
 				return nil, err
 			}
+
 			crossed = crossChannelItems(crossed, resolved)
 		}
 
 		return crossed, nil
 	case "join":
 		joined := cloneChannelItems(items)
+
 		for _, other := range operator.Channels {
 			resolved, err := resolveChannelItems(other, cwd, resolver)
 			if err != nil {
 				return nil, err
 			}
+
 			joined = joinChannelItems(joined, resolved)
 		}
 
@@ -1851,16 +2009,19 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 	default:
 		if _, ok := deprecatedChannelOperators[operator.Name]; ok {
 			warnDeprecatedChannelOperator(operator.Name)
+
 			return cloneChannelItems(items), nil
 		}
 
 		if _, ok := warningOnlyChannelOperators[operator.Name]; ok {
 			warnUnsupportedCardinalityOperator(operator.Name)
+
 			return cloneChannelItems(items), nil
 		}
 
 		if _, ok := unsupportedCardinalityOperators[operator.Name]; ok {
 			warnUnsupportedCardinalityOperator(operator.Name)
+
 			return cloneChannelItems(items), nil
 		}
 
@@ -1937,12 +2098,14 @@ func joinChannelItems(left, right []channelItem) []channelItem {
 	}
 
 	rightByKey := make(map[string][]channelItem)
+
 	for _, item := range right {
 		key := channelItemKey(item)
 		rightByKey[key] = append(rightByKey[key], cloneChannelItem(item))
 	}
 
 	joined := []channelItem{}
+
 	for _, item := range left {
 		matches := rightByKey[channelItemKey(item)]
 		for _, match := range matches {
@@ -1968,15 +2131,18 @@ func groupTupleItems(items []channelItem) []channelItem {
 
 	grouped := make(map[string]*groupedTuple)
 	keys := []string{}
+
 	for _, item := range items {
 		row := channelTuple(item.value)
 		key := fmt.Sprint(row[0])
+
 		entry, ok := grouped[key]
 		if !ok {
 			entry = &groupedTuple{}
 			grouped[key] = entry
 			keys = append(keys, key)
 		}
+
 		entry.rows = append(entry.rows, row)
 		entry.depGroups = appendUniqueStrings(entry.depGroups, item.depGroups)
 	}
@@ -1985,11 +2151,13 @@ func groupTupleItems(items []channelItem) []channelItem {
 	for _, key := range keys {
 		entry := grouped[key]
 		columns := make([][]any, 0)
+
 		for _, row := range entry.rows {
 			for index := 1; index < len(row); index++ {
 				for len(columns) < index {
 					columns = append(columns, []any{})
 				}
+
 				columns[index-1] = append(columns[index-1], cloneChannelValue(row[index]))
 			}
 		}
@@ -2016,12 +2184,14 @@ func channelItemKey(item channelItem) string {
 
 func joinChannelValues(left, right any) any {
 	leftTuple := channelTuple(left)
+
 	rightTuple := channelTuple(right)
 	if len(rightTuple) == 0 {
 		return leftTuple
 	}
 
 	joined := make([]any, 0, len(leftTuple)+len(rightTuple))
+
 	joined = append(joined, cloneChannelSlice(leftTuple)...)
 	if len(leftTuple) > 0 && len(rightTuple) > 0 && fmt.Sprint(leftTuple[0]) == fmt.Sprint(rightTuple[0]) {
 		joined = append(joined, cloneChannelSlice(rightTuple[1:])...)
@@ -2130,17 +2300,20 @@ func resolveFilePairs(pattern string) ([]any, error) {
 			if _, seen := seenPaths[cleaned]; seen {
 				continue
 			}
+
 			seenPaths[cleaned] = struct{}{}
 
 			key := filePairGroupKey(cleaned)
 			if _, ok := grouped[key]; !ok {
 				keys = append(keys, key)
 			}
+
 			grouped[key] = append(grouped[key], cleaned)
 		}
 	}
 
 	sort.Strings(keys)
+
 	items := make([]any, 0, len(keys))
 	for _, key := range keys {
 		matches := grouped[key]
@@ -2161,11 +2334,13 @@ func expandBracePatterns(pattern string) []string {
 	if end == -1 {
 		return []string{pattern}
 	}
+
 	end += start
 
 	prefix := pattern[:start]
 	suffix := pattern[end+1:]
 	parts := strings.Split(pattern[start+1:end], ",")
+
 	patterns := make([]string, 0, len(parts))
 	for _, part := range parts {
 		patterns = append(patterns, prefix+strings.TrimSpace(part)+suffix)
@@ -2188,6 +2363,7 @@ func minChannelValue(current, candidate any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if less {
 		return cloneChannelValue(candidate), nil
 	}
@@ -2200,6 +2376,7 @@ func maxChannelValue(current, candidate any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if less {
 		return cloneChannelValue(candidate), nil
 	}

@@ -92,7 +92,10 @@ func TestTranslateN2WorkflowPublish(t *testing.T) {
 			wf := newWorkflow(
 				"samples { path 'results/fastq'; index { path 'index.csv' } }",
 				[]*WFPublish{{Target: "samples", Source: "produce.out"}},
-				&Call{Target: "produce", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "sampleA"}, StringExpr{Value: "sampleB"}}}}},
+				&Call{Target: "produce", Args: []ChanExpr{ChannelFactory{
+					Name: "of",
+					Args: []Expr{StringExpr{Value: "sampleA"}, StringExpr{Value: "sampleB"}},
+				}}},
 			)
 			wf.Processes[0].Input = []*Declaration{{Kind: "val", Name: "sample"}}
 			wf.Processes[0].Output = []*Declaration{{Kind: "path", Expr: StringExpr{Value: "${sample}.txt"}}}
@@ -122,8 +125,10 @@ func TestTranslateN2WorkflowPublish(t *testing.T) {
 			)
 
 			var result *TranslateResult
+
 			stderr := captureTranslateStderr(func() {
 				var err error
+
 				result, err = Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
 				So(err, ShouldBeNil)
 			})

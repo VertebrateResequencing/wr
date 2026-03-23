@@ -26,6 +26,7 @@
 package nextflowdsl
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -171,6 +172,7 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 
 	for {
 		p.skipSeparators()
+
 		current := p.current()
 		if current.typ == tokenEOF {
 			return cfg, nil
@@ -186,30 +188,35 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 			if err != nil {
 				return nil, err
 			}
+
 			cfg.ContainerEngine = engine
 		case "env":
 			env, err := p.parseTopLevelEnvBlock()
 			if err != nil {
 				return nil, err
 			}
+
 			cfg.Env = env
 		case "executor":
 			executor, err := p.parseExecutorBlock()
 			if err != nil {
 				return nil, err
 			}
+
 			cfg.Executor = MergeParams(cfg.Executor, executor)
 		case "params":
 			params, err := p.parseParamsBlock()
 			if err != nil {
 				return nil, err
 			}
+
 			cfg.Params = MergeParams(cfg.Params, params)
 		case "process":
 			block, err := p.parseProcessBlock(MergeParams(knownParams, externalParams), true)
 			if err != nil {
 				return nil, err
 			}
+
 			cfg.Process = block.defaults
 			cfg.Selectors = block.selectors
 		case "profiles":
@@ -217,15 +224,18 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 			if err != nil {
 				return nil, err
 			}
+
 			cfg.Profiles = profiles
 		default:
 			skipped, err := p.skipUnknownTopLevelConfigScope()
 			if err != nil {
 				return nil, err
 			}
+
 			if skipped {
 				continue
 			}
+
 			return nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
 		}
 	}
@@ -237,6 +247,7 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 
 	for {
 		p.skipSeparators()
+
 		current := p.current()
 		if current.typ == tokenEOF {
 			return params, profileParams, nil
@@ -264,6 +275,7 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 			if err != nil {
 				return nil, nil, err
 			}
+
 			params = MergeParams(params, sectionParams)
 		case "process":
 			if err := p.skipNamedBlock("process"); err != nil {
@@ -274,6 +286,7 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 			if err != nil {
 				return nil, nil, err
 			}
+
 			for name, sectionParams := range sectionProfiles {
 				profileParams[name] = MergeParams(profileParams[name], sectionParams)
 			}
@@ -282,9 +295,11 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 			if err != nil {
 				return nil, nil, err
 			}
+
 			if skipped {
 				continue
 			}
+
 			return nil, nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
 		}
 	}
@@ -300,6 +315,7 @@ func (p *configParser) parseParamsBlock() (map[string]any, error) {
 	}
 
 	params := map[string]any{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -309,12 +325,14 @@ func (p *configParser) parseParamsBlock() (map[string]any, error) {
 			return nil, p.unclosedBlockError("params")
 		case tokenRBrace:
 			p.pos++
+
 			return params, nil
 		case tokenIdent:
 			value, err := p.parseAssignmentValue()
 			if err != nil {
 				return nil, err
 			}
+
 			params[current.lit] = value
 		default:
 			return nil, fmt.Errorf("line %d: expected parameter name", current.line)
@@ -336,6 +354,7 @@ func (p *configParser) parseProcessBlock(params map[string]any, allowSelectors b
 
 func (p *configParser) parseProcessSettingsBlock(params map[string]any, allowSelectors bool, blockName string) (*processBlock, error) {
 	defaults := &ProcessDefaults{}
+
 	var selectors []*ProcessSelector
 
 	for {
@@ -347,6 +366,7 @@ func (p *configParser) parseProcessSettingsBlock(params map[string]any, allowSel
 			return nil, p.unclosedBlockError(blockName)
 		case tokenRBrace:
 			p.pos++
+
 			return &processBlock{defaults: defaults, selectors: selectors}, nil
 		case tokenIdent:
 			if allowSelectors && isProcessSelectorName(current.lit) {
@@ -400,6 +420,7 @@ func (p *configParser) parseProcessSelectorWithDepth(params map[string]any, rema
 	}
 
 	defaults := &ProcessDefaults{}
+
 	var inner *ProcessSelector
 
 	for {
@@ -411,6 +432,7 @@ func (p *configParser) parseProcessSelectorWithDepth(params map[string]any, rema
 			return nil, p.unclosedBlockError(name.lit)
 		case tokenRBrace:
 			p.pos++
+
 			return &ProcessSelector{
 				Kind:     name.lit,
 				Pattern:  pattern,
@@ -428,6 +450,7 @@ func (p *configParser) parseProcessSelectorWithDepth(params map[string]any, rema
 				}
 
 				var err error
+
 				inner, err = p.parseProcessSelectorWithDepth(params, remainingDepth-1)
 				if err != nil {
 					return nil, err
@@ -452,16 +475,18 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 	}
 
 	if len(path) == 0 && name.lit == "env" && p.current().typ == tokenLBrace {
-		env, err := p.parseEnvBlock()
-		if err != nil {
-			return err
+		env, parseErr := p.parseEnvBlock()
+		if parseErr != nil {
+			return parseErr
 		}
+
 		defaults.Env = env
+
 		return nil
 	}
 
-	if _, err := p.expectType(tokenAssign, "="); err != nil {
-		return err
+	if _, expectErr := p.expectType(tokenAssign, "="); expectErr != nil {
+		return expectErr
 	}
 
 	value, err := p.parseValue(exprVars(params), tokenSemicolon, tokenNewline, tokenRBrace)
@@ -479,58 +504,71 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		if len(path) > 0 {
 			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
 		}
+
 		intValue, ok := value.(int)
 		if !ok {
 			return fmt.Errorf("line %d: cpus expects an integer value", name.line)
 		}
+
 		defaults.Cpus = intValue
 	case "memory":
 		if len(path) > 0 {
 			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
 		}
+
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: memory expects a string literal", name.line)
 		}
+
 		memory, parseErr := parseMemoryValue(stringValue)
 		if parseErr != nil {
 			return wrapLineError(name.line, parseErr)
 		}
+
 		defaults.Memory = memory
 	case "time":
 		if len(path) > 0 {
 			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
 		}
+
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: time expects a string literal", name.line)
 		}
+
 		timeValue, parseErr := parseTimeValue(stringValue)
 		if parseErr != nil {
 			return wrapLineError(name.line, parseErr)
 		}
+
 		defaults.Time = timeValue
 	case "disk":
 		if len(path) > 0 {
 			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
 		}
+
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: disk expects a string literal", name.line)
 		}
+
 		diskValue, parseErr := parseDiskValue(stringValue)
 		if parseErr != nil {
 			return wrapLineError(name.line, parseErr)
 		}
+
 		defaults.Disk = diskValue
 	case "container":
 		if len(path) > 0 {
 			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
 		}
+
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: container expects a string literal", name.line)
 		}
+
 		defaults.Container = stringValue
 	case "errorStrategy":
 		defaults.ErrorStrategy = value
@@ -543,6 +581,7 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		if parseErr != nil {
 			return wrapLineError(name.line, parseErr)
 		}
+
 		defaults.PublishDir = publishDirs
 	case "queue":
 		defaults.Queue = value
@@ -551,6 +590,7 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 	case "ext":
 		if len(path) > 0 {
 			defaults.Ext = setNestedConfigMap(defaults.Ext, path, value)
+
 			return nil
 		}
 
@@ -558,6 +598,7 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		if !ok {
 			return fmt.Errorf("line %d: ext expects a map literal", name.line)
 		}
+
 		defaults.Ext = mergeExtValues(defaults.Ext, mapValue)
 	case "containerOptions":
 		defaults.ContainerOptions = value
@@ -591,6 +632,7 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		if defaults.Directives == nil {
 			defaults.Directives = map[string]any{}
 		}
+
 		defaults.Directives[fullName] = value
 	}
 
@@ -611,16 +653,17 @@ func normalizeConfigPublishDirs(value any) ([]*PublishDir, error) {
 	case []any:
 		publishDirs := make([]*PublishDir, 0, len(typed))
 		for _, entry := range typed {
-			normalized, err := normalizeConfigPublishDirs(entry)
+			normalised, err := normalizeConfigPublishDirs(entry)
 			if err != nil {
 				return nil, err
 			}
-			publishDirs = append(publishDirs, normalized...)
+
+			publishDirs = append(publishDirs, normalised...)
 		}
 
 		return publishDirs, nil
 	default:
-		return nil, fmt.Errorf("publishDir expects a string, map, or list")
+		return nil, errors.New("publishDir expects a string, map, or list")
 	}
 }
 
@@ -628,6 +671,7 @@ func setNestedConfigMap(root map[string]any, path []string, value any) map[strin
 	if root == nil {
 		root = map[string]any{}
 	}
+
 	if len(path) == 0 {
 		if nested, ok := value.(map[string]any); ok {
 			return mergeExtValues(root, nested)
@@ -637,13 +681,16 @@ func setNestedConfigMap(root map[string]any, path []string, value any) map[strin
 	}
 
 	current := root
-	for index := 0; index < len(path)-1; index++ {
+
+	for index := range len(path) - 1 {
 		segment := path[index]
+
 		next, ok := current[segment].(map[string]any)
 		if !ok {
 			next = map[string]any{}
 			current[segment] = next
 		}
+
 		current = next
 	}
 
@@ -657,15 +704,19 @@ func (p *configParser) parseProcessSettingName() (token, []string, error) {
 	if name.typ != tokenIdent {
 		return token{}, nil, fmt.Errorf("line %d: expected process setting", name.line)
 	}
+
 	p.pos++
 
 	path := []string{}
+
 	for p.current().typ == tokenDot {
 		p.pos++
+
 		segment, err := p.expectType(tokenIdent, "process setting name")
 		if err != nil {
 			return token{}, nil, err
 		}
+
 		path = append(path, segment.lit)
 	}
 
@@ -682,6 +733,7 @@ func (p *configParser) parseProfilesBlock(baseParams map[string]any, knownProfil
 	}
 
 	profiles := map[string]*Profile{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -691,12 +743,14 @@ func (p *configParser) parseProfilesBlock(baseParams map[string]any, knownProfil
 			return nil, p.unclosedBlockError("profiles")
 		case tokenRBrace:
 			p.pos++
+
 			return profiles, nil
 		case tokenIdent:
 			profile, err := p.parseProfile(baseParams, knownProfileParams[current.lit], externalParams)
 			if err != nil {
 				return nil, err
 			}
+
 			profiles[current.lit] = profile
 		default:
 			return nil, fmt.Errorf("line %d: expected profile name", current.line)
@@ -714,6 +768,7 @@ func (p *configParser) collectProfileParams() (map[string]map[string]any, error)
 	}
 
 	profiles := map[string]map[string]any{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -723,12 +778,14 @@ func (p *configParser) collectProfileParams() (map[string]map[string]any, error)
 			return nil, p.unclosedBlockError("profiles")
 		case tokenRBrace:
 			p.pos++
+
 			return profiles, nil
 		case tokenIdent:
 			params, err := p.collectProfileParamsBlock()
 			if err != nil {
 				return nil, err
 			}
+
 			profiles[current.lit] = MergeParams(profiles[current.lit], params)
 		default:
 			return nil, fmt.Errorf("line %d: expected profile name", current.line)
@@ -747,6 +804,7 @@ func (p *configParser) collectProfileParamsBlock() (map[string]any, error) {
 	}
 
 	params := map[string]any{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -756,6 +814,7 @@ func (p *configParser) collectProfileParamsBlock() (map[string]any, error) {
 			return nil, p.unclosedNamedBlockError("profile", name.lit)
 		case tokenRBrace:
 			p.pos++
+
 			return params, nil
 		case tokenIdent:
 			switch current.lit {
@@ -764,6 +823,7 @@ func (p *configParser) collectProfileParamsBlock() (map[string]any, error) {
 				if parseErr != nil {
 					return nil, parseErr
 				}
+
 				params = MergeParams(params, profileParams)
 			case "executor":
 				if err := p.skipNamedBlock("executor"); err != nil {
@@ -793,6 +853,7 @@ func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[s
 	}
 
 	profile := &Profile{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -802,6 +863,7 @@ func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[s
 			return nil, p.unclosedNamedBlockError("profile", name.lit)
 		case tokenRBrace:
 			p.pos++
+
 			return profile, nil
 		case tokenIdent:
 			switch current.lit {
@@ -810,18 +872,21 @@ func (p *configParser) parseProfile(baseParams map[string]any, knownParams map[s
 				if parseErr != nil {
 					return nil, parseErr
 				}
+
 				profile.Params = MergeParams(profile.Params, params)
 			case "executor":
 				executor, parseErr := p.parseExecutorBlock()
 				if parseErr != nil {
 					return nil, parseErr
 				}
+
 				profile.Executor = MergeParams(profile.Executor, executor)
 			case "process":
 				block, parseErr := p.parseProcessBlock(MergeParams(baseParams, knownParams, externalParams), true)
 				if parseErr != nil {
 					return nil, parseErr
 				}
+
 				profile.Process = block.defaults
 				profile.Selectors = block.selectors
 			default:
@@ -837,6 +902,7 @@ func (p *configParser) skipNamedBlock(name string) error {
 	if _, err := p.expectIdent(name); err != nil {
 		return err
 	}
+
 	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
 		return err
 	}
@@ -854,6 +920,7 @@ func (p *configParser) skipNamedBlock(name string) error {
 		case tokenRBrace:
 			depth--
 		}
+
 		p.pos++
 	}
 
@@ -866,7 +933,12 @@ func (p *configParser) skipUnknownTopLevelConfigScope() (bool, error) {
 		return false, nil
 	}
 
-	_, _ = fmt.Fprintf(os.Stderr, "nextflowdsl: skipping unsupported top-level config scope %q at line %d\n", current.lit, current.line)
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: skipping unsupported top-level config scope %q at line %d\n",
+		current.lit,
+		current.line,
+	)
 
 	if err := p.skipNamedBlock(current.lit); err != nil {
 		return false, err
@@ -881,6 +953,7 @@ func (p *configParser) parseEnvBlock() (map[string]string, error) {
 	}
 
 	env := map[string]string{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -890,16 +963,19 @@ func (p *configParser) parseEnvBlock() (map[string]string, error) {
 			return nil, p.unclosedBlockError("env")
 		case tokenRBrace:
 			p.pos++
+
 			return env, nil
 		case tokenIdent:
 			value, err := p.parseAssignmentValue()
 			if err != nil {
 				return nil, err
 			}
+
 			stringValue, ok := value.(string)
 			if !ok {
 				return nil, fmt.Errorf("line %d: env value expects a string literal", current.line)
 			}
+
 			env[current.lit] = stringValue
 		default:
 			return nil, fmt.Errorf("line %d: expected environment variable name", current.line)
@@ -925,6 +1001,7 @@ func (p *configParser) parseExecutorBlock() (map[string]any, error) {
 	}
 
 	executor := map[string]any{}
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -934,6 +1011,7 @@ func (p *configParser) parseExecutorBlock() (map[string]any, error) {
 			return nil, p.unclosedBlockError("executor")
 		case tokenRBrace:
 			p.pos++
+
 			return executor, nil
 		case tokenIdent:
 			value, err := p.parseAssignmentValue()
@@ -947,12 +1025,14 @@ func (p *configParser) parseExecutorBlock() (map[string]any, error) {
 				if !ok {
 					return nil, fmt.Errorf("line %d: executor %s expects a string literal", current.line, current.lit)
 				}
+
 				executor[current.lit] = stringValue
 			case "queueSize":
 				intValue, ok := value.(int)
 				if !ok {
 					return nil, fmt.Errorf("line %d: executor queueSize expects an integer value", current.line)
 				}
+
 				executor[current.lit] = intValue
 			default:
 				executor[current.lit] = value
@@ -973,6 +1053,7 @@ func (p *configParser) parseContainerScope(scopeName string) (string, error) {
 	}
 
 	enabled := false
+
 	for {
 		p.skipSeparators()
 		current := p.current()
@@ -982,6 +1063,7 @@ func (p *configParser) parseContainerScope(scopeName string) (string, error) {
 			return "", p.unclosedBlockError(scopeName)
 		case tokenRBrace:
 			p.pos++
+
 			if enabled {
 				return scopeName, nil
 			}
@@ -1087,6 +1169,7 @@ func (p *configParser) readExprTokens(terminators ...tokenType) ([]token, error)
 			if len(tokens) == 0 {
 				return nil, fmt.Errorf("line %d: expected expression", start.line)
 			}
+
 			return tokens, nil
 		}
 
@@ -1094,6 +1177,7 @@ func (p *configParser) readExprTokens(terminators ...tokenType) ([]token, error)
 			if len(tokens) == 0 {
 				return nil, fmt.Errorf("line %d: expected expression", current.line)
 			}
+
 			return tokens, nil
 		}
 
@@ -1124,10 +1208,13 @@ func (p *configParser) expectType(expected tokenType, description string) (token
 	if current.typ != expected {
 		return token{}, fmt.Errorf("line %d: expected %s", current.line, description)
 	}
+
 	if expected == tokenRBrace {
 		p.pos++
+
 		return current, nil
 	}
+
 	p.pos++
 
 	return current, nil
@@ -1138,6 +1225,7 @@ func (p *configParser) expectIdent(expected string) (token, error) {
 	if current.typ != tokenIdent || current.lit != expected {
 		return token{}, fmt.Errorf("line %d: expected %q", current.line, expected)
 	}
+
 	p.pos++
 
 	return current, nil
@@ -1180,22 +1268,26 @@ func (p *configParser) unclosedNamedBlockError(kind, name string) error {
 func normalizeConfigPublishDirMap(value map[string]any) (*PublishDir, error) {
 	pathValue, ok := value["path"].(string)
 	if !ok || pathValue == "" {
-		return nil, fmt.Errorf("publishDir path must be a string")
+		return nil, errors.New("publishDir path must be a string")
 	}
 
 	publishDir := &PublishDir{Path: pathValue, Mode: "copy"}
+
 	if pattern, ok := value["pattern"]; ok {
 		patternValue, ok := pattern.(string)
 		if !ok {
-			return nil, fmt.Errorf("publishDir pattern must be a string")
+			return nil, errors.New("publishDir pattern must be a string")
 		}
+
 		publishDir.Pattern = patternValue
 	}
+
 	if mode, ok := value["mode"]; ok {
 		modeValue, ok := mode.(string)
 		if !ok {
-			return nil, fmt.Errorf("publishDir mode must be a string")
+			return nil, errors.New("publishDir mode must be a string")
 		}
+
 		publishDir.Mode = modeValue
 	}
 
@@ -1251,6 +1343,7 @@ func expandConfigIncludes(tokens []token, baseDir string, visited map[string]str
 
 			expanded = append(expanded, includeTokens[:len(includeTokens)-1]...)
 			index++
+
 			continue
 		}
 

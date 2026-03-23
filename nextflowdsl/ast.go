@@ -102,7 +102,7 @@ type WFPublish struct {
 	Source string
 }
 
-// IfBlock represents an if/else if/else in a workflow block.
+// IfBlock represents an if/else in a workflow block.
 type IfBlock struct {
 	Condition string
 	Body      []*Call

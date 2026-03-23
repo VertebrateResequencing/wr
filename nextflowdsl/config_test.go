@@ -113,7 +113,9 @@ func TestParseConfig(t *testing.T) {
 		})
 
 		Convey("profile process settings can use params-backed expressions defined later in the profile", func() {
-			cfg, err := ParseConfig(strings.NewReader("profiles { test { process { cpus = params.cpus * 2 } params { cpus = 4 } } }"))
+			source := "profiles { test { process { cpus = params.cpus * 2 } " +
+				"params { cpus = 4 } } }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg.Profiles, ShouldContainKey, "test")
@@ -190,7 +192,9 @@ func TestParseConfig(t *testing.T) {
 		})
 
 		Convey("container engine remains empty when container scopes are absent or disabled", func() {
-			cfg, err := ParseConfig(strings.NewReader("docker { enabled = false }\nsingularity { enabled = false }\nparams { x = 1 }"))
+			source := "docker { enabled = false }\n" +
+				"singularity { enabled = false }\nparams { x = 1 }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg, ShouldNotBeNil)
@@ -246,18 +250,19 @@ func TestParseConfig(t *testing.T) {
 				{name: "trace scopes parse without error", input: "trace { enabled = true }"},
 				{name: "weblog scopes parse without error", input: "weblog { url = 'http://example.com' }"},
 				{
-					name:  "all standard remaining scopes parse together without error",
-					input: "conda {}\ndag {}\nmanifest {}\nnotification {}\nreport {}\ntimeline {}\ntower {}\ntrace {}\nwave {}\nweblog {}",
+					name: "all standard remaining scopes parse together without error",
+					input: "conda {}\ndag {}\nmanifest {}\nnotification {}\n" +
+						"report {}\ntimeline {}\ntower {}\ntrace {}\nwave {}\nweblog {}",
 				},
 			}
 
 			for _, testCase := range testCases {
-				testCase := testCase
 				Convey(testCase.name, func() {
 					cfg, err := ParseConfig(strings.NewReader(testCase.input))
 
 					So(err, ShouldBeNil)
 					So(cfg, ShouldNotBeNil)
+
 					if testCase.expectedParam != "" {
 						So(cfg.Params, ShouldContainKey, testCase.expectedParam)
 						So(cfg.Params[testCase.expectedParam], ShouldEqual, testCase.expectedValue)
@@ -432,7 +437,9 @@ func TestParseConfigContainerScopes(t *testing.T) {
 		})
 
 		Convey("disabled or absent container scopes leave the engine empty", func() {
-			cfg, err := ParseConfig(strings.NewReader("docker { enabled = false }\nsingularity { enabled = false }\nparams { x = 1 }"))
+			source := "docker { enabled = false }\n" +
+				"singularity { enabled = false }\nparams { x = 1 }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg, ShouldNotBeNil)
@@ -493,7 +500,9 @@ func TestParseConfigSelectors(t *testing.T) {
 		})
 
 		Convey("process selectors preserve declaration order", func() {
-			cfg, err := ParseConfig(strings.NewReader("process { withLabel: 'small' { cpus = 1 } ; withLabel: 'big' { cpus = 16 } }"))
+			source := "process { withLabel: 'small' { cpus = 1 } ; " +
+				"withLabel: 'big' { cpus = 16 } }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg.Selectors, ShouldHaveLength, 2)
@@ -523,7 +532,9 @@ func TestParseConfigSelectors(t *testing.T) {
 		})
 
 		Convey("selector settings populate all supported process defaults", func() {
-			cfg, err := ParseConfig(strings.NewReader("process { withLabel: 'big' { memory = '64 GB' ; time = '2h' ; container = 'ubuntu:22.04' ; env { FOO = 'bar' } } }"))
+			source := "process { withLabel: 'big' { memory = '64 GB' ; time = '2h' ; " +
+				"container = 'ubuntu:22.04' ; env { FOO = 'bar' } } }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg.Selectors, ShouldHaveLength, 1)
@@ -579,7 +590,7 @@ func TestParseConfigJ1ProcessDefaults(t *testing.T) {
 			"fair = true\n" +
 			"tag = 'sample'\n" +
 			"stageInMode = 'copy'\n" +
-		"}"))
+			"}"))
 
 		So(err, ShouldBeNil)
 		So(cfg.Process, ShouldNotBeNil)
@@ -612,10 +623,16 @@ func TestParseConfigJ1ProcessDefaults(t *testing.T) {
 func TestParseConfigExecutorScope(t *testing.T) {
 	Convey("ParseConfig handles M1 executor scopes", t, func() {
 		Convey("top-level executor blocks capture name, queueSize, and clusterOptions", func() {
-			cfg, err := ParseConfig(strings.NewReader("executor { name = 'slurm'; queueSize = 100; clusterOptions = '--account=mylab' }"))
+			source := "executor { name = 'slurm'; queueSize = 100; " +
+				"clusterOptions = '--account=mylab' }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
-			So(cfg.Executor, ShouldResemble, map[string]any{"name": "slurm", "queueSize": 100, "clusterOptions": "--account=mylab"})
+			So(cfg.Executor, ShouldResemble, map[string]any{
+				"name":           "slurm",
+				"queueSize":      100,
+				"clusterOptions": "--account=mylab",
+			})
 		})
 
 		Convey("top-level executor blocks capture queue settings", func() {
@@ -633,7 +650,9 @@ func TestParseConfigExecutorScope(t *testing.T) {
 		})
 
 		Convey("profile-scoped executor blocks are retained alongside top-level executor config", func() {
-			cfg, err := ParseConfig(strings.NewReader("executor { name = 'local' }\nprofiles { hpc { executor { name = 'slurm' } } }"))
+			source := "executor { name = 'local' }\n" +
+				"profiles { hpc { executor { name = 'slurm' } } }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg.Executor, ShouldResemble, map[string]any{"name": "local"})
@@ -642,12 +661,18 @@ func TestParseConfigExecutorScope(t *testing.T) {
 		})
 
 		Convey("executor blocks preserve additional supported Nextflow settings", func() {
-			cfg, err := ParseConfig(strings.NewReader("executor { name = 'local'; submitRateLimit = '1 sec' }\nprofiles { hpc { executor { name = 'slurm'; pollInterval = '30 sec'; queueSize = 16 } } }"))
+			source := "executor { name = 'local'; submitRateLimit = '1 sec' }\n" +
+				"profiles { hpc { executor { name = 'slurm'; pollInterval = '30 sec'; queueSize = 16 } } }"
+			cfg, err := ParseConfig(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(cfg.Executor, ShouldResemble, map[string]any{"name": "local", "submitRateLimit": "1 sec"})
 			So(cfg.Profiles, ShouldContainKey, "hpc")
-			So(cfg.Profiles["hpc"].Executor, ShouldResemble, map[string]any{"name": "slurm", "pollInterval": "30 sec", "queueSize": 16})
+			So(cfg.Profiles["hpc"].Executor, ShouldResemble, map[string]any{
+				"name":         "slurm",
+				"pollInterval": "30 sec",
+				"queueSize":    16,
+			})
 		})
 	})
 }

@@ -43,12 +43,23 @@ func TestEvalExprM4NumberMethods(t *testing.T) {
 			{name: "abs returns positive value for negative ints", receiver: -5, method: "abs", expected: 5},
 			{name: "round rounds 3.7 up", receiver: float64(3.7), method: "round", expected: 4},
 			{name: "round rounds 3.2 down", receiver: float64(3.2), method: "round", expected: 3},
-			{name: "intdiv performs integer division", receiver: 7, method: "intdiv", args: []Expr{IntExpr{Value: 2}}, expected: 3},
+			{
+				name:     "intdiv performs integer division",
+				receiver: 7,
+				method:   "intdiv",
+				args:     []Expr{IntExpr{Value: 2}},
+				expected: 3,
+			},
 			{name: "toInteger truncates floats", receiver: float64(3.14), method: "toInteger", expected: 3},
 			{name: "toDouble converts ints to float64", receiver: 42, method: "toDouble", expected: float64(42.0)},
 			{name: "abs preserves zero", receiver: 0, method: "abs", expected: 0},
 			{name: "toLong converts int64 receivers", receiver: int64(42), method: "toLong", expected: int64(42)},
-			{name: "toBigDecimal converts float64 receivers", receiver: float64(3.14), method: "toBigDecimal", expected: float64(3.14)},
+			{
+				name:     "toBigDecimal converts float64 receivers",
+				receiver: float64(3.14),
+				method:   "toBigDecimal",
+				expected: float64(3.14),
+			},
 		}
 
 		for _, testCase := range cases {

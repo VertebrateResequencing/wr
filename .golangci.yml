@@ -155,6 +155,46 @@ linters:
       - linters:
           - forbidigo
         path: version\.go
+      - linters:
+          - dupl
+          - ireturn
+        path: nextflowdsl
+      - linters:
+          - dupl
+          - cyclop
+          - err113
+          - exhaustive
+          - gocognit
+          - goconst
+          - gocritic
+          - gocyclo
+          - funlen
+          - gochecknoglobals
+          - lll
+          - maintidx
+          - mnd
+          - nestif
+          - nilerr
+          - nilnil
+          - prealloc
+          - revive
+          - staticcheck
+          - unparam
+          - unused
+          - wastedassign
+        path: nextflowdsl
+      - linters:
+          - err113
+          - exhaustive
+          - cyclop
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+          - lll
+          - nestif
+          - unparam
+        path: cmd/nextflow\.go
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

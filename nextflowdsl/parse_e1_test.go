@@ -69,7 +69,9 @@ func TestParseE1SkippableStatements(t *testing.T) {
 		})
 
 		Convey("functions with switch statements parse without error", func() {
-			wf, err := Parse(strings.NewReader("def label(x) { switch (x) { case 1: 'one'; break; case 2: 'two'; break; default: 'other' } }"))
+			source := "def label(x) { switch (x) { case 1: 'one'; break; " +
+				"case 2: 'two'; break; default: 'other' } }"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Functions, ShouldHaveLength, 1)
@@ -94,7 +96,9 @@ func TestParseE1SkippableStatements(t *testing.T) {
 		})
 
 		Convey("process scripts containing for-in loops keep raw script text", func() {
-			wf, err := Parse(strings.NewReader("process foo {\nscript:\n\"\"\"\nfor (x in items) {\n    println x\n}\n\"\"\"\n}"))
+			source := "process foo {\nscript:\n\"\"\"\nfor (x in items) {\n" +
+				"    println x\n}\n\"\"\"\n}"
+			wf, err := Parse(strings.NewReader(source))
 
 			So(err, ShouldBeNil)
 			So(wf.Processes, ShouldHaveLength, 1)
@@ -106,6 +110,7 @@ func TestParseE1SkippableStatements(t *testing.T) {
 			expr, err := parseE1TestExpr("{ item -> if (item == null) return null; item.trim() }")
 
 			So(err, ShouldBeNil)
+
 			closure, ok := expr.(ClosureExpr)
 			So(ok, ShouldBeTrue)
 			So(closure.Params, ShouldResemble, []string{"item"})

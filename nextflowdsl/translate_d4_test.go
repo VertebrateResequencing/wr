@@ -196,7 +196,10 @@ func TestTranslateD4(t *testing.T) {
 					},
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{
+						Name: "of",
+						Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}},
+					}}},
 					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
 				}},
 			}
@@ -240,7 +243,10 @@ func TestTranslateD4(t *testing.T) {
 					},
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{
+						Name: "of",
+						Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}},
+					}}},
 					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
 				}},
 			}
@@ -269,7 +275,11 @@ func TestTranslateD4(t *testing.T) {
 
 			secondPath := writeOutput(result.Jobs[1])
 
-			completed, ready, err = CompletedJobsForPending(result.Pending[0], []*jobqueue.Job{result.Jobs[0], result.Jobs[1]}, nil)
+			completed, ready, err = CompletedJobsForPending(
+				result.Pending[0],
+				[]*jobqueue.Job{result.Jobs[0], result.Jobs[1]},
+				nil,
+			)
 			So(err, ShouldBeNil)
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 2)
@@ -326,13 +336,18 @@ func TestTranslateD4(t *testing.T) {
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 12)
 
-			jobs, err := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			jobs, err := TranslatePending(
+				result.Pending[0],
+				completed,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir},
+			)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 12)
 
 			for i, job := range jobs {
 				expectedPath := filepath.Join(baseDir, "nf-work", "r1", "PRODUCE", strconv.Itoa(i), "produced.txt")
 				expectedDep := "nf.r1.PRODUCE." + strconv.Itoa(i)
+
 				So(job.Cmd, ShouldContainSubstring, expectedPath)
 				So(job.Dependencies.DepGroups(), ShouldResemble, []string{expectedDep})
 			}
@@ -405,7 +420,11 @@ func TestTranslateD4(t *testing.T) {
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 12)
 
-			jobs, err := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			jobs, err := TranslatePending(
+				result.Pending[0],
+				completed,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir},
+			)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 12)
 
@@ -490,7 +509,10 @@ func TestTranslateD4(t *testing.T) {
 					},
 				},
 				EntryWF: &WorkflowBlock{Calls: []*Call{
-					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{
+						Name: "of",
+						Args: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}},
+					}}},
 					{Target: "CONSUME", Args: []ChanExpr{ChanRef{Name: "PRODUCE.out"}}},
 					{Target: "REPORT", Args: []ChanExpr{ChanRef{Name: "CONSUME.out"}}},
 				}},
@@ -536,7 +558,11 @@ func TestTranslateD4(t *testing.T) {
 				})
 			}
 
-			consumeJobs, err := TranslatePending(result.Pending[0], produceOutputs, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			consumeJobs, err := TranslatePending(
+				result.Pending[0],
+				produceOutputs,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir},
+			)
 			So(err, ShouldBeNil)
 			So(consumeJobs, ShouldHaveLength, 2)
 
@@ -563,7 +589,11 @@ func TestTranslateD4(t *testing.T) {
 			So(ready, ShouldBeTrue)
 			So(completed, ShouldHaveLength, 2)
 
-			reportJobs, err := TranslatePending(result.Pending[1], completed, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir})
+			reportJobs, err := TranslatePending(
+				result.Pending[1],
+				completed,
+				TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir},
+			)
 			So(err, ShouldBeNil)
 			So(reportJobs, ShouldHaveLength, 2)
 			So(reportJobs[0].Dependencies.DepGroups(), ShouldResemble, []string{"nf.r1.CONSUME.0"})

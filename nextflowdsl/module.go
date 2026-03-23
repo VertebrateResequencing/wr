@@ -154,25 +154,26 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 	}
 
 	cachePath := filepath.Join(r.cacheDir, owner, repo, revision)
-	if ok, err := hasNextflowModuleFiles(cachePath); err != nil {
-		return "", err
+	if ok, hasFilesErr := hasNextflowModuleFiles(cachePath); hasFilesErr != nil {
+		return "", hasFilesErr
 	} else if ok && explicitRevision {
 		return cachePath, nil
 	} else if ok {
-		if err := githubResolverRunGit(cachePath, "pull", "--ff-only"); err == nil {
+		if pullErr := githubResolverRunGit(cachePath, "pull", "--ff-only"); pullErr == nil {
 			return cachePath, nil
 		}
 	}
 
-	if err := os.RemoveAll(cachePath); err != nil {
-		return "", fmt.Errorf("clear module cache %q: %w", cachePath, err)
+	if removeErr := os.RemoveAll(cachePath); removeErr != nil {
+		return "", fmt.Errorf("clear module cache %q: %w", cachePath, removeErr)
 	}
 
-	if err := os.MkdirAll(cachePath, 0o755); err != nil {
-		return "", fmt.Errorf("create module cache %q: %w", cachePath, err)
+	if mkdirErr := os.MkdirAll(cachePath, 0o755); mkdirErr != nil {
+		return "", fmt.Errorf("create module cache %q: %w", cachePath, mkdirErr)
 	}
-	if err := os.MkdirAll(r.cacheDir, 0o755); err != nil {
-		return "", fmt.Errorf("create module cache root %q: %w", r.cacheDir, err)
+
+	if mkdirErr := os.MkdirAll(r.cacheDir, 0o755); mkdirErr != nil {
+		return "", fmt.Errorf("create module cache root %q: %w", r.cacheDir, mkdirErr)
 	}
 
 	args := []string{"clone", "--depth", "1", githubModuleURL(owner, repo), cachePath}
@@ -180,12 +181,13 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 		args = []string{"clone", githubModuleURL(owner, repo), cachePath}
 	}
 
-	if err := githubResolverRunGit(r.cacheDir, args...); err != nil {
-		return "", fmt.Errorf("fetch failure for %q: %w", spec, err)
+	if fetchErr := githubResolverRunGit(r.cacheDir, args...); fetchErr != nil {
+		return "", fmt.Errorf("fetch failure for %q: %w", spec, fetchErr)
 	}
+
 	if explicitRevision {
-		if err := githubResolverRunGit(cachePath, "checkout", revision); err != nil {
-			return "", fmt.Errorf("fetch failure for %q: %w", spec, err)
+		if checkoutErr := githubResolverRunGit(cachePath, "checkout", revision); checkoutErr != nil {
+			return "", fmt.Errorf("fetch failure for %q: %w", spec, checkoutErr)
 		}
 	}
 
@@ -193,6 +195,7 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	if !hasFiles {
 		return "", fmt.Errorf("fetch failure for %q: cloned module did not contain any .nf files", spec)
 	}
@@ -202,6 +205,7 @@ func (r githubResolver) Resolve(spec string) (string, error) {
 
 func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitRevision bool, err error) {
 	repoSpec, revisionSpec, hasRevision := strings.Cut(spec, "@")
+
 	repoSpec, err = normalizeGitHubRepoSpec(repoSpec)
 	if err != nil {
 		return "", "", "", false, err
@@ -211,6 +215,7 @@ func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitR
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", false, fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
+
 	if !isValidGitHubRepoPathPart(parts[0]) || !isValidGitHubRepoPathPart(parts[1]) {
 		return "", "", "", false, fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
@@ -219,6 +224,7 @@ func parseGitHubModuleSpec(spec string) (owner, repo, revision string, explicitR
 		if revisionSpec == "" {
 			return "", "", "", false, fmt.Errorf("unsupported GitHub module spec %q", spec)
 		}
+
 		if strings.ContainsRune(revisionSpec, filepath.Separator) || strings.Contains(revisionSpec, "/") {
 			return "", "", "", false, fmt.Errorf("unsupported GitHub revision %q", revisionSpec)
 		}
@@ -242,26 +248,31 @@ func hasNextflowModuleFiles(path string) (bool, error) {
 
 		return false, fmt.Errorf("stat module cache %q: %w", path, err)
 	}
+
 	if !info.IsDir() {
 		return false, fmt.Errorf("module cache %q is not a directory", path)
 	}
 
 	var found bool
+
 	walkErr := filepath.WalkDir(path, func(currentPath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
+
 		if entry.IsDir() {
 			return nil
 		}
+
 		if filepath.Ext(currentPath) == ".nf" {
 			found = true
+
 			return filepath.SkipAll
 		}
 
 		return nil
 	})
-	if walkErr != nil && walkErr != filepath.SkipAll {
+	if walkErr != nil && !errors.Is(walkErr, filepath.SkipAll) {
 		return false, fmt.Errorf("scan module cache %q: %w", path, walkErr)
 	}
 
@@ -281,11 +292,15 @@ func normalizeGitHubRepoSpec(spec string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
-	if !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+
+	if !strings.EqualFold(parsed.Host, "github.com") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+
 		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
 
 	trimmedPath := strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/")
+
 	parts := strings.Split(trimmedPath, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)

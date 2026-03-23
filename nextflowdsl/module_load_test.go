@@ -14,9 +14,10 @@ func TestLoadWorkflowFilePreservesImportedEnums(t *testing.T) {
 		workflowPath := filepath.Join(tempDir, "main.nf")
 		moduleDir := filepath.Join(tempDir, "modules")
 		modulePath := filepath.Join(moduleDir, "helper.nf")
+		workflowContent := "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
 		So(os.WriteFile(modulePath, []byte("enum Day { MONDAY, TUESDAY }\nworkflow helper { }\n"), 0o644), ShouldBeNil)
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)
@@ -37,10 +38,15 @@ func TestLoadWorkflowFilePreservesImportedWorkflowMetadata(t *testing.T) {
 		workflowPath := filepath.Join(tempDir, "main.nf")
 		moduleDir := filepath.Join(tempDir, "modules")
 		modulePath := filepath.Join(moduleDir, "helper.nf")
+		workflowContent := "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"
+		moduleContent := "output { samples { path 'results/*.txt' } }\n" +
+			"params { input = '/data/default.txt' }\n" +
+			"record Sample { id: String; reads: Path }\n" +
+			"workflow helper {\npublish:\nout = helper.out\nonComplete:\nprintln 'done'\nonError:\nprintln 'failed'\n}\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
-		So(os.WriteFile(modulePath, []byte("output { samples { path 'results/*.txt' } }\nparams { input = '/data/default.txt' }\nrecord Sample { id: String; reads: Path }\nworkflow helper {\npublish:\nout = helper.out\nonComplete:\nprintln 'done'\nonError:\nprintln 'failed'\n}\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte(moduleContent), 0o644), ShouldBeNil)
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)
 		So(err, ShouldBeNil)
@@ -87,10 +93,13 @@ func TestLoadWorkflowFileRewritesAliasedWorkflowEmitRefs(t *testing.T) {
 		workflowPath := filepath.Join(tempDir, "main.nf")
 		moduleDir := filepath.Join(tempDir, "modules")
 		modulePath := filepath.Join(moduleDir, "pack.nf")
+		workflowContent := "include { helper as aliased ; pack } from './modules/pack.nf'\nworkflow { pack() }\n"
+		moduleContent := "process helper {\noutput:\nval 'hello', emit: greeting\nscript:\n'echo hello'\n}\n" +
+			"workflow pack {\nhelper()\nemit:\nresult = helper.out.greeting\n}\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper as aliased ; pack } from './modules/pack.nf'\nworkflow { pack() }\n"), 0o644), ShouldBeNil)
-		So(os.WriteFile(modulePath, []byte("process helper {\noutput:\nval 'hello', emit: greeting\nscript:\n'echo hello'\n}\nworkflow pack {\nhelper()\nemit:\nresult = helper.out.greeting\n}\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte(moduleContent), 0o644), ShouldBeNil)
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)
 		So(err, ShouldBeNil)
@@ -107,11 +116,15 @@ func TestLoadWorkflowFileRejectsImportCycles(t *testing.T) {
 		moduleDir := filepath.Join(tempDir, "modules")
 		helperPath := filepath.Join(moduleDir, "helper.nf")
 		helperImplPath := filepath.Join(moduleDir, "helper_impl.nf")
+		workflowContent := "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"
+		helperContent := "include { helper_impl } from './helper_impl.nf'\nworkflow helper { helper_impl() }\n"
+		helperImplContent := "include { helper } from './helper.nf'\n" +
+			"process helper_impl { script: 'echo hi' }\nworkflow helper_impl { helper() }\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
-		So(os.WriteFile(helperPath, []byte("include { helper_impl } from './helper_impl.nf'\nworkflow helper { helper_impl() }\n"), 0o644), ShouldBeNil)
-		So(os.WriteFile(helperImplPath, []byte("include { helper } from './helper.nf'\nprocess helper_impl { script: 'echo hi' }\nworkflow helper_impl { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
+		So(os.WriteFile(helperPath, []byte(helperContent), 0o644), ShouldBeNil)
+		So(os.WriteFile(helperImplPath, []byte(helperImplContent), 0o644), ShouldBeNil)
 
 		_, err := LoadWorkflowFile(workflowPath, nil)
 		So(err, ShouldNotBeNil)
@@ -125,10 +138,12 @@ func TestLoadWorkflowFilePreservesImportedProcessLabels(t *testing.T) {
 		workflowPath := filepath.Join(tempDir, "main.nf")
 		moduleDir := filepath.Join(tempDir, "modules")
 		modulePath := filepath.Join(moduleDir, "helper.nf")
+		workflowContent := "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"
+		moduleContent := "process helper {\nlabel 'big_mem'\nlabel 'long_time'\nscript:\n'echo hello'\n}\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
-		So(os.WriteFile(modulePath, []byte("process helper {\nlabel 'big_mem'\nlabel 'long_time'\nscript:\n'echo hello'\n}\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte(moduleContent), 0o644), ShouldBeNil)
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)
 		So(err, ShouldBeNil)
@@ -144,10 +159,14 @@ func TestLoadWorkflowFilePreservesImportedWorkflowConditions(t *testing.T) {
 		workflowPath := filepath.Join(tempDir, "main.nf")
 		moduleDir := filepath.Join(tempDir, "modules")
 		modulePath := filepath.Join(moduleDir, "helper.nf")
+		workflowContent := "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"
+		moduleContent := "process A {\nscript:\n'echo a'\n}\n" +
+			"process B {\nscript:\n'echo b'\n}\n" +
+			"workflow helper {\nif( params.choice == 'a' ) {\nA()\n} else {\nB()\n}\n}\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
-		So(os.WriteFile(modulePath, []byte("process A {\nscript:\n'echo a'\n}\nprocess B {\nscript:\n'echo b'\n}\nworkflow helper {\nif( params.choice == 'a' ) {\nA()\n} else {\nB()\n}\n}\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
+		So(os.WriteFile(modulePath, []byte(moduleContent), 0o644), ShouldBeNil)
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)
 		So(err, ShouldBeNil)
@@ -171,9 +190,10 @@ func TestLoadWorkflowFilePreservesImportedClosureParams(t *testing.T) {
 		workflowPath := filepath.Join(tempDir, "main.nf")
 		moduleDir := filepath.Join(tempDir, "modules")
 		modulePath := filepath.Join(moduleDir, "helper.nf")
+		workflowContent := "include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"
 
 		So(os.MkdirAll(moduleDir, 0o755), ShouldBeNil)
-		So(os.WriteFile(workflowPath, []byte("include { helper } from './modules/helper.nf'\nworkflow { helper() }\n"), 0o644), ShouldBeNil)
+		So(os.WriteFile(workflowPath, []byte(workflowContent), 0o644), ShouldBeNil)
 		So(os.WriteFile(modulePath, []byte("process sink {\ninput:\nval x\nscript:\n'echo ${x}'\n}\nworkflow helper {\nsink(Channel.of([id: 'a'], [id: 'b']).map { item -> item.id })\n}\n"), 0o644), ShouldBeNil)
 
 		wf, err := LoadWorkflowFile(workflowPath, nil)

@@ -55,7 +55,9 @@ func TestResolveChannelD5(t *testing.T) {
 				So(err, ShouldBeNil)
 			}
 
-			items, err := ResolveChannel(ChannelFactory{Name: "fromPath", Args: []Expr{StringExpr{Value: filepath.Join(dataDir, "*.fq")}}}, "/work")
+			items, err := ResolveChannel(ChannelFactory{Name: "fromPath", Args: []Expr{
+				StringExpr{Value: filepath.Join(dataDir, "*.fq")},
+			}}, "/work")
 
 			So(err, ShouldBeNil)
 			So(items, ShouldResemble, []any{
@@ -72,12 +74,20 @@ func TestResolveChannelD5(t *testing.T) {
 				So(err, ShouldBeNil)
 			}
 
-			items, err := ResolveChannel(ChannelFactory{Name: "fromFilePairs", Args: []Expr{StringExpr{Value: filepath.Join(dataDir, "*_{1,2}.fq")}}}, "/work")
+			items, err := ResolveChannel(ChannelFactory{Name: "fromFilePairs", Args: []Expr{
+				StringExpr{Value: filepath.Join(dataDir, "*_{1,2}.fq")},
+			}}, "/work")
 
 			So(err, ShouldBeNil)
 			So(items, ShouldHaveLength, 2)
-			So(items[0], ShouldResemble, []string{filepath.Join(dataDir, "sample1_1.fq"), filepath.Join(dataDir, "sample1_2.fq")})
-			So(items[1], ShouldResemble, []string{filepath.Join(dataDir, "sample2_1.fq"), filepath.Join(dataDir, "sample2_2.fq")})
+			So(items[0], ShouldResemble, []string{
+				filepath.Join(dataDir, "sample1_1.fq"),
+				filepath.Join(dataDir, "sample1_2.fq"),
+			})
+			So(items[1], ShouldResemble, []string{
+				filepath.Join(dataDir, "sample2_1.fq"),
+				filepath.Join(dataDir, "sample2_2.fq"),
+			})
 		})
 
 		Convey("Channel.value and Channel.empty resolve singleton and zero-item channels", func() {
@@ -273,7 +283,13 @@ func TestResolveChannelD6(t *testing.T) {
 				Operators: []ChannelOperator{{Name: "take", Args: []Expr{IntExpr{Value: 2}}}},
 			}, "/work")
 			filterItems, filterErr := ResolveChannel(ChannelChain{
-				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 4}, IntExpr{Value: 5}}},
+				Source: ChannelFactory{Name: "of", Args: []Expr{
+					IntExpr{Value: 1},
+					IntExpr{Value: 2},
+					IntExpr{Value: 3},
+					IntExpr{Value: 4},
+					IntExpr{Value: 5},
+				}},
 				Operators: []ChannelOperator{{Name: "filter", Closure: "it > 3"}},
 			}, "/work")
 			mapItems, mapErr := ResolveChannel(ChannelChain{
@@ -351,7 +367,7 @@ func TestResolveChannelD6(t *testing.T) {
 
 			Convey("passes all items through when N exceeds channel size", func() {
 				items, err := ResolveChannel(ChannelChain{
-					Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+					Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
 					Operators: []ChannelOperator{{Name: "randomSample", Args: []Expr{IntExpr{Value: 5}}}},
 				}, "/work")
 
@@ -528,7 +544,13 @@ func TestResolveChannelD6(t *testing.T) {
 			Convey("distinct removes only consecutive duplicates", func() {
 				items, err := ResolveChannel(ChannelChain{
 					Source: ChannelFactory{Name: "of", Args: []Expr{
-						IntExpr{Value: 1}, IntExpr{Value: 1}, IntExpr{Value: 2}, IntExpr{Value: 2}, IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 1},
+						IntExpr{Value: 1},
+						IntExpr{Value: 1},
+						IntExpr{Value: 2},
+						IntExpr{Value: 2},
+						IntExpr{Value: 3},
+						IntExpr{Value: 1},
+						IntExpr{Value: 1},
 					}},
 					Operators: []ChannelOperator{{Name: "distinct"}},
 				}, "/work")
@@ -637,6 +659,7 @@ func TestResolveChannelD6(t *testing.T) {
 				wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('1.5', '2.5').toFloat()) }"))
 
 				So(err, ShouldBeNil)
+
 				items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
 
 				So(resolveErr, ShouldBeNil)
@@ -647,6 +670,7 @@ func TestResolveChannelD6(t *testing.T) {
 				wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('100', '200').toLong()) }"))
 
 				So(err, ShouldBeNil)
+
 				items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
 
 				So(resolveErr, ShouldBeNil)
@@ -657,6 +681,7 @@ func TestResolveChannelD6(t *testing.T) {
 				wf, err := Parse(strings.NewReader("workflow { foo(Channel.of('1.5', '2.5').toDouble()) }"))
 
 				So(err, ShouldBeNil)
+
 				items, resolveErr := ResolveChannel(wf.EntryWF.Calls[0].Args[0], "/work")
 
 				So(resolveErr, ShouldBeNil)
@@ -666,7 +691,10 @@ func TestResolveChannelD6(t *testing.T) {
 			Convey("transpose expands nested list elements into separate items", func() {
 				items, err := ResolveChannel(ChannelChain{
 					Source: ChannelFactory{Name: "of", Args: []Expr{
-						ListExpr{Elements: []Expr{IntExpr{Value: 1}, ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+						ListExpr{Elements: []Expr{
+							IntExpr{Value: 1},
+							ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}},
+						}},
 						ListExpr{Elements: []Expr{IntExpr{Value: 2}, ListExpr{Elements: []Expr{StringExpr{Value: "c"}}}}},
 					}},
 					Operators: []ChannelOperator{{Name: "transpose"}},
@@ -700,7 +728,10 @@ func TestResolveChannelD6(t *testing.T) {
 			Convey("transpose supports explicit by indexes", func() {
 				items, err := ResolveChannel(ChannelChain{
 					Source: ChannelFactory{Name: "of", Args: []Expr{
-						ListExpr{Elements: []Expr{IntExpr{Value: 1}, ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}}}},
+						ListExpr{Elements: []Expr{
+							IntExpr{Value: 1},
+							ListExpr{Elements: []Expr{StringExpr{Value: "a"}, StringExpr{Value: "b"}}},
+						}},
 						ListExpr{Elements: []Expr{IntExpr{Value: 2}, ListExpr{Elements: []Expr{StringExpr{Value: "c"}}}}},
 					}},
 					Operators: []ChannelOperator{{
@@ -781,7 +812,13 @@ func TestResolveChannelD6(t *testing.T) {
 
 		Convey("min reduces a channel to its minimum item", func() {
 			items, err := ResolveChannel(ChannelChain{
-				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 4}, IntExpr{Value: 1}, IntExpr{Value: 5}}},
+				Source: ChannelFactory{Name: "of", Args: []Expr{
+					IntExpr{Value: 3},
+					IntExpr{Value: 1},
+					IntExpr{Value: 4},
+					IntExpr{Value: 1},
+					IntExpr{Value: 5},
+				}},
 				Operators: []ChannelOperator{{Name: "min"}},
 			}, "/work")
 
@@ -791,7 +828,13 @@ func TestResolveChannelD6(t *testing.T) {
 
 		Convey("max reduces a channel to its maximum item", func() {
 			items, err := ResolveChannel(ChannelChain{
-				Source:    ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 1}, IntExpr{Value: 4}, IntExpr{Value: 1}, IntExpr{Value: 5}}},
+				Source: ChannelFactory{Name: "of", Args: []Expr{
+					IntExpr{Value: 3},
+					IntExpr{Value: 1},
+					IntExpr{Value: 4},
+					IntExpr{Value: 1},
+					IntExpr{Value: 5},
+				}},
 				Operators: []ChannelOperator{{Name: "max"}},
 			}, "/work")
 
@@ -822,7 +865,9 @@ func TestResolveChannelD6(t *testing.T) {
 			}
 
 			var stderr string
+
 			items := []channelItem{}
+
 			var err error
 
 			stderr = captureParseStderr(func() {
@@ -923,10 +968,14 @@ func TestPendingChannelOperatorsL2(t *testing.T) {
 
 		Convey("collectFile writes completed items into a single collected file", func() {
 			workDir := t.TempDir()
-			items, err := collectFileChannelItems([]channelItem{{value: "alpha"}, {value: "beta"}, {value: "gamma"}}, ChannelOperator{
-				Name: "collectFile",
-				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "name"}}, Values: []Expr{StringExpr{Value: "out.txt"}}}},
-			}, workDir)
+			items, err := collectFileChannelItems(
+				[]channelItem{{value: "alpha"}, {value: "beta"}, {value: "gamma"}},
+				ChannelOperator{
+					Name: "collectFile",
+					Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "name"}}, Values: []Expr{StringExpr{Value: "out.txt"}}}},
+				},
+				workDir,
+			)
 
 			So(err, ShouldBeNil)
 			So(items, ShouldHaveLength, 1)
@@ -977,12 +1026,16 @@ func TestPendingChannelOperatorsL2(t *testing.T) {
 			workDir := t.TempDir()
 			left := filepath.Join(workDir, "r1.fq")
 			right := filepath.Join(workDir, "r2.fq")
+
 			So(os.WriteFile(left, []byte("@r1/1\nACGT\n+\n!!!!\n@r2/1\nTGCA\n+\n####\n"), 0o600), ShouldBeNil)
 			So(os.WriteFile(right, []byte("@r1/2\nTTTT\n+\n$$$$\n@r2/2\nCCCC\n+\n%%%%\n"), 0o600), ShouldBeNil)
 
 			items, err := splitFASTQChannelItems([]channelItem{{value: []string{left, right}}}, ChannelOperator{
 				Name: "splitFastq",
-				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}, StringExpr{Value: "pe"}}, Values: []Expr{IntExpr{Value: 1}, BoolExpr{Value: true}}}},
+				Args: []Expr{MapExpr{Keys: []Expr{StringExpr{Value: "by"}, StringExpr{Value: "pe"}}, Values: []Expr{
+					IntExpr{Value: 1},
+					BoolExpr{Value: true},
+				}}},
 			})
 
 			So(err, ShouldBeNil)
