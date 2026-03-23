@@ -45,7 +45,7 @@ Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>` (spaceship).
 Logical: `&&`, `||`, `!`.
 
 ### SYN-bitwise
-Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>`.
+Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>` (unsigned right shift).
 
 ### SYN-ternary
 Ternary: `condition ? valueIfTrue : valueIfFalse`.
@@ -66,10 +66,40 @@ Find operator: `string =~ /pattern/`. Returns matcher (truthy if matches).
 Match operator: `string ==~ /pattern/`. Returns true if entire string matches.
 
 ### SYN-membership
-Membership: `element in collection`, negated: `!(element in collection)`.
+Membership: `element in collection`, negated: `element !in collection`.
+Both `in` and `!in` are distinct binary operators.
 
 ### SYN-instanceof
-Type check: `value instanceof Type`, `value as Type` (cast).
+Type check: `value instanceof Type`, `value !instanceof Type` (negated),
+`value as Type` (cast). Both `instanceof` and `!instanceof` are distinct
+binary operators.
 
 ### SYN-assign-compound
 Compound assignment: `+=`, `-=`, `*=`, `/=`, etc.
+
+## Expression Precedence
+
+### SYN-precedence
+Operator precedence from highest to lowest:
+1. parentheses
+2. property expressions (`.`, `*.`, `?.`)
+3. function calls
+4. index expressions (`[]`)
+5. `~`, `!`
+6. `**`
+7. `+`, `-` (unary)
+8. `*`, `/`, `%`
+9. `+`, `-` (binary)
+10. `<<`, `>>>`, `>>`, `..`, `..<`
+11. `as`
+12. `instanceof`, `!instanceof`
+13. `<`, `>`, `<=`, `>=`, `in`, `!in`
+14. `==`, `!=`, `<=>`
+15. `=~`, `==~`
+16. `&`
+17. `^`
+18. `|`
+19. `&&`
+20. `||`
+21. `?:` (ternary)
+22. `?:` (elvis)

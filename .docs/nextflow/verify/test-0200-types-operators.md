@@ -25,16 +25,17 @@ For each feature ID in nf-0200-types-operators.md, determine its classification.
   SYN-compare-identical, SYN-compare-not-identical
 - SYN-log-and, SYN-log-or
 - SYN-bitwise-and, SYN-bitwise-or, SYN-bitwise-xor,
-  SYN-bitwise-lshift, SYN-bitwise-rshift
+  SYN-bitwise-lshift, SYN-bitwise-rshift, SYN-bitwise-urshift
 - SYN-ternary, SYN-elvis
 - SYN-regex, SYN-regex-find, SYN-regex-match
 - SYN-range, SYN-range-exclusive
-- SYN-instanceof
-- SYN-in
+- SYN-instanceof, SYN-not-instanceof
+- SYN-in, SYN-not-in
 - SYN-cast, SYN-as-cast
 - SYN-null-safe, SYN-spread
 - SYN-index, SYN-index-negative, SYN-index-range
 - SYN-assign-eq, SYN-assign-compound
+- SYN-precedence
 
 ### Output format
 

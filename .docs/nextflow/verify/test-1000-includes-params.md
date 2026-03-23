@@ -18,7 +18,7 @@ For each feature ID in nf-1000-includes-params.md, determine its classification.
 
 - INCL-include, INCL-selective, INCL-alias, INCL-multiple,
   INCL-relative-path, INCL-plugin, INCL-remote, INCL-addParams
-- PARAM-block, PARAM-dot-assign, PARAM-cli-override,
+- PARAM-block, PARAM-typed-block, PARAM-dot-assign, PARAM-cli-override,
   PARAM-file-json, PARAM-file-yaml, PARAM-nested
 - SYN-enum, SYN-record
 

@@ -11,7 +11,10 @@ For each feature ID in nf-0300-statements.md, determine its classification.
 
 1. Check evalStatement (groovy.go line 255) for each statement type
 2. Verify the statement type is parsed and evaluated
-3. Classify per 00-instructions.md criteria
+3. Note: STMT-for, STMT-while, STMT-switch, STMT-break, STMT-continue,
+   and `finally` clause are ⚠️NON-STRICT (not in syntax.html strict mode).
+   Classify them as normal but note the non-strict status.
+4. Classify per 00-instructions.md criteria
 
 ### Features to classify
 
