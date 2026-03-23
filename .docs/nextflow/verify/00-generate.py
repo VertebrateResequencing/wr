@@ -149,13 +149,21 @@ PAGES_CONFIG = [
                 "number": "1200", "slug": "input-qualifiers",
                 "title": "Input Qualifiers & Options",
                 "prefix": "INP",
-                "heading_exact": ["Inputs"],
+                "extract_mode": "dt_sectioned",
+                "section_prefix_map": {
+                    "Inputs and outputs (legacy)": ("INP", ""),
+                },
+                "section_h3_filter": {"Inputs"},
             },
             {
                 "number": "1300", "slug": "output-qualifiers",
                 "title": "Output Qualifiers & Options",
                 "prefix": "OUT",
-                "heading_exact": ["Outputs"],
+                "extract_mode": "dt_sectioned",
+                "section_prefix_map": {
+                    "Inputs and outputs (legacy)": ("OUT", ""),
+                },
+                "section_h3_filter": {"Outputs"},
             },
             {
                 "number": "1400", "slug": "dir-resources",
@@ -336,6 +344,14 @@ EXTRA_FILES = [
         "prefix": "SYN",
         "source_url": "https://nextflow.io/docs/latest/reference/syntax.html",
         "heading_filter": ["deprecat"],
+        "manual_features": [
+            ("SYN-deprecated-addParams",
+             "addParams and params clauses of include declarations"),
+            ("SYN-deprecated-when-section",
+             "when: section of a process definition"),
+            ("SYN-deprecated-shell-section",
+             "shell: section of a process definition"),
+        ],
     },
 ]
 
@@ -349,19 +365,20 @@ class PageContentExtractor(HTMLParser):
 
     Returns:
         headings: [(level, text)]
-        dt_items: [(parent_h2_text, dt_text)]
+        dt_items: [(parent_h2_text, parent_h3_text, dt_text)]
         li_items: [(parent_h2_text, li_text)]
     """
 
     def __init__(self):
         super().__init__()
         self.headings = []       # [(level, text)]
-        self.dt_items = []       # [(parent_h2, text)]
+        self.dt_items = []       # [(parent_h2, parent_h3, text)]
         self.li_items = []       # [(parent_h2, text)]
         self._in_tag = None      # current tag being captured
         self._tag_level = 0      # heading level if in h tag
         self._cur = []           # text accumulator
         self._parent_h2 = ""     # most recent H2 text
+        self._parent_h3 = ""     # most recent H3 text
         self._skip = {"script", "style", "nav", "footer"}
         self._skip_depth = 0
 
@@ -391,11 +408,15 @@ class PageContentExtractor(HTMLParser):
                 self.headings.append((self._tag_level, text))
                 if self._tag_level == 2:
                     self._parent_h2 = text
+                    self._parent_h3 = ""
+                elif self._tag_level == 3:
+                    self._parent_h3 = text
             self._in_tag = None
         elif self._in_tag == "dt" and tag == "dt":
             text = "".join(self._cur).strip()
             if text:
-                self.dt_items.append((self._parent_h2, text))
+                self.dt_items.append(
+                    (self._parent_h2, self._parent_h3, text))
             self._in_tag = None
         elif self._in_tag == "li" and tag == "li":
             text = "".join(self._cur).strip()
@@ -466,9 +487,10 @@ def heading_to_feature_id(heading_text, prefix):
 _OP_MAP = {
     "+": "plus", "-": "minus", "*": "multiply", "/": "divide",
     "%": "mod", "[]": "getAt", "in": "in", "!in": "notIn",
-    "in, !in": "in", "<<": "leftShift", ">>": "rightShift",
+    "in, !in": "membership", "<<": "leftShift", ">>": "rightShift",
     "**": "power", "<=>": "compareTo", "==": "equals",
-    "!=": "notEquals",
+    "!=": "notEquals", "~": "bitwiseNegate",
+    "=~": "find", "==~": "match",
 }
 
 
@@ -501,8 +523,11 @@ def dt_to_feature_id(dt_text, prefix, section_slug=""):
             return f"{prefix}-{section_slug}-{name}"
         return f"{prefix}-{name}"
 
-    # Operator style: '+ : (...) -> ...' or 'in, !in : ...'
-    op_match = re.match(r'^([+\-*/\[\]<>=!%&|,\s]+)\s*:', clean)
+    # Operator style: '+ : (...) -> ...' or '~ : ...'
+    op_match = re.match(r'^([+\-*/\[\]<>=!%&|~,\s]+)\s*:', clean)
+    # Also match word-based operators: 'in, !in : ...'
+    if not op_match:
+        op_match = re.match(r'^((?:!?in)(?:,\s*!?in)*)\s*:', clean)
     if op_match:
         op = op_match.group(1).strip()
         slug = _OP_MAP.get(op, op.replace(" ", ""))
@@ -729,7 +754,7 @@ def cmd_coverage(_args):
                       if c.get("extract_mode") in ("dt", "dt_sectioned")]
         if dt_configs or exact_claimed_sections:
             unclaimed_dt = []
-            for section_h2, text in dt_items:
+            for section_h2, _h3, text in dt_items:
                 # Implicitly covered if parent section is heading_exact claimed
                 if section_h2.lower().strip() in exact_claimed_sections:
                     continue
@@ -832,7 +857,7 @@ def _extract_from_dt_flat(dt_items, file_conf, seen_ids):
     prefix = file_conf["prefix"]
     features = []
 
-    for _section, text in dt_items:
+    for _section, _h3, text in dt_items:
         fid = dt_to_feature_id(text, prefix)
         if fid and fid not in seen_ids:
             seen_ids.add(fid)
@@ -847,14 +872,21 @@ def _extract_from_dt_sectioned(dt_items, file_conf, seen_ids):
     Uses section_prefix_map if provided, otherwise derives section slug
     from the H2 heading text.  When section_prefix_map is present, only
     DTs from listed sections are included (implicit filter).
+
+    section_h3_filter: optional set of H3 names to restrict DTs to.
     """
     prefix = file_conf["prefix"]
     section_map = file_conf.get("section_prefix_map", {})
+    h3_filter = file_conf.get("section_h3_filter")
     features = []
 
-    for section_h2, text in dt_items:
+    for section_h2, section_h3, text in dt_items:
         # When section_map is set, skip sections not in the map
         if section_map and section_h2 not in section_map:
+            continue
+
+        # When h3_filter is set, skip DTs not under a matching H3
+        if h3_filter and section_h3 not in h3_filter:
             continue
 
         # Determine prefix and section slug for this DT

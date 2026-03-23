@@ -16,11 +16,11 @@ For each feature ID in nf-0350-deprecations.md, determine its classification.
 
 ### Features to classify
 
-- SYN-deprecations
+- SYN-deprecated-addParams, SYN-deprecated-when-section, SYN-deprecated-shell-section, SYN-deprecations
 
 ### Output format
 
 ```
-SYN-deprecations: SUPPORTED | reason
+SYN-deprecated-addParams: SUPPORTED | reason
 ...
 ```

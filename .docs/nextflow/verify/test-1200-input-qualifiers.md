@@ -16,11 +16,12 @@ For each feature ID in nf-1200-input-qualifiers.md, determine its classification
 
 ### Features to classify
 
-- INP-inputs
+- INP-val, INP-file, INP-path, INP-arity, INP-name
+  INP-stageAs, INP-env, INP-stdin, INP-tuple
 
 ### Output format
 
 ```
-INP-inputs: SUPPORTED | reason
+INP-val: SUPPORTED | reason
 ...
 ```
