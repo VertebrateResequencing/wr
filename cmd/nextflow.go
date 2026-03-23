@@ -373,6 +373,7 @@ func followNextflowWorkflow(
 	terminalSuccessPending := false
 	terminalPendingPending := false
 	displayedJobKeys := make(map[string]struct{})
+	stoppedFinishLimitGroups := make(map[string]struct{})
 	if outputWriter == nil {
 		outputWriter = io.Discard
 	}
@@ -405,6 +406,10 @@ func followNextflowWorkflow(
 		}
 		for _, job := range newlyTerminalJobs {
 			displayedJobKeys[job.Key()] = struct{}{}
+		}
+
+		if err = stopFinishStrategyLimitGroups(jq, buriedJobs, stoppedFinishLimitGroups); err != nil {
+			return err
 		}
 
 		progressed := false
@@ -634,6 +639,36 @@ func compareInstanceIndexKeys(left, right []int) int {
 	}
 
 	return 0
+}
+
+func stopFinishStrategyLimitGroups(jq nextflowJobManager, buriedJobs []*jobqueue.Job, stopped map[string]struct{}) error {
+	for _, job := range buriedJobs {
+		for _, limitGroup := range job.LimitGroups {
+			finishGroup := nextflowFinishLimitGroup(limitGroup)
+			if finishGroup == "" {
+				continue
+			}
+			if _, ok := stopped[finishGroup]; ok {
+				continue
+			}
+
+			if _, err := jq.GetOrSetLimitGroup(finishGroup + ":0"); err != nil {
+				return fmt.Errorf("failed to stop finish-strategy jobs for %s: %w", job.RepGroup, err)
+			}
+			stopped[finishGroup] = struct{}{}
+		}
+	}
+
+	return nil
+}
+
+func nextflowFinishLimitGroup(limitGroup string) string {
+	name, _, _ := strings.Cut(limitGroup, ":")
+	if strings.HasPrefix(name, "nf-finish-") {
+		return name
+	}
+
+	return ""
 }
 
 func addNextflowPendingHelper(
@@ -937,6 +972,7 @@ type nextflowJobQuerier interface {
 type nextflowJobManager interface {
 	nextflowJobQuerier
 	Delete(jes []*jobqueue.JobEssence) (int, error)
+	GetOrSetLimitGroup(group string) (int, error)
 }
 
 type nextflowRepGroup struct {

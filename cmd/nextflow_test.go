@@ -34,6 +34,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1625,6 +1626,48 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 			So(queue.added, ShouldHaveLength, 1)
 			So(*sleeps, ShouldResemble, []time.Duration{75 * time.Millisecond, 75 * time.Millisecond, 75 * time.Millisecond, 75 * time.Millisecond})
 		})
+
+		Convey("buried finish-strategy jobs zero their limit group", func() {
+			finishJob := &jobqueue.Job{
+				RepGroup:    "nf.wf.r1.A",
+				LimitGroups: []string{"nf-finish-A-r1"},
+				State:       jobqueue.JobStateBuried,
+			}
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{buried: []*jobqueue.Job{finishJob}}}}
+
+			_, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+
+			err := followNextflowWorkflow(queue, "nf.wf.r1.", nil, nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: "wf"}, 25*time.Millisecond, io.Discard)
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "buried")
+			So(queue.limitGroupCalls, ShouldResemble, []string{"nf-finish-A-r1:0"})
+		})
+
+		Convey("buried finish-strategy jobs do not stop other processes from continuing", func() {
+			finishJob := &jobqueue.Job{
+				RepGroup:    "nf.wf.r1.A",
+				LimitGroups: []string{"nf-finish-A-r1"},
+				State:       jobqueue.JobStateBuried,
+			}
+			otherRunning := &jobqueue.Job{RepGroup: "nf.wf.r1.B", State: jobqueue.JobStateRunning}
+			otherComplete := &jobqueue.Job{RepGroup: "nf.wf.r1.B", State: jobqueue.JobStateComplete}
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{buried: []*jobqueue.Job{finishJob}, incomplete: []*jobqueue.Job{otherRunning}},
+				{buried: []*jobqueue.Job{finishJob}, complete: []*jobqueue.Job{otherComplete}},
+			}}
+
+			sleeps, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+
+			err := followNextflowWorkflow(queue, "nf.wf.r1.", nil, nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: "wf"}, 25*time.Millisecond, io.Discard)
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "buried")
+			So(queue.limitGroupCalls, ShouldResemble, []string{"nf-finish-A-r1:0"})
+			So(*sleeps, ShouldResemble, []time.Duration{25 * time.Millisecond})
+		})
 	})
 }
 
@@ -2151,6 +2194,7 @@ func cloneJobs(jobs []*jobqueue.Job) []*jobqueue.Job {
 			Cmd:             job.Cmd,
 			Cwd:             job.Cwd,
 			CwdMatters:      job.CwdMatters,
+			LimitGroups:     append([]string{}, job.LimitGroups...),
 			RepGroup:        job.RepGroup,
 			ReqGroup:        job.ReqGroup,
 			Requirements:    job.Requirements,
@@ -2190,6 +2234,8 @@ type fakeNextflowQueue struct {
 	completeAfterAdd  bool
 	buryAfterAdd      bool
 	deletedKeys       []string
+	limitGroupCalls   []string
+	limitGroups       map[string]int
 }
 
 func (f *fakeNextflowQueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
@@ -2238,6 +2284,28 @@ func (f *fakeNextflowQueue) Delete(jes []*jobqueue.JobEssence) (int, error) {
 	}
 
 	return deleted, nil
+}
+
+func (f *fakeNextflowQueue) GetOrSetLimitGroup(group string) (int, error) {
+	if f.limitGroups == nil {
+		f.limitGroups = make(map[string]int)
+	}
+	f.limitGroupCalls = append(f.limitGroupCalls, group)
+	parts := strings.SplitN(group, ":", 2)
+	if len(parts) == 2 {
+		limit, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return -1, err
+		}
+		f.limitGroups[parts[0]] = limit
+
+		return limit, nil
+	}
+	if limit, ok := f.limitGroups[group]; ok {
+		return limit, nil
+	}
+
+	return -1, nil
 }
 
 func (f *fakeNextflowQueue) GetByRepGroupMatch(_ string, _ jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
