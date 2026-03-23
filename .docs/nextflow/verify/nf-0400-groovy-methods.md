@@ -1,6 +1,22 @@
 # Groovy Methods
 
-**Source:** https://nextflow.io/docs/latest/reference/stdlib.html
+**Source:** https://nextflow.io/docs/latest/reference/stdlib.html,
+https://nextflow.io/docs/latest/reference/stdlib-groovy.html
+
+## Default Imports
+
+### METH-default-imports
+Classes imported by default in Nextflow scripts:
+- `groovy.lang.*`
+- `groovy.util.*`
+- `java.io.*`
+- `java.lang.*`
+- `java.math.BigDecimal`
+- `java.math.BigInteger`
+- `java.net.*`
+- `java.util.*`
+
+All other classes must use their fully-qualified name (e.g. `groovy.json.JsonOutput`).
 
 ## String Methods
 
