@@ -62,6 +62,7 @@ type TranslateConfig struct {
 	WorkflowName     string
 	WorkflowPath     string
 	Cwd              string
+	Scheduler        string
 	StubRun          bool
 	ContainerRuntime string
 	Params           map[string]any
@@ -288,6 +289,318 @@ func maxInt(left, right int) int {
 	return right
 }
 
+func processWithConfigDefaults(proc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any) (*Process, error) {
+	if proc == nil {
+		return nil, nil
+	}
+
+	cloned := *proc
+	cloned.Directives = cloneDirectiveMap(proc.Directives)
+	cloned.PublishDir = clonePublishDirs(proc.PublishDir)
+	cloned.Env = cloneStringMap(proc.Env)
+
+	if err := applyProcessDefaults(&cloned, defaults, params, false); err != nil {
+		return nil, err
+	}
+
+	matches := make([]selectorMatch, 0, len(selectors))
+	for _, selector := range selectors {
+		collectSelectorMatches(proc, selector, true, &matches)
+	}
+
+	for _, specificity := range []int{selectorSpecificityLabel, selectorSpecificityName} {
+		for _, match := range matches {
+			if match.specificity != specificity {
+				continue
+			}
+
+			if err := applyProcessDefaults(&cloned, match.settings, params, true); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return &cloned, nil
+}
+
+func cloneDirectiveMap(directives map[string]any) map[string]any {
+	if len(directives) == 0 {
+		return map[string]any{}
+	}
+
+	cloned := make(map[string]any, len(directives))
+	for key, value := range directives {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+func clonePublishDirs(publishDirs []*PublishDir) []*PublishDir {
+	if len(publishDirs) == 0 {
+		return nil
+	}
+
+	cloned := make([]*PublishDir, 0, len(publishDirs))
+	for _, publishDir := range publishDirs {
+		if publishDir == nil {
+			cloned = append(cloned, nil)
+			continue
+		}
+
+		copyPublishDir := *publishDir
+		cloned = append(cloned, &copyPublishDir)
+	}
+
+	return cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+func applyProcessDefaults(proc *Process, defaults *ProcessDefaults, params map[string]any, override bool) error {
+	if proc == nil || defaults == nil {
+		return nil
+	}
+
+	if proc.Directives == nil {
+		proc.Directives = map[string]any{}
+	}
+
+	applyDirective := func(name string, value any) {
+		if value == nil {
+			return
+		}
+		if !override {
+			if _, ok := proc.Directives[name]; ok {
+				return
+			}
+		}
+		proc.Directives[name] = value
+	}
+
+	if defaults.Cpus != 0 {
+		if _, ok := proc.Directives["cpus"]; !ok {
+			proc.Directives["cpus"] = defaults.Cpus
+		}
+	}
+	if defaults.Memory != 0 {
+		if _, ok := proc.Directives["memory"]; !ok {
+			proc.Directives["memory"] = defaults.Memory
+		}
+	}
+	if defaults.Time != 0 {
+		if _, ok := proc.Directives["time"]; !ok {
+			proc.Directives["time"] = defaults.Time
+		}
+	}
+	if defaults.Disk != 0 {
+		if _, ok := proc.Directives["disk"]; !ok {
+			proc.Directives["disk"] = defaults.Disk
+		}
+	}
+	if defaults.Container != "" && proc.Container == "" && proc.Directives["container"] == nil {
+		proc.Container = defaults.Container
+		applyDirective("container", defaults.Container)
+	}
+	if defaults.ErrorStrategy != nil && (override || (proc.ErrorStrat == "" && proc.Directives["errorStrategy"] == nil)) {
+		proc.Directives["errorStrategy"] = defaults.ErrorStrategy
+		resolved, err := resolveDirectiveString("errorStrategy", defaults.ErrorStrategy, params, proc.ErrorStrat, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.ErrorStrat = resolved
+	}
+	if defaults.MaxRetries != nil && (override || proc.MaxRetries == 0) {
+		resolved, err := resolveDirectiveInt("maxRetries", defaults.MaxRetries, params, proc.MaxRetries, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.MaxRetries = resolved
+	}
+	if defaults.MaxForks != nil && (override || proc.MaxForks == 0) {
+		resolved, err := resolveDirectiveInt("maxForks", defaults.MaxForks, params, proc.MaxForks, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.MaxForks = resolved
+	}
+	if len(defaults.PublishDir) > 0 && (override || len(proc.PublishDir) == 0) {
+		proc.PublishDir = clonePublishDirs(defaults.PublishDir)
+	}
+	if len(defaults.Ext) > 0 {
+		current, err := extDirectiveSourceMap(proc.Directives["ext"])
+		if err != nil {
+			return err
+		}
+		if override {
+			proc.Directives["ext"] = mergeExtValues(current, defaults.Ext)
+		} else {
+			proc.Directives["ext"] = mergeExtValues(current, defaults.Ext)
+		}
+	}
+	applyDirective("queue", defaults.Queue)
+	applyDirective("clusterOptions", defaults.ClusterOptions)
+	applyDirective("containerOptions", defaults.ContainerOptions)
+	applyDirective("accelerator", defaults.Accelerator)
+	applyDirective("arch", defaults.Arch)
+	applyDirective("scratch", defaults.Scratch)
+	applyDirective("storeDir", defaults.StoreDir)
+	applyDirective("conda", defaults.Conda)
+	applyDirective("spack", defaults.Spack)
+	applyDirective("fair", defaults.Fair)
+
+	if defaults.Shell != nil && (override || strings.TrimSpace(proc.Shell) == "") {
+		resolved, err := resolveShellDirective(defaults.Shell, params)
+		if err != nil {
+			return err
+		}
+		if resolved != "" {
+			proc.Shell = resolved
+		}
+	}
+	if defaults.BeforeScript != nil && (override || proc.BeforeScript == "") {
+		resolved, err := resolveDirectiveString("beforeScript", defaults.BeforeScript, params, proc.BeforeScript, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.BeforeScript = resolved
+	}
+	if defaults.AfterScript != nil && (override || proc.AfterScript == "") {
+		resolved, err := resolveDirectiveString("afterScript", defaults.AfterScript, params, proc.AfterScript, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.AfterScript = resolved
+	}
+	if defaults.Module != nil && (override || proc.Module == "") {
+		resolved, err := resolveDirectiveString("module", defaults.Module, params, proc.Module, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.Module = resolved
+	}
+	if defaults.Cache != nil && (override || proc.Cache == "") {
+		resolved, err := resolveDirectiveString("cache", defaults.Cache, params, proc.Cache, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.Cache = resolved
+	}
+	if defaults.Tag != nil && (override || proc.Tag == "") {
+		resolved, err := resolveDirectiveString("tag", defaults.Tag, params, proc.Tag, defaultDirectiveTask())
+		if err != nil {
+			return err
+		}
+		proc.Tag = resolved
+	}
+
+	if len(defaults.Directives) > 0 {
+		for key, value := range defaults.Directives {
+			applyDirective(key, value)
+		}
+	}
+	if len(defaults.Env) > 0 {
+		if proc.Env == nil {
+			proc.Env = map[string]string{}
+		}
+		for key, value := range defaults.Env {
+			if _, ok := proc.Env[key]; ok {
+				continue
+			}
+			proc.Env[key] = value
+		}
+	}
+
+	return nil
+}
+
+func extDirectiveSourceMap(raw any) (map[string]any, error) {
+	switch typed := raw.(type) {
+	case nil:
+		return nil, nil
+	case map[string]any:
+		return cloneExtMap(typed), nil
+	case MapExpr:
+		values := make(map[string]any, len(typed.Keys))
+		for index, keyExpr := range typed.Keys {
+			keyValue, err := EvalExpr(keyExpr, nil)
+			if err != nil {
+				return nil, err
+			}
+
+			key, ok := keyValue.(string)
+			if !ok {
+				return nil, fmt.Errorf("ext directive keys must evaluate to strings")
+			}
+
+			values[key] = typed.Values[index]
+		}
+
+		return values, nil
+	default:
+		return nil, fmt.Errorf("ext directive must evaluate to a map")
+	}
+}
+
+func cloneExtMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		cloned[key] = cloneExtValue(value)
+	}
+
+	return cloned
+}
+
+func cloneExtValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneExtMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, item := range typed {
+			cloned[index] = cloneExtValue(item)
+		}
+
+		return cloned
+	case []string:
+		return cloneStrings(typed)
+	default:
+		return typed
+	}
+}
+
+func mergeExtValues(base map[string]any, override map[string]any) map[string]any {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+
+	merged := cloneExtMap(base)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+
+	for key, value := range override {
+		merged[key] = cloneExtValue(value)
+	}
+
+	return merged
+}
+
 func deterministicEachCwd(base, runID string, scope []string, processName string, regularIndex, eachIndex int) string {
 	parts := []string{base, "nf-work", runID}
 	parts = append(parts, scope...)
@@ -411,6 +724,13 @@ func resolveDirectiveValue(name string, expr any, params map[string]any, task ma
 }
 
 func evalDirectiveExpr(expr any, params map[string]any, task map[string]any) (any, error) {
+	switch typed := expr.(type) {
+	case nil:
+		return nil, nil
+	case string, int, bool, float64, []any, []string, map[string]any:
+		return typed, nil
+	}
+
 	if closure, ok := expr.(ClosureExpr); ok {
 		if len(closure.Params) != 0 {
 			return UnsupportedExpr{Text: renderExpr(closure)}, nil
@@ -488,8 +808,139 @@ func resolveShellDirective(expr any, params map[string]any) (string, error) {
 	}
 }
 
-func buildCommandBody(proc *Process, bindings []string, params map[string]any) (string, error) {
-	script, err := renderScript(proc, bindings, params)
+func resolveAcceleratorOptions(proc *Process, params map[string]any, schedulerName string) (string, error) {
+	value, fallbackUsed, err := resolveDirectiveValue("accelerator", proc.Directives["accelerator"], params, defaultDirectiveTask())
+	if err != nil {
+		return "", err
+	}
+	if fallbackUsed || value == nil {
+		return "", nil
+	}
+	if schedulerName != "lsf" {
+		warnf("nextflowdsl: accelerator directive is only applied for lsf scheduling\n")
+		return "", nil
+	}
+
+	count, ok := value.(int)
+	if !ok {
+		return "", fmt.Errorf("accelerator directive must evaluate to an integer")
+	}
+	if count <= 0 {
+		return "", nil
+	}
+
+	return fmt.Sprintf(`-R "select[ngpus>0] rusage[ngpus_physical=%d]"`, count), nil
+}
+
+func appendSchedulerRequirement(other map[string]string, key, option string) map[string]string {
+	if strings.TrimSpace(option) == "" {
+		return other
+	}
+	if other == nil {
+		other = make(map[string]string)
+	}
+	if existing := strings.TrimSpace(other[key]); existing != "" {
+		other[key] = existing + " " + option
+	} else {
+		other[key] = option
+	}
+
+	return other
+}
+
+func resolveArchOptions(proc *Process, params map[string]any, schedulerName string) (string, error) {
+	value, err := resolveDirectiveString("arch", proc.Directives["arch"], params, "", defaultDirectiveTask())
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", nil
+	}
+	if schedulerName != "lsf" {
+		warnf("nextflowdsl: arch directive is only applied for lsf scheduling\n")
+		return "", nil
+	}
+
+	archName := ""
+	switch value {
+	case "linux/x86_64":
+		archName = "X86_64"
+	case "linux/aarch64":
+		archName = "AARCH64"
+	default:
+		return "", nil
+	}
+
+	return fmt.Sprintf(`-R "select[type==%s]"`, archName), nil
+}
+
+func applyFairPriority(job *jobqueue.Job, proc *Process, index int, params map[string]any) {
+	fair, err := resolveDirectiveBool("fair", proc.Directives["fair"], params, false, defaultDirectiveTask())
+	if err != nil || !fair {
+		return
+	}
+
+	clampedIndex := index
+	if clampedIndex > 254 {
+		clampedIndex = 254
+	}
+	job.Priority = uint8(255 - clampedIndex)
+}
+
+func resolveDirectiveBool(name string, expr any, params map[string]any, fallback bool, task map[string]any) (bool, error) {
+	if expr == nil {
+		return fallback, nil
+	}
+
+	value, fallbackUsed, err := resolveDirectiveValue(name, expr, params, task)
+	if err != nil {
+		return false, err
+	}
+	if fallbackUsed {
+		return fallback, nil
+	}
+
+	boolValue, ok := value.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s directive must evaluate to a boolean", name)
+	}
+
+	return boolValue, nil
+}
+
+func buildCommandWithValues(proc *Process, bindings []string, values []any, params map[string]any, cwd string, launchCwd string) (string, error) {
+	body, err := buildCommandBody(proc, bindings, values, params)
+	if err != nil {
+		return "", err
+	}
+
+	executionCommand := captureCommand(body, nfStdoutFile, nfStderrFile)
+	scratchEnabled, scratchPath, err := resolveScratchDirective(proc, params)
+	if err != nil {
+		return "", err
+	}
+	if scratchEnabled {
+		executionCommand = wrapScratchCommand(body, proc, bindings, params, scratchPath)
+	}
+
+	executionCommand, err = prependEnvironmentDirectives(executionCommand, proc, params)
+	if err != nil {
+		return "", err
+	}
+
+	storeDir, storeDirEnabled, err := resolveStoreDirDirective(proc, params, launchCwd)
+	if err != nil {
+		return "", err
+	}
+	if storeDirEnabled {
+		return wrapStoreDirCommand(executionCommand, proc, bindings, params, cwd, storeDir), nil
+	}
+
+	return executionCommand, nil
+}
+
+func buildCommandBody(proc *Process, bindings []string, values []any, params map[string]any) (string, error) {
+	script, err := renderScript(proc, bindings, values, params)
 	if err != nil {
 		return "", err
 	}
@@ -534,7 +985,7 @@ func buildCommandBody(proc *Process, bindings []string, params map[string]any) (
 	return body, nil
 }
 
-func renderScript(proc *Process, bindings []string, params map[string]any) (string, error) {
+func renderScript(proc *Process, bindings []string, values []any, params map[string]any) (string, error) {
 	if strings.TrimSpace(proc.Shell) != "" {
 		return renderShellSection(proc, bindings, params)
 	}
@@ -543,8 +994,12 @@ func renderScript(proc *Process, bindings []string, params map[string]any) (stri
 	if err != nil {
 		return "", err
 	}
+	extValues, err := resolveExtDirectiveWithValues(proc, nil, bindings, values, params)
+	if err != nil {
+		return "", err
+	}
 
-	return interpolateKnownScriptVars(script, outputVars(proc, bindings, params))
+	return interpolateKnownScriptVars(script, outputVarsWithValues(proc, bindings, values, params), extValues)
 }
 
 func renderShellSection(proc *Process, bindings []string, params map[string]any) (string, error) {
@@ -564,6 +1019,26 @@ func renderShellSection(proc *Process, bindings []string, params map[string]any)
 	}
 
 	return strings.Join([]string{"set -euo pipefail", interpolated}, "\n"), nil
+}
+
+func outputVarsWithValues(proc *Process, bindings []string, values []any, params map[string]any) map[string]any {
+	vars := make(map[string]any)
+	if len(params) > 0 {
+		vars["params"] = params
+	}
+	inputs := flattenedInputDeclarations(proc)
+	for index, binding := range bindings {
+		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
+			if index < len(values) {
+				vars[inputs[index].Name] = cloneChannelValue(values[index])
+				continue
+			}
+
+			vars[inputs[index].Name] = binding
+		}
+	}
+
+	return vars
 }
 
 func renderShellSectionList(section string, vars map[string]any) (string, error) {
@@ -668,8 +1143,81 @@ func evalShellInterpolationExpr(exprText string, vars map[string]any) (any, erro
 	return resolved, nil
 }
 
-func interpolateKnownScriptVars(script string, vars map[string]any) (string, error) {
-	if len(vars) == 0 {
+func resolveExtDirectiveWithValues(proc *Process, defaults *ProcessDefaults, bindings []string, values []any, params map[string]any) (map[string]any, error) {
+	if proc == nil {
+		return nil, nil
+	}
+
+	merged, err := extDirectiveSourceMap(proc.Directives["ext"])
+	if err != nil {
+		return nil, err
+	}
+	if defaults != nil {
+		merged = mergeExtValues(merged, defaults.Ext)
+	}
+	if len(merged) == 0 {
+		return nil, nil
+	}
+
+	vars := outputVarsWithValues(proc, bindings, values, params)
+	resolved := make(map[string]any, len(merged))
+	for key, value := range merged {
+		resolvedValue, err := resolveExtValue(value, vars)
+		if err != nil {
+			return nil, err
+		}
+		if unsupported, ok := resolvedValue.(UnsupportedExpr); ok {
+			warnf("nextflowdsl: falling back for ext.%s with unsupported expression %q\n", key, unsupported.Text)
+			continue
+		}
+
+		resolved[key] = resolvedValue
+	}
+
+	return resolved, nil
+}
+
+func resolveExtValue(value any, vars map[string]any) (any, error) {
+	switch typed := value.(type) {
+	case ClosureExpr:
+		if len(typed.Params) != 0 {
+			return UnsupportedExpr{Text: renderExpr(typed)}, nil
+		}
+
+		return evalStatementBody(typed.Body, cloneEvalVars(vars))
+	case Expr:
+		return EvalExpr(typed, vars)
+	case map[string]any:
+		resolved := make(map[string]any, len(typed))
+		for key, item := range typed {
+			value, err := resolveExtValue(item, vars)
+			if err != nil {
+				return nil, err
+			}
+
+			resolved[key] = value
+		}
+
+		return resolved, nil
+	case []any:
+		resolved := make([]any, len(typed))
+		for index, item := range typed {
+			value, err := resolveExtValue(item, vars)
+			if err != nil {
+				return nil, err
+			}
+
+			resolved[index] = value
+		}
+
+		return resolved, nil
+	default:
+		return cloneExtValue(typed), nil
+	}
+}
+
+func interpolateKnownScriptVars(script string, vars map[string]any, extValues map[string]any) (string, error) {
+	if len(vars) == 0 && len(extValues) == 0 && !strings.Contains(script, "${task.ext.") {
 		return script, nil
 	}
 
@@ -685,6 +1233,12 @@ func interpolateKnownScriptVars(script string, vars map[string]any) (string, err
 		builder.WriteString(script[last:match[0]])
 
 		exprText := strings.TrimSpace(script[match[2]:match[3]])
+		if strings.HasPrefix(exprText, "task.ext.") {
+			builder.WriteString(taskExtInterpolationValue(exprText, extValues))
+			last = match[1]
+			continue
+		}
+
 		root, _, _ := strings.Cut(exprText, ".")
 		if _, ok := vars[root]; !ok {
 			builder.WriteString(script[match[0]:match[1]])
@@ -732,6 +1286,34 @@ func flattenedInputDeclarations(proc *Process) []*Declaration {
 	}
 
 	return flat
+}
+
+func taskExtInterpolationValue(exprText string, extValues map[string]any) string {
+	if len(extValues) == 0 {
+		return ""
+	}
+
+	path, ok := strings.CutPrefix(exprText, "task.ext.")
+	if !ok || path == "" {
+		return ""
+	}
+
+	current := any(extValues)
+	for _, part := range strings.Split(path, ".") {
+		next, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+
+		value, ok := next[part]
+		if !ok || value == nil {
+			return ""
+		}
+
+		current = value
+	}
+
+	return fmt.Sprint(current)
 }
 
 func evalOutputCaptureLines(proc *Process, bindings []string, params map[string]any) ([]string, error) {
@@ -2304,6 +2886,31 @@ func mergeTranslateParams(wf *Workflow, cfg *Config, tc TranslateConfig) (map[st
 	return MergeParams(sources...), nil
 }
 
+func processWithMergedExt(proc *Process, defaults *ProcessDefaults) (*Process, error) {
+	if proc == nil {
+		return nil, nil
+	}
+
+	merged, err := extDirectiveSourceMap(proc.Directives["ext"])
+	if err != nil {
+		return nil, err
+	}
+	merged = mergeExtValues(merged, defaults.Ext)
+	if len(merged) == 0 {
+		return proc, nil
+	}
+
+	cloned := *proc
+	cloned.Directives = cloneDirectiveMap(proc.Directives)
+	cloned.Directives["ext"] = merged
+
+	return &cloned, nil
+}
+
+func resolveExtDirective(proc *Process, defaults *ProcessDefaults, bindings []string, params map[string]any) (map[string]any, error) {
+	return resolveExtDirectiveWithValues(proc, defaults, bindings, nil, params)
+}
+
 func workflowPollingLimitGroup(t time.Time) string {
 	return fmt.Sprintf("datetime < %s", t.Format(time.DateTime))
 }
@@ -2719,9 +3326,13 @@ func translateProcessCall(
 	reqGroup := fmt.Sprintf("nf.%s", proc.Name)
 	indexed := len(bindingSets) > 1
 	stage.baseCwd = deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
-	procForCommand := proc
+	effectiveProc, err := processWithConfigDefaults(proc, defaults, selectors, params)
+	if err != nil {
+		return nil, translatedCall{}, err
+	}
+	procForCommand := effectiveProc
 	if tc.StubRun && proc != nil && proc.Stub != "" {
-		stubProc := *proc
+		stubProc := *effectiveProc
 		stubProc.Script = proc.Stub
 		procForCommand = &stubProc
 	}
@@ -2746,31 +3357,32 @@ func translateProcessCall(
 			Override:     0,
 		}
 
-		requirements, reqErr := buildRequirements(proc, defaults, selectors, params)
+		requirements, reqErr := buildRequirements(proc, effectiveProc, defaults, selectors, params, tc.Scheduler)
 		if reqErr != nil {
 			return nil, translatedCall{}, reqErr
 		}
 		job.Requirements = requirements
 
-		if err = applyContainer(job, proc, defaults, tc.ContainerRuntime, params); err != nil {
+		if err = applyContainer(job, effectiveProc, tc.ContainerRuntime, params); err != nil {
 			return nil, translatedCall{}, err
 		}
-		applyMaxForks(job, proc)
-		if err = applyErrorStrategy(job, proc, params); err != nil {
+		applyMaxForks(job, effectiveProc)
+		applyFairPriority(job, effectiveProc, index, params)
+		if err = applyErrorStrategy(job, effectiveProc, params); err != nil {
 			return nil, translatedCall{}, err
 		}
-		if err = applyEnv(job, proc, defaults, params); err != nil {
+		if err = applyEnv(job, effectiveProc, params); err != nil {
 			return nil, translatedCall{}, err
 		}
 
-		cmd, cmdErr := buildCommand(procForCommand, bindingSet.bindings, params, cwd, tc.Cwd)
+		cmd, cmdErr := buildCommandWithValues(procForCommand, bindingSet.bindings, bindingSet.values, params, cwd, tc.Cwd)
 		if cmdErr != nil {
 			return nil, translatedCall{}, cmdErr
 		}
 		job.Cmd = cmd
 		applyCaptureCleanupBehaviour(job)
 
-		if err = applyPublishDirBehaviours(job, proc, bindingSet.bindings, params, tc, cwd); err != nil {
+		if err = applyPublishDirBehaviours(job, effectiveProc, bindingSet.bindings, params, tc, cwd); err != nil {
 			return nil, translatedCall{}, err
 		}
 
@@ -2779,10 +3391,10 @@ func translateProcessCall(
 			stage.depGroup = depGroup
 		}
 		stage.depGroups = appendUniqueStrings(stage.depGroups, []string{depGroup})
-		paths := outputPaths(proc, bindingSet.bindings, params, cwd)
+		paths := outputPaths(effectiveProc, bindingSet.bindings, params, cwd)
 		stage.outputPaths = append(stage.outputPaths, paths...)
-		stage.items = append(stage.items, channelItem{value: outputValue(proc, bindingSet.bindings, params, cwd, paths), depGroups: []string{depGroup}})
-		stage.emitOutputs = mergeEmittedOutputs(stage.emitOutputs, emitOutputsForProcess(proc, bindingSet.bindings, params, cwd, depGroup))
+		stage.items = append(stage.items, channelItem{value: outputValue(effectiveProc, bindingSet.bindings, params, cwd, paths), depGroups: []string{depGroup}})
+		stage.emitOutputs = mergeEmittedOutputs(stage.emitOutputs, emitOutputsForProcess(effectiveProc, bindingSet.bindings, params, cwd, depGroup))
 	}
 
 	maxErrorsJob, err := newProcessMaxErrorsJob(proc, repGroup, scope, params, tc, len(jobs))
@@ -2858,18 +3470,7 @@ func staticOutputValue(proc *Process, decl *Declaration, bindings []string, para
 }
 
 func outputVars(proc *Process, bindings []string, params map[string]any) map[string]any {
-	vars := make(map[string]any)
-	if len(params) > 0 {
-		vars["params"] = params
-	}
-	inputs := flattenedInputDeclarations(proc)
-	for index, binding := range bindings {
-		if index < len(inputs) && inputs[index] != nil && inputs[index].Name != "" {
-			vars[inputs[index].Name] = binding
-		}
-	}
-
-	return vars
+	return outputVarsWithValues(proc, bindings, nil, params)
 }
 
 func resolveBindings(proc *Process, call *Call, scope []string, translated map[string]translatedCall, cwd string) ([]bindingSet, error) {
@@ -2912,6 +3513,7 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 					}
 					expanded[itemIndex] = bindingSet{
 						bindings:  append(cloneStrings(plans[0].bindings), bindings...),
+						values:    append(cloneChannelSlice(plans[0].values), cloneChannelSlice(item.values)...),
 						depGroups: cloneStrings(plans[0].depGroups),
 						regularIx: itemIndex,
 					}
@@ -2925,6 +3527,7 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 						return nil, bindErr
 					}
 					plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
+					plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(item.values)...)
 					plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, item.depGroups)
 				}
 			default:
@@ -2935,6 +3538,7 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 		}
 
 		binding := ""
+		values := []any{}
 		depGroups := []string{}
 		bindings := []string{binding}
 		if len(resolved.items) > 0 {
@@ -2946,14 +3550,17 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 			if len(bindings) > 0 {
 				binding = bindings[0]
 			}
+			values = cloneChannelSlice(resolved.items[0].values)
 			depGroups = resolved.items[0].depGroups
 		}
 		for itemIndex := range plans {
 			if len(bindings) == 0 {
 				plans[itemIndex].bindings = append(plans[itemIndex].bindings, binding)
+				plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(values)...)
 				continue
 			}
 			plans[itemIndex].bindings = append(plans[itemIndex].bindings, bindings...)
+			plans[itemIndex].values = append(plans[itemIndex].values, cloneChannelSlice(values)...)
 			plans[itemIndex].depGroups = appendUniqueStrings(plans[itemIndex].depGroups, depGroups)
 		}
 	}
@@ -2982,6 +3589,7 @@ func resolveBindings(proc *Process, call *Call, scope []string, translated map[s
 
 				nextPlan := bindingSet{
 					bindings:  append(cloneStrings(plan.bindings), bindings...),
+					values:    append(cloneChannelSlice(plan.values), cloneChannelSlice(item.values)...),
 					depGroups: cloneStrings(plan.depGroups),
 					regularIx: plan.regularIx,
 					hasEach:   true,
@@ -3198,29 +3806,31 @@ func repGroupToken(value string) string {
 	return strings.ReplaceAll(url.PathEscape(value), ".", "%2E")
 }
 
-func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any) (*scheduler.Requirements, error) {
-	defaults = MatchSelectors(proc, defaults, selectors)
-
+func buildRequirements(proc *Process, effectiveProc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any, schedulerName string) (*scheduler.Requirements, error) {
 	req := &scheduler.Requirements{}
 	task := defaultDirectiveTask()
+	legacyDefaults := MatchSelectors(proc, defaults, selectors)
+	if effectiveProc == nil {
+		effectiveProc = proc
+	}
 
-	cpus, err := resolveDirectiveInt("cpus", proc.Directives["cpus"], params, intDefault(defaults.Cpus, defaultCPUs), task)
+	cpus, err := resolveDirectiveInt("cpus", proc.Directives["cpus"], params, intDefault(legacyDefaults.Cpus, defaultCPUs), task)
 	if err != nil {
 		return nil, err
 	}
 	task["cpus"] = cpus
 
-	memory, err := resolveDirectiveInt("memory", proc.Directives["memory"], params, intDefault(defaults.Memory, defaultMemory), task)
+	memory, err := resolveDirectiveInt("memory", proc.Directives["memory"], params, intDefault(legacyDefaults.Memory, defaultMemory), task)
 	if err != nil {
 		return nil, err
 	}
 	task["memory"] = memory
 
-	timeMinutes, err := resolveDirectiveInt("time", proc.Directives["time"], params, intDefault(defaults.Time, defaultTime), task)
+	timeMinutes, err := resolveDirectiveInt("time", proc.Directives["time"], params, intDefault(legacyDefaults.Time, defaultTime), task)
 	if err != nil {
 		return nil, err
 	}
-	disk, err := resolveDirectiveInt("disk", proc.Directives["disk"], params, intDefault(defaults.Disk, defaultDisk), task)
+	disk, err := resolveDirectiveInt("disk", proc.Directives["disk"], params, intDefault(legacyDefaults.Disk, defaultDisk), task)
 	if err != nil {
 		return nil, err
 	}
@@ -3232,7 +3842,7 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*Pr
 	req.Disk = disk
 	req.DiskSet = true
 
-	queue, err := resolveDirectiveString("queue", proc.Directives["queue"], params, "", task)
+	queue, err := resolveDirectiveString("queue", effectiveProc.Directives["queue"], params, "", task)
 	if err != nil {
 		return nil, err
 	}
@@ -3244,7 +3854,7 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*Pr
 		req.OtherSet = true
 	}
 
-	clusterOptions, err := resolveDirectiveString("clusterOptions", proc.Directives["clusterOptions"], params, "", task)
+	clusterOptions, err := resolveDirectiveString("clusterOptions", effectiveProc.Directives["clusterOptions"], params, "", task)
 	if err != nil {
 		return nil, err
 	}
@@ -3256,7 +3866,30 @@ func buildRequirements(proc *Process, defaults *ProcessDefaults, selectors []*Pr
 		req.OtherSet = true
 	}
 
+	acceleratorOptions, err := resolveAcceleratorOptions(effectiveProc, params, schedulerName)
+	if err != nil {
+		return nil, err
+	}
+	req.Other = appendSchedulerRequirement(req.Other, "scheduler_misc", acceleratorOptions)
+
+	archOptions, err := resolveArchOptions(effectiveProc, params, schedulerName)
+	if err != nil {
+		return nil, err
+	}
+	req.Other = appendSchedulerRequirement(req.Other, "scheduler_misc", archOptions)
+	if len(req.Other) > 0 {
+		req.OtherSet = true
+	}
+
 	return req, nil
+}
+
+func intDefault(value, fallback int) int {
+	if value != 0 {
+		return value
+	}
+
+	return fallback
 }
 
 func resolveDirectiveInt(name string, expr any, params map[string]any, fallback int, task map[string]any) (int, error) {
@@ -3284,24 +3917,13 @@ func warnf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format, args...)
 }
 
-func intDefault(value, fallback int) int {
-	if value != 0 {
-		return value
-	}
-
-	return fallback
-}
-
-func applyContainer(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults, runtime string, params map[string]any) error {
+func applyContainer(job *jobqueue.Job, proc *Process, runtime string, params map[string]any) error {
 	container := proc.Container
 	resolved, err := resolveDirectiveString("container", proc.Directives["container"], params, container, defaultDirectiveTask())
 	if err != nil {
 		return err
 	}
 	container = resolved
-	if container == "" && defaults != nil {
-		container = defaults.Container
-	}
 	if container == "" {
 		return nil
 	}
@@ -3352,20 +3974,9 @@ func applyErrorStrategy(job *jobqueue.Job, proc *Process, params map[string]any)
 	return nil
 }
 
-func applyEnv(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults, params map[string]any) error {
-	defaultEnvSize := 0
-	if defaults != nil {
-		defaultEnvSize = len(defaults.Env)
-	}
-
-	env := make([]string, 0, len(proc.Env)+defaultEnvSize+1)
-	positions := make(map[string]int, len(proc.Env)+defaultEnvSize+1)
-	if defaults != nil {
-		for key, value := range defaults.Env {
-			positions[key] = len(env)
-			env = append(env, key+"="+value)
-		}
-	}
+func applyEnv(job *jobqueue.Job, proc *Process, params map[string]any) error {
+	env := make([]string, 0, len(proc.Env)+1)
+	positions := make(map[string]int, len(proc.Env)+1)
 	for key, value := range proc.Env {
 		if index, ok := positions[key]; ok {
 			env[index] = key + "=" + value
@@ -3394,34 +4005,7 @@ func applyEnv(job *jobqueue.Job, proc *Process, defaults *ProcessDefaults, param
 }
 
 func buildCommand(proc *Process, bindings []string, params map[string]any, cwd string, launchCwd string) (string, error) {
-	body, err := buildCommandBody(proc, bindings, params)
-	if err != nil {
-		return "", err
-	}
-
-	executionCommand := captureCommand(body, nfStdoutFile, nfStderrFile)
-	scratchEnabled, scratchPath, err := resolveScratchDirective(proc, params)
-	if err != nil {
-		return "", err
-	}
-	if scratchEnabled {
-		executionCommand = wrapScratchCommand(body, proc, bindings, params, scratchPath)
-	}
-
-	executionCommand, err = prependEnvironmentDirectives(executionCommand, proc, params)
-	if err != nil {
-		return "", err
-	}
-
-	storeDir, storeDirEnabled, err := resolveStoreDirDirective(proc, params, launchCwd)
-	if err != nil {
-		return "", err
-	}
-	if storeDirEnabled {
-		return wrapStoreDirCommand(executionCommand, proc, bindings, params, cwd, storeDir), nil
-	}
-
-	return executionCommand, nil
+	return buildCommandWithValues(proc, bindings, nil, params, cwd, launchCwd)
 }
 
 func shellQuote(value string) string {
@@ -3915,6 +4499,77 @@ func mergeDefaults(base *ProcessDefaults, override *ProcessDefaults) *ProcessDef
 	if override.Container != "" {
 		merged.Container = override.Container
 	}
+	if override.ErrorStrategy != nil {
+		merged.ErrorStrategy = cloneExtValue(override.ErrorStrategy)
+	}
+	if override.MaxRetries != nil {
+		merged.MaxRetries = cloneExtValue(override.MaxRetries)
+	}
+	if override.MaxForks != nil {
+		merged.MaxForks = cloneExtValue(override.MaxForks)
+	}
+	if len(override.PublishDir) > 0 {
+		merged.PublishDir = clonePublishDirs(override.PublishDir)
+	}
+	if override.Queue != nil {
+		merged.Queue = cloneExtValue(override.Queue)
+	}
+	if override.ClusterOptions != nil {
+		merged.ClusterOptions = cloneExtValue(override.ClusterOptions)
+	}
+	if len(override.Ext) > 0 {
+		merged.Ext = mergeExtValues(merged.Ext, override.Ext)
+	}
+	if override.ContainerOptions != nil {
+		merged.ContainerOptions = cloneExtValue(override.ContainerOptions)
+	}
+	if override.Accelerator != nil {
+		merged.Accelerator = cloneExtValue(override.Accelerator)
+	}
+	if override.Arch != nil {
+		merged.Arch = cloneExtValue(override.Arch)
+	}
+	if override.Shell != nil {
+		merged.Shell = cloneExtValue(override.Shell)
+	}
+	if override.BeforeScript != nil {
+		merged.BeforeScript = cloneExtValue(override.BeforeScript)
+	}
+	if override.AfterScript != nil {
+		merged.AfterScript = cloneExtValue(override.AfterScript)
+	}
+	if override.Cache != nil {
+		merged.Cache = cloneExtValue(override.Cache)
+	}
+	if override.Scratch != nil {
+		merged.Scratch = cloneExtValue(override.Scratch)
+	}
+	if override.StoreDir != nil {
+		merged.StoreDir = cloneExtValue(override.StoreDir)
+	}
+	if override.Module != nil {
+		merged.Module = cloneExtValue(override.Module)
+	}
+	if override.Conda != nil {
+		merged.Conda = cloneExtValue(override.Conda)
+	}
+	if override.Spack != nil {
+		merged.Spack = cloneExtValue(override.Spack)
+	}
+	if override.Fair != nil {
+		merged.Fair = cloneExtValue(override.Fair)
+	}
+	if override.Tag != nil {
+		merged.Tag = cloneExtValue(override.Tag)
+	}
+	if len(override.Directives) > 0 {
+		if merged.Directives == nil {
+			merged.Directives = make(map[string]any, len(override.Directives))
+		}
+		for key, value := range override.Directives {
+			merged.Directives[key] = cloneExtValue(value)
+		}
+	}
 	if len(override.Env) > 0 {
 		if merged.Env == nil {
 			merged.Env = make(map[string]string, len(override.Env))
@@ -3933,11 +4588,38 @@ func cloneDefaults(defaults *ProcessDefaults) *ProcessDefaults {
 	}
 
 	clone := &ProcessDefaults{
-		Cpus:      defaults.Cpus,
-		Memory:    defaults.Memory,
-		Time:      defaults.Time,
-		Disk:      defaults.Disk,
-		Container: defaults.Container,
+		Cpus:             defaults.Cpus,
+		Memory:           defaults.Memory,
+		Time:             defaults.Time,
+		Disk:             defaults.Disk,
+		Container:        defaults.Container,
+		ErrorStrategy:    cloneExtValue(defaults.ErrorStrategy),
+		MaxRetries:       cloneExtValue(defaults.MaxRetries),
+		MaxForks:         cloneExtValue(defaults.MaxForks),
+		PublishDir:       clonePublishDirs(defaults.PublishDir),
+		Queue:            cloneExtValue(defaults.Queue),
+		ClusterOptions:   cloneExtValue(defaults.ClusterOptions),
+		Ext:              cloneExtMap(defaults.Ext),
+		ContainerOptions: cloneExtValue(defaults.ContainerOptions),
+		Accelerator:      cloneExtValue(defaults.Accelerator),
+		Arch:             cloneExtValue(defaults.Arch),
+		Shell:            cloneExtValue(defaults.Shell),
+		BeforeScript:     cloneExtValue(defaults.BeforeScript),
+		AfterScript:      cloneExtValue(defaults.AfterScript),
+		Cache:            cloneExtValue(defaults.Cache),
+		Scratch:          cloneExtValue(defaults.Scratch),
+		StoreDir:         cloneExtValue(defaults.StoreDir),
+		Module:           cloneExtValue(defaults.Module),
+		Conda:            cloneExtValue(defaults.Conda),
+		Spack:            cloneExtValue(defaults.Spack),
+		Fair:             cloneExtValue(defaults.Fair),
+		Tag:              cloneExtValue(defaults.Tag),
+	}
+	if len(defaults.Directives) > 0 {
+		clone.Directives = make(map[string]any, len(defaults.Directives))
+		for key, value := range defaults.Directives {
+			clone.Directives[key] = cloneExtValue(value)
+		}
 	}
 	if len(defaults.Env) > 0 {
 		clone.Env = make(map[string]string, len(defaults.Env))

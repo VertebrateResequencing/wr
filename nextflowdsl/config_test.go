@@ -554,6 +554,61 @@ func TestParseConfigNestedSelectors(t *testing.T) {
 	})
 }
 
+func TestParseConfigJ1ProcessDefaults(t *testing.T) {
+	Convey("ParseConfig stores J1 process directive defaults with typed fields and a catch-all", t, func() {
+		cfg, err := ParseConfig(strings.NewReader("process {\n" +
+			"errorStrategy = 'retry'\n" +
+			"maxRetries = 3\n" +
+			"maxForks = 4\n" +
+			"publishDir = [path: '/results', pattern: '*.bam', mode: 'copy']\n" +
+			"queue = 'long'\n" +
+			"clusterOptions = '--account=mylab'\n" +
+			"ext.args = '--verbose'\n" +
+			"containerOptions = '--gpus all'\n" +
+			"accelerator = 1\n" +
+			"arch = 'linux/x86_64'\n" +
+			"shell = ['/bin/bash', '-euo', 'pipefail']\n" +
+			"beforeScript = 'echo before'\n" +
+			"afterScript = 'echo after'\n" +
+			"cache = 'lenient'\n" +
+			"scratch = true\n" +
+			"storeDir = 'cache/results'\n" +
+			"module = 'samtools/1.17'\n" +
+			"conda = 'samtools=1.17'\n" +
+			"spack = 'samtools@1.17'\n" +
+			"fair = true\n" +
+			"tag = 'sample'\n" +
+			"stageInMode = 'copy'\n" +
+		"}"))
+
+		So(err, ShouldBeNil)
+		So(cfg.Process, ShouldNotBeNil)
+		So(cfg.Process.ErrorStrategy, ShouldEqual, "retry")
+		So(cfg.Process.MaxRetries, ShouldEqual, 3)
+		So(cfg.Process.MaxForks, ShouldEqual, 4)
+		So(cfg.Process.PublishDir, ShouldHaveLength, 1)
+		So(cfg.Process.PublishDir[0], ShouldResemble, &PublishDir{Path: "/results", Pattern: "*.bam", Mode: "copy"})
+		So(cfg.Process.Queue, ShouldEqual, "long")
+		So(cfg.Process.ClusterOptions, ShouldEqual, "--account=mylab")
+		So(cfg.Process.Ext, ShouldResemble, map[string]any{"args": "--verbose"})
+		So(cfg.Process.ContainerOptions, ShouldEqual, "--gpus all")
+		So(cfg.Process.Accelerator, ShouldEqual, 1)
+		So(cfg.Process.Arch, ShouldEqual, "linux/x86_64")
+		So(cfg.Process.Shell, ShouldResemble, []any{"/bin/bash", "-euo", "pipefail"})
+		So(cfg.Process.BeforeScript, ShouldEqual, "echo before")
+		So(cfg.Process.AfterScript, ShouldEqual, "echo after")
+		So(cfg.Process.Cache, ShouldEqual, "lenient")
+		So(cfg.Process.Scratch, ShouldEqual, true)
+		So(cfg.Process.StoreDir, ShouldEqual, "cache/results")
+		So(cfg.Process.Module, ShouldEqual, "samtools/1.17")
+		So(cfg.Process.Conda, ShouldEqual, "samtools=1.17")
+		So(cfg.Process.Spack, ShouldEqual, "samtools@1.17")
+		So(cfg.Process.Fair, ShouldEqual, true)
+		So(cfg.Process.Tag, ShouldEqual, "sample")
+		So(cfg.Process.Directives, ShouldResemble, map[string]any{"stageInMode": "copy"})
+	})
+}
+
 func TestParseConfigExecutorScope(t *testing.T) {
 	Convey("ParseConfig handles M1 executor scopes", t, func() {
 		Convey("top-level executor blocks capture name, queueSize, and clusterOptions", func() {

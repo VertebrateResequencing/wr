@@ -30,6 +30,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var skippedTopLevelConfigScopes = map[string]struct{}{
@@ -47,12 +48,34 @@ var skippedTopLevelConfigScopes = map[string]struct{}{
 
 // ProcessDefaults holds default values for process directives.
 type ProcessDefaults struct {
-	Cpus      int
-	Memory    int
-	Time      int
-	Disk      int
-	Container string
-	Env       map[string]string
+	Cpus             int
+	Memory           int
+	Time             int
+	Disk             int
+	Container        string
+	ErrorStrategy    any
+	MaxRetries       any
+	MaxForks         any
+	PublishDir       []*PublishDir
+	Queue            any
+	ClusterOptions   any
+	Ext              map[string]any
+	ContainerOptions any
+	Accelerator      any
+	Arch             any
+	Shell            any
+	BeforeScript     any
+	AfterScript      any
+	Cache            any
+	Scratch          any
+	StoreDir         any
+	Module           any
+	Conda            any
+	Spack            any
+	Fair             any
+	Tag              any
+	Directives       map[string]any
+	Env              map[string]string
 }
 
 // ProcessSelector holds directive overrides for a process selector.
@@ -65,10 +88,10 @@ type ProcessSelector struct {
 
 // Profile holds profile-scoped config overrides.
 type Profile struct {
-	Process *ProcessDefaults
+	Process   *ProcessDefaults
 	Selectors []*ProcessSelector
-	Params  map[string]any
-	Executor map[string]any
+	Params    map[string]any
+	Executor  map[string]any
 }
 
 // Config holds parsed Nextflow configuration.
@@ -423,10 +446,12 @@ func (p *configParser) parseProcessSelectorWithDepth(params map[string]any, rema
 }
 
 func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params map[string]any) error {
-	name := p.current()
-	p.pos++
+	name, path, err := p.parseProcessSettingName()
+	if err != nil {
+		return err
+	}
 
-	if name.lit == "env" && p.current().typ == tokenLBrace {
+	if len(path) == 0 && name.lit == "env" && p.current().typ == tokenLBrace {
 		env, err := p.parseEnvBlock()
 		if err != nil {
 			return err
@@ -444,14 +469,25 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		return err
 	}
 
+	fullName := name.lit
+	if len(path) > 0 {
+		fullName += "." + strings.Join(path, ".")
+	}
+
 	switch name.lit {
 	case "cpus":
+		if len(path) > 0 {
+			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
+		}
 		intValue, ok := value.(int)
 		if !ok {
 			return fmt.Errorf("line %d: cpus expects an integer value", name.line)
 		}
 		defaults.Cpus = intValue
 	case "memory":
+		if len(path) > 0 {
+			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
+		}
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: memory expects a string literal", name.line)
@@ -462,6 +498,9 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		}
 		defaults.Memory = memory
 	case "time":
+		if len(path) > 0 {
+			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
+		}
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: time expects a string literal", name.line)
@@ -472,6 +511,9 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		}
 		defaults.Time = timeValue
 	case "disk":
+		if len(path) > 0 {
+			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
+		}
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: disk expects a string literal", name.line)
@@ -482,16 +524,152 @@ func (p *configParser) parseProcessAssignment(defaults *ProcessDefaults, params 
 		}
 		defaults.Disk = diskValue
 	case "container":
+		if len(path) > 0 {
+			return fmt.Errorf("line %d: unsupported nested process setting %q", name.line, fullName)
+		}
 		stringValue, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("line %d: container expects a string literal", name.line)
 		}
 		defaults.Container = stringValue
+	case "errorStrategy":
+		defaults.ErrorStrategy = value
+	case "maxRetries":
+		defaults.MaxRetries = value
+	case "maxForks":
+		defaults.MaxForks = value
+	case "publishDir":
+		publishDirs, parseErr := normalizeConfigPublishDirs(value)
+		if parseErr != nil {
+			return wrapLineError(name.line, parseErr)
+		}
+		defaults.PublishDir = publishDirs
+	case "queue":
+		defaults.Queue = value
+	case "clusterOptions":
+		defaults.ClusterOptions = value
+	case "ext":
+		if len(path) > 0 {
+			defaults.Ext = setNestedConfigMap(defaults.Ext, path, value)
+			return nil
+		}
+
+		mapValue, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("line %d: ext expects a map literal", name.line)
+		}
+		defaults.Ext = mergeExtValues(defaults.Ext, mapValue)
+	case "containerOptions":
+		defaults.ContainerOptions = value
+	case "accelerator":
+		defaults.Accelerator = value
+	case "arch":
+		defaults.Arch = value
+	case "shell":
+		defaults.Shell = value
+	case "beforeScript":
+		defaults.BeforeScript = value
+	case "afterScript":
+		defaults.AfterScript = value
+	case "cache":
+		defaults.Cache = value
+	case "scratch":
+		defaults.Scratch = value
+	case "storeDir":
+		defaults.StoreDir = value
+	case "module":
+		defaults.Module = value
+	case "conda":
+		defaults.Conda = value
+	case "spack":
+		defaults.Spack = value
+	case "fair":
+		defaults.Fair = value
+	case "tag":
+		defaults.Tag = value
 	default:
-		return fmt.Errorf("line %d: unsupported process setting %q", name.line, name.lit)
+		if defaults.Directives == nil {
+			defaults.Directives = map[string]any{}
+		}
+		defaults.Directives[fullName] = value
 	}
 
 	return nil
+}
+
+func normalizeConfigPublishDirs(value any) ([]*PublishDir, error) {
+	switch typed := value.(type) {
+	case string:
+		return []*PublishDir{{Path: typed, Mode: "copy"}}, nil
+	case map[string]any:
+		publishDir, err := normalizeConfigPublishDirMap(typed)
+		if err != nil {
+			return nil, err
+		}
+
+		return []*PublishDir{publishDir}, nil
+	case []any:
+		publishDirs := make([]*PublishDir, 0, len(typed))
+		for _, entry := range typed {
+			normalized, err := normalizeConfigPublishDirs(entry)
+			if err != nil {
+				return nil, err
+			}
+			publishDirs = append(publishDirs, normalized...)
+		}
+
+		return publishDirs, nil
+	default:
+		return nil, fmt.Errorf("publishDir expects a string, map, or list")
+	}
+}
+
+func setNestedConfigMap(root map[string]any, path []string, value any) map[string]any {
+	if root == nil {
+		root = map[string]any{}
+	}
+	if len(path) == 0 {
+		if nested, ok := value.(map[string]any); ok {
+			return mergeExtValues(root, nested)
+		}
+
+		return root
+	}
+
+	current := root
+	for index := 0; index < len(path)-1; index++ {
+		segment := path[index]
+		next, ok := current[segment].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			current[segment] = next
+		}
+		current = next
+	}
+
+	current[path[len(path)-1]] = value
+
+	return root
+}
+
+func (p *configParser) parseProcessSettingName() (token, []string, error) {
+	name := p.current()
+	if name.typ != tokenIdent {
+		return token{}, nil, fmt.Errorf("line %d: expected process setting", name.line)
+	}
+	p.pos++
+
+	path := []string{}
+	for p.current().typ == tokenDot {
+		p.pos++
+		segment, err := p.expectType(tokenIdent, "process setting name")
+		if err != nil {
+			return token{}, nil, err
+		}
+		path = append(path, segment.lit)
+	}
+
+	return name, path, nil
 }
 
 func (p *configParser) parseProfilesBlock(baseParams map[string]any, knownProfileParams map[string]map[string]any, externalParams map[string]any) (map[string]*Profile, error) {
@@ -997,6 +1175,31 @@ func (p *configParser) unclosedNamedBlockError(kind, name string) error {
 	}
 
 	return fmt.Errorf("line %d: expected } to close %s %q", line, kind, name)
+}
+
+func normalizeConfigPublishDirMap(value map[string]any) (*PublishDir, error) {
+	pathValue, ok := value["path"].(string)
+	if !ok || pathValue == "" {
+		return nil, fmt.Errorf("publishDir path must be a string")
+	}
+
+	publishDir := &PublishDir{Path: pathValue, Mode: "copy"}
+	if pattern, ok := value["pattern"]; ok {
+		patternValue, ok := pattern.(string)
+		if !ok {
+			return nil, fmt.Errorf("publishDir pattern must be a string")
+		}
+		publishDir.Pattern = patternValue
+	}
+	if mode, ok := value["mode"]; ok {
+		modeValue, ok := mode.(string)
+		if !ok {
+			return nil, fmt.Errorf("publishDir mode must be a string")
+		}
+		publishDir.Mode = modeValue
+	}
+
+	return publishDir, nil
 }
 
 func loadConfigTokens(path string, visited map[string]struct{}) ([]token, error) {
