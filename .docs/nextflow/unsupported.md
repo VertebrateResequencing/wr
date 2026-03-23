@@ -141,11 +141,20 @@ reporting, cloud platform integration, notifications. wr has its own
 monitoring (web UI, status commands) and does not need Nextflow's reporting
 infrastructure. None affect job creation or execution semantics.
 
+- `aws` / `azure` / `google` — cloud provider executor and storage settings (wr uses OpenStack)
+- `charliecloud` / `podman` / `sarus` / `shifter` — alternative container engines (wr supports Docker, Singularity, Apptainer)
 - `conda` — Conda environment management settings
 - `dag` — DAG visualisation output settings
+- `fusion` — Fusion FUSE file system for cloud object storage
+- `k8s` — Kubernetes execution settings (wr has its own K8s scheduler)
+- `lineage` — data lineage/provenance metadata store
+- `mail` — SMTP mail server for email notifications
 - `manifest` — Pipeline metadata (name, version, author, description)
+- `nextflow` — Nextflow runtime retry policy internals
 - `notification` — Email/webhook notifications on completion/error
 - `report` — HTML execution report settings
+- `seqera` — Seqera Platform compute environment and scheduler
+- `spack` — Spack package manager environment (directive is supported)
 - `timeline` — Timeline HTML report settings
 - `tower` / `wave` — Seqera Platform and Wave container service integration
 - `trace` — Execution trace CSV settings
