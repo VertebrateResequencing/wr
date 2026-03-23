@@ -28,6 +28,7 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
+| SYN-variable | nf-0200-types-operators.md |
 | SYN-number | nf-0200-types-operators.md |
 | SYN-boolean | nf-0200-types-operators.md |
 | SYN-null | nf-0200-types-operators.md |
@@ -36,6 +37,7 @@ Use `00-audit.py` to validate consistency.
 | SYN-unary-expressions | nf-0200-types-operators.md |
 | SYN-binary-expressions | nf-0200-types-operators.md |
 | SYN-ternary-expression | nf-0200-types-operators.md |
+| SYN-parentheses | nf-0200-types-operators.md |
 | SYN-precedence | nf-0200-types-operators.md |
 
 ## nf-0300-statements.md — Statements
@@ -49,6 +51,12 @@ Use `00-audit.py` to validate consistency.
 | STMT-return | nf-0300-statements.md |
 | STMT-throw | nf-0300-statements.md |
 | STMT-trycatch | nf-0300-statements.md |
+
+## nf-0350-deprecations.md — Deprecations
+
+| Feature ID | nf- file |
+|------------|----------|
+| SYN-deprecations | nf-0350-deprecations.md |
 
 ## nf-0400-groovy-methods.md — Groovy Methods & Imports
 
@@ -594,4 +602,4 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 449 feature IDs across 28 files.**
+**Total: 452 feature IDs across 29 files.**

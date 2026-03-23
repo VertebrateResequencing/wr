@@ -8,6 +8,7 @@ Commands:
     sync      — Read existing nf-*.md files, regenerate 00-manifest.md and
                 test-*.md files.
     all       — Run scaffold then sync.
+    coverage  — Fetch NF docs and report headings not claimed by any file.
 
 Usage:
     python3 00-generate.py scaffold   # fetch docs, create nf- skeletons
@@ -75,9 +76,10 @@ PAGES_CONFIG = [
                     "arithmetic", "comparison", "logical", "bitwise",
                     "ternary", "elvis", "null-safe", "spread",
                     "regex", "membership", "instanceof", "as ",
-                    "compound assign", "precedence",
+                    "compound assign", "precedence", "parenthes",
                     "unary", "binary",
                 ],
+                "heading_exact": ["Variable"],
             },
             {
                 "number": "0300", "slug": "statements",
@@ -328,6 +330,13 @@ EXTRA_FILES = [
         "heading_filter": ["workflow", "entry", "named", "take",
                            "main", "emit", "publish", "output"],
     },
+    {
+        "number": "0350", "slug": "deprecations",
+        "title": "Deprecations",
+        "prefix": "SYN",
+        "source_url": "https://nextflow.io/docs/latest/reference/syntax.html",
+        "heading_filter": ["deprecat"],
+    },
 ]
 
 
@@ -543,9 +552,11 @@ def clean_section_slug(h2_text):
 
 GENERIC_HEADINGS = {
     'overview', 'description', 'options', 'example', 'examples',
-    'syntax', 'usage', 'see also', 'parameters', 'deprecated',
-    'deprecations', 'notes', 'note', 'contents', 'table of contents',
+    'syntax', 'usage', 'see also', 'parameters',
+    'notes', 'note', 'contents', 'table of contents',
     'top', 'navigation', 'search', 'next', 'previous', 'reference',
+    # Structural parent headings (contain features, not features themselves)
+    'script declarations', 'statements', 'expressions',
 }
 
 
@@ -619,6 +630,137 @@ def cmd_scaffold(args):
         created += 1
 
     print(f"\nScaffolded {created} nf-*.md files.", file=sys.stderr)
+
+
+def cmd_coverage(_args):
+    """Report headings on each page not claimed by any file config."""
+    # Build url → list-of-file-configs from both PAGES_CONFIG and EXTRA_FILES
+    url_configs = {}  # url → [file_conf, ...]
+    for pc in PAGES_CONFIG:
+        url_configs.setdefault(pc["url"], []).extend(pc["files"])
+    for ef in EXTRA_FILES:
+        url_configs.setdefault(ef["source_url"], []).append(ef)
+
+    # Headings covered by a config sourcing a different page (cross-page).
+    # Key = page URL, value = set of heading texts (case-insensitive).
+    cross_page = {
+        "https://nextflow.io/docs/latest/reference/syntax.html": {
+            "process", "process (typed)", "output block",
+            "script declarations",
+        },
+    }
+
+    total_unclaimed = 0
+
+    for url in sorted(url_configs):
+        page_name = url.split('/')[-1]
+        print(f"Fetching {page_name}...", file=sys.stderr)
+        try:
+            headings, dt_items, _li_items = fetch_page_content(url)
+        except Exception as e:
+            print(f"  ERROR fetching {url}: {e}", file=sys.stderr)
+            continue
+
+        configs = url_configs[url]
+
+        # Collect all section names claimed by heading_exact configs
+        # (DTs under those sections are implicitly covered)
+        exact_claimed_sections = set()
+        for fc in configs:
+            for name in fc.get("heading_exact", []):
+                exact_claimed_sections.add(name.lower().strip())
+
+        # Collect section names used as dt_sectioned section_prefix_map keys
+        # (H2 headings naming those sections are implicitly covered)
+        dt_section_names = set()
+        for fc in configs:
+            for key in fc.get("section_prefix_map", {}):
+                dt_section_names.add(key.lower().strip())
+
+        # Known cross-page headings for this URL
+        xpage = cross_page.get(url, set())
+
+        # Check heading-mode files: find headings not claimed
+        heading_configs = [c for c in configs
+                          if c.get("extract_mode", "headings") == "headings"]
+        if heading_configs:
+            unclaimed = []
+            for level, text in headings:
+                if level == 1 or is_generic_heading(text):
+                    continue
+                # H2 headings used as dt_sectioned section names are covered
+                if text.lower().strip() in dt_section_names:
+                    continue
+                # Headings covered by configs on a different page
+                if text.lower().strip() in xpage:
+                    continue
+                claimed = False
+                for fc in heading_configs:
+                    h_filter = fc.get("heading_filter")
+                    h_exact = fc.get("heading_exact")
+                    if h_exact and h_filter:
+                        if (heading_matches_exact(text, h_exact) or
+                                heading_matches_filter(text, h_filter)):
+                            claimed = True
+                            break
+                    elif h_exact:
+                        if heading_matches_exact(text, h_exact):
+                            claimed = True
+                            break
+                    elif h_filter:
+                        if heading_matches_filter(text, h_filter):
+                            claimed = True
+                            break
+                    else:
+                        # No filter at all → claims everything
+                        claimed = True
+                        break
+                if not claimed:
+                    unclaimed.append((level, text))
+            if unclaimed:
+                print(f"\n{page_name}: {len(unclaimed)} unclaimed headings:")
+                for lvl, txt in unclaimed:
+                    print(f"  H{lvl}: {txt}")
+                total_unclaimed += len(unclaimed)
+
+        # Check DT-mode files: find DTs not claimed by any config
+        # DTs under sections claimed by heading_exact are considered covered
+        dt_configs = [c for c in configs
+                      if c.get("extract_mode") in ("dt", "dt_sectioned")]
+        if dt_configs or exact_claimed_sections:
+            unclaimed_dt = []
+            for section_h2, text in dt_items:
+                # Implicitly covered if parent section is heading_exact claimed
+                if section_h2.lower().strip() in exact_claimed_sections:
+                    continue
+                # Covered by cross-page config
+                if section_h2.lower().strip() in xpage:
+                    continue
+                claimed = False
+                for fc in dt_configs:
+                    mode = fc.get("extract_mode")
+                    if mode == "dt":
+                        claimed = True
+                        break
+                    elif mode == "dt_sectioned":
+                        smap = fc.get("section_prefix_map", {})
+                        if not smap or section_h2 in smap:
+                            claimed = True
+                            break
+                if not claimed:
+                    unclaimed_dt.append((section_h2, text))
+            if unclaimed_dt:
+                sections = sorted(set(s for s, _ in unclaimed_dt))
+                print(f"\n{page_name}: {len(unclaimed_dt)} unclaimed <dt> "
+                      f"items in sections: {', '.join(sections)}")
+                total_unclaimed += len(unclaimed_dt)
+
+    if total_unclaimed == 0:
+        print("\n*** ALL CLEAR — every heading/DT is claimed by a file "
+              "config ***")
+    else:
+        print(f"\n*** {total_unclaimed} unclaimed items found ***")
+    sys.exit(1 if total_unclaimed > 0 else 0)
 
 
 def extract_features(headings, dt_items, li_items, file_conf):
@@ -796,6 +938,7 @@ NF_TO_IMPL = {
     "4000": ["impl-07-config.md"],
     "4100": ["impl-07-config.md"],
     "4500": ["impl-08-groovy.md"],
+    "0350": ["impl-01-parse.md"],
 }
 
 
@@ -974,6 +1117,9 @@ def main():
     p_all.add_argument("--force", action="store_true",
                        help="Overwrite existing files")
 
+    sub.add_parser("coverage",
+                   help="Report unclaimed headings per page")
+
     args = parser.parse_args()
 
     if args.command == "scaffold":
@@ -983,6 +1129,8 @@ def main():
     elif args.command == "all":
         cmd_scaffold(args)
         cmd_sync(args)
+    elif args.command == "coverage":
+        cmd_coverage(args)
     else:
         parser.print_help()
         sys.exit(1)
