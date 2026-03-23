@@ -4,6 +4,11 @@ Everything listed below is parsed without error AND translated to wr jobs
 (or stored/evaluated as appropriate) with the same practical end-result
 behaviour as real Nextflow.
 
+## Syntax Basics
+
+- Line comments (`// ...`) and block comments (`/* ... */`)
+- Shebang line (`#!/usr/bin/env nextflow`) — recognised and skipped
+
 ## Pipeline Structure
 
 - DSL2 workflow files (`.nf`)
