@@ -27,11 +27,13 @@ package nextflowdsl
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1970,6 +1972,128 @@ func TestTranslateG1FairDirectivePriority(t *testing.T) {
 	})
 }
 
+func TestTranslateC1WhenGuard(t *testing.T) {
+	Convey("Translate and TranslatePending handle C1 when guards", t, func() {
+		Convey("EvalWhenGuard returns true for params-driven guards that pass", func() {
+			allowed, err := EvalWhenGuard("params.run_step", nil, map[string]any{"run_step": true})
+
+			So(err, ShouldBeNil)
+			So(allowed, ShouldBeTrue)
+		})
+
+		Convey("EvalWhenGuard returns false for params-driven guards that fail", func() {
+			allowed, err := EvalWhenGuard("params.run_step", nil, map[string]any{"run_step": false})
+
+			So(err, ShouldBeNil)
+			So(allowed, ShouldBeFalse)
+		})
+
+		Convey("EvalWhenGuard returns false for skipped input bindings", func() {
+			allowed, err := EvalWhenGuard("id != 'skip'", map[string]any{"id": "skip"}, nil)
+
+			So(err, ShouldBeNil)
+			So(allowed, ShouldBeFalse)
+		})
+
+		Convey("EvalWhenGuard returns true for retained input bindings", func() {
+			allowed, err := EvalWhenGuard("id != 'skip'", map[string]any{"id": "keep"}, nil)
+
+			So(err, ShouldBeNil)
+			So(allowed, ShouldBeTrue)
+		})
+
+		Convey("processes without when guards preserve existing eager translation behaviour", func() {
+			wf := &Workflow{
+				Processes: []*Process{{
+					Name:   "A",
+					Script: "echo hello",
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work"})
+
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldBeEmpty)
+		})
+
+		Convey("TranslatePending creates jobs only for bindings whose when guards pass", func() {
+			wf := &Workflow{
+				Processes: []*Process{{
+					Name:   "FILTER",
+					When:   "params.run_step",
+					Script: "echo hello",
+				}},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "FILTER"}}},
+			}
+
+			allowed, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": true}})
+			So(err, ShouldBeNil)
+			So(allowed.Jobs, ShouldBeEmpty)
+			So(allowed.Pending, ShouldHaveLength, 1)
+
+			jobs, err := TranslatePending(allowed.Pending[0], nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": true}})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+
+			blocked, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			So(err, ShouldBeNil)
+			So(blocked.Jobs, ShouldBeEmpty)
+			So(blocked.Pending, ShouldHaveLength, 1)
+
+			jobs, err = TranslatePending(blocked.Pending[0], nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+
+		Convey("downstream stages see empty channels when an upstream when guard skips execution", func() {
+			wf := &Workflow{
+				Processes: []*Process{
+					{
+						Name:   "A",
+						Script: "touch produced.txt",
+						Output: []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
+					},
+					{
+						Name:   "B",
+						When:   "params.run_step",
+						Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+						Script: "cat $reads > filtered.txt",
+						Output: []*Declaration{{Kind: "path", Expr: StringExpr{Value: "filtered.txt"}}},
+					},
+					{
+						Name:   "C",
+						Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+						Script: "cat $reads > consumed.txt",
+					},
+				},
+				EntryWF: &WorkflowBlock{Calls: []*Call{{Target: "A"}, {Target: "B", Args: []ChanExpr{ChanRef{Name: "A.out"}}}, {Target: "C", Args: []ChanExpr{ChanRef{Name: "B.out"}}}}},
+			}
+
+			result, err := Translate(wf, nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldHaveLength, 2)
+
+			jobs, err := TranslatePending(result.Pending[0], []CompletedJob{{
+				RepGrp:      "nf.wf.r1.A",
+				OutputPaths: []string{"/work/nf-work/r1/A/produced.txt"},
+				DepGroups:   []string{"nf.r1.A"},
+				ExitCode:    0,
+			}}, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+
+			So(MarkPendingStageSkipped(result.Pending[0], result.Pending[1:]), ShouldBeNil)
+
+			jobs, err = TranslatePending(result.Pending[1], nil, TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: "/work", Params: map[string]any{"run_step": false}})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+	})
+}
+
 func TestTranslateD6UnsupportedCastDirectiveFallback(t *testing.T) {
 	Convey("Translate falls back for directives with unsupported cast targets", t, func() {
 		stderr := captureTranslateStderr(func() {
@@ -2438,6 +2562,79 @@ func TestTranslate(t *testing.T) {
 		So(jobs, ShouldHaveLength, 1)
 		So(jobs[0].Dependencies, ShouldNotBeNil)
 		So(jobs[0].Cmd, ShouldContainSubstring, "produced.txt")
+	})
+
+	Convey("TranslatePending resolves randomSample channel operators after upstream completion", t, func() {
+		wf := &Workflow{
+			Processes: []*Process{
+				{
+					Name:   "PRODUCE",
+					Script: "touch produced.txt",
+					Input:  []*Declaration{{Kind: "val", Name: "item"}},
+					Output: []*Declaration{{Kind: "path", Expr: StringExpr{Value: "produced.txt"}}},
+				},
+				{
+					Name:   "CONSUME",
+					Script: "cat $reads",
+					Input:  []*Declaration{{Kind: "path", Name: "reads"}},
+				},
+			},
+			EntryWF: &WorkflowBlock{
+				Calls: []*Call{
+					{Target: "PRODUCE", Args: []ChanExpr{ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 0},
+						IntExpr{Value: 1},
+						IntExpr{Value: 2},
+						IntExpr{Value: 3},
+						IntExpr{Value: 4},
+						IntExpr{Value: 5},
+						IntExpr{Value: 6},
+						IntExpr{Value: 7},
+						IntExpr{Value: 8},
+						IntExpr{Value: 9},
+					}}}},
+					{Target: "CONSUME", Args: []ChanExpr{ChannelChain{
+						Source:    ChanRef{Name: "PRODUCE.out"},
+						Operators: []ChannelOperator{{Name: "randomSample", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 42}}}},
+					}}},
+				},
+			},
+		}
+
+		result, err := Translate(wf, nil, TranslateConfig{
+			RunID:        "run123",
+			WorkflowName: "main",
+			Cwd:          "/tmp/workdir",
+		})
+		So(err, ShouldBeNil)
+		So(result.Jobs, ShouldHaveLength, 10)
+		So(result.Pending, ShouldHaveLength, 1)
+		So(result.Pending[0].AwaitDepGrps, ShouldBeEmpty)
+		So(result.Pending[0].awaitRepGrps, ShouldResemble, []string{"nf.main.run123.PRODUCE"})
+
+		completed := make([]CompletedJob, 0, 10)
+		for index := range 10 {
+			completed = append(completed, CompletedJob{
+				RepGrp:      "nf.main.run123.PRODUCE",
+				OutputPaths: []string{filepath.Join("/tmp/workdir", "nf-work", "run123", "PRODUCE", strconv.Itoa(index), "produced.txt")},
+				DepGroups:   []string{fmt.Sprintf("nf.run123.PRODUCE.%d", index)},
+				ExitCode:    0,
+			})
+		}
+
+		first, firstErr := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "run123", WorkflowName: "main", Cwd: "/tmp/workdir"})
+		second, secondErr := TranslatePending(result.Pending[0], completed, TranslateConfig{RunID: "run123", WorkflowName: "main", Cwd: "/tmp/workdir"})
+
+		So(firstErr, ShouldBeNil)
+		So(secondErr, ShouldBeNil)
+		So(first, ShouldHaveLength, 3)
+		So(second, ShouldHaveLength, 3)
+		for _, job := range first {
+			So(job.Cmd, ShouldContainSubstring, "produced.txt")
+		}
+		for index := range first {
+			So(second[index].Cmd, ShouldEqual, first[index].Cmd)
+		}
 	})
 
 	Convey("Translate covers D1 acceptance details for resources and behaviors", t, func() {

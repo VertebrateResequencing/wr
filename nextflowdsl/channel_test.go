@@ -301,6 +301,75 @@ func TestResolveChannelD6(t *testing.T) {
 			So(flatMapItems, ShouldResemble, []any{"a", "b", "c", "d"})
 		})
 
+		Convey("randomSample samples cardinality-sensitive channels", func() {
+			Convey("returns exactly N items when sampling without a seed", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 0},
+						IntExpr{Value: 1},
+						IntExpr{Value: 2},
+						IntExpr{Value: 3},
+						IntExpr{Value: 4},
+						IntExpr{Value: 5},
+						IntExpr{Value: 6},
+						IntExpr{Value: 7},
+						IntExpr{Value: 8},
+						IntExpr{Value: 9},
+					}},
+					Operators: []ChannelOperator{{Name: "randomSample", Args: []Expr{IntExpr{Value: 3}}}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldHaveLength, 3)
+			})
+
+			Convey("returns deterministic items with the same seed", func() {
+				chain := ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{
+						IntExpr{Value: 0},
+						IntExpr{Value: 1},
+						IntExpr{Value: 2},
+						IntExpr{Value: 3},
+						IntExpr{Value: 4},
+						IntExpr{Value: 5},
+						IntExpr{Value: 6},
+						IntExpr{Value: 7},
+						IntExpr{Value: 8},
+						IntExpr{Value: 9},
+					}},
+					Operators: []ChannelOperator{{Name: "randomSample", Args: []Expr{IntExpr{Value: 3}, IntExpr{Value: 42}}}},
+				}
+
+				first, firstErr := ResolveChannel(chain, "/work")
+				second, secondErr := ResolveChannel(chain, "/work")
+
+				So(firstErr, ShouldBeNil)
+				So(secondErr, ShouldBeNil)
+				So(first, ShouldHaveLength, 3)
+				So(second, ShouldResemble, first)
+			})
+
+			Convey("passes all items through when N exceeds channel size", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source: ChannelFactory{Name: "of", Args: []Expr{IntExpr{Value: 1}, IntExpr{Value: 2}}},
+					Operators: []ChannelOperator{{Name: "randomSample", Args: []Expr{IntExpr{Value: 5}}}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldResemble, []any{1, 2})
+			})
+
+			Convey("returns no items for an empty channel", func() {
+				items, err := ResolveChannel(ChannelChain{
+					Source:    ChannelFactory{Name: "empty"},
+					Operators: []ChannelOperator{{Name: "randomSample", Args: []Expr{IntExpr{Value: 3}}}},
+				}, "/work")
+
+				So(err, ShouldBeNil)
+				So(items, ShouldBeEmpty)
+			})
+		})
+
 		Convey("mix, join, and groupTuple transform referenced channels while preserving grouping", func() {
 			resolver := func(ref ChanRef) ([]channelItem, error) {
 				switch ref.Name {

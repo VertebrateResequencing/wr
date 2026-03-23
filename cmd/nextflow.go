@@ -428,6 +428,15 @@ func followNextflowWorkflow(
 			if translateErr != nil {
 				return translateErr
 			}
+			if len(jobs) == 0 {
+				if skipErr := nextflowdsl.MarkPendingStageSkipped(stage, remaining); skipErr != nil {
+					return skipErr
+				}
+
+				progressed = true
+
+				continue
+			}
 			if addErr := addNextflowJobs(jq, repGroupPrefix, jobs); addErr != nil {
 				return addErr
 			}

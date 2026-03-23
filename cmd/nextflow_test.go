@@ -1668,6 +1668,72 @@ func TestNextflowRunCommandFollow(t *testing.T) {
 			So(queue.limitGroupCalls, ShouldResemble, []string{"nf-finish-A-r1:0"})
 			So(*sleeps, ShouldResemble, []time.Duration{25 * time.Millisecond})
 		})
+
+		Convey("when-guarded stages that skip execution propagate empty outputs and finish cleanly", func() {
+			baseDir := t.TempDir()
+			wf := &nextflowdsl.Workflow{
+				Processes: []*nextflowdsl.Process{
+					{
+						Name:       "A",
+						Directives: map[string]any{},
+						Script:     "echo hello > produced.txt",
+						Output: []*nextflowdsl.Declaration{{
+							Kind: "path",
+							Expr: nextflowdsl.StringExpr{Value: "produced.txt"},
+						}},
+						Env:        map[string]string{},
+						PublishDir: []*nextflowdsl.PublishDir{},
+					},
+					{
+						Name:       "B",
+						Directives: map[string]any{},
+						When:       "params.run_step",
+						Input:      []*nextflowdsl.Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cat $reads > filtered.txt",
+						Output: []*nextflowdsl.Declaration{{
+							Kind: "path",
+							Expr: nextflowdsl.StringExpr{Value: "filtered.txt"},
+						}},
+						Env:        map[string]string{},
+						PublishDir: []*nextflowdsl.PublishDir{},
+					},
+					{
+						Name:       "C",
+						Directives: map[string]any{},
+						Input:      []*nextflowdsl.Declaration{{Kind: "path", Name: "reads"}},
+						Script:     "cat $reads > consumed.txt",
+						Env:        map[string]string{},
+						PublishDir: []*nextflowdsl.PublishDir{},
+					},
+				},
+				EntryWF: &nextflowdsl.WorkflowBlock{Calls: []*nextflowdsl.Call{{Target: "A"}, {Target: "B", Args: []nextflowdsl.ChanExpr{nextflowdsl.ChanRef{Name: "A.out"}}}, {Target: "C", Args: []nextflowdsl.ChanExpr{nextflowdsl.ChanRef{Name: "B.out"}}}}},
+			}
+
+			tc := nextflowdsl.TranslateConfig{RunID: "r1", WorkflowName: "wf", Cwd: baseDir, Params: map[string]any{"run_step": false}}
+			result, err := nextflowdsl.Translate(wf, nil, tc)
+			So(err, ShouldBeNil)
+			So(result.Jobs, ShouldHaveLength, 1)
+			So(result.Pending, ShouldHaveLength, 2)
+
+			producer := cloneJobs(result.Jobs)[0]
+			producer.State = jobqueue.JobStateComplete
+			So(os.MkdirAll(producer.Cwd, 0o755), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(producer.Cwd, "produced.txt"), []byte("hello"), 0o644), ShouldBeNil)
+
+			queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{
+				{complete: []*jobqueue.Job{producer}},
+				{complete: []*jobqueue.Job{producer}},
+			}}
+
+			sleeps, restoreSleep := withFakeNextflowSleep(queue)
+			defer restoreSleep()
+
+			err = followNextflowWorkflow(queue, nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID), result.Pending, tc, 25*time.Millisecond, io.Discard)
+
+			So(err, ShouldBeNil)
+			So(queue.added, ShouldBeEmpty)
+			So(*sleeps, ShouldContain, 25*time.Millisecond)
+		})
 	})
 }
 

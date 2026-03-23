@@ -26,8 +26,8 @@ Update `cmd/nextflow.go` for follow-loop integration. Depends
 on Phase 1 evaluator enhancements. Covering all 6 acceptance
 tests from C1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.2: H1 - Implement `randomSample` via PendingStage [parallel with 5.1]
 
@@ -41,8 +41,8 @@ collect completed items and randomly sample N. If seeded, use
 deterministic sampling. If N >= total items, all pass through.
 Covering all 4 acceptance tests from H1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill
