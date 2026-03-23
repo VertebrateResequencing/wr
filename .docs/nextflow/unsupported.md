@@ -3,6 +3,19 @@
 These Nextflow features are either impossible to support in wr's execution
 model, inapplicable to wr's architecture, or deprecated by Nextflow itself.
 
+## Plugin Includes
+
+Nextflow supports including definitions from plugins:
+
+```groovy
+include { VALIDATE } from 'plugin/nf-schema'
+```
+
+Plugins run in the JVM and cannot be executed by wr. The include source
+is not recognised, causing a module resolution error.
+nf-core pipelines increasingly use `nf-schema` (parameter validation)
+and other plugins — see `gaps.md` for a possible workaround.
+
 ## Process Sections
 
 ### `exec:` section
@@ -159,7 +172,7 @@ equivalents (e.g. `splitFasta | count`, `combine`) are supported.
 - `countFastq` — use `splitFastq | count`
 - `countJson` — use `splitJson | count`
 - `countLines` — use `splitText | count`
-- `merge` — use `combine`
+- `merge` — use `combine` or `join`
 
 ## Config Scopes
 
@@ -168,24 +181,27 @@ reporting, cloud platform integration, notifications. wr has its own
 monitoring (web UI, status commands) and does not need Nextflow's reporting
 infrastructure. None affect job creation or execution semantics.
 
+Scopes marked *(skipped)* are silently ignored by the config parser.
+The rest cause parse errors when encountered — see `gaps.md` for details.
+
 - `aws` / `azure` / `google` — cloud provider executor and storage settings (wr uses OpenStack)
 - `charliecloud` / `podman` / `sarus` / `shifter` — alternative container engines (wr supports Docker, Singularity, Apptainer)
-- `conda` — Conda environment management settings
-- `dag` — DAG visualisation output settings
+- `conda` — Conda environment management settings *(skipped)*
+- `dag` — DAG visualisation output settings *(skipped)*
 - `fusion` — Fusion FUSE file system for cloud object storage
 - `k8s` — Kubernetes execution settings (wr has its own K8s scheduler)
 - `lineage` — data lineage/provenance metadata store
 - `mail` — SMTP mail server for email notifications
-- `manifest` — Pipeline metadata (name, version, author, description)
+- `manifest` — Pipeline metadata (name, version, author, description) *(skipped)*
 - `nextflow` — Nextflow runtime retry policy internals
-- `notification` — Email/webhook notifications on completion/error
-- `report` — HTML execution report settings
+- `notification` — Email/webhook notifications on completion/error *(skipped)*
+- `report` — HTML execution report settings *(skipped)*
 - `seqera` — Seqera Platform compute environment and scheduler
 - `spack` — Spack package manager environment (directive is supported)
-- `timeline` — Timeline HTML report settings
-- `tower` / `wave` — Seqera Platform and Wave container service integration
-- `trace` — Execution trace CSV settings
-- `weblog` — HTTP webhook for real-time execution logging
+- `timeline` — Timeline HTML report settings *(skipped)*
+- `tower` / `wave` — Seqera Platform and Wave container service integration *(skipped)*
+- `trace` — Execution trace CSV settings *(skipped)*
+- `weblog` — HTTP webhook for real-time execution logging *(skipped)*
 
 ## Container Config Settings
 

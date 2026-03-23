@@ -330,6 +330,11 @@ expressions and closures. The following are not implemented:
 - `env(name)` — returns the value of an environment variable from the
   launch environment. New in Nextflow 25.04. Different from `Channel.env`
   (a channel factory). May appear in config files and parameter defaults.
+- `tuple(args...)` — creates a tuple (list) from its arguments. Used in
+  `map` closures and workflow wiring as an alternative to list literals.
+- `record([options])` — creates a typed record instance from named
+  arguments. New in Nextflow 25.10+. Required when using record type
+  definitions.
 - `sendMail(...)` — send email notifications from pipeline code.
 - `sleep(ms)` — pause execution.
 
@@ -348,3 +353,41 @@ many methods in Groovy/Nextflow that are not evaluated:
 - `.readLines()` — read lines into list
 
 These appear in bespoke pipelines but are uncommon in nf-core modules.
+
+## Config Scopes — Parse Errors
+
+The following config scopes are silently skipped without errors:
+`conda`, `dag`, `manifest`, `notification`, `report`, `timeline`,
+`tower`, `trace`, `wave`, `weblog`.
+
+However, the remaining Nextflow config scopes listed in `unsupported.md`
+cause **parse errors** when encountered rather than being silently
+skipped. The most likely to appear in real pipeline configs are:
+
+- `mail` — SMTP settings; appears in some nf-core configs.
+- `seqera` — newer name for the `tower` scope; `tower` is skipped but
+  `seqera` is not.
+- `nextflow` — as a block scope (e.g. `nextflow { ... }`); note that
+  top-level assignments like `nextflow.enable.X = true` are handled
+  separately as feature flags and do work.
+
+Other scopes that cause parse errors: `aws`, `azure`, `google`,
+`charliecloud`, `podman`, `sarus`, `shifter`, `fusion`, `k8s`,
+`lineage`, `spack`.
+
+Adding these to the silently-skipped list is trivial — the fix is
+adding entries to the `skippedTopLevelConfigScopes` map in config.go.
+
+## Include Sources — Plugin Modules
+
+Nextflow supports including definitions from plugins:
+
+```groovy
+include { VALIDATE } from 'plugin/nf-schema'
+```
+
+Plugin includes are not recognised. Encountering one causes a module
+resolution error. nf-core pipelines increasingly use `nf-schema`
+(formerly `nf-validation`) for parameter validation. The plugin code
+itself cannot be executed (it runs in the JVM), but recognising the
+include and silently skipping it would prevent parse failures.
