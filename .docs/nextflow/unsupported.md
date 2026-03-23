@@ -1,8 +1,9 @@
 # Nextflow Features — Unsupported in wr
 
-These Nextflow features are parsed without error but will not be translated
-to wr jobs. They are either impossible to support in wr's execution model,
-irrelevant to wr's architecture, or deprecated by Nextflow itself.
+These Nextflow features are either parsed without error but never translated
+to wr jobs, or are irrelevant to wr's architecture. They are impossible to
+support in wr's execution model, inapplicable to wr's architecture, or
+deprecated by Nextflow itself.
 
 ## Process Sections
 
@@ -141,7 +142,6 @@ equivalents (e.g. `splitFasta | count`, `combine`) are supported.
 - `countJson` — use `splitJson | count`
 - `countLines` — use `splitText | count`
 - `merge` — use `combine`
-- `toInteger` — use `map { it.toInteger() }`
 
 ## Config Scopes
 
@@ -168,6 +168,36 @@ infrastructure. None affect job creation or execution semantics.
 - `tower` / `wave` — Seqera Platform and Wave container service integration
 - `trace` — Execution trace CSV settings
 - `weblog` — HTTP webhook for real-time execution logging
+
+## Container Config Settings
+
+### `docker` / `singularity` / `apptainer` settings beyond `enabled`
+
+Only the `enabled` flag is parsed in container config scopes. Settings
+like `envWhitelist`, `registry`, `mountFlags`, `sudo`, `temp`,
+`fixOwnership`, `remove`, `legacy`, and `writableDockerfile` cause parse
+errors. wr manages container execution through its own container flags
+and does not need these settings. `runOptions` is also not yet parsed
+but could be useful — see `gaps.md`.
+
+## publishDir Options (Cloud-Only)
+
+### `contentType` / `storageClass` / `tags`
+
+These publishDir options are experimental and only supported for S3
+object storage in Nextflow. `contentType` sets the MIME type,
+`storageClass` sets the storage tier, and `tags` attach metadata. wr
+does not publish to S3 buckets, so these have no mapping.
+
+## Include Clauses
+
+### `addParams` / `params` on includes
+
+`include { FOO } from './module' addParams(x: 1)` and the `params`
+include clause are deprecated by Nextflow itself (since DSL2). These
+clauses are not recognised by the parser and will cause errors. Pipeline
+parameters should be defined in `params {}` blocks or config files
+instead.
 
 ## Type Definitions
 
