@@ -2693,7 +2693,7 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(wf.Processes, ShouldHaveLength, 1)
 			So(wf.Processes[0].Stub, ShouldEqual, "echo stub")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
+			So(stderr, ShouldEqual, "")
 		})
 
 		Convey("script and stub sections can coexist", func() {
@@ -2710,7 +2710,7 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Script, ShouldEqual, "echo real")
 			So(wf.Processes[0].Stub, ShouldEqual, "echo stub")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
+			So(stderr, ShouldEqual, "")
 		})
 
 		Convey("exec sections are stored as raw text", func() {
@@ -2742,7 +2742,7 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].Shell, ShouldEqual, "echo !{var}")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"shell\"")
+			So(stderr, ShouldEqual, "")
 		})
 
 		Convey("when sections are stored as raw text", func() {
@@ -2758,7 +2758,7 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(wf.Processes[0].When, ShouldEqual, "params.run_step")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"when\"")
+			So(stderr, ShouldEqual, "")
 		})
 
 		Convey("bare section bodies preserve raw text and realistic punctuation", func() {
@@ -2777,10 +2777,10 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 			So(wf.Processes[0].Exec, ShouldEqual, "println params.run_step ? 'go' : 'stop'")
 			So(wf.Processes[0].Shell, ShouldEqual, "echo !{sample_id} && touch out.txt")
 			So(wf.Processes[0].When, ShouldEqual, "params.run_step && meta.id != 'skip'")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
 			So(stderr, ShouldContainSubstring, "unsupported process section \"exec\"")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"shell\"")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"when\"")
+			So(stderr, ShouldNotContainSubstring, "unsupported process section \"stub\"")
+			So(stderr, ShouldNotContainSubstring, "unsupported process section \"shell\"")
+			So(stderr, ShouldNotContainSubstring, "unsupported process section \"when\"")
 		})
 
 		Convey("input, output, script, stub, and when sections all parse together", func() {
@@ -2801,8 +2801,7 @@ func TestParseAdditionalProcessSections(t *testing.T) {
 			So(wf.Processes[0].Script, ShouldEqual, "echo hello")
 			So(wf.Processes[0].Stub, ShouldEqual, "touch stub.txt && echo ${params.prefix}")
 			So(wf.Processes[0].When, ShouldEqual, "params.run_step")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"stub\"")
-			So(stderr, ShouldContainSubstring, "unsupported process section \"when\"")
+			So(stderr, ShouldEqual, "")
 		})
 	})
 }

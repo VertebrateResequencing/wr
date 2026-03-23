@@ -4303,7 +4303,6 @@ func (p *parser) parseSection(proc *Process, label token) error {
 			return err
 		}
 		proc.Stub = stub
-		warnUnsupportedProcessSection(label)
 	case "exec":
 		execBody, err := p.parseRawSectionBody()
 		if err != nil {
@@ -4317,7 +4316,6 @@ func (p *parser) parseSection(proc *Process, label token) error {
 			return err
 		}
 		proc.Shell = shell
-		warnUnsupportedProcessSection(label)
 	case "stage":
 		if _, err := p.parseRawSectionBody(); err != nil {
 			return err
@@ -4329,7 +4327,6 @@ func (p *parser) parseSection(proc *Process, label token) error {
 			return err
 		}
 		proc.When = when
-		warnUnsupportedProcessSection(label)
 	default:
 		return fmt.Errorf("line %d: unsupported section %q", label.line, label.lit)
 	}
