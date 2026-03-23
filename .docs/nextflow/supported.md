@@ -34,8 +34,7 @@ behaviour as real Nextflow.
 - `val(x)` — value input
 - `path(x)` / `file(x)` — file input (file is deprecated alias)
 - `tuple val(x), path(y)` — tuple input with mixed qualifiers
-- `env(x)` — environment variable input
-- `stdin` — standard input (exported as env var, not piped to process stdin)
+- `env(x)` — environment variable input (value available for script interpolation; not exported as a real shell environment variable)
 - `each val(x)` / `each path(x)` — cross-product input (generates separate jobs per each-value)
 
 ### Output Qualifiers
@@ -43,7 +42,6 @@ behaviour as real Nextflow.
 - `val(x)` — value output
 - `path('pattern')` / `file('pattern')` — file output
 - `tuple val(x), path(y)` — tuple output
-- `env(x)` — environment variable output (statically resolved; not captured at runtime)
 - `stdout` — standard output capture
 - `eval('command')` — evaluate command and capture stdout
 
@@ -156,11 +154,10 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `join(other)` — keyed join by first element
 - `combine(other, [by: n])` — cross product
 - `concat(ch1, ch2, ...)` — ordered concatenation
-- `cross(other)` — cross product
 
 ### Splitting
 
-- `splitCsv([header: true])` — CSV splitting (comma delimiter)
+- `splitCsv([header: true, by: n])` — CSV splitting (comma delimiter; `by` groups rows into chunks)
 - `splitJson([path: '...'])` — JSON splitting
 - `splitText([by: n])` — line-based text splitting
 - `splitFasta([by: n])` — FASTA splitting
@@ -197,6 +194,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 
 ### Statements
 
+- `break` — exit for loops and switch cases
 - `if (cond) { } else if (cond) { } else { }` — conditional execution
 - `for (x in collection) { }` — iteration over lists, ranges, maps
 - `try { } catch (Type e) { } finally { }` — exception handling with typed catches

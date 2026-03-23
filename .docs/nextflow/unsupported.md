@@ -226,10 +226,10 @@ handles a Groovy subset. Closures referencing undefined functions,
 performing I/O, or using unsupported constructs cannot be evaluated. Items
 pass through unchanged with a warning.
 
-### `while` / `do-while` loops
+### `do-while` loops
 
-Not implemented in the Groovy evaluator. These loop constructs are
-extremely rare in Nextflow scripts — `for (x in collection)` covers
-virtually all iteration needs. Supporting `while` would require
-evaluating arbitrary loop conditions in the Go evaluator, potentially
-with unbounded iteration.
+Not implemented in the Groovy evaluator. The `do { ... } while (cond)`
+construct does not appear in the Nextflow syntax reference and is
+extremely rare in Nextflow scripts. `for (x in collection)` covers
+virtually all iteration needs. `while` loops (without `do`) are tracked
+in `gaps.md`.
