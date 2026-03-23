@@ -292,6 +292,160 @@ func maxInt(left, right int) int {
 	return right
 }
 
+func filterWhenBindingSets(proc *Process, bindingSets []bindingSet, params map[string]any) ([]bindingSet, error) {
+	if proc == nil || strings.TrimSpace(proc.When) == "" || len(bindingSets) == 0 {
+		return bindingSets, nil
+	}
+
+	filtered := make([]bindingSet, 0, len(bindingSets))
+	for _, bindingSet := range bindingSets {
+		bindings := outputVarsWithValues(proc, bindingSet.bindings, bindingSet.values, nil)
+		delete(bindings, "params")
+
+		allowed, err := EvalWhenGuard(proc.When, bindings, params)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			filtered = append(filtered, bindingSet)
+		}
+	}
+
+	return filtered, nil
+}
+
+// EvalWhenGuard evaluates a process when: expression with the given input
+// bindings and params.
+func EvalWhenGuard(whenExpr string, bindings map[string]any, params map[string]any) (bool, error) {
+	if strings.TrimSpace(whenExpr) == "" {
+		return true, nil
+	}
+
+	vars := cloneEvalVars(bindings)
+	if vars == nil {
+		vars = map[string]any{}
+	}
+	if params != nil {
+		vars["params"] = params
+	}
+
+	expr, err := parseExprText(whenExpr)
+	if err != nil {
+		return false, err
+	}
+
+	value, err := EvalExpr(expr, vars)
+	if err != nil {
+		return false, err
+	}
+
+	return isTruthy(value), nil
+}
+
+func translateProcessBindingSets(
+	proc *Process,
+	bindingSets []bindingSet,
+	scope []string,
+	defaults *ProcessDefaults,
+	selectors []*ProcessSelector,
+	params map[string]any,
+	tc TranslateConfig,
+) ([]*jobqueue.Job, translatedCall, error) {
+	if len(bindingSets) == 0 {
+		return nil, translatedCall{}, nil
+	}
+
+	jobs := make([]*jobqueue.Job, 0, len(bindingSets))
+	stage := translatedCall{depGroups: make([]string, 0, len(bindingSets)), items: make([]channelItem, 0, len(bindingSets))}
+	repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
+	reqGroup := fmt.Sprintf("nf.%s", proc.Name)
+	indexed := len(bindingSets) > 1
+	stage.baseCwd = deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
+	effectiveProc, err := processWithConfigDefaults(proc, defaults, selectors, params)
+	if err != nil {
+		return nil, translatedCall{}, err
+	}
+	procForCommand := effectiveProc
+	if tc.StubRun && proc != nil && proc.Stub != "" {
+		stubProc := *effectiveProc
+		stubProc.Script = proc.Stub
+		procForCommand = &stubProc
+	}
+
+	for index, bindingSet := range bindingSets {
+		cwd := deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
+		depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
+		if bindingSet.hasEach {
+			cwd = deterministicEachCwd(tc.Cwd, tc.RunID, scope, proc.Name, bindingSet.regularIx, bindingSet.eachIx)
+		} else if indexed {
+			cwd = deterministicIndexedCwd(tc.Cwd, tc.RunID, scope, proc.Name, index)
+			depGroup = scopedIndexedDepGroup(tc.RunID, scope, proc.Name, index)
+		}
+
+		job := &jobqueue.Job{
+			Cwd:          cwd,
+			CwdMatters:   true,
+			RepGroup:     repGroup,
+			ReqGroup:     reqGroup,
+			DepGroups:    []string{depGroup},
+			Dependencies: depGroupsToDependencies(bindingSet.depGroups),
+			Override:     0,
+		}
+
+		requirements, reqErr := buildRequirements(proc, effectiveProc, defaults, selectors, params, tc.Scheduler)
+		if reqErr != nil {
+			return nil, translatedCall{}, reqErr
+		}
+		job.Requirements = requirements
+
+		if err = applyContainer(job, effectiveProc, tc.ContainerRuntime, params); err != nil {
+			return nil, translatedCall{}, err
+		}
+		applyMaxForks(job, effectiveProc)
+		applyFairPriority(job, effectiveProc, index, params)
+		if err = applyFinishStrategyLimitGroup(job, effectiveProc, params, tc.RunID); err != nil {
+			return nil, translatedCall{}, err
+		}
+		if err = applyErrorStrategy(job, effectiveProc, params); err != nil {
+			return nil, translatedCall{}, err
+		}
+		if err = applyEnv(job, effectiveProc, params); err != nil {
+			return nil, translatedCall{}, err
+		}
+
+		cmd, cmdErr := buildCommandWithValues(procForCommand, bindingSet.bindings, bindingSet.values, params, cwd, tc.Cwd)
+		if cmdErr != nil {
+			return nil, translatedCall{}, cmdErr
+		}
+		job.Cmd = cmd
+		applyCaptureCleanupBehaviour(job)
+
+		if err = applyPublishDirBehaviours(job, effectiveProc, bindingSet.bindings, params, tc, cwd); err != nil {
+			return nil, translatedCall{}, err
+		}
+
+		jobs = append(jobs, job)
+		if stage.depGroup == "" {
+			stage.depGroup = depGroup
+		}
+		stage.depGroups = appendUniqueStrings(stage.depGroups, []string{depGroup})
+		paths := outputPaths(effectiveProc, bindingSet.bindings, params, cwd)
+		stage.outputPaths = append(stage.outputPaths, paths...)
+		stage.items = append(stage.items, channelItem{value: outputValue(effectiveProc, bindingSet.bindings, params, cwd, paths), depGroups: []string{depGroup}})
+		stage.emitOutputs = mergeEmittedOutputs(stage.emitOutputs, emitOutputsForProcess(effectiveProc, bindingSet.bindings, params, cwd, depGroup))
+	}
+
+	maxErrorsJob, err := newProcessMaxErrorsJob(proc, repGroup, scope, params, tc, len(jobs))
+	if err != nil {
+		return nil, translatedCall{}, err
+	}
+	if maxErrorsJob != nil {
+		jobs = append(jobs, maxErrorsJob)
+	}
+
+	return jobs, stage, nil
+}
+
 func processWithConfigDefaults(proc *Process, defaults *ProcessDefaults, selectors []*ProcessSelector, params map[string]any) (*Process, error) {
 	if proc == nil {
 		return nil, nil
@@ -2212,7 +2366,7 @@ func translateCalls(
 			if err != nil {
 				return err
 			}
-			if len(awaitDepGrps) > 0 || len(awaitRepGrps) > 0 {
+			if len(awaitDepGrps) > 0 || len(awaitRepGrps) > 0 || strings.TrimSpace(proc.When) != "" {
 				repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
 				depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
 				placeholderPaths := outputPaths(proc, nil, params, deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name))
@@ -2276,6 +2430,63 @@ func translateCalls(
 	}
 
 	return nil
+}
+
+func channelChainWaitsForAllItems(expr ChannelChain) bool {
+	for _, operator := range expr.Operators {
+		if operator.Name == "randomSample" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func translatedChannelExprRepGroups(arg ChanExpr, scope []string, translated map[string]translatedCall) ([]string, error) {
+	switch expr := arg.(type) {
+	case ChanRef:
+		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
+		if !ok {
+			return nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
+		}
+
+		return translatedStageRepGroups(stage), nil
+	case NamedChannelRef:
+		return translatedChannelExprRepGroups(expr.Source, scope, translated)
+	case ChannelChain:
+		repGrps, err := translatedChannelExprRepGroups(expr.Source, scope, translated)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, operator := range expr.Operators {
+			for _, channel := range operator.Channels {
+				channelRepGrps, channelErr := translatedChannelExprRepGroups(channel, scope, translated)
+				if channelErr != nil {
+					return nil, channelErr
+				}
+				repGrps = appendUniqueStrings(repGrps, channelRepGrps)
+			}
+		}
+
+		return repGrps, nil
+	case PipeExpr:
+		repGrps := []string{}
+		for _, stage := range expr.Stages {
+			stageRepGrps, err := translatedChannelExprRepGroups(stage, scope, translated)
+			if err != nil {
+				if _, ok := stage.(ChanRef); ok {
+					continue
+				}
+				return nil, err
+			}
+			repGrps = appendUniqueStrings(repGrps, stageRepGrps)
+		}
+
+		return repGrps, nil
+	default:
+		return nil, nil
+	}
 }
 
 func hasDynamicOutputsForStage(proc *Process, outputPatterns []string) bool {
@@ -2965,6 +3176,62 @@ func compareIndexedSuffixes(left, right []int) int {
 	return 0
 }
 
+// MarkPendingStageSkipped records that a pending stage resolved to an empty
+// channel and updates downstream pending stages so they no longer wait on it.
+func MarkPendingStageSkipped(skipped *PendingStage, downstream []*PendingStage) error {
+	if skipped == nil || skipped.call == nil {
+		return fmt.Errorf("pending stage is nil")
+	}
+
+	targetKey := scopedTargetKey(skipped.scope, skipped.call.Target)
+	stage, ok := skipped.translated[targetKey]
+	if !ok {
+		return fmt.Errorf("pending stage %q has no translated placeholder", skipped.call.Target)
+	}
+
+	for _, pending := range downstream {
+		if pending == nil {
+			continue
+		}
+
+		pending.awaitRepGrps = removeStringValues(pending.awaitRepGrps, stage.repGroup)
+
+		existing, ok := pending.translated[targetKey]
+		if !ok {
+			continue
+		}
+
+		existing.depGroup = ""
+		existing.depGroups = nil
+		existing.outputPaths = nil
+		existing.emitOutputs = nil
+		existing.items = nil
+		existing.dynamicOutput = false
+		existing.pending = false
+		existing.skipped = true
+		pending.translated[targetKey] = existing
+	}
+
+	return nil
+}
+
+func removeStringValues(values []string, remove string) []string {
+	if len(values) == 0 || remove == "" {
+		return values
+	}
+
+	filtered := values[:0]
+	for _, value := range values {
+		if value == remove {
+			continue
+		}
+
+		filtered = append(filtered, value)
+	}
+
+	return filtered
+}
+
 // TranslateResult holds the output of Translate.
 type TranslateResult struct {
 	Jobs    []*jobqueue.Job
@@ -2990,6 +3257,7 @@ type translatedCall struct {
 	items         []channelItem
 	dynamicOutput bool
 	pending       bool
+	skipped       bool
 }
 
 func cloneTranslatedCall(value translatedCall) translatedCall {
@@ -3261,11 +3529,26 @@ func TranslatePending(pending *PendingStage, completed []CompletedJob, tc Transl
 		translated[name] = stage
 	}
 
-	jobs, _, err := translateProcessCall(
+	bindingSets, err := resolveBindings(pending.Process, pending.call, pending.scope, translated, tc.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	if len(bindingSets) == 0 {
+		return nil, nil
+	}
+
+	bindingSets, err = filterWhenBindingSets(pending.Process, bindingSets, params)
+	if err != nil {
+		return nil, err
+	}
+	if len(bindingSets) == 0 {
+		return nil, nil
+	}
+
+	jobs, _, err := translateProcessBindingSets(
 		pending.Process,
-		pending.call,
+		bindingSets,
 		pending.scope,
-		translated,
 		cloneDefaults(pending.defaults),
 		cloneSelectors(pending.selectors),
 		params,
@@ -3473,99 +3756,8 @@ func translateProcessCall(
 	if err != nil {
 		return nil, translatedCall{}, err
 	}
-	if len(bindingSets) == 0 {
-		return nil, translatedCall{}, nil
-	}
 
-	jobs := make([]*jobqueue.Job, 0, len(bindingSets))
-	stage := translatedCall{depGroups: make([]string, 0, len(bindingSets)), items: make([]channelItem, 0, len(bindingSets))}
-	repGroup := scopedRepGroup(tc.WorkflowName, tc.RunID, scope, proc.Name)
-	reqGroup := fmt.Sprintf("nf.%s", proc.Name)
-	indexed := len(bindingSets) > 1
-	stage.baseCwd = deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
-	effectiveProc, err := processWithConfigDefaults(proc, defaults, selectors, params)
-	if err != nil {
-		return nil, translatedCall{}, err
-	}
-	procForCommand := effectiveProc
-	if tc.StubRun && proc != nil && proc.Stub != "" {
-		stubProc := *effectiveProc
-		stubProc.Script = proc.Stub
-		procForCommand = &stubProc
-	}
-
-	for index, bindingSet := range bindingSets {
-		cwd := deterministicCwd(tc.Cwd, tc.RunID, scope, proc.Name)
-		depGroup := scopedDepGroup(tc.RunID, scope, proc.Name)
-		if bindingSet.hasEach {
-			cwd = deterministicEachCwd(tc.Cwd, tc.RunID, scope, proc.Name, bindingSet.regularIx, bindingSet.eachIx)
-		} else if indexed {
-			cwd = deterministicIndexedCwd(tc.Cwd, tc.RunID, scope, proc.Name, index)
-			depGroup = scopedIndexedDepGroup(tc.RunID, scope, proc.Name, index)
-		}
-
-		job := &jobqueue.Job{
-			Cwd:          cwd,
-			CwdMatters:   true,
-			RepGroup:     repGroup,
-			ReqGroup:     reqGroup,
-			DepGroups:    []string{depGroup},
-			Dependencies: depGroupsToDependencies(bindingSet.depGroups),
-			Override:     0,
-		}
-
-		requirements, reqErr := buildRequirements(proc, effectiveProc, defaults, selectors, params, tc.Scheduler)
-		if reqErr != nil {
-			return nil, translatedCall{}, reqErr
-		}
-		job.Requirements = requirements
-
-		if err = applyContainer(job, effectiveProc, tc.ContainerRuntime, params); err != nil {
-			return nil, translatedCall{}, err
-		}
-		applyMaxForks(job, effectiveProc)
-		applyFairPriority(job, effectiveProc, index, params)
-		if err = applyFinishStrategyLimitGroup(job, effectiveProc, params, tc.RunID); err != nil {
-			return nil, translatedCall{}, err
-		}
-		if err = applyErrorStrategy(job, effectiveProc, params); err != nil {
-			return nil, translatedCall{}, err
-		}
-		if err = applyEnv(job, effectiveProc, params); err != nil {
-			return nil, translatedCall{}, err
-		}
-
-		cmd, cmdErr := buildCommandWithValues(procForCommand, bindingSet.bindings, bindingSet.values, params, cwd, tc.Cwd)
-		if cmdErr != nil {
-			return nil, translatedCall{}, cmdErr
-		}
-		job.Cmd = cmd
-		applyCaptureCleanupBehaviour(job)
-
-		if err = applyPublishDirBehaviours(job, effectiveProc, bindingSet.bindings, params, tc, cwd); err != nil {
-			return nil, translatedCall{}, err
-		}
-
-		jobs = append(jobs, job)
-		if stage.depGroup == "" {
-			stage.depGroup = depGroup
-		}
-		stage.depGroups = appendUniqueStrings(stage.depGroups, []string{depGroup})
-		paths := outputPaths(effectiveProc, bindingSet.bindings, params, cwd)
-		stage.outputPaths = append(stage.outputPaths, paths...)
-		stage.items = append(stage.items, channelItem{value: outputValue(effectiveProc, bindingSet.bindings, params, cwd, paths), depGroups: []string{depGroup}})
-		stage.emitOutputs = mergeEmittedOutputs(stage.emitOutputs, emitOutputsForProcess(effectiveProc, bindingSet.bindings, params, cwd, depGroup))
-	}
-
-	maxErrorsJob, err := newProcessMaxErrorsJob(proc, repGroup, scope, params, tc, len(jobs))
-	if err != nil {
-		return nil, translatedCall{}, err
-	}
-	if maxErrorsJob != nil {
-		jobs = append(jobs, maxErrorsJob)
-	}
-
-	return jobs, stage, nil
+	return translateProcessBindingSets(proc, bindingSets, scope, defaults, selectors, params, tc)
 }
 
 func outputValue(proc *Process, bindings []string, params map[string]any, cwd string, fallbackPaths []string) any {
@@ -3825,6 +4017,9 @@ func resolveTranslatedChannelItems(arg ChanExpr, scope []string, translated map[
 		if !ok {
 			return nil, fmt.Errorf("unknown upstream reference %q", ref.Name)
 		}
+		if stage.skipped {
+			return nil, nil
+		}
 		if len(stage.items) > 0 {
 			return cloneChannelItems(stage.items), nil
 		}
@@ -3844,6 +4039,9 @@ func resolveArg(arg ChanExpr, scope []string, translated map[string]translatedCa
 		stage, ok := resolveTranslatedOutput(expr.Name, scope, translated)
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
+		}
+		if stage.skipped {
+			return nil, nil, nil
 		}
 
 		deps := cloneStrings(stage.depGroups)
@@ -4384,6 +4582,9 @@ func detectPendingArg(arg ChanExpr, scope []string, translated map[string]transl
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown upstream reference %q", expr.Name)
 		}
+		if stage.skipped {
+			return nil, nil, nil
+		}
 		if !stage.dynamicOutput && !stage.pending {
 			return nil, nil, nil
 		}
@@ -4400,6 +4601,16 @@ func detectPendingArg(arg ChanExpr, scope []string, translated map[string]transl
 	case NamedChannelRef:
 		return detectPendingArg(expr.Source, scope, translated)
 	case ChannelChain:
+		if channelChainWaitsForAllItems(expr) {
+			repGrps, err := translatedChannelExprRepGroups(expr, scope, translated)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(repGrps) > 0 {
+				return nil, repGrps, nil
+			}
+		}
+
 		depGrps, repGrps, err := detectPendingArg(expr.Source, scope, translated)
 		if err != nil {
 			return nil, nil, err

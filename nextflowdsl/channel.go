@@ -32,11 +32,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 var unsupportedCardinalityOperators = map[string]struct{}{
@@ -44,9 +46,8 @@ var unsupportedCardinalityOperators = map[string]struct{}{
 }
 
 var warningOnlyChannelOperators = map[string]struct{}{
-	"randomSample": {},
-	"subscribe":    {},
-	"until":        {},
+	"subscribe": {},
+	"until":     {},
 }
 
 var deprecatedChannelOperators = map[string]struct{}{
@@ -692,6 +693,77 @@ func channelOperatorMatches(filter Expr, value any) (bool, error) {
 	}
 
 	return reflect.DeepEqual(value, resolved), nil
+}
+
+func randomSampleChannelItems(items []channelItem, operator ChannelOperator) ([]channelItem, error) {
+	count, seed, seeded, err := randomSampleOperatorArgs(operator)
+	if err != nil {
+		return nil, err
+	}
+	if count <= 0 || len(items) == 0 {
+		return nil, nil
+	}
+	if count >= len(items) {
+		return cloneChannelItems(items), nil
+	}
+
+	indexes := make([]int, len(items))
+	for index := range len(items) {
+		indexes[index] = index
+	}
+
+	var rng *rand.Rand
+	if seeded {
+		rng = rand.New(rand.NewSource(seed))
+	} else {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	rng.Shuffle(len(indexes), func(left, right int) {
+		indexes[left], indexes[right] = indexes[right], indexes[left]
+	})
+
+	selected := indexes[:count]
+	sort.Ints(selected)
+
+	sampled := make([]channelItem, 0, count)
+	for _, index := range selected {
+		sampled = append(sampled, cloneChannelItem(items[index]))
+	}
+
+	return sampled, nil
+}
+
+func randomSampleOperatorArgs(operator ChannelOperator) (int, int64, bool, error) {
+	if len(operator.Args) == 0 || len(operator.Args) > 2 {
+		return 0, 0, false, fmt.Errorf("randomSample expects 1 or 2 arguments, got %d", len(operator.Args))
+	}
+
+	countValue, err := EvalExpr(operator.Args[0], nil)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	count, ok := countValue.(int)
+	if !ok {
+		return 0, 0, false, fmt.Errorf("randomSample expects an integer sample size")
+	}
+
+	if len(operator.Args) == 1 {
+		return count, 0, false, nil
+	}
+
+	seedValue, err := EvalExpr(operator.Args[1], nil)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	seed, ok := seedValue.(int)
+	if !ok {
+		return 0, 0, false, fmt.Errorf("randomSample expects an integer seed")
+	}
+
+	return count, int64(seed), true, nil
 }
 
 func transposeChannelItems(items []channelItem, byIndex *int) ([]channelItem, error) {
@@ -1686,6 +1758,8 @@ func applyChannelOperator(items []channelItem, operator ChannelOperator, cwd str
 		return []channelItem{{value: sorted, depGroups: unionChannelDepGroups(items)}}, nil
 	case "count":
 		return countChannelItems(items, operator)
+	case "randomSample":
+		return randomSampleChannelItems(items, operator)
 	case "reduce":
 		seed, hasSeed, closure, err := reduceOperatorSeedAndClosure(operator)
 		if err != nil {
