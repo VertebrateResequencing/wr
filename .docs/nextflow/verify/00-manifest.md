@@ -7,7 +7,7 @@ intentionally excluded with a reason.
 
 **Methodology:** This manifest was extracted by fetching each reference page
 and listing every H2/H3/H4 heading. Feature IDs are then assigned from
-nf-*.md files. The validation script `00-validate.sh` checks that every
+nf-*.md files. The validation script `00-audit.py` checks that every
 heading has a covering feature ID and every feature ID maps to a heading.
 
 ---
