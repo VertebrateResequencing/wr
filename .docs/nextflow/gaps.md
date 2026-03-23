@@ -269,6 +269,16 @@ variable":
 - `workflow.projectDir`, `workflow.launchDir`, `workflow.workDir` —
   same values via the workflow namespace
 - `workflow.resume`, `workflow.sessionId`, `workflow.runName` — run metadata
+- `workflow.profile` — comma-separated list of active configuration profiles;
+  commonly used in nf-core config files: `if (workflow.profile.contains('test'))`
+- `workflow.stubRun` — whether the current run is a stub-run
+- `workflow.homeDir` — user system home directory
+- `workflow.manifest.*` — pipeline metadata from manifest config scope
+- `workflow.container` / `workflow.containerEngine` — container image/engine info
+- `workflow.scriptFile` / `workflow.scriptName` / `workflow.scriptId` — script metadata
+- `workflow.repository` / `workflow.commitId` / `workflow.revision` — Git metadata
+- `workflow.userName` — user system account name
+- `workflow.configFiles` — list of config files used
 - `nextflow.version` — Nextflow version string
 - `nextflow.build` — Nextflow build number
 - `nextflow.timestamp` — Nextflow build timestamp
