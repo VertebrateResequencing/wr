@@ -104,6 +104,26 @@ wr jobs run in their CWD with files accessed directly via paths. There is
 no staging layer — inputs are referenced by absolute path in the command,
 outputs are produced in-place.
 
+## Task Properties
+
+### `task.previousException` / `task.previousTrace`
+
+`task.previousException` returns the exception from the previous failed
+attempt; `task.previousTrace` returns the trace record. Both are only
+available when `task.attempt > 1` (retried tasks). New in Nextflow 24.10.
+wr does not track per-attempt exception or trace data — retries are
+handled by wr's scheduler, not by the translator.
+
+## Process Output Options
+
+### `topic: <name>`
+
+The `topic:` generic output option sends a process output to a named
+topic channel (pub/sub pattern). Example:
+`output: val('hello'), topic: my_topic`. This is part of Nextflow's
+topic-based channel system alongside `Channel.topic()`. wr does not
+implement topic channels — see `future.md` for `Channel.topic`.
+
 ## Channel Factories
 
 ### `Channel.fromLineage`

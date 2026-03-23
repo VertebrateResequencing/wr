@@ -144,7 +144,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `toList()` — collect into list
 - `toSortedList()` — collect into sorted list (natural ordering only; no comparator)
 - `reduce(acc, closure)` — fold/accumulate
-- `count([filter])` — count items
+- `count()` — count items (closure predicates also supported)
 - `ifEmpty(value)` — default for empty channel
 
 ### Combining
@@ -187,7 +187,7 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 ### Aggregation
 
 - `min()` / `max()` — extremes (int and string comparison only; no closures/comparators)
-- `sum()` — sum items
+- `sum()` — sum items (integer items only)
 
 ## Expression / Groovy Evaluation
 
