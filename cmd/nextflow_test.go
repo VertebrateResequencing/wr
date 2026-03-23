@@ -628,13 +628,14 @@ func TestNextflowRunCommand(t *testing.T) {
 
 			workflowPath := env.writeWorkflow("stubbed.nf", "process A {\nscript: 'real_cmd'\nstub: 'touch out.txt'\n}\nworkflow { A() }\n")
 
-			err := env.executeRun("--stub-run", workflowPath)
+			output, err := env.executeRunWithOutput("--stub-run", workflowPath)
 			So(err, ShouldBeNil)
 
 			jobs := env.jobsByRepGroupSubstring("nf.stubbed.")
 			So(jobs, ShouldHaveLength, 1)
 			So(jobs[0].Cmd, ShouldContainSubstring, "touch out.txt")
 			So(jobs[0].Cmd, ShouldNotContainSubstring, "real_cmd")
+			So(output, ShouldNotContainSubstring, "unsupported process section \"stub\"")
 		})
 
 		Convey("config params are applied to translated job commands", func() {
