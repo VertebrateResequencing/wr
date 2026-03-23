@@ -15,6 +15,7 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `params {}` block syntax with typed declarations
 - `enum` and `record` type definitions — parsed and stored
 - `output {}` top-level block — parsed, publish targets extracted and wired
+- `nextflow.enable.*` / `nextflow.preview.*` feature flag assignments — parsed and silently ignored
 
 ## Process Definitions
 
@@ -25,7 +26,6 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `script:` — shell script body with Nextflow interpolation
 - `when:` — conditional guard expression; evaluated at runtime to skip process when false
 - `stub:` — stub script for dry-run mode; used as job command when `--stub-run` flag set
-- `exec:` — Groovy exec block (parsed, stored; not translated)
 - `shell:` — alternative script with `!{var}` interpolation resolved, `${...}` left for bash
 
 ### Input Qualifiers
@@ -61,7 +61,7 @@ Everything listed below is parsed without error AND translated to wr jobs
 - `errorStrategy` — retry/ignore/terminate/finish behaviour
 - `maxRetries` — retry count
 - `maxForks` — concurrency limit → wr limit groups
-- `publishDir` — output publishing (path, mode, pattern, saveAs)
+- `publishDir` — output publishing (path, mode, pattern)
 - `label` — process labels for config selector matching
 - `tag` — job name substitution tag
 - `beforeScript` — pre-execution command prepended to job
@@ -195,6 +195,12 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `tap(closure)` — side-effect without consuming
 - `set()` — bind to variable
 
+### Type Conversion (Pass-through)
+
+- `toLong()` — pass-through (no runtime conversion)
+- `toFloat()` — pass-through
+- `toDouble()` — pass-through
+
 ### Grouping
 
 - `buffer(size: n)` — group items into fixed-size sublists
@@ -208,6 +214,19 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 
 - `min()` / `max()` — extremes
 - `sum()` — sum items
+
+## Groovy Statement Evaluation
+
+- `if (cond) { } else if (cond) { } else { }` — conditional execution
+- `for (x in collection) { }` — iteration over lists, ranges, maps
+- `try { } catch (Type e) { } finally { }` — exception handling with typed catches
+- `switch (val) { case X: ...; default: ... }` — multi-branch dispatch
+- `assert condition` / `assert condition, message` — assertion check
+- `throw expression` — raise exception
+- `return value` — function return
+- `break` — loop / switch exit
+- `x = expr` — variable assignment
+- `x += expr`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=` — augmented assignment
 
 ## Groovy Expression Evaluation
 
@@ -326,17 +345,6 @@ Evaluated with `task.attempt=1` (and other defaults) at translate time.
 - `round()` — round to nearest integer
 - `intdiv(n)` — integer division
 - `toInteger()`, `toLong()`, `toDouble()`, `toBigDecimal()`
-
-### Statement Types
-
-- `if / else if / else` — conditional execution
-- `for (x in collection) { }` — iteration
-- `while (condition) { }` — loops
-- `switch / case / default` — multi-way branching
-- `try / catch / finally` — error handling
-- `return expr` — early return
-- `assert expr : 'message'` — assertions evaluated; emit warning when false
-- `throw new Exception('...')` — error raising; emit warning with message
 
 ## Configuration
 

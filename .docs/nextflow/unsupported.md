@@ -15,6 +15,15 @@ for toy examples. wr runs shell commands, not Groovy code. Supporting
 `exec:` would require a full Groovy interpreter or transpilation of
 arbitrary Groovy to shell, which is infeasible in a pure-Go implementation.
 
+### `stage:` section (typed process syntax)
+
+`stage:` is part of the new typed process syntax introduced experimentally
+in Nextflow 25.10+. It declares staged file inputs/outputs with type
+annotations. The section body is parsed and consumed but discarded with a
+warning. Fully typed process definitions (including `stage:`, `topic:`,
+and typed `input:`/`output:` sections) are not supported — the existing
+untyped declaration model covers all production usage.
+
 ## Process Directives
 
 ### `array`
@@ -188,3 +197,11 @@ external method calls, file I/O, complex logic chains. The Go evaluator
 handles a Groovy subset. Closures referencing undefined functions,
 performing I/O, or using unsupported constructs cannot be evaluated. Items
 pass through unchanged with a warning.
+
+### `while` / `do-while` loops
+
+Not implemented in the Groovy evaluator. These loop constructs are
+extremely rare in Nextflow scripts — `for (x in collection)` covers
+virtually all iteration needs. Supporting `while` would require
+evaluating arbitrary loop conditions in the Go evaluator, potentially
+with unbounded iteration.
