@@ -4,6 +4,14 @@
 
 ## Core Scopes
 
+### CFG-unscoped
+Unscoped options (top-level, outside any scope):
+- `bucketDir` — remote work directory for hybrid workflows
+- `cleanup` — delete work files on success (default: `false`)
+- `outputDir` — pipeline output directory
+- `resume` — enable cached task re-use
+- `workDir` — pipeline work directory
+
 ### CFG-params
 `params` scope — pipeline parameters.
 ```groovy
@@ -148,7 +156,11 @@ Patterns support `*` and `?` wildcards, also `!` negation.
 
 ### CFG-feature-flags
 Feature flags via `nextflow.enable.*` and `nextflow.preview.*`:
-- `nextflow.enable.dsl` — DSL version
-- `nextflow.enable.strict` — strict mode
+- `nextflow.enable.configProcessNamesValidation` — warn on unmatched withName selectors (deprecated)
+- `nextflow.enable.dsl` — DSL version (deprecated)
+- `nextflow.enable.moduleBinaries` — enable modules with binary scripts
+- `nextflow.enable.strict` — strict mode (deprecated)
+- `nextflow.preview.output` — workflow outputs (deprecated, now stable)
+- `nextflow.preview.recursion` — process/workflow recursion
+- `nextflow.preview.topic` — topic channels (deprecated, now stable)
 - `nextflow.preview.types` — typed processes
-- etc.

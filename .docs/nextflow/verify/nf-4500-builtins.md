@@ -73,6 +73,54 @@ https://nextflow.io/docs/latest/script.html
 ### BV-workflow-failOnIgnore
 `workflow.failOnIgnore` — config setting for fail-on-ignore.
 
+### BV-workflow-commandLine
+`workflow.commandLine` — command line as entered by the user.
+
+### BV-workflow-container
+`workflow.container` — Docker image (or map of process→image) used by tasks.
+
+### BV-workflow-containerEngine
+`workflow.containerEngine` — name of the container engine (e.g. `docker`, `singularity`) or null.
+
+### BV-workflow-duration
+`workflow.duration` — elapsed time to complete (onComplete only).
+
+### BV-workflow-errorMessage
+`workflow.errorMessage` — error message of the failing task (onComplete/onError only).
+
+### BV-workflow-errorReport
+`workflow.errorReport` — detailed error report of the failing task (onComplete/onError only).
+
+### BV-workflow-exitStatus
+`workflow.exitStatus` — exit status of the failing task (onComplete/onError only).
+
+### BV-workflow-fusion
+`workflow.fusion.enabled` — whether Fusion is enabled. `workflow.fusion.version` — Fusion version.
+
+### BV-workflow-homeDir
+`workflow.homeDir` — user system home directory.
+
+### BV-workflow-manifest
+`workflow.manifest` — namespace corresponding to the `manifest` config scope.
+
+### BV-workflow-outputDir
+`workflow.outputDir` — pipeline output directory.
+
+### BV-workflow-preview
+`workflow.preview` — true if current run is a preview run.
+
+### BV-workflow-scriptId
+`workflow.scriptId` — main script unique hash ID.
+
+### BV-workflow-stubRun
+`workflow.stubRun` — true if current run is a stub-run execution.
+
+### BV-workflow-userName
+`workflow.userName` — user system account name.
+
+### BV-workflow-wave
+`workflow.wave.enabled` — whether Wave is enabled.
+
 ## Nextflow Object
 
 ### BV-nextflow-version
@@ -127,5 +175,13 @@ https://nextflow.io/docs/latest/script.html
 ### GF-sleep
 `sleep(milliseconds)` — pause execution.
 
+### GF-record
+`record([options])` — create a record from named arguments.
+
 ### GF-sendMail
 `sendMail(to: ..., subject: ..., body: ...)` — send email notification.
+
+## Global Constants
+
+### GC-secrets
+`secrets` — `Map<String,String>` of pipeline secrets (since 24.02.0-edge).
