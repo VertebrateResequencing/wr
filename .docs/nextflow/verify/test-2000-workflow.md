@@ -16,14 +16,14 @@ For each feature ID in nf-2000-workflow.md, determine its classification.
 
 ### Features to classify
 
-- WF-take, WF-main, WF-emit, WF-publish, WF-onComplete
-  WF-onError, WF-out-directory, WF-out-mode, WF-out-overwrite, WF-out-path
-  WF-out-index, WF-out-enabled, WF-out-tags, WF-out-contentType, WF-workflow
-  WF-output-block
+- WF-workflow, WF-output-block, WF-take, WF-main, WF-emit
+  WF-publish, WF-onComplete, WF-onError, WF-out-directory, WF-out-mode
+  WF-out-overwrite, WF-out-path, WF-out-index, WF-out-enabled, WF-out-tags
+  WF-out-contentType
 
 ### Output format
 
 ```
-WF-take: SUPPORTED | reason
+WF-workflow: SUPPORTED | reason
 ...
 ```

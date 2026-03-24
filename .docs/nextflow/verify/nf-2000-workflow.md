@@ -4,6 +4,12 @@
 
 ## Features
 
+### WF-workflow
+`Workflow` — TODO: describe expected behaviour.
+
+### WF-output-block
+`Output block` — TODO: describe expected behaviour.
+
 ### WF-take
 `take: section of a workflow` — TODO: describe expected behaviour.
 
@@ -45,9 +51,3 @@
 
 ### WF-out-contentType
 `output block: contentType directive` — TODO: describe expected behaviour.
-
-### WF-workflow
-`Workflow` — TODO: describe expected behaviour.
-
-### WF-output-block
-`Output block` — TODO: describe expected behaviour.

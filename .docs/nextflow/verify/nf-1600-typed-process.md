@@ -4,15 +4,6 @@
 
 ## Features
 
-### PSEC-inputs-and-outputs-typed
-`Inputs and outputs (typed)` — TODO: describe expected behaviour.
-
-### PSEC-stage-directives
-`Stage directives` — TODO: describe expected behaviour.
-
-### PSEC-typed-outputs
-`Outputs section of typed process` — TODO: describe expected behaviour.
-
 ### PSEC-typed-env
 `env( name: String, String value )` — TODO: describe expected behaviour.
 
@@ -60,3 +51,12 @@
 
 ### PSEC-typed-stdout
 `stdout() -> String` — TODO: describe expected behaviour.
+
+### PSEC-typed-outputs
+`Outputs section of typed process` — TODO: describe expected behaviour.
+
+### PSEC-inputs-and-outputs-typed
+`Inputs and outputs (typed)` — TODO: describe expected behaviour.
+
+### PSEC-stage-directives
+`Stage directives` — TODO: describe expected behaviour.
