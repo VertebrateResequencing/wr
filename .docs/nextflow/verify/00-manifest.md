@@ -501,6 +501,7 @@ Use `00-audit.py` to validate consistency.
 | WF-out-label | nf-2000-workflow.md |
 | WF-out-ignoreErrors | nf-2000-workflow.md |
 | WF-out-storageClass | nf-2000-workflow.md |
+| WF-out-copyAttributes | nf-2000-workflow.md |
 
 ## nf-2500-channel-factories.md — Channel Factories
 
@@ -724,4 +725,4 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 569 feature IDs across 30 files.**
+**Total: 570 feature IDs across 30 files.**

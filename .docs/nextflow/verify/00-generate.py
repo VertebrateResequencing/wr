@@ -430,6 +430,7 @@ EXTRA_FILES = [
             ("WF-out-label", "output block: label directive"),
             ("WF-out-ignoreErrors", "output block: ignoreErrors directive"),
             ("WF-out-storageClass", "output block: storageClass directive"),
+            ("WF-out-copyAttributes", "output block: copyAttributes directive"),
         ],
     },
     {
