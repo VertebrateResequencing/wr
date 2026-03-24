@@ -24,3 +24,6 @@
 
 ### STMT-trycatch
 `try/catch` — TODO: describe expected behaviour.
+
+### STMT-multi-assignment
+`Multi-assignment: def (a, b) = [1, 2]` — TODO: describe expected behaviour.

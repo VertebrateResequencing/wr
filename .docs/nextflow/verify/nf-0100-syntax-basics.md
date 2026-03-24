@@ -45,3 +45,12 @@
 
 ### SYN-constructor-call
 `Constructor call` — TODO: describe expected behaviour.
+
+### SYN-multi-line-string
+`Triple-quoted string ('''...''') for multi-line literals` — TODO: describe expected behaviour.
+
+### SYN-multi-line-dynamic-string
+`Triple-quoted dynamic string ("""...""") for multi-line interpolation` — TODO: describe expected behaviour.
+
+### SYN-slashy-string
+`Slashy string (/pattern/) for regex patterns` — TODO: describe expected behaviour.

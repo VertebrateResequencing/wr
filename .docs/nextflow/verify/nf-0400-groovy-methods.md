@@ -579,6 +579,3 @@
 
 ### METH-versionnumber-matches
 `matches( condition: String ) -> Boolean` — TODO: describe expected behaviour.
-
-### METH-default-imports
-`Default import packages (groovy.lang.*, java.io.*, etc.)` — TODO: describe expected behaviour.
