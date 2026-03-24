@@ -141,8 +141,8 @@ maps, or the parser rejects the syntax.
 
 ## Output format
 
-Results for each test file go into a YAML-like block at the end of the test
-file (or into a separate results file). Example:
+Results for each test file go into a `## Results` section at the end of the test
+file. Example:
 
 ```
 ## Results
