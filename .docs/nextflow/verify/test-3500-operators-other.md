@@ -24,3 +24,9 @@ For each feature ID in nf-3500-operators-other.md, determine its classification.
 CO-dump: SUPPORTED | reason
 ...
 ```
+
+## Results
+
+- CO-dump: GAP — `applyChannelOperator` in `nextflowdsl/channel.go` handles `dump` via the `case "dump", "set", "tap", "view": return cloneChannelItems(items), nil` pass-through path, so it parses but does not perform any dump/output side effect.
+- CO-subscribe: GAP — `warningOnlyChannelOperators` includes `subscribe`, and the default path in `applyChannelOperator` warns then returns `cloneChannelItems(items)` unchanged, so it parses but does not perform subscription/callback behaviour.
+- CO-view: GAP — `applyChannelOperator` in `nextflowdsl/channel.go` handles `view` via the same pass-through branch as `dump`, returning items unchanged without any view/output side effect.
