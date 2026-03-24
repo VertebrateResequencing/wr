@@ -7,6 +7,36 @@
 ### METH-default-imports
 `Default import packages (groovy.lang.*, java.io.*, etc.)` — TODO: describe expected behaviour.
 
+### METH-iterable-toUnique-1
+`toUnique( comparator: (E) -> R ) -> Iterable<E>` — TODO: describe expected behaviour.
+
+### METH-duration-getDays
+`getDays() — alias for toDays()` — TODO: describe expected behaviour.
+
+### METH-duration-getHours
+`getHours() — alias for toHours()` — TODO: describe expected behaviour.
+
+### METH-duration-getMillis
+`getMillis() — alias for toMillis()` — TODO: describe expected behaviour.
+
+### METH-duration-getMinutes
+`getMinutes() — alias for toMinutes()` — TODO: describe expected behaviour.
+
+### METH-duration-getSeconds
+`getSeconds() — alias for toSeconds()` — TODO: describe expected behaviour.
+
+### METH-memoryunit-getBytes
+`getBytes() — alias for toBytes()` — TODO: describe expected behaviour.
+
+### METH-memoryunit-getGiga
+`getGiga() — alias for toGiga()` — TODO: describe expected behaviour.
+
+### METH-memoryunit-getKilo
+`getKilo() — alias for toKilo()` — TODO: describe expected behaviour.
+
+### METH-memoryunit-getMega
+`getMega() — alias for toMega()` — TODO: describe expected behaviour.
+
 ### METH-bag-plus
 `+ : (Bag<E>, Bag<E>) -> Bag<E>` — TODO: describe expected behaviour.
 

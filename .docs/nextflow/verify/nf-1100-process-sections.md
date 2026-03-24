@@ -13,6 +13,15 @@
 ### PSEC-stub
 `stub: section of a process definition` — TODO: describe expected behaviour.
 
+### PSEC-generic-emit
+`emit: generic option for inputs/outputs` — TODO: describe expected behaviour.
+
+### PSEC-generic-optional
+`optional: generic option for inputs/outputs` — TODO: describe expected behaviour.
+
+### PSEC-generic-topic
+`topic: generic option for inputs/outputs` — TODO: describe expected behaviour.
+
 ### PSEC-inputs-and-outputs-legacy
 `Inputs and outputs (legacy)` — TODO: describe expected behaviour.
 

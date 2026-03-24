@@ -66,6 +66,16 @@ Use `00-audit.py` to validate consistency.
 | Feature ID | nf- file |
 |------------|----------|
 | METH-default-imports | nf-0400-groovy-methods.md |
+| METH-iterable-toUnique-1 | nf-0400-groovy-methods.md |
+| METH-duration-getDays | nf-0400-groovy-methods.md |
+| METH-duration-getHours | nf-0400-groovy-methods.md |
+| METH-duration-getMillis | nf-0400-groovy-methods.md |
+| METH-duration-getMinutes | nf-0400-groovy-methods.md |
+| METH-duration-getSeconds | nf-0400-groovy-methods.md |
+| METH-memoryunit-getBytes | nf-0400-groovy-methods.md |
+| METH-memoryunit-getGiga | nf-0400-groovy-methods.md |
+| METH-memoryunit-getKilo | nf-0400-groovy-methods.md |
+| METH-memoryunit-getMega | nf-0400-groovy-methods.md |
 | METH-bag-plus | nf-0400-groovy-methods.md |
 | METH-bag-membership | nf-0400-groovy-methods.md |
 | METH-duration-toDays | nf-0400-groovy-methods.md |
@@ -305,6 +315,9 @@ Use `00-audit.py` to validate consistency.
 | PSEC-script | nf-1100-process-sections.md |
 | PSEC-exec | nf-1100-process-sections.md |
 | PSEC-stub | nf-1100-process-sections.md |
+| PSEC-generic-emit | nf-1100-process-sections.md |
+| PSEC-generic-optional | nf-1100-process-sections.md |
+| PSEC-generic-topic | nf-1100-process-sections.md |
 | PSEC-inputs-and-outputs-legacy | nf-1100-process-sections.md |
 | PSEC-inputs | nf-1100-process-sections.md |
 | PSEC-generic-options | nf-1100-process-sections.md |
@@ -434,12 +447,42 @@ Use `00-audit.py` to validate consistency.
 |------------|----------|
 | PSEC-inputs-and-outputs-typed | nf-1600-typed-process.md |
 | PSEC-stage-directives | nf-1600-typed-process.md |
-| PSEC-outputs | nf-1600-typed-process.md |
+| PSEC-typed-outputs | nf-1600-typed-process.md |
+| PSEC-typed-env | nf-1600-typed-process.md |
+| PSEC-typed-stageAs | nf-1600-typed-process.md |
+| PSEC-typed-stageAs-2 | nf-1600-typed-process.md |
+| PSEC-typed-stdin | nf-1600-typed-process.md |
+| PSEC-typed-env-1 | nf-1600-typed-process.md |
+| PSEC-typed-eval | nf-1600-typed-process.md |
+| PSEC-typed-file | nf-1600-typed-process.md |
+| PSEC-typed-file-followLinks | nf-1600-typed-process.md |
+| PSEC-typed-file-glob | nf-1600-typed-process.md |
+| PSEC-typed-file-hidden | nf-1600-typed-process.md |
+| PSEC-typed-file-includeInputs | nf-1600-typed-process.md |
+| PSEC-typed-file-maxDepth | nf-1600-typed-process.md |
+| PSEC-typed-file-optional | nf-1600-typed-process.md |
+| PSEC-typed-file-type | nf-1600-typed-process.md |
+| PSEC-typed-files | nf-1600-typed-process.md |
+| PSEC-typed-stdout | nf-1600-typed-process.md |
 
 ## nf-2000-workflow.md — Workflow
 
 | Feature ID | nf- file |
 |------------|----------|
+| WF-take | nf-2000-workflow.md |
+| WF-main | nf-2000-workflow.md |
+| WF-emit | nf-2000-workflow.md |
+| WF-publish | nf-2000-workflow.md |
+| WF-onComplete | nf-2000-workflow.md |
+| WF-onError | nf-2000-workflow.md |
+| WF-out-directory | nf-2000-workflow.md |
+| WF-out-mode | nf-2000-workflow.md |
+| WF-out-overwrite | nf-2000-workflow.md |
+| WF-out-path | nf-2000-workflow.md |
+| WF-out-index | nf-2000-workflow.md |
+| WF-out-enabled | nf-2000-workflow.md |
+| WF-out-tags | nf-2000-workflow.md |
+| WF-out-contentType | nf-2000-workflow.md |
 | WF-workflow | nf-2000-workflow.md |
 | WF-output-block | nf-2000-workflow.md |
 
@@ -665,4 +708,4 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 510 feature IDs across 30 files.**
+**Total: 553 feature IDs across 30 files.**

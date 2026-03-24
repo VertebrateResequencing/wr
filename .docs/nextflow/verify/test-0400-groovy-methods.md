@@ -16,7 +16,9 @@ For each feature ID in nf-0400-groovy-methods.md, determine its classification.
 
 ### Features to classify
 
-- METH-default-imports, METH-bag-plus, METH-bag-membership, METH-duration-toDays, METH-duration-toHours
+- METH-default-imports, METH-iterable-toUnique-1, METH-duration-getDays, METH-duration-getHours, METH-duration-getMillis
+  METH-duration-getMinutes, METH-duration-getSeconds, METH-memoryunit-getBytes, METH-memoryunit-getGiga, METH-memoryunit-getKilo
+  METH-memoryunit-getMega, METH-bag-plus, METH-bag-membership, METH-duration-toDays, METH-duration-toHours
   METH-duration-toMillis, METH-duration-toMinutes, METH-duration-toSeconds, METH-iterable-any, METH-iterable-collect
   METH-iterable-collectMany, METH-iterable-contains, METH-iterable-each, METH-iterable-every, METH-iterable-findAll
   METH-iterable-groupBy, METH-iterable-inject, METH-iterable-inject-3, METH-iterable-isEmpty, METH-iterable-join

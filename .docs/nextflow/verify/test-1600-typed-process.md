@@ -16,7 +16,10 @@ For each feature ID in nf-1600-typed-process.md, determine its classification.
 
 ### Features to classify
 
-- PSEC-inputs-and-outputs-typed, PSEC-stage-directives, PSEC-outputs
+- PSEC-inputs-and-outputs-typed, PSEC-stage-directives, PSEC-typed-outputs, PSEC-typed-env, PSEC-typed-stageAs
+  PSEC-typed-stageAs-2, PSEC-typed-stdin, PSEC-typed-env-1, PSEC-typed-eval, PSEC-typed-file
+  PSEC-typed-file-followLinks, PSEC-typed-file-glob, PSEC-typed-file-hidden, PSEC-typed-file-includeInputs, PSEC-typed-file-maxDepth
+  PSEC-typed-file-optional, PSEC-typed-file-type, PSEC-typed-files, PSEC-typed-stdout
 
 ### Output format
 
