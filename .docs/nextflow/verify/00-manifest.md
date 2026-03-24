@@ -477,14 +477,25 @@ Use `00-audit.py` to validate consistency.
 | WF-publish | nf-2000-workflow.md |
 | WF-onComplete | nf-2000-workflow.md |
 | WF-onError | nf-2000-workflow.md |
+| WF-pipe | nf-2000-workflow.md |
+| WF-and | nf-2000-workflow.md |
+| WF-recurse | nf-2000-workflow.md |
+| WF-until | nf-2000-workflow.md |
+| WF-times | nf-2000-workflow.md |
 | WF-out-directory | nf-2000-workflow.md |
 | WF-out-mode | nf-2000-workflow.md |
 | WF-out-overwrite | nf-2000-workflow.md |
 | WF-out-path | nf-2000-workflow.md |
 | WF-out-index | nf-2000-workflow.md |
+| WF-out-index-header | nf-2000-workflow.md |
+| WF-out-index-path | nf-2000-workflow.md |
+| WF-out-index-sep | nf-2000-workflow.md |
 | WF-out-enabled | nf-2000-workflow.md |
 | WF-out-tags | nf-2000-workflow.md |
 | WF-out-contentType | nf-2000-workflow.md |
+| WF-out-label | nf-2000-workflow.md |
+| WF-out-ignoreErrors | nf-2000-workflow.md |
+| WF-out-storageClass | nf-2000-workflow.md |
 
 ## nf-2500-channel-factories.md — Channel Factories
 
@@ -708,4 +719,4 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 553 feature IDs across 30 files.**
+**Total: 564 feature IDs across 30 files.**
