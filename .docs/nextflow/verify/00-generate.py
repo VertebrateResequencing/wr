@@ -112,6 +112,26 @@ PAGES_CONFIG = [
                 "manual_features": [
                     ("METH-default-imports",
                      "Default import packages (groovy.lang.*, java.io.*, etc.)"),
+                    ("METH-iterable-toUnique-1",
+                     "toUnique( comparator: (E) -> R ) -> Iterable<E>"),
+                    ("METH-duration-getDays",
+                     "getDays() — alias for toDays()"),
+                    ("METH-duration-getHours",
+                     "getHours() — alias for toHours()"),
+                    ("METH-duration-getMillis",
+                     "getMillis() — alias for toMillis()"),
+                    ("METH-duration-getMinutes",
+                     "getMinutes() — alias for toMinutes()"),
+                    ("METH-duration-getSeconds",
+                     "getSeconds() — alias for toSeconds()"),
+                    ("METH-memoryunit-getBytes",
+                     "getBytes() — alias for toBytes()"),
+                    ("METH-memoryunit-getGiga",
+                     "getGiga() — alias for toGiga()"),
+                    ("METH-memoryunit-getKilo",
+                     "getKilo() — alias for toKilo()"),
+                    ("METH-memoryunit-getMega",
+                     "getMega() — alias for toMega()"),
                 ],
             },
         ],
@@ -163,6 +183,12 @@ PAGES_CONFIG = [
                      "exec: section of a process definition"),
                     ("PSEC-stub",
                      "stub: section of a process definition"),
+                    ("PSEC-generic-emit",
+                     "emit: generic option for inputs/outputs"),
+                    ("PSEC-generic-optional",
+                     "optional: generic option for inputs/outputs"),
+                    ("PSEC-generic-topic",
+                     "topic: generic option for inputs/outputs"),
                 ],
             },
             {
@@ -237,8 +263,19 @@ PAGES_CONFIG = [
                 "number": "1600", "slug": "typed-process",
                 "title": "Typed Process (Preview)",
                 "prefix": "PSEC",
-                "heading_exact": ["Inputs and outputs (typed)",
-                                  "Stage directives", "Outputs"],
+                "extract_mode": "dt_sectioned",
+                "section_prefix_map": {
+                    "Inputs and outputs (typed)": ("PSEC", "typed"),
+                },
+                "section_h3_filter": {"Stage directives", "Outputs"},
+                "manual_features": [
+                    ("PSEC-inputs-and-outputs-typed",
+                     "Inputs and outputs (typed)"),
+                    ("PSEC-stage-directives",
+                     "Stage directives"),
+                    ("PSEC-typed-outputs",
+                     "Outputs section of typed process"),
+                ],
             },
         ],
     },
@@ -357,6 +394,22 @@ EXTRA_FILES = [
         "source_url": "https://nextflow.io/docs/latest/reference/syntax.html",
         "heading_filter": ["workflow", "entry", "named", "take",
                            "main", "emit", "publish", "output"],
+        "manual_features": [
+            ("WF-take", "take: section of a workflow"),
+            ("WF-main", "main: section of a workflow"),
+            ("WF-emit", "emit: section of a workflow"),
+            ("WF-publish", "publish: section of a workflow"),
+            ("WF-onComplete", "workflow.onComplete handler"),
+            ("WF-onError", "workflow.onError handler"),
+            ("WF-out-directory", "output block: directory directive"),
+            ("WF-out-mode", "output block: mode directive"),
+            ("WF-out-overwrite", "output block: overwrite directive"),
+            ("WF-out-path", "output block: path directive"),
+            ("WF-out-index", "output block: index directive"),
+            ("WF-out-enabled", "output block: enabled directive"),
+            ("WF-out-tags", "output block: tags directive"),
+            ("WF-out-contentType", "output block: contentType directive"),
+        ],
     },
     {
         "number": "0350", "slug": "deprecations",
@@ -761,6 +814,13 @@ def cmd_coverage(_args):
             for key in fc.get("section_prefix_map", {}):
                 dt_section_names.add(key.lower().strip())
 
+        # Collect H3 names used as section_h3_filter values
+        # (these H3 headings are implicitly covered by dt_sectioned configs)
+        h3_filter_names = set()
+        for fc in configs:
+            for name in fc.get("section_h3_filter", set()):
+                h3_filter_names.add(name.lower().strip())
+
         # Known cross-page headings for this URL
         xpage = cross_page.get(url, set())
 
@@ -774,6 +834,9 @@ def cmd_coverage(_args):
                     continue
                 # H2 headings used as dt_sectioned section names are covered
                 if text.lower().strip() in dt_section_names:
+                    continue
+                # H3 headings used as section_h3_filter values are covered
+                if text.lower().strip() in h3_filter_names:
                     continue
                 # Headings covered by configs on a different page
                 if text.lower().strip() in xpage:
