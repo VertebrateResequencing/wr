@@ -54,7 +54,7 @@ For each feature ID in nf-0400-groovy-methods.md, determine its classification.
   METH-string-toDouble, METH-string-toFloat, METH-string-toInteger, METH-string-toLong, METH-string-toLowerCase
   METH-string-toUpperCase, METH-string-tokenize, METH-tuple-getAt, METH-value-flatMap, METH-value-map
   METH-value-subscribe, METH-value-view, METH-value-view-1, METH-versionnumber-getMajor, METH-versionnumber-getMinor
-  METH-versionnumber-getPatch, METH-versionnumber-matches, METH-default-imports
+  METH-versionnumber-getPatch, METH-versionnumber-matches
 
 ### Output format
 

@@ -17,7 +17,7 @@ For each feature ID in nf-0300-statements.md, determine its classification.
 ### Features to classify
 
 - STMT-assignment, STMT-expression-statement, STMT-assert, STMT-ifelse, STMT-return
-  STMT-throw, STMT-trycatch
+  STMT-throw, STMT-trycatch, STMT-multi-assignment
 
 ### Output format
 

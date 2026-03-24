@@ -18,7 +18,8 @@ For each feature ID in nf-0100-syntax-basics.md, determine its classification.
 
 - SYN-comments, SYN-shebang, SYN-feature-flag, SYN-function, SYN-enum-type
   SYN-record-type, SYN-variable-declaration, SYN-string, SYN-dynamic-string, SYN-closure
-  SYN-index-expression, SYN-property-expression, SYN-function-call, SYN-constructor-call
+  SYN-index-expression, SYN-property-expression, SYN-function-call, SYN-constructor-call, SYN-multi-line-string
+  SYN-multi-line-dynamic-string, SYN-slashy-string
 
 ### Output format
 

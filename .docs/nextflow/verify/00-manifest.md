@@ -23,6 +23,9 @@ Use `00-audit.py` to validate consistency.
 | SYN-property-expression | nf-0100-syntax-basics.md |
 | SYN-function-call | nf-0100-syntax-basics.md |
 | SYN-constructor-call | nf-0100-syntax-basics.md |
+| SYN-multi-line-string | nf-0100-syntax-basics.md |
+| SYN-multi-line-dynamic-string | nf-0100-syntax-basics.md |
+| SYN-slashy-string | nf-0100-syntax-basics.md |
 
 ## nf-0200-types-operators.md — Types, Literals and Operators
 
@@ -51,6 +54,7 @@ Use `00-audit.py` to validate consistency.
 | STMT-return | nf-0300-statements.md |
 | STMT-throw | nf-0300-statements.md |
 | STMT-trycatch | nf-0300-statements.md |
+| STMT-multi-assignment | nf-0300-statements.md |
 
 ## nf-0350-deprecations.md — Deprecations
 
@@ -60,6 +64,8 @@ Use `00-audit.py` to validate consistency.
 | SYN-deprecated-addParams | nf-0350-deprecations.md |
 | SYN-deprecated-when-section | nf-0350-deprecations.md |
 | SYN-deprecated-shell-section | nf-0350-deprecations.md |
+| SYN-deprecated-for-loop | nf-0350-deprecations.md |
+| SYN-deprecated-while-loop | nf-0350-deprecations.md |
 
 ## nf-0400-groovy-methods.md — Groovy Methods & Imports
 
@@ -257,7 +263,6 @@ Use `00-audit.py` to validate consistency.
 | METH-versionnumber-getMinor | nf-0400-groovy-methods.md |
 | METH-versionnumber-getPatch | nf-0400-groovy-methods.md |
 | METH-versionnumber-matches | nf-0400-groovy-methods.md |
-| METH-default-imports | nf-0400-groovy-methods.md |
 
 ## nf-0450-groovy-imports.md — Groovy & Java Imports
 
@@ -719,4 +724,4 @@ Use `00-audit.py` to validate consistency.
 | BV-workflow-onComplete | nf-4500-builtins.md |
 | BV-workflow-onError | nf-4500-builtins.md |
 
-**Total: 564 feature IDs across 30 files.**
+**Total: 569 feature IDs across 30 files.**

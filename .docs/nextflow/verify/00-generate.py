@@ -65,6 +65,14 @@ PAGES_CONFIG = [
                     "constructor", "named arg", "index expr",
                     "property expr",
                 ],
+                "manual_features": [
+                    ("SYN-multi-line-string",
+                     "Triple-quoted string ('''...''') for multi-line literals"),
+                    ("SYN-multi-line-dynamic-string",
+                     'Triple-quoted dynamic string ("""...""") for multi-line interpolation'),
+                    ("SYN-slashy-string",
+                     "Slashy string (/pattern/) for regex patterns"),
+                ],
             },
             {
                 "number": "0200", "slug": "types-operators",
@@ -92,6 +100,10 @@ PAGES_CONFIG = [
                     "for", "while", "switch", "case",
                     "break", "continue",
                 ],
+                "manual_features": [
+                    ("STMT-multi-assignment",
+                     "Multi-assignment: def (a, b) = [1, 2]"),
+                ],
             },
         ],
     },
@@ -110,8 +122,6 @@ PAGES_CONFIG = [
                 "prefix": "METH",
                 "extract_mode": "dt_sectioned",
                 "manual_features": [
-                    ("METH-default-imports",
-                     "Default import packages (groovy.lang.*, java.io.*, etc.)"),
                     ("METH-iterable-toUnique-1",
                      "toUnique( comparator: (E) -> R ) -> Iterable<E>"),
                     ("METH-duration-getDays",
@@ -435,6 +445,10 @@ EXTRA_FILES = [
              "when: section of a process definition"),
             ("SYN-deprecated-shell-section",
              "shell: section of a process definition"),
+            ("SYN-deprecated-for-loop",
+             "for loop — removed in strict syntax"),
+            ("SYN-deprecated-while-loop",
+             "while loop — removed in strict syntax"),
         ],
     },
 ]
