@@ -21,7 +21,7 @@ For each feature ID in nf-2000-workflow.md, determine its classification.
   WF-recurse, WF-until, WF-times, WF-out-directory, WF-out-mode
   WF-out-overwrite, WF-out-path, WF-out-index, WF-out-index-header, WF-out-index-path
   WF-out-index-sep, WF-out-enabled, WF-out-tags, WF-out-contentType, WF-out-label
-  WF-out-ignoreErrors, WF-out-storageClass
+  WF-out-ignoreErrors, WF-out-storageClass, WF-out-copyAttributes
 
 ### Output format
 

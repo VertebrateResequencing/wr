@@ -84,3 +84,6 @@
 
 ### WF-out-storageClass
 `output block: storageClass directive` — TODO: describe expected behaviour.
+
+### WF-out-copyAttributes
+`output block: copyAttributes directive` — TODO: describe expected behaviour.
