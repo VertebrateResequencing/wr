@@ -56,26 +56,15 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
+| SYN-deprecations | nf-0350-deprecations.md |
 | SYN-deprecated-addParams | nf-0350-deprecations.md |
 | SYN-deprecated-when-section | nf-0350-deprecations.md |
 | SYN-deprecated-shell-section | nf-0350-deprecations.md |
-| SYN-deprecations | nf-0350-deprecations.md |
 
 ## nf-0400-groovy-methods.md — Groovy Methods & Imports
 
 | Feature ID | nf- file |
 |------------|----------|
-| METH-default-imports | nf-0400-groovy-methods.md |
-| METH-iterable-toUnique-1 | nf-0400-groovy-methods.md |
-| METH-duration-getDays | nf-0400-groovy-methods.md |
-| METH-duration-getHours | nf-0400-groovy-methods.md |
-| METH-duration-getMillis | nf-0400-groovy-methods.md |
-| METH-duration-getMinutes | nf-0400-groovy-methods.md |
-| METH-duration-getSeconds | nf-0400-groovy-methods.md |
-| METH-memoryunit-getBytes | nf-0400-groovy-methods.md |
-| METH-memoryunit-getGiga | nf-0400-groovy-methods.md |
-| METH-memoryunit-getKilo | nf-0400-groovy-methods.md |
-| METH-memoryunit-getMega | nf-0400-groovy-methods.md |
 | METH-bag-plus | nf-0400-groovy-methods.md |
 | METH-bag-membership | nf-0400-groovy-methods.md |
 | METH-duration-toDays | nf-0400-groovy-methods.md |
@@ -83,6 +72,11 @@ Use `00-audit.py` to validate consistency.
 | METH-duration-toMillis | nf-0400-groovy-methods.md |
 | METH-duration-toMinutes | nf-0400-groovy-methods.md |
 | METH-duration-toSeconds | nf-0400-groovy-methods.md |
+| METH-duration-getDays | nf-0400-groovy-methods.md |
+| METH-duration-getHours | nf-0400-groovy-methods.md |
+| METH-duration-getMillis | nf-0400-groovy-methods.md |
+| METH-duration-getMinutes | nf-0400-groovy-methods.md |
+| METH-duration-getSeconds | nf-0400-groovy-methods.md |
 | METH-iterable-any | nf-0400-groovy-methods.md |
 | METH-iterable-collect | nf-0400-groovy-methods.md |
 | METH-iterable-collectMany | nf-0400-groovy-methods.md |
@@ -111,6 +105,7 @@ Use `00-audit.py` to validate consistency.
 | METH-iterable-toSorted-2 | nf-0400-groovy-methods.md |
 | METH-iterable-toUnique | nf-0400-groovy-methods.md |
 | METH-iterable-toUnique-2 | nf-0400-groovy-methods.md |
+| METH-iterable-toUnique-1 | nf-0400-groovy-methods.md |
 | METH-list-plus | nf-0400-groovy-methods.md |
 | METH-list-multiply | nf-0400-groovy-methods.md |
 | METH-list-getAt | nf-0400-groovy-methods.md |
@@ -149,6 +144,10 @@ Use `00-audit.py` to validate consistency.
 | METH-memoryunit-toKilo | nf-0400-groovy-methods.md |
 | METH-memoryunit-toMega | nf-0400-groovy-methods.md |
 | METH-memoryunit-toUnit | nf-0400-groovy-methods.md |
+| METH-memoryunit-getBytes | nf-0400-groovy-methods.md |
+| METH-memoryunit-getGiga | nf-0400-groovy-methods.md |
+| METH-memoryunit-getKilo | nf-0400-groovy-methods.md |
+| METH-memoryunit-getMega | nf-0400-groovy-methods.md |
 | METH-path-divide | nf-0400-groovy-methods.md |
 | METH-path-leftShift | nf-0400-groovy-methods.md |
 | METH-path-baseName | nf-0400-groovy-methods.md |
@@ -258,6 +257,7 @@ Use `00-audit.py` to validate consistency.
 | METH-versionnumber-getMinor | nf-0400-groovy-methods.md |
 | METH-versionnumber-getPatch | nf-0400-groovy-methods.md |
 | METH-versionnumber-matches | nf-0400-groovy-methods.md |
+| METH-default-imports | nf-0400-groovy-methods.md |
 
 ## nf-0450-groovy-imports.md — Groovy & Java Imports
 
@@ -312,16 +312,16 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
-| PSEC-script | nf-1100-process-sections.md |
-| PSEC-exec | nf-1100-process-sections.md |
-| PSEC-stub | nf-1100-process-sections.md |
-| PSEC-generic-emit | nf-1100-process-sections.md |
-| PSEC-generic-optional | nf-1100-process-sections.md |
-| PSEC-generic-topic | nf-1100-process-sections.md |
 | PSEC-inputs-and-outputs-legacy | nf-1100-process-sections.md |
 | PSEC-inputs | nf-1100-process-sections.md |
 | PSEC-generic-options | nf-1100-process-sections.md |
+| PSEC-generic-emit | nf-1100-process-sections.md |
+| PSEC-generic-optional | nf-1100-process-sections.md |
+| PSEC-generic-topic | nf-1100-process-sections.md |
 | PSEC-directives | nf-1100-process-sections.md |
+| PSEC-script | nf-1100-process-sections.md |
+| PSEC-exec | nf-1100-process-sections.md |
+| PSEC-stub | nf-1100-process-sections.md |
 
 ## nf-1200-input-qualifiers.md — Input Qualifiers & Options
 
@@ -445,9 +445,6 @@ Use `00-audit.py` to validate consistency.
 
 | Feature ID | nf- file |
 |------------|----------|
-| PSEC-inputs-and-outputs-typed | nf-1600-typed-process.md |
-| PSEC-stage-directives | nf-1600-typed-process.md |
-| PSEC-typed-outputs | nf-1600-typed-process.md |
 | PSEC-typed-env | nf-1600-typed-process.md |
 | PSEC-typed-stageAs | nf-1600-typed-process.md |
 | PSEC-typed-stageAs-2 | nf-1600-typed-process.md |
@@ -464,11 +461,16 @@ Use `00-audit.py` to validate consistency.
 | PSEC-typed-file-type | nf-1600-typed-process.md |
 | PSEC-typed-files | nf-1600-typed-process.md |
 | PSEC-typed-stdout | nf-1600-typed-process.md |
+| PSEC-typed-outputs | nf-1600-typed-process.md |
+| PSEC-inputs-and-outputs-typed | nf-1600-typed-process.md |
+| PSEC-stage-directives | nf-1600-typed-process.md |
 
 ## nf-2000-workflow.md — Workflow
 
 | Feature ID | nf- file |
 |------------|----------|
+| WF-workflow | nf-2000-workflow.md |
+| WF-output-block | nf-2000-workflow.md |
 | WF-take | nf-2000-workflow.md |
 | WF-main | nf-2000-workflow.md |
 | WF-emit | nf-2000-workflow.md |
@@ -483,8 +485,6 @@ Use `00-audit.py` to validate consistency.
 | WF-out-enabled | nf-2000-workflow.md |
 | WF-out-tags | nf-2000-workflow.md |
 | WF-out-contentType | nf-2000-workflow.md |
-| WF-workflow | nf-2000-workflow.md |
-| WF-output-block | nf-2000-workflow.md |
 
 ## nf-2500-channel-factories.md — Channel Factories
 

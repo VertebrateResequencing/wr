@@ -914,16 +914,19 @@ def extract_features(headings, dt_items, li_items, file_conf):
     """Extract feature IDs from page content for a specific file config.
 
     Dispatches based on extract_mode: headings, dt, dt_sectioned, li.
+    Manual features are merged near related auto-extracted features
+    (by shared ID prefix) rather than always prepended.
     """
     mode = file_conf.get("extract_mode", "headings")
     features = []
     seen_ids = set()
 
-    # Always add manual features first
+    # Collect manual features (add to seen_ids so auto-extract skips dupes)
+    manual = []
     for fid, desc in file_conf.get("manual_features", []):
         if fid not in seen_ids:
             seen_ids.add(fid)
-            features.append((fid, desc, 3))
+            manual.append((fid, desc, 3))
 
     if mode == "headings":
         features.extend(
@@ -937,6 +940,28 @@ def extract_features(headings, dt_items, li_items, file_conf):
     elif mode == "li":
         features.extend(
             _extract_from_li(li_items, file_conf, seen_ids))
+
+    # Merge manual features: insert each near its ID family if possible.
+    # Try exact base match first (overload variants), then section match
+    # (e.g. METH-duration-getDays near METH-duration-toDays).
+    for mfid, mdesc, mlvl in manual:
+        base = re.sub(r'-\d+$', '', mfid)  # e.g. METH-iterable-toUnique
+        # Section prefix: everything up to the last '-' segment
+        section = mfid.rsplit('-', 1)[0] + '-'  # e.g. METH-duration-
+        best = -1
+        # First try: exact base match (overloads)
+        for i, (fid, _, _) in enumerate(features):
+            if fid.startswith(base):
+                best = i
+        # Second try: section match (aliases near same-section methods)
+        if best < 0:
+            for i, (fid, _, _) in enumerate(features):
+                if fid.startswith(section):
+                    best = i
+        if best >= 0:
+            features.insert(best + 1, (mfid, mdesc, mlvl))
+        else:
+            features.append((mfid, mdesc, mlvl))
 
     return features
 
