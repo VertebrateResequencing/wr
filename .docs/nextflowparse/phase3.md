@@ -25,7 +25,8 @@ Add fields `StageName string` and `StageAs string` to both
 Test file: `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.2: G1 - Skip DSL1 combined input/output [parallel with 3.1, 3.3]
 
@@ -40,7 +41,8 @@ skip nil declarations. Covering all 3 acceptance tests from
 G1. Test file: `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.3: I1 - Skip deprecated addParams/params [parallel with 3.1, 3.2]
 
@@ -55,7 +57,8 @@ brace-delimited) using paren/brace-counting. Covering all 4
 acceptance tests from I1. Test file: `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

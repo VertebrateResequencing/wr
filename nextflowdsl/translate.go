@@ -978,13 +978,7 @@ func flattenedInputDeclarations(proc *Process) []*Declaration {
 				continue
 			}
 
-			flat = append(flat, &Declaration{
-				Kind: element.Kind,
-				Name: element.Name,
-				Expr: element.Expr,
-				Raw:  element.Raw,
-				Emit: element.Emit,
-			})
+			flat = append(flat, declarationFromTupleElement(element))
 		}
 	}
 
@@ -1570,10 +1564,17 @@ func exprVarsWithTask(params map[string]any, task map[string]any) map[string]any
 
 func defaultDirectiveTask() map[string]any {
 	return map[string]any{
-		"attempt":    1,
-		"cpus":       1,
-		"memory":     0,
-		"exitStatus": 0,
+		"attempt":           1,
+		"cpus":              1,
+		"memory":            0,
+		"exitStatus":        0,
+		"hash":              "",
+		"index":             0,
+		"name":              "",
+		"previousException": "",
+		"previousTrace":     "",
+		"process":           "",
+		"workDir":           "",
 	}
 }
 
@@ -3452,13 +3453,7 @@ func tupleOutputValue(proc *Process, decl *Declaration, bindings []string, param
 
 			values = append(values, pattern)
 		default:
-			value, ok := staticOutputValue(proc, &Declaration{
-				Kind: element.Kind,
-				Name: element.Name,
-				Expr: element.Expr,
-				Raw:  element.Raw,
-				Emit: element.Emit,
-			}, bindings, params)
+			value, ok := staticOutputValue(proc, declarationFromTupleElement(element), bindings, params)
 			if !ok {
 				return nil, false
 			}
@@ -3546,13 +3541,7 @@ func emitOutputsForProcess(proc *Process, bindings []string, params map[string]a
 				continue
 			}
 
-			addEmittedOutput(outputs, element.Emit, proc, &Declaration{
-				Kind: element.Kind,
-				Name: element.Name,
-				Expr: element.Expr,
-				Raw:  element.Raw,
-				Emit: element.Emit,
-			}, bindings, params, cwd, depGroup)
+			addEmittedOutput(outputs, element.Emit, proc, declarationFromTupleElement(element), bindings, params, cwd, depGroup)
 		}
 	}
 
@@ -6064,8 +6053,7 @@ func consumeOutputBlockValue(tokens []token, start int) ([]token, int) {
 loop:
 	for end < len(tokens) {
 		current := tokens[end]
-		if (current.typ == tokenNewline || current.typ == tokenSemicolon) &&
-			parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+		if (current.typ == tokenNewline || current.typ == tokenSemicolon) && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
 			break
 		}
 

@@ -76,6 +76,7 @@ var supportedChannelOperators = map[string]struct{}{
 	"multiMap":     {},
 	"randomSample": {},
 	"reduce":       {},
+	"recurse":      {},
 	"set":          {},
 	"splitCsv":     {},
 	"splitFasta":   {},
@@ -86,6 +87,7 @@ var supportedChannelOperators = map[string]struct{}{
 	"sum":          {},
 	"tap":          {},
 	"take":         {},
+	"times":        {},
 	"toDouble":     {},
 	"toFloat":      {},
 	"toInteger":    {},
@@ -134,6 +136,24 @@ const (
 	tokenNewline
 )
 
+func hasBalancedDelimiters(tokens []token, open, closeTok tokenType) bool {
+	depth := 0
+
+	for _, tok := range tokens {
+		switch tok.typ {
+		case open:
+			depth++
+		case closeTok:
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+
+	return depth == 0
+}
+
 type token struct {
 	typ    tokenType
 	lit    string
@@ -142,6 +162,43 @@ type token struct {
 	start  int
 	end    int
 	slashy bool
+}
+
+func findLegacyDSL1IntoClause(tokens []token) (token, bool) {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for index, tok := range tokens {
+		if tok.typ == tokenIdent && tok.lit == "into" && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+			prefix := trimDeclarationTokens(tokens[:index])
+
+			suffix := trimDeclarationTokens(tokens[index+1:])
+			if looksLikeLegacyDSL1IntoPrefix(prefix) && looksLikeLegacyDSL1IntoTargets(suffix) {
+				return tok, true
+			}
+		}
+
+		switch tok.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			parenDepth--
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			braceDepth--
+		case tokenSymbol:
+			switch tok.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				bracketDepth--
+			}
+		}
+	}
+
+	return token{}, false
 }
 
 func lex(input string) ([]token, error) {
@@ -430,6 +487,26 @@ func hasClosingSlashyDelimiter(l *lexer) bool {
 	}
 }
 
+func parseStringOrIdentifierQualifierValue(name token, valueTokens []token) (string, error) {
+	value, err := parseExprTokens(valueTokens)
+	if err != nil {
+		return "", wrapLineError(name.line, err)
+	}
+
+	switch parsed := value.(type) {
+	case StringExpr:
+		return parsed.Value, nil
+	case VarExpr:
+		if parsed.Path != "" {
+			return "", fmt.Errorf("line %d: %s qualifier expects a string or identifier", name.line, name.lit)
+		}
+
+		return parsed.Root, nil
+	default:
+		return "", fmt.Errorf("line %d: %s qualifier expects a string or identifier", name.line, name.lit)
+	}
+}
+
 func warnUnsupportedOutputQualifier(name token) {
 	_, _ = fmt.Fprintf(
 		os.Stderr,
@@ -620,9 +697,7 @@ func parseTernaryExprTokens(tokens []token) (Expr, error) {
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 ||
-			current.typ != tokenSymbol || current.lit != "?" ||
-			isNullSafeQuestion(tokens, index) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || current.lit != "?" || isNullSafeQuestion(tokens, index) {
 			continue
 		}
 
@@ -712,9 +787,7 @@ func splitClosureArrowTokens(tokens []token) ([]token, []token, bool) {
 			}
 		}
 
-		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 &&
-			current.typ == tokenSymbol && current.lit == "-" &&
-			tokens[index+1].typ == tokenSymbol && tokens[index+1].lit == ">" {
+		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && current.typ == tokenSymbol && current.lit == "-" && tokens[index+1].typ == tokenSymbol && tokens[index+1].lit == ">" {
 			return tokens[:index], tokens[index+2:], true
 		}
 	}
@@ -901,6 +974,20 @@ func applyTupleElementQualifier(element *TupleElement, tokens []token) error {
 		if err != nil {
 			return wrapLineError(name.line, err)
 		}
+	case "name":
+		value, err := parseStringOrIdentifierQualifierValue(name, valueTokens)
+		if err != nil {
+			return err
+		}
+
+		element.StageName = value
+	case "stageAs":
+		value, err := parseStringOrIdentifierQualifierValue(name, valueTokens)
+		if err != nil {
+			return err
+		}
+
+		element.StageAs = value
 	case "emit":
 		value, err := parseExprTokens(valueTokens)
 		if err != nil {
@@ -1285,9 +1372,7 @@ func parseRegexExprTokens(tokens []token) (Expr, error) {
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 ||
-			current.typ != tokenSymbol ||
-			!stringInSlice(current.lit, []string{"=~", "==~"}) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, []string{"=~", "==~"}) {
 			continue
 		}
 
@@ -1359,9 +1444,7 @@ func parseRangeExprTokens(tokens []token) (Expr, error) {
 			}
 		}
 
-		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 ||
-			current.typ != tokenSymbol ||
-			!stringInSlice(current.lit, []string{"..", "..<"}) {
+		if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 || current.typ != tokenSymbol || !stringInSlice(current.lit, []string{"..", "..<"}) {
 			continue
 		}
 
@@ -1554,8 +1637,7 @@ func parsePrimaryExprTokens(tokens []token) (Expr, error) {
 }
 
 func parseNewExprTokens(tokens []token) (Expr, bool, error) {
-	if len(tokens) < 4 || tokens[0].typ != tokenIdent ||
-		tokens[0].lit != "new" || tokens[len(tokens)-1].typ != tokenRParen {
+	if len(tokens) < 4 || tokens[0].typ != tokenIdent || tokens[0].lit != "new" || tokens[len(tokens)-1].typ != tokenRParen {
 		return nil, false, nil
 	}
 
@@ -1829,8 +1911,7 @@ func parseTrailingClosureArgTokens(tokens []token) (Expr, []token, bool, error) 
 
 func parseMethodCallExprTokensWithTrailingArgs(tokens []token, trailingArgs []Expr, allowBareMethod bool) (Expr, bool, error) {
 	if len(tokens) < 5 || tokens[len(tokens)-1].typ != tokenRParen {
-		if !allowBareMethod || len(tokens) < 3 ||
-			tokens[len(tokens)-1].typ != tokenIdent || tokens[len(tokens)-2].typ != tokenDot {
+		if !allowBareMethod || len(tokens) < 3 || tokens[len(tokens)-1].typ != tokenIdent || tokens[len(tokens)-2].typ != tokenDot {
 			return nil, false, nil
 		}
 
@@ -1976,8 +2057,7 @@ func findTrailingBracketStart(tokens []token) (int, bool) {
 }
 
 func parseCollectionExprTokens(tokens []token) (Expr, bool, error) {
-	if len(tokens) < 2 || tokens[0].typ != tokenSymbol || tokens[0].lit != "[" ||
-		tokens[len(tokens)-1].typ != tokenSymbol || tokens[len(tokens)-1].lit != "]" {
+	if len(tokens) < 2 || tokens[0].typ != tokenSymbol || tokens[0].lit != "[" || tokens[len(tokens)-1].typ != tokenSymbol || tokens[len(tokens)-1].lit != "]" {
 		return nil, false, nil
 	}
 
@@ -2217,6 +2297,60 @@ func warnUnsupportedOutputType(name token) {
 		name.lit,
 		name.line,
 	)
+}
+
+func looksLikeLegacyDSL1IntoPrefix(tokens []token) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+
+	if _, err := parseDeclarationPrimary(tokens); err != nil {
+		return false
+	}
+
+	if len(tokens) > 1 {
+		return true
+	}
+
+	return tokens[0].typ == tokenIdent && (tokens[0].lit == "stdout" || tokens[0].lit == "stdin")
+}
+
+func looksLikeLegacyDSL1IntoTargets(tokens []token) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+
+	if tokens[0].typ == tokenLBrace {
+		return tokens[len(tokens)-1].typ == tokenRBrace && hasBalancedDelimiters(tokens, tokenLBrace, tokenRBrace)
+	}
+
+	segments := splitTopLevelCommaSegments(tokens)
+	if len(segments) == 0 {
+		return false
+	}
+
+	for _, segment := range segments {
+		trimmed := trimDeclarationTokens(segment)
+		if len(trimmed) == 0 || !isSimpleIdentifierPathTokens(trimmed) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isSimpleIdentifierPathTokens(tokens []token) bool {
+	if len(tokens) == 0 || tokens[0].typ != tokenIdent {
+		return false
+	}
+
+	for index := 1; index < len(tokens); index += 2 {
+		if tokens[index].typ != tokenDot || index+1 >= len(tokens) || tokens[index+1].typ != tokenIdent {
+			return false
+		}
+	}
+
+	return len(tokens)%2 == 1
 }
 
 type lexer struct {
@@ -3282,7 +3416,83 @@ parseSource:
 	importNode.Source = p.current().lit
 	p.pos++
 
+	if p.current().typ == tokenIdent && (p.current().lit == "addParams" || p.current().lit == "params") {
+		if err := p.skipDeprecatedImportClause(); err != nil {
+			return nil, err
+		}
+	}
+
 	return importNode, nil
+}
+
+func (p *parser) skipDeprecatedImportClause() error {
+	clause := p.current()
+
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: deprecated '%s' clause in include at line %d, ignoring\n",
+		clause.lit,
+		clause.line,
+	)
+
+	p.pos++
+
+	switch p.current().typ {
+	case tokenLParen:
+		return p.skipDelimitedTokens(tokenLParen, tokenRParen, ")", clause.line)
+	case tokenLBrace:
+		return p.skipDelimitedTokens(tokenLBrace, tokenRBrace, "}", clause.line)
+	default:
+		return nil
+	}
+}
+
+func (p *parser) skipDelimitedTokens(open tokenType, closeTok tokenType, closingLiteral string, line int) error {
+	depth := 0
+
+	for {
+		current := p.current()
+		if current.typ == tokenEOF {
+			return fmt.Errorf("line %d: expected %s", line, closingLiteral)
+		}
+
+		switch current.typ {
+		case open:
+			depth++
+		case closeTok:
+			depth--
+		}
+
+		p.pos++
+
+		if depth == 0 {
+			return nil
+		}
+	}
+}
+
+func (p *parser) skipDelimitedBody(open tokenType, closeTok tokenType, closingLiteral string, line int) error {
+	depth := 1
+
+	for {
+		current := p.current()
+		if current.typ == tokenEOF {
+			return fmt.Errorf("line %d: expected %s", line, closingLiteral)
+		}
+
+		switch current.typ {
+		case open:
+			depth++
+		case closeTok:
+			depth--
+		}
+
+		p.pos++
+
+		if depth == 0 {
+			return nil
+		}
+	}
 }
 
 func (p *parser) parseWorkflowBlockDecl() (string, *WorkflowBlock, error) {
@@ -3420,6 +3630,14 @@ func (p *parser) parseWorkflowBlock() (*WorkflowBlock, error) {
 				continue
 			}
 
+			if current.typ == tokenIdent && (current.lit == "for" || current.lit == "while") {
+				if err := p.skipDeprecatedWorkflowLoop(); err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+
 			calls, err := p.parseWorkflowStatement()
 			if err != nil {
 				return nil, err
@@ -3439,6 +3657,35 @@ func isWorkflowBlockSection(name string) bool {
 	default:
 		return false
 	}
+}
+
+func (p *parser) skipDeprecatedWorkflowLoop() error {
+	loop := p.current()
+
+	_, _ = fmt.Fprintf(
+		os.Stderr,
+		"nextflowdsl: deprecated '%s' loop at line %d, skipping\n",
+		loop.lit,
+		loop.line,
+	)
+
+	p.pos++
+
+	if _, err := p.expectType(tokenLParen, "("); err != nil {
+		return err
+	}
+
+	if err := p.skipDelimitedBody(tokenLParen, tokenRParen, ")", loop.line); err != nil {
+		return err
+	}
+
+	p.skipWorkflowSeparators()
+
+	if _, err := p.expectType(tokenLBrace, "{"); err != nil {
+		return err
+	}
+
+	return p.skipDelimitedBody(tokenLBrace, tokenRBrace, "}", loop.line)
 }
 
 func (p *parser) parseWorkflowTakeLine() ([]string, error) {
@@ -3609,8 +3856,7 @@ func (p *parser) parseWorkflowRawSectionBody() (string, error) {
 				parenDepth--
 			}
 		case tokenIdent:
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
-				p.peek().typ == tokenColon && isWorkflowBlockSection(current.lit) {
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && p.peek().typ == tokenColon && isWorkflowBlockSection(current.lit) {
 				return p.rawTokenText(p.tokens[start:p.pos]), nil
 			}
 		case tokenSymbol:
@@ -3647,6 +3893,20 @@ func (p *parser) parseWorkflowStatement() ([]*Call, error) {
 }
 
 func desugarWorkflowPipe(expr ChanExpr) ([]*Call, error) {
+	if parallel, ok := expr.(BinaryExpr); ok && parallel.Op == "&" {
+		targets, err := flattenWorkflowParallelTargets(parallel)
+		if err != nil {
+			return nil, err
+		}
+
+		calls := make([]*Call, 0, len(targets))
+		for _, target := range targets {
+			calls = append(calls, &Call{Target: target.Name, Args: []ChanExpr{}})
+		}
+
+		return calls, nil
+	}
+
 	pipe, ok := expr.(PipeExpr)
 	if !ok {
 		return nil, errors.New("workflow statements must be calls or channel pipelines")
@@ -3656,22 +3916,22 @@ func desugarWorkflowPipe(expr ChanExpr) ([]*Call, error) {
 		return nil, errors.New("workflow pipelines require at least one process stage")
 	}
 
-	input := pipe.Stages[0]
+	inputs := []ChanExpr{pipe.Stages[0]}
 
 	calls := make([]*Call, 0, len(pipe.Stages)-1)
 	for stageIndex, stage := range pipe.Stages[1:] {
-		target, ok := stage.(ChanRef)
-		if !ok {
-			return nil, fmt.Errorf("workflow pipe stage %d must be a bare identifier", stageIndex+2)
+		nextInputs, stageCalls, err := desugarWorkflowPipeStage(
+			stage,
+			inputs,
+			stageIndex+2,
+			stageIndex == len(pipe.Stages)-2,
+		)
+		if err != nil {
+			return nil, err
 		}
 
-		if target.Name == "view" && stageIndex == len(pipe.Stages)-2 {
-			break
-		}
-
-		call := &Call{Target: target.Name, Args: []ChanExpr{input}}
-		calls = append(calls, call)
-		input = ChanRef{Name: target.Name + ".out"}
+		calls = append(calls, stageCalls...)
+		inputs = nextInputs
 	}
 
 	if len(calls) == 0 {
@@ -3913,8 +4173,7 @@ func (p *parser) isTrackedChannelAssignmentTokens(tokens []token) bool {
 		return false
 	}
 
-	if len(tokens) >= 3 && tokens[0].typ == tokenIdent &&
-		tokens[0].lit == "Channel" && tokens[1].typ == tokenDot && tokens[2].typ == tokenIdent {
+	if len(tokens) >= 3 && tokens[0].typ == tokenIdent && tokens[0].lit == "Channel" && tokens[1].typ == tokenDot && tokens[2].typ == tokenIdent {
 		return true
 	}
 
@@ -4055,6 +4314,37 @@ func (p *parser) parseChanExpr(terminators ...tokenType) (ChanExpr, error) {
 }
 
 func (p *parser) parseChanStage(terminators ...tokenType) (ChanExpr, error) {
+	stage, err := p.parseBasicChanStage(terminators...)
+	if err != nil {
+		return nil, err
+	}
+
+	for p.current().typ == tokenSymbol && p.current().lit == "&" {
+		op := p.current()
+		p.pos++
+
+		right, err := p.parseBasicChanStage(terminators...)
+		if err != nil {
+			return nil, err
+		}
+
+		leftExpr, ok := stage.(Expr)
+		if !ok {
+			return nil, fmt.Errorf("line %d: invalid workflow parallel operand", op.line)
+		}
+
+		rightExpr, ok := right.(Expr)
+		if !ok {
+			return nil, fmt.Errorf("line %d: invalid workflow parallel operand", op.line)
+		}
+
+		stage = BinaryExpr{Left: leftExpr, Op: "&", Right: rightExpr}
+	}
+
+	return stage, nil
+}
+
+func (p *parser) parseBasicChanStage(terminators ...tokenType) (ChanExpr, error) {
 	current := p.current()
 	if hasTokenType(terminators, current.typ) {
 		return nil, fmt.Errorf("line %d: expected channel expression", current.line)
@@ -4689,6 +4979,10 @@ func (p *parser) parseDeclarations(section string) ([]*Declaration, error) {
 			return nil, err
 		}
 
+		if decl == nil {
+			continue
+		}
+
 		decls = append(decls, decl)
 	}
 }
@@ -4699,12 +4993,6 @@ func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 		return nil, fmt.Errorf("line %d: expected declaration", p.current().line)
 	}
 
-	for _, tok := range lineTokens {
-		if tok.typ == tokenIdent && tok.lit == "into" {
-			return nil, fmt.Errorf("line %d: DSL 1 syntax is not supported", tok.line)
-		}
-	}
-
 	primaryLineTokens, each, err := normalizeEachDeclarationTokens(lineTokens)
 	if err != nil {
 		return nil, err
@@ -4713,6 +5001,16 @@ func (p *parser) parseDeclarationLine(section string) (*Declaration, error) {
 	primaryTokens, qualifierTokens, err := splitDeclarationLineTokens(primaryLineTokens)
 	if err != nil {
 		return nil, err
+	}
+
+	if tok, ok := findLegacyDSL1IntoClause(primaryTokens); ok {
+		_, _ = fmt.Fprintf(
+			os.Stderr,
+			"nextflowdsl: DSL 1 'into' syntax at line %d is not supported, skipping declaration\n",
+			tok.line,
+		)
+
+		return nil, nil
 	}
 
 	decl, err := parseDeclarationPrimary(primaryTokens)
@@ -4918,6 +5216,20 @@ func applyDeclarationQualifier(decl *Declaration, tokens []token, section string
 		default:
 			return fmt.Errorf("line %d: emit qualifier expects a string or identifier", name.line)
 		}
+	case "name":
+		value, err := parseStringOrIdentifierQualifierValue(name, valueTokens)
+		if err != nil {
+			return err
+		}
+
+		decl.StageName = value
+	case "stageAs":
+		value, err := parseStringOrIdentifierQualifierValue(name, valueTokens)
+		if err != nil {
+			return err
+		}
+
+		decl.StageAs = value
 	case "optional":
 		if len(valueTokens) == 1 && valueTokens[0].typ == tokenIdent {
 			switch valueTokens[0].lit {
@@ -5536,6 +5848,71 @@ func Parse(r io.Reader) (*Workflow, error) {
 	return newParser(tokens, string(input)).parseWorkflow()
 }
 
+func desugarWorkflowPipeStage(stage ChanExpr, inputs []ChanExpr, stageNumber int, terminal bool) ([]ChanExpr, []*Call, error) {
+	if parallel, ok := stage.(BinaryExpr); ok && parallel.Op == "&" {
+		targets, err := flattenWorkflowParallelTargets(parallel)
+		if err != nil {
+			return nil, nil, fmt.Errorf("workflow pipe stage %d: %w", stageNumber, err)
+		}
+
+		outputs, calls := buildWorkflowPipeCalls(targets, inputs, terminal)
+
+		return outputs, calls, nil
+	}
+
+	target, ok := stage.(ChanRef)
+	if !ok {
+		return nil, nil, fmt.Errorf("workflow pipe stage %d must be a bare identifier", stageNumber)
+	}
+
+	outputs, calls := buildWorkflowPipeCalls([]ChanRef{target}, inputs, terminal)
+
+	return outputs, calls, nil
+}
+
+func flattenWorkflowParallelTargets(expr Expr) ([]ChanRef, error) {
+	switch current := expr.(type) {
+	case BinaryExpr:
+		if current.Op != "&" {
+			return nil, errors.New("parallel workflow stages must use &")
+		}
+
+		left, err := flattenWorkflowParallelTargets(current.Left)
+		if err != nil {
+			return nil, err
+		}
+
+		right, err := flattenWorkflowParallelTargets(current.Right)
+		if err != nil {
+			return nil, err
+		}
+
+		return append(left, right...), nil
+	case ChanRef:
+		return []ChanRef{current}, nil
+	default:
+		return nil, errors.New("parallel workflow stages must contain only bare identifiers")
+	}
+}
+
+func buildWorkflowPipeCalls(targets []ChanRef, inputs []ChanExpr, terminal bool) ([]ChanExpr, []*Call) {
+	outputs := make([]ChanExpr, 0, len(targets)*len(inputs))
+	calls := make([]*Call, 0, len(targets)*len(inputs))
+
+	for _, input := range inputs {
+		for _, target := range targets {
+			if target.Name == "view" && terminal {
+				continue
+			}
+
+			calls = append(calls, &Call{Target: target.Name, Args: []ChanExpr{input}})
+			outputs = append(outputs, ChanRef{Name: target.Name + ".out"})
+		}
+	}
+
+	return outputs, calls
+}
+
 func parseMemoryValue(value string) (int, error) {
 	matches := memoryRE.FindStringSubmatch(strings.TrimSpace(value))
 	if matches == nil {
@@ -5586,3 +5963,13 @@ func parseTimeValue(value string) (int, error) {
 		return 0, fmt.Errorf("unsupported time unit %q", matches[2])
 	}
 }
+
+func (ChanRef) expr() {}
+
+func (NamedChannelRef) expr() {}
+
+func (ChannelFactory) expr() {}
+
+func (ChannelChain) expr() {}
+
+func (BinaryExpr) chanExpr() {}

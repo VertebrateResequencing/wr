@@ -679,6 +679,60 @@ func TestJobqueueUtils(t *testing.T) {
 		So(d, ShouldBeLessThan, 60*time.Second)
 	})
 
+	Convey("recoveredJobDelay uses only the remaining wait when rehydrating delayed jobs", t, func() {
+		ctx := context.Background()
+		q := queue.New(ctx, "recovered delayed jobs")
+
+		defer func() {
+			err := q.Destroy()
+			So(err, ShouldBeNil)
+		}()
+
+		fullDelay := 120 * time.Millisecond
+		now := time.Now()
+		job := &Job{
+			Cmd:       "echo delayed",
+			State:     JobStateDelayed,
+			DelayTime: fullDelay,
+			EndTime:   now.Add(-70 * time.Millisecond),
+		}
+
+		remainingDelay := recoveredJobDelay(job, now)
+		So(remainingDelay, ShouldBeGreaterThanOrEqualTo, 45*time.Millisecond)
+		So(remainingDelay, ShouldBeLessThanOrEqualTo, 55*time.Millisecond)
+
+		readyJob := &Job{State: JobStateReady, DelayTime: fullDelay, EndTime: now.Add(-70 * time.Millisecond)}
+		So(recoveredJobDelay(readyJob, now), ShouldEqual, fullDelay)
+
+		expiredJob := &Job{State: JobStateDelayed, DelayTime: fullDelay, EndTime: now.Add(-150 * time.Millisecond)}
+		So(recoveredJobDelay(expiredJob, now), ShouldEqual, 0)
+
+		added, dups, err := q.AddMany(ctx, []*queue.ItemDef{{
+			Key:   job.Key(),
+			Data:  job,
+			Delay: remainingDelay,
+			TTR:   time.Second,
+		}})
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(dups, ShouldEqual, 0)
+
+		item, err := q.Reserve("", 20*time.Millisecond)
+		So(item, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+
+		var qerr queue.Error
+
+		ok := errors.As(err, &qerr)
+		So(ok, ShouldBeTrue)
+		So(qerr.Err, ShouldEqual, queue.ErrNothingReady)
+
+		item, err = q.Reserve("", 60*time.Millisecond)
+		So(err, ShouldBeNil)
+		So(item, ShouldNotBeNil)
+		So(item.Key, ShouldEqual, job.Key())
+	})
+
 	Convey("normalizeRepGroupMatch defaults and preserves explicit match", t, func() {
 		So(normalizeRepGroupMatch("", false), ShouldEqual, RepGroupMatchExact)
 		So(normalizeRepGroupMatch("", true), ShouldEqual, RepGroupMatchSubStr)

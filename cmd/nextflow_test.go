@@ -1567,9 +1567,12 @@ func TestNextflowRunCommandPendingHelper(t *testing.T) {
 		So(helperJobs, ShouldHaveLength, 1)
 		So(helperJobs[0].RepGroup, ShouldEqual, nextflowPendingHelperRepGroup("dynamic_pending_helper", "r1"))
 		So(helperJobs[0].ReqGroup, ShouldEqual, "nextflow-follow-helper")
+		So(helperJobs[0].State, ShouldEqual, jobqueue.JobStateDelayed)
 		So(helperJobs[0].CwdMatters, ShouldBeTrue)
 		So(helperJobs[0].Cwd, ShouldEqual, mustGetwd(t))
+		So(helperJobs[0].Dependencies, ShouldBeEmpty)
 		So(helperJobs[0].Cmd, ShouldContainSubstring, "'wr' 'nextflow' 'run' '--follow'")
+		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--pending-helper'")
 		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--run-id' 'r1'")
 		So(helperJobs[0].Cmd, ShouldContainSubstring, "'--poll-interval' '5s'")
 		So(helperJobs[0].Cmd, ShouldContainSubstring, nextflowShellQuote(workflowPath))
@@ -2043,6 +2046,7 @@ func cloneJobs(jobs []*jobqueue.Job) []*jobqueue.Job {
 			Cmd:             job.Cmd,
 			Cwd:             job.Cwd,
 			CwdMatters:      job.CwdMatters,
+			DelayTime:       job.DelayTime,
 			LimitGroups:     append([]string{}, job.LimitGroups...),
 			RepGroup:        job.RepGroup,
 			ReqGroup:        job.ReqGroup,
@@ -2083,6 +2087,7 @@ func TestNextflowRunCommandResumeMissing(t *testing.T) {
 		workflowPath := env.writeWorkflow("resume_missing.nf", dynamicWorkflow("cat $reads > consumed.txt"))
 
 		So(env.executeRun("--run-id", "r1", workflowPath), ShouldBeNil)
+		So(env.jobsByRepGroupSubstring(nextflowPendingHelperRepGroupPrefix("resume_missing", "r1")), ShouldHaveLength, 1)
 		So(executeReservedJobs(env, 1), ShouldBeNil)
 		env.waitForRepGroupState("nf.resume_missing.r1.A", jobqueue.JobStateComplete)
 
@@ -2092,6 +2097,7 @@ func TestNextflowRunCommandResumeMissing(t *testing.T) {
 
 		jobs := env.jobsByRepGroupSubstring("nf.resume_missing.r1")
 		So(jobs, ShouldHaveLength, 2)
+		So(env.jobsByRepGroupSubstring(nextflowPendingHelperRepGroupPrefix("resume_missing", "r1")), ShouldBeEmpty)
 		env.waitForRepGroupState("nf.resume_missing.r1.B", jobqueue.JobStateComplete)
 	})
 }
@@ -2267,6 +2273,31 @@ type fakeNextflowSnapshot struct {
 	complete   []*jobqueue.Job
 	buried     []*jobqueue.Job
 	incomplete []*jobqueue.Job
+}
+
+func TestDeleteNextflowPendingHelpers(t *testing.T) {
+	Convey("manual follow cleanup removes stale helper jobs for the same workflow run", t, func() {
+		staleHelper := &jobqueue.Job{
+			Cmd:      "helper-r1",
+			RepGroup: nextflowPendingHelperRepGroup("wf", "r1"),
+			State:    jobqueue.JobStateReady,
+		}
+		otherHelper := &jobqueue.Job{
+			Cmd:      "helper-r2",
+			RepGroup: nextflowPendingHelperRepGroup("wf", "r2"),
+			State:    jobqueue.JobStateReady,
+		}
+		queue := &fakeNextflowQueue{snapshots: []fakeNextflowSnapshot{{
+			incomplete: []*jobqueue.Job{staleHelper, otherHelper},
+		}}}
+
+		err := deleteNextflowPendingHelpers(queue, "wf", "r1")
+
+		So(err, ShouldBeNil)
+		So(queue.deletedKeys, ShouldResemble, []string{staleHelper.Key()})
+		So(queue.snapshots[0].incomplete, ShouldHaveLength, 1)
+		So(queue.snapshots[0].incomplete[0].RepGroup, ShouldEqual, otherHelper.RepGroup)
+	})
 }
 
 func TestFollowNextflowWorkflowOutput(t *testing.T) {
@@ -2689,8 +2720,8 @@ func (f *fakeNextflowQueue) GetOrSetLimitGroup(group string) (int, error) {
 }
 
 func (f *fakeNextflowQueue) GetByRepGroupMatch(
-	_ string,
-	_ jobqueue.RepGroupMatch,
+	repGroup string,
+	match jobqueue.RepGroupMatch,
 	_ int,
 	state jobqueue.JobState,
 	_ bool,
@@ -2698,33 +2729,53 @@ func (f *fakeNextflowQueue) GetByRepGroupMatch(
 ) ([]*jobqueue.Job, error) {
 	snapshot := f.current()
 	if state == "" {
-		jobs := cloneJobs(snapshot.complete)
-		jobs = append(jobs, cloneJobs(snapshot.buried)...)
-		jobs = append(jobs, cloneJobs(snapshot.incomplete)...)
+		jobs := filterJobsByRepGroupMatch(snapshot.complete, repGroup, match)
+		jobs = append(jobs, filterJobsByRepGroupMatch(snapshot.buried, repGroup, match)...)
+		jobs = append(jobs, filterJobsByRepGroupMatch(snapshot.incomplete, repGroup, match)...)
 
 		return jobs, nil
 	}
 
 	if state == jobqueue.JobStateComplete {
-		return cloneJobs(snapshot.complete), nil
+		return filterJobsByRepGroupMatch(snapshot.complete, repGroup, match), nil
 	}
 
 	if state == jobqueue.JobStateBuried {
-		return cloneJobs(snapshot.buried), nil
+		return filterJobsByRepGroupMatch(snapshot.buried, repGroup, match), nil
 	}
 
 	return nil, nil
 }
 
+func filterJobsByRepGroupMatch(jobs []*jobqueue.Job, repGroup string, match jobqueue.RepGroupMatch) []*jobqueue.Job {
+	filtered := make([]*jobqueue.Job, 0, len(jobs))
+	for _, job := range jobs {
+		switch match {
+		case jobqueue.RepGroupMatchPrefix:
+			if !strings.HasPrefix(job.RepGroup, repGroup) {
+				continue
+			}
+		default:
+			if job.RepGroup != repGroup {
+				continue
+			}
+		}
+
+		filtered = append(filtered, job)
+	}
+
+	return cloneJobs(filtered)
+}
+
 func (f *fakeNextflowQueue) GetIncompleteByRepGroupMatch(
-	_ string,
-	_ jobqueue.RepGroupMatch,
+	repGroup string,
+	match jobqueue.RepGroupMatch,
 	_ int,
 	_ jobqueue.JobState,
 	_ bool,
 	_ bool,
 ) ([]*jobqueue.Job, error) {
-	return cloneJobs(f.current().incomplete), nil
+	return filterJobsByRepGroupMatch(f.current().incomplete, repGroup, match), nil
 }
 
 func (f *fakeNextflowQueue) current() fakeNextflowSnapshot {
