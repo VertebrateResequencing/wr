@@ -10,7 +10,8 @@ Checks performed:
   3. MANIFEST:   Every feature ID in 00-manifest.md exists in an nf-*.md
   4. MANIFEST:   Every feature ID in nf-*.md exists in 00-manifest.md
   5. TEST-SPEC:  Every ### ID in nf-*.md is mentioned in the matching test-*.md
-  6. CONTENT:    (optional, --fetch) Fetch live Nextflow docs and check for
+  6. RESULTS:    Every ### ID in nf-*.md has a result in the matching test-*.md
+  7. CONTENT:    (optional, --fetch) Fetch live Nextflow docs and check for
                  keywords/headings not mentioned in verify files
 
 Usage:
@@ -166,6 +167,48 @@ def check_structural(nf_files, test_files, manifest_content):
             warnings.append(
                 f"DUPLICATE: {fid} defined as ### heading in multiple files: {', '.join(fnames)}")
 
+    # Check 6: every nf- feature ID has a result line in the matching test file
+    valid_classes = {'SUPPORTED', 'GAP', 'UNSUPPORTED', 'FUTURE',
+                     'PARSE_ERROR', 'UNKNOWN'}
+    result_re = re.compile(r'^- ([A-Z]+-[a-zA-Z0-9_][-a-zA-Z0-9_]*):\s+(\S+)')
+    for nf_fname, content in nf_files.items():
+        num = nf_number(nf_fname)
+        if not num:
+            continue
+        matching_tests = [f for f in test_files if nf_number(f) == num]
+        if not matching_tests:
+            continue
+        # Extract result IDs from the ## Results section(s)
+        result_ids = {}  # id -> classification
+        for tf in matching_tests:
+            tc = test_files[tf]
+            in_results = False
+            for line in tc.splitlines():
+                if line.strip() == '## Results':
+                    in_results = True
+                    continue
+                if in_results:
+                    m = result_re.match(line)
+                    if m:
+                        result_ids[m.group(1)] = m.group(2)
+        nf_ids = extract_feature_ids_from_headings(content)
+        # Check each nf- feature has a result
+        for fid in sorted(nf_ids):
+            if fid not in result_ids:
+                errors.append(
+                    f"RESULTS: {fid} (in {nf_fname}) has no result in "
+                    f"{', '.join(matching_tests)}")
+            elif result_ids[fid] not in valid_classes:
+                warnings.append(
+                    f"RESULTS: {fid} has non-standard classification "
+                    f"'{result_ids[fid]}' in {', '.join(matching_tests)}")
+        # Check for result IDs not in nf- file
+        for fid in sorted(result_ids):
+            if fid not in nf_ids:
+                warnings.append(
+                    f"RESULTS: {fid} has a result in "
+                    f"{', '.join(matching_tests)} but no ### heading in {nf_fname}")
+
     return errors, warnings
 
 
@@ -285,6 +328,33 @@ def main():
             len(extract_feature_ids_from_headings(c)) for c in nf_files.values()
         )
         print(f"Total feature IDs (### headings in nf-): {nf_id_count}")
+
+        # Count results by classification
+        result_re = re.compile(
+            r'^- [A-Z]+-[a-zA-Z0-9_][-a-zA-Z0-9_]*:\s+(\S+)')
+        class_counts = defaultdict(int)
+        for content in test_files.values():
+            in_results = False
+            for line in content.splitlines():
+                if line.strip() == '## Results':
+                    in_results = True
+                    continue
+                if in_results:
+                    m = result_re.match(line)
+                    if m:
+                        class_counts[m.group(1)] += 1
+        total_results = sum(class_counts.values())
+        if total_results:
+            print(f"Total results: {total_results}")
+            for cls in ['SUPPORTED', 'GAP', 'UNSUPPORTED', 'FUTURE',
+                        'PARSE_ERROR', 'UNKNOWN']:
+                if class_counts.get(cls):
+                    print(f"  {cls}: {class_counts[cls]}")
+            others = {k: v for k, v in class_counts.items()
+                      if k not in {'SUPPORTED', 'GAP', 'UNSUPPORTED',
+                                   'FUTURE', 'PARSE_ERROR', 'UNKNOWN'}}
+            for cls, count in sorted(others.items()):
+                print(f"  {cls} (non-standard): {count}")
         print()
 
     # Run structural checks
