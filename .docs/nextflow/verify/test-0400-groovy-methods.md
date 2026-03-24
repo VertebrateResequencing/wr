@@ -93,3 +93,185 @@ METH-bag-plus: SUPPORTED | reason
 - METH-tuple-getAt: SUPPORTED - tuple-like `[]any` values use `evalIndexExpr` for indexing.
 - METH-value-flatMap, METH-value-map, METH-value-subscribe, METH-value-view, METH-value-view-1: FUTURE - `evalMethodCallExpr` has no receiver handling for Nextflow value/channel objects beyond strings, maps, numbers, and `[]any`.
 - METH-versionnumber-getMajor, METH-versionnumber-getMinor, METH-versionnumber-getPatch, METH-versionnumber-matches: FUTURE - there is no VersionNumber receiver/type support in `groovy.go`.
+- METH-duration-toHours: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-toMillis: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-toMinutes: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-toSeconds: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-getDays: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-getHours: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-getMillis: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-getMinutes: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-duration-getSeconds: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-iterable-collect: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-collectMany: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-contains: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-every: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-findAll: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-groupBy: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-inject-3: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-isEmpty: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-max: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-max-1: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-min: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-min-1: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-min-2: GAP - `evalListClosureMethod` supports the unary closure/scoring form for `max`/`min`, but not the two-argument comparator closure variant.
+- METH-iterable-size: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-sum: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-sum-1: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-toList: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-toSet: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-toSorted: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-toSorted-1: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-toSorted-2: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-toUnique: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-toUnique-2: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-toUnique-1: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-list-multiply: FUTURE - list `+` and `*` operators are not implemented in `evalBinaryExpr`; only integer arithmetic and list `<<` are handled there.
+- METH-list-membership: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-collate-3: FUTURE - these list method names are absent from `evalListMethodCallExpr` and `evalListMethodCall`.
+- METH-list-find: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-first: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-getIndices: FUTURE - these list method names are absent from `evalListMethodCallExpr` and `evalListMethodCall`.
+- METH-list-head: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-indexOf: FUTURE - these list method names are absent from `evalListMethodCallExpr` and `evalListMethodCall`.
+- METH-list-init: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-last: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-reverse: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-subList: FUTURE - these list method names are absent from `evalListMethodCallExpr` and `evalListMethodCall`.
+- METH-list-tail: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-take: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-takeWhile: FUTURE - these list method names are absent from `evalListMethodCallExpr` and `evalListMethodCall`.
+- METH-list-withIndex: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-map-membership: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-any: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-containsKey: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-containsValue: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-each: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-every: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-isEmpty: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-keySet: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-size: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-subMap: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-map-values: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-memoryunit-toGiga: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-toKilo: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-toMega: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-toUnit: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-getBytes: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-getGiga: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-getKilo: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-memoryunit-getMega: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-path-leftShift: FUTURE - `evalBinaryExpr` does not implement path `/` or path `<<`; File/Path values are created as plain strings by `evalPathConstructor`.
+- METH-path-extension: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-name: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-parent: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-scheme: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-simpleName: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-exists: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-isDirectory: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-isEmpty: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-isFile: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-isHidden: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-isLink: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-lastModified: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-relativize: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-resolve: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-resolveSibling: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-size: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-toUriString: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-getText: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-readLines: GAP - because File/Path constructors return strings, these calls would hit `evalStringMethodCall` and operate on the path string text itself rather than reading filesystem contents.
+- METH-path-withReader: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-append: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-setText: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-write: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-copyTo: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-delete: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-deleteDir: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-getPermissions: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-mkdir: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-mkdirs: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-mklink: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-mklink-hard: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-mklink-overwrite: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-moveTo: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-renameTo: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-setPermissions: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-setPermissions-3: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-eachFile: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-eachFileRecurse: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-listDirectory: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-listFiles: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-countFasta: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-countFastq: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-countJson: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-countLines: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-splitCsv: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-splitFasta: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-splitFastq: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-splitJson: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-splitText: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-set-minus: FUTURE - set `+` and `-` operators are not implemented in `evalBinaryExpr` for `[]any` receivers.
+- METH-set-intersect: SUPPORTED - set-like `[]any` values work with `containsValue` for `in` and with `evalListMethodCall` for `intersect`.
+- METH-string-multiply: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-getAt: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-bitwiseNegate: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-find: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-match: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-endsWith: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-indexOf: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-indexOf-2: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-isBlank: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-isEmpty: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-isDouble: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-isFloat: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-isInteger: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-isLong: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-lastIndexOf: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-lastIndexOf-2: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-length: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-md5: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-replace: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-replaceAll: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-replaceFirst: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-sha256: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-startsWith: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-strip: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-stripIndent: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-stripLeading: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-stripTrailing: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-substring: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-substring-2: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-toBoolean: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-toDouble: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-toFloat: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-toInteger: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-toLong: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-toLowerCase: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-toUpperCase: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-string-tokenize: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-value-map: FUTURE - `evalMethodCallExpr` has no receiver handling for Nextflow value/channel objects beyond strings, maps, numbers, and `[]any`.
+- METH-value-subscribe: FUTURE - `evalMethodCallExpr` has no receiver handling for Nextflow value/channel objects beyond strings, maps, numbers, and `[]any`.
+- METH-value-view: FUTURE - `evalMethodCallExpr` has no receiver handling for Nextflow value/channel objects beyond strings, maps, numbers, and `[]any`.
+- METH-value-view-1: FUTURE - `evalMethodCallExpr` has no receiver handling for Nextflow value/channel objects beyond strings, maps, numbers, and `[]any`.
+- METH-versionnumber-getMinor: FUTURE - there is no VersionNumber receiver/type support in `groovy.go`.
+- METH-versionnumber-getPatch: FUTURE - there is no VersionNumber receiver/type support in `groovy.go`.
+- METH-versionnumber-matches: FUTURE - there is no VersionNumber receiver/type support in `groovy.go`.
+- METH-duration-toDays: FUTURE - `evalMethodCallExpr` only dispatches method calls for `string`, `map[string]any`/`orderedMap`, numbers, and `[]any`; there is no Duration receiver/type support in `groovy.go`.
+- METH-iterable-any: SUPPORTED - `evalListMethodCallExpr`, `evalListClosurePredicateMethod`, `evalListClosureMethod`, and `evalListMethodCall` implement these operations for `[]any` receivers.
+- METH-iterable-each: FUTURE - these method names are not implemented in `evalListMethodCallExpr` or `evalListMethodCall`.
+- METH-iterable-max-2: GAP - `evalListClosureMethod` supports the unary closure/scoring form for `max`/`min`, but not the two-argument comparator closure variant.
+- METH-list-plus: FUTURE - list `+` and `*` operators are not implemented in `evalBinaryExpr`; only integer arithmetic and list `<<` are handled there.
+- METH-list-getAt: SUPPORTED - `evalIndexExpr`, `containsValue`, `evalListClosurePredicateMethod`, and `evalListMethodCall` implement these list operations on `[]any`.
+- METH-list-collate: FUTURE - these list method names are absent from `evalListMethodCallExpr` and `evalListMethodCall`.
+- METH-map-getAt: SUPPORTED - `evalIndexExpr`, `containsValue`, and `evalMapMethodCall` implement these map operations for `map[string]any` and `orderedMap` receivers.
+- METH-memoryunit-toBytes: FUTURE - there is no MemoryUnit receiver/type support in `evalMethodCallExpr` or elsewhere in `groovy.go`.
+- METH-path-divide: FUTURE - `evalBinaryExpr` does not implement path `/` or path `<<`; File/Path values are created as plain strings by `evalPathConstructor`.
+- METH-path-baseName: FUTURE - `evalPathConstructor` returns plain strings and there is no path-specific property or method dispatcher in `groovy.go`.
+- METH-path-eachLine: GAP - because File/Path constructors return strings, these calls would hit `evalStringMethodCall` and operate on the path string text itself rather than reading filesystem contents.
+- METH-set-plus: FUTURE - set `+` and `-` operators are not implemented in `evalBinaryExpr` for `[]any` receivers.
+- METH-set-membership: SUPPORTED - set-like `[]any` values work with `containsValue` for `in` and with `evalListMethodCall` for `intersect`.
+- METH-string-plus: FUTURE - these operator/method/property cases are not implemented in `evalBinaryExpr`, `evalIndexExpr`, `evalUnaryExpr`, or `evalStringMethodCall`.
+- METH-string-contains: SUPPORTED - these cases are implemented directly in `evalStringMethodCall`.
+- METH-value-flatMap: FUTURE - `evalMethodCallExpr` has no receiver handling for Nextflow value/channel objects beyond strings, maps, numbers, and `[]any`.
+- METH-versionnumber-getMajor: FUTURE - there is no VersionNumber receiver/type support in `groovy.go`.
