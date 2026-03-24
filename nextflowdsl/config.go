@@ -35,16 +35,31 @@ import (
 )
 
 var skippedTopLevelConfigScopes = map[string]struct{}{
+	"aws":          {},
+	"azure":        {},
+	"charliecloud": {},
 	"conda":        {},
 	"dag":          {},
+	"fusion":       {},
+	"google":       {},
+	"k8s":          {},
+	"lineage":      {},
+	"mail":         {},
 	"manifest":     {},
+	"nextflow":     {},
 	"notification": {},
+	"podman":       {},
 	"report":       {},
+	"sarus":        {},
+	"seqera":       {},
+	"shifter":      {},
+	"spack":        {},
 	"timeline":     {},
 	"tower":        {},
 	"trace":        {},
 	"wave":         {},
 	"weblog":       {},
+	"workflow":     {},
 }
 
 // ProcessDefaults holds default values for process directives.
@@ -236,6 +251,14 @@ func (p *configParser) parse(knownParams map[string]any, knownProfileParams map[
 				continue
 			}
 
+			if p.peek().typ == tokenAssign {
+				if err := p.skipBareTopLevelConfigAssignment(true); err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+
 			return nil, fmt.Errorf("line %d: unsupported config section %q", current.line, current.lit)
 		}
 	}
@@ -297,6 +320,14 @@ func (p *configParser) collectParams() (map[string]any, map[string]map[string]an
 			}
 
 			if skipped {
+				continue
+			}
+
+			if p.peek().typ == tokenAssign {
+				if err := p.skipBareTopLevelConfigAssignment(false); err != nil {
+					return nil, nil, err
+				}
+
 				continue
 			}
 
@@ -915,6 +946,10 @@ func (p *configParser) skipNamedBlock(name string) error {
 		return err
 	}
 
+	return p.skipCurrentBlockBody(name)
+}
+
+func (p *configParser) skipCurrentBlockBody(name string) error {
 	depth := 1
 	for depth > 0 {
 		current := p.current()
@@ -953,6 +988,29 @@ func (p *configParser) skipUnknownTopLevelConfigScope() (bool, error) {
 	}
 
 	return true, nil
+}
+
+func (p *configParser) skipBareTopLevelConfigAssignment(warn bool) error {
+	name := p.current()
+
+	if warn {
+		_, _ = fmt.Fprintf(
+			os.Stderr,
+			"nextflowdsl: skipping unsupported top-level config assignment %q at line %d\n",
+			name.lit,
+			name.line,
+		)
+	}
+
+	p.pos++
+
+	if _, err := p.expectType(tokenAssign, "="); err != nil {
+		return err
+	}
+
+	_, err := p.readExprTokens(tokenSemicolon, tokenNewline)
+
+	return err
 }
 
 func (p *configParser) parseEnvBlock() (map[string]string, error) {
@@ -1022,7 +1080,20 @@ func (p *configParser) parseExecutorBlock() (map[string]any, error) {
 
 			return executor, nil
 		case tokenIdent:
-			value, err := p.parseAssignmentValue()
+			name := current
+			p.pos++
+
+			if p.current().typ == tokenLBrace {
+				p.pos++
+
+				if err := p.skipCurrentBlockBody(name.lit); err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+
+			value, err := p.parseAssignmentValueAfterName(name)
 			if err != nil {
 				return nil, err
 			}
@@ -1045,6 +1116,20 @@ func (p *configParser) parseExecutorBlock() (map[string]any, error) {
 			default:
 				executor[current.lit] = value
 			}
+		case tokenString:
+			p.pos++
+
+			if p.current().typ == tokenLBrace {
+				p.pos++
+
+				if err := p.skipCurrentBlockBody(current.lit); err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+
+			return nil, fmt.Errorf("line %d: expected executor setting", current.line)
 		default:
 			return nil, fmt.Errorf("line %d: expected executor setting", current.line)
 		}
@@ -1103,6 +1188,10 @@ func (p *configParser) parseAssignmentValue() (any, error) {
 	name := p.current()
 	p.pos++
 
+	return p.parseAssignmentValueAfterName(name)
+}
+
+func (p *configParser) parseAssignmentValueAfterName(name token) (any, error) {
 	if _, err := p.expectType(tokenAssign, "="); err != nil {
 		return nil, err
 	}
@@ -1161,7 +1250,9 @@ func exprToValue(expr Expr, vars map[string]any) (any, error) {
 func (p *configParser) readExprTokens(terminators ...tokenType) ([]token, error) {
 	start := p.current()
 	tokens := []token{}
-	depth := 0
+	parenDepth := 0
+	braceDepth := 0
+	bracketDepth := 0
 
 	for {
 		current := p.current()
@@ -1173,7 +1264,7 @@ func (p *configParser) readExprTokens(terminators ...tokenType) ([]token, error)
 			return tokens, nil
 		}
 
-		if depth == 0 && hasTokenType(terminators, current.typ) {
+		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && hasTokenType(terminators, current.typ) {
 			if len(tokens) == 0 {
 				return nil, fmt.Errorf("line %d: expected expression", current.line)
 			}
@@ -1181,10 +1272,28 @@ func (p *configParser) readExprTokens(terminators ...tokenType) ([]token, error)
 			return tokens, nil
 		}
 
-		if current.typ == tokenLParen {
-			depth++
-		} else if current.typ == tokenRParen && depth > 0 {
-			depth--
+		switch current.typ {
+		case tokenLParen:
+			parenDepth++
+		case tokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case tokenLBrace:
+			braceDepth++
+		case tokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case tokenSymbol:
+			switch current.lit {
+			case "[":
+				bracketDepth++
+			case "]":
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+			}
 		}
 
 		tokens = append(tokens, current)
@@ -1237,6 +1346,14 @@ func (p *configParser) current() token {
 	}
 
 	return p.tokens[p.pos]
+}
+
+func (p *configParser) peek() token {
+	if p.pos+1 >= len(p.tokens) {
+		return p.tokens[len(p.tokens)-1]
+	}
+
+	return p.tokens[p.pos+1]
 }
 
 func (p *configParser) previous() token {

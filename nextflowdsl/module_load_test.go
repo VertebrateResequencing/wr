@@ -219,9 +219,11 @@ func TestLoadWorkflowFilePreservesClonedProcessFields(t *testing.T) {
 
 		workflow := `process demo {
 input:
-tuple val(id), path(reads)
+path(reads), name: 'reads.fastq.gz', stageAs: 'sample.fastq.gz'
+tuple val(id), path(read_pair, name: 'pair_*.fq.gz', stageAs: 'staged/pair.fastq.gz')
 output:
-tuple val(id), path("${id}.bam"), emit: aligned, optional: true
+path("${id}.bam"), emit: aligned_file, name: 'out.bam', stageAs: 'results/out.bam'
+tuple val(id), path("${id}.bam", emit: aligned, name: 'tuple.bam', stageAs: 'results/tuple.bam'), emit: pair, optional: true
 script:
 'touch ${id}.bam'
 stub:
@@ -245,23 +247,36 @@ demo()
 		So(wf.Processes, ShouldHaveLength, 1)
 
 		proc := wf.Processes[0]
-		So(proc.Input, ShouldHaveLength, 1)
-		So(proc.Input[0].Kind, ShouldEqual, "tuple")
-		So(proc.Input[0].Elements, ShouldHaveLength, 2)
-		So(proc.Input[0].Elements[0].Kind, ShouldEqual, "val")
-		So(proc.Input[0].Elements[0].Name, ShouldEqual, "id")
-		So(proc.Input[0].Elements[1].Kind, ShouldEqual, "path")
-		So(proc.Input[0].Elements[1].Name, ShouldEqual, "reads")
+		So(proc.Input, ShouldHaveLength, 2)
+		So(proc.Input[0].Kind, ShouldEqual, "path")
+		So(proc.Input[0].Name, ShouldEqual, "reads")
+		So(proc.Input[0].StageName, ShouldEqual, "reads.fastq.gz")
+		So(proc.Input[0].StageAs, ShouldEqual, "sample.fastq.gz")
+		So(proc.Input[1].Kind, ShouldEqual, "tuple")
+		So(proc.Input[1].Elements, ShouldHaveLength, 2)
+		So(proc.Input[1].Elements[0].Kind, ShouldEqual, "val")
+		So(proc.Input[1].Elements[0].Name, ShouldEqual, "id")
+		So(proc.Input[1].Elements[1].Kind, ShouldEqual, "path")
+		So(proc.Input[1].Elements[1].Name, ShouldEqual, "read_pair")
+		So(proc.Input[1].Elements[1].StageName, ShouldEqual, "pair_*.fq.gz")
+		So(proc.Input[1].Elements[1].StageAs, ShouldEqual, "staged/pair.fastq.gz")
 
-		So(proc.Output, ShouldHaveLength, 1)
-		So(proc.Output[0].Kind, ShouldEqual, "tuple")
-		So(proc.Output[0].Emit, ShouldEqual, "aligned")
-		So(proc.Output[0].Optional, ShouldBeTrue)
-		So(proc.Output[0].Elements, ShouldHaveLength, 2)
-		So(proc.Output[0].Elements[0].Kind, ShouldEqual, "val")
-		So(proc.Output[0].Elements[0].Name, ShouldEqual, "id")
-		So(proc.Output[0].Elements[1].Kind, ShouldEqual, "path")
-		stringExpr, ok := proc.Output[0].Elements[1].Expr.(StringExpr)
+		So(proc.Output, ShouldHaveLength, 2)
+		So(proc.Output[0].Kind, ShouldEqual, "path")
+		So(proc.Output[0].Emit, ShouldEqual, "aligned_file")
+		So(proc.Output[0].StageName, ShouldEqual, "out.bam")
+		So(proc.Output[0].StageAs, ShouldEqual, "results/out.bam")
+		So(proc.Output[1].Kind, ShouldEqual, "tuple")
+		So(proc.Output[1].Emit, ShouldEqual, "pair")
+		So(proc.Output[1].Optional, ShouldBeTrue)
+		So(proc.Output[1].Elements, ShouldHaveLength, 2)
+		So(proc.Output[1].Elements[0].Kind, ShouldEqual, "val")
+		So(proc.Output[1].Elements[0].Name, ShouldEqual, "id")
+		So(proc.Output[1].Elements[1].Kind, ShouldEqual, "path")
+		So(proc.Output[1].Elements[1].Emit, ShouldEqual, "aligned")
+		So(proc.Output[1].Elements[1].StageName, ShouldEqual, "tuple.bam")
+		So(proc.Output[1].Elements[1].StageAs, ShouldEqual, "results/tuple.bam")
+		stringExpr, ok := proc.Output[1].Elements[1].Expr.(StringExpr)
 		So(ok, ShouldBeTrue)
 		So(stringExpr.Value, ShouldEqual, "${id}.bam")
 

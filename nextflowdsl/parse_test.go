@@ -1422,11 +1422,21 @@ func TestParseProcessDefinitions(t *testing.T) {
 			So(stderr, ShouldContainSubstring, "unsupported directive \"secret\"")
 		})
 
-		Convey("legacy DSL1 into syntax is rejected", func() {
-			_, err := Parse(strings.NewReader("process foo {\noutput: stdout into result\nscript: 'echo hello'\n}"))
+		Convey("legacy DSL1 into syntax is skipped with a warning", func() {
+			var (
+				wf     *Workflow
+				err    error
+				stderr string
+			)
 
-			So(err, ShouldNotBeNil)
-			So(err.Error(), ShouldContainSubstring, "DSL 1")
+			stderr = captureParseStderr(func() {
+				wf, err = Parse(strings.NewReader("process foo {\noutput: stdout into result\nscript: 'echo hello'\n}"))
+			})
+
+			So(err, ShouldBeNil)
+			So(wf.Processes, ShouldHaveLength, 1)
+			So(wf.Processes[0].Output, ShouldHaveLength, 0)
+			So(stderr, ShouldContainSubstring, "DSL 1")
 		})
 
 		Convey("unknown directives are ignored", func() {

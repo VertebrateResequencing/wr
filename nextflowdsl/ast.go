@@ -30,23 +30,27 @@ type Expr interface{ expr() }
 
 // TupleElement is one element within a tuple declaration.
 type TupleElement struct {
-	Kind string
-	Name string
-	Expr Expr
-	Raw  string
-	Emit string
+	Kind      string
+	Name      string
+	Expr      Expr
+	Raw       string
+	Emit      string
+	StageName string
+	StageAs   string
 }
 
 // Declaration is a parsed input or output declaration.
 type Declaration struct {
-	Kind     string
-	Name     string
-	Expr     Expr
-	Raw      string
-	Emit     string
-	Each     bool
-	Optional bool
-	Elements []*TupleElement
+	Kind      string
+	Name      string
+	Expr      Expr
+	Raw       string
+	Emit      string
+	StageName string
+	StageAs   string
+	Each      bool
+	Optional  bool
+	Elements  []*TupleElement
 }
 
 // PublishDir holds a parsed publishDir directive.

@@ -229,6 +229,23 @@ func (r *rgToKeys) Values(rg string) []string {
 	return plist.Values()
 }
 
+func recoveredJobDelay(job *Job, now time.Time) time.Duration {
+	if job.DelayTime <= 0 {
+		return 0
+	}
+
+	if job.State != JobStateDelayed || job.EndTime.IsZero() {
+		return job.DelayTime
+	}
+
+	remaining := job.EndTime.Add(job.DelayTime).Sub(now)
+	if remaining < 0 {
+		return 0
+	}
+
+	return remaining
+}
+
 // jstateCount is the state count change we send to the status webpage; we are
 // representing the jobs moving from one state to another.
 type jstateCount struct {
@@ -775,7 +792,20 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 				return nil, msg, token, err
 			}
 
-			itemdef := &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps}
+			itemDelay := job.DelayTime
+			if job.State == JobStateDelayed {
+				itemDelay = recoveredJobDelay(job, time.Now())
+			}
+
+			itemdef := &queue.ItemDef{
+				Key:          job.Key(),
+				ReserveGroup: job.getSchedulerGroup(),
+				Data:         job,
+				Priority:     job.Priority,
+				Delay:        itemDelay,
+				TTR:          ServerItemTTR,
+				Dependencies: deps,
+			}
 
 			switch job.State {
 			case JobStateRunning:
@@ -1921,7 +1951,16 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 				qerr = err
 				break
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+
+			itemdefs = append(itemdefs, &queue.ItemDef{
+				Key:          job.Key(),
+				ReserveGroup: job.getSchedulerGroup(),
+				Data:         job,
+				Priority:     job.Priority,
+				Delay:        job.DelayTime,
+				TTR:          ServerItemTTR,
+				Dependencies: deps,
+			})
 		}
 
 		srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
@@ -1994,7 +2033,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 			break
 		}
 
-		thisErr := s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+		thisErr := s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, job.DelayTime, ServerItemTTR, deps)
 		if thisErr != nil {
 			qerr = thisErr
 			break

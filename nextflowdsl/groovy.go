@@ -160,6 +160,10 @@ type evalAssignStmt struct {
 	expr Expr
 }
 
+type evalMultiAssignStmt struct {
+	expr MultiAssignExpr
+}
+
 type evalAugAssignStmt struct {
 	name string
 	op   string
@@ -274,6 +278,13 @@ func evalStatement(stmt any, scope map[string]any) (evalStatementResult, error) 
 		}
 
 		scope[typed.name] = cloneChannelValue(value)
+
+		return resultWithValue(value), nil
+	case evalMultiAssignStmt:
+		value, err := evalMultiAssignExpr(typed.expr, scope)
+		if err != nil {
+			return evalStatementResult{}, err
+		}
 
 		return resultWithValue(value), nil
 	case evalAugAssignStmt:
@@ -4753,8 +4764,7 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 				}
 			}
 
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
-				current.typ == tokenIdent && (current.lit == "case" || current.lit == "default") {
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && current.typ == tokenIdent && (current.lit == "case" || current.lit == "default") {
 				break
 			}
 
@@ -4777,8 +4787,51 @@ func (p *evalStatementParser) parseSwitchStmt() (any, error) {
 }
 
 func (p *evalStatementParser) parseAssignmentStmt(declare bool) (any, error) {
+	var decl token
 	if declare {
+		decl = p.current()
 		p.pos++
+
+		if !p.atEnd() && p.current().typ == tokenLParen {
+			open := p.current()
+
+			targetTokens, err := p.readWrappedTokens(tokenLParen, tokenRParen)
+			if err != nil {
+				return nil, err
+			}
+
+			if p.atEnd() || p.current().typ != tokenAssign {
+				return nil, errors.New("expected assignment operator")
+			}
+
+			assign := p.current()
+			p.pos++
+
+			exprTokens := trimDeclarationTokens(p.readStatementExprTokens())
+			if len(exprTokens) == 0 {
+				return nil, errors.New("expected expression")
+			}
+
+			multiAssignTokens := make([]token, 0, len(targetTokens)+4+len(exprTokens))
+			multiAssignTokens = append(multiAssignTokens, token{typ: tokenIdent, lit: "def", line: decl.line, col: decl.col, start: decl.start, end: decl.end})
+			multiAssignTokens = append(multiAssignTokens, token{typ: tokenLParen, lit: open.lit, line: open.line, col: open.col, start: open.start, end: open.end})
+			multiAssignTokens = append(multiAssignTokens, targetTokens...)
+			multiAssignTokens = append(multiAssignTokens, token{typ: tokenRParen, lit: ")", line: open.line, col: open.col, start: open.start, end: open.end})
+			multiAssignTokens = append(multiAssignTokens, token{typ: tokenAssign, lit: assign.lit, line: assign.line, col: assign.col, start: assign.start, end: assign.end})
+			multiAssignTokens = append(multiAssignTokens, exprTokens...)
+
+			expr, err := parseMultiAssignExprTokens(multiAssignTokens)
+			if err != nil {
+				return nil, err
+			}
+
+			multiAssign, ok := expr.(MultiAssignExpr)
+			if !ok {
+				return nil, errors.New("expected multi-assignment expression")
+			}
+
+			return evalMultiAssignStmt{expr: multiAssign}, nil
+		}
 	}
 
 	if p.atEnd() || p.current().typ != tokenIdent {
@@ -4898,8 +4951,7 @@ func (p *evalStatementParser) readStatementExprTokens() []token {
 
 	for p.pos < len(p.tokens) {
 		current := p.tokens[p.pos]
-		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
-			(current.typ == tokenNewline || current.typ == tokenSemicolon) {
+		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && (current.typ == tokenNewline || current.typ == tokenSemicolon) {
 			break
 		}
 

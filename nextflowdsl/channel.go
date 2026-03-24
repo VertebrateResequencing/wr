@@ -797,9 +797,7 @@ func parseNamedClosureEntries(operator ChannelOperator) ([]namedClosureEntry, er
 				}
 			}
 
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 &&
-				(current.typ == tokenNewline || current.typ == tokenSemicolon || current.typ == tokenEOF) {
-
+			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && (current.typ == tokenNewline || current.typ == tokenSemicolon || current.typ == tokenEOF) {
 				break
 			}
 

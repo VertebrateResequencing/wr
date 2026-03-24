@@ -24,7 +24,8 @@ and skips if `{` follows. Covering all 4 acceptance tests from
 D1. Test file: `config_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 2.2: E1 - Handle bare assignments in config parser [parallel with 2.1]
 
@@ -40,7 +41,8 @@ scope, skippable scope, nor bare assignment, return the existing
 tests from E1. Test file: `config_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

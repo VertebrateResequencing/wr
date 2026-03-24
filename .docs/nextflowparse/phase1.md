@@ -22,7 +22,8 @@ properties and 0 for index. Covering all 8 acceptance tests
 from A1. Test file: `translate_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.2: B1+C1 - Add scopes to skippedTopLevelConfigScopes
 
@@ -37,7 +38,8 @@ features. Covering all 16 acceptance tests from B1 and all 9
 acceptance tests from C1. Test file: `config_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 1.3: L1 - Add channel operators recurse and times
 
@@ -49,7 +51,8 @@ map in `parse.go`. They parse as standard channel operators
 tests from L1. Test file: `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

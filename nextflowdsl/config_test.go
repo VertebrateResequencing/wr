@@ -381,6 +381,181 @@ func TestParseConfig(t *testing.T) {
 	})
 }
 
+func TestParseConfigSkippedTopLevelConfigScopes(t *testing.T) {
+	Convey("ParseConfig handles Phase 1 Item 1.2 skipped top-level config scopes", t, func() {
+		testCases := []struct {
+			name          string
+			input         string
+			warning       string
+			expectedParam string
+			expectedValue any
+		}{
+			{
+				name:    "aws scopes are skipped with a warning",
+				input:   "aws { batch { cliPath = '/usr/bin/aws' } }",
+				warning: "skipping unsupported top-level config scope \"aws\"",
+			},
+			{name: "azure scopes parse without error", input: "azure { storage { accountName = 'x' } }"},
+			{name: "charliecloud scopes parse without error", input: "charliecloud { enabled = true }"},
+			{name: "fusion scopes parse without error", input: "fusion { enabled = true }"},
+			{name: "google scopes parse without error", input: "google { region = 'us-east1' }"},
+			{name: "k8s scopes parse without error", input: "k8s { namespace = 'default' }"},
+			{name: "lineage scopes parse without error", input: "lineage { enabled = true }"},
+			{name: "mail scopes parse without error", input: "mail { smtp { host = 'x' } }"},
+			{name: "nextflow enable scopes parse without error", input: "nextflow { enable { dsl = 2 } }"},
+			{name: "podman scopes parse without error", input: "podman { enabled = true }"},
+			{name: "sarus scopes parse without error", input: "sarus { enabled = true }"},
+			{name: "seqera scopes parse without error", input: "seqera { endpoint = 'https://x' }"},
+			{name: "shifter scopes parse without error", input: "shifter { enabled = true }"},
+			{name: "spack scopes parse without error", input: "spack { enabled = true }"},
+			{name: "workflow scopes parse without error", input: "workflow { onComplete { println 'done' } }"},
+			{
+				name:          "skipped scopes preserve params parsing",
+				input:         "params { x = 1 }\naws { batch { cliPath = '/bin/aws' } }",
+				expectedParam: "x",
+				expectedValue: 1,
+			},
+		}
+
+		for _, testCase := range testCases {
+			Convey(testCase.name, func() {
+				var (
+					cfg    *Config
+					err    error
+					stderr string
+				)
+
+				stderr = captureParseStderr(func() {
+					cfg, err = ParseConfig(strings.NewReader(testCase.input))
+				})
+
+				So(err, ShouldBeNil)
+				So(cfg, ShouldNotBeNil)
+
+				if testCase.warning != "" {
+					So(stderr, ShouldContainSubstring, testCase.warning)
+				}
+
+				if testCase.expectedParam != "" {
+					So(cfg.Params, ShouldContainKey, testCase.expectedParam)
+					So(cfg.Params[testCase.expectedParam], ShouldEqual, testCase.expectedValue)
+				}
+			})
+		}
+	})
+}
+
+func TestParseConfigNextflowFeatureFlags(t *testing.T) {
+	Convey("ParseConfig handles Phase 1 Item 1.2 nextflow enable and preview feature flags", t, func() {
+		testCases := []struct {
+			name          string
+			input         string
+			expectedParam string
+			expectedValue any
+		}{
+			{name: "nextflow enable dsl parses without error", input: "nextflow { enable { dsl = 2 } }"},
+			{name: "nextflow enable strict parses without error", input: "nextflow { enable { strict = true } }"},
+			{name: "nextflow enable moduleBinaries parses without error", input: "nextflow { enable { moduleBinaries = true } }"},
+			{name: "nextflow enable configProcessNamesValidation parses without error", input: "nextflow { enable { configProcessNamesValidation = true } }"},
+			{name: "nextflow preview output parses without error", input: "nextflow { preview { output = true } }"},
+			{name: "nextflow preview recursion parses without error", input: "nextflow { preview { recursion = true } }"},
+			{name: "nextflow preview topic parses without error", input: "nextflow { preview { topic = true } }"},
+			{name: "nextflow preview types parses without error", input: "nextflow { preview { types = true } }"},
+			{
+				name:          "nextflow feature flags preserve params parsing",
+				input:         "params { x = 1 }\nnextflow { enable { dsl = 2 } }",
+				expectedParam: "x",
+				expectedValue: 1,
+			},
+		}
+
+		for _, testCase := range testCases {
+			Convey(testCase.name, func() {
+				cfg, err := ParseConfig(strings.NewReader(testCase.input))
+
+				So(err, ShouldBeNil)
+				So(cfg, ShouldNotBeNil)
+
+				if testCase.expectedParam != "" {
+					So(cfg.Params, ShouldContainKey, testCase.expectedParam)
+					So(cfg.Params[testCase.expectedParam], ShouldEqual, testCase.expectedValue)
+				}
+			})
+		}
+	})
+}
+
+func TestParseConfigBareAssignments(t *testing.T) {
+	Convey("ParseConfig handles Phase 2 Item 2.2 bare top-level assignments", t, func() {
+		Convey("a single bare assignment parses without error", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader("cleanup = true"))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config assignment \"cleanup\"")
+		})
+
+		Convey("bare assignments preserve later params blocks", func() {
+			cfg, err := ParseConfig(strings.NewReader("cleanup = true ; params { x = 1 }"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Params, ShouldContainKey, "x")
+			So(cfg.Params["x"], ShouldEqual, 1)
+		})
+
+		Convey("multiple bare assignments separated by newlines parse without error", func() {
+			cfg, err := ParseConfig(strings.NewReader("resume = true\ncleanup = false"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+		})
+
+		Convey("multiline closure bare assignments preserve later params blocks", func() {
+			var (
+				cfg    *Config
+				err    error
+				stderr string
+			)
+
+			source := "cleanup = {\n  enabled = true\n}\nparams {\n  x = 1\n}"
+			stderr = captureParseStderr(func() {
+				cfg, err = ParseConfig(strings.NewReader(source))
+			})
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Params, ShouldContainKey, "x")
+			So(cfg.Params["x"], ShouldEqual, 1)
+			So(stderr, ShouldContainSubstring, "skipping unsupported top-level config assignment \"cleanup\"")
+		})
+
+		Convey("multiline map bare assignments preserve later params blocks", func() {
+			cfg, err := ParseConfig(strings.NewReader("settings = [\n  enabled: true,\n  nested: [x: 1]\n]\nparams {\n  x = 1\n}"))
+
+			So(err, ShouldBeNil)
+			So(cfg, ShouldNotBeNil)
+			So(cfg.Params, ShouldContainKey, "x")
+			So(cfg.Params["x"], ShouldEqual, 1)
+		})
+
+		Convey("unknown top-level scopes without assignments remain unsupported", func() {
+			_, err := ParseConfig(strings.NewReader("unknownScope { }"))
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "unsupported config section")
+		})
+	})
+}
+
 func TestParseConfigEnvScope(t *testing.T) {
 	Convey("ParseConfig handles G1 env scopes", t, func() {
 		Convey("env blocks populate Config.Env", func() {
@@ -673,6 +848,37 @@ func TestParseConfigExecutorScope(t *testing.T) {
 				"pollInterval": "30 sec",
 				"queueSize":    16,
 			})
+		})
+
+		Convey("executor-specific nested blocks are skipped without error", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { local { cpus = 4 } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldNotBeNil)
+			So(cfg.Executor, ShouldBeEmpty)
+		})
+
+		Convey("executor nested blocks preserve flat assignments", func() {
+			source := "executor { name = 'slurm' ; slurm { queue = 'x' } }"
+			cfg, err := ParseConfig(strings.NewReader(source))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldResemble, map[string]any{"name": "slurm"})
+		})
+
+		Convey("string-keyed executor nested blocks are skipped without error", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { '$local' { cpus = 8 } }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldNotBeNil)
+			So(cfg.Executor, ShouldBeEmpty)
+		})
+
+		Convey("flat executor assignments still parse without nesting", func() {
+			cfg, err := ParseConfig(strings.NewReader("executor { name = 'local' }"))
+
+			So(err, ShouldBeNil)
+			So(cfg.Executor, ShouldResemble, map[string]any{"name": "local"})
 		})
 	})
 }

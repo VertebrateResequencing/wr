@@ -65,6 +65,7 @@ type nextflowRunOptions struct {
 	paramAssignments    []string
 	runID               string
 	stubRun             bool
+	pendingHelper       bool
 	containerRuntime    string
 	containerRuntimeSet bool
 	follow              bool
@@ -122,6 +123,7 @@ func newNextflowRunCommand(options *nextflowRunOptions) *cobra.Command {
 	)
 	cmd.Flags().StringVar(&options.runID, "run-id", "", "explicit workflow run id")
 	cmd.Flags().BoolVar(&options.stubRun, "stub-run", false, "use stub section instead of script")
+	cmd.Flags().BoolVar(&options.pendingHelper, "pending-helper", false, "internal flag for pending follow helper jobs")
 	cmd.Flags().StringVar(
 		&options.containerRuntime,
 		"container-runtime",
@@ -142,6 +144,10 @@ func newNextflowRunCommand(options *nextflowRunOptions) *cobra.Command {
 		nextflowDefaultManagerTimeoutSecs,
 		"how long (seconds) to wait to get a reply from 'wr manager'",
 	)
+
+	if err := cmd.Flags().MarkHidden("pending-helper"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }
@@ -239,6 +245,13 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 		}
 	}()
 
+	if options.follow && !options.pendingHelper {
+		err = deleteNextflowPendingHelpers(jq, translateConfig.WorkflowName, translateConfig.RunID)
+		if err != nil {
+			return err
+		}
+	}
+
 	if err = addNextflowJobs(
 		jq,
 		nextflowRepGroupPrefix(translateConfig.WorkflowName, translateConfig.RunID),
@@ -254,7 +267,7 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 	}
 
 	if !options.follow && len(result.Pending) > 0 {
-		err = addNextflowPendingHelper(jq, workflowArg, options, translateConfig, containerRuntime)
+		err = addNextflowPendingHelper(jq, workflowArg, options, translateConfig, result.Jobs, containerRuntime)
 		if err != nil {
 			return err
 		}
@@ -262,6 +275,17 @@ func runNextflowWorkflow(outputWriter io.Writer, workflowArg string, options nex
 
 	if !options.follow {
 		return nil
+	}
+
+	if options.pendingHelper {
+		return runNextflowPendingHelperOnce(
+			jq,
+			workflowArg,
+			options,
+			result.Pending,
+			translateConfig,
+			containerRuntime,
+		)
 	}
 
 	return followNextflowWorkflow(
@@ -411,6 +435,33 @@ func nextflowWorkflowName(path string) string {
 	return trimmed
 }
 
+func deleteNextflowPendingHelpers(jq nextflowJobManager, workflowName, runID string) error {
+	helperJobs, err := jq.GetByRepGroupMatch(
+		nextflowPendingHelperRepGroupPrefix(workflowName, runID),
+		jobqueue.RepGroupMatchPrefix,
+		0,
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		return err
+	}
+
+	if len(helperJobs) == 0 {
+		return nil
+	}
+
+	jes := make([]*jobqueue.JobEssence, 0, len(helperJobs))
+	for _, job := range helperJobs {
+		jes = append(jes, &jobqueue.JobEssence{JobKey: job.Key()})
+	}
+
+	_, err = jq.Delete(jes)
+
+	return err
+}
+
 func addNextflowJobs(jq nextflowJobManager, repGroupPrefix string, jobs []*jobqueue.Job) error {
 	jobsToAdd, err := nextflowResumeJobs(jq, repGroupPrefix, jobs)
 	if err != nil {
@@ -488,9 +539,7 @@ func nextflowResumeMatch(existingJobs []*jobqueue.Job, plannedJob *jobqueue.Job)
 	if len(existingJobs) == 1 {
 		existingJob := existingJobs[0]
 		if existingJob.CwdMatters || plannedJob.CwdMatters {
-			if existingJob.CwdMatters &&
-				plannedJob.CwdMatters &&
-				filepath.Clean(existingJob.Cwd) == filepath.Clean(plannedJob.Cwd) {
+			if existingJob.CwdMatters && plannedJob.CwdMatters && filepath.Clean(existingJob.Cwd) == filepath.Clean(plannedJob.Cwd) {
 				return existingJob, nil
 			}
 
@@ -990,14 +1039,89 @@ func nextflowFinishLimitGroup(limitGroup string) string {
 	return ""
 }
 
+func nextflowPendingHelperContinuationRepGroup(workflowName, runID string) string {
+	return nextflowPendingHelperRepGroupPrefix(workflowName, runID) + "follow." + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func runNextflowPendingHelperOnce(
+	jq nextflowJobManager,
+	workflowArg string,
+	options nextflowRunOptions,
+	pending []*nextflowdsl.PendingStage,
+	tc nextflowdsl.TranslateConfig,
+	containerRuntime string,
+) error {
+	repGroupPrefix := nextflowRepGroupPrefix(tc.WorkflowName, tc.RunID)
+
+	completeJobs, buriedJobs, incompleteJobs, err := nextflowWorkflowJobs(jq, repGroupPrefix)
+	if err != nil {
+		return err
+	}
+
+	if len(buriedJobs) > 0 {
+		return fmt.Errorf("workflow %s failed with %d buried job(s)", tc.RunID, len(buriedJobs))
+	}
+
+	remaining := make([]*nextflowdsl.PendingStage, 0, len(pending))
+	for _, stage := range pending {
+		completed, ready, completedErr := nextflowdsl.CompletedJobsForPending(stage, completeJobs, incompleteJobs)
+		if completedErr != nil {
+			return completedErr
+		}
+
+		if !ready {
+			remaining = append(remaining, stage)
+
+			continue
+		}
+
+		jobs, translateErr := nextflowdsl.TranslatePending(stage, completed, tc)
+		if translateErr != nil {
+			return translateErr
+		}
+
+		if len(jobs) == 0 {
+			if skipErr := nextflowdsl.MarkPendingStageSkipped(stage, pending); skipErr != nil {
+				return skipErr
+			}
+
+			continue
+		}
+
+		if addErr := addNextflowJobs(jq, repGroupPrefix, jobs); addErr != nil {
+			return addErr
+		}
+	}
+
+	if len(remaining) == 0 {
+		return nil
+	}
+
+	_, buriedJobs, incompleteJobs, err = nextflowWorkflowJobs(jq, repGroupPrefix)
+	if err != nil {
+		return err
+	}
+
+	if len(buriedJobs) > 0 {
+		return fmt.Errorf("workflow %s failed with %d buried job(s)", tc.RunID, len(buriedJobs))
+	}
+
+	if len(incompleteJobs) == 0 {
+		return fmt.Errorf("workflow %s has unresolved pending stages", tc.RunID)
+	}
+
+	return addNextflowPendingHelper(jq, workflowArg, options, tc, incompleteJobs, containerRuntime)
+}
+
 func addNextflowPendingHelper(
 	jq nextflowJobManager,
 	workflowArg string,
 	options nextflowRunOptions,
 	tc nextflowdsl.TranslateConfig,
+	activeJobs []*jobqueue.Job,
 	containerRuntime string,
 ) error {
-	helper := nextflowPendingHelperJob(workflowArg, options, tc, containerRuntime)
+	helper := nextflowPendingHelperJob(workflowArg, options, tc, activeJobs, containerRuntime)
 
 	return addNextflowJobs(jq, nextflowPendingHelperRepGroupPrefix(tc.WorkflowName, tc.RunID), []*jobqueue.Job{helper})
 }
@@ -1010,15 +1134,22 @@ func nextflowPendingHelperJob(
 	workflowArg string,
 	options nextflowRunOptions,
 	tc nextflowdsl.TranslateConfig,
+	_ []*jobqueue.Job,
 	containerRuntime string,
 ) *jobqueue.Job {
+	repGroup := nextflowPendingHelperRepGroup(tc.WorkflowName, tc.RunID)
+	if options.pendingHelper {
+		repGroup = nextflowPendingHelperContinuationRepGroup(tc.WorkflowName, tc.RunID)
+	}
+
 	return &jobqueue.Job{
 		Cmd:          nextflowPendingHelperCommand(workflowArg, options, tc.RunID, containerRuntime),
 		Cwd:          tc.Cwd,
 		CwdMatters:   true,
-		RepGroup:     nextflowPendingHelperRepGroup(tc.WorkflowName, tc.RunID),
+		RepGroup:     repGroup,
 		ReqGroup:     "nextflow-follow-helper",
 		Requirements: nextflowPendingHelperRequirements(),
+		DelayTime:    options.pollInterval,
 		Override:     uint8(nextflowPendingHelperOverride),
 	}
 }
@@ -1043,6 +1174,7 @@ func nextflowPendingHelperCommand(workflowArg string, options nextflowRunOptions
 		"nextflow",
 		"run",
 		"--follow",
+		"--pending-helper",
 		"--run-id",
 		runID,
 		"--poll-interval",

@@ -26,7 +26,8 @@ all 3 acceptance tests from H1. Test file:
 `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.2: J1 - Deprecated loop skipping [parallel with 4.1, 4.3]
 
@@ -41,7 +42,8 @@ using brace-counting. No AST nodes needed. Covering all 4
 acceptance tests from J1. Test file: `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.3: K1 - & parallel operator desugar [parallel with 4.1, 4.2]
 
@@ -57,7 +59,8 @@ all 4 acceptance tests from K1. Test file:
 `parse_e1_test.go`.
 
 - [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

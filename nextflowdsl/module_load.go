@@ -34,6 +34,22 @@ import (
 	"strings"
 )
 
+func declarationFromTupleElement(element *TupleElement) *Declaration {
+	if element == nil {
+		return nil
+	}
+
+	return &Declaration{
+		Kind:      element.Kind,
+		Name:      element.Name,
+		Expr:      element.Expr,
+		Raw:       element.Raw,
+		Emit:      element.Emit,
+		StageName: element.StageName,
+		StageAs:   element.StageAs,
+	}
+}
+
 // LoadWorkflowFile parses a workflow file and resolves any imported modules
 // into a single merged AST ready for translation.
 func LoadWorkflowFile(path string, remoteResolver ModuleResolver) (*Workflow, error) {
@@ -465,42 +481,64 @@ func cloneProcess(proc *Process, name string) *Process {
 func cloneDeclarations(declarations []*Declaration) []*Declaration {
 	cloned := make([]*Declaration, 0, len(declarations))
 	for _, declaration := range declarations {
-		if declaration == nil {
+		clonedDeclaration := cloneDeclaration(declaration)
+		if clonedDeclaration == nil {
 			continue
 		}
 
-		cloned = append(cloned, &Declaration{
-			Kind:     declaration.Kind,
-			Name:     declaration.Name,
-			Expr:     declaration.Expr,
-			Raw:      declaration.Raw,
-			Emit:     declaration.Emit,
-			Each:     declaration.Each,
-			Optional: declaration.Optional,
-			Elements: cloneTupleElements(declaration.Elements),
-		})
+		cloned = append(cloned, clonedDeclaration)
 	}
 
 	return cloned
 }
 
+func cloneDeclaration(declaration *Declaration) *Declaration {
+	if declaration == nil {
+		return nil
+	}
+
+	return &Declaration{
+		Kind:      declaration.Kind,
+		Name:      declaration.Name,
+		Expr:      declaration.Expr,
+		Raw:       declaration.Raw,
+		Emit:      declaration.Emit,
+		StageName: declaration.StageName,
+		StageAs:   declaration.StageAs,
+		Each:      declaration.Each,
+		Optional:  declaration.Optional,
+		Elements:  cloneTupleElements(declaration.Elements),
+	}
+}
+
 func cloneTupleElements(elements []*TupleElement) []*TupleElement {
 	cloned := make([]*TupleElement, 0, len(elements))
 	for _, element := range elements {
-		if element == nil {
+		clonedElement := cloneTupleElement(element)
+		if clonedElement == nil {
 			continue
 		}
 
-		cloned = append(cloned, &TupleElement{
-			Kind: element.Kind,
-			Name: element.Name,
-			Expr: element.Expr,
-			Raw:  element.Raw,
-			Emit: element.Emit,
-		})
+		cloned = append(cloned, clonedElement)
 	}
 
 	return cloned
+}
+
+func cloneTupleElement(element *TupleElement) *TupleElement {
+	if element == nil {
+		return nil
+	}
+
+	return &TupleElement{
+		Kind:      element.Kind,
+		Name:      element.Name,
+		Expr:      element.Expr,
+		Raw:       element.Raw,
+		Emit:      element.Emit,
+		StageName: element.StageName,
+		StageAs:   element.StageAs,
+	}
 }
 
 func cloneEnv(env map[string]string) map[string]string {

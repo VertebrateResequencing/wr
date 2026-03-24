@@ -613,8 +613,101 @@ func TestTranslateN1DynamicDirectiveClosures(t *testing.T) {
 	})
 }
 
+func TestTranslateA1DefaultDirectiveTaskPlaceholders(t *testing.T) {
+	Convey("defaultDirectiveTask exposes A1 task placeholders", t, func() {
+		task := defaultDirectiveTask()
+
+		Convey("task.hash resolves to an empty string", func() {
+			resolved, err := resolveExprPath("task", "hash", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, "")
+		})
+
+		Convey("task.index resolves to zero", func() {
+			resolved, err := resolveExprPath("task", "index", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, 0)
+		})
+
+		Convey("task.name resolves to an empty string", func() {
+			resolved, err := resolveExprPath("task", "name", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, "")
+		})
+
+		Convey("task.previousException resolves to an empty string", func() {
+			resolved, err := resolveExprPath("task", "previousException", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, "")
+		})
+
+		Convey("task.previousTrace resolves to an empty string", func() {
+			resolved, err := resolveExprPath("task", "previousTrace", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, "")
+		})
+
+		Convey("task.process resolves to an empty string", func() {
+			resolved, err := resolveExprPath("task", "process", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, "")
+		})
+
+		Convey("task.workDir resolves to an empty string", func() {
+			resolved, err := resolveExprPath("task", "workDir", map[string]any{"task": task})
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldEqual, "")
+		})
+
+		Convey("existing directive task defaults are preserved", func() {
+			So(task["attempt"], ShouldEqual, 1)
+			So(task["cpus"], ShouldEqual, 1)
+			So(task["memory"], ShouldEqual, 0)
+			So(task["exitStatus"], ShouldEqual, 0)
+		})
+	})
+}
+
 func TestTranslateTupleOutputPathBinding(t *testing.T) {
 	Convey("Translate wires tuple output path elements into downstream translation", t, func() {
+		Convey("tuple flattening and tuple-element declaration reconstruction preserve stage qualifiers", func() {
+			proc := &Process{
+				Input: []*Declaration{{
+					Kind: "tuple",
+					Elements: []*TupleElement{
+						{Kind: "val", Name: "id"},
+						{Kind: "path", Name: "reads", StageName: "reads_*.fq.gz", StageAs: "staged/reads.fastq.gz", Emit: "reads_out"},
+					},
+				}},
+			}
+
+			flat := flattenedInputDeclarations(proc)
+
+			So(flat, ShouldHaveLength, 2)
+			So(flat[1], ShouldNotBeNil)
+			So(flat[1].Kind, ShouldEqual, "path")
+			So(flat[1].Name, ShouldEqual, "reads")
+			So(flat[1].Emit, ShouldEqual, "reads_out")
+			So(flat[1].StageName, ShouldEqual, "reads_*.fq.gz")
+			So(flat[1].StageAs, ShouldEqual, "staged/reads.fastq.gz")
+
+			reconstructed := declarationFromTupleElement(proc.Input[0].Elements[1])
+
+			So(reconstructed, ShouldNotBeNil)
+			So(reconstructed.Kind, ShouldEqual, "path")
+			So(reconstructed.Name, ShouldEqual, "reads")
+			So(reconstructed.Emit, ShouldEqual, "reads_out")
+			So(reconstructed.StageName, ShouldEqual, "reads_*.fq.gz")
+			So(reconstructed.StageAs, ShouldEqual, "staged/reads.fastq.gz")
+		})
+
 		Convey("tuple outputs with resolved path elements expose those paths to downstream tuple inputs", func() {
 			proc := &Process{
 				Name:   "A",

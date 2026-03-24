@@ -293,9 +293,7 @@ func normalizeGitHubRepoSpec(spec string) (string, error) {
 		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
 
-	if !strings.EqualFold(parsed.Host, "github.com") ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-
+	if !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("unsupported GitHub module spec %q", spec)
 	}
 
