@@ -568,19 +568,15 @@ func (s *Server) matchingClientSubscriptionsForJob(key, repGroup string) []*serv
 	return subs
 }
 
-func subscriptionUpdateCandidate(from, to JobState) bool {
-	return to == JobStateComplete || to == JobStateBuried || from == JobStateRunning
+func subscriptionUpdateCandidate(_, to JobState) bool {
+	return to == JobStateComplete || to == JobStateBuried
 }
 
-func subscriptionUpdateStateFromStatus(status JStatus, from, to JobState) (JobState, bool) {
+func subscriptionUpdateStateFromStatus(_ JStatus, _, to JobState) (JobState, bool) {
 	switch to {
 	case JobStateComplete, JobStateBuried:
 		return to, true
 	default:
-	}
-
-	if from == JobStateRunning && status.State == JobStateLost {
-		return JobStateLost, true
 	}
 
 	return "", false
@@ -603,6 +599,19 @@ func jobUpdateFromStatus(status JStatus, state JobState, started, ended *int64) 
 		State:      state,
 		Exitcode:   status.Exitcode,
 		FailReason: status.FailReason,
+	}
+}
+
+func jobUpdateFromLockedJob(job *Job, state JobState) *JobUpdate {
+	return &JobUpdate{
+		Started:    jobUnixNano(job.StartTime),
+		Ended:      jobUnixNano(job.EndTime),
+		Kind:       jobUpdateKind(state),
+		Key:        job.Key(),
+		RepGroup:   job.RepGroup,
+		State:      state,
+		Exitcode:   job.Exitcode,
+		FailReason: job.FailReason,
 	}
 }
 
@@ -2031,9 +2040,11 @@ func (s *Server) createQueue(ctx context.Context) {
 
 		job.Lock()
 		if !job.StartTime.IsZero() && !job.Exited {
+			wasLost := job.Lost
 			job.Lost = true
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
+			lostUpdate := jobUpdateFromLockedJob(job, JobStateLost)
 
 			// we don't test recovered jobs are dead because they might have
 			// exited while the server wasn't running, and we want the existing
@@ -2045,6 +2056,10 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobPID := job.Pid
 				serverLostJobCheckTimeout := ServerLostJobCheckTimeout
 				job.Unlock()
+
+				if !wasLost {
+					s.enqueueSubscriptionUpdate(lostUpdate)
+				}
 
 				go func() {
 					if !killCalled && !s.recoveredRunningJobs[jobKey] &&

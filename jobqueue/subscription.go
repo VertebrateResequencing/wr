@@ -85,18 +85,19 @@ type JobUpdate struct {
 
 // Subscription is a client-side handle for job completion updates.
 type Subscription struct {
-	client   *Client
-	sock     mangos.Socket
-	ch       codec.Handle
-	updates  chan *JobUpdate
-	stop     chan struct{}
-	closed   chan struct{}
-	id       string
-	dialAddr string
-	stopOnce sync.Once
-	doneOnce sync.Once
-	errMu    sync.RWMutex
-	err      error
+	client    *Client
+	sock      mangos.Socket
+	ch        codec.Handle
+	updates   chan *JobUpdate
+	stop      chan struct{}
+	closed    chan struct{}
+	id        string
+	dialAddr  string
+	stopOnce  sync.Once
+	unsubOnce sync.Once
+	doneOnce  sync.Once
+	errMu     sync.RWMutex
+	err       error
 }
 
 func newSubscription(c *Client, sock mangos.Socket, id, dialAddr string) *Subscription {
@@ -130,10 +131,24 @@ func (s *Subscription) Err() error {
 func (s *Subscription) Unsubscribe() {
 	s.requestStop(nil)
 
-	if _, err := s.client.request(&clientRequest{Method: "unsubscribe", SubscriptionID: s.id}); err != nil {
+	if err := s.unsubscribeServer(); err != nil {
 		s.finish(err)
 	}
 
+	s.waitUntilClosed()
+}
+
+func (s *Subscription) unsubscribeServer() error {
+	var unsubErr error
+
+	s.unsubOnce.Do(func() {
+		_, unsubErr = s.client.request(&clientRequest{Method: "unsubscribe", SubscriptionID: s.id})
+	})
+
+	return unsubErr
+}
+
+func (s *Subscription) waitUntilClosed() {
 	select {
 	case <-s.closed:
 	case <-time.After(time.Second):
@@ -143,7 +158,13 @@ func (s *Subscription) Unsubscribe() {
 func (s *Subscription) stopWhenContextDone(ctx context.Context) {
 	select {
 	case <-ctx.Done():
-		s.requestStop(ctx.Err())
+		ctxErr := ctx.Err()
+		s.requestStop(ctxErr)
+
+		if err := s.unsubscribeServer(); err != nil {
+			s.setErr(errors.Join(ctxErr, err))
+			s.finish(err)
+		}
 	case <-s.closed:
 	}
 }
@@ -261,15 +282,21 @@ func (s *Subscription) publishClientUpdate(ctx context.Context, update *JobUpdat
 
 func (s *Subscription) requestStop(err error) {
 	s.stopOnce.Do(func() {
-		if err != nil {
-			s.errMu.Lock()
-			s.err = err
-			s.errMu.Unlock()
-		}
+		s.setErr(err)
 
 		close(s.stop)
 		_ = s.sock.Close()
 	})
+}
+
+func (s *Subscription) setErr(err error) {
+	if err == nil {
+		return
+	}
+
+	s.errMu.Lock()
+	s.err = err
+	s.errMu.Unlock()
 }
 
 func (s *Subscription) isStopping() bool {

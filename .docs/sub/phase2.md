@@ -22,8 +22,8 @@ long-poll socket and loop in `jobqueue/subscription.go`. Deliver one
 server-side queue (`jobqueue/server.go`). Covering all 4 acceptance tests
 from B1. Builds on the Phase 1 registry/handlers.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: D1 - Context-bound and explicit Unsubscribe teardown
 
@@ -35,5 +35,5 @@ the dedicated socket, drops server registration, idempotent, closes
 `Updates()` with nil `Err()`), and `Subscription.Err()`/`Updates()`
 semantics. Covering all 4 acceptance tests from D1. Depends on item 2.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
