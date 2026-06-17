@@ -24,5 +24,5 @@ the unfinished key(s). Catch-up ensures a job finishing between add and
 subscribe is counted. Files: `jobqueue/subscription.go`. Covering all 6
 acceptance tests from E1. Builds on Phases 1-6.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

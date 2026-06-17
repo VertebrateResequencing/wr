@@ -30,7 +30,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -600,6 +602,32 @@ func subscriptionScope(cr *clientRequest) ([]string, string) {
 	return keys, cr.Job.RepGroup
 }
 
+func addAndWaitError(
+	ctx context.Context,
+	waitErr error,
+	keys []string,
+	seen map[string]JobState,
+	fetchErr error,
+) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		waitErr = fmt.Errorf("%w; unfinished job keys: %s", ctxErr, strings.Join(unfinishedKeys(keys, seen), ", "))
+	}
+
+	return errors.Join(waitErr, fetchErr)
+}
+
+func unfinishedKeys(keys []string, seen map[string]JobState) []string {
+	unfinished := make([]string, 0, len(keys)-len(seen))
+
+	for _, key := range keys {
+		if _, ok := seen[key]; !ok {
+			unfinished = append(unfinished, key)
+		}
+	}
+
+	return unfinished
+}
+
 func configureSubscriptionSocket(sock mangos.Socket, timeout time.Duration) error {
 	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
 		return err
@@ -641,6 +669,10 @@ func collectDistinctTerminalKeys(ctx context.Context, updates <-chan *JobUpdate,
 		select {
 		case update, ok := <-updates:
 			if !ok {
+				if err := ctx.Err(); err != nil {
+					return seen, err
+				}
+
 				return seen, ErrSubscriptionClosed
 			}
 
@@ -661,6 +693,78 @@ func terminalKeySet(keys []string) map[string]struct{} {
 	}
 
 	return wanted
+}
+
+func distinctKeysInOrder(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	distinct := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		distinct = append(distinct, key)
+	}
+
+	return distinct
+}
+
+// AddAndWait adds jobs, then blocks until every just-added job reaches a
+// terminal state. Returned jobs are re-fetched with stdout/stderr populated
+// where wr stores them. Complete and buried jobs are both successful returns;
+// ctx cancellation returns the terminal jobs gathered so far plus an error
+// naming the unfinished keys.
+func (c *Client) AddAndWait(ctx context.Context, jobs []*Job, envVars []string, ignoreComplete bool) ([]*Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	keys, err := c.AddAndReturnIDs(jobs, envVars, ignoreComplete)
+	if err != nil {
+		return nil, err
+	}
+
+	keys = distinctKeysInOrder(keys)
+	if len(keys) == 0 {
+		return []*Job{}, nil
+	}
+
+	sub, err := c.SubscribeToJobKeys(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer sub.Unsubscribe()
+
+	seen, err := collectDistinctTerminalKeys(ctx, sub.Updates(), keys)
+	terminalJobs, fetchErr := c.fetchSeenTerminalJobs(keys, seen)
+	if err != nil {
+		return terminalJobs, addAndWaitError(ctx, err, keys, seen, fetchErr)
+	}
+
+	return terminalJobs, fetchErr
+}
+
+func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) ([]*Job, error) {
+	jobs := make([]*Job, 0, len(seen))
+
+	for _, key := range keys {
+		if _, ok := seen[key]; !ok {
+			continue
+		}
+
+		job, err := c.GetByEssence(&JobEssence{JobKey: key}, true, false)
+		if err != nil {
+			return jobs, err
+		}
+
+		if job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs, nil
 }
 
 func (c *Client) subscriptionDialAddr() string {

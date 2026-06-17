@@ -44,6 +44,377 @@ import (
 	"nanomsg.org/go-mangos"
 )
 
+type addAndWaitResult struct {
+	jobs []*Job
+	err  error
+}
+
+func receiveAddAndWaitResult(resultCh <-chan addAndWaitResult, timeout time.Duration) addAndWaitResult {
+	select {
+	case result := <-resultCh:
+		return result
+	case <-time.After(timeout):
+		return addAndWaitResult{err: fmt.Errorf("timed out waiting for AddAndWait")}
+	}
+}
+
+func TestClientAddAndWait(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("AddAndWait returns all just-added complete and buried jobs by key", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		input := subscriptionTestJobs("subscription-e1-mixed", standardReqs, 3)
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		archiveNextAddAndWaitJob(runner)
+		buryNextAddAndWaitJob(runner, 12, "subscription e1 buried", "subscription e1 stderr")
+		archiveNextAddAndWaitJob(runner)
+
+		result := receiveAddAndWaitResult(resultCh, 6*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 3)
+		So(addAndWaitStatesByKey(result.jobs, input), ShouldResemble, []JobState{
+			JobStateComplete,
+			JobStateBuried,
+			JobStateComplete,
+		})
+		So(addAndWaitExitCodesByKey(result.jobs, input), ShouldResemble, []int{0, 12, 0})
+	})
+
+	Convey("AddAndWait returns a successful complete job with exit code 0", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		input := subscriptionTestJobs("subscription-e1-complete", standardReqs, 1)
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		archiveNextAddAndWaitJob(runner)
+
+		result := receiveAddAndWaitResult(resultCh, 6*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
+		So(result.jobs[0].Exitcode, ShouldEqual, 0)
+	})
+
+	Convey("AddAndWait returns a buried job with non-zero exit code and inline stderr without a Go error", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		input := subscriptionTestJobs("subscription-e1-buried", standardReqs, 1)
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		buryNextAddAndWaitJob(runner, 29, "subscription e1 failed", "subscription e1 failed stderr")
+
+		result := receiveAddAndWaitResult(resultCh, 6*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].State, ShouldEqual, JobStateBuried)
+		So(result.jobs[0].Exitcode, ShouldEqual, 29)
+
+		stderr, err := result.jobs[0].StdErr()
+		So(err, ShouldBeNil)
+		So(stderr, ShouldContainSubstring, "subscription e1 failed stderr")
+	})
+
+	Convey("AddAndWait catch-up counts a job that completes before its internal subscription", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		workerDone := archiveNextAddAndWaitJobAsync(runner)
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		input := subscriptionTestJobs("subscription-e1-catch-up", standardReqs, 1)
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		So(receiveAsyncError(workerDone, 2*time.Second), ShouldBeNil)
+
+		result := receiveAddAndWaitResult(resultCh, 6*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
+		So(result.jobs[0].Key(), ShouldEqual, input[0].Key())
+	})
+
+	Convey("AddAndWait deadline returns gathered jobs and names unfinished lost keys", t, func() {
+		restore := overrideSubscriptionTimings(50 * time.Millisecond)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+
+		input := subscriptionTestJobs("subscription-e1-deadline", standardReqs, 2)
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		archiveNextAddAndWaitJob(runner)
+		_ = startNextAddAndWaitJob(runner)
+
+		result := receiveAddAndWaitResult(resultCh, time.Second)
+		So(errors.Is(result.err, context.DeadlineExceeded), ShouldBeTrue)
+		So(result.err.Error(), ShouldContainSubstring, input[1].Key())
+		So(result.err.Error(), ShouldNotContainSubstring, input[0].Key())
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].Key(), ShouldEqual, input[0].Key())
+		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
+	})
+
+	Convey("AddAndWait ignores a lost update and waits for the later terminal event", t, func() {
+		restore := overrideSubscriptionTimings(50 * time.Millisecond)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		input := subscriptionTestJobs("subscription-e1-lost-then-complete", standardReqs, 1)
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		job := startNextAddAndWaitJob(runner)
+		time.Sleep(200 * time.Millisecond)
+
+		select {
+		case result := <-resultCh:
+			So(result.err, ShouldNotBeNil)
+			So("AddAndWait returned before the terminal event", ShouldBeBlank)
+		default:
+		}
+
+		So(runner.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		result := receiveAddAndWaitResult(resultCh, 3*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
+		So(result.jobs[0].Key(), ShouldEqual, input[0].Key())
+	})
+}
+
+func archiveNextAddAndWaitJob(jq *Client) {
+	job := startNextAddAndWaitJob(jq)
+	So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+}
+
+func startNextAddAndWaitJob(jq *Client) *Job {
+	job, err := reserveAndStartAddAndWaitJob(jq)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+
+	if job == nil {
+		return &Job{}
+	}
+
+	return job
+}
+
+func reserveAndStartAddAndWaitJob(jq *Client) (*Job, error) {
+	job, err := jq.Reserve(2 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	if job == nil {
+		return nil, fmt.Errorf("reserve returned no job")
+	}
+
+	if err = jq.Started(job, os.Getpid()); err != nil {
+		return nil, err
+	}
+
+	return job, nil
+}
+
+func buryNextAddAndWaitJob(jq *Client, exitCode int, failReason string, stderr string) {
+	job := startNextAddAndWaitJob(jq)
+	endState := &JobEndState{
+		Exited:   true,
+		Exitcode: exitCode,
+		EndTime:  time.Now(),
+		Stderr:   compressStd([]byte(stderr)),
+	}
+
+	So(jq.Bury(job, endState, failReason), ShouldBeNil)
+}
+
+func addAndWaitStatesByKey(got []*Job, input []*Job) []JobState {
+	byKey := addAndWaitJobsByKey(got)
+	states := make([]JobState, 0, len(input))
+
+	for _, job := range input {
+		if gotJob := byKey[job.Key()]; gotJob != nil {
+			states = append(states, gotJob.State)
+		} else {
+			states = append(states, JobState("missing"))
+		}
+	}
+
+	return states
+}
+
+func addAndWaitJobsByKey(jobs []*Job) map[string]*Job {
+	byKey := make(map[string]*Job, len(jobs))
+
+	for _, job := range jobs {
+		byKey[job.Key()] = job
+	}
+
+	return byKey
+}
+
+func addAndWaitExitCodesByKey(got []*Job, input []*Job) []int {
+	byKey := addAndWaitJobsByKey(got)
+	exitCodes := make([]int, 0, len(input))
+
+	for _, job := range input {
+		if gotJob := byKey[job.Key()]; gotJob != nil {
+			exitCodes = append(exitCodes, gotJob.Exitcode)
+		} else {
+			exitCodes = append(exitCodes, -999999)
+		}
+	}
+
+	return exitCodes
+}
+
+func archiveNextAddAndWaitJobAsync(jq *Client) <-chan error {
+	done := make(chan error, 1)
+
+	go func() {
+		job, err := reserveAndStartAddAndWaitJob(jq)
+		if err != nil {
+			done <- err
+
+			return
+		}
+
+		done <- jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+	}()
+
+	return done
+}
+
+func receiveAsyncError(done <-chan error, timeout time.Duration) error {
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("timed out waiting for async job driver")
+	}
+}
+
+func addAndWaitAsync(ctx context.Context, jq *Client, jobs []*Job) <-chan addAndWaitResult {
+	resultCh := make(chan addAndWaitResult, 1)
+
+	go func() {
+		got, err := jq.AddAndWait(ctx, jobs, envVars, true)
+		resultCh <- addAndWaitResult{jobs: got, err: err}
+	}()
+
+	return resultCh
+}
+
 func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 	if runnermode || servermode {
 		return
