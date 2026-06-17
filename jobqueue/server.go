@@ -349,6 +349,7 @@ type serverSubscription struct {
 	keys           map[string]struct{}
 	repGroupStates map[string]JobState
 	queue          chan *JobUpdate
+	deliveryQueue  chan *JobUpdate
 	done           chan struct{}
 	repGroup       string
 	once           sync.Once
@@ -367,13 +368,18 @@ func newServerSubscription(keys []string, repGroup string, repGroupKeys []string
 		repGroupStates[key] = ""
 	}
 
-	return &serverSubscription{
+	sub := &serverSubscription{
 		keys:           keySet,
 		repGroupStates: repGroupStates,
 		queue:          make(chan *JobUpdate, serverSubscriptionQueueSize),
+		deliveryQueue:  make(chan *JobUpdate, serverSubscriptionDeliveryQueueSize(len(keySet), len(repGroupStates))),
 		done:           make(chan struct{}),
 		repGroup:       repGroup,
 	}
+
+	go sub.deliverQueuedUpdates()
+
+	return sub
 }
 
 func (s *serverSubscription) matchesKey(key string) bool {
@@ -405,7 +411,7 @@ func (s *serverSubscription) enqueue(update *JobUpdate) bool {
 	}
 }
 
-func (s *serverSubscription) tryEnqueue(update *JobUpdate) bool {
+func (s *serverSubscription) deliver(update *JobUpdate) bool {
 	select {
 	case <-s.done:
 		return false
@@ -413,12 +419,23 @@ func (s *serverSubscription) tryEnqueue(update *JobUpdate) bool {
 	}
 
 	select {
-	case s.queue <- update:
+	case s.deliveryQueue <- update:
 		return true
 	case <-s.done:
 		return false
-	default:
-		return false
+	}
+}
+
+func (s *serverSubscription) deliverQueuedUpdates() {
+	for {
+		select {
+		case update := <-s.deliveryQueue:
+			if !s.enqueue(update) {
+				return
+			}
+		case <-s.done:
+			return
+		}
 	}
 }
 
@@ -694,16 +711,8 @@ func (s *Server) enqueueSubscriptionUpdate(update *JobUpdate) {
 }
 
 func (s *Server) enqueueSubscriptionDeliveries(deliveries []repGroupSubscriptionUpdate) {
-	blocked := make([]repGroupSubscriptionUpdate, 0)
-
 	for _, delivery := range deliveries {
-		if !delivery.sub.tryEnqueue(delivery.update) {
-			blocked = append(blocked, delivery)
-		}
-	}
-
-	for _, delivery := range blocked {
-		go delivery.sub.enqueue(delivery.update)
+		delivery.sub.deliver(delivery.update)
 	}
 }
 
@@ -3048,6 +3057,10 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	}
 
 	return jobs
+}
+
+func serverSubscriptionDeliveryQueueSize(keyCount, repGroupKeyCount int) int {
+	return max(serverSubscriptionQueueSize, 2*keyCount+repGroupKeyCount+1)
 }
 
 func addRepGroupAggregateState(update *JobUpdate, state JobState) bool {

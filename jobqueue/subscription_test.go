@@ -26,13 +26,17 @@
 package jobqueue
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -579,6 +583,31 @@ func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
 		return
 	}
 
+	Convey("A full subscriber parks one delivery worker instead of one goroutine per blocked event", t, func() {
+		total := serverSubscriptionQueueSize + 16
+		keys := subscriptionTestKeys("subscription-d2-worker", total)
+		sub := newServerSubscription(keys, "", nil)
+		defer sub.close()
+
+		deliveries := make([]repGroupSubscriptionUpdate, 0, total)
+		for _, key := range keys {
+			deliveries = append(deliveries, repGroupSubscriptionUpdate{
+				sub: sub,
+				update: &JobUpdate{
+					Kind:  JobUpdateTerminal,
+					Key:   key,
+					State: JobStateComplete,
+				},
+			})
+		}
+
+		before := subscriptionEnqueueGoroutines()
+		(&Server{}).enqueueSubscriptionDeliveries(deliveries)
+
+		So(serverSubscriptionQueueDepthBecomes(sub, serverSubscriptionQueueSize, time.Second), ShouldBeTrue)
+		So(maxSubscriptionEnqueueGoroutines(100*time.Millisecond), ShouldBeLessThanOrEqualTo, before+1)
+	})
+
 	Convey("A full subscriber does not stall a peer receiving many terminal updates", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
@@ -689,6 +718,16 @@ func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
 		server.unregisterClientSubscription(stalledID)
 		So(completionFinished(independentDone, time.Second), ShouldBeTrue)
 	})
+}
+
+func subscriptionTestKeys(prefix string, count int) []string {
+	keys := make([]string, 0, count)
+
+	for i := range count {
+		keys = append(keys, fmt.Sprintf("%s-%d", prefix, i))
+	}
+
+	return keys
 }
 
 func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
@@ -1729,6 +1768,35 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
 		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
 	})
+}
+
+func maxSubscriptionEnqueueGoroutines(timeout time.Duration) int {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	maxCount := 0
+
+	for {
+		runtime.Gosched()
+
+		maxCount = max(maxCount, subscriptionEnqueueGoroutines())
+
+		select {
+		case <-deadline:
+			return maxCount
+		case <-ticker.C:
+		}
+	}
+}
+
+func subscriptionEnqueueGoroutines() int {
+	var buf bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&buf, 2); err != nil {
+		return 0
+	}
+
+	return strings.Count(buf.String(), "jobqueue.(*serverSubscription).enqueue")
 }
 
 func buriedSubscriptionItemDefs(
