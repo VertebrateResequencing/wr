@@ -25,5 +25,5 @@ on `Updates()` before draining the long-poll loop. Wrap DB read failures in
 `jobqueue/serverCLI.go`, `jobqueue/subscription.go`. Covering all 4
 acceptance tests from C1. Builds on Phases 1-2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

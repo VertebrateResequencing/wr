@@ -376,6 +376,198 @@ func TestSubscriptionAuthorization(t *testing.T) {
 	})
 }
 
+func TestSubscriptionCatchUp(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("An archived subscribed key is returned in the synchronous subscribe reply and emitted", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-c1-archived-key", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		sock, err := dialSubscriptionSocket(jq.ServerInfo.Addr, serverConfig.CAFile, serverConfig.CertDomain, 2*time.Second)
+		So(err, ShouldBeNil)
+
+		defer sock.Close()
+
+		subscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
+			Method: "subscribe",
+			Keys:   ids,
+			Token:  token,
+		})
+		So(err, ShouldBeNil)
+		So(subscribeResp.Err, ShouldBeBlank)
+		So(subscribeResp.SubscriptionID, ShouldNotBeBlank)
+		So(subscribeResp.JobUpdates, ShouldHaveLength, 1)
+		So(subscribeResp.JobUpdates[0].Kind, ShouldEqual, JobUpdateTerminal)
+		So(subscribeResp.JobUpdates[0].State, ShouldEqual, JobStateComplete)
+		So(subscribeResp.JobUpdates[0].Key, ShouldEqual, ids[0])
+
+		unsubscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
+			Method:         "unsubscribe",
+			SubscriptionID: subscribeResp.SubscriptionID,
+			Token:          token,
+		})
+		So(err, ShouldBeNil)
+		So(unsubscribeResp.Err, ShouldBeBlank)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		update := receiveSubscriptionUpdate(sub, time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateTerminal)
+		So(update.State, ShouldEqual, JobStateComplete)
+		So(update.Key, ShouldEqual, ids[0])
+	})
+
+	Convey("An archived RepGroup catch-up returns one aggregate update with counts", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-c1-archived-rg"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 2), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 2)
+
+		for range ids {
+			job, errr := jq.Reserve(50 * time.Millisecond)
+			So(errr, ShouldBeNil)
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+			So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+		}
+
+		sub, err := jq.SubscribeToRepGroup(ctx, repGroup)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		update := receiveSubscriptionUpdate(sub, time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(update.RepGroup, ShouldEqual, repGroup)
+		So(update.Complete, ShouldEqual, 2)
+		So(update.Buried, ShouldEqual, 0)
+		So(update.Lost, ShouldEqual, 0)
+		So(update.Total, ShouldEqual, 2)
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
+	Convey("A running subscribed key emits no catch-up until it becomes terminal", t, func() {
+		restore := overrideSubscriptionTimings(5 * time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-c1-running", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateTerminal)
+		So(update.Key, ShouldEqual, ids[0])
+		So(update.State, ShouldEqual, JobStateComplete)
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
+	Convey("A subscribed missing key emits no catch-up event", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-c1-missing-key"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
+	Convey("A catch-up DB read failure returns ErrDBError without registering a subscription", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		So(server.db.close(ctx), ShouldBeNil)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-c1-db-error"})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, ErrDBError)
+		So(sub, ShouldBeNil)
+		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
+	})
+}
+
 func TestSubscriptionTeardown(t *testing.T) {
 	if runnermode || servermode {
 		return
