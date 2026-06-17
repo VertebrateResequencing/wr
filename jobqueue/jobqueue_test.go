@@ -312,7 +312,9 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		ws, err := drainWebSocket(wsURL, header)
 		So(err, ShouldBeNil)
 
-		defer ws.Close()
+		defer func() {
+			So(ws.Close(), ShouldBeNil)
+		}()
 
 		err = ws.WriteJSON(jstatusReq{
 			Request:  "details",

@@ -232,9 +232,10 @@ func subscriptionCatchUpRepGroupUpdate(repGroup string, records map[string]subsc
 		state := records[key].state
 		update.JobStates = append(update.JobStates, state)
 
-		if state == JobStateComplete {
+		switch state {
+		case JobStateComplete:
 			update.Complete++
-		} else if state == JobStateBuried {
+		case JobStateBuried:
 			update.Buried++
 		}
 	}

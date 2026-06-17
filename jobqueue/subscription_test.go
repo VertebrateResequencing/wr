@@ -1070,7 +1070,9 @@ func TestSubscriptionAuthorization(t *testing.T) {
 		sock, err := dialSubscriptionSocket(jq.ServerInfo.Addr, serverConfig.CAFile, serverConfig.CertDomain, 2*time.Second)
 		So(err, ShouldBeNil)
 
-		defer sock.Close()
+		defer func() {
+			So(sock.Close(), ShouldBeNil)
+		}()
 
 		wrongToken := mismatchedToken(token)
 		subscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
@@ -1134,7 +1136,9 @@ func TestSubscriptionCatchUp(t *testing.T) {
 		sock, err := dialSubscriptionSocket(jq.ServerInfo.Addr, serverConfig.CAFile, serverConfig.CertDomain, 2*time.Second)
 		So(err, ShouldBeNil)
 
-		defer sock.Close()
+		defer func() {
+			So(sock.Close(), ShouldBeNil)
+		}()
 
 		subscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
 			Method: "subscribe",
