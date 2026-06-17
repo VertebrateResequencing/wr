@@ -210,6 +210,57 @@ func TestClientAddAndWait(t *testing.T) {
 		So(result.jobs[0].Key(), ShouldEqual, input[0].Key())
 	})
 
+	Convey("AddAndWait rerun waits for the live job instead of archived catch-up", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		prefix := "subscription-e1-rerun-live"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(prefix, standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		archiveNextAddAndWaitJob(runner)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+
+		input := subscriptionTestJobs(prefix, standardReqs, 1)
+		resultCh := addAndWaitAsyncWithIgnoreComplete(waitCtx, jq, input, false)
+
+		job := startNextAddAndWaitJob(runner)
+
+		time.Sleep(200 * time.Millisecond)
+
+		select {
+		case result := <-resultCh:
+			So(result.err, ShouldNotBeNil)
+			So("AddAndWait returned before the live rerun terminal event", ShouldBeBlank)
+		default:
+		}
+
+		So(runner.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		result := receiveAddAndWaitResult(resultCh, 3*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
+		So(result.jobs[0].Key(), ShouldEqual, ids[0])
+	})
+
 	Convey("AddAndWait deadline returns gathered jobs and names unfinished lost keys", t, func() {
 		restore := overrideSubscriptionTimings(50 * time.Millisecond)
 		defer restore()
@@ -409,10 +460,19 @@ func receiveAsyncError(done <-chan error, timeout time.Duration) error {
 }
 
 func addAndWaitAsync(ctx context.Context, jq *Client, jobs []*Job) <-chan addAndWaitResult {
+	return addAndWaitAsyncWithIgnoreComplete(ctx, jq, jobs, true)
+}
+
+func addAndWaitAsyncWithIgnoreComplete(
+	ctx context.Context,
+	jq *Client,
+	jobs []*Job,
+	ignoreComplete bool,
+) <-chan addAndWaitResult {
 	resultCh := make(chan addAndWaitResult, 1)
 
 	go func() {
-		got, err := jq.AddAndWait(ctx, jobs, envVars, true)
+		got, err := jq.AddAndWait(ctx, jobs, envVars, ignoreComplete)
 		resultCh <- addAndWaitResult{jobs: got, err: err}
 	}()
 
@@ -1239,6 +1299,50 @@ func TestSubscriptionCatchUp(t *testing.T) {
 		So(job.Key(), ShouldEqual, ids[0])
 		So(jq.Started(job, os.Getpid()), ShouldBeNil)
 
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateTerminal)
+		So(update.Key, ShouldEqual, ids[0])
+		So(update.State, ShouldEqual, JobStateComplete)
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
+	Convey("A live rerun subscribed key suppresses archived terminal catch-up", t, func() {
+		restore := overrideSubscriptionTimings(5 * time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		prefix := "subscription-c1-rerun-live"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(prefix, standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		archiveNextSubscriptionJob(jq)
+
+		liveIDs, err := jq.AddAndReturnIDs(subscriptionTestJobs(prefix, standardReqs, 1), envVars, false)
+		So(err, ShouldBeNil)
+		So(liveIDs, ShouldResemble, ids)
+
+		job := startNextSubscriptionJob(jq)
 		sub, err := jq.SubscribeToJobKeys(ctx, ids)
 		So(err, ShouldBeNil)
 

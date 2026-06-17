@@ -76,14 +76,19 @@ func subscriptionCatchUpRepGroupRecordForJob(job *Job) (string, subscriptionCatc
 
 func (s *Server) subscriptionCatchUpByKeys(ctx context.Context, keys []string) ([]*JobUpdate, error) {
 	records := make(map[string]subscriptionCatchUpRecord, len(keys))
+	completeKeys := make([]string, 0, len(keys))
 
 	for _, key := range keys {
 		if item, err := s.q.Get(key); err == nil && item != nil {
 			addSubscriptionCatchUpRecord(records, s.itemToJob(ctx, item, false, false))
+
+			continue
 		}
+
+		completeKeys = append(completeKeys, key)
 	}
 
-	complete, err := s.db.retrieveCompleteJobsByKeys(keys)
+	complete, err := s.db.retrieveCompleteJobsByKeys(completeKeys)
 	if err != nil {
 		return nil, err
 	}
