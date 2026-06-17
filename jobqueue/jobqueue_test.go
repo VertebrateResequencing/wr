@@ -24,10 +24,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"log"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/user"
@@ -261,6 +266,335 @@ func TestJobqueueUtils(t *testing.T) {
 		So(RepGroupMatches(value, "alpha", RepGroupMatchSuffix), ShouldBeFalse)
 		So(RepGroupMatches(value, "delta", RepGroupMatchSubStr), ShouldBeFalse)
 	})
+}
+
+func TestSubscriptionStateChangeEvents(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Browser websocket and Go subscription both receive completion updates", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-f1-shared"
+		ids, err := jq.AddAndReturnIDs([]*Job{{
+			Cmd:          "echo subscription f1 shared",
+			Cwd:          "/tmp",
+			ReqGroup:     repGroup,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}}, envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  "details",
+			RepGroup: repGroup,
+			State:    JobStateReady,
+		})
+		So(err, ShouldBeNil)
+
+		limitedDrain(ws, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		var webStatus *JStatus
+
+		for range 4 {
+			status, errr := readUntilStatus(ws)
+			if errr != nil {
+				break
+			}
+
+			if status.State == JobStateComplete {
+				webStatus = status
+
+				break
+			}
+		}
+
+		So(webStatus, ShouldNotBeNil)
+		So(webStatus.Key, ShouldEqual, ids[0])
+		So(webStatus.RepGroup, ShouldEqual, repGroup)
+		So(webStatus.IsPushUpdate, ShouldBeTrue)
+
+		select {
+		case update := <-sub.Updates():
+			So(update.Kind, ShouldEqual, JobUpdateTerminal)
+			So(update.State, ShouldEqual, JobStateComplete)
+			So(update.Key, ShouldEqual, ids[0])
+			So(update.RepGroup, ShouldEqual, repGroup)
+		case <-time.After(time.Second):
+			So("timed out waiting for Go subscription update", ShouldBeBlank)
+		}
+	})
+
+	Convey("SetChangedCallback emits browser and Go push updates from one per-job status loop", t, func() {
+		guard, err := changedCallbackStatusGuardForFile("server.go")
+		So(err, ShouldBeNil)
+
+		So(guard.callbackCount, ShouldEqual, 1)
+		So(guard.nonBuiltinDataArgumentCalls, ShouldEqual, 0)
+		So(guard.pushStatusLoopCount, ShouldEqual, 1)
+		So(guard.subscriptionOnlyDataLoops, ShouldEqual, 0)
+		So(guard.pushStatusLoop.statusFromToStatusAssignments, ShouldEqual, 1)
+		So(guard.pushStatusLoop.toStatusCalls, ShouldEqual, 1)
+		So(guard.pushStatusLoop.jobUpdateFromStatusUsesStatus, ShouldBeTrue)
+		So(guard.pushStatusLoop.subscriptionUpdateCalls, ShouldBeGreaterThan, 0)
+		So(guard.pushStatusLoop.writesStatus, ShouldBeTrue)
+	})
+}
+
+const (
+	changedCallbackCreateQueue      = "createQueue"
+	changedCallbackDataIdent        = "data"
+	changedCallbackJobUpdateMaker   = "jobUpdateFromStatus"
+	changedCallbackMethodName       = "SetChangedCallback"
+	changedCallbackStatusIdent      = "status"
+	changedCallbackSubscriptionName = "SubscriptionUpdate"
+	changedCallbackToStatus         = "ToStatus"
+	changedCallbackWriteJSON        = "WriteJSON"
+)
+
+var errChangedCallbackCreateQueueNotFound = errors.New("createQueue function not found")
+
+type changedCallbackStatusGuard struct {
+	callbackCount               int
+	nonBuiltinDataArgumentCalls int
+	pushStatusLoop              changedCallbackDataLoopGuard
+	pushStatusLoopCount         int
+	subscriptionOnlyDataLoops   int
+}
+
+type changedCallbackDataLoopGuard struct {
+	jobUpdateFromStatusUsesStatus bool
+	statusFromToStatusAssignments int
+	subscriptionUpdateCalls       int
+	toStatusCalls                 int
+	writesStatus                  bool
+}
+
+func changedCallbackStatusGuardForFile(path string) (changedCallbackStatusGuard, error) {
+	fileSet := token.NewFileSet()
+
+	parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+	if err != nil {
+		return changedCallbackStatusGuard{}, err
+	}
+
+	createQueue := findFuncDecl(parsed, changedCallbackCreateQueue)
+	if createQueue == nil {
+		return changedCallbackStatusGuard{}, errChangedCallbackCreateQueueNotFound
+	}
+
+	guard := changedCallbackStatusGuard{}
+
+	ast.Inspect(createQueue.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !isCallNamed(call, changedCallbackMethodName) {
+			return true
+		}
+
+		guard.callbackCount++
+
+		callback, ok := firstFuncLiteralArg(call)
+		if ok {
+			inspectChangedCallbackBody(callback.Body, &guard)
+		}
+
+		return false
+	})
+
+	return guard, nil
+}
+
+func inspectChangedCallbackBody(body *ast.BlockStmt, guard *changedCallbackStatusGuard) {
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok && callReceivesDirectIdent(call, changedCallbackDataIdent) && !isCallNamed(call, "len") {
+			guard.nonBuiltinDataArgumentCalls++
+		}
+
+		loop, ok := node.(*ast.RangeStmt)
+		if !ok || !isIdent(loop.X, changedCallbackDataIdent) {
+			return true
+		}
+
+		loopGuard := changedCallbackDataLoopGuardFor(loop)
+		if loopGuard.toStatusCalls > 0 {
+			guard.pushStatusLoopCount++
+			guard.pushStatusLoop = loopGuard
+		}
+
+		if loopGuard.subscriptionUpdateCalls > 0 && loopGuard.toStatusCalls == 0 {
+			guard.subscriptionOnlyDataLoops++
+		}
+
+		return false
+	})
+}
+
+func changedCallbackDataLoopGuardFor(loop *ast.RangeStmt) changedCallbackDataLoopGuard {
+	guard := changedCallbackDataLoopGuard{}
+
+	ast.Inspect(loop.Body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			if assignsStatusFromToStatus(node) {
+				guard.statusFromToStatusAssignments++
+			}
+		case *ast.CallExpr:
+			guard.recordCall(node)
+		}
+
+		return true
+	})
+
+	return guard
+}
+
+func (g *changedCallbackDataLoopGuard) recordCall(call *ast.CallExpr) {
+	if isCallNamed(call, changedCallbackToStatus) {
+		g.toStatusCalls++
+	}
+
+	if isSubscriptionUpdateCall(call) {
+		g.subscriptionUpdateCalls++
+	}
+
+	if callUsesStatusInJobUpdateFromStatus(call) {
+		g.jobUpdateFromStatusUsesStatus = true
+	}
+
+	if callWritesStatus(call) {
+		g.writesStatus = true
+	}
+}
+
+func findFuncDecl(file *ast.File, name string) *ast.FuncDecl {
+	for _, decl := range file.Decls {
+		if function, ok := decl.(*ast.FuncDecl); ok && function.Name.Name == name {
+			return function
+		}
+	}
+
+	return nil
+}
+
+func firstFuncLiteralArg(call *ast.CallExpr) (*ast.FuncLit, bool) {
+	if len(call.Args) == 0 {
+		return nil, false
+	}
+
+	literal, ok := call.Args[0].(*ast.FuncLit)
+
+	return literal, ok
+}
+
+func assignsStatusFromToStatus(assign *ast.AssignStmt) bool {
+	if !assignLHSContainsIdent(assign, changedCallbackStatusIdent) {
+		return false
+	}
+
+	for _, expr := range assign.Rhs {
+		if call, ok := expr.(*ast.CallExpr); ok && isCallNamed(call, changedCallbackToStatus) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func assignLHSContainsIdent(assign *ast.AssignStmt, name string) bool {
+	for _, expr := range assign.Lhs {
+		if isIdent(expr, name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func callReceivesDirectIdent(call *ast.CallExpr, name string) bool {
+	for _, arg := range call.Args {
+		if isIdent(arg, name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isSubscriptionUpdateCall(call *ast.CallExpr) bool {
+	return strings.Contains(callName(call), changedCallbackSubscriptionName)
+}
+
+func callUsesStatusInJobUpdateFromStatus(call *ast.CallExpr) bool {
+	if !isCallNamed(call, changedCallbackJobUpdateMaker) || len(call.Args) == 0 {
+		return false
+	}
+
+	return isIdent(call.Args[0], changedCallbackStatusIdent)
+}
+
+func callWritesStatus(call *ast.CallExpr) bool {
+	if !isCallNamed(call, changedCallbackWriteJSON) || len(call.Args) != 1 {
+		return false
+	}
+
+	return isIdent(call.Args[0], changedCallbackStatusIdent)
+}
+
+func isCallNamed(call *ast.CallExpr, name string) bool {
+	return callName(call) == name
+}
+
+func callName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func isIdent(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+
+	return ok && ident.Name == name
 }
 
 func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jqs.Requirements, time.Duration) {

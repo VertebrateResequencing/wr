@@ -124,6 +124,18 @@ var (
 // pretending to be bsub.
 var BsubID uint64
 
+type subscriptionRequestError string
+
+const (
+	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
+	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
+	errUnknownSubscription      subscriptionRequestError = "unknown subscription"
+)
+
+func (e subscriptionRequestError) Error() string {
+	return string(e)
+}
+
 // Error records an error and the operation and item that caused it.
 type Error struct {
 	Op   string // name of the method
@@ -154,6 +166,8 @@ type serverResponse struct {
 	DB              []byte
 	Path            string
 	BadServers      []*BadServer
+	SubscriptionID  string
+	JobUpdates      []*JobUpdate
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -331,6 +345,87 @@ func (s *sgroup) hasSkips() bool {
 	return s.skipped > 0
 }
 
+type serverSubscription struct {
+	keys     map[string]struct{}
+	queue    chan *JobUpdate
+	done     chan struct{}
+	repGroup string
+	once     sync.Once
+}
+
+func newServerSubscription(keys []string, repGroup string) *serverSubscription {
+	keySet := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		keySet[key] = struct{}{}
+	}
+
+	return &serverSubscription{
+		keys:     keySet,
+		queue:    make(chan *JobUpdate, serverSubscriptionQueueSize),
+		done:     make(chan struct{}),
+		repGroup: repGroup,
+	}
+}
+
+func (s *serverSubscription) matches(key, repGroup string) bool {
+	if len(s.keys) > 0 {
+		_, exists := s.keys[key]
+
+		return exists
+	}
+
+	return s.repGroup == repGroup
+}
+
+func (s *serverSubscription) enqueue(update *JobUpdate) bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+	}
+
+	select {
+	case s.queue <- update:
+		return true
+	case <-s.done:
+		return false
+	default:
+		return false
+	}
+}
+
+func (s *serverSubscription) wait(timeout time.Duration) ([]*JobUpdate, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	var updates []*JobUpdate
+	select {
+	case update := <-s.queue:
+		updates = append(updates, update)
+	case <-s.done:
+		return nil, false
+	case <-timer.C:
+		return nil, true
+	}
+
+	for {
+		select {
+		case update := <-s.queue:
+			updates = append(updates, update)
+		case <-s.done:
+			return updates, false
+		default:
+			return updates, true
+		}
+	}
+}
+
+func (s *serverSubscription) close() {
+	s.once.Do(func() {
+		close(s.done)
+	})
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token                     []byte
@@ -359,6 +454,7 @@ type Server struct {
 	wsconns                   map[string]*websocket.Conn
 	wsWriteMutexes            map[string]*sync.Mutex     // mutex per websocket connection
 	jobSubscriptions          map[string]map[string]bool // conn ID -> job key -> subscribed
+	clientSubscriptions       map[string]*serverSubscription
 	badServers                map[string]*cloud.Server
 	schedIssues               map[string]*schedulerIssue
 	racmutex                  sync.RWMutex // to protect the readyaddedcallback
@@ -367,6 +463,7 @@ type Server struct {
 	krmutex                   sync.RWMutex
 	ssmutex                   sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
+	csmutex                   sync.RWMutex // to protect clientSubscriptions
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	jsmutex                   sync.RWMutex // to protect jobSubscriptions
 	sync.Mutex
@@ -380,6 +477,133 @@ type Server struct {
 	racRunning           bool
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
+	nextSubscriptionID   uint64
+}
+
+func (s *Server) registerClientSubscription(keys []string, repGroup string) (string, error) {
+	if len(keys) == 0 && repGroup == "" {
+		return "", errMissingSubscriptionScope
+	}
+
+	id := fmt.Sprintf("sub-%d", atomic.AddUint64(&s.nextSubscriptionID, 1))
+	sub := newServerSubscription(keys, repGroup)
+
+	s.csmutex.Lock()
+	defer s.csmutex.Unlock()
+
+	if s.clientSubscriptions == nil {
+		s.clientSubscriptions = make(map[string]*serverSubscription)
+	}
+
+	s.clientSubscriptions[id] = sub
+
+	return id, nil
+}
+
+func (s *Server) unregisterClientSubscription(id string) {
+	s.csmutex.Lock()
+	sub := s.clientSubscriptions[id]
+	delete(s.clientSubscriptions, id)
+	s.csmutex.Unlock()
+
+	if sub != nil {
+		sub.close()
+	}
+}
+
+func (s *Server) clientSubscription(id string) (*serverSubscription, bool) {
+	s.csmutex.RLock()
+	defer s.csmutex.RUnlock()
+
+	sub, exists := s.clientSubscriptions[id]
+
+	return sub, exists
+}
+
+func (s *Server) waitForSubscriptionUpdates(id string, timeout time.Duration) ([]*JobUpdate, error) {
+	sub, exists := s.clientSubscription(id)
+	if !exists {
+		return nil, errUnknownSubscription
+	}
+
+	if timeout <= 0 || timeout > serverSubscriptionHoldTime {
+		timeout = serverSubscriptionHoldTime
+	}
+
+	updates, ok := sub.wait(timeout)
+	if !ok {
+		return nil, errSubscriptionClosed
+	}
+
+	return updates, nil
+}
+
+func (s *Server) enqueueSubscriptionUpdate(update *JobUpdate) {
+	subs := s.matchingClientSubscriptions(update)
+	s.enqueueSubscriptionUpdateTo(subs, update)
+}
+
+func (s *Server) enqueueSubscriptionUpdateTo(subs []*serverSubscription, update *JobUpdate) {
+	for _, sub := range subs {
+		sub.enqueue(update)
+	}
+}
+
+func (s *Server) matchingClientSubscriptions(update *JobUpdate) []*serverSubscription {
+	return s.matchingClientSubscriptionsForJob(update.Key, update.RepGroup)
+}
+
+func (s *Server) matchingClientSubscriptionsForJob(key, repGroup string) []*serverSubscription {
+	s.csmutex.RLock()
+	defer s.csmutex.RUnlock()
+
+	subs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
+
+	for _, sub := range s.clientSubscriptions {
+		if sub.matches(key, repGroup) {
+			subs = append(subs, sub)
+		}
+	}
+
+	return subs
+}
+
+func subscriptionUpdateCandidate(from, to JobState) bool {
+	return to == JobStateComplete || to == JobStateBuried || from == JobStateRunning
+}
+
+func subscriptionUpdateStateFromStatus(status JStatus, from, to JobState) (JobState, bool) {
+	switch to {
+	case JobStateComplete, JobStateBuried:
+		return to, true
+	default:
+	}
+
+	if from == JobStateRunning && status.State == JobStateLost {
+		return JobStateLost, true
+	}
+
+	return "", false
+}
+
+func jobUpdateTimes(job *Job) (*int64, *int64) {
+	job.RLock()
+	defer job.RUnlock()
+
+	return jobUnixNano(job.StartTime), jobUnixNano(job.EndTime)
+}
+
+func jobUpdateFromStatus(status JStatus, state JobState, started, ended *int64) *JobUpdate {
+	return &JobUpdate{
+		Started:    started,
+		Ended:      ended,
+		Kind:       jobUpdateKind(state),
+		Key:        status.Key,
+		RepGroup:   status.RepGroup,
+		State:      state,
+		Exitcode:   status.Exitcode,
+		FailReason: status.FailReason,
+	}
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -742,6 +966,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		badServerCaster:           bcast.NewGroup(),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		jobSubscriptions:          make(map[string]map[string]bool),
+		clientSubscriptions:       make(map[string]*serverSubscription),
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               bcast.NewGroup(),
 		schedIssues:               make(map[string]*schedulerIssue),
@@ -1706,10 +1931,18 @@ func (s *Server) createQueue(ctx context.Context) {
 			job := inter.(*Job) //nolint:errcheck,forcetypeassert
 			job.RLock()
 			jobKey := job.Key()
+			repGroup := job.RepGroup
 			job.RUnlock()
 
-			connIDs, ok := jobSubscriptions[jobKey]
-			if !ok {
+			connIDs := jobSubscriptions[jobKey]
+
+			var clientSubs []*serverSubscription
+
+			if subscriptionUpdateCandidate(from, to) {
+				clientSubs = s.matchingClientSubscriptionsForJob(jobKey, repGroup)
+			}
+
+			if len(connIDs) == 0 && len(clientSubs) == 0 {
 				continue
 			}
 
@@ -1727,7 +1960,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				}
 			}
 
-			if from == JobStateRunning {
+			if from == JobStateRunning && len(connIDs) > 0 {
 				s.jobPopulateStdEnv(ctx, job, true, false)
 			}
 
@@ -1739,6 +1972,16 @@ func (s *Server) createQueue(ctx context.Context) {
 			}
 
 			status.IsPushUpdate = true
+
+			state, ok := subscriptionUpdateStateFromStatus(status, from, to)
+			if ok && len(clientSubs) > 0 {
+				started, ended := jobUpdateTimes(job)
+				s.enqueueSubscriptionUpdateTo(clientSubs, jobUpdateFromStatus(status, state, started, ended))
+			}
+
+			if len(connIDs) == 0 {
+				continue
+			}
 
 			s.wsmutex.RLock()
 
@@ -2584,6 +2827,24 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	}
 
 	return jobs
+}
+
+func jobUnixNano(t time.Time) *int64 {
+	if t.IsZero() {
+		return nil
+	}
+
+	i := t.UnixNano()
+
+	return &i
+}
+
+func jobUpdateKind(state JobState) JobUpdateKind {
+	if state == JobStateLost {
+		return JobUpdateLost
+	}
+
+	return JobUpdateTerminal
 }
 
 func normalizeRepGroupMatch(match RepGroupMatch, search bool) RepGroupMatch {

@@ -26,8 +26,8 @@ pre-existing `Port`. Files: `jobqueue/serverCLI.go`, `jobqueue/server.go`,
 plus minimal client-side `subscription.go` scaffolding to exercise the
 dedicated long-poll socket. Covering all 4 acceptance tests from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Unauthorized client cannot subscribe
 
@@ -39,8 +39,8 @@ every other client call: token on `clientRequest.Token`, checked in
 subscription is registered or events buffered. Covering all 2 acceptance
 tests from A2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: F1 - Single source of state-change events
 
@@ -53,5 +53,5 @@ once with no second divergent traversal. Confirm the browser
 `JStatus IsPushUpdate == true` path still works. Covering all 2 acceptance
 tests from F1. Depends on item 1.1's registry/queue.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

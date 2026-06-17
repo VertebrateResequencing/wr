@@ -188,6 +188,45 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					}
 				}
 			}
+		case "subscribe":
+			repGroup := ""
+			if cr.Job != nil {
+				repGroup = cr.Job.RepGroup
+			}
+
+			id, err := s.registerClientSubscription(cr.Keys, repGroup)
+			if err != nil {
+				srerr = ErrBadRequest
+				qerr = err.Error()
+			} else {
+				sr = &serverResponse{SubscriptionID: id}
+			}
+		case "unsubscribe":
+			if cr.SubscriptionID == "" {
+				srerr = ErrBadRequest
+
+				break
+			}
+
+			s.unregisterClientSubscription(cr.SubscriptionID)
+
+			sr = &serverResponse{}
+		case "waitForUpdates":
+			if cr.SubscriptionID == "" {
+				srerr = ErrBadRequest
+
+				break
+			}
+
+			updates, err := s.waitForSubscriptionUpdates(cr.SubscriptionID, cr.Timeout)
+			if err != nil {
+				srerr = ErrBadRequest
+				qerr = err.Error()
+
+				break
+			}
+
+			sr = &serverResponse{JobUpdates: updates}
 		case "reserve":
 			// return the next ready job
 			if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {

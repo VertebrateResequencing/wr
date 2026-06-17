@@ -118,6 +118,7 @@ type clientRequest struct {
 	Token                   []byte
 	LimitGroup              string
 	Method                  string
+	SubscriptionID          string
 	SchedulerGroup          string
 	State                   JobState
 	Path                    string // desired path File should be stored at, can be blank
