@@ -130,13 +130,20 @@ func TestClientAddAndWait(t *testing.T) {
 		input := subscriptionTestJobs("subscription-e1-complete", standardReqs, 1)
 		resultCh := addAndWaitAsync(waitCtx, jq, input)
 
-		archiveNextAddAndWaitJob(runner)
+		archiveNextAddAndWaitJobWithOutput(runner, "subscription e1 stdout", "subscription e1 stderr")
 
 		result := receiveAddAndWaitResult(resultCh, 6*time.Second)
 		So(result.err, ShouldBeNil)
 		So(result.jobs, ShouldHaveLength, 1)
 		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
 		So(result.jobs[0].Exitcode, ShouldEqual, 0)
+
+		stdout, err := result.jobs[0].StdOut()
+		So(err, ShouldBeNil)
+		So(stdout, ShouldEqual, "subscription e1 stdout")
+		stderr, err := result.jobs[0].StdErr()
+		So(err, ShouldBeNil)
+		So(stderr, ShouldEqual, "subscription e1 stderr")
 	})
 
 	Convey("AddAndWait returns a buried job with non-zero exit code and inline stderr without a Go error", t, func() {
@@ -348,8 +355,20 @@ func TestClientAddAndWait(t *testing.T) {
 }
 
 func archiveNextAddAndWaitJob(jq *Client) {
+	archiveNextAddAndWaitJobWithOutput(jq, "", "")
+}
+
+func archiveNextAddAndWaitJobWithOutput(jq *Client, stdout string, stderr string) {
 	job := startNextAddAndWaitJob(jq)
-	So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+	endState := &JobEndState{
+		Exited:   true,
+		Exitcode: 0,
+		EndTime:  time.Now(),
+		Stdout:   compressStd([]byte(stdout)),
+		Stderr:   compressStd([]byte(stderr)),
+	}
+
+	So(jq.Archive(job, endState), ShouldBeNil)
 }
 
 func startNextAddAndWaitJob(jq *Client) *Job {

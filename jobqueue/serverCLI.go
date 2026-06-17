@@ -644,6 +644,10 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
+					if cr.JobEndState != nil {
+						job.StdOutC = cr.JobEndState.Stdout
+						job.StdErrC = cr.JobEndState.Stderr
+					}
 					sgroup := job.schedulerGroup
 					rgroup := job.RepGroup
 					job.Unlock()
