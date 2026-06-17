@@ -111,7 +111,7 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 		return nil, false, err
 	}
 
-	completeTerminal := addSubscriptionCatchUpRecords(records, complete)
+	completeTerminal := addSubscriptionCatchUpRepGroupRecords(records, complete)
 
 	return records, queueTerminal && completeTerminal, nil
 }
@@ -150,18 +150,6 @@ func addSubscriptionCatchUpRepGroupRecord(records map[string]subscriptionCatchUp
 
 func subscriptionCatchUpTerminalState(state JobState) bool {
 	return state == JobStateComplete || state == JobStateBuried
-}
-
-func addSubscriptionCatchUpRecords(records map[string]subscriptionCatchUpRecord, jobs []*Job) bool {
-	allTerminal := true
-
-	for _, job := range jobs {
-		if !addSubscriptionCatchUpRecord(records, job) {
-			allTerminal = false
-		}
-	}
-
-	return allTerminal
 }
 
 func addSubscriptionCatchUpRecord(records map[string]subscriptionCatchUpRecord, job *Job) bool {

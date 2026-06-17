@@ -45,6 +45,7 @@ import (
 	gpnet "github.com/shirou/gopsutil/net"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
+	bolt "go.etcd.io/bbolt"
 	"nanomsg.org/go-mangos"
 )
 
@@ -1896,6 +1897,58 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
 	})
 
+	Convey("A live rerun RepGroup suppresses archived aggregate catch-up", t, func() {
+		restore := overrideSubscriptionTimings(5 * time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-b2-rerun-live"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		archiveNextSubscriptionJob(jq)
+
+		liveIDs, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 1), envVars, false)
+		So(err, ShouldBeNil)
+		So(liveIDs, ShouldResemble, ids)
+
+		job := startNextSubscriptionJob(jq)
+		restoreLiveJob := hideLiveSubscriptionJobInDB(server, ids[0])
+		sub, err := jq.SubscribeToRepGroup(ctx, repGroup)
+		restoreLiveJob()
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(update.RepGroup, ShouldEqual, repGroup)
+		So(update.Complete, ShouldEqual, 1)
+		So(update.Buried, ShouldEqual, 0)
+		So(update.Lost, ShouldEqual, 0)
+		So(update.Total, ShouldEqual, 1)
+		So(subscriptionStatesByKey(update), ShouldResemble, map[string]JobState{
+			ids[0]: JobStateComplete,
+		})
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
 	Convey("A post-registration catch-up snapshot holds back a missed live RepGroup job", t, func() {
 		restore := overrideSubscriptionTimings(5 * time.Second)
 		defer restore()
@@ -2015,6 +2068,25 @@ func buriedSubscriptionItemDefs(
 	}
 
 	return itemdefs, ids
+}
+
+func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
+	var encoded []byte
+	err := server.db.bolt.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketJobsLive)
+		encoded = append([]byte(nil), bucket.Get([]byte(key))...)
+
+		return bucket.Delete([]byte(key))
+	})
+	So(err, ShouldBeNil)
+	So(encoded, ShouldNotBeNil)
+
+	return func() {
+		err := server.db.bolt.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(bucketJobsLive).Put([]byte(key), encoded)
+		})
+		So(err, ShouldBeNil)
+	}
 }
 
 func distinctSubscriptionUpdateKeys(updates []*JobUpdate) int {
