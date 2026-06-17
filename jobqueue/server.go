@@ -2258,6 +2258,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobHost := job.Host
 				jobPID := job.Pid
 				serverLostJobCheckTimeout := ServerLostJobCheckTimeout
+				serverLostJobCheckRetryTime := ServerLostJobCheckRetryTime
 				job.Unlock()
 
 				if !wasLost {
@@ -2266,7 +2267,8 @@ func (s *Server) createQueue(ctx context.Context) {
 
 				go func() {
 					if !killCalled && !s.recoveredRunningJobs[jobKey] &&
-						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout) {
+						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout,
+							serverLostJobCheckRetryTime) {
 						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
 					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
@@ -2478,14 +2480,14 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 
 // confirmJobDeadAndKill calls and returns the value of confirmJobDead(). If
 // true, kills the job and triggers behaviours in a goroutine. If false,
-// arranges to re-call this in an hour. This is so that if we can't currently
-// confirm the job is dead due to an ssh issue, but later on the job really does
-// die because the server it was running on gets rebooted, we eventually
-// auto-kill the job.
+// arranges to re-call this after the configured retry time. This is so that if
+// we can't currently confirm the job is dead due to an ssh issue, but later on
+// the job really does die because the server it was running on gets rebooted,
+// we eventually auto-kill the job.
 func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string,
-	jobPID int, serverLostJobCheckTimeout time.Duration) bool {
+	jobPID int, serverLostJobCheckTimeout, serverLostJobCheckRetryTime time.Duration) bool {
 	if !s.confirmJobDead(ctx, jobPID, jobHost, serverLostJobCheckTimeout) {
-		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey)
+		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey, serverLostJobCheckRetryTime)
 
 		return false
 	}
@@ -2525,20 +2527,37 @@ func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
 	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
 }
 
-func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string) { //nolint:gocyclo
+func (s *Server) confirmJobDeadAndKillAfterRetryTime(
+	ctx context.Context,
+	jobKey string,
+	serverLostJobCheckRetryTime time.Duration,
+) { //nolint:gocyclo
+	timer := time.NewTimer(serverLostJobCheckRetryTime)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(ServerLostJobCheckRetryTime):
+	case <-timer.C:
 		item, err := s.q.Get(jobKey)
 		if err != nil || item.Stats().State != queue.ItemStateRun {
 			return
 		}
 
 		job, ok := item.Data().(*Job)
-		if ok && job.State == JobStateRunning && job.Lost {
-			job.Lock()
-			serverLostJobCheckTimeout := ServerLostJobCheckTimeout
-			job.Unlock()
-			s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid, serverLostJobCheckTimeout)
+		if !ok {
+			return
+		}
+
+		job.Lock()
+		shouldRetry := job.State == JobStateRunning && job.Lost
+		serverLostJobCheckTimeout := ServerLostJobCheckTimeout
+		retryJobKey := job.Key()
+		jobHost := job.Host
+		jobPID := job.Pid
+		job.Unlock()
+
+		if shouldRetry {
+			s.confirmJobDeadAndKill(ctx, retryJobKey, jobHost, jobPID, serverLostJobCheckTimeout,
+				serverLostJobCheckRetryTime)
 		}
 	case <-s.stopClientHandling:
 		return
