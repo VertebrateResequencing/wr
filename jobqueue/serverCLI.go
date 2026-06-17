@@ -45,7 +45,7 @@ func subscriptionCatchUpRecordForJob(job *Job) (string, subscriptionCatchUpRecor
 	job.RLock()
 	defer job.RUnlock()
 
-	if job.State != JobStateComplete && job.State != JobStateBuried {
+	if !subscriptionCatchUpTerminalState(job.State) {
 		return "", subscriptionCatchUpRecord{}, false
 	}
 
@@ -55,6 +55,23 @@ func subscriptionCatchUpRecordForJob(job *Job) (string, subscriptionCatchUpRecor
 	}
 
 	return job.Key(), subscriptionCatchUpRecord{job: job, state: job.State, atTime: atTime}, true
+}
+
+func subscriptionCatchUpRepGroupRecordForJob(job *Job) (string, subscriptionCatchUpRecord, bool) {
+	job.RLock()
+	defer job.RUnlock()
+
+	record := subscriptionCatchUpRecord{job: job, state: job.State}
+	if !subscriptionCatchUpTerminalState(job.State) {
+		return job.Key(), record, false
+	}
+
+	record.atTime = job.EndTime
+	if record.atTime.IsZero() {
+		record.atTime = job.StartTime
+	}
+
+	return job.Key(), record, true
 }
 
 func (s *Server) subscriptionCatchUpByKeys(ctx context.Context, keys []string) ([]*JobUpdate, error) {
@@ -82,7 +99,7 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 	repGroup string,
 ) (map[string]subscriptionCatchUpRecord, bool, error) {
 	records := make(map[string]subscriptionCatchUpRecord)
-	queueTerminal := addSubscriptionCatchUpRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup))
+	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup))
 
 	complete, err := s.db.retrieveCompleteJobsByRepGroup(repGroup)
 	if err != nil {
@@ -92,6 +109,42 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 	completeTerminal := addSubscriptionCatchUpRecords(records, complete)
 
 	return records, queueTerminal && completeTerminal, nil
+}
+
+func addSubscriptionCatchUpRepGroupRecords(records map[string]subscriptionCatchUpRecord, jobs []*Job) bool {
+	allTerminal := true
+
+	for _, job := range jobs {
+		if !addSubscriptionCatchUpRepGroupRecord(records, job) {
+			allTerminal = false
+		}
+	}
+
+	return allTerminal
+}
+
+func addSubscriptionCatchUpRepGroupRecord(records map[string]subscriptionCatchUpRecord, job *Job) bool {
+	key, record, terminal := subscriptionCatchUpRepGroupRecordForJob(job)
+	if !terminal {
+		records[key] = record
+
+		return false
+	}
+
+	previous, exists := records[key]
+	if exists && !subscriptionCatchUpTerminalState(previous.state) {
+		return true
+	}
+
+	if !exists || record.atTime.After(previous.atTime) {
+		records[key] = record
+	}
+
+	return true
+}
+
+func subscriptionCatchUpTerminalState(state JobState) bool {
+	return state == JobStateComplete || state == JobStateBuried
 }
 
 func addSubscriptionCatchUpRecords(records map[string]subscriptionCatchUpRecord, jobs []*Job) bool {

@@ -1768,6 +1768,65 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
 		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
 	})
+
+	Convey("A post-registration catch-up snapshot holds back a missed live RepGroup job", t, func() {
+		restore := overrideSubscriptionTimings(5 * time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-b2-catch-up-race"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		archiveNextSubscriptionJob(jq)
+
+		liveJobs := subscriptionTestJobs(repGroup+"-live", standardReqs, 1)
+		liveJobs[0].RepGroup = repGroup
+		liveIDs, err := jq.AddAndReturnIDs(liveJobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(liveIDs, ShouldHaveLength, 1)
+
+		id := "sub-catch-up-race"
+		server.csmutex.Lock()
+		server.clientSubscriptions[id] = newServerSubscription(nil, repGroup, nil)
+		server.csmutex.Unlock()
+
+		defer server.unregisterClientSubscription(id)
+
+		catchUp, err := server.subscriptionCatchUpForRegistered(ctx, id, nil, repGroup)
+		So(err, ShouldBeNil)
+		So(catchUp, ShouldBeNil)
+
+		archiveNextSubscriptionJob(jq)
+
+		updates, ok := collectServerSubscriptionUpdatesByID(server, id, 1, 2*time.Second)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, 1)
+
+		update := updates[0]
+		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(update.RepGroup, ShouldEqual, repGroup)
+		So(update.Complete, ShouldEqual, 2)
+		So(update.Buried, ShouldEqual, 0)
+		So(update.Lost, ShouldEqual, 0)
+		So(update.Total, ShouldEqual, 2)
+		So(subscriptionStatesByKey(update), ShouldResemble, map[string]JobState{
+			ids[0]:     JobStateComplete,
+			liveIDs[0]: JobStateComplete,
+		})
+	})
 }
 
 func maxSubscriptionEnqueueGoroutines(timeout time.Duration) int {
