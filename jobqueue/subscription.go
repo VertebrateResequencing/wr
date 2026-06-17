@@ -47,6 +47,7 @@ const (
 	serverSubscriptionHoldTime   = 25 * time.Second
 	subscriptionSocketRecvMargin = 5 * time.Second
 	subscriptionReconnectTimeout = time.Second
+	subscriptionMinReconnectWait = 10 * time.Millisecond
 )
 
 // ErrSubscriptionClosed is returned by Subscription.Err after an unrecoverable
@@ -84,6 +85,19 @@ type JobUpdate struct {
 	Buried     int
 	Lost       int
 	Total      int
+}
+
+func receiveJobUpdate(ctx context.Context, updates <-chan *JobUpdate) (*JobUpdate, error) {
+	select {
+	case update, ok := <-updates:
+		if !ok {
+			return nil, closedSubscriptionError(ctx)
+		}
+
+		return update, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func recordTerminalKey(update *JobUpdate, wanted map[string]struct{}, seen map[string]JobState) {
@@ -235,7 +249,9 @@ func (s *Subscription) requestUpdates() (*serverResponse, error) {
 		return nil, encodeErr
 	}
 
-	sock := s.currentSock()
+	s.sockMu.RLock()
+	sock := s.sock
+	s.sockMu.RUnlock()
 
 	if err := sock.Send(encoded); err != nil {
 		return nil, err
@@ -358,6 +374,7 @@ func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error
 	}
 
 	dialAddr := s.client.subscriptionDialAddr()
+
 	sock, err := dialSubscriptionSocket(dialAddr, s.client.args[1], s.client.args[2],
 		serverSubscriptionHoldTime+subscriptionSocketRecvMargin)
 	if err != nil {
@@ -372,15 +389,21 @@ func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error
 	}
 
 	if !s.replaceSock(sock, resp.SubscriptionID, dialAddr) {
-		_, _ = s.client.request(&clientRequest{
-			Method:         "unsubscribe",
-			SubscriptionID: resp.SubscriptionID,
-		})
-
-		return nil, ErrSubscriptionClosed
+		return nil, s.unsubscribeRejectedReplacement(resp.SubscriptionID)
 	}
 
 	return resp.JobUpdates, nil
+}
+
+func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string) error {
+	if _, err := s.client.request(&clientRequest{
+		Method:         "unsubscribe",
+		SubscriptionID: subscriptionID,
+	}); err != nil {
+		return errors.Join(ErrSubscriptionClosed, err)
+	}
+
+	return ErrSubscriptionClosed
 }
 
 func (s *Subscription) subscribeRequest() *clientRequest {
@@ -417,7 +440,7 @@ func (s *Subscription) waitBeforeReconnect(ctx context.Context) bool {
 
 func subscriptionReconnectWait() time.Duration {
 	if ClientRetryWait <= 0 {
-		return 10 * time.Millisecond
+		return subscriptionMinReconnectWait
 	}
 
 	return ClientRetryWait
@@ -482,13 +505,6 @@ func (s *Subscription) finish(err error) {
 	})
 }
 
-func (s *Subscription) currentSock() mangos.Socket {
-	s.sockMu.RLock()
-	defer s.sockMu.RUnlock()
-
-	return s.sock
-}
-
 func (s *Subscription) closeSock() {
 	s.sockMu.RLock()
 	sock := s.sock
@@ -503,6 +519,7 @@ func (s *Subscription) replaceSock(sock mangos.Socket, id, dialAddr string) bool
 	s.sockMu.Lock()
 	if s.isStopping() {
 		s.sockMu.Unlock()
+
 		_ = sock.Close()
 
 		return false
@@ -628,6 +645,14 @@ func unfinishedKeys(keys []string, seen map[string]JobState) []string {
 	return unfinished
 }
 
+func closedSubscriptionError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return ErrSubscriptionClosed
+}
+
 func configureSubscriptionSocket(sock mangos.Socket, timeout time.Duration) error {
 	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
 		return err
@@ -661,25 +686,21 @@ func subscriptionTLSConfig(caFile, certDomain string) *tls.Config {
 	return tlsConfig
 }
 
-func collectDistinctTerminalKeys(ctx context.Context, updates <-chan *JobUpdate, keys []string) (map[string]JobState, error) {
+func collectDistinctTerminalKeys(
+	ctx context.Context,
+	updates <-chan *JobUpdate,
+	keys []string,
+) (map[string]JobState, error) {
 	wanted := terminalKeySet(keys)
 	seen := make(map[string]JobState, len(wanted))
 
 	for len(seen) < len(wanted) {
-		select {
-		case update, ok := <-updates:
-			if !ok {
-				if err := ctx.Err(); err != nil {
-					return seen, err
-				}
-
-				return seen, ErrSubscriptionClosed
-			}
-
-			recordTerminalKey(update, wanted, seen)
-		case <-ctx.Done():
-			return seen, ctx.Err()
+		update, err := receiveJobUpdate(ctx, updates)
+		if err != nil {
+			return seen, err
 		}
+
+		recordTerminalKey(update, wanted, seen)
 	}
 
 	return seen, nil
@@ -705,6 +726,7 @@ func distinctKeysInOrder(keys []string) []string {
 		}
 
 		seen[key] = struct{}{}
+
 		distinct = append(distinct, key)
 	}
 
@@ -738,12 +760,13 @@ func (c *Client) AddAndWait(ctx context.Context, jobs []*Job, envVars []string, 
 	defer sub.Unsubscribe()
 
 	seen, err := collectDistinctTerminalKeys(ctx, sub.Updates(), keys)
-	terminalJobs, fetchErr := c.fetchSeenTerminalJobs(keys, seen)
 	if err != nil {
+		terminalJobs, fetchErr := c.fetchSeenTerminalJobs(keys, seen)
+
 		return terminalJobs, addAndWaitError(ctx, err, keys, seen, fetchErr)
 	}
 
-	return terminalJobs, fetchErr
+	return c.fetchSeenTerminalJobs(keys, seen)
 }
 
 func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) ([]*Job, error) {

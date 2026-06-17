@@ -49,6 +49,12 @@ import (
 	"nanomsg.org/go-mangos"
 )
 
+var (
+	errAddAndWaitTimeout = errors.New("timed out waiting for AddAndWait")
+	errNoReservedJob     = errors.New("reserve returned no job")
+	errAsyncDriverWait   = errors.New("timed out waiting for async job driver")
+)
+
 type addAndWaitResult struct {
 	jobs []*Job
 	err  error
@@ -59,7 +65,7 @@ func receiveAddAndWaitResult(resultCh <-chan addAndWaitResult, timeout time.Dura
 	case result := <-resultCh:
 		return result
 	case <-time.After(timeout):
-		return addAndWaitResult{err: fmt.Errorf("timed out waiting for AddAndWait")}
+		return addAndWaitResult{err: errAddAndWaitTimeout}
 	}
 }
 
@@ -142,6 +148,7 @@ func TestClientAddAndWait(t *testing.T) {
 		stdout, err := result.jobs[0].StdOut()
 		So(err, ShouldBeNil)
 		So(stdout, ShouldEqual, "subscription e1 stdout")
+
 		stderr, err := result.jobs[0].StdErr()
 		So(err, ShouldBeNil)
 		So(stderr, ShouldEqual, "subscription e1 stderr")
@@ -203,6 +210,7 @@ func TestClientAddAndWait(t *testing.T) {
 		defer disconnect(runner)
 
 		workerDone := archiveNextAddAndWaitJobAsync(runner)
+
 		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
@@ -336,6 +344,7 @@ func TestClientAddAndWait(t *testing.T) {
 		resultCh := addAndWaitAsync(waitCtx, jq, input)
 
 		job := startNextAddAndWaitJob(runner)
+
 		time.Sleep(200 * time.Millisecond)
 
 		select {
@@ -391,7 +400,7 @@ func reserveAndStartAddAndWaitJob(jq *Client) (*Job, error) {
 	}
 
 	if job == nil {
-		return nil, fmt.Errorf("reserve returned no job")
+		return nil, errNoReservedJob
 	}
 
 	if err = jq.Started(job, os.Getpid()); err != nil {
@@ -475,7 +484,7 @@ func receiveAsyncError(done <-chan error, timeout time.Duration) error {
 	case err := <-done:
 		return err
 	case <-time.After(timeout):
-		return fmt.Errorf("timed out waiting for async job driver")
+		return errAsyncDriverWait
 	}
 }
 
@@ -655,7 +664,6 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 		So(got.Cmd, ShouldEqual, job.Cmd)
 		So(got.State, ShouldEqual, JobStateReady)
 	})
-
 }
 
 func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
@@ -667,6 +675,7 @@ func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
 		total := serverSubscriptionQueueSize + 16
 		keys := subscriptionTestKeys("subscription-d2-worker", total)
 		sub := newServerSubscription(keys, "", nil)
+
 		defer sub.close()
 
 		deliveries := make([]repGroupSubscriptionUpdate, 0, total)
@@ -682,6 +691,7 @@ func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
 		}
 
 		before := subscriptionEnqueueGoroutines()
+
 		(&Server{}).enqueueSubscriptionDeliveries(deliveries)
 
 		So(serverSubscriptionQueueDepthBecomes(sub, serverSubscriptionQueueSize, time.Second), ShouldBeTrue)
@@ -719,6 +729,7 @@ func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
 
 		updates, ok := collectServerSubscriptionUpdatesByID(server, peerID, total, time.Second)
 		peerCount := len(updates)
+
 		server.unregisterClientSubscription(stalledID)
 
 		So(ok, ShouldBeTrue)
@@ -861,6 +872,7 @@ func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
 
 		So(result.err, ShouldBeNil)
 		So(result.sub, ShouldNotBeNil)
+
 		if result.err != nil || result.sub == nil {
 			return
 		}
@@ -934,7 +946,8 @@ func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
 		So(live[0].State, ShouldEqual, catchUp[0].State)
 	})
 
-	Convey("The AddAndWait terminal collector counts distinct keys when a duplicate terminal event is injected", t, func() {
+	Convey("The AddAndWait terminal collector counts distinct keys "+
+		"when a duplicate terminal event is injected", t, func() {
 		updates := make(chan *JobUpdate, 4)
 		keys := []string{"subscription-d3-a", "subscription-d3-b", "subscription-d3-c"}
 
@@ -998,6 +1011,7 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 
 		catchUpClient, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
+
 		catchUpClient.clientid = jq.clientid
 
 		defer disconnect(catchUpClient)
@@ -1927,7 +1941,9 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		job := startNextSubscriptionJob(jq)
 		restoreLiveJob := hideLiveSubscriptionJobInDB(server, ids[0])
 		sub, err := jq.SubscribeToRepGroup(ctx, repGroup)
+
 		restoreLiveJob()
+
 		So(err, ShouldBeNil)
 
 		defer sub.Unsubscribe()
@@ -1979,6 +1995,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(liveIDs, ShouldHaveLength, 1)
 
 		id := "sub-catch-up-race"
+
 		server.csmutex.Lock()
 		server.clientSubscriptions[id] = newServerSubscription(nil, repGroup, nil)
 		server.csmutex.Unlock()
@@ -2011,6 +2028,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 
 func maxSubscriptionEnqueueGoroutines(timeout time.Duration) int {
 	deadline := time.After(timeout)
+
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -2072,6 +2090,7 @@ func buriedSubscriptionItemDefs(
 
 func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
 	var encoded []byte
+
 	err := server.db.bolt.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(bucketJobsLive)
 		encoded = append([]byte(nil), bucket.Get([]byte(key))...)
@@ -2101,6 +2120,7 @@ func distinctSubscriptionUpdateKeys(updates []*JobUpdate) int {
 
 func serverSubscriptionQueueDepthBecomes(sub *serverSubscription, expected int, timeout time.Duration) bool {
 	deadline := time.After(timeout)
+
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -2173,6 +2193,7 @@ func subscriptionUpdatesStillOpen(sub *Subscription, timeout time.Duration) bool
 
 func subscriptionErrBecomes(sub *Subscription, target error, timeout time.Duration) bool {
 	deadline := time.After(timeout)
+
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -2191,6 +2212,7 @@ func subscriptionErrBecomes(sub *Subscription, target error, timeout time.Durati
 
 func completeJobsByRepGroupBecome(jq *Client, repGroup string, expected int, timeout time.Duration) bool {
 	deadline := time.After(timeout)
+
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 

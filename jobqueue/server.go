@@ -554,6 +554,13 @@ type repGroupSubscriptionUpdate struct {
 	update *JobUpdate
 }
 
+type lostJobRetryCheck struct {
+	jobKey       string
+	jobHost      string
+	jobPID       int
+	checkTimeout time.Duration
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token                     []byte
@@ -649,11 +656,14 @@ func (s *Server) unregisterClientSubscription(id string) {
 
 func (s *Server) closeClientSubscriptions() {
 	s.csmutex.Lock()
+
 	subs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
 	for id, sub := range s.clientSubscriptions {
 		subs = append(subs, sub)
+
 		delete(s.clientSubscriptions, id)
 	}
+
 	s.csmutex.Unlock()
 
 	for _, sub := range subs {
@@ -816,6 +826,32 @@ func jobUpdateFromLockedJob(job *Job, state JobState) *JobUpdate {
 		Exitcode:   job.Exitcode,
 		FailReason: job.FailReason,
 	}
+}
+
+func (s *Server) lostJobRetryCheck(jobKey string) (lostJobRetryCheck, bool) {
+	item, err := s.q.Get(jobKey)
+	if err != nil || item.Stats().State != queue.ItemStateRun {
+		return lostJobRetryCheck{}, false
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return lostJobRetryCheck{}, false
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	if job.State != JobStateRunning || !job.Lost {
+		return lostJobRetryCheck{}, false
+	}
+
+	return lostJobRetryCheck{
+		jobKey:       job.Key(),
+		jobHost:      job.Host,
+		jobPID:       job.Pid,
+		checkTimeout: ServerLostJobCheckTimeout,
+	}, true
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -2527,38 +2563,20 @@ func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
 	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
 }
 
-func (s *Server) confirmJobDeadAndKillAfterRetryTime(
-	ctx context.Context,
-	jobKey string,
-	serverLostJobCheckRetryTime time.Duration,
-) { //nolint:gocyclo
+func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string,
+	serverLostJobCheckRetryTime time.Duration) {
 	timer := time.NewTimer(serverLostJobCheckRetryTime)
 	defer timer.Stop()
 
 	select {
 	case <-timer.C:
-		item, err := s.q.Get(jobKey)
-		if err != nil || item.Stats().State != queue.ItemStateRun {
-			return
-		}
-
-		job, ok := item.Data().(*Job)
+		retry, ok := s.lostJobRetryCheck(jobKey)
 		if !ok {
 			return
 		}
 
-		job.Lock()
-		shouldRetry := job.State == JobStateRunning && job.Lost
-		serverLostJobCheckTimeout := ServerLostJobCheckTimeout
-		retryJobKey := job.Key()
-		jobHost := job.Host
-		jobPID := job.Pid
-		job.Unlock()
-
-		if shouldRetry {
-			s.confirmJobDeadAndKill(ctx, retryJobKey, jobHost, jobPID, serverLostJobCheckTimeout,
-				serverLostJobCheckRetryTime)
-		}
+		s.confirmJobDeadAndKill(ctx, retry.jobKey, retry.jobHost, retry.jobPID, retry.checkTimeout,
+			serverLostJobCheckRetryTime)
 	case <-s.stopClientHandling:
 		return
 	}

@@ -922,6 +922,7 @@ func synchronousAdd(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string
 	if err != nil {
 		die("%s", err)
 	}
+
 	if len(jobs) == 0 {
 		os.Exit(1)
 	}

@@ -22,15 +22,21 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
-	"fmt"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/jobqueue"
-
 	. "github.com/smartystreets/goconvey/convey"
+)
+
+var (
+	errMissingSynchronousAddContext = errors.New("missing context")
+	errUnexpectedSynchronousJobs    = errors.New("AddAndWait received unexpected jobs")
+	errMissingIgnoreComplete        = errors.New("AddAndWait did not preserve ignoreComplete")
+	errUnexpectedSynchronousEnv     = errors.New("AddAndWait received unexpected env vars")
 )
 
 func TestAddQueuesAvoidDefault(t *testing.T) {
@@ -59,16 +65,19 @@ type synchronousAddTestClient struct {
 func (c synchronousAddTestClient) AddAndWait(ctx context.Context, jobs []*jobqueue.Job,
 	envVars []string, ignoreComplete bool) ([]*jobqueue.Job, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("missing context")
+		return nil, errMissingSynchronousAddContext
 	}
+
 	if len(jobs) != 1 || jobs[0].Cmd != "sync command" {
-		return nil, fmt.Errorf("AddAndWait received unexpected jobs: %#v", jobs)
+		return nil, errUnexpectedSynchronousJobs
 	}
+
 	if !ignoreComplete {
-		return nil, fmt.Errorf("AddAndWait did not preserve ignoreComplete")
+		return nil, errMissingIgnoreComplete
 	}
+
 	if len(envVars) != 1 || envVars[0] != "SYNC_TEST=1" {
-		return nil, fmt.Errorf("AddAndWait received unexpected env vars: %#v", envVars)
+		return nil, errUnexpectedSynchronousEnv
 	}
 
 	return []*jobqueue.Job{{
@@ -84,6 +93,7 @@ func zlibCompress(data []byte) []byte {
 	}
 
 	var compressed bytes.Buffer
+
 	writer, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
 	if err != nil {
 		panic(err)
@@ -133,6 +143,7 @@ func TestSynchronousAddExitsWithBuriedJobExitCode(t *testing.T) {
 func runSynchronousAddSubprocess(t *testing.T, helper string) (string, string, int) {
 	t.Helper()
 
+	//nolint:gosec // Test helper intentionally re-execs the current test binary with fixed arguments.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSynchronousAddHelperProcess$")
 	cmd.Env = append(os.Environ(),
 		"WR_SYNC_ADD_HELPER_PROCESS=1",
@@ -148,13 +159,19 @@ func runSynchronousAddSubprocess(t *testing.T, helper string) (string, string, i
 		return stdout.String(), stderr.String(), 0
 	}
 
-	exitErr, ok := err.(*exec.ExitError)
-	So(ok, ShouldBeTrue)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		So(err, ShouldBeNil)
+
+		return stdout.String(), stderr.String(), 1
+	}
 
 	return stdout.String(), stderr.String(), exitErr.ExitCode()
 }
 
 func TestSynchronousAddHelperProcess(t *testing.T) {
+	t.Helper()
+
 	if os.Getenv("WR_SYNC_ADD_HELPER_PROCESS") != "1" {
 		return
 	}

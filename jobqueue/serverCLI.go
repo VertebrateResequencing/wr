@@ -152,18 +152,16 @@ func subscriptionCatchUpTerminalState(state JobState) bool {
 	return state == JobStateComplete || state == JobStateBuried
 }
 
-func addSubscriptionCatchUpRecord(records map[string]subscriptionCatchUpRecord, job *Job) bool {
+func addSubscriptionCatchUpRecord(records map[string]subscriptionCatchUpRecord, job *Job) {
 	key, record, ok := subscriptionCatchUpRecordForJob(job)
 	if !ok {
-		return false
+		return
 	}
 
 	previous, exists := records[key]
 	if !exists || record.atTime.After(previous.atTime) {
 		records[key] = record
 	}
-
-	return true
 }
 
 func subscriptionCatchUpKeyUpdates(keys []string, records map[string]subscriptionCatchUpRecord) []*JobUpdate {
@@ -230,6 +228,7 @@ func subscriptionCatchUpRepGroupUpdate(repGroup string, records map[string]subsc
 			update.Complete++
 		case JobStateBuried:
 			update.Buried++
+		default:
 		}
 	}
 
@@ -632,10 +631,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
+
 					if cr.JobEndState != nil {
 						job.StdOutC = cr.JobEndState.Stdout
 						job.StdErrC = cr.JobEndState.Stderr
 					}
+
 					sgroup := job.schedulerGroup
 					rgroup := job.RepGroup
 					job.Unlock()

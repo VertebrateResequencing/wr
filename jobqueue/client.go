@@ -223,12 +223,11 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return nil, err
 	}
 
-	err = sock.SetOption(mangos.OptionRecvDeadline, timeout)
-	if err != nil {
+	if err = sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
 		return nil, err
 	}
-	err = sock.SetOption(mangos.OptionSendDeadline, timeout)
-	if err != nil {
+
+	if err = sock.SetOption(mangos.OptionSendDeadline, timeout); err != nil {
 		return nil, err
 	}
 
