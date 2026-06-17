@@ -463,6 +463,152 @@ func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
 	})
 }
 
+func TestSubscriptionReconnectResync(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A restarted manager delivers a resync marker and catch-up terminal update", t, func() {
+		restore := overrideSubscriptionReconnectTimings(250*time.Millisecond, 2*time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-d4-catch-up", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		server.Stop(ctx, true)
+		sub.closeSock()
+		time.Sleep(100 * time.Millisecond)
+
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+
+		catchUpClient, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+		catchUpClient.clientid = jq.clientid
+
+		defer disconnect(catchUpClient)
+
+		So(catchUpClient.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		updates, ok := collectSubscriptionUpdates(sub, 2, 2*time.Second)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, 2)
+		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
+		So(updates[1].Kind, ShouldEqual, JobUpdateTerminal)
+		So(updates[1].Key, ShouldEqual, ids[0])
+		So(updates[1].State, ShouldEqual, JobStateComplete)
+		So(sub.Err(), ShouldBeNil)
+		So(subscriptionUpdatesStillOpen(sub, 150*time.Millisecond), ShouldBeTrue)
+	})
+
+	Convey("A permanently stopped manager closes only after reconnect retries are exhausted", t, func() {
+		restore := overrideSubscriptionReconnectTimings(50*time.Millisecond, 200*time.Millisecond)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-d4-permanent"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		server.Stop(ctx, true)
+		sub.closeSock()
+
+		So(subscriptionUpdatesStillOpen(sub, 75*time.Millisecond), ShouldBeTrue)
+		So(sub.Err(), ShouldBeNil)
+		So(subscriptionErrBecomes(sub, ErrSubscriptionClosed, 3*time.Second), ShouldBeTrue)
+		So(errors.Is(sub.Err(), ErrSubscriptionClosed), ShouldBeTrue)
+		So(subscriptionUpdatesClosed(sub), ShouldBeTrue)
+		So(ErrSubscriptionClosed.Error(), ShouldEqual, "jobqueue subscription closed: unrecoverable disconnect")
+	})
+
+	Convey("A successful transient reconnect never sets a fatal subscription error", t, func() {
+		restore := overrideSubscriptionReconnectTimings(200*time.Millisecond, 2*time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-d4-transient"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		server.Stop(ctx, true)
+		sub.closeSock()
+		time.Sleep(75 * time.Millisecond)
+		So(sub.Err(), ShouldBeNil)
+
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateResync)
+		So(sub.Err(), ShouldBeNil)
+		So(subscriptionUpdatesStillOpen(sub, 150*time.Millisecond), ShouldBeTrue)
+	})
+}
+
+func overrideSubscriptionReconnectTimings(
+	retryWait time.Duration,
+	retryTime time.Duration,
+) func() {
+	originalRetryWait := ClientRetryWait
+	originalRetryTime := ClientRetryTime
+
+	ClientRetryWait = retryWait
+	ClientRetryTime = retryTime
+
+	return func() {
+		ClientRetryWait = originalRetryWait
+		ClientRetryTime = originalRetryTime
+	}
+}
+
 func TestSubscriptionAuthorization(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1306,6 +1452,44 @@ func archiveIndependentSubscriptionJob(
 	}()
 
 	return done
+}
+
+func restartSubscriptionTestServer(ctx context.Context, serverConfig ServerConfig) *Server {
+	originalWipe := wipeDevDBOnInit
+	wipeDevDBOnInit = false
+	server, _, _, err := serve(ctx, serverConfig)
+	wipeDevDBOnInit = originalWipe
+
+	So(err, ShouldBeNil)
+
+	return server
+}
+
+func subscriptionUpdatesStillOpen(sub *Subscription, timeout time.Duration) bool {
+	select {
+	case _, ok := <-sub.Updates():
+		return ok
+	case <-time.After(timeout):
+		return true
+	}
+}
+
+func subscriptionErrBecomes(sub *Subscription, target error, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if errors.Is(sub.Err(), target) {
+			return true
+		}
+
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 func completeJobsByRepGroupBecome(jq *Client, repGroup string, expected int, timeout time.Duration) bool {

@@ -44,11 +44,12 @@ const (
 	serverSubscriptionQueueSize  = 1024
 	serverSubscriptionHoldTime   = 25 * time.Second
 	subscriptionSocketRecvMargin = 5 * time.Second
+	subscriptionReconnectTimeout = time.Second
 )
 
 // ErrSubscriptionClosed is returned by Subscription.Err after an unrecoverable
 // subscription disconnect.
-var ErrSubscriptionClosed = errors.New("subscription closed")
+var ErrSubscriptionClosed = errors.New("jobqueue subscription closed: unrecoverable disconnect")
 
 // JobUpdateKind discriminates the events on a Subscription channel.
 type JobUpdateKind int
@@ -111,12 +112,15 @@ func isTerminalUpdate(update *JobUpdate) bool {
 type Subscription struct {
 	client    *Client
 	sock      mangos.Socket
+	sockMu    sync.RWMutex
 	ch        codec.Handle
 	updates   chan *JobUpdate
 	stop      chan struct{}
 	closed    chan struct{}
 	id        string
 	dialAddr  string
+	keys      []string
+	repGroup  string
 	stopOnce  sync.Once
 	unsubOnce sync.Once
 	doneOnce  sync.Once
@@ -124,7 +128,14 @@ type Subscription struct {
 	err       error
 }
 
-func newSubscription(c *Client, sock mangos.Socket, id, dialAddr string) *Subscription {
+func newSubscription(
+	c *Client,
+	sock mangos.Socket,
+	id string,
+	dialAddr string,
+	keys []string,
+	repGroup string,
+) *Subscription {
 	return &Subscription{
 		client:   c,
 		sock:     sock,
@@ -134,6 +145,8 @@ func newSubscription(c *Client, sock mangos.Socket, id, dialAddr string) *Subscr
 		closed:   make(chan struct{}),
 		id:       id,
 		dialAddr: dialAddr,
+		keys:     append([]string(nil), keys...),
+		repGroup: repGroup,
 	}
 }
 
@@ -201,9 +214,11 @@ func (s *Subscription) poll(ctx context.Context, initial []*JobUpdate) {
 	for {
 		resp, err := s.requestUpdates()
 		if err != nil {
-			s.finishAfterPollError()
+			if !s.reconnectAfterPollError(ctx) {
+				return
+			}
 
-			return
+			continue
 		}
 
 		if !s.publishClientUpdates(ctx, resp.JobUpdates) {
@@ -218,11 +233,13 @@ func (s *Subscription) requestUpdates() (*serverResponse, error) {
 		return nil, encodeErr
 	}
 
-	if err := s.sock.Send(encoded); err != nil {
+	sock := s.currentSock()
+
+	if err := sock.Send(encoded); err != nil {
 		return nil, err
 	}
 
-	resp, err := s.sock.Recv()
+	resp, err := sock.Recv()
 	if err != nil {
 		return nil, err
 	}
@@ -278,14 +295,130 @@ func (s *Subscription) publishClientUpdates(ctx context.Context, updates []*JobU
 	return true
 }
 
-func (s *Subscription) finishAfterPollError() {
+func (s *Subscription) reconnectAfterPollError(ctx context.Context) bool {
 	if s.isStopping() {
 		s.finish(nil)
 
-		return
+		return false
 	}
 
-	s.finish(ErrSubscriptionClosed)
+	catchUp, ok := s.reconnect(ctx)
+	if !ok {
+		return false
+	}
+
+	if !s.publishClientUpdate(ctx, &JobUpdate{Kind: JobUpdateResync}) {
+		return false
+	}
+
+	return s.publishClientUpdates(ctx, catchUp)
+}
+
+func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
+	retryEnd := time.Now().Add(ClientRetryTime)
+
+	for {
+		if s.isStopping() {
+			s.finish(nil)
+
+			return nil, false
+		}
+
+		catchUp, err := s.reconnectOnce(subscriptionReconnectTimeoutFor(retryEnd))
+		if err == nil {
+			return catchUp, true
+		}
+
+		if time.Now().After(retryEnd) {
+			s.finish(ErrSubscriptionClosed)
+
+			return nil, false
+		}
+
+		if !s.waitBeforeReconnect(ctx) {
+			return nil, false
+		}
+	}
+}
+
+func subscriptionReconnectTimeoutFor(retryEnd time.Time) time.Duration {
+	remaining := time.Until(retryEnd)
+	if remaining <= 0 {
+		return subscriptionReconnectTimeout
+	}
+
+	return min(remaining, subscriptionReconnectTimeout)
+}
+
+func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error) {
+	if err := s.client.reconnect(timeout); err != nil {
+		return nil, err
+	}
+
+	dialAddr := s.client.subscriptionDialAddr()
+	sock, err := dialSubscriptionSocket(dialAddr, s.client.args[1], s.client.args[2],
+		serverSubscriptionHoldTime+subscriptionSocketRecvMargin)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.client.request(s.subscribeRequest())
+	if err != nil {
+		_ = sock.Close()
+
+		return nil, err
+	}
+
+	if !s.replaceSock(sock, resp.SubscriptionID, dialAddr) {
+		_, _ = s.client.request(&clientRequest{
+			Method:         "unsubscribe",
+			SubscriptionID: resp.SubscriptionID,
+		})
+
+		return nil, ErrSubscriptionClosed
+	}
+
+	return resp.JobUpdates, nil
+}
+
+func (s *Subscription) subscribeRequest() *clientRequest {
+	req := &clientRequest{
+		Method: "subscribe",
+		Keys:   append([]string(nil), s.keys...),
+	}
+
+	if s.repGroup != "" {
+		req.Job = &Job{RepGroup: s.repGroup}
+	}
+
+	return req
+}
+
+func (s *Subscription) waitBeforeReconnect(ctx context.Context) bool {
+	timer := time.NewTimer(subscriptionReconnectWait())
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		s.requestStop(ctx.Err())
+		s.finish(ctx.Err())
+
+		return false
+	case <-s.stop:
+		s.finish(nil)
+
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func subscriptionReconnectWait() time.Duration {
+	if ClientRetryWait <= 0 {
+		return 10 * time.Millisecond
+	}
+
+	return ClientRetryWait
 }
 
 func (s *Subscription) publishClientUpdate(ctx context.Context, update *JobUpdate) bool {
@@ -309,7 +442,7 @@ func (s *Subscription) requestStop(err error) {
 		s.setErr(err)
 
 		close(s.stop)
-		_ = s.sock.Close()
+		s.closeSock()
 	})
 }
 
@@ -345,6 +478,45 @@ func (s *Subscription) finish(err error) {
 		close(s.updates)
 		close(s.closed)
 	})
+}
+
+func (s *Subscription) currentSock() mangos.Socket {
+	s.sockMu.RLock()
+	defer s.sockMu.RUnlock()
+
+	return s.sock
+}
+
+func (s *Subscription) closeSock() {
+	s.sockMu.RLock()
+	sock := s.sock
+	s.sockMu.RUnlock()
+
+	if sock != nil {
+		_ = sock.Close()
+	}
+}
+
+func (s *Subscription) replaceSock(sock mangos.Socket, id, dialAddr string) bool {
+	s.sockMu.Lock()
+	if s.isStopping() {
+		s.sockMu.Unlock()
+		_ = sock.Close()
+
+		return false
+	}
+
+	oldSock := s.sock
+	s.sock = sock
+	s.id = id
+	s.dialAddr = dialAddr
+	s.sockMu.Unlock()
+
+	if oldSock != nil {
+		_ = oldSock.Close()
+	}
+
+	return true
 }
 
 // SubscribeToJobKeys subscribes to updates for the given job keys.
@@ -383,7 +555,8 @@ func (c *Client) subscribe(ctx context.Context, cr *clientRequest) (*Subscriptio
 		return nil, c.unsubscribeAfterDialFailure(resp.SubscriptionID, err)
 	}
 
-	sub := newSubscription(c, sock, resp.SubscriptionID, dialAddr)
+	keys, repGroup := subscriptionScope(cr)
+	sub := newSubscription(c, sock, resp.SubscriptionID, dialAddr, keys, repGroup)
 
 	go sub.poll(ctx, resp.JobUpdates)
 	go sub.stopWhenContextDone(ctx)
@@ -415,6 +588,16 @@ func dialSubscriptionSocket(addr, caFile, certDomain string, timeout time.Durati
 	}
 
 	return sock, nil
+}
+
+func subscriptionScope(cr *clientRequest) ([]string, string) {
+	keys := append([]string(nil), cr.Keys...)
+
+	if cr.Job == nil {
+		return keys, ""
+	}
+
+	return keys, cr.Job.RepGroup
 }
 
 func configureSubscriptionSocket(sock mangos.Socket, timeout time.Duration) error {
@@ -499,4 +682,23 @@ func (c *Client) unsubscribeAfterDialFailure(subscriptionID string, dialErr erro
 	}
 
 	return dialErr
+}
+
+func (c *Client) reconnect(timeout time.Duration) error {
+	newClient, err := Connect(c.args[0], c.args[1], c.args[2], c.token, timeout)
+	if err != nil {
+		return err
+	}
+
+	c.Lock()
+	oldSock := c.sock
+	c.sock = newClient.sock
+	c.ServerInfo = newClient.ServerInfo
+	c.Unlock()
+
+	if oldSock != nil {
+		_ = oldSock.Close()
+	}
+
+	return nil
 }

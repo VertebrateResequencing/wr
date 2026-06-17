@@ -107,6 +107,13 @@ var (
 	RAMIncreaseMultBreakpoint    float64 = 8192
 )
 
+const (
+	RepGroupMatchExact  RepGroupMatch = "exact"
+	RepGroupMatchSubStr RepGroupMatch = "substr"
+	RepGroupMatchPrefix RepGroupMatch = "prefix"
+	RepGroupMatchSuffix RepGroupMatch = "suffix"
+)
+
 // clientRequest is the struct that clients send to the server over the network
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
@@ -143,13 +150,6 @@ type clientRequest struct {
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
 // job retrieval calls.
 type RepGroupMatch string
-
-const (
-	RepGroupMatchExact  RepGroupMatch = "exact"
-	RepGroupMatchSubStr RepGroupMatch = "substr"
-	RepGroupMatchPrefix RepGroupMatch = "prefix"
-	RepGroupMatchSuffix RepGroupMatch = "suffix"
-)
 
 // RepGroupMatches reports if jobRepGroup matches repgroup according to match.
 func RepGroupMatches(jobRepGroup, repgroup string, match RepGroupMatch) bool {
@@ -224,6 +224,10 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	}
 
 	err = sock.SetOption(mangos.OptionRecvDeadline, timeout)
+	if err != nil {
+		return nil, err
+	}
+	err = sock.SetOption(mangos.OptionSendDeadline, timeout)
 	if err != nil {
 		return nil, err
 	}

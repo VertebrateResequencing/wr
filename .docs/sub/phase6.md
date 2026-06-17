@@ -24,5 +24,5 @@ unrecoverable disconnect (retry budget exhausted) closes `Updates()` with
 sentinel. Files: `jobqueue/subscription.go`. Covering all 3 acceptance
 tests from D4. Builds on Phases 1-5.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

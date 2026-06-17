@@ -630,6 +630,20 @@ func (s *Server) unregisterClientSubscription(id string) {
 	}
 }
 
+func (s *Server) closeClientSubscriptions() {
+	s.csmutex.Lock()
+	subs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
+	for id, sub := range s.clientSubscriptions {
+		subs = append(subs, sub)
+		delete(s.clientSubscriptions, id)
+	}
+	s.csmutex.Unlock()
+
+	for _, sub := range subs {
+		sub.close()
+	}
+}
+
 func (s *Server) clientSubscription(id string) (*serverSubscription, bool) {
 	s.csmutex.RLock()
 	defer s.csmutex.RUnlock()
@@ -3706,6 +3720,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	}
 
 	// close our command line interface
+	s.closeClientSubscriptions()
 	close(s.stopClientHandling)
 	err = s.sock.Close()
 	if err != nil {
