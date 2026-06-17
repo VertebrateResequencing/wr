@@ -24,5 +24,5 @@ settles (or ctx fires); an empty group never fires; deliver no per-job
 `jobqueue/subscription.go`, `jobqueue/server.go`. Covering all 5 acceptance
 tests from B2. Builds on Phases 1-3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

@@ -346,35 +346,48 @@ func (s *sgroup) hasSkips() bool {
 }
 
 type serverSubscription struct {
-	keys     map[string]struct{}
-	queue    chan *JobUpdate
-	done     chan struct{}
-	repGroup string
-	once     sync.Once
+	keys           map[string]struct{}
+	repGroupStates map[string]JobState
+	queue          chan *JobUpdate
+	done           chan struct{}
+	repGroup       string
+	once           sync.Once
+	mu             sync.Mutex
+	repGroupDone   bool
 }
 
-func newServerSubscription(keys []string, repGroup string) *serverSubscription {
+func newServerSubscription(keys []string, repGroup string, repGroupKeys []string) *serverSubscription {
 	keySet := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		keySet[key] = struct{}{}
 	}
 
+	repGroupStates := make(map[string]JobState, len(repGroupKeys))
+	for _, key := range repGroupKeys {
+		repGroupStates[key] = ""
+	}
+
 	return &serverSubscription{
-		keys:     keySet,
-		queue:    make(chan *JobUpdate, serverSubscriptionQueueSize),
-		done:     make(chan struct{}),
-		repGroup: repGroup,
+		keys:           keySet,
+		repGroupStates: repGroupStates,
+		queue:          make(chan *JobUpdate, serverSubscriptionQueueSize),
+		done:           make(chan struct{}),
+		repGroup:       repGroup,
 	}
 }
 
-func (s *serverSubscription) matches(key, repGroup string) bool {
-	if len(s.keys) > 0 {
-		_, exists := s.keys[key]
-
-		return exists
+func (s *serverSubscription) matchesKey(key string) bool {
+	if len(s.keys) == 0 {
+		return false
 	}
 
-	return s.repGroup == repGroup
+	_, exists := s.keys[key]
+
+	return exists
+}
+
+func (s *serverSubscription) matchesRepGroup(repGroup string) bool {
+	return s.repGroup != "" && s.repGroup == repGroup
 }
 
 func (s *serverSubscription) enqueue(update *JobUpdate) bool {
@@ -424,6 +437,89 @@ func (s *serverSubscription) close() {
 	s.once.Do(func() {
 		close(s.done)
 	})
+}
+
+func (s *serverSubscription) rememberRepGroupKey(key string) {
+	if key == "" || s.repGroup == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.repGroupStates[key]; !exists {
+		s.repGroupStates[key] = ""
+	}
+}
+
+func (s *serverSubscription) recordRepGroupCatchUp(records map[string]subscriptionCatchUpRecord) *JobUpdate {
+	if s.repGroup == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key, record := range records {
+		s.repGroupStates[key] = record.state
+	}
+
+	return s.repGroupDoneUpdate()
+}
+
+func (s *serverSubscription) recordRepGroupUpdate(update *JobUpdate) *JobUpdate {
+	if s.repGroup == "" || update.Key == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.repGroupStates[update.Key] = update.State
+
+	return s.repGroupDoneUpdate()
+}
+
+func (s *serverSubscription) repGroupDoneUpdate() *JobUpdate {
+	if s.repGroupDone || len(s.repGroupStates) == 0 {
+		return nil
+	}
+
+	update := repGroupAggregateUpdate(s.repGroup, s.repGroupStates)
+	if update == nil {
+		return nil
+	}
+
+	s.repGroupDone = true
+
+	return update
+}
+
+func repGroupAggregateUpdate(repGroup string, states map[string]JobState) *JobUpdate {
+	keys := sortedRepGroupStateKeys(states)
+	update := &JobUpdate{
+		Kind:     JobUpdateRepGroupDone,
+		RepGroup: repGroup,
+		JobKeys:  keys,
+		Total:    len(keys),
+	}
+
+	for _, key := range keys {
+		if !addRepGroupAggregateState(update, states[key]) {
+			return nil
+		}
+	}
+
+	if update.Lost > 0 {
+		return nil
+	}
+
+	return update
+}
+
+type repGroupSubscriptionUpdate struct {
+	sub    *serverSubscription
+	update *JobUpdate
 }
 
 // Server represents the server side of the socket that clients Connect() to.
@@ -486,7 +582,7 @@ func (s *Server) registerClientSubscription(keys []string, repGroup string) (str
 	}
 
 	id := fmt.Sprintf("sub-%d", atomic.AddUint64(&s.nextSubscriptionID, 1))
-	sub := newServerSubscription(keys, repGroup)
+	sub := newServerSubscription(keys, repGroup, s.repGroupSubscriptionKeys(repGroup))
 
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
@@ -498,6 +594,14 @@ func (s *Server) registerClientSubscription(keys []string, repGroup string) (str
 	s.clientSubscriptions[id] = sub
 
 	return id, nil
+}
+
+func (s *Server) repGroupSubscriptionKeys(repGroup string) []string {
+	if repGroup == "" {
+		return nil
+	}
+
+	return s.rpl.Values(repGroup)
 }
 
 func (s *Server) unregisterClientSubscription(id string) {
@@ -538,19 +642,28 @@ func (s *Server) waitForSubscriptionUpdates(id string, timeout time.Duration) ([
 	return updates, nil
 }
 
+func (s *Server) seedRepGroupSubscription(id string, records map[string]subscriptionCatchUpRecord) *JobUpdate {
+	sub, exists := s.clientSubscription(id)
+	if !exists {
+		return nil
+	}
+
+	return sub.recordRepGroupCatchUp(records)
+}
+
 func (s *Server) enqueueSubscriptionUpdate(update *JobUpdate) {
-	subs := s.matchingClientSubscriptions(update)
-	s.enqueueSubscriptionUpdateTo(subs, update)
+	keySubs, repGroupUpdates := s.subscriptionUpdatesForJob(update)
+	s.enqueueSubscriptionUpdateTo(keySubs, update)
+
+	for _, repGroupUpdate := range repGroupUpdates {
+		repGroupUpdate.sub.enqueue(repGroupUpdate.update)
+	}
 }
 
 func (s *Server) enqueueSubscriptionUpdateTo(subs []*serverSubscription, update *JobUpdate) {
 	for _, sub := range subs {
 		sub.enqueue(update)
 	}
-}
-
-func (s *Server) matchingClientSubscriptions(update *JobUpdate) []*serverSubscription {
-	return s.matchingClientSubscriptionsForJob(update.Key, update.RepGroup)
 }
 
 func (s *Server) matchingClientSubscriptionsForJob(key, repGroup string) []*serverSubscription {
@@ -560,12 +673,52 @@ func (s *Server) matchingClientSubscriptionsForJob(key, repGroup string) []*serv
 	subs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
 
 	for _, sub := range s.clientSubscriptions {
-		if sub.matches(key, repGroup) {
+		if sub.matchesKey(key) || sub.matchesRepGroup(repGroup) {
 			subs = append(subs, sub)
 		}
 	}
 
 	return subs
+}
+
+func (s *Server) subscriptionUpdatesForJob(update *JobUpdate) ([]*serverSubscription, []repGroupSubscriptionUpdate) {
+	s.csmutex.RLock()
+	defer s.csmutex.RUnlock()
+
+	keySubs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
+	repGroupUpdates := make([]repGroupSubscriptionUpdate, 0)
+
+	for _, sub := range s.clientSubscriptions {
+		if sub.matchesKey(update.Key) {
+			keySubs = append(keySubs, sub)
+		}
+
+		if !sub.matchesRepGroup(update.RepGroup) {
+			continue
+		}
+
+		repGroupUpdate := sub.recordRepGroupUpdate(update)
+		if repGroupUpdate != nil {
+			repGroupUpdates = append(repGroupUpdates, repGroupSubscriptionUpdate{sub: sub, update: repGroupUpdate})
+		}
+	}
+
+	return keySubs, repGroupUpdates
+}
+
+func (s *Server) rememberRepGroupSubscriptionKey(repGroup, key string) {
+	if repGroup == "" || key == "" {
+		return
+	}
+
+	s.csmutex.RLock()
+	defer s.csmutex.RUnlock()
+
+	for _, sub := range s.clientSubscriptions {
+		if sub.matchesRepGroup(repGroup) {
+			sub.rememberRepGroupKey(key)
+		}
+	}
 }
 
 func subscriptionUpdateCandidate(_, to JobState) bool {
@@ -1945,13 +2098,13 @@ func (s *Server) createQueue(ctx context.Context) {
 
 			connIDs := jobSubscriptions[jobKey]
 
-			var clientSubs []*serverSubscription
+			hasClientSubs := false
 
 			if subscriptionUpdateCandidate(from, to) {
-				clientSubs = s.matchingClientSubscriptionsForJob(jobKey, repGroup)
+				hasClientSubs = len(s.matchingClientSubscriptionsForJob(jobKey, repGroup)) > 0
 			}
 
-			if len(connIDs) == 0 && len(clientSubs) == 0 {
+			if len(connIDs) == 0 && !hasClientSubs {
 				continue
 			}
 
@@ -1983,9 +2136,9 @@ func (s *Server) createQueue(ctx context.Context) {
 			status.IsPushUpdate = true
 
 			state, ok := subscriptionUpdateStateFromStatus(status, from, to)
-			if ok && len(clientSubs) > 0 {
+			if ok && hasClientSubs {
 				started, ended := jobUpdateTimes(job)
-				s.enqueueSubscriptionUpdateTo(clientSubs, jobUpdateFromStatus(status, state, started, ended))
+				s.enqueueSubscriptionUpdate(jobUpdateFromStatus(status, state, started, ended))
 			}
 
 			if len(connIDs) == 0 {
@@ -2108,12 +2261,24 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 	}
 
 	// add to our lookup of job RepGroup to key
+	repGroupKeys := make([]struct {
+		repGroup string
+		key      string
+	}, 0, len(itemdefs))
 	s.rpl.Lock()
 	for _, itemdef := range itemdefs {
 		rp := itemdef.Data.(*Job).RepGroup
 		s.rpl.Add(rp, itemdef.Key)
+		repGroupKeys = append(repGroupKeys, struct {
+			repGroup string
+			key      string
+		}{repGroup: rp, key: itemdef.Key})
 	}
 	s.rpl.Unlock()
+
+	for _, repGroupKey := range repGroupKeys {
+		s.rememberRepGroupSubscriptionKey(repGroupKey.repGroup, repGroupKey.key)
+	}
 
 	return added, dups, err
 }
@@ -2842,6 +3007,34 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	}
 
 	return jobs
+}
+
+func addRepGroupAggregateState(update *JobUpdate, state JobState) bool {
+	update.JobStates = append(update.JobStates, state)
+
+	switch state {
+	case JobStateComplete:
+		update.Complete++
+	case JobStateBuried:
+		update.Buried++
+	case JobStateLost:
+		update.Lost++
+	default:
+		return false
+	}
+
+	return true
+}
+
+func sortedRepGroupStateKeys(states map[string]JobState) []string {
+	keys := make([]string, 0, len(states))
+	for key := range states {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	return keys
 }
 
 func jobUnixNano(t time.Time) *int64 {

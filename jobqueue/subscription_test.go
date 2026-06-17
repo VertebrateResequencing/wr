@@ -203,7 +203,7 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 
 	Convey("A full Go subscription queue does not block dispatch", t, func() {
 		server := &Server{clientSubscriptions: make(map[string]*serverSubscription)}
-		sub := newServerSubscription([]string{"subscription-a1-full"}, "")
+		sub := newServerSubscription([]string{"subscription-a1-full"}, "", nil)
 		server.clientSubscriptions["sub"] = sub
 
 		defer sub.close()
@@ -240,7 +240,7 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 
 	Convey("A full Go subscription queue does not accumulate dispatch goroutines", t, func() {
 		server := &Server{clientSubscriptions: make(map[string]*serverSubscription)}
-		sub := newServerSubscription([]string{"subscription-a1-goroutines"}, "")
+		sub := newServerSubscription([]string{"subscription-a1-goroutines"}, "", nil)
 		server.clientSubscriptions["sub"] = sub
 
 		defer sub.close()
@@ -878,6 +878,171 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	})
 }
 
+func TestSubscriptionRepGroupAggregate(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A RepGroup subscription emits one aggregate when all known jobs are complete or buried", t, func() {
+		restore := overrideSubscriptionTimings(5 * time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-b2-done"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 2), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 2)
+
+		sub, err := jq.SubscribeToRepGroup(ctx, repGroup)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		archiveNextSubscriptionJob(jq)
+		buryNextSubscriptionJob(jq)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(update.RepGroup, ShouldEqual, repGroup)
+		So(update.Complete, ShouldEqual, 1)
+		So(update.Buried, ShouldEqual, 1)
+		So(update.Lost, ShouldEqual, 0)
+		So(update.Total, ShouldEqual, 2)
+		So(update.JobKeys, ShouldHaveLength, 2)
+		So(update.JobStates, ShouldHaveLength, 2)
+		So(subscriptionStatesByKey(update), ShouldResemble, map[string]JobState{
+			ids[0]: JobStateComplete,
+			ids[1]: JobStateBuried,
+		})
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
+	Convey("A lost RepGroup job holds the aggregate back until it settles", t, func() {
+		restore := overrideSubscriptionTimings(200 * time.Millisecond)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-b2-lost"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 2), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 2)
+
+		sub, err := jq.SubscribeToRepGroup(ctx, repGroup)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		lostJob := startNextSubscriptionJob(jq)
+		archiveNextSubscriptionJob(jq)
+
+		So(receiveSubscriptionUpdate(sub, 2*time.Second), ShouldBeNil)
+
+		killed, err := server.killJob(ctx, lostJob.Key())
+		So(err, ShouldBeNil)
+		So(killed, ShouldBeTrue)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(update.Complete, ShouldEqual, 1)
+		So(update.Buried, ShouldEqual, 1)
+		So(update.Lost, ShouldEqual, 0)
+		So(update.Total, ShouldEqual, 2)
+		So(subscriptionStatesByKey(update), ShouldResemble, map[string]JobState{
+			ids[0]: JobStateBuried,
+			ids[1]: JobStateComplete,
+		})
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+
+	Convey("An empty RepGroup subscription closes on context deadline without a done event", t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(context.Background(), serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(context.Background(), true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToRepGroup(ctx, "subscription-b2-empty")
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		var updates []*JobUpdate
+		for update := range sub.Updates() {
+			updates = append(updates, update)
+		}
+
+		So(updates, ShouldHaveLength, 0)
+		So(errors.Is(sub.Err(), context.DeadlineExceeded), ShouldBeTrue)
+	})
+
+	Convey("A RepGroup subscription delivers only the aggregate when its jobs finish", t, func() {
+		restore := overrideSubscriptionTimings(5 * time.Second)
+		defer restore()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-b2-only-aggregate"
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 2), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 2)
+
+		sub, err := jq.SubscribeToRepGroup(ctx, repGroup)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		archiveNextSubscriptionJob(jq)
+		archiveNextSubscriptionJob(jq)
+
+		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
+	})
+}
+
 func overrideSubscriptionTimings(ttr time.Duration) func() {
 	originalTTR := ServerItemTTR
 	originalLostCheckTimeout := ServerLostJobCheckTimeout
@@ -946,6 +1111,19 @@ func collectSubscriptionUpdates(sub *Subscription, count int, timeout time.Durat
 	return updates, true
 }
 
+func archiveNextSubscriptionJob(jq *Client) {
+	job := startNextSubscriptionJob(jq)
+	So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+}
+
+func buryNextSubscriptionJob(jq *Client) {
+	job := startNextSubscriptionJob(jq)
+	So(
+		jq.Bury(job, &JobEndState{Exited: true, Exitcode: -1, EndTime: time.Now()}, "subscription test buried"),
+		ShouldBeNil,
+	)
+}
+
 func receiveSubscriptionUpdate(sub *Subscription, timeout time.Duration) *JobUpdate {
 	select {
 	case update, ok := <-sub.Updates():
@@ -964,6 +1142,25 @@ func mismatchedToken(token []byte) []byte {
 	wrong[0] ^= 1
 
 	return wrong
+}
+
+func subscriptionStatesByKey(update *JobUpdate) map[string]JobState {
+	states := make(map[string]JobState, len(update.JobKeys))
+
+	for i, key := range update.JobKeys {
+		states[key] = update.JobStates[i]
+	}
+
+	return states
+}
+
+func startNextSubscriptionJob(jq *Client) *Job {
+	job, err := jq.Reserve(50 * time.Millisecond)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+	So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+	return job
 }
 
 func subscriptionUpdatesClosed(sub *Subscription) bool {

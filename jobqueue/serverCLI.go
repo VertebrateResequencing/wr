@@ -370,7 +370,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				break
 			}
 
-			catchUp, catchUpErr := s.subscriptionCatchUp(ctx, cr.Keys, repGroup)
+			catchUp, catchUpErr := s.subscriptionCatchUpForRegistered(ctx, id, cr.Keys, repGroup)
 			if catchUpErr != nil {
 				s.unregisterClientSubscription(id)
 
@@ -1102,6 +1102,26 @@ func (s *Server) jobPopulateStdEnv(ctx context.Context, job *Job, getStd bool, g
 
 func jobCouldHaveStd(job *Job) bool {
 	return (job.Exited && job.Exitcode != 0) || job.State == JobStateBuried
+}
+
+func (s *Server) subscriptionCatchUpForRegistered(ctx context.Context, id string,
+	keys []string, repGroup string,
+) ([]*JobUpdate, error) {
+	if repGroup == "" {
+		return s.subscriptionCatchUp(ctx, keys, repGroup)
+	}
+
+	records, _, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	update := s.seedRepGroupSubscription(id, records)
+	if update == nil {
+		return nil, nil
+	}
+
+	return []*JobUpdate{update}, nil
 }
 
 func (s *Server) subscriptionCatchUp(ctx context.Context, keys []string, repGroup string) ([]*JobUpdate, error) {
