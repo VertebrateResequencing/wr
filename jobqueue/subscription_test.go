@@ -31,13 +31,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
 
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	gpnet "github.com/shirou/gopsutil/net"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
@@ -201,94 +201,265 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 		So(got.State, ShouldEqual, JobStateReady)
 	})
 
-	Convey("A full Go subscription queue does not block dispatch", t, func() {
-		server := &Server{clientSubscriptions: make(map[string]*serverSubscription)}
-		sub := newServerSubscription([]string{"subscription-a1-full"}, "", nil)
-		server.clientSubscriptions["sub"] = sub
+}
 
-		defer sub.close()
+func TestSubscriptionBoundedIsolatedBuffer(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
 
-		update := &JobUpdate{
-			Kind:     JobUpdateTerminal,
-			Key:      "subscription-a1-full",
-			RepGroup: "subscription-a1",
-			State:    JobStateComplete,
+	Convey("A full subscriber does not stall a peer receiving many terminal updates", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		total := serverSubscriptionQueueSize + 8
+		itemdefs, ids := buriedSubscriptionItemDefs("subscription-d2-shared", standardReqs, total)
+
+		stalledID, err := server.registerClientSubscription(ids, "")
+		So(err, ShouldBeNil)
+
+		peerID, err := server.registerClientSubscription(ids, "")
+		So(err, ShouldBeNil)
+
+		defer server.unregisterClientSubscription(peerID)
+
+		added, dups, err := server.enqueueItems(ctx, itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, total)
+		So(dups, ShouldEqual, 0)
+
+		updates, ok := collectServerSubscriptionUpdatesByID(server, peerID, total, time.Second)
+		peerCount := len(updates)
+		server.unregisterClientSubscription(stalledID)
+
+		So(ok, ShouldBeTrue)
+		So(peerCount, ShouldEqual, total)
+		So(distinctSubscriptionUpdateKeys(updates), ShouldEqual, total)
+	})
+
+	Convey("A subscriber receives every terminal event after its full queue resumes", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		total := serverSubscriptionQueueSize + 8
+		itemdefs, ids := buriedSubscriptionItemDefs("subscription-d2-resume", standardReqs, total)
+
+		subID, err := server.registerClientSubscription(ids, "")
+		So(err, ShouldBeNil)
+
+		defer server.unregisterClientSubscription(subID)
+
+		sub, exists := server.clientSubscription(subID)
+		So(exists, ShouldBeTrue)
+
+		added, dups, err := server.enqueueItems(ctx, itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, total)
+		So(dups, ShouldEqual, 0)
+		So(serverSubscriptionQueueDepthBecomes(sub, serverSubscriptionQueueSize, time.Second), ShouldBeTrue)
+
+		updates, ok := collectServerSubscriptionUpdatesByID(server, subID, total, time.Second)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, total)
+		So(distinctSubscriptionUpdateKeys(updates), ShouldEqual, total)
+	})
+
+	Convey("A stalled subscriber does not stop unrelated terminal transitions becoming observable", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		total := serverSubscriptionQueueSize + 1
+		itemdefs, stalledIDs := buriedSubscriptionItemDefs("subscription-d2-stalled", standardReqs, total)
+
+		stalledID, err := server.registerClientSubscription(stalledIDs, "")
+		So(err, ShouldBeNil)
+
+		defer server.unregisterClientSubscription(stalledID)
+
+		stalled, exists := server.clientSubscription(stalledID)
+		So(exists, ShouldBeTrue)
+
+		added, dups, err := server.enqueueItems(ctx, itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, total)
+		So(dups, ShouldEqual, 0)
+		So(serverSubscriptionQueueDepthBecomes(stalled, serverSubscriptionQueueSize, time.Second), ShouldBeTrue)
+
+		independentDone := archiveIndependentSubscriptionJob(jq, standardReqs, "subscription-d2-independent")
+		So(completeJobsByRepGroupBecome(jq, "subscription-d2-independent", 1, time.Second), ShouldBeTrue)
+
+		server.unregisterClientSubscription(stalledID)
+		So(completionFinished(independentDone, time.Second), ShouldBeTrue)
+	})
+}
+
+func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("SubscribeToJobKeys delivers a terminal update when completion races the subscribe call", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-d3-race", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		type subscribeResult struct {
+			sub *Subscription
+			err error
 		}
 
-		enqueued := 0
-
-		for range serverSubscriptionQueueSize {
-			if sub.enqueue(update) {
-				enqueued++
-			}
-		}
-
-		So(enqueued, ShouldEqual, serverSubscriptionQueueSize)
-
-		done := make(chan struct{})
+		subscribed := make(chan subscribeResult, 1)
 		go func() {
-			server.enqueueSubscriptionUpdate(update)
-			close(done)
+			sub, subErr := jq.SubscribeToJobKeys(ctx, ids)
+			subscribed <- subscribeResult{sub: sub, err: subErr}
 		}()
 
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		var result subscribeResult
 		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			So("timed out waiting for full subscription queue dispatch to return", ShouldBeBlank)
+		case result = <-subscribed:
+		case <-time.After(time.Second):
+			So("timed out waiting for SubscribeToJobKeys", ShouldBeBlank)
+
+			return
+		}
+
+		So(result.err, ShouldBeNil)
+		So(result.sub, ShouldNotBeNil)
+		if result.err != nil || result.sub == nil {
+			return
+		}
+
+		defer result.sub.Unsubscribe()
+
+		updates, ok := collectSubscriptionUpdates(result.sub, 1, 2*time.Second)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, 1)
+
+		if second := receiveSubscriptionUpdate(result.sub, 150*time.Millisecond); second != nil {
+			updates = append(updates, second)
+		}
+
+		for _, update := range updates {
+			So(update.Kind, ShouldEqual, JobUpdateTerminal)
+			So(update.Key, ShouldEqual, ids[0])
+			So(update.State, ShouldEqual, JobStateComplete)
+		}
+
+		if len(updates) == 2 {
+			So(updates[1].Key, ShouldEqual, updates[0].Key)
+			So(updates[1].State, ShouldEqual, updates[0].State)
 		}
 	})
 
-	Convey("A full Go subscription queue does not accumulate dispatch goroutines", t, func() {
-		server := &Server{clientSubscriptions: make(map[string]*serverSubscription)}
-		sub := newServerSubscription([]string{"subscription-a1-goroutines"}, "", nil)
-		server.clientSubscriptions["sub"] = sub
+	Convey("A key completed during subscribe catch-up can be seen as an identical catch-up/live duplicate", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
 
-		defer sub.close()
+		defer server.Stop(ctx, true)
 
-		update := &JobUpdate{
-			Kind:     JobUpdateTerminal,
-			Key:      "subscription-a1-goroutines",
-			RepGroup: "subscription-a1",
-			State:    JobStateComplete,
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-d3-duplicate", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		subID, err := server.registerClientSubscription(ids, "")
+		So(err, ShouldBeNil)
+
+		defer server.unregisterClientSubscription(subID)
+
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		catchUp, err := server.subscriptionCatchUpForRegistered(ctx, subID, ids, "")
+		So(err, ShouldBeNil)
+		So(catchUp, ShouldHaveLength, 1)
+
+		live, ok := collectServerSubscriptionUpdatesByID(server, subID, 1, time.Second)
+		So(ok, ShouldBeTrue)
+		So(live, ShouldHaveLength, 1)
+
+		for _, update := range []*JobUpdate{catchUp[0], live[0]} {
+			So(update.Kind, ShouldEqual, JobUpdateTerminal)
+			So(update.Key, ShouldEqual, ids[0])
+			So(update.State, ShouldEqual, JobStateComplete)
 		}
 
-		enqueued := 0
+		So(live[0].Key, ShouldEqual, catchUp[0].Key)
+		So(live[0].State, ShouldEqual, catchUp[0].State)
+	})
 
-		for range serverSubscriptionQueueSize {
-			if sub.enqueue(update) {
-				enqueued++
-			}
-		}
+	Convey("The AddAndWait terminal collector counts distinct keys when a duplicate terminal event is injected", t, func() {
+		updates := make(chan *JobUpdate, 4)
+		keys := []string{"subscription-d3-a", "subscription-d3-b", "subscription-d3-c"}
 
-		So(enqueued, ShouldEqual, serverSubscriptionQueueSize)
+		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[0], State: JobStateComplete}
+		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[1], State: JobStateBuried}
+		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[1], State: JobStateBuried}
+		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[2], State: JobStateComplete}
 
-		goroutinesBefore := runtime.NumGoroutine()
-		done := make(chan struct{})
-
-		go func() {
-			for range serverSubscriptionQueueSize + 128 {
-				server.enqueueSubscriptionUpdate(update)
-			}
-
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-			So("timed out waiting for repeated full subscription queue dispatch", ShouldBeBlank)
-		}
-
-		time.Sleep(20 * time.Millisecond)
-
-		goroutinesAfter := runtime.NumGoroutine()
-		growth := 0
-
-		if goroutinesAfter > goroutinesBefore {
-			growth = goroutinesAfter - goroutinesBefore
-		}
-
-		So(growth, ShouldBeLessThan, 16)
+		seen, err := collectDistinctTerminalKeys(context.Background(), updates, keys)
+		So(err, ShouldBeNil)
+		So(seen, ShouldResemble, map[string]JobState{
+			keys[0]: JobStateComplete,
+			keys[1]: JobStateBuried,
+			keys[2]: JobStateComplete,
+		})
 	})
 }
 
@@ -1041,6 +1212,154 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(update.Kind, ShouldEqual, JobUpdateRepGroupDone)
 		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
 	})
+}
+
+func buriedSubscriptionItemDefs(
+	prefix string,
+	standardReqs *jqs.Requirements,
+	count int,
+) ([]*queue.ItemDef, []string) {
+	jobs := subscriptionTestJobs(prefix, standardReqs, count)
+	itemdefs := make([]*queue.ItemDef, 0, count)
+	ids := make([]string, 0, count)
+	now := time.Now()
+
+	for _, job := range jobs {
+		job.State = JobStateBuried
+		job.Exited = true
+		job.Exitcode = -1
+		job.FailReason = "subscription test buried"
+		job.StartTime = now
+		job.EndTime = now
+
+		key := job.Key()
+		ids = append(ids, key)
+		itemdefs = append(itemdefs, &queue.ItemDef{
+			Key:          key,
+			ReserveGroup: job.getSchedulerGroup(),
+			Data:         job,
+			TTR:          ServerItemTTR,
+			StartQueue:   queue.SubQueueBury,
+		})
+	}
+
+	return itemdefs, ids
+}
+
+func distinctSubscriptionUpdateKeys(updates []*JobUpdate) int {
+	keys := make(map[string]struct{}, len(updates))
+
+	for _, update := range updates {
+		keys[update.Key] = struct{}{}
+	}
+
+	return len(keys)
+}
+
+func serverSubscriptionQueueDepthBecomes(sub *serverSubscription, expected int, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if len(sub.queue) == expected {
+			return true
+		}
+
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func archiveIndependentSubscriptionJob(
+	jq *Client,
+	standardReqs *jqs.Requirements,
+	repGroup string,
+) <-chan error {
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 1), envVars, true)
+		if err != nil {
+			done <- err
+
+			return
+		}
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		if err != nil {
+			done <- err
+
+			return
+		}
+
+		if err = jq.Started(job, os.Getpid()); err != nil {
+			done <- err
+
+			return
+		}
+
+		done <- jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+	}()
+
+	return done
+}
+
+func completeJobsByRepGroupBecome(jq *Client, repGroup string, expected int, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		jobs, err := jq.GetByRepGroup(repGroup, false, 0, JobStateComplete, false, false)
+		if err == nil && len(jobs) == expected {
+			return true
+		}
+
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func completionFinished(done <-chan error, timeout time.Duration) bool {
+	select {
+	case err := <-done:
+		So(err, ShouldBeNil)
+
+		return err == nil
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func collectServerSubscriptionUpdatesByID(
+	server *Server,
+	id string,
+	count int,
+	perUpdateTimeout time.Duration,
+) ([]*JobUpdate, bool) {
+	updates := make([]*JobUpdate, 0, count)
+
+	for len(updates) < count {
+		batch, err := server.waitForSubscriptionUpdates(id, perUpdateTimeout)
+		if err != nil {
+			return updates, false
+		}
+
+		updates = append(updates, batch...)
+
+		if len(batch) == 0 {
+			return updates, false
+		}
+	}
+
+	return updates, true
 }
 
 func overrideSubscriptionTimings(ttr time.Duration) func() {

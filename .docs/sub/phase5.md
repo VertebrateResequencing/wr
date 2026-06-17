@@ -21,8 +21,8 @@ isolation: a stuck subscriber must not stall the manager's
 `jobqueue/server.go`. Covering all 3 acceptance tests from D2. Builds on
 Phases 1-4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 5.2: D3 - At-least-once delivery; dedup by key
 
@@ -35,5 +35,5 @@ Lay the client-side dedup-by-key groundwork that AddAndWait relies on
 (counting distinct terminal keys). Files: `jobqueue/subscription.go`.
 Covering all 2 acceptance tests from D3. Depends on item 5.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

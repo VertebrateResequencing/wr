@@ -83,6 +83,30 @@ type JobUpdate struct {
 	Total      int
 }
 
+func recordTerminalKey(update *JobUpdate, wanted map[string]struct{}, seen map[string]JobState) {
+	if !isTerminalUpdate(update) {
+		return
+	}
+
+	if _, wantedKey := wanted[update.Key]; !wantedKey {
+		return
+	}
+
+	if _, alreadySeen := seen[update.Key]; alreadySeen {
+		return
+	}
+
+	seen[update.Key] = update.State
+}
+
+func isTerminalUpdate(update *JobUpdate) bool {
+	if update == nil || update.Kind != JobUpdateTerminal {
+		return false
+	}
+
+	return update.State == JobStateComplete || update.State == JobStateBuried
+}
+
 // Subscription is a client-side handle for job completion updates.
 type Subscription struct {
 	client    *Client
@@ -424,6 +448,36 @@ func subscriptionTLSConfig(caFile, certDomain string) *tls.Config {
 	}
 
 	return tlsConfig
+}
+
+func collectDistinctTerminalKeys(ctx context.Context, updates <-chan *JobUpdate, keys []string) (map[string]JobState, error) {
+	wanted := terminalKeySet(keys)
+	seen := make(map[string]JobState, len(wanted))
+
+	for len(seen) < len(wanted) {
+		select {
+		case update, ok := <-updates:
+			if !ok {
+				return seen, ErrSubscriptionClosed
+			}
+
+			recordTerminalKey(update, wanted, seen)
+		case <-ctx.Done():
+			return seen, ctx.Err()
+		}
+	}
+
+	return seen, nil
+}
+
+func terminalKeySet(keys []string) map[string]struct{} {
+	wanted := make(map[string]struct{}, len(keys))
+
+	for _, key := range keys {
+		wanted[key] = struct{}{}
+	}
+
+	return wanted
 }
 
 func (c *Client) subscriptionDialAddr() string {

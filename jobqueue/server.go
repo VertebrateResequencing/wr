@@ -402,6 +402,21 @@ func (s *serverSubscription) enqueue(update *JobUpdate) bool {
 		return true
 	case <-s.done:
 		return false
+	}
+}
+
+func (s *serverSubscription) tryEnqueue(update *JobUpdate) bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+	}
+
+	select {
+	case s.queue <- update:
+		return true
+	case <-s.done:
+		return false
 	default:
 		return false
 	}
@@ -653,16 +668,28 @@ func (s *Server) seedRepGroupSubscription(id string, records map[string]subscrip
 
 func (s *Server) enqueueSubscriptionUpdate(update *JobUpdate) {
 	keySubs, repGroupUpdates := s.subscriptionUpdatesForJob(update)
-	s.enqueueSubscriptionUpdateTo(keySubs, update)
+	deliveries := make([]repGroupSubscriptionUpdate, 0, len(keySubs)+len(repGroupUpdates))
 
-	for _, repGroupUpdate := range repGroupUpdates {
-		repGroupUpdate.sub.enqueue(repGroupUpdate.update)
+	for _, sub := range keySubs {
+		deliveries = append(deliveries, repGroupSubscriptionUpdate{sub: sub, update: update})
 	}
+
+	deliveries = append(deliveries, repGroupUpdates...)
+
+	s.enqueueSubscriptionDeliveries(deliveries)
 }
 
-func (s *Server) enqueueSubscriptionUpdateTo(subs []*serverSubscription, update *JobUpdate) {
-	for _, sub := range subs {
-		sub.enqueue(update)
+func (s *Server) enqueueSubscriptionDeliveries(deliveries []repGroupSubscriptionUpdate) {
+	blocked := make([]repGroupSubscriptionUpdate, 0)
+
+	for _, delivery := range deliveries {
+		if !delivery.sub.tryEnqueue(delivery.update) {
+			blocked = append(blocked, delivery)
+		}
+	}
+
+	for _, delivery := range blocked {
+		go delivery.sub.enqueue(delivery.update)
 	}
 }
 
