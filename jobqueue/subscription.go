@@ -195,7 +195,7 @@ func (s *Subscription) unsubscribeServer() error {
 	var unsubErr error
 
 	s.unsubOnce.Do(func() {
-		_, unsubErr = s.client.request(&clientRequest{Method: "unsubscribe", SubscriptionID: s.id})
+		_, unsubErr = s.client.request(&clientRequest{Method: requestMethodUnsubscribe, SubscriptionID: s.id})
 	})
 
 	return unsubErr
@@ -280,7 +280,7 @@ func (s *Subscription) encodeUpdateRequest() ([]byte, string, error) {
 
 func (s *Subscription) updateRequest() *clientRequest {
 	return &clientRequest{
-		Method:         "waitForUpdates",
+		Method:         requestMethodWaitForUpdates,
 		SubscriptionID: s.id,
 		Token:          s.client.token,
 		ClientID:       s.client.clientid,
@@ -397,7 +397,7 @@ func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error
 
 func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string) error {
 	if _, err := s.client.request(&clientRequest{
-		Method:         "unsubscribe",
+		Method:         requestMethodUnsubscribe,
 		SubscriptionID: subscriptionID,
 	}); err != nil {
 		return errors.Join(ErrSubscriptionClosed, err)
@@ -408,7 +408,7 @@ func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string) err
 
 func (s *Subscription) subscribeRequest() *clientRequest {
 	req := &clientRequest{
-		Method: "subscribe",
+		Method: requestMethodSubscribe,
 		Keys:   append([]string(nil), s.keys...),
 	}
 
@@ -541,10 +541,10 @@ func (s *Subscription) replaceSock(sock mangos.Socket, id, dialAddr string) bool
 // SubscribeToJobKeys subscribes to updates for the given job keys.
 func (c *Client) SubscribeToJobKeys(ctx context.Context, keys []string) (*Subscription, error) {
 	if len(keys) == 0 {
-		return nil, Error{"subscribe", "", ErrBadRequest}
+		return nil, Error{requestMethodSubscribe, "", ErrBadRequest}
 	}
 
-	cr := &clientRequest{Method: "subscribe", Keys: append([]string(nil), keys...)}
+	cr := &clientRequest{Method: requestMethodSubscribe, Keys: append([]string(nil), keys...)}
 
 	return c.subscribe(ctx, cr)
 }
@@ -552,10 +552,10 @@ func (c *Client) SubscribeToJobKeys(ctx context.Context, keys []string) (*Subscr
 // SubscribeToRepGroup subscribes to updates for a single exact RepGroup.
 func (c *Client) SubscribeToRepGroup(ctx context.Context, repGroup string) (*Subscription, error) {
 	if repGroup == "" {
-		return nil, Error{"subscribe", "", ErrBadRequest}
+		return nil, Error{requestMethodSubscribe, "", ErrBadRequest}
 	}
 
-	cr := &clientRequest{Method: "subscribe", Job: &Job{RepGroup: repGroup}}
+	cr := &clientRequest{Method: requestMethodSubscribe, Job: &Job{RepGroup: repGroup}}
 
 	return c.subscribe(ctx, cr)
 }
@@ -802,7 +802,7 @@ func (c *Client) subscriptionDialAddr() string {
 
 func (c *Client) unsubscribeAfterDialFailure(subscriptionID string, dialErr error) error {
 	if _, unsubscribeErr := c.request(&clientRequest{
-		Method:         "unsubscribe",
+		Method:         requestMethodUnsubscribe,
 		SubscriptionID: subscriptionID,
 	}); unsubscribeErr != nil {
 		return errors.Join(dialErr, unsubscribeErr)

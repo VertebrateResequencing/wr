@@ -35,6 +35,11 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+const (
+	jstatusRequestDetails     = "details"
+	jstatusRequestUnsubscribe = requestMethodUnsubscribe
+)
+
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
 type jstatusReq struct {
 	// possible Requests are:
@@ -296,7 +301,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						if failed {
 							break
 						}
-					case "details":
+					case jstatusRequestDetails:
 						opts := repGroupOptions{
 							RepGroup: req.RepGroup,
 							Match:    normalizeRepGroupMatch("", req.Search),
@@ -350,7 +355,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 								break
 							}
 						}
-					case "unsubscribe":
+					case jstatusRequestUnsubscribe:
 						s.unsubscribeFromJob(connStorageName, req.Key)
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})

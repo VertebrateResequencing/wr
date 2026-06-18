@@ -49,6 +49,8 @@ import (
 	"nanomsg.org/go-mangos"
 )
 
+const subscriptionA1ReqGroup = "subscription-a1"
+
 var (
 	errAddAndWaitTimeout = errors.New("timed out waiting for AddAndWait")
 	errNoReservedJob     = errors.New("reserve returned no job")
@@ -528,10 +530,10 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 
 		ids, err := jq.AddAndReturnIDs([]*Job{{
 			Cmd:          "echo subscription a1 dial",
-			Cwd:          "/tmp",
-			ReqGroup:     "subscription-a1",
+			Cwd:          testCwd,
+			ReqGroup:     subscriptionA1ReqGroup,
 			Requirements: standardReqs,
-			RepGroup:     "subscription-a1",
+			RepGroup:     subscriptionA1ReqGroup,
 		}}, envVars, true)
 		So(err, ShouldBeNil)
 		So(ids, ShouldHaveLength, 1)
@@ -559,10 +561,10 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 
 		ids, err := jq.AddAndReturnIDs([]*Job{{
 			Cmd:          "echo subscription a1 complete",
-			Cwd:          "/tmp",
-			ReqGroup:     "subscription-a1",
+			Cwd:          testCwd,
+			ReqGroup:     subscriptionA1ReqGroup,
 			Requirements: standardReqs,
-			RepGroup:     "subscription-a1",
+			RepGroup:     subscriptionA1ReqGroup,
 		}}, envVars, true)
 		So(err, ShouldBeNil)
 		So(ids, ShouldHaveLength, 1)
@@ -613,10 +615,10 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 
 		ids, err := jq.AddAndReturnIDs([]*Job{{
 			Cmd:          "echo subscription a1 ports",
-			Cwd:          "/tmp",
-			ReqGroup:     "subscription-a1",
+			Cwd:          testCwd,
+			ReqGroup:     subscriptionA1ReqGroup,
 			Requirements: standardReqs,
-			RepGroup:     "subscription-a1",
+			RepGroup:     subscriptionA1ReqGroup,
 		}}, envVars, true)
 		So(err, ShouldBeNil)
 		So(ids, ShouldHaveLength, 1)
@@ -648,10 +650,10 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 
 		job := &Job{
 			Cmd:          "echo subscription a1 unchanged",
-			Cwd:          "/tmp",
-			ReqGroup:     "subscription-a1",
+			Cwd:          testCwd,
+			ReqGroup:     subscriptionA1ReqGroup,
 			Requirements: standardReqs,
-			RepGroup:     "subscription-a1",
+			RepGroup:     subscriptionA1ReqGroup,
 		}
 		added, existed, err := jq.Add([]*Job{job}, envVars, true)
 		So(err, ShouldBeNil)
@@ -854,6 +856,7 @@ func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
 		}
 
 		subscribed := make(chan subscribeResult, 1)
+
 		go func() {
 			sub, subErr := jq.SubscribeToJobKeys(ctx, ids)
 			subscribed <- subscribeResult{sub: sub, err: subErr}
@@ -952,8 +955,11 @@ func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
 		keys := []string{"subscription-d3-a", "subscription-d3-b", "subscription-d3-c"}
 
 		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[0], State: JobStateComplete}
+
 		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[1], State: JobStateBuried}
+
 		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[1], State: JobStateBuried}
+
 		updates <- &JobUpdate{Kind: JobUpdateTerminal, Key: keys[2], State: JobStateComplete}
 
 		seen, err := collectDistinctTerminalKeys(context.Background(), updates, keys)
@@ -1153,7 +1159,7 @@ func TestSubscriptionAuthorization(t *testing.T) {
 
 		ids, err := jq.AddAndReturnIDs([]*Job{{
 			Cmd:          "echo subscription a2 unauthorised",
-			Cwd:          "/tmp",
+			Cwd:          testCwd,
 			ReqGroup:     "subscription-a2",
 			Requirements: standardReqs,
 			RepGroup:     "subscription-a2",
@@ -1170,7 +1176,7 @@ func TestSubscriptionAuthorization(t *testing.T) {
 
 		wrongToken := mismatchedToken(token)
 		subscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
-			Method: "subscribe",
+			Method: requestMethodSubscribe,
 			Keys:   ids,
 			Token:  wrongToken,
 		})
@@ -1181,7 +1187,7 @@ func TestSubscriptionAuthorization(t *testing.T) {
 		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
 
 		waitResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
-			Method:         "waitForUpdates",
+			Method:         requestMethodWaitForUpdates,
 			SubscriptionID: "sub-unauthorised",
 			Token:          wrongToken,
 			Timeout:        2 * time.Second,
@@ -1235,7 +1241,7 @@ func TestSubscriptionCatchUp(t *testing.T) {
 		}()
 
 		subscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
-			Method: "subscribe",
+			Method: requestMethodSubscribe,
 			Keys:   ids,
 			Token:  token,
 		})
@@ -1248,7 +1254,7 @@ func TestSubscriptionCatchUp(t *testing.T) {
 		So(subscribeResp.JobUpdates[0].Key, ShouldEqual, ids[0])
 
 		unsubscribeResp, err := sendRawSubscriptionRequest(sock, &clientRequest{
-			Method:         "unsubscribe",
+			Method:         requestMethodUnsubscribe,
 			SubscriptionID: subscribeResp.SubscriptionID,
 			Token:          token,
 		})
@@ -2303,7 +2309,7 @@ func subscriptionTestJobs(prefix string, standardReqs *jqs.Requirements, count i
 		name := fmt.Sprintf("%s-%d", prefix, i)
 		jobs = append(jobs, &Job{
 			Cmd:          "echo " + name,
-			Cwd:          "/tmp",
+			Cwd:          testCwd,
 			ReqGroup:     name,
 			Requirements: standardReqs,
 			RepGroup:     prefix,

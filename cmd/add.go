@@ -918,13 +918,20 @@ func checkForRelativePathsInNonCwdMatters(
 // synchronousAdd adds one job and waits for it to complete, then outputs its
 // stdout&err and exits with its exit code.
 func synchronousAdd(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string, ignoreComplete bool) {
+	synchronousAddWithExit(jq, job, envVars, ignoreComplete, os.Exit)
+}
+
+func synchronousAddWithExit(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string, ignoreComplete bool,
+	exit func(int)) {
 	jobs, err := jq.AddAndWait(context.Background(), []*jobqueue.Job{job}, envVars, ignoreComplete)
 	if err != nil {
 		die("%s", err)
 	}
 
 	if len(jobs) == 0 {
-		os.Exit(1)
+		exit(1)
+
+		return
 	}
 
 	job = jobs[0]
@@ -939,7 +946,7 @@ func synchronousAdd(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string
 		fmt.Fprintln(os.Stderr, stderr)
 	}
 
-	os.Exit(job.Exitcode)
+	exit(job.Exitcode)
 }
 
 func overrideStringToInt(input string) int {

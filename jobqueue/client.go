@@ -114,6 +114,12 @@ const (
 	RepGroupMatchSuffix RepGroupMatch = "suffix"
 )
 
+const (
+	requestMethodSubscribe      = "subscribe"
+	requestMethodUnsubscribe    = "unsubscribe"
+	requestMethodWaitForUpdates = "waitForUpdates"
+)
+
 // clientRequest is the struct that clients send to the server over the network
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)

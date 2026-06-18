@@ -45,19 +45,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
-
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/shirou/gopsutil/process"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/wtsi-ssg/wr/clog"
 	bolt "go.etcd.io/bbolt"
 )
 
 const (
 	maxSpawnTime = 240 * time.Second
 	serverRC     = `echo %s %s %s %s %d %d`
+	testCwd      = "/tmp"
 )
 
 var (
@@ -335,7 +335,7 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		repGroup := "subscription-f1-shared"
 		ids, err := jq.AddAndReturnIDs([]*Job{{
 			Cmd:          "echo subscription f1 shared",
-			Cwd:          "/tmp",
+			Cwd:          testCwd,
 			ReqGroup:     repGroup,
 			Requirements: standardReqs,
 			RepGroup:     repGroup,
@@ -363,7 +363,7 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		}()
 
 		err = ws.WriteJSON(jstatusReq{
-			Request:  "details",
+			Request:  jstatusRequestDetails,
 			RepGroup: repGroup,
 			State:    JobStateReady,
 		})
@@ -4598,6 +4598,7 @@ func TestJobqueueProduction(t *testing.T) {
 		Convey("A kill requested after reservation survives job start", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
+
 			defer disconnect(jq)
 
 			jobs := []*Job{{

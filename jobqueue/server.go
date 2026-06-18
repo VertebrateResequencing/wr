@@ -390,6 +390,7 @@ func (c *caster) Join() *casterMember {
 
 func (c *caster) Send(val interface{}) {
 	c.RLock()
+
 	if c.closed {
 		c.RUnlock()
 
@@ -400,6 +401,7 @@ func (c *caster) Send(val interface{}) {
 	for member := range c.members {
 		members = append(members, member)
 	}
+
 	c.RUnlock()
 
 	for _, member := range members {
@@ -527,6 +529,7 @@ func (s *serverSubscription) wait(timeout time.Duration) ([]*JobUpdate, bool) {
 	defer timer.Stop()
 
 	var updates []*JobUpdate
+
 	select {
 	case update := <-s.queue:
 		updates = append(updates, update)
@@ -2412,10 +2415,20 @@ func (s *Server) createQueue(ctx context.Context) {
 				}
 
 				go func() {
-					if !killCalled && !s.recoveredRunningJobs[jobKey] &&
-						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout,
-							serverLostJobCheckRetryTime) {
-						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
+					confirmedDead := !killCalled && !s.recoveredRunningJobs[jobKey]
+					if confirmedDead {
+						confirmedDead = s.confirmJobDeadAndKill(
+							ctx,
+							jobKey,
+							jobHost,
+							jobPID,
+							serverLostJobCheckTimeout,
+							serverLostJobCheckRetryTime,
+						)
+					}
+
+					if confirmedDead {
+						clog.Info(ctx, "killed a job after confirming it was dead", "key", jobKey)
 					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
 
@@ -2654,6 +2667,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 
 	for _, update := range updates {
 		job := update.job
+
 		thisErr := s.q.Update(
 			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, update.deps,
 		)

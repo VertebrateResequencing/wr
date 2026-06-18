@@ -66,6 +66,7 @@ func TestCaster(t *testing.T) {
 		}
 
 		sent := make(chan struct{})
+
 		go func() {
 			caster.Send("closed")
 			close(sent)
@@ -251,7 +252,7 @@ func TestServerWebI(t *testing.T) {
 
 			Convey("The websocket handler responds to details requests", func() {
 				err = ws.WriteJSON(jstatusReq{
-					Request:  "details",
+					Request:  jstatusRequestDetails,
 					RepGroup: "rg1",
 					State:    JobStateComplete,
 				})
@@ -267,7 +268,7 @@ func TestServerWebI(t *testing.T) {
 				go func() {
 					<-time.After(100 * time.Millisecond)
 					ws.WriteJSON(jstatusReq{ //nolint:errcheck
-						Request:  "details",
+						Request:  jstatusRequestDetails,
 						RepGroup: "rg1",
 						State:    JobStateReserved,
 					})
@@ -338,7 +339,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns the first page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -353,7 +354,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns the second page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -368,7 +369,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns a partial page when reaching the end", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -383,7 +384,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns no jobs when offset is beyond available results", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -398,7 +399,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns all jobs when limit is 0", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -428,7 +429,7 @@ func TestServerWebI(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					err = ws.WriteJSON(jstatusReq{
-						Request:  "details",
+						Request:  jstatusRequestDetails,
 						RepGroup: "search_rg",
 						Search:   true,
 					})
@@ -478,7 +479,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It handles negative offset gracefully", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -519,7 +520,7 @@ func TestServerWebI(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   2,
@@ -999,14 +1000,14 @@ func TestJobSubscriptions(t *testing.T) {
 			So(len(rg2Jobs), ShouldEqual, 1)
 
 			err = ws1.WriteJSON(jstatusReq{
-				Request:  "details",
+				Request:  jstatusRequestDetails,
 				RepGroup: "sub_rg1",
 				State:    JobStateReady,
 			})
 			So(err, ShouldBeNil)
 
 			err = ws2.WriteJSON(jstatusReq{
-				Request:  "details",
+				Request:  jstatusRequestDetails,
 				RepGroup: "sub_rg2",
 				State:    JobStateReady,
 			})
@@ -1058,7 +1059,7 @@ func TestJobSubscriptions(t *testing.T) {
 				defer ws2.Close()
 
 				err = ws2.WriteJSON(jstatusReq{
-					Request:  "details",
+					Request:  jstatusRequestDetails,
 					RepGroup: "sub_rg2",
 					State:    JobStateReady,
 				})
@@ -1095,7 +1096,7 @@ func TestJobSubscriptions(t *testing.T) {
 				defer ws1.Close()
 
 				err = ws1.WriteJSON(jstatusReq{
-					Request:  "details",
+					Request:  jstatusRequestDetails,
 					RepGroup: "sub_rg1",
 					State:    JobStateReady,
 				})
@@ -1104,7 +1105,7 @@ func TestJobSubscriptions(t *testing.T) {
 				limitedDrain(ws1, 3)
 
 				err = ws1.WriteJSON(jstatusReq{
-					Request: "unsubscribe",
+					Request: jstatusRequestUnsubscribe,
 				})
 				So(err, ShouldBeNil)
 

@@ -23,8 +23,8 @@ import (
 	"compress/zlib"
 	"context"
 	"errors"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -38,6 +38,8 @@ var (
 	errMissingIgnoreComplete        = errors.New("AddAndWait did not preserve ignoreComplete")
 	errUnexpectedSynchronousEnv     = errors.New("AddAndWait received unexpected env vars")
 )
+
+const synchronousAddBuriedHelper = "buried"
 
 func TestAddQueuesAvoidDefault(t *testing.T) {
 	Convey("add queues_avoid default is applied when unset", t, func() {
@@ -111,18 +113,21 @@ func zlibCompress(data []byte) []byte {
 	return compressed.Bytes()
 }
 
-func runSynchronousAddHelper(exitCode int, stdout string, stderr string) {
-	synchronousAdd(
+type synchronousAddExitCode int
+
+func runSynchronousAddHelper(exitCode int, stdout string, stderr string, exit func(int)) {
+	synchronousAddWithExit(
 		synchronousAddTestClient{exitCode: exitCode, stdout: stdout, stderr: stderr},
 		&jobqueue.Job{Cmd: "sync command"},
 		[]string{"SYNC_TEST=1"},
 		true,
+		exit,
 	)
 }
 
 func TestSynchronousAddPrintsStdoutAndExitsZero(t *testing.T) {
 	Convey("wr add --sync prints stdout and exits zero for a successful job", t, func() {
-		stdout, stderr, exitCode := runSynchronousAddSubprocess(t, "success")
+		stdout, stderr, exitCode := runSynchronousAddInProcess(t, "success")
 
 		So(exitCode, ShouldEqual, 0)
 		So(stdout, ShouldEqual, "sync stdout\n")
@@ -132,7 +137,7 @@ func TestSynchronousAddPrintsStdoutAndExitsZero(t *testing.T) {
 
 func TestSynchronousAddExitsWithBuriedJobExitCode(t *testing.T) {
 	Convey("wr add --sync exits with the buried job exit code", t, func() {
-		stdout, stderr, exitCode := runSynchronousAddSubprocess(t, "buried")
+		stdout, stderr, exitCode := runSynchronousAddInProcess(t, synchronousAddBuriedHelper)
 
 		So(exitCode, ShouldEqual, 3)
 		So(stdout, ShouldBeBlank)
@@ -140,46 +145,70 @@ func TestSynchronousAddExitsWithBuriedJobExitCode(t *testing.T) {
 	})
 }
 
-func runSynchronousAddSubprocess(t *testing.T, helper string) (string, string, int) {
+func runSynchronousAddInProcess(t *testing.T, helper string) (string, string, int) {
 	t.Helper()
 
-	//nolint:gosec // Test helper intentionally re-execs the current test binary with fixed arguments.
-	cmd := exec.Command(os.Args[0], "-test.run=^TestSynchronousAddHelperProcess$")
-	cmd.Env = append(os.Environ(),
-		"WR_SYNC_ADD_HELPER_PROCESS=1",
-		"WR_SYNC_ADD_HELPER="+helper,
-	)
+	stdoutReader, stdoutWriter := synchronousAddPipe(t)
+	defer stdoutReader.Close()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stderrReader, stderrWriter := synchronousAddPipe(t)
+	defer stderrReader.Close()
 
-	err := cmd.Run()
-	if err == nil {
-		return stdout.String(), stderr.String(), 0
-	}
+	originalStdout, originalStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdoutWriter, stderrWriter
 
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		So(err, ShouldBeNil)
+	exitCode := 0
 
-		return stdout.String(), stderr.String(), 1
-	}
+	func() {
+		defer func() {
+			os.Stdout, os.Stderr = originalStdout, originalStderr
 
-	return stdout.String(), stderr.String(), exitErr.ExitCode()
+			So(stdoutWriter.Close(), ShouldBeNil)
+			So(stderrWriter.Close(), ShouldBeNil)
+
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+
+			code, ok := recovered.(synchronousAddExitCode)
+			if !ok {
+				panic(recovered)
+			}
+
+			exitCode = int(code)
+		}()
+
+		runSynchronousAddNamedHelper(helper, func(code int) {
+			panic(synchronousAddExitCode(code))
+		})
+	}()
+
+	stdout, err := io.ReadAll(stdoutReader)
+	So(err, ShouldBeNil)
+
+	stderr, err := io.ReadAll(stderrReader)
+	So(err, ShouldBeNil)
+
+	return string(stdout), string(stderr), exitCode
 }
 
-func TestSynchronousAddHelperProcess(t *testing.T) {
+func synchronousAddPipe(t *testing.T) (*os.File, *os.File) {
 	t.Helper()
 
-	if os.Getenv("WR_SYNC_ADD_HELPER_PROCESS") != "1" {
-		return
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	switch os.Getenv("WR_SYNC_ADD_HELPER") {
+	return reader, writer
+}
+
+func runSynchronousAddNamedHelper(helper string, exit func(int)) {
+	switch helper {
 	case "success":
-		runSynchronousAddHelper(0, "sync stdout", "")
-	case "buried":
-		runSynchronousAddHelper(3, "", "sync stderr")
+		runSynchronousAddHelper(0, "sync stdout", "", exit)
+	case synchronousAddBuriedHelper:
+		runSynchronousAddHelper(3, "", "sync stderr", exit)
 	}
 }

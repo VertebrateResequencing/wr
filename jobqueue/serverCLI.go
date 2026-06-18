@@ -402,7 +402,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					}
 				}
 			}
-		case "subscribe":
+		case requestMethodSubscribe:
 			repGroup := ""
 			if cr.Job != nil {
 				repGroup = cr.Job.RepGroup
@@ -427,7 +427,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			}
 
 			sr = &serverResponse{SubscriptionID: id, JobUpdates: catchUp}
-		case "unsubscribe":
+		case requestMethodUnsubscribe:
 			if cr.SubscriptionID == "" {
 				srerr = ErrBadRequest
 
@@ -437,7 +437,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			s.unregisterClientSubscription(cr.SubscriptionID)
 
 			sr = &serverResponse{}
-		case "waitForUpdates":
+		case requestMethodWaitForUpdates:
 			if cr.SubscriptionID == "" {
 				srerr = ErrBadRequest
 
