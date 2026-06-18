@@ -25,6 +25,7 @@ import (
 	"embed"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -119,6 +120,75 @@ type JStatus struct {
 	HomeChanged     bool
 	Exited          bool
 	IsPushUpdate    bool
+}
+
+func statusFromJobUpdate(update *JobUpdate) *JStatus {
+	return &JStatus{
+		Key:          update.Key,
+		RepGroup:     update.RepGroup,
+		State:        update.State,
+		FailReason:   update.FailReason,
+		Exitcode:     update.Exitcode,
+		Started:      statusTimeFromJobUpdateTime(update.Started),
+		Ended:        statusTimeFromJobUpdateTime(update.Ended),
+		IsPushUpdate: true,
+	}
+}
+
+func (s *Server) statusFromSubscriptionUpdate(ctx context.Context, update *JobUpdate) *JStatus {
+	if update == nil || update.Key == "" {
+		return nil
+	}
+
+	jobs, _, errstr := s.getJobsByKeys(ctx, []string{update.Key}, true, true)
+	if errstr != "" || len(jobs) != 1 {
+		return statusFromJobUpdate(update)
+	}
+
+	status, err := jobs[0].ToStatus()
+	if err != nil {
+		return statusFromJobUpdate(update)
+	}
+
+	status.State = update.State
+	status.Started = statusTimeFromJobUpdateTime(update.Started)
+	status.Ended = statusTimeFromJobUpdateTime(update.Ended)
+	status.IsPushUpdate = true
+
+	return &status
+}
+
+func statusTimeFromJobUpdateTime(unixNano *int64) *int64 {
+	if unixNano == nil {
+		return nil
+	}
+
+	unixSeconds := *unixNano / int64(time.Second)
+
+	return &unixSeconds
+}
+
+func (s *Server) writeStatusSubscriptionUpdate(ctx context.Context, conn *websocket.Conn,
+	connName string, status *JStatus) bool {
+	s.wsmutex.RLock()
+	writeMutex := s.wsWriteMutexes[connName]
+	s.wsmutex.RUnlock()
+
+	if writeMutex == nil {
+		return false
+	}
+
+	writeMutex.Lock()
+	err := conn.WriteJSON(status)
+	writeMutex.Unlock()
+
+	if err != nil {
+		clog.Warn(ctx, "status subscription updater failed to send JSON to client", "err", err)
+
+		return false
+	}
+
+	return true
 }
 
 // webInterfaceStatic is a http handler for our static documents in the static
@@ -217,16 +287,18 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 		// when the server shuts down it will close our conn, ending the main
 		// goroutine
 		storedName := s.storeWebSocketConnection(conn)
+		statusSubscriptionID := s.registerStatusSubscription()
 
 		// when the main goroutine closes we will end all the others
 		stopper := make(chan bool)
 
 		// go routine to read client requests and respond to them
-		go func(conn *websocket.Conn, connStorageName string, stop chan bool) {
+		go func(conn *websocket.Conn, connStorageName string, subscriptionID string, stop chan bool) {
 			// log panics and die
 			defer internal.LogPanic(ctx, "jobqueue websocket client handling", true)
 
 			defer func() {
+				s.unregisterClientSubscription(subscriptionID)
 				s.closeWebSocketConnection(ctx, connStorageName)
 
 				// stop the other goroutines
@@ -318,10 +390,9 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 
 						jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
 						if errstr == "" && len(jobs) > 0 {
-							writeMutex.Lock()
 							failed := false
-
 							jobKeys := make([]string, 0, len(jobs))
+							statuses := make([]JStatus, 0, len(jobs))
 
 							for _, job := range jobs {
 								status, err := job.ToStatus()
@@ -337,17 +408,26 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 									status.RepGroup = req.RepGroup
 								}
 
-								err = conn.WriteJSON(status)
-								if err != nil {
-									failed = true
-									break
-								}
-
+								statuses = append(statuses, status)
 								jobKeys = append(jobKeys, job.Key())
 							}
 
 							if len(jobKeys) > 0 {
-								s.subscribeToJobs(connStorageName, jobKeys)
+								s.subscribeToJobs(subscriptionID, jobKeys)
+							}
+
+							writeMutex.Lock()
+							if s.statusWSDetailsHook != nil {
+								s.statusWSDetailsHook()
+							}
+
+							for _, status := range statuses {
+								err := conn.WriteJSON(status)
+								if err != nil {
+									failed = true
+
+									break
+								}
 							}
 
 							writeMutex.Unlock()
@@ -356,7 +436,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							}
 						}
 					case jstatusRequestUnsubscribe:
-						s.unsubscribeFromJob(connStorageName, req.Key)
+						s.unsubscribeFromJob(subscriptionID, req.Key)
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						s.kickJobs(ctx, jobs)
@@ -406,12 +486,11 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							break
 						}
 
+						s.subscribeToJobs(subscriptionID, []string{req.Key})
+
 						writeMutex.Lock()
 
 						err = conn.WriteJSON(status)
-						if err == nil {
-							s.subscribeToJobs(connStorageName, []string{req.Key})
-						}
 
 						writeMutex.Unlock()
 						if err != nil {
@@ -420,12 +499,22 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					}
 				}
 			}
-		}(conn, storedName, stopper)
+		}(conn, storedName, statusSubscriptionID, stopper)
 
 		// Set up goroutines to push changes to the client
 		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.statusCaster, "status updater")
 		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
 		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
+		go s.setupStatusSubscriptionUpdateListener(ctx, conn, stopper, storedName, statusSubscriptionID)
+	}
+}
+
+func statusSubscriptionStopped(stop <-chan bool) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -535,4 +624,40 @@ func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string
 		}
 	}
 	return nil
+}
+
+func (s *Server) setupStatusSubscriptionUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
+	connName string, subscriptionID string) {
+	defer internal.LogPanic(ctx, "jobqueue websocket status subscription updater", true)
+
+	for {
+		if statusSubscriptionStopped(stop) {
+			return
+		}
+
+		updates, err := s.waitForSubscriptionUpdates(subscriptionID, serverSubscriptionHoldTime)
+		if err != nil {
+			return
+		}
+
+		if !s.writeStatusSubscriptionUpdates(ctx, conn, connName, updates) {
+			return
+		}
+	}
+}
+
+func (s *Server) writeStatusSubscriptionUpdates(ctx context.Context, conn *websocket.Conn,
+	connName string, updates []*JobUpdate) bool {
+	for _, update := range updates {
+		status := s.statusFromSubscriptionUpdate(ctx, update)
+		if status == nil {
+			continue
+		}
+
+		if !s.writeStatusSubscriptionUpdate(ctx, conn, connName, status) {
+			return false
+		}
+	}
+
+	return true
 }

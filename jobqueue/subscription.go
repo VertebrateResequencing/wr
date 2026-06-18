@@ -67,6 +67,10 @@ const (
 	JobUpdateRepGroupDone
 	// JobUpdateResync means the client re-subscribed after reconnecting.
 	JobUpdateResync
+	// JobUpdateStateChange means a subscribed job changed to a non-terminal
+	// state. Only server-side status websocket detail subscriptions request
+	// these updates.
+	JobUpdateStateChange
 )
 
 // JobUpdate is the single event type delivered on Subscription.

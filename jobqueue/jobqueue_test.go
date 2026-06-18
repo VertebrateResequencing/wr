@@ -397,8 +397,12 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		So(webStatus.RepGroup, ShouldEqual, repGroup)
 		So(webStatus.IsPushUpdate, ShouldBeTrue)
 
+		var goUpdate *JobUpdate
+
 		select {
 		case update := <-sub.Updates():
+			goUpdate = update
+
 			So(update.Kind, ShouldEqual, JobUpdateTerminal)
 			So(update.State, ShouldEqual, JobStateComplete)
 			So(update.Key, ShouldEqual, ids[0])
@@ -406,6 +410,33 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		case <-time.After(time.Second):
 			So("timed out waiting for Go subscription update", ShouldBeBlank)
 		}
+
+		So(webStatus.Started, ShouldNotBeNil)
+		So(webStatus.Ended, ShouldNotBeNil)
+		So(goUpdate, ShouldNotBeNil)
+
+		if webStatus.Started == nil || webStatus.Ended == nil || goUpdate == nil {
+			return
+		}
+
+		So(goUpdate.Started, ShouldNotBeNil)
+		So(goUpdate.Ended, ShouldNotBeNil)
+
+		if goUpdate.Started == nil || goUpdate.Ended == nil {
+			return
+		}
+
+		unixMilliseconds := time.Now().Add(-time.Hour).UnixNano() / int64(time.Millisecond)
+		So(*goUpdate.Started, ShouldBeGreaterThan, unixMilliseconds)
+		So(*goUpdate.Ended, ShouldBeGreaterThan, unixMilliseconds)
+		So(*webStatus.Started, ShouldBeLessThan, unixMilliseconds)
+		So(*webStatus.Ended, ShouldBeLessThan, unixMilliseconds)
+
+		startedSeconds := *goUpdate.Started / int64(time.Second)
+		endedSeconds := *goUpdate.Ended / int64(time.Second)
+
+		So(*webStatus.Started, ShouldBeBetweenOrEqual, startedSeconds-1, startedSeconds+1)
+		So(*webStatus.Ended, ShouldBeBetweenOrEqual, endedSeconds-1, endedSeconds+1)
 	})
 
 	Convey("SetChangedCallback emits browser and Go push updates from one per-job status loop", t, func() {
@@ -420,7 +451,7 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		So(guard.pushStatusLoop.toStatusCalls, ShouldEqual, 1)
 		So(guard.pushStatusLoop.jobUpdateFromStatusUsesStatus, ShouldBeTrue)
 		So(guard.pushStatusLoop.subscriptionUpdateCalls, ShouldBeGreaterThan, 0)
-		So(guard.pushStatusLoop.writesStatus, ShouldBeTrue)
+		So(guard.pushStatusLoop.writesStatus, ShouldBeFalse)
 	})
 }
 
