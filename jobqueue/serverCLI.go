@@ -32,7 +32,7 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
-	"nanomsg.org/go-mangos"
+	"go.nanomsg.org/mangos/v3"
 )
 
 type subscriptionCatchUpRecord struct {
@@ -256,6 +256,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 	cr := &clientRequest{}
 	errd := dec.Decode(cr)
 	if errd != nil {
+		m.Free()
+
 		return errd
 	}
 
@@ -1243,9 +1245,15 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
 	err := enc.Encode(sr)
 	if err != nil {
+		m.Free()
+
 		return err
 	}
 	m.Body = encoded
 	err = s.sock.SendMsg(m)
+	if err != nil {
+		m.Free()
+	}
+
 	return err
 }

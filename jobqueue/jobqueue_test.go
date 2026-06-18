@@ -910,7 +910,7 @@ func TestJobqueueSignal(t *testing.T) {
 			return
 		}
 		errd := jq.Disconnect()
-		if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+		if errd != nil && !isClosedSocketError(errd) {
 			fmt.Printf("failed to disconnect: %s\n", errd)
 		}
 
@@ -1238,7 +1238,7 @@ func TestJobqueueSignal(t *testing.T) {
 				fmt.Printf("failed to send SIGKILL to runner: %s\n", errk)
 			}
 			errd := jq.Disconnect()
-			if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+			if errd != nil && !isClosedSocketError(errd) {
 				fmt.Printf("failed to disconnect: %s\n", errd)
 			}
 			errw := serverCmd.Wait()
@@ -4984,7 +4984,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				err = jq.Disconnect()
 				if err != nil {
-					So(err.Error(), ShouldEqual, "connection closed")
+					So(isClosedSocketError(err), ShouldBeTrue)
 				}
 
 				wipeDevDBOnInit = false
@@ -7964,7 +7964,7 @@ func timelimitDebug(jobs []*Job, err error) {
 
 func disconnect(client *Client) {
 	err := client.Disconnect()
-	if err != nil && !strings.Contains(err.Error(), "connection closed") {
+	if err != nil && !isClosedSocketError(err) {
 		fmt.Printf("client.Disconnect() failed: %s", err)
 	}
 }

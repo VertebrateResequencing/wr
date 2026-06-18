@@ -53,9 +53,9 @@ import (
 	"github.com/lindell/go-ordered-set/orderedset"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
-	mangos "nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/rep"
-	"nanomsg.org/go-mangos/transport/tlstcp"
+	mangos "go.nanomsg.org/mangos/v3"
+	"go.nanomsg.org/mangos/v3/protocol/xrep"
+	_ "go.nanomsg.org/mangos/v3/transport/tlstcp" // register tls+tcp transport
 )
 
 // Err* constants are found in our returned Errors under err.Err, so you can
@@ -838,7 +838,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		}
 	}()
 
-	sock, err := rep.NewSocket()
+	sock, err := xrep.NewSocket()
 	if err != nil {
 		return s, msg, token, err
 	}
@@ -856,12 +856,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// forever when it legitimately wants to Add() a ton of jobs
 	// unlimited Recv() length
 	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return s, msg, token, err
-	}
-
-	// we use raw mode, allowing us to respond to multiple clients in
-	// parallel
-	if err = sock.SetOption(mangos.OptionRaw, true); err != nil {
 		return s, msg, token, err
 	}
 
@@ -892,7 +886,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	// have mangos listen using TLS over TCP
-	sock.AddTransport(tlstcp.NewTransport())
 	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return s, msg, token, err

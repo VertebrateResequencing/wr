@@ -46,7 +46,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
-	"nanomsg.org/go-mangos"
+	"go.nanomsg.org/mangos/v3"
 )
 
 const subscriptionA1ReqGroup = "subscription-a1"

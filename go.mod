@@ -44,11 +44,11 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/ugorji/go/codec v1.3.1
 	go.etcd.io/bbolt v1.4.3
+	go.nanomsg.org/mangos/v3 v3.4.2
 	golang.org/x/crypto v0.53.0
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.1
 	k8s.io/client-go v11.0.0+incompatible
-	nanomsg.org/go-mangos v1.4.0
 	vimagination.zapto.org/parser v1.2.2
 )
 

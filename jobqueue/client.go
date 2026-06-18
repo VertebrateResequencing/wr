@@ -26,6 +26,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -49,9 +50,9 @@ import (
 	"github.com/kballard/go-shellquote"
 	"github.com/shirou/gopsutil/process"
 	"github.com/ugorji/go/codec"
-	"nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/req"
-	"nanomsg.org/go-mangos/transport/tlstcp"
+	"go.nanomsg.org/mangos/v3"
+	"go.nanomsg.org/mangos/v3/protocol/req"
+	_ "go.nanomsg.org/mangos/v3/transport/tlstcp" // register tls+tcp transport
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs
@@ -108,16 +109,16 @@ var (
 )
 
 const (
+	requestMethodSubscribe      = "subscribe"
+	requestMethodUnsubscribe    = "unsubscribe"
+	requestMethodWaitForUpdates = "waitForUpdates"
+)
+
+const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
 	RepGroupMatchSubStr RepGroupMatch = "substr"
 	RepGroupMatchPrefix RepGroupMatch = "prefix"
 	RepGroupMatchSuffix RepGroupMatch = "suffix"
-)
-
-const (
-	requestMethodSubscribe      = "subscribe"
-	requestMethodUnsubscribe    = "unsubscribe"
-	requestMethodWaitForUpdates = "waitForUpdates"
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -237,7 +238,6 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return nil, err
 	}
 
-	sock.AddTransport(tlstcp.NewTransport())
 	tlsConfig := &tls.Config{ServerName: certDomain}
 	caCert, err := os.ReadFile(caFile)
 	if err == nil {
@@ -249,7 +249,12 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	dialOpts := make(map[string]interface{})
 	dialOpts[mangos.OptionTLSConfig] = tlsConfig
 	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
-		return nil, err
+		errc := sock.Close()
+		if errc != nil && !isClosedSocketError(errc) {
+			return nil, errc
+		}
+
+		return nil, Error{"Connect", "", ErrNoServer}
 	}
 
 	// clients identify themselves (only for the purpose of calling methods that
@@ -272,8 +277,8 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		args:     []string{addr, caFile, certDomain},
 	}
 
-	// Dial succeeds even when there's no server up, so we test the connection
-	// works with a Ping()
+	// Check the application-level connection, populate ServerInfo, and report
+	// authentication failures consistently.
 	si, err := c.Ping(timeout)
 	if err != nil {
 		errc := sock.Close()
@@ -1504,7 +1509,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			if !disconnected {
 				errd := c.Disconnect()
-				if errd == nil || strings.Contains(errd.Error(), "connection closed") {
+				if errd == nil || isClosedSocketError(errd) {
 					disconnected = true
 				} else {
 					clog.Warn(ctx, "failed to disconnect", "err", errd)
@@ -1541,6 +1546,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	return myerr
+}
+
+func isClosedSocketError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return errors.Is(err, mangos.ErrClosed) || strings.Contains(err.Error(), "connection closed")
 }
 
 // createLSFSymlinks creates symlinks of bsub, bjobs and bkill to own exe,

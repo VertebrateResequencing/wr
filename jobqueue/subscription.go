@@ -37,9 +37,9 @@ import (
 	"time"
 
 	"github.com/ugorji/go/codec"
-	"nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/req"
-	"nanomsg.org/go-mangos/transport/tlstcp"
+	"go.nanomsg.org/mangos/v3"
+	"go.nanomsg.org/mangos/v3/protocol/req"
+	_ "go.nanomsg.org/mangos/v3/transport/tlstcp" // register tls+tcp transport
 )
 
 const (
@@ -600,8 +600,6 @@ func dialSubscriptionSocket(addr, caFile, certDomain string, timeout time.Durati
 		return nil, err
 	}
 
-	sock.AddTransport(tlstcp.NewTransport())
-
 	dialOpts := subscriptionDialOptions(caFile, certDomain)
 
 	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
@@ -670,7 +668,9 @@ func configureSubscriptionSocket(sock mangos.Socket, timeout time.Duration) erro
 }
 
 func subscriptionDialOptions(caFile, certDomain string) map[string]interface{} {
-	return map[string]interface{}{mangos.OptionTLSConfig: subscriptionTLSConfig(caFile, certDomain)}
+	return map[string]interface{}{
+		mangos.OptionTLSConfig: subscriptionTLSConfig(caFile, certDomain),
+	}
 }
 
 func subscriptionTLSConfig(caFile, certDomain string) *tls.Config {
