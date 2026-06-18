@@ -30,7 +30,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 //go:embed static

@@ -50,7 +50,7 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/shirou/gopsutil/process"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 	bolt "go.etcd.io/bbolt"
 )
 

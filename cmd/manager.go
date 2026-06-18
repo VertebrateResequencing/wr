@@ -32,7 +32,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"

@@ -33,7 +33,7 @@ import (
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 const logDirPerm = 0o770

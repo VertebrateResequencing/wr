@@ -30,7 +30,7 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 func TestUtility(t *testing.T) {

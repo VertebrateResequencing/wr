@@ -30,10 +30,10 @@ import (
 	"github.com/creasty/defaults"
 	"github.com/jinzhu/configor"
 	"github.com/olekukonko/tablewriter"
-	"github.com/wtsi-ssg/wr/clog"
-	fsd "github.com/wtsi-ssg/wr/fs/dir"
-	fp "github.com/wtsi-ssg/wr/fs/filepath"
-	"github.com/wtsi-ssg/wr/network/port"
+	"github.com/VertebrateResequencing/wr/clog"
+	fsd "github.com/VertebrateResequencing/wr/fs/dir"
+	fp "github.com/VertebrateResequencing/wr/fs/filepath"
+	"github.com/VertebrateResequencing/wr/network/port"
 )
 
 const (

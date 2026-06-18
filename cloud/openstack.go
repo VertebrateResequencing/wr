@@ -36,7 +36,7 @@ import (
 	"time"
 
 	"github.com/sb10/waitgroup"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"

@@ -39,7 +39,7 @@ import (
 	"github.com/gofrs/uuid"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/container"
+	"github.com/VertebrateResequencing/wr/container"
 )
 
 // JobState is how we describe the possible job states.

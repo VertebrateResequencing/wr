@@ -31,7 +31,7 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 	"nanomsg.org/go-mangos"
 )
 

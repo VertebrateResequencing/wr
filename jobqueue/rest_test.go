@@ -177,7 +177,7 @@ func TestREST(t *testing.T) {
 			So(len(jstati), ShouldEqual, 3)
 
 			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-			So(jstati[0].State, ShouldEqual, "ready")
+			So(jstati[0].State, ShouldEqual, JobStateReady)
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
 			So(jstati[0].RepGroup, ShouldEqual, "rp1")
 			So(jstati[0].ExpectedRAM, ShouldEqual, 1000)
@@ -187,7 +187,7 @@ func TestREST(t *testing.T) {
 			So(jstati[1].RepGroup, ShouldEqual, "rp2")
 			So(jstati[1].CwdBase, ShouldEqual, "/tmp/foo")
 			So(jstati[2].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-			So(jstati[2].State, ShouldEqual, "ready")
+			So(jstati[2].State, ShouldEqual, JobStateReady)
 			So(jstati[2].CwdBase, ShouldEqual, "/tmp")
 			So(jstati[2].RepGroup, ShouldEqual, "rp1")
 			So(jstati[2].ExpectedRAM, ShouldEqual, 50)
@@ -464,7 +464,7 @@ func TestREST(t *testing.T) {
 
 						So(jstati2[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
 						So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
-						So(jstati2[0].State, ShouldEqual, "buried")
+						So(jstati2[0].State, ShouldEqual, JobStateBuried)
 						So(jstati2[0].StdOut, ShouldEqual, "3")
 						So(jstati2[0].Started, ShouldNotBeNil)
 						So(*jstati2[0].Started, ShouldBeGreaterThanOrEqualTo, t.Unix())
@@ -486,7 +486,7 @@ func TestREST(t *testing.T) {
 
 						So(jstati3[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
 						So(jstati3[0].CwdBase, ShouldEqual, "/tmp")
-						So(jstati3[0].State, ShouldEqual, "buried")
+						So(jstati3[0].State, ShouldEqual, JobStateBuried)
 						So(jstati3[0].StdOut, ShouldEqual, "")
 					})
 
@@ -529,7 +529,7 @@ func TestREST(t *testing.T) {
 			So(len(jstati), ShouldEqual, 1)
 
 			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-			So(jstati[0].State, ShouldEqual, "ready")
+			So(jstati[0].State, ShouldEqual, JobStateReady)
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
 			So(jstati[0].RepGroup, ShouldEqual, "rp1")
 			other := []string{"cloud_flavor:o1.tiny"}
@@ -590,7 +590,7 @@ func TestREST(t *testing.T) {
 			So(len(jstati), ShouldEqual, 1)
 
 			So(jstati[0].Key, ShouldEqual, "b17c665295e0a3fcf2e07c6d7ad6ddd4")
-			So(jstati[0].State, ShouldEqual, "ready")
+			So(jstati[0].State, ShouldEqual, JobStateReady)
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp/foo")
 			So(jstati[0].RepGroup, ShouldEqual, "defaultedRepGrp")
 			So(jstati[0].Cores, ShouldEqual, 2)

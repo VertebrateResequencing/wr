@@ -38,7 +38,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 const (

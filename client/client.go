@@ -38,7 +38,7 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/inconshreveable/log15"
 	"github.com/rs/xid"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 type Error string

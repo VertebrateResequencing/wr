@@ -36,7 +36,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"

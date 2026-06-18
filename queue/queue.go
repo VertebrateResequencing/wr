@@ -90,7 +90,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 // SubQueue is how we name the sub-queues of a Queue.

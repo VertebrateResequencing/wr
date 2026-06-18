@@ -32,7 +32,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 // maxCloudResourceUsernameLength is the maximum length that cloud username can
