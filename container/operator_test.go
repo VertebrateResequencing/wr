@@ -101,7 +101,7 @@ func TestOperator(t *testing.T) {
 	Convey("Given a NewOperator", t, func() {
 		// Create a list of dummy containers
 		cntrList := []*Container{{
-			ID: "container_id1", Names: []string{"/test_container1", "/test_container1_2"},
+			ID: testContainerID1, Names: []string{testContainerName1WithPrefix, "/test_container1_2"},
 		}, {
 			ID: "container_id2", Names: []string{"/test_container2"},
 		}, {

@@ -55,7 +55,7 @@ type Status struct { //nolint:errname
 func (s *Status) String() string {
 	errString := ""
 	if s.Err != nil {
-		errString = fmt.Sprintf("; err: %s", s.Err.Error())
+		errString = "; err: " + s.Err.Error()
 	}
 
 	return fmt.Sprintf("after %d retries, stopped trying because %s%s", s.Retried, s.StoppedBecause, errString)

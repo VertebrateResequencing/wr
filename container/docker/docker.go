@@ -28,10 +28,10 @@ import (
 	"context"
 	"encoding/json"
 
-	cn "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 	"github.com/VertebrateResequencing/wr/container"
 	"github.com/VertebrateResequencing/wr/math/convert"
+	cn "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 )
 
 // Interator implements the container/Interactor interface for docker.
@@ -78,10 +78,10 @@ func (i *Interactor) ContainerStats(ctx context.Context,
 	return decodeDockerContainerStats(stats)
 }
 
-// decodeDockerContainerStats takes type.ContainerStats and decodes it to return
+// decodeDockerContainerStats takes Docker container stats and decodes them to return
 // the current memory usage (RSS, in MB) and total CPU (in seconds).
 func decodeDockerContainerStats(containerStats cn.StatsResponseReader) (*container.Stats, error) {
-	var ds *cn.Stats
+	var ds *cn.StatsResponse
 
 	err := json.NewDecoder(containerStats.Body).Decode(&ds)
 	if err != nil {

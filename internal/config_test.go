@@ -29,11 +29,11 @@ import (
 	"strconv"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/clog"
 	fsd "github.com/VertebrateResequencing/wr/fs/dir"
 	fl "github.com/VertebrateResequencing/wr/fs/file"
 	ft "github.com/VertebrateResequencing/wr/fs/test"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 // expectedManagerPort is the manager port string used to verify tests.

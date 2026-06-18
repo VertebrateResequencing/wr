@@ -31,9 +31,9 @@ import (
 	"syscall"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	backoff "github.com/VertebrateResequencing/wr/backoff/time"
 	"github.com/VertebrateResequencing/wr/fs"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestVolumeUsageCalculator(t *testing.T) {
@@ -45,12 +45,16 @@ func TestVolumeUsageCalculator(t *testing.T) {
 
 	Convey("Size() and Free() methods return real values", t, func() {
 		path := os.TempDir()
+
 		var stat syscall.Statfs_t
+
 		err := syscall.Statfs(path, &stat)
 		if err != nil {
 			t.Fatalf("Statfs failed: %s", err)
 		}
-		expectedSize := stat.Blocks * uint64(stat.Bsize)
+
+		So(stat.Bsize, ShouldBeGreaterThan, 0)
+		expectedSize := stat.Blocks * uint64(stat.Bsize) //nolint:gosec // Statfs block size is positive above.
 
 		calc := &VolumeUsageCalculator{}
 		So(calc.Size(ctx, path), ShouldEqual, expectedSize)

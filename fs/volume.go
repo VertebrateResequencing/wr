@@ -60,7 +60,7 @@ type Volume struct {
 
 // Size returns the size of the volume in GB.
 func (v *Volume) Size(ctx context.Context) int {
-	return int(v.UsageCalculator.Size(ctx, v.Dir) / gb)
+	return uint64ToInt(v.UsageCalculator.Size(ctx, v.Dir) / gb)
 }
 
 // NoSpaceLeft tells you if the volume has no more space left (or is within
@@ -130,6 +130,7 @@ func retryIfZero(ctx context.Context,
 	f volumeUsageCalculationMethod,
 	arg string) uint64 {
 	var bytes uint64
+
 	status := retry.Do(
 		ctx,
 		operationReturnsErrIfZero(ctx, f, arg, &bytes),
@@ -163,4 +164,13 @@ func operationReturnsErrIfZero(ctx context.Context,
 
 		return nil
 	}
+}
+
+func uint64ToInt(value uint64) int {
+	maxInt := int(^uint(0) >> 1)
+	if value > uint64(maxInt) {
+		return maxInt
+	}
+
+	return int(value) //nolint:gosec // value is bounded by maxInt above.
 }

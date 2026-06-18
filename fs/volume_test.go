@@ -31,10 +31,10 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/backoff"
 	bm "github.com/VertebrateResequencing/wr/backoff/mock"
 	"github.com/VertebrateResequencing/wr/fs/mock"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestVolume(t *testing.T) {
@@ -84,7 +84,7 @@ func TestVolume(t *testing.T) {
 
 	makeCheckedMockVolumeAndCalculator := func(attempts int,
 		wait time.Duration,
-		max time.Duration) (*Volume, *mock.VolumeUsageCalculator, *bm.Sleeper) {
+		maxSleep time.Duration) (*Volume, *mock.VolumeUsageCalculator, *bm.Sleeper) {
 		m := &mock.VolumeUsageCalculator{
 			FreeFn: func(volumePath string) uint64 {
 				return 0
@@ -99,7 +99,7 @@ func TestVolume(t *testing.T) {
 			Retries:         attempts - 1,
 			Backoff: &backoff.Backoff{
 				Min:     wait,
-				Max:     max,
+				Max:     maxSleep,
 				Factor:  2,
 				Sleeper: bm,
 			},
@@ -127,6 +127,7 @@ func TestVolume(t *testing.T) {
 
 		Convey("You can choose how long to wait in between checks", func() {
 			var bm *bm.Sleeper
+
 			volume, m, bm = makeCheckedMockVolumeAndCalculator(attempts, 2*time.Millisecond, 2*time.Millisecond)
 			So(volume.NoSpaceLeft(ctx), ShouldBeTrue)
 			So(m.FreeInvoked, ShouldEqual, attempts)
@@ -138,6 +139,7 @@ func TestVolume(t *testing.T) {
 			m.FreeFn = func(volumePath string) uint64 {
 				return 1
 			}
+
 			So(volume.NoSpaceLeft(ctx), ShouldBeTrue)
 			So(m.FreeInvoked, ShouldEqual, 1)
 		})
@@ -156,6 +158,7 @@ func TestVolume(t *testing.T) {
 			m.SizeFn = func(volumePath string) uint64 {
 				return gb
 			}
+
 			So(volume.Size(ctx), ShouldEqual, 1)
 			So(m.SizeInvoked, ShouldEqual, attempts+1)
 			So(bm.Invoked(), ShouldEqual, attempts-1)
@@ -166,10 +169,12 @@ func TestVolume(t *testing.T) {
 				if called {
 					return gb
 				}
+
 				called = true
 
 				return 0
 			}
+
 			So(volume.Size(ctx), ShouldEqual, 1)
 			So(m.SizeInvoked, ShouldEqual, attempts+3)
 			So(bm.Invoked(), ShouldEqual, attempts)

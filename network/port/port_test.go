@@ -60,7 +60,11 @@ func TestPort(t *testing.T) {
 
 				_, err = checker.availablePort()
 				So(err, ShouldBeNil)
-				checker.listeners[0] = &mockListener{checker.listeners[0].(*net.TCPListener)} //nolint:forcetypeassert
+
+				tcpListener, ok := checker.listeners[0].(*net.TCPListener)
+				So(ok, ShouldBeTrue)
+
+				checker.listeners[0] = &mockListener{tcpListener}
 				err = checker.release(err)
 				So(err, ShouldNotBeNil)
 			})
@@ -119,6 +123,7 @@ func TestPort(t *testing.T) {
 		Convey("AvailableRange fails when tcp listening fails", func() {
 			addr, err := net.ResolveTCPAddr("tcp", "localhost:1")
 			So(err, ShouldBeNil)
+
 			checker.Addr = addr
 			_, _, err = checker.AvailableRange(2)
 			So(err, ShouldNotBeNil)
@@ -163,7 +168,7 @@ func rangeTest(checker *Checker, truePorts []int, expected []int) {
 }
 
 func checkAvailableRange(checker *Checker, size int) bool {
-	min, max, err := checker.AvailableRange(size)
+	first, last, err := checker.AvailableRange(size)
 	if err != nil {
 		So(err.Error(), ShouldContainSubstring, "too many open files")
 		SkipConvey("your ulimit -n is too low for AvailableRange to function", func() {})
@@ -171,8 +176,8 @@ func checkAvailableRange(checker *Checker, size int) bool {
 		return false
 	}
 
-	So(min, ShouldBeBetweenOrEqual, 1, maxPort)
-	So(max, ShouldEqual, min+size-1)
+	So(first, ShouldBeBetweenOrEqual, 1, maxPort)
+	So(last, ShouldEqual, first+size-1)
 
 	return true
 }

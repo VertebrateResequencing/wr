@@ -41,7 +41,7 @@ import (
 type Sleeper interface {
 	// Sleep sleeps for the given duration, stopping early if context is
 	// cancelled.
-	Sleep(context.Context, time.Duration)
+	Sleep(ctx context.Context, d time.Duration)
 }
 
 // Backoff is used to sleep for increasing periods of time.

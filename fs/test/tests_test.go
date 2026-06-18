@@ -45,24 +45,34 @@ func TestTestFuncs(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		var response string
-		fmt.Scanf("%s\n", &response)
+
+		n, err := fmt.Scanf("%s\n", &response)
+		So(n, ShouldEqual, 1)
+		So(err, ShouldBeNil)
 		So(response, ShouldEqual, "test")
 
 		os.Stdin = origStdin
-		stdinWriter.Close()
+
+		err = stdinWriter.Close()
+		So(err, ShouldBeNil)
 	})
 
 	Convey("Given a mocked STDIN", t, func() {
 		mockedStdIn, err := NewMockStdIn()
 		defer mockedStdIn.RestoreStdIn()
+
 		So(mockedStdIn, ShouldNotBeNil)
 		So(err, ShouldBeNil)
 
 		Convey("we can write to it", func() {
 			err = mockedStdIn.WriteString("test2")
+			So(err, ShouldBeNil)
 
 			var response string
-			fmt.Scanf("%s\n", &response)
+
+			n, err := fmt.Scanf("%s\n", &response)
+			So(n, ShouldEqual, 1)
+			So(err, ShouldBeNil)
 			So(response, ShouldEqual, "test2")
 		})
 
@@ -81,17 +91,22 @@ func TestTestFuncs(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		os.Stderr = origStderr
-		stderrReader.Close()
+
+		err = stderrReader.Close()
+		So(err, ShouldBeNil)
 	})
 
 	Convey("Given a mocked STDERR", t, func() {
 		mockedStdErr, err := NewMockStdErr()
 		defer mockedStdErr.RestoreStdErr()
+
 		So(mockedStdErr, ShouldNotBeNil)
 		So(err, ShouldBeNil)
 
 		Convey("we can read from it and restore it to default", func() {
-			fmt.Fprintf(os.Stderr, "test stderr")
+			_, err = fmt.Fprintf(os.Stderr, "test stderr")
+			So(err, ShouldBeNil)
+
 			stdErr, errg := mockedStdErr.GetAndRestoreStdErr()
 			So(errg, ShouldBeNil)
 			So(stdErr, ShouldContainSubstring, "test stderr")
@@ -108,7 +123,9 @@ func TestTestFuncs(t *testing.T) {
 			err = mockedStdErr.stderrReader.Close()
 			So(err, ShouldBeNil)
 
-			fmt.Fprintf(os.Stderr, "test stderr")
+			_, err = fmt.Fprintf(os.Stderr, "test stderr")
+			So(err, ShouldNotBeNil)
+
 			stdErr, err := mockedStdErr.GetAndRestoreStdErr()
 			So(err, ShouldBeNil)
 			So(stdErr, ShouldContainSubstring, "file already closed")

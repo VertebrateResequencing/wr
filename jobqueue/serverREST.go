@@ -35,10 +35,10 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/bytefmt"
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/ugorji/go/codec"
-	"github.com/VertebrateResequencing/wr/clog"
 )
 
 const (

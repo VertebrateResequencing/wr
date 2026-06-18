@@ -35,10 +35,10 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/bsubresource"
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/mattn/go-shellwords"
-	"github.com/VertebrateResequencing/wr/clog"
 )
 
 // scanBufferSize is used when scanning bjobs -w output. The default buffer size

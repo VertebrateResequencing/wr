@@ -34,10 +34,19 @@ const (
 
 // NanosecondsToSec converts nanoseconds to secs.
 func NanosecondsToSec(tm uint64) int {
-	return int(tm / nanoDivisor)
+	return uint64ToInt(tm / nanoDivisor)
 }
 
 // BytesToMB converts bytes to MB.
 func BytesToMB(bt uint64) int {
-	return int(bt / megabyteDivisor / megabyteDivisor)
+	return uint64ToInt(bt / megabyteDivisor / megabyteDivisor)
+}
+
+func uint64ToInt(value uint64) int {
+	maxInt := int(^uint(0) >> 1)
+	if value > uint64(maxInt) {
+		return maxInt
+	}
+
+	return int(value) //nolint:gosec // value is bounded by maxInt above.
 }

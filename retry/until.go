@@ -71,7 +71,7 @@ type UntilLimit struct {
 
 // ShouldStop returns BecauseLimitReached when retries is greater than or equal
 // to Max. err is not considered.
-func (u *UntilLimit) ShouldStop(retries int, err error) Reason {
+func (u *UntilLimit) ShouldStop(retries int, _ error) Reason {
 	if retries >= u.Max {
 		return BecauseLimitReached
 	}
@@ -85,7 +85,7 @@ type UntilNoError struct{}
 
 // ShouldStop returns BecauseErrorNil when err is nil. retries is not
 // considered.
-func (u *UntilNoError) ShouldStop(retries int, err error) Reason {
+func (u *UntilNoError) ShouldStop(_ int, err error) Reason {
 	if err == nil {
 		return BecauseErrorNil
 	}
@@ -101,7 +101,7 @@ type untilContext struct {
 
 // ShouldStop returns BecauseContextClosed after the context has been
 // closed. retries and err are not considered.
-func (u *untilContext) ShouldStop(retries int, err error) Reason {
+func (u *untilContext) ShouldStop(_ int, _ error) Reason {
 	if u.Context.Err() != nil {
 		return BecauseContextClosed
 	}

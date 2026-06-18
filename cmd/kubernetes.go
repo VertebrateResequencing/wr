@@ -32,13 +32,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	kubedeployment "github.com/VertebrateResequencing/wr/kubernetes/deployment"
 	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
-	"github.com/VertebrateResequencing/wr/clog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

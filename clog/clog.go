@@ -40,12 +40,11 @@ import (
 	"github.com/sb10/l15h"
 )
 
-// osExit is used to disable real os.Exit for testing purposes when calling
-// Fatal().
-var osExit = os.Exit
+// osExit is used to disable real os.Exit for testing purposes when calling Fatal.
+var osExit = os.Exit //nolint:gochecknoglobals // Fatal tests swap this process-exit hook.
 
 // init sets our default logging syle.
-func init() {
+func init() { //nolint:gochecknoinits // The package intentionally sets a default root logger.
 	ToDefault()
 }
 
@@ -98,28 +97,33 @@ func toOutputAtLevel(outputHandler log.Handler, lvl log.Lvl) {
 // first.
 func CallerInfoHandler(h log.Handler) log.Handler {
 	return log.FuncHandler(func(r *log.Record) error {
-		s := stack.Trace().TrimBelow(r.Call).TrimRuntime()
-		if len(s) > 0 {
-			switch r.Lvl {
-			case log.LvlInfo:
-				break
-			case log.LvlDebug, log.LvlWarn, log.LvlError:
-				var call stack.Call
-				if len(s) > 1 {
-					call = s[1]
-				} else {
-					call = s[0]
-				}
-
-				path := filepath.Join(fmt.Sprintf("%k", call), fmt.Sprintf("%v", call))
-				r.Ctx = append(r.Ctx, "caller", path)
-			case log.LvlCrit:
-				r.Ctx = append(r.Ctx, "stack", fmt.Sprintf("%+v", s))
-			}
-		}
+		addCallerContext(r, stack.Trace().TrimBelow(r.Call).TrimRuntime())
 
 		return h.Log(r)
 	})
+}
+
+func addCallerContext(r *log.Record, calls stack.CallStack) {
+	if len(calls) == 0 {
+		return
+	}
+
+	switch r.Lvl {
+	case log.LvlInfo:
+	case log.LvlDebug, log.LvlWarn, log.LvlError:
+		r.Ctx = append(r.Ctx, "caller", callerPath(calls))
+	case log.LvlCrit:
+		r.Ctx = append(r.Ctx, "stack", fmt.Sprintf("%+v", calls))
+	}
+}
+
+func callerPath(calls stack.CallStack) string {
+	call := calls[0]
+	if len(calls) > 1 {
+		call = calls[1]
+	}
+
+	return filepath.Join(fmt.Sprintf("%k", call), fmt.Sprintf("%v", call))
 }
 
 // createFilteredInfoHandler wraps the given output handler in handlers that add

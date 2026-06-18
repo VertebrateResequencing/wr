@@ -31,9 +31,9 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/backoff/mock"
 	"github.com/VertebrateResequencing/wr/clog"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestBackoff(t *testing.T) {
@@ -95,7 +95,9 @@ func TestBackoff(t *testing.T) {
 
 		Convey("Sleep()s are logged", func() {
 			buff := clog.ToBufferAtLevel("debug")
+
 			defer clog.ToDefault()
+
 			b.Sleep(ctx)
 			So(buff.String(), ShouldContainSubstring, "lvl=dbug")
 			So(buff.String(), ShouldContainSubstring, "msg=backoff")
@@ -104,13 +106,13 @@ func TestBackoff(t *testing.T) {
 	})
 
 	testBackoffProperties := func(
-		min, max time.Duration,
+		minSleep, maxSleep time.Duration,
 		factor float64,
 		elapsedAfter1Sleep, elapsedAfter2Sleeps time.Duration) {
 		sleeper := &mock.Sleeper{}
 		b := &Backoff{
-			Min:     min,
-			Max:     max,
+			Min:     minSleep,
+			Max:     maxSleep,
 			Factor:  factor,
 			Sleeper: sleeper,
 		}
@@ -172,15 +174,19 @@ func TestBackoff(t *testing.T) {
 
 		c := 4
 		wg.Add(c)
+
 		for i := 1; i <= c; i++ {
 			go sleep()
 		}
+
 		wg.Add(1)
+
 		go func() {
 			b.Reset()
 			b.Sleep(ctx)
 			wg.Done()
 		}()
+
 		wg.Wait()
 
 		So(sleeper.Invoked(), ShouldEqual, 5)

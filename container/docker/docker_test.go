@@ -41,6 +41,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const linuxOS = "linux"
+
 // testReaderCloserStats is the dummy ReaderCloserStats data used for
 // ContainerStats testing.
 const testReaderCloserStats = `{
@@ -147,7 +149,7 @@ func createAndStartNamedContainers(ctx context.Context, cli *client.Client, cont
 
 func createContainer(ctx context.Context, cli *client.Client, cname string) (string, error) {
 	cbody, err := cli.ContainerCreate(ctx, &cn.Config{Image: "ubuntu", Tty: true}, &cn.HostConfig{},
-		&nw.NetworkingConfig{}, &specs.Platform{Architecture: "amd64", OS: "linux"}, cname)
+		&nw.NetworkingConfig{}, &specs.Platform{Architecture: "amd64", OS: linuxOS}, cname)
 
 	return cbody.ID, err
 }
@@ -199,7 +201,7 @@ func TestDocker(t *testing.T) {
 	Convey("Decode the Container stats", t, func() {
 		Convey("for empty ReaderCloser stats", func() {
 			emptyRC := io.NopCloser(bytes.NewReader([]byte("")))
-			emptyReaderCloserStats := cn.StatsResponseReader{Body: emptyRC, OSType: "linux"}
+			emptyReaderCloserStats := cn.StatsResponseReader{Body: emptyRC, OSType: linuxOS}
 
 			stats, err := decodeDockerContainerStats(emptyReaderCloserStats)
 			So(stats, ShouldBeNil)
@@ -208,7 +210,7 @@ func TestDocker(t *testing.T) {
 
 		Convey("for non-empty ReaderCloser stats", func() {
 			nonEmptyRC := io.NopCloser(bytes.NewReader([]byte(testReaderCloserStats)))
-			nonEmptyReaderCloserStats := cn.StatsResponseReader{Body: nonEmptyRC, OSType: "linux"}
+			nonEmptyReaderCloserStats := cn.StatsResponseReader{Body: nonEmptyRC, OSType: linuxOS}
 
 			stats, err := decodeDockerContainerStats(nonEmptyReaderCloserStats)
 			So(stats, ShouldNotBeNil)

@@ -29,9 +29,9 @@ package local
 import (
 	"context"
 
-	"github.com/ricochet2200/go-disk-usage/du"
 	backoff "github.com/VertebrateResequencing/wr/backoff/time"
 	"github.com/VertebrateResequencing/wr/fs"
+	"github.com/ricochet2200/go-disk-usage/du"
 )
 
 const usefulNumOfRetryChecks = 6
@@ -41,12 +41,12 @@ const usefulNumOfRetryChecks = 6
 type VolumeUsageCalculator struct{}
 
 // Size returns the size of the volume in bytes.
-func (v *VolumeUsageCalculator) Size(ctx context.Context, volumePath string) uint64 {
+func (v *VolumeUsageCalculator) Size(_ context.Context, volumePath string) uint64 {
 	return du.NewDiskUsage(volumePath).Size()
 }
 
 // Free returns the free space of the volume in bytes.
-func (v *VolumeUsageCalculator) Free(ctx context.Context, volumePath string) uint64 {
+func (v *VolumeUsageCalculator) Free(_ context.Context, volumePath string) uint64 {
 	return du.NewDiskUsage(volumePath).Free()
 }
 

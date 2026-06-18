@@ -38,9 +38,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/clog"
-
 	"github.com/VertebrateResequencing/muxfys/v4"
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/limiter"
 	lru "github.com/hashicorp/golang-lru"

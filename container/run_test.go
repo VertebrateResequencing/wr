@@ -32,9 +32,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/fs/file"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 const dirMode os.FileMode = 0755
@@ -47,6 +47,7 @@ func TestRunPrepare(t *testing.T) {
 		path, cleanup, err := PrepareCmdFile(ctx, envCmd)
 		So(err, ShouldBeNil)
 		So(path, ShouldNotBeBlank)
+
 		So(cleanup, ShouldNotBeNil)
 		defer cleanup()
 
@@ -58,6 +59,7 @@ func TestRunPrepare(t *testing.T) {
 
 		Convey("After calling the cleanup method, the command file is deleted", func() {
 			buff := clog.ToBufferAtLevel("debug")
+
 			defer clog.ToDefault()
 
 			cleanup()
@@ -71,6 +73,7 @@ func TestRunPrepare(t *testing.T) {
 
 	Convey("Issues with the tmp dir will prevent command file creation", t, func() {
 		tmpdir := os.Getenv("TMPDIR")
+
 		os.Setenv("TMPDIR", "/asdf")
 		defer os.Setenv("TMPDIR", tmpdir)
 
@@ -181,25 +184,29 @@ func realTestSetup(t *testing.T, exe, containerCmd string) (cmdFile, homeDir str
 	t.Helper()
 
 	if _, err = exec.LookPath(exe); err != nil {
-		return
+		return cmdFile, homeDir,
+			mounts, cleanup, err
 	}
 
 	rootDir, homeDir, mountADir, mountBDir, err := createRealTestDirs()
 	if err != nil {
-		return
+		return cmdFile, homeDir,
+			mounts, cleanup, err
 	}
 
 	if err = createRealTestFiles(homeDir, mountADir, mountBDir); err != nil {
 		removeTestRootDir(t, rootDir)
 
-		return
+		return cmdFile, homeDir,
+			mounts, cleanup, err
 	}
 
 	cmdFile, cmdFileCleanup, err := PrepareCmdFile(context.Background(), containerCmd)
 	if err != nil {
 		removeTestRootDir(t, rootDir)
 
-		return
+		return cmdFile, homeDir,
+			mounts, cleanup, err
 	}
 
 	cleanup = func() {
@@ -223,19 +230,19 @@ func removeTestRootDir(t *testing.T, dir string) {
 func createRealTestDirs() (root, home, mountA, mountB string, err error) {
 	root, err = os.MkdirTemp("", "container_run_test")
 	if err != nil {
-		return
+		return root, home, mountA, mountB, err
 	}
 
 	home = filepath.Join(root, "home")
 
 	if err = os.Mkdir(home, dirMode); err != nil {
-		return
+		return root, home, mountA, mountB, err
 	}
 
 	mountA = filepath.Join(root, "mntA")
 
 	if err = os.Mkdir(mountA, dirMode); err != nil {
-		return
+		return root, home, mountA, mountB, err
 	}
 
 	mountB = filepath.Join(root, "mntB")
@@ -271,7 +278,7 @@ func createRealTestFile(dir, baseName string) error {
 
 func realTestTryCmd(cmdLine, homeDir string) (string, error) {
 	cmdLine = "set -o pipefail; " + cmdLine
-	cmd := exec.Command("/bin/bash", "-c", cmdLine)
+	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", cmdLine)
 	cmd.Dir = homeDir
 	cmd.Env = os.Environ()
 

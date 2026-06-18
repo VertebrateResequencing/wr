@@ -29,6 +29,7 @@ package clog
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/syslog"
 	"os"
 	"runtime"
@@ -36,12 +37,12 @@ import (
 	"testing"
 	"time"
 
+	fl "github.com/VertebrateResequencing/wr/fs/file"
+	ft "github.com/VertebrateResequencing/wr/fs/test"
 	"github.com/acarl005/stripansi"
 	"github.com/hpcloud/tail"
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
-	fl "github.com/VertebrateResequencing/wr/fs/file"
-	ft "github.com/VertebrateResequencing/wr/fs/test"
 )
 
 func TestLogger(t *testing.T) {
@@ -124,6 +125,7 @@ func TestLogger(t *testing.T) {
 
 	Convey("LogHandler changes how we log", t, func() {
 		buff := ToBufferAtLevel("debug")
+
 		Debug(background, "msg", "foo", 1)
 		So(buff.String(), ShouldStartWith, "t=")
 		So(buff.String(), ShouldContainSubstring, foo)
@@ -140,8 +142,9 @@ func TestLogger(t *testing.T) {
 
 			Convey("and that can also include other context", func() {
 				buff2.Reset()
-				ctx = ContextWithServerFlavor(ctx, "bar")
-				Debug(ctx, "msg", "fooT", 1)
+
+				flavoredCtx := ContextWithServerFlavor(ctx, "bar")
+				Debug(flavoredCtx, "msg", "fooT", 1)
 				So(buff2.String(), ShouldNotStartWith, "t=")
 				So(stripansi.Strip(buff2.String()), ShouldStartWith, "DBUG")
 				So(stripansi.Strip(buff2.String()), ShouldContainSubstring, "fooT=1")
@@ -165,18 +168,20 @@ func TestLogger(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Debug(ctxf, "msg", "foo", 1)
+
 		content, err := fl.ToString(logPath)
 		So(content, ShouldContainSubstring, foo)
 		So(err, ShouldBeNil)
 
 		Convey("Unless the path is invalid", func() {
-			ctxf, err = ContextWithFileHandler(context.Background(), "", "debug")
-			So(ctxf, ShouldBeNil)
+			invalidCtx, err := ContextWithFileHandler(context.Background(), "", "debug")
+			So(invalidCtx, ShouldBeNil)
 			So(err, ShouldNotBeNil)
 		})
 
 		Convey("but doesn't log to console", func() {
 			buff := ToBufferAtLevel("debug")
+
 			Debug(ctxf, "msg", "foo", 1)
 			So(buff.String(), ShouldBeEmpty)
 		})
@@ -202,6 +207,7 @@ func TestLogger(t *testing.T) {
 				buff = ToBufferAtLevel("debug")
 
 				Debug(ctx, "msg", "foo", 1)
+
 				lmsg := buff.String()
 
 				hasMsgAndFoo("dbug", lmsg)
@@ -217,6 +223,7 @@ func TestLogger(t *testing.T) {
 
 				Convey("And works without context", func() {
 					Debug(context.Background(), "msg", "foo", 1)
+
 					lmsg := buff.String()
 					hasMsgAndFoo("dbug", lmsg)
 					So(lmsg, ShouldNotContainSubstring, retryLogMsg)
@@ -228,6 +235,7 @@ func TestLogger(t *testing.T) {
 				So(err, ShouldBeNil)
 				ToDefaultAtLevel("debug")
 				Debug(ctx, "msg", "foo", 1)
+
 				stderr, err := fse.GetAndRestoreStdErr()
 				So(err, ShouldBeNil)
 				So(stripansi.Strip(stderr), ShouldContainSubstring, foo)
@@ -242,6 +250,7 @@ func TestLogger(t *testing.T) {
 				buff = ToBufferAtLevel("debug")
 
 				Info(ctx, "msg", "foo", 1)
+
 				lmsg := buff.String()
 				hasMsgAndFoo("info", lmsg)
 				So(lmsg, ShouldNotContainSubstring, "caller=clog")
@@ -249,7 +258,9 @@ func TestLogger(t *testing.T) {
 				buff.Reset()
 
 				buff = ToBufferAtLevel("info")
+
 				Info(ctx, "msg", "foo", 1)
+
 				lmsg = buff.String()
 				hasMsgAndFoo("info", lmsg)
 				So(lmsg, ShouldContainSubstring, retryLogMsg)
@@ -259,6 +270,7 @@ func TestLogger(t *testing.T) {
 
 		checkMethod := func(method func(context.Context, string, ...interface{}), lvl1, lvl2 string) {
 			method(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			hasMsgAndFoo(lvl1, lmsg)
 			So(lmsg, ShouldContainSubstring, "caller=clog")
@@ -280,6 +292,7 @@ func TestLogger(t *testing.T) {
 
 		Convey("Crit always works and has a stack trace", func() {
 			Crit(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			hasMsgAndFoo("crit", lmsg)
 			So(lmsg, ShouldNotContainSubstring, "caller=clog")
@@ -289,8 +302,11 @@ func TestLogger(t *testing.T) {
 
 		Convey("Fatal works and has a stack trace", func() {
 			os.Setenv("WR_FATAL_EXIT_TEST", "1")
+
 			defer os.Unsetenv("WR_FATAL_EXIT_TEST")
+
 			Fatal(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			hasMsgAndFoo("crit", lmsg)
 			So(lmsg, ShouldContainSubstring, "fatal=true")
@@ -391,6 +407,7 @@ func TestCaller(t *testing.T) {
 
 		Convey("Debug() includes caller", func() {
 			Debug(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			So(lmsg, ShouldContainSubstring, msg)
 			So(lmsg, ShouldContainSubstring, foo)
@@ -399,6 +416,7 @@ func TestCaller(t *testing.T) {
 
 		Convey("Info() doesn't include caller", func() {
 			Info(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			So(lmsg, ShouldContainSubstring, msg)
 			So(lmsg, ShouldContainSubstring, foo)
@@ -407,6 +425,7 @@ func TestCaller(t *testing.T) {
 
 		Convey("Warn() includes caller", func() {
 			Warn(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			So(lmsg, ShouldContainSubstring, msg)
 			So(lmsg, ShouldContainSubstring, foo)
@@ -415,6 +434,7 @@ func TestCaller(t *testing.T) {
 
 		Convey("Error() includes caller", func() {
 			Warn(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			So(lmsg, ShouldContainSubstring, msg)
 			So(lmsg, ShouldContainSubstring, foo)
@@ -423,6 +443,7 @@ func TestCaller(t *testing.T) {
 
 		Convey("Crit() includes stack", func() {
 			Crit(ctx, "msg", "foo", 1)
+
 			lmsg := buff.String()
 			So(lmsg, ShouldContainSubstring, msg)
 			So(lmsg, ShouldContainSubstring, foo)
@@ -471,9 +492,10 @@ func trySyslogTest(ctx context.Context, t *testing.T) {
 func getSyslogPath() string {
 	syslogpath := "/var/log/syslog"
 
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		syslogpath = "/var/log/system.log"
-	} else if runtime.GOOS == "windows" {
+	case "windows":
 		return ""
 	}
 
@@ -497,7 +519,7 @@ func startSyslogTail(syslogpath string, logCh chan string) {
 		Follow: true,
 		Location: &tail.SeekInfo{
 			Offset: 0,
-			Whence: os.SEEK_END,
+			Whence: io.SeekEnd,
 		},
 		Poll:   true,
 		Logger: tail.DiscardingLogger,

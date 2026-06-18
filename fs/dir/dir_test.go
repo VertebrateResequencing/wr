@@ -32,8 +32,8 @@ import (
 	"strings"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/clog"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestDir(t *testing.T) {
@@ -66,9 +66,11 @@ func TestDir(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			buff := clog.ToBufferAtLevel("fatal")
+
 			defer clog.ToDefault()
 
 			os.Setenv("WR_FATAL_EXIT_TEST", "1")
+
 			defer os.Unsetenv("WR_FATAL_EXIT_TEST")
 
 			_ = GetPWD(ctx)
@@ -103,9 +105,11 @@ func TestDir(t *testing.T) {
 			defer os.Setenv("HOME", origHome)
 
 			buff := clog.ToBufferAtLevel("fatal")
+
 			defer clog.ToDefault()
 
 			os.Setenv("WR_FATAL_EXIT_TEST", "1")
+
 			defer os.Unsetenv("WR_FATAL_EXIT_TEST")
 
 			_ = GetHome(ctx)

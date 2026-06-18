@@ -35,9 +35,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sb10/waitgroup"
 	"github.com/VertebrateResequencing/wr/clog"
-
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
 	"github.com/gophercloud/gophercloud"
@@ -61,6 +59,7 @@ import (
 	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
 	"github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
+	"github.com/sb10/waitgroup"
 	"golang.org/x/crypto/ssh"
 )
 

@@ -41,14 +41,14 @@ type Sleeper struct {
 
 // Sleep increases Elapsed and increments SleepInvoked, but doesn't actually
 // sleep.
-func (s *Sleeper) Sleep(ctx context.Context, d time.Duration) {
+func (s *Sleeper) Sleep(_ context.Context, d time.Duration) {
 	atomic.AddUint64(&s.sleepInvoked, 1)
 	atomic.AddInt64(&s.elapsed, int64(d))
 }
 
 // Invoked returns the number of times Sleep() has been called.
 func (s *Sleeper) Invoked() int {
-	return int(atomic.LoadUint64(&s.sleepInvoked))
+	return int(atomic.LoadUint64(&s.sleepInvoked)) //nolint:gosec // test counters stay tiny.
 }
 
 // Elapsed returns the total elapsed time we were supposed to have slept for.

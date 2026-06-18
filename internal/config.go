@@ -27,13 +27,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/creasty/defaults"
-	"github.com/jinzhu/configor"
-	"github.com/olekukonko/tablewriter"
 	"github.com/VertebrateResequencing/wr/clog"
 	fsd "github.com/VertebrateResequencing/wr/fs/dir"
 	fp "github.com/VertebrateResequencing/wr/fs/filepath"
 	"github.com/VertebrateResequencing/wr/network/port"
+	"github.com/creasty/defaults"
+	"github.com/jinzhu/configor"
+	"github.com/olekukonko/tablewriter"
 )
 
 const (

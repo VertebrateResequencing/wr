@@ -46,6 +46,7 @@ func TestPath(t *testing.T) {
 
 		home, herr := os.UserHomeDir()
 		So(herr, ShouldEqual, nil)
+
 		filepth := filepath.Join(home, "testing_absolute_path.text")
 
 		So(TildaToHome("~/testing_absolute_path.text"), ShouldEqual, filepth)

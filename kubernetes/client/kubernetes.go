@@ -39,8 +39,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/docker/docker/pkg/namesgenerator"
 	appsv1beta1 "k8s.io/api/apps/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	rbacapi "k8s.io/api/rbac/v1"

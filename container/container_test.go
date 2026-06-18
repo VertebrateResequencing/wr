@@ -31,13 +31,17 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const testContainerName1 = "test_container1"
+const testContainerName1WithPrefix = "/" + testContainerName1
+const testContainerID1 = "container_id1"
+
 func TestContainer(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a NewOperator", t, func() {
 		// Create a list of dummy container
 		cntrList := []*Container{{
-			ID: "container_id1", Names: []string{"/test_container1"},
+			ID: testContainerID1, Names: []string{testContainerName1WithPrefix},
 		}}
 
 		// Create a client with list of dummy containers
@@ -80,12 +84,12 @@ func TestContainer(t *testing.T) {
 
 	Convey("Given a container", t, func() {
 		newContainer := &Container{
-			ID: "container_id1", Names: []string{"/test_container1", "/test_container1_new"},
+			ID: testContainerID1, Names: []string{testContainerName1WithPrefix, "/test_container1_new"},
 		}
 
 		Convey("it can trim the / from its names", func() {
 			newContainer.TrimNamePrefixes()
-			So(newContainer.Names[0], ShouldEqual, "test_container1")
+			So(newContainer.Names[0], ShouldEqual, testContainerName1)
 			So(newContainer.Names[1], ShouldEqual, "test_container1_new")
 		})
 

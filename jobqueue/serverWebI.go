@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
-	"github.com/VertebrateResequencing/wr/clog"
 )
 
 //go:embed static

@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/clog"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestUtility(t *testing.T) {

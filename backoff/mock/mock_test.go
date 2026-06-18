@@ -30,8 +30,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/backoff"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestSleeper(t *testing.T) {

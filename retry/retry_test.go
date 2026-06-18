@@ -31,10 +31,10 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/backoff"
 	bm "github.com/VertebrateResequencing/wr/backoff/mock"
 	"github.com/VertebrateResequencing/wr/clog"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 var ErrOp = errors.New("op err")
@@ -59,12 +59,14 @@ func TestRetry(t *testing.T) {
 		sleeper := &bm.Sleeper{}
 		backoff.Sleeper = sleeper
 		buff := clog.ToBufferAtLevel("debug")
+
 		defer clog.ToDefault()
 
 		status := Do(ctx, op, &UntilNoError{}, backoff, activity)
 		So(status.Retried, ShouldEqual, 2)
 		So(status.StoppedBecause, ShouldEqual, BecauseErrorNil)
 		So(status.Err, ShouldBeNil)
+
 		msg := "after 2 retries, stopped trying because there was no error"
 		So(status.String(), ShouldEqual, msg)
 		So(status.Error(), ShouldEqual, msg)
@@ -101,6 +103,7 @@ func TestRetry(t *testing.T) {
 		So(status.Retried, ShouldEqual, 2)
 		So(status.StoppedBecause, ShouldEqual, BecauseLimitReached)
 		So(status.Err, ShouldEqual, ErrOp)
+
 		msg := "after 2 retries, stopped trying because limit reached; err: op err"
 		So(status.String(), ShouldEqual, msg)
 		So(status.Error(), ShouldEqual, msg)
@@ -117,12 +120,14 @@ func TestRetry(t *testing.T) {
 		sleeper := &bm.Sleeper{}
 		backoff.Sleeper = sleeper
 		buff := clog.ToBufferAtLevel("debug")
+
 		defer clog.ToDefault()
 
 		status := Do(ctx, op, &UntilNoError{}, backoff, activity)
 		So(status.Retried, ShouldEqual, 0)
 		So(status.StoppedBecause, ShouldEqual, BecauseErrorNil)
 		So(status.Err, ShouldBeNil)
+
 		msg := "after 0 retries, stopped trying because there was no error"
 		So(status.String(), ShouldEqual, msg)
 

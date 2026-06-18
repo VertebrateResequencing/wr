@@ -38,6 +38,7 @@ var ErrNormal = errors.New("normal")
 func TestUntil(t *testing.T) {
 	Convey("UntilLimit stops after the specified limit", t, func() {
 		var _ Until = (*UntilLimit)(nil)
+
 		u := &UntilLimit{Max: 2}
 		So(u.ShouldStop(0, ErrNormal), ShouldEqual, doNotStop)
 		So(u.ShouldStop(0, nil), ShouldEqual, doNotStop)
@@ -48,6 +49,7 @@ func TestUntil(t *testing.T) {
 
 	Convey("UntilNoError stops after getting no error", t, func() {
 		var _ Until = (*UntilNoError)(nil)
+
 		u := &UntilNoError{}
 		So(u.ShouldStop(0, ErrNormal), ShouldEqual, doNotStop)
 		So(u.ShouldStop(1, ErrNormal), ShouldEqual, doNotStop)
@@ -57,6 +59,7 @@ func TestUntil(t *testing.T) {
 
 	Convey("untilContext stops after the context is done", t, func() {
 		var _ Until = (*untilContext)(nil)
+
 		ctx, cancel := context.WithCancel(context.Background())
 		u := &untilContext{Context: ctx}
 		So(u.ShouldStop(1, nil), ShouldEqual, doNotStop)
@@ -66,6 +69,7 @@ func TestUntil(t *testing.T) {
 
 	Convey("You can combine multiple Untils", t, func() {
 		var _ Until = (*Untils)(nil)
+
 		u := Untils{&UntilLimit{Max: 2}, &UntilNoError{}}
 		So(u.ShouldStop(0, ErrNormal), ShouldEqual, doNotStop)
 		So(u.ShouldStop(2, ErrNormal), ShouldEqual, BecauseLimitReached)
@@ -74,6 +78,7 @@ func TestUntil(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		u = Untils{u, &untilContext{Context: ctx}}
+
 		cancel()
 		So(u.ShouldStop(1, ErrNormal), ShouldEqual, BecauseContextClosed)
 	})

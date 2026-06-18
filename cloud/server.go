@@ -36,9 +36,8 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
-	mth "github.com/VertebrateResequencing/wr/math"
-
 	"github.com/VertebrateResequencing/wr/internal"
+	mth "github.com/VertebrateResequencing/wr/math"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )

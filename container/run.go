@@ -93,15 +93,16 @@ func writeStringToFile(f *os.File, content string, cleanup func()) error {
 //
 // * Pull the given image if it is missing.
 // * Create a container with the given name.
-//   * That will mount the current working directory inside the container and
+//   - That will mount the current working directory inside the container and
 //     use it as the workdir.
-//   * That will also mount any given disk locations, in the format
+//   - That will also mount any given disk locations, in the format
 //     "/local/path:/inside/container/path" (the colon and inside path being
 //     optional if the same as local path).
-//   * That will set the given environment variables inside the container to
+//   - That will set the given environment variables inside the container to
 //     their values outside the container.
-//   * That will run the command in the given file (by piping the file contents
+//   - That will run the command in the given file (by piping the file contents
 //     to /bin/sh); use PrepareCmdFile() to create one.
+//
 // * Automatically remove the container when it exits.
 func DockerRunCmd(image, cmdFile, name string, mounts, env []string) string {
 	mountArgs := dockerMounts(mounts)
@@ -118,6 +119,8 @@ func DockerRunCmd(image, cmdFile, name string, mounts, env []string) string {
 func dockerMounts(mounts []string) string {
 	args := " -w $PWD --mount type=bind,source=$PWD,target=$PWD"
 
+	var argsSb121 strings.Builder
+
 	for _, spec := range mounts {
 		parts := strings.Split(spec, ":")
 		out := parts[0]
@@ -127,8 +130,10 @@ func dockerMounts(mounts []string) string {
 			in = parts[1]
 		}
 
-		args += fmt.Sprintf(" --mount type=bind,source=%s,target=%s", out, in)
+		fmt.Fprintf(&argsSb121, " --mount type=bind,source=%s,target=%s", out, in)
 	}
+
+	args += argsSb121.String()
 
 	return args
 }
@@ -153,18 +158,18 @@ func listToPrefixedString(vals []string, prefix string) string {
 
 // SingularityRunCmd returns a `singularity shell` command line that will:
 //
-// * Pull the given image if it is missing, creating a sif image if it's a
-//   docker image.
-// * Create a container.
-//   * That will run the command in the given file (by piping the file contents
+//   - Pull the given image if it is missing, creating a sif image if it's a
+//     docker image.
+//   - Create a container.
+//   - That will run the command in the given file (by piping the file contents
 //     to the container's shell); use PrepareCmdFile() to create one.
-//   * That will mount the given disk locations, in the format
+//   - That will mount the given disk locations, in the format
 //     "/local/path:/inside/container/path" (the colon and inside path being
 //     optional if the same as local path). The CWD is always mounted at / in
 //     container.
-//   * That will have all environment variables outside the container
+//   - That will have all environment variables outside the container
 //     replicated inside the container.
-// * Automatically remove the container when it exits.
+//   - Automatically remove the container when it exits.
 func SingularityRunCmd(image, cmdFile string, mounts []string) string {
 	mountArgs := singularityMounts(mounts)
 

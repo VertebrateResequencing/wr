@@ -26,12 +26,15 @@
 package port
 
 import (
+	"errors"
 	"fmt"
 	"net"
 )
 
 const maxPort = 65535
 const maxTries = maxPort - 10000
+
+var errListenerAddrNotTCP = errors.New("listener address was not *net.TCPAddr")
 
 // listener interface is used instead of *net.TCPListener directly, so that we
 // can test with a mock version.
@@ -75,7 +78,7 @@ func (c *Checker) AvailableRange(size int) (int, int, error) {
 		err = c.release(err)
 	}()
 
-	var min, max int
+	var first, last int
 
 	for i := 0; i < maxTries; i++ {
 		var port int
@@ -86,13 +89,13 @@ func (c *Checker) AvailableRange(size int) (int, int, error) {
 		}
 
 		if set, has := c.checkRange(port, size); has {
-			min, max = firstAndLast(set)
+			first, last = firstAndLast(set)
 
 			break
 		}
 	}
 
-	return min, max, err
+	return first, last, err
 }
 
 func (c *Checker) availablePort() (int, error) {
@@ -102,7 +105,13 @@ func (c *Checker) availablePort() (int, error) {
 	}
 
 	c.listeners = append(c.listeners, l)
-	port := l.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert
+
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("%w: %T", errListenerAddrNotTCP, l.Addr())
+	}
+
+	port := addr.Port
 	c.ports[port] = true
 
 	return port, nil
@@ -174,6 +183,6 @@ func (c *Checker) release(err error) error {
 	return err
 }
 
-func firstAndLast(s []int) (min, max int) {
+func firstAndLast(s []int) (first, last int) {
 	return s[0], s[len(s)-1]
 }

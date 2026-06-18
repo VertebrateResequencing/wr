@@ -35,9 +35,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/clog"
-
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
 )

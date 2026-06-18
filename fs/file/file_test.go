@@ -79,6 +79,7 @@ func TestFile(t *testing.T) {
 
 		home, herr := os.UserHomeDir()
 		So(herr, ShouldEqual, nil)
+
 		filepth := filepath.Join(home, "testing_pathtocontent.text")
 		defer os.Remove(filepth)
 

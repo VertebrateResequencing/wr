@@ -29,8 +29,8 @@ import (
 	"context"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/VertebrateResequencing/wr/fs"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestVolumeUsageCalculator(t *testing.T) {

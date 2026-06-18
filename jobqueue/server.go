@@ -41,6 +41,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -52,7 +53,6 @@ import (
 	"github.com/lindell/go-ordered-set/orderedset"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
-	"github.com/VertebrateResequencing/wr/clog"
 	mangos "nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/rep"
 	"nanomsg.org/go-mangos/transport/tlstcp"
