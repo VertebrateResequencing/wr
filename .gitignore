@@ -27,3 +27,5 @@ testjobs*
 
 # Added by goreleaser init:
 dist/
+
+.tmp/
