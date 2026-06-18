@@ -5307,10 +5307,7 @@ func TestJobqueueRunners(t *testing.T) {
 			elapsed := time.Since(start)
 
 			So(completed, ShouldBeTrue)
-
-			if completed {
-				So(elapsed, ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
-			}
+			So(elapsed, ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
 		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {

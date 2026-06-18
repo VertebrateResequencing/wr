@@ -116,8 +116,6 @@ github.com/gopherjs/gopherjs v0.0.0-20210923143318-357ed63a84fb/go.mod h1:cz9oNY
 github.com/gorilla/websocket v1.4.2/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
-github.com/grafov/bcast v0.0.0-20161019100130-e9affb593f6c h1:aHP0RghsYoxCoA8tsnYKwixHoqDrzwQfspVJYBsQTn0=
-github.com/grafov/bcast v0.0.0-20161019100130-e9affb593f6c/go.mod h1:46t1/moUr2iW5E5oMsa2Mh16hz+aYFFsc/Eb+fkwmS4=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0 h1:bkypFPDjIYGfCYD5mRBvpqxfYX1YCS1PXdKYWi8FsN0=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0/go.mod h1:P+Lt/0by1T8bfcF3z737NnSbmxQAppXMRziHUxPOC8k=
 github.com/hanwen/go-fuse v1.0.0/go.mod h1:unqXarDXqzAk0rt98O2tVndEPIpUgLD9+rwFisZH3Ok=

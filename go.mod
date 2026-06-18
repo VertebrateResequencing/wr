@@ -17,7 +17,6 @@ require (
 	github.com/gophercloud/gophercloud v1.14.1
 	github.com/gophercloud/utils v0.0.0-20231010081019-80377eca5d56
 	github.com/gorilla/websocket v1.5.3
-	github.com/grafov/bcast v0.0.0-20190217190352-1447f067e08d
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/inconshreveable/log15 v2.16.0+incompatible
@@ -133,8 +132,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/grafov/bcast => github.com/grafov/bcast v0.0.0-20161019100130-e9affb593f6c
 
 // we need a specific version of old k8s stuff
 replace k8s.io/apimachinery => k8s.io/apimachinery v0.0.0-20180228050457-302974c03f7e

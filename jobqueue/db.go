@@ -253,8 +253,6 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, nil)
 				if errbk == nil {
 					errbk = backupDB.Close()
-				}
-				if errbk == nil {
 					origerr := err
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
 					err = os.Remove(dbFile)
