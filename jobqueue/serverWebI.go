@@ -29,7 +29,6 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
-	"github.com/grafov/bcast"
 	"github.com/wtsi-ssg/wr/clog"
 )
 
@@ -428,7 +427,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 // setupUpdateListener creates a goroutine that listens for updates from a
 // broadcaster and forwards them to the WebSocket client.
 func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool, //nolint:gocognit,funlen
-	connName string, caster *bcast.Group, name string) {
+	connName string, caster *caster, name string) {
 	defer internal.LogPanic(ctx, "jobqueue websocket "+name, true)
 
 	receiver := caster.Join()

@@ -519,6 +519,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sjob.PeakRAM = 0
 					sjob.PeakDisk = 0
 					sjob.Exitcode = -1
+					sjob.killCalled = false
 					sgroup := sjob.schedulerGroup
 					retries := sjob.Retries
 					ub := sjob.UntilBuried
@@ -556,7 +557,6 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					var tend time.Time
 					job.EndTime = tend
 					job.Attempts++
-					job.killCalled = false
 					job.Lost = false
 					job.State = JobStateRunning
 

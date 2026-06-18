@@ -47,7 +47,6 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
-	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
 	"github.com/lindell/go-ordered-set/orderedset"
@@ -345,6 +344,90 @@ func (s *sgroup) hasSkips() bool {
 	return s.skipped > 0
 }
 
+type casterMember struct {
+	group *caster
+	In    chan interface{}
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (cm *casterMember) Close() {
+	cm.once.Do(func() {
+		cm.group.Lock()
+		delete(cm.group.members, cm)
+		cm.group.Unlock()
+		close(cm.done)
+	})
+}
+
+type caster struct {
+	members map[*casterMember]struct{}
+	closed  bool
+	sync.RWMutex
+}
+
+func newCaster() *caster {
+	return &caster{members: make(map[*casterMember]struct{})}
+}
+
+func (c *caster) Broadcasting(time.Duration) {}
+
+func (c *caster) Join() *casterMember {
+	member := &casterMember{
+		group: c,
+		In:    make(chan interface{}, 1),
+		done:  make(chan struct{}),
+	}
+
+	c.Lock()
+	if !c.closed {
+		c.members[member] = struct{}{}
+	}
+	c.Unlock()
+
+	return member
+}
+
+func (c *caster) Send(val interface{}) {
+	c.RLock()
+	if c.closed {
+		c.RUnlock()
+
+		return
+	}
+
+	members := make([]*casterMember, 0, len(c.members))
+	for member := range c.members {
+		members = append(members, member)
+	}
+	c.RUnlock()
+
+	for _, member := range members {
+		select {
+		case <-member.done:
+		case member.In <- val:
+		default:
+		}
+	}
+}
+
+func (c *caster) Close() {
+	c.Lock()
+	c.closed = true
+
+	members := make([]*casterMember, 0, len(c.members))
+	for member := range c.members {
+		members = append(members, member)
+	}
+
+	c.members = make(map[*casterMember]struct{})
+	c.Unlock()
+
+	for _, member := range members {
+		member.Close()
+	}
+}
+
 type serverSubscription struct {
 	keys           map[string]struct{}
 	repGroupStates map[string]JobState
@@ -581,9 +664,9 @@ type Server struct {
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
-	statusCaster              *bcast.Group
-	badServerCaster           *bcast.Group
-	schedCaster               *bcast.Group
+	statusCaster              *caster
+	badServerCaster           *caster
+	schedCaster               *caster
 	racCheckTimer             *time.Timer
 	pauseRequests             int
 	wsconns                   map[string]*websocket.Conn
@@ -613,6 +696,40 @@ type Server struct {
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
 	nextSubscriptionID   uint64
+}
+
+func (s *Server) setRACPending() {
+	s.rpmutex.Lock()
+	s.racPending = true
+	s.rpmutex.Unlock()
+}
+
+func (s *Server) clearRACWaiters() {
+	for _, ch := range s.waitingReserves {
+		close(ch)
+	}
+
+	s.waitingReserves = nil
+}
+
+func (s *Server) clearRACPending() {
+	s.rpmutex.Lock()
+	s.racPending = false
+	s.clearRACWaiters()
+	s.rpmutex.Unlock()
+}
+
+func (s *Server) finishRAC() {
+	s.rpmutex.Lock()
+	s.racPending = false
+	s.racRunning = false
+	s.clearRACWaiters()
+	s.rpmutex.Unlock()
+}
+
+func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
+	s.setRACPending()
+	s.q.TriggerReadyAddedCallback(ctx)
 }
 
 func (s *Server) registerClientSubscription(keys []string, repGroup string) (string, error) {
@@ -852,6 +969,22 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobRetryCheck, bool) {
 		jobPID:       job.Pid,
 		checkTimeout: ServerLostJobCheckTimeout,
 	}, true
+}
+
+func itemDefTriggersReadyAdded(itemdef *queue.ItemDef) bool {
+	if itemdef.StartQueue == queue.SubQueueRun || itemdef.StartQueue == queue.SubQueueBury {
+		return false
+	}
+
+	return itemdef.Delay == 0 && len(itemdef.Dependencies) == 0
+}
+
+func itemWillBecomeReadyAfterDependencyUpdate(item *queue.Item, err error) bool {
+	if err != nil || item == nil {
+		return false
+	}
+
+	return item.Stats().State == queue.ItemStateDependent && len(item.UnresolvedDependencies()) > 0
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -1210,13 +1343,13 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		statusCaster:              bcast.NewGroup(),
-		badServerCaster:           bcast.NewGroup(),
+		statusCaster:              newCaster(),
+		badServerCaster:           newCaster(),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		jobSubscriptions:          make(map[string]map[string]bool),
 		clientSubscriptions:       make(map[string]*serverSubscription),
 		badServers:                make(map[string]*cloud.Server),
-		schedCaster:               bcast.NewGroup(),
+		schedCaster:               newCaster(),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
 	}
@@ -1599,7 +1732,7 @@ func (s *Server) Resume(ctx context.Context) (bool, error) {
 	}
 	s.drain = false
 	s.ServerInfo.Mode = ServerModeNormal
-	s.q.TriggerReadyAddedCallback(ctx)
+	s.triggerReadyAddedCallback(ctx)
 	return true, nil
 }
 
@@ -1776,16 +1909,8 @@ func (s *Server) createQueue(ctx context.Context) {
 		s.rpmutex.Lock()
 		s.racRunning = true
 		s.rpmutex.Unlock()
-		defer func() {
-			s.rpmutex.Lock()
-			s.racPending = false
-			s.racRunning = false
-			for _, ch := range s.waitingReserves {
-				close(ch)
-			}
-			s.waitingReserves = nil
-			s.rpmutex.Unlock()
-		}()
+
+		defer s.finishRAC()
 
 		s.racmutex.RLock()
 		rc := s.rc
@@ -2035,6 +2160,8 @@ func (s *Server) createQueue(ctx context.Context) {
 					clog.Debug(ctx, "rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 				}
 
+				s.previouslyScheduledGroups[name] = group
+
 				wgk := s.wg.Add(1)
 				group.Lock()
 				go func(group *sgroup) {
@@ -2043,8 +2170,6 @@ func (s *Server) createQueue(ctx context.Context) {
 					s.scheduleRunners(ctx, group)
 					group.Unlock()
 				}(group)
-
-				s.previouslyScheduledGroups[name] = group
 			}
 			s.psgmutex.Unlock()
 
@@ -2080,7 +2205,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 					if stats.Ready > 0 {
 						s.racmutex.Unlock()
-						q.TriggerReadyAddedCallback(ctx)
+						s.triggerReadyAddedCallback(ctx)
 					} else {
 						s.racmutex.Unlock()
 					}
@@ -2094,21 +2219,6 @@ func (s *Server) createQueue(ctx context.Context) {
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
-		if toQ != queue.SubQueueReady {
-			// readyAddedCallback won't be called, cancel racPending
-			defer func() {
-				s.rpmutex.Lock()
-				if s.racPending {
-					s.racPending = false
-					for _, ch := range s.waitingReserves {
-						close(ch)
-					}
-					s.waitingReserves = nil
-				}
-				s.rpmutex.Unlock()
-			}()
-		}
-
 		var from, to JobState
 		if toQ == queue.SubQueueRemoved {
 			// things are removed from the queue if deleted or completed;
@@ -2337,15 +2447,31 @@ func (s *Server) createQueue(ctx context.Context) {
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	s.rpmutex.Lock()
-	s.racPending = true
-	s.rpmutex.Unlock()
+	readyCallbackExpected := false
+
+	for _, itemdef := range itemdefs {
+		if itemDefTriggersReadyAdded(itemdef) {
+			readyCallbackExpected = true
+
+			break
+		}
+	}
+
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
 	added, dups, err = s.q.AddMany(ctx, itemdefs)
 	if err != nil {
-		s.rpmutex.Lock()
-		s.racPending = false
-		s.rpmutex.Unlock()
+		if readyCallbackExpected {
+			s.clearRACPending()
+		}
+
 		return added, dups, err
+	}
+
+	if readyCallbackExpected && added == 0 {
+		s.clearRACPending()
 	}
 
 	// add to our lookup of job RepGroup to key
@@ -2494,9 +2620,14 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // need their dependencies updated because they just changed when we stored the
 // jobs.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
-	s.rpmutex.Lock()
-	s.racPending = true
-	s.rpmutex.Unlock()
+	type jobDeps struct {
+		job  *Job
+		deps []string
+	}
+
+	updates := make([]jobDeps, 0, len(jobs))
+	readyCallbackExpected := false
+
 	for _, job := range jobs {
 		deps, err := job.Dependencies.incompleteJobKeys(s.db)
 		if err != nil {
@@ -2505,12 +2636,38 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 			break
 		}
 
-		thisErr := s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+		updates = append(updates, jobDeps{job: job, deps: deps})
+
+		if len(deps) == 0 && !readyCallbackExpected {
+			item, errq := s.q.Get(job.Key())
+			readyCallbackExpected = itemWillBecomeReadyAfterDependencyUpdate(item, errq)
+		}
+	}
+
+	if qerr != nil {
+		return srerr, qerr
+	}
+
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
+	for _, update := range updates {
+		job := update.job
+		thisErr := s.q.Update(
+			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, update.deps,
+		)
 		if thisErr != nil {
 			qerr = thisErr
+
+			if readyCallbackExpected {
+				s.clearRACPending()
+			}
+
 			break
 		}
 	}
+
 	return srerr, qerr
 }
 
@@ -2823,9 +2980,15 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 // kickJobs unburies the given jobs and returns the number affected.
 func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 	for _, job := range jobs {
-		s.rpmutex.Lock()
-		s.racPending = true
-		s.rpmutex.Unlock()
+		readyCallbackExpected := false
+
+		item, errg := s.q.Get(job.Key())
+		if errg == nil && item != nil && len(item.UnresolvedDependencies()) == 0 {
+			readyCallbackExpected = true
+
+			s.setRACPending()
+		}
+
 		err := s.q.Kick(ctx, job.Key())
 		if err == nil {
 			job.Lock()
@@ -2836,10 +2999,8 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 			kicked++
 
 			s.db.updateJobAfterChange(ctx, job)
-		} else {
-			s.rpmutex.Lock()
-			s.racPending = false
-			s.rpmutex.Unlock()
+		} else if readyCallbackExpected {
+			s.clearRACPending()
 		}
 	}
 
@@ -3436,7 +3597,8 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 					s.deleteJobIfRequested(ctx, job)
 				}
 			}
-			s.q.TriggerReadyAddedCallback(ctx)
+
+			s.triggerReadyAddedCallback(ctx)
 		}
 
 		if problem {
@@ -3488,7 +3650,7 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 	}
 
 	if group.hasSkips() {
-		defer s.q.TriggerReadyAddedCallback(ctx)
+		defer s.triggerReadyAddedCallback(ctx)
 	}
 
 	count := group.decrement(drop)
@@ -3634,7 +3796,7 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 			s.limiter.RemoveLimit(g)
 		}
 
-		s.q.TriggerReadyAddedCallback(ctx)
+		s.triggerReadyAddedCallback(ctx)
 
 		return limit, "", nil
 	}
@@ -3787,10 +3949,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.rpmutex.Lock()
 	s.racPending = false
 	s.racRunning = false
-	for _, ch := range s.waitingReserves {
-		close(ch)
-	}
-	s.waitingReserves = nil
+	s.clearRACWaiters()
 	s.rpmutex.Unlock()
 
 	// wait for our goroutines to finish

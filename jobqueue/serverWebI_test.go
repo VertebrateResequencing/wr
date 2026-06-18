@@ -36,6 +36,66 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestCaster(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A caster sends updates to active members", t, func() {
+		caster := newCaster()
+
+		receiver := caster.Join()
+		defer receiver.Close()
+
+		caster.Send("status")
+
+		select {
+		case msg := <-receiver.In:
+			So(msg, ShouldEqual, "status")
+		case <-time.After(time.Second):
+			So("timed out waiting for caster update", ShouldBeBlank)
+		}
+	})
+
+	Convey("Closing a caster member cancels a pending send", t, func() {
+		caster := newCaster()
+		receiver := caster.Join()
+
+		if cap(receiver.In) > 0 {
+			receiver.In <- "queued"
+		}
+
+		sent := make(chan struct{})
+		go func() {
+			caster.Send("closed")
+			close(sent)
+		}()
+
+		select {
+		case <-sent:
+		case <-time.After(time.Second):
+			So("timed out waiting for caster send", ShouldBeBlank)
+		}
+
+		receiver.Close()
+
+		if cap(receiver.In) > 0 {
+			select {
+			case msg := <-receiver.In:
+				So(msg, ShouldEqual, "queued")
+			default:
+				So("buffered caster update was missing", ShouldBeBlank)
+			}
+		}
+
+		select {
+		case msg := <-receiver.In:
+			So(fmt.Sprintf("received update after close: %v", msg), ShouldBeBlank)
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+}
+
 func TestServerWebI(t *testing.T) {
 	if runnermode || servermode {
 		return

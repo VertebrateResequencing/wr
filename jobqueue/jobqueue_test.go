@@ -52,6 +52,7 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/shirou/gopsutil/process"
 	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -75,6 +76,8 @@ var (
 	serverKeepDB        bool
 	serverEnableRunners bool
 )
+
+var errMissingLiveJobsBucket = errors.New("missing live jobs bucket")
 
 func init() {
 	clog.ToDefault()
@@ -100,6 +103,49 @@ func serverShutDownTime() time.Duration {
 	// global lock on them, so we have to allow the 500ms of time to any pending
 	// starts to resolve before we can shut down.
 	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
+}
+
+func assertNonEmptyFile(path string) {
+	info, err := os.Stat(path)
+	So(err, ShouldBeNil)
+
+	if err != nil {
+		return
+	}
+
+	size := info.Size()
+	So(size, ShouldBeGreaterThan, int64(0))
+}
+
+func assertBoltLiveJobs(path string, expected int) {
+	boltdb, err := bolt.Open(path, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	So(err, ShouldBeNil)
+
+	if err != nil {
+		return
+	}
+
+	defer func() {
+		So(boltdb.Close(), ShouldBeNil)
+	}()
+
+	liveJobs := 0
+	err = boltdb.View(func(tx *bolt.Tx) error {
+		jobs := tx.Bucket(bucketJobsLive)
+		if jobs == nil {
+			return errMissingLiveJobsBucket
+		}
+
+		return jobs.ForEach(func(_, encoded []byte) error {
+			if encoded != nil {
+				liveJobs++
+			}
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+	So(liveJobs, ShouldEqual, expected)
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -1248,6 +1294,7 @@ func TestJobqueueBasics(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -1770,6 +1817,7 @@ func TestJobqueueMedium(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -4547,6 +4595,50 @@ func TestJobqueueProduction(t *testing.T) {
 		_, err = os.Stat(managerDBBkFile)
 		So(err, ShouldNotBeNil)
 
+		Convey("A kill requested after reservation survives job start", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+
+			jobs := []*Job{{
+				Cmd:          "sleep 10",
+				Cwd:          "/tmp",
+				ReqGroup:     "pending_kill",
+				Requirements: &jqs.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+				Retries:      uint8(0),
+				RepGroup:     "pending_kill",
+			}}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			job, err := jq.Reserve(time.Second)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+
+			if job == nil {
+				return
+			}
+
+			killCount, err := jq.Kill([]*JobEssence{job.ToEssense()})
+			So(err, ShouldBeNil)
+			So(killCount, ShouldEqual, 1)
+
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			killCalled, err := jq.Touch(job)
+			So(err, ShouldBeNil)
+			So(killCalled, ShouldBeTrue)
+
+			err = jq.Bury(job, &JobEndState{
+				Exited:   true,
+				Exitcode: -1,
+				EndTime:  time.Now(),
+			}, FailReasonKilled)
+			So(err, ShouldBeNil)
+		})
+
 		Convey("You can connect, and add 2 jobs, which creates a db backup", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -4581,12 +4673,9 @@ func TestJobqueueProduction(t *testing.T) {
 
 			<-wait
 
-			info, err := os.Stat(config.ManagerDBFile)
-			So(err, ShouldBeNil)
-			So(info.Size(), ShouldEqual, 65536) // don't know if this will be consistent across platforms and versions...
-			info2, err := os.Stat(managerDBBkFile)
-			So(err, ShouldBeNil)
-			So(info2.Size(), ShouldEqual, 32768) // *** don't know why it's so much smaller...
+			assertNonEmptyFile(config.ManagerDBFile)
+			assertNonEmptyFile(managerDBBkFile)
+			assertBoltLiveJobs(managerDBBkFile, 2)
 			_, err = os.Stat(tmpPath)
 			So(err, ShouldNotBeNil)
 
@@ -4594,9 +4683,8 @@ func TestJobqueueProduction(t *testing.T) {
 				manualBackup := managerDBBkFile + ".manual"
 				err = jq.BackupDB(manualBackup)
 				So(err, ShouldBeNil)
-				info3, err := os.Stat(manualBackup)
-				So(err, ShouldBeNil)
-				So(info3.Size(), ShouldEqual, 32768)
+				assertNonEmptyFile(manualBackup)
+				assertBoltLiveJobs(manualBackup, 2)
 
 				server.Stop(ctx, true)
 				server, _, token, errs = serve(ctx, serverConfig)
@@ -4655,12 +4743,9 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
 
-				info, err = os.Stat(config.ManagerDBFile)
-				So(err, ShouldBeNil)
-				So(info.Size(), ShouldEqual, 32768)
-				info2, err = os.Stat(managerDBBkFile)
-				So(err, ShouldBeNil)
-				So(info2.Size(), ShouldEqual, 32768)
+				assertNonEmptyFile(config.ManagerDBFile)
+				assertNonEmptyFile(managerDBBkFile)
+				assertBoltLiveJobs(managerDBBkFile, 2)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -4682,12 +4767,9 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
 
-				info, err = os.Stat(config.ManagerDBFile)
-				So(err, ShouldBeNil)
-				So(info.Size(), ShouldEqual, 32768)
-				info2, err = os.Stat(managerDBBkFile)
-				So(err, ShouldBeNil)
-				So(info2.Size(), ShouldEqual, 32768)
+				assertNonEmptyFile(config.ManagerDBFile)
+				assertNonEmptyFile(managerDBBkFile)
+				assertBoltLiveJobs(managerDBBkFile, 2)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -4741,12 +4823,10 @@ func TestJobqueueProduction(t *testing.T) {
 			So(already, ShouldEqual, 0)
 			server.Stop(ctx, true)
 
-			info, err := os.Stat(config.ManagerDBFile)
-			So(err, ShouldBeNil)
-			So(info.Size(), ShouldEqual, 32768)
-			info2, err := os.Stat(managerDBBkFile)
-			So(err, ShouldBeNil)
-			So(info2.Size(), ShouldEqual, 28672)
+			assertNonEmptyFile(config.ManagerDBFile)
+			assertBoltLiveJobs(config.ManagerDBFile, 1)
+			assertNonEmptyFile(managerDBBkFile)
+			assertBoltLiveJobs(managerDBBkFile, 1)
 
 			Convey("You can restart the server with that existing job, delete it, and it stays deleted when restoring from backup", func() {
 				wipeDevDBOnInit = false
@@ -5033,11 +5113,13 @@ func TestJobqueueRunners(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			// wait for the job to start running
-			started := make(chan int, 1)
-			go func() {
+			// wait for the job process to start running
+			waitForStartedJobPID := func() int {
 				limit := time.After(30 * time.Second)
+
 				ticker := time.NewTicker(50 * time.Millisecond)
+				defer ticker.Stop()
+
 				for {
 					select {
 					case <-ticker.C:
@@ -5045,28 +5127,32 @@ func TestJobqueueRunners(t *testing.T) {
 						if err != nil {
 							continue
 						}
-						if len(jobs) == 1 {
-							ticker.Stop()
-							started <- jobs[0].Pid
 
-							return
+						if len(jobs) == 1 && jobs[0].Pid > 0 && !jobs[0].StartTime.IsZero() {
+							if errp := syscall.Kill(jobs[0].Pid, 0); errp == nil {
+								return jobs[0].Pid
+							}
 						}
 
-						continue
 					case <-limit:
-						ticker.Stop()
-						started <- 0
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+						timelimitDebug(jobs, err)
 
-						return
+						return 0
 					}
 				}
-			}()
-			jobPID := <-started
+			}
+			jobPID := waitForStartedJobPID()
 			So(jobPID, ShouldNotEqual, 0)
+
+			if jobPID == 0 {
+				return
+			}
 
 			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].Pid, ShouldEqual, jobPID)
 
 			// initially, we force us to fail to be able to check if the job
 			// is really dead or not, so that we can test this scenario
@@ -5093,10 +5179,12 @@ func TestJobqueueRunners(t *testing.T) {
 			killed := make(chan bool, 1)
 			checkLost := true
 			var timeToBury time.Duration
+
+			lostStatePollInterval := 50 * time.Millisecond
 			go func() {
 				var lostTime time.Time
 				limit := time.After(ServerItemTTR + 5*time.Second)
-				ticker := time.NewTicker(50 * time.Millisecond)
+				ticker := time.NewTicker(lostStatePollInterval)
 				for {
 					select {
 					case <-ticker.C:
@@ -5151,7 +5239,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
 			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
 			So(jobs[0].Exitcode, ShouldEqual, -1)
-			So(timeToBury, ShouldBeGreaterThanOrEqualTo, ServerLostJobCheckRetryTime-1*time.Millisecond)
+			So(timeToBury, ShouldBeGreaterThanOrEqualTo, ServerLostJobCheckRetryTime-(2*lostStatePollInterval))
 		})
 
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
@@ -5193,7 +5281,12 @@ func TestJobqueueRunners(t *testing.T) {
 
 			// wait for 1 job to complete, then add a job with overlapping
 			// limitgroups and different requirements
-			waitForCompletion(1)
+			completed := waitForCompletion(1)
+			So(completed, ShouldBeTrue)
+
+			if !completed {
+				return
+			}
 
 			jobs = []*Job{}
 			jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d && sleep 1", count+1), Cwd: "/tmp", CwdMatters: true, ReqGroup: "limitedB", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"c:5", "b:1"}})
@@ -5209,9 +5302,15 @@ func TestJobqueueRunners(t *testing.T) {
 			// additional runner timeout (1s) due to fact the first runner uses
 			// up the limit for that long while waiting to reserve from the now
 			// empty queue for its group. There's also a little overhead.
-			t := time.Now()
-			waitForCompletion(count + 1)
-			So(time.Since(t), ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
+			start := time.Now()
+			completed = waitForCompletion(count + 1)
+			elapsed := time.Since(start)
+
+			So(completed, ShouldBeTrue)
+
+			if completed {
+				So(elapsed, ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
+			}
 		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
@@ -7303,16 +7402,14 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 			<-time.After(8 * time.Second)
 
-			info, err := os.Stat(config.ManagerDBFile)
-			So(err, ShouldBeNil)
-			So(info.Size(), ShouldEqual, 32768)
+			assertNonEmptyFile(config.ManagerDBFile)
 			_, err = os.Stat(localBkPath)
 			So(err, ShouldNotBeNil)
 
-			server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
-			info2, err := os.Stat(localBkPath)
+			err = server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
 			So(err, ShouldBeNil)
-			So(info2.Size(), ShouldEqual, 28672)
+			assertNonEmptyFile(localBkPath)
+			assertBoltLiveJobs(localBkPath, 1)
 			err = os.Remove(localBkPath)
 			So(err, ShouldBeNil)
 
@@ -7347,16 +7444,14 @@ func TestJobqueueWithMounts(t *testing.T) {
 				So(errs, ShouldBeNil)
 				defer server.Stop(ctx, true)
 
-				info, err = os.Stat(config.ManagerDBFile)
-				So(err, ShouldBeNil)
-				So(info.Size(), ShouldEqual, 28672)
+				assertNonEmptyFile(config.ManagerDBFile)
 				_, err = os.Stat(localBkPath)
 				So(err, ShouldNotBeNil)
 
-				server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
-				info2, err := os.Stat(localBkPath)
+				err = server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
 				So(err, ShouldBeNil)
-				So(info2.Size(), ShouldEqual, 28672)
+				assertNonEmptyFile(localBkPath)
+				assertBoltLiveJobs(localBkPath, 1)
 				err = os.Remove(localBkPath)
 				So(err, ShouldBeNil)
 
