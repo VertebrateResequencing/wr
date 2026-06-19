@@ -32,6 +32,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,6 +208,310 @@ func TestSchedulerSubmitJobsAndReturnIDs(t *testing.T) {
 			})
 		})
 	})
+}
+
+type waitForRunningSequenceJobqueue struct {
+	*pretendJobqueue
+	job    *jobqueue.Job
+	states []jobqueue.JobState
+	calls  atomic.Int64
+}
+
+func newWaitForRunningSequenceScheduler(key string,
+	states ...jobqueue.JobState) (*Scheduler, *waitForRunningSequenceJobqueue) {
+	if len(states) == 0 {
+		states = []jobqueue.JobState{jobqueue.JobStateReady}
+	}
+
+	s := &Scheduler{cwd: "/tmp"}
+	job := s.NewJob("cmd-"+key, "rg-"+key, "req-"+key, "", "", nil)
+
+	jq := &waitForRunningSequenceJobqueue{
+		pretendJobqueue: newPretendJobqueue(),
+		job:             job,
+		states:          states,
+	}
+	s.jq = jq
+
+	return s, jq
+}
+
+func (w *waitForRunningSequenceJobqueue) GetByEssence(je *jobqueue.JobEssence,
+	_ bool, _ bool) (*jobqueue.Job, error) {
+	if je == nil || je.Key() == "" {
+		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
+	}
+
+	key := je.Key()
+	if key != w.job.Key() {
+		return nil, jobqueue.Error{Op: getByEssenceOp, Item: key, Err: jobqueue.ErrBadJob}
+	}
+
+	call := int(w.calls.Add(1)) - 1
+	if call >= len(w.states) {
+		call = len(w.states) - 1
+	}
+
+	w.job.State = w.states[call]
+
+	return w.job, nil
+}
+
+func TestSchedulerWaitForRunning(t *testing.T) {
+	Convey("Given a running test manager and scheduler", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		runner, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(runner, ShouldNotBeNil)
+
+		defer func() {
+			So(runner.Disconnect(), ShouldBeNil)
+		}()
+
+		runnerJQ, ok := runner.jq.(*jobqueue.Client)
+		So(ok, ShouldBeTrue)
+
+		Convey("WaitForRunning returns when a ready job starts running", func() {
+			job := s.NewJob("echo c1 running", "rg-c1-running",
+				"req-c1-running", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job},
+				SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			done := waitForRunningAsync(waitCtx, s, keys[0], 10*time.Millisecond)
+
+			started, err := reserveAndStartSchedulerJob(runnerJQ)
+			So(err, ShouldBeNil)
+
+			result := receiveWaitForRunningResult(done, 6*time.Second)
+			So(result.err, ShouldBeNil)
+			So(result.job, ShouldNotBeNil)
+			So(result.job.Key(), ShouldEqual, keys[0])
+			So(result.job.State, ShouldEqual, jobqueue.JobStateRunning)
+
+			err = runnerJQ.Archive(started, &jobqueue.JobEndState{
+				Exited:   true,
+				Exitcode: 0,
+				EndTime:  time.Now(),
+			})
+			So(err, ShouldBeNil)
+		})
+
+		Convey("WaitForRunning skips reserved states and returns final started-or-ended states", func() {
+			finalStates := []jobqueue.JobState{
+				jobqueue.JobStateRunning,
+				jobqueue.JobStateLost,
+				jobqueue.JobStateComplete,
+				jobqueue.JobStateBuried,
+				jobqueue.JobStateUnknown,
+			}
+
+			for _, finalState := range finalStates {
+				label := "c1-reserved-" + string(finalState)
+				s, jq := newWaitForRunningSequenceScheduler(label,
+					jobqueue.JobStateReserved, finalState)
+				key := jq.job.Key()
+
+				got, err := s.WaitForRunning(ctx, key, time.Millisecond)
+				So(err, ShouldBeNil)
+				So(got, ShouldNotBeNil)
+				So(got.Key(), ShouldEqual, key)
+				So(got.State, ShouldEqual, finalState)
+				So(got.State, ShouldNotEqual, jobqueue.JobStateReserved)
+			}
+
+			s, jq := newWaitForRunningSequenceScheduler("c1-reserved-canceled",
+				jobqueue.JobStateReserved)
+			key := jq.job.Key()
+			waitCtx, cancel := context.WithCancel(ctx)
+
+			done := waitForRunningAsync(waitCtx, s, key, time.Millisecond)
+
+			So(waitForRunningCalls(jq, 1, time.Second), ShouldBeTrue)
+			cancel()
+
+			result := receiveWaitForRunningResult(done, time.Second)
+			So(result.job, ShouldBeNil)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+		})
+
+		Convey("WaitForRunning returns lost before running", func() {
+			s, jq := newWaitForRunningSequenceScheduler("c1-lost",
+				jobqueue.JobStateLost)
+			key := jq.job.Key()
+
+			got, err := s.WaitForRunning(ctx, key, time.Millisecond)
+			So(err, ShouldBeNil)
+			So(got, ShouldNotBeNil)
+			So(got.Key(), ShouldEqual, key)
+			So(got.State, ShouldEqual, jobqueue.JobStateLost)
+		})
+
+		Convey("WaitForRunning returns complete before running", func() {
+			s, jq := newWaitForRunningSequenceScheduler("c1-complete",
+				jobqueue.JobStateComplete)
+			key := jq.job.Key()
+
+			got, err := s.WaitForRunning(ctx, key, time.Millisecond)
+			So(err, ShouldBeNil)
+			So(got, ShouldNotBeNil)
+			So(got.State, ShouldEqual, jobqueue.JobStateComplete)
+		})
+
+		Convey("WaitForRunning returns buried before running", func() {
+			s, jq := newWaitForRunningSequenceScheduler("c1-buried",
+				jobqueue.JobStateBuried)
+			key := jq.job.Key()
+
+			got, err := s.WaitForRunning(ctx, key, time.Millisecond)
+			So(err, ShouldBeNil)
+			So(got, ShouldNotBeNil)
+			So(got.State, ShouldEqual, jobqueue.JobStateBuried)
+		})
+
+		Convey("WaitForRunning returns unknown without retrying", func() {
+			s, jq := newWaitForRunningSequenceScheduler("c1-unknown",
+				jobqueue.JobStateUnknown)
+			key := jq.job.Key()
+
+			got, err := s.WaitForRunning(ctx, key, time.Millisecond)
+			So(err, ShouldBeNil)
+			So(got, ShouldNotBeNil)
+			So(got.State, ShouldEqual, jobqueue.JobStateUnknown)
+			So(jq.calls.Load(), ShouldEqual, 1)
+		})
+
+		Convey("WaitForRunning rejects a blank key", func() {
+			s, _ := newWaitForRunningSequenceScheduler("unused",
+				jobqueue.JobStateRunning)
+
+			got, err := s.WaitForRunning(ctx, "", time.Millisecond)
+			So(got, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr, ShouldResemble, jobqueue.Error{
+				Op:  "WaitForRunning",
+				Err: jobqueue.ErrBadRequest,
+			})
+		})
+
+		Convey("WaitForRunning reports a missing key as a bad job", func() {
+			s, _ := newWaitForRunningSequenceScheduler("existing-key",
+				jobqueue.JobStateRunning)
+
+			got, err := s.WaitForRunning(ctx, "missing-key", time.Millisecond)
+			So(got, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr, ShouldResemble, jobqueue.Error{
+				Op:   "WaitForRunning",
+				Item: "missing-key",
+				Err:  jobqueue.ErrBadJob,
+			})
+		})
+
+		Convey("WaitForRunning returns context deadline before a ready job starts", func() {
+			s, jq := newWaitForRunningSequenceScheduler("c1-deadline",
+				jobqueue.JobStateReady)
+			key := jq.job.Key()
+
+			waitCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+			defer cancel()
+
+			got, err := s.WaitForRunning(waitCtx, key, time.Millisecond)
+			So(got, ShouldBeNil)
+			So(errors.Is(err, context.DeadlineExceeded), ShouldBeTrue)
+		})
+
+		Convey("WaitForRunning accepts a non-positive poll interval", func() {
+			s, jq := newWaitForRunningSequenceScheduler("c1-canceled",
+				jobqueue.JobStateReady)
+			key := jq.job.Key()
+			waitCtx, cancel := context.WithCancel(ctx)
+			cancel()
+
+			got, err := s.WaitForRunning(waitCtx, key, 0)
+			So(got, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+		})
+	})
+}
+
+func waitForRunningAsync(ctx context.Context, s *Scheduler, key string,
+	pollInterval time.Duration) <-chan waitForRunningResult {
+	done := make(chan waitForRunningResult, 1)
+
+	go func() {
+		job, err := s.WaitForRunning(ctx, key, pollInterval)
+		done <- waitForRunningResult{job: job, err: err}
+	}()
+
+	return done
+}
+
+func receiveWaitForRunningResult(done <-chan waitForRunningResult,
+	timeout time.Duration) waitForRunningResult {
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(timeout):
+		return waitForRunningResult{err: errSchedulerJobTimeout}
+	}
+}
+
+func waitForRunningCalls(jq *waitForRunningSequenceJobqueue, want int64,
+	timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if jq.calls.Load() >= want {
+			return true
+		}
+
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestSchedulerSubmitJobsOptions(t *testing.T) {
@@ -1127,4 +1432,9 @@ func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
 type waitForJobsResult struct {
 	jobs []*jobqueue.Job
 	err  error
+}
+
+type waitForRunningResult struct {
+	job *jobqueue.Job
+	err error
 }

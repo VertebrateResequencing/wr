@@ -20,5 +20,5 @@ Add `(*Scheduler).WaitForRunning(ctx, key, pollInterval)` in
 when `pollInterval <= 0`; and return `ctx.Err()` on cancellation or deadline.
 Covering all 10 acceptance tests from C1. Builds on Phase 2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

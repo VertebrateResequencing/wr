@@ -65,13 +65,17 @@ var PretendSubmissions string //nolint:gochecknoglobals
 
 // some consts used by Scheduler.
 const (
-	getJobByKeyOp       = "GetJobByKey"
-	waitForJobsOp       = "WaitForJobs"
-	jobRetries    uint8 = 30
-	reqRAM              = 100
-	reqTime             = 10 * time.Second
-	reqCores            = 1
-	reqDisk             = 1
+	getByEssenceOp         = "GetByEssence"
+	getJobByKeyOp          = "GetJobByKey"
+	waitForRunningOp       = "WaitForRunning"
+	waitForJobsOp          = "WaitForJobs"
+	jobRetries       uint8 = 30
+	reqRAM                 = 100
+	reqTime                = 10 * time.Second
+	reqCores               = 1
+	reqDisk                = 1
+
+	waitForRunningDefaultPollInterval = 5 * time.Second
 )
 
 type Error string
@@ -225,7 +229,7 @@ func distinctJobsInKeyOrder(jobs []*jobqueue.Job) []*jobqueue.Job {
 func (p *pretendJobqueue) GetByEssence(je *jobqueue.JobEssence, _ bool,
 	_ bool) (*jobqueue.Job, error) {
 	if je == nil || je.Key() == "" {
-		return nil, jobqueue.Error{Op: "GetByEssence", Err: jobqueue.ErrBadRequest}
+		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
 	}
 
 	key := je.Key()
@@ -235,7 +239,7 @@ func (p *pretendJobqueue) GetByEssence(je *jobqueue.JobEssence, _ bool,
 		}
 	}
 
-	return nil, jobqueue.Error{Op: "GetByEssence", Item: key, Err: jobqueue.ErrBadJob}
+	return nil, jobqueue.Error{Op: getByEssenceOp, Item: key, Err: jobqueue.ErrBadJob}
 }
 
 func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
@@ -456,6 +460,117 @@ func (s *Scheduler) GetJobByKey(key string, getStd bool,
 	}
 
 	return job, nil
+}
+
+// WaitForRunning waits until the job identified by key has started running or
+// has already reached a state that means it will not start in this wait.
+func (s *Scheduler) WaitForRunning(ctx context.Context, key string,
+	pollInterval time.Duration) (*jobqueue.Job, error) {
+	if err := validateWaitForRunningKey(key); err != nil {
+		return nil, err
+	}
+
+	ticker := time.NewTicker(waitForRunningPollInterval(pollInterval))
+	defer ticker.Stop()
+
+	return s.waitForRunning(ctx, key, ticker)
+}
+
+func validateWaitForRunningKey(key string) error {
+	if key == "" {
+		return jobqueue.Error{Op: waitForRunningOp, Err: jobqueue.ErrBadRequest}
+	}
+
+	return nil
+}
+
+func waitForRunningPollInterval(pollInterval time.Duration) time.Duration {
+	if pollInterval <= 0 {
+		return waitForRunningDefaultPollInterval
+	}
+
+	return pollInterval
+}
+
+func (s *Scheduler) waitForRunning(ctx context.Context, key string,
+	ticker *time.Ticker) (*jobqueue.Job, error) {
+	for ctx.Err() == nil {
+		job, done, err := s.pollWaitForRunning(key)
+		switch {
+		case err != nil:
+			return nil, err
+		case done:
+			return job, nil
+		}
+
+		if err = waitForRunningTick(ctx, ticker); err != nil {
+			return nil, err
+		}
+	}
+
+	return nil, ctx.Err()
+}
+
+func waitForRunningTick(ctx context.Context, ticker *time.Ticker) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-ticker.C:
+		return nil
+	}
+}
+
+func (s *Scheduler) pollWaitForRunning(key string) (*jobqueue.Job, bool, error) {
+	job, err := s.GetJobByKey(key, false, false)
+	if err != nil {
+		return nil, false, waitForRunningError(key, err)
+	}
+
+	done := s.returnPretendRunningJob(job) || isWaitForRunningState(job.State)
+
+	return job, done, nil
+}
+
+func waitForRunningError(key string, err error) error {
+	var jqErr jobqueue.Error
+
+	if !errors.As(err, &jqErr) {
+		return err
+	}
+
+	switch jqErr.Err {
+	case jobqueue.ErrBadRequest:
+		return jobqueue.Error{Op: waitForRunningOp, Err: jobqueue.ErrBadRequest}
+	case jobqueue.ErrBadJob:
+		return jobqueue.Error{Op: waitForRunningOp, Item: key, Err: jobqueue.ErrBadJob}
+	default:
+		return err
+	}
+}
+
+func isWaitForRunningState(state jobqueue.JobState) bool {
+	switch state {
+	case jobqueue.JobStateRunning, jobqueue.JobStateLost, jobqueue.JobStateComplete,
+		jobqueue.JobStateBuried, jobqueue.JobStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Scheduler) returnPretendRunningJob(job *jobqueue.Job) bool {
+	if _, ok := s.jq.(*pretendJobqueue); !ok {
+		return false
+	}
+
+	switch job.State {
+	case jobqueue.JobStateDelayed, jobqueue.JobStateReady, jobqueue.JobStateReserved:
+		job.State = jobqueue.JobStateRunning
+
+		return true
+	default:
+		return false
+	}
 }
 
 // WaitForJobs waits for the supplied job keys to reach a terminal state,
