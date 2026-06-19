@@ -27,13 +27,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/VertebrateResequencing/wr/clog"
+	fsd "github.com/VertebrateResequencing/wr/fs/dir"
+	fp "github.com/VertebrateResequencing/wr/fs/filepath"
+	"github.com/VertebrateResequencing/wr/network/port"
 	"github.com/creasty/defaults"
 	"github.com/jinzhu/configor"
 	"github.com/olekukonko/tablewriter"
-	"github.com/wtsi-ssg/wr/clog"
-	fsd "github.com/wtsi-ssg/wr/fs/dir"
-	fp "github.com/wtsi-ssg/wr/fs/filepath"
-	"github.com/wtsi-ssg/wr/network/port"
+	"github.com/olekukonko/tablewriter/tw"
 )
 
 const (
@@ -120,7 +121,6 @@ type Config struct {
 	CloudGateway         string `default:"192.168.64.1"`
 	CloudDNS             string `default:"8.8.4.4,8.8.8.8"`
 	CloudOS              string `default:"bionic-server"`
-	ContainerImage       string `default:"ubuntu:latest"`
 	CloudUser            string `default:"ubuntu"`
 	CloudRAM             int    `default:"2048"`
 	CloudDisk            int    `default:"1"`
@@ -169,9 +169,12 @@ func (c Config) String() string {
 	typeOfC := vals.Type()
 
 	tableString := &strings.Builder{}
-	table := tablewriter.NewWriter(tableString)
-	table.SetHeader([]string{"Config", "Value", "Source"})
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
+	table := tablewriter.NewTable(
+		tableString,
+		tablewriter.WithHeaderAlignment(tw.AlignLeft),
+		tablewriter.WithRowAlignment(tw.AlignLeft),
+	)
+	table.Header("Config", "Value", "Source")
 
 	for i := 0; i < vals.NumField(); i++ {
 		property := typeOfC.Field(i).Name
@@ -184,10 +187,14 @@ func (c Config) String() string {
 			source = ConfigSourceDefault
 		}
 
-		table.Append([]string{property, fmt.Sprintf("%v", vals.Field(i).Interface()), source})
+		if err := table.Append([]string{property, fmt.Sprintf("%v", vals.Field(i).Interface()), source}); err != nil {
+			return tableString.String()
+		}
 	}
 
-	table.Render()
+	if err := table.Render(); err != nil {
+		return tableString.String()
+	}
 
 	return tableString.String()
 }

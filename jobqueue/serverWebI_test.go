@@ -36,6 +36,67 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestCaster(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A caster sends updates to active members", t, func() {
+		caster := newCaster()
+
+		receiver := caster.Join()
+		defer receiver.Close()
+
+		caster.Send("status")
+
+		select {
+		case msg := <-receiver.In:
+			So(msg, ShouldEqual, "status")
+		case <-time.After(time.Second):
+			So("timed out waiting for caster update", ShouldBeBlank)
+		}
+	})
+
+	Convey("Closing a caster member cancels a pending send", t, func() {
+		caster := newCaster()
+		receiver := caster.Join()
+
+		if cap(receiver.In) > 0 {
+			receiver.In <- "queued"
+		}
+
+		sent := make(chan struct{})
+
+		go func() {
+			caster.Send("closed")
+			close(sent)
+		}()
+
+		select {
+		case <-sent:
+		case <-time.After(time.Second):
+			So("timed out waiting for caster send", ShouldBeBlank)
+		}
+
+		receiver.Close()
+
+		if cap(receiver.In) > 0 {
+			select {
+			case msg := <-receiver.In:
+				So(msg, ShouldEqual, "queued")
+			default:
+				So("buffered caster update was missing", ShouldBeBlank)
+			}
+		}
+
+		select {
+		case msg := <-receiver.In:
+			So(fmt.Sprintf("received update after close: %v", msg), ShouldBeBlank)
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+}
+
 func TestServerWebI(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -191,7 +252,7 @@ func TestServerWebI(t *testing.T) {
 
 			Convey("The websocket handler responds to details requests", func() {
 				err = ws.WriteJSON(jstatusReq{
-					Request:  "details",
+					Request:  jstatusRequestDetails,
 					RepGroup: "rg1",
 					State:    JobStateComplete,
 				})
@@ -207,7 +268,7 @@ func TestServerWebI(t *testing.T) {
 				go func() {
 					<-time.After(100 * time.Millisecond)
 					ws.WriteJSON(jstatusReq{ //nolint:errcheck
-						Request:  "details",
+						Request:  jstatusRequestDetails,
 						RepGroup: "rg1",
 						State:    JobStateReserved,
 					})
@@ -278,7 +339,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns the first page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -293,7 +354,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns the second page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -308,7 +369,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns a partial page when reaching the end", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -323,7 +384,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns no jobs when offset is beyond available results", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -338,7 +399,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns all jobs when limit is 0", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -368,7 +429,7 @@ func TestServerWebI(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					err = ws.WriteJSON(jstatusReq{
-						Request:  "details",
+						Request:  jstatusRequestDetails,
 						RepGroup: "search_rg",
 						Search:   true,
 					})
@@ -418,7 +479,7 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It handles negative offset gracefully", func() {
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   1,
@@ -459,7 +520,7 @@ func TestServerWebI(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					err = ws.WriteJSON(jstatusReq{
-						Request:    "details",
+						Request:    jstatusRequestDetails,
 						RepGroup:   "pg_repgroup",
 						State:      JobStateBuried,
 						Exitcode:   2,
@@ -791,6 +852,101 @@ func TestServerWebI(t *testing.T) {
 	})
 }
 
+func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A details subscription queues updates that race initial status delivery", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "status-ws-details-race"
+		ids, err := jq.AddAndReturnIDs([]*Job{{
+			Cmd:          "echo status ws details race",
+			Cwd:          testCwd,
+			ReqGroup:     repGroup,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}}, envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		hookEntered := make(chan struct{})
+		releaseInitialStatus := make(chan struct{})
+
+		var hookOnce sync.Once
+
+		server.statusWSDetailsHook = func() {
+			hookOnce.Do(func() {
+				close(hookEntered)
+				<-releaseInitialStatus
+			})
+		}
+
+		defer func() {
+			server.statusWSDetailsHook = nil
+		}()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: repGroup,
+			State:    JobStateReady,
+		})
+		So(err, ShouldBeNil)
+
+		select {
+		case <-hookEntered:
+		case <-time.After(time.Second):
+			So("timed out waiting for details hook", ShouldBeBlank)
+
+			return
+		}
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		close(releaseInitialStatus)
+
+		So(ws.SetReadDeadline(time.Now().Add(2*time.Second)), ShouldBeNil)
+
+		initialStatus, err := readUntilStatus(ws)
+		So(err, ShouldBeNil)
+		So(initialStatus.Key, ShouldEqual, ids[0])
+		So(initialStatus.State, ShouldEqual, JobStateReady)
+		So(initialStatus.IsPushUpdate, ShouldBeFalse)
+
+		pushStatus, err := readUntilStatus(ws)
+		So(err, ShouldBeNil)
+		So(pushStatus.Key, ShouldEqual, ids[0])
+		So(pushStatus.State, ShouldEqual, JobStateRunning)
+		So(pushStatus.IsPushUpdate, ShouldBeTrue)
+	})
+}
+
 func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
 	ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
@@ -810,6 +966,8 @@ func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
 			break
 		}
 	}
+
+	_ = ws.Close()
 
 	ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
@@ -939,14 +1097,14 @@ func TestJobSubscriptions(t *testing.T) {
 			So(len(rg2Jobs), ShouldEqual, 1)
 
 			err = ws1.WriteJSON(jstatusReq{
-				Request:  "details",
+				Request:  jstatusRequestDetails,
 				RepGroup: "sub_rg1",
 				State:    JobStateReady,
 			})
 			So(err, ShouldBeNil)
 
 			err = ws2.WriteJSON(jstatusReq{
-				Request:  "details",
+				Request:  jstatusRequestDetails,
 				RepGroup: "sub_rg2",
 				State:    JobStateReady,
 			})
@@ -998,7 +1156,7 @@ func TestJobSubscriptions(t *testing.T) {
 				defer ws2.Close()
 
 				err = ws2.WriteJSON(jstatusReq{
-					Request:  "details",
+					Request:  jstatusRequestDetails,
 					RepGroup: "sub_rg2",
 					State:    JobStateReady,
 				})
@@ -1035,7 +1193,7 @@ func TestJobSubscriptions(t *testing.T) {
 				defer ws1.Close()
 
 				err = ws1.WriteJSON(jstatusReq{
-					Request:  "details",
+					Request:  jstatusRequestDetails,
 					RepGroup: "sub_rg1",
 					State:    JobStateReady,
 				})
@@ -1044,7 +1202,7 @@ func TestJobSubscriptions(t *testing.T) {
 				limitedDrain(ws1, 3)
 
 				err = ws1.WriteJSON(jstatusReq{
-					Request: "unsubscribe",
+					Request: jstatusRequestUnsubscribe,
 				})
 				So(err, ShouldBeNil)
 
@@ -1062,10 +1220,17 @@ func TestJobSubscriptions(t *testing.T) {
 				ws4, err := drainWebSocket(wsURL, header)
 				So(err, ShouldBeNil)
 
-				job, err := jq.Reserve(50 * time.Millisecond)
+				cleanupIDs, err := jq.AddAndReturnIDs([]*Job{{
+					Cmd:          "echo sub_cleanup",
+					Cwd:          "/tmp",
+					ReqGroup:     "sub_cleanup",
+					Requirements: standardReqs,
+					RepGroup:     "sub_cleanup",
+				}}, envVars, true)
 				So(err, ShouldBeNil)
+				So(cleanupIDs, ShouldHaveLength, 1)
 
-				jobKey := job.Key()
+				jobKey := cleanupIDs[0]
 
 				err = ws4.WriteJSON(jstatusReq{
 					Key: jobKey,
@@ -1076,17 +1241,84 @@ func TestJobSubscriptions(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(status.Key, ShouldEqual, jobKey)
 
+				subscriptionID, sub, ok := statusSubscriptionForKeyBecomes(server, jobKey, time.Second)
+				So(ok, ShouldBeTrue)
+				So(subscriptionID, ShouldNotBeBlank)
+
 				ws4.Close()
-				time.Sleep(100 * time.Millisecond)
-
-				server.jsmutex.RLock()
-				_, exists := server.jobSubscriptions[jobKey]
-				server.jsmutex.RUnlock()
-				So(exists, ShouldBeFalse)
-
-				err = jq.Execute(ctx, job, config.RunnerExecShell)
-				So(err, ShouldBeNil)
+				So(serverClientSubscriptionRemoved(server, subscriptionID, 5*time.Second), ShouldBeTrue)
+				So(serverSubscriptionClosed(sub, time.Second), ShouldBeTrue)
 			})
 		})
 	})
+}
+
+func statusSubscriptionForKeyBecomes(
+	server *Server,
+	key string,
+	timeout time.Duration,
+) (string, *serverSubscription, bool) {
+	deadline := time.After(timeout)
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if id, sub, ok := statusSubscriptionForKey(server, key); ok {
+			return id, sub, true
+		}
+
+		select {
+		case <-deadline:
+			return "", nil, false
+		case <-ticker.C:
+		}
+	}
+}
+
+func statusSubscriptionForKey(server *Server, key string) (string, *serverSubscription, bool) {
+	server.csmutex.RLock()
+	defer server.csmutex.RUnlock()
+
+	for id, sub := range server.clientSubscriptions {
+		if !sub.stateChanges || !sub.matchesKey(key) {
+			continue
+		}
+
+		return id, sub, true
+	}
+
+	return "", nil, false
+}
+
+func serverClientSubscriptionRemoved(server *Server, id string, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if _, exists := server.clientSubscription(id); !exists {
+			return true
+		}
+
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func serverSubscriptionClosed(sub *serverSubscription, timeout time.Duration) bool {
+	if sub == nil {
+		return false
+	}
+
+	select {
+	case <-sub.done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }

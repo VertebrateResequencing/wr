@@ -29,17 +29,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/wtsi-ssg/wr/clog"
-
-	"github.com/inconshreveable/log15"
+	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -52,6 +50,65 @@ var (
 
 func init() {
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+}
+
+type startOrderRecorder struct {
+	dir   string
+	lock  string
+	count string
+	order string
+}
+
+func newStartOrderRecorder() (*startOrderRecorder, error) {
+	dir, err := os.MkdirTemp("", "wr_schedulers_local_test_order_dir_")
+	if err != nil {
+		return nil, err
+	}
+
+	return &startOrderRecorder{
+		dir:   dir,
+		lock:  filepath.Join(dir, "lock"),
+		count: filepath.Join(dir, "count"),
+		order: filepath.Join(dir, "order"),
+	}, nil
+}
+
+func (r *startOrderRecorder) Close() {
+	os.RemoveAll(r.dir)
+}
+
+func (r *startOrderRecorder) Command(label string, tmpdir string) string {
+	return fmt.Sprintf("while ! mkdir %s 2>/dev/null; do sleep 0.001; done; "+
+		"n=0; if [ -s %s ]; then n=$(cat %s); fi; n=$((n + 1)); "+
+		"echo \"$n\" > %s; printf '%%06d %s\\n' \"$n\" >> %s; rmdir %s; "+
+		"mktemp --tmpdir=%s tmp.XXXXXX >/dev/null && sleep 0.75",
+		r.lock, r.count, r.count, r.count, label, r.order, r.lock, tmpdir)
+}
+
+func (r *startOrderRecorder) Order() ([]string, error) {
+	startOrderBytes, err := os.ReadFile(r.order)
+	if err != nil {
+		return nil, err
+	}
+
+	return strings.Fields(string(startOrderBytes)), nil
+}
+
+func (r *startOrderRecorder) Labels() ([]string, error) {
+	startOrder, err := r.Order()
+	if err != nil {
+		return nil, err
+	}
+
+	labels := make([]string, 0, len(startOrder)/2)
+
+	for i, field := range startOrder {
+		if i%2 == 1 {
+			labels = append(labels, field)
+		}
+	}
+
+	return labels, nil
 }
 
 func TestLocal(t *testing.T) {
@@ -300,11 +357,18 @@ func TestLocal(t *testing.T) {
 				}
 				defer os.RemoveAll(bigTmpdir)
 
+				order, err := newStartOrderRecorder()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				defer order.Close()
+
 				blockCmd := "sleep 0.25"
 				blockReq := &Requirements{1, 1 * time.Second, float64(maxCPU), 0, otherReqs, true, true, true}
-				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
+				smallCmd := order.Command("small", smallTmpdir)
 				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
-				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
+				bigCmd := order.Command("big", bigTmpdir)
 				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU - 1), 0, otherReqs, true, true, true}
 
 				// schedule 2 big cmds and then a small one to prove the small
@@ -325,14 +389,13 @@ func TestLocal(t *testing.T) {
 				So(len(bigTimes), ShouldEqual, 2)
 				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
 				So(len(smallTimes), ShouldEqual, 1)
-				firstBig := bigTimes[0]
-				secondBig := bigTimes[1]
-				if secondBig.Before(firstBig) {
-					firstBig = bigTimes[1]
-					secondBig = bigTimes[0]
-				}
-				So(smallTimes[0], ShouldHappenOnOrAfter, firstBig)
-				So(smallTimes[0], ShouldHappenBefore, secondBig)
+
+				startLabels, err := order.Labels()
+				So(err, ShouldBeNil)
+				So(startLabels, ShouldHaveLength, 3)
+				So(countStartLabels(startLabels, "big"), ShouldEqual, 2)
+				So(countStartLabels(startLabels, "small"), ShouldEqual, 1)
+				So(nthStartLabelIndex(startLabels, "small", 1), ShouldBeLessThan, nthStartLabelIndex(startLabels, "big", 2))
 
 				// schedule a blocker so that subsequent schedules will be
 				// compared to each other, then schedule 2 small cmds and a big
@@ -377,10 +440,17 @@ func TestLocal(t *testing.T) {
 				}
 				defer os.RemoveAll(bigTmpdir)
 
-				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
+				order, err := newStartOrderRecorder()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				defer order.Close()
+
+				smallCmd := order.Command("small", smallTmpdir)
 				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
-				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
-				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU / 2), 0, otherReqs, true, true, true}
+				bigCmd := order.Command("big", bigTmpdir)
+				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU) / 2, 0, otherReqs, true, true, true}
 
 				// schedule 3 big cmds (where 2 can run at once, filling the
 				// whole machine) and then a small one to prove the small
@@ -401,12 +471,13 @@ func TestLocal(t *testing.T) {
 				So(len(bigTimes), ShouldEqual, 3)
 				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
 				So(len(smallTimes), ShouldEqual, 1)
-				sort.Slice(bigTimes, func(i, j int) bool {
-					return bigTimes[i].Before(bigTimes[j])
-				})
-				So(smallTimes[0], ShouldHappenAfter, bigTimes[0])
-				So(smallTimes[0], ShouldHappenOnOrAfter, bigTimes[1])
-				So(smallTimes[0], ShouldHappenOnOrBefore, bigTimes[2])
+
+				startLabels, err := order.Labels()
+				So(err, ShouldBeNil)
+				So(startLabels, ShouldHaveLength, 4)
+				So(countStartLabels(startLabels, "big"), ShouldEqual, 3)
+				So(countStartLabels(startLabels, "small"), ShouldEqual, 1)
+				So(nthStartLabelIndex(startLabels, "small", 1), ShouldBeLessThan, nthStartLabelIndex(startLabels, "big", 3))
 			})
 		}
 
@@ -451,6 +522,35 @@ func TestLocal(t *testing.T) {
 			So(first, ShouldHappenBefore, second.Add(-400*time.Millisecond))
 		})
 	}
+}
+
+func countStartLabels(labels []string, label string) int {
+	count := 0
+
+	for _, got := range labels {
+		if got == label {
+			count++
+		}
+	}
+
+	return count
+}
+
+func nthStartLabelIndex(labels []string, label string, nth int) int {
+	seen := 0
+
+	for i, got := range labels {
+		if got != label {
+			continue
+		}
+
+		seen++
+		if seen == nth {
+			return i
+		}
+	}
+
+	return -1
 }
 
 func TestLSF(t *testing.T) {
@@ -674,7 +774,7 @@ func TestLSF(t *testing.T) {
 
 			logMsg := ""
 
-			testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.FuncHandler(func(r *log15.Record) error {
+			testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.FuncHandler(func(r log15.Record) error {
 				logMsg += r.Msg
 
 				return nil

@@ -21,10 +21,8 @@ dependencies enabling easy automation of on-going projects.
 
 Furthermore, wr has best-in-class support for OpenStack, providing incredibly
 easy deployment and auto-scaling without you having to know anything about
-OpenStack. For use in clouds such as AWS, GCP and others, wr also has the
-built-in ability to self-deploy to any Kubernetes cluster. And it has built-in
-support for mounting S3-like object stores, providing an easy way of running
-commands against remote files whilst enjoying [high
+OpenStack. It also has built-in support for mounting S3-like object stores,
+providing an easy way of running commands against remote files whilst enjoying [high
 performance](https://github.com/VertebrateResequencing/muxfys).
 
 Download

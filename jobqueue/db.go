@@ -38,12 +38,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
-
-	"github.com/VertebrateResequencing/muxfys/v4"
+	"github.com/VertebrateResequencing/muxfys/v5"
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/limiter"
-	lru "github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru/arc/v2"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
@@ -54,6 +53,7 @@ const (
 	jobStatWindowPercent          = float32(5)
 	dbFilePermission              = 0o600
 	rgEndTimeBytes                = 8
+	envCacheSize                  = 12
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 )
@@ -116,7 +116,7 @@ type db struct {
 	backupNotification   chan bool
 	backupWait           time.Duration
 	bolt                 *bolt.DB
-	envcache             *lru.ARCCache
+	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit int
 	wg                   *waitgroup.WaitGroup
 	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
@@ -250,10 +250,14 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				boltdb, errbk = bolt.Open(bkPath, dbFilePermission, nil)
+				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, nil)
 				if errbk == nil {
-					origerr := err
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
+					if errbk = backupDB.Close(); errbk != nil {
+						return nil, msg, errbk
+					}
+
+					origerr := err
 					err = os.Remove(dbFile)
 					if err != nil {
 						return nil, msg, err
@@ -338,8 +342,9 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 		return nil, msg, err
 	}
 
-	// we will cache frequently used things to avoid actual db (disk) access
-	envcache, err := lru.NewARC(12) // we don't expect that many different ENVs to be in use at once
+	// we will cache frequently used things to avoid actual db (disk) access.
+	// We don't expect that many different ENVs to be in use at once.
+	envcache, err := lru.NewARC[string, []byte](envCacheSize)
 	if err != nil {
 		return nil, msg, err
 	}
@@ -1020,7 +1025,7 @@ func (db *db) storeEnv(env []byte) (string, error) {
 func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 	cached, got := db.envcache.Get(envkey)
 	if got {
-		return cached.([]byte)
+		return cached
 	}
 
 	envc := db.retrieve(ctx, bucketEnvs, envkey)

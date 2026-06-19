@@ -28,11 +28,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
-	"github.com/wtsi-ssg/wr/clog"
 )
 
 // maxCloudResourceUsernameLength is the maximum length that cloud username can

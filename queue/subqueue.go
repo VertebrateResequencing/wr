@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	logext "github.com/inconshreveable/log15/ext"
+	logext "github.com/inconshreveable/log15/v3/ext"
 )
 
 type subQueue struct {

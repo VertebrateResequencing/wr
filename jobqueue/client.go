@@ -26,6 +26,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -39,19 +40,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/container"
+	"github.com/VertebrateResequencing/wr/container/docker"
+	"github.com/VertebrateResequencing/wr/fs/local"
 	"github.com/VertebrateResequencing/wr/internal"
+	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
 	"github.com/docker/docker/client"
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 	"github.com/kballard/go-shellquote"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v4/process"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/clog"
-	"github.com/wtsi-ssg/wr/container"
-	"github.com/wtsi-ssg/wr/container/docker"
-	"github.com/wtsi-ssg/wr/fs/local"
-	"nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/req"
-	"nanomsg.org/go-mangos/transport/tlstcp"
+	"go.nanomsg.org/mangos/v3"
+	"go.nanomsg.org/mangos/v3/protocol/req"
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs
@@ -107,6 +108,19 @@ var (
 	RAMIncreaseMultBreakpoint    float64 = 8192
 )
 
+const (
+	requestMethodSubscribe      = "subscribe"
+	requestMethodUnsubscribe    = "unsubscribe"
+	requestMethodWaitForUpdates = "waitForUpdates"
+)
+
+const (
+	RepGroupMatchExact  RepGroupMatch = "exact"
+	RepGroupMatchSubStr RepGroupMatch = "substr"
+	RepGroupMatchPrefix RepGroupMatch = "prefix"
+	RepGroupMatchSuffix RepGroupMatch = "suffix"
+)
+
 // clientRequest is the struct that clients send to the server over the network
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
@@ -118,6 +132,7 @@ type clientRequest struct {
 	Token                   []byte
 	LimitGroup              string
 	Method                  string
+	SubscriptionID          string
 	SchedulerGroup          string
 	State                   JobState
 	Path                    string // desired path File should be stored at, can be blank
@@ -142,13 +157,6 @@ type clientRequest struct {
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
 // job retrieval calls.
 type RepGroupMatch string
-
-const (
-	RepGroupMatchExact  RepGroupMatch = "exact"
-	RepGroupMatchSubStr RepGroupMatch = "substr"
-	RepGroupMatchPrefix RepGroupMatch = "prefix"
-	RepGroupMatchSuffix RepGroupMatch = "suffix"
-)
 
 // RepGroupMatches reports if jobRepGroup matches repgroup according to match.
 func RepGroupMatches(jobRepGroup, repgroup string, match RepGroupMatch) bool {
@@ -222,12 +230,14 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return nil, err
 	}
 
-	err = sock.SetOption(mangos.OptionRecvDeadline, timeout)
-	if err != nil {
+	if err = sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
 		return nil, err
 	}
 
-	sock.AddTransport(tlstcp.NewTransport())
+	if err = sock.SetOption(mangos.OptionSendDeadline, timeout); err != nil {
+		return nil, err
+	}
+
 	tlsConfig := &tls.Config{ServerName: certDomain}
 	caCert, err := os.ReadFile(caFile)
 	if err == nil {
@@ -239,7 +249,12 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	dialOpts := make(map[string]interface{})
 	dialOpts[mangos.OptionTLSConfig] = tlsConfig
 	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
-		return nil, err
+		errc := sock.Close()
+		if errc != nil && !isClosedSocketError(errc) {
+			return nil, errc
+		}
+
+		return nil, Error{"Connect", "", ErrNoServer}
 	}
 
 	// clients identify themselves (only for the purpose of calling methods that
@@ -262,8 +277,8 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		args:     []string{addr, caFile, certDomain},
 	}
 
-	// Dial succeeds even when there's no server up, so we test the connection
-	// works with a Ping()
+	// Check the application-level connection, populate ServerInfo, and report
+	// authentication failures consistently.
 	si, err := c.Ping(timeout)
 	if err != nil {
 		errc := sock.Close()
@@ -1494,7 +1509,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			if !disconnected {
 				errd := c.Disconnect()
-				if errd == nil || strings.Contains(errd.Error(), "connection closed") {
+				if errd == nil || isClosedSocketError(errd) {
 					disconnected = true
 				} else {
 					clog.Warn(ctx, "failed to disconnect", "err", errd)
@@ -1531,6 +1546,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	return myerr
+}
+
+func isClosedSocketError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return errors.Is(err, mangos.ErrClosed) || strings.Contains(err.Error(), "connection closed")
 }
 
 // createLSFSymlinks creates symlinks of bsub, bjobs and bkill to own exe,

@@ -32,13 +32,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
-
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/kardianos/osext"
 	"github.com/sb10/waitgroup"
 	"github.com/sevlyar/go-daemon"
@@ -64,7 +62,6 @@ var (
 )
 
 const (
-	kubernetes      = "kubernetes"
 	deadlockTimeout = 5 * time.Minute
 	ownerReadWrite  = 0600
 )
@@ -128,11 +125,6 @@ Instead of creating your own openstack network and instance to start the
 manager on, you can use 'wr cloud deploy -p openstack' to create an OpenStack
 server on which wr manager will be started in OpenStack mode for you. 
 
-Similarly, If using the Kubernetes scheduler you must already be running in a
-pod. Be sure to pass a namespace for wr to use that will not have another wr
-user attempting to use it.
-Instead it is recommended to use 'wr k8s deploy' to bootstrap wr to a cluster.
-
 The --use_cert_domain option is intended for use when you have configured your
 own security certificates and want the manager to be reachable at a given
 domain name, because there is a risk of the manager's server going down and you
@@ -164,15 +156,6 @@ fully.`,
 
 		if mountJSON != "" {
 			mountParseJSON(mountJSON) // just to check the sytax and fail early
-		}
-
-		if scheduler == kubernetes {
-			if len(kubeNamespace) == 0 {
-				die("namespace must be specified when using the kubernetes scheduler")
-			}
-			if len(configMapName) == 0 && len(postCreationScript) == 0 {
-				die("either a config map name or path to a post creation script is required")
-			}
 		}
 
 		if len(localUsername) > maxCloudResourceUsernameLength {
@@ -624,8 +607,6 @@ func init() {
 	managerStartCmd.Flags().StringVar(&flavorSets, "cloud_flavor_sets", defaultConfig.CloudFlavorSets, "for cloud schedulers, sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().StringVarP(&preDestroyScript, "cloud_destroy_script", "y", defaultConfig.CloudDestroyScript, "for cloud schedulers, path to a script that will be run on each server before it is destroyed")
-	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
-	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", "for the kubernetes scheduler, provide an existing config map to initialise all pods with. To be used instead of --cloud_script")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	managerStartCmd.Flags().IntVar(&cloudServersAutoConfirmDead, "cloud_auto_confirm_dead", defaultConfig.CloudAutoConfirmDead, "for cloud schedulers, how long to wait in minutes before destroying bad servers; 0 means forever")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
@@ -769,20 +750,6 @@ func startJQ(postCreation, preDestroy []byte) {
 			Umask:                     config.ManagerUmask,
 		}
 		serverCIDR = cloudCIDR
-	case kubernetes:
-		schedulerConfig = &jqs.ConfigKubernetes{
-			Image:              osPrefix,
-			PostCreationScript: postCreation,
-			ConfigMap:          configMapName,
-			ConfigFiles:        cloudConfigFiles,
-			Shell:              config.RunnerExecShell,
-			TempMountPath:      filepath.Dir(exe) + "/",
-			LocalBinaryPath:    exe,
-			Namespace:          kubeNamespace,
-			ManagerDir:         config.ManagerDir,
-			Debug:              managerDebug,
-		}
-
 	}
 
 	if cloudConfig, ok := schedulerConfig.(jqs.CloudConfig); ok {
@@ -794,23 +761,16 @@ func startJQ(postCreation, preDestroy []byte) {
 			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
 		}
 
-		if scheduler != kubernetes {
-			// also check that we're actually in the cloud, or this is not going to
-			// work
-			provider, errc := cloud.New(ctx, scheduler, cloudResourceName(localUsername),
-				filepath.Join(config.ManagerDir, "cloud_resources."+scheduler))
-			if errc != nil {
-				die("could not connect to %s: %s", scheduler, errc)
-			}
-			if !provider.InCloud() {
-				die("according to hostname, this is not an instance in %s", scheduler)
-			}
-		} else {
-			// kubernetes specific code to check if we are in a wr pod inside a cluster
-			kubeWRPod := client.InWRPod()
-			if !kubeWRPod {
-				die("according to hostname and env vars, this is not a container in kubernetes")
-			}
+		// also check that we're actually in the cloud, or this is not going to
+		// work
+		provider, errc := cloud.New(ctx, scheduler, cloudResourceName(localUsername),
+			filepath.Join(config.ManagerDir, "cloud_resources."+scheduler))
+		if errc != nil {
+			die("could not connect to %s: %s", scheduler, errc)
+		}
+
+		if !provider.InCloud() {
+			die("according to hostname, this is not an instance in %s", scheduler)
 		}
 	}
 

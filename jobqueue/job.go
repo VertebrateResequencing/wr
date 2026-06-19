@@ -32,14 +32,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/VertebrateResequencing/muxfys/v4"
+	"github.com/VertebrateResequencing/muxfys/v5"
+	"github.com/VertebrateResequencing/wr/container"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/container"
 )
 
 // JobState is how we describe the possible job states.

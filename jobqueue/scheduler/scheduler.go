@@ -21,7 +21,7 @@ Package scheduler lets the jobqueue server interact with the configured job
 scheduler (if any) to submit jobqueue runner clients and have them run on a
 compute cluster (or local machine).
 
-Currently implemented schedulers are local, LSF, OpenStack and Kubernetes. The
+Currently implemented schedulers are local, LSF, and OpenStack. The
 implementation of each supported scheduler type is in its own .go file.
 
 It's a pseudo plug-in system in that it is designed so that you can easily add a
@@ -48,8 +48,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
-
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/dgryski/go-farm"
@@ -225,8 +224,8 @@ type Scheduler struct {
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
-// Possible names so far are "lsf", "local", "openstack" and "kubernetes". You
-// must also provide a config struct appropriate for your chosen scheduler, eg.
+// Possible names so far are "lsf", "local", and "openstack". You must also
+// provide a config struct appropriate for your chosen scheduler, eg.
 // for the local scheduler you will provide a ConfigLocal.
 //
 // Providing a logger allows for debug messages to be logged somewhere, along
@@ -241,8 +240,6 @@ func New(ctx context.Context, name string, config interface{}) (*Scheduler, erro
 		s = &Scheduler{impl: new(local)}
 	case "openstack":
 		s = &Scheduler{impl: new(opst)}
-	case "kubernetes":
-		s = &Scheduler{impl: new(k8s)}
 	default:
 		return nil, Error{name, "New", ErrBadScheduler}
 	}

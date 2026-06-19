@@ -39,9 +39,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	infoblox "github.com/fanatic/go-infoblox"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/wtsi-ssg/wr/clog"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 // ZeroCoreMultiplier is the multipler of actual cores we use for the maximum of

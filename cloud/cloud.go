@@ -84,10 +84,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/fs/local"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/gofrs/uuid"
-	"github.com/wtsi-ssg/wr/clog"
-	"github.com/wtsi-ssg/wr/fs/local"
+	"github.com/gofrs/uuid/v5"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can

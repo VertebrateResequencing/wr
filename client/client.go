@@ -34,11 +34,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/inconshreveable/log15"
+	"github.com/inconshreveable/log15/v3"
 	"github.com/rs/xid"
-	"github.com/wtsi-ssg/wr/clog"
 )
 
 type Error string

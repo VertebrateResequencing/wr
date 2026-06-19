@@ -23,16 +23,230 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/clog"
-	"nanomsg.org/go-mangos"
+	"go.nanomsg.org/mangos/v3"
 )
+
+type subscriptionCatchUpRecord struct {
+	job    *Job
+	state  JobState
+	atTime time.Time
+}
+
+func subscriptionCatchUpRecordForJob(job *Job) (string, subscriptionCatchUpRecord, bool) {
+	job.RLock()
+	defer job.RUnlock()
+
+	if !subscriptionCatchUpTerminalState(job.State) {
+		return "", subscriptionCatchUpRecord{}, false
+	}
+
+	atTime := job.EndTime
+	if atTime.IsZero() {
+		atTime = job.StartTime
+	}
+
+	return job.Key(), subscriptionCatchUpRecord{job: job, state: job.State, atTime: atTime}, true
+}
+
+func subscriptionCatchUpRepGroupRecordForJob(job *Job) (string, subscriptionCatchUpRecord, bool) {
+	job.RLock()
+	defer job.RUnlock()
+
+	record := subscriptionCatchUpRecord{job: job, state: job.State}
+	if !subscriptionCatchUpTerminalState(job.State) {
+		return job.Key(), record, false
+	}
+
+	record.atTime = job.EndTime
+	if record.atTime.IsZero() {
+		record.atTime = job.StartTime
+	}
+
+	return job.Key(), record, true
+}
+
+func (s *Server) subscriptionCatchUpByKeys(ctx context.Context, keys []string) ([]*JobUpdate, error) {
+	records := make(map[string]subscriptionCatchUpRecord, len(keys))
+	completeKeys := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		if item, err := s.q.Get(key); err == nil && item != nil {
+			addSubscriptionCatchUpRecord(records, s.itemToJob(ctx, item, false, false))
+
+			continue
+		}
+
+		completeKeys = append(completeKeys, key)
+	}
+
+	complete, err := s.db.retrieveCompleteJobsByKeys(completeKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, job := range complete {
+		addSubscriptionCatchUpRecord(records, job)
+	}
+
+	return subscriptionCatchUpKeyUpdates(keys, records), nil
+}
+
+func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
+	repGroup string,
+) (map[string]subscriptionCatchUpRecord, bool, error) {
+	records := make(map[string]subscriptionCatchUpRecord)
+	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup))
+
+	complete, err := s.db.retrieveCompleteJobsByRepGroup(repGroup)
+	if err != nil {
+		return nil, false, err
+	}
+
+	completeTerminal := addSubscriptionCatchUpRepGroupRecords(records, complete)
+
+	return records, queueTerminal && completeTerminal, nil
+}
+
+func addSubscriptionCatchUpRepGroupRecords(records map[string]subscriptionCatchUpRecord, jobs []*Job) bool {
+	allTerminal := true
+
+	for _, job := range jobs {
+		if !addSubscriptionCatchUpRepGroupRecord(records, job) {
+			allTerminal = false
+		}
+	}
+
+	return allTerminal
+}
+
+func addSubscriptionCatchUpRepGroupRecord(records map[string]subscriptionCatchUpRecord, job *Job) bool {
+	key, record, terminal := subscriptionCatchUpRepGroupRecordForJob(job)
+	if !terminal {
+		records[key] = record
+
+		return false
+	}
+
+	previous, exists := records[key]
+	if exists && !subscriptionCatchUpTerminalState(previous.state) {
+		return true
+	}
+
+	if !exists || record.atTime.After(previous.atTime) {
+		records[key] = record
+	}
+
+	return true
+}
+
+func subscriptionCatchUpTerminalState(state JobState) bool {
+	return state == JobStateComplete || state == JobStateBuried
+}
+
+func addSubscriptionCatchUpRecord(records map[string]subscriptionCatchUpRecord, job *Job) {
+	key, record, ok := subscriptionCatchUpRecordForJob(job)
+	if !ok {
+		return
+	}
+
+	previous, exists := records[key]
+	if !exists || record.atTime.After(previous.atTime) {
+		records[key] = record
+	}
+}
+
+func subscriptionCatchUpKeyUpdates(keys []string, records map[string]subscriptionCatchUpRecord) []*JobUpdate {
+	updates := make([]*JobUpdate, 0, len(records))
+	seen := make(map[string]struct{}, len(keys))
+
+	for _, key := range keys {
+		if _, exists := seen[key]; exists {
+			continue
+		}
+
+		seen[key] = struct{}{}
+
+		record, exists := records[key]
+		if !exists {
+			continue
+		}
+
+		updates = append(updates, subscriptionCatchUpJobUpdate(record))
+	}
+
+	return updates
+}
+
+func subscriptionCatchUpJobUpdate(record subscriptionCatchUpRecord) *JobUpdate {
+	job := record.job
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return &JobUpdate{
+		Started:    jobUnixNano(job.StartTime),
+		Ended:      jobUnixNano(job.EndTime),
+		Kind:       jobUpdateKind(record.state),
+		Key:        job.Key(),
+		RepGroup:   job.RepGroup,
+		State:      record.state,
+		Exitcode:   job.Exitcode,
+		FailReason: job.FailReason,
+	}
+}
+
+func subscriptionCatchUpRepGroupUpdate(repGroup string, records map[string]subscriptionCatchUpRecord) *JobUpdate {
+	keys := make([]string, 0, len(records))
+	for key := range records {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	update := &JobUpdate{
+		Kind:     JobUpdateRepGroupDone,
+		RepGroup: repGroup,
+		JobKeys:  keys,
+		Total:    len(keys),
+	}
+
+	for _, key := range keys {
+		state := records[key].state
+		update.JobStates = append(update.JobStates, state)
+
+		switch state {
+		case JobStateComplete:
+			update.Complete++
+		case JobStateBuried:
+			update.Buried++
+		default:
+		}
+	}
+
+	return update
+}
+
+func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
+	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	if !allTerminal || len(records) == 0 {
+		return nil, nil
+	}
+
+	return []*JobUpdate{subscriptionCatchUpRepGroupUpdate(repGroup, records)}, nil
+}
 
 // handleRequest parses the bytes received from a connected client in to a
 // clientRequest, does the requested work, then responds back to the client with
@@ -42,6 +256,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 	cr := &clientRequest{}
 	errd := dec.Decode(cr)
 	if errd != nil {
+		m.Free()
+
 		return errd
 	}
 
@@ -188,6 +404,57 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					}
 				}
 			}
+		case requestMethodSubscribe:
+			repGroup := ""
+			if cr.Job != nil {
+				repGroup = cr.Job.RepGroup
+			}
+
+			id, err := s.registerClientSubscription(cr.Keys, repGroup)
+			if err != nil {
+				srerr = ErrBadRequest
+				qerr = err.Error()
+
+				break
+			}
+
+			catchUp, catchUpErr := s.subscriptionCatchUpForRegistered(ctx, id, cr.Keys, repGroup)
+			if catchUpErr != nil {
+				s.unregisterClientSubscription(id)
+
+				srerr = ErrDBError
+				qerr = catchUpErr.Error()
+
+				break
+			}
+
+			sr = &serverResponse{SubscriptionID: id, JobUpdates: catchUp}
+		case requestMethodUnsubscribe:
+			if cr.SubscriptionID == "" {
+				srerr = ErrBadRequest
+
+				break
+			}
+
+			s.unregisterClientSubscription(cr.SubscriptionID)
+
+			sr = &serverResponse{}
+		case requestMethodWaitForUpdates:
+			if cr.SubscriptionID == "" {
+				srerr = ErrBadRequest
+
+				break
+			}
+
+			updates, err := s.waitForSubscriptionUpdates(cr.SubscriptionID, cr.Timeout)
+			if err != nil {
+				srerr = ErrBadRequest
+				qerr = err.Error()
+
+				break
+			}
+
+			sr = &serverResponse{JobUpdates: updates}
 		case "reserve":
 			// return the next ready job
 			if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
@@ -254,6 +521,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sjob.PeakRAM = 0
 					sjob.PeakDisk = 0
 					sjob.Exitcode = -1
+					sjob.killCalled = false
 					sgroup := sjob.schedulerGroup
 					retries := sjob.Retries
 					ub := sjob.UntilBuried
@@ -291,7 +559,6 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					var tend time.Time
 					job.EndTime = tend
 					job.Attempts++
-					job.killCalled = false
 					job.Lost = false
 					job.State = JobStateRunning
 
@@ -366,6 +633,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
+
+					if cr.JobEndState != nil {
+						job.StdOutC = cr.JobEndState.Stdout
+						job.StdErrC = cr.JobEndState.Stderr
+					}
+
 					sgroup := job.schedulerGroup
 					rgroup := job.RepGroup
 					job.Unlock()
@@ -885,6 +1158,38 @@ func jobCouldHaveStd(job *Job) bool {
 	return (job.Exited && job.Exitcode != 0) || job.State == JobStateBuried
 }
 
+func (s *Server) subscriptionCatchUpForRegistered(ctx context.Context, id string,
+	keys []string, repGroup string,
+) ([]*JobUpdate, error) {
+	if repGroup == "" {
+		return s.subscriptionCatchUp(ctx, keys, repGroup)
+	}
+
+	records, _, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	update := s.seedRepGroupSubscription(id, records)
+	if update == nil {
+		return nil, nil
+	}
+
+	return []*JobUpdate{update}, nil
+}
+
+func (s *Server) subscriptionCatchUp(ctx context.Context, keys []string, repGroup string) ([]*JobUpdate, error) {
+	if len(keys) > 0 {
+		return s.subscriptionCatchUpByKeys(ctx, keys)
+	}
+
+	if repGroup != "" {
+		return s.subscriptionCatchUpByRepGroup(ctx, repGroup)
+	}
+
+	return nil, nil
+}
+
 // reserveWithLimits reserves the next item in the queue (optionally limited to
 // the given scheduler group). If (and only if!) a scheduler group was supplied,
 // and it is suffixed with limit groups, those limit groups will be incremented.
@@ -940,9 +1245,15 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
 	err := enc.Encode(sr)
 	if err != nil {
+		m.Free()
+
 		return err
 	}
 	m.Body = encoded
 	err = s.sock.SendMsg(m)
+	if err != nil {
+		m.Free()
+	}
+
 	return err
 }

@@ -24,15 +24,21 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"log"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,18 +46,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
-
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
 	maxSpawnTime = 240 * time.Second
 	serverRC     = `echo %s %s %s %s %d %d`
+	testCwd      = "/tmp"
 )
 
 var (
@@ -70,6 +77,8 @@ var (
 	serverKeepDB        bool
 	serverEnableRunners bool
 )
+
+var errMissingLiveJobsBucket = errors.New("missing live jobs bucket")
 
 func init() {
 	clog.ToDefault()
@@ -95,6 +104,49 @@ func serverShutDownTime() time.Duration {
 	// global lock on them, so we have to allow the 500ms of time to any pending
 	// starts to resolve before we can shut down.
 	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
+}
+
+func assertNonEmptyFile(path string) {
+	info, err := os.Stat(path)
+	So(err, ShouldBeNil)
+
+	if err != nil {
+		return
+	}
+
+	size := info.Size()
+	So(size, ShouldBeGreaterThan, int64(0))
+}
+
+func assertBoltLiveJobs(path string, expected int) {
+	boltdb, err := bolt.Open(path, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	So(err, ShouldBeNil)
+
+	if err != nil {
+		return
+	}
+
+	defer func() {
+		So(boltdb.Close(), ShouldBeNil)
+	}()
+
+	liveJobs := 0
+	err = boltdb.View(func(tx *bolt.Tx) error {
+		jobs := tx.Bucket(bucketJobsLive)
+		if jobs == nil {
+			return errMissingLiveJobsBucket
+		}
+
+		return jobs.ForEach(func(_, encoded []byte) error {
+			if encoded != nil {
+				liveJobs++
+			}
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+	So(liveJobs, ShouldEqual, expected)
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -261,6 +313,368 @@ func TestJobqueueUtils(t *testing.T) {
 		So(RepGroupMatches(value, "alpha", RepGroupMatchSuffix), ShouldBeFalse)
 		So(RepGroupMatches(value, "delta", RepGroupMatchSubStr), ShouldBeFalse)
 	})
+}
+
+func TestSubscriptionStateChangeEvents(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Browser websocket and Go subscription both receive completion updates", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "subscription-f1-shared"
+		ids, err := jq.AddAndReturnIDs([]*Job{{
+			Cmd:          "echo subscription f1 shared",
+			Cwd:          testCwd,
+			ReqGroup:     repGroup,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}}, envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(ws.Close(), ShouldBeNil)
+		}()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: repGroup,
+			State:    JobStateReady,
+		})
+		So(err, ShouldBeNil)
+
+		limitedDrain(ws, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		var webStatus *JStatus
+
+		for range 4 {
+			status, errr := readUntilStatus(ws)
+			if errr != nil {
+				break
+			}
+
+			if status.State == JobStateComplete {
+				webStatus = status
+
+				break
+			}
+		}
+
+		So(webStatus, ShouldNotBeNil)
+		So(webStatus.Key, ShouldEqual, ids[0])
+		So(webStatus.RepGroup, ShouldEqual, repGroup)
+		So(webStatus.IsPushUpdate, ShouldBeTrue)
+
+		var goUpdate *JobUpdate
+
+		select {
+		case update := <-sub.Updates():
+			goUpdate = update
+
+			So(update.Kind, ShouldEqual, JobUpdateTerminal)
+			So(update.State, ShouldEqual, JobStateComplete)
+			So(update.Key, ShouldEqual, ids[0])
+			So(update.RepGroup, ShouldEqual, repGroup)
+		case <-time.After(time.Second):
+			So("timed out waiting for Go subscription update", ShouldBeBlank)
+		}
+
+		So(webStatus.Started, ShouldNotBeNil)
+		So(webStatus.Ended, ShouldNotBeNil)
+		So(goUpdate, ShouldNotBeNil)
+
+		if webStatus.Started == nil || webStatus.Ended == nil || goUpdate == nil {
+			return
+		}
+
+		So(goUpdate.Started, ShouldNotBeNil)
+		So(goUpdate.Ended, ShouldNotBeNil)
+
+		if goUpdate.Started == nil || goUpdate.Ended == nil {
+			return
+		}
+
+		unixMilliseconds := time.Now().Add(-time.Hour).UnixNano() / int64(time.Millisecond)
+		So(*goUpdate.Started, ShouldBeGreaterThan, unixMilliseconds)
+		So(*goUpdate.Ended, ShouldBeGreaterThan, unixMilliseconds)
+		So(*webStatus.Started, ShouldBeLessThan, unixMilliseconds)
+		So(*webStatus.Ended, ShouldBeLessThan, unixMilliseconds)
+
+		startedSeconds := *goUpdate.Started / int64(time.Second)
+		endedSeconds := *goUpdate.Ended / int64(time.Second)
+
+		So(*webStatus.Started, ShouldBeBetweenOrEqual, startedSeconds-1, startedSeconds+1)
+		So(*webStatus.Ended, ShouldBeBetweenOrEqual, endedSeconds-1, endedSeconds+1)
+	})
+
+	Convey("SetChangedCallback emits browser and Go push updates from one per-job status loop", t, func() {
+		guard, err := changedCallbackStatusGuardForFile("server.go")
+		So(err, ShouldBeNil)
+
+		So(guard.callbackCount, ShouldEqual, 1)
+		So(guard.nonBuiltinDataArgumentCalls, ShouldEqual, 0)
+		So(guard.pushStatusLoopCount, ShouldEqual, 1)
+		So(guard.subscriptionOnlyDataLoops, ShouldEqual, 0)
+		So(guard.pushStatusLoop.statusFromToStatusAssignments, ShouldEqual, 1)
+		So(guard.pushStatusLoop.toStatusCalls, ShouldEqual, 1)
+		So(guard.pushStatusLoop.jobUpdateFromStatusUsesStatus, ShouldBeTrue)
+		So(guard.pushStatusLoop.subscriptionUpdateCalls, ShouldBeGreaterThan, 0)
+		So(guard.pushStatusLoop.writesStatus, ShouldBeFalse)
+	})
+}
+
+const (
+	changedCallbackCreateQueue      = "createQueue"
+	changedCallbackDataIdent        = "data"
+	changedCallbackJobUpdateMaker   = "jobUpdateFromStatus"
+	changedCallbackMethodName       = "SetChangedCallback"
+	changedCallbackStatusIdent      = "status"
+	changedCallbackSubscriptionName = "SubscriptionUpdate"
+	changedCallbackToStatus         = "ToStatus"
+	changedCallbackWriteJSON        = "WriteJSON"
+)
+
+var errChangedCallbackCreateQueueNotFound = errors.New("createQueue function not found")
+
+type changedCallbackStatusGuard struct {
+	callbackCount               int
+	nonBuiltinDataArgumentCalls int
+	pushStatusLoop              changedCallbackDataLoopGuard
+	pushStatusLoopCount         int
+	subscriptionOnlyDataLoops   int
+}
+
+type changedCallbackDataLoopGuard struct {
+	jobUpdateFromStatusUsesStatus bool
+	statusFromToStatusAssignments int
+	subscriptionUpdateCalls       int
+	toStatusCalls                 int
+	writesStatus                  bool
+}
+
+func changedCallbackStatusGuardForFile(path string) (changedCallbackStatusGuard, error) {
+	fileSet := token.NewFileSet()
+
+	parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+	if err != nil {
+		return changedCallbackStatusGuard{}, err
+	}
+
+	createQueue := findFuncDecl(parsed, changedCallbackCreateQueue)
+	if createQueue == nil {
+		return changedCallbackStatusGuard{}, errChangedCallbackCreateQueueNotFound
+	}
+
+	guard := changedCallbackStatusGuard{}
+
+	ast.Inspect(createQueue.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !isCallNamed(call, changedCallbackMethodName) {
+			return true
+		}
+
+		guard.callbackCount++
+
+		callback, ok := firstFuncLiteralArg(call)
+		if ok {
+			inspectChangedCallbackBody(callback.Body, &guard)
+		}
+
+		return false
+	})
+
+	return guard, nil
+}
+
+func inspectChangedCallbackBody(body *ast.BlockStmt, guard *changedCallbackStatusGuard) {
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok && callReceivesDirectIdent(call, changedCallbackDataIdent) && !isCallNamed(call, "len") {
+			guard.nonBuiltinDataArgumentCalls++
+		}
+
+		loop, ok := node.(*ast.RangeStmt)
+		if !ok || !isIdent(loop.X, changedCallbackDataIdent) {
+			return true
+		}
+
+		loopGuard := changedCallbackDataLoopGuardFor(loop)
+		if loopGuard.toStatusCalls > 0 {
+			guard.pushStatusLoopCount++
+			guard.pushStatusLoop = loopGuard
+		}
+
+		if loopGuard.subscriptionUpdateCalls > 0 && loopGuard.toStatusCalls == 0 {
+			guard.subscriptionOnlyDataLoops++
+		}
+
+		return false
+	})
+}
+
+func changedCallbackDataLoopGuardFor(loop *ast.RangeStmt) changedCallbackDataLoopGuard {
+	guard := changedCallbackDataLoopGuard{}
+
+	ast.Inspect(loop.Body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			if assignsStatusFromToStatus(node) {
+				guard.statusFromToStatusAssignments++
+			}
+		case *ast.CallExpr:
+			guard.recordCall(node)
+		}
+
+		return true
+	})
+
+	return guard
+}
+
+func (g *changedCallbackDataLoopGuard) recordCall(call *ast.CallExpr) {
+	if isCallNamed(call, changedCallbackToStatus) {
+		g.toStatusCalls++
+	}
+
+	if isSubscriptionUpdateCall(call) {
+		g.subscriptionUpdateCalls++
+	}
+
+	if callUsesStatusInJobUpdateFromStatus(call) {
+		g.jobUpdateFromStatusUsesStatus = true
+	}
+
+	if callWritesStatus(call) {
+		g.writesStatus = true
+	}
+}
+
+func findFuncDecl(file *ast.File, name string) *ast.FuncDecl {
+	for _, decl := range file.Decls {
+		if function, ok := decl.(*ast.FuncDecl); ok && function.Name.Name == name {
+			return function
+		}
+	}
+
+	return nil
+}
+
+func firstFuncLiteralArg(call *ast.CallExpr) (*ast.FuncLit, bool) {
+	if len(call.Args) == 0 {
+		return nil, false
+	}
+
+	literal, ok := call.Args[0].(*ast.FuncLit)
+
+	return literal, ok
+}
+
+func assignsStatusFromToStatus(assign *ast.AssignStmt) bool {
+	if !assignLHSContainsIdent(assign, changedCallbackStatusIdent) {
+		return false
+	}
+
+	for _, expr := range assign.Rhs {
+		if call, ok := expr.(*ast.CallExpr); ok && isCallNamed(call, changedCallbackToStatus) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func assignLHSContainsIdent(assign *ast.AssignStmt, name string) bool {
+	for _, expr := range assign.Lhs {
+		if isIdent(expr, name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func callReceivesDirectIdent(call *ast.CallExpr, name string) bool {
+	for _, arg := range call.Args {
+		if isIdent(arg, name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isSubscriptionUpdateCall(call *ast.CallExpr) bool {
+	return strings.Contains(callName(call), changedCallbackSubscriptionName)
+}
+
+func callUsesStatusInJobUpdateFromStatus(call *ast.CallExpr) bool {
+	if !isCallNamed(call, changedCallbackJobUpdateMaker) || len(call.Args) == 0 {
+		return false
+	}
+
+	return isIdent(call.Args[0], changedCallbackStatusIdent)
+}
+
+func callWritesStatus(call *ast.CallExpr) bool {
+	if !isCallNamed(call, changedCallbackWriteJSON) || len(call.Args) != 1 {
+		return false
+	}
+
+	return isIdent(call.Args[0], changedCallbackStatusIdent)
+}
+
+func isCallNamed(call *ast.CallExpr, name string) bool {
+	return callName(call) == name
+}
+
+func callName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func isIdent(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+
+	return ok && ident.Name == name
 }
 
 func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jqs.Requirements, time.Duration) {
@@ -497,7 +911,7 @@ func TestJobqueueSignal(t *testing.T) {
 			return
 		}
 		errd := jq.Disconnect()
-		if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+		if errd != nil && !isClosedSocketError(errd) {
 			fmt.Printf("failed to disconnect: %s\n", errd)
 		}
 
@@ -825,7 +1239,7 @@ func TestJobqueueSignal(t *testing.T) {
 				fmt.Printf("failed to send SIGKILL to runner: %s\n", errk)
 			}
 			errd := jq.Disconnect()
-			if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+			if errd != nil && !isClosedSocketError(errd) {
 				fmt.Printf("failed to disconnect: %s\n", errd)
 			}
 			errw := serverCmd.Wait()
@@ -912,6 +1326,7 @@ func TestJobqueueBasics(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -1434,6 +1849,7 @@ func TestJobqueueMedium(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -1962,7 +2378,7 @@ func TestJobqueueMedium(t *testing.T) {
 					})
 				}
 
-				Convey("The stdout/err of jobs is only kept for failed jobs, and cwd&TMPDIR&HOME get set appropriately", func() {
+				Convey("The stdout/err of archived jobs is retained, and cwd&TMPDIR&HOME get set appropriately", func() {
 					jobs = nil
 					baseDir := t.TempDir()
 					So(err, ShouldBeNil)
@@ -2001,10 +2417,10 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job2.State, ShouldEqual, JobStateComplete)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, "")
+					So(stdout, ShouldEqual, tmpDir+"-"+home)
 					stderr, err = job2.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, "")
+					So(stderr, ShouldEqual, os.TempDir())
 
 					// job that outputs to stdout and stderr and fails
 					job, err = jq.Reserve(50 * time.Millisecond)
@@ -4211,6 +4627,51 @@ func TestJobqueueProduction(t *testing.T) {
 		_, err = os.Stat(managerDBBkFile)
 		So(err, ShouldNotBeNil)
 
+		Convey("A kill requested after reservation survives job start", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			jobs := []*Job{{
+				Cmd:          "sleep 10",
+				Cwd:          "/tmp",
+				ReqGroup:     "pending_kill",
+				Requirements: &jqs.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+				Retries:      uint8(0),
+				RepGroup:     "pending_kill",
+			}}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			job, err := jq.Reserve(time.Second)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+
+			if job == nil {
+				return
+			}
+
+			killCount, err := jq.Kill([]*JobEssence{job.ToEssense()})
+			So(err, ShouldBeNil)
+			So(killCount, ShouldEqual, 1)
+
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			killCalled, err := jq.Touch(job)
+			So(err, ShouldBeNil)
+			So(killCalled, ShouldBeTrue)
+
+			err = jq.Bury(job, &JobEndState{
+				Exited:   true,
+				Exitcode: -1,
+				EndTime:  time.Now(),
+			}, FailReasonKilled)
+			So(err, ShouldBeNil)
+		})
+
 		Convey("You can connect, and add 2 jobs, which creates a db backup", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -4245,12 +4706,9 @@ func TestJobqueueProduction(t *testing.T) {
 
 			<-wait
 
-			info, err := os.Stat(config.ManagerDBFile)
-			So(err, ShouldBeNil)
-			So(info.Size(), ShouldEqual, 65536) // don't know if this will be consistent across platforms and versions...
-			info2, err := os.Stat(managerDBBkFile)
-			So(err, ShouldBeNil)
-			So(info2.Size(), ShouldEqual, 32768) // *** don't know why it's so much smaller...
+			assertNonEmptyFile(config.ManagerDBFile)
+			assertNonEmptyFile(managerDBBkFile)
+			assertBoltLiveJobs(managerDBBkFile, 2)
 			_, err = os.Stat(tmpPath)
 			So(err, ShouldNotBeNil)
 
@@ -4258,9 +4716,8 @@ func TestJobqueueProduction(t *testing.T) {
 				manualBackup := managerDBBkFile + ".manual"
 				err = jq.BackupDB(manualBackup)
 				So(err, ShouldBeNil)
-				info3, err := os.Stat(manualBackup)
-				So(err, ShouldBeNil)
-				So(info3.Size(), ShouldEqual, 32768)
+				assertNonEmptyFile(manualBackup)
+				assertBoltLiveJobs(manualBackup, 2)
 
 				server.Stop(ctx, true)
 				server, _, token, errs = serve(ctx, serverConfig)
@@ -4319,12 +4776,9 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
 
-				info, err = os.Stat(config.ManagerDBFile)
-				So(err, ShouldBeNil)
-				So(info.Size(), ShouldEqual, 32768)
-				info2, err = os.Stat(managerDBBkFile)
-				So(err, ShouldBeNil)
-				So(info2.Size(), ShouldEqual, 32768)
+				assertNonEmptyFile(config.ManagerDBFile)
+				assertNonEmptyFile(managerDBBkFile)
+				assertBoltLiveJobs(managerDBBkFile, 2)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -4346,12 +4800,9 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
 
-				info, err = os.Stat(config.ManagerDBFile)
-				So(err, ShouldBeNil)
-				So(info.Size(), ShouldEqual, 32768)
-				info2, err = os.Stat(managerDBBkFile)
-				So(err, ShouldBeNil)
-				So(info2.Size(), ShouldEqual, 32768)
+				assertNonEmptyFile(config.ManagerDBFile)
+				assertNonEmptyFile(managerDBBkFile)
+				assertBoltLiveJobs(managerDBBkFile, 2)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -4405,12 +4856,10 @@ func TestJobqueueProduction(t *testing.T) {
 			So(already, ShouldEqual, 0)
 			server.Stop(ctx, true)
 
-			info, err := os.Stat(config.ManagerDBFile)
-			So(err, ShouldBeNil)
-			So(info.Size(), ShouldEqual, 32768)
-			info2, err := os.Stat(managerDBBkFile)
-			So(err, ShouldBeNil)
-			So(info2.Size(), ShouldEqual, 28672)
+			assertNonEmptyFile(config.ManagerDBFile)
+			assertBoltLiveJobs(config.ManagerDBFile, 1)
+			assertNonEmptyFile(managerDBBkFile)
+			assertBoltLiveJobs(managerDBBkFile, 1)
 
 			Convey("You can restart the server with that existing job, delete it, and it stays deleted when restoring from backup", func() {
 				wipeDevDBOnInit = false
@@ -4536,7 +4985,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				err = jq.Disconnect()
 				if err != nil {
-					So(err.Error(), ShouldEqual, "connection closed")
+					So(isClosedSocketError(err), ShouldBeTrue)
 				}
 
 				wipeDevDBOnInit = false
@@ -4697,11 +5146,13 @@ func TestJobqueueRunners(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			// wait for the job to start running
-			started := make(chan int, 1)
-			go func() {
+			// wait for the job process to start running
+			waitForStartedJobPID := func() int {
 				limit := time.After(30 * time.Second)
+
 				ticker := time.NewTicker(50 * time.Millisecond)
+				defer ticker.Stop()
+
 				for {
 					select {
 					case <-ticker.C:
@@ -4709,28 +5160,32 @@ func TestJobqueueRunners(t *testing.T) {
 						if err != nil {
 							continue
 						}
-						if len(jobs) == 1 {
-							ticker.Stop()
-							started <- jobs[0].Pid
 
-							return
+						if len(jobs) == 1 && jobs[0].Pid > 0 && !jobs[0].StartTime.IsZero() {
+							if errp := syscall.Kill(jobs[0].Pid, 0); errp == nil {
+								return jobs[0].Pid
+							}
 						}
 
-						continue
 					case <-limit:
-						ticker.Stop()
-						started <- 0
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+						timelimitDebug(jobs, err)
 
-						return
+						return 0
 					}
 				}
-			}()
-			jobPID := <-started
+			}
+			jobPID := waitForStartedJobPID()
 			So(jobPID, ShouldNotEqual, 0)
+
+			if jobPID == 0 {
+				return
+			}
 
 			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].Pid, ShouldEqual, jobPID)
 
 			// initially, we force us to fail to be able to check if the job
 			// is really dead or not, so that we can test this scenario
@@ -4757,10 +5212,12 @@ func TestJobqueueRunners(t *testing.T) {
 			killed := make(chan bool, 1)
 			checkLost := true
 			var timeToBury time.Duration
+
+			lostStatePollInterval := 50 * time.Millisecond
 			go func() {
 				var lostTime time.Time
 				limit := time.After(ServerItemTTR + 5*time.Second)
-				ticker := time.NewTicker(50 * time.Millisecond)
+				ticker := time.NewTicker(lostStatePollInterval)
 				for {
 					select {
 					case <-ticker.C:
@@ -4815,7 +5272,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
 			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
 			So(jobs[0].Exitcode, ShouldEqual, -1)
-			So(timeToBury, ShouldBeGreaterThanOrEqualTo, ServerLostJobCheckRetryTime-1*time.Millisecond)
+			So(timeToBury, ShouldBeGreaterThanOrEqualTo, ServerLostJobCheckRetryTime-(2*lostStatePollInterval))
 		})
 
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
@@ -4857,7 +5314,12 @@ func TestJobqueueRunners(t *testing.T) {
 
 			// wait for 1 job to complete, then add a job with overlapping
 			// limitgroups and different requirements
-			waitForCompletion(1)
+			completed := waitForCompletion(1)
+			So(completed, ShouldBeTrue)
+
+			if !completed {
+				return
+			}
 
 			jobs = []*Job{}
 			jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d && sleep 1", count+1), Cwd: "/tmp", CwdMatters: true, ReqGroup: "limitedB", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"c:5", "b:1"}})
@@ -4866,16 +5328,51 @@ func TestJobqueueRunners(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			// the remaining jobs should complete in about count seconds, ie. no
-			// delay between finishing the 0 cpu jobs, and starting the 1 cpu
-			// job. If this is not working due to a bug, it takes
-			// ServerCheckRunnerTime longer. When working, it takes an
-			// additional runner timeout (1s) due to fact the first runner uses
-			// up the limit for that long while waiting to reserve from the now
-			// empty queue for its group. There's also a little overhead.
-			t := time.Now()
-			waitForCompletion(count + 1)
-			So(time.Since(t), ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
+			completed = waitForCompletion(count + 1)
+			So(completed, ShouldBeTrue)
+
+			if !completed {
+				return
+			}
+
+			jobs, err = jq.GetByRepGroup("limited", false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+
+			var (
+				zeroCPUComplete int
+				zeroCPUEnd      time.Time
+				oneCPUComplete  int
+				oneCPUStart     time.Time
+			)
+
+			for _, job := range jobs {
+				switch job.ReqGroup {
+				case "limitedA":
+					zeroCPUComplete++
+
+					if job.EndTime.After(zeroCPUEnd) {
+						zeroCPUEnd = job.EndTime
+					}
+				case "limitedB":
+					oneCPUComplete++
+					oneCPUStart = job.StartTime
+				}
+			}
+
+			So(zeroCPUComplete, ShouldEqual, count)
+			So(oneCPUComplete, ShouldEqual, 1)
+			So(zeroCPUEnd.IsZero(), ShouldBeFalse)
+			So(oneCPUStart.IsZero(), ShouldBeFalse)
+
+			if zeroCPUComplete != count || oneCPUComplete != 1 || zeroCPUEnd.IsZero() || oneCPUStart.IsZero() {
+				return
+			}
+
+			// The 1 CPU job should start soon after the 0 CPU jobs release the
+			// shared limit group. The old regression delayed that by a full
+			// ServerCheckRunnerTime, so assert on the recorded scheduling gap
+			// instead of the wall-clock time for every job to finish and archive.
+			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, ServerCheckRunnerTime)
 		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
@@ -5491,7 +5988,7 @@ func TestJobqueueRunners(t *testing.T) {
 										if errf == nil {
 											if strings.Contains(cmd, runnertmpdir+"2sim") {
 												status, errf := p.Status()
-												if errf == nil && status == "S" {
+												if errf == nil && slices.Contains(status, process.Sleep) {
 													ticker.Stop()
 													running <- true
 													return
@@ -5543,7 +6040,7 @@ func TestJobqueueRunners(t *testing.T) {
 										if err == nil {
 											if strings.Contains(cmd, runnertmpdir+"2sim") {
 												status, err := p.Status()
-												if err == nil && status == "S" {
+												if err == nil && slices.Contains(status, process.Sleep) {
 													simultaneous++
 												}
 											}
@@ -6967,16 +7464,14 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 			<-time.After(8 * time.Second)
 
-			info, err := os.Stat(config.ManagerDBFile)
-			So(err, ShouldBeNil)
-			So(info.Size(), ShouldEqual, 32768)
+			assertNonEmptyFile(config.ManagerDBFile)
 			_, err = os.Stat(localBkPath)
 			So(err, ShouldNotBeNil)
 
-			server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
-			info2, err := os.Stat(localBkPath)
+			err = server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
 			So(err, ShouldBeNil)
-			So(info2.Size(), ShouldEqual, 28672)
+			assertNonEmptyFile(localBkPath)
+			assertBoltLiveJobs(localBkPath, 1)
 			err = os.Remove(localBkPath)
 			So(err, ShouldBeNil)
 
@@ -7011,16 +7506,14 @@ func TestJobqueueWithMounts(t *testing.T) {
 				So(errs, ShouldBeNil)
 				defer server.Stop(ctx, true)
 
-				info, err = os.Stat(config.ManagerDBFile)
-				So(err, ShouldBeNil)
-				So(info.Size(), ShouldEqual, 28672)
+				assertNonEmptyFile(config.ManagerDBFile)
 				_, err = os.Stat(localBkPath)
 				So(err, ShouldNotBeNil)
 
-				server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
-				info2, err := os.Stat(localBkPath)
+				err = server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
 				So(err, ShouldBeNil)
-				So(info2.Size(), ShouldEqual, 28672)
+				assertNonEmptyFile(localBkPath)
+				assertBoltLiveJobs(localBkPath, 1)
 				err = os.Remove(localBkPath)
 				So(err, ShouldBeNil)
 
@@ -7504,7 +7997,7 @@ func timelimitDebug(jobs []*Job, err error) {
 
 func disconnect(client *Client) {
 	err := client.Disconnect()
-	if err != nil && !strings.Contains(err.Error(), "connection closed") {
+	if err != nil && !isClosedSocketError(err) {
 		fmt.Printf("client.Disconnect() failed: %s", err)
 	}
 }

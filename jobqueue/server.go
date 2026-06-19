@@ -41,22 +41,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
-	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
-	"github.com/inconshreveable/log15"
-	logext "github.com/inconshreveable/log15/ext"
+	"github.com/inconshreveable/log15/v3"
+	logext "github.com/inconshreveable/log15/v3/ext"
 	"github.com/lindell/go-ordered-set/orderedset"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
-	"github.com/wtsi-ssg/wr/clog"
-	mangos "nanomsg.org/go-mangos"
-	"nanomsg.org/go-mangos/protocol/rep"
-	"nanomsg.org/go-mangos/transport/tlstcp"
+	mangos "go.nanomsg.org/mangos/v3"
+	"go.nanomsg.org/mangos/v3/protocol/xrep"
 )
 
 // Err* constants are found in our returned Errors under err.Err, so you can
@@ -124,6 +123,18 @@ var (
 // pretending to be bsub.
 var BsubID uint64
 
+type subscriptionRequestError string
+
+const (
+	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
+	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
+	errUnknownSubscription      subscriptionRequestError = "unknown subscription"
+)
+
+func (e subscriptionRequestError) Error() string {
+	return string(e)
+}
+
 // Error records an error and the operation and item that caused it.
 type Error struct {
 	Op   string // name of the method
@@ -154,6 +165,8 @@ type serverResponse struct {
 	DB              []byte
 	Path            string
 	BadServers      []*BadServer
+	SubscriptionID  string
+	JobUpdates      []*JobUpdate
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -331,6 +344,99 @@ func (s *sgroup) hasSkips() bool {
 	return s.skipped > 0
 }
 
+type casterMember struct {
+	group *caster
+	In    chan interface{}
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (cm *casterMember) Close() {
+	cm.once.Do(func() {
+		cm.group.Lock()
+		delete(cm.group.members, cm)
+		cm.group.Unlock()
+		close(cm.done)
+	})
+}
+
+type caster struct {
+	members map[*casterMember]struct{}
+	closed  bool
+	sync.RWMutex
+}
+
+func newCaster() *caster {
+	return &caster{members: make(map[*casterMember]struct{})}
+}
+
+func (c *caster) Broadcasting(time.Duration) {}
+
+func (c *caster) Join() *casterMember {
+	member := &casterMember{
+		group: c,
+		In:    make(chan interface{}, 1),
+		done:  make(chan struct{}),
+	}
+
+	c.Lock()
+	if !c.closed {
+		c.members[member] = struct{}{}
+	}
+	c.Unlock()
+
+	return member
+}
+
+func (c *caster) Send(val interface{}) {
+	c.RLock()
+
+	if c.closed {
+		c.RUnlock()
+
+		return
+	}
+
+	members := make([]*casterMember, 0, len(c.members))
+	for member := range c.members {
+		members = append(members, member)
+	}
+
+	c.RUnlock()
+
+	for _, member := range members {
+		select {
+		case <-member.done:
+		case member.In <- val:
+		default:
+		}
+	}
+}
+
+func (c *caster) Close() {
+	c.Lock()
+	c.closed = true
+
+	members := make([]*casterMember, 0, len(c.members))
+	for member := range c.members {
+		members = append(members, member)
+	}
+
+	c.members = make(map[*casterMember]struct{})
+	c.Unlock()
+
+	for _, member := range members {
+		member.Close()
+	}
+}
+
+type lostJobRetryCheck struct {
+	jobKey       string
+	jobHost      string
+	jobPID       int
+	checkTimeout time.Duration
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token                     []byte
@@ -344,6 +450,7 @@ type Server struct {
 	done                      chan error
 	stopSigHandling           chan bool
 	stopClientHandling        chan bool
+	clientHandlingDone        chan struct{}
 	wg                        *waitgroup.WaitGroup
 	q                         *queue.Queue
 	rpl                       *rgToKeys
@@ -351,14 +458,15 @@ type Server struct {
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
-	statusCaster              *bcast.Group
-	badServerCaster           *bcast.Group
-	schedCaster               *bcast.Group
+	statusCaster              *caster
+	badServerCaster           *caster
+	schedCaster               *caster
 	racCheckTimer             *time.Timer
+	statusWSDetailsHook       func()
 	pauseRequests             int
 	wsconns                   map[string]*websocket.Conn
-	wsWriteMutexes            map[string]*sync.Mutex     // mutex per websocket connection
-	jobSubscriptions          map[string]map[string]bool // conn ID -> job key -> subscribed
+	wsWriteMutexes            map[string]*sync.Mutex // mutex per websocket connection
+	clientSubscriptions       map[string]*serverSubscription
 	badServers                map[string]*cloud.Server
 	schedIssues               map[string]*schedulerIssue
 	racmutex                  sync.RWMutex // to protect the readyaddedcallback
@@ -367,8 +475,8 @@ type Server struct {
 	krmutex                   sync.RWMutex
 	ssmutex                   sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
+	csmutex                   sync.RWMutex // to protect clientSubscriptions
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
-	jsmutex                   sync.RWMutex // to protect jobSubscriptions
 	sync.Mutex
 	wsmutex              sync.RWMutex
 	up                   bool
@@ -380,6 +488,154 @@ type Server struct {
 	racRunning           bool
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
+	nextSubscriptionID   uint64
+}
+
+func (s *Server) setRACPending() {
+	s.rpmutex.Lock()
+	s.racPending = true
+	s.rpmutex.Unlock()
+}
+
+func (s *Server) clearRACWaiters() {
+	for _, ch := range s.waitingReserves {
+		close(ch)
+	}
+
+	s.waitingReserves = nil
+}
+
+func (s *Server) clearRACPending() {
+	s.rpmutex.Lock()
+	s.racPending = false
+	s.clearRACWaiters()
+	s.rpmutex.Unlock()
+}
+
+func (s *Server) finishRAC() {
+	s.rpmutex.Lock()
+	s.racPending = false
+	s.racRunning = false
+	s.clearRACWaiters()
+	s.rpmutex.Unlock()
+}
+
+func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
+	s.setRACPending()
+	s.q.TriggerReadyAddedCallback(ctx)
+}
+
+func (s *Server) waitForClientHandling(ctx context.Context) {
+	timer := time.NewTimer(ServerShutdownWaitTime)
+	defer timer.Stop()
+
+	select {
+	case <-s.clientHandlingDone:
+	case <-timer.C:
+		clog.Warn(ctx, "server shutdown timed out waiting for client handling to stop")
+	}
+}
+
+func subscriptionUpdateState(_, to JobState) (JobState, bool) {
+	switch to {
+	case JobStateDelayed, JobStateDependent, JobStateReady, JobStateReserved,
+		JobStateRunning, JobStateComplete, JobStateBuried, JobStateDeleted:
+		return to, true
+	default:
+	}
+
+	return "", false
+}
+
+func waitForJobStartTime(job *Job) {
+	for range serverMaxRetriesToStartRunning {
+		<-time.After(serverWaitPeriodToStartRunning)
+
+		job.RLock()
+
+		if !job.StartTime.IsZero() {
+			job.RUnlock()
+
+			return
+		}
+
+		job.RUnlock()
+	}
+}
+
+func jobUpdateTimes(job *Job) (*int64, *int64) {
+	job.RLock()
+	defer job.RUnlock()
+
+	return jobUnixNano(job.StartTime), jobUnixNano(job.EndTime)
+}
+
+func jobUpdateFromStatus(status JStatus, state JobState, started, ended *int64) *JobUpdate {
+	return &JobUpdate{
+		Started:    started,
+		Ended:      ended,
+		Kind:       jobUpdateKind(state),
+		Key:        status.Key,
+		RepGroup:   status.RepGroup,
+		State:      state,
+		Exitcode:   status.Exitcode,
+		FailReason: status.FailReason,
+	}
+}
+
+func jobUpdateFromLockedJob(job *Job, state JobState) *JobUpdate {
+	return &JobUpdate{
+		Started:    jobUnixNano(job.StartTime),
+		Ended:      jobUnixNano(job.EndTime),
+		Kind:       jobUpdateKind(state),
+		Key:        job.Key(),
+		RepGroup:   job.RepGroup,
+		State:      state,
+		Exitcode:   job.Exitcode,
+		FailReason: job.FailReason,
+	}
+}
+
+func (s *Server) lostJobRetryCheck(jobKey string) (lostJobRetryCheck, bool) {
+	item, err := s.q.Get(jobKey)
+	if err != nil || item.Stats().State != queue.ItemStateRun {
+		return lostJobRetryCheck{}, false
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return lostJobRetryCheck{}, false
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	if job.State != JobStateRunning || !job.Lost {
+		return lostJobRetryCheck{}, false
+	}
+
+	return lostJobRetryCheck{
+		jobKey:       job.Key(),
+		jobHost:      job.Host,
+		jobPID:       job.Pid,
+		checkTimeout: ServerLostJobCheckTimeout,
+	}, true
+}
+
+func itemDefTriggersReadyAdded(itemdef *queue.ItemDef) bool {
+	if itemdef.StartQueue == queue.SubQueueRun || itemdef.StartQueue == queue.SubQueueBury {
+		return false
+	}
+
+	return itemdef.Delay == 0 && len(itemdef.Dependencies) == 0
+}
+
+func itemWillBecomeReadyAfterDependencyUpdate(item *queue.Item, err error) bool {
+	if err != nil || item == nil {
+		return false
+	}
+
+	return item.Stats().State == queue.ItemStateDependent && len(item.UnresolvedDependencies()) > 0
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -594,7 +850,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		}
 	}()
 
-	sock, err := rep.NewSocket()
+	sock, err := xrep.NewSocket()
 	if err != nil {
 		return s, msg, token, err
 	}
@@ -612,12 +868,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// forever when it legitimately wants to Add() a ton of jobs
 	// unlimited Recv() length
 	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return s, msg, token, err
-	}
-
-	// we use raw mode, allowing us to respond to multiple clients in
-	// parallel
-	if err = sock.SetOption(mangos.OptionRaw, true); err != nil {
 		return s, msg, token, err
 	}
 
@@ -648,7 +898,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	// have mangos listen using TLS over TCP
-	sock.AddTransport(tlstcp.NewTransport())
 	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return s, msg, token, err
@@ -677,6 +926,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	stopSigHandling := make(chan bool, 1)
 	stopClientHandling := make(chan bool)
+	clientHandlingDone := make(chan struct{})
 	done := make(chan error, 1)
 	wg := waitgroup.New()
 
@@ -731,6 +981,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		db:                        db,
 		stopSigHandling:           stopSigHandling,
 		stopClientHandling:        stopClientHandling,
+		clientHandlingDone:        clientHandlingDone,
 		done:                      done,
 		wg:                        wg,
 		up:                        true,
@@ -738,12 +989,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		statusCaster:              bcast.NewGroup(),
-		badServerCaster:           bcast.NewGroup(),
+		statusCaster:              newCaster(),
+		badServerCaster:           newCaster(),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
-		jobSubscriptions:          make(map[string]map[string]bool),
+		clientSubscriptions:       make(map[string]*serverSubscription),
 		badServers:                make(map[string]*cloud.Server),
-		schedCaster:               bcast.NewGroup(),
+		schedCaster:               newCaster(),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
 	}
@@ -987,6 +1238,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		// log panics and die
 		defer internal.LogPanic(ctx, "jobqueue serving", true)
 		defer wg.Done(wgk)
+		defer close(clientHandlingDone)
 
 		for {
 			select {
@@ -1126,7 +1378,7 @@ func (s *Server) Resume(ctx context.Context) (bool, error) {
 	}
 	s.drain = false
 	s.ServerInfo.Mode = ServerModeNormal
-	s.q.TriggerReadyAddedCallback(ctx)
+	s.triggerReadyAddedCallback(ctx)
 	return true, nil
 }
 
@@ -1303,16 +1555,8 @@ func (s *Server) createQueue(ctx context.Context) {
 		s.rpmutex.Lock()
 		s.racRunning = true
 		s.rpmutex.Unlock()
-		defer func() {
-			s.rpmutex.Lock()
-			s.racPending = false
-			s.racRunning = false
-			for _, ch := range s.waitingReserves {
-				close(ch)
-			}
-			s.waitingReserves = nil
-			s.rpmutex.Unlock()
-		}()
+
+		defer s.finishRAC()
 
 		s.racmutex.RLock()
 		rc := s.rc
@@ -1562,6 +1806,8 @@ func (s *Server) createQueue(ctx context.Context) {
 					clog.Debug(ctx, "rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 				}
 
+				s.previouslyScheduledGroups[name] = group
+
 				wgk := s.wg.Add(1)
 				group.Lock()
 				go func(group *sgroup) {
@@ -1570,8 +1816,6 @@ func (s *Server) createQueue(ctx context.Context) {
 					s.scheduleRunners(ctx, group)
 					group.Unlock()
 				}(group)
-
-				s.previouslyScheduledGroups[name] = group
 			}
 			s.psgmutex.Unlock()
 
@@ -1607,7 +1851,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 					if stats.Ready > 0 {
 						s.racmutex.Unlock()
-						q.TriggerReadyAddedCallback(ctx)
+						s.triggerReadyAddedCallback(ctx)
 					} else {
 						s.racmutex.Unlock()
 					}
@@ -1621,21 +1865,6 @@ func (s *Server) createQueue(ctx context.Context) {
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
-		if toQ != queue.SubQueueReady {
-			// readyAddedCallback won't be called, cancel racPending
-			defer func() {
-				s.rpmutex.Lock()
-				if s.racPending {
-					s.racPending = false
-					for _, ch := range s.waitingReserves {
-						close(ch)
-					}
-					s.waitingReserves = nil
-				}
-				s.rpmutex.Unlock()
-			}()
-		}
-
 		var from, to JobState
 		if toQ == queue.SubQueueRemoved {
 			// things are removed from the queue if deleted or completed;
@@ -1691,44 +1920,24 @@ func (s *Server) createQueue(ctx context.Context) {
 			}
 		}
 
-		// send detailed updates to subscribed connections
-		s.jsmutex.RLock()
-		jobSubscriptions := make(map[string][]string)
-
-		for connID, jobs := range s.jobSubscriptions {
-			for jobKey := range jobs {
-				jobSubscriptions[jobKey] = append(jobSubscriptions[jobKey], connID)
-			}
-		}
-		s.jsmutex.RUnlock()
-
 		for _, inter := range data {
 			job := inter.(*Job) //nolint:errcheck,forcetypeassert
 			job.RLock()
 			jobKey := job.Key()
+			repGroup := job.RepGroup
 			job.RUnlock()
 
-			connIDs, ok := jobSubscriptions[jobKey]
+			state, ok := subscriptionUpdateState(from, to)
 			if !ok {
 				continue
 			}
 
-			if to == JobStateRunning {
-				for range serverMaxRetriesToStartRunning {
-					<-time.After(serverWaitPeriodToStartRunning)
-
-					job.RLock()
-					if !job.StartTime.IsZero() {
-						job.RUnlock()
-
-						break
-					}
-					job.RUnlock()
-				}
+			if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state) {
+				continue
 			}
 
-			if from == JobStateRunning {
-				s.jobPopulateStdEnv(ctx, job, true, false)
+			if to == JobStateRunning {
+				waitForJobStartTime(job)
 			}
 
 			status, err := job.ToStatus()
@@ -1740,40 +1949,8 @@ func (s *Server) createQueue(ctx context.Context) {
 
 			status.IsPushUpdate = true
 
-			s.wsmutex.RLock()
-
-			connMutexes := make(map[string]struct {
-				conn  *websocket.Conn
-				mutex *sync.Mutex
-			})
-
-			for _, connID := range connIDs {
-				conn, exists := s.wsconns[connID]
-				mutex, mutexExists := s.wsWriteMutexes[connID]
-
-				if exists && mutexExists {
-					connMutexes[connID] = struct {
-						conn  *websocket.Conn
-						mutex *sync.Mutex
-					}{conn, mutex}
-				}
-			}
-			s.wsmutex.RUnlock()
-
-			for _, cm := range connMutexes {
-				go func(cm struct {
-					conn  *websocket.Conn
-					mutex *sync.Mutex
-				}) {
-					cm.mutex.Lock()
-					errw := cm.conn.WriteJSON(status)
-					cm.mutex.Unlock()
-
-					if errw != nil {
-						clog.Warn(ctx, "failed to send job update to subscriber", "err", errw)
-					}
-				}(cm)
-			}
+			started, ended := jobUpdateTimes(job)
+			s.enqueueSubscriptionUpdate(jobUpdateFromStatus(status, state, started, ended))
 		}
 	})
 
@@ -1788,9 +1965,11 @@ func (s *Server) createQueue(ctx context.Context) {
 
 		job.Lock()
 		if !job.StartTime.IsZero() && !job.Exited {
+			wasLost := job.Lost
 			job.Lost = true
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
+			lostUpdate := jobUpdateFromLockedJob(job, JobStateLost)
 
 			// we don't test recovered jobs are dead because they might have
 			// exited while the server wasn't running, and we want the existing
@@ -1801,12 +1980,28 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobHost := job.Host
 				jobPID := job.Pid
 				serverLostJobCheckTimeout := ServerLostJobCheckTimeout
+				serverLostJobCheckRetryTime := ServerLostJobCheckRetryTime
 				job.Unlock()
 
+				if !wasLost {
+					s.enqueueSubscriptionUpdate(lostUpdate)
+				}
+
 				go func() {
-					if !killCalled && !s.recoveredRunningJobs[jobKey] &&
-						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout) {
-						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
+					confirmedDead := !killCalled && !s.recoveredRunningJobs[jobKey]
+					if confirmedDead {
+						confirmedDead = s.confirmJobDeadAndKill(
+							ctx,
+							jobKey,
+							jobHost,
+							jobPID,
+							serverLostJobCheckTimeout,
+							serverLostJobCheckRetryTime,
+						)
+					}
+
+					if confirmedDead {
+						clog.Info(ctx, "killed a job after confirming it was dead", "key", jobKey)
 					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
 
@@ -1838,24 +2033,52 @@ func (s *Server) createQueue(ctx context.Context) {
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	s.rpmutex.Lock()
-	s.racPending = true
-	s.rpmutex.Unlock()
+	readyCallbackExpected := false
+
+	for _, itemdef := range itemdefs {
+		if itemDefTriggersReadyAdded(itemdef) {
+			readyCallbackExpected = true
+
+			break
+		}
+	}
+
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
 	added, dups, err = s.q.AddMany(ctx, itemdefs)
 	if err != nil {
-		s.rpmutex.Lock()
-		s.racPending = false
-		s.rpmutex.Unlock()
+		if readyCallbackExpected {
+			s.clearRACPending()
+		}
+
 		return added, dups, err
 	}
 
+	if readyCallbackExpected && added == 0 {
+		s.clearRACPending()
+	}
+
 	// add to our lookup of job RepGroup to key
+	repGroupKeys := make([]struct {
+		repGroup string
+		key      string
+	}, 0, len(itemdefs))
 	s.rpl.Lock()
 	for _, itemdef := range itemdefs {
 		rp := itemdef.Data.(*Job).RepGroup
 		s.rpl.Add(rp, itemdef.Key)
+		repGroupKeys = append(repGroupKeys, struct {
+			repGroup string
+			key      string
+		}{repGroup: rp, key: itemdef.Key})
 	}
 	s.rpl.Unlock()
+
+	for _, repGroupKey := range repGroupKeys {
+		s.rememberRepGroupSubscriptionKey(repGroupKey.repGroup, repGroupKey.key)
+	}
 
 	return added, dups, err
 }
@@ -1983,9 +2206,14 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // need their dependencies updated because they just changed when we stored the
 // jobs.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
-	s.rpmutex.Lock()
-	s.racPending = true
-	s.rpmutex.Unlock()
+	type jobDeps struct {
+		job  *Job
+		deps []string
+	}
+
+	updates := make([]jobDeps, 0, len(jobs))
+	readyCallbackExpected := false
+
 	for _, job := range jobs {
 		deps, err := job.Dependencies.incompleteJobKeys(s.db)
 		if err != nil {
@@ -1994,25 +2222,52 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 			break
 		}
 
-		thisErr := s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+		updates = append(updates, jobDeps{job: job, deps: deps})
+
+		if len(deps) == 0 && !readyCallbackExpected {
+			item, errq := s.q.Get(job.Key())
+			readyCallbackExpected = itemWillBecomeReadyAfterDependencyUpdate(item, errq)
+		}
+	}
+
+	if qerr != nil {
+		return srerr, qerr
+	}
+
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
+	for _, update := range updates {
+		job := update.job
+
+		thisErr := s.q.Update(
+			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, update.deps,
+		)
 		if thisErr != nil {
 			qerr = thisErr
+
+			if readyCallbackExpected {
+				s.clearRACPending()
+			}
+
 			break
 		}
 	}
+
 	return srerr, qerr
 }
 
 // confirmJobDeadAndKill calls and returns the value of confirmJobDead(). If
 // true, kills the job and triggers behaviours in a goroutine. If false,
-// arranges to re-call this in an hour. This is so that if we can't currently
-// confirm the job is dead due to an ssh issue, but later on the job really does
-// die because the server it was running on gets rebooted, we eventually
-// auto-kill the job.
+// arranges to re-call this after the configured retry time. This is so that if
+// we can't currently confirm the job is dead due to an ssh issue, but later on
+// the job really does die because the server it was running on gets rebooted,
+// we eventually auto-kill the job.
 func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string,
-	jobPID int, serverLostJobCheckTimeout time.Duration) bool {
+	jobPID int, serverLostJobCheckTimeout, serverLostJobCheckRetryTime time.Duration) bool {
 	if !s.confirmJobDead(ctx, jobPID, jobHost, serverLostJobCheckTimeout) {
-		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey)
+		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey, serverLostJobCheckRetryTime)
 
 		return false
 	}
@@ -2052,21 +2307,20 @@ func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
 	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
 }
 
-func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string) { //nolint:gocyclo
+func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string,
+	serverLostJobCheckRetryTime time.Duration) {
+	timer := time.NewTimer(serverLostJobCheckRetryTime)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(ServerLostJobCheckRetryTime):
-		item, err := s.q.Get(jobKey)
-		if err != nil || item.Stats().State != queue.ItemStateRun {
+	case <-timer.C:
+		retry, ok := s.lostJobRetryCheck(jobKey)
+		if !ok {
 			return
 		}
 
-		job, ok := item.Data().(*Job)
-		if ok && job.State == JobStateRunning && job.Lost {
-			job.Lock()
-			serverLostJobCheckTimeout := ServerLostJobCheckTimeout
-			job.Unlock()
-			s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid, serverLostJobCheckTimeout)
-		}
+		s.confirmJobDeadAndKill(ctx, retry.jobKey, retry.jobHost, retry.jobPID, retry.checkTimeout,
+			serverLostJobCheckRetryTime)
 	case <-s.stopClientHandling:
 		return
 	}
@@ -2313,9 +2567,15 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 // kickJobs unburies the given jobs and returns the number affected.
 func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 	for _, job := range jobs {
-		s.rpmutex.Lock()
-		s.racPending = true
-		s.rpmutex.Unlock()
+		readyCallbackExpected := false
+
+		item, errg := s.q.Get(job.Key())
+		if errg == nil && item != nil && len(item.UnresolvedDependencies()) == 0 {
+			readyCallbackExpected = true
+
+			s.setRACPending()
+		}
+
 		err := s.q.Kick(ctx, job.Key())
 		if err == nil {
 			job.Lock()
@@ -2326,10 +2586,8 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 			kicked++
 
 			s.db.updateJobAfterChange(ctx, job)
-		} else {
-			s.rpmutex.Lock()
-			s.racPending = false
-			s.rpmutex.Unlock()
+		} else if readyCallbackExpected {
+			s.clearRACPending()
 		}
 	}
 
@@ -2584,6 +2842,28 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	}
 
 	return jobs
+}
+
+func jobUnixNano(t time.Time) *int64 {
+	if t.IsZero() {
+		return nil
+	}
+
+	i := t.UnixNano()
+
+	return &i
+}
+
+func jobUpdateKind(state JobState) JobUpdateKind {
+	if state == JobStateLost {
+		return JobUpdateLost
+	}
+
+	if state != JobStateComplete && state != JobStateBuried {
+		return JobUpdateStateChange
+	}
+
+	return JobUpdateTerminal
 }
 
 func normalizeRepGroupMatch(match RepGroupMatch, search bool) RepGroupMatch {
@@ -2876,7 +3156,8 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 					s.deleteJobIfRequested(ctx, job)
 				}
 			}
-			s.q.TriggerReadyAddedCallback(ctx)
+
+			s.triggerReadyAddedCallback(ctx)
 		}
 
 		if problem {
@@ -2922,13 +3203,23 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 
 	s.psgmutex.RLock()
 	group, existed := s.previouslyScheduledGroups[schedulerGroup]
+	hasSkippedGroups := false
+
+	for _, scheduledGroup := range s.previouslyScheduledGroups {
+		if scheduledGroup.hasSkips() {
+			hasSkippedGroups = true
+
+			break
+		}
+	}
 	s.psgmutex.RUnlock()
-	if !existed {
-		return
+
+	if hasSkippedGroups {
+		defer s.triggerReadyAddedCallback(ctx)
 	}
 
-	if group.hasSkips() {
-		defer s.q.TriggerReadyAddedCallback(ctx)
+	if !existed {
+		return
 	}
 
 	count := group.decrement(drop)
@@ -3074,7 +3365,7 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 			s.limiter.RemoveLimit(g)
 		}
 
-		s.q.TriggerReadyAddedCallback(ctx)
+		s.triggerReadyAddedCallback(ctx)
 
 		return limit, "", nil
 	}
@@ -3122,8 +3413,6 @@ func (s *Server) closeWebSocketConnection(ctx context.Context, unique string) {
 			clog.Warn(ctx, "websocket close failed", "err", err)
 		}
 	}
-
-	s.cleanupSubscriptions(unique)
 }
 
 // shutdown stops listening to client connections, close all queues and
@@ -3191,26 +3480,28 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	}
 	s.wsmutex.Unlock()
 
-	time.Sleep(serverSocketWait)
-
 	s.statusCaster.Close()
 	s.badServerCaster.Close()
 	s.schedCaster.Close()
 
 	// not-fully graceful shutdown of http server, since it takes too long to
 	// shutdown normally due to a fixed 500ms poll
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
 	go func() {
 		<-time.After(httpServerShutdownTime)
 		cancel()
 	}()
-	err := s.httpServer.Shutdown(ctx)
+
+	err := s.httpServer.Shutdown(httpCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		clog.Warn(ctx, "server shutdown of web interface failed", "err", err)
 	}
 
 	// close our command line interface
+	s.closeClientSubscriptions()
 	close(s.stopClientHandling)
+	s.waitForClientHandling(ctx)
+	time.Sleep(serverSocketWait)
 	err = s.sock.Close()
 	if err != nil {
 		clog.Warn(ctx, "server shutdown socket close failed", "err", err)
@@ -3226,10 +3517,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.rpmutex.Lock()
 	s.racPending = false
 	s.racRunning = false
-	for _, ch := range s.waitingReserves {
-		close(ch)
-	}
-	s.waitingReserves = nil
+	s.clearRACWaiters()
 	s.rpmutex.Unlock()
 
 	// wait for our goroutines to finish
@@ -3281,53 +3569,27 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	}
 }
 
-// subscribeToJobs subscribes the given connection to updates for the specified
-// jobs.
-func (s *Server) subscribeToJobs(connID string, jobKeys []string) {
+// subscribeToJobs adds the specified jobs to a status websocket subscription.
+func (s *Server) subscribeToJobs(subscriptionID string, jobKeys []string) {
 	if len(jobKeys) == 0 {
 		return
 	}
 
-	s.jsmutex.Lock()
-	defer s.jsmutex.Unlock()
-
-	if _, exists := s.jobSubscriptions[connID]; !exists {
-		s.jobSubscriptions[connID] = make(map[string]bool)
-	}
-
-	for _, key := range jobKeys {
-		s.jobSubscriptions[connID][key] = true
-	}
-}
-
-// unsubscribeFromJob removes the subscription for a specific job or all jobs if
-// jobKey is empty.
-func (s *Server) unsubscribeFromJob(connID string, jobKey string) {
-	s.jsmutex.Lock()
-	defer s.jsmutex.Unlock()
-
-	subscriptions, exists := s.jobSubscriptions[connID]
+	sub, exists := s.clientSubscription(subscriptionID)
 	if !exists {
 		return
 	}
 
-	if jobKey == "" {
-		delete(s.jobSubscriptions, connID)
+	sub.addKeys(jobKeys)
+}
 
+// unsubscribeFromJob removes a specific job, or all jobs when jobKey is empty,
+// from a status websocket subscription.
+func (s *Server) unsubscribeFromJob(subscriptionID string, jobKey string) {
+	sub, exists := s.clientSubscription(subscriptionID)
+	if !exists {
 		return
 	}
 
-	delete(subscriptions, jobKey)
-
-	if len(subscriptions) == 0 {
-		delete(s.jobSubscriptions, connID)
-	}
-}
-
-// cleanupSubscriptions removes all subscriptions for the given connection.
-func (s *Server) cleanupSubscriptions(connID string) {
-	s.jsmutex.Lock()
-	defer s.jsmutex.Unlock()
-
-	delete(s.jobSubscriptions, connID)
+	sub.removeKey(jobKey)
 }

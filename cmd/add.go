@@ -32,7 +32,6 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jscheduler "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/jpillora/backoff"
 	"github.com/spf13/cobra"
 )
 
@@ -41,15 +40,10 @@ import (
 // shells such as bash.
 const maxScanTokenSize = 4096 * 1024
 
-// sync* are the backoff values we use to poll for our synchrounous job's
-// completion.
 const (
-	syncMinBackoff    = 500 * time.Millisecond
-	syncMaxBackoff    = 1 * time.Minute
-	syncBackoffFactor = 1.1
-	overrideNo        = 0
-	overrideHigher    = 1
-	overrideAlways    = 2
+	overrideNo     = 0
+	overrideHigher = 1
+	overrideAlways = 2
 )
 
 // options for this cmd
@@ -492,7 +486,7 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
-		if simpleOutput || syncMode {
+		if simpleOutput {
 			ids, err := jq.AddAndReturnIDs(jobs, envVars, !cmdReRun)
 			if err != nil {
 				die("%s", err)
@@ -501,13 +495,11 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 				os.Exit(1)
 			}
 
-			if simpleOutput {
-				for _, id := range ids {
-					fmt.Printf("%s\n", id)
-				}
-			} else {
-				synchronousAdd(jq, ids[0])
+			for _, id := range ids {
+				fmt.Printf("%s\n", id)
 			}
+		} else if syncMode {
+			synchronousAdd(jq, jobs[0], envVars, !cmdReRun)
 		} else {
 			inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
 			if err != nil {
@@ -582,6 +574,10 @@ func init() {
 	if err != nil {
 		die("cloud not hide reserver_timeout option: %s", err)
 	}
+}
+
+type synchronousAddWaiter interface {
+	AddAndWait(ctx context.Context, jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) ([]*jobqueue.Job, error)
 }
 
 // convert cmd,cwd columns in to Dependency.
@@ -919,10 +915,26 @@ func checkForRelativePathsInNonCwdMatters(
 	}
 }
 
-// synchronousAdd waits for the job with the given interal id to complete, then
-// we output its stdout&err and exit with its exit code.
-func synchronousAdd(jq *jobqueue.Client, id string) {
-	job := waitForJobCompletion(jq, id)
+// synchronousAdd adds one job and waits for it to complete, then outputs its
+// stdout&err and exits with its exit code.
+func synchronousAdd(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string, ignoreComplete bool) {
+	synchronousAddWithExit(jq, job, envVars, ignoreComplete, os.Exit)
+}
+
+func synchronousAddWithExit(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string, ignoreComplete bool,
+	exit func(int)) {
+	jobs, err := jq.AddAndWait(context.Background(), []*jobqueue.Job{job}, envVars, ignoreComplete)
+	if err != nil {
+		die("%s", err)
+	}
+
+	if len(jobs) == 0 {
+		exit(1)
+
+		return
+	}
+
+	job = jobs[0]
 
 	stdout, err := job.StdOut()
 	if err == nil && stdout != "" {
@@ -934,42 +946,7 @@ func synchronousAdd(jq *jobqueue.Client, id string) {
 		fmt.Fprintln(os.Stderr, stderr)
 	}
 
-	os.Exit(job.Exitcode)
-}
-
-// waitForJobCompletion blocks until the manager reports that the job with the
-// given internal id has either completed or become buried.
-func waitForJobCompletion(jq *jobqueue.Client, id string) *jobqueue.Job {
-	backoff := &backoff.Backoff{
-		Min:    syncMinBackoff,
-		Max:    syncMaxBackoff,
-		Factor: syncBackoffFactor,
-		Jitter: false,
-	}
-
-	var job *jobqueue.Job
-
-	for {
-		d := backoff.Duration()
-		time.Sleep(d)
-
-		job = getJob(jq, id)
-		if job.State == jobqueue.JobStateComplete || job.State == jobqueue.JobStateBuried {
-			break
-		}
-	}
-
-	return job
-}
-
-// getJob gets a job given its internal id.
-func getJob(jq *jobqueue.Client, id string) *jobqueue.Job {
-	job, err := jq.GetByEssence(&jobqueue.JobEssence{JobKey: id}, true, false)
-	if err != nil {
-		die("failed to get job details: %s", err)
-	}
-
-	return job
+	exit(job.Exitcode)
 }
 
 func overrideStringToInt(input string) int {

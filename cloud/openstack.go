@@ -29,38 +29,35 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/sb10/waitgroup"
-	"github.com/wtsi-ssg/wr/clog"
-
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
-	"github.com/gophercloud/gophercloud"
-	"github.com/gophercloud/gophercloud/openstack"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/attachinterfaces"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/quotasets"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/secgroups"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/flavors"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/images"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
-	"github.com/gophercloud/gophercloud/pagination"
-	"github.com/gophercloud/utils/openstack/clientconfig"
-	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
+	"github.com/gophercloud/gophercloud/v2"
+	"github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/attachinterfaces"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/keypairs"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/quotasets"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/secgroups"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
+	imageimages "github.com/gophercloud/gophercloud/v2/openstack/image/v2/images"
+	networkfloatingips "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/subnets"
+	"github.com/gophercloud/gophercloud/v2/pagination"
 	"github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
+	"github.com/sb10/waitgroup"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -93,6 +90,8 @@ const destroyServerCheckFrequency = 250 * time.Millisecond
 // learning.
 const minimumServerSpawnTimeoutSecs = 180
 
+const ipVersion4 = 4
+
 // invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
 const invalidFlavorIDMsg = "invalid flavor ID"
 
@@ -112,6 +111,8 @@ var (
 	openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
 )
 
+var errInvalidServerFlavorID = errors.New("server flavor id is not a string")
+
 // openstackp is our implementer of provideri
 type openstackp struct {
 	lastFlavorCache   time.Time
@@ -126,7 +127,8 @@ type openstackp struct {
 	computeClient     *gophercloud.ServiceClient
 	errorBackoff      *backoff.Backoff
 	fmap              map[string]*Flavor
-	imap              map[string]*images.Image
+	imap              map[string]*imageimages.Image
+	imageClient       *gophercloud.ServiceClient
 	ipNet             *net.IPNet
 	networkClient     *gophercloud.ServiceClient
 	ownServer         *servers.Server
@@ -171,14 +173,16 @@ func (p *openstackp) initialize() error {
 	}
 
 	// authenticate
-	opts, err := clientconfig.AuthOptions(&clientconfig.ClientOpts{})
+	ctx := context.Background()
+
+	opts, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
 		return err
 	}
 
 	opts.AllowReauth = true
 
-	provider, err := openstack.AuthenticatedClient(*opts)
+	provider, err := openstack.AuthenticatedClient(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -199,7 +203,7 @@ func (p *openstackp) initialize() error {
 			return err
 		}
 
-		project, erri := tokens.Create(identityClient, opts).ExtractProject()
+		project, erri := tokens.Create(ctx, identityClient, &opts).ExtractProject()
 		if erri != nil {
 			return err
 		}
@@ -219,10 +223,15 @@ func (p *openstackp) initialize() error {
 		return err
 	}
 
+	p.imageClient, err = openstack.NewImageV2(provider, endpoint)
+	if err != nil {
+		return err
+	}
+
 	// flavors and images are retrieved on-demand via caching methods that store
 	// in these maps
 	p.fmap = make(map[string]*Flavor)
-	p.imap = make(map[string]*images.Image)
+	p.imap = make(map[string]*imageimages.Image)
 
 	// to get a reasonable new server timeout we'll keep track of how long it
 	// takes to spawn them using an exponentially weighted moving average. We
@@ -248,7 +257,7 @@ func (p *openstackp) initialize() error {
 // cacheFlavors retrieves the current list of flavors from OpenStack and caches
 // them in p. Old no-longer existent flavors are kept forever, so we can still
 // see what resources old instances are using.
-func (p *openstackp) cacheFlavors() error {
+func (p *openstackp) cacheFlavors(ctx context.Context) error {
 	p.fmapMutex.Lock()
 	defer func() {
 		p.lastFlavorCache = time.Now()
@@ -256,7 +265,8 @@ func (p *openstackp) cacheFlavors() error {
 	}()
 
 	pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
-	return pager.EachPage(func(page pagination.Page) (bool, error) {
+
+	return pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 		flavorList, err := flavors.ExtractFlavors(page)
 		if err != nil {
 			return false, err
@@ -278,12 +288,12 @@ func (p *openstackp) cacheFlavors() error {
 // getFlavor retrieves the desired flavor by id from the cache. If it's not in
 // the cache, will call cacheFlavors() to get any newly added flavors. If still
 // not in the cache, returns nil and an error.
-func (p *openstackp) getFlavor(flavorID string) (*Flavor, error) {
+func (p *openstackp) getFlavor(ctx context.Context, flavorID string) (*Flavor, error) {
 	p.fmapMutex.RLock()
 	flavor, found := p.fmap[flavorID]
 	p.fmapMutex.RUnlock()
 	if !found {
-		err := p.cacheFlavors()
+		err := p.cacheFlavors(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -301,22 +311,22 @@ func (p *openstackp) getFlavor(flavorID string) (*Flavor, error) {
 // cacheImages retrieves the current list of images from OpenStack and caches
 // them in p. Old no-longer existent images are kept forever, so we can still
 // see what images old instances are using.
-func (p *openstackp) cacheImages() error {
+func (p *openstackp) cacheImages(ctx context.Context) error {
 	p.imapMutex.Lock()
 	defer p.imapMutex.Unlock()
-	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
-	return pager.EachPage(func(page pagination.Page) (bool, error) {
-		imageList, errf := images.ExtractImages(page)
+
+	pager := imageimages.List(p.imageClient, imageimages.ListOpts{Status: imageimages.ImageStatusActive})
+
+	return pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
+		imageList, errf := imageimages.ExtractImages(page)
 		if errf != nil {
 			return false, errf
 		}
 
 		for _, i := range imageList {
-			if i.Progress == 100 {
-				thisI := i // copy before storing ref
-				p.imap[i.ID] = &thisI
-				p.imap[i.Name] = &thisI
-			}
+			thisI := i // copy before storing ref
+			p.imap[i.ID] = &thisI
+			p.imap[i.Name] = &thisI
 		}
 
 		return true, nil
@@ -326,13 +336,13 @@ func (p *openstackp) cacheImages() error {
 // getImage retrieves the desired image by name or id prefix from the cache. If
 // it's not in the cache, will call cacheImages() to get any newly added images.
 // If still not in the cache, returns nil and an error.
-func (p *openstackp) getImage(prefix string) (*images.Image, error) {
+func (p *openstackp) getImage(ctx context.Context, prefix string) (*imageimages.Image, error) {
 	image := p.getImageFromCache(prefix)
 	if image != nil {
 		return image, nil
 	}
 
-	err := p.cacheImages()
+	err := p.cacheImages(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +356,7 @@ func (p *openstackp) getImage(prefix string) (*images.Image, error) {
 }
 
 // getImageFromCache is used by getImage(); don't call this directly.
-func (p *openstackp) getImageFromCache(prefix string) *images.Image {
+func (p *openstackp) getImageFromCache(prefix string) *imageimages.Image {
 	p.imapMutex.RLock()
 	defer p.imapMutex.RUnlock()
 
@@ -362,6 +372,64 @@ func (p *openstackp) getImageFromCache(prefix string) *images.Image {
 		}
 	}
 	return nil
+}
+
+func enabledBool() *bool {
+	enabled := true
+
+	return &enabled
+}
+
+func (p *openstackp) networkIDFromName(ctx context.Context, name string) (string, error) {
+	pages, err := networks.List(p.networkClient, networks.ListOpts{Name: name}).AllPages(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	all, err := networks.ExtractNetworks(pages)
+	if err != nil {
+		return "", err
+	}
+
+	ids := make([]string, len(all))
+	for i := range all {
+		ids[i] = all[i].ID
+	}
+
+	switch count := len(ids); count {
+	case 0:
+		return "", gophercloud.ErrResourceNotFound{Name: name, ResourceType: "network"}
+	case 1:
+		return ids[0], nil
+	default:
+		return "", gophercloud.ErrMultipleResourcesFound{Name: name, Count: count, ResourceType: "network"}
+	}
+}
+
+func (p *openstackp) getServerPortID(ctx context.Context, serverID string) (string, error) {
+	pages, err := ports.List(p.networkClient, ports.ListOpts{
+		DeviceID:  serverID,
+		NetworkID: p.networks[0].UUID,
+	}).AllPages(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	allPorts, err := ports.ExtractPorts(pages)
+	if err != nil {
+		return "", err
+	}
+
+	for _, port := range allPorts {
+		for _, fixedIP := range port.FixedIPs {
+			ip := net.ParseIP(fixedIP.IPAddress)
+			if ip != nil && p.ipNet.Contains(ip) {
+				return port.ID, nil
+			}
+		}
+	}
+
+	return "", gophercloud.ErrResourceNotFound{Name: serverID, ResourceType: "server port"}
 }
 
 // deploy achieves the aims of Deploy().
@@ -383,9 +451,9 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	p.useConfigDrive = useConfigDrive
 
 	// get/create key pair
-	kp, err := keypairs.Get(p.computeClient, resources.ResourceName, nil).Extract()
+	kp, err := keypairs.Get(ctx, p.computeClient, resources.ResourceName, nil).Extract()
 	if err != nil {
-		if _, notfound := err.(gophercloud.ErrDefault404); notfound {
+		if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
 			// create a new keypair; we can't just let Openstack create one for
 			// us because in latest versions it does not return a DER encoded
 			// key, which is what GO built-in library supports.
@@ -401,7 +469,12 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			}
 			publicKeyStr := ssh.MarshalAuthorizedKey(pub)
 
-			kp, err = keypairs.Create(p.computeClient, keypairs.CreateOpts{Name: resources.ResourceName, PublicKey: string(publicKeyStr)}).Extract()
+			createOpts := keypairs.CreateOpts{
+				Name:      resources.ResourceName,
+				PublicKey: string(publicKeyStr),
+			}
+
+			kp, err = keypairs.Create(ctx, p.computeClient, createOpts).Extract()
 			if err != nil {
 				return err
 			}
@@ -422,7 +495,8 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		var group *secgroups.SecurityGroup
 		defaultGroupExists := false
 		foundGroup := false
-		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+
+		err = pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 			groupList, errf := secgroups.ExtractSecurityGroups(page)
 			if errf != nil {
 				return false, errf
@@ -452,7 +526,12 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		}
 		if !foundGroup {
 			// create a new security group with rules allowing the desired ports
-			group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.ResourceName, Description: "access amongst wr-spawned nodes"}).Extract()
+			createOpts := secgroups.CreateOpts{
+				Name:        resources.ResourceName,
+				Description: "access amongst wr-spawned nodes",
+			}
+
+			group, err = secgroups.Create(ctx, p.computeClient, createOpts).Extract()
 			if err != nil {
 				return err
 			}
@@ -460,7 +539,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			//*** check if the rules are already there, in case we previously died
 			// between previous line and this one
 			for _, port := range requiredPorts {
-				_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
+				_, err = secgroups.CreateRule(ctx, p.computeClient, secgroups.CreateRuleOpts{
 					ParentGroupID: group.ID,
 					FromPort:      port,
 					ToPort:        port,
@@ -473,7 +552,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			}
 
 			// ICMP may help networking work as expected
-			_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
+			_, err = secgroups.CreateRule(ctx, p.computeClient, secgroups.CreateRuleOpts{
 				ParentGroupID: group.ID,
 				FromPort:      -1,
 				ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
@@ -495,18 +574,18 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	if p.inCloud(ctx) {
 		// work out our network uuid, needed for spawning later
 		for networkName := range p.ownServer.Addresses {
-			networkUUID, erri := networksutil.IDFromName(p.networkClient, networkName)
+			networkUUID, erri := p.networkIDFromName(ctx, networkName)
 			if erri != nil {
 				return erri
 			}
 
 			if networkUUID != "" {
-				network, errg := networks.Get(p.networkClient, networkUUID).Extract()
+				network, errg := networks.Get(ctx, p.networkClient, networkUUID).Extract()
 				if errg != nil {
 					return errg
 				}
 				for _, subnetID := range network.Subnets {
-					subnet, errg := subnets.Get(p.networkClient, subnetID).Extract()
+					subnet, errg := subnets.Get(ctx, p.networkClient, subnetID).Extract()
 					if errg != nil {
 						return errg
 					}
@@ -538,11 +617,17 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 
 	// get/create network
 	var network *networks.Network
-	networkID, err := networksutil.IDFromName(p.networkClient, resources.ResourceName)
+
+	networkID, err := p.networkIDFromName(ctx, resources.ResourceName)
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrResourceNotFound); notfound {
 			// create a network for ourselves
-			network, err = networks.Create(p.networkClient, networks.CreateOpts{Name: resources.ResourceName, AdminStateUp: gophercloud.Enabled}).Extract()
+			createOpts := networks.CreateOpts{
+				Name:         resources.ResourceName,
+				AdminStateUp: enabledBool(),
+			}
+
+			network, err = networks.Create(ctx, p.networkClient, createOpts).Extract()
 			if err != nil {
 				return err
 			}
@@ -551,7 +636,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			return err
 		}
 	} else {
-		network, err = networks.Get(p.networkClient, networkID).Extract()
+		network, err = networks.Get(ctx, p.networkClient, networkID).Extract()
 		if err != nil {
 			return err
 		}
@@ -570,7 +655,8 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		gip := new(string)
 		*gip = gatewayIP
 		var subnet *subnets.Subnet
-		subnet, err = subnets.Create(p.networkClient, subnets.CreateOpts{
+
+		subnet, err = subnets.Create(ctx, p.networkClient, subnets.CreateOpts{
 			NetworkID:      networkID,
 			CIDR:           cidr,
 			GatewayIP:      gip,
@@ -588,7 +674,8 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	// get/create router
 	var routerID string
 	pager := routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
+
+	err = pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 		routerList, errf := routers.ExtractRouters(page)
 		if errf != nil {
 			return false, errf
@@ -603,17 +690,18 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	if routerID == "" {
 		// get the external network id
 		if p.externalNetworkID == "" {
-			p.externalNetworkID, err = networksutil.IDFromName(p.networkClient, p.poolName)
+			p.externalNetworkID, err = p.networkIDFromName(ctx, p.poolName)
 			if err != nil {
 				return err
 			}
 		}
 
 		var router *routers.Router
-		router, err = routers.Create(p.networkClient, routers.CreateOpts{
+
+		router, err = routers.Create(ctx, p.networkClient, routers.CreateOpts{
 			Name:         resources.ResourceName,
 			GatewayInfo:  &routers.GatewayInfo{NetworkID: p.externalNetworkID},
-			AdminStateUp: gophercloud.Enabled,
+			AdminStateUp: enabledBool(),
 		}).Extract()
 		if err != nil {
 			return err
@@ -622,11 +710,11 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		routerID = router.ID
 
 		// add our subnet
-		_, err = routers.AddInterface(p.networkClient, routerID, routers.AddInterfaceOpts{SubnetID: subnetID}).Extract()
+		_, err = routers.AddInterface(ctx, p.networkClient, routerID, routers.AddInterfaceOpts{SubnetID: subnetID}).Extract()
 		if err != nil {
 			// if this fails, we'd be stuck with a useless router, so we try and
 			// delete it
-			routers.Delete(p.networkClient, router.ID)
+			routers.Delete(ctx, p.networkClient, router.ID)
 			return err
 		}
 	}
@@ -640,7 +728,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error) {
 	var sdetails [][]string
 	pager := servers.List(p.computeClient, servers.ListOpts{})
-	err := pager.EachPage(func(page pagination.Page) (bool, error) {
+	err := pager.EachPage(context.Background(), func(ctx context.Context, page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
 		if err != nil {
 			return false, err
@@ -648,7 +736,7 @@ func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error)
 
 		for _, server := range serverList {
 			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
-				serverIP, errg := p.getServerIP(server.ID)
+				serverIP, errg := p.getServerIP(ctx, server.ID)
 				if errg != nil {
 					continue
 				}
@@ -670,7 +758,8 @@ func (p *openstackp) inCloud(ctx context.Context) bool {
 	inCloud := false
 	if err == nil {
 		pager := servers.List(p.computeClient, servers.ListOpts{})
-		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+
+		err = pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 			serverList, errf := servers.ExtractServers(page)
 			if errf != nil {
 				return false, errf
@@ -702,7 +791,8 @@ func (p *openstackp) flavors(ctx context.Context) map[string]*Flavor {
 	p.fmapMutex.RLock()
 	if time.Since(p.lastFlavorCache) > 30*time.Minute {
 		p.fmapMutex.RUnlock()
-		err := p.cacheFlavors()
+
+		err := p.cacheFlavors(ctx)
 		if err != nil {
 			clog.Warn(ctx, "failed to cache available flavors", "err", err)
 		}
@@ -719,7 +809,7 @@ func (p *openstackp) flavors(ctx context.Context) map[string]*Flavor {
 // getQuota achieves the aims of GetQuota().
 func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 	// query our quota
-	q, err := quotasets.Get(p.computeClient, p.tenantID).Extract()
+	q, err := quotasets.Get(ctx, p.computeClient, p.tenantID).Extract()
 	if err != nil {
 		return nil, err
 	}
@@ -727,17 +817,19 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 		MaxRAM:       q.RAM,
 		MaxCores:     q.Cores,
 		MaxInstances: q.Instances,
-		// MaxVolume:    q.Volume, //*** https://github.com/gophercloud/gophercloud/issues/234#issuecomment-273666521 : no support for getting volume quotas...
+		// MaxVolume: q.Volume,
+		// *** https://github.com/gophercloud/gophercloud/v2/issues/234#issuecomment-273666521 :
+		// no support for getting volume quotas...
 	}
 
 	// query all servers to figure out what we've used of our quota
 	// (*** gophercloud currently doesn't implement getting this properly)
-	err = p.cacheFlavors()
+	err = p.cacheFlavors(ctx)
 	if err != nil {
 		clog.Warn(ctx, "failed to cache available flavors", "err", err)
 	}
 	pager := servers.List(p.computeClient, servers.ListOpts{})
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
+	err = pager.EachPage(ctx, func(ctx context.Context, page pagination.Page) (bool, error) {
 		serverList, errf := servers.ExtractServers(page)
 		if errf != nil {
 			return false, errf
@@ -745,14 +837,20 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 
 		for _, server := range serverList {
 			quota.UsedInstances++
-			f, errf := p.getFlavor(server.Flavor["id"].(string))
+
+			flavorID, ok := server.Flavor["id"].(string)
+			if !ok {
+				return false, fmt.Errorf("%w: %s", errInvalidServerFlavorID, server.ID)
+			}
+
+			f, errf := p.getFlavor(ctx, flavorID)
 			// since we're going through all servers, not just ones we created
 			// ourselves, it's possible that there is an old server with a
 			// flavor that no longer exists, so we allow invalid flavor errors
 			if errf != nil {
 				if strings.HasPrefix(errf.Error(), invalidFlavorIDMsg) {
 					warnStr := "an old server has a flavor that no longer exists; our remaining quota estimation will be off"
-					clog.Warn(ctx, warnStr, "server", server.ID, "flavor", server.Flavor["id"].(string))
+					clog.Warn(ctx, warnStr, "server", server.ID, "flavor", flavorID)
 				} else {
 					return false, errf
 				}
@@ -773,20 +871,20 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 // spawn achieves the aims of Spawn()
 func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error) {
 	// get the image that matches desired OS
-	image, err := p.getImage(osPrefix)
+	image, err := p.getImage(ctx, osPrefix)
 	if err != nil {
 		return serverID, serverIP, serverName, adminPass, err
 	}
 
-	flavor, err := p.getFlavor(flavorID)
+	flavor, err := p.getFlavor(ctx, flavorID)
 	if err != nil {
 		return serverID, serverIP, serverName, adminPass, err
 	}
 
 	// if the OS image itself specifies a minimum disk size and it's higher than
 	// requested disk, increase our requested disk
-	if image.MinDisk > diskGB {
-		diskGB = image.MinDisk
+	if image.MinDiskGigabytes > diskGB {
+		diskGB = image.MinDiskGigabytes
 	}
 
 	// if we previously had a problem spawning a server, wait before attempting
@@ -825,27 +923,25 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 	var createdVolume bool
 	t := time.Now()
 	if diskGB > flavor.Disk {
-		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
-			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
-				CreateOptsBuilder: createOpts,
-				BlockDevice: []bootfromvolume.BlockDevice{
-					{
-						UUID:                image.ID,
-						SourceType:          bootfromvolume.SourceImage,
-						DeleteOnTermination: true,
-						DestinationType:     bootfromvolume.DestinationVolume,
-						VolumeSize:          diskGB,
-					},
-				},
+		createOpts.BlockDevice = []servers.BlockDevice{
+			{
+				UUID:                image.ID,
+				SourceType:          servers.SourceImage,
+				DeleteOnTermination: true,
+				DestinationType:     servers.DestinationVolume,
+				VolumeSize:          diskGB,
 			},
-			KeyName: resources.ResourceName,
-		}).Extract()
-		createdVolume = true
-	} else {
-		server, err = servers.Create(p.computeClient, keypairs.CreateOptsExt{
+		}
+		server, err = servers.Create(ctx, p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: createOpts,
 			KeyName:           resources.ResourceName,
-		}).Extract()
+		}, nil).Extract()
+		createdVolume = true
+	} else {
+		server, err = servers.Create(ctx, p.computeClient, keypairs.CreateOptsExt{
+			CreateOptsBuilder: createOpts,
+			KeyName:           resources.ResourceName,
+		}, nil).Extract()
 	}
 
 	if server != nil {
@@ -893,7 +989,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 		for {
 			select {
 			case <-ticker.C:
-				current, errf := servers.Get(p.computeClient, serverID).Extract()
+				current, errf := servers.Get(ctx, p.computeClient, serverID).Extract()
 				attempts++
 				if errf != nil {
 					ticker.Stop()
@@ -926,7 +1022,8 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 				continue
 			case <-timeout:
 				ticker.Stop()
-				current, errf := servers.Get(p.computeClient, serverID).Extract()
+
+				current, errf := servers.Get(ctx, p.computeClient, serverID).Extract()
 				status := "unknown"
 				if errf == nil {
 					status = current.Status
@@ -943,7 +1040,8 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 		p.spMutex.Lock()
 		p.spawnFailed = true
 		p.spMutex.Unlock()
-		delerr := servers.Delete(p.computeClient, server.ID).ExtractErr()
+
+		delerr := servers.Delete(ctx, p.computeClient, server.ID).ExtractErr()
 		if delerr != nil {
 			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
 		}
@@ -964,7 +1062,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 	// first, because without an IP it's useless
 	if externalIP {
 		// give it a floating ip
-		floatingIP, errf := p.getAvailableFloatingIP()
+		floatingIP, errf := p.getAvailableFloatingIP(ctx)
 		if errf != nil {
 			errd := p.destroyServer(ctx, serverID)
 			if errd != nil {
@@ -975,9 +1073,19 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 
 		// associate floating ip with server *** we have a race condition
 		// between finding/creating free floating IP above, and using it here
-		errf = floatingips.AssociateInstance(p.computeClient, serverID, floatingips.AssociateOpts{
-			FloatingIP: floatingIP,
-		}).ExtractErr()
+		portID, errp := p.getServerPortID(ctx, serverID)
+		if errp != nil {
+			errd := p.destroyServer(ctx, serverID)
+			if errd != nil {
+				clog.Warn(ctx, "server destruction after not finding port failed", "server", serverID, "err", errd)
+			}
+
+			return serverID, serverIP, serverName, adminPass, errp
+		}
+
+		_, errf = networkfloatingips.Update(ctx, p.networkClient, floatingIP.ID, networkfloatingips.UpdateOpts{
+			PortID: &portID,
+		}).Extract()
 		if errf != nil {
 			errd := p.destroyServer(ctx, serverID)
 			if errd != nil {
@@ -986,10 +1094,11 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 
-		serverIP = floatingIP
+		serverIP = floatingIP.FloatingIP
 	} else {
 		var errg error
-		serverIP, errg = p.getServerIP(serverID)
+
+		serverIP, errg = p.getServerIP(ctx, serverID)
 		if errg != nil {
 			errd := p.destroyServer(ctx, serverID)
 			if errd != nil {
@@ -1007,12 +1116,12 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			}
 
 			portCreateOtps := ports.CreateOpts{
-				AdminStateUp: gophercloud.Enabled,
+				AdminStateUp: enabledBool(),
 				NetworkID:    network.UUID,
 				Name:         fmt.Sprintf("%s-%s-%d", resources.ResourceName, serverID, i),
 			}
 
-			port, errC := ports.Create(p.networkClient, portCreateOtps).Extract()
+			port, errC := ports.Create(ctx, p.networkClient, portCreateOtps).Extract()
 			if errC != nil {
 				clog.Warn(ctx, "failed to create port", "err", errC, "network", network.UUID)
 
@@ -1023,7 +1132,8 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			attachOpts := attachinterfaces.CreateOpts{
 				PortID: port.ID,
 			}
-			_, errC = attachinterfaces.Create(p.computeClient, serverID, attachOpts).Extract()
+
+			_, errC = attachinterfaces.Create(ctx, p.computeClient, serverID, attachOpts).Extract()
 			if errC != nil {
 				clog.Warn(ctx, "failed to attach port", "err", errC, "network", network.UUID, "port", port.ID, "server", serverID)
 
@@ -1045,9 +1155,9 @@ func (p *openstackp) errIsNoHardware(err error) bool {
 
 // getServerIP tries to find the auto-assigned internal ip address of the server
 // with the given ID.
-func (p *openstackp) getServerIP(serverID string) (string, error) {
+func (p *openstackp) getServerIP(ctx context.Context, serverID string) (string, error) {
 	// *** there must be a better way of doing this...
-	allNetworkAddressPages, err := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
+	allNetworkAddressPages, err := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -1056,13 +1166,13 @@ func (p *openstackp) getServerIP(serverID string) (string, error) {
 		return "", err
 	}
 	for _, address := range allNetworkAddresses {
-		if address.Version == 4 {
-			ip := net.ParseIP(address.Address)
-			if ip != nil {
-				if p.ipNet.Contains(ip) {
-					return address.Address, nil
-				}
-			}
+		if address.Version != ipVersion4 {
+			continue
+		}
+
+		ip := net.ParseIP(address.Address)
+		if ip != nil && p.ipNet.Contains(ip) {
+			return address.Address, nil
 		}
 	}
 	return "", nil
@@ -1070,7 +1180,7 @@ func (p *openstackp) getServerIP(serverID string) (string, error) {
 
 // checkServer achieves the aims of CheckServer().
 func (p *openstackp) checkServer(serverID string) (bool, error) {
-	server, err := servers.Get(p.computeClient, serverID).Extract()
+	server, err := servers.Get(context.Background(), p.computeClient, serverID).Extract()
 	if err != nil {
 		if errorIsNotFound(err) {
 			return false, nil
@@ -1082,12 +1192,12 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 }
 
 func errorIsNotFound(err error) bool {
-	return strings.Contains(err.Error(), "Resource not found")
+	return gophercloud.ResponseCodeIs(err, http.StatusNotFound) || strings.Contains(err.Error(), "Resource not found")
 }
 
 // checkServer achieves the aims of ServerIsKnown().
 func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
-	server, err := servers.Get(p.computeClient, serverID).Extract()
+	server, err := servers.Get(context.Background(), p.computeClient, serverID).Extract()
 	if err != nil {
 		if errorIsNotFound(err) {
 			return false, nil
@@ -1101,7 +1211,7 @@ func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
 
 // destroyServer achieves the aims of DestroyServer().
 func (p *openstackp) destroyServer(ctx context.Context, serverID string) error {
-	err := servers.Delete(p.computeClient, serverID).ExtractErr()
+	err := servers.Delete(ctx, p.computeClient, serverID).ExtractErr()
 	if err != nil {
 		if errorIsNotFound(err) {
 			return nil
@@ -1125,7 +1235,7 @@ WAIT:
 			serverCh := make(chan *servers.Server, 1)
 			getErrCh := make(chan error, 1)
 			go func() {
-				s, e := servers.Get(p.computeClient, serverID).Extract()
+				s, e := servers.Get(ctx, p.computeClient, serverID).Extract()
 				serverCh <- s
 				getErrCh <- e
 			}()
@@ -1157,7 +1267,7 @@ WAIT:
 	// and delete any ports we made for this server
 	if createdPorts, created := p.createdPorts[serverID]; created {
 		for _, uuid := range createdPorts {
-			errP := ports.Delete(p.networkClient, uuid).ExtractErr()
+			errP := ports.Delete(ctx, p.networkClient, uuid).ExtractErr()
 			if errP != nil {
 				clog.Warn(ctx, "failed to delete a port", "id", uuid, "server", serverID)
 			}
@@ -1178,7 +1288,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 	// delete servers, except for ourselves
 	var toDestroy []string
 	pager := servers.List(p.computeClient, servers.ListOpts{})
-	err := pager.EachPage(func(page pagination.Page) (bool, error) {
+	err := pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
 		if err != nil {
 			return false, err
@@ -1226,7 +1336,10 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 				tries := 0
 				for {
 					t := time.Now()
-					_, errr := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+					removeOpts := routers.RemoveInterfaceOpts{
+						SubnetID: subnetid,
+					}
+					_, errr := routers.RemoveInterface(ctx, p.networkClient, id, removeOpts).Extract()
 					clog.Debug(ctx, "remove router interface", "time", time.Since(t), "routerid",
 						id, "subnetid", subnetid, "err", errr)
 					if errr != nil {
@@ -1242,7 +1355,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 				}
 			}
 			t := time.Now()
-			err := routers.Delete(p.networkClient, id).ExtractErr()
+			err := routers.Delete(ctx, p.networkClient, id).ExtractErr()
 			clog.Debug(ctx, "delete router", "time", time.Since(t), "id", id, "err", err)
 			if err == nil {
 				didSomething = true
@@ -1253,7 +1366,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 		// delete network (and its subnet)
 		if id := resources.Details["network"]; id != "" {
 			t := time.Now()
-			err := networks.Delete(p.networkClient, id).ExtractErr()
+			err := networks.Delete(ctx, p.networkClient, id).ExtractErr()
 			clog.Debug(ctx, "delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
 			if err == nil {
 				didSomething = true
@@ -1264,7 +1377,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 		// delete secgroup
 		if id := resources.Details["secgroup"]; id != "" {
 			t := time.Now()
-			err := secgroups.Delete(p.computeClient, id).ExtractErr()
+			err := secgroups.Delete(ctx, p.computeClient, id).ExtractErr()
 			clog.Debug(ctx, "delete security group", "time", time.Since(t), "id", id, "err", err)
 			if err == nil {
 				didSomething = true
@@ -1280,7 +1393,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 	if id := resources.Details["keypair"]; id != "" {
 		if p.createdKeyPair || p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
 			t := time.Now()
-			err := keypairs.Delete(p.computeClient, id, nil).ExtractErr()
+			err := keypairs.Delete(ctx, p.computeClient, id, nil).ExtractErr()
 			clog.Debug(ctx, "delete keypair", "time", time.Since(t), "id", id, "err", err)
 			// keypairs are not credential-specific enough, so we don't consider
 			// deleting one as didSomething
@@ -1308,36 +1421,42 @@ func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror
 }
 
 // getAvailableFloatingIP gets or creates an unused floating ip
-func (p *openstackp) getAvailableFloatingIP() (string, error) {
+func (p *openstackp) getAvailableFloatingIP(ctx context.Context) (*networkfloatingips.FloatingIP, error) {
 	// find any existing floating ips
-	allFloatingIPPages, err := floatingips.List(p.computeClient).AllPages()
+	allFloatingIPPages, err := networkfloatingips.List(p.networkClient, networkfloatingips.ListOpts{}).AllPages(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	allFloatingIPs, err := floatingips.ExtractFloatingIPs(allFloatingIPPages)
+	allFloatingIPs, err := networkfloatingips.ExtractFloatingIPs(allFloatingIPPages)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	var floatingIP string
 	for _, fIP := range allFloatingIPs {
-		if fIP.InstanceID == "" {
-			floatingIP = fIP.IP
-			break
+		if fIP.PortID == "" {
+			thisFIP := fIP
+
+			return &thisFIP, nil
 		}
-	}
-	if floatingIP == "" {
-		// create a new one
-		fIP, err := floatingips.Create(p.computeClient, floatingips.CreateOpts{
-			Pool: p.poolName,
-		}).Extract()
-		if err != nil {
-			return "", err
-		}
-		floatingIP = fIP.IP
-		// *** should we delete these during TearDown? fIP.Delete(p.computeClient, fIP.ID) ...
 	}
 
-	return floatingIP, nil
+	return p.createFloatingIP(ctx)
+}
+
+func (p *openstackp) createFloatingIP(ctx context.Context) (*networkfloatingips.FloatingIP, error) {
+	if p.externalNetworkID == "" {
+		networkID, err := p.networkIDFromName(ctx, p.poolName)
+		if err != nil {
+			return nil, err
+		}
+
+		p.externalNetworkID = networkID
+	}
+
+	createOpts := networkfloatingips.CreateOpts{
+		FloatingNetworkID: p.externalNetworkID,
+	}
+	// *** should we delete these during TearDown? fIP.Delete(p.computeClient, fIP.ID) ...
+	return networkfloatingips.Create(ctx, p.networkClient, createOpts).Extract()
 }
