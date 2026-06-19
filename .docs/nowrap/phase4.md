@@ -21,8 +21,8 @@ the typed bad-request error for nil specs; otherwise call
 Covering all 4 acceptance tests from D1. Builds on Phases 1-3 and can run in
 parallel with Phases 5 and 6.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.2: D2 - Document the no-shell path
 
@@ -39,5 +39,5 @@ returned key, passing a `context.Context`, reading terminal job fields, using
 acceptance tests from D2. Depends on item 4.1 and the public methods from
 Phases 1-3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

@@ -210,6 +210,90 @@ func TestSchedulerSubmitJobsAndReturnIDs(t *testing.T) {
 	})
 }
 
+func TestSchedulerNewJobFromJSON(t *testing.T) {
+	Convey("Given a Scheduler configured with JSON job defaults", t, func() {
+		cwd := t.TempDir()
+		s := &Scheduler{cwd: cwd, queue: "short", queuesAvoid: "slow,big"}
+
+		Convey("JobDefaults maps Scheduler defaults into jobqueue defaults", func() {
+			defaults := s.JobDefaults()
+
+			So(defaults.Cwd, ShouldEqual, cwd)
+			So(defaults.CwdMatters, ShouldBeTrue)
+			So(defaults.SchedulerQueue, ShouldEqual, "short")
+			So(defaults.SchedulerQueuesAvoid, ShouldEqual, "slow,big")
+			So(defaults.Memory, ShouldEqual, 100)
+			So(defaults.Time, ShouldEqual, 10*time.Second)
+			So(defaults.CPUs, ShouldEqual, float64(1))
+			So(defaults.Disk, ShouldEqual, 1)
+			So(defaults.DiskSet, ShouldBeTrue)
+			So(defaults.Retries, ShouldEqual, 30)
+			So(defaults.Override, ShouldEqual, 0)
+		})
+
+		Convey("NewJobFromJSON converts a JobViaJSON using Scheduler defaults", func() {
+			retries := 3
+			override := 2
+			mounts := jobqueue.MountConfigs{{
+				Mount:     "mnt",
+				CacheBase: "cache-base",
+				Targets: []jobqueue.MountTarget{{
+					Profile:  "prof",
+					Path:     "bucket/path",
+					Cache:    true,
+					CacheDir: "cache-dir",
+					Write:    true,
+				}},
+			}}
+			spec := &jobqueue.JobViaJSON{
+				Cmd:          "echo json",
+				RepGrp:       "rg-json",
+				Retries:      &retries,
+				LimitGrps:    []string{"lg1"},
+				Memory:       "8G",
+				Time:         "8h",
+				Override:     &override,
+				MountConfigs: mounts,
+			}
+
+			job, err := s.NewJobFromJSON(spec)
+			So(err, ShouldBeNil)
+			So(job.Cmd, ShouldEqual, "echo json")
+			So(job.RepGroup, ShouldEqual, "rg-json")
+			So(job.Retries, ShouldEqual, uint8(3))
+			So(job.LimitGroups, ShouldResemble, []string{"lg1"})
+			So(job.Requirements.RAM, ShouldEqual, 8*1024)
+			So(job.Requirements.Time, ShouldEqual, 8*time.Hour)
+			So(job.Cwd, ShouldEqual, cwd)
+			So(job.CwdMatters, ShouldBeTrue)
+			So(job.Requirements.Other, ShouldResemble, map[string]string{
+				"scheduler_queue":        "short",
+				"scheduler_queues_avoid": "slow,big",
+			})
+			So(job.Override, ShouldEqual, uint8(2))
+			So(job.MountConfigs, ShouldResemble, mounts)
+		})
+
+		Convey("NewJobFromJSON returns a typed bad request for a nil spec", func() {
+			job, err := s.NewJobFromJSON(nil)
+			So(job, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr.Err, ShouldEqual, jobqueue.ErrBadRequest)
+		})
+
+		Convey("NewJobFromJSON returns conversion errors from JobViaJSON", func() {
+			job, err := s.NewJobFromJSON(&jobqueue.JobViaJSON{RepGrp: "missing-cmd"})
+			So(job, ShouldBeNil)
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "cmd was not specified")
+		})
+	})
+}
+
 type waitForRunningSequenceJobqueue struct {
 	*pretendJobqueue
 	job    *jobqueue.Job

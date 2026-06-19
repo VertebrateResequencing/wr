@@ -67,6 +67,7 @@ var PretendSubmissions string //nolint:gochecknoglobals
 const (
 	getByEssenceOp         = "GetByEssence"
 	getJobByKeyOp          = "GetJobByKey"
+	newJobFromJSONOp       = "NewJobFromJSON"
 	waitForRunningOp       = "WaitForRunning"
 	waitForJobsOp          = "WaitForJobs"
 	jobRetries       uint8 = 30
@@ -819,6 +820,34 @@ func (s *Scheduler) recordSubscribedTerminalJob(update *jobqueue.JobUpdate,
 	terminal[update.Key] = job
 
 	return nil
+}
+
+// JobDefaults returns the defaults used when converting a JobViaJSON into a
+// Job with this Scheduler.
+func (s *Scheduler) JobDefaults() *jobqueue.JobDefaults {
+	return &jobqueue.JobDefaults{
+		Cwd:                  s.cwd,
+		SchedulerQueue:       s.queue,
+		SchedulerQueuesAvoid: s.queuesAvoid,
+		CPUs:                 reqCores,
+		Memory:               reqRAM,
+		Time:                 reqTime,
+		Disk:                 reqDisk,
+		Retries:              int(jobRetries),
+		Override:             0,
+		CwdMatters:           true,
+		DiskSet:              true,
+	}
+}
+
+// NewJobFromJSON converts a JobViaJSON into a Job using this Scheduler's
+// defaults.
+func (s *Scheduler) NewJobFromJSON(spec *jobqueue.JobViaJSON) (*jobqueue.Job, error) {
+	if spec == nil {
+		return nil, jobqueue.Error{Op: newJobFromJSONOp, Err: jobqueue.ErrBadRequest}
+	}
+
+	return spec.Convert(s.JobDefaults())
 }
 
 func unfinishedWaitForJobKeys(keys []string,
