@@ -27,6 +27,40 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestJobEnv(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Job env distinguishes absent and explicitly empty stored environments", t, func() {
+		t.Setenv("WR_JOBQUEUE_ENV_FALLBACK", "present")
+
+		Convey("a requested job with no stored env uses the current environment", func() {
+			env, err := (&Job{EnvCRetrieved: true}).Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldContain, "WR_JOBQUEUE_ENV_FALLBACK=present")
+		})
+
+		Convey("a stored nil env uses the current environment", func() {
+			envc, err := compressEnv(nil)
+			So(err, ShouldBeNil)
+
+			env, err := (&Job{EnvC: envc, EnvCRetrieved: true}).Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldContain, "WR_JOBQUEUE_ENV_FALLBACK=present")
+		})
+
+		Convey("a stored empty env remains empty", func() {
+			envc, err := compressEnv([]string{})
+			So(err, ShouldBeNil)
+
+			env, err := (&Job{EnvC: envc, EnvCRetrieved: true}).Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldResemble, []string{})
+		})
+	})
+}
+
 func TestJob(t *testing.T) {
 	if runnermode || servermode {
 		return

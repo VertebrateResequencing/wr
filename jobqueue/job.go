@@ -42,6 +42,14 @@ import (
 	"github.com/ugorji/go/codec"
 )
 
+// jobSchedLimitGroupSeparator is the separator between requirements and limit
+// groups in scheduler group names.
+const jobSchedLimitGroupSeparator = "~"
+
+// jobLimitGroupSeparator is the separator between limit groups in scheduler
+// group names.
+const jobLimitGroupSeparator = ","
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -65,14 +73,6 @@ const (
 	JobStateDeletable JobState = "deletable"
 	JobStateUnknown   JobState = "unknown"
 )
-
-// jobSchedLimitGroupSeparator is the separator between requirements and limit
-// groups in schedular group names.
-const jobSchedLimitGroupSeparator = "~"
-
-// jobLimitGroupSeparator is the separator between limit groups in schedular
-// group names.
-const jobLimitGroupSeparator = ","
 
 // subqueueToJobState converts queue.SubQueue entries to JobStates.
 var subqueueToJobState = map[queue.SubQueue]JobState{
@@ -434,10 +434,12 @@ func (j *Job) WallTime() time.Duration {
 
 // Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are
 // the environment variables the Job's Cmd should run/ran under). Note that EnvC
-// is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().
-// If no environment variables were passed in when the job was Add()ed to the
-// queue, returns current environment variables instead. In both cases, alters
-// the return value to apply any overrides stored in job.EnvOverride.
+// is only populated if you got the Job from GetByCmd(_, _, true),
+// GetByEssence(_, _, true), or Reserve().
+// If no environment was stored for the job, returns current environment
+// variables instead. A stored non-nil empty environment returns an empty slice.
+// In both cases, alters the return value to apply any overrides stored in
+// job.EnvOverride.
 func (j *Job) Env() ([]string, error) {
 	overrideEs, err := j.envCurrentOverrides()
 	if err != nil {
@@ -467,8 +469,7 @@ func (j *Job) Env() ([]string, error) {
 		return nil, err
 	}
 	env := es.Environ
-
-	if len(env) == 0 {
+	if env == nil {
 		env = os.Environ()
 	}
 

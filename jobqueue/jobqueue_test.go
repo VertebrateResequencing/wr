@@ -1644,12 +1644,20 @@ func TestJobqueueBasics(t *testing.T) {
 				})
 			}
 
-			Convey("You can add more jobs, but without any environment variables", func() {
+			Convey("You can add more jobs, but without storing environment variables", func() {
 				server.racmutex.Lock()
 				server.rc = ""
 				server.racmutex.Unlock()
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
-				inserts, already, err := jq.Add([]*Job{{Cmd: "echo $wr_jobqueue_test_no_envvar && false", Cwd: "/tmp", ReqGroup: "new_group", Requirements: standardReqs, Priority: uint8(100), RepGroup: "noenvvar"}}, []string{}, true)
+
+				inserts, already, err := jq.Add([]*Job{{
+					Cmd:          "echo $wr_jobqueue_test_no_envvar && false",
+					Cwd:          "/tmp",
+					ReqGroup:     "new_group",
+					Requirements: standardReqs,
+					Priority:     uint8(100),
+					RepGroup:     "noenvvar",
+				}}, nil, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
