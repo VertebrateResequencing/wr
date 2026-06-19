@@ -43,10 +43,10 @@ import (
 )
 
 // jobSchedLimitGroupSeparator is the separator between requirements and limit
-// groups in schedular group names.
+// groups in scheduler group names.
 const jobSchedLimitGroupSeparator = "~"
 
-// jobLimitGroupSeparator is the separator between limit groups in schedular
+// jobLimitGroupSeparator is the separator between limit groups in scheduler
 // group names.
 const jobLimitGroupSeparator = ","
 
