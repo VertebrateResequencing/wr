@@ -4,6 +4,7 @@ GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
 TAG := $(shell git describe --abbrev=0 --tags)
 LDFLAGS = -s -w -X ${PKG}/jobqueue.ServerVersion=${VERSION}
+GOLANGCI_LINT_ARGS ?=
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
 
@@ -36,7 +37,7 @@ race:
 
 # curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
 lint:
-	@golangci-lint run
+	@golangci-lint run ${GOLANGCI_LINT_ARGS}
 
 clean:
 	@rm -f ./wr
