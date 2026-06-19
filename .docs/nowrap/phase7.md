@@ -31,5 +31,5 @@ Resolve failures only within the scope of Phases 1-6. This verifies the full
 implemented coverage for all 51 acceptance tests across A1-A2, B1-B3, C1,
 D1-D2, E1, and F1. Depends on Phases 1-6.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
