@@ -29,10 +29,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -45,6 +47,8 @@ import (
 // ErrDuplicateJobs is returned by SubmitJobs when any submitted jobs already
 // exist in the queue.
 var ErrDuplicateJobs = errors.New("some of the added jobs were duplicates")
+
+var errWaitForJobsJobqueueClient = errors.New("WaitForJobs requires a jobqueue client")
 
 // PretendSubmissions as a non-empty string causes SubmitJobs to only record the
 // jobs for retrieval by SubmittedJobs(); no wr manager server is needed or
@@ -59,13 +63,15 @@ var ErrDuplicateJobs = errors.New("some of the added jobs were duplicates")
 // descriptor.
 var PretendSubmissions string //nolint:gochecknoglobals
 
-// some consts for the jobs returned by NewJob().
+// some consts used by Scheduler.
 const (
-	jobRetries uint8 = 30
-	reqRAM           = 100
-	reqTime          = 10 * time.Second
-	reqCores         = 1
-	reqDisk          = 1
+	getJobByKeyOp       = "GetJobByKey"
+	waitForJobsOp       = "WaitForJobs"
+	jobRetries    uint8 = 30
+	reqRAM              = 100
+	reqTime             = 10 * time.Second
+	reqCores            = 1
+	reqDisk             = 1
 )
 
 type Error string
@@ -108,6 +114,9 @@ func (opts SubmitJobsOptions) ignoreComplete() bool {
 type jobqueueClient interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
 	AddAndReturnIDs(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) ([]string, error)
+	AddAndWait(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
+		ignoreComplete bool) ([]*jobqueue.Job, error)
+	GetByEssence(je *jobqueue.JobEssence, getStd bool, getEnv bool) (*jobqueue.Job, error)
 	GetByRepGroup(repgroup string, subStr bool, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	GetByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch, limit int,
@@ -163,6 +172,70 @@ func (p *pretendJobqueue) AddAndReturnIDs(jobs []*jobqueue.Job,
 	}
 
 	return keys, nil
+}
+
+func (p *pretendJobqueue) AddAndWait(ctx context.Context, jobs []*jobqueue.Job,
+	_ []string, _ bool) ([]*jobqueue.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, job := range jobs {
+		job.State = jobqueue.JobStateComplete
+		job.Exited = true
+		job.Exitcode = 0
+		job.EndTime = time.Now()
+	}
+
+	p.jobBuffer = append(p.jobBuffer, jobs...)
+
+	if p.output != nil {
+		json.NewEncoder(p.output).Encode(jobs) //nolint:errcheck,errchkjson
+	}
+
+	return distinctJobsInKeyOrder(jobs), nil
+}
+
+func distinctJobsInKeyOrder(jobs []*jobqueue.Job) []*jobqueue.Job {
+	if jobs == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(jobs))
+	distinct := make([]*jobqueue.Job, 0, len(jobs))
+
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+
+		key := job.Key()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+
+		distinct = append(distinct, job)
+	}
+
+	return distinct
+}
+
+func (p *pretendJobqueue) GetByEssence(je *jobqueue.JobEssence, _ bool,
+	_ bool) (*jobqueue.Job, error) {
+	if je == nil || je.Key() == "" {
+		return nil, jobqueue.Error{Op: "GetByEssence", Err: jobqueue.ErrBadRequest}
+	}
+
+	key := je.Key()
+	for _, job := range p.jobBuffer {
+		if job.Key() == key {
+			return job, nil
+		}
+	}
+
+	return nil, jobqueue.Error{Op: "GetByEssence", Item: key, Err: jobqueue.ErrBadJob}
 }
 
 func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
@@ -347,6 +420,303 @@ func (s *Scheduler) EnableSudo() {
 func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
 	opts SubmitJobsOptions) ([]string, error) {
 	return s.jq.AddAndReturnIDs(jobs, opts.envVars(), opts.ignoreComplete())
+}
+
+// SubmitJobsAndWait adds the given jobs to wr's queue and waits for every
+// just-added job to reach a terminal state.
+func (s *Scheduler) SubmitJobsAndWait(ctx context.Context, jobs []*jobqueue.Job,
+	opts SubmitJobsOptions) ([]*jobqueue.Job, error) {
+	got, err := s.jq.AddAndWait(ctx, jobs, opts.envVars(), opts.ignoreComplete())
+
+	return distinctJobsInKeyOrder(got), err
+}
+
+// GetJobByKey returns the job identified by key, optionally including stored
+// stdout/stderr and environment data.
+func (s *Scheduler) GetJobByKey(key string, getStd bool,
+	getEnv bool) (*jobqueue.Job, error) {
+	if key == "" {
+		return nil, jobqueue.Error{Op: getJobByKeyOp, Err: jobqueue.ErrBadRequest}
+	}
+
+	job, err := s.jq.GetByEssence(&jobqueue.JobEssence{JobKey: key}, getStd, getEnv)
+	if err != nil {
+		var jqErr jobqueue.Error
+
+		ok := errors.As(err, &jqErr)
+		if ok && jqErr.Err == jobqueue.ErrBadJob {
+			return nil, jobqueue.Error{Op: getJobByKeyOp, Item: key, Err: jobqueue.ErrBadJob}
+		}
+
+		return nil, err
+	}
+
+	if job == nil {
+		return nil, jobqueue.Error{Op: getJobByKeyOp, Item: key, Err: jobqueue.ErrBadJob}
+	}
+
+	return job, nil
+}
+
+// WaitForJobs waits for the supplied job keys to reach a terminal state,
+// returning complete and buried jobs in de-duplicated key order.
+func (s *Scheduler) WaitForJobs(ctx context.Context,
+	keys ...string) ([]*jobqueue.Job, error) {
+	distinct, err := distinctWaitForJobKeys(keys)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(distinct) == 0 {
+		return []*jobqueue.Job{}, nil
+	}
+
+	terminal := make(map[string]*jobqueue.Job, len(distinct))
+
+	waitKeys, err := s.currentTerminalAndWaitKeys(distinct, terminal)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = s.waitForNonTerminalJobs(ctx, distinct, waitKeys, terminal); err != nil {
+		return jobsInWaitKeyOrder(distinct, terminal), err
+	}
+
+	return jobsInWaitKeyOrder(distinct, terminal), nil
+}
+
+func distinctWaitForJobKeys(keys []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(keys))
+	distinct := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		if key == "" {
+			return nil, jobqueue.Error{Op: waitForJobsOp, Err: jobqueue.ErrBadRequest}
+		}
+
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		distinct = append(distinct, key)
+	}
+
+	return distinct, nil
+}
+
+func jobsInWaitKeyOrder(keys []string,
+	terminal map[string]*jobqueue.Job) []*jobqueue.Job {
+	jobs := make([]*jobqueue.Job, 0, len(terminal))
+
+	for _, key := range keys {
+		if job, ok := terminal[key]; ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+func (s *Scheduler) waitForNonTerminalJobs(ctx context.Context, allKeys []string,
+	waitKeys []string, terminal map[string]*jobqueue.Job) error {
+	if len(waitKeys) == 0 {
+		return nil
+	}
+
+	if _, ok := s.jq.(*pretendJobqueue); ok {
+		return s.completePretendWaitJobs(waitKeys, terminal)
+	}
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return waitForJobsContextError(ctxErr, allKeys, terminal)
+	}
+
+	jq, ok := s.jq.(*jobqueue.Client)
+	if !ok {
+		return errWaitForJobsJobqueueClient
+	}
+
+	return s.waitForSubscribedKeys(ctx, jq, allKeys, waitKeys, terminal)
+}
+
+func waitForJobsContextError(ctxErr error, keys []string,
+	terminal map[string]*jobqueue.Job) error {
+	return fmt.Errorf("%w; unfinished job keys: %s", ctxErr,
+		strings.Join(unfinishedWaitForJobKeys(keys, terminal), ", "))
+}
+
+func (s *Scheduler) currentTerminalAndWaitKeys(keys []string,
+	terminal map[string]*jobqueue.Job) ([]string, error) {
+	waitKeys := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		job, err := s.GetJobByKey(key, true, false)
+		if err != nil {
+			return nil, err
+		}
+
+		if isTerminalJobState(job.State) {
+			terminal[key] = job
+
+			continue
+		}
+
+		waitKeys = append(waitKeys, key)
+	}
+
+	return waitKeys, nil
+}
+
+func isTerminalJobState(state jobqueue.JobState) bool {
+	return state == jobqueue.JobStateComplete || state == jobqueue.JobStateBuried
+}
+
+func (s *Scheduler) completePretendWaitJobs(waitKeys []string,
+	terminal map[string]*jobqueue.Job) error {
+	for _, key := range waitKeys {
+		job, err := s.GetJobByKey(key, true, false)
+		if err != nil {
+			return err
+		}
+
+		job.State = jobqueue.JobStateComplete
+		job.Exited = true
+		job.Exitcode = 0
+		job.EndTime = time.Now()
+		terminal[key] = job
+	}
+
+	return nil
+}
+
+func (s *Scheduler) waitForSubscribedKeys(ctx context.Context, jq *jobqueue.Client,
+	allKeys []string, waitKeys []string, terminal map[string]*jobqueue.Job) error {
+	sub, err := jq.SubscribeToJobKeys(ctx, waitKeys)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return waitForJobsContextError(ctxErr, allKeys, terminal)
+		}
+
+		return err
+	}
+	defer sub.Unsubscribe()
+
+	wanted := waitForJobsKeySet(waitKeys)
+
+	return s.collectSubscribedTerminalJobs(ctx, sub, allKeys, waitKeys, wanted, terminal)
+}
+
+func waitForJobsKeySet(keys []string) map[string]struct{} {
+	wanted := make(map[string]struct{}, len(keys))
+
+	for _, key := range keys {
+		wanted[key] = struct{}{}
+	}
+
+	return wanted
+}
+
+func (s *Scheduler) collectSubscribedTerminalJobs(ctx context.Context,
+	sub *jobqueue.Subscription, allKeys []string, waitKeys []string,
+	wanted map[string]struct{}, terminal map[string]*jobqueue.Job) error {
+	for !allWaitKeysTerminal(waitKeys, terminal) {
+		update, recvErr := receiveWaitForJobsUpdate(ctx, sub)
+		if recvErr != nil {
+			return waitForJobsReceiveError(ctx, recvErr, allKeys, terminal)
+		}
+
+		if !isWantedTerminalUpdate(update, wanted, terminal) {
+			continue
+		}
+
+		if err := s.recordSubscribedTerminalJob(update, terminal); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func allWaitKeysTerminal(keys []string, terminal map[string]*jobqueue.Job) bool {
+	for _, key := range keys {
+		if _, ok := terminal[key]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func receiveWaitForJobsUpdate(ctx context.Context,
+	sub *jobqueue.Subscription) (*jobqueue.JobUpdate, error) {
+	select {
+	case update, ok := <-sub.Updates():
+		if !ok {
+			if err := sub.Err(); err != nil {
+				return nil, err
+			}
+
+			return nil, jobqueue.ErrSubscriptionClosed
+		}
+
+		return update, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func waitForJobsReceiveError(ctx context.Context, recvErr error, keys []string,
+	terminal map[string]*jobqueue.Job) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return waitForJobsContextError(ctxErr, keys, terminal)
+	}
+
+	return recvErr
+}
+
+func isWantedTerminalUpdate(update *jobqueue.JobUpdate,
+	wanted map[string]struct{}, terminal map[string]*jobqueue.Job) bool {
+	if update == nil || update.Kind != jobqueue.JobUpdateTerminal {
+		return false
+	}
+
+	if !isTerminalJobState(update.State) {
+		return false
+	}
+
+	if _, ok := wanted[update.Key]; !ok {
+		return false
+	}
+
+	_, alreadyTerminal := terminal[update.Key]
+
+	return !alreadyTerminal
+}
+
+func (s *Scheduler) recordSubscribedTerminalJob(update *jobqueue.JobUpdate,
+	terminal map[string]*jobqueue.Job) error {
+	job, err := s.GetJobByKey(update.Key, true, false)
+	if err != nil {
+		return err
+	}
+
+	terminal[update.Key] = job
+
+	return nil
+}
+
+func unfinishedWaitForJobKeys(keys []string,
+	terminal map[string]*jobqueue.Job) []string {
+	unfinished := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		if _, ok := terminal[key]; !ok {
+			unfinished = append(unfinished, key)
+		}
+	}
+
+	return unfinished
 }
 
 // pickCWD checks the given directory exists, returns an error. If the given

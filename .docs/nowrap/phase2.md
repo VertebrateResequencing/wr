@@ -20,8 +20,8 @@ Missing keys return `jobqueue.Error{Op: "GetJobByKey", Item: key, Err:
 jobqueue.ErrBadJob}`. Tests live in `client/client_test.go`. Covering all 4
 acceptance tests from B3. Builds on Phase 1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: B2 - Wait later by key
 
@@ -36,8 +36,8 @@ return terminal jobs gathered so far in key order with an error wrapping
 `ctx.Err()` and naming unfinished keys. Covering all 6 acceptance tests from
 B2. Depends on item 2.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: B1 - Submit and wait for terminal jobs
 
@@ -51,5 +51,5 @@ preserving gathered terminal jobs. Covering all 5 acceptance tests from B1.
 Depends on Phase 1 and should share terminal-key collection logic with item
 2.2 where that keeps code simpler.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

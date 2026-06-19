@@ -44,6 +44,117 @@ import (
 
 const testDeployment = "development"
 
+var (
+	errSchedulerJobTimeout     = errors.New("timed out waiting for WaitForJobs")
+	errSchedulerNoReservedJob  = errors.New("reserve returned no job")
+	errSchedulerNotLocalConfig = errors.New("test scheduler config is not local")
+)
+
+func TestSchedulerGetJobByKey(t *testing.T) {
+	Convey("Given a running test manager and scheduler", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		jq, ok := s.jq.(*jobqueue.Client)
+		So(ok, ShouldBeTrue)
+
+		schedulerConfig, ok := config.SchedulerConfig.(*jqs.ConfigLocal)
+		So(ok, ShouldBeTrue)
+
+		Convey("GetJobByKey returns a submitted ready job by key", func() {
+			job := s.NewJob("echo b3 ready", "rg-b3-ready", "req-b3-ready", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			stored, err := s.GetJobByKey(keys[0], false, false)
+			So(err, ShouldBeNil)
+			So(stored.Key(), ShouldEqual, keys[0])
+			So(stored.State, ShouldEqual, jobqueue.JobStateReady)
+		})
+
+		Convey("GetJobByKey fetches stdout and stderr for complete jobs when requested", func() {
+			job := s.NewJob("printf 'typed stdout'; printf 'typed stderr' >&2",
+				"rg-b3-std", "req-b3-std", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			reserved, err := jq.Reserve(50 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(reserved.Key(), ShouldEqual, keys[0])
+
+			So(jq.Execute(ctx, reserved, schedulerConfig.Shell), ShouldBeNil)
+
+			stored, err := s.GetJobByKey(keys[0], true, false)
+			So(err, ShouldBeNil)
+			So(stored.State, ShouldEqual, jobqueue.JobStateComplete)
+
+			stdout, err := stored.StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldEqual, "typed stdout")
+
+			stderr, err := stored.StdErr()
+			So(err, ShouldBeNil)
+			So(stderr, ShouldEqual, "typed stderr")
+		})
+
+		Convey("GetJobByKey rejects a blank key", func() {
+			stored, err := s.GetJobByKey("", false, false)
+			So(stored, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr, ShouldResemble, jobqueue.Error{
+				Op:  getJobByKeyOp,
+				Err: jobqueue.ErrBadRequest,
+			})
+		})
+
+		Convey("GetJobByKey reports a missing key as a bad job", func() {
+			stored, err := s.GetJobByKey("missing-key", false, false)
+			So(stored, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr, ShouldResemble, jobqueue.Error{
+				Op:   getJobByKeyOp,
+				Item: "missing-key",
+				Err:  jobqueue.ErrBadJob,
+			})
+		})
+	})
+}
+
+type schedulerJobStderrError string
+
+func (s schedulerJobStderrError) Error() string {
+	return string(s)
+}
+
 func TestSchedulerSubmitJobsAndReturnIDs(t *testing.T) {
 	Convey("Given a running test manager and one scheduler job", t, func() {
 		ctx := context.Background()
@@ -193,6 +304,420 @@ func TestSchedulerSubmitJobsOptions(t *testing.T) {
 			So(env, ShouldResemble, []string{})
 		})
 	})
+}
+
+func TestSchedulerSubmitJobsAndWait(t *testing.T) {
+	Convey("Given a running test manager and scheduler", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		runner, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(runner, ShouldNotBeNil)
+
+		defer func() {
+			So(runner.Disconnect(), ShouldBeNil)
+		}()
+
+		runnerJQ, ok := runner.jq.(*jobqueue.Client)
+		So(ok, ShouldBeTrue)
+
+		Convey("SubmitJobsAndWait returns complete and buried jobs in submitted-key order", func() {
+			jobs := []*jobqueue.Job{
+				s.NewJob("printf 'a1 stdout'; printf 'a1 stderr' >&2",
+					"rg-b1-mixed-1", "req-b1-mixed", "", "", nil),
+				s.NewJob("echo b1 mixed 2", "rg-b1-mixed-2", "req-b1-mixed", "", "", nil),
+			}
+
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			done := submitJobsAndWaitAsync(waitCtx, s, jobs, SubmitJobsOptions{})
+
+			So(executeNextSchedulerJob(runnerJQ, config), ShouldBeNil)
+			So(buryNextSchedulerJob(runnerJQ, 12, "b1 failed", "b1 stderr"), ShouldBeNil)
+
+			result := receiveWaitForJobsResult(done, 6*time.Second)
+			So(result.err, ShouldBeNil)
+			So(result.jobs, ShouldHaveLength, 2)
+			So(result.jobs[0].Key(), ShouldEqual, jobs[0].Key())
+			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(result.jobs[0].Exitcode, ShouldEqual, 0)
+			So(result.jobs[1].Key(), ShouldEqual, jobs[1].Key())
+			So(result.jobs[1].State, ShouldEqual, jobqueue.JobStateBuried)
+			So(result.jobs[1].Exitcode, ShouldEqual, 12)
+			So(result.jobs[1].FailReason, ShouldEqual, "b1 failed")
+
+			stdout, err := result.jobs[0].StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldEqual, "a1 stdout")
+
+			stderr, err := result.jobs[0].StdErr()
+			So(err, ShouldBeNil)
+			So(stderr, ShouldEqual, "a1 stderr")
+
+			stderr, err = result.jobs[1].StdErr()
+			So(err, ShouldBeNil)
+			So(stderr, ShouldEqual, "b1 stderr")
+		})
+
+		Convey("SubmitJobsAndWait returns context cancellation before submission", func() {
+			waitCtx, cancel := context.WithCancel(ctx)
+			cancel()
+
+			job := s.NewJob("echo b1 canceled", "rg-b1-canceled", "req-b1-canceled",
+				"", "", nil)
+
+			got, err := s.SubmitJobsAndWait(waitCtx, []*jobqueue.Job{job},
+				SubmitJobsOptions{})
+			So(got, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+		})
+
+		Convey("SubmitJobsAndWait returns gathered jobs and unfinished keys on context deadline", func() {
+			jobs := []*jobqueue.Job{
+				s.NewJob("echo b1 deadline 1", "rg-b1-deadline-1", "req-b1-deadline", "", "", nil),
+				s.NewJob("echo b1 deadline 2", "rg-b1-deadline-2", "req-b1-deadline", "", "", nil),
+			}
+
+			waitCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			defer cancel()
+
+			done := submitJobsAndWaitAsync(waitCtx, s, jobs, SubmitJobsOptions{})
+
+			So(archiveNextSchedulerJob(runnerJQ), ShouldBeNil)
+
+			result := receiveWaitForJobsResult(done, 2*time.Second)
+			So(result.jobs, ShouldHaveLength, 1)
+			So(result.jobs[0].Key(), ShouldEqual, jobs[0].Key())
+			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(errors.Is(result.err, context.DeadlineExceeded), ShouldBeTrue)
+			So(result.err.Error(), ShouldContainSubstring, "unfinished job keys: "+jobs[1].Key())
+			So(result.err.Error(), ShouldNotContainSubstring, jobs[0].Key())
+		})
+
+		Convey("SubmitJobsAndWait skips already complete matching jobs by default", func() {
+			job := s.NewJob("echo b1 skip complete", "rg-b1-skip-complete",
+				"req-b1-skip-complete", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			So(archiveNextSchedulerJob(runnerJQ), ShouldBeNil)
+
+			got, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(got, ShouldResemble, []*jobqueue.Job{})
+		})
+
+		Convey("SubmitJobsAndWait reruns already complete matching jobs when requested", func() {
+			job := s.NewJob("echo b1 rerun complete", "rg-b1-rerun-complete",
+				"req-b1-rerun-complete", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			So(archiveNextSchedulerJob(runnerJQ), ShouldBeNil)
+
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			done := submitJobsAndWaitAsync(waitCtx, s, []*jobqueue.Job{job},
+				SubmitJobsOptions{RerunCompleted: true})
+
+			So(archiveNextSchedulerJob(runnerJQ), ShouldBeNil)
+
+			result := receiveWaitForJobsResult(done, 6*time.Second)
+			So(result.err, ShouldBeNil)
+			So(result.jobs, ShouldHaveLength, 1)
+			So(result.jobs[0].Key(), ShouldEqual, job.Key())
+			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
+		})
+	})
+}
+
+func submitJobsAndWaitAsync(ctx context.Context, s *Scheduler, jobs []*jobqueue.Job,
+	opts SubmitJobsOptions) <-chan waitForJobsResult {
+	done := make(chan waitForJobsResult, 1)
+
+	go func() {
+		got, err := s.SubmitJobsAndWait(ctx, jobs, opts)
+		done <- waitForJobsResult{jobs: got, err: err}
+	}()
+
+	return done
+}
+
+func executeNextSchedulerJob(jq *jobqueue.Client, config jobqueue.ServerConfig) error {
+	schedulerConfig, ok := config.SchedulerConfig.(*jqs.ConfigLocal)
+	if !ok {
+		return errSchedulerNotLocalConfig
+	}
+
+	job, err := jq.Reserve(2 * time.Second)
+	if err != nil {
+		return err
+	}
+
+	if job == nil {
+		return errSchedulerNoReservedJob
+	}
+
+	return jq.Execute(context.Background(), job, schedulerConfig.Shell)
+}
+
+func receiveWaitForJobsResult(done <-chan waitForJobsResult,
+	timeout time.Duration) waitForJobsResult {
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(timeout):
+		return waitForJobsResult{err: errSchedulerJobTimeout}
+	}
+}
+
+func archiveNextSchedulerJob(jq *jobqueue.Client) error {
+	job, err := reserveAndStartSchedulerJob(jq)
+	if err != nil {
+		return err
+	}
+
+	return jq.Archive(job, &jobqueue.JobEndState{
+		Exited:   true,
+		Exitcode: 0,
+		EndTime:  time.Now(),
+	})
+}
+
+func reserveAndStartSchedulerJob(jq *jobqueue.Client) (*jobqueue.Job, error) {
+	job, err := jq.Reserve(2 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	if job == nil {
+		return nil, errSchedulerNoReservedJob
+	}
+
+	if err = jq.Started(job, os.Getpid()); err != nil {
+		return nil, err
+	}
+
+	return job, nil
+}
+
+func TestSchedulerWaitForJobs(t *testing.T) {
+	Convey("Given a running test manager and scheduler", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		jq, ok := s.jq.(*jobqueue.Client)
+		So(ok, ShouldBeTrue)
+
+		schedulerConfig, ok := config.SchedulerConfig.(*jqs.ConfigLocal)
+		So(ok, ShouldBeTrue)
+
+		Convey("WaitForJobs returns live jobs after they archive", func() {
+			jobs := []*jobqueue.Job{
+				s.NewJob("echo b2 live 1", "rg-b2-live-1", "req-b2-live", "", "", nil),
+				s.NewJob("echo b2 live 2", "rg-b2-live-2", "req-b2-live", "", "", nil),
+			}
+
+			keys, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			done := waitForJobsAsync(waitCtx, s, keys...)
+
+			So(archiveNextSchedulerJob(jq), ShouldBeNil)
+			So(archiveNextSchedulerJob(jq), ShouldBeNil)
+
+			result := receiveWaitForJobsResult(done, 6*time.Second)
+			So(result.err, ShouldBeNil)
+			So(result.jobs, ShouldHaveLength, 2)
+			So(result.jobs[0].Key(), ShouldEqual, keys[0])
+			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(result.jobs[1].Key(), ShouldEqual, keys[1])
+			So(result.jobs[1].State, ShouldEqual, jobqueue.JobStateComplete)
+		})
+
+		Convey("WaitForJobs returns already terminal jobs with stdout and stderr", func() {
+			completeJob := s.NewJob("printf 'pre stdout'; printf 'pre stderr' >&2",
+				"rg-b2-pre-complete", "req-b2-pre", "", "", nil)
+			buriedJob := s.NewJob("echo b2 pre buried", "rg-b2-pre-buried",
+				"req-b2-pre", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{completeJob, buriedJob},
+				SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+
+			reserved, err := jq.Reserve(2 * time.Second)
+			So(err, ShouldBeNil)
+			So(reserved.Key(), ShouldEqual, keys[0])
+			So(jq.Execute(ctx, reserved, schedulerConfig.Shell), ShouldBeNil)
+			So(buryNextSchedulerJob(jq, 7, "pre failed", "pre buried stderr"),
+				ShouldBeNil)
+
+			got, err := s.WaitForJobs(ctx, keys...)
+			So(err, ShouldBeNil)
+			So(got, ShouldHaveLength, 2)
+			So(got[0].Key(), ShouldEqual, keys[0])
+			So(got[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(got[0].Exitcode, ShouldEqual, 0)
+			So(got[1].Key(), ShouldEqual, keys[1])
+			So(got[1].State, ShouldEqual, jobqueue.JobStateBuried)
+			So(got[1].Exitcode, ShouldEqual, 7)
+			So(got[1].FailReason, ShouldEqual, "pre failed")
+
+			stdout, err := got[0].StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldEqual, "pre stdout")
+
+			stderr, err := got[0].StdErr()
+			So(err, ShouldBeNil)
+			So(stderr, ShouldEqual, "pre stderr")
+
+			stderr, err = got[1].StdErr()
+			So(err, ShouldBeNil)
+			So(stderr, ShouldEqual, "pre buried stderr")
+		})
+
+		Convey("WaitForJobs de-duplicates keys in input order", func() {
+			jobs := []*jobqueue.Job{
+				s.NewJob("echo b2 dedup 1", "rg-b2-dedup-1", "req-b2-dedup", "", "", nil),
+				s.NewJob("echo b2 dedup 2", "rg-b2-dedup-2", "req-b2-dedup", "", "", nil),
+			}
+
+			keys, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			done := waitForJobsAsync(waitCtx, s, keys[0], keys[0], keys[1])
+
+			So(archiveNextSchedulerJob(jq), ShouldBeNil)
+			So(archiveNextSchedulerJob(jq), ShouldBeNil)
+
+			result := receiveWaitForJobsResult(done, 6*time.Second)
+			So(result.err, ShouldBeNil)
+			So(result.jobs, ShouldHaveLength, 2)
+			So(result.jobs[0].Key(), ShouldEqual, keys[0])
+			So(result.jobs[1].Key(), ShouldEqual, keys[1])
+		})
+
+		Convey("WaitForJobs returns an empty slice when no keys are supplied", func() {
+			got, err := s.WaitForJobs(ctx)
+			So(err, ShouldBeNil)
+			So(got, ShouldResemble, []*jobqueue.Job{})
+		})
+
+		Convey("WaitForJobs rejects a blank key", func() {
+			got, err := s.WaitForJobs(ctx, "")
+			So(got, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr, ShouldResemble, jobqueue.Error{
+				Op:  "WaitForJobs",
+				Err: jobqueue.ErrBadRequest,
+			})
+		})
+
+		Convey("WaitForJobs returns partial terminal jobs on context deadline", func() {
+			jobs := []*jobqueue.Job{
+				s.NewJob("echo b2 deadline 1", "rg-b2-deadline-1", "req-b2-deadline", "", "", nil),
+				s.NewJob("echo b2 deadline 2", "rg-b2-deadline-2", "req-b2-deadline", "", "", nil),
+			}
+
+			keys, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+
+			waitCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			defer cancel()
+
+			done := waitForJobsAsync(waitCtx, s, keys...)
+
+			So(archiveNextSchedulerJob(jq), ShouldBeNil)
+
+			result := receiveWaitForJobsResult(done, 2*time.Second)
+			So(result.jobs, ShouldHaveLength, 1)
+			So(result.jobs[0].Key(), ShouldEqual, keys[0])
+			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(errors.Is(result.err, context.DeadlineExceeded), ShouldBeTrue)
+			So(result.err.Error(), ShouldContainSubstring, "unfinished job keys: "+keys[1])
+			So(result.err.Error(), ShouldNotContainSubstring, keys[0])
+		})
+	})
+}
+
+func waitForJobsAsync(ctx context.Context, s *Scheduler, keys ...string) <-chan waitForJobsResult {
+	done := make(chan waitForJobsResult, 1)
+
+	go func() {
+		jobs, err := s.WaitForJobs(ctx, keys...)
+		done <- waitForJobsResult{jobs: jobs, err: err}
+	}()
+
+	return done
+}
+
+func buryNextSchedulerJob(jq *jobqueue.Client, exitCode int,
+	failReason string, stderr string) error {
+	job, err := reserveAndStartSchedulerJob(jq)
+	if err != nil {
+		return err
+	}
+
+	return jq.Bury(job, &jobqueue.JobEndState{
+		Exited:   true,
+		Exitcode: exitCode,
+		EndTime:  time.Now(),
+	}, failReason, schedulerJobStderrError(stderr))
 }
 
 func TestScheduler(t *testing.T) {
@@ -597,4 +1122,9 @@ func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
 			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
 		})
 	})
+}
+
+type waitForJobsResult struct {
+	jobs []*jobqueue.Job
+	err  error
 }
