@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"slices"
 	"strconv"
@@ -43,7 +44,10 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const testDeployment = "development"
+const (
+	missingSchedulerJobKey = "missing-key"
+	testDeployment         = "development"
+)
 
 var (
 	errSchedulerJobTimeout     = errors.New("timed out waiting for WaitForJobs")
@@ -134,7 +138,7 @@ func TestSchedulerGetJobByKey(t *testing.T) {
 		})
 
 		Convey("GetJobByKey reports a missing key as a bad job", func() {
-			stored, err := s.GetJobByKey("missing-key", false, false)
+			stored, err := s.GetJobByKey(missingSchedulerJobKey, false, false)
 			So(stored, ShouldBeNil)
 
 			var jqErr jobqueue.Error
@@ -143,7 +147,7 @@ func TestSchedulerGetJobByKey(t *testing.T) {
 			So(ok, ShouldBeTrue)
 			So(jqErr, ShouldResemble, jobqueue.Error{
 				Op:   getJobByKeyOp,
-				Item: "missing-key",
+				Item: missingSchedulerJobKey,
 				Err:  jobqueue.ErrBadJob,
 			})
 		})
@@ -514,7 +518,7 @@ func TestSchedulerWaitForRunning(t *testing.T) {
 			s, _ := newWaitForRunningSequenceScheduler("existing-key",
 				jobqueue.JobStateRunning)
 
-			got, err := s.WaitForRunning(ctx, "missing-key", time.Millisecond)
+			got, err := s.WaitForRunning(ctx, missingSchedulerJobKey, time.Millisecond)
 			So(got, ShouldBeNil)
 
 			var jqErr jobqueue.Error
@@ -523,7 +527,7 @@ func TestSchedulerWaitForRunning(t *testing.T) {
 			So(ok, ShouldBeTrue)
 			So(jqErr, ShouldResemble, jobqueue.Error{
 				Op:   "WaitForRunning",
-				Item: "missing-key",
+				Item: missingSchedulerJobKey,
 				Err:  jobqueue.ErrBadJob,
 			})
 		})
@@ -1521,4 +1525,216 @@ type waitForJobsResult struct {
 type waitForRunningResult struct {
 	job *jobqueue.Job
 	err error
+}
+
+func TestSchedulerPretendNewMethods(t *testing.T) {
+	Convey("Given scheduler settings in pretend mode", t, func() {
+		restorePretend := setPretendSubmissionsForTest(" ")
+		defer restorePretend()
+
+		ctx := context.Background()
+		settings := SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		}
+
+		Convey("SubmitJobsAndReturnIDs records delayed jobs and returns keys", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			job1 := s.NewJob("cmd-e1-ids-1", "rg-e1-ids-1", "req-e1-ids-1", "", "", nil)
+			job2 := s.NewJob("cmd-e1-ids-2", "rg-e1-ids-2", "req-e1-ids-2", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job1, job2},
+				SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job1.Key(), job2.Key()})
+			So(job1.State, ShouldEqual, jobqueue.JobStateDelayed)
+			So(job2.State, ShouldEqual, jobqueue.JobStateDelayed)
+
+			submitted := s.SubmittedJobs()
+			So(submitted, ShouldHaveLength, 2)
+			So(submitted[0], ShouldEqual, job1)
+			So(submitted[1], ShouldEqual, job2)
+		})
+
+		Convey("SubmitJobsAndWait records complete jobs and returns them", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			job1 := s.NewJob("cmd-e1-wait-1", "rg-e1-wait-1", "req-e1-wait-1", "", "", nil)
+			job2 := s.NewJob("cmd-e1-wait-2", "rg-e1-wait-2", "req-e1-wait-2", "", "", nil)
+
+			got, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{job1, job2},
+				SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(got, ShouldHaveLength, 2)
+			So(got[0], ShouldEqual, job1)
+			So(got[1], ShouldEqual, job2)
+			So(got[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(got[0].Exited, ShouldBeTrue)
+			So(got[0].Exitcode, ShouldEqual, 0)
+			So(got[1].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(got[1].Exited, ShouldBeTrue)
+			So(got[1].Exitcode, ShouldEqual, 0)
+
+			submitted := s.SubmittedJobs()
+			So(submitted, ShouldHaveLength, 2)
+			So(submitted[0], ShouldEqual, job1)
+			So(submitted[1], ShouldEqual, job2)
+		})
+
+		Convey("GetJobByKey returns recorded jobs and typed missing-key errors", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			job := s.NewJob("cmd-e1-get", "rg-e1-get", "req-e1-get", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+
+			got, err := s.GetJobByKey(keys[0], false, false)
+			So(err, ShouldBeNil)
+			So(got, ShouldEqual, job)
+
+			got, err = s.GetJobByKey(missingSchedulerJobKey, false, false)
+			So(got, ShouldBeNil)
+
+			var jqErr jobqueue.Error
+
+			ok := errors.As(err, &jqErr)
+			So(ok, ShouldBeTrue)
+			So(jqErr, ShouldResemble, jobqueue.Error{
+				Op:   getJobByKeyOp,
+				Item: missingSchedulerJobKey,
+				Err:  jobqueue.ErrBadJob,
+			})
+		})
+
+		Convey("WaitForRunning marks a recorded delayed job running", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			job := s.NewJob("cmd-e1-running", "rg-e1-running", "req-e1-running", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(job.State, ShouldEqual, jobqueue.JobStateDelayed)
+
+			got, err := s.WaitForRunning(ctx, keys[0], time.Millisecond)
+			So(err, ShouldBeNil)
+			So(got, ShouldEqual, job)
+			So(got.State, ShouldEqual, jobqueue.JobStateRunning)
+		})
+
+		Convey("WaitForJobs completes and returns a recorded delayed job", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			job := s.NewJob("cmd-e1-wait-for-jobs", "rg-e1-wait-for-jobs",
+				"req-e1-wait-for-jobs", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(job.State, ShouldEqual, jobqueue.JobStateDelayed)
+
+			got, err := s.WaitForJobs(ctx, keys[0])
+			So(err, ShouldBeNil)
+			So(got, ShouldHaveLength, 1)
+			So(got[0], ShouldEqual, job)
+			So(got[0].State, ShouldEqual, jobqueue.JobStateComplete)
+			So(got[0].Exited, ShouldBeTrue)
+			So(got[0].Exitcode, ShouldEqual, 0)
+		})
+
+		Convey("Submit paths write pretend JSON exactly once per call", func() {
+			returnIDJobs, returnIDPayloads, err := collectPretendJSONPayloads(settings,
+				func(s *Scheduler) ([]*jobqueue.Job, error) {
+					jobs := []*jobqueue.Job{
+						s.NewJob("cmd-e1-json-ids", "rg-e1-json-ids", "req-e1-json-ids", "", "", nil),
+					}
+
+					_, submitErr := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+
+					return jobs, submitErr
+				})
+			So(err, ShouldBeNil)
+			So(returnIDPayloads, ShouldHaveLength, 1)
+			So(returnIDPayloads[0], ShouldHaveLength, 1)
+			So(returnIDPayloads[0][0].Key(), ShouldEqual, returnIDJobs[0].Key())
+			So(returnIDPayloads[0][0].State, ShouldEqual, jobqueue.JobStateDelayed)
+
+			waitJobs, waitPayloads, err := collectPretendJSONPayloads(settings,
+				func(s *Scheduler) ([]*jobqueue.Job, error) {
+					jobs := []*jobqueue.Job{
+						s.NewJob("cmd-e1-json-wait", "rg-e1-json-wait", "req-e1-json-wait", "", "", nil),
+					}
+
+					_, submitErr := s.SubmitJobsAndWait(ctx, jobs, SubmitJobsOptions{})
+
+					return jobs, submitErr
+				})
+			So(err, ShouldBeNil)
+			So(waitPayloads, ShouldHaveLength, 1)
+			So(waitPayloads[0], ShouldHaveLength, 1)
+			So(waitPayloads[0][0].Key(), ShouldEqual, waitJobs[0].Key())
+			So(waitPayloads[0][0].State, ShouldEqual, jobqueue.JobStateComplete)
+		})
+	})
+}
+
+func collectPretendJSONPayloads(settings SchedulerSettings,
+	submit func(*Scheduler) ([]*jobqueue.Job, error)) (
+	[]*jobqueue.Job, [][]*jobqueue.Job, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer pr.Close()
+
+	restorePretend := setPretendSubmissionsForTest(strconv.FormatUint(uint64(pw.Fd()), 10))
+	defer restorePretend()
+
+	s, err := New(settings)
+	if err != nil {
+		pw.Close()
+
+		return nil, nil, err
+	}
+
+	jobs, submitErr := submit(s)
+	closeErr := pw.Close()
+	payloads, decodeErr := decodePretendJobPayloads(pr)
+
+	return jobs, payloads, errors.Join(submitErr, closeErr, decodeErr)
+}
+
+func setPretendSubmissionsForTest(value string) func() {
+	oldValue := PretendSubmissions
+	PretendSubmissions = value
+
+	return func() {
+		PretendSubmissions = oldValue
+	}
+}
+
+func decodePretendJobPayloads(r io.Reader) ([][]*jobqueue.Job, error) {
+	decoder := json.NewDecoder(r)
+	payloads := make([][]*jobqueue.Job, 0, 1)
+
+	for {
+		var jobs []*jobqueue.Job
+
+		err := decoder.Decode(&jobs)
+		if errors.Is(err, io.EOF) {
+			return payloads, nil
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		payloads = append(payloads, jobs)
+	}
 }

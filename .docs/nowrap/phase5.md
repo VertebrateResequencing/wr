@@ -24,5 +24,5 @@ Ensure both submit paths write pretend JSON exactly once when configured.
 Covering all 6 acceptance tests from E1. Builds on Phases 1-3 and can run in
 parallel with Phases 4 and 6.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
