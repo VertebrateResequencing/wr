@@ -434,7 +434,8 @@ func (j *Job) WallTime() time.Duration {
 
 // Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are
 // the environment variables the Job's Cmd should run/ran under). Note that EnvC
-// is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().
+// is only populated if you got the Job from GetByCmd(_, _, true),
+// GetByEssence(_, _, true), or Reserve().
 // If no environment was stored for the job, returns current environment
 // variables instead. A stored non-nil empty environment returns an empty slice.
 // In both cases, alters the return value to apply any overrides stored in
