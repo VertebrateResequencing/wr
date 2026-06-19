@@ -589,6 +589,11 @@ func (s *Scheduler) WaitForJobs(ctx context.Context,
 
 	terminal := make(map[string]*jobqueue.Job, len(distinct))
 
+	if err = ctx.Err(); err != nil {
+		return jobsInWaitKeyOrder(distinct, terminal),
+			waitForJobsContextError(err, distinct, terminal)
+	}
+
 	waitKeys, err := s.currentTerminalAndWaitKeys(distinct, terminal)
 	if err != nil {
 		return nil, err
@@ -640,12 +645,12 @@ func (s *Scheduler) waitForNonTerminalJobs(ctx context.Context, allKeys []string
 		return nil
 	}
 
-	if _, ok := s.jq.(*pretendJobqueue); ok {
-		return s.completePretendWaitJobs(waitKeys, terminal)
-	}
-
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return waitForJobsContextError(ctxErr, allKeys, terminal)
+	}
+
+	if _, ok := s.jq.(*pretendJobqueue); ok {
+		return s.completePretendWaitJobs(waitKeys, terminal)
 	}
 
 	jq, ok := s.jq.(*jobqueue.Client)

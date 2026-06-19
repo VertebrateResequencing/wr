@@ -1061,6 +1061,21 @@ func TestSchedulerWaitForJobs(t *testing.T) {
 			})
 		})
 
+		Convey("WaitForJobs returns cancellation before looking up jobs", func() {
+			waitCtx, cancel := context.WithCancel(ctx)
+			cancel()
+
+			got, err := s.WaitForJobs(waitCtx, missingSchedulerJobKey)
+			So(got, ShouldHaveLength, 0)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(err.Error(), ShouldContainSubstring,
+				"unfinished job keys: "+missingSchedulerJobKey)
+
+			var jqErr jobqueue.Error
+
+			So(errors.As(err, &jqErr), ShouldBeFalse)
+		})
+
 		Convey("WaitForJobs returns partial terminal jobs on context deadline", func() {
 			jobs := []*jobqueue.Job{
 				s.NewJob("echo b2 deadline 1", "rg-b2-deadline-1", "req-b2-deadline", "", "", nil),
@@ -1646,6 +1661,42 @@ func TestSchedulerPretendNewMethods(t *testing.T) {
 			So(got[0].State, ShouldEqual, jobqueue.JobStateComplete)
 			So(got[0].Exited, ShouldBeTrue)
 			So(got[0].Exitcode, ShouldEqual, 0)
+		})
+
+		Convey("WaitForJobs returns cancellation without completing recorded pending jobs", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			jobs := []*jobqueue.Job{
+				s.NewJob("cmd-e1-canceled-delayed", "rg-e1-canceled-delayed",
+					"req-e1-canceled", "", "", nil),
+				s.NewJob("cmd-e1-canceled-ready", "rg-e1-canceled-ready",
+					"req-e1-canceled", "", "", nil),
+				s.NewJob("cmd-e1-canceled-reserved", "rg-e1-canceled-reserved",
+					"req-e1-canceled", "", "", nil),
+			}
+
+			keys, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+
+			jobs[1].State = jobqueue.JobStateReady
+			jobs[2].State = jobqueue.JobStateReserved
+
+			waitCtx, cancel := context.WithCancel(ctx)
+			cancel()
+
+			got, err := s.WaitForJobs(waitCtx, keys...)
+			So(got, ShouldHaveLength, 0)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(err.Error(), ShouldContainSubstring, "unfinished job keys: "+keys[0])
+			So(err.Error(), ShouldContainSubstring, keys[1])
+			So(err.Error(), ShouldContainSubstring, keys[2])
+			So(jobs[0].State, ShouldEqual, jobqueue.JobStateDelayed)
+			So(jobs[1].State, ShouldEqual, jobqueue.JobStateReady)
+			So(jobs[2].State, ShouldEqual, jobqueue.JobStateReserved)
+			So(jobs[0].Exited, ShouldBeFalse)
+			So(jobs[1].Exited, ShouldBeFalse)
+			So(jobs[2].Exited, ShouldBeFalse)
 		})
 
 		Convey("Submit paths write pretend JSON exactly once per call", func() {
