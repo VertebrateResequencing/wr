@@ -19,20 +19,9 @@ install:
 	@go install -tags netgo -ldflags "${LDFLAGS}"
 	@echo installed to ${GOPATH}/bin/wr
 
-compile_k8s_tmp: /tmp/wr
-/tmp/wr:
-	export CGO_ENABLED=0	&& \
-	go build -i -o /tmp/wr
-
 test: export CGO_ENABLED = 0
 test:
 	@go test -p 1 -tags netgo -timeout 40m --count 1 -failfast ${PKG_LIST}
-
-test-e2e: compile_k8s_tmp ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
-	./kubernetes/run-e2e.sh
-
-test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kubernetes driver
-	./kubernetes/run-unit.sh
 
 race: export CGO_ENABLED = 1
 race:
@@ -61,4 +50,4 @@ dist: export WR_LDFLAGS = $(LDFLAGS)
 dist:
 	goreleaser release --clean
 
-.PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e test-k8s-unit
+.PHONY: build test race lint lintextra install clean dist

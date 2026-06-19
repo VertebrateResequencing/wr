@@ -473,17 +473,6 @@ clouddns: "8.8.4.4,8.8.8.8"
 # OpenStack.
 cloudos: "bionic-server"
 
-# containerimage:  What container image should be used for spawned pods? This
-# defaults to "ubuntu:latest". It is overridden by the --container_image option
-# to 'wr k8s deploy' and the --cloud_os option of 'wr manager start'.
-# The image should have bash, and tar installed. The image should also have sudo
-# installed if it is required in a post creation script you intend to use.
-# By default, the images are pulled from docker hub. Others public registries
-# can be used. For example, a gcr.io image would be specified: gcr.io/foo/bar.
-#
-# This option is only relevant when you are using the kubernetes scheduler.
-containerimage: "ubuntu:latest"
-
 # clouduser: What username should be used to log in to cloudos images?
 # This defaults to "ubuntu". It is overridden by the --username option to
 # 'wr cloud deploy' and the --cloud_username option of 'wr manager start'.
