@@ -44,6 +44,7 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -55,7 +56,6 @@ import (
 	"github.com/ugorji/go/codec"
 	mangos "go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/xrep"
-	_ "go.nanomsg.org/mangos/v3/transport/tlstcp" // register tls+tcp transport
 )
 
 // Err* constants are found in our returned Errors under err.Err, so you can
@@ -450,6 +450,7 @@ type Server struct {
 	done                      chan error
 	stopSigHandling           chan bool
 	stopClientHandling        chan bool
+	clientHandlingDone        chan struct{}
 	wg                        *waitgroup.WaitGroup
 	q                         *queue.Queue
 	rpl                       *rgToKeys
@@ -522,6 +523,17 @@ func (s *Server) finishRAC() {
 func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.setRACPending()
 	s.q.TriggerReadyAddedCallback(ctx)
+}
+
+func (s *Server) waitForClientHandling(ctx context.Context) {
+	timer := time.NewTimer(ServerShutdownWaitTime)
+	defer timer.Stop()
+
+	select {
+	case <-s.clientHandlingDone:
+	case <-timer.C:
+		clog.Warn(ctx, "server shutdown timed out waiting for client handling to stop")
+	}
 }
 
 func subscriptionUpdateState(_, to JobState) (JobState, bool) {
@@ -914,6 +926,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	stopSigHandling := make(chan bool, 1)
 	stopClientHandling := make(chan bool)
+	clientHandlingDone := make(chan struct{})
 	done := make(chan error, 1)
 	wg := waitgroup.New()
 
@@ -968,6 +981,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		db:                        db,
 		stopSigHandling:           stopSigHandling,
 		stopClientHandling:        stopClientHandling,
+		clientHandlingDone:        clientHandlingDone,
 		done:                      done,
 		wg:                        wg,
 		up:                        true,
@@ -1224,6 +1238,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		// log panics and die
 		defer internal.LogPanic(ctx, "jobqueue serving", true)
 		defer wg.Done(wgk)
+		defer close(clientHandlingDone)
 
 		for {
 			select {
@@ -3465,20 +3480,19 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	}
 	s.wsmutex.Unlock()
 
-	time.Sleep(serverSocketWait)
-
 	s.statusCaster.Close()
 	s.badServerCaster.Close()
 	s.schedCaster.Close()
 
 	// not-fully graceful shutdown of http server, since it takes too long to
 	// shutdown normally due to a fixed 500ms poll
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
 	go func() {
 		<-time.After(httpServerShutdownTime)
 		cancel()
 	}()
-	err := s.httpServer.Shutdown(ctx)
+
+	err := s.httpServer.Shutdown(httpCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		clog.Warn(ctx, "server shutdown of web interface failed", "err", err)
 	}
@@ -3486,6 +3500,8 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	// close our command line interface
 	s.closeClientSubscriptions()
 	close(s.stopClientHandling)
+	s.waitForClientHandling(ctx)
+	time.Sleep(serverSocketWait)
 	err = s.sock.Close()
 	if err != nil {
 		clog.Warn(ctx, "server shutdown socket close failed", "err", err)

@@ -36,10 +36,10 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
 	"github.com/ugorji/go/codec"
 	"go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/req"
-	_ "go.nanomsg.org/mangos/v3/transport/tlstcp" // register tls+tcp transport
 )
 
 const (

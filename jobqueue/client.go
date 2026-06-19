@@ -45,6 +45,7 @@ import (
 	"github.com/VertebrateResequencing/wr/container/docker"
 	"github.com/VertebrateResequencing/wr/fs/local"
 	"github.com/VertebrateResequencing/wr/internal"
+	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
 	"github.com/docker/docker/client"
 	"github.com/gofrs/uuid/v5"
 	"github.com/kballard/go-shellquote"
@@ -52,7 +53,6 @@ import (
 	"github.com/ugorji/go/codec"
 	"go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/req"
-	_ "go.nanomsg.org/mangos/v3/transport/tlstcp" // register tls+tcp transport
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs
