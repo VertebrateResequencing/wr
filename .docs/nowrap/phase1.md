@@ -22,8 +22,8 @@ Queued duplicates should return successful keys from the new method, while
 exact existing error string. Tests live in `client/client_test.go`. Cover all 4
 acceptance tests from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Control completed-job reruns
 
@@ -37,5 +37,5 @@ client API. Cover all 4 acceptance tests from A2. Depends on item 1.1; env
 assertions should fetch jobs with `jobqueue.Client.GetByEssence` in this phase.
 Phase 2 adds the public `Scheduler.GetJobByKey` wrapper.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

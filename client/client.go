@@ -28,6 +28,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"slices"
@@ -41,11 +42,9 @@ import (
 	"github.com/rs/xid"
 )
 
-type Error string
-
-func (e Error) Error() string { return string(e) }
-
-const errDupJobs = Error("some of the added jobs were duplicates")
+// ErrDuplicateJobs is returned by SubmitJobs when any submitted jobs already
+// exist in the queue.
+var ErrDuplicateJobs = errors.New("some of the added jobs were duplicates")
 
 // PretendSubmissions as a non-empty string causes SubmitJobs to only record the
 // jobs for retrieval by SubmittedJobs(); no wr manager server is needed or
@@ -69,6 +68,10 @@ const (
 	reqDisk          = 1
 )
 
+type Error string
+
+func (e Error) Error() string { return string(e) }
+
 type SchedulerSettings struct {
 	Deployment  string
 	Cwd         string
@@ -78,8 +81,33 @@ type SchedulerSettings struct {
 	Logger      log15.Logger
 }
 
+// SubmitJobsOptions controls how Scheduler job submission handles environment
+// variables and already-completed matching jobs.
+type SubmitJobsOptions struct {
+	// EnvVars is passed to wr for job execution. nil means os.Environ().
+	// A non-nil empty slice means no environment variables.
+	EnvVars []string
+
+	// RerunCompleted matches `wr add --rerun`. false skips already complete
+	// matching jobs; true re-adds them.
+	RerunCompleted bool
+}
+
+func (opts SubmitJobsOptions) envVars() []string {
+	if opts.EnvVars == nil {
+		return os.Environ()
+	}
+
+	return opts.EnvVars
+}
+
+func (opts SubmitJobsOptions) ignoreComplete() bool {
+	return !opts.RerunCompleted
+}
+
 type jobqueueClient interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
+	AddAndReturnIDs(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) ([]string, error)
 	GetByRepGroup(repgroup string, subStr bool, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	GetByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch, limit int,
@@ -120,6 +148,21 @@ func (p *pretendJobqueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, in
 	}
 
 	return len(jobs), 0, nil
+}
+
+func (p *pretendJobqueue) AddAndReturnIDs(jobs []*jobqueue.Job,
+	envVars []string, ignoreComplete bool) ([]string, error) {
+	_, _, err := p.Add(jobs, envVars, ignoreComplete)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, len(jobs))
+	for n, job := range jobs {
+		keys[n] = job.Key()
+	}
+
+	return keys, nil
 }
 
 func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
@@ -298,6 +341,14 @@ func (s *Scheduler) EnableSudo() {
 	s.sudo = true
 }
 
+// SubmitJobsAndReturnIDs adds the given jobs to wr's queue and returns their
+// stable job keys. Queued duplicate jobs are not an error; their existing keys
+// are returned.
+func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
+	opts SubmitJobsOptions) ([]string, error) {
+	return s.jq.AddAndReturnIDs(jobs, opts.envVars(), opts.ignoreComplete())
+}
+
 // pickCWD checks the given directory exists, returns an error. If the given
 // dir is blank, returns the current working directory.
 func pickCWD(cwd string) (string, error) {
@@ -446,7 +497,7 @@ func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
 	}
 
 	if inserts != len(jobs) {
-		return errDupJobs
+		return ErrDuplicateJobs
 	}
 
 	return nil

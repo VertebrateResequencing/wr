@@ -28,7 +28,9 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -40,9 +42,162 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const testDeployment = "development"
+
+func TestSchedulerSubmitJobsAndReturnIDs(t *testing.T) {
+	Convey("Given a running test manager and one scheduler job", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+
+		So(s, ShouldNotBeNil)
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		job := s.NewJob("echo ok", "rg-a1", "req-a1", "", "", nil)
+		_ = &ErrDuplicateJobs
+
+		So(ErrDuplicateJobs.Error(), ShouldEqual, "some of the added jobs were duplicates")
+
+		Convey("SubmitJobsAndReturnIDs returns the submitted job key", func() {
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			info := server.GetServerStats()
+			So(info.Ready, ShouldEqual, 1)
+
+			Convey("submitting the same queued job again returns its key without adding another ready job", func() {
+				keys, err = s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+				So(err, ShouldBeNil)
+				So(keys, ShouldResemble, []string{job.Key()})
+
+				info = server.GetServerStats()
+				So(info.Ready, ShouldEqual, 1)
+
+				Convey("SubmitJobs exposes duplicate failures through ErrDuplicateJobs", func() {
+					err = s.SubmitJobs([]*jobqueue.Job{job})
+					So(err, ShouldNotBeNil)
+					So(errors.Is(err, ErrDuplicateJobs), ShouldBeTrue)
+					So(err.Error(), ShouldEqual, "some of the added jobs were duplicates")
+				})
+			})
+		})
+	})
+}
+
+func TestSchedulerSubmitJobsOptions(t *testing.T) {
+	Convey("Given a running test manager and scheduler", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		jq, ok := s.jq.(*jobqueue.Client)
+		So(ok, ShouldBeTrue)
+
+		Convey("completed jobs are skipped by default and rerun when requested", func() {
+			job := s.NewJob("echo a2 complete", "rg-a2-complete", "req-a2", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			reserved, err := jq.Reserve(50 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(reserved, ShouldNotBeNil)
+			So(reserved.Key(), ShouldEqual, job.Key())
+			So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+			err = jq.Archive(reserved, &jobqueue.JobEndState{
+				Exited:   true,
+				Exitcode: 0,
+				EndTime:  time.Now(),
+			})
+			So(err, ShouldBeNil)
+
+			keys, err = s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job}, SubmitJobsOptions{})
+			So(err, ShouldBeNil)
+			So(keys, ShouldBeEmpty)
+
+			info := server.GetServerStats()
+			So(info.Ready, ShouldEqual, 0)
+
+			keys, err = s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job},
+				SubmitJobsOptions{RerunCompleted: true})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			info = server.GetServerStats()
+			So(info.Ready, ShouldEqual, 1)
+		})
+
+		Convey("explicit environment variables are persisted", func() {
+			job := s.NewJob("echo a2 env", "rg-a2-env", "req-a2", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job},
+				SubmitJobsOptions{EnvVars: []string{"A=B"}})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			stored, err := jq.GetByEssence(&jobqueue.JobEssence{JobKey: keys[0]}, false, true)
+			So(err, ShouldBeNil)
+
+			env, err := stored.Env()
+			So(err, ShouldBeNil)
+			So(slices.Contains(env, "A=B"), ShouldBeTrue)
+		})
+
+		Convey("an explicit empty environment is persisted as empty", func() {
+			t.Setenv("WR_A2_EMPTY_ENV_SHOULD_NOT_APPEAR", "present")
+
+			job := s.NewJob("echo a2 empty env", "rg-a2-empty-env", "req-a2", "", "", nil)
+
+			keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{job},
+				SubmitJobsOptions{EnvVars: []string{}})
+			So(err, ShouldBeNil)
+			So(keys, ShouldResemble, []string{job.Key()})
+
+			stored, err := jq.GetByEssence(&jobqueue.JobEssence{JobKey: keys[0]}, false, true)
+			So(err, ShouldBeNil)
+
+			env, err := stored.Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldResemble, []string{})
+		})
+	})
+}
+
 func TestScheduler(t *testing.T) {
 	Convey("Given some scheduler settings", t, func() {
-		deployment := "development"
+		deployment := testDeployment
 		timeout := 10 * time.Second
 		logger := log15.New()
 		ctx := context.Background()
@@ -113,7 +268,8 @@ func TestScheduler(t *testing.T) {
 						Convey("but you get an error if there are duplicates", func() {
 							err = s.SubmitJobs([]*jobqueue.Job{job, job2})
 							So(err, ShouldNotBeNil)
-							So(err, ShouldEqual, errDupJobs)
+							So(errors.Is(err, ErrDuplicateJobs), ShouldBeTrue)
+							So(err.Error(), ShouldEqual, "some of the added jobs were duplicates")
 
 							info := server.GetServerStats()
 							So(info.Ready, ShouldEqual, 2)
@@ -245,7 +401,7 @@ func TestFakeScheduler(t *testing.T) {
 		PretendSubmissions = " "
 
 		settings := SchedulerSettings{
-			Deployment: "development",
+			Deployment: testDeployment,
 			Timeout:    10 * time.Second,
 			Logger:     log15.New(),
 		}
