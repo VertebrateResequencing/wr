@@ -37,7 +37,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/inconshreveable/log15"
+	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -774,7 +774,7 @@ func TestLSF(t *testing.T) {
 
 			logMsg := ""
 
-			testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.FuncHandler(func(r *log15.Record) error {
+			testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.FuncHandler(func(r log15.Record) error {
 				logMsg += r.Msg
 
 				return nil

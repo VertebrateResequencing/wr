@@ -25,10 +25,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/VertebrateResequencing/muxfys/v4"
+	"github.com/VertebrateResequencing/muxfys/v5"
 	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/inconshreveable/log15"
-	"github.com/sb10/l15h"
+	"github.com/inconshreveable/log15/v3"
+	"github.com/sb10/l15h/v2"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
@@ -182,7 +182,8 @@ not cached, only serial writes are possible.`,
 		if mountVerbose {
 			logLevel = log15.LvlInfo
 		}
-		muxfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+
+		muxfys.SetLogHandler(l15h.CallerInfoHandler(log15.LvlFilterHandler(logLevel, log15.StderrHandler)))
 
 		// now daemonize unless in foreground mode
 		if foreground {

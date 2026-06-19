@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 )
 
 // Protector struct is used to Protect a particular resource by granting tokens

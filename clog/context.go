@@ -29,7 +29,7 @@ package clog
 import (
 	"context"
 
-	"github.com/inconshreveable/log15"
+	"github.com/inconshreveable/log15/v3"
 )
 
 // correlationIDType is for the *Key constants, which provide private quick-to-

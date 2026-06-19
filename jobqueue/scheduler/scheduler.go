@@ -49,7 +49,6 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
-
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/dgryski/go-farm"

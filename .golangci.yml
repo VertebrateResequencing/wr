@@ -98,6 +98,9 @@ linters:
       line-length: 120
     misspell:
       locale: UK
+      ignore-rules:
+        - flavor
+        - flavors
     nakedret:
       max-func-lines: 20
     nestif:

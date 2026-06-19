@@ -48,8 +48,8 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
-	"github.com/inconshreveable/log15"
-	logext "github.com/inconshreveable/log15/ext"
+	"github.com/inconshreveable/log15/v3"
+	logext "github.com/inconshreveable/log15/v3/ext"
 	"github.com/lindell/go-ordered-set/orderedset"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
@@ -3188,13 +3188,23 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 
 	s.psgmutex.RLock()
 	group, existed := s.previouslyScheduledGroups[schedulerGroup]
+	hasSkippedGroups := false
+
+	for _, scheduledGroup := range s.previouslyScheduledGroups {
+		if scheduledGroup.hasSkips() {
+			hasSkippedGroups = true
+
+			break
+		}
+	}
 	s.psgmutex.RUnlock()
-	if !existed {
-		return
+
+	if hasSkippedGroups {
+		defer s.triggerReadyAddedCallback(ctx)
 	}
 
-	if group.hasSkips() {
-		defer s.triggerReadyAddedCallback(ctx)
+	if !existed {
+		return
 	}
 
 	count := group.decrement(drop)

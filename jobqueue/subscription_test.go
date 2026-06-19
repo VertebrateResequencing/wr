@@ -42,7 +42,7 @@ import (
 
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
-	gpnet "github.com/shirou/gopsutil/net"
+	gpnet "github.com/shirou/gopsutil/v4/net"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"

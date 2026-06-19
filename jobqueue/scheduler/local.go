@@ -39,9 +39,9 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	mth "github.com/VertebrateResequencing/wr/math"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/inconshreveable/log15"
-	logext "github.com/inconshreveable/log15/ext"
-	"github.com/shirou/gopsutil/process"
+	"github.com/inconshreveable/log15/v3"
+	logext "github.com/inconshreveable/log15/v3/ext"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 const (

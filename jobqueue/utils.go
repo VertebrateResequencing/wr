@@ -43,7 +43,7 @@ import (
 	"github.com/dgryski/go-farm"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // AppName gets used in certain places like naming the base directory of created

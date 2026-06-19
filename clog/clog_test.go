@@ -2,7 +2,7 @@
  * Copyright (c) 2020, 2021 Genome Research Ltd.
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>, <ac55@sanger.ac.uk>
- * TestCaller based on code from github.com/sb10/l15h
+ * TestCaller based on code from github.com/sb10/l15h/v2
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -41,7 +41,7 @@ import (
 	ft "github.com/VertebrateResequencing/wr/fs/test"
 	"github.com/acarl005/stripansi"
 	"github.com/hpcloud/tail"
-	"github.com/inconshreveable/log15"
+	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -53,7 +53,7 @@ func TestLogger(t *testing.T) {
 	Convey("GetHandler returns a log15 handler", t, func() {
 		handler := GetHandler()
 		So(handler, ShouldNotBeNil)
-		So(handler, ShouldHaveSameTypeAs, log15.FuncHandler(func(r *log15.Record) error { return nil }))
+		So(handler, ShouldHaveSameTypeAs, log15.FuncHandler(func(r log15.Record) error { return nil }))
 	})
 
 	Convey("lvlFromString returns appropriate levels", t, func() {
@@ -371,7 +371,7 @@ func TestLogger(t *testing.T) {
 
 	Convey("You can add a handler to log to multiple places at once", t, func() {
 		buff := ToBufferAtLevel("warn")
-		caller := "caller=clog/clog_test.go"
+		caller := "caller=clog.go:"
 		logPath := ft.FilePathInTempDir(t, "clog.log")
 		fh, err := CreateFileHandlerAtLevel(logPath, "warn")
 		So(err, ShouldBeNil)
@@ -401,7 +401,7 @@ func TestCaller(t *testing.T) {
 		buff := new(bytes.Buffer)
 		msg := "msg=msg"
 		foo := "foo=1"
-		ec := "caller=clog/clog_test.go:"
+		ec := "caller=clog.go:"
 		h := CallerInfoHandler(log15.StreamHandler(buff, log15.LogfmtFormat()))
 		setRootHandler(h)
 
@@ -447,8 +447,8 @@ func TestCaller(t *testing.T) {
 			lmsg := buff.String()
 			So(lmsg, ShouldContainSubstring, msg)
 			So(lmsg, ShouldContainSubstring, foo)
-			So(lmsg, ShouldContainSubstring, ` stack="[github.com/VertebrateResequencing/wr/clog/clog.go:`)
-			So(lmsg, ShouldContainSubstring, "github.com/VertebrateResequencing/wr/clog/clog_test.go:")
+			So(lmsg, ShouldContainSubstring, ` stack="[clog.go:`)
+			So(lmsg, ShouldContainSubstring, "clog_test.go:")
 		})
 
 		Reset(func() {

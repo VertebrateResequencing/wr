@@ -38,6 +38,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,7 +50,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
 )
@@ -5327,19 +5328,51 @@ func TestJobqueueRunners(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			// the remaining jobs should complete in about count seconds, ie. no
-			// delay between finishing the 0 cpu jobs, and starting the 1 cpu
-			// job. If this is not working due to a bug, it takes
-			// ServerCheckRunnerTime longer. When working, it takes an
-			// additional runner timeout (1s) due to fact the first runner uses
-			// up the limit for that long while waiting to reserve from the now
-			// empty queue for its group. There's also a little overhead.
-			start := time.Now()
 			completed = waitForCompletion(count + 1)
-			elapsed := time.Since(start)
-
 			So(completed, ShouldBeTrue)
-			So(elapsed, ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
+
+			if !completed {
+				return
+			}
+
+			jobs, err = jq.GetByRepGroup("limited", false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+
+			var (
+				zeroCPUComplete int
+				zeroCPUEnd      time.Time
+				oneCPUComplete  int
+				oneCPUStart     time.Time
+			)
+
+			for _, job := range jobs {
+				switch job.ReqGroup {
+				case "limitedA":
+					zeroCPUComplete++
+
+					if job.EndTime.After(zeroCPUEnd) {
+						zeroCPUEnd = job.EndTime
+					}
+				case "limitedB":
+					oneCPUComplete++
+					oneCPUStart = job.StartTime
+				}
+			}
+
+			So(zeroCPUComplete, ShouldEqual, count)
+			So(oneCPUComplete, ShouldEqual, 1)
+			So(zeroCPUEnd.IsZero(), ShouldBeFalse)
+			So(oneCPUStart.IsZero(), ShouldBeFalse)
+
+			if zeroCPUComplete != count || oneCPUComplete != 1 || zeroCPUEnd.IsZero() || oneCPUStart.IsZero() {
+				return
+			}
+
+			// The 1 CPU job should start soon after the 0 CPU jobs release the
+			// shared limit group. The old regression delayed that by a full
+			// ServerCheckRunnerTime, so assert on the recorded scheduling gap
+			// instead of the wall-clock time for every job to finish and archive.
+			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, ServerCheckRunnerTime)
 		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
@@ -5955,7 +5988,7 @@ func TestJobqueueRunners(t *testing.T) {
 										if errf == nil {
 											if strings.Contains(cmd, runnertmpdir+"2sim") {
 												status, errf := p.Status()
-												if errf == nil && status == "S" {
+												if errf == nil && slices.Contains(status, process.Sleep) {
 													ticker.Stop()
 													running <- true
 													return
@@ -6007,7 +6040,7 @@ func TestJobqueueRunners(t *testing.T) {
 										if err == nil {
 											if strings.Contains(cmd, runnertmpdir+"2sim") {
 												status, err := p.Status()
-												if err == nil && status == "S" {
+												if err == nil && slices.Contains(status, process.Sleep) {
 													simultaneous++
 												}
 											}

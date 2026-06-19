@@ -3,7 +3,7 @@
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>, <ac55@sanger.ac.uk>
  * Based on: https://blog.gopheracademy.com/advent-2016/context-logging/
- * CallerInfoHandler based on code from github.com/sb10/l15h
+ * CallerInfoHandler delegates to github.com/sb10/l15h/v2
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -31,13 +31,10 @@ package clog
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/go-stack/stack"
-	log "github.com/inconshreveable/log15"
-	"github.com/sb10/l15h"
+	log "github.com/inconshreveable/log15/v3"
+	"github.com/sb10/l15h/v2"
 )
 
 // osExit is used to disable real os.Exit for testing purposes when calling Fatal.
@@ -96,42 +93,15 @@ func toOutputAtLevel(outputHandler log.Handler, lvl log.Lvl) {
 // list of call sites inside matching []'s. The most recent call site is listed
 // first.
 func CallerInfoHandler(h log.Handler) log.Handler {
-	return log.FuncHandler(func(r *log.Record) error {
-		addCallerContext(r, stack.Trace().TrimBelow(r.Call).TrimRuntime())
-
-		return h.Log(r)
-	})
-}
-
-func addCallerContext(r *log.Record, calls stack.CallStack) {
-	if len(calls) == 0 {
-		return
-	}
-
-	switch r.Lvl {
-	case log.LvlInfo:
-	case log.LvlDebug, log.LvlWarn, log.LvlError:
-		r.Ctx = append(r.Ctx, "caller", callerPath(calls))
-	case log.LvlCrit:
-		r.Ctx = append(r.Ctx, "stack", fmt.Sprintf("%+v", calls))
-	}
-}
-
-func callerPath(calls stack.CallStack) string {
-	call := calls[0]
-	if len(calls) > 1 {
-		call = calls[1]
-	}
-
-	return filepath.Join(fmt.Sprintf("%k", call), fmt.Sprintf("%v", call))
+	return l15h.CallerInfoHandler(h)
 }
 
 // createFilteredInfoHandler wraps the given output handler in handlers that add
 // caller info and filters on the given level.
 func createFilteredInfoHandler(outputHandler log.Handler, lvl log.Lvl) log.Handler {
-	return log.LvlFilterHandler(
-		lvl,
-		CallerInfoHandler(
+	return CallerInfoHandler(
+		log.LvlFilterHandler(
+			lvl,
 			outputHandler,
 		),
 	)

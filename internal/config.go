@@ -34,6 +34,7 @@ import (
 	"github.com/creasty/defaults"
 	"github.com/jinzhu/configor"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 )
 
 const (
@@ -168,9 +169,12 @@ func (c Config) String() string {
 	typeOfC := vals.Type()
 
 	tableString := &strings.Builder{}
-	table := tablewriter.NewWriter(tableString)
-	table.SetHeader([]string{"Config", "Value", "Source"})
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
+	table := tablewriter.NewTable(
+		tableString,
+		tablewriter.WithHeaderAlignment(tw.AlignLeft),
+		tablewriter.WithRowAlignment(tw.AlignLeft),
+	)
+	table.Header("Config", "Value", "Source")
 
 	for i := 0; i < vals.NumField(); i++ {
 		property := typeOfC.Field(i).Name
@@ -183,10 +187,14 @@ func (c Config) String() string {
 			source = ConfigSourceDefault
 		}
 
-		table.Append([]string{property, fmt.Sprintf("%v", vals.Field(i).Interface()), source})
+		if err := table.Append([]string{property, fmt.Sprintf("%v", vals.Field(i).Interface()), source}); err != nil {
+			return tableString.String()
+		}
 	}
 
-	table.Render()
+	if err := table.Render(); err != nil {
+		return tableString.String()
+	}
 
 	return tableString.String()
 }

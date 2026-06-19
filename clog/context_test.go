@@ -30,7 +30,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/inconshreveable/log15"
+	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
 

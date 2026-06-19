@@ -23,7 +23,7 @@ It also implements the the config system used by the cmd package (see
 config.go).
 
 	import "github.com/VertebrateResequencing/wr/internal"
-	import "github.com/inconshreveable/log15"
+	import "github.com/inconshreveable/log15/v3"
 	deployment := internal.DefaultDeployment()
 	logger := log15.New()
 	logger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
