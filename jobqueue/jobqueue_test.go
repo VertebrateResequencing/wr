@@ -699,11 +699,40 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	}
 	addr := "localhost:" + config.ManagerPort
 
+	// ensure the manager dir exists so Serve() can write its token and TLS
+	// certs there. Normally this is ~/.wr_development (already present), but
+	// when tests are isolated onto a per-process WR_MANAGERDIR (used to run
+	// groups of these tests in parallel on separate ports) the dir won't
+	// pre-exist, and Serve() does not create it itself.
+	if err := os.MkdirAll(config.ManagerDir, 0o700); err != nil {
+		log.Fatal(err)
+	}
+
+	// pre-generate the TLS certs (as Serve() would) if they don't already
+	// exist. Some tests Connect() before starting a server (to check the
+	// "no server" error), which needs the CA cert to be present; with the
+	// normal ~/.wr_development dir it persists between runs, but a fresh
+	// isolated WR_MANAGERDIR has none until a server first runs.
+	if internal.CheckCerts(serverConfig.CertFile, serverConfig.KeyFile) != nil {
+		if err := internal.GenerateCerts(serverConfig.CAFile, serverConfig.CertFile, serverConfig.KeyFile,
+			config.ManagerCertDomain, internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey,
+			crand.Reader, internal.DefaultCertFileFlags); err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	setDomainIP(config.ManagerCertDomain)
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelayMin = 100 * time.Millisecond
+	// when a runner can't reach the server (e.g. during the crash/shutdown
+	// recovery tests) it waits ClientRetryWait before reconnecting; the 15s
+	// production default added up to ~15s per such scenario and made their
+	// timing highly variable. Tests restart servers near-instantly, so a short
+	// wait reconnects just as reliably (ClientRetryTime stays at its 24h
+	// ceiling) while being much faster and more deterministic.
+	ClientRetryWait = 1 * time.Second
 	clientConnectTime := 1500 * time.Millisecond
 
 	if shortTTR {
@@ -4980,6 +5009,12 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job2, ShouldBeNil)
 
+				// wait for the drain (the running ~1s job finishing, then the
+				// server shutting down) to complete. We must not poll Ping here:
+				// pinging mid-shutdown can catch the socket in a state where the
+				// underlying Send blocks while holding the client lock, hanging
+				// the test, so we wait for the worst-case settle and then Ping
+				// once, by which point the server is reliably gone.
 				<-time.After(3 * time.Second)
 
 				_, err = jq.Ping(10 * time.Millisecond)
@@ -5186,6 +5221,15 @@ func TestJobqueueRunners(t *testing.T) {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
+
+			// this leaf waits for a killed job to be detected as lost, which
+			// happens ~TTR after its last touch. The group-wide TTR (10s) only
+			// needs to be that high so jobs survive scheduling load in the other
+			// leaves; this job's TTR is captured at Add() time and GoConvey
+			// re-runs the group setup (resetting TTR to 10s) for every other
+			// leaf, so shortening it here just speeds up the lost detection
+			// without affecting them.
+			ServerItemTTR = 3 * time.Second
 
 			var jobs []*Job
 			cmd := "perl -e 'for (1..20) { sleep(1) }'"

@@ -20,19 +20,44 @@ install:
 	@go install -tags netgo -ldflags "${LDFLAGS}"
 	@echo installed to ${GOPATH}/bin/wr
 
-# Packages are run two-at-a-time (-p 2). Only the jobqueue package binds the
-# fixed development manager port and uses ~/.wr_development; every other package
-# uses dynamically allocated free ports and per-test temp dirs, so they can
-# safely run concurrently. The slow jobqueue package dominates total runtime, so
-# running the rest alongside it hides almost all of their cost. We deliberately
-# keep this at 2 rather than higher: jobqueue is the long pole, so overlapping it
-# with just one other package at a time captures nearly all of the wall-clock
-# saving while keeping the load (open sockets, processes) low enough to avoid
-# the flakiness that more aggressive parallelism can cause in the network-heavy
-# tests.
+# The jobqueue package is by far the slowest and, unlike the others, binds a
+# fixed manager port and uses a single manager dir (~/.wr_development), so its
+# tests can't overlap each other on that shared port. We therefore split it into
+# two groups, each run as its own `go test` process isolated onto a private
+# manager port, web port, manager dir and TMPDIR via env vars (so their servers,
+# bolt DBs, TLS certs and job working dirs don't collide). Using separate
+# processes (rather than t.Parallel within one) also keeps each group's
+# package-level timing globals -- ServerItemTTR, ClientTouchInterval etc. --
+# independent, which tests rely on setting per-scenario. Those two groups run in
+# parallel with each other and with a third lane that covers every other
+# package. The two heaviest, subprocess-spawning jobqueue tests (Runners and
+# Signal) are deliberately kept together in one group so they run one-at-a-time
+# and don't oversubscribe the CPUs alongside each other. This roughly halves the
+# wall-clock time versus running everything serially behind the jobqueue package.
+JQ_GROUP := TestJobqueueRunners|TestJobqueueSignal|TestJobqueueProduction
+OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$')
+GO_TEST := go test -tags netgo -timeout 40m --count 1 -failfast
+
 test: export CGO_ENABLED = 0
 test:
-	@go test -p 2 -tags netgo -timeout 40m --count 1 -failfast ${PKG_LIST}
+	@set -e; \
+	base=$$(mktemp -d "$${TMPDIR:-/tmp}/wrtest.XXXXXX"); \
+	mkdir -p "$$base/g1d" "$$base/g2d" "$$base/g1t" "$$base/g2t"; \
+	echo "testing: 2 parallel jobqueue groups + other packages ($$base)"; \
+	rc=0; \
+	TMPDIR="$$base/g1t" WR_MANAGERPORT=55001 WR_MANAGERWEB=55002 WR_MANAGERDIR="$$base/g1d" \
+		$(GO_TEST) -run '$(JQ_GROUP)' ${PKG}/jobqueue >"$$base/g1.log" 2>&1 & p1=$$!; \
+	TMPDIR="$$base/g2t" WR_MANAGERPORT=55101 WR_MANAGERWEB=55102 WR_MANAGERDIR="$$base/g2d" \
+		$(GO_TEST) -skip '$(JQ_GROUP)' ${PKG}/jobqueue >"$$base/g2.log" 2>&1 & p2=$$!; \
+	$(GO_TEST) -p 2 $(OTHER_PKGS) >"$$base/o.log" 2>&1 & p3=$$!; \
+	wait $$p1 || rc=1; \
+	wait $$p2 || rc=1; \
+	wait $$p3 || rc=1; \
+	echo "===== jobqueue group 1 (Runners/Signal/Production) ====="; cat "$$base/g1.log"; \
+	echo "===== jobqueue group 2 (rest of jobqueue) ====="; cat "$$base/g2.log"; \
+	echo "===== other packages ====="; cat "$$base/o.log"; \
+	rm -rf "$$base"; \
+	exit $$rc
 
 race: export CGO_ENABLED = 1
 race:
