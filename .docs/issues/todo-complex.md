@@ -1,40 +1,83 @@
 # Complex Todos
 
-Items that are substantial enough to deserve a short spec and/or a decision from you
-before implementation. Each has its own section and its own checklist; the
-**Questions for you** lines are the things I'd want answered before (or as part of)
-producing the spec, because they're matters of choice about how the feature should
-behave.
+## Workflow — how to tackle this file
+
+Same shape as `todo-simple.md` — one **orchestrator** agent fans the sections out to
+**parallel section agents** (one per `##` issue section below) — with two differences:
+each branch first **writes a spec**, then **implements by following the generated phase
+files** rather than via the `bugfix` skill. The verified mechanics are the same as
+todo-simple (the `develop` branch exists; isolated `git worktree`s off `origin/develop`
+work; subagents can spawn their own subagents and invoke skills; `gh` can push / open
+PRs / comment on / close issues; `Monitor` can watch a PR for merge). The `spec-writer`
+and `orchestrator` skills are available, and this exact spec → phases → implement
+pipeline has already been used in this repo (see `.docs/sub/` and `.docs/nowrap/`, each
+a `prompt.md` + `spec.md` + `phaseN.md` set).
+
+**Section agent** — spawn one per `##` issue section, all in parallel, each given its
+section's full text (Issue, Current knowledge, Suggested way forward, and the answered
+Questions). It:
+
+1. Makes an isolated checkout off the latest develop and creates a branch (choose a
+   name, e.g. `feat/<issue>-<slug>`): run `git fetch origin develop`, then
+   `git -C <main-repo> worktree add /tmp/wr-work/<branch> -b <branch> origin/develop`.
+   All work happens in that worktree.
+2. **Writes the spec with the `spec-writer` skill.** Compose the feature-description
+   input from the section text — Issue + Current knowledge + Suggested way forward,
+   plus every Question rewritten as a direct decision using your recorded answers — and
+   invoke `spec-writer` with an output path like `.docs/<branch-slug>/spec.md`.
+   **Bypass the human Q&A loop:** give spec-writer a prompt that already contains a
+   `## Notes` section capturing those answers as resolved decisions, so its
+   clarification cycle returns NONE immediately. No human is available, so never relay
+   anything via `ask_questions` — resolve any residual ambiguity yourself from the
+   recorded answers or a sensible default, append it to the prompt's Notes, and
+   continue. spec-writer produces `spec.md` + reviewed `phaseN.md` files in that
+   directory. Tick **Spec produced**.
+3. **Implements by following the phase files** — for each `phaseN.md` in order, invoke
+   the **`orchestrator` skill** (it drives each phase's items through
+   implementor/reviewer subagents per the phase's Instructions, commits each phase, and
+   runs spec-aware + spec-free branch-review passes). Do **not** use the `bugfix` skill
+   here. Make the affected package's tests and linter pass. Tick **Implemented**.
+4. `git push -u origin <branch>`, then opens a PR against **develop** whose body
+   **solves** the section's issues (list them as `Solves #N` — not `Fixes/Closes #N`).
+   The PR includes both the code and the generated `.docs/<branch-slug>/` spec + phase
+   files (matching the existing convention).
+5. Drives the PR to a good state with the **`pr-resolver` skill**: loop on CI + review
+   comments until CI is green and **Copilot** is satisfied, then tick **Reviewed** and
+   report it ready. This is *not* the end of PR resolution — normally `pr-resolver`
+   stops once Copilot is happy, but here the PR must keep being re-run through
+   `pr-resolver` for any **new human review comments** right up until the merge is
+   detected. That ongoing loop runs during monitoring (see the orchestrator).
+6. Reports back to the orchestrator — PR URL, branch, worktree path, issue numbers —
+   then returns.
+
+**Orchestrator** — same as in `todo-simple.md`: tell the human each PR is ready, then
+**monitor each ready PR until it is merged** — and during that window keep re-running
+**`pr-resolver`** for any **new human review comments** (don't stop at Copilot-happy;
+loop until merge). On merge, comment on that section's issues — *"Fixed on `develop`;
+will ship in the next release."* — and `gh issue close` them, tick **Merged** and
+**Solved**, then `git fetch origin develop` and rebase every still-open branch onto it
+(`git rebase origin/develop` → `git push --force-with-lease`, re-running `pr-resolver`
+if the rebase changed anything). Monitoring, the human-comment resolution loop,
+issue-closing and the cross-branch rebase live in the orchestrator for the same
+reliability reasons given in todo-simple.
+
+Notes: PRs target **`develop`**, not `master`. One `##` issue = one branch/PR. **#19 is
+folded into #197** — spec and implement them together on #197's branch. If a spec-writer
+run hits a genuine blocker (a recorded answer turns out to be unimplementable) it writes
+`blocker.md` and stops rather than inventing behaviour — surface that to the human
+instead of opening a PR.
 
 ---
 
-## #506 Table-like report mode for wr status
+Items that are substantial enough to deserve a short spec and/or a decision before
+implementation. Each has its own section and checklist; the **Questions for you**
+lines now have answers recorded inline.
 
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** Users want a columnar `wr status` output (like `bjobs`), e.g.
-`Command | ID | Status | Attempts | Host | Req group | count`, ideally with
-user-specified columns and widths in the style of LSF's `LSB_BJOBS_FORMAT`
-(`JOBID:10 STAT:5 ...`). Like normal status it would show a representative one of each
-same-status group.
-
-**Current knowledge:** `cmd/status.go` supports `-o` modes `counts`/`summary`/`details`/`json`/`plain` (flag defined ~`cmd/status.go:504`); there is no table mode. The data needed per row is already in the status structs.
-
-**Suggested way forward:** add `-o table` (alias `t`) producing a default column set via a small aligned table writer; optionally support a `--format` string (or env var) for custom columns + widths.
-
-**Questions for you:**
-1. v1 = a fixed, sensible default column set, or full configurable columns+widths from the start?
-   - configurable with WR_STATUS_FORMAT
-2. Which columns by default?
-   - as requested in the issue
-3. Format syntax for custom columns — LSF-style `FIELD:width ...`, or Go-template, or a simple comma list?
-   - LSF-style
-4. CLI only, or mirror it in the web UI too?
-   - CLI only
+Items that became unambiguous and focused enough once answered have been **promoted
+to `todo-simple.md`** (#506, #288, #322, #333, #326, #251, #20); a few were moved to
+the **Can't Fix** list in `lists.md` (#287, #194, #28). What remains below either
+still needs a design decision (#502, #316, #290) or is a sprawling multi-layer
+feature worth speccing as a project (#207, #197, #98, #19).
 
 ---
 
@@ -60,75 +103,7 @@ same-status group.
 3. Exact wording of the clarified message(s)?
    - if the other reason already has a message, just list/concatenate the messages
 
----
-
-## #333 wr mod: too slow on lots of jobs
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** `wr mod` on ~11,705 jobs completes server-side but the client times out.
-
-**Current knowledge (investigated):** `jobqueue/db.go modifyLiveJobs` deletes each modified job's lookup entries by `ForEach` over the **entire** `bucketRTK`/`bucketDTK`/`bucketRDTK` buckets, once per modified job → O(jobs_modified × total_lookup_entries). The maintainer left a `// *** ... will have to implement a reverse lookup ...` comment right there. The whole operation runs synchronously inside one paused `jmod` request under a single client deadline (default 120s, `cmd/mod.go`).
-
-**Suggested way forward:** add a reverse-lookup index (job key → its lookup-bucket entries) so deletion becomes O(entries-per-job); maintain it on add/modify/delete. Optionally also raise the default `wr mod` timeout as a complementary mitigation. Add a benchmark/regression test.
-
-**Questions for you:**
-1. OK to add a new boltdb bucket and maintain it across all mutation paths, rebuilding it on first load for pre-existing DBs that lack it?
-   - yes
-2. Do you also want the client timeout raised, or rely solely on the speedup?
-   - soley speedup
-
----
-
-## #326 Adding a dependent job with --rerun results in unexpected behaviour
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** The original crash/resurrection is already fixed, but the remaining ask is: when `--rerun` re-adds a dependent job that duplicates a previously-completed one, wr should use the newly added job rather than treating it as a duplicate.
-
-**Current knowledge:** job uniqueness is by `Job.Key()` (cmd/cwd/mounts/image). The desired end behaviour is stated in the issue, but the edge cases (especially around dependency chains) aren't pinned down; needs a fresh reproduction against the current add/rerun path.
-
-**Suggested way forward:** reproduce, then make the add path, under `--rerun`, reactivate/replace the completed job (and its dependents) instead of skipping it as a duplicate.
-
-**Questions for you:**
-1. When a dependent job is rerun, should its downstream dependents also rerun automatically?
-   - no
-2. Semantics of "use the newly added job" — reactivate the existing record in place, or remove and re-add?
-   - not sure what you mean, but I believe the thing we're trying to fix here is that --rerun jobs should always rerun, but if they're dependent they should wait on currently incomplete dependencies just as they would have the first time.
-3. Should `--rerun` semantics be defined for a whole dependency tree, or only the explicitly re-added jobs?
-   - only explicit
-
----
-
-## #322 wr status: can be unexpectedly slow
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** `wr status -i <substr> -z -o c` (counts only) is slow with ~185k complete jobs.
-
-**Current knowledge (investigated):** for `-o c` the count is computed client-side after the server decodes **all** matching complete `Job` structs from boltdb and ships them over the wire (`jobqueue/db.go retrieveCompleteJobsByRepGroup` → `getJobsByRepGroup` → `limitJobs`). v0.36.4's server-side rep-group filtering only narrows which groups match; it added no count-only path. So producing ~7 integers costs O(n) decode + transfer.
-
-**Suggested way forward:** add a server handler (and client method) that returns per-state counts for a repgroup match without decoding/returning full jobs, mirroring the WebI `stateCounts` approach; wire `-o c` (and possibly `-o summary`) to it.
-
-**Questions for you:**
-1. Compute counts on demand by iterating keys, or maintain persistent per-repgroup/state counters?
-   - if on-demand count will be fast enough stick with that, only maintain counters if we can be sure they won't get out of sync
-2. Acceptable to add a new request type to the client/server protocol for this?
-   - yes
-3. Should `-o summary` reuse the same fast path?
-   - yes
+**Still open before this is implementation-ready:** the answers keep the memory-based rescheduling (always bump expected memory when peak exceeded) and ask to *also* surface any other known reason by concatenating messages — but the mechanism for knowing an "external OOM kill" happened (exit 137 / SIGKILL is unreliable; cgroup/dmesg needs privileges) still needs a chosen, testable approach. Spec that detection method first.
 
 ---
 
@@ -152,6 +127,8 @@ same-status group.
 2. If behaviour: opt-in flag name and exact semantics (how long to wait, how/when it resolves, interaction with normal live deps)?
    - not opt-in. Change the behaviour to always wait
 
+**Still open before this is implementation-ready:** "always wait, not opt-in" changes core scheduling semantics for *every* user, so it needs a careful spec: precisely, a dependency on a dep group becomes satisfied only once at least one job has carried that dep group and all such jobs are complete (a group that has *never* existed must now block, where today it is vacuously satisfied). The blast radius (dynamic workflows that add dep groups late, cmd-based deps, existing pipelines that rely on the current behaviour) is why this stays a spec'd project rather than a simple change.
+
 ---
 
 ## #290 Improve efficiency of client methods
@@ -174,51 +151,7 @@ same-status group.
 2. Scope — just the known offender(s) like `Archive()`, or a full audit of all client methods?
    - Full audit
 
----
-
-## #288 Show scheduler issues on the command line
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** scheduler problems (can't create an OpenStack server, out of quota, etc.) appear in the web UI / REST warnings but not on the CLI. The issue suggests surfacing them in `wr status` or via a dedicated `wr issues` command.
-
-**Current knowledge:** the data exists server-side and is exposed over REST (`restWarnings` / bad-servers endpoints) and in the web UI; the CLI client would need a method to fetch and render it.
-
-**Suggested way forward:** add a client method to fetch current scheduler warnings / bad servers and surface them on the CLI.
-
-**Questions for you:**
-1. Integrate into `wr status` (header/footer section or a flag), a dedicated `wr issues` command, or both?
-   - footer of `wr status`
-2. What to include — scheduler warnings, bad/lost servers, reasons jobs are stuck pending?
-   - all the things the web UI can alert about
-
----
-
-## #251 Implement log rotation
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** the manager log file should be rotated and size-limited, user-configurable.
-
-**Current knowledge:** the `clog` package writes to a configured log file with no rotation policy.
-
-**Suggested way forward:** add size-based rotation (max size / number of backups / max age) and wire it into `clog`'s file writer with new config options.
-
-**Questions for you:**
-1. OK to add the de-facto-standard `gopkg.in/natefinch/lumberjack` dependency, or do you prefer a hand-rolled size-based rotator (you've historically kept dependencies minimal)?
-   - lumberjack
-2. Config option names and defaults (max size MB, max backups, max age, compress?)
-   - WR_LOGS prefix, whatever is typical and expected when people use log rotation
-3. Rotate only the manager log, or also the runner file logs (`--runner_filelog`)?
-   - both
+**Still open before this is implementation-ready:** "full audit" is exploratory rather than a single predetermined change — the work is to enumerate every client→server call, measure what each currently sends vs what the server reads, and decide per-method what to trim. Best treated as: produce the audit (a short findings doc) first, then the audit itself defines the bounded set of edits (which can then become one or more simple PRs).
 
 ---
 
@@ -246,9 +179,11 @@ same-status group.
 4. Web UI — reuse an existing Bootstrap colour for the new state, and add a status filter for it?
    - yes, can be the delayed colour
 
+**Why still complex:** even with every decision made, this is a sprawling feature — a new job state threaded through the queue, persistence, status counts, CLI selectors + a new `wr suspend`/`wr resume`, REST, and the web UI (colour + filter). Worth a spec and phased plan.
+
 ---
 
-## #197 Allow job modification using web/REST interfaces
+## #197 Allow job modification using web/REST interfaces (folds #19)
 
 - [ ] Spec produced
 - [ ] Implemented
@@ -256,11 +191,11 @@ same-status group.
 - [ ] Merged
 - [ ] Solved
 
-**Issue:** expose the modification that `wr mod` performs on the CLI via the web UI and the public REST API.
+**Issue:** expose the modification that `wr mod` performs on the CLI via the web UI and the public REST API. Per the answers below this now **also subsumes #19** (web editing of env vars + resource requirements).
 
-**Current knowledge:** REST currently supports only GET/POST/DELETE on jobs (no PUT/PATCH); the web UI has no modify action; the server-side modify capability already exists (used by `wr mod`). This overlaps heavily with #19 (the web-editing subset).
+**Current knowledge:** REST currently supports only GET/POST/DELETE on jobs (no PUT/PATCH); the web UI has no modify action; the server-side modify capability already exists (used by `wr mod`).
 
-**Suggested way forward:** add a REST PUT/PATCH endpoint that applies `wr mod`-style changes, and add web UI editing (editable fields on eligible jobs with a Modify button). Likely specced together with #19.
+**Suggested way forward:** add a REST PUT/PATCH endpoint that applies `wr mod`-style changes, and add web UI editing — make every field the web UI displays for a non-running incomplete job editable, with a Modify button, and report invalid edits via an error popup. No auth changes beyond the existing token.
 
 **Questions for you:**
 1. Which fields should be editable via REST/web (mirror `wr mod`: reqs, env, priority, retries, limit groups, behaviours, ...)?
@@ -271,6 +206,8 @@ same-status group.
    - fold
 4. Any auth considerations beyond the existing token?
    - no
+
+**Why still complex:** large multi-layer feature (new REST verb + server validation + a full editing UX in the web interface across many fields). Spec it as a project; #19 is delivered as part of it.
 
 ---
 
@@ -286,7 +223,7 @@ same-status group.
 
 **Current knowledge:** live walltime and live state updates already exist; the runner `touch`es the manager periodically; job subscriptions were added (#503). What's missing is the live resource-usage push during a run and the ssh-to-job convenience.
 
-**Suggested way forward:** extend the touch/subscription path to carry current peak RAM/CPU (and optionally a tail of stdout/err) for in-flight jobs and surface it live; add display of the `ssh ... && cd ...` needed to reach a running job.
+**Suggested way forward:** extend the touch/subscription path to carry current peak RAM/CPU and a fixed-size (compressed) tail of stdout/err for in-flight jobs on each heartbeat, surface it live, and display the `ssh ... && cd ...` needed to reach a running job. Gate on https/auth being enabled.
 
 **Questions for you:**
 1. Which live metrics in v1 — peak RAM/CPU only, or also a live stdout/err tail?
@@ -298,29 +235,7 @@ same-status group.
 4. Gate any of this on https/auth being enabled?
    - yes
 
----
-
-## #20 Status webpage: add rerun button
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** add a "rerun" button to completed commands in the web status UI (today only buried jobs have a retry action).
-
-**Current knowledge:** the web action-handlers cover retry (buried) / remove / kill / confirm-dead but not rerun-of-completed; the REST API has a `rerun` option when adding jobs, and wr intentionally ignores re-added completed jobs unless `--rerun`. So "rerun from the web" means re-submitting the command with rerun semantics. There is a design tension with the "completed jobs are ignored unless --rerun" model.
-
-**Suggested way forward:** add a Rerun action on completed jobs that re-adds/reruns the command via the existing rerun mechanism.
-
-**Questions for you:**
-1. Exact behaviour — re-add the same command with `rerun=true` (a fresh run)? With a confirm dialog and what feedback?
-   - fresh run, same sort of confirmation as when removing a job
-2. Available for any completed job, or only ones present in the current view/search?
-   - any completed job
-3. Reuse the existing add+rerun, or add a dedicated REST action?
-   - reuse
+**Why still complex:** touches the runner (gather + cap + compress the tail and resource stats on each touch), the wire/touch protocol and subscription delivery, the server, and the web UI display — a multi-layer change worth a spec.
 
 ---
 
@@ -336,7 +251,7 @@ same-status group.
 
 **Current knowledge:** the backend capability exists via `wr mod`; the web UI has no editing. This is essentially the web-editing subset of #197.
 
-**Suggested way forward:** add inline editable fields (including pop-ups such as env vars) on eligible jobs, with a Modify button that calls the (new) modify endpoint — best specced together with #197.
+**Suggested way forward:** **folded into #197** (per the answers) — deliver web editing of every displayed field for any non-running incomplete job as part of that spec, rather than as a separate slice.
 
 **Questions for you:**
 1. Fold this into #197's spec, or deliver it as a focused first slice (just env + memory/time/cpu)?
@@ -345,3 +260,5 @@ same-status group.
    - any non-running incomplete
 3. Which fields in v1?
    - all currently displayed
+
+**Status:** folded into #197 — kept here only to record the decision; no separate work item.

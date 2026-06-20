@@ -27,16 +27,23 @@ calls in a single message), each given its branch name and item list. It:
    `gh pr create --base develop ...`. The body says it **solves** the section's
    issues, listing them as `Solves #N` — **not** `Fixes/Closes #N`, because we close
    the issues ourselves after merge with a release note.
-5. Drives the PR to a good state by invoking the **`pr-resolver` skill** (CI +
-   Copilot/human comments, looped until clean). Ticks **Reviewed**.
+5. Drives the PR to a good state by invoking the **`pr-resolver` skill**: loop on CI
+   + review comments until CI is green and **Copilot** is satisfied, then tick
+   **Reviewed** and report it ready. This is *not* the end of PR resolution — normally
+   `pr-resolver` stops once Copilot is happy, but here the PR must keep being re-run
+   through `pr-resolver` for any **new human review comments** right up until the
+   merge is detected. That ongoing loop runs during monitoring (see the orchestrator).
 6. Reports back to the orchestrator — PR URL, branch, worktree path, issue numbers —
    then returns.
 
 **Orchestrator** — once section agents report ready:
 
 7. Tells you, per section: "PR `<url>` is ready to merge (covers #a, #b)."
-8. **Monitors each open PR** for you to merge (e.g. `Monitor` a persistent poll of
-   `gh pr view <url> --json state` that emits when `state == MERGED`).
+8. **Monitors each ready PR until it is merged** (e.g. `Monitor` a persistent poll of
+   `gh pr view <url> --json state,reviews,comments`). Two jobs during this window:
+   (a) whenever **new human review comments** land, re-run the **`pr-resolver` skill**
+   in that branch's worktree to address them — do **not** stop at Copilot-happy; keep
+   looping until merge; (b) when `state == MERGED`, proceed to step 9.
 9. **On each merge:** comments on that section's issues — *"Fixed on `develop`; will
    ship in the next release."* — and `gh issue close`s them; ticks **Merged** and
    **Solved**. Then `git fetch origin develop` and **rebases every still-open
@@ -96,3 +103,60 @@ manual/browser verification.
 - [ ] Solved
 
 - **[#301 Update error handling](https://github.com/VertebrateResequencing/wr/issues/301)** — mechanical modernisation: replace `err == someErr` comparisons (other than `nil` / `io.EOF`) with `errors.Is`, replace `err.(*T)` type assertions with `errors.As`, and add `%w` wrapping where it adds useful context. **Scope note:** a full-repo sweep would be far too large for one reviewable PR (Copilot will refuse), so split the work one top-level package per PR (e.g. `jobqueue`, then `cloud`, `cmd`, `fs`, `queue`, ...). The checklist above tracks the overall effort; expect several PRs under this branch theme.
+
+## feat/status-cli-output
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+Two related additions to `wr status` CLI output (both centre on `cmd/status.go`), promoted from todo-complex now that the design is settled.
+
+- **[#506 Table-like report mode for wr status](https://github.com/VertebrateResequencing/wr/issues/506)** — add a new `-o table` (alias `t`) output mode rendered with a small aligned table writer. Columns are configurable via a `WR_STATUS_FORMAT` env var using LSF `LSB_BJOBS_FORMAT`-style syntax (`FIELD:width FIELD:width ...`). When unset, the default columns are those in the issue: Command, ID, Status, Attempts, Host, Requirements group, and the count of tasks sharing that status. As with normal `wr status`, show a representative one per same-status group. CLI only — no web UI change.
+- **[#288 Show scheduler issues on the command line](https://github.com/VertebrateResequencing/wr/issues/288)** — add a go-client method to fetch the scheduler warnings / bad (dead/lost) servers / dismissible messages the web UI surfaces (REST already exposes these via the warnings and bad-servers endpoints), and print them as a footer at the end of `wr status` output. Include everything the web UI can alert about.
+
+## perf/status-count-path
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+- **[#322 wr status: can be unexpectedly slow](https://github.com/VertebrateResequencing/wr/issues/322)** — `-o c` (and `-o summary`) currently make the server decode and ship every matching complete job just to count them (`jobqueue/db.go retrieveCompleteJobsByRepGroup` → `getJobsByRepGroup` → `limitJobs`). Add a new client/server request type that returns per-state counts for a repgroup match **without** decoding/returning full jobs, computed on demand by iterating keys (only introduce maintained counters if they can be guaranteed not to drift). Wire both `-o c` and `-o summary` to the new fast path. Add a benchmark/regression test.
+
+## perf/mod-reverse-lookup
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+- **[#333 wr mod: too slow on lots of jobs](https://github.com/VertebrateResequencing/wr/issues/333)** — `jobqueue/db.go modifyLiveJobs` deletes each modified job's lookup entries by scanning the **entire** `bucketRTK`/`bucketDTK`/`bucketRDTK` buckets per job (O(jobs_modified × total entries); the maintainer's own `// *** ... reverse lookup` comment is right there). Add a reverse-lookup index (job key → its lookup-bucket entries) so deletion is O(entries-per-job); maintain it on add/modify/delete, and rebuild it on first load for pre-existing DBs that lack it. Rely on the speedup alone — do **not** raise the client timeout. Add a benchmark/regression test.
+
+## fix/rerun-dependent-jobs
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+- **[#326 Adding a dependent job with --rerun results in unexpected behaviour](https://github.com/VertebrateResequencing/wr/issues/326)** — desired behaviour: a job added with `--rerun` should **always** be re-run even if a matching command previously completed; but if it has dependencies that are currently incomplete, it must **wait** on them exactly as it would have on first add (not run immediately, and not be skipped as a duplicate). This is scoped to how the *explicitly* re-added job is treated; wr's existing **live-dependency cascade stays as-is** — re-running a parent already auto-resurrects its downstream dependents transitively (`jobqueue/db.go` `retrieveDependentJobs`, cascade at `db.go:952-983`), which is the intended "live deps" feature, so #326 must not change it. (Selectively *disabling* that cascade would be the separate #28, which is parked in Can't Fix.) Use the bugfix skill's TDD: first write a failing acceptance test for an explicit `--rerun` of a previously-completed dependent job (it should re-queue and wait on its incomplete deps, not be skipped as a duplicate), then fix.
+
+## feat/log-rotation
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+- **[#251 Implement log rotation](https://github.com/VertebrateResequencing/wr/issues/251)** — add size-based rotation to the `clog` file writer using `gopkg.in/natefinch/lumberjack`. Expose config via `WR_LOGS*`-prefixed options with the values typical/expected for log rotation (max size MB, max backups, max age days, compress). Apply rotation to **both** the manager log and the runner file logs (`--runner_filelog`).
+
+## feat/webui-rerun-completed
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+- **[#20 Status webpage: add rerun button](https://github.com/VertebrateResequencing/wr/issues/20)** — add a "Rerun" action/button to completed jobs in the web status UI that triggers a fresh run by re-adding the command with `rerun=true`, **reusing** the existing add+rerun mechanism (no dedicated new REST action). Available for any completed job. Show a confirmation dialog of the same style as the existing job-removal confirmation.
