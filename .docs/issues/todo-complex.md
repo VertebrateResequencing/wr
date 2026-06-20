@@ -28,9 +28,13 @@ same-status group.
 
 **Questions for you:**
 1. v1 = a fixed, sensible default column set, or full configurable columns+widths from the start?
+   - configurable with WR_STATUS_FORMAT
 2. Which columns by default?
+   - as requested in the issue
 3. Format syntax for custom columns — LSF-style `FIELD:width ...`, or Go-template, or a simple comma list?
+   - LSF-style
 4. CLI only, or mirror it in the web UI too?
+   - CLI only
 
 ---
 
@@ -50,8 +54,11 @@ same-status group.
 
 **Questions for you:**
 1. When a job fails for another reason **and** exceeded expected memory, what should status show — the real reason plus a "note: peak memory also exceeded the estimate" addendum, or a brand-new distinct FailReason?
+   - I believe there is a mechanism that based on the FailReason the job gets rescheduled with more expected memory. That must always happen if peak memory exceeded the expected. If some other reason is known, figure out the simplest way of also giving it to the user.
 2. Is detecting external OOM-killer kills (SIGKILL / exit 137, possibly via dmesg) in scope, or only wr-initiated memory kills?
+   - external kills is the main scope; wr-initiated kills almost never happen in real life
 3. Exact wording of the clarified message(s)?
+   - if the other reason already has a message, just list/concatenate the messages
 
 ---
 
@@ -71,7 +78,9 @@ same-status group.
 
 **Questions for you:**
 1. OK to add a new boltdb bucket and maintain it across all mutation paths, rebuilding it on first load for pre-existing DBs that lack it?
+   - yes
 2. Do you also want the client timeout raised, or rely solely on the speedup?
+   - soley speedup
 
 ---
 
@@ -91,8 +100,11 @@ same-status group.
 
 **Questions for you:**
 1. When a dependent job is rerun, should its downstream dependents also rerun automatically?
+   - no
 2. Semantics of "use the newly added job" — reactivate the existing record in place, or remove and re-add?
+   - not sure what you mean, but I believe the thing we're trying to fix here is that --rerun jobs should always rerun, but if they're dependent they should wait on currently incomplete dependencies just as they would have the first time.
 3. Should `--rerun` semantics be defined for a whole dependency tree, or only the explicitly re-added jobs?
+   - only explicit
 
 ---
 
@@ -112,8 +124,11 @@ same-status group.
 
 **Questions for you:**
 1. Compute counts on demand by iterating keys, or maintain persistent per-repgroup/state counters?
+   - if on-demand count will be fast enough stick with that, only maintain counters if we can be sure they won't get out of sync
 2. Acceptable to add a new request type to the client/server protocol for this?
+   - yes
 3. Should `-o summary` reuse the same fast path?
+   - yes
 
 ---
 
@@ -133,7 +148,9 @@ same-status group.
 
 **Questions for you:**
 1. Docs-only clarification, or a real behaviour change?
+   - behaviour change with docs improvement
 2. If behaviour: opt-in flag name and exact semantics (how long to wait, how/when it resolves, interaction with normal live deps)?
+   - not opt-in. Change the behaviour to always wait
 
 ---
 
@@ -153,7 +170,9 @@ same-status group.
 
 **Questions for you:**
 1. Are there external go-API consumers we must stay wire-compatible with, or can we freely change the internal client/server protocol?
+   - Only need to ensure existing client pkg public methods don't change behaviour
 2. Scope — just the known offender(s) like `Archive()`, or a full audit of all client methods?
+   - Full audit
 
 ---
 
@@ -173,28 +192,9 @@ same-status group.
 
 **Questions for you:**
 1. Integrate into `wr status` (header/footer section or a flag), a dedicated `wr issues` command, or both?
+   - footer of `wr status`
 2. What to include — scheduler warnings, bad/lost servers, reasons jobs are stuck pending?
-
----
-
-## #287 Extend LSF emulation
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** `wr bsub` emulation currently only supports the interactive console mode and a few flags (`-J`, `-n`); extend it to accept arguments and the command on the command line like real `bsub`.
-
-**Current knowledge:** `cmd/lsf.go` confirms the interactive-only, limited-flag support. Real `bsub` has many options (`-J`, `-n`, `-M`, `-R`, `-o`, `-e`, `-q`, `-cwd`, `-w` for deps, ...). The point of the emulation is to back third-party workflow systems (Nextflow/Martian/Cromwell).
-
-**Suggested way forward:** parse `bsub`-style command-line args plus the trailing command and map them to wr job options, while keeping the interactive `#BSUB` mode working.
-
-**Questions for you:**
-1. Which `bsub` flags must be supported (scope) — at minimum the ones the target workflow systems actually emit?
-2. On an unsupported flag, error out or ignore-with-warning?
-3. Any specific mapping decisions for `-R` (resource requirement strings) and `-w` (job dependencies)?
+   - all the things the web UI can alert about
 
 ---
 
@@ -214,8 +214,11 @@ same-status group.
 
 **Questions for you:**
 1. OK to add the de-facto-standard `gopkg.in/natefinch/lumberjack` dependency, or do you prefer a hand-rolled size-based rotator (you've historically kept dependencies minimal)?
+   - lumberjack
 2. Config option names and defaults (max size MB, max backups, max age, compress?)
+   - WR_LOGS prefix, whatever is typical and expected when people use log rotation
 3. Rotate only the manager log, or also the runner file logs (`--runner_filelog`)?
+   - both
 
 ---
 
@@ -235,9 +238,13 @@ same-status group.
 
 **Questions for you:**
 1. v1 scope — CLI only first, or CLI + web together?
+   - both
 2. Does "suspend" apply only to pending/ready/dependent jobs, or should it also pause running jobs (significantly harder)?
+   - not running
 3. How should suspend interact with dependencies and with limit groups?
+   - to those systems it should seem no different to the job being in pending or ready state
 4. Web UI — reuse an existing Bootstrap colour for the new state, and add a status filter for it?
+   - yes, can be the delayed colour
 
 ---
 
@@ -257,30 +264,13 @@ same-status group.
 
 **Questions for you:**
 1. Which fields should be editable via REST/web (mirror `wr mod`: reqs, env, priority, retries, limit groups, behaviours, ...)?
+   - all the fields the web UI shows when looking at a job
 2. Validation / error-reporting model for invalid edits?
+   - popup with error messages
 3. Fold #19 into this spec, or keep them separate?
+   - fold
 4. Any auth considerations beyond the existing token?
-
----
-
-## #194 wr mod: allow modification of dep groups and bsub mode
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** `wr mod` can change most things but not dependency groups or bsub mode.
-
-**Current knowledge:** `cmd/mod.go` explicitly stubs both out — dep-group modification is commented "complex; not done", and bsub-mode modification "not sure if it makes sense." Changing dep groups means safely rebuilding the dependency graph for live jobs.
-
-**Suggested way forward:** design dep-group modification that recomputes dependency edges consistently for affected jobs and re-evaluates their readiness; separately decide whether bsub-mode should be modifiable at all.
-
-**Questions for you:**
-1. Is dep-group modification worth the complexity now, or defer it?
-2. When dep groups change, should readiness be re-evaluated immediately (jobs becoming ready/dependent as a result)?
-3. bsub-mode modification — implement it, or close that part as "won't do"?
+   - no
 
 ---
 
@@ -300,31 +290,13 @@ same-status group.
 
 **Questions for you:**
 1. Which live metrics in v1 — peak RAM/CPU only, or also a live stdout/err tail?
+   - peak RAM/CPU and most recent stdout/err tail from last heartbeat
 2. Push frequency / payload-size limits (this rides on every touch)?
+   - on every touch at current touch frequency, compressed fixed size tail of stdout/err implies a payload size limit
 3. The ssh affordance — just display the command, or an embedded web terminal (much bigger, with security implications)?
+   - just display command
 4. Gate any of this on https/auth being enabled?
-
----
-
-## #28 Dependencies: choose to make them un-"live"
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** a way to mark a dependency as not "live" during `wr add`, and to toggle it on/off later for selected jobs, so downstream "dependent" jobs can be dismissed instead of automatically re-running (the equivalent of de/reactivating setups in vrpipe).
-
-**Current knowledge:** dependencies are currently always live (re-adding a dep group reactivates dependents). There is no flag or toggle, and no "dismiss the re-run and cascade downstream" action.
-
-**Suggested way forward:** add a "live" flag settable at add time and toggleable later (by rep/dep group selectors), plus a dismiss action that cascades to downstream dependents.
-
-**Questions for you:**
-1. Granularity — per job, per dependency edge, or per dep group?
-2. Exact dismissal-cascade semantics (what happens to already-dependent downstream jobs)?
-3. CLI and/or web surface for toggling and dismissing?
-4. How should this interact with the existing live-dependency reactivation behaviour?
+   - yes
 
 ---
 
@@ -344,8 +316,11 @@ same-status group.
 
 **Questions for you:**
 1. Exact behaviour — re-add the same command with `rerun=true` (a fresh run)? With a confirm dialog and what feedback?
+   - fresh run, same sort of confirmation as when removing a job
 2. Available for any completed job, or only ones present in the current view/search?
+   - any completed job
 3. Reuse the existing add+rerun, or add a dedicated REST action?
+   - reuse
 
 ---
 
@@ -365,5 +340,8 @@ same-status group.
 
 **Questions for you:**
 1. Fold this into #197's spec, or deliver it as a focused first slice (just env + memory/time/cpu)?
+   - fold
 2. Which job states are editable — buried/delayed only, or any non-running incomplete job?
+   - any non-running incomplete
 3. Which fields in v1?
+   - all currently displayed

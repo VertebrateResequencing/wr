@@ -20,10 +20,12 @@ Three kinds of sub-note appear under some items:
 - [#315 Cloud deploy doesn't work with a cloudforms server?](https://github.com/VertebrateResequencing/wr/issues/315): The failure is specific to a CloudForms/OpenStack host and local networking configuration.
 - [#314 Strange db performance issue, disk dependant](https://github.com/VertebrateResequencing/wr/issues/314): The symptoms are tied to Sanger LSF behavior and particular disks/filesystems, including Lustre and site hosts.
 - [#299 Test manager resilience in cloud deployments](https://github.com/VertebrateResequencing/wr/issues/299): These tests require production OpenStack deployment, head-node deletion, and domain-IP updates.
+- [#287 Extend LSF emulation](https://github.com/VertebrateResequencing/wr/issues/287): The current LSF command still documents limited bsub support, so adding normal command-line bsub syntax is a focused parser/CLI task.
 - [#285 Cleanup for failed mounted jobs should delete output files](https://github.com/VertebrateResequencing/wr/issues/285): The fix depends on MuxFys exposing reliable remote-output tracking and needs mounted write tests.
 - [#284 File Staging](https://github.com/VertebrateResequencing/wr/issues/284): This is a broad workflow/storage architecture feature rather than a contained bug fix.
   - _Independent review (suggest Todo): although broad, the shared-filesystem (symlink) variant the issue describes is implementable and testable locally without cloud/S3, so at least a first increment is tractable rather than impossible._
 - [#283 Refactor codebase](https://github.com/VertebrateResequencing/wr/issues/283): This asks for a full-codebase architectural refactor and 100% coverage, which is too open-ended to tackle as a single issue.
+- [#194 wr mod: allow modification of dep groups and bsub mode](https://github.com/VertebrateResequencing/wr/issues/194): The current `mod` command explicitly excludes dependency groups and bsub mode.
 - [#192 Write Nextflow support](https://github.com/VertebrateResequencing/wr/issues/192): This is a separate Nextflow scheduler/integration project and the issue notes it is not strictly for this repository.
   - _Independent review (suggest Invalid): beyond being out of scope (the executor would live in Nextflow's codebase), wr already supports being a Nextflow backend via its LSF/bsub emulation (added v0.13.0), so the need is largely moot._
 - [#117 Task Execution Service - GA4GH APIs](https://github.com/VertebrateResequencing/wr/issues/117): TES support would require API design, auth choices, and file input/output semantics beyond the current REST surface.
@@ -41,6 +43,7 @@ Three kinds of sub-note appear under some items:
 - [#36 Alter cloud deployment max servers while live](https://github.com/VertebrateResequencing/wr/issues/36): This needs live OpenStack scheduler reconfiguration and remote-manager coordination.
 - [#31 Resource Token system](https://github.com/VertebrateResequencing/wr/issues/31): Limit groups cover part of the need, but the full token server/rate-limit design is a large distributed feature.
   - _Independent review (suggest Todo): the urgent need is already met by limit groups and the started `rp` package is a local foundation; continuing the single-manager timed/delayed parts is tractable and testable locally without any special environment._
+- [#28 Dependencies: choose to make them un-"live"](https://github.com/VertebrateResequencing/wr/issues/28): There is no visible way to add or toggle a non-live dependency state.
 - [#22 Long-running commands should have the option of being checkpointed](https://github.com/VertebrateResequencing/wr/issues/22): Checkpoint/restart depends heavily on OS and application support and has no obvious general implementation path here.
 - [#17 Cloud deployment should work from MacOS -> linux](https://github.com/VertebrateResequencing/wr/issues/17): Cloud deploy still uploads the local executable, so a Darwin client can still copy the wrong binary to Linux.
   - _Independent review (suggest Can't Fix): the binary-selection logic is local code, but "cloud deployment should work MacOS->linux" can only be confirmed by an actual OpenStack deploy, which isn't available here._
@@ -101,13 +104,10 @@ Three kinds of sub-note appear under some items:
 - [#301 Update error handling](https://github.com/VertebrateResequencing/wr/issues/301): Updating comparisons and type assertions to `errors.Is`/`errors.As` is a current, local cleanup.
 - [#290 Improve efficiency of client methods](https://github.com/VertebrateResequencing/wr/issues/290): Client methods can be audited locally for oversized request payloads.
 - [#288 Show scheduler issues on the command line](https://github.com/VertebrateResequencing/wr/issues/288): Scheduler warnings exist for the web/REST paths but are not surfaced by `wr status` as requested.
-- [#287 Extend LSF emulation](https://github.com/VertebrateResequencing/wr/issues/287): The current LSF command still documents limited bsub support, so adding normal command-line bsub syntax is a focused parser/CLI task.
 - [#251 Implement log rotation](https://github.com/VertebrateResequencing/wr/issues/251): The manager still writes a configured log file without an obvious rotation policy.
 - [#207 Allow to suspend and resume non-running jobs](https://github.com/VertebrateResequencing/wr/issues/207): Limit groups are a workaround, but a first-class suspended state remains implementable.
 - [#197 Allow job modification using web/REST interfaces](https://github.com/VertebrateResequencing/wr/issues/197): `wr mod` exists, but the web UI and public REST API do not expose equivalent editing.
-- [#194 wr mod: allow modification of dep groups and bsub mode](https://github.com/VertebrateResequencing/wr/issues/194): The current `mod` command explicitly excludes dependency groups and bsub mode.
 - [#98 "Live" job introspection](https://github.com/VertebrateResequencing/wr/issues/98): The runner touches jobs, but live peak resource/stdout/stderr updates are still not sent as requested.
-- [#28 Dependencies: choose to make them un-"live"](https://github.com/VertebrateResequencing/wr/issues/28): There is no visible way to add or toggle a non-live dependency state.
 - [#20 Status webpage: add rerun button](https://github.com/VertebrateResequencing/wr/issues/20): The web UI has retry for buried jobs but no rerun button for completed jobs.
 - [#19 Cmd env vars and expected resource requirements should be editable](https://github.com/VertebrateResequencing/wr/issues/19): These edits are possible through `wr mod` but not through the status webpage.
 
