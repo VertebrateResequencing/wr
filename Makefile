@@ -49,7 +49,7 @@ test:
 		$(GO_TEST) -run '$(JQ_GROUP)' ${PKG}/jobqueue >"$$base/g1.log" 2>&1 & p1=$$!; \
 	TMPDIR="$$base/g2t" WR_MANAGERPORT=55101 WR_MANAGERWEB=55102 WR_MANAGERDIR="$$base/g2d" \
 		$(GO_TEST) -skip '$(JQ_GROUP)' ${PKG}/jobqueue >"$$base/g2.log" 2>&1 & p2=$$!; \
-	$(GO_TEST) -p 2 $(OTHER_PKGS) >"$$base/o.log" 2>&1 & p3=$$!; \
+	nice -n 19 $(GO_TEST) -p 2 $(OTHER_PKGS) >"$$base/o.log" 2>&1 & p3=$$!; \
 	wait $$p1 || rc=1; \
 	wait $$p2 || rc=1; \
 	wait $$p3 || rc=1; \

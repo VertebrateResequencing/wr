@@ -4060,6 +4060,11 @@ func TestJobqueueModify(t *testing.T) {
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 	rtime := 50 * time.Millisecond
+	// reserveWait is used when we expect a reservation to succeed: ReserveScheduled
+	// returns as soon as a job is available, so a generous timeout is free on the
+	// happy path but tolerates the scheduler taking a while to make a job
+	// reservable when the machine is under load (which was a source of flakiness).
+	reserveWait := 15 * time.Second
 	rgroup := "110:30:1:0"
 	learnedRgroup := "200:30:1:0"
 	learnedRAMNormal := 100
@@ -4105,27 +4110,38 @@ func TestJobqueueModify(t *testing.T) {
 				s = skip[0]
 			}
 			_, _, line, _ := runtime.Caller(s)
-			job, errr := jq.ReserveScheduled(rtime, schedStr)
-			So(errr, ShouldBeNil)
-			if job == nil && schedStr == learnedRgroup {
-				// *** not sure why the memory is sometimes higher when running
-				// under Travis or race...
-				job, errr = jq.ReserveScheduled(rtime, "300:30:1:0")
+
+			// poll until the job becomes reservable or we hit a generous
+			// deadline: each attempt is short, but the scheduler can take a
+			// while to make a job reservable under its scheduler group when the
+			// machine is under load, which was a source of flakiness.
+			var (
+				job  *Job
+				errr error
+			)
+
+			for deadline := time.Now().Add(reserveWait); ; {
+				job, errr = jq.ReserveScheduled(rtime, schedStr)
 				So(errr, ShouldBeNil)
 
-				if job == nil {
-					job, errr = jq.ReserveScheduled(rtime, "400:30:1:0")
-					So(errr, ShouldBeNil)
+				if job == nil && schedStr == learnedRgroup {
+					// *** not sure why the memory is sometimes higher when
+					// running under Travis or race...
+					for _, alt := range []string{"300:30:1:0", "400:30:1:0", "500:30:1:0", "600:30:1:0"} {
+						if job != nil {
+							break
+						}
+
+						job, errr = jq.ReserveScheduled(rtime, alt)
+						So(errr, ShouldBeNil)
+					}
 				}
-				if job == nil {
-					job, errr = jq.ReserveScheduled(rtime, "500:30:1:0")
-					So(errr, ShouldBeNil)
-				}
-				if job == nil {
-					job, errr = jq.ReserveScheduled(rtime, "600:30:1:0")
-					So(errr, ShouldBeNil)
+
+				if job != nil || time.Now().After(deadline) {
+					break
 				}
 			}
+
 			if job == nil {
 				schedDetails := server.schedulerGroupDetails()
 				if len(schedDetails) > 0 {
