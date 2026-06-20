@@ -25,6 +25,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -36,18 +37,26 @@ type changedStruct struct {
 	count int
 }
 
+// synctestConvey runs a single top-level Convey block inside its own synctest
+// bubble. The queue's delay/ttr/reserve waits then use a synthetic clock and
+// resolve instantly instead of sleeping for real wall-clock time. Each
+// top-level block gets its own bubble so that the background goroutines it
+// creates are isolated and must all exit before the next block runs.
+func synctestConvey(t *testing.T, desc string, action func()) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		Convey(desc, t, action)
+	})
+}
+
 func TestQueue(t *testing.T) {
 	ctx := context.Background()
 
-	Convey("Adding multiple items with a delay to fresh queues always works", t, func() {
+	synctestConvey(t, "Adding multiple items with a delay to fresh queues always works", func() {
+		// this test proves we fixed a deadlock bug; under synctest a deadlock is
+		// detected automatically (the bubble panics if every goroutine blocks),
+		// so no wall-clock timeout watchdog is needed.
 		done := make(chan bool, 1)
-		go func() {
-			// this test proves we fixed a deadlock bug, hence testing against
-			// a timeout, but with go-deadlock and race detection, it can take
-			// longer than 5s
-			<-time.After(10 * time.Second)
-			done <- false
-		}()
 		go func() {
 			for l := 0; l < 1000; l++ {
 				queue := New(ctx, "myqueue")
@@ -66,12 +75,9 @@ func TestQueue(t *testing.T) {
 		So(<-done, ShouldBeTrue)
 	})
 
-	Convey("Reserving multiple items with a ttr always works", t, func() {
+	synctestConvey(t, "Reserving multiple items with a ttr always works", func() {
+		// as above, synctest's deadlock detection replaces the timeout watchdog.
 		done := make(chan bool, 1)
-		go func() {
-			<-time.After(45 * time.Second) // with go-deadlock plus race detection, the following tests are just fundamentally slow; only ~1s needed without these
-			done <- false
-		}()
 		go func() {
 			for l := 0; l < 1000; l++ {
 				queue := New(ctx, "myqueue")
@@ -97,7 +103,7 @@ func TestQueue(t *testing.T) {
 		So(<-done, ShouldBeTrue)
 	})
 
-	Convey("Once 10 items of differing delay and ttr have been added to the queue", t, func() {
+	synctestConvey(t, "Once 10 items of differing delay and ttr have been added to the queue", func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 
@@ -269,6 +275,10 @@ func TestQueue(t *testing.T) {
 			queue.TriggerReadyAddedCallback(ctx)
 			<-waitForReadyAdded
 			callBackLock.Lock()
+			// stop the callback from blocking on a further unbuffered send once
+			// later delayed items become ready (relevant under synctest, where
+			// those timers fire deterministically before the queue is destroyed).
+			enableWaitForReadyAdded = false
 			So(numReadyAdded, ShouldEqual, 3)
 			callBackLock.Unlock()
 
@@ -770,7 +780,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("Once an item been added to the queue", t, func() {
+	synctestConvey(t, "Once an item been added to the queue", func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 		item, err := queue.Add(ctx, "item1", "", "data", 0, 50*time.Millisecond, 50*time.Millisecond, "")
@@ -905,7 +915,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("You can add items to the queue that start in the run or bury sub-queues", t, func() {
+	synctestConvey(t, "You can add items to the queue that start in the run or bury sub-queues", func() {
 		queue := New(ctx, "run/bury queue")
 		defer func() {
 			errd := queue.Destroy()
@@ -934,7 +944,7 @@ func TestQueue(t *testing.T) {
 		So(stats.Buried, ShouldEqual, 1)
 	})
 
-	Convey("You can add items to the queue that have sizes", t, func() {
+	synctestConvey(t, "You can add items to the queue that have sizes", func() {
 		queue := New(ctx, "size queue")
 		defer func() {
 			errd := queue.Destroy()
@@ -959,7 +969,7 @@ func TestQueue(t *testing.T) {
 		So(item.Key, ShouldEqual, "key_large")
 	})
 
-	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
+	synctestConvey(t, "Once a thousand items with no delay have been added to the queue", func() {
 		queue := New(ctx, "1000 queue")
 		defer qdestroy(queue)
 		type testdata struct {
@@ -1034,7 +1044,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("Once a thousand items with no delay and differing ReserveGroups have been added to the queue", t, func() {
+	synctestConvey(t, "Once 1000 items with no delay and differing ReserveGroups have been added to the queue", func() {
 		queue := New(ctx, "1000 queue")
 		defer qdestroy(queue)
 		type testdata struct {
@@ -1091,7 +1101,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("Once a thousand items with a small delay have been added to the queue", t, func() {
+	synctestConvey(t, "Once a thousand items with a small delay have been added to the queue", func() {
 		queue := New(ctx, "1000 queue")
 		defer qdestroy(queue)
 		t := time.Now()
@@ -1132,7 +1142,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("You can add many items to the queue in one go", t, func() {
+	synctestConvey(t, "You can add many items to the queue in one go", func() {
 		q := New(ctx, "myqueue")
 		defer qdestroy(q)
 
@@ -1202,7 +1212,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("You can add many items to the queue that start in the run or bury sub-queues, all in one go", t, func() {
+	synctestConvey(t, "You can add many items that start in the run or bury sub-queues, all in one go", func() {
 		queue := New(ctx, "run/bury queue")
 		defer func() {
 			errd := queue.Destroy()
@@ -1251,7 +1261,7 @@ func TestQueue(t *testing.T) {
 		So(stats.Buried, ShouldEqual, 10)
 	})
 
-	Convey("Once some items with dependencies have been added to the queue", t, func() {
+	synctestConvey(t, "Once some items with dependencies have been added to the queue", func() {
 		// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
 		queue := New(ctx, "dep queue")
 		defer qdestroy(queue)
@@ -1477,7 +1487,7 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	Convey("Once some items with dependencies have been added to the queue en-masse", t, func() {
+	synctestConvey(t, "Once some items with dependencies have been added to the queue en-masse", func() {
 		// same setup as in previous test
 		queue := New(ctx, "dep many queue")
 		defer qdestroy(queue)
@@ -1514,6 +1524,9 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
+	// This block deliberately exercises real-time callback throttling: the
+	// callback sleeps while holding a lock and the recall logic waits for a
+	// fixed break, so it stays on the real clock rather than synctest.
 	Convey("When you add items to the queue over time, slow readyAddedCallbacks only get called once at a time", t, func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
@@ -1556,7 +1569,7 @@ func TestQueue(t *testing.T) {
 		callBackLock.RUnlock()
 	})
 
-	Convey("You can reserve with a wait time, reserving before items are even added", t, func() {
+	synctestConvey(t, "You can reserve with a wait time, reserving before items are even added", func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 
@@ -1607,6 +1620,9 @@ func TestQueue(t *testing.T) {
 		So(<-rCh2, ShouldBeTrue)
 	})
 
+	// This block asserts on exact elapsed-time windows (e.g. strictly greater
+	// than 2000ms) and matches reserving goroutines to adding goroutines by
+	// timing, so it stays on the real clock rather than synctest.
 	Convey("Multiple clients can reserve with a wait time before items are even added", t, func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
@@ -1656,7 +1672,7 @@ func TestQueue(t *testing.T) {
 		So(<-rCh, ShouldBeTrue)
 	})
 
-	Convey("You can reserve with a wait time, reserving before a dependent item becomes ready", t, func() {
+	synctestConvey(t, "You can reserve with a wait time, reserving before a dependent item becomes ready", func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 
@@ -1691,7 +1707,7 @@ func TestQueue(t *testing.T) {
 		So(<-rCh2, ShouldBeTrue)
 	})
 
-	Convey("You can reserve with a wait time, reserving before changing an item's reserve group", t, func() {
+	synctestConvey(t, "You can reserve with a wait time, reserving before changing an item's reserve group", func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 

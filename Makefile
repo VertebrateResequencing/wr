@@ -20,9 +20,19 @@ install:
 	@go install -tags netgo -ldflags "${LDFLAGS}"
 	@echo installed to ${GOPATH}/bin/wr
 
+# Packages are run two-at-a-time (-p 2). Only the jobqueue package binds the
+# fixed development manager port and uses ~/.wr_development; every other package
+# uses dynamically allocated free ports and per-test temp dirs, so they can
+# safely run concurrently. The slow jobqueue package dominates total runtime, so
+# running the rest alongside it hides almost all of their cost. We deliberately
+# keep this at 2 rather than higher: jobqueue is the long pole, so overlapping it
+# with just one other package at a time captures nearly all of the wall-clock
+# saving while keeping the load (open sockets, processes) low enough to avoid
+# the flakiness that more aggressive parallelism can cause in the network-heavy
+# tests.
 test: export CGO_ENABLED = 0
 test:
-	@go test -p 1 -tags netgo -timeout 40m --count 1 -failfast ${PKG_LIST}
+	@go test -p 2 -tags netgo -timeout 40m --count 1 -failfast ${PKG_LIST}
 
 race: export CGO_ENABLED = 1
 race:

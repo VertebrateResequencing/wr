@@ -268,21 +268,29 @@ func (item *Item) touch() {
 	item.releaseAt = time.Now().Add(item.ttr)
 }
 
-// Verify if the item is ready
+// Verify if the item is ready. An item is ready once the current time has
+// reached (or passed) its readyAt; using an inclusive comparison means that
+// when the delay-processing goroutine wakes exactly at readyAt the item is
+// treated as ready, rather than busy-looping until the monotonic clock drifts
+// past the boundary (which also lets the tests run under synthetic time).
 func (item *Item) isready() bool {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
-	return item.readyAt.Before(time.Now())
+
+	return !item.readyAt.After(time.Now())
 }
 
-// Verify if the item should be released
+// Verify if the item should be released. As with isready, the comparison is
+// inclusive of the releaseAt instant.
 func (item *Item) releasable() bool {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	if item.releaseAt.IsZero() {
 		return false
 	}
-	return item.releaseAt.Before(time.Now())
+
+	return !item.releaseAt.After(time.Now())
 }
 
 // tempDisableTTR is a thread-safe way to effectively temporarily disable an

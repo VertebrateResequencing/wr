@@ -35,7 +35,17 @@ type subQueue struct {
 	groupedItems             map[string][]*Item
 	sqIndex                  int
 	reserveGroup             string
-	pushNotificationChannels map[string]map[string]chan bool
+	pushNotificationChannels map[string]map[string]*pushNotification
+}
+
+// pushNotification holds the channel that a notifyPush() caller is waiting on,
+// along with the timer responsible for the timeout. Keeping the timer lets us
+// stop it (and so let its goroutine exit immediately) the moment the
+// notification is triggered, instead of leaving it pending until the full
+// timeout elapses.
+type pushNotification struct {
+	ch    chan bool
+	timer *time.Timer
 }
 
 // create a new subQueue that can hold *Items in "priority" order. sqIndex is
@@ -44,7 +54,7 @@ type subQueue struct {
 func newSubQueue(sqIndex int) *subQueue {
 	queue := &subQueue{
 		sqIndex:                  sqIndex,
-		pushNotificationChannels: make(map[string]map[string]chan bool),
+		pushNotificationChannels: make(map[string]map[string]*pushNotification),
 	}
 	if sqIndex == 1 {
 		queue.groupedItems = make(map[string][]*Item)
@@ -68,30 +78,30 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
-	var chans map[string]chan bool
+	var chans map[string]*pushNotification
 	if val, ok := q.pushNotificationChannels[reserveGroup]; ok {
 		chans = val
 	} else {
-		chans = make(map[string]chan bool)
+		chans = make(map[string]*pushNotification)
 	}
 	id := logext.RandId(8)
-	chans[id] = ch
-	q.pushNotificationChannels[reserveGroup] = chans
 
-	go func() {
-		<-time.After(timeout)
+	timer := time.AfterFunc(timeout, func() {
 		q.mutex.Lock()
 		defer q.mutex.Unlock()
 		if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
-			if ch, ok := chans[id]; ok {
-				ch <- false
+			if pn, ok := chans[id]; ok {
+				pn.ch <- false
 				delete(chans, id)
 				if len(q.pushNotificationChannels[reserveGroup]) == 0 {
 					delete(q.pushNotificationChannels, reserveGroup)
 				}
 			}
 		}
-	}()
+	})
+
+	chans[id] = &pushNotification{ch: ch, timer: timer}
+	q.pushNotificationChannels[reserveGroup] = chans
 }
 
 // triggerNotify is used to check if we should notify about the given
@@ -99,8 +109,10 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 // must hold the mutext lock before calling this.
 func (q *subQueue) triggerNotify(reserveGroup string) {
 	if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
-		for id, ch := range chans {
-			ch <- true
+		for id, pn := range chans {
+			pn.timer.Stop()
+
+			pn.ch <- true
 
 			delete(chans, id)
 
@@ -239,11 +251,17 @@ func (q *subQueue) Len() int {
 func (q *subQueue) Less(i, j int) bool {
 	switch q.sqIndex {
 	case 0:
+		if q.items[i].readyAt.Equal(q.items[j].readyAt) {
+			return q.items[i].iid < q.items[j].iid
+		}
 		return q.items[i].readyAt.Before(q.items[j].readyAt)
 	case 1:
 		if itemList, existed := q.groupedItems[q.reserveGroup]; existed {
 			if itemList[i].priority == itemList[j].priority {
 				if itemList[i].size == itemList[j].size {
+					if itemList[i].creation.Equal(itemList[j].creation) {
+						return itemList[i].iid < itemList[j].iid
+					}
 					return itemList[i].creation.Before(itemList[j].creation)
 				}
 				return itemList[i].size > itemList[j].size
@@ -253,6 +271,9 @@ func (q *subQueue) Less(i, j int) bool {
 		return false
 	}
 	// case 2, outside the switch, because we need to return
+	if q.items[i].releaseAt.Equal(q.items[j].releaseAt) {
+		return q.items[i].iid < q.items[j].iid
+	}
 	return q.items[i].releaseAt.Before(q.items[j].releaseAt)
 }
 

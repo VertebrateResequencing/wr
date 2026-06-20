@@ -716,6 +716,53 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	return *config, serverConfig, addr, standardReqs, clientConnectTime
 }
 
+// compiledSelf compiles this test binary (once per test process) and returns
+// the path to the resulting executable, caching the result. Several tests need
+// to run this binary (in --servermode or --runnermode); compiling is slow
+// (seconds) and previously every such test recompiled from scratch, so doing it
+// once and sharing the binary saves that repeated cost.
+//
+//nolint:gochecknoglobals // the compile result is intentionally cached process-wide
+var compiledSelf = sync.OnceValues(func() (string, error) {
+	dir, err := os.MkdirTemp("", "wr_self_test")
+	if err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(dir, "wr.test")
+
+	out, err := exec.CommandContext(context.Background(), "go", "test",
+		"-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", path).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to compile self: %w: %s", err, string(out))
+	}
+
+	return path, nil
+})
+
+// copyCompiledSelf compiles this test binary once (shared via compileSelf) and
+// copies it to dst, returning dst. The runner tests count the files left in
+// their runner tmpdir and expect the runner executable to be one of them, so
+// each test gets its own copy of the shared binary (a cheap file copy) rather
+// than paying to recompile from scratch.
+func copyCompiledSelf(dst string) (string, error) {
+	src, err := compiledSelf()
+	if err != nil {
+		return "", err
+	}
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.WriteFile(dst, data, 0o700); err != nil { //nolint:gosec
+		return "", err
+	}
+
+	return dst, nil
+}
+
 // startServer runs the given exe with the --servermode arg. It is assumed that
 // doing so starts a jobqueue server in another process that will kill itself
 // after some time or when signalled. We return a client that is connected to
@@ -879,14 +926,10 @@ func TestJobqueueSignal(t *testing.T) {
 
 	config, _, addr, _, clientConnectTime := jobqueueTestInit(false)
 
-	servertmpdir := t.TempDir()
-
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client. Our server will be ourself in --servermode, so
-	// first we'll compile ourselves to the tmpdir
-	serverExe := filepath.Join(servertmpdir, "server")
-	cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", serverExe)
-	err := cmd.Run()
+	// first we'll compile ourselves (shared with the other tests that need it)
+	serverExe, err := compiledSelf()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -5123,9 +5166,7 @@ func TestJobqueueRunners(t *testing.T) {
 
 		// our runnerCmd will be running ourselves in --runnermode, so first
 		// we'll compile ourselves to the tmpdir
-		runnerCmd := filepath.Join(runnertmpdir, "runner")
-		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
-		err := cmd.Run()
+		runnerCmd, err := copyCompiledSelf(filepath.Join(runnertmpdir, "runner"))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -6262,9 +6303,7 @@ func TestJobqueueRunners(t *testing.T) {
 
 		// our runnerCmd will be running ourselves in --runnermode, so first
 		// we'll compile ourselves to the tmpdir
-		runnerCmd := filepath.Join(runnertmpdir, "runner")
-		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
-		err := cmd.Run()
+		runnerCmd, err := copyCompiledSelf(filepath.Join(runnertmpdir, "runner"))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -6395,9 +6434,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 	// our runnerCmd will be running ourselves in --runnermode, so first
 	// we'll compile ourselves to the tmpdir
-	runnerCmd := filepath.Join(runnertmpdir, "runner")
-	cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
-	err = cmd.Run()
+	runnerCmd, err := copyCompiledSelf(filepath.Join(runnertmpdir, "runner"))
 	if err != nil {
 		log.Fatal(err)
 	}

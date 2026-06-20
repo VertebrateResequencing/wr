@@ -20,12 +20,19 @@ package queue
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// TestItem runs inside a synctest bubble so its delay/ttr waits use a synthetic
+// clock and resolve instantly.
 func TestItem(t *testing.T) {
+	synctest.Test(t, testItemBody)
+}
+
+func testItemBody(t *testing.T) {
 	Convey("Given an item with a non-zero delay and ttr", t, func() {
 		item := newItem("item1", "", "data", 255, 100*time.Millisecond, 100*time.Millisecond)
 		So(item.state, ShouldEqual, ItemStateDelay)
@@ -36,7 +43,9 @@ func TestItem(t *testing.T) {
 			stats := item.Stats()
 			So(stats.State, ShouldEqual, ItemStateDelay)
 			So(stats.Remaining.Nanoseconds(), ShouldBeBetweenOrEqual, 90000000, 100000000)
-			So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 0, time.Since(item.creation))
+			// under synctest no real time elapses between creation and here, so
+			// the age is exactly zero.
+			So(stats.Age.Nanoseconds(), ShouldEqual, 0)
 		})
 
 		Convey("It won't be ready until after delay", func() {
@@ -120,7 +129,9 @@ func TestItem(t *testing.T) {
 				stats := item.Stats()
 				So(stats.State, ShouldEqual, ItemStateBury)
 				So(stats.Remaining.Nanoseconds(), ShouldEqual, 0)
-				So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 0, time.Since(item.creation))
+				// under synctest no real time elapses between creation and here, so
+				// the age is exactly zero.
+				So(stats.Age.Nanoseconds(), ShouldEqual, 0)
 			})
 		})
 
