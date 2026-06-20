@@ -111,7 +111,8 @@ func TestServerWebI(t *testing.T) {
 	}()
 
 	Convey("Once the jobqueue server is up", t, func() {
-		ServerItemTTR = 100 * time.Second
+		serverConfig.Timings.ItemTTR = 100 * time.Second
+		serverConfig.Timings.TouchInterval = 50 * time.Second
 		ClientTouchInterval = 50 * time.Second
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -1043,7 +1044,8 @@ func TestJobSubscriptions(t *testing.T) {
 	}()
 
 	Convey("Once the jobqueue server is up with jobs added", t, func() {
-		ServerItemTTR = 100 * time.Second
+		serverConfig.Timings.ItemTTR = 100 * time.Second
+		serverConfig.Timings.TouchInterval = 50 * time.Second
 		ClientTouchInterval = 50 * time.Second
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)

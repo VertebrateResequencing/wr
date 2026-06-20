@@ -263,31 +263,33 @@ func TestJobqueueUtils(t *testing.T) {
 	})
 
 	Convey("calculateItemDelay works", t, func() {
-		d := calculateItemDelay(0)
+		relDelayMin := ClientReleaseDelayMin
+
+		d := calculateItemDelay(0, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 30*time.Second)
 		So(d, ShouldBeLessThan, 60*time.Second)
 
-		d = calculateItemDelay(1)
+		d = calculateItemDelay(1, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 60*time.Second)
 		So(d, ShouldBeLessThan, 90*time.Second)
 
-		d = calculateItemDelay(2)
+		d = calculateItemDelay(2, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 120*time.Second)
 		So(d, ShouldBeLessThan, 150*time.Second)
 
-		d = calculateItemDelay(6)
+		d = calculateItemDelay(6, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 1800*time.Second)
 		So(d, ShouldBeLessThan, 1830*time.Second)
 
-		d = calculateItemDelay(7)
+		d = calculateItemDelay(7, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 1800*time.Second)
 		So(d, ShouldBeLessThan, 1830*time.Second)
 
-		d = calculateItemDelay(999999999)
+		d = calculateItemDelay(999999999, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 1800*time.Second)
 		So(d, ShouldBeLessThan, 1830*time.Second)
 
-		d = calculateItemDelay(-999999999)
+		d = calculateItemDelay(-999999999, relDelayMin)
 		So(d, ShouldBeGreaterThanOrEqualTo, 30*time.Second)
 		So(d, ShouldBeLessThan, 60*time.Second)
 	})
@@ -723,9 +725,11 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 
 	setDomainIP(config.ManagerCertDomain)
 
-	ServerInterruptTime = 10 * time.Millisecond
-	ServerReserveTicker = 10 * time.Millisecond
-	ClientReleaseDelayMin = 100 * time.Millisecond
+	// configure faster timings for the server we're about to test (see
+	// ServerConfig.Timings); these are per-server so independent test servers
+	// don't clobber each other's settings.
+	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
+	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
 	// when a runner can't reach the server (e.g. during the crash/shutdown
 	// recovery tests) it waits ClientRetryWait before reconnecting; the 15s
 	// production default added up to ~15s per such scenario and made their
@@ -736,7 +740,8 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	clientConnectTime := 1500 * time.Millisecond
 
 	if shortTTR {
-		ServerItemTTR = 1 * time.Second
+		serverConfig.Timings.ItemTTR = 1 * time.Second
+		serverConfig.Timings.TouchInterval = 500 * time.Millisecond
 		ClientTouchInterval = 500 * time.Millisecond
 	}
 
@@ -864,7 +869,8 @@ func runServer(ctx context.Context) {
 		serverConfig.RunnerCmd = self + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d"
 	}
 
-	ServerItemTTR = 200 * time.Millisecond
+	serverConfig.Timings.ItemTTR = 200 * time.Millisecond
+	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 	server, msg, _, err := serve(ctx, serverConfig)
 	if err != nil {
 		clog.Crit(ctx, "test daemon failed to start", "err", err)
@@ -1021,11 +1027,6 @@ func TestJobqueueSignal(t *testing.T) {
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "3secs_pass"})
 			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "3secs_fail"})
-			RecSecRound = 1
-			defer func() {
-				// revert back to normal
-				RecSecRound = 1800
-			}()
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1935,7 +1936,8 @@ func TestJobqueueMedium(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 200 * time.Millisecond
+		serverConfig.Timings.ItemTTR = 200 * time.Millisecond
+		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -2087,11 +2089,11 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateDelayed)
-					So(job2.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin)
-					So(job2.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*2)
+					So(job2.DelayTime, ShouldBeGreaterThanOrEqualTo, serverConfig.Timings.ReleaseDelayMin)
+					So(job2.DelayTime, ShouldBeLessThan, serverConfig.Timings.ReleaseDelayMin*2)
 
-					<-time.After(ClientReleaseDelayMin)
-					job, err = jq.Reserve(ClientReleaseDelayMin)
+					<-time.After(serverConfig.Timings.ReleaseDelayMin)
+					job, err = jq.Reserve(serverConfig.Timings.ReleaseDelayMin)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
@@ -2111,11 +2113,11 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.Exitcode, ShouldEqual, 1)
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
-						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin*2)
-						So(job.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*3)
+						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, serverConfig.Timings.ReleaseDelayMin*2)
+						So(job.DelayTime, ShouldBeLessThan, serverConfig.Timings.ReleaseDelayMin*3)
 						delayEnd := job.EndTime.Add(job.DelayTime)
 
-						<-time.After(ClientReleaseDelayMin)
+						<-time.After(serverConfig.Timings.ReleaseDelayMin)
 						job, err = jq.Reserve(time.Until(delayEnd) - 10*time.Millisecond)
 						So(err, ShouldBeNil)
 						So(job, ShouldBeNil)
@@ -2130,8 +2132,8 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.State, ShouldEqual, JobStateReserved)
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
-						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin*4)
-						So(job.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*5)
+						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, serverConfig.Timings.ReleaseDelayMin*4)
+						So(job.DelayTime, ShouldBeLessThan, serverConfig.Timings.ReleaseDelayMin*5)
 
 						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
@@ -3738,7 +3740,8 @@ func TestJobqueueLimitGroups(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 1 * time.Second
+		serverConfig.Timings.ItemTTR = 1 * time.Second
+		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
 		ClientTouchInterval = 2500 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -3922,7 +3925,8 @@ func TestJobqueueModules(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 1 * time.Second
+		serverConfig.Timings.ItemTTR = 1 * time.Second
+		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
 		ClientTouchInterval = 2500 * time.Millisecond
 
 		server, _, token, errs := serve(ctx, serverConfig)
@@ -3991,9 +3995,10 @@ func TestJobqueueModify(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up and client is connected", t, func() {
-		ServerItemTTR = 5 * time.Second
+		serverConfig.Timings.ItemTTR = 5 * time.Second
+		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
+		serverConfig.Timings.ReleaseDelayMin = 1 * time.Nanosecond
 		ClientTouchInterval = 2500 * time.Millisecond
-		ClientReleaseDelayMin = 1 * time.Nanosecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 		defer func() {
@@ -4609,7 +4614,8 @@ func TestJobqueueHighMem(t *testing.T) {
 	maxRAM, errp := internal.ProcMeminfoMBs()
 	if errp == nil && maxRAM > 80000 { // authors high memory system
 		Convey("If a job uses close to all memory on machine it is killed and we recommend more next time", t, func() {
-			ServerItemTTR = 200 * time.Second
+			serverConfig.Timings.ItemTTR = 200 * time.Second
+			serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 			ClientTouchInterval = 50 * time.Millisecond
 			server, _, token, errs := serve(ctx, serverConfig)
 			So(errs, ShouldBeNil)
@@ -4691,7 +4697,7 @@ func TestJobqueueProduction(t *testing.T) {
 	// start these tests anew because I need to disable dev-mode wiping of the
 	// db to test some behaviours
 	Convey("Once a new jobqueue server is up it creates a db file", t, func() {
-		ServerItemTTR = 2 * time.Second
+		serverConfig.Timings.ItemTTR = 2 * time.Second
 		forceBackups = true
 		defer func() {
 			forceBackups = false
@@ -5086,7 +5092,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				shouldBeLost := false
-				if time.Since(startedAt) > ServerItemTTR {
+				if time.Since(startedAt) > serverConfig.Timings.ItemTTR {
 					shouldBeLost = true
 				}
 
@@ -5114,7 +5120,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job.Exited, ShouldBeTrue)
 
 				shouldBeLost = false
-				if !notLost && time.Since(startedAt) > ServerItemTTR {
+				if !notLost && time.Since(startedAt) > serverConfig.Timings.ItemTTR {
 					shouldBeLost = true
 				}
 				So(job.Lost, ShouldEqual, shouldBeLost)
@@ -5194,8 +5200,9 @@ func TestJobqueueRunners(t *testing.T) {
 
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 10 * time.Second
-		ServerCheckRunnerTime = 2 * time.Second
+		serverConfig.Timings.ItemTTR = 10 * time.Second
+		serverConfig.Timings.CheckRunnerTime = 2 * time.Second
+		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
 		runnertmpdir := t.TempDir()
 
@@ -5225,11 +5232,9 @@ func TestJobqueueRunners(t *testing.T) {
 			// this leaf waits for a killed job to be detected as lost, which
 			// happens ~TTR after its last touch. The group-wide TTR (10s) only
 			// needs to be that high so jobs survive scheduling load in the other
-			// leaves; this job's TTR is captured at Add() time and GoConvey
-			// re-runs the group setup (resetting TTR to 10s) for every other
-			// leaf, so shortening it here just speeds up the lost detection
-			// without affecting them.
-			ServerItemTTR = 3 * time.Second
+			// leaves; here we shorten just this server's TTR (it takes effect
+			// for jobs queued after this point) to speed up the lost detection.
+			server.SetItemTTR(3 * time.Second)
 
 			var jobs []*Job
 			cmd := "perl -e 'for (1..20) { sleep(1) }'"
@@ -5280,14 +5285,16 @@ func TestJobqueueRunners(t *testing.T) {
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].Pid, ShouldEqual, jobPID)
 
+			lostJobCheckRetry := 2 * time.Second
+
 			// initially, we force us to fail to be able to check if the job
 			// is really dead or not, so that we can test this scenario
-			ServerLostJobCheckTimeout = 1 * time.Nanosecond
-			ServerLostJobCheckRetryTime = 2 * time.Second
+			server.SetLostJobCheckTimeout(1 * time.Nanosecond)
+			server.SetLostJobCheckRetryTime(lostJobCheckRetry)
 
 			defer func() {
-				ServerLostJobCheckTimeout = 5 * time.Second
-				ServerLostJobCheckRetryTime = 1 * time.Hour
+				server.SetLostJobCheckTimeout(5 * time.Second)
+				server.SetLostJobCheckRetryTime(1 * time.Hour)
 			}()
 
 			pscmd := fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobPID)
@@ -5309,7 +5316,8 @@ func TestJobqueueRunners(t *testing.T) {
 			lostStatePollInterval := 50 * time.Millisecond
 			go func() {
 				var lostTime time.Time
-				limit := time.After(ServerItemTTR + 5*time.Second)
+
+				limit := time.After(8 * time.Second) // this server's TTR was shortened to 3s above
 				ticker := time.NewTicker(lostStatePollInterval)
 				for {
 					select {
@@ -5327,7 +5335,7 @@ func TestJobqueueRunners(t *testing.T) {
 								// re-enable our ability to check the job is
 								// really dead
 								jobs[0].Lock()
-								ServerLostJobCheckTimeout = 5 * time.Second
+								server.SetLostJobCheckTimeout(5 * time.Second)
 								jobs[0].Unlock()
 							} else {
 								continue
@@ -5365,7 +5373,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
 			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
 			So(jobs[0].Exitcode, ShouldEqual, -1)
-			So(timeToBury, ShouldBeGreaterThanOrEqualTo, ServerLostJobCheckRetryTime-(2*lostStatePollInterval))
+			So(timeToBury, ShouldBeGreaterThanOrEqualTo, lostJobCheckRetry-(2*lostStatePollInterval))
 		})
 
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
@@ -5465,7 +5473,7 @@ func TestJobqueueRunners(t *testing.T) {
 			// shared limit group. The old regression delayed that by a full
 			// ServerCheckRunnerTime, so assert on the recorded scheduling gap
 			// instead of the wall-clock time for every job to finish and archive.
-			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, ServerCheckRunnerTime)
+			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, serverConfig.Timings.CheckRunnerTime)
 		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
@@ -6340,8 +6348,9 @@ func TestJobqueueRunners(t *testing.T) {
 	// start these tests anew because these tests have the server spawn runners
 	// that fail, simulating some network issue
 	Convey("Once a new jobqueue server is up with bad runners", t, func() {
-		ServerItemTTR = 1 * time.Second
-		ServerCheckRunnerTime = 2 * time.Second
+		serverConfig.Timings.ItemTTR = 1 * time.Second
+		serverConfig.Timings.CheckRunnerTime = 2 * time.Second
+		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
 		runnertmpdir := t.TempDir()
 

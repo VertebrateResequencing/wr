@@ -641,17 +641,18 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 }
 
 // calculateItemDelay returns a delay based on a backoff and the number of
-// previous delays.
-func calculateItemDelay(numPreviousDelays int) time.Duration {
+// previous delays. delayMin is the minimum delay (the server's resolved
+// ReleaseDelayMin).
+func calculateItemDelay(numPreviousDelays int, delayMin time.Duration) time.Duration {
 	b := &backoff.Backoff{
-		Min:    ClientReleaseDelayMin,
+		Min:    delayMin,
 		Max:    ClientReleaseDelayMax,
 		Factor: ClientReleaseDelayStepFactor,
 		Jitter: false, // don't like the behaviour of it's jitter
 	}
 
 	d := b.ForAttempt(float64(numPreviousDelays))
-	d -= time.Duration(rand.Float64()*float64(ClientReleaseDelayMin) - float64(ClientReleaseDelayMin)) // #nosec
+	d -= time.Duration(rand.Float64()*float64(delayMin) - float64(delayMin)) // #nosec
 
 	if d < 0 {
 		d = ClientReleaseDelayMax

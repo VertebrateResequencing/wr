@@ -97,9 +97,12 @@ const (
 // go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
 var ServerVersion string
 
-// these global variables are primarily exported for testing purposes; you
-// probably shouldn't change them (*** and they should probably be re-factored
-// as fields of a config struct...)
+// these global variables hold the default values for the corresponding
+// ServerTimings fields (and a few non-timing knobs). The timing ones are no
+// longer read directly during operation -- a Server resolves its own
+// ServerTimings in Serve() (see ServerConfig.Timings) -- so different servers
+// (eg. in parallel tests) can use different values without racing on shared
+// globals.
 var (
 	ServerInterruptTime                             = 1 * time.Second
 	ServerItemTTR                                   = 60 * time.Second
@@ -118,6 +121,77 @@ var (
 	// were listeners.
 	httpServerShutdownTime = 1 * time.Millisecond
 )
+
+// ServerTimings holds the timing parameters a Server operates with. These were
+// previously package-level globals that tests mutated, which prevented running
+// servers concurrently; they are now per-Server config. Set any subset on
+// ServerConfig.Timings; each zero-valued field is replaced with its default
+// (the matching Server*/Client* package variable above) by Serve(). Most are
+// fixed once the server starts; LostJobCheckTimeout and LostJobCheckRetryTime
+// can additionally be adjusted at runtime via the Server's setter methods.
+type ServerTimings struct {
+	// InterruptTime is how long the server blocks waiting to receive from
+	// clients before checking for signals etc. (default ServerInterruptTime).
+	InterruptTime time.Duration
+
+	// ItemTTR is the time-to-release given to queued items: a reserved job not
+	// touched within this long is considered lost (default ServerItemTTR).
+	ItemTTR time.Duration
+
+	// CheckRunnerTime is how often the server re-checks whether it needs to
+	// spawn runners (default ServerCheckRunnerTime).
+	CheckRunnerTime time.Duration
+
+	// LostJobCheckTimeout is how long the server gives a "lost" job's host to
+	// respond when confirming the job is really dead (default
+	// ServerLostJobCheckTimeout). Adjustable at runtime.
+	LostJobCheckTimeout time.Duration
+
+	// LostJobCheckRetryTime is how long the server waits before re-checking a
+	// lost job that could not be confirmed dead (default
+	// ServerLostJobCheckRetryTime). Adjustable at runtime.
+	LostJobCheckRetryTime time.Duration
+
+	// ReleaseDelayMin is the minimum backoff before a released job becomes
+	// runnable again (default ClientReleaseDelayMin).
+	ReleaseDelayMin time.Duration
+
+	// TouchInterval is how often the server expects clients to touch their
+	// running jobs; the server uses it to decide how long to wait for runners
+	// during shutdown (default ClientTouchInterval).
+	TouchInterval time.Duration
+
+	// RecSecRound is the number of seconds that recommended reserve times are
+	// rounded up to (default RecSecRound).
+	RecSecRound int
+}
+
+// dfltDuration returns v, or def if v is zero.
+func dfltDuration(v, def time.Duration) time.Duration {
+	if v == 0 {
+		return def
+	}
+
+	return v
+}
+
+// withDefaults returns a copy of t with every zero-valued field replaced by its
+// package-default value.
+func (t ServerTimings) withDefaults() ServerTimings {
+	t.InterruptTime = dfltDuration(t.InterruptTime, ServerInterruptTime)
+	t.ItemTTR = dfltDuration(t.ItemTTR, ServerItemTTR)
+	t.CheckRunnerTime = dfltDuration(t.CheckRunnerTime, ServerCheckRunnerTime)
+	t.LostJobCheckTimeout = dfltDuration(t.LostJobCheckTimeout, ServerLostJobCheckTimeout)
+	t.LostJobCheckRetryTime = dfltDuration(t.LostJobCheckRetryTime, ServerLostJobCheckRetryTime)
+	t.ReleaseDelayMin = dfltDuration(t.ReleaseDelayMin, ClientReleaseDelayMin)
+	t.TouchInterval = dfltDuration(t.TouchInterval, ClientTouchInterval)
+
+	if t.RecSecRound == 0 {
+		t.RecSecRound = RecSecRound
+	}
+
+	return t
+}
 
 // BsubID is used to give added jobs a unique (atomically incremented) id when
 // pretending to be bsub.
@@ -489,6 +563,61 @@ type Server struct {
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
 	nextSubscriptionID   uint64
+
+	// timings holds this server's resolved timing parameters. The fixed ones
+	// are set once in Serve() and then only read; the three below
+	// (itemTTR, which is read each time a job is queued, and the two
+	// lost-job-check durations) can be adjusted at runtime and so are copied
+	// out into dedicated fields guarded by timingMu.
+	timings               ServerTimings
+	timingMu              sync.RWMutex
+	itemTTR               time.Duration
+	lostJobCheckTimeout   time.Duration
+	lostJobCheckRetryTime time.Duration
+}
+
+// itemTTRDuration returns the current (runtime-adjustable) time-to-release given
+// to newly queued items.
+func (s *Server) itemTTRDuration() time.Duration {
+	s.timingMu.RLock()
+	defer s.timingMu.RUnlock()
+
+	return s.itemTTR
+}
+
+// SetItemTTR sets the time-to-release given to subsequently queued items. Safe
+// to call while the server is running.
+func (s *Server) SetItemTTR(d time.Duration) {
+	s.timingMu.Lock()
+	s.itemTTR = d
+	s.timingMu.Unlock()
+}
+
+// lostJobCheckDurations returns the current (runtime-adjustable) lost-job-check
+// timeout and retry time.
+func (s *Server) lostJobCheckDurations() (timeout, retry time.Duration) {
+	s.timingMu.RLock()
+	defer s.timingMu.RUnlock()
+
+	return s.lostJobCheckTimeout, s.lostJobCheckRetryTime
+}
+
+// SetLostJobCheckTimeout sets how long the server gives a lost job's host to
+// respond when confirming the job is really dead. Safe to call while the server
+// is running.
+func (s *Server) SetLostJobCheckTimeout(d time.Duration) {
+	s.timingMu.Lock()
+	s.lostJobCheckTimeout = d
+	s.timingMu.Unlock()
+}
+
+// SetLostJobCheckRetryTime sets how long the server waits before re-checking a
+// lost job that could not be confirmed dead. Safe to call while the server is
+// running.
+func (s *Server) SetLostJobCheckRetryTime(d time.Duration) {
+	s.timingMu.Lock()
+	s.lostJobCheckRetryTime = d
+	s.timingMu.Unlock()
 }
 
 func (s *Server) setRACPending() {
@@ -614,11 +743,13 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobRetryCheck, bool) {
 		return lostJobRetryCheck{}, false
 	}
 
+	timeout, _ := s.lostJobCheckDurations()
+
 	return lostJobRetryCheck{
 		jobKey:       job.Key(),
 		jobHost:      job.Host,
 		jobPID:       job.Pid,
-		checkTimeout: ServerLostJobCheckTimeout,
+		checkTimeout: timeout,
 	}, true
 }
 
@@ -756,6 +887,11 @@ type ServerConfig struct {
 	// If this is unset, nothing is logged (defaults to a logger using a
 	// log15.DiscardHandler()).
 	Logger log15.Logger
+
+	// Timings optionally overrides the server's timing parameters. Any zero
+	// field uses its package default. Mainly useful for testing (to speed
+	// scenarios up) and lets independent servers run with different timings.
+	Timings ServerTimings
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -801,6 +937,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	defer internal.LogPanic(ctx, "jobqueue serve", true)
 
+	// resolve our timing parameters (config overrides, otherwise defaults)
+	timings := config.Timings.withDefaults()
+
 	// generate a secure token for clients to authenticate with
 	token, err = generateToken(config.TokenFile)
 	if err != nil {
@@ -841,6 +980,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		return s, msg, token, err
 	}
+
+	db.recSecRound = timings.RecSecRound
+
 	defer func() {
 		if err != nil {
 			errc := db.close(ctx)
@@ -873,7 +1015,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// we'll wait ServerInterruptTime to recv from clients before trying again,
 	// allowing us to check if signals have been passed
-	if err = sock.SetOption(mangos.OptionRecvDeadline, ServerInterruptTime); err != nil {
+	if err = sock.SetOption(mangos.OptionRecvDeadline, timings.InterruptTime); err != nil {
 		return s, msg, token, err
 	}
 
@@ -997,6 +1139,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		schedCaster:               newCaster(),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
+		timings:                   timings,
+		itemTTR:                   timings.ItemTTR,
+		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
+		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
@@ -1026,7 +1172,11 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 				return nil, msg, token, err
 			}
 
-			itemdef := &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps}
+			itemdef := &queue.ItemDef{
+				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
+				Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
+				Dependencies: deps,
+			}
 
 			switch job.State {
 			case JobStateRunning:
@@ -1829,9 +1979,10 @@ func (s *Server) createQueue(ctx context.Context) {
 				if !s.racCheckTimer.Stop() {
 					<-s.racCheckTimer.C
 				}
-				s.racCheckTimer.Reset(ServerCheckRunnerTime)
+
+				s.racCheckTimer.Reset(s.timings.CheckRunnerTime)
 			} else {
-				s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
+				s.racCheckTimer = time.NewTimer(s.timings.CheckRunnerTime)
 
 				wgk := s.wg.Add(1)
 				go func() {
@@ -1979,8 +2130,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobKey := job.Key()
 				jobHost := job.Host
 				jobPID := job.Pid
-				serverLostJobCheckTimeout := ServerLostJobCheckTimeout
-				serverLostJobCheckRetryTime := ServerLostJobCheckRetryTime
+				serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
 				job.Unlock()
 
 				if !wasLost {
@@ -2144,7 +2294,12 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 				qerr = err
 				break
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+
+			itemdefs = append(itemdefs, &queue.ItemDef{
+				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
+				Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
+				Dependencies: deps,
+			})
 		}
 
 		srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
@@ -2242,7 +2397,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 		job := update.job
 
 		thisErr := s.q.Update(
-			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, update.deps,
+			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, s.itemTTRDuration(), update.deps,
 		)
 		if thisErr != nil {
 			qerr = thisErr
@@ -3172,7 +3327,7 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 				defer s.wg.Done(wgk)
 
 				select {
-				case <-time.After(ServerCheckRunnerTime):
+				case <-time.After(s.timings.CheckRunnerTime):
 					break
 				case <-s.stopClientHandling:
 					return
@@ -3451,7 +3606,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
-		<-time.After(ClientTouchInterval)
+		<-time.After(s.timings.TouchInterval)
 	}
 
 	// wait for the runners to actually die

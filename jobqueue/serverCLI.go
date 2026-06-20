@@ -850,7 +850,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 									if err != nil {
 										clog.Error(ctx, "failed to get job dependencies", "err", err)
 									}
-									err = s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+
+									err = s.q.Update(
+										ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
+										0*time.Second, s.itemTTRDuration(), deps,
+									)
 									if err != nil {
 										clog.Error(ctx, "failed to modify a job in the queue", "err", err)
 									}
@@ -1055,7 +1059,7 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 // setItemDelay is called when a job is reserved, and sets the item's delay to
 // a value based on a backoff. Returns the delay that was set.
 func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, untilBuried uint8) time.Duration {
-	delay := calculateItemDelay(int(maxRetries) - int(untilBuried) + 1)
+	delay := calculateItemDelay(int(maxRetries)-int(untilBuried)+1, s.timings.ReleaseDelayMin)
 
 	errd := s.q.SetDelay(key, delay)
 	if errd != nil {

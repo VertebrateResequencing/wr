@@ -128,6 +128,7 @@ type db struct {
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
 	slowBackups    bool // just for testing purposes
+	recSecRound    int  // rounding (secs) for recommended reserve times; from the server's timings
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -1391,7 +1392,12 @@ func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
 // case, the true value is rounded up to the nearest second. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
+	round := db.recSecRound
+	if round == 0 {
+		round = RecSecRound
+	}
+
+	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, round)
 }
 
 // recommendedReqGroupStat is the implementation for the other recommend*()
