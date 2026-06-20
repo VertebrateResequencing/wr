@@ -46,6 +46,8 @@ var (
 	cmdLine         string
 	showBuried      bool
 	showRunning     bool
+	showPending     bool
+	showDependent   bool
 	showEnv         bool
 	outputFormat    string
 	statusLimit     int
@@ -115,6 +117,10 @@ redirect (eg. "mycmd > stdout.txt").
 			cmdState = jobqueue.JobStateBuried
 		} else if showRunning {
 			cmdState = jobqueue.JobStateRunning
+		} else if showPending {
+			cmdState = jobqueue.JobStateReady
+		} else if showDependent {
+			cmdState = jobqueue.JobStateDependent
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
@@ -484,6 +490,10 @@ func init() {
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
 	statusCmd.Flags().StringVar(&fromHost, "host", "", "filter output to only show the status of commands that ran on the given host (ID, name or IP)")
 	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
+	statusCmd.Flags().BoolVar(&showPending, "pending", false,
+		"in default or -i mode only, only show the status of pending commands")
+	statusCmd.Flags().BoolVar(&showDependent, "dependent", false,
+		"in default or -i mode only, only show the status of dependent commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details", "['counts','summary','details','json'] output format")
 	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "in -o d mode, number of commands that share the same properties to display; 0 displays all")
