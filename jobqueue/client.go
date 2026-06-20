@@ -186,6 +186,13 @@ type Client struct {
 	host       string
 	port       string
 	args       []string // allowing internal reconnects
+
+	// timing parameters this client uses; defaulted from the server's
+	// ServerInfo at Connect() (falling back to the Client* package defaults for
+	// older servers), but may be overridden locally before use.
+	touchInterval time.Duration
+	retryWait     time.Duration
+	retryTime     time.Duration
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -292,6 +299,9 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return nil, Error{"Connect", "", msg}
 	}
 	c.ServerInfo = si
+	c.touchInterval = dfltDuration(si.TouchInterval, ClientTouchInterval)
+	c.retryWait = dfltDuration(si.RetryWait, ClientRetryWait)
+	c.retryTime = dfltDuration(si.RetryTime, ClientRetryTime)
 
 	return c, err
 }
@@ -666,7 +676,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// before doing any other pre-start tasks, which might take time, start
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
-	touchTicker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
+	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
 	var wkbsMutex sync.RWMutex
 	killDoneCh := make(chan bool, 1)
@@ -1450,7 +1460,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// (we keep retrying for 24hrs, giving plenty of time for issues to be
 	// fixed and potentially a new server to be brought online for us to
 	// connect to and succeed)
-	retryEnd := time.Now().Add(ClientRetryTime)
+	retryEnd := time.Now().Add(c.retryTime)
 	worked := false
 	disconnected := false
 	hadProblems := false
@@ -1479,8 +1489,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			if errc != nil {
 				clog.Warn(ctx, "tried to reconnect to server but failed", "err", errc)
 
-				// keep retrying after a jittered sleep
-				wait := ClientRetryWait + time.Duration(rand.Float64()*0.5*float64(ClientRetryWait))
+				// keep retrying after a jittered sleep (weak random is fine here)
+				wait := c.retryWait + time.Duration(rand.Float64()*0.5*float64(c.retryWait)) //nolint:gosec
 				<-time.After(wait)
 				continue
 			}
@@ -1521,7 +1531,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				break
 			}
 
-			<-time.After(ClientRetryWait)
+			<-time.After(c.retryWait)
 			continue
 		}
 		worked = true

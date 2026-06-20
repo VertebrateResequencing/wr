@@ -99,11 +99,11 @@ func init() {
 	ServerLogClientErrors = false
 }
 
-func serverShutDownTime() time.Duration {
+func serverShutDownTime(touchInterval time.Duration) time.Duration {
 	// golang can't actually do exec.Command.Start() in parallel and has a
 	// global lock on them, so we have to allow the 500ms of time to any pending
 	// starts to resolve before we can shut down.
-	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
+	return touchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
 }
 
 func assertNonEmptyFile(path string) {
@@ -730,19 +730,15 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	// don't clobber each other's settings.
 	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
 	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
-	// when a runner can't reach the server (e.g. during the crash/shutdown
-	// recovery tests) it waits ClientRetryWait before reconnecting; the 15s
-	// production default added up to ~15s per such scenario and made their
-	// timing highly variable. Tests restart servers near-instantly, so a short
-	// wait reconnects just as reliably (ClientRetryTime stays at its 24h
-	// ceiling) while being much faster and more deterministic.
-	ClientRetryWait = 1 * time.Second
 	clientConnectTime := 1500 * time.Millisecond
+	// NB: RetryWait is left at its 15s default here. Only the crash/shutdown
+	// recovery tests (which wait it out before reconnecting) shorten it, via
+	// their own serverConfig.Timings.RetryWait; doing it globally would make
+	// runner clients in unrelated tests retry aggressively under load.
 
 	if shortTTR {
 		serverConfig.Timings.ItemTTR = 1 * time.Second
 		serverConfig.Timings.TouchInterval = 500 * time.Millisecond
-		ClientTouchInterval = 500 * time.Millisecond
 	}
 
 	standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
@@ -871,6 +867,9 @@ func runServer(ctx context.Context) {
 
 	serverConfig.Timings.ItemTTR = 200 * time.Millisecond
 	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
+	// these signal-handling tests crash and restart the server; a short retry
+	// wait makes the runner reconnect to the new server promptly.
+	serverConfig.Timings.RetryWait = 1 * time.Second
 	server, msg, _, err := serve(ctx, serverConfig)
 	if err != nil {
 		clog.Crit(ctx, "test daemon failed to start", "err", err)
@@ -979,9 +978,6 @@ func TestJobqueueSignal(t *testing.T) {
 			t.Fatalf("failed to delete token file after test: %s\n", errr)
 		}
 	}()
-
-	ClientTouchInterval = 50 * time.Millisecond
-	ClientRetryWait = 1 * time.Second
 
 	alreadyKilled := make(map[int]bool)
 	killServer := func(jq *Client, serverPid int, serverCmd *exec.Cmd) {
@@ -1877,7 +1873,8 @@ func TestJobqueueBasics(t *testing.T) {
 				if errk != nil {
 					fmt.Printf("failed to send SIGTERM: %s\n", errk)
 				}
-				<-time.After(serverShutDownTime())
+
+				<-time.After(serverShutDownTime(serverConfig.Timings.TouchInterval))
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
@@ -1896,7 +1893,8 @@ func TestJobqueueBasics(t *testing.T) {
 				if errk != nil {
 					fmt.Printf("failed to send SIGINT: %s\n", errk)
 				}
-				<-time.After(serverShutDownTime())
+
+				<-time.After(serverShutDownTime(serverConfig.Timings.TouchInterval))
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok = err.(Error)
@@ -1938,7 +1936,6 @@ func TestJobqueueMedium(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 200 * time.Millisecond
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
-		ClientTouchInterval = 50 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 		defer func() {
@@ -2830,8 +2827,9 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateComplete)
 
-					// same again, but we'll alter the clienttouchinterval to be > ttr
-					ClientTouchInterval = 500 * time.Millisecond
+					// same again, but we'll alter this client's touch interval to
+					// be > ttr (per-client override of the server-provided value)
+					jq.touchInterval = 500 * time.Millisecond
 					inserts, _, err = jq.Add(jobs, envVars, false)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -3742,7 +3740,6 @@ func TestJobqueueLimitGroups(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 1 * time.Second
 		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
-		ClientTouchInterval = 2500 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 		defer func() {
@@ -3927,7 +3924,6 @@ func TestJobqueueModules(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 1 * time.Second
 		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
-		ClientTouchInterval = 2500 * time.Millisecond
 
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -3998,7 +3994,6 @@ func TestJobqueueModify(t *testing.T) {
 		serverConfig.Timings.ItemTTR = 5 * time.Second
 		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
 		serverConfig.Timings.ReleaseDelayMin = 1 * time.Nanosecond
-		ClientTouchInterval = 2500 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 		defer func() {
@@ -4616,7 +4611,6 @@ func TestJobqueueHighMem(t *testing.T) {
 		Convey("If a job uses close to all memory on machine it is killed and we recommend more next time", t, func() {
 			serverConfig.Timings.ItemTTR = 200 * time.Second
 			serverConfig.Timings.TouchInterval = 50 * time.Millisecond
-			ClientTouchInterval = 50 * time.Millisecond
 			server, _, token, errs := serve(ctx, serverConfig)
 			So(errs, ShouldBeNil)
 			defer func() {
@@ -4698,6 +4692,9 @@ func TestJobqueueProduction(t *testing.T) {
 	// db to test some behaviours
 	Convey("Once a new jobqueue server is up it creates a db file", t, func() {
 		serverConfig.Timings.ItemTTR = 2 * time.Second
+		// a couple of these leaves stop/restart the server and rely on the
+		// client reconnecting promptly to report a job's final state.
+		serverConfig.Timings.RetryWait = 1 * time.Second
 		forceBackups = true
 		defer func() {
 			forceBackups = false
@@ -5203,7 +5200,6 @@ func TestJobqueueRunners(t *testing.T) {
 		serverConfig.Timings.ItemTTR = 10 * time.Second
 		serverConfig.Timings.CheckRunnerTime = 2 * time.Second
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
-		ClientTouchInterval = 50 * time.Millisecond
 		runnertmpdir := t.TempDir()
 
 		// our runnerCmd will be running ourselves in --runnermode, so first
@@ -6351,7 +6347,6 @@ func TestJobqueueRunners(t *testing.T) {
 		serverConfig.Timings.ItemTTR = 1 * time.Second
 		serverConfig.Timings.CheckRunnerTime = 2 * time.Second
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
-		ClientTouchInterval = 50 * time.Millisecond
 		runnertmpdir := t.TempDir()
 
 		// our runnerCmd will be running ourselves in --runnermode, so first
@@ -6471,7 +6466,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	ClientReleaseDelayMin = 100 * time.Millisecond
 	clientConnectTime := 10 * time.Second
 	ServerItemTTR = 1 * time.Second
-	ClientTouchInterval = 50 * time.Millisecond
 
 	var server *Server
 	var token []byte
@@ -7498,7 +7492,6 @@ func TestJobqueueWithMounts(t *testing.T) {
 	ClientReleaseDelayMin = 100 * time.Millisecond
 	clientConnectTime := 10 * time.Second
 	ServerItemTTR = 10 * time.Second
-	ClientTouchInterval = 50 * time.Millisecond
 
 	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
 	addr := "localhost:" + config.ManagerPort
@@ -8127,7 +8120,6 @@ func runner(ctx context.Context) {
 	}
 
 	ServerItemTTR = 10 * time.Second
-	ClientTouchInterval = 50 * time.Millisecond
 
 	if runnerdebug {
 		logfile, errlog := os.CreateTemp("", "wrrunnerlog")

@@ -337,7 +337,7 @@ func (s *Subscription) reconnectAfterPollError(ctx context.Context) bool {
 }
 
 func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
-	retryEnd := time.Now().Add(ClientRetryTime)
+	retryEnd := time.Now().Add(s.client.retryTime)
 
 	for {
 		if s.isStopping() {
@@ -424,7 +424,7 @@ func (s *Subscription) subscribeRequest() *clientRequest {
 }
 
 func (s *Subscription) waitBeforeReconnect(ctx context.Context) bool {
-	timer := time.NewTimer(subscriptionReconnectWait())
+	timer := time.NewTimer(subscriptionReconnectWait(s.client.retryWait))
 	defer timer.Stop()
 
 	select {
@@ -442,12 +442,12 @@ func (s *Subscription) waitBeforeReconnect(ctx context.Context) bool {
 	}
 }
 
-func subscriptionReconnectWait() time.Duration {
-	if ClientRetryWait <= 0 {
+func subscriptionReconnectWait(retryWait time.Duration) time.Duration {
+	if retryWait <= 0 {
 		return subscriptionMinReconnectWait
 	}
 
-	return ClientRetryWait
+	return retryWait
 }
 
 func (s *Subscription) publishClientUpdate(ctx context.Context, update *JobUpdate) bool {

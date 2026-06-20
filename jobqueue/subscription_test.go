@@ -974,11 +974,9 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	}
 
 	Convey("A restarted manager delivers a resync marker and catch-up terminal update", t, func() {
-		restore := overrideSubscriptionReconnectTimings(250*time.Millisecond, 2*time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, 2*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1032,11 +1030,9 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 
 	Convey("A permanently stopped manager closes only after reconnect retries are exhausted", t, func() {
-		restore := overrideSubscriptionReconnectTimings(50*time.Millisecond, 200*time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, 200*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1062,11 +1058,9 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 
 	Convey("A successful transient reconnect never sets a fatal subscription error", t, func() {
-		restore := overrideSubscriptionReconnectTimings(200*time.Millisecond, 2*time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 200*time.Millisecond, 2*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1099,20 +1093,11 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 }
 
-func overrideSubscriptionReconnectTimings(
-	retryWait time.Duration,
-	retryTime time.Duration,
-) func() {
-	originalRetryWait := ClientRetryWait
-	originalRetryTime := ClientRetryTime
-
-	ClientRetryWait = retryWait
-	ClientRetryTime = retryTime
-
-	return func() {
-		ClientRetryWait = originalRetryWait
-		ClientRetryTime = originalRetryTime
-	}
+// applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
+// the server will hand to its clients, for tests exercising reconnection.
+func applySubscriptionReconnectTimings(sc *ServerConfig, retryWait, retryTime time.Duration) {
+	sc.Timings.RetryWait = retryWait
+	sc.Timings.RetryTime = retryTime
 }
 
 func TestSubscriptionAuthorization(t *testing.T) {

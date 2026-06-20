@@ -89,7 +89,6 @@ func TestREST(t *testing.T) {
 	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
 	serverConfig.Timings.ItemTTR = 200 * time.Millisecond
 	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
-	ClientTouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
 
 	var server *Server

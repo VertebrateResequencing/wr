@@ -156,10 +156,20 @@ type ServerTimings struct {
 	// runnable again (default ClientReleaseDelayMin).
 	ReleaseDelayMin time.Duration
 
-	// TouchInterval is how often the server expects clients to touch their
-	// running jobs; the server uses it to decide how long to wait for runners
+	// TouchInterval is how often clients should touch their running jobs. It is
+	// sent to connecting clients (which use it as their default touch
+	// frequency) and used by the server to decide how long to wait for runners
 	// during shutdown (default ClientTouchInterval).
 	TouchInterval time.Duration
+
+	// RetryWait is how long a client waits between attempts to reconnect to the
+	// server (eg. to report a finished job after the server restarted); sent to
+	// connecting clients (default ClientRetryWait).
+	RetryWait time.Duration
+
+	// RetryTime is the total time a client keeps retrying to reach the server
+	// before giving up; sent to connecting clients (default ClientRetryTime).
+	RetryTime time.Duration
 
 	// RecSecRound is the number of seconds that recommended reserve times are
 	// rounded up to (default RecSecRound).
@@ -185,6 +195,8 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.LostJobCheckRetryTime = dfltDuration(t.LostJobCheckRetryTime, ServerLostJobCheckRetryTime)
 	t.ReleaseDelayMin = dfltDuration(t.ReleaseDelayMin, ClientReleaseDelayMin)
 	t.TouchInterval = dfltDuration(t.TouchInterval, ClientTouchInterval)
+	t.RetryWait = dfltDuration(t.RetryWait, ClientRetryWait)
+	t.RetryTime = dfltDuration(t.RetryTime, ClientRetryTime)
 
 	if t.RecSecRound == 0 {
 		t.RecSecRound = RecSecRound
@@ -254,6 +266,15 @@ type ServerInfo struct {
 	Deployment string // deployment the server is running under
 	Scheduler  string // the name of the scheduler that jobs are being submitted to
 	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain|Paused if draining or paused
+
+	// the following timing parameters are sent to clients on connection, so
+	// that client behaviour (touch frequency, reconnection backoff) defaults to
+	// what the server's config specifies rather than to client-side globals. A
+	// client may still override them locally (eg. to touch slower than the TTR
+	// in a test).
+	TouchInterval time.Duration // how often clients should touch running jobs
+	RetryWait     time.Duration // how long clients wait between reconnect attempts
+	RetryTime     time.Duration // total time clients keep retrying to reach the server
 }
 
 // ServerVersions holds the server version (git tag) and API version supported.
@@ -1103,15 +1124,18 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	s = &Server{
 		ServerInfo: &ServerInfo{
-			Addr:       ip + ":" + config.Port,
-			Host:       certDomain,
-			FQDN:       fqdn(),
-			Port:       config.Port,
-			WebPort:    config.WebPort,
-			PID:        os.Getpid(),
-			Deployment: config.Deployment,
-			Scheduler:  config.SchedulerName,
-			Mode:       ServerModeNormal,
+			Addr:          ip + ":" + config.Port,
+			Host:          certDomain,
+			FQDN:          fqdn(),
+			Port:          config.Port,
+			WebPort:       config.WebPort,
+			PID:           os.Getpid(),
+			Deployment:    config.Deployment,
+			Scheduler:     config.SchedulerName,
+			Mode:          ServerModeNormal,
+			TouchInterval: timings.TouchInterval,
+			RetryWait:     timings.RetryWait,
+			RetryTime:     timings.RetryTime,
 		},
 		ServerVersions:            &ServerVersions{Version: ServerVersion, API: restAPIVersion},
 		token:                     token,
