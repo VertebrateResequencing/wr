@@ -50,6 +50,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
@@ -68,6 +69,7 @@ var (
 	schedgrp            string
 	runnermodetmpdir    string
 	rdeployment         string
+	rmanagerdir         string //nolint:gochecknoglobals
 	rserver             string
 	rdomain             string
 	rtimeout            int
@@ -88,6 +90,7 @@ func init() {
 	flag.BoolVar(&runnerdebug, "runnerdebug", false, "make the runner create debug files")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
+	flag.StringVar(&rmanagerdir, "rmanagerdir", "", "manager dir (WR_MANAGERDIR) for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
 	flag.StringVar(&rdomain, "rdomain", "", "domain for runnermode")
 	flag.IntVar(&rtimeout, "rtimeout", 1, "reserve timeout for runnermode")
@@ -679,11 +682,68 @@ func isIdent(expr ast.Expr, name string) bool {
 	return ok && ident.Name == name
 }
 
+// isolateTestConfig rewrites the manager port, web port and directory (and the
+// file paths derived from the directory) in config to test-private values: two
+// free ports and a fresh temp dir. This lets each test use its own server
+// without colliding on the fixed dev manager port or ~/.wr_development, which
+// is what allows the tests to run concurrently. The temp dir is left for the
+// Makefile (or the OS) to clean up.
+func isolateTestConfig(config *internal.Config) {
+	port, err := freeport.GetFreePort()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	webPort, err := freeport.GetFreePort()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	dir, err := os.MkdirTemp("", "wrtest")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	managerDir := filepath.Join(dir, ".wr_development")
+	if err := os.MkdirAll(managerDir, 0o700); err != nil {
+		log.Fatal(err)
+	}
+
+	config.ManagerPort = strconv.Itoa(port)
+	config.ManagerWeb = strconv.Itoa(webPort)
+	config.ManagerDir = managerDir
+	config.ManagerDBFile = filepath.Join(managerDir, "db")
+	config.ManagerDBBkFile = filepath.Join(managerDir, "db_bk")
+	config.ManagerTokenFile = filepath.Join(managerDir, "client.token")
+	config.ManagerCAFile = filepath.Join(managerDir, "ca.pem")
+	config.ManagerCertFile = filepath.Join(managerDir, "cert.pem")
+	config.ManagerKeyFile = filepath.Join(managerDir, "key.pem")
+
+	// also export these so config-reloading clients (ConnectUsingConfig) and
+	// spawned subprocesses find this server. WR_MANAGERDIR is set without its
+	// deployment suffix, the form the config reader expects. os.Setenv (not
+	// t.Setenv) because the manager dir is shared by the whole process; this is
+	// safe as long as tests in a process run serially.
+	os.Setenv("WR_MANAGERPORT", config.ManagerPort)                                          //nolint:usetesting
+	os.Setenv("WR_MANAGERWEB", config.ManagerWeb)                                            //nolint:usetesting
+	os.Setenv("WR_MANAGERDIR", strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)) //nolint:usetesting
+}
+
 func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jqs.Requirements, time.Duration) {
 	ctx := context.Background()
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoadFromParentDir(ctx, "development")
+
+	// give each test its own free ports and manager directory, so tests don't
+	// share the fixed dev port and ~/.wr_development and can run concurrently.
+	// Subprocess children (--servermode/--runnermode) instead inherit these
+	// from the parent via env vars that ConfigLoadFromParentDir reads, so we
+	// leave their (already isolated) config alone.
+	if !servermode && !runnermode {
+		isolateTestConfig(config)
+	}
+
 	managerDBBkFile := config.ManagerDBFile + "_bk" // not config.ManagerDBBkFile in case it is an s3 url
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
@@ -816,8 +876,17 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 		args = append(args, "--enablerunners")
 	}
 
-	// run the server in the background
+	// run the server in the background, telling it (and the runners it spawns,
+	// which inherit this env) which isolated port and manager dir to use. The
+	// dir is passed without its deployment suffix, the form the config reader
+	// expects from WR_MANAGERDIR.
 	cmd := exec.Command(serverExe, args...)
+
+	cmd.Env = append(os.Environ(),
+		"WR_MANAGERPORT="+config.ManagerPort,
+		"WR_MANAGERWEB="+config.ManagerWeb,
+		"WR_MANAGERDIR="+strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment),
+	)
 	err = cmd.Start()
 	if err != nil {
 		log.Fatal(err)
@@ -5210,7 +5279,10 @@ func TestJobqueueRunners(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		rmd := strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
+		runningConfig.RunnerCmd = runnerCmd +
+			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
+			" --rtimeout %d --maxmins %d --rmanagerdir " + rmd + " --tmpdir " + runnertmpdir
 		server, _, token, errs := serve(ctx, runningConfig)
 		So(errs, ShouldBeNil)
 		defer func() {
@@ -6357,7 +6429,11 @@ func TestJobqueueRunners(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		rmd := strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
+		runningConfig.RunnerCmd = runnerCmd +
+			" --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s'" +
+			" --rdomain %s --rtimeout %d --maxmins %d --rmanagerdir " + rmd +
+			" --tmpdir " + runnertmpdir
 		server, _, token, errs := serve(ctx, runningConfig)
 		So(errs, ShouldBeNil)
 		defer func() {
@@ -6520,7 +6596,11 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
-		RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+		RunnerCmd: runnerCmd +
+			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
+			" --rtimeout %d --maxmins %d --rmanagerdir " +
+			strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment) +
+			" --tmpdir " + runnertmpdir,
 	}
 
 	dockerInstallScript := `sudo mkdir -p /etc/docker/
@@ -8133,6 +8213,13 @@ func runner(ctx context.Context) {
 		log.Fatal("schedgrp missing")
 	}
 	log.Printf("runner working on schedgrp %s\n", schedgrp)
+
+	// when the server that spawned us runs on an isolated manager dir (in-process
+	// test servers can't pass it via our inherited env), it tells us via
+	// --rmanagerdir; point our config there so we read the right token and CA.
+	if rmanagerdir != "" {
+		os.Setenv("WR_MANAGERDIR", rmanagerdir) //nolint:usetesting
+	}
 
 	config := internal.ConfigLoadFromParentDir(ctx, rdeployment)
 
