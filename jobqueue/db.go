@@ -127,6 +127,7 @@ type db struct {
 	closed         bool
 	slowBackups    bool // just for testing purposes
 	recSecRound    int  // rounding (secs) for recommended reserve times; from the server's timings
+	recMBRound     int  // rounding (MBs) for recommended memory/disk; from the server's timings
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -1371,7 +1372,7 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobRAM, reqGroup, RecMBRound)
+	return db.recommendedReqGroupStat(bucketJobRAM, reqGroup, db.mbRound())
 }
 
 // recommendedReqGroupDisk returns the 95th percentile peak disk usage of
@@ -1381,7 +1382,17 @@ func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobDisk, reqGroup, RecMBRound)
+	return db.recommendedReqGroupStat(bucketJobDisk, reqGroup, db.mbRound())
+}
+
+// mbRound returns the MB rounding for recommendations, falling back to the
+// RecMBRound package default if this db wasn't given one.
+func (db *db) mbRound() int {
+	if db.recMBRound == 0 {
+		return RecMBRound
+	}
+
+	return db.recMBRound
 }
 
 // recommendReqGroupTime returns the 95th percentile wall time taken of all jobs

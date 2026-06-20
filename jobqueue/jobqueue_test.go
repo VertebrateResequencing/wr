@@ -2375,9 +2375,10 @@ func TestJobqueueMedium(t *testing.T) {
 					jobs = nil
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
-					RecMBRound = 1
+
+					server.db.recMBRound = 1
 					defer func() {
-						RecMBRound = 100 // revert back to normal
+						server.db.recMBRound = 100 // revert back to normal
 					}()
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -4704,9 +4705,10 @@ func TestJobqueueHighMem(t *testing.T) {
 			var jobs []*Job
 			cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 800000000) }'"
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "run_out_of_mem"})
-			RecMBRound = 1
+
+			server.db.recMBRound = 1
 			defer func() {
-				RecMBRound = 100 // revert back to normal
+				server.db.recMBRound = 100 // revert back to normal
 			}()
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)

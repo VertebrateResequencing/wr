@@ -174,6 +174,10 @@ type ServerTimings struct {
 	// RecSecRound is the number of seconds that recommended reserve times are
 	// rounded up to (default RecSecRound).
 	RecSecRound int
+
+	// RecMBRound is the number of megabytes that recommended memory and disk
+	// reservations are rounded up to (default RecMBRound).
+	RecMBRound int
 }
 
 // dfltDuration returns v, or def if v is zero.
@@ -200,6 +204,10 @@ func (t ServerTimings) withDefaults() ServerTimings {
 
 	if t.RecSecRound == 0 {
 		t.RecSecRound = RecSecRound
+	}
+
+	if t.RecMBRound == 0 {
+		t.RecMBRound = RecMBRound
 	}
 
 	return t
@@ -1015,6 +1023,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	db.recSecRound = timings.RecSecRound
+	db.recMBRound = timings.RecMBRound
 
 	defer func() {
 		if err != nil {
