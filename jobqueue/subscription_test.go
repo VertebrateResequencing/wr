@@ -2137,10 +2137,8 @@ func archiveIndependentSubscriptionJob(
 }
 
 func restartSubscriptionTestServer(ctx context.Context, serverConfig ServerConfig) *Server {
-	originalWipe := wipeDevDBOnInit
-	wipeDevDBOnInit = false
+	serverConfig.dontWipeDevDB = true
 	server, _, _, err := serve(ctx, serverConfig)
-	wipeDevDBOnInit = originalWipe
 
 	So(err, ShouldBeNil)
 

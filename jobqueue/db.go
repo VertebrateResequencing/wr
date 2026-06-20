@@ -73,8 +73,6 @@ var (
 	bucketJobDisk      = []byte("jobDisk")
 	bucketJobSecs      = []byte("jobSecs")
 	bucketRGEndTime    = []byte("repgroupEndTime") //nolint:gochecknoglobals
-	wipeDevDBOnInit    = true
-	forceBackups       = false
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -139,9 +137,10 @@ type db struct {
 // which will cause that s3 path to be mounted in the same directory as dbFile
 // and backups will be written there.
 //
-// In development we delete any existing db and force a fresh start. Backups
-// are also not carried out, so dbBkFile is ignored.
-func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment string) (*db, string, error) {
+// In development we delete any existing db and force a fresh start (unless
+// wipeDevDB is false). Backups are also not carried out in development (unless
+// forceBackups is true), so dbBkFile is ignored.
+func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) { //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx
 	var backupsEnabled bool
 
 	var accessor *muxfys.S3Accessor
@@ -194,7 +193,7 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 		}
 	}
 
-	if wipeDevDBOnInit && deployment == internal.Development {
+	if wipeDevDB && deployment == internal.Development { //nolint:nestif
 		errr := os.Remove(dbFile)
 		if errr != nil && !os.IsNotExist(errr) {
 			clog.Warn(ctx, "Failed to remove database file", "path", dbFile, "err", errr)

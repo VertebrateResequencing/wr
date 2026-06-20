@@ -718,12 +718,15 @@ func isolateTestConfig(config *internal.Config) {
 	config.ManagerCAFile = filepath.Join(managerDir, "ca.pem")
 	config.ManagerCertFile = filepath.Join(managerDir, "cert.pem")
 	config.ManagerKeyFile = filepath.Join(managerDir, "key.pem")
+}
 
-	// also export these so config-reloading clients (ConnectUsingConfig) and
-	// spawned subprocesses find this server. WR_MANAGERDIR is set without its
-	// deployment suffix, the form the config reader expects. os.Setenv (not
-	// t.Setenv) because the manager dir is shared by the whole process; this is
-	// safe as long as tests in a process run serially.
+// exportConfigEnv exports the given config's manager port/web/dir as the
+// WR_MANAGER* environment variables, so a config-reloading client
+// (ConnectUsingConfig) in this same process finds this server. WR_MANAGERDIR
+// is set without its deployment suffix, the form the config reader expects.
+// This mutates process-wide state via os.Setenv, so only a test that runs
+// serially (no t.Parallel) may call it.
+func exportConfigEnv(config *internal.Config) {
 	os.Setenv("WR_MANAGERPORT", config.ManagerPort)                                          //nolint:usetesting
 	os.Setenv("WR_MANAGERWEB", config.ManagerWeb)                                            //nolint:usetesting
 	os.Setenv("WR_MANAGERDIR", strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)) //nolint:usetesting
@@ -918,7 +921,7 @@ func runServer(ctx context.Context) {
 	_, serverConfig, _, _, _ := jobqueueTestInit(false)
 
 	if serverKeepDB {
-		wipeDevDBOnInit = false
+		serverConfig.dontWipeDevDB = true
 	}
 
 	if serverEnableRunners {
@@ -1466,6 +1469,11 @@ func TestJobqueueBasics(t *testing.T) {
 	}
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	// this test exercises ConnectUsingConfig, which reloads the config from the
+	// environment, so export our isolated config there. Safe because this test
+	// does not run in parallel with others.
+	exportConfigEnv(&config)
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
@@ -4710,9 +4718,9 @@ func TestJobqueueHighMem(t *testing.T) {
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateReserved)
 
-			ClientPercentMemoryKill = 1
+			jq.percentMemoryKill = 1
 			err = jq.Execute(ctx, job, config.RunnerExecShell)
-			ClientPercentMemoryKill = 90
+			jq.percentMemoryKill = 90
 			So(err, ShouldNotBeNil)
 			jqerr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
@@ -4764,9 +4772,10 @@ func TestJobqueueProduction(t *testing.T) {
 		// a couple of these leaves stop/restart the server and rely on the
 		// client reconnecting promptly to report a job's final state.
 		serverConfig.Timings.RetryWait = 1 * time.Second
-		forceBackups = true
+
+		serverConfig.forceBackups = true
 		defer func() {
-			forceBackups = false
+			serverConfig.forceBackups = false
 		}()
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -4884,10 +4893,11 @@ func TestJobqueueProduction(t *testing.T) {
 				server.Stop(ctx, true)
 				err = os.Rename(manualBackup, config.ManagerDBFile)
 				So(err, ShouldBeNil)
-				wipeDevDBOnInit = false
+
+				serverConfig.dontWipeDevDB = true
 
 				defer func() {
-					wipeDevDBOnInit = true
+					serverConfig.dontWipeDevDB = false
 				}()
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
@@ -4905,9 +4915,10 @@ func TestJobqueueProduction(t *testing.T) {
 				So(len(jobsByRepGroup), ShouldEqual, 2)
 
 				server.Stop(ctx, true)
-				wipeDevDBOnInit = false
+
+				serverConfig.dontWipeDevDB = true
 				defer func() {
-					wipeDevDBOnInit = true
+					serverConfig.dontWipeDevDB = false
 				}()
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
@@ -4975,9 +4986,10 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job.Exitcode, ShouldEqual, 0)
 
 				server.Stop(ctx, true)
-				wipeDevDBOnInit = false
+
+				serverConfig.dontWipeDevDB = true
 				server, _, token, errs = serve(ctx, serverConfig)
-				wipeDevDBOnInit = true
+				serverConfig.dontWipeDevDB = false
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -5014,9 +5026,9 @@ func TestJobqueueProduction(t *testing.T) {
 			assertBoltLiveJobs(managerDBBkFile, 1)
 
 			Convey("You can restart the server with that existing job, delete it, and it stays deleted when restoring from backup", func() {
-				wipeDevDBOnInit = false
+				serverConfig.dontWipeDevDB = true
 				defer func() {
-					wipeDevDBOnInit = true
+					serverConfig.dontWipeDevDB = false
 				}()
 				errr := os.Remove(config.ManagerDBFile)
 				So(errr, ShouldBeNil)
@@ -5092,9 +5104,9 @@ func TestJobqueueProduction(t *testing.T) {
 				_, err = jq.Ping(10 * time.Millisecond)
 				So(err, ShouldNotBeNil)
 
-				wipeDevDBOnInit = false
+				serverConfig.dontWipeDevDB = true
 				server, _, token, errs = serve(ctx, serverConfig)
-				wipeDevDBOnInit = true
+				serverConfig.dontWipeDevDB = false
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -5146,10 +5158,10 @@ func TestJobqueueProduction(t *testing.T) {
 					So(isClosedSocketError(err), ShouldBeTrue)
 				}
 
-				wipeDevDBOnInit = false
+				serverConfig.dontWipeDevDB = true
 				server, _, token, errs = serve(ctx, serverConfig)
 				startedAt := time.Now()
-				wipeDevDBOnInit = true
+				serverConfig.dontWipeDevDB = false
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -5226,9 +5238,9 @@ func TestJobqueueProduction(t *testing.T) {
 			err = jq.Disconnect()
 			So(err, ShouldBeNil)
 
-			wipeDevDBOnInit = false
+			serverConfig.dontWipeDevDB = true
 			server, _, token, errs = serve(ctx, serverConfig)
-			wipeDevDBOnInit = true
+			serverConfig.dontWipeDevDB = false
 			So(errs, ShouldBeNil)
 			jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -7599,10 +7611,8 @@ func TestJobqueueWithMounts(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		os.Remove(config.ManagerDBFile)
-		forceBackups = true
-		defer func() {
-			forceBackups = false
-		}()
+
+		s3ServerConfig.forceBackups = true
 		server, _, token, errs := serve(ctx, s3ServerConfig)
 		So(errs, ShouldBeNil)
 
@@ -7652,10 +7662,8 @@ func TestJobqueueWithMounts(t *testing.T) {
 				So(len(jobsByRepGroup), ShouldEqual, 1)
 
 				server.Stop(ctx, true)
-				wipeDevDBOnInit = false
-				defer func() {
-					wipeDevDBOnInit = true
-				}()
+
+				s3ServerConfig.dontWipeDevDB = true
 				server, _, token, errs = serve(ctx, s3ServerConfig)
 				So(errs, ShouldBeNil)
 				defer server.Stop(ctx, true)

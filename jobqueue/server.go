@@ -913,6 +913,15 @@ type ServerConfig struct {
 	// field uses its package default. Mainly useful for testing (to speed
 	// scenarios up) and lets independent servers run with different timings.
 	Timings ServerTimings
+
+	// dontWipeDevDB stops a development-deployment server wiping any existing
+	// database on startup (production never wipes regardless). Only set by
+	// tests that restart a server and want to keep its database.
+	dontWipeDevDB bool
+
+	// forceBackups enables database backups even for a development deployment
+	// (production always backs up regardless). Only set by tests.
+	forceBackups bool
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -990,7 +999,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(ctx, config.DBFile, config.DBFileBackup, config.Deployment)
+	db, msg, err := initDB(
+		ctx, config.DBFile, config.DBFileBackup, config.Deployment,
+		!config.dontWipeDevDB, config.forceBackups,
+	)
 	if certMsg != "" {
 		if msg == "" {
 			msg = certMsg

@@ -193,6 +193,11 @@ type Client struct {
 	touchInterval time.Duration
 	retryWait     time.Duration
 	retryTime     time.Duration
+
+	// percentMemoryKill is the percentage of physical machine memory a running
+	// command may use before we kill it. Defaults to ClientPercentMemoryKill,
+	// but may be overridden locally before Execute() (used by tests).
+	percentMemoryKill int
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -302,6 +307,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	c.touchInterval = dfltDuration(si.TouchInterval, ClientTouchInterval)
 	c.retryWait = dfltDuration(si.RetryWait, ClientRetryWait)
 	c.retryTime = dfltDuration(si.RetryTime, ClientRetryTime)
+	c.percentMemoryKill = ClientPercentMemoryKill
 
 	return c, err
 }
@@ -1221,7 +1227,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 								machineRAM = ram
 							}
 						}
-						if machineRAM > 0 && peakmem >= ((machineRAM/100)*ClientPercentMemoryKill) {
+
+						if machineRAM > 0 && peakmem >= ((machineRAM/100)*c.percentMemoryKill) { //nolint:mnd
 							killErr = killCmd()
 							stateMutex.Unlock()
 							break CHECKING
