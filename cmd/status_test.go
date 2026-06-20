@@ -1,27 +1,20 @@
-/*******************************************************************************
- * Copyright (c) 2026 Genome Research Ltd.
- *
- * Author: Sendu Bala <sb10@sanger.ac.uk>
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- ******************************************************************************/
+// Copyright © 2016-2021,2024,2025 Genome Research Limited
+// Author: Sendu Bala <sb10@sanger.ac.uk>.
+//
+//  This file is part of wr.
+//
+//  wr is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU Lesser General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  wr is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU Lesser General Public License for more details.
+//
+//  You should have received a copy of the GNU Lesser General Public License
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package cmd
 
@@ -48,6 +41,7 @@ const (
 	statusTestFlagBury = "buried"
 	statusTestHost     = "localhost"
 	statusTestReqGroup = "status"
+	statusTestRepGroup = "status-filter"
 )
 
 func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
@@ -79,7 +73,7 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 			Cwd:          statusTestCwd,
 			ReqGroup:     statusTestReqGroup,
 			Requirements: reqs,
-			RepGroup:     "status-pending",
+			RepGroup:     statusTestRepGroup,
 		}
 		inserts, already, err := jq.Add([]*jobqueue.Job{parent}, os.Environ(), true)
 		So(err, ShouldBeNil)
@@ -91,7 +85,7 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 			Cwd:          statusTestCwd,
 			ReqGroup:     statusTestReqGroup,
 			Requirements: reqs,
-			RepGroup:     "status-dependent",
+			RepGroup:     statusTestRepGroup,
 			Dependencies: jobqueue.Dependencies{
 				jobqueue.NewEssenceDependency(parent.Cmd, ""),
 			},
@@ -108,6 +102,70 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 		dependentOutput := runStatusForTest(t, "--dependent", "--output", "counts")
 		So(dependentOutput, ShouldContainSubstring, "ready: 0\n")
 		So(dependentOutput, ShouldContainSubstring, "dependent: 1\n")
+
+		combinedOutput := runStatusForTest(t, "--pending", "--dependent", "--output", "counts")
+		So(combinedOutput, ShouldContainSubstring, "ready: 1\n")
+		So(combinedOutput, ShouldContainSubstring, "dependent: 1\n")
+
+		identifierOutput := runStatusForTest(t, "--identifier", statusTestRepGroup, "--pending", "--dependent",
+			"--output", "counts")
+		So(identifierOutput, ShouldContainSubstring, "ready: 1\n")
+		So(identifierOutput, ShouldContainSubstring, "dependent: 1\n")
+	})
+
+	Convey("wr status validates where state filters can apply", t, func() {
+		Convey("allows combined state filters in default and report group modes", func() {
+			resetStatusForTest(t)
+
+			showPending = true
+			showDependent = true
+
+			states := statusStateFilters()
+			So(states, ShouldResemble, []jobqueue.JobState{jobqueue.JobStateReady, jobqueue.JobStateDependent})
+			So(validateStatusStateFilters(states), ShouldBeNil)
+
+			cmdIDStatus = statusTestRepGroup
+
+			So(validateStatusStateFilters(states), ShouldBeNil)
+		})
+
+		for _, tc := range []struct {
+			name  string
+			setup func()
+			want  string
+		}{
+			{
+				name:  "file mode",
+				setup: func() { cmdFileStatus = "commands.txt" },
+				want:  "-f",
+			},
+			{
+				name:  "cmdline mode",
+				setup: func() { cmdLine = "echo status" },
+				want:  "-l",
+			},
+			{
+				name: "internal identifier mode",
+				setup: func() {
+					cmdIDStatus = "abc123"
+					cmdIDIsInternal = true
+				},
+				want: "--internal",
+			},
+		} {
+			Convey("rejects state filters in "+tc.name, func() {
+				resetStatusForTest(t)
+
+				showPending = true
+
+				tc.setup()
+
+				err := validateStatusStateFilters(statusStateFilters())
+				So(err, ShouldNotBeNil)
+				So(err.Error(), ShouldContainSubstring, "state filters")
+				So(err.Error(), ShouldContainSubstring, tc.want)
+			})
+		}
 	})
 }
 

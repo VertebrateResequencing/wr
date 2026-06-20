@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -35,6 +36,15 @@ import (
 const (
 	shortTimeFormat = "06/1/2-15:04:05"
 	allRepGrps      = "all above"
+)
+
+var (
+	errStatusStateFiltersFile = errors.New("state filters (--buried/--running/--pending/--dependent) are only " +
+		"supported in default or report group (-i) mode; remove them when using -f")
+	errStatusStateFiltersCmdLine = errors.New("state filters (--buried/--running/--pending/--dependent) are only " +
+		"supported in default or report group (-i) mode; remove them when using -l")
+	errStatusStateFiltersInternal = errors.New("state filters (--buried/--running/--pending/--dependent) cannot " +
+		"be used with --internal because internal job lookups cannot be state-filtered")
 )
 
 // options for this cmd
@@ -112,16 +122,12 @@ redirect (eg. "mycmd > stdout.txt").
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
-		var cmdState jobqueue.JobState
-		if showBuried {
-			cmdState = jobqueue.JobStateBuried
-		} else if showRunning {
-			cmdState = jobqueue.JobStateRunning
-		} else if showPending {
-			cmdState = jobqueue.JobStateReady
-		} else if showDependent {
-			cmdState = jobqueue.JobStateDependent
+
+		cmdStates := statusStateFilters()
+		if err := validateStatusStateFilters(cmdStates); err != nil {
+			die("%s", err)
 		}
+
 		timeout := time.Duration(timeoutint) * time.Second
 
 		jq := connect(timeout)
@@ -138,7 +144,7 @@ redirect (eg. "mycmd > stdout.txt").
 			showEnv = false
 		}
 
-		jobs := getJobs(jq, cmdState, set == 0, statusLimit, true, showEnv)
+		jobs := getJobsForStates(jq, cmdStates, set == 0, statusLimit, true, showEnv)
 		showextra := cmdFileStatus == ""
 
 		if fromHost != "" {
@@ -516,6 +522,58 @@ func countGetJobArgs() int {
 		set++
 	}
 	return set
+}
+
+func statusStateFilters() []jobqueue.JobState {
+	var states []jobqueue.JobState
+	if showBuried {
+		states = append(states, jobqueue.JobStateBuried)
+	}
+
+	if showRunning {
+		states = append(states, jobqueue.JobStateRunning)
+	}
+
+	if showPending {
+		states = append(states, jobqueue.JobStateReady)
+	}
+
+	if showDependent {
+		states = append(states, jobqueue.JobStateDependent)
+	}
+
+	return states
+}
+
+func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
+	if len(cmdStates) == 0 {
+		return nil
+	}
+
+	switch {
+	case cmdFileStatus != "":
+		return errStatusStateFiltersFile
+	case cmdLine != "":
+		return errStatusStateFiltersCmdLine
+	case cmdIDStatus != "" && cmdIDIsInternal:
+		return errStatusStateFiltersInternal
+	}
+
+	return nil
+}
+
+func getJobsForStates(jq *jobqueue.Client, cmdStates []jobqueue.JobState, all bool,
+	statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
+	if len(cmdStates) == 0 {
+		return getJobs(jq, "", all, statusLimit, showStd, showEnv)
+	}
+
+	var jobs []*jobqueue.Job
+	for _, cmdState := range cmdStates {
+		jobs = append(jobs, getJobs(jq, cmdState, all, statusLimit, showStd, showEnv)...)
+	}
+
+	return jobs
 }
 
 func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
