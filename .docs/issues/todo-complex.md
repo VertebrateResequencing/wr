@@ -3,14 +3,21 @@
 ## Workflow — how to tackle this file
 
 **Entry point.** If you've been told "follow the instructions in this file", begin at
-**Step 0**. Same **idempotent, resumable** shape as `todo-simple.md` — **one
-orchestrator** fanning out **parallel section agents** (one per `##` issue section) —
-with two differences: each branch first **writes a spec**, then **implements by
-following the generated phase files** rather than via the `bugfix` skill. Verified
-mechanics match todo-simple (`develop` exists; worktrees off `origin/develop`; nested
-subagents; skills invocable; `gh`; `Monitor`). The `spec-writer` and `orchestrator`
-skills are available, and this exact `prompt.md → spec.md → phaseN.md` pipeline has
-shipped in this repo (see `.docs/sub/`, `.docs/nowrap/`).
+**Step 0**. Same **idempotent, resumable** shape as `todo-simple.md`: **one Codex
+orchestrator** owns every section's state machine, and starts bounded worker subagents
+for runnable milestones across several sections in parallel. The differences are that
+each branch first **writes a spec**, then **implements by following the generated phase
+files** rather than by using the simple bugfix flow.
+
+Important harness constraint: worker subagents **cannot spawn their own subagents**. Do
+not hand an entire section to a "section agent" and tell it to run `spec-writer`,
+`orchestrator`, or `pr-resolver`. The main orchestrator runs those workflows at the top
+level by starting the necessary author/implement/review/PR-fix workers itself. All
+scratch files and worktrees live under `<main-repo>/.tmp/`; do **not** use `/tmp`.
+
+The `prompt.md` → `spec.md` → `phaseN.md` pipeline has shipped in this repo (see
+`.docs/sub/`, `.docs/nowrap/`), but in this harness the main orchestrator is the only
+agent allowed to coordinate that pipeline across subagents.
 
 **Branch naming (so resumes can find prior work): each branch name contains its issue
 number — use `feat/issue-<N>`** (e.g. `feat/issue-502`). **#19 is folded into #197** →
@@ -29,80 +36,86 @@ state from durable sources, correct the boxes, resume each section where it is.
 3. Classify each `##` section, fix its checkboxes, resume from the right point:
    - **Issues closed + PR merged** → done; skip.
    - **PR merged, issue(s) open** → post-merge tail only (comment "ships in the next release" + close; mark **Merged**/**Solved**), then rebase still-open siblings.
-   - **PR open** → resume the PR stage: rebase onto latest `origin/develop` if behind; re-run `pr-resolver` (incl. new human comments); keep monitoring to merge.
-   - **Branch has committed `spec.md` + `phaseN.md`, phases unfinished / no PR** → resume **implementation** (the `orchestrator` skill skips already-checked phase items), then push + open the PR.
+   - **PR open** → resume the PR stage: rebase onto latest `origin/develop` if behind; handle CI/review comments from the orchestrator; keep monitoring to merge.
+   - **Branch has committed `spec.md` + `phaseN.md`, phases unfinished / no PR** → resume **implementation** from the phase checkboxes, then push + open the PR.
    - **Branch exists but no committed spec** → resume from **spec-writing**.
    - **Nothing exists** → start fresh.
-4. Worktrees: reuse `/tmp/wr-work/<branch>` if present; else recreate from
-   `origin/<branch>` (if pushed) or fresh from `origin/develop`. Section agents push
-   after every commit (the spec, and each phase), so a lost worktree costs at most the
-   current uncommitted change.
-5. Dispatch: (re)spawn a section agent for each section needing spec/implementation
-   work; resume the orchestrator's monitor-until-merge loop for each open/post-merge PR.
+4. Worktrees: reuse `<main-repo>/.tmp/wr-work/<branch>` if present; else recreate from
+   `origin/<branch>` (if pushed) or fresh from `origin/develop`. If the branch name
+   contains slashes, create the corresponding nested directory under `.tmp/wr-work/`.
+5. Build a section-state table: issue numbers, branch, worktree path, docs path,
+   spec/phase status, PR URL, active worker (if any), and last pushed commit. Then start
+   workers for every section whose next milestone is runnable. Do not wait for one
+   section's worker before starting workers for other sections.
 
-### Section agent — one per `##` issue section
+### Worker subagents
 
-Spawn in parallel, each given its section's full text (Issue, Current knowledge,
-Suggested way forward, answered Questions). It:
+Workers are short-lived and bounded. Start them from the orchestrator with one explicit
+task in one worktree: draft spec inputs, author/review spec text, author/review phase
+files, implement one phase item or phase, run a focused review, fix CI/review comments,
+or resolve a rebase conflict. A worker may edit code/docs, run tests/lint with timeouts,
+commit, and push **only its assigned branch**. A worker must not update this file, open
+or close issues, open or merge PRs, monitor siblings, or launch another subagent. If it
+needs more help, it reports the need and the orchestrator starts the next worker.
 
-1. Gets an isolated worktree off the latest develop on branch `feat/issue-<N>` — reuse
-   the one Step 0 found, else create from `origin/develop` (fresh) or `origin/<branch>`
-   (resume a pushed branch).
-2. **Writes the spec with the `spec-writer` skill** — *skip if a committed `spec.md`
-   already exists on the branch.* Build the feature-description input from the section
-   text (Issue + Current knowledge + Suggested way forward + every Question rewritten as
-   a decision using the recorded answers); output to `.docs/<branch-slug>/spec.md`.
-   **Bypass the human Q&A loop:** pre-bake the answers into the prompt's `## Notes` so
-   the clarification cycle returns NONE; never call `ask_questions` — resolve residual
-   ambiguity yourself from the recorded answers / a sensible default and append to
-   Notes. spec-writer produces `spec.md` + reviewed `phaseN.md`. **Commit and push**
-   them, then report **Spec produced**. (If spec-writer raises a genuine blocker it
-   writes `blocker.md` and stops — surface that to the human rather than opening a PR.)
-3. **Implements by following the phase files** — for each `phaseN.md` in order, invoke
-   the **`orchestrator` skill** (drives each phase's items via implementor/reviewer
-   subagents per the phase Instructions, commits each phase, runs branch-review passes,
-   and **skips phase items already checked** — so it's resume-safe). Not the `bugfix`
-   skill. Tests + linter pass. **`git push` after each phase commit.** When the final
-   phase is committed and pushed, report **Implemented**.
-4. If no PR exists, open one against **develop** (`Solves #N`, not `Fixes/Closes`),
-   including the code and the generated `.docs/<branch-slug>/` spec + phase files.
-5. Drives the PR to a good state with **`pr-resolver`**: loop until CI green + Copilot
-   satisfied, push, report **Reviewed / ready**. Not the end — the PR keeps being
-   re-run for **new human comments** until merge (during monitoring).
-6. Reports back — PR URL, branch, worktree path, issue numbers — then returns.
+For spec production, run the `spec-writer` workflow semantics at the orchestrator level.
+Do **not** ask a worker to invoke `spec-writer`. The orchestrator builds the feature
+description from the section text (Issue + Current knowledge + Suggested way forward +
+every Question rewritten as a decision using the recorded answers), writes/updates
+`.docs/<branch-slug>/prompt.md`, and starts whatever author/review workers are needed to
+produce reviewed `spec.md` and `phaseN.md` files. **Bypass the human Q&A loop:** pre-bake
+the answers into the prompt's `## Notes` so clarification returns NONE; resolve residual
+ambiguity from the recorded answers or a sensible default and append it to Notes. If the
+spec workflow raises a genuine blocker, write `blocker.md`, stop that section, and surface
+the blocker to the human rather than opening a PR.
+
+For implementation, run the phase-orchestration semantics at the top level. For each
+`phaseN.md` in order, the orchestrator reads the phase checklist, starts implement/review
+workers for unchecked phase items, and only marks a phase item complete after its commit
+is pushed and verification is reported. Keep phase order within a branch, but keep
+different branches moving in parallel. When the final phase is committed and pushed,
+report/tick **Implemented**.
 
 ### Orchestrator
 
-Same as `todo-simple.md`: it is the **single writer of this file's checkboxes** (ticking
-**Spec produced** / **Implemented** / **Reviewed** as section agents report each
-durably-pushed milestone, and reconciling them in Step 0). It tells you each ready PR;
-**monitors each ready PR until merged**, re-running `pr-resolver` for **new human
-comments** throughout (not stopping at Copilot-happy); on merge, comments *"Fixed on
-`develop`; will ship in the next release."* + `gh issue close` (ticking **Merged**/
-**Solved** only once confirmed), then `git fetch origin develop` and rebases every
-still-open branch onto it (`--force-with-lease`, re-running `pr-resolver` if needed).
-Monitoring, the human-comment loop, issue-closing and rebases all live in the
-orchestrator.
+- Is the **single writer of this file's checkboxes**, ticking **Spec produced** /
+  **Implemented** / **Reviewed** only after the relevant commits are pushed and verified.
+- Opens PRs against **develop** once implementation is pushed. PR bodies must include the
+  generated `.docs/<branch-slug>/` spec + phase files and must **solve** the issues:
+  `Solves #N`, not `Fixes/Closes #N`.
+- Tells you each ready PR; **monitors each ready PR until merged** by polling with
+  `gh pr view` / `gh pr checks` or by using any available Codex automation. Whenever CI
+  fails or **new human review comments** land, the orchestrator starts a PR-resolution
+  worker in that branch's worktree, waits for its pushed fix, and repeats until merge.
+  Do **not** stop at Copilot-happy if new human comments arrive later.
+- On merge, comments *"Fixed on `develop`; will ship in the next release."* and
+  `gh issue close`s the section issues, ticking **Merged**/**Solved** only once
+  confirmed. Then `git fetch origin develop` and rebase every still-open branch onto it
+  (`--force-with-lease`, starting PR-resolution workers if needed).
 
-### Durability & resuming after a usage-limit reset
+Monitoring, the human-comment loop, issue-closing and cross-branch rebases all live in
+the orchestrator. Keep at most one active writer worker per branch/worktree at a time,
+but keep different branches moving whenever their next milestones are independent.
+
+### Durability & resuming after an interruption
 
 - **A box is ticked only after its work is pushed to `origin`:** **Spec produced** after
   the spec + phase files are committed and pushed; **Implemented** after the phase
-  commits are pushed; **Reviewed** after `pr-resolver`'s changes are pushed + CI green;
-  **Merged**/**Solved** only after the merge and issue closes.
-- **Transient throttling** (429 / "overloaded", 529) auto-retries with backoff. The
-  **hard 5-hour cap is a stop**, not an auto-resume; nothing is corrupted, because the
-  spec, phase files (with their per-phase checkboxes) and code are all committed/pushed.
-- **To resume after a reset (or any interruption): just start a fresh agent on this
-  file.** Step 0 rediscovers pushed branches (incl. their committed spec/phase files and
-  per-phase checkboxes), open/merged PRs and closed issues, and continues — at most the
-  current uncommitted change is redone.
+  commits are pushed; **Reviewed** after PR-resolution/review changes are pushed + CI
+  green; **Merged**/**Solved** only after the merge and issue closes.
+- **Transient throttling** (429 / "overloaded", 529) is retried with backoff. A hard
+  interruption is a stop, not an auto-resume; nothing is corrupted, because the spec,
+  phase files (with their per-phase checkboxes) and code are all committed/pushed.
+- **To resume after any interruption: start a fresh agent on this file.** Step 0
+  rediscovers pushed branches (incl. their committed spec/phase files and per-phase
+  checkboxes), open/merged PRs and closed issues, and continues — at most the current
+  uncommitted change is redone.
 
 Notes: PRs target **`develop`**, not `master`. One `##` issue = one branch/PR. **#19 is
-folded into #197** — spec and implement them together on #197's branch. If a spec-writer
-run hits a genuine blocker (a recorded answer turns out to be unimplementable) it writes
-`blocker.md` and stops rather than inventing behaviour — surface that to the human
-instead of opening a PR.
+folded into #197** — spec and implement them together on #197's branch. If the spec
+workflow hits a genuine blocker (a recorded answer turns out to be unimplementable), it
+writes `blocker.md` and stops rather than inventing behaviour — surface that to the
+human instead of opening a PR.
 
 ---
 
