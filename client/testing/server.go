@@ -43,6 +43,16 @@ const (
 	userOnlyPerm         = 0700
 	serverTimeout        = 10 * time.Second
 	serverRetryFrequency = 500 * time.Millisecond
+
+	// these speed the test server up versus its seconds-to-minutes production
+	// timing defaults; the client tests run quick jobs and just need the server
+	// to react and shut down promptly.
+	testInterruptTime   = 10 * time.Millisecond
+	testItemTTR         = 10 * time.Second
+	testTouchInterval   = 100 * time.Millisecond
+	testCheckRunnerTime = 500 * time.Millisecond
+	testReleaseDelayMin = 100 * time.Millisecond
+	testSocketWait      = 1 * time.Millisecond
 )
 
 // PrepareWrConfig creates a temp directory, changes to that directory, creates
@@ -66,6 +76,17 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 		CertFile:        filepath.Join(managerDirActual, "cert.pem"),
 		KeyFile:         filepath.Join(managerDirActual, "key.pem"),
 		Deployment:      "development",
+		// the production defaults for these are seconds-to-minutes long, which
+		// makes the test suite slow; the client tests run quick jobs and just
+		// need the server to react and shut down promptly.
+		Timings: jobqueue.ServerTimings{
+			InterruptTime:      testInterruptTime,
+			ItemTTR:            testItemTTR,
+			TouchInterval:      testTouchInterval,
+			CheckRunnerTime:    testCheckRunnerTime,
+			ReleaseDelayMin:    testReleaseDelayMin,
+			ShutdownSocketWait: testSocketWait,
+		},
 	}
 
 	writeConfig(t, dir, managerDir, config)

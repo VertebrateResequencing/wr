@@ -178,6 +178,12 @@ type ServerTimings struct {
 	// RecMBRound is the number of megabytes that recommended memory and disk
 	// reservations are rounded up to (default RecMBRound).
 	RecMBRound int
+
+	// ShutdownSocketWait is how long shutdown waits, after client handling has
+	// stopped, before closing the command socket, to let in-flight messages
+	// drain (default serverSocketWait). Tests set this low to shut servers down
+	// faster.
+	ShutdownSocketWait time.Duration
 }
 
 // dfltDuration returns v, or def if v is zero.
@@ -209,6 +215,8 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	if t.RecMBRound == 0 {
 		t.RecMBRound = RecMBRound
 	}
+
+	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
 
 	return t
 }
@@ -3701,7 +3709,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.closeClientSubscriptions()
 	close(s.stopClientHandling)
 	s.waitForClientHandling(ctx)
-	time.Sleep(serverSocketWait)
+	time.Sleep(s.timings.ShutdownSocketWait)
 	err = s.sock.Close()
 	if err != nil {
 		clog.Warn(ctx, "server shutdown socket close failed", "err", err)

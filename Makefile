@@ -20,43 +20,42 @@ install:
 	@go install -tags netgo -ldflags "${LDFLAGS}"
 	@echo installed to ${GOPATH}/bin/wr
 
-# The jobqueue package is by far the slowest and, unlike the others, binds a
-# fixed manager port and uses a single manager dir (~/.wr_development), so its
-# tests can't overlap each other on that shared port. We therefore split it into
-# two groups, each run as its own `go test` process isolated onto a private
-# manager port, web port, manager dir and TMPDIR via env vars (so their servers,
-# bolt DBs, TLS certs and job working dirs don't collide). Using separate
-# processes (rather than t.Parallel within one) also keeps each group's
-# package-level timing globals -- ServerItemTTR, ClientTouchInterval etc. --
-# independent, which tests rely on setting per-scenario. Those two groups run in
-# parallel with each other and with a third lane that covers every other
-# package. The two heaviest, subprocess-spawning jobqueue tests (Runners and
-# Signal) are deliberately kept together in one group so they run one-at-a-time
-# and don't oversubscribe the CPUs alongside each other. This roughly halves the
-# wall-clock time versus running everything serially behind the jobqueue package.
-JQ_GROUP := TestJobqueueRunners|TestJobqueueSignal|TestJobqueueProduction
-OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$')
+# The jobqueue and client packages are by far the slowest: they spin up real
+# servers and run jobs via subprocesses, and most of their wall-clock time is
+# spent idle, waiting for timers and subprocesses rather than using CPU. Since
+# every test now isolates itself onto its own free ports and temp manager dir
+# (no shared fixed port or ~/.wr_development), we run many of them concurrently
+# as independent `go test` processes whose idle waits overlap. The heaviest
+# tests get their own lane; the lighter jobqueue tests share two lanes. The
+# non-jobqueue lanes (client + everything else) are nice'd so the
+# timing-sensitive jobqueue lanes get CPU priority on a busy machine.
+ALL_SPLIT := TestJobqueueRunners|TestJobqueueSignal|TestJobqueueProduction|TestJobqueueMedium|TestJobqueueModify|TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils
+JQ_RESTA := ^(TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils)$$
+OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$' | grep -v '^${PKG}/client$$' | grep -v '^${PKG}/jobqueue/scheduler$$')
 GO_TEST := go test -tags netgo -timeout 40m --count 1 -failfast
 
 test: export CGO_ENABLED = 0
 test:
 	@set -e; \
 	base=$$(mktemp -d "$${TMPDIR:-/tmp}/wrtest.XXXXXX"); \
-	mkdir -p "$$base/g1d" "$$base/g2d" "$$base/g1t" "$$base/g2t"; \
-	echo "testing: 2 parallel jobqueue groups + other packages ($$base)"; \
+	rm -rf /tmp/jobqueue_cwd 2>/dev/null || true; \
+	echo "testing: parallel per-test jobqueue lanes + client + other packages ($$base)"; \
 	rc=0; \
-	TMPDIR="$$base/g1t" WR_MANAGERPORT=55001 WR_MANAGERWEB=55002 WR_MANAGERDIR="$$base/g1d" \
-		$(GO_TEST) -run '$(JQ_GROUP)' ${PKG}/jobqueue >"$$base/g1.log" 2>&1 & p1=$$!; \
-	TMPDIR="$$base/g2t" WR_MANAGERPORT=55101 WR_MANAGERWEB=55102 WR_MANAGERDIR="$$base/g2d" \
-		$(GO_TEST) -skip '$(JQ_GROUP)' ${PKG}/jobqueue >"$$base/g2.log" 2>&1 & p2=$$!; \
-	nice -n 19 $(GO_TEST) -p 2 $(OTHER_PKGS) >"$$base/o.log" 2>&1 & p3=$$!; \
-	wait $$p1 || rc=1; \
-	wait $$p2 || rc=1; \
-	wait $$p3 || rc=1; \
-	echo "===== jobqueue group 1 (Runners/Signal/Production) ====="; cat "$$base/g1.log"; \
-	echo "===== jobqueue group 2 (rest of jobqueue) ====="; cat "$$base/g2.log"; \
-	echo "===== other packages ====="; cat "$$base/o.log"; \
-	rm -rf "$$base"; \
+	$(GO_TEST) -run '^TestJobqueueRunners$$' ${PKG}/jobqueue >"$$base/runners.log" 2>&1 & p1=$$!; \
+	$(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal.log" 2>&1 & p2=$$!; \
+	$(GO_TEST) -run '^TestJobqueueProduction$$' ${PKG}/jobqueue >"$$base/production.log" 2>&1 & p3=$$!; \
+	$(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium.log" 2>&1 & p4=$$!; \
+	$(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify.log" 2>&1 & p5=$$!; \
+	$(GO_TEST) -run '$(JQ_RESTA)' ${PKG}/jobqueue >"$$base/jqA.log" 2>&1 & p6=$$!; \
+	$(GO_TEST) -skip '$(ALL_SPLIT)' ${PKG}/jobqueue >"$$base/jqB.log" 2>&1 & p7=$$!; \
+	$(GO_TEST) ${PKG}/jobqueue/scheduler >"$$base/scheduler.log" 2>&1 & p8=$$!; \
+	nice -n 19 $(GO_TEST) ${PKG}/client >"$$base/client.log" 2>&1 & p9=$$!; \
+	nice -n 19 $(GO_TEST) -p 4 $(OTHER_PKGS) >"$$base/other.log" 2>&1 & p10=$$!; \
+	for pid in $$p1 $$p2 $$p3 $$p4 $$p5 $$p6 $$p7 $$p8 $$p9 $$p10; do wait $$pid || rc=1; done; \
+	for f in runners signal production medium modify jqA jqB scheduler client other; do \
+		echo "===== $$f ====="; cat "$$base/$$f.log"; \
+	done; \
+	rm -rf "$$base" /tmp/jobqueue_cwd 2>/dev/null || true; \
 	exit $$rc
 
 race: export CGO_ENABLED = 1

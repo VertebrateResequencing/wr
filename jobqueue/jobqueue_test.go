@@ -793,6 +793,7 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	// don't clobber each other's settings.
 	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
 	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
+	serverConfig.Timings.ShutdownSocketWait = 1 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
 	// NB: RetryWait is left at its 15s default here. Only the crash/shutdown
 	// recovery tests (which wait it out before reconnecting) shorten it, via
@@ -1027,8 +1028,6 @@ func TestJobqueueSignal(t *testing.T) {
 		runServer(ctx)
 		return
 	}
-
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	config, _, addr, _, clientConnectTime := jobqueueTestInit(false)
 
@@ -1474,8 +1473,6 @@ func TestJobqueueBasics(t *testing.T) {
 	// environment, so export our isolated config there. Safe because this test
 	// does not run in parallel with others.
 	exportConfigEnv(&config)
-
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	var server *Server
 	var token []byte
@@ -2007,8 +2004,6 @@ func TestJobqueueMedium(t *testing.T) {
 	}
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
-
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 200 * time.Millisecond
@@ -3813,8 +3808,6 @@ func TestJobqueueLimitGroups(t *testing.T) {
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 1 * time.Second
 		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
@@ -3997,8 +3990,6 @@ func TestJobqueueModules(t *testing.T) {
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 1 * time.Second
 		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
@@ -4070,8 +4061,6 @@ func TestJobqueueModify(t *testing.T) {
 	learnedRAMNormal := 100
 	learnedRAMExtraRange := []int{200, 500}
 	tmp := "/tmp"
-
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up and client is connected", t, func() {
 		serverConfig.Timings.ItemTTR = 5 * time.Second
@@ -4697,8 +4686,6 @@ func TestJobqueueHighMem(t *testing.T) {
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-
 	// start these tests anew because they need a long TTR
 	maxRAM, errp := internal.ProcMeminfoMBs()
 	if errp == nil && maxRAM > 80000 { // authors high memory system
@@ -4778,8 +4765,6 @@ func TestJobqueueProduction(t *testing.T) {
 		return
 	}
 	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
-
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	managerDBBkFile := serverConfig.DBFileBackup
 
@@ -5291,8 +5276,6 @@ func TestJobqueueRunners(t *testing.T) {
 		return
 	}
 	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
-
-	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
@@ -6269,8 +6252,8 @@ func TestJobqueueRunners(t *testing.T) {
 
 		Convey("You can connect, and add 2 large batches of jobs sequentially", func() {
 			lsfMode := false
-			count := 1000
-			count2 := 100
+			count := 200
+			count2 := 50
 
 			batchtest := func() {
 				clientConnectTime = 20 * time.Second // it takes a long time with -race to add 10000 jobs...

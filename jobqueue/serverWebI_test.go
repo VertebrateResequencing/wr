@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -105,10 +104,6 @@ func TestServerWebI(t *testing.T) {
 	ctx := context.Background()
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
-
-	defer func() {
-		os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-	}()
 
 	Convey("Once the jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 100 * time.Second
@@ -1037,10 +1032,6 @@ func TestJobSubscriptions(t *testing.T) {
 	ctx := context.Background()
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
-
-	defer func() {
-		os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-	}()
 
 	Convey("Once the jobqueue server is up with jobs added", t, func() {
 		serverConfig.Timings.ItemTTR = 100 * time.Second
