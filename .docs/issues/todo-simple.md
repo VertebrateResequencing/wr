@@ -1,5 +1,61 @@
 # Simple Todos
 
+## Workflow — how to tackle this file
+
+Execute this file with **one orchestrator agent** that fans the sections out to
+**parallel section agents** (one per `##` branch section below). These mechanics have
+been verified to work in this environment: the `develop` branch exists; isolated
+`git worktree`s created off `origin/develop` work; subagents can spawn their own
+subagents; subagents can invoke the `bugfix` and `pr-resolver` skills; `gh` can push,
+open PRs, and comment on / close issues; and the `Monitor` tool can watch a PR for
+merge.
+
+**Section agent** — spawn one per branch section, all in parallel (several `Agent`
+calls in a single message), each given its branch name and item list. It:
+
+1. Makes an isolated checkout off the latest develop and creates the branch (run
+   `git fetch origin develop` first):
+   `git -C <main-repo> worktree add /tmp/wr-work/<branch> -b <branch> origin/develop`.
+   All work happens inside that worktree.
+2. Implements the section's items by invoking the **`bugfix` skill** (it runs TDD via
+   its own implementor/reviewer subagents and auto-commits each fix). Make the
+   affected package's tests and linter pass locally.
+3. Ticks **Implemented** in its own section below. (Each section's checkboxes are
+   distinct lines, so parallel edits don't collide; re-read and retry if an edit ever
+   fails.)
+4. `git push -u origin <branch>`, then opens a PR against **develop**:
+   `gh pr create --base develop ...`. The body says it **solves** the section's
+   issues, listing them as `Solves #N` — **not** `Fixes/Closes #N`, because we close
+   the issues ourselves after merge with a release note.
+5. Drives the PR to a good state by invoking the **`pr-resolver` skill** (CI +
+   Copilot/human comments, looped until clean). Ticks **Reviewed**.
+6. Reports back to the orchestrator — PR URL, branch, worktree path, issue numbers —
+   then returns.
+
+**Orchestrator** — once section agents report ready:
+
+7. Tells you, per section: "PR `<url>` is ready to merge (covers #a, #b)."
+8. **Monitors each open PR** for you to merge (e.g. `Monitor` a persistent poll of
+   `gh pr view <url> --json state` that emits when `state == MERGED`).
+9. **On each merge:** comments on that section's issues — *"Fixed on `develop`; will
+   ship in the next release."* — and `gh issue close`s them; ticks **Merged** and
+   **Solved**. Then `git fetch origin develop` and **rebases every still-open
+   section's branch** onto the new develop (`git rebase origin/develop` in each
+   worktree → `git push --force-with-lease`, re-running `pr-resolver` if the rebase
+   changed anything). Repeat until all sections are Merged + Solved.
+
+Monitoring, issue-closing and the cross-branch rebase live in the orchestrator (not
+inside each section agent) because a section agent can't reach its siblings to make
+them rebase, and one central watcher is far more reliable than several agents each
+blocked for hours — the net effect is exactly the flow described above.
+
+Notes: PRs target **`develop`**, not `master`. Keep each branch to its section's
+items so the diff stays reviewable (Copilot refuses very large diffs).
+`chore/error-wrapping-sweep` (#301) will likely need splitting into several
+per-package PRs — run each as its own branch off develop through the same flow.
+
+---
+
 Straightforward, unambiguous items — the implementation is determined and needs no
 product decisions. Items are grouped into proposed **branches** (the section
 headers). Each branch batches work that can be implemented and reviewed together —
