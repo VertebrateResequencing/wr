@@ -5280,7 +5280,7 @@ func TestJobqueueRunners(t *testing.T) {
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 10 * time.Second
-		serverConfig.Timings.CheckRunnerTime = 2 * time.Second
+		serverConfig.Timings.CheckRunnerTime = 10 * time.Second
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		runnertmpdir := t.TempDir()
 
@@ -5817,7 +5817,7 @@ func TestJobqueueRunners(t *testing.T) {
 			var jobs []*Job
 			count := maxCPU * 2
 			for i := 0; i < count; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0.5}, Retries: uint8(0), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 1 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0.5}, Retries: uint8(0), RepGroup: "manually_added"}) //nolint:lll
 			}
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -5895,7 +5895,7 @@ func TestJobqueueRunners(t *testing.T) {
 			jobMB := int(math.Floor(float64(maxMem) / float64(maxCPU*2)))
 			count := maxCPU * 3
 			for i := 0; i < count; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: 2, RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 1 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: 2, RepGroup: "manually_added"}) //nolint:lll
 			}
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -6074,28 +6074,28 @@ func TestJobqueueRunners(t *testing.T) {
 				defer disconnect(jq)
 
 				req1 := &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}
-				jobs := []*Job{{Cmd: "echo 1 && sleep 4", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "a"}}
+				jobs := []*Job{{Cmd: "echo 1 && sleep 2", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "a"}}
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(1 * time.Second)
+				<-time.After(500 * time.Millisecond)
 
-				job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 4"}, false, false)
+				job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 2"}, false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
 
-				jobs = []*Job{{Cmd: "echo 2 && sleep 3", Cwd: "/tmp", ReqGroup: "req2", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Hour, Cores: 1}, RepGroup: "a"}}
+				jobs = []*Job{{Cmd: "echo 2 && sleep 2", Cwd: "/tmp", ReqGroup: "req2", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Hour, Cores: 1}, RepGroup: "a"}} //nolint:lll
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(1 * time.Second)
+				<-time.After(500 * time.Millisecond)
 
-				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 3"}, false, false)
+				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 2"}, false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -6106,7 +6106,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(1 * time.Second)
+				<-time.After(500 * time.Millisecond)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && sleep 2"}, false, false)
 				So(err, ShouldBeNil)
@@ -6146,7 +6146,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(err, ShouldBeNil)
 				defer disconnect(jq)
 
-				jobs := []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 1), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}}
+				jobs := []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(2);'", runnertmpdir, 1), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}} //nolint:lll
 
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
@@ -6195,7 +6195,7 @@ func TestJobqueueRunners(t *testing.T) {
 				}()
 				So(<-running, ShouldBeTrue)
 
-				jobs = []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 2), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}}
+				jobs = []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(2);'", runnertmpdir, 2), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}} //nolint:lll
 
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
