@@ -27,7 +27,11 @@ Three kinds of sub-note appear under some items:
 - [#192 Write Nextflow support](https://github.com/VertebrateResequencing/wr/issues/192): This is a separate Nextflow scheduler/integration project and the issue notes it is not strictly for this repository.
   - _Independent review (suggest Invalid): beyond being out of scope (the executor would live in Nextflow's codebase), wr already supports being a Nextflow backend via its LSF/bsub emulation (added v0.13.0), so the need is largely moot._
 - [#117 Task Execution Service - GA4GH APIs](https://github.com/VertebrateResequencing/wr/issues/117): TES support would require API design, auth choices, and file input/output semantics beyond the current REST surface.
+- [#92 Add a website front-page to readthedocs](https://github.com/VertebrateResequencing/wr/issues/92): The changelog records a new Read the Docs documentation site replacing the old README/wiki content.
+  - _Independent review (disagree with Solved): the docs site exists, but the issue's actual ask (a proper front page, a purchased domain, a walkthrough/video) was still open per the 2021-10-29 comment ("no nice front page implemented, or domain purchased yet"). The remaining work is external/non-code, so I placed it in Can't Fix rather than Solved._
 - [#73 OpenStack: Watch host resources to identify lockups](https://github.com/VertebrateResequencing/wr/issues/73): Validating this needs real OpenStack workers that exhibit the low-load lockup behavior.
+- [#72 Openstack failed job should retry on a different host](https://github.com/VertebrateResequencing/wr/issues/72): A normal user-command failure can still leave the host reusable, so retry-on-different-host behavior remains to be added.
+  - _Independent review (suggest Can't Fix): the runner-exit-on-failure sub-behaviour is local code, but "retry on a different host" is inherently multi-host and can't be meaningfully verified without OpenStack._
 - [#66 OpenStack - additional storage should be mounted as additional volume](https://github.com/VertebrateResequencing/wr/issues/66): This needs OpenStack block-device behavior and volume lifecycle testing.
 - [#54 Feature - OpenStack volume passing between dependant jobs](https://github.com/VertebrateResequencing/wr/issues/54): Passing volumes between dependent cloud jobs is a major OpenStack orchestration feature.
 - [#53 Cloud schedulers: better/no server reuse](https://github.com/VertebrateResequencing/wr/issues/53): This requires cloud scheduling policy changes and real OpenStack validation around reuse, isolation, and teardown.
@@ -38,6 +42,8 @@ Three kinds of sub-note appear under some items:
 - [#31 Resource Token system](https://github.com/VertebrateResequencing/wr/issues/31): Limit groups cover part of the need, but the full token server/rate-limit design is a large distributed feature.
   - _Independent review (suggest Todo): the urgent need is already met by limit groups and the started `rp` package is a local foundation; continuing the single-manager timed/delayed parts is tractable and testable locally without any special environment._
 - [#22 Long-running commands should have the option of being checkpointed](https://github.com/VertebrateResequencing/wr/issues/22): Checkpoint/restart depends heavily on OS and application support and has no obvious general implementation path here.
+- [#17 Cloud deployment should work from MacOS -> linux](https://github.com/VertebrateResequencing/wr/issues/17): Cloud deploy still uploads the local executable, so a Darwin client can still copy the wrong binary to Linux.
+  - _Independent review (suggest Can't Fix): the binary-selection logic is local code, but "cloud deployment should work MacOS->linux" can only be confirmed by an actual OpenStack deploy, which isn't available here._
 
 ## Invalid
 
@@ -101,15 +107,9 @@ Three kinds of sub-note appear under some items:
 - [#197 Allow job modification using web/REST interfaces](https://github.com/VertebrateResequencing/wr/issues/197): `wr mod` exists, but the web UI and public REST API do not expose equivalent editing.
 - [#194 wr mod: allow modification of dep groups and bsub mode](https://github.com/VertebrateResequencing/wr/issues/194): The current `mod` command explicitly excludes dependency groups and bsub mode.
 - [#98 "Live" job introspection](https://github.com/VertebrateResequencing/wr/issues/98): The runner touches jobs, but live peak resource/stdout/stderr updates are still not sent as requested.
-- [#92 Add a website front-page to readthedocs](https://github.com/VertebrateResequencing/wr/issues/92): The changelog records a new Read the Docs documentation site replacing the old README/wiki content.
-  - _Independent review (disagree with Solved): the docs site exists, but the issue's actual ask (a proper front page, a purchased domain, a walkthrough/video) was still open per the 2021-10-29 comment ("no nice front page implemented, or domain purchased yet"). The remaining work is external/non-code, so I placed it in Can't Fix rather than Solved._
-- [#72 Openstack failed job should retry on a different host](https://github.com/VertebrateResequencing/wr/issues/72): A normal user-command failure can still leave the host reusable, so retry-on-different-host behavior remains to be added.
-  - _Independent review (suggest Can't Fix): the runner-exit-on-failure sub-behaviour is local code, but "retry on a different host" is inherently multi-host and can't be meaningfully verified without OpenStack._
 - [#28 Dependencies: choose to make them un-"live"](https://github.com/VertebrateResequencing/wr/issues/28): There is no visible way to add or toggle a non-live dependency state.
 - [#20 Status webpage: add rerun button](https://github.com/VertebrateResequencing/wr/issues/20): The web UI has retry for buried jobs but no rerun button for completed jobs.
 - [#19 Cmd env vars and expected resource requirements should be editable](https://github.com/VertebrateResequencing/wr/issues/19): These edits are possible through `wr mod` but not through the status webpage.
-- [#17 Cloud deployment should work from MacOS -> linux](https://github.com/VertebrateResequencing/wr/issues/17): Cloud deploy still uploads the local executable, so a Darwin client can still copy the wrong binary to Linux.
-  - _Independent review (suggest Can't Fix): the binary-selection logic is local code, but "cloud deployment should work MacOS->linux" can only be confirmed by an actual OpenStack deploy, which isn't available here._
 
 ## Investigate
 
