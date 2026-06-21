@@ -934,6 +934,74 @@ func TestLSF(t *testing.T) {
 	})
 }
 
+// TestLSFQueueSelection tests the LSF scheduler's queue-selection logic
+// (determineQueue and its helpers) directly, by constructing the parsed queue
+// data that the scheduler would normally build from `bqueues -l` at setup. This needs no
+// real LSF installation, so it runs everywhere (unlike TestLSF, which is gated
+// on LSF being installed and WR_LSF_TEST_KEY); the real bsub/bqueues paths
+// remain covered by TestLSF. determineQueue picks the first queue, in the
+// scheduler's preferred order, that isn't excluded and has enough memory and
+// runtime for the job.
+const (
+	memlimitKey = "memlimit"
+	runlimitKey = "runlimit"
+)
+
+func TestLSFQueueSelection(t *testing.T) {
+	Convey("Given an lsf scheduler with parsed queues", t, func() {
+		// preferred order (as the scheduler would rank them), and per-queue
+		// memlimit (MB) and runlimit (seconds); 0 means unlimited.
+		s := &lsf{
+			sortedqs: []string{"normal", "long", "hugemem", "basement"},
+			queues: map[string]map[string]int{
+				"normal":   {memlimitKey: 36000, runlimitKey: 12 * 60 * 60},
+				"long":     {memlimitKey: 36000, runlimitKey: 720 * 60 * 60},
+				"hugemem":  {memlimitKey: 3000000, runlimitKey: 720 * 60 * 60},
+				"basement": {memlimitKey: 3000000, runlimitKey: 0},
+			},
+		}
+
+		noOther := make(map[string]string)
+
+		Convey("a small, short job goes to the first (most-preferred) suitable queue", func() {
+			q, err := s.determineQueue(&Requirements{100, 1 * time.Minute, 1, 20, noOther, true, true, true})
+			So(err, ShouldBeNil)
+			So(q, ShouldEqual, "normal")
+		})
+
+		Convey("a long-running job skips queues whose runlimit is too low", func() {
+			q, err := s.determineQueue(&Requirements{100, 100 * time.Hour, 1, 20, noOther, true, true, true})
+			So(err, ShouldBeNil)
+			So(q, ShouldEqual, "long")
+		})
+
+		Convey("a high-memory job skips queues whose memlimit is too low", func() {
+			q, err := s.determineQueue(&Requirements{100000, 1 * time.Minute, 1, 20, noOther, true, true, true})
+			So(err, ShouldBeNil)
+			So(q, ShouldEqual, "hugemem")
+		})
+
+		Convey("a queue can be explicitly requested", func() {
+			q, err := s.determineQueue(&Requirements{100, 1 * time.Minute, 1, 20,
+				map[string]string{"scheduler_queue": "long"}, true, true, true})
+			So(err, ShouldBeNil)
+			So(q, ShouldEqual, "long")
+		})
+
+		Convey("queues can be avoided by substring", func() {
+			q, err := s.determineQueue(&Requirements{100, 1 * time.Minute, 1, 20,
+				map[string]string{"scheduler_queues_avoid": "normal,long"}, true, true, true})
+			So(err, ShouldBeNil)
+			So(q, ShouldEqual, "hugemem")
+		})
+
+		Convey("an impossible job (more memory than any queue allows) errors", func() {
+			_, err := s.determineQueue(&Requirements{9999999999, 1 * time.Minute, 1, 20, noOther, true, true, true})
+			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
 func TestOpenstack(t *testing.T) {
 	ctx := context.Background()
 	// check if we have our special openstack-related variable
