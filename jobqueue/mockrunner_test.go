@@ -28,6 +28,9 @@ func fakeRunnerSchedGrp(cmd string) string {
 // fake runner only cares about the group.
 const mockRunnerCmd = "fakerunner %s %s %s %s %d %d"
 
+// fakeReqGroup is the ReqGroup used by mock-runner test jobs.
+const fakeReqGroup = "fake"
+
 // newFakeRunnerFunc returns a ConfigMock.RunnerFunc that acts like a wr runner
 // without spawning a subprocess or executing any real job command: it connects
 // to the server, reserves jobs for its scheduler group, and drives each job
@@ -167,7 +170,7 @@ func TestJobqueueMockRunner(t *testing.T) {
 			jobs := make([]*Job, 0, 10)
 			for i := range 10 {
 				jobs = append(jobs, &Job{
-					Cmd: "echo " + string(rune('a'+i)), Cwd: testCwd, ReqGroup: "fake",
+					Cmd: "echo " + string(rune('a'+i)), Cwd: testCwd, ReqGroup: fakeReqGroup,
 					Requirements: standardReqs, RepGroup: "mocktest",
 				})
 			}
@@ -176,13 +179,27 @@ func TestJobqueueMockRunner(t *testing.T) {
 			So(errr, ShouldBeNil)
 			So(inserts, ShouldEqual, 10)
 
-			complete := waitForJobState(jq, "mocktest", JobStateComplete, 10, 20*time.Second)
+			complete := waitForJobState(jq, "mocktest", JobStateComplete, 10)
 			So(complete, ShouldEqual, 10)
 		})
 
-		Convey("a failing job is retried then buried", func() {
+		Convey("a job that fails with no retries is buried immediately", func() {
 			jobs := []*Job{{
-				Cmd: "echo x && false", Cwd: testCwd, ReqGroup: "fake",
+				Cmd: "echo x && false", Cwd: testCwd, ReqGroup: fakeReqGroup,
+				Requirements: standardReqs, Retries: uint8(0), RepGroup: "mockfail0",
+			}}
+
+			inserts, _, errr := jq.Add(jobs, envVars, true)
+			So(errr, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+
+			buried := waitForJobState(jq, "mockfail0", JobStateBuried, 1)
+			So(buried, ShouldEqual, 1)
+		})
+
+		Convey("a failing job is retried then buried, and kicking retries it again", func() {
+			jobs := []*Job{{
+				Cmd: "echo x && false", Cwd: testCwd, ReqGroup: fakeReqGroup,
 				Requirements: standardReqs, Retries: uint8(1), RepGroup: "mockfail",
 			}}
 
@@ -190,16 +207,31 @@ func TestJobqueueMockRunner(t *testing.T) {
 			So(errr, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 
-			buried := waitForJobState(jq, "mockfail", JobStateBuried, 1, 20*time.Second)
+			buried := waitForJobState(jq, "mockfail", JobStateBuried, 1)
 			So(buried, ShouldEqual, 1)
+
+			// kicking a buried job makes it ready again; the fake runner runs
+			// it, it fails again and is re-buried - repeatedly.
+			for range 2 {
+				buriedJobs, errg := jq.GetByRepGroup("mockfail", false, 0, JobStateBuried, false, false)
+				So(errg, ShouldBeNil)
+				So(len(buriedJobs), ShouldEqual, 1)
+
+				kicked, errk := jq.Kick([]*JobEssence{buriedJobs[0].ToEssense()})
+				So(errk, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				reburied := waitForJobState(jq, "mockfail", JobStateBuried, 1)
+				So(reburied, ShouldEqual, 1)
+			}
 		})
 	})
 }
 
 // waitForJobState polls until want jobs in the repgroup reach the given state,
 // or the deadline passes; returns how many reached it.
-func waitForJobState(jq *Client, repGroup string, state JobState, want int, deadline time.Duration) int {
-	limit := time.Now().Add(deadline)
+func waitForJobState(jq *Client, repGroup string, state JobState, want int) int {
+	limit := time.Now().Add(20 * time.Second)
 
 	for {
 		jobs, err := jq.GetByRepGroup(repGroup, false, 0, state, false, false)
