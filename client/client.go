@@ -32,10 +32,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -140,25 +140,15 @@ type pretendJobqueue struct {
 	output    io.WriteCloser
 }
 
-type borrowedWriteCloser struct {
-	io.Writer
-}
-
-func (borrowedWriteCloser) Close() error {
-	return nil
-}
-
 func newPretendJobqueue() *pretendJobqueue {
 	var w io.WriteCloser
 
-	fd, errr := strconv.ParseUint(PretendSubmissions, 10, 64)
+	fd, errr := strconv.Atoi(PretendSubmissions)
 	if errr == nil {
-		// The fd is borrowed (set via PretendSubmissions by our caller/parent
-		// process), so the pretend client must never close it: by then the fd
-		// number may have been reused for an unrelated file.
-		f := os.NewFile(uintptr(fd), "")
-		runtime.SetFinalizer(f, nil)
-		w = borrowedWriteCloser{Writer: f}
+		dupFD, err := syscall.Dup(fd)
+		if err == nil {
+			w = os.NewFile(uintptr(dupFD), "pretend-submissions")
+		}
 	}
 
 	return &pretendJobqueue{output: w}
@@ -378,7 +368,10 @@ func (p *pretendJobqueue) Disconnect() error {
 		return nil
 	}
 
-	return p.output.Close()
+	output := p.output
+	p.output = nil
+
+	return output.Close()
 }
 
 // Scheduler can be used to schedule commands to be executed by adding them to

@@ -8,7 +8,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"testing"
 )
+
+//nolint:gochecknoglobals // TestMain cleans up the process-wide compiled binary.
+var runnerBinaryTempDir string
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+
+	if runnerBinaryTempDir != "" {
+		if err := os.RemoveAll(runnerBinaryTempDir); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "failed to remove %s: %s\n", runnerBinaryTempDir, err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
+
+	os.Exit(code)
+}
 
 // runnerBinary returns the path to a test binary to run as the --servermode or
 // --runnermode subprocess. Under the race detector we must NOT reuse the
@@ -28,8 +47,12 @@ func runnerBinary() (string, error) {
 	out, err := exec.CommandContext(context.Background(), "go", "test",
 		"-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", path).CombinedOutput()
 	if err != nil {
+		_ = os.RemoveAll(dir)
+
 		return "", fmt.Errorf("failed to compile self: %w: %s", err, string(out))
 	}
+
+	runnerBinaryTempDir = dir
 
 	return path, nil
 }

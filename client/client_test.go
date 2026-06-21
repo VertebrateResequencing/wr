@@ -1475,19 +1475,26 @@ func TestFakeScheduler(t *testing.T) {
 			pr, pw, err := os.Pipe()
 			So(err, ShouldBeNil)
 
-			PretendSubmissions = strconv.FormatUint(uint64(pw.Fd()), 10)
+			defer pr.Close()
+
+			restorePretend := setPretendSubmissionsForTest(strconv.FormatUint(uint64(pw.Fd()), 10))
+			defer restorePretend()
 
 			var (
-				jobs []*jobqueue.Job
-				jch  = make(chan error)
+				payloads [][]*jobqueue.Job
+				jch      = make(chan error)
 			)
 
 			go func() {
-				jch <- json.NewDecoder(pr).Decode(&jobs)
+				var decodeErr error
+
+				payloads, decodeErr = decodePretendJobPayloads(pr)
+				jch <- decodeErr
 			}()
 
 			s, err := New(settings)
 			So(err, ShouldBeNil)
+			So(pw.Close(), ShouldBeNil)
 
 			job1 := s.NewJob("cmd1", "rep1suffix", "req1", "depg1", "dep1", nil)
 			job2 := s.NewJob("cmd2", "rep2suffix", "req2", "depg2", "dep2", nil)
@@ -1495,10 +1502,11 @@ func TestFakeScheduler(t *testing.T) {
 			err = s.SubmitJobs([]*jobqueue.Job{job1, job2})
 			So(err, ShouldBeNil)
 
-			pw.Close()
+			So(s.Disconnect(), ShouldBeNil)
 
 			So(<-jch, ShouldBeNil)
-			So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
+			So(payloads, ShouldHaveLength, 1)
+			So(payloads[0], ShouldResemble, []*jobqueue.Job{job1, job2})
 		})
 	})
 }
@@ -1768,17 +1776,18 @@ func collectPretendJSONPayloads(settings SchedulerSettings,
 	}
 
 	jobs, submitErr := submit(s)
+	disconnectErr := s.Disconnect()
 	closeErr := f.Close()
 
 	r, openErr := os.Open(f.Name())
 	if openErr != nil {
-		return jobs, nil, errors.Join(submitErr, closeErr, openErr)
+		return jobs, nil, errors.Join(submitErr, disconnectErr, closeErr, openErr)
 	}
 	defer r.Close()
 
 	payloads, decodeErr := decodePretendJobPayloads(r)
 
-	return jobs, payloads, errors.Join(submitErr, closeErr, decodeErr)
+	return jobs, payloads, errors.Join(submitErr, disconnectErr, closeErr, decodeErr)
 }
 
 func setPretendSubmissionsForTest(value string) func() {
