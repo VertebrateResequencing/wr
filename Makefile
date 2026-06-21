@@ -29,7 +29,7 @@ install:
 # tests get their own lane; the lighter jobqueue tests share two lanes. The
 # non-jobqueue lanes (client + everything else) are nice'd so the
 # timing-sensitive jobqueue lanes get CPU priority on a busy machine.
-ALL_SPLIT := TestJobqueueRunners|TestJobqueueSignal|TestJobqueueProduction|TestJobqueueMedium|TestJobqueueModify|TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils
+ALL_SPLIT := TestJobqueueRunners|TestJobqueueSignal|TestJobqueueProduction|TestJobqueueMedium|TestJobqueueModify|TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils|TestJobqueueMockRunner
 JQ_RESTA := ^(TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils)$$
 OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$' | grep -v '^${PKG}/client$$' | grep -v '^${PKG}/jobqueue/scheduler$$')
 GO_TEST := go test -tags netgo -timeout 40m --count 1 -failfast
@@ -48,11 +48,12 @@ test:
 	$(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify.log" 2>&1 & p5=$$!; \
 	$(GO_TEST) -run '$(JQ_RESTA)' ${PKG}/jobqueue >"$$base/jqA.log" 2>&1 & p6=$$!; \
 	$(GO_TEST) -skip '$(ALL_SPLIT)' ${PKG}/jobqueue >"$$base/jqB.log" 2>&1 & p7=$$!; \
+	$(GO_TEST) -run '^TestJobqueueMockRunner$$' ${PKG}/jobqueue >"$$base/mock.log" 2>&1 & pm=$$!; \
 	$(GO_TEST) ${PKG}/jobqueue/scheduler >"$$base/scheduler.log" 2>&1 & p8=$$!; \
 	nice -n 19 $(GO_TEST) ${PKG}/client >"$$base/client.log" 2>&1 & p9=$$!; \
 	nice -n 19 $(GO_TEST) -p 4 $(OTHER_PKGS) >"$$base/other.log" 2>&1 & p10=$$!; \
-	for pid in $$p1 $$p2 $$p3 $$p4 $$p5 $$p6 $$p7 $$p8 $$p9 $$p10; do wait $$pid || rc=1; done; \
-	for f in runners signal production medium modify jqA jqB scheduler client other; do \
+	for pid in $$p1 $$p2 $$p3 $$p4 $$p5 $$p6 $$p7 $$pm $$p8 $$p9 $$p10; do wait $$pid || rc=1; done; \
+	for f in runners signal production medium modify jqA jqB mock scheduler client other; do \
 		echo "===== $$f ====="; cat "$$base/$$f.log"; \
 	done; \
 	rm -rf "$$base" /tmp/jobqueue_cwd 2>/dev/null || true; \
