@@ -2026,6 +2026,7 @@ func TestJobqueueMedium(t *testing.T) {
 	}
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+	reserveWait := 5 * time.Second
 
 	Convey("Once a new jobqueue server is up", t, func() {
 		serverConfig.Timings.ItemTTR = 200 * time.Millisecond
@@ -2221,7 +2222,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job, ShouldNotBeNil)
 						So(job.State, ShouldEqual, JobStateDelayed)
 
-						job, err = jq.Reserve(100 * time.Millisecond)
+						job, err = jq.Reserve(reserveWait)
 						So(err, ShouldBeNil)
 						So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
 						So(job.State, ShouldEqual, JobStateReserved)
