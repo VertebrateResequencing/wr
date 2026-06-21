@@ -141,6 +141,9 @@ func TestJobqueueMockRunner(t *testing.T) {
 
 	ctx := context.Background()
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+	// a meaningful (but short) CheckRunnerTime so the scheduling-gap assertion
+	// below still detects the old "delayed by a full CheckRunnerTime" regression.
+	serverConfig.Timings.CheckRunnerTime = 2 * time.Second
 	serverConfig.SchedulerName = "mock"
 	serverConfig.RunnerCmd = mockRunnerCmd
 	serverConfig.SchedulerConfig = &jqs.ConfigMock{
@@ -224,6 +227,72 @@ func TestJobqueueMockRunner(t *testing.T) {
 				reburied := waitForJobState(jq, "mockfail", JobStateBuried, 1)
 				So(reburied, ShouldEqual, 1)
 			}
+		})
+
+		Convey("limit groups cap concurrency and the next job starts without delay", func() {
+			// limitedA jobs share limit group "b:1" with the limitedB job, so the
+			// server lets only one of them be reserved/run at a time; the 1-core
+			// limitedB job should become runnable promptly once the limitedA jobs
+			// free the shared limit (the old regression delayed it by a full
+			// CheckRunnerTime).
+			count := 3
+
+			jobs := make([]*Job, 0, count)
+			for i := 1; i <= count; i++ {
+				jobs = append(jobs, &Job{
+					Cmd: "echo " + string(rune('a'+i)), Cwd: testCwd, CwdMatters: true,
+					ReqGroup: "limitedA", Requirements: &jqs.Requirements{RAM: 1, Time: time.Second, Cores: 0},
+					Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"a:5", "b:1"},
+				})
+			}
+
+			inserts, _, errr := jq.Add(jobs, envVars, true)
+			So(errr, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+
+			So(waitForJobState(jq, "limited", JobStateComplete, 1), ShouldBeGreaterThanOrEqualTo, 1)
+
+			jobs = []*Job{{
+				Cmd: "echo z", Cwd: testCwd, CwdMatters: true, ReqGroup: "limitedB",
+				Requirements: &jqs.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+				Override:     uint8(2), RepGroup: "limited", LimitGroups: []string{"c:5", "b:1"},
+			}}
+
+			inserts, _, errr = jq.Add(jobs, envVars, true)
+			So(errr, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+
+			So(waitForJobState(jq, "limited", JobStateComplete, count+1), ShouldEqual, count+1)
+
+			completed, errg := jq.GetByRepGroup("limited", false, 0, JobStateComplete, false, false)
+			So(errg, ShouldBeNil)
+
+			var (
+				zeroCPUComplete int
+				zeroCPUEnd      time.Time
+				oneCPUComplete  int
+				oneCPUStart     time.Time
+			)
+
+			for _, job := range completed {
+				switch job.ReqGroup {
+				case "limitedA":
+					zeroCPUComplete++
+
+					if job.EndTime.After(zeroCPUEnd) {
+						zeroCPUEnd = job.EndTime
+					}
+				case "limitedB":
+					oneCPUComplete++
+					oneCPUStart = job.StartTime
+				}
+			}
+
+			So(zeroCPUComplete, ShouldEqual, count)
+			So(oneCPUComplete, ShouldEqual, 1)
+			So(zeroCPUEnd.IsZero(), ShouldBeFalse)
+			So(oneCPUStart.IsZero(), ShouldBeFalse)
+			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, serverConfig.Timings.CheckRunnerTime)
 		})
 	})
 }
