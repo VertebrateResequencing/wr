@@ -92,10 +92,10 @@ func init() {
 }
 
 type startOrderRecorder struct {
-	dir   string
-	lock  string
-	count string
-	order string
+	dir        string
+	lock       string
+	order      string
+	releaseAll string
 }
 
 func newStartOrderRecorder() (*startOrderRecorder, error) {
@@ -105,10 +105,10 @@ func newStartOrderRecorder() (*startOrderRecorder, error) {
 	}
 
 	return &startOrderRecorder{
-		dir:   dir,
-		lock:  filepath.Join(dir, "lock"),
-		count: filepath.Join(dir, "count"),
-		order: filepath.Join(dir, "order"),
+		dir:        dir,
+		lock:       filepath.Join(dir, "lock"),
+		order:      filepath.Join(dir, "order"),
+		releaseAll: filepath.Join(dir, "release_all"),
 	}, nil
 }
 
@@ -116,38 +116,93 @@ func (r *startOrderRecorder) Close() {
 	os.RemoveAll(r.dir)
 }
 
-func (r *startOrderRecorder) Command(label string, tmpdir string) string {
-	return fmt.Sprintf("while ! mkdir %s 2>/dev/null; do sleep 0.001; done; "+
-		"n=0; if [ -s %s ]; then n=$(cat %s); fi; n=$((n + 1)); "+
-		"echo \"$n\" > %s; printf '%%06d %s\\n' \"$n\" >> %s; rmdir %s; "+
-		"mktemp --tmpdir=%s tmp.XXXXXX >/dev/null && sleep 0.75",
-		r.lock, r.count, r.count, r.count, label, r.order, r.lock, tmpdir)
+// Command returns a shell command for label that, when run, creates a unique
+// "running" marker in tmpdir, records label in the start-order file, then
+// blocks until either its own marker is deleted (releaseOne) or the release-all
+// file appears (releaseAllJobs). Because a running job holds its marker, the
+// test sees which jobs run concurrently by counting markers and releases them
+// one at a time; it never depends on the real-time order in which dispatched
+// processes happen to reach this code, which is unreliable under heavy load.
+func (r *startOrderRecorder) Command(label, tmpdir string) string {
+	return fmt.Sprintf("marker=$(mktemp --tmpdir=%s run.XXXXXX); "+
+		"while ! mkdir %s 2>/dev/null; do sleep 0.001; done; echo %s >> %s; rmdir %s; "+
+		"while [ -e \"$marker\" ] && [ ! -e %s ]; do sleep 0.02; done",
+		tmpdir, r.lock, label, r.order, r.lock, r.releaseAll)
 }
 
-func (r *startOrderRecorder) Order() ([]string, error) {
-	startOrderBytes, err := os.ReadFile(r.order)
+// running returns how many instances of a label are currently running (holding
+// a marker) in tmpdir.
+func (r *startOrderRecorder) running(tmpdir string) int {
+	entries, err := os.ReadDir(tmpdir)
 	if err != nil {
-		return nil, err
+		return 0
 	}
 
-	return strings.Fields(string(startOrderBytes)), nil
+	return len(entries)
 }
 
-func (r *startOrderRecorder) Labels() ([]string, error) {
-	startOrder, err := r.Order()
-	if err != nil {
-		return nil, err
+// waitForRunning waits for tmpdir to hold exactly n running markers, returning
+// true as soon as it does and false on timeout.
+func (r *startOrderRecorder) waitForRunning(tmpdir string, n int) bool {
+	return pollUntil(func() bool { return r.running(tmpdir) == n })
+}
+
+// releaseOne lets one running instance in tmpdir finish, by deleting one of its
+// markers.
+func (r *startOrderRecorder) releaseOne(tmpdir string) {
+	entries, err := os.ReadDir(tmpdir)
+	if err != nil || len(entries) == 0 {
+		return
 	}
 
-	labels := make([]string, 0, len(startOrder)/2)
+	os.Remove(filepath.Join(tmpdir, entries[0].Name()))
+}
 
-	for i, field := range startOrder {
-		if i%2 == 1 {
-			labels = append(labels, field)
+// releaseAllJobs lets every still-running instance finish.
+func (r *startOrderRecorder) releaseAllJobs() {
+	if err := os.WriteFile(r.releaseAll, []byte{}, 0600); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// started returns how many times label has started (cumulative, even if it has
+// since been released).
+func (r *startOrderRecorder) started(label string) int {
+	data, err := os.ReadFile(r.order)
+	if err != nil {
+		return 0
+	}
+
+	n := 0
+
+	for _, field := range strings.Fields(string(data)) {
+		if field == label {
+			n++
 		}
 	}
 
-	return labels, nil
+	return n
+}
+
+// pollUntil polls cond every 20ms for up to 30s, returning true as soon as cond
+// returns true and false on timeout.
+func pollUntil(cond func() bool) bool {
+	limit := time.After(30 * time.Second)
+
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if cond() {
+			return true
+		}
+
+		select {
+		case <-limit:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestLocal(t *testing.T) {
@@ -384,12 +439,13 @@ func TestLocal(t *testing.T) {
 		})
 
 		if maxCPU > 2 {
-			Convey("Schedule() does bin packing and fills up the machine with different size cmds", func() {
+			Convey("Schedule() bin-packs a small cmd alongside a big one, deferring the second big", func() {
 				smallTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_small_output_dir_")
 				if err != nil {
 					log.Fatal(err)
 				}
 				defer os.RemoveAll(smallTmpdir)
+
 				bigTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_big_output_dir_")
 				if err != nil {
 					log.Fatal(err)
@@ -403,68 +459,80 @@ func TestLocal(t *testing.T) {
 
 				defer order.Close()
 
-				blockCmd := "sleep 0.25"
-				blockReq := &Requirements{1, 1 * time.Second, float64(maxCPU), 0, otherReqs, true, true, true}
-				smallCmd := order.Command("small", smallTmpdir)
 				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
-				bigCmd := order.Command("big", bigTmpdir)
 				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU - 1), 0, otherReqs, true, true, true}
 
-				// schedule 2 big cmds and then a small one to prove the small
-				// one fits the gap and runs before the second big one
-				err = s.Schedule(ctx, bigCmd, bigReq, 0, 2)
-				So(err, ShouldBeNil)
-				err = s.Schedule(ctx, smallCmd, smallReq, 0, 1)
-				So(err, ShouldBeNil)
+				// 2 big cmds (each needs all-but-one core) and 1 small (1 core). Bin
+				// packing must run the first big and the small together (filling the
+				// machine), so the second big has to wait. We assert on what is running
+				// concurrently, not on the (load-sensitive) order processes happen to start.
+				So(s.Schedule(ctx, order.Command("big", bigTmpdir), bigReq, 0, 2), ShouldBeNil)
+				So(s.Schedule(ctx, order.Command("small", smallTmpdir), smallReq, 0, 1), ShouldBeNil)
 
-				for {
-					if !s.Busy(ctx) {
-						break
-					}
-					<-time.After(1 * time.Millisecond)
+				So(order.waitForRunning(smallTmpdir, 1), ShouldBeTrue)
+				So(order.waitForRunning(bigTmpdir, 1), ShouldBeTrue)
+				So(order.running(bigTmpdir), ShouldEqual, 1)
+				So(order.running(smallTmpdir), ShouldEqual, 1)
+
+				// release the first big; the second big now has room and runs
+				order.releaseOne(bigTmpdir)
+				So(pollUntil(func() bool { return order.started("big") == 2 }), ShouldBeTrue)
+
+				order.releaseAllJobs()
+				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(order.started("big"), ShouldEqual, 2)
+				So(order.started("small"), ShouldEqual, 1)
+			})
+
+			Convey("The biggest scheduled cmd runs first when the machine frees up", func() {
+				smallTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_small_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(smallTmpdir)
+
+				bigTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_big_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(bigTmpdir)
+
+				order, err := newStartOrderRecorder()
+				if err != nil {
+					log.Fatal(err)
 				}
 
-				bigTimes := mtimesOfFilesInDir(bigTmpdir, 2)
-				So(len(bigTimes), ShouldEqual, 2)
-				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
-				So(len(smallTimes), ShouldEqual, 1)
+				defer order.Close()
 
-				startLabels, err := order.Labels()
-				So(err, ShouldBeNil)
-				So(startLabels, ShouldHaveLength, 3)
-				So(countStartLabels(startLabels, "big"), ShouldEqual, 2)
-				So(countStartLabels(startLabels, "small"), ShouldEqual, 1)
-				So(nthStartLabelIndex(startLabels, "small", 1), ShouldBeLessThan, nthStartLabelIndex(startLabels, "big", 2))
-
-				// schedule a blocker so that subsequent schedules will be
-				// compared to each other, then schedule 2 small cmds and a big
-				// command that uses all cpus to prove that the biggest one
-				// takes priority
-				err = s.Schedule(ctx, blockCmd, blockReq, 0, 1)
-				So(err, ShouldBeNil)
-				err = s.Schedule(ctx, smallCmd, smallReq, 0, 2)
-				So(err, ShouldBeNil)
-				err = s.Schedule(ctx, bigCmd, blockReq, 0, 1)
-				So(err, ShouldBeNil)
-
-				for {
-					if !s.Busy(ctx) {
-						break
-					}
-					<-time.After(1 * time.Millisecond)
+				blockTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_block_output_dir_")
+				if err != nil {
+					log.Fatal(err)
 				}
+				defer os.RemoveAll(blockTmpdir)
 
-				bigTimes = mtimesOfFilesInDir(bigTmpdir, 1)
-				So(len(bigTimes), ShouldEqual, 1)
-				smallTimes = mtimesOfFilesInDir(smallTmpdir, 2)
-				So(len(smallTimes), ShouldEqual, 2)
-				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[0])
-				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[1])
-				// *** one of the above 2 tests can fail; the jobs start in the
-				// correct order, which is what we're trying to test for, but
-				// finish in the wrong order. That is, the big job takes a few
-				// extra ms before it does anything. Not sure how to test for
-				// actual job start time order...
+				allReq := &Requirements{1, 1 * time.Second, float64(maxCPU), 0, otherReqs, true, true, true}
+				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
+
+				// a blocker fills the whole machine, then 2 small (1 core) and 1 big (all
+				// cores) are queued behind it; when the machine frees, the biggest cmd
+				// must take priority and run before the smalls.
+				So(s.Schedule(ctx, order.Command("block", blockTmpdir), allReq, 0, 1), ShouldBeNil)
+				So(order.waitForRunning(blockTmpdir, 1), ShouldBeTrue)
+				So(s.Schedule(ctx, order.Command("small", smallTmpdir), smallReq, 0, 2), ShouldBeNil)
+				So(s.Schedule(ctx, order.Command("big", bigTmpdir), allReq, 0, 1), ShouldBeNil)
+
+				So(order.running(smallTmpdir), ShouldEqual, 0)
+				So(order.running(bigTmpdir), ShouldEqual, 0)
+
+				order.releaseOne(blockTmpdir)
+				So(order.waitForRunning(bigTmpdir, 1), ShouldBeTrue)
+				So(order.running(smallTmpdir), ShouldEqual, 0)
+				So(order.started("small"), ShouldEqual, 0)
+
+				order.releaseAllJobs()
+				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(order.started("big"), ShouldEqual, 1)
+				So(order.started("small"), ShouldEqual, 2)
 			})
 
 			Convey("Priority overrides bin-packing for smaller cmds", func() {
@@ -473,6 +541,7 @@ func TestLocal(t *testing.T) {
 					log.Fatal(err)
 				}
 				defer os.RemoveAll(smallTmpdir)
+
 				bigTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_big_output_dir_")
 				if err != nil {
 					log.Fatal(err)
@@ -486,37 +555,27 @@ func TestLocal(t *testing.T) {
 
 				defer order.Close()
 
-				smallCmd := order.Command("small", smallTmpdir)
 				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
-				bigCmd := order.Command("big", bigTmpdir)
 				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU) / 2, 0, otherReqs, true, true, true}
 
-				// schedule 3 big cmds (where 2 can run at once, filling the
-				// whole machine) and then a small one to prove the small
-				// one with higher priority runs before the 3rd big one.
-				err = s.Schedule(ctx, bigCmd, bigReq, 0, 3)
-				So(err, ShouldBeNil)
-				err = s.Schedule(ctx, smallCmd, smallReq, 1, 1)
-				So(err, ShouldBeNil)
+				// 3 big cmds at priority 0 (two fill the machine) and 1 small at higher
+				// priority 1. When a slot frees, the higher-priority small must take it
+				// before the third big does.
+				So(s.Schedule(ctx, order.Command("big", bigTmpdir), bigReq, 0, 3), ShouldBeNil)
+				So(s.Schedule(ctx, order.Command("small", smallTmpdir), smallReq, 1, 1), ShouldBeNil)
 
-				for {
-					if !s.Busy(ctx) {
-						break
-					}
-					<-time.After(1 * time.Millisecond)
-				}
+				So(order.waitForRunning(bigTmpdir, 2), ShouldBeTrue)
+				So(order.running(smallTmpdir), ShouldEqual, 0)
 
-				bigTimes := mtimesOfFilesInDir(bigTmpdir, 2)
-				So(len(bigTimes), ShouldEqual, 3)
-				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
-				So(len(smallTimes), ShouldEqual, 1)
+				order.releaseOne(bigTmpdir)
+				So(order.waitForRunning(smallTmpdir, 1), ShouldBeTrue)
+				So(order.running(bigTmpdir), ShouldEqual, 1)
+				So(order.started("big"), ShouldEqual, 2)
 
-				startLabels, err := order.Labels()
-				So(err, ShouldBeNil)
-				So(startLabels, ShouldHaveLength, 4)
-				So(countStartLabels(startLabels, "big"), ShouldEqual, 3)
-				So(countStartLabels(startLabels, "small"), ShouldEqual, 1)
-				So(nthStartLabelIndex(startLabels, "small", 1), ShouldBeLessThan, nthStartLabelIndex(startLabels, "big", 3))
+				order.releaseAllJobs()
+				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(order.started("big"), ShouldEqual, 3)
+				So(order.started("small"), ShouldEqual, 1)
 			})
 		}
 
@@ -561,35 +620,6 @@ func TestLocal(t *testing.T) {
 			So(first, ShouldHappenBefore, second.Add(-400*time.Millisecond))
 		})
 	}
-}
-
-func countStartLabels(labels []string, label string) int {
-	count := 0
-
-	for _, got := range labels {
-		if got == label {
-			count++
-		}
-	}
-
-	return count
-}
-
-func nthStartLabelIndex(labels []string, label string, nth int) int {
-	seen := 0
-
-	for i, got := range labels {
-		if got != label {
-			continue
-		}
-
-		seen++
-		if seen == nth {
-			return i
-		}
-	}
-
-	return -1
 }
 
 func TestLSF(t *testing.T) {
