@@ -27,6 +27,13 @@ import (
 	"time"
 )
 
+const (
+	mockSchedulerName   = "mock"
+	mockInitializeOp    = "initialize" //nolint:misspell
+	errMockConfig       = "SchedulerConfig must be ConfigMock or *ConfigMock with RunnerFunc"
+	errMockNoRunnerFunc = "SchedulerConfig must include RunnerFunc"
+)
+
 // ConfigMock is the config option you supply to New() when using the "mock"
 // scheduler. The mock scheduler does not spawn any subprocesses; instead, for
 // every runner it is asked to run, it calls RunnerFunc in its own goroutine.
@@ -66,9 +73,19 @@ type mock struct {
 func (s *mock) initialize(_ context.Context, config any) error { //nolint:misspell
 	switch conf := config.(type) {
 	case *ConfigMock:
+		if conf == nil {
+			return Error{mockSchedulerName, mockInitializeOp, errMockConfig}
+		}
+
 		s.config = *conf
 	case ConfigMock:
 		s.config = conf
+	default:
+		return Error{mockSchedulerName, mockInitializeOp, errMockConfig}
+	}
+
+	if s.config.RunnerFunc == nil {
+		return Error{mockSchedulerName, mockInitializeOp, errMockNoRunnerFunc}
 	}
 
 	s.running = make(map[string]int)

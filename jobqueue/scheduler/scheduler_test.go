@@ -48,6 +48,45 @@ var (
 	testLogger = log15.Root() //nolint:gochecknoglobals
 )
 
+// TestLSFQueueSelection tests the LSF scheduler's queue-selection logic
+// (determineQueue and its helpers) directly, by constructing the parsed queue
+// data that the scheduler would normally build from `bqueues -l` at setup. This needs no
+// real LSF installation, so it runs everywhere (unlike TestLSF, which is gated
+// on LSF being installed and WR_LSF_TEST_KEY); the real bsub/bqueues paths
+// remain covered by TestLSF. determineQueue picks the first queue, in the
+// scheduler's preferred order, that isn't excluded and has enough memory and
+// runtime for the job.
+const (
+	memlimitKey = "memlimit"
+	runlimitKey = "runlimit"
+)
+
+func TestMock(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("You can get a new mock scheduler with a runner function", t, func() {
+		runnerFunc := func(context.Context, string) {}
+		s, err := New(ctx, mockSchedulerName, ConfigMock{RunnerFunc: runnerFunc})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		Convey("It rejects configs that cannot run mock runners", func() {
+			badConfigs := []any{
+				nil,
+				&ConfigLocal{},
+				(*ConfigMock)(nil),
+				ConfigMock{},
+			}
+
+			for _, badConfig := range badConfigs {
+				_, err = New(ctx, mockSchedulerName, badConfig)
+				So(err, ShouldNotBeNil)
+				So(err.Error(), ShouldContainSubstring, "SchedulerConfig")
+			}
+		})
+	})
+}
+
 func init() {
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
 }
@@ -933,19 +972,6 @@ func TestLSF(t *testing.T) {
 		So(waitToFinish(ctx, s, 300, 1000), ShouldBeTrue)
 	})
 }
-
-// TestLSFQueueSelection tests the LSF scheduler's queue-selection logic
-// (determineQueue and its helpers) directly, by constructing the parsed queue
-// data that the scheduler would normally build from `bqueues -l` at setup. This needs no
-// real LSF installation, so it runs everywhere (unlike TestLSF, which is gated
-// on LSF being installed and WR_LSF_TEST_KEY); the real bsub/bqueues paths
-// remain covered by TestLSF. determineQueue picks the first queue, in the
-// scheduler's preferred order, that isn't excluded and has enough memory and
-// runtime for the job.
-const (
-	memlimitKey = "memlimit"
-	runlimitKey = "runlimit"
-)
 
 func TestLSFQueueSelection(t *testing.T) {
 	Convey("Given an lsf scheduler with parsed queues", t, func() {

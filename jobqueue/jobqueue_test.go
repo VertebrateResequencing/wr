@@ -56,11 +56,12 @@ import (
 )
 
 const (
-	maxSpawnTime  = 240 * time.Second
-	serverRC      = `echo %s %s %s %s %d %d`
-	testCwd       = "/tmp"
-	manuallyAdded = "manually_added"
-	reqGroupPerl  = "perl"
+	localSchedulerName = "local"
+	maxSpawnTime       = 240 * time.Second
+	serverRC           = `echo %s %s %s %s %d %d`
+	testCwd            = "/tmp"
+	manuallyAdded      = "manually_added"
+	reqGroupPerl       = "perl"
 )
 
 var (
@@ -81,7 +82,11 @@ var (
 	serverEnableRunners bool
 )
 
-var errMissingLiveJobsBucket = errors.New("missing live jobs bucket")
+var (
+	errMissingLiveJobsBucket = errors.New("missing live jobs bucket")
+	errUnexpectedLiveJobs    = errors.New("unexpected live job count")
+	errFileStillExists       = errors.New("file still exists")
+)
 
 func init() {
 	clog.ToDefault()
@@ -122,19 +127,18 @@ func assertNonEmptyFile(path string) {
 	So(size, ShouldBeGreaterThan, int64(0))
 }
 
-func assertBoltLiveJobs(path string, expected int) {
+func boltLiveJobs(path string) (liveJobs int, err error) {
 	boltdb, err := bolt.Open(path, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
-	So(err, ShouldBeNil)
-
 	if err != nil {
-		return
+		return 0, err
 	}
 
 	defer func() {
-		So(boltdb.Close(), ShouldBeNil)
+		if closeErr := boltdb.Close(); err == nil {
+			err = closeErr
+		}
 	}()
 
-	liveJobs := 0
 	err = boltdb.View(func(tx *bolt.Tx) error {
 		jobs := tx.Bucket(bucketJobsLive)
 		if jobs == nil {
@@ -149,8 +153,94 @@ func assertBoltLiveJobs(path string, expected int) {
 			return nil
 		})
 	})
+
+	return liveJobs, err
+}
+
+func assertBoltLiveJobs(path string, expected int) {
+	liveJobs, err := boltLiveJobs(path)
 	So(err, ShouldBeNil)
+
+	if err != nil {
+		return
+	}
+
 	So(liveJobs, ShouldEqual, expected)
+}
+
+func waitForBoltLiveJobs(path string, expected int, maxWait time.Duration) error {
+	var (
+		liveJobs int
+		err      error
+	)
+
+	deadline := time.Now().Add(maxWait)
+
+	for {
+		liveJobs, err = boltLiveJobs(path)
+		if err == nil && liveJobs == expected {
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err != nil {
+		return fmt.Errorf("expected %d live jobs in %s: %w", expected, path, err)
+	}
+
+	return fmt.Errorf("%w: expected %d live jobs in %s, got %d", errUnexpectedLiveJobs, expected, path, liveJobs)
+}
+
+func waitForFileToDisappear(path string, maxWait time.Duration) error {
+	var err error
+
+	deadline := time.Now().Add(maxWait)
+
+	for {
+		_, err = os.Stat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err != nil {
+		return fmt.Errorf("expected %s to disappear: %w", path, err)
+	}
+
+	return fmt.Errorf("%w: expected %s to disappear", errFileStillExists, path)
+}
+
+func configureFastTestBackups(db *db) {
+	db.Lock()
+	defer db.Unlock()
+
+	db.slowBackups = true
+	db.backupWait = 0
+}
+
+func captureTimingGlobals() func() {
+	interruptTime := ServerInterruptTime
+	reserveTicker := ServerReserveTicker
+	releaseDelayMin := ClientReleaseDelayMin
+	itemTTR := ServerItemTTR
+
+	return func() {
+		ServerInterruptTime = interruptTime
+		ServerReserveTicker = reserveTicker
+		ClientReleaseDelayMin = releaseDelayMin
+		ServerItemTTR = itemTTR
+	}
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -752,7 +842,7 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
-		SchedulerName:   "local",
+		SchedulerName:   localSchedulerName,
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDBFile,
 		DBFileBackup:    managerDBBkFile,
@@ -819,7 +909,7 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 //nolint:gochecknoglobals // the compile result is intentionally cached process-wide
 var compiledSelf = sync.OnceValues(runnerBinary)
 
-// copyCompiledSelf compiles this test binary once (shared via compileSelf) and
+// copyCompiledSelf compiles this test binary once (shared via compiledSelf) and
 // copies it to dst, returning dst. The runner tests count the files left in
 // their runner tmpdir and expect the runner executable to be one of them, so
 // each test gets its own copy of the shared binary (a cheap file copy) rather
@@ -849,7 +939,9 @@ func copyCompiledSelf(dst string) (string, error) {
 // true, the exe will be run with --keepdb arg as well. Same idea with
 // enableRunners. This also creates config.ManagerDir dir on disk if necessary,
 // and does not delete it afterwards.
-func startServer(serverExe string, keepDB, enableRunners bool, config internal.Config, addr string) (*Client, []byte, *exec.Cmd, error) {
+func startServer(
+	serverExe string, keepDB, enableRunners bool, config internal.Config, addr string,
+) (*Client, []byte, *exec.Cmd, error) {
 	err := os.MkdirAll(config.ManagerDir, 0o700)
 	if err != nil {
 		log.Fatal(err)
@@ -861,6 +953,7 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 	if keepDB {
 		args = append(args, "--keepdb")
 	}
+
 	if enableRunners {
 		args = append(args, "--enablerunners")
 	}
@@ -869,13 +962,14 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 	// which inherit this env) which isolated port and manager dir to use. The
 	// dir is passed without its deployment suffix, the form the config reader
 	// expects from WR_MANAGERDIR.
-	cmd := exec.Command(serverExe, args...)
+	cmd := exec.CommandContext(context.Background(), serverExe, args...)
 
 	cmd.Env = append(os.Environ(),
 		"WR_MANAGERPORT="+config.ManagerPort,
 		"WR_MANAGERWEB="+config.ManagerWeb,
 		"WR_MANAGERDIR="+strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment),
 	)
+
 	err = cmd.Start()
 	if err != nil {
 		log.Fatal(err)
@@ -884,11 +978,14 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 	// wait a while for our server cmd to actually start serving
 	mTimeout := 10 * time.Second
 	internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
+
 	token, err := os.ReadFile(config.ManagerTokenFile)
 	if err != nil || len(token) == 0 {
 		return nil, nil, cmd, err
 	}
+
 	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, 2*time.Second)
+
 	return jq, token, cmd, err
 }
 
@@ -904,7 +1001,7 @@ func runServer(ctx context.Context) {
 	// testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, h))
 	// pid := os.Getpid()
 	// testLogger = testLogger.New("pid", pid)
-	_, serverConfig, _, _, _ := jobqueueTestInit(false)
+	_, serverConfig, _, _, _ := jobqueueTestInit(false) //nolint:dogsled
 
 	if serverKeepDB {
 		serverConfig.dontWipeDevDB = true
@@ -920,7 +1017,9 @@ func runServer(ctx context.Context) {
 		// we can't use the --tmpdir option, since that means the runner cmds
 		// won't match between invocations, so recovery won't be complete. We
 		// don't need it anyway
-		serverConfig.RunnerCmd = self + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d"
+		serverConfig.RunnerCmd = self +
+			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
+			" --rtimeout %d --maxmins %d"
 	}
 
 	serverConfig.Timings.ItemTTR = 200 * time.Millisecond
@@ -928,11 +1027,13 @@ func runServer(ctx context.Context) {
 	// these signal-handling tests crash and restart the server; a short retry
 	// wait makes the runner reconnect to the new server promptly.
 	serverConfig.Timings.RetryWait = 1 * time.Second
+
 	server, msg, _, err := serve(ctx, serverConfig)
 	if err != nil {
 		clog.Crit(ctx, "test daemon failed to start", "err", err)
 		os.Exit(1)
 	}
+
 	if msg != "" {
 		clog.Warn(ctx, msg)
 	}
@@ -4942,17 +5043,10 @@ func TestJobqueueProduction(t *testing.T) {
 
 			// do this in 2 separate Add() calls to better test how backups
 			// work
-			server.db.slowBackups = true
+			configureFastTestBackups(server.db)
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
-			wait := make(chan bool)
-			go func() {
-				<-time.After(150 * time.Millisecond)
-				wait <- true
-				<-time.After(300 * time.Millisecond)
-				wait <- true
-			}()
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -4963,11 +5057,8 @@ func TestJobqueueProduction(t *testing.T) {
 			So(already, ShouldEqual, 1)
 
 			tmpPath := managerDBBkFile + ".tmp"
-			<-wait
-			_, err = os.Stat(tmpPath)
-			So(err, ShouldBeNil)
-
-			<-wait
+			So(waitForBoltLiveJobs(managerDBBkFile, 2, 5*time.Second), ShouldBeNil)
+			So(waitForFileToDisappear(tmpPath, 5*time.Second), ShouldBeNil)
 
 			assertNonEmptyFile(config.ManagerDBFile)
 			assertNonEmptyFile(managerDBBkFile)
@@ -5113,7 +5204,7 @@ func TestJobqueueProduction(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			server.db.slowBackups = true
+			configureFastTestBackups(server.db)
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
@@ -5982,6 +6073,9 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 		return
 	}
+
+	restoreTimingGlobals := captureTimingGlobals()
+	defer restoreTimingGlobals()
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -7013,6 +7107,9 @@ func TestJobqueueWithMounts(t *testing.T) {
 		return
 	}
 
+	restoreTimingGlobals := captureTimingGlobals()
+	defer restoreTimingGlobals()
+
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelayMin = 100 * time.Millisecond
@@ -7024,7 +7121,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
-		SchedulerName:   "local",
+		SchedulerName:   localSchedulerName,
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDBFile,
 		DBFileBackup:    config.ManagerDBBkFile,
@@ -7338,7 +7435,7 @@ func TestJobqueueSpeed(t *testing.T) {
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
-		SchedulerName:   "local",
+		SchedulerName:   localSchedulerName,
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDBFile,
 		DBFileBackup:    config.ManagerDBBkFile,

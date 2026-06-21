@@ -240,7 +240,7 @@ func New(ctx context.Context, name string, config interface{}) (*Scheduler, erro
 		s = &Scheduler{impl: new(local)}
 	case "openstack":
 		s = &Scheduler{impl: new(opst)}
-	case "mock":
+	case mockSchedulerName:
 		// a test double that runs an in-process function instead of spawning
 		// runner subprocesses; see ConfigMock.
 		s = &Scheduler{impl: new(mock)}
