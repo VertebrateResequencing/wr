@@ -21,6 +21,7 @@ package rp
 import (
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -118,6 +119,10 @@ func getRequest(rp *Protector, numTokens int) Receipt {
 }
 
 func TestRP(t *testing.T) {
+	synctest.Test(t, testRPBody)
+}
+
+func testRPBody(t *testing.T) {
 	Convey("You can make a new Protector", t, func() {
 		delayInt := 50
 		delayBetween := time.Duration(delayInt) * time.Millisecond
@@ -129,6 +134,11 @@ func TestRP(t *testing.T) {
 
 		rp := New("irods", delayBetween, maxSimultaneous, releaseTimeout)
 		So(rp, ShouldNotBeNil)
+		Reset(func() {
+			rp.Shutdown()
+			synctest.Wait()
+		})
+
 		begin := time.Now()
 
 		Convey("Request() returns immediately, but there is a delay between each granting and once all tokens have been granted", func() {

@@ -811,29 +811,12 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	return *config, serverConfig, addr, standardReqs, clientConnectTime
 }
 
-// compiledSelf compiles this test binary (once per test process) and returns
-// the path to the resulting executable, caching the result. Several tests need
-// to run this binary (in --servermode or --runnermode); compiling is slow
-// (seconds) and previously every such test recompiled from scratch, so doing it
-// once and sharing the binary saves that repeated cost.
+// compiledSelf returns the running test executable. Several tests need to run
+// this binary (in --servermode or --runnermode), and the test harness has
+// already built exactly what those subprocesses need.
 //
 //nolint:gochecknoglobals // the compile result is intentionally cached process-wide
-var compiledSelf = sync.OnceValues(func() (string, error) {
-	dir, err := os.MkdirTemp("", "wr_self_test")
-	if err != nil {
-		return "", err
-	}
-
-	path := filepath.Join(dir, "wr.test")
-
-	out, err := exec.CommandContext(context.Background(), "go", "test",
-		"-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", path).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to compile self: %w: %s", err, string(out))
-	}
-
-	return path, nil
-})
+var compiledSelf = sync.OnceValues(os.Executable)
 
 // copyCompiledSelf compiles this test binary once (shared via compileSelf) and
 // copies it to dst, returning dst. The runner tests count the files left in
@@ -2896,7 +2879,7 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {
 					jobs = nil
-					cmd := "perl -e 'for (1..3) { sleep(1) }'"
+					cmd := "perl -MTime::HiRes=sleep -e 'sleep 0.8'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
