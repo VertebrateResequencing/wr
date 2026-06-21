@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ const (
 func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 	Convey("wr status filters pending and dependent jobs", t, func() {
 		ctx := context.Background()
-		testConfig, serverConfig, addr, reqs := statusTestServerConfig(t)
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
 
 		oldConfig, oldCAFile := config, caFile
 
@@ -55,9 +56,6 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 		defer func() {
 			config, caFile = oldConfig, oldCAFile
 		}()
-
-		server, _, token, err := jobqueue.Serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
 
 		defer server.Stop(ctx, true)
 
@@ -173,8 +171,7 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	port := freeStatusTestPort(t)
-	webPort := freeStatusTestPort(t)
+	port, webPort := freeStatusTestPorts(t)
 
 	testConfig := &internal.Config{
 		ManagerHost:       statusTestHost,
@@ -209,21 +206,39 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 	return testConfig, serverConfig, statusTestHost + ":" + port, reqs
 }
 
-func freeStatusTestPort(t *testing.T) string {
+// freeStatusTestPorts returns two distinct free ports, for a test server's
+// manager and web listeners. It holds both listeners open at the same time
+// before reading their ports, so the two can never come back equal (the old
+// approach closed the first listener before opening the second, letting the OS
+// hand out the same port twice, which made the web listener fail to bind the
+// manager's port). Ephemeral ports also avoid the collisions a fixed per-lane
+// scheme would cause when test runs overlap on a shared machine.
+func freeStatusTestPorts(t *testing.T) (string, string) {
 	t.Helper()
 
 	listenConfig := net.ListenConfig{}
-	listener, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+
+	l1, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	So(err, ShouldBeNil)
 
 	defer func() {
-		So(listener.Close(), ShouldBeNil)
+		So(l1.Close(), ShouldBeNil)
 	}()
 
-	addr, ok := listener.Addr().(*net.TCPAddr)
+	l2, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	So(err, ShouldBeNil)
+
+	defer func() {
+		So(l2.Close(), ShouldBeNil)
+	}()
+
+	a1, ok := l1.Addr().(*net.TCPAddr)
 	So(ok, ShouldBeTrue)
 
-	return strconv.Itoa(addr.Port)
+	a2, ok := l2.Addr().(*net.TCPAddr)
+	So(ok, ShouldBeTrue)
+
+	return strconv.Itoa(a1.Port), strconv.Itoa(a2.Port)
 }
 
 func runStatusForTest(t *testing.T, args ...string) string {
@@ -291,4 +306,38 @@ func resetStatusForTest(t *testing.T) {
 	} {
 		So(statusCmd.Flags().Set(flag.name, flag.value), ShouldBeNil)
 	}
+}
+
+// startStatusTestServer builds a test config and starts a server, retrying with
+// fresh ports if a chosen port is momentarily in use (which can happen on a
+// busy machine in the window between picking a free port and the server binding
+// it). It returns the config, server config, connection address, requirements,
+// running server and its token.
+func startStatusTestServer(ctx context.Context, t *testing.T) (
+	*internal.Config, jobqueue.ServerConfig, string, *jqs.Requirements, *jobqueue.Server, []byte,
+) {
+	t.Helper()
+
+	var (
+		testConfig   *internal.Config
+		serverConfig jobqueue.ServerConfig
+		addr         string
+		reqs         *jqs.Requirements
+		server       *jobqueue.Server
+		token        []byte
+		err          error
+	)
+
+	for attempt := 0; ; attempt++ {
+		testConfig, serverConfig, addr, reqs = statusTestServerConfig(t)
+
+		server, _, token, err = jobqueue.Serve(ctx, serverConfig)
+		if err == nil || attempt >= 20 || !strings.Contains(err.Error(), "address already in use") {
+			break
+		}
+	}
+
+	So(err, ShouldBeNil)
+
+	return testConfig, serverConfig, addr, reqs, server, token
 }

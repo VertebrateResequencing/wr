@@ -976,7 +976,7 @@ func startServer(
 	}
 
 	// wait a while for our server cmd to actually start serving
-	mTimeout := 10 * time.Second
+	mTimeout := 30 * time.Second
 	internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 
 	token, err := os.ReadFile(config.ManagerTokenFile)
@@ -984,7 +984,7 @@ func startServer(
 		return nil, nil, cmd, err
 	}
 
-	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, 2*time.Second)
+	jq, err := connectWithRetry(addr, config, token, mTimeout)
 
 	return jq, token, cmd, err
 }
@@ -6028,22 +6028,22 @@ func TestJobqueueRunners(t *testing.T) {
 				}()
 
 				So(<-hadRunner, ShouldBeTrue)
-				<-time.After(1 * time.Second)
 
-				jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateReady, false, false)
-				So(err, ShouldBeNil)
-				So(len(jobs), ShouldEqual, 1)
+				// the failed runner releases its job back to ready, and the
+				// manager keeps retrying; poll for these instead of assuming fixed
+				// timings, which flake when the box is under heavy load.
+				So(pollUntil(func() bool {
+					jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateReady, false, false)
 
-				So(runnerCheck(), ShouldEqual, 1)
+					return err == nil && len(jobs) == 1
+				}), ShouldBeTrue)
 
-				<-time.After(3 * time.Second)
-
-				So(runnerCheck(), ShouldEqual, 2)
+				// the manager spawns (and fails) runners more than once
+				So(pollUntil(func() bool { return runnerCheck() >= 2 }), ShouldBeTrue)
 
 				err = server.Drain(ctx)
 				So(err, ShouldBeNil)
-				<-time.After(4 * time.Second)
-				So(server.HasRunners(ctx), ShouldBeFalse)
+				So(pollUntil(func() bool { return !server.HasRunners(ctx) }), ShouldBeTrue)
 			})
 		})
 
@@ -7899,6 +7899,28 @@ func skipInShard(homeShard string) bool {
 	return shard != "" && shard != homeShard
 }
 
+// pollUntil polls cond every 20ms for up to 30s, returning true as soon as cond
+// returns true and false on timeout. Used to wait for an async count/state to
+// reach an expected value instead of sleeping a fixed (load-sensitive) time.
+func pollUntil(cond func() bool) bool {
+	limit := time.After(30 * time.Second)
+
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if cond() {
+			return true
+		}
+
+		select {
+		case <-limit:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
 // waitUntilFileExists polls for up to maxWait seconds for path to exist,
 // returning true as soon as it does and false on timeout. Used to wait for a
 // test job to actually start (the job touches a marker file) without relying on
@@ -7947,5 +7969,23 @@ func waitUntilJobState(jq *Client, essence *JobEssence, wantState JobState, maxW
 			return job
 		case <-ticker.C:
 		}
+	}
+}
+
+// connectWithRetry retries Connect until the server responds or timeout elapses,
+// keeping the per-attempt 2s deadline. A freshly-started daemon under heavy load
+// (e.g. many test lanes sharing few cpus) may not accept connections the instant
+// its token file appears; retrying avoids returning a nil client that callers
+// would then dereference.
+func connectWithRetry(addr string, config internal.Config, token []byte, timeout time.Duration) (*Client, error) {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, 2*time.Second)
+		if err == nil || time.Now().After(deadline) {
+			return jq, err
+		}
+
+		<-time.After(100 * time.Millisecond)
 	}
 }

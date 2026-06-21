@@ -786,12 +786,13 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
+				So(pollUntil(func() bool {
+					server.simutex.RLock()
+					_, exists := server.schedIssues[testMsg]
+					server.simutex.RUnlock()
 
-				server.simutex.RLock()
-				_, exists := server.schedIssues[testMsg]
-				server.simutex.RUnlock()
-				So(exists, ShouldBeFalse)
+					return !exists
+				}), ShouldBeTrue)
 
 				anotherMsg := "Another test issue"
 				anotherSi := &schedulerIssue{
@@ -810,12 +811,13 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
+				So(pollUntil(func() bool {
+					server.simutex.RLock()
+					count := len(server.schedIssues)
+					server.simutex.RUnlock()
 
-				server.simutex.RLock()
-				count := len(server.schedIssues)
-				server.simutex.RUnlock()
-				So(count, ShouldEqual, 0)
+					return count == 0
+				}), ShouldBeTrue)
 			})
 
 			Convey("The websocket handler handles bad server notifications", func() {

@@ -209,7 +209,6 @@ func TestLocal(t *testing.T) {
 	ctx := context.Background()
 	runtime.GOMAXPROCS(maxCPU)
 
-	var overhead time.Duration
 	Convey("You can get a new local scheduler", t, func() {
 		otherReqs := make(map[string]string)
 
@@ -291,21 +290,6 @@ func TestLocal(t *testing.T) {
 			// parallel still, since it is slower to run when many are running
 			// at once) to find how long it takes, as subsequent tests are very
 			// timing dependent
-			if overhead == 0 {
-				Convey("You can first run with the number of CPUs", func() {
-					err = s.Schedule(ctx, cmd, possibleReq, 0, maxCPU)
-					So(err, ShouldBeNil)
-					before := time.Now()
-					for {
-						if !s.Busy(ctx) {
-							overhead = time.Since(before) - (750 * time.Millisecond) // about 150ms
-							break
-						}
-						<-time.After(1 * time.Millisecond)
-					}
-				})
-			}
-
 			count := maxCPU * 2
 			sched := func() {
 				serr := s.Schedule(ctx, cmd, possibleReq, 0, count)
@@ -316,123 +300,87 @@ func TestLocal(t *testing.T) {
 				So(scheduled, ShouldEqual, count)
 			}
 
-			Convey("It eventually runs them all", func() {
+			// each cmd creates a file in tmpdir when it starts and another in tmpdir2
+			// when it finishes, so started-minus-finished is how many are running right
+			// now. We poll these instead of sleeping for fixed (load-sensitive)
+			// durations and checking exact counts at a fixed moment.
+			started := func() int { return testDirForFiles(tmpdir, 0) }
+			finished := func() int { return testDirForFiles(tmpdir2, 0) }
+
+			Convey("It eventually runs them all, at most maxCPU at a time", func() {
 				sched()
-				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				maxConcurrent := 0
 
-				<-time.After(750*time.Millisecond + overhead)
+				So(pollUntil(func() bool {
+					if r := started() - finished(); r > maxConcurrent {
+						maxConcurrent = r
+					}
 
-				numfiles = testDirForFiles(tmpdir, count)
-				So(numfiles, ShouldEqual, count)
-				numfiles = testDirForFiles(tmpdir2, count)
-				if numfiles < count {
-					So(s.Busy(ctx), ShouldBeTrue) // but they might not all have finished quite yet
-				}
+					return finished() == count
+				}), ShouldBeTrue)
 
-				<-time.After(200*time.Millisecond + overhead) // an extra 150ms for leeway
-				numfiles = testDirForFiles(tmpdir2, count)
-				So(numfiles, ShouldEqual, count)
-				So(s.Busy(ctx), ShouldBeFalse)
+				So(maxConcurrent, ShouldEqual, maxCPU)
+				So(started(), ShouldEqual, count)
+				// Busy lags the last finish-marker (the scheduler still has to
+				// reap the exited job), so poll for idle rather than asserting it.
+				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
 			})
 
 			Convey("Dropping the count below the number currently running doesn't kill those that are running", func() {
 				sched()
-				<-time.After(700 * time.Millisecond)
-
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
+				So(started(), ShouldEqual, maxCPU)
 
 				newcount := maxCPU - 1
-				err = s.Schedule(ctx, cmd, possibleReq, 0, newcount)
-				So(err, ShouldBeNil)
+				So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-				<-time.After(750*time.Millisecond + overhead)
-
-				numfiles = testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
-
-				So(waitToFinish(ctx, s, 3, 100), ShouldBeTrue)
-
-				numfiles = testDirForFiles(tmpdir2, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(started(), ShouldEqual, maxCPU)
+				So(finished(), ShouldEqual, maxCPU)
 			})
 
 			Convey("You can Schedule() again to increase the count", func() {
 				sched()
-				<-time.After(700 * time.Millisecond)
-
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
+				So(started(), ShouldEqual, maxCPU)
 
 				newcount := count + 1
-				err = s.Schedule(ctx, cmd, possibleReq, 0, newcount)
-				So(err, ShouldBeNil)
+				So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-				<-time.After(1500*time.Millisecond + overhead + overhead)
-
-				numfiles = testDirForFiles(tmpdir, newcount)
-				So(numfiles, ShouldEqual, newcount)
-
-				So(waitToFinish(ctx, s, 3, 100), ShouldBeTrue)
-
-				numfiles = testDirForFiles(tmpdir2, newcount)
-				So(numfiles, ShouldEqual, newcount)
+				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(started(), ShouldEqual, newcount)
+				So(finished(), ShouldEqual, newcount)
 			})
 
 			if maxCPU > 1 {
 				Convey("You can Schedule() again to drop the count", func() {
 					sched()
-					<-time.After(700 * time.Millisecond)
+					So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
+					So(started(), ShouldEqual, maxCPU)
 
-					numfiles := testDirForFiles(tmpdir, maxCPU)
-					So(numfiles, ShouldEqual, maxCPU)
+					newcount := maxCPU + 1
+					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-					newcount := maxCPU + 1 // (this test only really makes sense if newcount is now less than count, ie. we have more than 1 cpu)
-					err = s.Schedule(ctx, cmd, possibleReq, 0, newcount)
-					So(err, ShouldBeNil)
-
-					<-time.After(750*time.Millisecond + overhead)
-
-					numfiles = testDirForFiles(tmpdir, newcount)
-					So(numfiles, ShouldEqual, newcount)
-
-					So(waitToFinish(ctx, s, 3, 100), ShouldBeTrue)
-
-					numfiles = testDirForFiles(tmpdir2, newcount)
-					So(numfiles, ShouldEqual, newcount)
+					So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+					So(started(), ShouldEqual, newcount)
+					So(finished(), ShouldEqual, newcount)
 				})
 
 				Convey("You can Schedule() a new job and have it run while the first is still running", func() {
 					sched()
-					<-time.After(700 * time.Millisecond)
-
-					numfiles := testDirForFiles(tmpdir, maxCPU)
-					So(numfiles, ShouldEqual, maxCPU)
+					So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
+					So(started(), ShouldEqual, maxCPU)
 
 					newcount := maxCPU + 1
-					err = s.Schedule(ctx, cmd, possibleReq, 0, newcount)
-					So(err, ShouldBeNil)
+					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir)
-					err = s.Schedule(ctx, newcmd, possibleReq, 0, 1)
-					So(err, ShouldBeNil)
+					So(s.Schedule(ctx, newcmd, possibleReq, 0, 1), ShouldBeNil)
 
-					<-time.After(750*time.Millisecond + overhead)
-
-					numfiles = testDirForFiles(tmpdir, newcount+1)
-					So(numfiles, ShouldEqual, newcount+1)
-
-					So(waitToFinish(ctx, s, 3, 100), ShouldBeTrue)
-
-					numfiles = testDirForFiles(tmpdir2, newcount)
-					So(numfiles, ShouldEqual, newcount)
+					So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+					So(started(), ShouldEqual, newcount+1)
+					So(finished(), ShouldEqual, newcount)
 				})
-
-				//*** want a test where the first job fills up all resources
-				// and has more to do, and a second job could slip and complete
-				// before resources for the first become available
 			} else {
 				SkipConvey("Skipping Schedule() tests that need more than 1 cpu", func() {})
 			}
