@@ -584,7 +584,7 @@ type Server struct {
 	bsmutex                   sync.RWMutex
 	simutex                   sync.RWMutex
 	krmutex                   sync.RWMutex
-	ssmutex                   sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
+	ssmutex                   sync.RWMutex // "server state mutex": up, drain, blocking, ServerInfo.Mode, shutdown's q-nil
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
 	csmutex                   sync.RWMutex // to protect clientSubscriptions
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
@@ -1519,20 +1519,32 @@ func (s *Server) Drain(ctx context.Context) error {
 		defer internal.LogPanic(ctx, "jobqueue drain", true)
 
 		ticker := time.NewTicker(1 * time.Second)
-	TICKS:
+		defer ticker.Stop()
+
 		for range ticker.C {
-			// check our queue for things running, which is cheap
-			stats := s.q.Stats()
-			if stats.Running > 0 {
-				continue TICKS
+			// grab the queue under lock; shutdown() sets up false (and then
+			// nils q) under the same lock, so if a shutdown has already begun
+			// we stop here rather than racing its nil of s.q
+			s.ssmutex.RLock()
+			q := s.q
+			up := s.up
+			s.ssmutex.RUnlock()
+
+			if !up || q == nil {
+				return
 			}
-			ticker.Stop()
+
+			// check our queue for things running, which is cheap
+			if q.Stats().Running > 0 {
+				continue
+			}
 
 			// now that we think nothing should be running, get
 			// Stop() to wait for the runner clients to exit so the
 			// job scheduler will be nice and clean
 			s.Stop(ctx, true)
-			break
+
+			return
 		}
 	}()
 	return nil
@@ -3760,7 +3772,11 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	if err != nil {
 		clog.Warn(ctx, "server shutdown queue destruction failed", "err", err)
 	}
+
+	// nil under ssmutex, since the Drain() goroutine reads s.q under it
+	s.ssmutex.Lock()
 	s.q = nil
+	s.ssmutex.Unlock()
 
 	s.krmutex.Lock()
 	s.killRunners = false
