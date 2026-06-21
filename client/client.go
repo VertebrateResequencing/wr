@@ -140,18 +140,25 @@ type pretendJobqueue struct {
 	output    io.WriteCloser
 }
 
+type borrowedWriteCloser struct {
+	io.Writer
+}
+
+func (borrowedWriteCloser) Close() error {
+	return nil
+}
+
 func newPretendJobqueue() *pretendJobqueue {
 	var w io.WriteCloser
 
 	fd, errr := strconv.ParseUint(PretendSubmissions, 10, 64)
 	if errr == nil {
-		f := os.NewFile(uintptr(fd), "")
 		// The fd is borrowed (set via PretendSubmissions by our caller/parent
-		// process), so we must not let os.NewFile's finalizer close it when this
-		// File is garbage collected: by then the fd number may have been reused
-		// for an unrelated file, which we would then wrongly close.
+		// process), so the pretend client must never close it: by then the fd
+		// number may have been reused for an unrelated file.
+		f := os.NewFile(uintptr(fd), "")
 		runtime.SetFinalizer(f, nil)
-		w = f
+		w = borrowedWriteCloser{Writer: f}
 	}
 
 	return &pretendJobqueue{output: w}
@@ -367,6 +374,10 @@ func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {
 }
 
 func (p *pretendJobqueue) Disconnect() error {
+	if p.output == nil {
+		return nil
+	}
+
 	return p.output.Close()
 }
 

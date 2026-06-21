@@ -47,10 +47,14 @@ test:
 	go test -tags netgo -c -o "$$base/client.test" ${PKG}/client; \
 	go test -tags netgo -c -o "$$base/scheduler.test" ${PKG}/jobqueue/scheduler; \
 	rc=0; pids=""; \
-	(cd jobqueue && WR_TEST_LANE=2 GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueSignal$$') >"$$base/signal.log" 2>&1 & pids="$$pids $$!"; \
-	(cd jobqueue && WR_TEST_LANE=4 GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueMedium$$') >"$$base/medium.log" 2>&1 & pids="$$pids $$!"; \
-	(cd jobqueue && WR_TEST_LANE=5 GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueModify$$') >"$$base/modify.log" 2>&1 & pids="$$pids $$!"; \
-	(cd client && WR_TEST_LANE=12 GOCONVEY_REPORTER=silent nice -n 19 "$$base/client.test" -test.timeout=40m -test.failfast) >"$$base/client.log" 2>&1 & pids="$$pids $$!"; \
+	(cd jobqueue && WR_TEST_LANE=2 WR_TEST_SHARD=a GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueSignal$$') >"$$base/signal_a.log" 2>&1 & pids="$$pids $$!"; \
+	(cd jobqueue && WR_TEST_LANE=14 WR_TEST_SHARD=b GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueSignal$$') >"$$base/signal_b.log" 2>&1 & pids="$$pids $$!"; \
+	(cd jobqueue && WR_TEST_LANE=4 WR_TEST_SHARD=a GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueMedium$$') >"$$base/medium_a.log" 2>&1 & pids="$$pids $$!"; \
+	(cd jobqueue && WR_TEST_LANE=15 WR_TEST_SHARD=b GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueMedium$$') >"$$base/medium_b.log" 2>&1 & pids="$$pids $$!"; \
+	(cd jobqueue && WR_TEST_LANE=5 WR_TEST_SHARD=a GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueModify$$') >"$$base/modify_a.log" 2>&1 & pids="$$pids $$!"; \
+	(cd jobqueue && WR_TEST_LANE=16 WR_TEST_SHARD=b GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueModify$$') >"$$base/modify_b.log" 2>&1 & pids="$$pids $$!"; \
+	(cd client && WR_TEST_LANE=12 GOCONVEY_REPORTER=silent nice -n 19 "$$base/client.test" -test.timeout=40m -test.failfast -test.run '^TestScheduler$$') >"$$base/client_a.log" 2>&1 & pids="$$pids $$!"; \
+	(cd client && WR_TEST_LANE=17 GOCONVEY_REPORTER=silent nice -n 19 "$$base/client.test" -test.timeout=40m -test.failfast -test.skip '^TestScheduler$$') >"$$base/client_b.log" 2>&1 & pids="$$pids $$!"; \
 	(cd jobqueue && WR_TEST_LANE=0 GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueRunners$$') >"$$base/runners.log" 2>&1 & pids="$$pids $$!"; \
 	(cd jobqueue && WR_TEST_LANE=1 GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueRunners2$$') >"$$base/runners2.log" 2>&1 & pids="$$pids $$!"; \
 	(cd jobqueue && WR_TEST_LANE=3 GOCONVEY_REPORTER=silent "$$base/jobqueue.test" -test.timeout=40m -test.failfast -test.run '^TestJobqueueProduction$$') >"$$base/production.log" 2>&1 & pids="$$pids $$!"; \
