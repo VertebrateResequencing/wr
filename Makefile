@@ -29,8 +29,12 @@ install:
 # tests get their own lane; the lighter jobqueue tests share two lanes. The
 # non-jobqueue lanes (client + everything else) are nice'd so the
 # timing-sensitive jobqueue lanes get CPU priority on a busy machine.
-ALL_SPLIT := TestJobqueueRunners|TestJobqueueSignal|TestJobqueueProduction|TestJobqueueMedium|TestJobqueueModify|TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils|TestJobqueueMockRunner
-JQ_RESTA := ^(TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils)$$
+ALL_SPLIT := TestJobqueueRunners|TestJobqueueRunners2|TestJobqueueSignal|TestJobqueueProduction|TestJobqueueMedium|TestJobqueueModify|TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils|TestJobqueueMockRunner
+JQ_RESTA := ^(TestJobqueueLimitGroups|TestREST|TestJobqueueHighMem|TestJobqueueUtils|TestJobqueueModules)$$
+JQ_RESTB := ^(TestServerWebI|TestJobqueueBasics)$$
+# jqB (the tests not named in any other lane - mostly the subscription tests) is
+# split into two lanes of roughly equal duration; JQ_B1 names the first half.
+JQ_B1 := TestJobSubscriptions|TestSubscriptionCatchUp|TestSubscriptionReconnectResync|TestSubscriptionTeardown|TestSubscriptionAtLeastOnceDedup|TestSubscriptionStateChangeEvents
 OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$' | grep -v '^${PKG}/client$$' | grep -v '^${PKG}/jobqueue/scheduler$$')
 GO_TEST := go test -tags netgo -timeout 40m --count 1 -failfast
 
@@ -39,23 +43,40 @@ test:
 	@set -e; \
 	base=$$(mktemp -d "$${TMPDIR:-/tmp}/wrtest.XXXXXX"); \
 	rm -rf /tmp/jobqueue_cwd 2>/dev/null || true; \
-	echo "testing: parallel per-test jobqueue lanes + client + other packages ($$base)"; \
-	rc=0; \
-	$(GO_TEST) -run '^TestJobqueueRunners$$' ${PKG}/jobqueue >"$$base/runners.log" 2>&1 & p1=$$!; \
-	$(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal.log" 2>&1 & p2=$$!; \
-	$(GO_TEST) -run '^TestJobqueueProduction$$' ${PKG}/jobqueue >"$$base/production.log" 2>&1 & p3=$$!; \
-	$(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium.log" 2>&1 & p4=$$!; \
-	$(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify.log" 2>&1 & p5=$$!; \
-	$(GO_TEST) -run '$(JQ_RESTA)' ${PKG}/jobqueue >"$$base/jqA.log" 2>&1 & p6=$$!; \
-	$(GO_TEST) -skip '$(ALL_SPLIT)' ${PKG}/jobqueue >"$$base/jqB.log" 2>&1 & p7=$$!; \
-	$(GO_TEST) -run '^TestJobqueueMockRunner$$' ${PKG}/jobqueue >"$$base/mock.log" 2>&1 & pm=$$!; \
-	$(GO_TEST) ${PKG}/jobqueue/scheduler >"$$base/scheduler.log" 2>&1 & p8=$$!; \
-	nice -n 19 $(GO_TEST) ${PKG}/client >"$$base/client.log" 2>&1 & p9=$$!; \
-	nice -n 19 $(GO_TEST) -p 4 $(OTHER_PKGS) >"$$base/other.log" 2>&1 & p10=$$!; \
-	for pid in $$p1 $$p2 $$p3 $$p4 $$p5 $$p6 $$p7 $$pm $$p8 $$p9 $$p10; do wait $$pid || rc=1; done; \
-	for f in runners signal production medium modify jqA jqB mock scheduler client other; do \
-		echo "===== $$f ====="; cat "$$base/$$f.log"; \
-	done; \
+	cpus=$$(nproc 2>/dev/null || echo 4); \
+	echo "testing: parallel jobqueue/client/other lanes on $$cpus cpus ($$base)"; \
+	echo "warming build cache so the parallel lanes don't all compile at once..."; \
+	$(GO_TEST) -run '^DOESNOTEXIST$$' ${PKG}/jobqueue ${PKG}/client ${PKG}/jobqueue/scheduler >/dev/null 2>&1 || true; \
+	rc=0; pids=""; \
+	if [ "$$cpus" -ge 6 ]; then \
+		echo "  (>=6 cpus: sharding the heaviest single tests for extra parallelism)"; \
+		WR_TEST_LANE=2 WR_TEST_SHARD=a $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal_a.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=14 WR_TEST_SHARD=b $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal_b.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=4 WR_TEST_SHARD=a $(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium_a.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=15 WR_TEST_SHARD=b $(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium_b.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=5 WR_TEST_SHARD=a $(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify_a.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=16 WR_TEST_SHARD=b $(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify_b.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=12 nice -n 19 $(GO_TEST) -run '^TestScheduler$$' ${PKG}/client >"$$base/client_a.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=17 nice -n 19 $(GO_TEST) -skip '^TestScheduler$$' ${PKG}/client >"$$base/client_b.log" 2>&1 & pids="$$pids $$!"; \
+	else \
+		echo "  (<6 cpus: running the heaviest tests whole to avoid oversubscribing cores)"; \
+		WR_TEST_LANE=2 $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=4 $(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=5 $(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify.log" 2>&1 & pids="$$pids $$!"; \
+		WR_TEST_LANE=12 nice -n 19 $(GO_TEST) ${PKG}/client >"$$base/client.log" 2>&1 & pids="$$pids $$!"; \
+	fi; \
+	WR_TEST_LANE=0 $(GO_TEST) -run '^TestJobqueueRunners$$' ${PKG}/jobqueue >"$$base/runners.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=1 $(GO_TEST) -run '^TestJobqueueRunners2$$' ${PKG}/jobqueue >"$$base/runners2.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=3 $(GO_TEST) -run '^TestJobqueueProduction$$' ${PKG}/jobqueue >"$$base/production.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=6 $(GO_TEST) -run '$(JQ_RESTA)' ${PKG}/jobqueue >"$$base/jqA1.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=7 $(GO_TEST) -run '$(JQ_RESTB)' ${PKG}/jobqueue >"$$base/jqA2.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=8 $(GO_TEST) -run '^($(JQ_B1))$$' ${PKG}/jobqueue >"$$base/jqB1.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=9 $(GO_TEST) -skip '$(ALL_SPLIT)|$(JQ_B1)' ${PKG}/jobqueue >"$$base/jqB2.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=10 $(GO_TEST) -run '^TestJobqueueMockRunner$$' ${PKG}/jobqueue >"$$base/mock.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=11 $(GO_TEST) ${PKG}/jobqueue/scheduler >"$$base/scheduler.log" 2>&1 & pids="$$pids $$!"; \
+	WR_TEST_LANE=13 nice -n 19 $(GO_TEST) -p 4 $(OTHER_PKGS) >"$$base/other.log" 2>&1 & pids="$$pids $$!"; \
+	for pid in $$pids; do wait $$pid || rc=1; done; \
+	for f in "$$base"/*.log; do echo "===== $$(basename "$$f" .log) ====="; cat "$$f"; done; \
 	rm -rf "$$base" /tmp/jobqueue_cwd 2>/dev/null || true; \
 	exit $$rc
 
