@@ -794,14 +794,18 @@ func TestSchedulerSubmitJobsAndWait(t *testing.T) {
 				s.NewJob("echo b1 deadline 2", "rg-b1-deadline-2", "req-b1-deadline", "", "", nil),
 			}
 
-			waitCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			// generous deadline: it must outlast the (load-sensitive) time to
+			// reserve+archive+gather the one completed job below, while the other
+			// job stays unfinished until the deadline. A tight value raced the
+			// gather under heavy parallel-test load (got 0 gathered, not 1).
+			waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 
 			done := submitJobsAndWaitAsync(waitCtx, s, jobs, SubmitJobsOptions{})
 
 			So(archiveNextSchedulerJob(runnerJQ), ShouldBeNil)
 
-			result := receiveWaitForJobsResult(done, 2*time.Second)
+			result := receiveWaitForJobsResult(done, 5*time.Second)
 			So(result.jobs, ShouldHaveLength, 1)
 			So(result.jobs[0].Key(), ShouldEqual, jobs[0].Key())
 			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
@@ -1085,14 +1089,18 @@ func TestSchedulerWaitForJobs(t *testing.T) {
 			keys, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
 			So(err, ShouldBeNil)
 
-			waitCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			// generous deadline: it must outlast the (load-sensitive) time to
+			// reserve+archive+gather the one completed job below, while the other
+			// job stays unfinished until the deadline. A tight value raced the
+			// gather under heavy parallel-test load (got 0 gathered, not 1).
+			waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 
 			done := waitForJobsAsync(waitCtx, s, keys...)
 
 			So(archiveNextSchedulerJob(jq), ShouldBeNil)
 
-			result := receiveWaitForJobsResult(done, 2*time.Second)
+			result := receiveWaitForJobsResult(done, 5*time.Second)
 			So(result.jobs, ShouldHaveLength, 1)
 			So(result.jobs[0].Key(), ShouldEqual, keys[0])
 			So(result.jobs[0].State, ShouldEqual, jobqueue.JobStateComplete)
@@ -1738,25 +1746,37 @@ func TestSchedulerPretendNewMethods(t *testing.T) {
 func collectPretendJSONPayloads(settings SchedulerSettings,
 	submit func(*Scheduler) ([]*jobqueue.Job, error)) (
 	[]*jobqueue.Job, [][]*jobqueue.Job, error) {
-	pr, pw, err := os.Pipe()
+	// Capture the pretend JSON via a temp file rather than a pipe: the scheduler
+	// is handed the file's fd to write to, but we read the result back by path
+	// (a fresh fd), so no read fd is shared. Under heavy parallel-test load a
+	// shared pipe read fd could go bad ("read |0: bad file descriptor") when its
+	// number got reused.
+	f, err := os.CreateTemp("", "wr_pretend_json")
 	if err != nil {
 		return nil, nil, err
 	}
-	defer pr.Close()
+	defer os.Remove(f.Name())
 
-	restorePretend := setPretendSubmissionsForTest(strconv.FormatUint(uint64(pw.Fd()), 10))
+	restorePretend := setPretendSubmissionsForTest(strconv.FormatUint(uint64(f.Fd()), 10))
 	defer restorePretend()
 
 	s, err := New(settings)
 	if err != nil {
-		pw.Close()
+		f.Close()
 
 		return nil, nil, err
 	}
 
 	jobs, submitErr := submit(s)
-	closeErr := pw.Close()
-	payloads, decodeErr := decodePretendJobPayloads(pr)
+	closeErr := f.Close()
+
+	r, openErr := os.Open(f.Name())
+	if openErr != nil {
+		return jobs, nil, errors.Join(submitErr, closeErr, openErr)
+	}
+	defer r.Close()
+
+	payloads, decodeErr := decodePretendJobPayloads(r)
 
 	return jobs, payloads, errors.Join(submitErr, closeErr, decodeErr)
 }

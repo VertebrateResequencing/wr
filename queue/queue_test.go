@@ -1524,29 +1524,64 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
-	// This block deliberately exercises real-time callback throttling: the
-	// callback sleeps while holding a lock and the recall logic waits for a
-	// fixed break, so it stays on the real clock rather than synctest.
+	// This exercises slow readyAddedCallbacks: while the callback is running,
+	// further adds must coalesce into a single later call (not one per add). We
+	// drive it off the callback actually firing (polling added) rather than
+	// fixed real-time sleeps, which are flaky under heavy parallel-test load.
+	// (synctest can't be used here - the callback + recall goroutines deadlock
+	// its scheduler.) The recall window is recallBreak (500ms), so the handful
+	// of adds below reliably land in the single coalesced call under any load.
 	Convey("When you add items to the queue over time, slow readyAddedCallbacks only get called once at a time", t, func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 
 		var callBackLock sync.RWMutex
 		var added []int
-		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+
+		queue.SetReadyAddedCallback(func(queuename string, allitemdata []any) {
 			callBackLock.Lock()
-			defer callBackLock.Unlock()
 			added = append(added, len(allitemdata))
+			callBackLock.Unlock()
+			// stay "busy" for a while WITHOUT holding callBackLock (so the poll
+			// below can observe this call has started), making the adds below
+			// land while this call is still running so they coalesce into a
+			// single recalled call rather than one call each
 			time.Sleep(50 * time.Millisecond)
 		})
 
-		for i := 0; i < 10; i++ {
+		addedLen := func() int {
+			callBackLock.RLock()
+			defer callBackLock.RUnlock()
+
+			return len(added)
+		}
+		waitForAddedLen := func(n int) bool {
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				if addedLen() >= n {
+					return true
+				}
+
+				time.Sleep(2 * time.Millisecond)
+			}
+
+			return false
+		}
+
+		// add the first item and wait for the (slow) callback to actually start,
+		// so the remaining adds all happen while it is still running (or within
+		// the recall window) and therefore coalesce into a single later call
+		_, err := queue.Add(ctx, "key_0", "", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+		So(err, ShouldBeNil)
+		So(waitForAddedLen(1), ShouldBeTrue)
+		callBackLock.RLock()
+		So(added[0], ShouldEqual, 1)
+		callBackLock.RUnlock()
+
+		for i := 1; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			_, err := queue.Add(ctx, key, "", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
 			So(err, ShouldBeNil)
-			if i == 0 {
-				time.Sleep(5 * time.Millisecond)
-			}
 		}
 
 		stats := queue.Stats()
@@ -1556,13 +1591,8 @@ func TestQueue(t *testing.T) {
 		So(stats.Running, ShouldEqual, 0)
 		So(stats.Buried, ShouldEqual, 0)
 
-		callBackLock.RLock()
-		So(len(added), ShouldEqual, 1)
-		So(added[0], ShouldEqual, 1)
-		callBackLock.RUnlock()
-
-		<-time.After(650 * time.Millisecond)
-
+		// exactly one further (coalesced) call happens, seeing all 10 ready items
+		So(waitForAddedLen(2), ShouldBeTrue)
 		callBackLock.RLock()
 		So(len(added), ShouldEqual, 2)
 		So(added[1], ShouldEqual, 10)
@@ -1620,19 +1650,17 @@ func TestQueue(t *testing.T) {
 		So(<-rCh2, ShouldBeTrue)
 	})
 
-	// This block asserts on exact elapsed-time windows (e.g. strictly greater
-	// than 2000ms) and matches reserving goroutines to adding goroutines by
-	// timing, so it stays on the real clock rather than synctest.
-	Convey("Multiple clients can reserve with a wait time before items are even added", t, func() {
+	// Runs under synctest's fake clock so it doesn't depend on real wall-clock
+	// timing (which is flaky under heavy parallel-test load): the reservers
+	// block until the items are added 2000ms later, and synctest advances the
+	// clock deterministically once every goroutine is waiting. This proves
+	// clients can reserve before the items they want even exist.
+	synctestConvey(t, "Multiple clients can reserve with a wait time before items are even added", func() {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 
 		stats := queue.Stats()
 		So(stats.Items, ShouldEqual, 0)
-
-		// with race detection and using go-deadlock, just adding 2 items to the
-		// queue takes ~15ms instead of ~0.1ms, so the times here allow for that
-		// kind of leeway
 
 		willReserve := make(map[int]chan bool)
 		willReserve[1] = make(chan bool)
@@ -1647,7 +1675,11 @@ func TestQueue(t *testing.T) {
 				t := time.Now()
 				item, err := queue.Reserve("foo", 3000*time.Millisecond)
 				addT := <-addTimes[i]
-				ok := item != nil && err == nil && time.Since(t) < 2500*time.Millisecond && time.Since(t) > 2000*time.Millisecond && time.Since(addT) < 10*time.Millisecond
+
+				ok := item != nil && err == nil &&
+					time.Since(t) < 2500*time.Millisecond &&
+					time.Since(t) >= 2000*time.Millisecond &&
+					time.Since(addT) < 10*time.Millisecond
 				if !ok {
 					fmt.Printf("\nitem: %v, err: [%s], time passed: %s, since add: %s\n", item != nil, err, time.Since(t), time.Since(addT))
 				}

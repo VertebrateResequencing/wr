@@ -811,12 +811,13 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	return *config, serverConfig, addr, standardReqs, clientConnectTime
 }
 
-// compiledSelf returns the running test executable. Several tests need to run
-// this binary (in --servermode or --runnermode), and the test harness has
-// already built exactly what those subprocesses need.
+// compiledSelf returns a test binary to run in --servermode or --runnermode,
+// caching the result process-wide. Normally that's just the running test binary
+// (runnerBinary), but under -race it's a freshly compiled plain binary; see
+// runnerBinary's build-tagged variants for why.
 //
 //nolint:gochecknoglobals // the compile result is intentionally cached process-wide
-var compiledSelf = sync.OnceValues(os.Executable)
+var compiledSelf = sync.OnceValues(runnerBinary)
 
 // copyCompiledSelf compiles this test binary once (shared via compileSelf) and
 // copies it to dst, returning dst. The runner tests count the files left in
@@ -1310,8 +1311,29 @@ func TestJobqueueSignal(t *testing.T) {
 		So(jq.ServerInfo.PID, ShouldEqual, serverPid)
 
 		Convey("Killed runners after a hard server crash come up lost, and new runners don't overcommit resources due to existing runners", func() {
-			cmd := "sleep 10"
-			cmd2 := "perl -e 'for (1..10) { sleep(1) }'"
+			// Use jobs that block until released (via marker files in a temp
+			// dir) instead of fixed-duration commands, so the test never depends
+			// on real wall-clock timing: under heavy parallel-test load (e.g. CI's
+			// 1-2 cpus) the kill sequence below can be delayed past when a
+			// fixed-duration "lost" job would finish - it would then be recorded
+			// "complete" before we kill its runner. Blocking jobs stay running
+			// until the test decides, so the outcome is deterministic.
+			markerDir, errMarker := os.MkdirTemp("", "wr_signal_marker")
+			So(errMarker, ShouldBeNil)
+
+			defer os.RemoveAll(markerDir)
+
+			recoverStarted := filepath.Join(markerDir, "recover_started")
+			recoverRelease := filepath.Join(markerDir, "recover_release")
+			lostStarted := filepath.Join(markerDir, "lost_started")
+
+			// the "recover" job holds all the CPUs and runs until the test
+			// releases it (creating recover_release); the "lost" job runs until
+			// cleanup removes markerDir. Both touch a marker when they start.
+			cmd := fmt.Sprintf(
+				"touch %s && while [ -d %s ] && [ ! -e %s ]; do sleep 0.1; done",
+				recoverStarted, markerDir, recoverRelease)
+			cmd2 := fmt.Sprintf("touch %s && while [ -d %s ]; do sleep 0.1; done", lostStarted, markerDir)
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: float64(runtime.NumCPU())}, Retries: uint8(0), RepGroup: "recover"})
 			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "lost"})
@@ -1320,8 +1342,11 @@ func TestJobqueueSignal(t *testing.T) {
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
 
-			// get pids of the runners the server spawned
-			<-time.After(2 * time.Second)
+			// wait until both jobs are actually running (their start markers
+			// appear) instead of sleeping a fixed time, then get the pids of the
+			// runners the server spawned
+			So(waitUntilFileExists(recoverStarted, 60), ShouldBeTrue)
+			So(waitUntilFileExists(lostStarted, 60), ShouldBeTrue)
 			processes, err := process.Processes()
 			So(err, ShouldBeNil)
 			runnerPids := make(map[int]bool)
@@ -1331,41 +1356,48 @@ func TestJobqueueSignal(t *testing.T) {
 				if errc != nil {
 					continue
 				}
-				if strings.Contains(thisCmd, "sleep") {
-					parent, errp := p.Parent()
-					if errp != nil {
-						continue
-					}
-					parentCmd, errp := parent.Cmdline()
-					if errp != nil {
-						continue
-					}
-					if strings.Contains(parentCmd, serverExe) {
-						pid := int(parent.Pid)
 
-						if strings.Contains(thisCmd, "perl") {
-							runnerPidToKill = pid
-						}
+				if !strings.Contains(thisCmd, markerDir) {
+					continue
+				}
 
-						runnerPids[pid] = true
-						if len(runnerPids) == 2 {
-							break
-						}
-					}
+				parent, errp := p.Parent()
+				if errp != nil {
+					continue
+				}
+
+				parentCmd, errp := parent.Cmdline()
+				if errp != nil {
+					continue
+				}
+
+				if !strings.Contains(parentCmd, serverExe) {
+					continue
+				}
+
+				pid := int(parent.Pid)
+				if strings.Contains(thisCmd, lostStarted) {
+					runnerPidToKill = pid
+				}
+
+				runnerPids[pid] = true
+				if len(runnerPids) == 2 {
+					break
 				}
 			}
+
 			So(len(runnerPids), ShouldEqual, 2)
 			So(runnerPidToKill, ShouldNotEqual, 0)
 			So(runnerPidToKill, ShouldNotEqual, serverPid)
 
-			// kill server and then second runner, then wait before starting new
-			// server. We don't use killServer here because we don't want to
-			// jq.Disconnect and reap before killing the runner
+			// kill the server and then the lost job's runner, then wait for the old
+			// server process to be gone before starting a new one. We don't use
+			// killServer here because we don't want to jq.Disconnect and reap before
+			// killing the runner.
 			errk := syscall.Kill(serverPid, syscall.SIGKILL)
 			if errk != nil {
 				fmt.Printf("failed to send SIGKILL to server: %s\n", errk)
 			}
-			<-time.After(2 * time.Second)
 			errk = syscall.Kill(runnerPidToKill, syscall.SIGKILL)
 			if errk != nil {
 				fmt.Printf("failed to send SIGKILL to runner: %s\n", errk)
@@ -1380,15 +1412,19 @@ func TestJobqueueSignal(t *testing.T) {
 			}
 			alreadyKilled[serverPid] = true
 
-			<-time.After(4 * time.Second)
+			// the killed runner's job (the lost one) is still running but can no longer
+			// report; wait for the old server and that runner to be gone, then start a
+			// fresh server reusing the same db.
+			So(waitUntilPidsAreGone(map[int]bool{serverPid: true, runnerPidToKill: true}, 30), ShouldBeTrue)
 			var errf error
 			jq, _, serverCmd, errf = startServer(serverExe, true, true, config, addr)
 			serverPid = serverCmd.Process.Pid
 			So(errf, ShouldBeNil)
 			So(jq, ShouldNotBeNil)
 
-			// add a new job which should wait until job 1 completes, since it
-			// uses all CPUs
+			// add a new job which should wait until the recover job completes, since the
+			// recover job uses all the CPUs - proving new runners don't overcommit
+			// because of the existing (surviving) runner.
 			cmd3 := "echo 1"
 			jobs = []*Job{{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
 			inserts, already, err = jq.Add(jobs, envVars, true)
@@ -1400,14 +1436,6 @@ func TestJobqueueSignal(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			// wait for runner pids to no longer exist (generous timeout: they
-			// terminate within seconds normally, but can take longer when the
-			// box is under heavy parallel-test load; waitUntilPidsAreGone polls
-			// and returns as soon as they're gone, so this doesn't slow the
-			// normal case)
-			waitUntilPidsAreGone(runnerPids, 90)
-			So(len(runnerPids), ShouldEqual, 0)
-
 			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer func() {
@@ -1416,33 +1444,30 @@ func TestJobqueueSignal(t *testing.T) {
 					fmt.Printf("failed to disconnect: %s\n", errd)
 				}
 			}()
-			job, err := jq2.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
-			So(err, ShouldBeNil)
-			So(job, ShouldNotBeNil)
-			So(job.Cmd, ShouldEqual, cmd)
-			So(job.State, ShouldEqual, JobStateComplete)
-			So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime.Add(9900*time.Millisecond))
 
-			job2, err := jq2.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
-			So(err, ShouldBeNil)
+			// the lost job's runner was killed mid-run, so once the restarted server
+			// notices it must come up lost (poll, since detection isn't instant)
+			job2 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd2}, JobStateLost, 60)
 			So(job2, ShouldNotBeNil)
 			So(job2.Cmd, ShouldEqual, cmd2)
 			So(job2.State, ShouldEqual, JobStateLost)
 
-			// now allow 2 secs for job3 to start and complete
-			var job3 *Job
-			for i := 0; i < 8; i++ {
-				job3, err = jq2.GetByEssence(&JobEssence{Cmd: cmd3}, false, false)
-				if job3 != nil && job3.State == JobStateComplete {
-					break
-				}
-				<-time.After(250 * time.Millisecond)
-			}
-			So(err, ShouldBeNil)
+			// the recover job's runner survived the crash; release the job and it should
+			// complete, proving a surviving runner finishes its job across a restart.
+			So(os.WriteFile(recoverRelease, nil, 0600), ShouldBeNil)
+
+			job := waitUntilJobState(jq2, &JobEssence{Cmd: cmd}, JobStateComplete, 60)
+			So(job, ShouldNotBeNil)
+			So(job.Cmd, ShouldEqual, cmd)
+			So(job.State, ShouldEqual, JobStateComplete)
+
+			// only now that the recover job freed the CPUs can the waiting job run; it
+			// must have started on or after the recover job ended.
+			job3 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd3}, JobStateComplete, 60)
 			So(job3, ShouldNotBeNil)
 			So(job3.Cmd, ShouldEqual, cmd3)
 			So(job3.State, ShouldEqual, JobStateComplete)
-			So(job3.StartTime, ShouldHappenAfter, job.EndTime)
+			So(job3.StartTime, ShouldHappenOnOrAfter, job.EndTime)
 
 			// for subsequent tests to work, we need to wait for the server to
 			// really be gone (generous timeout for heavy parallel-test load;
@@ -7774,4 +7799,55 @@ func skipInShard(homeShard string) bool {
 	shard := os.Getenv("WR_TEST_SHARD")
 
 	return shard != "" && shard != homeShard
+}
+
+// waitUntilFileExists polls for up to maxWait seconds for path to exist,
+// returning true as soon as it does and false on timeout. Used to wait for a
+// test job to actually start (the job touches a marker file) without relying on
+// a fixed sleep, which is unreliable under heavy parallel-test load.
+func waitUntilFileExists(path string, maxWait int) bool {
+	limit := time.After(time.Duration(maxWait) * time.Second)
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+
+		select {
+		case <-limit:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+// waitUntilJobState polls (up to maxWait seconds) until the job matching essence
+// reaches wantState, returning that job (or the last-seen job, possibly nil, on
+// timeout). It returns as soon as the state matches, so it doesn't slow the
+// happy path while tolerating however long a state transition takes under load.
+func waitUntilJobState(jq *Client, essence *JobEssence, wantState JobState, maxWait int) *Job {
+	limit := time.After(time.Duration(maxWait) * time.Second)
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	var job *Job
+
+	for {
+		if got, err := jq.GetByEssence(essence, false, false); err == nil {
+			job = got
+			if job != nil && job.State == wantState {
+				return job
+			}
+		}
+
+		select {
+		case <-limit:
+			return job
+		case <-ticker.C:
+		}
+	}
 }

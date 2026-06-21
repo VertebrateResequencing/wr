@@ -23,10 +23,22 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// synctestConvey runs a single top-level Convey block inside its own synctest
+// bubble, so the wait-time windows in the block resolve on a synthetic clock
+// (instantly and deterministically) instead of depending on real wall-clock
+// timing, which is flaky under heavy parallel-test load.
+func synctestConvey(t *testing.T, desc string, action func()) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		Convey(desc, t, action)
+	})
+}
 
 func BenchmarkLimiterIncDec(b *testing.B) {
 	ctx := context.Background()
@@ -257,56 +269,6 @@ func TestLimiter(t *testing.T) {
 			So(atomic.LoadUint64(&incs), ShouldEqual, 125)
 			So(atomic.LoadUint64(&fails), ShouldEqual, 75)
 		})
-
-		Convey("Concurrent Increment()s at the limit work with wait times", func() {
-			groups := []string{"l1", "l2"}
-			So(l.Increment(ctx, groups), ShouldBeTrue)
-			So(l.Increment(ctx, groups), ShouldBeTrue)
-			So(l.Increment(ctx, groups), ShouldBeFalse)
-			start := time.Now()
-
-			go func() {
-				l.Decrement(groups)
-				l.Decrement(groups)
-				<-time.After(50 * time.Millisecond)
-				l.Decrement(groups)
-			}()
-
-			go func() {
-				<-time.After(60 * time.Millisecond)
-				// (decrementing the higher capacity group doesn't make an
-				// increment of the lower capacity group work)
-				l.Decrement([]string{"l1"})
-			}()
-
-			var quickIncs uint64
-			var slowIncs uint64
-			var fails uint64
-			wait := 125 * time.Millisecond
-			var wg sync.WaitGroup
-			for i := 0; i < 4; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					if l.Increment(ctx, groups, wait) {
-						if time.Since(start) < 35*time.Millisecond {
-							atomic.AddUint64(&quickIncs, 1)
-						} else {
-							atomic.AddUint64(&slowIncs, 1)
-						}
-					} else {
-						if time.Since(start) > 100*time.Millisecond {
-							atomic.AddUint64(&fails, 1)
-						}
-					}
-				}()
-			}
-			wg.Wait()
-
-			So(atomic.LoadUint64(&quickIncs), ShouldEqual, 2)
-			So(atomic.LoadUint64(&slowIncs), ShouldEqual, 1)
-			So(atomic.LoadUint64(&fails), ShouldEqual, 1)
-		})
 	})
 
 	Convey("You can make non-count Limiters", t, func() {
@@ -333,6 +295,75 @@ func TestLimiter(t *testing.T) {
 		So(l.Increment(ctx, []string{dateAdd(time.Hour) + "<datetime<" + dateAdd(2*time.Hour)}), ShouldBeFalse)
 		So(l.Increment(ctx, []string{dateAdd(-2*time.Hour) + "<datetime<" + dateAdd(-time.Hour)}), ShouldBeFalse)
 		So(l.Increment(ctx, []string{dateAdd(-time.Hour) + "<datetime<" + dateAdd(time.Hour)}), ShouldBeTrue)
+	})
+
+	// Runs under synctest's fake clock so the 35ms/50ms/60ms/125ms wait windows
+	// resolve deterministically instead of depending on real wall-clock timing,
+	// which is flaky under heavy parallel-test load (e.g. CI's 1-2 cpus running
+	// many test lanes at once). Proves Increment()s blocked at the limit are
+	// released as capacity frees - quickly when freed immediately, slowly when
+	// freed later - and time out when it isn't freed within the wait.
+	synctestConvey(t, "Concurrent Increment()s at the limit work with wait times", func() {
+		l := New(func(ctx context.Context, name string) *GroupData {
+			switch name {
+			case "l1":
+				return NewCountGroupData(3)
+			case "l2":
+				return NewCountGroupData(2)
+			}
+
+			return NewCountGroupData(-1)
+		})
+
+		groups := []string{"l1", "l2"}
+		So(l.Increment(ctx, groups), ShouldBeTrue)
+		So(l.Increment(ctx, groups), ShouldBeTrue)
+		So(l.Increment(ctx, groups), ShouldBeFalse)
+
+		start := time.Now()
+
+		go func() {
+			l.Decrement(groups)
+			l.Decrement(groups)
+			<-time.After(50 * time.Millisecond)
+			l.Decrement(groups)
+		}()
+
+		go func() {
+			<-time.After(60 * time.Millisecond)
+			// (decrementing the higher capacity group doesn't make an
+			// increment of the lower capacity group work)
+			l.Decrement([]string{"l1"})
+		}()
+
+		var quickIncs, slowIncs, fails atomic.Uint64
+
+		wait := 125 * time.Millisecond
+
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				if !l.Increment(ctx, groups, wait) {
+					if time.Since(start) > 100*time.Millisecond {
+						fails.Add(1)
+					}
+
+					return
+				}
+
+				if time.Since(start) < 35*time.Millisecond {
+					quickIncs.Add(1)
+				} else {
+					slowIncs.Add(1)
+				}
+			})
+		}
+
+		wg.Wait()
+
+		So(quickIncs.Load(), ShouldEqual, 2)
+		So(slowIncs.Load(), ShouldEqual, 1)
+		So(fails.Load(), ShouldEqual, 1)
 	})
 }
 

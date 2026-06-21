@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -144,7 +145,13 @@ func newPretendJobqueue() *pretendJobqueue {
 
 	fd, errr := strconv.ParseUint(PretendSubmissions, 10, 64)
 	if errr == nil {
-		w = os.NewFile(uintptr(fd), "")
+		f := os.NewFile(uintptr(fd), "")
+		// The fd is borrowed (set via PretendSubmissions by our caller/parent
+		// process), so we must not let os.NewFile's finalizer close it when this
+		// File is garbage collected: by then the fd number may have been reused
+		// for an unrelated file, which we would then wrongly close.
+		runtime.SetFinalizer(f, nil)
+		w = f
 	}
 
 	return &pretendJobqueue{output: w}

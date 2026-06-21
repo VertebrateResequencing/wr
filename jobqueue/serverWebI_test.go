@@ -724,12 +724,43 @@ func TestServerWebI(t *testing.T) {
 
 				foundMessage := false
 
-				for range 10 {
-					var msg schedulerIssue
+				// The scheduler-issue broadcast is lossy (the caster drops to any subscriber
+				// whose buffer is full), so under heavy parallel-test load the "current" we
+				// requested above can be dropped before this ws reads it. Re-request
+				// "current" periodically (it re-broadcasts the issues) while reading until we
+				// see our message, bounded by a read deadline; skip other message shapes.
+				resendStop := make(chan struct{})
+				resendDone := make(chan struct{})
 
-					errr := ws.ReadJSON(&msg)
+				go func() {
+					defer close(resendDone)
+
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-resendStop:
+							return
+						case <-ticker.C:
+							if werr := ws.WriteJSON(jstatusReq{Request: "current"}); werr != nil {
+								return
+							}
+						}
+					}
+				}()
+
+				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+
+				for {
+					_, data, errr := ws.ReadMessage()
 					if errr != nil {
-						continue
+						break // read deadline exceeded or connection closed
+					}
+
+					var msg schedulerIssue
+					if json.Unmarshal(data, &msg) != nil {
+						continue // a different message shape on the stream; skip it
 					}
 
 					if msg.Msg == testMsg {
@@ -743,6 +774,10 @@ func TestServerWebI(t *testing.T) {
 					}
 				}
 
+				close(resendStop)
+				<-resendDone
+
+				So(ws.SetReadDeadline(time.Time{}), ShouldBeNil)
 				So(foundMessage, ShouldBeTrue)
 
 				err = ws.WriteJSON(jstatusReq{

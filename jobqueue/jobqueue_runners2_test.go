@@ -381,7 +381,11 @@ func TestJobqueueRunners2(t *testing.T) {
 				fourHundredCount := 0
 
 				go func() {
-					limit := time.After(45 * time.Second)
+					// generous give-up cap: the loop returns as soon as the jobs
+					// finish (a few seconds normally), so this only fires if they
+					// never do. Set high so `make race`, where the
+					// race-instrumented job runs are far slower, doesn't time out.
+					limit := time.After(600 * time.Second)
 					ticker := time.NewTicker(50 * time.Millisecond)
 
 					for {
@@ -447,7 +451,9 @@ func TestJobqueueRunners2(t *testing.T) {
 				twoHundredCount := 0
 
 				go func() {
-					limit := time.After(360 * time.Second)
+					// generous give-up cap (see the first batch above): all
+					// count+count2 jobs are much slower to finish under -race.
+					limit := time.After(1800 * time.Second)
 					ticker := time.NewTicker(50 * time.Millisecond)
 
 					for {
