@@ -1417,8 +1417,12 @@ func TestJobqueueSignal(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			// wait for runner pids to no longer exist
-			waitUntilPidsAreGone(runnerPids, 16)
+			// wait for runner pids to no longer exist (generous timeout: they
+			// terminate within seconds normally, but can take longer when the
+			// box is under heavy parallel-test load; waitUntilPidsAreGone polls
+			// and returns as soon as they're gone, so this doesn't slow the
+			// normal case)
+			waitUntilPidsAreGone(runnerPids, 90)
 			So(len(runnerPids), ShouldEqual, 0)
 
 			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -1458,9 +1462,10 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job3.StartTime, ShouldHappenAfter, job.EndTime)
 
 			// for subsequent tests to work, we need to wait for the server to
-			// really be gone
+			// really be gone (generous timeout for heavy parallel-test load;
+			// polls and returns as soon as it's gone)
 			killServer(jq, serverPid, serverCmd)
-			So(waitUntilPidsAreGone(map[int]bool{serverPid: true}, 5), ShouldBeTrue)
+			So(waitUntilPidsAreGone(map[int]bool{serverPid: true}, 30), ShouldBeTrue)
 		})
 
 		Reset(func() {

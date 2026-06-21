@@ -35,7 +35,10 @@ JQ_RESTB := ^(TestServerWebI|TestJobqueueBasics)$$
 # jqB (the tests not named in any other lane - mostly the subscription tests) is
 # split into two lanes of roughly equal duration; JQ_B1 names the first half.
 JQ_B1 := TestJobSubscriptions|TestSubscriptionCatchUp|TestSubscriptionReconnectResync|TestSubscriptionTeardown|TestSubscriptionAtLeastOnceDedup|TestSubscriptionStateChangeEvents
-OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$' | grep -v '^${PKG}/client$$' | grep -v '^${PKG}/jobqueue/scheduler$$')
+# rp is excluded here and run on its own first (see the test target): its tests
+# assert on millisecond-scale timing, so they must not run under the heavy
+# parallel load, which would starve them and make them flaky.
+OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$' | grep -v '^${PKG}/client$$' | grep -v '^${PKG}/jobqueue/scheduler$$' | grep -v '^${PKG}/rp$$')
 GO_TEST := go test -tags netgo -timeout 40m --count 1 -failfast
 
 test: export CGO_ENABLED = 0
@@ -48,6 +51,8 @@ test:
 	echo "warming build cache so the parallel lanes don't all compile at once..."; \
 	$(GO_TEST) -run '^DOESNOTEXIST$$' ${PKG}/jobqueue ${PKG}/client ${PKG}/jobqueue/scheduler >/dev/null 2>&1 || true; \
 	rc=0; pids=""; \
+	echo "  (running rp's millisecond-timing tests first, un-contended, so they don't flake)"; \
+	$(GO_TEST) ${PKG}/rp >"$$base/rp.log" 2>&1 || rc=1; \
 	if [ "$$cpus" -ge 6 ]; then \
 		echo "  (>=6 cpus: sharding the heaviest single tests for extra parallelism)"; \
 		WR_TEST_LANE=2 WR_TEST_SHARD=a $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal_a.log" 2>&1 & pids="$$pids $$!"; \

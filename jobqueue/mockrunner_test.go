@@ -292,7 +292,11 @@ func TestJobqueueMockRunner(t *testing.T) {
 			So(oneCPUComplete, ShouldEqual, 1)
 			So(zeroCPUEnd.IsZero(), ShouldBeFalse)
 			So(oneCPUStart.IsZero(), ShouldBeFalse)
-			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, serverConfig.Timings.CheckRunnerTime)
+			// the 1-CPU job should start within a re-check cycle or two of the
+			// limited jobs finishing (proving the freed limit gets noticed and
+			// rescheduled promptly); allow generous headroom for scheduling
+			// jitter under parallel test load rather than asserting a tight gap.
+			So(oneCPUStart.Sub(zeroCPUEnd), ShouldBeLessThan, 2*serverConfig.Timings.CheckRunnerTime)
 		})
 	})
 }

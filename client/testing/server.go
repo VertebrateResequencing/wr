@@ -97,17 +97,51 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 func getPorts(t *testing.T) (int, int) {
 	t.Helper()
 
-	clientPort, err := freeport.GetFreePort()
+	clientPort, err := laneFreePort()
 	if err != nil {
 		t.Fatalf("getting free port failed: %s", err)
 	}
 
-	webPort, err := freeport.GetFreePort()
+	webPort, err := laneFreePort()
 	if err != nil {
 		t.Fatalf("getting free port failed: %s", err)
 	}
 
 	return clientPort, webPort
+}
+
+// laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
+// lane's tests run sequentially, so it needs no synchronisation.
+var laneTestPortNext int //nolint:gochecknoglobals
+
+// laneFreePort returns a port to bind. A global free-port picker (bind :0, note
+// the port, close it, hand it back) has a time-of-check to time-of-use race:
+// when many `go test` lanes run at once, two lanes can be handed the same
+// "free" port before either binds it, and one then fails to start ("address
+// already in use"). So when the Makefile runs a lane it sets WR_TEST_LANE, and
+// each lane draws from its own disjoint range (matching jobqueue's freeTestPort
+// so the two packages' lanes never overlap); within a lane the tests run
+// sequentially, so an incrementing counter never repeats a port before it would
+// wrap. Falls back to the global picker when WR_TEST_LANE is unset.
+func laneFreePort() (int, error) {
+	const (
+		laneBasePort = 10000
+		laneSpan     = 1000
+	)
+
+	laneStr := os.Getenv("WR_TEST_LANE")
+	if laneStr == "" {
+		return freeport.GetFreePort()
+	}
+
+	lane, err := strconv.Atoi(laneStr)
+	if err != nil {
+		return freeport.GetFreePort()
+	}
+
+	laneTestPortNext++
+
+	return laneBasePort + lane*laneSpan + laneTestPortNext%laneSpan, nil
 }
 
 func prepareDir(t *testing.T) (string, string, string, func()) {
