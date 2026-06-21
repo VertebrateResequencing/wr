@@ -47,14 +47,10 @@ test:
 	base=$$(mktemp -d "$${TMPDIR:-/tmp}/wrtest.XXXXXX"); \
 	rm -rf /tmp/jobqueue_cwd 2>/dev/null || true; \
 	cpus=$$(nproc 2>/dev/null || echo 4); \
-	echo "testing: parallel jobqueue/client/other lanes on $$cpus cpus ($$base)"; \
-	echo "warming build cache so the parallel lanes don't all compile at once..."; \
 	$(GO_TEST) -run '^DOESNOTEXIST$$' ${PKG}/jobqueue ${PKG}/client ${PKG}/jobqueue/scheduler >/dev/null 2>&1 || true; \
 	rc=0; pids=""; \
-	echo "  (running rp's millisecond-timing tests first, un-contended, so they don't flake)"; \
 	$(GO_TEST) ${PKG}/rp >"$$base/rp.log" 2>&1 || rc=1; \
 	if [ "$$cpus" -ge 6 ]; then \
-		echo "  (>=6 cpus: sharding the heaviest single tests for extra parallelism)"; \
 		WR_TEST_LANE=2 WR_TEST_SHARD=a $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal_a.log" 2>&1 & pids="$$pids $$!"; \
 		WR_TEST_LANE=14 WR_TEST_SHARD=b $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal_b.log" 2>&1 & pids="$$pids $$!"; \
 		WR_TEST_LANE=4 WR_TEST_SHARD=a $(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium_a.log" 2>&1 & pids="$$pids $$!"; \
@@ -64,7 +60,6 @@ test:
 		WR_TEST_LANE=12 nice -n 19 $(GO_TEST) -run '^TestScheduler$$' ${PKG}/client >"$$base/client_a.log" 2>&1 & pids="$$pids $$!"; \
 		WR_TEST_LANE=17 nice -n 19 $(GO_TEST) -skip '^TestScheduler$$' ${PKG}/client >"$$base/client_b.log" 2>&1 & pids="$$pids $$!"; \
 	else \
-		echo "  (<6 cpus: running the heaviest tests whole to avoid oversubscribing cores)"; \
 		WR_TEST_LANE=2 $(GO_TEST) -run '^TestJobqueueSignal$$' ${PKG}/jobqueue >"$$base/signal.log" 2>&1 & pids="$$pids $$!"; \
 		WR_TEST_LANE=4 $(GO_TEST) -run '^TestJobqueueMedium$$' ${PKG}/jobqueue >"$$base/medium.log" 2>&1 & pids="$$pids $$!"; \
 		WR_TEST_LANE=5 $(GO_TEST) -run '^TestJobqueueModify$$' ${PKG}/jobqueue >"$$base/modify.log" 2>&1 & pids="$$pids $$!"; \
