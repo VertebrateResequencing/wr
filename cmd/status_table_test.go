@@ -31,6 +31,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -66,6 +67,53 @@ func TestStatusTableFormatErrors(t *testing.T) {
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, errStatusFormatBadWidth.Error())
 		So(err.Error(), ShouldNotContainSubstring, errStatusFormatEmpty.Error())
+	})
+}
+
+func TestStatusTableRows(t *testing.T) {
+	Convey("wr status table renders reserved jobs as running", t, func() {
+		t.Setenv(statusFormatEnv, "status:9 count:5")
+
+		jobs := []*jobqueue.Job{
+			{State: jobqueue.JobStateReserved},
+		}
+
+		var output bytes.Buffer
+
+		err := writeStatusTable(&output, jobs)
+
+		So(err, ShouldBeNil)
+		So(output.String(), ShouldContainSubstring, "running")
+		So(output.String(), ShouldNotContainSubstring, "reserved")
+	})
+
+	Convey("wr status table repeats the limited status group total on each row", t, func() {
+		t.Setenv(statusFormatEnv, "command:9 status:9 count:5")
+
+		jobs := []*jobqueue.Job{
+			{Cmd: "first", State: jobqueue.JobStateBuried, Exitcode: 1, FailReason: jobqueue.FailReasonExit},
+			{
+				Cmd:        "second",
+				State:      jobqueue.JobStateBuried,
+				Exitcode:   1,
+				FailReason: jobqueue.FailReasonExit,
+				Similar:    2,
+			},
+		}
+
+		var output bytes.Buffer
+
+		err := writeStatusTable(&output, jobs)
+		lines := nonEmptyStatusLines(output.String())
+
+		So(err, ShouldBeNil)
+		So(lines, ShouldHaveLength, 3)
+		So(lines[1], ShouldContainSubstring, "first")
+		So(lines[1], ShouldContainSubstring, "buried")
+		So(lines[1], ShouldContainSubstring, "4")
+		So(lines[2], ShouldContainSubstring, "second")
+		So(lines[2], ShouldContainSubstring, "buried")
+		So(lines[2], ShouldContainSubstring, "4")
 	})
 }
 

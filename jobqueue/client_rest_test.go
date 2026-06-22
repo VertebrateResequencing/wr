@@ -56,6 +56,25 @@ func TestRESTHTTPClientReuse(t *testing.T) {
 	})
 }
 
+func TestRESTHTTPClientTimeout(t *testing.T) {
+	Convey("REST calls cap long RPC timeouts at the default REST client timeout", t, func() {
+		jq := &Client{timeout: 2 * defaultRESTClientTimeout}
+
+		client := jq.restHTTPClient()
+
+		So(client.Timeout, ShouldEqual, defaultRESTClientTimeout)
+	})
+
+	Convey("REST calls preserve RPC timeouts shorter than the default REST client timeout", t, func() {
+		shorterTimeout := defaultRESTClientTimeout / 3
+		jq := &Client{timeout: shorterTimeout}
+
+		client := jq.restHTTPClient()
+
+		So(client.Timeout, ShouldEqual, shorterTimeout)
+	})
+}
+
 func TestRESTURLUsesConnectedHost(t *testing.T) {
 	Convey("REST URLs prefer the host used for the RPC connection", t, func() {
 		jq := &Client{

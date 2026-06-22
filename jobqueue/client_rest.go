@@ -159,7 +159,7 @@ func (c *Client) newRestHTTPClient() *http.Client {
 }
 
 func (c *Client) restTimeout() time.Duration {
-	if c.timeout > 0 {
+	if c.timeout > 0 && c.timeout < defaultRESTClientTimeout {
 		return c.timeout
 	}
 

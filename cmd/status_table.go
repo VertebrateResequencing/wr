@@ -59,7 +59,7 @@ const (
 type statusTableField struct {
 	header string
 	right  bool
-	value  func(*jobqueue.Job) string
+	value  func(statusTableRow) string
 }
 
 var (
@@ -69,33 +69,33 @@ var (
 	errStatusFormatUnknown  = errors.New("unknown field")
 	statusTableCommandField = statusTableField{
 		header: "Command",
-		value:  func(job *jobqueue.Job) string { return job.Cmd },
+		value:  func(row statusTableRow) string { return row.job.Cmd },
 	}
 	statusTableIDField = statusTableField{
 		header: "ID",
-		value:  func(job *jobqueue.Job) string { return job.Key() },
+		value:  func(row statusTableRow) string { return row.job.Key() },
 	}
 	statusTableStatusField = statusTableField{
 		header: "Status",
-		value:  func(job *jobqueue.Job) string { return string(job.State) },
+		value:  func(row statusTableRow) string { return string(row.displayState) },
 	}
 	statusTableAttemptsField = statusTableField{
 		header: "Attempts",
 		right:  true,
-		value:  func(job *jobqueue.Job) string { return strconv.FormatUint(uint64(job.Attempts), 10) },
+		value:  func(row statusTableRow) string { return strconv.FormatUint(uint64(row.job.Attempts), 10) },
 	}
 	statusTableHostField = statusTableField{
 		header: "Host",
-		value:  statusTableHost,
+		value:  statusTableRowHost,
 	}
 	statusTableReqGroupField = statusTableField{
 		header: "Requirements group",
-		value:  func(job *jobqueue.Job) string { return job.ReqGroup },
+		value:  func(row statusTableRow) string { return row.job.ReqGroup },
 	}
 	statusTableCountField = statusTableField{
 		header: "Count",
 		right:  true,
-		value:  func(job *jobqueue.Job) string { return strconv.Itoa(1 + job.Similar) },
+		value:  func(row statusTableRow) string { return strconv.Itoa(row.count) },
 	}
 	statusTableFieldsByName = map[string]statusTableField{
 		"command":                  statusTableCommandField,
@@ -127,6 +127,16 @@ func statusOutputShowsAlerts(format string) bool {
 	}
 }
 
+type statusTableRow struct {
+	job          *jobqueue.Job
+	displayState jobqueue.JobState
+	count        int
+}
+
+func statusTableRowHost(row statusTableRow) string {
+	return statusTableHost(row.job)
+}
+
 func statusTableHost(job *jobqueue.Job) string {
 	switch {
 	case job.Host != "":
@@ -144,6 +154,48 @@ func statusOutputGetsEnv(format string) bool {
 	return format == statusOutputFormatDetails || format == statusOutputFormatDetailsAlias
 }
 
+func newStatusTableRows(jobs []*jobqueue.Job) []statusTableRow {
+	totals := statusTableGroupTotals(jobs)
+	rows := make([]statusTableRow, 0, len(jobs))
+
+	for _, job := range jobs {
+		key := statusTableGroupKeyForJob(job)
+		rows = append(rows, statusTableRow{
+			job:          job,
+			displayState: key.state,
+			count:        totals[key],
+		})
+	}
+
+	return rows
+}
+
+func statusTableGroupTotals(jobs []*jobqueue.Job) map[statusTableGroupKey]int {
+	totals := make(map[statusTableGroupKey]int)
+
+	for _, job := range jobs {
+		totals[statusTableGroupKeyForJob(job)] += 1 + job.Similar
+	}
+
+	return totals
+}
+
+func statusTableGroupKeyForJob(job *jobqueue.Job) statusTableGroupKey {
+	return statusTableGroupKey{
+		state:      statusTableDisplayState(job.State),
+		exitcode:   job.Exitcode,
+		failReason: job.FailReason,
+	}
+}
+
+func statusTableDisplayState(state jobqueue.JobState) jobqueue.JobState {
+	if state == jobqueue.JobStateReserved {
+		return jobqueue.JobStateRunning
+	}
+
+	return state
+}
+
 func statusTableFieldForName(name string) (statusTableField, error) {
 	if strings.TrimSpace(name) == "" {
 		return statusTableField{}, errStatusFormatBadField
@@ -155,6 +207,12 @@ func statusTableFieldForName(name string) (statusTableField, error) {
 	}
 
 	return field, nil
+}
+
+type statusTableGroupKey struct {
+	state      jobqueue.JobState
+	exitcode   int
+	failReason string
 }
 
 type statusTableColumn struct {
@@ -195,9 +253,9 @@ func writeStatusTable(w io.Writer, jobs []*jobqueue.Job) error {
 		return column.field.header
 	})
 
-	for _, job := range jobs {
+	for _, row := range newStatusTableRows(jobs) {
 		writeStatusTableRow(w, columns, func(column statusTableColumn) string {
-			return column.field.value(job)
+			return column.field.value(row)
 		})
 	}
 
