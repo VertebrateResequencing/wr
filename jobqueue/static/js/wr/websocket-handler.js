@@ -4,6 +4,46 @@
 import { removeBadServer, setupLiveWalltime } from '/js/wr/utility.js';
 import { createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 
+const countProperties = ['delayed', 'dependent', 'ready', 'running', 'lost', 'buried', 'deleted', 'complete'];
+const percentProperties = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
+const unixNanoThreshold = 1000000000000000;
+
+function resetTrackerCounts(tracker) {
+    for (const property of countProperties.concat(percentProperties)) {
+        if (tracker && typeof tracker[property] === 'function') {
+            tracker[property](0);
+        }
+    }
+
+    if (tracker) {
+        tracker.old_total = 0;
+    }
+}
+
+function resetLiveCounts(viewModel) {
+    resetTrackerCounts(viewModel.inflight);
+    viewModel.ignore = {};
+
+    for (const repgroup of viewModel.repGroups) {
+        if (!repgroup.id.startsWith('search:')) {
+            resetTrackerCounts(repgroup);
+        }
+    }
+}
+
+function normalizeStatusTimestamp(timestamp) {
+    if (typeof timestamp !== 'number' || Math.abs(timestamp) < unixNanoThreshold) {
+        return timestamp;
+    }
+
+    return timestamp / 1000000000;
+}
+
+function normalizeJobStatusTimes(job) {
+    job.Started = normalizeStatusTimestamp(job.Started);
+    job.Ended = normalizeStatusTimestamp(job.Ended);
+}
+
 /**
  * Sets up the WebSocket connection and message handling
  * @param {StatusViewModel} viewModel - The main view model
@@ -44,6 +84,9 @@ export function setupWebSocket(viewModel) {
 
             ws.onopen = () => {
                 reconnectDelay = reconnectInitialDelay;
+                if (reportedClose) {
+                    resetLiveCounts(viewModel);
+                }
                 reportedClose = false;
                 ws.send(currentRequest);
             };
@@ -206,6 +249,8 @@ function jobExists(detailsArray, key) {
  * @param {object} json - The JSON message data
  */
 function handleJobDetailsMessage(viewModel, json) {
+    normalizeJobStatusTimes(json);
+
     var rg = json['RepGroup'];
 
     // Handle search mode - add to search results instead of details
