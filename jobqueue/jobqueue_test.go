@@ -2518,16 +2518,67 @@ func TestJobqueueMedium(t *testing.T) {
 				})
 
 				Convey("A job with retries that fails after NoRetriesOverWalltime is immediately buried", func() {
+					noRetriesCmd := "sleep 0.5 && false"
+					noRetriesEssence := &JobEssence{Cmd: noRetriesCmd}
 					var jobs2 []*Job
-					jobs2 = append(jobs2, &Job{Cmd: "sleep 0.5 && false", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(1), NoRetriesOverWalltime: 10 * time.Millisecond, RepGroup: "manually_added"})
+
+					jobs2 = append(jobs2, &Job{
+						Cmd:                   noRetriesCmd,
+						Cwd:                   "/tmp",
+						ReqGroup:              "fake_group",
+						Requirements:          standardReqs,
+						Retries:               uint8(1),
+						NoRetriesOverWalltime: 10 * time.Millisecond,
+						RepGroup:              "manually_added",
+					})
 					inserts, already, err := jq.Add(jobs2, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 					So(already, ShouldEqual, 0)
 
-					job, err = jq.Reserve(50 * time.Millisecond)
+					noRetriesJob, err := jq.GetByEssence(noRetriesEssence, false, false)
 					So(err, ShouldBeNil)
-					So(job.Cmd, ShouldEqual, "sleep 0.5 && false")
+					So(noRetriesJob, ShouldNotBeNil)
+
+					noRetriesJobKey := noRetriesEssence.Key()
+					if noRetriesJob != nil {
+						noRetriesJobKey = noRetriesJob.Key()
+					}
+
+					for range 5 {
+						job, err = jq.Reserve(50 * time.Millisecond)
+						if err != nil || job == nil || job.Key() == noRetriesJobKey {
+							break
+						}
+
+						deleted, errd := jq.Delete([]*JobEssence{job.ToEssense()})
+						So(errd, ShouldBeNil)
+						So(deleted, ShouldEqual, 1)
+
+						if errd != nil || deleted != 1 {
+							return
+						}
+					}
+
+					So(err, ShouldBeNil)
+
+					if err != nil {
+						return
+					}
+
+					So(job, ShouldNotBeNil)
+
+					if job == nil {
+						return
+					}
+
+					So(job.Key(), ShouldEqual, noRetriesJobKey)
+
+					if job.Key() != noRetriesJobKey {
+						return
+					}
+
+					So(job.Cmd, ShouldEqual, noRetriesCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 					So(job.Attempts, ShouldEqual, 0)
 					So(job.UntilBuried, ShouldEqual, 2)
