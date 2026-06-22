@@ -554,7 +554,9 @@ func init() {
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
 		"['counts','summary','details','plain','table','json'] output format")
-	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "in -o d mode, number of commands that share the same properties to display; 0 displays all")
+	statusCmd.Flags().IntVar(&statusLimit, "limit", 1,
+		"for grouped outputs (details, table and json), number of commands that share "+
+			"the same properties to display per group; 0 displays all")
 
 	statusCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

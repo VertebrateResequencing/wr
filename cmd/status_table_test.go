@@ -27,6 +27,7 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"testing"
 	"unicode/utf8"
 
@@ -43,6 +44,39 @@ func TestStatusTableUnicodeCells(t *testing.T) {
 
 		So(output.String(), ShouldEqual, "é...")
 		So(utf8.ValidString(output.String()), ShouldBeTrue)
+	})
+}
+
+func TestStatusTableFormatErrors(t *testing.T) {
+	Convey("wr status table reports missing FIELD:width syntax", t, func() {
+		t.Setenv(statusFormatEnv, statusTableStatusFieldName)
+
+		err := writeStatusTable(io.Discard, nil)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "FIELD:width")
+		So(err.Error(), ShouldNotContainSubstring, errStatusFormatEmpty.Error())
+	})
+
+	Convey("wr status table reports empty widths as bad positive widths", t, func() {
+		t.Setenv(statusFormatEnv, statusTableStatusFieldName+":")
+
+		err := writeStatusTable(io.Discard, nil)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, errStatusFormatBadWidth.Error())
+		So(err.Error(), ShouldNotContainSubstring, errStatusFormatEmpty.Error())
+	})
+}
+
+func TestStatusLimitHelp(t *testing.T) {
+	Convey("wr status --limit help describes grouped outputs", t, func() {
+		flag := statusCmd.Flags().Lookup("limit")
+
+		So(flag, ShouldNotBeNil)
+		So(flag.Usage, ShouldContainSubstring, "grouped outputs")
+		So(flag.Usage, ShouldContainSubstring, "details")
+		So(flag.Usage, ShouldContainSubstring, "table")
 	})
 }
 

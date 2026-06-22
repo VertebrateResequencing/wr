@@ -64,6 +64,7 @@ type statusTableField struct {
 
 var (
 	errStatusFormatEmpty    = errors.New("no fields supplied")
+	errStatusFormatBadField = errors.New("field must use FIELD:width syntax")
 	errStatusFormatBadWidth = errors.New("field width must be a positive integer")
 	errStatusFormatUnknown  = errors.New("unknown field")
 	statusTableCommandField = statusTableField{
@@ -145,7 +146,7 @@ func statusOutputGetsEnv(format string) bool {
 
 func statusTableFieldForName(name string) (statusTableField, error) {
 	if strings.TrimSpace(name) == "" {
-		return statusTableField{}, errStatusFormatEmpty
+		return statusTableField{}, errStatusFormatBadField
 	}
 
 	field, found := statusTableFieldsByName[normaliseStatusTableFieldName(name)]
@@ -163,8 +164,8 @@ type statusTableColumn struct {
 
 func parseStatusTableColumn(part string) (statusTableColumn, error) {
 	name, widthText, found := strings.Cut(part, ":")
-	if !found {
-		return statusTableColumn{}, errStatusFormatEmpty
+	if !found || strings.TrimSpace(name) == "" {
+		return statusTableColumn{}, errStatusFormatBadField
 	}
 
 	width, err := parseStatusTableColumnWidth(widthText)
@@ -264,8 +265,9 @@ func fitStatusTableValue(value string, width int) string {
 }
 
 func parseStatusTableColumnWidth(widthText string) (int, error) {
-	if strings.TrimSpace(widthText) == "" {
-		return 0, errStatusFormatEmpty
+	widthText = strings.TrimSpace(widthText)
+	if widthText == "" {
+		return 0, errStatusFormatBadWidth
 	}
 
 	width, err := strconv.Atoi(widthText)
