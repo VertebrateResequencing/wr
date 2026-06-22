@@ -1,6 +1,7 @@
 /*******************************************************************************
- * Copyright (c) 2021,2025 Genome Research Ltd.
+ * Copyright (c) 2025-2026 Genome Research Ltd.
  *
+ * Author: Michael Woolnough <mw31@sanger.ac.uk>
  * Author: Sendu Bala <sb10@sanger.ac.uk>
  *
  * Permission is hereby granted, free of charge, to any person obtaining

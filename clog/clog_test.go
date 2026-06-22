@@ -1,8 +1,7 @@
 /*******************************************************************************
- * Copyright (c) 2020, 2021 Genome Research Ltd.
+ * Copyright (c) 2026 Genome Research Ltd.
  *
- * Author: Sendu Bala <sb10@sanger.ac.uk>, <ac55@sanger.ac.uk>
- * TestCaller based on code from github.com/sb10/l15h/v2
+ * Author: Sendu Bala <sb10@sanger.ac.uk>
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
