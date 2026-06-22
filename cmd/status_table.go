@@ -139,6 +139,10 @@ func statusTableHost(job *jobqueue.Job) string {
 	}
 }
 
+func statusOutputGetsEnv(format string) bool {
+	return format == statusOutputFormatDetails || format == statusOutputFormatDetailsAlias
+}
+
 func statusTableFieldForName(name string) (statusTableField, error) {
 	if strings.TrimSpace(name) == "" {
 		return statusTableField{}, errStatusFormatEmpty
@@ -273,15 +277,24 @@ func parseStatusTableColumnWidth(widthText string) (int, error) {
 }
 
 func statusOutputUsesGroupedJobs(format string) bool {
-	return strings.HasPrefix(format, "d") || strings.HasPrefix(format, "j") || statusOutputIsTable(format)
+	switch format {
+	case statusOutputFormatDetails, statusOutputFormatDetailsAlias,
+		statusOutputFormatJSON, statusOutputFormatJSONAlias,
+		statusOutputFormatTable, statusOutputFormatTableAlias:
+		return true
+	default:
+		return false
+	}
 }
 
 func statusOutputGetsStd(format string) bool {
-	return !statusOutputIsTable(format)
-}
-
-func statusOutputIsTable(format string) bool {
-	return format == statusOutputFormatTable || format == statusOutputFormatTableAlias
+	switch format {
+	case statusOutputFormatDetails, statusOutputFormatDetailsAlias,
+		statusOutputFormatJSON, statusOutputFormatJSONAlias:
+		return true
+	default:
+		return false
+	}
 }
 
 func normaliseStatusTableFieldName(name string) string {

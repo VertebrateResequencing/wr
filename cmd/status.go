@@ -150,8 +150,9 @@ redirect (eg. "mycmd > stdout.txt").
 
 		if !statusOutputUsesGroupedJobs(outputFormat) {
 			statusLimit = 0
-			showEnv = false
 		}
+
+		showEnv = showEnv && statusOutputGetsEnv(outputFormat)
 
 		useFastStatus := canUseFastStatusOutput(outputFormat)
 

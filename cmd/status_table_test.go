@@ -45,3 +45,49 @@ func TestStatusTableUnicodeCells(t *testing.T) {
 		So(utf8.ValidString(output.String()), ShouldBeTrue)
 	})
 }
+
+func TestStatusOutputRetrievalNeeds(t *testing.T) {
+	Convey("wr status only retrieves stdout and stderr for outputs that render them", t, func() {
+		for _, tc := range []struct {
+			format string
+			want   bool
+		}{
+			{statusOutputFormatCounts, false},
+			{statusOutputFormatCountsAlias, false},
+			{statusOutputFormatSummary, false},
+			{statusOutputFormatSummaryAlias, false},
+			{statusOutputFormatDetails, true},
+			{statusOutputFormatDetailsAlias, true},
+			{statusOutputFormatPlain, false},
+			{statusOutputFormatPlainAlias, false},
+			{statusOutputFormatTable, false},
+			{statusOutputFormatTableAlias, false},
+			{statusOutputFormatJSON, true},
+			{statusOutputFormatJSONAlias, true},
+		} {
+			So(statusOutputGetsStd(tc.format), ShouldEqual, tc.want)
+		}
+	})
+
+	Convey("wr status only applies --env to details output", t, func() {
+		for _, tc := range []struct {
+			format string
+			want   bool
+		}{
+			{statusOutputFormatCounts, false},
+			{statusOutputFormatCountsAlias, false},
+			{statusOutputFormatSummary, false},
+			{statusOutputFormatSummaryAlias, false},
+			{statusOutputFormatDetails, true},
+			{statusOutputFormatDetailsAlias, true},
+			{statusOutputFormatPlain, false},
+			{statusOutputFormatPlainAlias, false},
+			{statusOutputFormatTable, false},
+			{statusOutputFormatTableAlias, false},
+			{statusOutputFormatJSON, false},
+			{statusOutputFormatJSONAlias, false},
+		} {
+			So(statusOutputGetsEnv(tc.format), ShouldEqual, tc.want)
+		}
+	})
+}
