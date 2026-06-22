@@ -28,6 +28,7 @@ package testing
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,7 +54,14 @@ const (
 	testCheckRunnerTime = 500 * time.Millisecond
 	testReleaseDelayMin = 100 * time.Millisecond
 	testSocketWait      = 1 * time.Millisecond
+
+	laneBasePort = 10000
+	laneSpan     = 1000
 )
+
+// laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
+// lane's tests run sequentially, so it needs no synchronisation.
+var laneTestPortNext int //nolint:gochecknoglobals
 
 // PrepareWrConfig creates a temp directory, changes to that directory, creates
 // a wr config file with available ports set, then returns a ServerConfig with
@@ -110,10 +118,6 @@ func getPorts(t *testing.T) (int, int) {
 	return clientPort, webPort
 }
 
-// laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
-// lane's tests run sequentially, so it needs no synchronisation.
-var laneTestPortNext int //nolint:gochecknoglobals
-
 // laneFreePort returns a port to bind. A global free-port picker (bind :0, note
 // the port, close it, hand it back) has a time-of-check to time-of-use race:
 // when many `go test` lanes run at once, two lanes can be handed the same
@@ -124,11 +128,6 @@ var laneTestPortNext int //nolint:gochecknoglobals
 // sequentially, so an incrementing counter never repeats a port before it would
 // wrap. Falls back to the global picker when WR_TEST_LANE is unset.
 func laneFreePort() (int, error) {
-	const (
-		laneBasePort = 10000
-		laneSpan     = 1000
-	)
-
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
 		return freeport.GetFreePort()
@@ -139,9 +138,31 @@ func laneFreePort() (int, error) {
 		return freeport.GetFreePort()
 	}
 
-	laneTestPortNext++
+	for range laneSpan {
+		laneTestPortNext++
 
-	return laneBasePort + lane*laneSpan + laneTestPortNext%laneSpan, nil
+		port := laneBasePort + lane*laneSpan + laneTestPortNext%laneSpan
+		if lanePortAvailable(port) {
+			return port, nil
+		}
+	}
+
+	return freeport.GetFreePort()
+}
+
+func lanePortAvailable(port int) bool {
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(
+		context.Background(),
+		"tcp",
+		net.JoinHostPort("0.0.0.0", strconv.Itoa(port)),
+	)
+	if err != nil {
+		return false
+	}
+
+	return listener.Close() == nil
 }
 
 func prepareDir(t *testing.T) (string, string, string, func()) {
