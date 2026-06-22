@@ -189,7 +189,7 @@ type Client struct {
 
 	// timing parameters this client uses; defaulted from the server's
 	// ServerInfo at Connect() (falling back to the Client* package defaults for
-	// older servers), but may be overridden locally before use.
+	// older servers), but may be overridden by in-package code or tests before use.
 	touchInterval time.Duration
 	retryWait     time.Duration
 	retryTime     time.Duration

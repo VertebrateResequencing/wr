@@ -105,7 +105,7 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 }
 
 // triggerNotify is used to check if we should notify about the given
-// reserverGroup and send true on the registered channels if so. You
+// reserveGroup and send true on the registered channels if so. You
 // must hold the mutex lock before calling this.
 func (q *subQueue) triggerNotify(reserveGroup string) {
 	if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
