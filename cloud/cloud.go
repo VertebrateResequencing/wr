@@ -725,19 +725,34 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 	}
 
 	usingQuota := make(chan bool)
-	go func() {
-		<-usingQuota
-		close(usingQuota)
+	usingQuotaDone := make(chan struct{})
+
+	var usingQuotaOnce sync.Once
+
+	callUsingQuotaCB := func() {
 		if len(usingQuotaCB) == 1 {
 			usingQuotaCB[0]()
+		}
+	}
+
+	go func() {
+		select {
+		case <-usingQuota:
+			close(usingQuota)
+			usingQuotaOnce.Do(callUsingQuotaCB)
+		case <-usingQuotaDone:
 		}
 	}()
 
 	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.cloudContext(ctx), p.resources, os,
 		flavorID, diskGB, externalIP, usingQuota)
 	if err != nil {
+		close(usingQuotaDone)
+		usingQuotaOnce.Do(callUsingQuotaCB)
 		return nil, err
 	}
+
+	close(usingQuotaDone)
 
 	maxDisk := f.Disk
 	if diskGB > maxDisk {

@@ -54,6 +54,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -414,12 +415,14 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 		return false
 	}
 
-	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -p %d | wc -l", pid), false)
-	if err != nil || stdo != "1\n" {
+	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
+	if err != nil {
 		return false
 	}
 
-	return true
+	state := strings.TrimSpace(stdo)
+
+	return state == "" || strings.HasPrefix(state, "Z")
 }
 
 // Cleanup means you've finished using a scheduler and it can delete any
