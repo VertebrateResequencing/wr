@@ -587,6 +587,42 @@ func TestServerWebI(t *testing.T) {
 				So(kickedJobs[0].Cmd, ShouldEqual, "echo 4 && false")
 			})
 
+			Convey("The websocket handler can rerun completed jobs", func() {
+				completeJobs, errg := jq.GetByRepGroup("rg1", false, 0, JobStateComplete, false, false)
+				So(errg, ShouldBeNil)
+				So(len(completeJobs), ShouldEqual, 1)
+				So(completeJobs[0].Cmd, ShouldEqual, "echo 2")
+				So(completeJobs[0].Exited, ShouldBeTrue)
+				So(completeJobs[0].Attempts, ShouldEqual, 1)
+
+				err = ws.WriteJSON(jstatusReq{
+					Request: "rerun",
+					Key:     completeJobs[0].Key(),
+				})
+				So(err, ShouldBeNil)
+
+				So(pollUntil(func() bool {
+					rerunJobs, errr := jq.GetByRepGroup("rg1", false, 0, JobStateReady, false, false)
+					if errr != nil || len(rerunJobs) != 1 {
+						return false
+					}
+
+					return rerunJobs[0].Cmd == "echo 2"
+				}), ShouldBeTrue)
+
+				rerunJobs, errg := jq.GetByRepGroup("rg1", false, 0, JobStateReady, false, false)
+				So(errg, ShouldBeNil)
+				So(len(rerunJobs), ShouldEqual, 1)
+				So(rerunJobs[0].Key(), ShouldEqual, completeJobs[0].Key())
+				So(rerunJobs[0].Exited, ShouldBeFalse)
+				So(rerunJobs[0].Attempts, ShouldEqual, 0)
+				So(rerunJobs[0].StartTime.IsZero(), ShouldBeTrue)
+				So(rerunJobs[0].EndTime.IsZero(), ShouldBeTrue)
+				So(rerunJobs[0].PeakRAM, ShouldEqual, 0)
+				So(rerunJobs[0].PeakDisk, ShouldEqual, 0)
+				So(rerunJobs[0].FailReason, ShouldBeBlank)
+			})
+
 			Convey("The websocket handler can remove jobs", func() {
 				var removeJobs []*Job
 				removeJobs = append(removeJobs, &Job{Cmd: "echo remove", Cwd: "/tmp",

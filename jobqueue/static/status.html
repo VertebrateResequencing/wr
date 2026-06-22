@@ -783,6 +783,10 @@
                                     data-bind="click: $root.confirmRetry">Retry</button>
                             </div>
                             <!-- /ko -->
+                            <!-- ko if: State == "complete" -->
+                            <button type="button" class="btn btn-primary pull-right"
+                                data-bind="click: $root.confirmRerun">Rerun</button>
+                            <!-- /ko -->
                         </div>
                     </div>
                     <!-- /ko -->
@@ -804,8 +808,8 @@
                 Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span>
         commands with the identifier "<span data-bind="text: repGroup"></span>"
         <!-- ko if: exited -->
-        that had exit code <span data-bind="text: exitCode"></span> and failed because "<span
-            data-bind="text: failReason"></span>"?
+        that had exit code <span data-bind="text: exitCode"></span><!-- ko if: failReason --> and failed because "<span
+            data-bind="text: failReason"></span>"<!-- /ko -->?
         <!-- /ko -->
         <!-- ko if: ! exited -->
         ?

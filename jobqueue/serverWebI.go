@@ -38,6 +38,7 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -46,6 +47,7 @@ var staticFS embed.FS
 
 const (
 	jstatusRequestDetails     = "details"
+	jstatusRequestRerun       = "rerun"
 	jstatusRequestUnsubscribe = requestMethodUnsubscribe
 )
 
@@ -56,6 +58,7 @@ type jstatusReq struct {
 	//           queue.
 	// details = get example job details for jobs in the RepGroup, grouped by
 	//           having the same Status, Exitcode and FailReason.
+	// rerun = add completed jobs to the queue again, using Key or RepGroup.
 	// retry = retry buried jobs.
 	// remove = remove non-running jobs.
 	// kill = kill running jobs or confirm lost jobs are dead.
@@ -82,6 +85,48 @@ type jstatusReq struct {
 	FailReason string
 	ServerID   string // required argument for confirmBadServer
 	Msg        string // required argument for dismissMsg
+}
+
+// reqToCompletedJobs takes a rerun request from the status webpage and returns
+// completed jobs that are not already live in the queue.
+func (s *Server) reqToCompletedJobs(req jstatusReq) ([]*Job, string, string) {
+	if req.Key != "" {
+		return s.completedJobByKey(req.Key)
+	}
+
+	return s.completedJobsByRepGroup(req)
+}
+
+func (s *Server) completedJobsByRepGroup(req jstatusReq) ([]*Job, string, string) {
+	if req.RepGroup == "" || (req.State != "" && req.State != JobStateComplete) {
+		return nil, "", ""
+	}
+
+	complete, srerr, qerr := s.getCompleteJobsByRepGroup(req.RepGroup)
+	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	jobs := make([]*Job, 0, len(complete))
+	for _, job := range complete {
+		if !completedJobMatchesRerunRequest(job, req) {
+			continue
+		}
+
+		job.Lock()
+		job.RepGroup = req.RepGroup
+		job.Unlock()
+		jobs = append(jobs, job)
+	}
+
+	return jobs, "", ""
+}
+
+func completedJobMatchesRerunRequest(job *Job, req jstatusReq) bool {
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.Exitcode == req.Exitcode && job.FailReason == req.FailReason
 }
 
 // JStatus is the job info we send to the status webpage (only real difference
@@ -448,6 +493,15 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						s.kickJobs(ctx, jobs)
+					case jstatusRequestRerun:
+						jobs, srerr, qerr := s.reqToCompletedJobs(req)
+						if srerr != "" {
+							clog.Warn(ctx, "web interface rerun lookup failed", "err", qerr)
+
+							break
+						}
+
+						s.rerunCompletedJobs(ctx, jobs)
 					case "remove":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						deleted := s.deleteJobs(ctx, jobs)
@@ -524,6 +578,64 @@ func statusSubscriptionStopped(stop <-chan bool) bool {
 	default:
 		return false
 	}
+}
+
+func resetCompletedJobForRerun(job *Job) {
+	job.Lock()
+	defer job.Unlock()
+
+	resetJobExecutionFields(job)
+	resetJobStatusFields(job)
+}
+
+func resetJobExecutionFields(job *Job) {
+	job.ActualCwd = ""
+	job.PeakRAM = 0
+	job.PeakDisk = 0
+	job.Exited = false
+	job.Exitcode = 0
+	job.Lost = false
+	job.FailReason = ""
+	job.Pid = 0
+	job.Host = ""
+	job.HostID = ""
+	job.HostIP = ""
+	job.StartTime = time.Time{}
+	job.EndTime = time.Time{}
+	job.CPUtime = 0
+	job.StdErrC = nil
+	job.StdOutC = nil
+}
+
+func resetJobStatusFields(job *Job) {
+	job.EnvC = nil
+	job.EnvCRetrieved = false
+	job.State = JobStateReady
+	job.Attempts = 0
+	job.UntilBuried = job.Retries + 1
+	job.ReservedBy = uuid.UUID{}
+	job.Similar = 0
+	job.DelayTime = 0
+	job.killCalled = false
+	job.incrementedLimitGroups = nil
+}
+
+func (s *Server) completedJobByKey(key string) ([]*Job, string, string) {
+	live, err := s.db.checkIfLive(key)
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	if live {
+		return nil, "", ""
+	}
+
+	jobs, err := s.db.retrieveCompleteJobsByKeys([]string{key})
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	return jobs, "", ""
 }
 
 // setupUpdateListener creates a goroutine that listens for updates from a
@@ -632,6 +744,30 @@ func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string
 		}
 	}
 	return nil
+}
+
+func (s *Server) rerunCompletedJobs(ctx context.Context, jobs []*Job) {
+	jobsByEnvKey := make(map[string][]*Job)
+
+	for _, job := range jobs {
+		job.RLock()
+		envkey := job.EnvKey
+		job.RUnlock()
+
+		resetCompletedJobForRerun(job)
+		jobsByEnvKey[envkey] = append(jobsByEnvKey[envkey], job)
+	}
+
+	for envkey, envJobs := range jobsByEnvKey {
+		added, dups, _, srerr, err := s.createJobs(ctx, envJobs, envkey, false)
+		if err != nil {
+			clog.Warn(ctx, "web interface rerun failed", "err", err, "srerr", srerr)
+
+			continue
+		}
+
+		clog.Debug(ctx, "reran completed jobs", "new", added, "dups", dups)
+	}
 }
 
 func (s *Server) setupStatusSubscriptionUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
