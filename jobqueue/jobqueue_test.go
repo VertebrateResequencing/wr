@@ -1068,11 +1068,10 @@ func startServer(
 		log.Fatal(err)
 	}
 
-	// wait a while for our server cmd to actually start serving
+	// wait a while for our server cmd to start serving and write its token
 	mTimeout := 30 * time.Second
-	internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 
-	token, err := os.ReadFile(config.ManagerTokenFile)
+	token, err := readManagerToken(config.ManagerTokenFile, preStart, mTimeout)
 	if err != nil || len(token) == 0 {
 		return nil, nil, cmd, err
 	}
@@ -8168,5 +8167,29 @@ func connectWithRetry(addr string, config internal.Config, token []byte, timeout
 		}
 
 		<-time.After(100 * time.Millisecond)
+	}
+}
+
+// readManagerToken waits for the manager's token file to appear and reads it,
+// retrying until the token is non-empty or timeout elapses. The server writes
+// the token with a non-atomic os.WriteFile, so a reader racing startup can
+// briefly see the freshly-created file empty; retrying avoids returning an
+// empty token (and so a nil client) under load.
+func readManagerToken(file string, preStart time.Time, timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if internal.WaitForFile(file, preStart, time.Until(deadline)) {
+			token, err := os.ReadFile(file)
+			if err == nil && len(token) > 0 {
+				return token, nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return os.ReadFile(file)
+		}
+
+		<-time.After(50 * time.Millisecond)
 	}
 }
