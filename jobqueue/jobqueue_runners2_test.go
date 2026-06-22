@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -44,6 +45,8 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+var errWaitForJobRunningOrDoneTimeout = errors.New("timed out waiting for job to reach running or terminal state")
 
 // TestJobqueueRunners2 holds the second half of TestJobqueueRunners's
 // runner-spawning scenarios. It lives in its own test (and file) purely so the
@@ -590,7 +593,22 @@ func waitForJobRunningOrDone(jq *Client, essence *JobEssence, maxWait time.Durat
 		select {
 		case <-ticker.C:
 		case <-limit:
-			return job, nil
+			if job == nil {
+				return nil, fmt.Errorf(
+					"%w after %s for job %q: job not found",
+					errWaitForJobRunningOrDoneTimeout,
+					maxWait,
+					essence.Cmd,
+				)
+			}
+
+			return job, fmt.Errorf(
+				"%w after %s for job %q: last state %s",
+				errWaitForJobRunningOrDoneTimeout,
+				maxWait,
+				essence.Cmd,
+				job.State,
+			)
 		}
 	}
 }

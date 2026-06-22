@@ -100,6 +100,13 @@ func TestStatusSchedulerAlertsFooter(t *testing.T) {
 					Name:  "worker-maybe",
 					IP:    "192.168.0.10",
 					Date:  1710000180,
+					IsBad: true,
+				},
+				{
+					ID:    "serverid-footer-recovered",
+					Name:  "worker-recovered",
+					IP:    "192.168.0.11",
+					Date:  1710000240,
 					IsBad: false,
 				},
 			},
@@ -119,6 +126,28 @@ func TestStatusSchedulerAlertsFooter(t *testing.T) {
 		So(got, ShouldContainSubstring, "boot failed")
 		So(got, ShouldContainSubstring, "worker-maybe")
 		So(got, ShouldContainSubstring, "might be dead")
+		So(got, ShouldNotContainSubstring, "worker-recovered")
+	})
+
+	Convey("wr status skips recovered bad servers in the footer", t, func() {
+		alerts := &jobqueue.SchedulerAlerts{
+			BadServers: []*jobqueue.BadServer{
+				{
+					ID:      "serverid-footer-recovered",
+					Name:    "worker-recovered",
+					IP:      "192.168.0.11",
+					Date:    1710000240,
+					IsBad:   false,
+					Problem: "boot failed",
+				},
+			},
+		}
+
+		var output bytes.Buffer
+
+		writeStatusAlertsFooter(&output, alerts)
+
+		So(output.String(), ShouldBeEmpty)
 	})
 }
 

@@ -55,7 +55,7 @@ func writeStatusAlerts(w io.Writer, jq schedulerAlertsGetter, format string) {
 }
 
 func writeStatusAlertsFooter(w io.Writer, alerts *jobqueue.SchedulerAlerts) {
-	if alerts == nil || (len(alerts.Issues) == 0 && len(alerts.BadServers) == 0) {
+	if alerts == nil || (len(alerts.Issues) == 0 && !hasActiveStatusBadServerAlert(alerts.BadServers)) {
 		return
 	}
 
@@ -63,6 +63,16 @@ func writeStatusAlertsFooter(w io.Writer, alerts *jobqueue.SchedulerAlerts) {
 	fmt.Fprintln(w, "Scheduler alerts:")
 	writeStatusIssueAlerts(w, alerts.Issues)
 	writeStatusBadServerAlerts(w, alerts.BadServers)
+}
+
+func hasActiveStatusBadServerAlert(badServers []*jobqueue.BadServer) bool {
+	for _, server := range badServers {
+		if server != nil && server.IsBad {
+			return true
+		}
+	}
+
+	return false
 }
 
 func writeStatusIssueAlerts(w io.Writer, issues []*jobqueue.SchedulerIssue) {
@@ -110,7 +120,7 @@ func statusIssueAlertSuffix(issue *jobqueue.SchedulerIssue) string {
 
 func writeStatusBadServerAlerts(w io.Writer, badServers []*jobqueue.BadServer) {
 	for _, server := range sortedStatusBadServers(badServers) {
-		if server == nil {
+		if server == nil || !server.IsBad {
 			continue
 		}
 
