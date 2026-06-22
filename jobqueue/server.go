@@ -901,6 +901,110 @@ func queueItemStatusState(itemState queue.ItemState, lost bool) JobState {
 	return JobStateRunning
 }
 
+func (s *Server) replaceLiveRerunItems(
+	ctx context.Context,
+	itemdefs []*queue.ItemDef,
+	ignoreComplete bool,
+) ([]*queue.ItemDef, int, error) {
+	if ignoreComplete {
+		return itemdefs, 0, nil
+	}
+
+	var (
+		remaining []*queue.ItemDef
+		replaced  int
+	)
+
+	for _, itemdef := range itemdefs {
+		updated, err := s.replaceLiveRerunItem(ctx, itemdef)
+		if err != nil {
+			return nil, replaced, err
+		}
+
+		if updated {
+			replaced++
+
+			continue
+		}
+
+		remaining = append(remaining, itemdef)
+	}
+
+	return remaining, replaced, nil
+}
+
+func (s *Server) replaceLiveRerunItem(ctx context.Context, itemdef *queue.ItemDef) (bool, error) {
+	item, err := s.q.Get(itemdef.Key)
+	if err != nil {
+		if queueErrorIs(err, queue.ErrNotFound) {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	oldRepGroup, ok := resurrectedCompleteRepGroup(item)
+	if !ok {
+		return false, nil
+	}
+
+	newJob, ok := itemdef.Data.(*Job)
+	if !ok {
+		return false, nil
+	}
+
+	if err = s.updateLiveRerunItem(ctx, itemdef); err != nil {
+		return false, err
+	}
+
+	newRepGroup := newJob.RepGroup
+	s.rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, itemdef.Key)
+
+	return true, nil
+}
+
+func queueErrorIs(err error, target error) bool {
+	var qerr queue.Error
+
+	return errors.As(err, &qerr) && errors.Is(qerr.Err, target)
+}
+
+func resurrectedCompleteRepGroup(item *queue.Item) (string, bool) {
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return "", false
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.RepGroup, job.State == JobStateComplete
+}
+
+func (s *Server) updateLiveRerunItem(ctx context.Context, itemdef *queue.ItemDef) error {
+	return s.q.Update(
+		ctx,
+		itemdef.Key,
+		itemdef.ReserveGroup,
+		itemdef.Data,
+		itemdef.Priority,
+		itemdef.Delay,
+		itemdef.TTR,
+		itemdef.Dependencies,
+	)
+}
+
+func (s *Server) rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, key string) {
+	s.rpl.Lock()
+	if oldRepGroup != newRepGroup {
+		s.rpl.Delete(oldRepGroup, key)
+	}
+
+	s.rpl.Add(newRepGroup, key)
+	s.rpl.Unlock()
+	s.rememberRepGroupSubscriptionKey(newRepGroup, key)
+}
+
 func subscriptionUpdateState(_, to JobState) (JobState, bool) {
 	switch to {
 	case JobStateDelayed, JobStateDependent, JobStateReady, JobStateReserved,
@@ -2570,11 +2674,17 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 
 		srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
 
+		var replaced int
+		if qerr == nil {
+			itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
+		}
+
 		if qerr != nil {
 			srerr = ErrInternalError
 		} else {
 			// add the jobs to the in-memory job queue
 			added, dups, qerr = s.enqueueItems(ctx, itemdefs)
+			added += replaced
 			if qerr != nil {
 				srerr = ErrInternalError
 			}

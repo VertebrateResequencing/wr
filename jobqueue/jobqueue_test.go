@@ -2250,6 +2250,138 @@ func TestJobqueueBasics(t *testing.T) {
 	}
 }
 
+func TestRerunDependentJobWaitsOnIncompleteDependencies(t *testing.T) {
+	ctx := context.Background()
+
+	if runnermode || servermode {
+		return
+	}
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("A rerun of a completed dependent job waits on an incomplete rerun dependency", t, func() {
+		const (
+			issue326A = "issue326-a"
+			issue326B = "issue326-b"
+		)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		jobA := &Job{
+			Cmd:          "echo issue326 a",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     issue326A,
+			DepGroups:    []string{issue326A},
+		}
+		jobB := &Job{
+			Cmd:          "echo issue326 b",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     issue326B,
+			DepGroups:    []string{issue326A, issue326B},
+		}
+		jobC := &Job{
+			Cmd:          "echo issue326 c",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     "issue326-c",
+			Dependencies: Dependencies{
+				NewDepGroupDependency(issue326A),
+				NewDepGroupDependency(issue326B),
+			},
+		}
+		explicitJobC := &Job{
+			Cmd:          jobC.Cmd,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     "issue326-c-explicit",
+			Priority:     10,
+			Dependencies: Dependencies{
+				NewDepGroupDependency(issue326A),
+				NewDepGroupDependency(issue326B),
+			},
+		}
+
+		added, existed, err := jq.Add([]*Job{jobA}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		added, existed, err = jq.Add([]*Job{jobB}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		added, existed, err = jq.Add([]*Job{jobC}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		firstRunA, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(firstRunA.Key(), ShouldEqual, jobA.Key())
+		So(jq.Execute(ctx, firstRunA, config.RunnerExecShell), ShouldBeNil)
+
+		firstRunB, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(firstRunB.Key(), ShouldEqual, jobB.Key())
+		So(jq.Execute(ctx, firstRunB, config.RunnerExecShell), ShouldBeNil)
+
+		firstRunC, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(firstRunC.Key(), ShouldEqual, jobC.Key())
+		So(jq.Execute(ctx, firstRunC, config.RunnerExecShell), ShouldBeNil)
+
+		added, existed, err = jq.Add([]*Job{jobA}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldBeGreaterThanOrEqualTo, 1)
+		So(existed, ShouldEqual, 0)
+
+		added, existed, err = jq.Add([]*Job{jobB}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		added, existed, err = jq.Add([]*Job{explicitJobC}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		gottenJobs, err := jq.GetByRepGroup(explicitJobC.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(gottenJobs, ShouldHaveLength, 1)
+		So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
+
+		nextJob, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(nextJob.Key(), ShouldEqual, jobA.Key())
+		So(jq.Execute(ctx, nextJob, config.RunnerExecShell), ShouldBeNil)
+
+		nextJob, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(nextJob.Key(), ShouldEqual, jobB.Key())
+		So(jq.Execute(ctx, nextJob, config.RunnerExecShell), ShouldBeNil)
+
+		nextJob, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(nextJob.Key(), ShouldEqual, explicitJobC.Key())
+		So(nextJob.RepGroup, ShouldEqual, explicitJobC.RepGroup)
+	})
+}
+
 func TestJobqueueMedium(t *testing.T) {
 	ctx := context.Background()
 
