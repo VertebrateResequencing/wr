@@ -147,6 +147,7 @@ func newPretendJobqueue() *pretendJobqueue {
 	if errr == nil {
 		dupFD, err := syscall.Dup(fd)
 		if err == nil {
+			syscall.CloseOnExec(dupFD)
 			w = os.NewFile(uintptr(dupFD), "pretend-submissions")
 		}
 	}

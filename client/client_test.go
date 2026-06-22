@@ -34,6 +34,7 @@ import (
 	"slices"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1508,6 +1509,35 @@ func TestFakeScheduler(t *testing.T) {
 			So(payloads, ShouldHaveLength, 1)
 			So(payloads[0], ShouldResemble, []*jobqueue.Job{job1, job2})
 		})
+
+		Convey("Setting pretendSubmissions to a file descriptor keeps the duplicate close-on-exec", func() {
+			pr, pw, err := os.Pipe()
+			So(err, ShouldBeNil)
+
+			defer pr.Close()
+
+			restorePretend := setPretendSubmissionsForTest(strconv.FormatUint(uint64(pw.Fd()), 10))
+			defer restorePretend()
+
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			defer func() {
+				So(s.Disconnect(), ShouldBeNil)
+			}()
+
+			So(pw.Close(), ShouldBeNil)
+
+			pjq, ok := s.jq.(*pretendJobqueue)
+			So(ok, ShouldBeTrue)
+
+			output, ok := pjq.output.(*os.File)
+			So(ok, ShouldBeTrue)
+
+			flags, err := fdFlags(output)
+			So(err, ShouldBeNil)
+			So(flags&syscall.FD_CLOEXEC, ShouldEqual, syscall.FD_CLOEXEC)
+		})
 	})
 }
 
@@ -1817,4 +1847,13 @@ func decodePretendJobPayloads(r io.Reader) ([][]*jobqueue.Job, error) {
 
 		payloads = append(payloads, jobs)
 	}
+}
+
+func fdFlags(f *os.File) (int, error) {
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFD, 0)
+	if errno != 0 {
+		return 0, errno
+	}
+
+	return int(flags), nil
 }
