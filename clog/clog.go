@@ -29,6 +29,7 @@ package clog
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"sync"
 
@@ -51,6 +52,8 @@ var osExit = os.Exit //nolint:gochecknoglobals // Fatal tests swap this process-
 var fileRotationConfigMu sync.RWMutex //nolint:gochecknoglobals // File handlers use process-wide rotation config.
 
 var fileRotationConfig = DefaultFileRotationConfig() //nolint:gochecknoglobals // Updated during command initialization.
+
+var errNoFileHandlerLevels = errors.New("at least one file handler level is required")
 
 // FileRotationConfig controls how file-backed clog handlers rotate log files.
 type FileRotationConfig struct {
@@ -79,6 +82,10 @@ func currentFileRotationConfig() FileRotationConfig {
 
 // ConfigureFileRotation sets the rotation settings used by new file handlers.
 func ConfigureFileRotation(config FileRotationConfig) {
+	if config.MaxSizeMB <= 0 {
+		config.MaxSizeMB = defaultFileRotationMaxSizeMB
+	}
+
 	fileRotationConfigMu.Lock()
 	defer fileRotationConfigMu.Unlock()
 
@@ -113,6 +120,10 @@ func validateFileHandlerPath(path string) error {
 
 // CreateFileHandlersAtLevels returns log15 file handlers for one shared file.
 func CreateFileHandlersAtLevels(path string, levels ...string) ([]log.Handler, error) {
+	if len(levels) == 0 {
+		return nil, errNoFileHandlerLevels
+	}
+
 	fh, err := createRotatingFileHandler(path)
 	if err != nil {
 		return nil, err

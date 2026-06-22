@@ -81,6 +81,50 @@ func TestFileLogRotation(t *testing.T) {
 	})
 }
 
+func TestFileRotationConfig(t *testing.T) {
+	Convey("Non-positive file rotation sizes fall back to the package default", t, func() {
+		defaultConfig := DefaultFileRotationConfig()
+		defer ConfigureFileRotation(defaultConfig)
+
+		ConfigureFileRotation(FileRotationConfig{
+			MaxSizeMB:  0,
+			MaxBackups: 2,
+			MaxAgeDays: 7,
+			Compress:   false,
+		})
+
+		config := currentFileRotationConfig()
+		So(config.MaxSizeMB, ShouldEqual, defaultConfig.MaxSizeMB)
+		So(config.MaxBackups, ShouldEqual, 2)
+		So(config.MaxAgeDays, ShouldEqual, 7)
+		So(config.Compress, ShouldBeFalse)
+
+		ConfigureFileRotation(FileRotationConfig{
+			MaxSizeMB:  -1,
+			MaxBackups: 4,
+			MaxAgeDays: 21,
+			Compress:   true,
+		})
+
+		config = currentFileRotationConfig()
+		So(config.MaxSizeMB, ShouldEqual, defaultConfig.MaxSizeMB)
+		So(config.MaxBackups, ShouldEqual, 4)
+		So(config.MaxAgeDays, ShouldEqual, 21)
+		So(config.Compress, ShouldBeTrue)
+	})
+}
+
+func TestCreateFileHandlersAtLevels(t *testing.T) {
+	Convey("File handlers require at least one level", t, func() {
+		logPath := filepath.Join(t.TempDir(), "clog.log")
+
+		handlers, err := CreateFileHandlersAtLevels(logPath)
+
+		So(handlers, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+	})
+}
+
 func TestLogger(t *testing.T) {
 	background := context.Background()
 	msg := "msg=msg"
