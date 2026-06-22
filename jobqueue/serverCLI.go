@@ -947,6 +947,26 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sr = &serverResponse{Jobs: jobs}
 				}
 			}
+		case "getrs":
+			var repGroup string
+			if cr.Job != nil {
+				repGroup = cr.Job.RepGroup
+			}
+
+			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
+			summaries, serr, qe := s.getStatusByRepGroup(repGroupStatusOptions{
+				RepGroup:             repGroup,
+				Match:                match,
+				States:               cr.States,
+				IncludeComplete:      cr.IncludeComplete,
+				IncludeStatusDetails: cr.IncludeStatusDetails,
+			})
+			srerr = serr
+			qerr = qe
+
+			if srerr == "" {
+				sr = &serverResponse{StatusSummaries: summaries}
+			}
 		case "getin":
 			// get incomplete jobs in the jobqueue, optionally filtered by rep group
 			var repGroup string

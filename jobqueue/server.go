@@ -276,6 +276,7 @@ type serverResponse struct {
 	SInfo           *ServerInfo
 	SStats          *ServerStats
 	CompletionTimes map[string]time.Time
+	StatusSummaries map[string]*RepGroupStatus
 	DB              []byte
 	Path            string
 	BadServers      []*BadServer
@@ -560,6 +561,14 @@ type lostJobRetryCheck struct {
 	checkTimeout time.Duration
 }
 
+type repGroupStatusOptions struct {
+	RepGroup             string
+	Match                RepGroupMatch
+	States               []JobState
+	IncludeComplete      bool
+	IncludeStatusDetails bool
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token                     []byte
@@ -712,6 +721,173 @@ func (s *Server) waitForClientHandling(ctx context.Context) {
 	case <-timer.C:
 		clog.Warn(ctx, "server shutdown timed out waiting for client handling to stop")
 	}
+}
+
+// getStatusByRepGroup gets compact per-state status summaries for jobs in the
+// given group match.
+func (s *Server) getStatusByRepGroup(opts repGroupStatusOptions) (map[string]*RepGroupStatus, string, string) {
+	rgs, srerr, qerr := s.getStatusRepGroups(opts)
+	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	summaries := make(map[string]*RepGroupStatus)
+	if opts.RepGroup == "" {
+		s.addAllQueueJobStatuses(summaries, opts)
+	} else {
+		for _, rg := range rgs {
+			s.addQueueJobStatusesByRepGroup(summaries, rg, opts)
+		}
+	}
+
+	srerr, qerr = s.addCompleteJobStatuses(summaries, rgs, opts)
+	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	return summaries, "", ""
+}
+
+func (s *Server) addCompleteJobStatuses(summaries map[string]*RepGroupStatus, rgs []string,
+	opts repGroupStatusOptions) (string, string) {
+	if !opts.IncludeComplete || !statusStateMatches(JobStateComplete, opts.States) {
+		return "", ""
+	}
+
+	for _, rg := range rgs {
+		complete, err := s.db.retrieveCompleteJobStatusByRepGroup(rg, opts.IncludeStatusDetails)
+		if err != nil {
+			return ErrDBError, err.Error()
+		}
+
+		if !statusSummaryEmpty(complete) {
+			statusSummaryForRepGroup(summaries, rg).Merge(complete)
+		}
+	}
+
+	return "", ""
+}
+
+func statusStateMatches(state JobState, filters []JobState) bool {
+	if len(filters) == 0 {
+		return true
+	}
+
+	for _, filter := range filters {
+		if normalizedStatusFilter(filter) == state {
+			return true
+		}
+	}
+
+	return false
+}
+
+func statusSummaryEmpty(summary *RepGroupStatus) bool {
+	if summary == nil {
+		return true
+	}
+
+	for _, count := range summary.Counts {
+		if count > 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
+func statusSummaryForRepGroup(summaries map[string]*RepGroupStatus, repGroup string) *RepGroupStatus {
+	summary, ok := summaries[repGroup]
+	if ok {
+		return summary
+	}
+
+	summary = NewRepGroupStatus()
+	summaries[repGroup] = summary
+
+	return summary
+}
+
+func (s *Server) getStatusRepGroups(opts repGroupStatusOptions) ([]string, string, string) {
+	if opts.RepGroup != "" {
+		return s.getRepGroupsList(opts.RepGroup, opts.Match)
+	}
+
+	if !opts.IncludeComplete {
+		return nil, "", ""
+	}
+
+	rgs, err := s.db.retrieveRepGroups()
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	return rgs, "", ""
+}
+
+func (s *Server) addAllQueueJobStatuses(summaries map[string]*RepGroupStatus,
+	opts repGroupStatusOptions) {
+	for _, item := range s.q.AllItems() {
+		s.addQueueItemStatus(summaries, item, opts)
+	}
+}
+
+func (s *Server) addQueueJobStatusesByRepGroup(summaries map[string]*RepGroupStatus, repGroup string,
+	opts repGroupStatusOptions) {
+	for _, key := range s.rpl.Values(repGroup) {
+		item, _ := s.q.Get(key) //nolint:errcheck
+		if item == nil {
+			continue
+		}
+
+		s.addQueueItemStatus(summaries, item, opts)
+	}
+}
+
+func (s *Server) addQueueItemStatus(summaries map[string]*RepGroupStatus, item *queue.Item,
+	opts repGroupStatusOptions) {
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return
+	}
+
+	itemState := item.State()
+
+	job.RLock()
+	repGroup := job.RepGroup
+	state := queueItemStatusState(itemState, job.Lost)
+	exitCode := job.Exitcode
+	failReason := job.FailReason
+	job.RUnlock()
+
+	if !statusStateMatches(state, opts.States) {
+		return
+	}
+
+	summary := statusSummaryForRepGroup(summaries, repGroup)
+	summary.AddState(state, 1)
+
+	if opts.IncludeStatusDetails && state == JobStateBuried {
+		group := fmt.Sprintf("exitcode.%d,\"%s\"", exitCode, failReason)
+		summary.AddBuried(group, item.Key)
+	}
+}
+
+func queueItemStatusState(itemState queue.ItemState, lost bool) JobState {
+	state := itemsStateToJobState[itemState]
+	if state == "" {
+		return JobStateUnknown
+	}
+
+	if state != JobStateReserved {
+		return state
+	}
+
+	if lost {
+		return JobStateLost
+	}
+
+	return JobStateRunning
 }
 
 func subscriptionUpdateState(_, to JobState) (JobState, bool) {
@@ -3077,6 +3253,14 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	}
 
 	return jobs
+}
+
+func normalizedStatusFilter(filter JobState) JobState {
+	if filter == JobStateReserved {
+		return JobStateRunning
+	}
+
+	return filter
 }
 
 func jobUnixNano(t time.Time) *int64 {

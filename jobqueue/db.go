@@ -915,6 +915,62 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 	return jobs, err
 }
 
+// retrieveCompleteJobStatusByRepGroup gets a compact status summary for
+// archived jobs in the given RepGroup. Count-only mode checks keys and does not
+// decode the archived jobs.
+func (db *db) retrieveCompleteJobStatusByRepGroup(repgroup string, includeDetails bool) (*RepGroupStatus, error) {
+	summary := NewRepGroupStatus()
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		return db.addCompleteJobStatusByRepGroup(tx, summary, repgroup, includeDetails)
+	})
+
+	return summary, err
+}
+
+func (db *db) addCompleteJobStatusByRepGroup(tx *bolt.Tx, summary *RepGroupStatus, repgroup string,
+	includeDetails bool) error {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	lookupBucket := tx.Bucket(bucketRTK).Cursor()
+
+	prefix := []byte(repgroup + dbDelimiter)
+	for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
+		key := bytes.TrimPrefix(k, prefix)
+
+		encoded := completeJobBucket.Get(key)
+		if len(encoded) == 0 || newJobBucket.Get(key) != nil {
+			continue
+		}
+
+		if err := db.addCompleteJobStatus(summary, repgroup, encoded, includeDetails); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (db *db) addCompleteJobStatus(summary *RepGroupStatus, repgroup string, encoded []byte,
+	includeDetails bool) error {
+	if !includeDetails {
+		summary.AddState(JobStateComplete, 1)
+
+		return nil
+	}
+
+	dec := codec.NewDecoderBytes(encoded, db.ch)
+
+	job := &Job{}
+	if err := dec.Decode(job); err != nil {
+		return err
+	}
+
+	job.RepGroup = repgroup
+	summary.AddCompleteJob(job)
+
+	return nil
+}
+
 // retrieveDependentJobs gets previously stored jobs that had a dependency on
 // one for the input depGroups. If the job is found in the live bucket, then it
 // is returned in the jobsToUpdate return value. If it is found in the complete
