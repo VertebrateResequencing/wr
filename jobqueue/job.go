@@ -983,12 +983,12 @@ func (j *Job) ToStatus() (JStatus, error) {
 	}
 
 	if !j.StartTime.IsZero() {
-		i := j.StartTime.Unix()
+		i := j.StartTime.UnixNano()
 		js.Started = &i
 	}
 
 	if !j.EndTime.IsZero() {
-		i := j.EndTime.Unix()
+		i := j.EndTime.UnixNano()
 		js.Ended = &i
 	}
 

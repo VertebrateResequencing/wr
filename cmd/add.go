@@ -69,6 +69,7 @@ var (
 	cmdPri                  int
 	cmdRet                  int
 	cmdFile                 string
+	cmdHead                 int
 	cmdCwdMatters           bool
 	cmdChangeHome           bool
 	cmdRepGroup             string
@@ -475,6 +476,10 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 			die("--with_docker and --with_singularity are mutually exclusive")
 		}
 
+		if cmdHead < 0 {
+			die("--head can't be negative")
+		}
+
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
 		var err error
@@ -532,6 +537,7 @@ func init() {
 
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
+	addCmd.Flags().IntVar(&cmdHead, "head", 0, "only add the first N parsed commands from the command file; 0 means all")
 	addCmd.Flags().StringVarP(&cmdRepGroup, "rep_grp", "i", "manually_added", "reporting group for your commands")
 	addCmd.Flags().StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
 	addCmd.Flags().StringVar(&cmdModules, "modules", "", "comma-separated list of environment modules to load")
@@ -858,6 +864,9 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		checkForRelativePathsInNonCwdMatters(&warnedAboutRelative, cwdContents, job)
 
 		jobs = append(jobs, job)
+		if cmdHead > 0 && len(jobs) >= cmdHead {
+			break
+		}
 	}
 
 	serr := scanner.Err()
