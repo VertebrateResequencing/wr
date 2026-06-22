@@ -29,6 +29,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -79,6 +80,32 @@ func TestGetBadLogLinesScansRotatedManagerLogs(t *testing.T) {
 			"lvl=eror msg=\"rotated error\"",
 			"lvl=eror msg=\"newer rotated error\"",
 			"lvl=crit msg=\"active critical\"",
+		})
+	})
+}
+
+func TestGetBadLogLinesHandlesLongLogLines(t *testing.T) {
+	Convey("getBadLogLines keeps scanning after a long non-matching log line", t, func() {
+		oldConfig := config
+
+		t.Cleanup(func() {
+			config = oldConfig
+		})
+
+		dir := t.TempDir()
+		logPath := filepath.Join(dir, "manager.log")
+		config = &internal.Config{ManagerLogFile: logPath}
+
+		err := os.WriteFile(logPath, []byte(
+			"lvl=info msg=\""+strings.Repeat("x", 70*1024)+"\"\n"+
+				"lvl=eror msg=\"later error\"\n"+
+				"lvl=crit msg=\"later critical\"\n",
+		), 0o600)
+		So(err, ShouldBeNil)
+
+		So(getBadLogLines(), ShouldResemble, []string{
+			"lvl=eror msg=\"later error\"",
+			"lvl=crit msg=\"later critical\"",
 		})
 	})
 }

@@ -626,6 +626,8 @@ func getBadLogLinesFromFile(path string, compressed bool, lines []string) []stri
 
 func getBadLogLinesFromReader(reader io.Reader, lines []string) []string {
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer([]byte{}, maxScanTokenSize)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
