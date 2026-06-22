@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -392,10 +393,17 @@ func TestLogger(t *testing.T) {
 	})
 
 	Convey("CreateFileHandler can be used to create a file handler", t, func() {
+		oldUmask := syscall.Umask(0)
+		defer syscall.Umask(oldUmask)
+
 		logPath := ft.FilePathInTempDir(t, "clog.log")
 		fh, err := CreateFileHandlerAtLevel(logPath, "warn")
 		So(err, ShouldBeNil)
 		So(fh, ShouldNotBeNil)
+
+		logInfo, err := os.Stat(logPath)
+		So(err, ShouldBeNil)
+		So(logInfo.Mode().Perm(), ShouldEqual, os.FileMode(0o600))
 
 		Convey("Unless the path is invalid", func() {
 			fh, err := CreateFileHandlerAtLevel("", "warn")

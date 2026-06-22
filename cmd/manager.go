@@ -30,13 +30,16 @@ package cmd
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -72,8 +75,10 @@ var (
 )
 
 const (
-	deadlockTimeout = 5 * time.Minute
-	ownerReadWrite  = 0600
+	deadlockTimeout            = 5 * time.Minute
+	lumberjackBackupTimeFormat = "2006-01-02T15-04-05.000"
+	lumberjackCompressedLogExt = ".gz"
+	ownerReadWrite             = 0600
 )
 
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
@@ -506,28 +511,121 @@ somewhere.)`,
 	},
 }
 
+type rotatedManagerLog struct {
+	path       string
+	timestamp  time.Time
+	compressed bool
+}
+
+func rotatedManagerLogFile(dir string, entry os.DirEntry, prefix, ext string) (rotatedManagerLog, bool) {
+	if entry.IsDir() {
+		return rotatedManagerLog{}, false
+	}
+
+	timestamp, compressed, ok := rotatedManagerLogTimestamp(entry.Name(), prefix, ext)
+	if !ok {
+		return rotatedManagerLog{}, false
+	}
+
+	return rotatedManagerLog{
+		path:       filepath.Join(dir, entry.Name()),
+		timestamp:  timestamp,
+		compressed: compressed,
+	}, true
+}
+
+func rotatedManagerLogFiles(logPath string) []rotatedManagerLog {
+	dir := filepath.Dir(logPath)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	prefix, ext := rotatedManagerLogNameParts(logPath)
+
+	logs := make([]rotatedManagerLog, 0, len(entries))
+
+	for _, entry := range entries {
+		logFile, ok := rotatedManagerLogFile(dir, entry, prefix, ext)
+		if ok {
+			logs = append(logs, logFile)
+		}
+	}
+
+	slices.SortFunc(logs, func(a, b rotatedManagerLog) int {
+		return a.timestamp.Compare(b.timestamp)
+	})
+
+	return logs
+}
+
+func rotatedManagerLogNameParts(logPath string) (string, string) {
+	base := filepath.Base(logPath)
+	ext := filepath.Ext(base)
+	prefix := strings.TrimSuffix(base, ext) + "-"
+
+	return prefix, ext
+}
+
+func rotatedManagerLogTimestamp(name, prefix, ext string) (time.Time, bool, bool) {
+	timestamp, ok := parseRotatedManagerLogTimestamp(name, prefix, ext)
+	if ok {
+		return timestamp, false, true
+	}
+
+	timestamp, ok = parseRotatedManagerLogTimestamp(name, prefix, ext+lumberjackCompressedLogExt)
+	if ok {
+		return timestamp, true, true
+	}
+
+	return time.Time{}, false, false
+}
+
+func parseRotatedManagerLogTimestamp(name, prefix, ext string) (time.Time, bool) {
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ext) {
+		return time.Time{}, false
+	}
+
+	timestamp := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ext)
+
+	rotatedAt, err := time.Parse(lumberjackBackupTimeFormat, timestamp)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	return rotatedAt, true
+}
+
 func logRotationEnv() string {
 	return fmt.Sprintf("WR_LOGSMAXSIZEMB=%d WR_LOGSMAXBACKUPS=%d WR_LOGSMAXAGEDAYS=%d WR_LOGSCOMPRESS=%t ",
 		config.LogsMaxSizeMB, config.LogsMaxBackups, config.LogsMaxAgeDays, config.LogsCompress)
 }
 
-func printLines(lines []string) {
-	for _, line := range lines {
-		fmt.Println(line)
-	}
-}
-
-// getBadLogLines finds any error or crit lines in the log since the manager
-// was last started.
-func getBadLogLines() []string {
-	var lines []string
-
-	f, err := os.Open(config.ManagerLogFile)
+func getBadLogLinesFromFile(path string, compressed bool, lines []string) []string {
+	f, err := os.Open(path)
 	if err != nil {
 		return lines
 	}
+	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
+	var reader io.Reader = f
+
+	if compressed {
+		gzipReader, err := gzip.NewReader(f)
+		if err != nil {
+			return lines
+		}
+		defer gzipReader.Close()
+
+		reader = gzipReader
+	}
+
+	return getBadLogLinesFromReader(reader, lines)
+}
+
+func getBadLogLinesFromReader(reader io.Reader, lines []string) []string {
+	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -541,6 +639,24 @@ func getBadLogLines() []string {
 	}
 
 	return lines
+}
+
+func printLines(lines []string) {
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+}
+
+// getBadLogLines finds any error or crit lines in the log since the manager
+// was last started.
+func getBadLogLines() []string {
+	var lines []string
+
+	for _, logFile := range rotatedManagerLogFiles(config.ManagerLogFile) {
+		lines = getBadLogLinesFromFile(logFile.path, logFile.compressed, lines)
+	}
+
+	return getBadLogLinesFromFile(config.ManagerLogFile, false, lines)
 }
 
 func handleScript(path, arg string, extraArgs *[]string) []byte {

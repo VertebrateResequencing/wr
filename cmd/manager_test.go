@@ -1,0 +1,84 @@
+/*******************************************************************************
+ * Copyright (c) 2026 Genome Research Ltd.
+ *
+ * Author: Sendu Bala <sb10@sanger.ac.uk>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ ******************************************************************************/
+
+package cmd
+
+import (
+	"compress/gzip"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+func TestGetBadLogLinesScansRotatedManagerLogs(t *testing.T) {
+	Convey("getBadLogLines finds bad lines since the latest manager start across rotated logs", t, func() {
+		oldConfig := config
+
+		t.Cleanup(func() {
+			config = oldConfig
+		})
+
+		dir := t.TempDir()
+		logPath := filepath.Join(dir, "manager.log")
+		config = &internal.Config{ManagerLogFile: logPath}
+
+		err := os.WriteFile(filepath.Join(dir, "manager-2026-01-01T00-00-00.000.log"), []byte(
+			"lvl=eror msg=\"old error\"\n",
+		), 0o600)
+		So(err, ShouldBeNil)
+
+		compressedLog, err := os.Create(filepath.Join(dir, "manager-2026-01-01T00-01-00.000.log.gz"))
+		So(err, ShouldBeNil)
+
+		gzipWriter := gzip.NewWriter(compressedLog)
+		_, err = gzipWriter.Write([]byte(
+			"lvl=info msg=\"wr manager 1.0.0 started on host:1234\"\n" +
+				"lvl=eror msg=\"rotated error\"\n",
+		))
+		So(err, ShouldBeNil)
+		So(gzipWriter.Close(), ShouldBeNil)
+		So(compressedLog.Close(), ShouldBeNil)
+
+		err = os.WriteFile(filepath.Join(dir, "manager-2026-01-01T00-02-00.000.log"), []byte(
+			"lvl=eror msg=\"newer rotated error\"\n",
+		), 0o600)
+		So(err, ShouldBeNil)
+
+		err = os.WriteFile(logPath, []byte(
+			"lvl=info msg=\"ordinary info\"\n"+
+				"lvl=crit msg=\"active critical\"\n",
+		), 0o600)
+		So(err, ShouldBeNil)
+
+		So(getBadLogLines(), ShouldResemble, []string{
+			"lvl=eror msg=\"rotated error\"",
+			"lvl=eror msg=\"newer rotated error\"",
+			"lvl=crit msg=\"active critical\"",
+		})
+	})
+}

@@ -42,7 +42,7 @@ const (
 	defaultFileRotationMaxBackups = 3
 	defaultFileRotationMaxAgeDays = 28
 	defaultFileRotationCompress   = true
-	logFilePerm                   = 0o644
+	logFilePerm                   = 0o600
 )
 
 // osExit is used to disable real os.Exit for testing purposes when calling Fatal.
