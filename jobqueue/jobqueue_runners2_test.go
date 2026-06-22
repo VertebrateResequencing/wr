@@ -287,9 +287,7 @@ func TestJobqueueRunners2(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(500 * time.Millisecond)
-
-				job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 2"}, false, false)
+				job, err := waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 1 && sleep 2"}, 30*time.Second)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -300,9 +298,7 @@ func TestJobqueueRunners2(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(500 * time.Millisecond)
-
-				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 2"}, false, false)
+				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 2 && sleep 2"}, 30*time.Second)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -313,9 +309,7 @@ func TestJobqueueRunners2(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(500 * time.Millisecond)
-
-				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && sleep 2"}, false, false)
+				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 3 && sleep 2"}, 30*time.Second)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -568,6 +562,46 @@ func TestJobqueueRunners2(t *testing.T) {
 			}
 		})
 	})
+}
+
+// waitForJobRunningOrDone polls until the job starts running, reaches a state
+// that means it will not become running, or maxWait elapses.
+func waitForJobRunningOrDone(jq *Client, essence *JobEssence, maxWait time.Duration) (*Job, error) {
+	limit := time.After(maxWait)
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	var job *Job
+
+	for {
+		got, err := jq.GetByEssence(essence, false, false)
+		if err != nil {
+			return nil, err
+		}
+
+		if got != nil {
+			job = got
+			if jobStateStopsRunningWait(job.State) {
+				return job, nil
+			}
+		}
+
+		select {
+		case <-ticker.C:
+		case <-limit:
+			return job, nil
+		}
+	}
+}
+
+func jobStateStopsRunningWait(state JobState) bool {
+	switch state {
+	case JobStateRunning, JobStateComplete, JobStateBuried, JobStateLost, JobStateDeleted, JobStateUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 // countSleepingProcs returns the number of currently-sleeping processes whose
