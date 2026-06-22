@@ -83,6 +83,16 @@ func TestFlavorSelection(t *testing.T) {
 			So(f, ShouldNotBeNil)
 			So(f.Name, ShouldEqual, "medium")
 		})
+
+		Convey("a nil subset regexp matches any flavor", func() {
+			var f *Flavor
+
+			So(func() {
+				f = pickCheapestFromFlavors(flavors, 1, 512, nil, []*regexp.Regexp{nil})
+			}, ShouldNotPanic)
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "tiny")
+		})
 	})
 }
 

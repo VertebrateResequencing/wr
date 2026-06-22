@@ -527,8 +527,8 @@ func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
 // pickCheapestFlavorFromSubset looks through p.impl.flavors() for the
 // cheapest flavor with a Name that matches the regexp, and that also matches
 // at least one of the regexps in the subset. regexp can be nil to match any
-// flavor, and subset can be empty to pick from the superset, but subset
-// elements cannot be nil.
+// flavor, and subset can be empty or contain a nil regexp to pick from the
+// superset.
 func (p *Provider) pickCheapestFlavorFromSubset(ctx context.Context, cores, ramMB int, regexp *regexp.Regexp, subset []*regexp.Regexp) *Flavor {
 	return pickCheapestFromFlavors(p.impl.flavors(p.cloudContext(ctx)), cores, ramMB, regexp, subset)
 }
@@ -573,14 +573,14 @@ func flavorQualifies(f *Flavor, cores, ramMB int, re *regexp.Regexp, subset []*r
 }
 
 // flavorInSubset reports whether f's Name matches at least one regexp in subset
-// (an empty subset matches any flavor).
+// (an empty subset or nil regexp matches any flavor).
 func flavorInSubset(f *Flavor, subset []*regexp.Regexp) bool {
 	if len(subset) == 0 {
 		return true
 	}
 
 	for _, r := range subset {
-		if r.MatchString(f.Name) {
+		if r == nil || r.MatchString(f.Name) {
 			return true
 		}
 	}
