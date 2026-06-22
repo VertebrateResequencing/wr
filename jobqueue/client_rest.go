@@ -66,6 +66,20 @@ func restCheckStatus(endpoint string, resp *http.Response) error {
 		endpoint, resp.Status, string(bytes.TrimSpace(body)))
 }
 
+func restRootCAPool(caFile string) *x509.CertPool {
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil
+	}
+
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(caCert) {
+		return nil
+	}
+
+	return certPool
+}
+
 // GetSchedulerAlerts returns scheduler issues and bad cloud servers currently
 // exposed by the manager web API. Reading Issues dismisses them on the manager,
 // matching the existing warnings REST endpoint behaviour used by the web UI.
@@ -157,10 +171,7 @@ func (c *Client) restTLSConfig() *tls.Config {
 
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: certDomain}
 
-	caCert, err := os.ReadFile(caFile)
-	if err == nil {
-		certPool := x509.NewCertPool()
-		certPool.AppendCertsFromPEM(caCert)
+	if certPool := restRootCAPool(caFile); certPool != nil {
 		tlsConfig.RootCAs = certPool
 	}
 

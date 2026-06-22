@@ -113,8 +113,10 @@ name to just the first letter, eg. -o c):
   "plain" outputs 2 tab separated columns: internal job id and current state of
 	that job. Possible states are: delayed, ready, reserved, running, lost,
 	buried, complete. If any jobs are buried, exits non-0 as well.
-  "table" outputs one aligned row per status group. Columns can be customised
-    with WR_STATUS_FORMAT using FIELD:width entries.
+  "table" outputs aligned rows for the grouped jobs returned by the status
+    query. As with details/json, --limit controls how many matching jobs can be
+    shown from each status group. Columns can be customised with WR_STATUS_FORMAT
+    using FIELD:width entries.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
     documentation for wr's REST API. If more than 1000 buried jobs get

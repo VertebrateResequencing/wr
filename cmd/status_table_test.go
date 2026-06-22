@@ -80,6 +80,15 @@ func TestStatusLimitHelp(t *testing.T) {
 	})
 }
 
+func TestStatusTableOutputHelp(t *testing.T) {
+	Convey("wr status table output help describes rows without promising exactly one per status group", t, func() {
+		So(statusCmd.Long, ShouldContainSubstring, `"table" outputs aligned rows`)
+		So(statusCmd.Long, ShouldContainSubstring, "--limit")
+		So(statusCmd.Long, ShouldContainSubstring, "WR_STATUS_FORMAT")
+		So(statusCmd.Long, ShouldNotContainSubstring, "one aligned row per status group")
+	})
+}
+
 func TestStatusOutputRetrievalNeeds(t *testing.T) {
 	Convey("wr status only retrieves stdout and stderr for outputs that render them", t, func() {
 		for _, tc := range []struct {

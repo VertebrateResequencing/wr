@@ -161,6 +161,7 @@ func statusBadServerAlertState(server *jobqueue.BadServer) string {
 	return "is no longer usable; problem: " + server.Problem
 }
 
+//nolint:gosmopolitan // wr status intentionally renders alert times in the user's local timezone.
 func formatStatusAlertTime(unixSeconds int64) string {
-	return time.Unix(unixSeconds, 0).Format(shortTimeFormat)
+	return time.Unix(unixSeconds, 0).Local().Format(shortTimeFormat)
 }
