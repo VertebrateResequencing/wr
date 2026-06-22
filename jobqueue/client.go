@@ -137,6 +137,7 @@ type clientRequest struct {
 	Env                     []byte // compressed binc encoding of []string
 	Jobs                    []*Job
 	Keys                    []string
+	States                  []JobState
 	File                    []byte // compressed bytes of file content
 	Token                   []byte
 	LimitGroup              string
@@ -156,6 +157,8 @@ type clientRequest struct {
 	GetEnv                  bool
 	GetStd                  bool
 	IgnoreComplete          bool
+	IncludeComplete         bool
+	IncludeStatusDetails    bool
 	Search                  bool
 	RepGroupMatch           RepGroupMatch
 	ConfirmDeadCloudServers bool
@@ -1938,6 +1941,26 @@ func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit 
 		return nil, err
 	}
 	return resp.Jobs, err
+}
+
+// GetStatusByRepGroupMatch gets compact per-state job counts, optionally with
+// summary details, for report groups that match repgroup.
+func (c *Client) GetStatusByRepGroupMatch(repgroup string, match RepGroupMatch,
+	states []JobState, includeComplete bool, includeStatusDetails bool) (map[string]*RepGroupStatus, error) {
+	resp, err := c.request(&clientRequest{
+		Method:               "getrs",
+		Job:                  &Job{RepGroup: repgroup},
+		Search:               match != RepGroupMatchExact,
+		RepGroupMatch:        match,
+		States:               states,
+		IncludeComplete:      includeComplete,
+		IncludeStatusDetails: includeStatusDetails,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.StatusSummaries, err
 }
 
 // GetIncomplete gets all Jobs that are currently in the jobqueue, ie. excluding

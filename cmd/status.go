@@ -151,21 +151,40 @@ redirect (eg. "mycmd > stdout.txt").
 			showEnv = false
 		}
 
-		jobs := getJobsForStates(jq, cmdStates, set == 0, statusLimit, true, showEnv)
+		useFastStatus := canUseFastStatusOutput(outputFormat)
+
+		statusSummaries := getFastStatusSummaries(jq, cmdStates, useFastStatus, outputFormat)
+		if statusSummaries == nil {
+			useFastStatus = false
+		}
+
+		var jobs []*jobqueue.Job
 		showextra := cmdFileStatus == ""
 
-		if fromHost != "" {
-			var subset []*jobqueue.Job
-			for _, job := range jobs {
-				if job.Host == fromHost || job.HostID == fromHost || job.HostIP == fromHost {
-					subset = append(subset, job)
+		if !useFastStatus {
+			jobs = getJobsForStates(jq, cmdStates, set == 0, statusLimit, true, showEnv)
+
+			if fromHost != "" {
+				var subset []*jobqueue.Job
+
+				for _, job := range jobs {
+					if job.Host == fromHost || job.HostID == fromHost || job.HostIP == fromHost {
+						subset = append(subset, job)
+					}
 				}
+
+				jobs = subset
 			}
-			jobs = subset
 		}
 
 		switch outputFormat {
 		case "counts", "c":
+			if useFastStatus {
+				printStatusCounts(mergeStatusSummaries(statusSummaries).Counts)
+
+				break
+			}
+
 			var d, re, b, ru, l, c, dep int
 			for _, job := range jobs {
 				switch job.State {
@@ -185,7 +204,16 @@ redirect (eg. "mycmd > stdout.txt").
 					dep += 1 + job.Similar
 				}
 			}
-			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, dep, l, d, b)
+
+			printStatusCounts(map[jobqueue.JobState]int{
+				jobqueue.JobStateComplete:  c,
+				jobqueue.JobStateRunning:   ru,
+				jobqueue.JobStateReady:     re,
+				jobqueue.JobStateDependent: dep,
+				jobqueue.JobStateLost:      l,
+				jobqueue.JobStateDelayed:   d,
+				jobqueue.JobStateBuried:    b,
+			})
 		case "plain", "p":
 			buried := false
 			for _, job := range jobs {
@@ -199,6 +227,12 @@ redirect (eg. "mycmd > stdout.txt").
 			}
 			os.Exit(0)
 		case "summary", "s":
+			if useFastStatus {
+				printStatusSummaries(statusSummaries)
+
+				break
+			}
+
 			counts := make(map[string]map[jobqueue.JobState]int)
 			buried := make(map[string]map[string][]string)
 			memory := make(map[string]*runningvariance.RunningStat)
@@ -567,6 +601,152 @@ func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
 	}
 
 	return nil
+}
+
+func canUseFastStatusOutput(format string) bool {
+	if fromHost != "" || cmdFileStatus != "" || cmdLine != "" || (cmdIDStatus != "" && cmdIDIsInternal) {
+		return false
+	}
+
+	switch format {
+	case "counts", "c", "summary", "s":
+		return true
+	default:
+		return false
+	}
+}
+
+func getFastStatusSummaries(jq *jobqueue.Client, cmdStates []jobqueue.JobState, useFastStatus bool,
+	format string) map[string]*jobqueue.RepGroupStatus {
+	if !useFastStatus {
+		return nil
+	}
+
+	match := jobqueue.RepGroupMatchExact
+	if cmdIDIsSubStr {
+		match = jobqueue.RepGroupMatchSubStr
+	}
+
+	includeComplete := cmdIDStatus != "" || cmdAll
+	includeStatusDetails := format == "summary" || format == "s"
+
+	summaries, err := jq.GetStatusByRepGroupMatch(cmdIDStatus, match, cmdStates, includeComplete, includeStatusDetails)
+	if err != nil {
+		if fastStatusUnsupported(err) {
+			return nil
+		}
+
+		die("failed to get job status counts corresponding to your settings: %s", err)
+	}
+
+	return summaries
+}
+
+func printStatusCounts(counts map[jobqueue.JobState]int) {
+	fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n",
+		counts[jobqueue.JobStateComplete],
+		counts[jobqueue.JobStateRunning]+counts[jobqueue.JobStateReserved],
+		counts[jobqueue.JobStateReady],
+		counts[jobqueue.JobStateDependent],
+		counts[jobqueue.JobStateLost],
+		counts[jobqueue.JobStateDelayed],
+		counts[jobqueue.JobStateBuried])
+}
+
+func fastStatusUnsupported(err error) bool {
+	var jqErr jobqueue.Error
+
+	return errors.As(err, &jqErr) && jqErr.Err == jobqueue.ErrUnknownCommand
+}
+
+func printStatusSummaries(summaries map[string]*jobqueue.RepGroupStatus) {
+	rgs := make([]string, 0, len(summaries))
+	for rg := range summaries {
+		rgs = append(rgs, rg)
+	}
+
+	sort.Strings(rgs)
+
+	if len(rgs) > 1 {
+		summaries[allRepGrps] = mergeStatusSummaries(summaries)
+		rgs = append(rgs, allRepGrps)
+	}
+
+	for _, rg := range rgs {
+		printRepGroupStatusSummary(rg, summaries[rg])
+	}
+}
+
+func mergeStatusSummaries(summaries map[string]*jobqueue.RepGroupStatus) *jobqueue.RepGroupStatus {
+	merged := jobqueue.NewRepGroupStatus()
+	for _, summary := range summaries {
+		merged.Merge(summary)
+	}
+
+	return merged
+}
+
+func printRepGroupStatusSummary(rg string, summary *jobqueue.RepGroupStatus) {
+	counts := summary.Counts
+	usage := statusSummaryUsage(summary)
+	dead := statusSummaryBuried(summary)
+
+	fmt.Printf("%s : complete=%d running=%d ready=%d dependent=%d lost=%d delayed=%d buried=%d%s%s\n",
+		rg,
+		counts[jobqueue.JobStateComplete],
+		counts[jobqueue.JobStateRunning]+counts[jobqueue.JobStateReserved],
+		counts[jobqueue.JobStateReady],
+		counts[jobqueue.JobStateDependent],
+		counts[jobqueue.JobStateLost],
+		counts[jobqueue.JobStateDelayed],
+		counts[jobqueue.JobStateBuried],
+		usage,
+		dead)
+}
+
+func statusSummaryUsage(summary *jobqueue.RepGroupStatus) string {
+	if summary.Counts[jobqueue.JobStateComplete] == 0 || summary.Memory.NumDataValues() == 0 {
+		return ""
+	}
+
+	usage := fmt.Sprintf(" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)",
+		int(summary.Memory.Mean()),
+		int(summary.Memory.StandardDeviation()),
+		int(summary.Disk.Mean()),
+		int(summary.Disk.StandardDeviation()),
+		time.Duration(summary.Walltime.Mean()),
+		time.Duration(summary.Walltime.StandardDeviation()),
+		time.Duration(summary.CPUtime.Mean()),
+		time.Duration(summary.CPUtime.StandardDeviation()))
+
+	if summary.Counts[jobqueue.JobStateComplete] > 1 && !summary.StartTime.IsZero() && !summary.EndTime.IsZero() {
+		usage += fmt.Sprintf(" started=%s ended=%s elapsed=%s",
+			summary.StartTime.Format(shortTimeFormat),
+			summary.EndTime.Format(shortTimeFormat),
+			summary.EndTime.Sub(summary.StartTime))
+	}
+
+	return usage
+}
+
+func statusSummaryBuried(summary *jobqueue.RepGroupStatus) string {
+	if summary.Counts[jobqueue.JobStateBuried] == 0 {
+		return ""
+	}
+
+	bgs := make([]string, 0, len(summary.Buried))
+	for bg := range summary.Buried {
+		bgs = append(bgs, bg)
+	}
+
+	sort.Strings(bgs)
+
+	var dead strings.Builder
+	for _, bg := range bgs {
+		fmt.Fprintf(&dead, " %s=%s", bg, strings.Join(summary.Buried[bg], ","))
+	}
+
+	return dead.String()
 }
 
 func getJobsForStates(jq *jobqueue.Client, cmdStates []jobqueue.JobState, all bool,
