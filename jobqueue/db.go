@@ -1386,13 +1386,18 @@ func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
 }
 
 // mbRound returns the MB rounding for recommendations, falling back to the
-// RecMBRound package default if this db wasn't given one.
+// RecMBRound package default if this db wasn't given a positive value.
 func (db *db) mbRound() int {
-	if db.recMBRound == 0 {
-		return RecMBRound
+	return recommendationRound(db.recMBRound, RecMBRound)
+}
+
+// recommendationRound returns round, or defaultRound if round is not positive.
+func recommendationRound(round, defaultRound int) int {
+	if round <= 0 {
+		return defaultRound
 	}
 
-	return db.recMBRound
+	return round
 }
 
 // recommendReqGroupTime returns the 95th percentile wall time taken of all jobs
@@ -1402,12 +1407,7 @@ func (db *db) mbRound() int {
 // case, the true value is rounded up to the nearest second. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
-	round := db.recSecRound
-	if round == 0 {
-		round = RecSecRound
-	}
-
-	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, round)
+	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
 }
 
 // recommendedReqGroupStat is the implementation for the other recommend*()

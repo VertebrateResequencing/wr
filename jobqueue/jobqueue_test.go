@@ -150,6 +150,64 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 	})
 }
 
+func TestDBRecommendationRoundsWithDefaults(t *testing.T) {
+	Convey("Non-positive database recommendation rounds use package defaults", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		if err != nil {
+			return
+		}
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		testDB.recMBRound = -1
+		testDB.recSecRound = -1
+
+		reqGroup := "negative_rounds"
+		storeStat := func(bucket []byte, value int) {
+			err = testDB.store(
+				bucket,
+				fmt.Sprintf("%s%s%20d", reqGroup, dbDelimiter, value),
+				[]byte(strconv.Itoa(value)),
+			)
+			So(err, ShouldBeNil)
+		}
+
+		storeStat(bucketJobRAM, 42)
+		storeStat(bucketJobDisk, 101)
+		storeStat(bucketJobSecs, 7)
+
+		rmem, err := testDB.recommendedReqGroupMemory(reqGroup)
+		So(err, ShouldBeNil)
+		So(rmem, ShouldEqual, RecMBRound)
+
+		rdisk, err := testDB.recommendedReqGroupDisk(reqGroup)
+		So(err, ShouldBeNil)
+
+		expectedDisk := int(math.Ceil(float64(101)/float64(RecMBRound))) * RecMBRound
+		So(rdisk, ShouldEqual, expectedDisk)
+
+		rtime, err := testDB.recommendedReqGroupTime(reqGroup)
+		So(err, ShouldBeNil)
+
+		expectedTime := int(math.Ceil(float64(7)/float64(RecSecRound))) * RecSecRound
+		So(rtime, ShouldEqual, expectedTime)
+	})
+}
+
 func assertNonEmptyFile(path string) {
 	info, err := os.Stat(path)
 	So(err, ShouldBeNil)
