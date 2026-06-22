@@ -335,6 +335,8 @@ func startStatusTestServer(ctx context.Context, t *testing.T) (
 		if err == nil || attempt >= 20 || !strings.Contains(err.Error(), "address already in use") {
 			break
 		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	So(err, ShouldBeNil)
