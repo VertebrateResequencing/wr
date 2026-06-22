@@ -117,10 +117,10 @@ Tick the checklist as each branch progresses.
 
 ## fix/small-fixes-batch
 
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Implemented
+- [x] Reviewed
+- [x] Merged
+- [x] Solved
 
 Three trivial, independent fixes batched into one PR to amortise overhead. #507 and
 #324 are small Go changes with unit tests; #310 is a frontend-only change that needs
@@ -132,28 +132,28 @@ manual/browser verification.
 
 ## fix/openstack-reserved-quota-leak
 
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Implemented
+- [x] Reviewed
+- [x] Merged
+- [x] Solved
 
 - **[#453 wr manager in cloud mode fails to update stats of reserved cpus when OS image is not available](https://github.com/VertebrateResequencing/wr/issues/453)** — confirmed live bug. `opst.spawn` increments `reserved{Instances,Cores,RAM,Volume}` (`jobqueue/scheduler/openstack.go:866-871`) and the only decrement is `usingQuotaCB`, which the provider goroutine runs after `usingQuotaCh <- true` (`cloud/openstack.go:953`). But `getImage`/`getFlavor` failures return early (`cloud/openstack.go:874-882`, "no OS image..." at `:355`) before that signal, so the callback never fires (also leaking a goroutine) and the scheduler's error-return path (`openstack.go:1022-1041`) doesn't decrement either — so every bad-image spawn permanently leaks the reservation until quota is exhausted and the manager locks up. **Fix:** guarantee the reservation is released on every early-return error path (e.g. have `cloud.Provider.Spawn` invoke the callback on its error return, or release in the scheduler's error branch / via `defer`). Add a regression test using the existing `debugEffect` mock-spawn hooks (`jobqueue/scheduler/openstack.go` ~`:900-905`, `:1012-1014`). No OpenStack environment is needed to reproduce or test.
 
 ## chore/error-wrapping-sweep
 
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
+- [x] Implemented
+- [x] Reviewed
+- [x] Merged
 - [ ] Solved
 
 - **[#301 Update error handling](https://github.com/VertebrateResequencing/wr/issues/301)** — mechanical modernisation: replace `err == someErr` comparisons (other than `nil` / `io.EOF`) with `errors.Is`, replace `err.(*T)` type assertions with `errors.As`, and add `%w` wrapping where it adds useful context. **Scope note:** a full-repo sweep would be far too large for one reviewable PR (Copilot will refuse), so split the work one top-level package per PR (e.g. `jobqueue`, then `cloud`, `cmd`, `fs`, `queue`, ...). The checklist above tracks the overall effort; expect several PRs under this branch theme.
 
 ## feat/status-cli-output
 
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Implemented
+- [x] Reviewed
+- [x] Merged
+- [x] Solved
 
 Two related additions to `wr status` CLI output (both centre on `cmd/status.go`), promoted from todo-complex now that the design is settled.
 
@@ -162,26 +162,26 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 ## perf/status-count-path
 
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Implemented
+- [x] Reviewed
+- [x] Merged
+- [x] Solved
 
 - **[#322 wr status: can be unexpectedly slow](https://github.com/VertebrateResequencing/wr/issues/322)** — `-o c` (and `-o summary`) currently make the server decode and ship every matching complete job just to count them (`jobqueue/db.go retrieveCompleteJobsByRepGroup` → `getJobsByRepGroup` → `limitJobs`). Add a new client/server request type that returns per-state counts for a repgroup match **without** decoding/returning full jobs, computed on demand by iterating keys (only introduce maintained counters if they can be guaranteed not to drift). Wire both `-o c` and `-o summary` to the new fast path. Add a benchmark/regression test.
 
 ## perf/mod-reverse-lookup
 
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Implemented
+- [x] Reviewed
+- [x] Merged
+- [x] Solved
 
 - **[#333 wr mod: too slow on lots of jobs](https://github.com/VertebrateResequencing/wr/issues/333)** — `jobqueue/db.go modifyLiveJobs` deletes each modified job's lookup entries by scanning the **entire** `bucketRTK`/`bucketDTK`/`bucketRDTK` buckets per job (O(jobs_modified × total entries); the maintainer's own `// *** ... reverse lookup` comment is right there). Add a reverse-lookup index (job key → its lookup-bucket entries) so deletion is O(entries-per-job); maintain it on add/modify/delete, and rebuild it on first load for pre-existing DBs that lack it. Rely on the speedup alone — do **not** raise the client timeout. Add a benchmark/regression test.
 
 ## fix/rerun-dependent-jobs
 
-- [ ] Implemented
-- [ ] Reviewed
+- [x] Implemented
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 
@@ -189,8 +189,8 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 ## feat/log-rotation
 
-- [ ] Implemented
-- [ ] Reviewed
+- [x] Implemented
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 
@@ -198,8 +198,8 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 ## feat/webui-rerun-completed
 
-- [ ] Implemented
-- [ ] Reviewed
+- [x] Implemented
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 

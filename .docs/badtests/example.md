@@ -1,0 +1,22 @@
+# Bad Test Examples
+
+This file tracks CI failures that appear unrelated to the PR under test, so we
+can look for patterns and improve the test suite after the current PR queue is
+merged.
+
+## Pattern Candidates
+
+- Fixed sleeps in asynchronous runner tests can assert too early on slower CI.
+- Shared scheduler/runner integration tests can fail in packages untouched by a
+  PR, especially under `make race`.
+- Some failures are only visible in full CI lanes, not in focused local tests.
+
+## Examples
+
+| Date | PR | Workflow job | Test / file | Symptom | Notes |
+| ---- | -- | ------------ | ----------- | ------- | ----- |
+| 2026-06-22 | #515 `feat/status-cli-output` | `tests` / `test` | `jobqueue/jobqueue_runners2_test.go` `TestJobqueueRunners2` | Expected jobs to be `running` after a fixed 500ms wait; actual state was `ready` at lines 295/308 on separate runs. | Unrelated to status CLI changes. Fixed in #515 by replacing fixed sleeps with bounded polling and clearer timeout errors. |
+| 2026-06-22 | #515 `feat/status-cli-output`; #518 `feat/webui-rerun-completed` | `tests` / `test`, `make race` lane `jqB2` | `jobqueue/subscription_test.go` around line 313, `TestClientAddAndWait` | Expected subscription state not to contain an unfinished job key, but it did; #518 message included `context deadline exceeded; unfinished job keys: ...`. | Same assertion has now appeared on unrelated status CLI and web UI rerun PRs. Looks like a timing/subscription completion flake rather than branch logic. |
+| 2026-06-22 | #519 `fix/rerun-dependent-jobs` | `tests` / `test`, `make race` | `jobqueue/scheduler/scheduler_test.go` `TestLocal` | Line 567 expected `2`, actual `1`; line 577 expected `true`, actual `false`. | Occurred in scheduler lane while #519 changes were in `jobqueue/server.go` rerun replacement logic. Logs included `server failed spawn ... forced fail before using quota`; likely inherited/openstack scheduler timing or fixture interaction. |
+| 2026-06-22 | #517 `feat/log-rotation` | `tests` / `test`, run `27980335379`, job `82808486671`, `make test` lane `jqB2` | `jobqueue/subscription_test.go` around line 313, `TestClientAddAndWait` | Expected the deadline error not to contain unfinished job key `b2cbd8...`, but it still did. | Same subscription assertion as #515/#518, now on a log-rotation-only PR. Strengthens the case for an existing timing/subscription completion flake. |
+| 2026-06-22 | #517 `feat/log-rotation` | `tests` / `test`, run `27980335379`, jobs `82808486671` and `82809101403`, `make test` lanes `medium_a` and `medium_b` | `jobqueue/jobqueue_test.go` `TestJobqueueMedium` | Line 2556 expected `1`, actual `0`; first run also saw lines 3669/3721 expected nil but got `bad job (not in queue or correct sub-queue)` after `echo deptest5` was killed due to a server error. | Happened in medium jobqueue integration lanes on a PR changing logging and manager log scanning. The `medium_a` failure repeated once in CI but passed locally with the same lane command, so this still looks like queue-state/integration-lane interference rather than log-rotation behavior. |
