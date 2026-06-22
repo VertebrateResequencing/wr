@@ -115,9 +115,9 @@ func (c *Client) restURL(endpoint string) (string, error) {
 		return "", errSchedulerAlertsNoServerInfo
 	}
 
-	host := c.ServerInfo.Host
+	host := c.host
 	if host == "" {
-		host = c.host
+		host = c.ServerInfo.Host
 	}
 
 	return "https://" + net.JoinHostPort(host, c.ServerInfo.WebPort) + endpoint, nil

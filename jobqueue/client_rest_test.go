@@ -49,3 +49,34 @@ func TestRESTHTTPClientReuse(t *testing.T) {
 		So(transport.Proxy, ShouldBeNil)
 	})
 }
+
+func TestRESTURLUsesConnectedHost(t *testing.T) {
+	Convey("REST URLs prefer the host used for the RPC connection", t, func() {
+		jq := &Client{
+			ServerInfo: &ServerInfo{
+				Host:    "manager-cert.example.org",
+				WebPort: "1234",
+			},
+			host: "127.0.0.1",
+		}
+
+		url, err := jq.restURL("/api")
+
+		So(err, ShouldBeNil)
+		So(url, ShouldEqual, "https://127.0.0.1:1234/api")
+	})
+
+	Convey("REST URLs fall back to the server host when no connected host is known", t, func() {
+		jq := &Client{
+			ServerInfo: &ServerInfo{
+				Host:    "manager-cert.example.org",
+				WebPort: "1234",
+			},
+		}
+
+		url, err := jq.restURL("/api")
+
+		So(err, ShouldBeNil)
+		So(url, ShouldEqual, "https://manager-cert.example.org:1234/api")
+	})
+}
