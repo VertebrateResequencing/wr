@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -130,6 +131,194 @@ func runSynchronousAddHelper(exitCode int, stdout string, stderr string, exit fu
 		true,
 		exit,
 	)
+}
+
+func TestAddHeadKeepsFirstParsedCommands(t *testing.T) {
+	Convey("wr add --head keeps only the first parsed commands from a command file", t, func() {
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("\ncmd one\ncmd two\t{\"rep_grp\":\"custom\"}\ncmd three\n"), 0600)
+		So(err, ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+		So(addCmd.Flags().Set("head", "2"), ShouldBeNil)
+
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: "remote:1234"}}
+		jobs, _, _ := parseCmdFile(jq, false)
+
+		So(jobs, ShouldHaveLength, 2)
+		So(jobs[0].Cmd, ShouldEqual, "cmd one")
+		So(jobs[1].Cmd, ShouldEqual, "cmd two")
+		So(jobs[1].RepGroup, ShouldEqual, "custom")
+	})
+}
+
+func TestAddHeadZeroKeepsAllParsedCommands(t *testing.T) {
+	Convey("wr add --head 0 keeps all parsed commands from a command file", t, func() {
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("\ncmd one\ncmd two\ncmd three\n"), 0600)
+		So(err, ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+		So(addCmd.Flags().Set("head", "0"), ShouldBeNil)
+
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: "remote:1234"}}
+		jobs, _, _ := parseCmdFile(jq, false)
+
+		So(jobs, ShouldHaveLength, 3)
+		So(jobs[0].Cmd, ShouldEqual, "cmd one")
+		So(jobs[1].Cmd, ShouldEqual, "cmd two")
+		So(jobs[2].Cmd, ShouldEqual, "cmd three")
+	})
+}
+
+func configureAddParserTest(t *testing.T, cmdPath string) {
+	t.Helper()
+
+	oldConfig := config
+	oldCmdFile := cmdFile
+	oldCmdRepGroup := cmdRepGroup
+	oldCmdLimitGroups := cmdLimitGroups
+	oldCmdModules := cmdModules
+	oldCmdDepGroups := cmdDepGroups
+	oldCmdCwd := cmdCwd
+	oldCmdCwdMatters := cmdCwdMatters
+	oldCmdChangeHome := cmdChangeHome
+	oldReqGroup := reqGroup
+	oldCmdMem := cmdMem
+	oldCmdTime := cmdTime
+	oldCmdCPUs := cmdCPUs
+	oldCmdDisk := cmdDisk
+	oldCmdOvr := cmdOvr
+	oldCmdPri := cmdPri
+	oldCmdRet := cmdRet
+	oldCmdNoRetry := cmdNoRetry
+	oldCmdCmdDeps := cmdCmdDeps
+	oldCmdGroupDeps := cmdGroupDeps
+	oldCmdMonitorDocker := cmdMonitorDocker
+	oldCmdWithDocker := cmdWithDocker
+	oldCmdWithSingularity := cmdWithSingularity
+	oldCmdContainerMounts := cmdContainerMounts
+	oldCmdOnFailure := cmdOnFailure
+	oldCmdOnSuccess := cmdOnSuccess
+	oldCmdOnExit := cmdOnExit
+	oldMountJSON := mountJSON
+	oldMountSimple := mountSimple
+	oldCmdOsPrefix := cmdOsPrefix
+	oldCmdOsUsername := cmdOsUsername
+	oldCmdOsRAM := cmdOsRAM
+	oldCmdFlavor := cmdFlavor
+	oldCmdPostCreationScript := cmdPostCreationScript
+	oldCmdCloudConfigs := cmdCloudConfigs
+	oldCmdCloudSharedDisk := cmdCloudSharedDisk
+	oldCmdQueue := cmdQueue
+	oldCmdQueuesAvoidAdd := cmdQueuesAvoidAdd
+	oldCmdMisc := cmdMisc
+	oldCmdEnv := cmdEnv
+	oldCmdReRun := cmdReRun
+	oldCmdBsubMode := cmdBsubMode
+	oldCmdDisableRelativeCheck := cmdDisableRelativeCheck
+	oldCmdGroup := cmdGroup
+	oldRtimeoutint := rtimeoutint
+
+	t.Cleanup(func() {
+		config = oldConfig
+		cmdFile = oldCmdFile
+		cmdRepGroup = oldCmdRepGroup
+		cmdLimitGroups = oldCmdLimitGroups
+		cmdModules = oldCmdModules
+		cmdDepGroups = oldCmdDepGroups
+		cmdCwd = oldCmdCwd
+		cmdCwdMatters = oldCmdCwdMatters
+		cmdChangeHome = oldCmdChangeHome
+		reqGroup = oldReqGroup
+		cmdMem = oldCmdMem
+		cmdTime = oldCmdTime
+		cmdCPUs = oldCmdCPUs
+		cmdDisk = oldCmdDisk
+		cmdOvr = oldCmdOvr
+		cmdPri = oldCmdPri
+		cmdRet = oldCmdRet
+		cmdNoRetry = oldCmdNoRetry
+		cmdCmdDeps = oldCmdCmdDeps
+		cmdGroupDeps = oldCmdGroupDeps
+		cmdMonitorDocker = oldCmdMonitorDocker
+		cmdWithDocker = oldCmdWithDocker
+		cmdWithSingularity = oldCmdWithSingularity
+		cmdContainerMounts = oldCmdContainerMounts
+		cmdOnFailure = oldCmdOnFailure
+		cmdOnSuccess = oldCmdOnSuccess
+		cmdOnExit = oldCmdOnExit
+		mountJSON = oldMountJSON
+		mountSimple = oldMountSimple
+		cmdOsPrefix = oldCmdOsPrefix
+		cmdOsUsername = oldCmdOsUsername
+		cmdOsRAM = oldCmdOsRAM
+		cmdFlavor = oldCmdFlavor
+		cmdPostCreationScript = oldCmdPostCreationScript
+		cmdCloudConfigs = oldCmdCloudConfigs
+		cmdCloudSharedDisk = oldCmdCloudSharedDisk
+		cmdQueue = oldCmdQueue
+		cmdQueuesAvoidAdd = oldCmdQueuesAvoidAdd
+		cmdMisc = oldCmdMisc
+		cmdEnv = oldCmdEnv
+		cmdReRun = oldCmdReRun
+		cmdBsubMode = oldCmdBsubMode
+		cmdDisableRelativeCheck = oldCmdDisableRelativeCheck
+		cmdGroup = oldCmdGroup
+		rtimeoutint = oldRtimeoutint
+
+		if addCmd.Flags().Lookup("head") != nil {
+			if err := addCmd.Flags().Set("head", "0"); err != nil {
+				t.Errorf("reset add --head: %s", err)
+			}
+		}
+	})
+
+	config = &internal.Config{ManagerPort: "4321"}
+	cmdFile = cmdPath
+	cmdRepGroup = "head-test"
+	cmdLimitGroups = ""
+	cmdModules = ""
+	cmdDepGroups = ""
+	cmdCwd = t.TempDir()
+	cmdCwdMatters = true
+	cmdChangeHome = false
+	reqGroup = ""
+	cmdMem = "1G"
+	cmdTime = "1h"
+	cmdCPUs = 1
+	cmdDisk = 0
+	cmdOvr = "no"
+	cmdPri = 0
+	cmdRet = 3
+	cmdNoRetry = ""
+	cmdCmdDeps = ""
+	cmdGroupDeps = ""
+	cmdMonitorDocker = ""
+	cmdWithDocker = ""
+	cmdWithSingularity = ""
+	cmdContainerMounts = ""
+	cmdOnFailure = ""
+	cmdOnSuccess = ""
+	cmdOnExit = `[{"cleanup":true}]`
+	mountJSON = ""
+	mountSimple = ""
+	cmdOsPrefix = ""
+	cmdOsUsername = ""
+	cmdOsRAM = 0
+	cmdFlavor = ""
+	cmdPostCreationScript = ""
+	cmdCloudConfigs = ""
+	cmdCloudSharedDisk = false
+	cmdQueue = ""
+	cmdQueuesAvoidAdd = "interactive"
+	cmdMisc = ""
+	cmdEnv = ""
+	cmdReRun = false
+	cmdBsubMode = false
+	cmdDisableRelativeCheck = true
+	cmdGroup = ""
+	rtimeoutint = 1
 }
 
 func TestSynchronousAddPrintsStdoutAndExitsZero(t *testing.T) {

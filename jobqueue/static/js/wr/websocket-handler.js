@@ -16,43 +16,80 @@ export function setupWebSocket(viewModel) {
 
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${location.hostname}:${location.port}/status_ws?token=${viewModel.token}`;
+    const currentRequest = JSON.stringify({ Request: "current" });
+    const reconnectInitialDelay = 1000;
+    const reconnectMaxDelay = 30000;
+    let reconnectDelay = reconnectInitialDelay;
+    let reconnectTimer = null;
+    let reportedClose = false;
 
-    try {
-        viewModel.ws = new WebSocket(wsUrl);
+    const scheduleReconnect = () => {
+        if (reconnectTimer !== null) {
+            return;
+        }
 
-        viewModel.ws.onopen = () => {
-            viewModel.ws.send(JSON.stringify({ Request: "current" }));
-        };
+        const delay = reconnectDelay;
+        reconnectDelay = Math.min(reconnectDelay * 2, reconnectMaxDelay);
 
-        viewModel.ws.onclose = () => {
-            viewModel.statuserror.push("Connection to the manager has been lost!");
-        };
+        reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = null;
+            connect();
+        }, delay);
+    };
 
-        viewModel.ws.onerror = (error) => {
-            viewModel.statuserror.push(`WebSocket error: ${error.message || 'Unknown error'}`);
-        };
+    const connect = () => {
+        try {
+            const ws = new WebSocket(wsUrl);
+            viewModel.ws = ws;
 
-        viewModel.ws.onmessage = (e) => {
-            try {
-                const json = JSON.parse(e.data);
+            ws.onopen = () => {
+                reconnectDelay = reconnectInitialDelay;
+                reportedClose = false;
+                ws.send(currentRequest);
+            };
 
-                if (json.hasOwnProperty('FromState')) {
-                    handleStateChangeMessage(viewModel, json);
-                } else if (json.hasOwnProperty('State')) {
-                    handleJobDetailsMessage(viewModel, json);
-                } else if (json.hasOwnProperty('IP')) {
-                    handleServerMessage(viewModel, json);
-                } else if (json.hasOwnProperty('Msg')) {
-                    handleSchedulerMessage(viewModel, json);
+            ws.onclose = () => {
+                if (viewModel.ws !== ws) {
+                    return;
                 }
-            } catch (error) {
-                console.error("Error processing message:", error);
-                viewModel.statuserror.push(`Error processing message: ${error.message}`);
-            }
-        };
-    } catch (error) {
-        viewModel.statuserror.push(`Failed to connect: ${error.message}`);
-    }
+
+                if (!reportedClose) {
+                    viewModel.statuserror.push("Connection to the manager has been lost!");
+                    reportedClose = true;
+                }
+
+                scheduleReconnect();
+            };
+
+            ws.onerror = (error) => {
+                viewModel.statuserror.push(`WebSocket error: ${error.message || 'Unknown error'}`);
+            };
+
+            ws.onmessage = (e) => {
+                try {
+                    const json = JSON.parse(e.data);
+
+                    if (json.hasOwnProperty('FromState')) {
+                        handleStateChangeMessage(viewModel, json);
+                    } else if (json.hasOwnProperty('State')) {
+                        handleJobDetailsMessage(viewModel, json);
+                    } else if (json.hasOwnProperty('IP')) {
+                        handleServerMessage(viewModel, json);
+                    } else if (json.hasOwnProperty('Msg')) {
+                        handleSchedulerMessage(viewModel, json);
+                    }
+                } catch (error) {
+                    console.error("Error processing message:", error);
+                    viewModel.statuserror.push(`Error processing message: ${error.message}`);
+                }
+            };
+        } catch (error) {
+            viewModel.statuserror.push(`Failed to connect: ${error.message}`);
+            scheduleReconnect();
+        }
+    };
+
+    connect();
 }
 
 /**

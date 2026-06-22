@@ -30,7 +30,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -233,5 +235,30 @@ func TestJob(t *testing.T) {
 				So(cmd, ShouldEndWith, fmt.Sprintf(" | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz %s", image))
 			})
 		})
+	})
+
+	Convey("ToStatus() reports start and end times as Unix nanoseconds", t, func() {
+		started := time.Unix(100, 123456789)
+		ended := started.Add(25 * time.Millisecond)
+		job := &Job{
+			Cmd:          "true",
+			Cwd:          "/cwd",
+			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+			StartTime:    started,
+			EndTime:      ended,
+		}
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.Started, ShouldNotBeNil)
+		So(status.Ended, ShouldNotBeNil)
+
+		if status.Started == nil || status.Ended == nil {
+			return
+		}
+
+		So(*status.Started, ShouldEqual, started.UnixNano())
+		So(*status.Ended, ShouldEqual, ended.UnixNano())
+		So(*status.Ended, ShouldBeGreaterThan, *status.Started)
 	})
 }
