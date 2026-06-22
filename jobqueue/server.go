@@ -138,9 +138,9 @@ const (
 // ServerConfig.Timings; each non-positive duration or rounding value is
 // replaced with its default (the matching Server*/Client* package variable
 // above, or Rec*Round constant) by Serve().
-// Most are fixed once the server starts; LostJobCheckTimeout and
-// LostJobCheckRetryTime can additionally be adjusted at runtime via the
-// Server's setter methods.
+// Most are fixed once the server starts; ItemTTR, LostJobCheckTimeout, and
+// LostJobCheckRetryTime can additionally be adjusted at runtime via the Server's
+// setter methods.
 type ServerTimings struct {
 	// InterruptTime is how long the server blocks waiting to receive from
 	// clients before checking for signals etc. (default ServerInterruptTime).
