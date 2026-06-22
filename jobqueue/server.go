@@ -122,13 +122,24 @@ var (
 	httpServerShutdownTime = 1 * time.Millisecond
 )
 
+// BsubID is used to give added jobs a unique (atomically incremented) id when
+// pretending to be bsub.
+var BsubID uint64 //nolint:gochecknoglobals
+
+const (
+	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
+	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
+	errUnknownSubscription      subscriptionRequestError = "unknown subscription"
+)
+
 // ServerTimings holds the timing parameters a Server operates with. These were
 // previously package-level globals that tests mutated, which prevented running
 // servers concurrently; they are now per-Server config. Set any subset on
-// ServerConfig.Timings; each zero-valued field is replaced with its default
-// (the matching Server*/Client* package variable above) by Serve(). Most are
-// fixed once the server starts; LostJobCheckTimeout and LostJobCheckRetryTime
-// can additionally be adjusted at runtime via the Server's setter methods.
+// ServerConfig.Timings; each non-positive duration is replaced with its
+// default (the matching Server*/Client* package variable above) by Serve().
+// Most are fixed once the server starts; LostJobCheckTimeout and
+// LostJobCheckRetryTime can additionally be adjusted at runtime via the
+// Server's setter methods.
 type ServerTimings struct {
 	// InterruptTime is how long the server blocks waiting to receive from
 	// clients before checking for signals etc. (default ServerInterruptTime).
@@ -186,17 +197,17 @@ type ServerTimings struct {
 	ShutdownSocketWait time.Duration
 }
 
-// dfltDuration returns v, or def if v is zero.
+// dfltDuration returns v, or def if v is not positive.
 func dfltDuration(v, def time.Duration) time.Duration {
-	if v == 0 {
+	if v <= 0 {
 		return def
 	}
 
 	return v
 }
 
-// withDefaults returns a copy of t with every zero-valued field replaced by its
-// package-default value.
+// withDefaults returns a copy of t with every non-positive duration replaced
+// by its package-default value.
 func (t ServerTimings) withDefaults() ServerTimings {
 	t.InterruptTime = dfltDuration(t.InterruptTime, ServerInterruptTime)
 	t.ItemTTR = dfltDuration(t.ItemTTR, ServerItemTTR)
@@ -221,17 +232,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	return t
 }
 
-// BsubID is used to give added jobs a unique (atomically incremented) id when
-// pretending to be bsub.
-var BsubID uint64
-
 type subscriptionRequestError string
-
-const (
-	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
-	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
-	errUnknownSubscription      subscriptionRequestError = "unknown subscription"
-)
 
 func (e subscriptionRequestError) Error() string {
 	return string(e)

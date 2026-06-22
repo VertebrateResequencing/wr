@@ -125,6 +125,7 @@ func (r *startOrderRecorder) Close() {
 // processes happen to reach this code, which is unreliable under heavy load.
 func (r *startOrderRecorder) Command(label, tmpdir string) string {
 	return fmt.Sprintf("marker=$(mktemp --tmpdir=%s run.XXXXXX); "+
+		"trap 'rm -f \"$marker\"' EXIT; "+
 		"while ! mkdir %s 2>/dev/null; do sleep 0.001; done; echo %s >> %s; rmdir %s; "+
 		"while [ -e \"$marker\" ] && [ ! -e %s ]; do sleep 0.02; done",
 		tmpdir, r.lock, label, r.order, r.lock, r.releaseAll)
@@ -203,6 +204,40 @@ func pollUntil(cond func() bool) bool {
 		case <-ticker.C:
 		}
 	}
+}
+
+func TestStartOrderRecorder(t *testing.T) {
+	Convey("Start-order commands remove their marker after release-all", t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		order, err := newStartOrderRecorder()
+		So(err, ShouldBeNil)
+
+		if err != nil {
+			return
+		}
+
+		defer order.Close()
+
+		tmpdir := t.TempDir()
+		cmd := exec.CommandContext(ctx, "bash", "-c", order.Command("job", tmpdir)) //nolint:gosec
+		err = cmd.Start()
+		So(err, ShouldBeNil)
+
+		if err != nil {
+			return
+		}
+
+		So(order.waitForRunning(tmpdir, 1), ShouldBeTrue)
+
+		order.releaseAllJobs()
+
+		err = cmd.Wait()
+		So(err, ShouldBeNil)
+		So(ctx.Err(), ShouldBeNil)
+		So(order.running(tmpdir), ShouldEqual, 0)
+	})
 }
 
 func TestLocal(t *testing.T) {

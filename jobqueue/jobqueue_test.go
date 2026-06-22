@@ -61,7 +61,10 @@ const (
 	serverRC           = `echo %s %s %s %s %d %d`
 	testCwd            = "/tmp"
 	manuallyAdded      = "manually_added"
+	reqGroupFake       = "fake_group"
+	reqGroupFallocate  = "fallocate"
 	reqGroupPerl       = "perl"
+	reqGroupSleep      = "sleep"
 )
 
 var (
@@ -113,6 +116,34 @@ func serverShutDownTime(touchInterval time.Duration) time.Duration {
 	// global lock on them, so we have to allow the 500ms of time to any pending
 	// starts to resolve before we can shut down.
 	return touchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
+}
+
+func TestServerTimingsWithDefaults(t *testing.T) {
+	Convey("Non-positive server timing values use package defaults", t, func() {
+		timings := ServerTimings{
+			InterruptTime:         -1 * time.Nanosecond,
+			ItemTTR:               -1 * time.Nanosecond,
+			CheckRunnerTime:       -1 * time.Nanosecond,
+			LostJobCheckTimeout:   -1 * time.Nanosecond,
+			LostJobCheckRetryTime: -1 * time.Nanosecond,
+			ReleaseDelayMin:       -1 * time.Nanosecond,
+			TouchInterval:         -1 * time.Nanosecond,
+			RetryWait:             -1 * time.Nanosecond,
+			RetryTime:             -1 * time.Nanosecond,
+			ShutdownSocketWait:    -1 * time.Nanosecond,
+		}.withDefaults()
+
+		So(timings.InterruptTime, ShouldEqual, ServerInterruptTime)
+		So(timings.ItemTTR, ShouldEqual, ServerItemTTR)
+		So(timings.CheckRunnerTime, ShouldEqual, ServerCheckRunnerTime)
+		So(timings.LostJobCheckTimeout, ShouldEqual, ServerLostJobCheckTimeout)
+		So(timings.LostJobCheckRetryTime, ShouldEqual, ServerLostJobCheckRetryTime)
+		So(timings.ReleaseDelayMin, ShouldEqual, ClientReleaseDelayMin)
+		So(timings.TouchInterval, ShouldEqual, ClientTouchInterval)
+		So(timings.RetryWait, ShouldEqual, ClientRetryWait)
+		So(timings.RetryTime, ShouldEqual, ClientRetryTime)
+		So(timings.ShutdownSocketWait, ShouldEqual, serverSocketWait)
+	})
 }
 
 func assertNonEmptyFile(path string) {
@@ -1062,6 +1093,7 @@ func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, e
 	if err != nil {
 		limit := time.After(5 * time.Second)
 		ticker := time.NewTicker(500 * time.Millisecond)
+
 	RETRY:
 		for {
 			select {
@@ -1070,14 +1102,18 @@ func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, e
 				if err != nil {
 					continue
 				}
+
 				ticker.Stop()
+
 				break RETRY
 			case <-limit:
 				ticker.Stop()
+
 				break RETRY
 			}
 		}
 	}
+
 	return server, msg, token, err
 }
 
@@ -1091,16 +1127,20 @@ func waitUntilPidsAreGone(pids map[int]bool, seconds int) bool {
 			if errf != nil && process == nil {
 				delete(pids, pid)
 			}
+
 			errs := process.Signal(syscall.Signal(0))
 			if errs != nil {
 				delete(pids, pid)
 			}
 		}
+
 		if len(pids) == 0 {
 			break
 		}
+
 		<-time.After(1 * time.Second)
 	}
+
 	return len(pids) == 0
 }
 
@@ -1110,8 +1150,10 @@ func TestJobqueueSignal(t *testing.T) {
 	if runnermode {
 		return
 	}
+
 	if servermode {
 		runServer(ctx)
+
 		return
 	}
 
@@ -3557,6 +3599,11 @@ func TestJobqueueMedium(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
+			// This scenario checks dependency transitions, not TTR expiry. Keep
+			// reserved dependency-chain jobs alive under race/CI load while the
+			// test inspects intermediate states before executing them.
+			server.SetItemTTR(2 * time.Second)
+
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "echo deptest1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep1", DepGroups: []string{"dep1", "dep1+2+3"}})
 			jobs = append(jobs, &Job{Cmd: "echo deptest2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep2", DepGroups: []string{"dep2", "dep1+2+3"}})
@@ -5321,25 +5368,37 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job2.Exitcode, ShouldEqual, 0)
 			})
 
-			Convey("You can reserve & execute the job, shut down the server and then can't add new jobs and the started job gets lost and eventually completes", func() {
+			Convey("You can reserve & execute the job, shut down, reject new jobs, and let the started job recover", func() {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, job1Cmd)
+
 				started := make(chan bool)
 				done := make(chan error)
+
 				go func() {
 					started <- true
+
 					erre := jq.Execute(ctx, job, config.RunnerExecShell)
 					done <- erre
 				}()
+
 				So(job.Exited, ShouldBeFalse)
 
 				<-started
 				<-time.After(200 * time.Millisecond)
+
 				ok := jq.ShutdownServer()
 				So(ok, ShouldBeTrue)
 
-				jobs = append(jobs, &Job{Cmd: "echo added", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "nij"})
+				jobs = append(jobs, &Job{
+					Cmd:          "echo added",
+					Cwd:          testCwd,
+					ReqGroup:     reqGroupFake,
+					Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1},
+					Retries:      uint8(3),
+					RepGroup:     "nij",
+				})
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldNotBeNil)
 
@@ -5355,31 +5414,32 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				startedAt := time.Now()
 				serverConfig.dontWipeDevDB = false
+
 				So(errs, ShouldBeNil)
+
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
 				So(err, ShouldBeNil)
 
-				shouldBeLost := false
-				if time.Since(startedAt) > serverConfig.Timings.ItemTTR {
-					shouldBeLost = true
-				}
+				shouldBeLost := time.Since(startedAt) > serverConfig.Timings.ItemTTR
 
 				job.RLock()
+				jobExited := job.Exited
+				jobLost := job.Lost
+				job.RUnlock()
+
 				notLost := false
-				if job.Exited {
+
+				if jobExited {
 					// sometimes the existing runner manages to reconnect to the
 					// new server before this test
-					So(job.Lost, ShouldEqual, shouldBeLost)
-					if !job.Lost {
-						notLost = true
-					}
+					So(jobLost, ShouldEqual, shouldBeLost)
+					notLost = !jobLost
 				} else {
-					So(job.Exited, ShouldBeFalse)
+					So(jobExited, ShouldBeFalse)
 				}
-				job.RUnlock()
 
 				erre := <-done
 				So(erre, ShouldNotBeNil)
@@ -5388,14 +5448,18 @@ func TestJobqueueProduction(t *testing.T) {
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
 				So(err, ShouldBeNil)
 				job.RLock()
-				So(job.Exited, ShouldBeTrue)
+				jobExited = job.Exited
+				jobLost = job.Lost
+				job.RUnlock()
+
+				So(jobExited, ShouldBeTrue)
 
 				shouldBeLost = false
 				if !notLost && time.Since(startedAt) > serverConfig.Timings.ItemTTR {
 					shouldBeLost = true
 				}
-				So(job.Lost, ShouldEqual, shouldBeLost)
-				job.RUnlock()
+
+				So(jobLost, ShouldEqual, shouldBeLost)
 			})
 		})
 
@@ -5405,8 +5469,16 @@ func TestJobqueueProduction(t *testing.T) {
 			defer disconnect(jq)
 
 			var jobs []*Job
+
 			job1Cmd := "false"
-			jobs = append(jobs, &Job{Cmd: job1Cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "false"})
+			jobs = append(jobs, &Job{
+				Cmd:          job1Cmd,
+				Cwd:          testCwd,
+				ReqGroup:     reqGroupFake,
+				Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1},
+				Retries:      uint8(0),
+				RepGroup:     "false",
+			})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -5434,7 +5506,9 @@ func TestJobqueueProduction(t *testing.T) {
 			serverConfig.dontWipeDevDB = true
 			server, _, token, errs = serve(ctx, serverConfig)
 			serverConfig.dontWipeDevDB = false
+
 			So(errs, ShouldBeNil)
+
 			jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 
@@ -5457,14 +5531,18 @@ func TestJobqueueRunners(t *testing.T) {
 	if servermode {
 		return
 	}
+
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	if runnermode {
 		// we have a full test of Serve() below that needs a client executable;
 		// we say this test script is that exe, and when --runnermode is passed
 		// to us we skip all tests and just act like a runner
 		runner(ctx)
+
 		return
 	}
+
 	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
 
 	// start these tests anew because these tests have the server spawn runners
@@ -5488,6 +5566,7 @@ func TestJobqueueRunners(t *testing.T) {
 			" --rtimeout %d --maxmins %d --rmanagerdir " + rmd + " --tmpdir " + runnertmpdir
 		server, _, token, errs := serve(ctx, runningConfig)
 		So(errs, ShouldBeNil)
+
 		defer func() {
 			server.Stop(ctx, true)
 		}()
@@ -5507,9 +5586,16 @@ func TestJobqueueRunners(t *testing.T) {
 			// for jobs queued after this point) to speed up the lost detection.
 			server.SetItemTTR(3 * time.Second)
 
-			var jobs []*Job
 			cmd := "perl -e 'for (1..20) { sleep(1) }'"
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			jobs := []*Job{{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				ReqGroup:     reqGroupSleep,
+				Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1},
+				Retries:      uint8(0),
+				Override:     uint8(2),
+				RepGroup:     manuallyAdded,
+			}}
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -5525,7 +5611,7 @@ func TestJobqueueRunners(t *testing.T) {
 				for {
 					select {
 					case <-ticker.C:
-						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+						jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateRunning, false, false)
 						if err != nil {
 							continue
 						}
@@ -5537,7 +5623,7 @@ func TestJobqueueRunners(t *testing.T) {
 						}
 
 					case <-limit:
-						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+						jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, "", true, false)
 						timelimitDebug(jobs, err)
 
 						return 0
@@ -5551,7 +5637,7 @@ func TestJobqueueRunners(t *testing.T) {
 				return
 			}
 
-			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+			jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateRunning, false, false)
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].Pid, ShouldEqual, jobPID)
@@ -5568,58 +5654,65 @@ func TestJobqueueRunners(t *testing.T) {
 				server.SetLostJobCheckRetryTime(1 * time.Hour)
 			}()
 
-			pscmd := fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobPID)
-			ec := exec.Command("bash", "-c", pscmd)
-			out, err := ec.CombinedOutput()
+			pgid, err := syscall.Getpgid(jobPID)
 			So(err, ShouldBeNil)
-			pgid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+
 			if err != nil {
-				fmt.Printf("\nps cmd [%s] failed\n", pscmd)
+				t.Logf("get process group failed for pid %d: %s", jobPID, err)
+
+				return
 			}
+
+			err = syscall.Kill(-pgid, syscall.SIGKILL)
 			So(err, ShouldBeNil)
-			syscall.Kill(-pgid, syscall.SIGKILL)
 
 			// wait for the job to become lost and then buried
 			killed := make(chan bool, 1)
 			checkLost := true
+
 			var timeToBury time.Duration
 
 			lostStatePollInterval := 50 * time.Millisecond
+
 			go func() {
 				var lostTime time.Time
 
 				limit := time.After(8 * time.Second) // this server's TTR was shortened to 3s above
 				ticker := time.NewTicker(lostStatePollInterval)
+				markLostJobSeen := func() bool {
+					jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateLost, false, false)
+					if err != nil || len(jobs) != 1 {
+						return false
+					}
+
+					checkLost = false
+					lostTime = time.Now()
+
+					// re-enable our ability to check the job is really dead
+					jobs[0].Lock()
+					server.SetLostJobCheckTimeout(5 * time.Second)
+					jobs[0].Unlock()
+
+					return true
+				}
+
 				for {
 					select {
 					case <-ticker.C:
-						if checkLost {
-							jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateLost, false, false)
-							if err != nil {
-								continue
-							}
-
-							if len(jobs) == 1 {
-								checkLost = false
-								lostTime = time.Now()
-
-								// re-enable our ability to check the job is
-								// really dead
-								jobs[0].Lock()
-								server.SetLostJobCheckTimeout(5 * time.Second)
-								jobs[0].Unlock()
-							} else {
-								continue
-							}
+						if checkLost && !markLostJobSeen() {
+							continue
 						}
 
-						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
+						jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateBuried, false, false)
 						if err != nil {
 							continue
 						}
+
 						if len(jobs) == 1 {
 							ticker.Stop()
+
 							timeToBury = time.Since(lostTime)
+
 							killed <- true
 
 							return
@@ -5628,17 +5721,20 @@ func TestJobqueueRunners(t *testing.T) {
 						continue
 					case <-limit:
 						ticker.Stop()
-						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+
+						jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, "", true, false)
 						timelimitDebug(jobs, err)
+
 						killed <- false
 
 						return
 					}
 				}
 			}()
+
 			So(<-killed, ShouldBeTrue)
 
-			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
+			jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateBuried, false, false)
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
@@ -5655,8 +5751,20 @@ func TestJobqueueRunners(t *testing.T) {
 			tmpdir := t.TempDir()
 
 			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
-			var jobs []*Job
-			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 1", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "fallocate"})
+			fallocateJob := func(cmd string, req *jqs.Requirements, override uint8, repGroup string) *Job {
+				return &Job{
+					Cmd:          cmd,
+					Cwd:          tmpdir,
+					ReqGroup:     reqGroupFallocate,
+					Requirements: req,
+					Retries:      uint8(0),
+					Override:     override,
+					RepGroup:     repGroup,
+				}
+			}
+
+			jobs := make([]*Job, 0, 5)
+			jobs = append(jobs, fallocateJob("fallocate -l 200M foo && echo 1", zeroReq, 2, reqGroupFallocate))
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -5666,6 +5774,7 @@ func TestJobqueueRunners(t *testing.T) {
 			// is 0 and override is 2)
 			waitToFinish := func() bool {
 				done := make(chan bool, 1)
+
 				go func() {
 					limit := time.After(10 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
@@ -5691,32 +5800,36 @@ func TestJobqueueRunners(t *testing.T) {
 				return <-done
 			}
 
-			waitToFinish()
+			So(waitToFinish(), ShouldBeTrue)
 
-			complete, errj := jq.GetByRepGroup("fallocate", false, 0, JobStateComplete, false, false)
+			complete, errj := jq.GetByRepGroup(reqGroupFallocate, false, 0, JobStateComplete, false, false)
 			So(errj, ShouldBeNil)
 			So(len(complete), ShouldEqual, 1)
 			So(complete[0].Requirements, ShouldResemble, zeroReq)
 			So(complete[0].PeakDisk, ShouldEqual, 200)
 
 			// add 3 similar jobs that only really differ in override behaviour
-			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 2", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(0), RepGroup: "learns"})
-			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 3", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "learnsDiskNotMem"})
+			jobs = append(jobs,
+				fallocateJob("fallocate -l 200M foo && echo 2", zeroReq, 0, "learns"),
+				fallocateJob("fallocate -l 200M foo && echo 3", zeroReq, 2, "learnsDiskNotMem"),
+			)
 			// following is the main test: specifying Disk of 0 and override 2
 			// should result in 0 overriding learned value, even though its a
 			// zero value, if DiskSet is true
 			notOverrideReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0, Disk: 0}
 			overrideReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0, Disk: 0, DiskSet: true}
 
-			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 4", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: notOverrideReq, Retries: uint8(0), Override: uint8(2), RepGroup: "learnsDiskNotMem2"})
-			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 5", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: overrideReq, Retries: uint8(0), Override: uint8(2), RepGroup: "nolearning"})
+			jobs = append(jobs,
+				fallocateJob("fallocate -l 200M foo && echo 4", notOverrideReq, 2, "learnsDiskNotMem2"),
+				fallocateJob("fallocate -l 200M foo && echo 5", overrideReq, 2, "nolearning"),
+			)
 
 			inserts, already, err = jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 4)
 			So(already, ShouldEqual, 1)
 
-			waitToFinish()
+			So(waitToFinish(), ShouldBeTrue)
 
 			complete, errj = jq.GetByRepGroup("learns", false, 0, JobStateComplete, false, false)
 			So(errj, ShouldBeNil)
@@ -5755,10 +5868,16 @@ func TestJobqueueRunners(t *testing.T) {
 
 			defer disconnect(jq)
 
-			var jobs []*Job
-
 			cmd := "perl -e 'for (1..20) { sleep(1) }'"
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			jobs := []*Job{{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				ReqGroup:     reqGroupSleep,
+				Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1},
+				Retries:      uint8(0),
+				Override:     uint8(2),
+				RepGroup:     manuallyAdded,
+			}}
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
