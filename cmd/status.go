@@ -152,7 +152,11 @@ redirect (eg. "mycmd > stdout.txt").
 		}
 
 		useFastStatus := canUseFastStatusOutput(outputFormat)
+
 		statusSummaries := getFastStatusSummaries(jq, cmdStates, useFastStatus, outputFormat)
+		if statusSummaries == nil {
+			useFastStatus = false
+		}
 
 		var jobs []*jobqueue.Job
 		showextra := cmdFileStatus == ""
@@ -628,6 +632,10 @@ func getFastStatusSummaries(jq *jobqueue.Client, cmdStates []jobqueue.JobState, 
 
 	summaries, err := jq.GetStatusByRepGroupMatch(cmdIDStatus, match, cmdStates, includeComplete, includeStatusDetails)
 	if err != nil {
+		if fastStatusUnsupported(err) {
+			return nil
+		}
+
 		die("failed to get job status counts corresponding to your settings: %s", err)
 	}
 
@@ -643,6 +651,12 @@ func printStatusCounts(counts map[jobqueue.JobState]int) {
 		counts[jobqueue.JobStateLost],
 		counts[jobqueue.JobStateDelayed],
 		counts[jobqueue.JobStateBuried])
+}
+
+func fastStatusUnsupported(err error) bool {
+	var jqErr jobqueue.Error
+
+	return errors.As(err, &jqErr) && jqErr.Err == jobqueue.ErrUnknownCommand
 }
 
 func printStatusSummaries(summaries map[string]*jobqueue.RepGroupStatus) {
