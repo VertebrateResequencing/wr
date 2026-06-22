@@ -36,6 +36,7 @@ package jobqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -299,7 +300,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else {
 		thismb, err := bytefmt.ToMegabytes(jvj.Memory)
 		if err != nil {
-			return nil, fmt.Errorf("memory value (%s) was not specified correctly: %s", jvj.Memory, err)
+			return nil, fmt.Errorf("memory value (%s) was not specified correctly: %w", jvj.Memory, err)
 		}
 		mb = int(thismb)
 	}
@@ -310,7 +311,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		var err error
 		dur, err = time.ParseDuration(jvj.Time)
 		if err != nil {
-			return nil, fmt.Errorf("time value (%s) was not specified correctly: %s", jvj.Time, err)
+			return nil, fmt.Errorf("time value (%s) was not specified correctly: %w", jvj.Time, err)
 		}
 	}
 
@@ -355,7 +356,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		var err error
 		noRetry, err = time.ParseDuration(jvj.NoRetriesOverWalltime)
 		if err != nil {
-			return nil, fmt.Errorf("time value (%s) was not specified correctly: %s", jvj.NoRetriesOverWalltime, err)
+			return nil, fmt.Errorf("time value (%s) was not specified correctly: %w", jvj.NoRetriesOverWalltime, err)
 		}
 	}
 
@@ -626,7 +627,7 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 		jstati := make([]JStatus, len(jobs))
 		for i, job := range jobs {
 			jstati[i], err = job.ToStatus()
-			if err != nil && err != io.ErrUnexpectedEOF {
+			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 				http.Error(w, err.Error(), status)
 				return
 			}
@@ -870,7 +871,7 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 	for _, jvj := range jvjs {
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
-			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %s", errf)
+			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %w", errf)
 		}
 		inputJobs = append(inputJobs, job)
 	}

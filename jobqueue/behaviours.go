@@ -301,7 +301,7 @@ func (b *Behaviour) run(j *Job) error {
 	cmd.Dir = actualCwd
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("run behaviour failed: %s\n%s", err, string(out))
+		return fmt.Errorf("run behaviour failed: %w\n%s", err, string(out))
 	}
 	return err
 }
