@@ -107,16 +107,32 @@ func TestQueue(t *testing.T) {
 		queue := New(ctx, "myqueue")
 		defer qdestroy(queue)
 
-		var callBackLock sync.Mutex
-		var numReadyAdded int
-		var enableWaitForReadyAdded bool
-		waitForReadyAdded := make(chan bool)
+		var (
+			callBackLock            sync.Mutex
+			numReadyAdded           int
+			waitedReadyAdded        int
+			enableWaitForReadyAdded bool
+		)
+
+		waitForReadyAdded := make(chan bool, 1)
 		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 			callBackLock.Lock()
-			defer callBackLock.Unlock()
 			numReadyAdded = len(allitemdata)
+
+			signalReadyAdded := enableWaitForReadyAdded
 			if enableWaitForReadyAdded {
-				waitForReadyAdded <- true
+				enableWaitForReadyAdded = false
+				waitedReadyAdded = numReadyAdded
+			}
+			callBackLock.Unlock()
+
+			// Signal outside callBackLock, and do not block if a duplicate
+			// callback has already supplied the one-shot notification.
+			if signalReadyAdded {
+				select {
+				case waitForReadyAdded <- true:
+				default:
+				}
 			}
 		})
 
@@ -275,11 +291,7 @@ func TestQueue(t *testing.T) {
 			queue.TriggerReadyAddedCallback(ctx)
 			<-waitForReadyAdded
 			callBackLock.Lock()
-			// stop the callback from blocking on a further unbuffered send once
-			// later delayed items become ready (relevant under synctest, where
-			// those timers fire deterministically before the queue is destroyed).
-			enableWaitForReadyAdded = false
-			So(numReadyAdded, ShouldEqual, 3)
+			So(waitedReadyAdded, ShouldEqual, 3)
 			callBackLock.Unlock()
 
 			Convey("Once ready you should be able to reserve them in the expected order", func() {
