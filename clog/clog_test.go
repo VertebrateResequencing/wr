@@ -31,6 +31,7 @@ import (
 	"io"
 	"log/syslog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -43,6 +44,41 @@ import (
 	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+func TestFileLogRotation(t *testing.T) {
+	Convey("File logging rotates when the active log grows beyond the configured size", t, func() {
+		logPath := filepath.Join(t.TempDir(), "clog.log")
+
+		ConfigureFileRotation(FileRotationConfig{
+			MaxSizeMB:  1,
+			MaxBackups: 2,
+			MaxAgeDays: 1,
+			Compress:   false,
+		})
+		defer ConfigureFileRotation(DefaultFileRotationConfig())
+		defer ToDefault()
+
+		err := ToFileAtLevel(logPath, "info")
+		So(err, ShouldBeNil)
+
+		payload := strings.Repeat("x", 300*1024)
+		for i := range 5 {
+			Info(context.Background(), "rotation test", "idx", i, "payload", payload)
+		}
+
+		activeInfo, err := os.Stat(logPath)
+		So(err, ShouldBeNil)
+		So(activeInfo.Size(), ShouldBeLessThanOrEqualTo, int64(1024*1024))
+
+		activeContent, err := os.ReadFile(logPath)
+		So(err, ShouldBeNil)
+		So(string(activeContent), ShouldContainSubstring, "idx=4")
+
+		rotatedLogs, err := filepath.Glob(filepath.Join(filepath.Dir(logPath), "clog-*.log"))
+		So(err, ShouldBeNil)
+		So(len(rotatedLogs), ShouldBeGreaterThan, 0)
+	})
+}
 
 func TestLogger(t *testing.T) {
 	background := context.Background()

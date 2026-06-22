@@ -219,64 +219,6 @@ fully.`,
 	},
 }
 
-func printLines(lines []string) {
-	for _, line := range lines {
-		fmt.Println(line)
-	}
-}
-
-// getBadLogLines finds any error or crit lines in the log since the manager
-// was last started.
-func getBadLogLines() []string {
-	var lines []string
-
-	f, err := os.Open(config.ManagerLogFile)
-	if err != nil {
-		return lines
-	}
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.Contains(line, "lvl=crit") || strings.Contains(line, "lvl=eror") {
-			lines = append(lines, line)
-		}
-
-		if managerStartedLogRegex.MatchString(line) {
-			lines = []string{}
-		}
-	}
-
-	return lines
-}
-
-func handleScript(path, arg string, extraArgs *[]string) []byte {
-	var script []byte
-	if path != "" {
-		var err error
-		script, err = os.ReadFile(path)
-		if err != nil {
-			die("--%s %s could not be read: %s", arg, path, err)
-		}
-
-		// daemon runs from /, so we need to convert relative to absolute
-		// path *** and then pretty hackily, re-specify the option by
-		// repeating it on the end of os.Args, where the daemonization code
-		// will pick it up
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			die("--%s %s could not be converted to an absolute path: %s", arg, path, err)
-		}
-		if abs != path {
-			*extraArgs = append(*extraArgs, "--"+arg)
-			*extraArgs = append(*extraArgs, abs)
-		}
-	}
-
-	return script
-}
-
 // stop sub-command stops the daemon by sending it a term signal
 var managerStopCmd = &cobra.Command{
 	Use:   "stop",
@@ -564,6 +506,70 @@ somewhere.)`,
 	},
 }
 
+func logRotationEnv() string {
+	return fmt.Sprintf("WR_LOGSMAXSIZEMB=%d WR_LOGSMAXBACKUPS=%d WR_LOGSMAXAGEDAYS=%d WR_LOGSCOMPRESS=%t ",
+		config.LogsMaxSizeMB, config.LogsMaxBackups, config.LogsMaxAgeDays, config.LogsCompress)
+}
+
+func printLines(lines []string) {
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+}
+
+// getBadLogLines finds any error or crit lines in the log since the manager
+// was last started.
+func getBadLogLines() []string {
+	var lines []string
+
+	f, err := os.Open(config.ManagerLogFile)
+	if err != nil {
+		return lines
+	}
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.Contains(line, "lvl=crit") || strings.Contains(line, "lvl=eror") {
+			lines = append(lines, line)
+		}
+
+		if managerStartedLogRegex.MatchString(line) {
+			lines = []string{}
+		}
+	}
+
+	return lines
+}
+
+func handleScript(path, arg string, extraArgs *[]string) []byte {
+	if path == "" {
+		return nil
+	}
+
+	script, err := os.ReadFile(path)
+	if err != nil {
+		die("--%s %s could not be read: %s", arg, path, err)
+	}
+
+	// daemon runs from /, so we need to convert relative to absolute
+	// path *** and then pretty hackily, re-specify the option by
+	// repeating it on the end of os.Args, where the daemonization code
+	// will pick it up
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		die("--%s %s could not be converted to an absolute path: %s", arg, path, err)
+	}
+
+	if abs != path {
+		*extraArgs = append(*extraArgs, "--"+arg)
+		*extraArgs = append(*extraArgs, abs)
+	}
+
+	return script
+}
+
 // reportLiveStatus is used by the status command on a working connection to
 // distinguish between the server being in a normal 'started' state or the
 // 'drain' state.
@@ -676,24 +682,26 @@ func startJQ(postCreation, preDestroy []byte) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	// change the logger to log to both STDERR and our configured log file
-	fileHandler, err := clog.CreateFileHandlerAtLevel(config.ManagerLogFile, "info")
-	if err != nil {
-		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
-	}
-
-	clog.AddHandler(fileHandler)
-
 	logLevel := "warn"
 
 	if managerDebug {
 		logLevel = "debug"
 	}
 
-	// create a file handler context for internal use by the server
-	ctxf, err := clog.ContextWithFileHandler(ctx, config.ManagerLogFile, logLevel)
+	// change the logger to log to both STDERR and our configured log file
+	ctxf := ctx
+	addManagerFileHandler := func() {}
+
+	fileHandlers, err := clog.CreateFileHandlersAtLevels(config.ManagerLogFile, "info", logLevel)
 	if err != nil {
 		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
+	} else {
+		addManagerFileHandler = func() {
+			clog.AddHandler(fileHandlers[0])
+		}
+		addManagerFileHandler()
+
+		ctxf = clog.ContextWithLogHandler(ctx, fileHandlers[1])
 	}
 
 	// we will spawn runners, which means we need to know the path to ourselves
@@ -784,7 +792,7 @@ func startJQ(postCreation, preDestroy []byte) {
 		}
 	}
 
-	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
+	runnerCmd := logRotationEnv() + exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
 
 	if runnerSyslog {
 		runnerCmd += " --syslog"
@@ -828,7 +836,7 @@ func startJQ(postCreation, preDestroy []byte) {
 	logStarted(server.ServerInfo, token)
 	// logStarted disabled logging to file; re-adding file handler
 	// to get final message below
-	clog.AddHandler(fileHandler)
+	addManagerFileHandler()
 
 	// block forever while the jobqueue does its work
 	err = server.Block()

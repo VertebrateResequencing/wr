@@ -364,6 +364,10 @@ func TestConfig(t *testing.T) {
 		So(defConfig.ManagerPort, ShouldBeEmpty)
 		So(defConfig.Source("ManagerPort"), ShouldEqual, "default")
 		So(defConfig.ManagerWeb, ShouldBeEmpty)
+		So(defConfig.LogsMaxSizeMB, ShouldEqual, 500)
+		So(defConfig.LogsMaxBackups, ShouldEqual, 3)
+		So(defConfig.LogsMaxAgeDays, ShouldEqual, 28)
+		So(defConfig.LogsCompress, ShouldBeTrue)
 
 		Convey("it can check if deployment is production", func() {
 			So(defConfig.IsProduction(), ShouldBeTrue)
@@ -712,10 +716,18 @@ func TestConfig(t *testing.T) {
 		os.Setenv("WR_MANAGERPORT", "1234")
 		os.Setenv("WR_MANAGERUMASK", "77")
 		os.Setenv("WR_MANAGERSETDOMAINIP", "true")
+		os.Setenv("WR_LOGSMAXSIZEMB", "5")
+		os.Setenv("WR_LOGSMAXBACKUPS", "4")
+		os.Setenv("WR_LOGSMAXAGEDAYS", "21")
+		os.Setenv("WR_LOGSCOMPRESS", "false")
 		defer func() {
 			os.Unsetenv("WR_MANAGERPORT")
 			os.Unsetenv("WR_MANAGERUMASK")
 			os.Unsetenv("WR_MANAGERSETDOMAINIP")
+			os.Unsetenv("WR_LOGSMAXSIZEMB")
+			os.Unsetenv("WR_LOGSMAXBACKUPS")
+			os.Unsetenv("WR_LOGSMAXAGEDAYS")
+			os.Unsetenv("WR_LOGSCOMPRESS")
 		}()
 
 		envVarConfig := getEnvVarsConfig(ctx)
@@ -724,16 +736,22 @@ func TestConfig(t *testing.T) {
 		So(envVarConfig.ManagerWeb, ShouldBeEmpty)
 		So(envVarConfig.ManagerUmask, ShouldEqual, 77)
 		So(envVarConfig.ManagerSetDomainIP, ShouldBeTrue)
+		So(envVarConfig.LogsMaxSizeMB, ShouldEqual, 5)
+		So(envVarConfig.LogsMaxBackups, ShouldEqual, 4)
+		So(envVarConfig.LogsMaxAgeDays, ShouldEqual, 21)
+		So(envVarConfig.LogsCompress, ShouldBeFalse)
 	})
 
 	Convey("It can merge Default Config and Env Var config", t, func() {
 		os.Setenv("WR_MANAGERPORT", "1234")
 		os.Setenv("WR_MANAGERUMASK", "077")
 		os.Setenv("WR_MANAGERSETDOMAINIP", "true")
+		os.Setenv("WR_LOGSMAXSIZEMB", "5")
 		defer func() {
 			os.Unsetenv("WR_MANAGERPORT")
 			os.Unsetenv("WR_MANAGERUMASK")
 			os.Unsetenv("WR_MANAGERSETDOMAINIP")
+			os.Unsetenv("WR_LOGSMAXSIZEMB")
 		}()
 
 		mergedConfig := mergeDefaultAndEnvVarsConfigs(ctx)
@@ -745,6 +763,8 @@ func TestConfig(t *testing.T) {
 		So(mergedConfig.Source("ManagerUmask"), ShouldEqual, ConfigSourceEnvVar)
 		So(mergedConfig.ManagerSetDomainIP, ShouldBeTrue)
 		So(mergedConfig.Source("ManagerSetDomainIP"), ShouldEqual, ConfigSourceEnvVar)
+		So(mergedConfig.LogsMaxSizeMB, ShouldEqual, 5)
+		So(mergedConfig.Source("LogsMaxSizeMB"), ShouldEqual, ConfigSourceEnvVar)
 	})
 
 	Convey("It can merge all the configs and return a final config", t, func() {
@@ -794,6 +814,10 @@ func TestConfig(t *testing.T) {
 				So(os.Getenv("WR_MANAGERDIR"), ShouldEqual, TildaToHome("~/.wr"))
 				So(os.Getenv("WR_MANAGERDIR"), ShouldNotEqual, config.ManagerDir)
 				So(os.Getenv("WR_MANAGERLOGFILE"), ShouldEqual, filepath.Join(config.ManagerDir, "log"))
+				So(os.Getenv("WR_LOGSMAXSIZEMB"), ShouldEqual, strconv.Itoa(config.LogsMaxSizeMB))
+				So(os.Getenv("WR_LOGSMAXBACKUPS"), ShouldEqual, strconv.Itoa(config.LogsMaxBackups))
+				So(os.Getenv("WR_LOGSMAXAGEDAYS"), ShouldEqual, strconv.Itoa(config.LogsMaxAgeDays))
+				So(os.Getenv("WR_LOGSCOMPRESS"), ShouldEqual, strconv.FormatBool(config.LogsCompress))
 
 				if config.ManagerSetDomainIP {
 					So(os.Getenv("WR_MANAGERSETDOMAINIP"), ShouldEqual, "true")
