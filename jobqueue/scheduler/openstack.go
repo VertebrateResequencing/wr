@@ -59,9 +59,12 @@ const (
 )
 
 // debugCounter and debugEffect are used by tests to prove some bugs
+//
+//nolint:gochecknoglobals // Existing debug hooks are package-level test controls.
 var (
-	debugCounter int
-	debugEffect  string
+	debugCounter                 int
+	debugEffect                  string
+	errDebugFailBeforeUsingQuota = errors.New("forced fail before using quota")
 )
 
 // opst is our implementer of scheduleri. It takes much of its implementation
@@ -885,15 +888,19 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 	// drop our reserved values down or we'll end up double-counting
 	// resource usage in checkQuota(), since that takes in to account
 	// resources used by an in-progress spawn.
+	var releaseReservedOnce sync.Once
 	usingQuotaCB := func() {
-		s.resourceMutex.Lock()
-		s.reservedInstances--
-		s.reservedCores -= flavor.Cores
-		s.reservedRAM -= flavor.RAM
-		if volumeAffected {
-			s.reservedVolume -= req.Disk
-		}
-		s.resourceMutex.Unlock()
+		releaseReservedOnce.Do(func() {
+			s.resourceMutex.Lock()
+			s.reservedInstances--
+			s.reservedCores -= flavor.Cores
+
+			s.reservedRAM -= flavor.RAM
+			if volumeAffected {
+				s.reservedVolume -= req.Disk
+			}
+			s.resourceMutex.Unlock()
+		})
 	}
 
 	var osUser string
@@ -921,8 +928,17 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 	clog.Debug(ctx, "will spawn new server", "cmd", cmd)
 
 	tSpawn := time.Now()
-	server, err := s.provider.Spawn(ctx, requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime,
-		false, usingQuotaCB)
+
+	var (
+		server *cloud.Server
+		err    error
+	)
+	if debugEffect == "failBeforeUsingQuota" && thisDebugCount == 1 {
+		err = errDebugFailBeforeUsingQuota
+	} else {
+		server, err = s.provider.Spawn(ctx, requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime,
+			false, usingQuotaCB)
+	}
 
 	serverID := "failed"
 	if server != nil {
@@ -1029,6 +1045,7 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 	// handle Spawn() or upload-of-exe errors now, by destroying the server
 	// and noting we failed
 	if err != nil {
+		usingQuotaCB()
 		if err.Error() == serverNotNeededErrStr {
 			clog.Debug(ctx, failMsg, "err", err)
 		} else {
@@ -1039,7 +1056,7 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 			if errd != nil {
 				clog.Debug(ctx, "server also failed to destroy", "err", errd)
 			}
-		} else if s.provider.ErrIsNoHardware(err) {
+		} else if s.provider != nil && s.provider.ErrIsNoHardware(err) {
 			s.ffCache.Set(flavor.ID, true, cache.DefaultExpiration)
 			clog.Warn(ctx, "server failed to spawn due to lack of hardware")
 		}
