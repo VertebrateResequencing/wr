@@ -124,9 +124,23 @@ func (c *Client) restURL(endpoint string) (string, error) {
 }
 
 func (c *Client) restHTTPClient() *http.Client {
+	c.Lock()
+	defer c.Unlock()
+
+	if c.restClient == nil {
+		c.restClient = c.newRestHTTPClient()
+	}
+
+	return c.restClient
+}
+
+func (c *Client) newRestHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout:   c.restTimeout(),
-		Transport: &http.Transport{TLSClientConfig: c.restTLSConfig()},
+		Timeout: c.restTimeout(),
+		Transport: &http.Transport{
+			Proxy:           nil,
+			TLSClientConfig: c.restTLSConfig(),
+		},
 	}
 }
 
@@ -139,16 +153,7 @@ func (c *Client) restTimeout() time.Duration {
 }
 
 func (c *Client) restTLSConfig() *tls.Config {
-	caFile := ""
-	certDomain := ""
-
-	if len(c.args) > restClientArgsCAFile {
-		caFile = c.args[restClientArgsCAFile]
-	}
-
-	if len(c.args) > restClientArgsCertDomain {
-		certDomain = c.args[restClientArgsCertDomain]
-	}
+	caFile, certDomain := c.restTLSConfigInputs()
 
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: certDomain}
 
@@ -160,4 +165,19 @@ func (c *Client) restTLSConfig() *tls.Config {
 	}
 
 	return tlsConfig
+}
+
+func (c *Client) restTLSConfigInputs() (string, string) {
+	caFile := ""
+	certDomain := ""
+
+	if len(c.args) > restClientArgsCAFile {
+		caFile = c.args[restClientArgsCAFile]
+	}
+
+	if len(c.args) > restClientArgsCertDomain {
+		certDomain = c.args[restClientArgsCertDomain]
+	}
+
+	return caFile, certDomain
 }

@@ -246,15 +246,17 @@ func writeStatusTableCell(w io.Writer, column statusTableColumn, value string) {
 }
 
 func fitStatusTableValue(value string, width int) string {
-	if len(value) <= width {
+	runes := []rune(value)
+	if len(runes) <= width {
 		return value
 	}
 
-	if width <= len(statusTableDefaultTruncateMarker) {
-		return value[:width]
+	truncateMarkerRunes := []rune(statusTableDefaultTruncateMarker)
+	if width <= len(truncateMarkerRunes) {
+		return string(runes[:width])
 	}
 
-	return value[:width-len(statusTableDefaultTruncateMarker)] + statusTableDefaultTruncateMarker
+	return string(runes[:width-len(truncateMarkerRunes)]) + statusTableDefaultTruncateMarker
 }
 
 func parseStatusTableColumnWidth(widthText string) (int, error) {

@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -195,6 +196,7 @@ type Client struct {
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
 	token      []byte
 	timeout    time.Duration
+	restClient *http.Client
 	ServerInfo *ServerInfo
 	host       string
 	port       string
@@ -348,6 +350,11 @@ func ConnectUsingConfig(ctx context.Context, deployment string, timeout time.Dur
 func (c *Client) Disconnect() error {
 	c.Lock()
 	defer c.Unlock()
+
+	if c.restClient != nil {
+		c.restClient.CloseIdleConnections()
+	}
+
 	return c.sock.Close()
 }
 
