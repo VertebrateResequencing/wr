@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -32,6 +33,68 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// TestFlavorSelection tests the cheapest-flavor selection logic directly,
+// without needing a real cloud provider (the real openstack flavor lookup +
+// server spawning stay in TestOpenStack, gated on OS_* env vars). It feeds
+// pickCheapestFromFlavors a constructed set of flavors, exercising the same
+// logic the provider uses once it has fetched the real flavors.
+func TestFlavorSelection(t *testing.T) {
+	Convey("pickCheapestFromFlavors picks the cheapest flavor that meets the requirements", t, func() {
+		flavors := map[string]*Flavor{
+			"tiny":   {Name: "tiny", Cores: 1, RAM: 1024, Disk: 10},
+			"small":  {Name: "small", Cores: 2, RAM: 4096, Disk: 20},
+			"small2": {Name: "small2", Cores: 2, RAM: 4096, Disk: 10}, // same cores+RAM as small, less disk
+			"medium": {Name: "medium", Cores: 4, RAM: 8192, Disk: 40},
+			"large":  {Name: "large", Cores: 8, RAM: 16384, Disk: 80},
+		}
+
+		Convey("it picks the smallest flavor that fits the cores and RAM", func() {
+			f := pickCheapestFromFlavors(flavors, 1, 512, nil, nil)
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "tiny")
+		})
+
+		Convey("it skips flavors with too few cores", func() {
+			f := pickCheapestFromFlavors(flavors, 3, 512, nil, nil)
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "medium")
+		})
+
+		Convey("for equal cores and RAM it prefers the flavor with less disk", func() {
+			f := pickCheapestFromFlavors(flavors, 2, 4096, nil, nil)
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "small2")
+		})
+
+		Convey("it returns nil when nothing is big enough", func() {
+			f := pickCheapestFromFlavors(flavors, 100, 512, nil, nil)
+			So(f, ShouldBeNil)
+		})
+
+		Convey("a name regex restricts the candidate flavors", func() {
+			f := pickCheapestFromFlavors(flavors, 1, 512, regexp.MustCompile("^large$"), nil)
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "large")
+		})
+
+		Convey("a subset restricts to flavors matching one of its regexps", func() {
+			f := pickCheapestFromFlavors(flavors, 1, 512, nil, []*regexp.Regexp{regexp.MustCompile("medium|large")})
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "medium")
+		})
+
+		Convey("a nil subset regexp matches any flavor", func() {
+			var f *Flavor
+
+			So(func() {
+				f = pickCheapestFromFlavors(flavors, 1, 512, nil, []*regexp.Regexp{nil})
+			}, ShouldNotPanic)
+			So(f, ShouldNotBeNil)
+			So(f.Name, ShouldEqual, "tiny")
+		})
+	})
+}
 
 func TestUtility(t *testing.T) {
 	Convey("nameToHostName works", t, func() {

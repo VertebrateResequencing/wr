@@ -28,6 +28,7 @@ package testing
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,7 +44,24 @@ const (
 	userOnlyPerm         = 0700
 	serverTimeout        = 10 * time.Second
 	serverRetryFrequency = 500 * time.Millisecond
+
+	// these speed the test server up versus its seconds-to-minutes production
+	// timing defaults; the client tests run quick jobs and just need the server
+	// to react and shut down promptly.
+	testInterruptTime   = 10 * time.Millisecond
+	testItemTTR         = 10 * time.Second
+	testTouchInterval   = 100 * time.Millisecond
+	testCheckRunnerTime = 500 * time.Millisecond
+	testReleaseDelayMin = 100 * time.Millisecond
+	testSocketWait      = 1 * time.Millisecond
+
+	laneBasePort = 10000
+	laneSpan     = 1000
 )
+
+// laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
+// lane's tests run sequentially, so it needs no synchronisation.
+var laneTestPortNext int //nolint:gochecknoglobals
 
 // PrepareWrConfig creates a temp directory, changes to that directory, creates
 // a wr config file with available ports set, then returns a ServerConfig with
@@ -66,6 +84,17 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 		CertFile:        filepath.Join(managerDirActual, "cert.pem"),
 		KeyFile:         filepath.Join(managerDirActual, "key.pem"),
 		Deployment:      "development",
+		// the production defaults for these are seconds-to-minutes long, which
+		// makes the test suite slow; the client tests run quick jobs and just
+		// need the server to react and shut down promptly.
+		Timings: jobqueue.ServerTimings{
+			InterruptTime:      testInterruptTime,
+			ItemTTR:            testItemTTR,
+			TouchInterval:      testTouchInterval,
+			CheckRunnerTime:    testCheckRunnerTime,
+			ReleaseDelayMin:    testReleaseDelayMin,
+			ShutdownSocketWait: testSocketWait,
+		},
 	}
 
 	writeConfig(t, dir, managerDir, config)
@@ -76,17 +105,64 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 func getPorts(t *testing.T) (int, int) {
 	t.Helper()
 
-	clientPort, err := freeport.GetFreePort()
+	clientPort, err := laneFreePort()
 	if err != nil {
 		t.Fatalf("getting free port failed: %s", err)
 	}
 
-	webPort, err := freeport.GetFreePort()
+	webPort, err := laneFreePort()
 	if err != nil {
 		t.Fatalf("getting free port failed: %s", err)
 	}
 
 	return clientPort, webPort
+}
+
+// laneFreePort returns a port to bind. A global free-port picker (bind :0, note
+// the port, close it, hand it back) has a time-of-check to time-of-use race:
+// when many `go test` lanes run at once, two lanes can be handed the same
+// "free" port before either binds it, and one then fails to start ("address
+// already in use"). So when the Makefile runs a lane it sets WR_TEST_LANE, and
+// each lane draws from its own disjoint range (matching jobqueue's freeTestPort
+// so the two packages' lanes never overlap); within a lane the tests run
+// sequentially, so an incrementing counter never repeats a port before it would
+// wrap. Falls back to the global picker when WR_TEST_LANE is unset.
+func laneFreePort() (int, error) {
+	laneStr := os.Getenv("WR_TEST_LANE")
+	if laneStr == "" {
+		return freeport.GetFreePort()
+	}
+
+	lane, err := strconv.Atoi(laneStr)
+	if err != nil {
+		return freeport.GetFreePort()
+	}
+
+	for range laneSpan {
+		laneTestPortNext++
+
+		port := laneBasePort + lane*laneSpan + laneTestPortNext%laneSpan
+		if lanePortAvailable(port) {
+			return port, nil
+		}
+	}
+
+	return freeport.GetFreePort()
+}
+
+func lanePortAvailable(port int) bool {
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(
+		context.Background(),
+		"tcp",
+		net.JoinHostPort("0.0.0.0", strconv.Itoa(port)),
+	)
+	if err != nil {
+		return false
+	}
+
+	return listener.Close() == nil
 }
 
 func prepareDir(t *testing.T) (string, string, string, func()) {

@@ -280,11 +280,9 @@ func TestClientAddAndWait(t *testing.T) {
 	})
 
 	Convey("AddAndWait deadline returns gathered jobs and names unfinished lost keys", t, func() {
-		restore := overrideSubscriptionTimings(50 * time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 50*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -319,11 +317,9 @@ func TestClientAddAndWait(t *testing.T) {
 	})
 
 	Convey("AddAndWait ignores a lost update and waits for the later terminal event", t, func() {
-		restore := overrideSubscriptionTimings(50 * time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 50*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -978,11 +974,9 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	}
 
 	Convey("A restarted manager delivers a resync marker and catch-up terminal update", t, func() {
-		restore := overrideSubscriptionReconnectTimings(250*time.Millisecond, 2*time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, 2*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1036,11 +1030,9 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 
 	Convey("A permanently stopped manager closes only after reconnect retries are exhausted", t, func() {
-		restore := overrideSubscriptionReconnectTimings(50*time.Millisecond, 200*time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, 200*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1066,11 +1058,9 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 
 	Convey("A successful transient reconnect never sets a fatal subscription error", t, func() {
-		restore := overrideSubscriptionReconnectTimings(200*time.Millisecond, 2*time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 200*time.Millisecond, 2*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1103,20 +1093,11 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 }
 
-func overrideSubscriptionReconnectTimings(
-	retryWait time.Duration,
-	retryTime time.Duration,
-) func() {
-	originalRetryWait := ClientRetryWait
-	originalRetryTime := ClientRetryTime
-
-	ClientRetryWait = retryWait
-	ClientRetryTime = retryTime
-
-	return func() {
-		ClientRetryWait = originalRetryWait
-		ClientRetryTime = originalRetryTime
-	}
+// applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
+// the server will hand to its clients, for tests exercising reconnection.
+func applySubscriptionReconnectTimings(sc *ServerConfig, retryWait, retryTime time.Duration) {
+	sc.Timings.RetryWait = retryWait
+	sc.Timings.RetryTime = retryTime
 }
 
 func TestSubscriptionAuthorization(t *testing.T) {
@@ -1315,11 +1296,9 @@ func TestSubscriptionCatchUp(t *testing.T) {
 	})
 
 	Convey("A running subscribed key emits no catch-up until it becomes terminal", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1356,11 +1335,9 @@ func TestSubscriptionCatchUp(t *testing.T) {
 	})
 
 	Convey("A live rerun subscribed key suppresses archived terminal catch-up", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1557,11 +1534,9 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	}
 
 	Convey("Subscribed keys each receive exactly one terminal update for complete or buried jobs", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1624,11 +1599,9 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	})
 
 	Convey("A running subscribed job emits one lost update and no terminal update while it stays lost", t, func() {
-		restore := overrideSubscriptionTimings(200 * time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 200*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1663,11 +1636,9 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	})
 
 	Convey("Reserved and running states are not delivered before the final terminal update", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1706,11 +1677,9 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	})
 
 	Convey("A lost subscribed job later emits a terminal buried update when it is confirmed dead", t, func() {
-		restore := overrideSubscriptionTimings(200 * time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 200*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1759,11 +1728,9 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	}
 
 	Convey("A RepGroup subscription emits one aggregate when all known jobs are complete or buried", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1805,11 +1772,9 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	})
 
 	Convey("A lost RepGroup job holds the aggregate back until it settles", t, func() {
-		restore := overrideSubscriptionTimings(200 * time.Millisecond)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 200*time.Millisecond)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1883,11 +1848,9 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	})
 
 	Convey("A RepGroup subscription delivers only the aggregate when its jobs finish", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1918,11 +1881,9 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	})
 
 	Convey("A live rerun RepGroup suppresses archived aggregate catch-up", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1972,11 +1933,9 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	})
 
 	Convey("A post-registration catch-up snapshot holds back a missed live RepGroup job", t, func() {
-		restore := overrideSubscriptionTimings(5 * time.Second)
-		defer restore()
-
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2178,10 +2137,8 @@ func archiveIndependentSubscriptionJob(
 }
 
 func restartSubscriptionTestServer(ctx context.Context, serverConfig ServerConfig) *Server {
-	originalWipe := wipeDevDBOnInit
-	wipeDevDBOnInit = false
+	serverConfig.dontWipeDevDB = true
 	server, _, _, err := serve(ctx, serverConfig)
-	wipeDevDBOnInit = originalWipe
 
 	So(err, ShouldBeNil)
 
@@ -2271,20 +2228,12 @@ func collectServerSubscriptionUpdatesByID(
 	return updates, true
 }
 
-func overrideSubscriptionTimings(ttr time.Duration) func() {
-	originalTTR := ServerItemTTR
-	originalLostCheckTimeout := ServerLostJobCheckTimeout
-	originalLostCheckRetry := ServerLostJobCheckRetryTime
-
-	ServerItemTTR = ttr
-	ServerLostJobCheckTimeout = 100 * time.Millisecond
-	ServerLostJobCheckRetryTime = time.Hour
-
-	return func() {
-		ServerItemTTR = originalTTR
-		ServerLostJobCheckTimeout = originalLostCheckTimeout
-		ServerLostJobCheckRetryTime = originalLostCheckRetry
-	}
+// applySubscriptionTimings sets faster timings on the given server config for
+// subscription tests that need a short TTR.
+func applySubscriptionTimings(sc *ServerConfig, ttr time.Duration) {
+	sc.Timings.ItemTTR = ttr
+	sc.Timings.LostJobCheckTimeout = 100 * time.Millisecond
+	sc.Timings.LostJobCheckRetryTime = time.Hour
 }
 
 func subscriptionTestConfig(t *testing.T) (ServerConfig, string, *jqs.Requirements, time.Duration) {

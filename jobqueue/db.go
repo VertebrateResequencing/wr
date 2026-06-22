@@ -73,8 +73,6 @@ var (
 	bucketJobDisk      = []byte("jobDisk")
 	bucketJobSecs      = []byte("jobSecs")
 	bucketRGEndTime    = []byte("repgroupEndTime") //nolint:gochecknoglobals
-	wipeDevDBOnInit    = true
-	forceBackups       = false
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -128,6 +126,8 @@ type db struct {
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
 	slowBackups    bool // just for testing purposes
+	recSecRound    int  // rounding (secs) for recommended reserve times; from the server's timings
+	recMBRound     int  // rounding (MBs) for recommended memory/disk; from the server's timings
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -138,9 +138,10 @@ type db struct {
 // which will cause that s3 path to be mounted in the same directory as dbFile
 // and backups will be written there.
 //
-// In development we delete any existing db and force a fresh start. Backups
-// are also not carried out, so dbBkFile is ignored.
-func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment string) (*db, string, error) {
+// In development we delete any existing db and force a fresh start (unless
+// wipeDevDB is false). Backups are also not carried out in development (unless
+// forceBackups is true), so dbBkFile is ignored.
+func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) { //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx
 	var backupsEnabled bool
 
 	var accessor *muxfys.S3Accessor
@@ -193,7 +194,7 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 		}
 	}
 
-	if wipeDevDBOnInit && deployment == internal.Development {
+	if wipeDevDB && deployment == internal.Development { //nolint:nestif
 		errr := os.Remove(dbFile)
 		if errr != nil && !os.IsNotExist(errr) {
 			clog.Warn(ctx, "Failed to remove database file", "path", dbFile, "err", errr)
@@ -1371,7 +1372,7 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobRAM, reqGroup, RecMBRound)
+	return db.recommendedReqGroupStat(bucketJobRAM, reqGroup, db.mbRound())
 }
 
 // recommendedReqGroupDisk returns the 95th percentile peak disk usage of
@@ -1381,7 +1382,22 @@ func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobDisk, reqGroup, RecMBRound)
+	return db.recommendedReqGroupStat(bucketJobDisk, reqGroup, db.mbRound())
+}
+
+// mbRound returns the MB rounding for recommendations, falling back to the
+// RecMBRound package default if this db wasn't given a positive value.
+func (db *db) mbRound() int {
+	return recommendationRound(db.recMBRound, RecMBRound)
+}
+
+// recommendationRound returns round, or defaultRound if round is not positive.
+func recommendationRound(round, defaultRound int) int {
+	if round <= 0 {
+		return defaultRound
+	}
+
+	return round
 }
 
 // recommendReqGroupTime returns the 95th percentile wall time taken of all jobs
@@ -1391,7 +1407,7 @@ func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
 // case, the true value is rounded up to the nearest second. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
+	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
 }
 
 // recommendedReqGroupStat is the implementation for the other recommend*()

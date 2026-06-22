@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -106,13 +105,9 @@ func TestServerWebI(t *testing.T) {
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	defer func() {
-		os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-	}()
-
 	Convey("Once the jobqueue server is up", t, func() {
-		ServerItemTTR = 100 * time.Second
-		ClientTouchInterval = 50 * time.Second
+		serverConfig.Timings.ItemTTR = 100 * time.Second
+		serverConfig.Timings.TouchInterval = 50 * time.Second
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 
@@ -729,12 +724,43 @@ func TestServerWebI(t *testing.T) {
 
 				foundMessage := false
 
-				for range 10 {
-					var msg schedulerIssue
+				// The scheduler-issue broadcast is lossy (the caster drops to any subscriber
+				// whose buffer is full), so under heavy parallel-test load the "current" we
+				// requested above can be dropped before this ws reads it. Re-request
+				// "current" periodically (it re-broadcasts the issues) while reading until we
+				// see our message, bounded by a read deadline; skip other message shapes.
+				resendStop := make(chan struct{})
+				resendDone := make(chan struct{})
 
-					errr := ws.ReadJSON(&msg)
+				go func() {
+					defer close(resendDone)
+
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-resendStop:
+							return
+						case <-ticker.C:
+							if werr := ws.WriteJSON(jstatusReq{Request: "current"}); werr != nil {
+								return
+							}
+						}
+					}
+				}()
+
+				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+
+				for {
+					_, data, errr := ws.ReadMessage()
 					if errr != nil {
-						continue
+						break // read deadline exceeded or connection closed
+					}
+
+					var msg schedulerIssue
+					if json.Unmarshal(data, &msg) != nil {
+						continue // a different message shape on the stream; skip it
 					}
 
 					if msg.Msg == testMsg {
@@ -748,6 +774,10 @@ func TestServerWebI(t *testing.T) {
 					}
 				}
 
+				close(resendStop)
+				<-resendDone
+
+				So(ws.SetReadDeadline(time.Time{}), ShouldBeNil)
 				So(foundMessage, ShouldBeTrue)
 
 				err = ws.WriteJSON(jstatusReq{
@@ -756,12 +786,13 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
+				So(pollUntil(func() bool {
+					server.simutex.RLock()
+					_, exists := server.schedIssues[testMsg]
+					server.simutex.RUnlock()
 
-				server.simutex.RLock()
-				_, exists := server.schedIssues[testMsg]
-				server.simutex.RUnlock()
-				So(exists, ShouldBeFalse)
+					return !exists
+				}), ShouldBeTrue)
 
 				anotherMsg := "Another test issue"
 				anotherSi := &schedulerIssue{
@@ -780,12 +811,13 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
+				So(pollUntil(func() bool {
+					server.simutex.RLock()
+					count := len(server.schedIssues)
+					server.simutex.RUnlock()
 
-				server.simutex.RLock()
-				count := len(server.schedIssues)
-				server.simutex.RUnlock()
-				So(count, ShouldEqual, 0)
+					return count == 0
+				}), ShouldBeTrue)
 			})
 
 			Convey("The websocket handler handles bad server notifications", func() {
@@ -1038,13 +1070,9 @@ func TestJobSubscriptions(t *testing.T) {
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	defer func() {
-		os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-	}()
-
 	Convey("Once the jobqueue server is up with jobs added", t, func() {
-		ServerItemTTR = 100 * time.Second
-		ClientTouchInterval = 50 * time.Second
+		serverConfig.Timings.ItemTTR = 100 * time.Second
+		serverConfig.Timings.TouchInterval = 50 * time.Second
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 

@@ -35,6 +35,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -142,9 +143,13 @@ type pretendJobqueue struct {
 func newPretendJobqueue() *pretendJobqueue {
 	var w io.WriteCloser
 
-	fd, errr := strconv.ParseUint(PretendSubmissions, 10, 64)
+	fd, errr := strconv.Atoi(PretendSubmissions)
 	if errr == nil {
-		w = os.NewFile(uintptr(fd), "")
+		dupFD, err := syscall.Dup(fd)
+		if err == nil {
+			syscall.CloseOnExec(dupFD)
+			w = os.NewFile(uintptr(dupFD), "pretend-submissions")
+		}
 	}
 
 	return &pretendJobqueue{output: w}
@@ -360,7 +365,14 @@ func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {
 }
 
 func (p *pretendJobqueue) Disconnect() error {
-	return p.output.Close()
+	if p.output == nil {
+		return nil
+	}
+
+	output := p.output
+	p.output = nil
+
+	return output.Close()
 }
 
 // Scheduler can be used to schedule commands to be executed by adding them to

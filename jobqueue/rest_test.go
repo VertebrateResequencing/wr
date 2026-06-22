@@ -61,6 +61,7 @@ func TestREST(t *testing.T) {
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
+	isolateTestConfig(config)
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
@@ -85,11 +86,10 @@ func TestREST(t *testing.T) {
 
 	setDomainIP(config.ManagerCertDomain)
 
-	ServerInterruptTime = 10 * time.Millisecond
-	ServerReserveTicker = 10 * time.Millisecond
-	ClientReleaseDelayMin = 100 * time.Millisecond
-	ServerItemTTR = 200 * time.Millisecond
-	ClientTouchInterval = 50 * time.Millisecond
+	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
+	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
+	serverConfig.Timings.ItemTTR = 200 * time.Millisecond
+	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
 
 	var server *Server

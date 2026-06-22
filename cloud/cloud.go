@@ -527,50 +527,79 @@ func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
 // pickCheapestFlavorFromSubset looks through p.impl.flavors() for the
 // cheapest flavor with a Name that matches the regexp, and that also matches
 // at least one of the regexps in the subset. regexp can be nil to match any
-// flavor, and subset can be empty to pick from the superset, but subset
-// elements cannot be nil.
+// flavor, and subset can be empty or contain a nil regexp to pick from the
+// superset.
 func (p *Provider) pickCheapestFlavorFromSubset(ctx context.Context, cores, ramMB int, regexp *regexp.Regexp, subset []*regexp.Regexp) *Flavor {
-	// from flavours in the subset, pick the one that has the lowest ram, disk
-	// and cpus that meet our minimums, and also matches the regex
+	return pickCheapestFromFlavors(p.impl.flavors(p.cloudContext(ctx)), cores, ramMB, regexp, subset)
+}
+
+// pickCheapestFromFlavors picks, from the given flavors, the one with the lowest
+// cores, then RAM, then disk that still meets the cores and ramMB minimums, has
+// a Name matching re (nil matches any), and matches at least one regexp in
+// subset (an empty subset matches any). Returns nil if none qualify. This is
+// the pure selection logic behind pickCheapestFlavorFromSubset, split out so it
+// can be tested without a real cloud provider.
+func pickCheapestFromFlavors(flavors map[string]*Flavor, cores, ramMB int,
+	re *regexp.Regexp, subset []*regexp.Regexp,
+) *Flavor {
 	var fr *Flavor
 
-	for _, f := range p.impl.flavors(p.cloudContext(ctx)) {
-		if regexp != nil && !regexp.MatchString(f.Name) {
+	for _, f := range flavors {
+		if !flavorQualifies(f, cores, ramMB, re, subset) {
 			continue
 		}
 
-		var inSubset bool
-		if len(subset) == 0 {
-			inSubset = true
-		} else {
-			for _, r := range subset {
-				if r.MatchString(f.Name) {
-					inSubset = true
-					break
-				}
-			}
-		}
-		if !inSubset {
-			continue
-		}
-
-		if f.Cores >= cores && f.RAM >= ramMB {
-			if fr != nil {
-				if f.Cores < fr.Cores {
-					fr = f
-				} else if f.Cores == fr.Cores {
-					if f.RAM < fr.RAM {
-						fr = f
-					} else if f.RAM == fr.RAM && f.Disk < fr.Disk {
-						fr = f
-					}
-				}
-			} else {
-				fr = f
-			}
+		if fr == nil || flavorCheaperThan(f, fr) {
+			fr = f
 		}
 	}
+
 	return fr
+}
+
+// flavorQualifies reports whether flavor f is big enough (cores and ramMB) and
+// allowed by the name regexp re (nil matches any) and subset (see
+// flavorInSubset).
+func flavorQualifies(f *Flavor, cores, ramMB int, re *regexp.Regexp, subset []*regexp.Regexp) bool {
+	if re != nil && !re.MatchString(f.Name) {
+		return false
+	}
+
+	if !flavorInSubset(f, subset) {
+		return false
+	}
+
+	return f.Cores >= cores && f.RAM >= ramMB
+}
+
+// flavorInSubset reports whether f's Name matches at least one regexp in subset
+// (an empty subset or nil regexp matches any flavor).
+func flavorInSubset(f *Flavor, subset []*regexp.Regexp) bool {
+	if len(subset) == 0 {
+		return true
+	}
+
+	for _, r := range subset {
+		if r == nil || r.MatchString(f.Name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// flavorCheaperThan reports whether flavor a is cheaper than b: fewer cores, or
+// equal cores and less RAM, or equal cores and RAM and less disk.
+func flavorCheaperThan(a, b *Flavor) bool {
+	if a.Cores != b.Cores {
+		return a.Cores < b.Cores
+	}
+
+	if a.RAM != b.RAM {
+		return a.RAM < b.RAM
+	}
+
+	return a.Disk < b.Disk
 }
 
 // CheapestServerFlavors is like CheapestServerFlavor(), taking the same first 3

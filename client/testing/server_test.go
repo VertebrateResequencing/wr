@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -75,4 +76,86 @@ func TestTestingServer(t *testing.T) {
 			s.Stop(context.Background(), false)
 		})
 	})
+}
+
+func TestLaneFreePort(t *testing.T) {
+	Convey("Lane free port skips a lane port that is already in use", t, func() {
+		lane, occupiedPort, listener := reserveFirstLanePort(t)
+		defer func() {
+			So(listener.Close(), ShouldBeNil)
+		}()
+
+		setLaneForTest(t, strconv.Itoa(lane), 0)
+
+		port, err := laneFreePort()
+		So(err, ShouldBeNil)
+		So(port, ShouldNotEqual, occupiedPort)
+
+		probe := listenOnPort(t, port)
+		defer func() {
+			So(probe.Close(), ShouldBeNil)
+		}()
+	})
+}
+
+func reserveFirstLanePort(t *testing.T) (int, int, net.Listener) {
+	t.Helper()
+
+	const firstCandidateOffset = 1
+
+	for laneOffset := range 20 {
+		lane := 30 + laneOffset
+		port := laneBasePort + lane*laneSpan + firstCandidateOffset
+
+		listener, err := tryListenOnPort(port)
+		if err == nil {
+			return lane, port, listener
+		}
+	}
+
+	t.Fatal("could not reserve a lane port for testing")
+
+	return 0, 0, nil
+}
+
+func setLaneForTest(t *testing.T, lane string, next int) {
+	t.Helper()
+
+	priorLane, hadPriorLane := os.LookupEnv("WR_TEST_LANE")
+	priorNext := laneTestPortNext
+
+	t.Cleanup(func() {
+		laneTestPortNext = priorNext
+
+		if hadPriorLane {
+			_ = os.Setenv("WR_TEST_LANE", priorLane)
+
+			return
+		}
+
+		_ = os.Unsetenv("WR_TEST_LANE")
+	})
+
+	So(os.Setenv("WR_TEST_LANE", lane), ShouldBeNil)
+
+	laneTestPortNext = next
+}
+
+func listenOnPort(t *testing.T, port int) net.Listener {
+	t.Helper()
+
+	listener, err := tryListenOnPort(port)
+	So(err, ShouldBeNil)
+
+	return listener
+}
+
+func tryListenOnPort(port int) (net.Listener, error) {
+	var listenConfig net.ListenConfig
+
+	return listenConfig.Listen(context.Background(), "tcp", portAddr(port))
+}
+
+func portAddr(port int) string {
+	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
 }
