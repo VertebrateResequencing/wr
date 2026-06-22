@@ -1932,6 +1932,97 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
 	})
 
+	Convey("A RepGroup subscription completes when its only known live rerun job moves to another RepGroup", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		depGroup := "subscription-b2-rerun-move-only-dep"
+		oldRepGroup := "subscription-b2-rerun-move-only-old"
+		newRepGroup := "subscription-b2-rerun-move-only-new"
+		trigger := &Job{
+			Cmd:          "echo " + depGroup,
+			Cwd:          testCwd,
+			ReqGroup:     depGroup,
+			Requirements: standardReqs,
+			RepGroup:     depGroup,
+			DepGroups:    []string{depGroup},
+		}
+		oldJob := &Job{
+			Cmd:          "echo " + oldRepGroup,
+			Cwd:          testCwd,
+			ReqGroup:     oldRepGroup,
+			Requirements: standardReqs,
+			RepGroup:     oldRepGroup,
+			Dependencies: Dependencies{NewDepGroupDependency(depGroup)},
+		}
+
+		added, existed, err := jq.Add([]*Job{trigger, oldJob}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 2)
+		So(existed, ShouldEqual, 0)
+
+		archiveNextSubscriptionJob(jq)
+		archiveNextSubscriptionJob(jq)
+
+		added, existed, err = jq.Add([]*Job{trigger}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldBeGreaterThanOrEqualTo, 1)
+		So(existed, ShouldEqual, 0)
+
+		liveOldJobs, err := jq.GetByRepGroup(oldRepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(liveOldJobs, ShouldHaveLength, 1)
+
+		oldSub, err := jq.SubscribeToRepGroup(ctx, oldRepGroup)
+		So(err, ShouldBeNil)
+
+		defer oldSub.Unsubscribe()
+
+		So(receiveSubscriptionUpdate(oldSub, 150*time.Millisecond), ShouldBeNil)
+		archiveNextSubscriptionJob(jq)
+		So(receiveSubscriptionUpdate(oldSub, 150*time.Millisecond), ShouldBeNil)
+
+		replacement := &Job{
+			Cmd:          oldJob.Cmd,
+			Cwd:          oldJob.Cwd,
+			ReqGroup:     oldJob.ReqGroup,
+			Requirements: standardReqs,
+			RepGroup:     newRepGroup,
+			Dependencies: oldJob.Dependencies,
+		}
+		added, existed, err = jq.Add([]*Job{replacement}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		oldDone := receiveSubscriptionUpdate(oldSub, 2*time.Second)
+		So(oldDone, ShouldNotBeNil)
+		So(oldDone.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(oldDone.RepGroup, ShouldEqual, oldRepGroup)
+		So(oldDone.Complete, ShouldEqual, 0)
+		So(oldDone.Buried, ShouldEqual, 0)
+		So(oldDone.Lost, ShouldEqual, 0)
+		So(oldDone.Total, ShouldEqual, 0)
+		So(oldDone.JobKeys, ShouldHaveLength, 0)
+		So(oldDone.JobStates, ShouldHaveLength, 0)
+
+		rerunJob := startNextSubscriptionJob(jq)
+		So(rerunJob.Key(), ShouldEqual, replacement.Key())
+		So(rerunJob.RepGroup, ShouldEqual, newRepGroup)
+		So(jq.Archive(rerunJob, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+		So(receiveSubscriptionUpdate(oldSub, 150*time.Millisecond), ShouldBeNil)
+	})
+
 	Convey("A RepGroup subscription completes when a live rerun moves the remaining key to another RepGroup", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)

@@ -234,6 +234,10 @@ func (s *serverSubscription) removeRepGroupKey(key string) *JobUpdate {
 
 	delete(s.repGroupStates, key)
 
+	if len(s.repGroupStates) == 0 {
+		return s.repGroupEmptyDoneUpdate()
+	}
+
 	return s.repGroupDoneUpdate()
 }
 
@@ -300,6 +304,16 @@ func repGroupAggregateUpdate(repGroup string, states map[string]JobState) *JobUp
 	}
 
 	return update
+}
+
+func (s *serverSubscription) repGroupEmptyDoneUpdate() *JobUpdate {
+	if s.repGroupDone {
+		return nil
+	}
+
+	s.repGroupDone = true
+
+	return repGroupAggregateUpdate(s.repGroup, s.repGroupStates)
 }
 
 func (s *Server) storeClientSubscription(sub *serverSubscription) string {
