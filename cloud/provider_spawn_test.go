@@ -115,23 +115,17 @@ func TestProviderSpawnCallsUsingQuotaCallbackOnEarlyError(t *testing.T) {
 			impl: &spawnBeforeQuotaErrorProvider{},
 			Name: "fake",
 		}
-		called := make(chan struct{}, 1)
+		called := 0
 
 		server, err := p.Spawn(
 			context.Background(), "missing-os", "ubuntu", spawnBeforeQuotaFlavorID, 20, time.Minute, false,
 			func() {
-				called <- struct{}{}
+				called++
 			},
 		)
 
 		So(server, ShouldBeNil)
 		So(err, ShouldNotBeNil)
-
-		select {
-		case <-called:
-			So(true, ShouldBeTrue)
-		case <-time.After(100 * time.Millisecond):
-			So("using-quota callback", ShouldEqual, "called")
-		}
+		So(called, ShouldEqual, 1)
 	})
 }
