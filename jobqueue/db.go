@@ -55,6 +55,7 @@ import (
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 const (
@@ -67,21 +68,23 @@ const (
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 )
 
+//nolint:gochecknoglobals // bucket names are shared BoltDB keys.
 var (
-	bucketJobsLive     = []byte("jobslive")
-	bucketJobsComplete = []byte("jobscomplete")
-	bucketRTK          = []byte("repgroupToKey")
-	bucketRGs          = []byte("repgroups")
-	bucketLGs          = []byte("limitgroups")
-	bucketDTK          = []byte("depgroupToKey")
-	bucketRDTK         = []byte("reverseDepgroupToKey")
-	bucketEnvs         = []byte("envs")
-	bucketStdO         = []byte("stdo")
-	bucketStdE         = []byte("stde")
-	bucketJobRAM       = []byte("jobRAM")
-	bucketJobDisk      = []byte("jobDisk")
-	bucketJobSecs      = []byte("jobSecs")
-	bucketRGEndTime    = []byte("repgroupEndTime") //nolint:gochecknoglobals
+	bucketJobsLive         = []byte("jobslive")
+	bucketJobsComplete     = []byte("jobscomplete")
+	bucketRTK              = []byte("repgroupToKey")
+	bucketRGs              = []byte("repgroups")
+	bucketLGs              = []byte("limitgroups")
+	bucketDTK              = []byte("depgroupToKey")
+	bucketRDTK             = []byte("reverseDepgroupToKey")
+	bucketJobLookupEntries = []byte("jobLookupEntries")
+	bucketEnvs             = []byte("envs")
+	bucketStdO             = []byte("stdo")
+	bucketStdE             = []byte("stde")
+	bucketJobRAM           = []byte("jobRAM")
+	bucketJobDisk          = []byte("jobDisk")
+	bucketJobSecs          = []byte("jobSecs")
+	bucketRGEndTime        = []byte("repgroupEndTime") //nolint:gochecknoglobals
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -315,6 +318,20 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketRDTK, errf)
+		}
+
+		hadJobLookupEntries := tx.Bucket(bucketJobLookupEntries) != nil
+
+		_, errf = tx.CreateBucketIfNotExists(bucketJobLookupEntries)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketJobLookupEntries, errf)
+		}
+
+		if !hadJobLookupEntries {
+			errf = rebuildJobLookupEntries(tx)
+			if errf != nil {
+				return fmt.Errorf("rebuild bucket %s: %w", bucketJobLookupEntries, errf)
+			}
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketEnvs)
 		if errf != nil {
@@ -796,7 +813,8 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 	}
 
 	db.backgroundBackup(ctx)
-	//*** we're not removing the lookup entries from the bucket*TK buckets...
+	// *** we're not removing the lookup entries from the bucket*TK buckets, or
+	// their reverse entries, because the lookup buckets are historical.
 
 	return nil
 }
@@ -1274,8 +1292,6 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 	sort.Sort(rdgLookups)
 	sort.Sort(encodedJobs)
 
-	lookupBuckets := [][]byte{bucketRTK, bucketDTK, bucketRDTK}
-
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		// delete old jobs and their lookups
 		newJobBucket := tx.Bucket(bucketJobsLive)
@@ -1285,28 +1301,14 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 		es := make([][]byte, len(oldKeys))
 		var hadStd bool
 		for i, oldKey := range oldKeys {
-			suffix := []byte(dbDelimiter + oldKey)
-			for _, bucket := range lookupBuckets {
-				b := tx.Bucket(bucket)
-				// *** currently having to go through the the whole lookup
-				// buckets; if this is a noticeable performance issue, will have
-				// to implement a reverse lookup...
-				errf := b.ForEach(func(k, v []byte) error {
-					if bytes.HasSuffix(k, suffix) {
-						errd := b.Delete(k)
-						if errd != nil {
-							return errd
-						}
-					}
-					return nil
-				})
-				if errf != nil {
-					return errf
-				}
+			key := []byte(oldKey)
+
+			errd := deleteLookupEntriesForJobKey(tx, key)
+			if errd != nil {
+				return errd
 			}
 
-			key := []byte(oldKey)
-			errd := newJobBucket.Delete(key)
+			errd = newJobBucket.Delete(key)
 			if errd != nil {
 				return errd
 			}
@@ -1388,6 +1390,36 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 	go db.backgroundBackup(ctx)
 
 	return err
+}
+
+func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
+	b := tx.Bucket(bucketJobLookupEntries)
+	if b == nil {
+		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobLookupEntries)
+	}
+
+	reverseKeys, deletes := collectLookupDeletes(b, reverseLookupEntryPrefix(jobKey))
+
+	for _, d := range deletes {
+		lookupBucket := tx.Bucket(d.bucket)
+		if lookupBucket == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, d.bucket)
+		}
+
+		err := lookupBucket.Delete(d.key)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, key := range reverseKeys {
+		err := b.Delete(key)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
@@ -1627,8 +1659,35 @@ func (db *db) putLookups(tx *bolt.Tx, bucket []byte, lookups sobsd) error {
 		if err != nil {
 			return err
 		}
+
+		if isIndexedLookupBucket(bucket) {
+			err = putReverseLookupEntry(tx, bucket, doublet[0])
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func isIndexedLookupBucket(bucket []byte) bool {
+	return bytes.Equal(bucket, bucketRTK) ||
+		bytes.Equal(bucket, bucketDTK) ||
+		bytes.Equal(bucket, bucketRDTK)
+}
+
+func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
+	jobKey := lookupEntryJobKey(lookupKey)
+	if len(jobKey) == 0 {
+		return nil
+	}
+
+	b := tx.Bucket(bucketJobLookupEntries)
+	if b == nil {
+		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobLookupEntries)
+	}
+
+	return b.Put(reverseLookupEntryKey(jobKey, lookupBucket, lookupKey), nil)
 }
 
 // storeEncodedJobs is a sobsdStorer for storing Jobs in the db.
@@ -1848,6 +1907,104 @@ func (db *db) backup(w io.Writer) error {
 		_, txErr := tx.WriteTo(w)
 		return txErr
 	})
+}
+
+type lookupDelete struct {
+	bucket []byte
+	key    []byte
+}
+
+func collectLookupDeletes(b *bolt.Bucket, prefix []byte) ([][]byte, []lookupDelete) {
+	var (
+		reverseKeys [][]byte
+		deletes     []lookupDelete
+	)
+
+	c := b.Cursor()
+	for k, _ := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		reverseKeys = append(reverseKeys, append([]byte(nil), k...))
+
+		lookupBucket, lookupKey, ok := parseReverseLookupEntry(k, prefix)
+		if !ok {
+			continue
+		}
+
+		deletes = append(deletes, lookupDelete{
+			bucket: append([]byte(nil), lookupBucket...),
+			key:    append([]byte(nil), lookupKey...),
+		})
+	}
+
+	return reverseKeys, deletes
+}
+
+func parseReverseLookupEntry(entry, prefix []byte) (lookupBucket []byte, lookupKey []byte, ok bool) {
+	rest := entry[len(prefix):]
+
+	idx := bytes.Index(rest, []byte(dbDelimiter))
+	if idx <= 0 {
+		return nil, nil, false
+	}
+
+	lookupKeyStart := idx + len(dbDelimiter)
+	if lookupKeyStart >= len(rest) {
+		return nil, nil, false
+	}
+
+	return rest[:idx], rest[lookupKeyStart:], true
+}
+
+func rebuildJobLookupEntries(tx *bolt.Tx) error {
+	for _, bucket := range indexedLookupBuckets() {
+		b := tx.Bucket(bucket)
+		if b == nil {
+			continue
+		}
+
+		err := b.ForEach(func(k, _ []byte) error {
+			return putReverseLookupEntry(tx, bucket, k)
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func indexedLookupBuckets() [][]byte {
+	return [][]byte{bucketRTK, bucketDTK, bucketRDTK}
+}
+
+func lookupEntryJobKey(lookupKey []byte) []byte {
+	idx := bytes.LastIndex(lookupKey, []byte(dbDelimiter))
+	if idx == -1 {
+		return nil
+	}
+
+	jobKeyStart := idx + len(dbDelimiter)
+	if jobKeyStart >= len(lookupKey) {
+		return nil
+	}
+
+	return lookupKey[jobKeyStart:]
+}
+
+func reverseLookupEntryKey(jobKey, lookupBucket, lookupKey []byte) []byte {
+	key := reverseLookupEntryPrefix(jobKey)
+	key = append(key, lookupBucket...)
+	key = append(key, dbDelimiter...)
+	key = append(key, lookupKey...)
+
+	return key
+}
+
+func reverseLookupEntryPrefix(jobKey []byte) []byte {
+	prefix := make([]byte, 0, len(jobKey)+len(dbDelimiter))
+	prefix = append(prefix, jobKey...)
+	prefix = append(prefix, dbDelimiter...)
+
+	return prefix
 }
 
 // stripBucketFromS3Path removes the first directory from the given path. If
