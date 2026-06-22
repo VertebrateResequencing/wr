@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -44,6 +45,8 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+var errWaitForJobRunningOrDoneTimeout = errors.New("timed out waiting for job to reach running or terminal state")
 
 // TestJobqueueRunners2 holds the second half of TestJobqueueRunners's
 // runner-spawning scenarios. It lives in its own test (and file) purely so the
@@ -287,9 +290,7 @@ func TestJobqueueRunners2(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(500 * time.Millisecond)
-
-				job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 2"}, false, false)
+				job, err := waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 1 && sleep 2"}, 30*time.Second)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -300,9 +301,7 @@ func TestJobqueueRunners2(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(500 * time.Millisecond)
-
-				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 2"}, false, false)
+				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 2 && sleep 2"}, 30*time.Second)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -313,9 +312,7 @@ func TestJobqueueRunners2(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				<-time.After(500 * time.Millisecond)
-
-				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && sleep 2"}, false, false)
+				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 3 && sleep 2"}, 30*time.Second)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -568,6 +565,61 @@ func TestJobqueueRunners2(t *testing.T) {
 			}
 		})
 	})
+}
+
+// waitForJobRunningOrDone polls until the job starts running, reaches a state
+// that means it will not become running, or maxWait elapses.
+func waitForJobRunningOrDone(jq *Client, essence *JobEssence, maxWait time.Duration) (*Job, error) {
+	limit := time.After(maxWait)
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	var job *Job
+
+	for {
+		got, err := jq.GetByEssence(essence, false, false)
+		if err != nil {
+			return nil, err
+		}
+
+		if got != nil {
+			job = got
+			if jobStateStopsRunningWait(job.State) {
+				return job, nil
+			}
+		}
+
+		select {
+		case <-ticker.C:
+		case <-limit:
+			if job == nil {
+				return nil, fmt.Errorf(
+					"%w after %s for job %q: job not found",
+					errWaitForJobRunningOrDoneTimeout,
+					maxWait,
+					essence.Cmd,
+				)
+			}
+
+			return job, fmt.Errorf(
+				"%w after %s for job %q: last state %s",
+				errWaitForJobRunningOrDoneTimeout,
+				maxWait,
+				essence.Cmd,
+				job.State,
+			)
+		}
+	}
+}
+
+func jobStateStopsRunningWait(state JobState) bool {
+	switch state {
+	case JobStateRunning, JobStateComplete, JobStateBuried, JobStateLost, JobStateDeleted, JobStateUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 // countSleepingProcs returns the number of currently-sleeping processes whose

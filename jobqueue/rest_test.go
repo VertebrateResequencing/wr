@@ -832,6 +832,50 @@ func TestREST(t *testing.T) {
 			})
 		})
 
+		Convey("The Go client can retrieve the scheduler alerts shown by the web UI", func() {
+			server.simutex.Lock()
+			server.schedIssues["client scheduler message"] = &schedulerIssue{
+				Msg:       "client scheduler message",
+				FirstDate: 1710000000,
+				LastDate:  1710000060,
+				Count:     3,
+			}
+			server.simutex.Unlock()
+
+			cloudServer := &cloud.Server{
+				ID:   "serverid-client-alert",
+				Name: "alert-server",
+				IP:   "192.168.0.7",
+			}
+			cloudServer.GoneBad("boot failed")
+
+			server.bsmutex.Lock()
+			server.badServers[cloudServer.ID] = cloudServer
+			server.bsmutex.Unlock()
+
+			alerts, err := jq.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+			So(alerts, ShouldNotBeNil)
+			So(alerts.Issues, ShouldHaveLength, 1)
+			So(alerts.Issues[0].Msg, ShouldEqual, "client scheduler message")
+			So(alerts.Issues[0].FirstDate, ShouldEqual, 1710000000)
+			So(alerts.Issues[0].LastDate, ShouldEqual, 1710000060)
+			So(alerts.Issues[0].Count, ShouldEqual, 3)
+			So(alerts.BadServers, ShouldHaveLength, 1)
+			So(alerts.BadServers[0].ID, ShouldEqual, "serverid-client-alert")
+			So(alerts.BadServers[0].Name, ShouldEqual, "alert-server")
+			So(alerts.BadServers[0].IP, ShouldEqual, "192.168.0.7")
+			So(alerts.BadServers[0].Problem, ShouldEqual, "boot failed")
+
+			server.simutex.RLock()
+			So(server.schedIssues, ShouldHaveLength, 0)
+			server.simutex.RUnlock()
+
+			server.bsmutex.RLock()
+			So(server.badServers, ShouldHaveLength, 1)
+			server.bsmutex.RUnlock()
+		})
+
 		Reset(func() {
 			server.Stop(ctx, true)
 		})

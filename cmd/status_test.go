@@ -26,6 +26,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -44,13 +45,169 @@ import (
 
 const (
 	statusTestCwd      = "/tmp"
-	statusTestDetails  = "details"
+	statusTestDetails  = statusOutputFormatDetails
 	statusTestFalse    = "false"
 	statusTestFlagBury = "buried"
 	statusTestHost     = "localhost"
 	statusTestReqGroup = "status"
 	statusTestRepGroup = "status-filter"
 )
+
+//nolint:gosmopolitan // This test fixes time.Local to assert local CLI rendering.
+func TestStatusAlertTimeFormatting(t *testing.T) {
+	Convey("wr status renders scheduler alert Unix timestamps in local time", t, func() {
+		oldLocal := time.Local
+
+		time.Local = time.FixedZone("status-alert-test", 90*60)
+		defer func() {
+			time.Local = oldLocal
+		}()
+
+		unixSeconds := time.Date(2024, 3, 9, 12, 0, 0, 0, time.UTC).Unix()
+
+		So(formatStatusAlertTime(unixSeconds), ShouldEqual, "24/3/9-13:30:00")
+	})
+}
+
+type statusAlertsGetterFunc func() (*jobqueue.SchedulerAlerts, error)
+
+func (f statusAlertsGetterFunc) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
+	return f()
+}
+
+func TestStatusSchedulerAlertsFooter(t *testing.T) {
+	Convey("wr status renders scheduler alerts as a footer", t, func() {
+		alerts := &jobqueue.SchedulerAlerts{
+			Issues: []*jobqueue.SchedulerIssue{
+				{
+					Msg:       "scheduler backed off",
+					FirstDate: 1710000000,
+					LastDate:  1710000060,
+					Count:     2,
+				},
+			},
+			BadServers: []*jobqueue.BadServer{
+				{
+					ID:      "serverid-footer-alert",
+					Name:    "worker-alert",
+					IP:      "192.168.0.9",
+					Date:    1710000120,
+					IsBad:   true,
+					Problem: "boot failed",
+				},
+				{
+					ID:    "serverid-footer-maybe",
+					Name:  "worker-maybe",
+					IP:    "192.168.0.10",
+					Date:  1710000180,
+					IsBad: true,
+				},
+				{
+					ID:    "serverid-footer-recovered",
+					Name:  "worker-recovered",
+					IP:    "192.168.0.11",
+					Date:  1710000240,
+					IsBad: false,
+				},
+			},
+		}
+
+		var output bytes.Buffer
+
+		writeStatusAlertsFooter(&output, alerts)
+
+		got := output.String()
+		So(got, ShouldContainSubstring, "Scheduler alerts:")
+		So(got, ShouldContainSubstring, "Scheduler Issue")
+		So(got, ShouldContainSubstring, "scheduler backed off")
+		So(got, ShouldContainSubstring, "reported 2 times")
+		So(got, ShouldContainSubstring, "Bad server")
+		So(got, ShouldContainSubstring, "worker-alert")
+		So(got, ShouldContainSubstring, "boot failed")
+		So(got, ShouldContainSubstring, "worker-maybe")
+		So(got, ShouldContainSubstring, "might be dead")
+		So(got, ShouldNotContainSubstring, "worker-recovered")
+	})
+
+	Convey("wr status skips recovered bad servers in the footer", t, func() {
+		alerts := &jobqueue.SchedulerAlerts{
+			BadServers: []*jobqueue.BadServer{
+				{
+					ID:      "serverid-footer-recovered",
+					Name:    "worker-recovered",
+					IP:      "192.168.0.11",
+					Date:    1710000240,
+					IsBad:   false,
+					Problem: "boot failed",
+				},
+			},
+		}
+
+		var output bytes.Buffer
+
+		writeStatusAlertsFooter(&output, alerts)
+
+		So(output.String(), ShouldBeEmpty)
+	})
+}
+
+func TestStatusSchedulerAlertsFooterOutputModes(t *testing.T) {
+	Convey("wr status leaves count and machine-readable outputs unchanged by scheduler alerts", t, func() {
+		calls := 0
+		getter := statusAlertsGetterFunc(func() (*jobqueue.SchedulerAlerts, error) {
+			calls++
+
+			return statusAlertsForTest(), nil
+		})
+
+		for _, format := range []string{
+			statusOutputFormatCounts,
+			statusOutputFormatCountsAlias,
+			statusOutputFormatJSON,
+			statusOutputFormatJSONAlias,
+			statusOutputFormatPlain,
+			statusOutputFormatPlainAlias,
+		} {
+			var output bytes.Buffer
+
+			writeStatusAlerts(&output, getter, format)
+
+			So(output.String(), ShouldBeEmpty)
+		}
+
+		So(calls, ShouldEqual, 0)
+	})
+
+	Convey("wr status appends scheduler alerts to human-readable outputs", t, func() {
+		for _, format := range []string{
+			statusOutputFormatDetails,
+			statusOutputFormatDetailsAlias,
+			statusOutputFormatSummary,
+			statusOutputFormatSummaryAlias,
+			statusOutputFormatTable,
+			statusOutputFormatTableAlias,
+		} {
+			var output bytes.Buffer
+
+			writeStatusAlerts(&output, statusAlertsGetterFunc(func() (*jobqueue.SchedulerAlerts, error) {
+				return statusAlertsForTest(), nil
+			}), format)
+
+			So(output.String(), ShouldContainSubstring, "Scheduler alerts:")
+			So(output.String(), ShouldContainSubstring, "scheduler backed off")
+		}
+	})
+}
+
+func statusAlertsForTest() *jobqueue.SchedulerAlerts {
+	return &jobqueue.SchedulerAlerts{
+		Issues: []*jobqueue.SchedulerIssue{
+			{
+				Msg: "scheduler backed off",
+			},
+		},
+	}
+}
 
 func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 	Convey("wr status filters pending and dependent jobs", t, func() {
@@ -171,6 +328,79 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 				So(err.Error(), ShouldContainSubstring, tc.want)
 			})
 		}
+	})
+}
+
+func TestStatusTableOutput(t *testing.T) {
+	Convey("wr status renders an aligned table", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		jobs := []*jobqueue.Job{
+			{
+				Cmd:          "echo status table one",
+				Cwd:          statusTestCwd,
+				ReqGroup:     statusTestReqGroup,
+				Requirements: reqs,
+				RepGroup:     statusTestRepGroup,
+			},
+			{
+				Cmd:          "echo status table two",
+				Cwd:          statusTestCwd,
+				ReqGroup:     statusTestReqGroup,
+				Requirements: reqs,
+				RepGroup:     statusTestRepGroup,
+			},
+		}
+		inserts, already, err := jq.Add(jobs, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		output := runStatusForTest(t, "--output", "table")
+		lines := nonEmptyStatusLines(output)
+
+		So(lines, ShouldHaveLength, 2)
+		So(lines[0], ShouldContainSubstring, "Command")
+		So(lines[0], ShouldContainSubstring, "ID")
+		So(lines[0], ShouldContainSubstring, "Status")
+		So(lines[0], ShouldContainSubstring, "Attempts")
+		So(lines[0], ShouldContainSubstring, "Host")
+		So(lines[0], ShouldContainSubstring, "Requirements group")
+		So(lines[0], ShouldContainSubstring, "Count")
+		So(lines[1], ShouldContainSubstring, "echo status table")
+		So(lines[1], ShouldContainSubstring, "ready")
+		So(lines[1], ShouldContainSubstring, statusTestReqGroup)
+		So(lines[1], ShouldContainSubstring, "2")
+		So(strings.Count(output, "echo status table"), ShouldEqual, 1)
+
+		t.Setenv("WR_STATUS_FORMAT", "status:9 count:5")
+
+		output = runStatusForTest(t, "--output", "t")
+		lines = nonEmptyStatusLines(output)
+
+		So(lines, ShouldHaveLength, 2)
+		So(lines[0], ShouldContainSubstring, "Status")
+		So(lines[0], ShouldContainSubstring, "Count")
+		So(lines[0], ShouldNotContainSubstring, "Command")
+		So(lines[1], ShouldContainSubstring, "ready")
+		So(lines[1], ShouldContainSubstring, "2")
 	})
 }
 
@@ -349,4 +579,16 @@ func startStatusTestServer(ctx context.Context, t *testing.T) (
 	So(err, ShouldBeNil)
 
 	return testConfig, serverConfig, addr, reqs, server, token
+}
+
+func nonEmptyStatusLines(output string) []string {
+	var lines []string
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+
+	return lines
 }

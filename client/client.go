@@ -132,6 +132,7 @@ type jobqueueClient interface {
 		limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	GetLastCompletionTimeByRepGroup(repgroup string,
 		match jobqueue.RepGroupMatch) (map[string]time.Time, error)
+	GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error)
 	Delete(jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
 }
@@ -253,6 +254,10 @@ func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
 	sj := p.jobBuffer
 
 	return sj
+}
+
+func (p *pretendJobqueue) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
+	return &jobqueue.SchedulerAlerts{}, nil
 }
 
 // GetByRepGroup behaves like jobqueue.GetByRepGroup, but only repgroup is
@@ -866,6 +871,12 @@ func (s *Scheduler) NewJobFromJSON(spec *jobqueue.JobViaJSON) (*jobqueue.Job, er
 	}
 
 	return spec.Convert(s.JobDefaults())
+}
+
+// GetSchedulerAlerts returns the scheduler alerts currently shown by wr's web
+// UI, including dismissible scheduler issues and bad cloud servers.
+func (s *Scheduler) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
+	return s.jq.GetSchedulerAlerts()
 }
 
 func unfinishedWaitForJobKeys(keys []string,

@@ -387,13 +387,24 @@ type BadServer struct {
 	Problem string
 }
 
-// schedulerIssue is the details of scheduler problems encountered that we send
-// to the status webpage.
-type schedulerIssue struct {
+// SchedulerIssue is the details of a scheduler problem encountered that we send
+// to the status webpage and expose to clients.
+type SchedulerIssue struct {
 	Msg       string
 	FirstDate int64 // seconds since Unix epoch
 	LastDate  int64
 	Count     int // the number of identical Msg sent
+}
+
+// schedulerIssue is retained as the package-internal name used by the existing
+// web UI paths.
+type schedulerIssue = SchedulerIssue
+
+// SchedulerAlerts contains every scheduler alert currently surfaced by the web
+// UI: dismissible scheduler issues and cloud servers thought to be bad.
+type SchedulerAlerts struct {
+	Issues     []*SchedulerIssue
+	BadServers []*BadServer
 }
 
 // sgroup represents a scheduler group
