@@ -180,7 +180,7 @@ redirect (eg. "mycmd > stdout.txt").
 		}
 
 		switch outputFormat {
-		case "counts", "c":
+		case statusOutputFormatCounts, statusOutputFormatCountsAlias:
 			if useFastStatus {
 				printStatusCounts(mergeStatusSummaries(statusSummaries).Counts)
 
@@ -216,7 +216,7 @@ redirect (eg. "mycmd > stdout.txt").
 				jobqueue.JobStateDelayed:   d,
 				jobqueue.JobStateBuried:    b,
 			})
-		case "plain", "p":
+		case statusOutputFormatPlain, statusOutputFormatPlainAlias:
 			buried := false
 			for _, job := range jobs {
 				fmt.Printf("%s\t%s\n", job.Key(), job.State)
@@ -228,7 +228,7 @@ redirect (eg. "mycmd > stdout.txt").
 				os.Exit(1)
 			}
 			os.Exit(0)
-		case "summary", "s":
+		case statusOutputFormatSummary, statusOutputFormatSummaryAlias:
 			if useFastStatus {
 				printStatusSummaries(statusSummaries)
 
@@ -341,7 +341,7 @@ redirect (eg. "mycmd > stdout.txt").
 
 				fmt.Printf("%s : complete=%d running=%d ready=%d dependent=%d lost=%d delayed=%d buried=%d%s%s\n", rg, counts[rg][jobqueue.JobStateComplete], counts[rg][jobqueue.JobStateRunning], counts[rg][jobqueue.JobStateReady], counts[rg][jobqueue.JobStateDependent], counts[rg][jobqueue.JobStateLost], counts[rg][jobqueue.JobStateDelayed], counts[rg][jobqueue.JobStateBuried], usage, dead)
 			}
-		case "details", "d":
+		case statusOutputFormatDetails, statusOutputFormatDetailsAlias:
 			// print out status information for each job
 			for _, job := range jobs {
 				cwd := job.Cwd
@@ -501,7 +501,7 @@ redirect (eg. "mycmd > stdout.txt").
 					fmt.Printf("+ %d other commands with the same status%s%s\n", job.Similar, er, fr)
 				}
 			}
-		case "json", "j":
+		case statusOutputFormatJSON, statusOutputFormatJSONAlias:
 			jstati := make([]jobqueue.JStatus, len(jobs))
 			for i, job := range jobs {
 				jstati[i], err = job.ToStatus()
@@ -516,7 +516,7 @@ redirect (eg. "mycmd > stdout.txt").
 			if err != nil {
 				die("failed to encode jobs: %s", err)
 			}
-		case "table", "t":
+		case statusOutputFormatTable, statusOutputFormatTableAlias:
 			err = writeStatusTable(os.Stdout, jobs)
 			if err != nil {
 				die("failed to write status table: %s", err)
@@ -525,9 +525,7 @@ redirect (eg. "mycmd > stdout.txt").
 			die("invalid -o format specified")
 		}
 
-		if statusOutputShowsAlerts(outputFormat) {
-			writeStatusAlerts(jq)
-		}
+		writeStatusAlerts(os.Stdout, jq, outputFormat)
 
 		fmt.Printf("\n")
 	},

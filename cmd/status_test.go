@@ -45,13 +45,19 @@ import (
 
 const (
 	statusTestCwd      = "/tmp"
-	statusTestDetails  = "details"
+	statusTestDetails  = statusOutputFormatDetails
 	statusTestFalse    = "false"
 	statusTestFlagBury = "buried"
 	statusTestHost     = "localhost"
 	statusTestReqGroup = "status"
 	statusTestRepGroup = "status-filter"
 )
+
+type statusAlertsGetterFunc func() (*jobqueue.SchedulerAlerts, error)
+
+func (f statusAlertsGetterFunc) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
+	return f()
+}
 
 func TestStatusSchedulerAlertsFooter(t *testing.T) {
 	Convey("wr status renders scheduler alerts as a footer", t, func() {
@@ -98,6 +104,64 @@ func TestStatusSchedulerAlertsFooter(t *testing.T) {
 		So(got, ShouldContainSubstring, "worker-maybe")
 		So(got, ShouldContainSubstring, "might be dead")
 	})
+}
+
+func TestStatusSchedulerAlertsFooterOutputModes(t *testing.T) {
+	Convey("wr status leaves count and machine-readable outputs unchanged by scheduler alerts", t, func() {
+		calls := 0
+		getter := statusAlertsGetterFunc(func() (*jobqueue.SchedulerAlerts, error) {
+			calls++
+
+			return statusAlertsForTest(), nil
+		})
+
+		for _, format := range []string{
+			statusOutputFormatCounts,
+			statusOutputFormatCountsAlias,
+			statusOutputFormatJSON,
+			statusOutputFormatJSONAlias,
+			statusOutputFormatPlain,
+			statusOutputFormatPlainAlias,
+		} {
+			var output bytes.Buffer
+
+			writeStatusAlerts(&output, getter, format)
+
+			So(output.String(), ShouldBeEmpty)
+		}
+
+		So(calls, ShouldEqual, 0)
+	})
+
+	Convey("wr status appends scheduler alerts to human-readable outputs", t, func() {
+		for _, format := range []string{
+			statusOutputFormatDetails,
+			statusOutputFormatDetailsAlias,
+			statusOutputFormatSummary,
+			statusOutputFormatSummaryAlias,
+			statusOutputFormatTable,
+			statusOutputFormatTableAlias,
+		} {
+			var output bytes.Buffer
+
+			writeStatusAlerts(&output, statusAlertsGetterFunc(func() (*jobqueue.SchedulerAlerts, error) {
+				return statusAlertsForTest(), nil
+			}), format)
+
+			So(output.String(), ShouldContainSubstring, "Scheduler alerts:")
+			So(output.String(), ShouldContainSubstring, "scheduler backed off")
+		}
+	})
+}
+
+func statusAlertsForTest() *jobqueue.SchedulerAlerts {
+	return &jobqueue.SchedulerAlerts{
+		Issues: []*jobqueue.SchedulerIssue{
+			{
+				Msg: "scheduler backed off",
+			},
+		},
+	}
 }
 
 func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {

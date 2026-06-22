@@ -42,6 +42,18 @@ const (
 	statusTableColumnSeparator       = "  "
 	statusTableDefaultTruncateMarker = "..."
 	statusTableStatusFieldName       = "status"
+	statusOutputFormatCounts         = "counts"
+	statusOutputFormatCountsAlias    = "c"
+	statusOutputFormatSummary        = "summary"
+	statusOutputFormatSummaryAlias   = "s"
+	statusOutputFormatDetails        = "details"
+	statusOutputFormatDetailsAlias   = "d"
+	statusOutputFormatPlain          = "plain"
+	statusOutputFormatPlainAlias     = "p"
+	statusOutputFormatTable          = "table"
+	statusOutputFormatTableAlias     = "t"
+	statusOutputFormatJSON           = "json"
+	statusOutputFormatJSONAlias      = "j"
 )
 
 type statusTableField struct {
@@ -104,7 +116,14 @@ var (
 )
 
 func statusOutputShowsAlerts(format string) bool {
-	return format != "json" && format != "j" && format != "plain" && format != "p"
+	switch format {
+	case statusOutputFormatCounts, statusOutputFormatCountsAlias,
+		statusOutputFormatJSON, statusOutputFormatJSONAlias,
+		statusOutputFormatPlain, statusOutputFormatPlainAlias:
+		return false
+	default:
+		return true
+	}
 }
 
 func statusTableHost(job *jobqueue.Job) string {
@@ -260,7 +279,7 @@ func statusOutputGetsStd(format string) bool {
 }
 
 func statusOutputIsTable(format string) bool {
-	return format == "table" || format == "t"
+	return format == statusOutputFormatTable || format == statusOutputFormatTableAlias
 }
 
 func normaliseStatusTableFieldName(name string) string {

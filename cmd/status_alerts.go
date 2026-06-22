@@ -28,7 +28,6 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -36,7 +35,15 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue"
 )
 
-func writeStatusAlerts(jq *jobqueue.Client) {
+type schedulerAlertsGetter interface {
+	GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error)
+}
+
+func writeStatusAlerts(w io.Writer, jq schedulerAlertsGetter, format string) {
+	if !statusOutputShowsAlerts(format) {
+		return
+	}
+
 	alerts, err := jq.GetSchedulerAlerts()
 	if err != nil {
 		warn("failed to retrieve scheduler alerts: %s", err)
@@ -44,7 +51,7 @@ func writeStatusAlerts(jq *jobqueue.Client) {
 		return
 	}
 
-	writeStatusAlertsFooter(os.Stdout, alerts)
+	writeStatusAlertsFooter(w, alerts)
 }
 
 func writeStatusAlertsFooter(w io.Writer, alerts *jobqueue.SchedulerAlerts) {
