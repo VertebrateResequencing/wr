@@ -1,8 +1,7 @@
 /*******************************************************************************
- * Copyright (c) 2020 Genome Research Ltd.
+ * Copyright (c) 2026 Genome Research Ltd.
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>
- * Based on: https://blog.gopheracademy.com/advent-2016/context-logging/
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
