@@ -58,6 +58,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
@@ -2379,6 +2380,147 @@ func TestRerunDependentJobWaitsOnIncompleteDependencies(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(nextJob.Key(), ShouldEqual, explicitJobC.Key())
 		So(nextJob.RepGroup, ShouldEqual, explicitJobC.RepGroup)
+	})
+}
+
+func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
+	ctx := context.Background()
+
+	if runnermode || servermode {
+		return
+	}
+
+	_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("A rerun replacement that becomes ready blocks reserves until ReadyAdded finishes", t, func() {
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		parent := &Job{
+			Cmd:          "echo rerun replacement parent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     "rerun-replacement-parent",
+		}
+		oldJob := &Job{
+			Cmd:          "echo rerun replacement child",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     "rerun-replacement-old",
+			State:        JobStateComplete,
+		}
+		newJob := &Job{
+			Cmd:          oldJob.Cmd,
+			Cwd:          oldJob.Cwd,
+			ReqGroup:     oldJob.ReqGroup,
+			Requirements: standardReqs,
+			RepGroup:     "rerun-replacement-new",
+		}
+
+		parentKey := parent.Key()
+		childKey := oldJob.Key()
+		added, dups, err := server.q.AddMany(ctx, []*queue.ItemDef{
+			{
+				Key:        parentKey,
+				Data:       parent,
+				TTR:        server.itemTTRDuration(),
+				StartQueue: queue.SubQueueBury,
+			},
+			{
+				Key:          childKey,
+				Data:         oldJob,
+				TTR:          server.itemTTRDuration(),
+				Dependencies: []string{parentKey},
+			},
+		})
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 2)
+		So(dups, ShouldEqual, 0)
+
+		server.rpl.Lock()
+		server.rpl.Add(oldJob.RepGroup, childKey)
+		server.rpl.Unlock()
+
+		callbackStarted := make(chan struct{})
+		releaseCallback := make(chan struct{})
+
+		var (
+			startOnce   sync.Once
+			releaseOnce sync.Once
+		)
+
+		release := func() {
+			releaseOnce.Do(func() {
+				close(releaseCallback)
+			})
+		}
+		defer release()
+
+		server.q.SetReadyAddedCallback(func(string, []interface{}) {
+			startOnce.Do(func() {
+				close(callbackStarted)
+			})
+			<-releaseCallback
+			server.finishRAC()
+		})
+
+		updated, err := server.replaceLiveRerunItem(ctx, &queue.ItemDef{
+			Key:  childKey,
+			Data: newJob,
+			TTR:  server.itemTTRDuration(),
+		})
+		So(err, ShouldBeNil)
+		So(updated, ShouldBeTrue)
+
+		select {
+		case <-callbackStarted:
+		case <-time.After(time.Second):
+			So("timed out waiting for ReadyAdded callback", ShouldBeBlank)
+
+			return
+		}
+
+		type reserveResult struct {
+			job *Job
+			err error
+		}
+
+		reserved := make(chan reserveResult, 1)
+
+		go func() {
+			job, reserveErr := jq.Reserve(2 * time.Second)
+			reserved <- reserveResult{job: job, err: reserveErr}
+		}()
+
+		select {
+		case <-reserved:
+			So("reserve returned before ReadyAdded callback completed", ShouldBeBlank)
+			release()
+
+			return
+		case <-time.After(150 * time.Millisecond):
+		}
+
+		release()
+
+		select {
+		case result := <-reserved:
+			So(result.err, ShouldBeNil)
+			So(result.job, ShouldNotBeNil)
+			So(result.job.Key(), ShouldEqual, childKey)
+			So(result.job.RepGroup, ShouldEqual, newJob.RepGroup)
+		case <-time.After(2 * time.Second):
+			So("timed out waiting for reserve after ReadyAdded callback completed", ShouldBeBlank)
+		}
 	})
 }
 

@@ -220,6 +220,23 @@ func (s *serverSubscription) rememberRepGroupKey(key string) {
 	}
 }
 
+func (s *serverSubscription) removeRepGroupKey(key string) *JobUpdate {
+	if key == "" || s.repGroup == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.repGroupStates[key]; !exists {
+		return nil
+	}
+
+	delete(s.repGroupStates, key)
+
+	return s.repGroupDoneUpdate()
+}
+
 func (s *serverSubscription) recordRepGroupCatchUp(records map[string]subscriptionCatchUpRecord) *JobUpdate {
 	if s.repGroup == "" {
 		return nil
@@ -508,4 +525,28 @@ func (s *Server) rememberRepGroupSubscriptionKey(repGroup, key string) {
 			sub.rememberRepGroupKey(key)
 		}
 	}
+}
+
+func (s *Server) removeRepGroupSubscriptionKey(repGroup, key string) {
+	if repGroup == "" || key == "" {
+		return
+	}
+
+	s.csmutex.RLock()
+
+	deliveries := make([]repGroupSubscriptionUpdate, 0, len(s.clientSubscriptions))
+	for _, sub := range s.clientSubscriptions {
+		if !sub.matchesRepGroup(repGroup) {
+			continue
+		}
+
+		update := sub.removeRepGroupKey(key)
+		if update != nil {
+			deliveries = append(deliveries, repGroupSubscriptionUpdate{sub: sub, update: update})
+		}
+	}
+
+	s.csmutex.RUnlock()
+
+	s.enqueueSubscriptionDeliveries(deliveries)
 }

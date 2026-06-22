@@ -1932,6 +1932,141 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 		So(receiveSubscriptionUpdate(sub, 150*time.Millisecond), ShouldBeNil)
 	})
 
+	Convey("A RepGroup subscription completes when a live rerun moves the remaining key to another RepGroup", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		depGroup := "subscription-b2-rerun-move-dep"
+		oldRepGroup := "subscription-b2-rerun-move-old"
+		newRepGroup := "subscription-b2-rerun-move-new"
+		trigger := &Job{
+			Cmd:          "echo " + depGroup,
+			Cwd:          testCwd,
+			ReqGroup:     depGroup,
+			Requirements: standardReqs,
+			RepGroup:     depGroup,
+			DepGroups:    []string{depGroup},
+		}
+		oldJobs := []*Job{
+			{
+				Cmd:          "echo " + oldRepGroup + "-0",
+				Cwd:          testCwd,
+				ReqGroup:     oldRepGroup + "-0",
+				Requirements: standardReqs,
+				RepGroup:     oldRepGroup,
+				Dependencies: Dependencies{NewDepGroupDependency(depGroup)},
+			},
+			{
+				Cmd:          "echo " + oldRepGroup + "-1",
+				Cwd:          testCwd,
+				ReqGroup:     oldRepGroup + "-1",
+				Requirements: standardReqs,
+				RepGroup:     oldRepGroup,
+				Dependencies: Dependencies{NewDepGroupDependency(depGroup)},
+			},
+		}
+
+		added, existed, err := jq.Add(append([]*Job{trigger}, oldJobs...), envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 3)
+		So(existed, ShouldEqual, 0)
+
+		archiveNextSubscriptionJob(jq)
+		archiveNextSubscriptionJob(jq)
+		archiveNextSubscriptionJob(jq)
+
+		added, existed, err = jq.Add([]*Job{trigger}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldBeGreaterThanOrEqualTo, 1)
+		So(existed, ShouldEqual, 0)
+
+		liveOldJobs, err := jq.GetByRepGroup(oldRepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(liveOldJobs, ShouldHaveLength, 2)
+
+		oldSub, err := jq.SubscribeToRepGroup(ctx, oldRepGroup)
+		So(err, ShouldBeNil)
+
+		defer oldSub.Unsubscribe()
+
+		newSub, err := jq.SubscribeToRepGroup(ctx, newRepGroup)
+		So(err, ShouldBeNil)
+
+		defer newSub.Unsubscribe()
+
+		archiveNextSubscriptionJob(jq)
+
+		completedOldJob := startNextSubscriptionJob(jq)
+		So(jq.Archive(completedOldJob, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+		So(receiveSubscriptionUpdate(oldSub, 150*time.Millisecond), ShouldBeNil)
+
+		oldJobByKey := map[string]*Job{
+			oldJobs[0].Key(): oldJobs[0],
+			oldJobs[1].Key(): oldJobs[1],
+		}
+		delete(oldJobByKey, completedOldJob.Key())
+
+		var remainingOldJob *Job
+		for _, job := range oldJobByKey {
+			remainingOldJob = job
+		}
+
+		So(remainingOldJob, ShouldNotBeNil)
+
+		replacement := &Job{
+			Cmd:          remainingOldJob.Cmd,
+			Cwd:          remainingOldJob.Cwd,
+			ReqGroup:     remainingOldJob.ReqGroup,
+			Requirements: standardReqs,
+			RepGroup:     newRepGroup,
+			Dependencies: remainingOldJob.Dependencies,
+		}
+		added, existed, err = jq.Add([]*Job{replacement}, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+
+		oldDone := receiveSubscriptionUpdate(oldSub, 2*time.Second)
+		So(oldDone, ShouldNotBeNil)
+		So(oldDone.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(oldDone.RepGroup, ShouldEqual, oldRepGroup)
+		So(oldDone.Complete, ShouldEqual, 1)
+		So(oldDone.Buried, ShouldEqual, 0)
+		So(oldDone.Lost, ShouldEqual, 0)
+		So(oldDone.Total, ShouldEqual, 1)
+		So(subscriptionStatesByKey(oldDone), ShouldResemble, map[string]JobState{
+			completedOldJob.Key(): JobStateComplete,
+		})
+
+		rerunJob := startNextSubscriptionJob(jq)
+		So(rerunJob.Key(), ShouldEqual, replacement.Key())
+		So(rerunJob.RepGroup, ShouldEqual, newRepGroup)
+		So(jq.Archive(rerunJob, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		newDone := receiveSubscriptionUpdate(newSub, 2*time.Second)
+		So(newDone, ShouldNotBeNil)
+		So(newDone.Kind, ShouldEqual, JobUpdateRepGroupDone)
+		So(newDone.RepGroup, ShouldEqual, newRepGroup)
+		So(newDone.Complete, ShouldEqual, 1)
+		So(newDone.Buried, ShouldEqual, 0)
+		So(newDone.Lost, ShouldEqual, 0)
+		So(newDone.Total, ShouldEqual, 1)
+		So(subscriptionStatesByKey(newDone), ShouldResemble, map[string]JobState{
+			replacement.Key(): JobStateComplete,
+		})
+		So(receiveSubscriptionUpdate(oldSub, 150*time.Millisecond), ShouldBeNil)
+	})
+
 	Convey("A post-registration catch-up snapshot holds back a missed live RepGroup job", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)

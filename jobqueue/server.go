@@ -953,7 +953,7 @@ func (s *Server) replaceLiveRerunItem(ctx context.Context, itemdef *queue.ItemDe
 		return false, nil
 	}
 
-	if err = s.updateLiveRerunItem(ctx, itemdef); err != nil {
+	if err = s.updateLiveRerunItemWithReadyPending(ctx, item, itemdef); err != nil {
 		return false, err
 	}
 
@@ -994,14 +994,40 @@ func (s *Server) updateLiveRerunItem(ctx context.Context, itemdef *queue.ItemDef
 	)
 }
 
+func (s *Server) updateLiveRerunItemWithReadyPending(
+	ctx context.Context,
+	item *queue.Item,
+	itemdef *queue.ItemDef,
+) error {
+	readyCallbackExpected := itemDefTriggersReadyAdded(itemdef) &&
+		itemWillBecomeReadyAfterDependencyUpdate(item, nil)
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
+	err := s.updateLiveRerunItem(ctx, itemdef)
+	if err != nil && readyCallbackExpected {
+		s.clearRACPending()
+	}
+
+	return err
+}
+
 func (s *Server) rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, key string) {
+	repGroupChanged := oldRepGroup != newRepGroup
+
 	s.rpl.Lock()
-	if oldRepGroup != newRepGroup {
+	if repGroupChanged {
 		s.rpl.Delete(oldRepGroup, key)
 	}
 
 	s.rpl.Add(newRepGroup, key)
 	s.rpl.Unlock()
+
+	if repGroupChanged {
+		s.removeRepGroupSubscriptionKey(oldRepGroup, key)
+	}
+
 	s.rememberRepGroupSubscriptionKey(newRepGroup, key)
 }
 
