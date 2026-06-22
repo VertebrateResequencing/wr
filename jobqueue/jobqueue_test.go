@@ -130,6 +130,8 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 			TouchInterval:         -1 * time.Nanosecond,
 			RetryWait:             -1 * time.Nanosecond,
 			RetryTime:             -1 * time.Nanosecond,
+			RecSecRound:           -1,
+			RecMBRound:            -1,
 			ShutdownSocketWait:    -1 * time.Nanosecond,
 		}.withDefaults()
 
@@ -142,6 +144,8 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 		So(timings.TouchInterval, ShouldEqual, ClientTouchInterval)
 		So(timings.RetryWait, ShouldEqual, ClientRetryWait)
 		So(timings.RetryTime, ShouldEqual, ClientRetryTime)
+		So(timings.RecSecRound, ShouldEqual, RecSecRound)
+		So(timings.RecMBRound, ShouldEqual, RecMBRound)
 		So(timings.ShutdownSocketWait, ShouldEqual, serverSocketWait)
 	})
 }

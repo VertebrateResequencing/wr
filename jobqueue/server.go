@@ -135,8 +135,9 @@ const (
 // ServerTimings holds the timing parameters a Server operates with. These were
 // previously package-level globals that tests mutated, which prevented running
 // servers concurrently; they are now per-Server config. Set any subset on
-// ServerConfig.Timings; each non-positive duration is replaced with its
-// default (the matching Server*/Client* package variable above) by Serve().
+// ServerConfig.Timings; each non-positive duration or rounding value is
+// replaced with its default (the matching Server*/Client* package variable
+// above, or Rec*Round constant) by Serve().
 // Most are fixed once the server starts; LostJobCheckTimeout and
 // LostJobCheckRetryTime can additionally be adjusted at runtime via the
 // Server's setter methods.
@@ -206,8 +207,8 @@ func dfltDuration(v, def time.Duration) time.Duration {
 	return v
 }
 
-// withDefaults returns a copy of t with every non-positive duration replaced
-// by its package-default value.
+// withDefaults returns a copy of t with every non-positive duration or
+// rounding value replaced by its package-default value.
 func (t ServerTimings) withDefaults() ServerTimings {
 	t.InterruptTime = dfltDuration(t.InterruptTime, ServerInterruptTime)
 	t.ItemTTR = dfltDuration(t.ItemTTR, ServerItemTTR)
@@ -219,11 +220,11 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.RetryWait = dfltDuration(t.RetryWait, ClientRetryWait)
 	t.RetryTime = dfltDuration(t.RetryTime, ClientRetryTime)
 
-	if t.RecSecRound == 0 {
+	if t.RecSecRound <= 0 {
 		t.RecSecRound = RecSecRound
 	}
 
-	if t.RecMBRound == 0 {
+	if t.RecMBRound <= 0 {
 		t.RecMBRound = RecMBRound
 	}
 

@@ -40,9 +40,9 @@ type subQueue struct {
 
 // pushNotification holds the channel that a notifyPush() caller is waiting on,
 // along with the timer responsible for the timeout. Keeping the timer lets us
-// stop it (and so let its goroutine exit immediately) the moment the
-// notification is triggered, instead of leaving it pending until the full
-// timeout elapses.
+// stop it the moment the notification is triggered, preventing the timeout
+// callback from starting if the timer has not already fired instead of leaving
+// it pending until the full timeout elapses.
 type pushNotification struct {
 	ch    chan bool
 	timer *time.Timer
