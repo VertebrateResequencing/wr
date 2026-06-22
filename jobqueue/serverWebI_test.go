@@ -207,8 +207,33 @@ func TestServerWebI(t *testing.T) {
 
 			defer ws.Close()
 
+			executeReservedJobs := func(expectedCmds ...string) {
+				expected := make(map[string]bool, len(expectedCmds))
+				for _, cmd := range expectedCmds {
+					expected[cmd] = true
+				}
+
+				for range expectedCmds {
+					job, errr := jq.Reserve(50 * time.Millisecond)
+					So(errr, ShouldBeNil)
+					So(job, ShouldNotBeNil)
+
+					if job == nil {
+						return
+					}
+
+					So(expected, ShouldContainKey, job.Cmd)
+					delete(expected, job.Cmd)
+
+					errr = jq.Execute(ctx, job, config.RunnerExecShell)
+					So(errr, ShouldBeNil)
+				}
+
+				So(len(expected), ShouldEqual, 0)
+			}
+
 			Convey("The websocket handler responds to current requests", func() {
-				err = ws.WriteJSON(jstatusReq{Request: "current"})
+				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				receivedJobs := make(map[string]bool)
@@ -596,8 +621,9 @@ func TestServerWebI(t *testing.T) {
 				So(completeJobs[0].Attempts, ShouldEqual, 1)
 
 				err = ws.WriteJSON(jstatusReq{
-					Request: "rerun",
-					Key:     completeJobs[0].Key(),
+					Request:  jstatusRequestRerun,
+					Key:      completeJobs[0].Key(),
+					RepGroup: completeJobs[0].RepGroup,
 				})
 				So(err, ShouldBeNil)
 
@@ -623,10 +649,142 @@ func TestServerWebI(t *testing.T) {
 				So(rerunJobs[0].FailReason, ShouldBeBlank)
 			})
 
+			Convey("The websocket handler can rerun completed jobs by key in the requested RepGroup", func() {
+				firstGroup := "rerun_key_rg1"
+				secondGroup := "rerun_key_rg2"
+				cmd := "echo webi rerun duplicate key"
+
+				inserts, already, erra := jq.Add([]*Job{{
+					Cmd:          cmd,
+					Cwd:          "/tmp",
+					ReqGroup:     "rerun_key_group",
+					Requirements: standardReqs,
+					RepGroup:     firstGroup,
+				}}, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				executeReservedJobs(cmd)
+
+				inserts, already, erra = jq.Add([]*Job{{
+					Cmd:          cmd,
+					Cwd:          "/tmp",
+					ReqGroup:     "rerun_key_group",
+					Requirements: standardReqs,
+					RepGroup:     secondGroup,
+				}}, envVars, false)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				executeReservedJobs(cmd)
+
+				firstGroupJobs, errg := jq.GetByRepGroup(firstGroup, false, 0, JobStateComplete, false, false)
+				So(errg, ShouldBeNil)
+				So(len(firstGroupJobs), ShouldEqual, 1)
+				So(firstGroupJobs[0].RepGroup, ShouldEqual, firstGroup)
+
+				err = ws.WriteJSON(jstatusReq{
+					Request:  jstatusRequestRerun,
+					Key:      firstGroupJobs[0].Key(),
+					RepGroup: firstGroupJobs[0].RepGroup,
+				})
+				So(err, ShouldBeNil)
+
+				So(pollUntil(func() bool {
+					rerunJobs, errr := jq.GetByRepGroup(firstGroup, false, 0, JobStateReady, false, false)
+					if errr != nil || len(rerunJobs) != 1 {
+						return false
+					}
+
+					return rerunJobs[0].Cmd == cmd
+				}), ShouldBeTrue)
+
+				firstGroupReady, errg := jq.GetByRepGroup(firstGroup, false, 0, JobStateReady, false, false)
+				So(errg, ShouldBeNil)
+				So(len(firstGroupReady), ShouldEqual, 1)
+				So(firstGroupReady[0].RepGroup, ShouldEqual, firstGroup)
+
+				secondGroupReady, errg := jq.GetByRepGroup(secondGroup, false, 0, JobStateReady, false, false)
+				So(errg, ShouldBeNil)
+				So(len(secondGroupReady), ShouldEqual, 0)
+			})
+
+			Convey("The websocket handler can rerun all matching completed jobs", func() {
+				repGroup := "rerun_all_rg"
+				otherRepGroup := "rerun_all_other_rg"
+				reqGroup := "rerun_all_group"
+				jobsToRerun := []*Job{
+					{Cmd: "echo webi rerun all 1", Cwd: "/tmp", ReqGroup: reqGroup,
+						Requirements: standardReqs, RepGroup: repGroup},
+					{Cmd: "echo webi rerun all 2", Cwd: "/tmp", ReqGroup: reqGroup,
+						Requirements: standardReqs, RepGroup: repGroup},
+					{Cmd: "echo webi rerun all other", Cwd: "/tmp", ReqGroup: reqGroup,
+						Requirements: standardReqs, RepGroup: otherRepGroup},
+				}
+
+				inserts, already, erra := jq.Add(jobsToRerun, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 3)
+				So(already, ShouldEqual, 0)
+
+				executeReservedJobs(
+					"echo webi rerun all 1",
+					"echo webi rerun all 2",
+					"echo webi rerun all other",
+				)
+
+				completeJobs, errg := jq.GetByRepGroup(repGroup, false, 0, JobStateComplete, false, false)
+				So(errg, ShouldBeNil)
+				So(len(completeJobs), ShouldEqual, 2)
+				So(completeJobs[0].Exited, ShouldBeTrue)
+				So(completeJobs[0].Attempts, ShouldEqual, 1)
+
+				err = ws.WriteJSON(jstatusReq{
+					Request:    jstatusRequestRerun,
+					RepGroup:   repGroup,
+					State:      JobStateComplete,
+					Exitcode:   completeJobs[0].Exitcode,
+					FailReason: completeJobs[0].FailReason,
+				})
+				So(err, ShouldBeNil)
+
+				So(pollUntil(func() bool {
+					rerunJobs, errr := jq.GetByRepGroup(repGroup, false, 0, JobStateReady, false, false)
+
+					return errr == nil && len(rerunJobs) == 2
+				}), ShouldBeTrue)
+
+				rerunJobs, errg := jq.GetByRepGroup(repGroup, false, 0, JobStateReady, false, false)
+				So(errg, ShouldBeNil)
+				So(len(rerunJobs), ShouldEqual, 2)
+
+				rerunKeys := make(map[string]bool, len(rerunJobs))
+				for _, job := range rerunJobs {
+					rerunKeys[job.Key()] = true
+					So(job.RepGroup, ShouldEqual, repGroup)
+					So(job.Exited, ShouldBeFalse)
+					So(job.Attempts, ShouldEqual, 0)
+					So(job.StartTime.IsZero(), ShouldBeTrue)
+					So(job.EndTime.IsZero(), ShouldBeTrue)
+					So(job.PeakRAM, ShouldEqual, 0)
+					So(job.PeakDisk, ShouldEqual, 0)
+					So(job.FailReason, ShouldBeBlank)
+				}
+
+				for _, job := range completeJobs {
+					So(rerunKeys, ShouldContainKey, job.Key())
+				}
+
+				otherReady, errg := jq.GetByRepGroup(otherRepGroup, false, 0, JobStateReady, false, false)
+				So(errg, ShouldBeNil)
+				So(len(otherReady), ShouldEqual, 0)
+			})
+
 			Convey("The websocket handler can remove jobs", func() {
-				var removeJobs []*Job
-				removeJobs = append(removeJobs, &Job{Cmd: "echo remove", Cwd: "/tmp",
-					ReqGroup: "group3", Requirements: standardReqs, RepGroup: "rg3"})
+				removeJobs := []*Job{{Cmd: "echo remove", Cwd: "/tmp",
+					ReqGroup: "group3", Requirements: standardReqs, RepGroup: "rg3"}}
 				inserts, _, erra := jq.Add(removeJobs, envVars, true)
 				So(erra, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
@@ -664,11 +822,11 @@ func TestServerWebI(t *testing.T) {
 				So(erra, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 
-				err = ws.WriteJSON(jstatusReq{Request: "current"})
+				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
-				err = ws2.WriteJSON(jstatusReq{Request: "current"})
+				err = ws2.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
-				err = ws3.WriteJSON(jstatusReq{Request: "current"})
+				err = ws3.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				var wg sync.WaitGroup
@@ -731,7 +889,7 @@ func TestServerWebI(t *testing.T) {
 
 				ws2.Close()
 
-				err = ws.WriteJSON(jstatusReq{Request: "current"})
+				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				var sc jstateCount
@@ -739,7 +897,7 @@ func TestServerWebI(t *testing.T) {
 				err = ws.ReadJSON(&sc)
 				So(err, ShouldBeNil)
 
-				err = ws3.WriteJSON(jstatusReq{Request: "current"})
+				err = ws3.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				err = ws3.ReadJSON(&sc)
@@ -762,7 +920,7 @@ func TestServerWebI(t *testing.T) {
 
 				server.schedCaster.Send(si)
 
-				err = ws.WriteJSON(jstatusReq{Request: "current"})
+				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				foundMessage := false
@@ -786,7 +944,7 @@ func TestServerWebI(t *testing.T) {
 						case <-resendStop:
 							return
 						case <-ticker.C:
-							if werr := ws.WriteJSON(jstatusReq{Request: "current"}); werr != nil {
+							if werr := ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}); werr != nil {
 								return
 							}
 						}
@@ -880,7 +1038,7 @@ func TestServerWebI(t *testing.T) {
 
 				<-time.After(100 * time.Millisecond)
 
-				err = ws.WriteJSON(jstatusReq{Request: "current"})
+				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				foundBadServer := false
@@ -1182,7 +1340,7 @@ func TestJobSubscriptions(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			err = ws3.WriteJSON(jstatusReq{
-				Request: "current",
+				Request: jstatusRequestCurrent,
 			})
 			So(err, ShouldBeNil)
 

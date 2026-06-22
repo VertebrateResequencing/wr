@@ -44,10 +44,16 @@ export function commitAction(viewModel, all) {
             FailReason: viewModel.actionDetails.failReason(),
         }));
     } else {
-        viewModel.ws.send(JSON.stringify({
+        const request = {
             Request: viewModel.actionDetails.action(),
             Key: viewModel.actionDetails.key(),
-        }));
+        };
+
+        if (viewModel.actionDetails.action() === 'rerun') {
+            request.RepGroup = viewModel.actionDetails.repGroup();
+        }
+
+        viewModel.ws.send(JSON.stringify(request));
     }
 
     // Reset the UI

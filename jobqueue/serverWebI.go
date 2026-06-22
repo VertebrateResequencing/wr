@@ -46,6 +46,7 @@ import (
 var staticFS embed.FS
 
 const (
+	jstatusRequestCurrent     = "current"
 	jstatusRequestDetails     = "details"
 	jstatusRequestRerun       = "rerun"
 	jstatusRequestUnsubscribe = requestMethodUnsubscribe
@@ -91,7 +92,7 @@ type jstatusReq struct {
 // completed jobs that are not already live in the queue.
 func (s *Server) reqToCompletedJobs(req jstatusReq) ([]*Job, string, string) {
 	if req.Key != "" {
-		return s.completedJobByKey(req.Key)
+		return s.completedJobByKey(req)
 	}
 
 	return s.completedJobsByRepGroup(req)
@@ -379,7 +380,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				switch {
 				case req.Request != "":
 					switch req.Request {
-					case "current":
+					case jstatusRequestCurrent:
 						// get all current jobs
 						jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false)
 						writeMutex.Lock()
@@ -620,8 +621,8 @@ func resetJobStatusFields(job *Job) {
 	job.incrementedLimitGroups = nil
 }
 
-func (s *Server) completedJobByKey(key string) ([]*Job, string, string) {
-	live, err := s.db.checkIfLive(key)
+func (s *Server) completedJobByKey(req jstatusReq) ([]*Job, string, string) {
+	live, err := s.db.checkIfLive(req.Key)
 	if err != nil {
 		return nil, ErrDBError, err.Error()
 	}
@@ -630,9 +631,17 @@ func (s *Server) completedJobByKey(key string) ([]*Job, string, string) {
 		return nil, "", ""
 	}
 
-	jobs, err := s.db.retrieveCompleteJobsByKeys([]string{key})
+	jobs, err := s.db.retrieveCompleteJobsByKeys([]string{req.Key})
 	if err != nil {
 		return nil, ErrDBError, err.Error()
+	}
+
+	if req.RepGroup != "" {
+		for _, job := range jobs {
+			job.Lock()
+			job.RepGroup = req.RepGroup
+			job.Unlock()
+		}
 	}
 
 	return jobs, "", ""
