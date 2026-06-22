@@ -35,6 +35,7 @@ import (
 	crand "crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -124,7 +125,7 @@ func copyFile(source string, dest string) error {
 			if err == nil {
 				err = errc
 			} else {
-				err = fmt.Errorf("%s (and closing source failed: %s)", err.Error(), errc)
+				err = fmt.Errorf("%w (and closing source failed: %w)", err, errc)
 			}
 		}
 	}()
@@ -138,7 +139,7 @@ func copyFile(source string, dest string) error {
 			if err == nil {
 				err = errc
 			} else {
-				err = fmt.Errorf("%s (and closing dest failed: %s)", err.Error(), errc)
+				err = fmt.Errorf("%w (and closing dest failed: %w)", err, errc)
 			}
 		}
 	}()
@@ -194,7 +195,7 @@ func currentMemory(pid int) (int, error) {
 			if err == nil {
 				err = errc
 			} else {
-				err = fmt.Errorf("%s (and closing smaps failed: %s)", err.Error(), errc)
+				err = fmt.Errorf("%w (and closing smaps failed: %w)", err, errc)
 			}
 		}
 	}()
@@ -225,7 +226,7 @@ func currentMemory(pid int) (int, error) {
 		return mem, err
 	}
 	children, err := p.Children()
-	if err != nil && err.Error() != "process does not have children" { // err != process.ErrorNoChildren
+	if err != nil && !errors.Is(err, process.ErrorNoChildren) {
 		return mem, err
 	}
 	for _, child := range children {
@@ -292,7 +293,7 @@ func getChildProcesses(pid int32) ([]*process.Process, error) {
 	}
 
 	children, err = p.Children()
-	if err != nil && err.Error() != "process does not have children" {
+	if err != nil && !errors.Is(err, process.ErrorNoChildren) {
 		return children, err
 	}
 
@@ -469,7 +470,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 			if err == nil {
 				err = errr
 			} else {
-				err = fmt.Errorf("%s (and removing the hold file failed: %s)", err.Error(), errr)
+				err = fmt.Errorf("%w (and removing the hold file failed: %w)", err, errr)
 			}
 		}
 	}()

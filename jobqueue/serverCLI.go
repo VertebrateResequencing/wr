@@ -32,6 +32,7 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -314,7 +315,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			clog.Debug(ctx, "pause requested")
 			paused, err := s.Pause()
 			if err != nil {
-				if jqerr, ok := err.(Error); ok {
+				var jqerr Error
+				if errors.As(err, &jqerr) {
 					srerr = jqerr.Err
 				} else {
 					srerr = ErrInternalError
@@ -340,7 +342,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			clog.Debug(ctx, "resume requested")
 			resumed, err := s.Resume(ctx)
 			if err != nil {
-				if jqerr, ok := err.(Error); ok {
+				var jqerr Error
+				if errors.As(err, &jqerr) {
 					srerr = jqerr.Err
 				} else {
 					srerr = ErrInternalError
@@ -503,11 +506,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				if !skip {
 					item, err = s.reserveWithLimits(ctx, cr.SchedulerGroup, cr.Timeout)
 					if err != nil {
-						if qerr, ok := err.(queue.Error); ok {
-							switch qerr.Err {
-							case queue.ErrNothingReady:
+						var qerr queue.Error
+						if errors.As(err, &qerr) {
+							switch {
+							case errors.Is(qerr.Err, queue.ErrNothingReady):
 								srerr = ""
-							case queue.ErrQueueClosed:
+							case errors.Is(qerr.Err, queue.ErrQueueClosed):
 								srerr = ErrQueueClosed
 							default:
 								srerr = ErrInternalError
@@ -761,7 +765,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				// afterwards
 				paused, err := s.Pause()
 				if err != nil {
-					if jqerr, ok := err.(Error); ok {
+					var jqerr Error
+					if errors.As(err, &jqerr) {
 						srerr = jqerr.Err
 					} else {
 						srerr = ErrInternalError
@@ -791,7 +796,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 					modified, err := cr.Modifier.Modify(toModifyJobs, s)
 					if err != nil {
-						if jqerr, ok := err.(Error); ok {
+						var jqerr Error
+						if errors.As(err, &jqerr) {
 							srerr = jqerr.Err
 						} else {
 							srerr = ErrInternalError

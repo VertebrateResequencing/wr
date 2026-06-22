@@ -625,7 +625,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 			if err != nil {
 				_, erru := j.Unmount()
 				if erru != nil {
-					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+					err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 				}
 				return uniqueCacheDirs, uniqueMountedDirs, err
 			}
@@ -633,7 +633,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 			if err != nil {
 				_, erru := j.Unmount()
 				if erru != nil {
-					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+					err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 				}
 				return uniqueCacheDirs, uniqueMountedDirs, err
 			}
@@ -660,7 +660,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 			err := fmt.Errorf("no Targets specified")
 			_, erru := j.Unmount()
 			if erru != nil {
-				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 			}
 			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
@@ -699,7 +699,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		if err != nil {
 			_, erru := j.Unmount()
 			if erru != nil {
-				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 			}
 			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
@@ -708,7 +708,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		if err != nil {
 			_, erru := j.Unmount()
 			if erru != nil {
-				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 			}
 			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
@@ -780,7 +780,7 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 
 	err = merr.ErrorOrNil()
 	if err != nil {
-		return logs, fmt.Errorf("Unmount failure(s): %s", err.Error())
+		return logs, fmt.Errorf("Unmount failure(s): %w", err)
 	}
 
 	// delete any empty dirs

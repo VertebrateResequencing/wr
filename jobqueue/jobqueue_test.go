@@ -1324,7 +1324,12 @@ func TestJobqueueSignal(t *testing.T) {
 				go func() {
 					err := jq.Execute(ctx, job, config.RunnerExecShell)
 					if err != nil {
-						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal && job.State == JobStateBuried && job.Exited && job.Exitcode == -1 && job.FailReason == FailReasonSignal {
+						var jqerr Error
+
+						gotSignalFailure := errors.As(err, &jqerr) && jqerr.Err == FailReasonSignal &&
+							job.State == JobStateBuried && job.Exited && job.Exitcode == -1 &&
+							job.FailReason == FailReasonSignal
+						if gotSignalFailure {
 							j1worked <- true
 						}
 					}
@@ -1335,7 +1340,12 @@ func TestJobqueueSignal(t *testing.T) {
 				go func() {
 					err := jq.Execute(ctx, job2, config.RunnerExecShell)
 					if err != nil {
-						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == JobStateBuried && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
+						var jqerr Error
+
+						gotTimeFailure := errors.As(err, &jqerr) && jqerr.Err == FailReasonTime &&
+							job2.State == JobStateBuried && job2.Exited && job2.Exitcode == -1 &&
+							job2.FailReason == FailReasonTime
+						if gotTimeFailure {
 							j2worked <- true
 						}
 					}
@@ -1442,8 +1452,8 @@ func TestJobqueueSignal(t *testing.T) {
 						// the server, then reconnected to the new server and
 						// therefore got ErrStopReserving, but otherwise
 						// everything was fine
-						jqerr, ok := erre.(Error)
-						if !ok || jqerr.Err != ErrStopReserving {
+						var jqerr Error
+						if !errors.As(erre, &jqerr) || jqerr.Err != ErrStopReserving {
 							fmt.Printf("\nexecute had err: %s\n", erre)
 							j1worked <- false
 							return
@@ -1717,7 +1727,10 @@ func TestJobqueueBasics(t *testing.T) {
 
 		_, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldNotBeNil)
-		jqerr, ok := err.(Error)
+
+		var jqerr Error
+
+		ok := errors.As(err, &jqerr)
 		So(ok, ShouldBeTrue)
 		So(jqerr.Err, ShouldEqual, ErrNoServer)
 
@@ -2186,7 +2199,10 @@ func TestJobqueueBasics(t *testing.T) {
 				<-time.After(serverShutDownTime(serverConfig.Timings.TouchInterval))
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
-				jqerr, ok := err.(Error)
+
+				var jqerr Error
+
+				ok := errors.As(err, &jqerr)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
@@ -2206,7 +2222,7 @@ func TestJobqueueBasics(t *testing.T) {
 				<-time.After(serverShutDownTime(serverConfig.Timings.TouchInterval))
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
-				jqerr, ok = err.(Error)
+				ok = errors.As(err, &jqerr)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 			})
@@ -2214,7 +2230,10 @@ func TestJobqueueBasics(t *testing.T) {
 			Convey("You get a nice error if you send the server junk", func() {
 				_, err := jq.request(&clientRequest{Method: "junk"})
 				So(err, ShouldNotBeNil)
-				jqerr, ok := err.(Error)
+
+				var jqerr Error
+
+				ok := errors.As(err, &jqerr)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrUnknownCommand)
 				disconnect(jq)
@@ -2273,7 +2292,10 @@ func TestJobqueueMedium(t *testing.T) {
 			Convey("You can't execute a job without reserving it", func() {
 				err := jq.Execute(ctx, jobs[0], config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
-				jqerr, ok := err.(Error)
+
+				var jqerr Error
+
+				ok := errors.As(err, &jqerr)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrMustReserve)
 				disconnect(jq)
@@ -2496,16 +2518,67 @@ func TestJobqueueMedium(t *testing.T) {
 				})
 
 				Convey("A job with retries that fails after NoRetriesOverWalltime is immediately buried", func() {
+					noRetriesCmd := "sleep 0.5 && false"
+					noRetriesEssence := &JobEssence{Cmd: noRetriesCmd}
 					var jobs2 []*Job
-					jobs2 = append(jobs2, &Job{Cmd: "sleep 0.5 && false", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(1), NoRetriesOverWalltime: 10 * time.Millisecond, RepGroup: "manually_added"})
+
+					jobs2 = append(jobs2, &Job{
+						Cmd:                   noRetriesCmd,
+						Cwd:                   "/tmp",
+						ReqGroup:              "fake_group",
+						Requirements:          standardReqs,
+						Retries:               uint8(1),
+						NoRetriesOverWalltime: 10 * time.Millisecond,
+						RepGroup:              "manually_added",
+					})
 					inserts, already, err := jq.Add(jobs2, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 					So(already, ShouldEqual, 0)
 
-					job, err = jq.Reserve(50 * time.Millisecond)
+					noRetriesJob, err := jq.GetByEssence(noRetriesEssence, false, false)
 					So(err, ShouldBeNil)
-					So(job.Cmd, ShouldEqual, "sleep 0.5 && false")
+					So(noRetriesJob, ShouldNotBeNil)
+
+					noRetriesJobKey := noRetriesEssence.Key()
+					if noRetriesJob != nil {
+						noRetriesJobKey = noRetriesJob.Key()
+					}
+
+					for range 5 {
+						job, err = jq.Reserve(50 * time.Millisecond)
+						if err != nil || job == nil || job.Key() == noRetriesJobKey {
+							break
+						}
+
+						deleted, errd := jq.Delete([]*JobEssence{job.ToEssense()})
+						So(errd, ShouldBeNil)
+						So(deleted, ShouldEqual, 1)
+
+						if errd != nil || deleted != 1 {
+							return
+						}
+					}
+
+					So(err, ShouldBeNil)
+
+					if err != nil {
+						return
+					}
+
+					So(job, ShouldNotBeNil)
+
+					if job == nil {
+						return
+					}
+
+					So(job.Key(), ShouldEqual, noRetriesJobKey)
+
+					if job.Key() != noRetriesJobKey {
+						return
+					}
+
+					So(job.Cmd, ShouldEqual, noRetriesCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 					So(job.Attempts, ShouldEqual, 0)
 					So(job.UntilBuried, ShouldEqual, 2)
@@ -5044,7 +5117,10 @@ func TestJobqueueHighMem(t *testing.T) {
 			err = jq.Execute(ctx, job, config.RunnerExecShell)
 			jq.percentMemoryKill = 90
 			So(err, ShouldNotBeNil)
-			jqerr, ok := err.(Error)
+
+			var jqerr Error
+
+			ok := errors.As(err, &jqerr)
 			So(ok, ShouldBeTrue)
 			So(jqerr.Err, ShouldEqual, FailReasonRAM)
 			So(job.State, ShouldEqual, JobStateBuried)
@@ -7988,7 +8064,8 @@ func runner(ctx context.Context) {
 		// actually run the cmd
 		err = jq.Execute(ctx, job, config.RunnerExecShell)
 		if err != nil {
-			if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal {
+			var jqerr Error
+			if errors.As(err, &jqerr) && jqerr.Err == FailReasonSignal {
 				break
 			} else {
 				log.Printf("execute err: %s\n", err) // make this a Fatalf if you want to see these in the test output

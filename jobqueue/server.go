@@ -1049,7 +1049,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		if err != nil {
 			errc := db.close(ctx)
 			if errc != nil {
-				err = fmt.Errorf("%s; db close also failed: %s", err.Error(), errc.Error())
+				err = fmt.Errorf("%w; db close also failed: %w", err, errc)
 			}
 		}
 	}()
@@ -1062,7 +1062,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		if err != nil {
 			errc := sock.Close()
 			if errc != nil {
-				err = fmt.Errorf("%s; socket close also failed: %s", err.Error(), errc.Error())
+				err = fmt.Errorf("%w; socket close also failed: %w", err, errc)
 			}
 		}
 	}()
@@ -1327,7 +1327,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 			defer internal.LogPanic(ctx, "jobqueue web server listenAndServe", true)
 			defer wg.Done(wgk2)
 			errs := srv.ListenAndServeTLS(certFile, keyFile)
-			if errs != nil && errs != http.ErrServerClosed {
+			if errs != nil && !errors.Is(errs, http.ErrServerClosed) {
 				clog.Error(ctx, "server web interface had problems", "err", errs)
 			}
 		}()
@@ -1466,7 +1466,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 					s.krmutex.RLock()
 					inShutdown := s.killRunners
 					s.krmutex.RUnlock()
-					if !inShutdown && rerr != mangos.ErrRecvTimeout {
+
+					if !inShutdown && !errors.Is(rerr, mangos.ErrRecvTimeout) {
 						clog.Error(ctx, "Server socket Receive error", "err", rerr)
 					}
 					continue
@@ -1937,7 +1938,8 @@ func (s *Server) createQueue(ctx context.Context) {
 					// we could be trying to set the reserve group after the
 					// job has already completed, if they complete
 					// ~instantly
-					if qerr, ok := errs.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+					var qerr queue.Error
+					if !errors.As(errs, &qerr) || !errors.Is(qerr.Err, queue.ErrNotFound) {
 						clog.Warn(ctx, "readycallback queue setreservegroup failed", "err", errs)
 					}
 				}
@@ -2876,7 +2878,8 @@ func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, 
 func (s *Server) checkJobByKey(key string) (bool, error) {
 	item, err := s.q.Get(key)
 	if err != nil {
-		if qerr, ok := err.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+		var qerr queue.Error
+		if !errors.As(err, &qerr) || !errors.Is(qerr.Err, queue.ErrNotFound) {
 			return false, err
 		}
 	}
@@ -3362,13 +3365,16 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 	err := s.scheduler.Schedule(ctx, s.groupToScheduleCmd(ctx, rc, group.name, group.req), group.req, group.priority, group.count)
 	if err != nil {
 		problem := true
-		if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
+
+		var serr scheduler.Error
+		if errors.As(err, &serr) && serr.Err == scheduler.ErrImpossible {
 			// bury all jobs in this scheduler group
 			problem = false
 			for {
 				item, errr := s.q.Reserve(group.name, 0)
 				if errr != nil {
-					if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNothingReady {
+					var qerr queue.Error
+					if !errors.As(errr, &qerr) || !errors.Is(qerr.Err, queue.ErrNothingReady) {
 						clog.Warn(ctx, "scheduleRunners failed to reserve an item", "group", group, "err", errr)
 						problem = true
 					}

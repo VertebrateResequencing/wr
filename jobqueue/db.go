@@ -290,55 +290,55 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	err = boltdb.Update(func(tx *bolt.Tx) error {
 		_, errf := tx.CreateBucketIfNotExists(bucketJobsLive)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsLive, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobsLive, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobsComplete)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsComplete, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobsComplete, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRTK)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRTK, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketRTK, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRGs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRGs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketRGs, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketLGs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketLGs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketLGs, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketDTK, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRDTK, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketRDTK, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketEnvs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketEnvs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketEnvs, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketStdO)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdO, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketStdO, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketStdE)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdE, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketStdE, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobRAM)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobRAM, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobRAM, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobDisk)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobDisk, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobDisk, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobSecs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobSecs, errf)
 		}
 
 		_, errf = tx.CreateBucketIfNotExists(bucketRGEndTime)
@@ -1637,7 +1637,7 @@ func (db *db) close(ctx context.Context) error {
 				if err == nil {
 					err = erru
 				} else {
-					err = fmt.Errorf("%s (and unmounting backup failed: %s)", err.Error(), erru)
+					err = fmt.Errorf("%w (and unmounting backup failed: %w)", err, erru)
 				}
 			}
 		}

@@ -307,7 +307,9 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 			return c, errc
 		}
 		msg := ErrNoServer
-		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrPermissionDenied {
+
+		var jqerr Error
+		if errors.As(err, &jqerr) && jqerr.Err == ErrPermissionDenied {
 			msg = ErrPermissionDenied
 		}
 		return nil, Error{"Connect", "", msg}
@@ -431,7 +433,7 @@ func (c *Client) BackupDB(path string) error {
 	if err != nil {
 		rerr := os.Remove(tmpPath)
 		if rerr != nil {
-			err = fmt.Errorf("%s\n%s", err.Error(), rerr.Error())
+			err = fmt.Errorf("%w\n%w", err, rerr)
 		}
 		return err
 	}
@@ -677,7 +679,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			buryErr := fmt.Errorf("could not create working directory: %w", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -742,7 +744,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			buryErr := fmt.Errorf("could not create lsf emulation directory: %w", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -752,7 +754,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if myerr == nil {
 					myerr = errr
 				} else {
-					myerr = fmt.Errorf("%v (and removing the lsf emulation dir failed: %w)", myerr, errr)
+					myerr = fmt.Errorf("%w (and removing the lsf emulation dir failed: %w)", myerr, errr)
 				}
 			}
 		}()
@@ -796,7 +798,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %w (%s)", err, os.Environ())
 			errb := c.Bury(job, nil, FailReasonMount, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -821,7 +823,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						if myerr == nil {
 							myerr = errc
 						} else {
-							myerr = fmt.Errorf("%v (and closing dir failed: %w)", myerr, errc)
+							myerr = fmt.Errorf("%w (and closing dir failed: %w)", myerr, errc)
 						}
 					}
 					if (errr == nil || errr == io.EOF) && len(files) == 0 {
@@ -873,7 +875,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if myerr == nil {
 					myerr = errr
 				} else {
-					myerr = fmt.Errorf("%v (and removing the tmpdir failed: %w)", myerr, errr)
+					myerr = fmt.Errorf("%w (and removing the tmpdir failed: %w)", myerr, errr)
 				}
 			}
 		}()
@@ -945,7 +947,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			buryErr := fmt.Errorf("failed to create docker client: %w", err)
 			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -963,7 +965,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				buryErr := fmt.Errorf("failed to get docker containers: %w", errc)
 				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
 				if errb != nil {
-					buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
+					buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
 				}
 				return buryErr
 			}
@@ -1067,7 +1069,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					errk = errc
 				} else {
 					clog.Warn(ctx, "failed to kill cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid, "err", errk)
-					errk = fmt.Errorf("%v, and getting child processes failed: %w", errk, errc)
+					errk = fmt.Errorf("%w, and getting child processes failed: %w", errk, errc)
 				}
 			}
 
@@ -1077,7 +1079,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if errk == nil {
 					errk = errd
 				} else {
-					errk = fmt.Errorf("%v, and killing the docker container failed: %w", errk, errd)
+					errk = fmt.Errorf("%w, and killing the docker container failed: %w", errk, errd)
 				}
 			}
 
@@ -1094,7 +1096,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					errk = errc
 				} else {
 					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.Cmd, "pid", child.Pid)
-					errk = fmt.Errorf("%v, and killing its child process failed: %w", errk, errc)
+
+					errk = fmt.Errorf("%w, and killing its child process failed: %w", errk, errc)
 				}
 
 				go func(child *process.Process) {
@@ -1197,7 +1200,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 							if myerr == nil {
 								myerr = errg
 							} else {
-								myerr = fmt.Errorf("%v (and finding the docker container had issues: %w)", myerr, errg)
+								myerr = fmt.Errorf("%w (and finding the docker container had issues: %w)", myerr, errg)
 							}
 						}
 					}
@@ -1323,7 +1326,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	if killErr != nil {
 		if myerr != nil {
-			myerr = fmt.Errorf("%v; killing the cmd also failed: %w", myerr, killErr)
+			myerr = fmt.Errorf("%w; killing the cmd also failed: %w", myerr, killErr)
 		} else {
 			myerr = killErr
 		}
@@ -1331,7 +1334,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
 		if myerr != nil {
-			myerr = fmt.Errorf("%v; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
+			myerr = fmt.Errorf("%w; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
 		} else {
 			myerr = closeErr
 		}
@@ -1341,7 +1344,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	berr := job.TriggerBehaviours(err == nil && myerr == nil)
 	if berr != nil {
 		if myerr != nil {
-			myerr = fmt.Errorf("%v; behaviour(s) also had problem(s): %w", myerr, berr)
+			myerr = fmt.Errorf("%w; behaviour(s) also had problem(s): %w", myerr, berr)
 		} else {
 			myerr = berr
 		}
@@ -1365,7 +1368,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		}
 
 		if myerr != nil {
-			myerr = fmt.Errorf("%v; unmounting also caused problem(s): %w", myerr, unmountErr)
+			myerr = fmt.Errorf("%w; unmounting also caused problem(s): %w", myerr, unmountErr)
 		} else {
 			myerr = unmountErr
 		}
@@ -1409,7 +1412,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			cmdOut = fmt.Sprintf(" [sterr: %s]", string(finalStdErr))
 		}
 
-		if exitError, ok := err.(*exec.ExitError); ok {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
 			exitcode = exitError.Sys().(syscall.WaitStatus).ExitStatus()
 			switch exitcode {
 			case 126:
@@ -1588,11 +1592,11 @@ func (c *Client) createLSFSymlinks(prependPath string, job *Job) error {
 	wr, erre := os.Executable()
 	if erre != nil {
 		errb := c.Bury(job, nil, FailReasonCwd)
-		extra := ""
 		if errb != nil {
-			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			return fmt.Errorf("could not get path to wr: %w (and burying the job failed: %w)", erre, errb)
 		}
-		return fmt.Errorf("could not get path to wr: %s%s", erre, extra)
+
+		return fmt.Errorf("could not get path to wr: %w", erre)
 	}
 
 	bsub := filepath.Join(prependPath, "bsub")
@@ -1601,29 +1605,29 @@ func (c *Client) createLSFSymlinks(prependPath string, job *Job) error {
 	err := os.Symlink(wr, bsub)
 	if err != nil {
 		errb := c.Bury(job, nil, FailReasonCwd)
-		extra := ""
 		if errb != nil {
-			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			return fmt.Errorf("could not create bsub symlink: %w (and burying the job failed: %w)", err, errb)
 		}
-		return fmt.Errorf("could not create bsub symlink: %s%s", err, extra)
+
+		return fmt.Errorf("could not create bsub symlink: %w", err)
 	}
 	err = os.Symlink(wr, bjobs)
 	if err != nil {
 		errb := c.Bury(job, nil, FailReasonCwd)
-		extra := ""
 		if errb != nil {
-			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			return fmt.Errorf("could not create bjobs symlink: %w (and burying the job failed: %w)", err, errb)
 		}
-		return fmt.Errorf("could not create bjobs symlink: %s%s", err, extra)
+
+		return fmt.Errorf("could not create bjobs symlink: %w", err)
 	}
 	err = os.Symlink(wr, bkill)
 	if err != nil {
 		errb := c.Bury(job, nil, FailReasonCwd)
-		extra := ""
 		if errb != nil {
-			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			return fmt.Errorf("could not create bkill symlink: %w (and burying the job failed: %w)", err, errb)
 		}
-		return fmt.Errorf("could not create bkill symlink: %s%s", err, extra)
+
+		return fmt.Errorf("could not create bkill symlink: %w", err)
 	}
 
 	return nil
