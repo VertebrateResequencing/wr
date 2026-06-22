@@ -26,6 +26,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -51,6 +52,53 @@ const (
 	statusTestReqGroup = "status"
 	statusTestRepGroup = "status-filter"
 )
+
+func TestStatusSchedulerAlertsFooter(t *testing.T) {
+	Convey("wr status renders scheduler alerts as a footer", t, func() {
+		alerts := &jobqueue.SchedulerAlerts{
+			Issues: []*jobqueue.SchedulerIssue{
+				{
+					Msg:       "scheduler backed off",
+					FirstDate: 1710000000,
+					LastDate:  1710000060,
+					Count:     2,
+				},
+			},
+			BadServers: []*jobqueue.BadServer{
+				{
+					ID:      "serverid-footer-alert",
+					Name:    "worker-alert",
+					IP:      "192.168.0.9",
+					Date:    1710000120,
+					IsBad:   true,
+					Problem: "boot failed",
+				},
+				{
+					ID:    "serverid-footer-maybe",
+					Name:  "worker-maybe",
+					IP:    "192.168.0.10",
+					Date:  1710000180,
+					IsBad: false,
+				},
+			},
+		}
+
+		var output bytes.Buffer
+
+		writeStatusAlertsFooter(&output, alerts)
+
+		got := output.String()
+		So(got, ShouldContainSubstring, "Scheduler alerts:")
+		So(got, ShouldContainSubstring, "Scheduler Issue")
+		So(got, ShouldContainSubstring, "scheduler backed off")
+		So(got, ShouldContainSubstring, "reported 2 times")
+		So(got, ShouldContainSubstring, "Bad server")
+		So(got, ShouldContainSubstring, "worker-alert")
+		So(got, ShouldContainSubstring, "boot failed")
+		So(got, ShouldContainSubstring, "worker-maybe")
+		So(got, ShouldContainSubstring, "might be dead")
+	})
+}
 
 func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 	Convey("wr status filters pending and dependent jobs", t, func() {
@@ -171,6 +219,79 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 				So(err.Error(), ShouldContainSubstring, tc.want)
 			})
 		}
+	})
+}
+
+func TestStatusTableOutput(t *testing.T) {
+	Convey("wr status renders an aligned table", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		jobs := []*jobqueue.Job{
+			{
+				Cmd:          "echo status table one",
+				Cwd:          statusTestCwd,
+				ReqGroup:     statusTestReqGroup,
+				Requirements: reqs,
+				RepGroup:     statusTestRepGroup,
+			},
+			{
+				Cmd:          "echo status table two",
+				Cwd:          statusTestCwd,
+				ReqGroup:     statusTestReqGroup,
+				Requirements: reqs,
+				RepGroup:     statusTestRepGroup,
+			},
+		}
+		inserts, already, err := jq.Add(jobs, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		output := runStatusForTest(t, "--output", "table")
+		lines := nonEmptyStatusLines(output)
+
+		So(lines, ShouldHaveLength, 2)
+		So(lines[0], ShouldContainSubstring, "Command")
+		So(lines[0], ShouldContainSubstring, "ID")
+		So(lines[0], ShouldContainSubstring, "Status")
+		So(lines[0], ShouldContainSubstring, "Attempts")
+		So(lines[0], ShouldContainSubstring, "Host")
+		So(lines[0], ShouldContainSubstring, "Requirements group")
+		So(lines[0], ShouldContainSubstring, "Count")
+		So(lines[1], ShouldContainSubstring, "echo status table")
+		So(lines[1], ShouldContainSubstring, "ready")
+		So(lines[1], ShouldContainSubstring, statusTestReqGroup)
+		So(lines[1], ShouldContainSubstring, "2")
+		So(strings.Count(output, "echo status table"), ShouldEqual, 1)
+
+		t.Setenv("WR_STATUS_FORMAT", "status:9 count:5")
+
+		output = runStatusForTest(t, "--output", "t")
+		lines = nonEmptyStatusLines(output)
+
+		So(lines, ShouldHaveLength, 2)
+		So(lines[0], ShouldContainSubstring, "Status")
+		So(lines[0], ShouldContainSubstring, "Count")
+		So(lines[0], ShouldNotContainSubstring, "Command")
+		So(lines[1], ShouldContainSubstring, "ready")
+		So(lines[1], ShouldContainSubstring, "2")
 	})
 }
 
@@ -349,4 +470,16 @@ func startStatusTestServer(ctx context.Context, t *testing.T) (
 	So(err, ShouldBeNil)
 
 	return testConfig, serverConfig, addr, reqs, server, token
+}
+
+func nonEmptyStatusLines(output string) []string {
+	var lines []string
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+
+	return lines
 }

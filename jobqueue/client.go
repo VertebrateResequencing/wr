@@ -194,6 +194,7 @@ type Client struct {
 	sync.Mutex
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
 	token      []byte
+	timeout    time.Duration
 	ServerInfo *ServerInfo
 	host       string
 	port       string
@@ -295,6 +296,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		sock:     sock,
 		ch:       new(codec.BincHandle),
 		token:    token,
+		timeout:  timeout,
 		clientid: u,
 		host:     addrParts[0],
 		port:     addrParts[1],

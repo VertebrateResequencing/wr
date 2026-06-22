@@ -96,7 +96,7 @@ option that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.
 
-There are 4 output formats to choose from with -o (you can shorten the output
+There are 6 output formats to choose from with -o (you can shorten the output
 name to just the first letter, eg. -o c):
   "counts" just displays the count of jobs in each possible state.
   "summary" shows the counts broken down by report group, along with the mean
@@ -113,6 +113,8 @@ name to just the first letter, eg. -o c):
   "plain" outputs 2 tab separated columns: internal job id and current state of
 	that job. Possible states are: delayed, ready, reserved, running, lost,
 	buried, complete. If any jobs are buried, exits non-0 as well.
+  "table" outputs one aligned row per status group. Columns can be customised
+    with WR_STATUS_FORMAT using FIELD:width entries.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
     documentation for wr's REST API. If more than 1000 buried jobs get
@@ -146,7 +148,7 @@ redirect (eg. "mycmd > stdout.txt").
 			}
 		}()
 
-		if !strings.HasPrefix(outputFormat, "d") && !strings.HasPrefix(outputFormat, "j") {
+		if !statusOutputUsesGroupedJobs(outputFormat) {
 			statusLimit = 0
 			showEnv = false
 		}
@@ -162,7 +164,7 @@ redirect (eg. "mycmd > stdout.txt").
 		showextra := cmdFileStatus == ""
 
 		if !useFastStatus {
-			jobs = getJobsForStates(jq, cmdStates, set == 0, statusLimit, true, showEnv)
+			jobs = getJobsForStates(jq, cmdStates, set == 0, statusLimit, statusOutputGetsStd(outputFormat), showEnv)
 
 			if fromHost != "" {
 				var subset []*jobqueue.Job
@@ -514,8 +516,17 @@ redirect (eg. "mycmd > stdout.txt").
 			if err != nil {
 				die("failed to encode jobs: %s", err)
 			}
+		case "table", "t":
+			err = writeStatusTable(os.Stdout, jobs)
+			if err != nil {
+				die("failed to write status table: %s", err)
+			}
 		default:
 			die("invalid -o format specified")
+		}
+
+		if statusOutputShowsAlerts(outputFormat) {
+			writeStatusAlerts(jq)
 		}
 
 		fmt.Printf("\n")
@@ -542,7 +553,8 @@ func init() {
 	statusCmd.Flags().BoolVar(&showDependent, "dependent", false,
 		"in default or -i mode only, only show the status of dependent commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
-	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details", "['counts','summary','details','json'] output format")
+	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
+		"['counts','summary','details','plain','table','json'] output format")
 	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "in -o d mode, number of commands that share the same properties to display; 0 displays all")
 
 	statusCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
