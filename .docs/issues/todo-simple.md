@@ -182,8 +182,8 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 - **[#326 Adding a dependent job with --rerun results in unexpected behaviour](https://github.com/VertebrateResequencing/wr/issues/326)** — desired behaviour: a job added with `--rerun` should **always** be re-run even if a matching command previously completed; but if it has dependencies that are currently incomplete, it must **wait** on them exactly as it would have on first add (not run immediately, and not be skipped as a duplicate). This is scoped to how the *explicitly* re-added job is treated; wr's existing **live-dependency cascade stays as-is** — re-running a parent already auto-resurrects its downstream dependents transitively (`jobqueue/db.go` `retrieveDependentJobs`, cascade at `db.go:952-983`), which is the intended "live deps" feature, so #326 must not change it. (Selectively *disabling* that cascade would be the separate #28, which is parked in Can't Fix.) Use the simple TDD flow: first write a failing acceptance test for an explicit `--rerun` of a previously-completed dependent job (it should re-queue and wait on its incomplete deps, not be skipped as a duplicate), then fix.
 
