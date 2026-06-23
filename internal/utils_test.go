@@ -38,6 +38,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+var errLegacyEOF = errors.New("EOF") // Regression sentinel for legacy close behaviour.
+
 type wrappedEOFCloser struct{}
 
 func (wrappedEOFCloser) Close() error {
@@ -62,5 +64,21 @@ func TestUtilsErrorWrapping(t *testing.T) {
 
 			So(buff.String(), ShouldEqual, "")
 		})
+
+		Convey("LogClose still ignores legacy EOF string close errors", func() {
+			buff := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			LogClose(context.Background(), legacyEOFCloser{}, "legacy eof")
+
+			So(buff.String(), ShouldEqual, "")
+		})
 	})
+}
+
+type legacyEOFCloser struct{}
+
+func (legacyEOFCloser) Close() error {
+	return errLegacyEOF
 }

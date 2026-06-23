@@ -215,7 +215,7 @@ func ProcMeminfoMBs() (int, error) {
 // args are passed as additional context for the logger.
 func LogClose(ctx context.Context, obj io.Closer, msg string, extra ...interface{}) {
 	err := obj.Close()
-	if err != nil && !errors.Is(err, io.EOF) {
+	if err != nil && err.Error() != "EOF" && !errors.Is(err, io.EOF) {
 		extra = append(extra, "err", err)
 		clog.Warn(ctx, "failed to close "+msg, extra...)
 	}
