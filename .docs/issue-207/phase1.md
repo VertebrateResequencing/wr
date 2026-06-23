@@ -18,7 +18,7 @@ Implement `ItemStateSuspended`, `SubQueueSuspended`, suspended queue storage,
 `queue/item.go` and `queue/queue.go` tests, covering all 9 acceptance tests
 from A1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1.2: A2 - Preserve Dependency Accounting
@@ -29,5 +29,5 @@ Preserve dependency links, unresolved dependency tracking, and ready callback
 accounting for suspended parent and child items in `queue/queue.go`, covering
 all 4 acceptance tests from A2. Depends on item 1.1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

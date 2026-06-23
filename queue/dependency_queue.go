@@ -36,19 +36,30 @@ import (
 	"sync"
 )
 
+const (
+	dependencyQueueIndex = 4
+	suspendedQueueIndex  = 5
+)
+
 type depQueue struct {
 	mutex sync.RWMutex
 	items []*Item
+	index int
 }
 
 func newDependencyQueue() *depQueue {
-	return &depQueue{}
+	return &depQueue{index: dependencyQueueIndex}
+}
+
+func newSuspendedQueue() *depQueue {
+	return &depQueue{index: suspendedQueueIndex}
 }
 
 func (q *depQueue) push(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	item.queueIndexes[4] = len(q.items)
+
+	item.queueIndexes[q.index] = len(q.items)
 	q.items = append(q.items, item)
 }
 
@@ -60,7 +71,7 @@ func (q *depQueue) pop() *Item {
 		return nil
 	}
 	item := q.items[lasti]
-	item.queueIndexes[4] = -1
+	item.queueIndexes[q.index] = -1
 	q.items = q.items[:lasti]
 	return item
 }
@@ -70,19 +81,19 @@ func (q *depQueue) remove(item *Item) {
 	defer q.mutex.Unlock()
 
 	lasti := len(q.items) - 1
-	thisi := item.queueIndexes[4]
+	thisi := item.queueIndexes[q.index]
 
 	if lasti == 0 {
 		// this item was the only one in the queue, just make a new slice
 		q.items = []*Item{}
 	} else {
-		q.items[thisi] = q.items[lasti]        // copy the item at the end to where this item was
-		q.items[thisi].queueIndexes[4] = thisi // update the index of the item we just moved
-		q.items[lasti] = nil                   // set the value at the end to nil so it can be garbage collected
-		q.items = q.items[:lasti]              // reduce the length of the slice
+		q.items[thisi] = q.items[lasti]              // copy the item at the end to where this item was
+		q.items[thisi].queueIndexes[q.index] = thisi // update the index of the item we just moved
+		q.items[lasti] = nil                         // set the value at the end to nil so it can be garbage collected
+		q.items = q.items[:lasti]                    // reduce the length of the slice
 	}
 
-	item.queueIndexes[4] = -1
+	item.queueIndexes[q.index] = -1
 }
 
 func (q *depQueue) len() int {

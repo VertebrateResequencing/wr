@@ -148,6 +148,28 @@ func testItemBody(t *testing.T) {
 			So(item.state, ShouldEqual, ItemStateReady)
 		})
 
+		Convey("Switching to and from suspended updates properties", func() {
+			item.switchDelaySuspended()
+			So(item.queueIndexes[0], ShouldEqual, -1)
+			So(item.readyAt, ShouldBeZeroValue)
+			So(item.state, ShouldEqual, ItemStateSuspended)
+
+			item.queueIndexes[5] = 1
+			item.switchSuspendedReady()
+			So(item.queueIndexes[5], ShouldEqual, -1)
+			So(item.state, ShouldEqual, ItemStateReady)
+
+			item.queueIndexes[1] = 1
+			item.switchReadySuspended()
+			So(item.queueIndexes[1], ShouldEqual, -1)
+			So(item.state, ShouldEqual, ItemStateSuspended)
+
+			item.queueIndexes[5] = 1
+			item.switchSuspendedDependent()
+			So(item.queueIndexes[5], ShouldEqual, -1)
+			So(item.state, ShouldEqual, ItemStateDependent)
+		})
+
 		Convey("Properties can be easily cleared out following removal", func() {
 			item.removalCleanup()
 			So(item.queueIndexes[2], ShouldEqual, -1)
