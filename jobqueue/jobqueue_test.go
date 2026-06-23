@@ -8502,6 +8502,34 @@ func setDomainIP(domain string) {
 	}
 }
 
+// Test reliability conventions
+//
+// The server/runner integration tests run as many concurrent `go test`
+// processes (see the Makefile), so on a busy or oversubscribed machine any
+// single test can be starved of CPU at an arbitrary moment. Tests must
+// therefore never depend on real-clock timing to observe asynchronous state.
+// When adding or changing tests, prefer these patterns over fixed delays:
+//
+//   - Don't assert on asynchronously-updated state (a job's server-side state,
+//     a count, a file, a websocket message) after a fixed sleep. Poll for the
+//     condition with a generous upper bound instead: pollUntil, waitUntilJobState
+//     and waitUntilFileExists here, waitForJobState in mockrunner_test.go, and
+//     the waitFor* helpers in jobqueue_runners2_test.go. A poll returns as soon
+//     as the condition holds, so it doesn't slow the happy path. A fixed sleep
+//     is only justified when the wait itself is under test, and even then poll
+//     for the resulting state rather than sampling once at a fixed offset.
+//
+//   - Give test servers timings that tolerate load by default. An ItemTTR short
+//     enough that a slow reserve->Started gap (under load) trips the lost-job
+//     logic makes unrelated reserve+Execute scenarios fail with "bad job"; use a
+//     TTR with headroom and set a short one only in the scenario that actually
+//     exercises TTR/lost-job behaviour.
+//
+//   - Don't fire-and-forget a goroutine with a process-wide effect (sending an
+//     OS signal, killing a shared server) on a fixed timer. Make it cancellable
+//     and stop it before the test returns, so a delayed effect can't leak into a
+//     later test.
+
 // testPortNext is the per-lane sequential offset used by freeTestPort. The
 // tests in a lane run sequentially, so it needs no synchronisation.
 var testPortNext int //nolint:gochecknoglobals
