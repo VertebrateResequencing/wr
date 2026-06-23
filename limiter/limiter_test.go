@@ -264,7 +264,9 @@ func TestLimiter(t *testing.T) {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
+
 					<-start
+
 					groups := []string{"l4", "l5"}
 					if i%2 == 0 {
 						groups = []string{"l5", "l4"}
@@ -281,6 +283,7 @@ func TestLimiter(t *testing.T) {
 					}
 				}(i)
 			}
+
 			close(start)
 			wg.Wait()
 

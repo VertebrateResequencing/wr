@@ -1324,7 +1324,7 @@ func TestJobqueueSignal(t *testing.T) {
 					select {
 					case <-time.After(2 * time.Second):
 						if errk := syscall.Kill(os.Getpid(), syscall.SIGTERM); errk != nil {
-							fmt.Printf("failed to send SIGTERM: %s\n", errk)
+							log.Printf("failed to send SIGTERM: %s\n", errk)
 						}
 					case <-sigDone:
 					}
@@ -3882,6 +3882,7 @@ func TestJobqueueMedium(t *testing.T) {
 				// poll for the server's view to reflect the completion instead
 				// of assuming it lands within a fixed few ms.
 				var gottenJobs []*Job
+
 				So(pollUntil(func() bool {
 					gottenJobs, err = jq.GetByRepGroup("dep1", false, 0, "", false, false)
 
@@ -4130,6 +4131,7 @@ func TestJobqueueMedium(t *testing.T) {
 				// poll for the server's view to reflect the completion instead
 				// of assuming it lands within a fixed few ms.
 				var gottenJobs []*Job
+
 				So(pollUntil(func() bool {
 					gottenJobs, err = jq.GetByRepGroup("dep1", false, 0, "", false, false)
 
