@@ -470,6 +470,8 @@ func TestServerWebI(t *testing.T) {
 					err = ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 					So(err, ShouldBeNil)
 
+					defer clearReadDeadlineBestEffort(ws)
+
 				collectLoop:
 					for {
 						select {
@@ -973,6 +975,7 @@ func TestServerWebI(t *testing.T) {
 				}()
 
 				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws)
 
 				for {
 					_, data, errr := ws.ReadMessage()
@@ -999,7 +1002,7 @@ func TestServerWebI(t *testing.T) {
 				close(resendStop)
 				<-resendDone
 
-				So(ws.SetReadDeadline(time.Time{}), ShouldBeNil)
+				clearReadDeadlineBestEffort(ws)
 				So(foundMessage, ShouldBeTrue)
 
 				err = ws.WriteJSON(jstatusReq{
@@ -1090,6 +1093,7 @@ func TestServerWebI(t *testing.T) {
 				}()
 
 				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws)
 
 				for {
 					var msg BadServer
@@ -1114,7 +1118,7 @@ func TestServerWebI(t *testing.T) {
 				close(resendStop)
 				<-resendDone
 
-				So(ws.SetReadDeadline(time.Time{}), ShouldBeNil)
+				clearReadDeadlineBestEffort(ws)
 
 				So(foundBadServer, ShouldBeTrue)
 
@@ -1231,6 +1235,7 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 		close(releaseInitialStatus)
 
 		So(ws.SetReadDeadline(time.Now().Add(2*time.Second)), ShouldBeNil)
+		defer clearReadDeadlineBestEffort(ws)
 
 		initialStatus, err := readUntilStatus(ws)
 		So(err, ShouldBeNil)
@@ -1311,6 +1316,7 @@ func testNoMoreMessages(ws *websocket.Conn) bool {
 	if err != nil {
 		return false
 	}
+	defer clearReadDeadlineBestEffort(ws)
 
 	err = ws.ReadJSON(&msg)
 
