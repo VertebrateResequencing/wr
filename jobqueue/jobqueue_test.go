@@ -1487,7 +1487,7 @@ func TestJobqueueSignal(t *testing.T) {
 						return
 					}
 
-					t.Logf("job2 had err %s, expected %q", erre, expectedSignalErr)
+					t.Logf("job2 had err %v, expected %q", erre, expectedSignalErr)
 					j2worked <- false
 					return
 				case <-giveUp2:
