@@ -285,9 +285,10 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				var status JStatus
-				err = ws.ReadJSON(&status)
-				So(err, ShouldBeNil)
+				status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+					return s.RepGroup == "rg1" && s.State == JobStateComplete
+				})
+				So(ok, ShouldBeTrue)
 				So(status.RepGroup, ShouldEqual, "rg1")
 				So(status.State, ShouldEqual, JobStateComplete)
 				So(status.Cmd, ShouldEqual, "echo 2")
@@ -301,9 +302,10 @@ func TestServerWebI(t *testing.T) {
 					})
 				}()
 
-				var status2 JStatus
-				err = ws.ReadJSON(&status2)
-				So(err, ShouldBeNil)
+				status2, ok2 := readJStatusMatching(ws, func(s JStatus) bool {
+					return s.RepGroup == "rg1" && s.State == JobStateReserved
+				})
+				So(ok2, ShouldBeTrue)
 				So(status2.Cmd, ShouldEqual, "echo 1")
 				So(status2.RepGroup, ShouldEqual, "rg1")
 			})
@@ -590,9 +592,8 @@ func TestServerWebI(t *testing.T) {
 				err = ws.WriteJSON(jstatusReq{Key: jobKey})
 				So(err, ShouldBeNil)
 
-				var status JStatus
-				err = ws.ReadJSON(&status)
-				So(err, ShouldBeNil)
+				status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key == jobKey })
+				So(ok, ShouldBeTrue)
 				So(status.Key, ShouldEqual, jobKey)
 				So(status.State, ShouldEqual, JobStateComplete)
 			})
@@ -1238,6 +1239,31 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 		So(pushStatus.State, ShouldEqual, JobStateRunning)
 		So(pushStatus.IsPushUpdate, ShouldBeTrue)
 	})
+}
+
+// readJStatusMatching reads JStatus messages from ws until one satisfies match
+// (or a generous deadline elapses), returning it and true, or a zero status and
+// false on timeout. The status websocket also carries unsolicited count and
+// state-change broadcast messages (a count decodes into a JStatus with an empty
+// Key), so a request's response has to be picked out rather than assuming it is
+// the very next message read - otherwise the read races those broadcasts under
+// load and sees the wrong message.
+func readJStatusMatching(ws *websocket.Conn, match func(JStatus) bool) (JStatus, bool) {
+	if err := ws.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return JStatus{}, false
+	}
+
+	for {
+		var status JStatus
+
+		if err := ws.ReadJSON(&status); err != nil {
+			return JStatus{}, false
+		}
+
+		if match(status) {
+			return status, true
+		}
+	}
 }
 
 func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
