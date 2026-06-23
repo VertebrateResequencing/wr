@@ -349,17 +349,13 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				testStatusesReceived := func(ws *websocket.Conn, expectedNum, offset, exitCode int) {
-					// Read with a deadline rather than pre-sleeping a fixed time:
-					// each ReadJSON below blocks until the next expected status
-					// arrives (or the deadline lapses), which is robust to the
-					// broadcast being slow under heavy parallel-test load.
-					So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
-
+					// The status websocket also carries unsolicited count
+					// broadcasts (which decode into a JStatus with an empty Key),
+					// so for each expected job read until the next real job status
+					// rather than asserting on whatever message arrives next.
 					for i := range expectedNum {
-						var status JStatus
-
-						err = ws.ReadJSON(&status)
-						So(err, ShouldBeNil)
+						status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
+						So(ok, ShouldBeTrue)
 						So(status.RepGroup, ShouldEqual, "pg_repgroup")
 						So(status.State, ShouldEqual, JobStateBuried)
 						So(status.Exitcode, ShouldEqual, exitCode)
@@ -487,6 +483,12 @@ func TestServerWebI(t *testing.T) {
 								break collectLoop
 							}
 
+							if status.Key == "" {
+								// skip interleaved count broadcasts; only the
+								// search's job results have a Key.
+								continue
+							}
+
 							statuses = append(statuses, status)
 						}
 					}
@@ -563,15 +565,10 @@ func TestServerWebI(t *testing.T) {
 					})
 					So(err, ShouldBeNil)
 
-					// Read with a deadline instead of a fixed pre-sleep: the
-					// single matching status is awaited up to the deadline, which
-					// tolerates a slow broadcast under heavy parallel-test load.
-					So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
-
-					var status JStatus
-
-					err = ws.ReadJSON(&status)
-					So(err, ShouldBeNil)
+					// skip any interleaved count broadcast (empty Key) and read
+					// the real job status the request asked for.
+					status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
+					So(ok, ShouldBeTrue)
 					So(status.RepGroup, ShouldEqual, "pg_repgroup")
 					So(status.State, ShouldEqual, JobStateBuried)
 					So(status.Exitcode, ShouldEqual, 2)
