@@ -26,7 +26,6 @@
 package jobqueue
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,14 +39,13 @@ const (
 	cgroupV2OOMKillKey = cgroupOOMKillKey
 	cgroupV1OOMKillKey = cgroupOOMKillKey
 	cgroupLineParts    = 3
+	cgroupOOMMissing   = "cgroup OOM kill count missing"
 )
 
 const (
 	procRoot   = "/proc"
 	cgroupRoot = "/sys/fs/cgroup"
 )
-
-var errCgroupOOMKillCountMissing = errors.New("cgroup OOM kill count missing")
 
 const shellSignalExitCodeOffset = 128
 
@@ -82,6 +80,15 @@ func cgroupOOMCounterFromLine(line, root string) (cgroupOOMCounter, bool) {
 	}
 
 	return cgroupOOMCounter{}, false
+}
+
+type cgroupOOMKillCountMissingError struct {
+	key  string
+	path string
+}
+
+func (err cgroupOOMKillCountMissingError) Error() string {
+	return fmt.Sprintf("%s: %s in %s", cgroupOOMMissing, err.key, err.path)
 }
 
 type cgroupOOMMonitor struct {
@@ -157,7 +164,7 @@ func readCgroupOOMKillCount(path, key string) (uint64, error) {
 		return count, nil
 	}
 
-	return 0, fmt.Errorf("%w: %s in %s", errCgroupOOMKillCountMissing, key, path)
+	return 0, cgroupOOMKillCountMissingError{key: key, path: path}
 }
 
 func appendHighMemoryNote(err error, peakRAM, requiredRAM int) error {
