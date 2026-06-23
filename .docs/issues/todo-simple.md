@@ -231,7 +231,7 @@ Promoted from todo-complex now that the audit is done and every decision is made
 ## fix/memory-kill-attribution
 
 - [x] Implemented
-- [ ] Reviewed
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 
