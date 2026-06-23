@@ -124,42 +124,10 @@ implementation. Each has its own section and checklist; the **Questions for you*
 lines now have answers recorded inline.
 
 Items that became unambiguous and focused enough once answered have been **promoted
-to `todo-simple.md`** (#506, #288, #322, #333, #326, #251, #20); a few were moved to
-the **Can't Fix** list in `lists.md` (#287, #194, #28). What remains below either
-still needs a design decision (#502, #316, #290) or is a sprawling multi-layer
-feature worth speccing as a project (#207, #197, #98, #19).
-
----
-
-## #502 Distinguish "killed for high memory" from "failed for another reason but used more memory than expected"
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** A job that fails for an unrelated reason but happens to exceed its expected peak RAM is reported as `FailReasonRAM` ("command used too much RAM"), masking the real cause.
-
-**Current knowledge:** the runner sets `FailReasonRAM` / `ranoutMem` whenever peak memory exceeded the estimate; wr itself also kills jobs that exceed memory. You noted on the issue that "we can only take an educated guess." The key is that wr *knows* when it deliberately killed a job for memory, versus when the process died on its own.
-
-**Suggested way forward:** only attribute the failure to RAM when wr actually killed the job for exceeding memory (track that decision in the runner); otherwise report the underlying exit/fail reason, optionally appending a clearly non-authoritative note that peak memory also exceeded the estimate.
-
-**Questions for you:**
-1. When a job fails for another reason **and** exceeded expected memory, what should status show — the real reason plus a "note: peak memory also exceeded the estimate" addendum, or a brand-new distinct FailReason?
-   - I believe there is a mechanism that based on the FailReason the job gets rescheduled with more expected memory. That must always happen if peak memory exceeded the expected. If some other reason is known, figure out the simplest way of also giving it to the user.
-2. Is detecting external OOM-killer kills (SIGKILL / exit 137, possibly via dmesg) in scope, or only wr-initiated memory kills?
-   - external kills is the main scope; wr-initiated kills almost never happen in real life
-3. Exact wording of the clarified message(s)?
-   - if the other reason already has a message, just list/concatenate the messages
-4. How should wr detect that a failure was genuinely caused by memory (the still-open detection method)?
-   - Read the cgroup OOM-kill counter where the job has its own cgroup — cgroup v2 `memory.events` `oom_kill` (cgroup v1: `memory.oom_control`); a non-zero delta over the run is a definitive kernel OOM-kill, reported as `FailReasonRAM`. Where the job is not in its own attributable cgroup (e.g. the cloud/`local` scheduler, which forks into a shared cgroup), fall back to the heuristic: the child was killed by SIGKILL (`WaitStatus.Signaled() && Signal()==SIGKILL`, i.e. "exit 137") together with peak >= estimate. Both paths must be testable (force a cgroup OOM with a low `memory.max`; simulate a SIGKILL for the fallback).
-5. The auto-reschedule with more RAM is currently keyed on `FailReason == FailReasonRAM` (`server.go:1889`). If we now report the real reason instead of RAM, does the memory bump still happen?
-   - Yes — always bump when peak exceeded the estimate. Decouple the bump from `FailReason`: trigger it whenever `job.PeakRAM > job.Requirements.RAM`, regardless of the reported reason (preserves the Q1 "must always happen" requirement while freeing `FailReason` to carry the true cause).
-6. Today `ranoutMem` is tested before every other reason (`client.go:1430`), so it masks the real cause. What is reported in each case after the change?
-   - If OOM is confirmed, or (off-cgroup) guessed per Q4: report `FailReasonRAM`. Otherwise report the real reason (e.g. `FailReasonExit`, signal, disk, time) as primary and, when peak also exceeded the estimate, append a clearly non-authoritative note concatenating the memory message after it (per Q3). Memory is bumped either way (per Q5).
-
-**Decision (now implementation-ready):** detection method chosen (Q4) — cgroup `oom_kill` counter where the job has its own cgroup, SIGKILL/peak-exceeded heuristic fallback elsewhere; the memory bump is decoupled from `FailReason` and fires on `PeakRAM > Requirements.RAM` (Q5); the reported reason is the real cause with a concatenated non-authoritative memory note unless an OOM is confirmed (Q6). Ready to spec.
+to `todo-simple.md`** (#506, #288, #322, #333, #326, #251, #20, #290, #502); a few were
+moved to the **Can't Fix** list in `lists.md` (#287, #194, #28). What remains below now
+has its decisions recorded inline and stays here only because each is a sprawling
+multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 ---
 
@@ -190,34 +158,6 @@ feature worth speccing as a project (#207, #197, #98, #19).
    - Keep a persistent record of every dep group ever seen (beyond the live-jobs bucket), persisted with the manager DB, so "never existed -> block" is separable from "existed and completed -> satisfied". Existing "live" re-evaluation is unchanged (a group whose jobs all complete satisfies dependents; new jobs added to that group re-block them). Same-batch adds (the dependency and a carrier added in one `wr add`) continue to work.
 
 **Decision (now implementation-ready):** scope is dep-group deps only (Q3); a dep-group dependency is satisfied only once >=1 job has carried that group and all such carriers are complete, while a group that has *never* existed now blocks (needs a persistent "groups ever seen" record, Q5). To stop never-appearing groups becoming silent hangs, blocked jobs are warned at add time and shown distinctly/filterably in status (Q4). Existing live re-evaluation and same-batch adds are preserved. Ready to spec (release-note the behaviour change for existing pipelines).
-
----
-
-## #290 Improve efficiency of client methods
-
-- [ ] Spec produced
-- [ ] Implemented
-- [ ] Reviewed
-- [ ] Merged
-- [ ] Solved
-
-**Issue:** client methods may send more data than the server needs — e.g. does `Archive()` encode and send the whole job (including `EnvC`) when the server only considers the job's key?
-
-**Current knowledge:** needs a current audit — the recent #504 "Improve client" reworked `client/client.go` and `jobqueue/job.go`, so part of this may already be addressed; the remaining over-sending should be enumerated against what each server handler actually reads.
-
-**Suggested way forward:** audit the client→server methods (Archive and friends), and trim each request to the minimal fields the server uses; add tests asserting payload shape where practical.
-
-**Questions for you:**
-1. Are there external go-API consumers we must stay wire-compatible with, or can we freely change the internal client/server protocol?
-   - Only need to ensure existing client pkg public methods don't change behaviour
-2. Scope — just the known offender(s) like `Archive()`, or a full audit of all client methods?
-   - Full audit
-3. Treat the "full audit" as a standalone findings doc first, or fold it into the spec and fix directly?
-   - The audit is done and small: `Archive`, `Release`, `Bury`, `Touch` send the whole `Job` (incl. the compressed `EnvC` blob) when the server only needs the key (+ `FailReason` for Release/Bury, + `JobEndState` for Archive/Bury); `Kill`/`Delete`/`Modify`/`Kick` already send keys only. Fold the audit into the #290 spec and trim those four directly — no separate doc-only deliverable.
-4. How do we trim without breaking the public client API, and how is it tested?
-   - Trim the wire payload only — populate a key (plus the few needed fields) in the request instead of the whole `*Job` — keeping every public method signature and behaviour identical. `Touch` overlaps with #98 (which adds live peak-RAM/CPU + a stdout/err tail to the touch path), so trim Touch to "key + the live fields #98 needs" and coordinate the two. Tests assert the built request omits the large fields (e.g. `EnvC`/`Cmd` empty) rather than asserting exact wire bytes.
-
-**Decision (now implementation-ready):** the audit is complete (Q3) — the four over-senders are `Archive`/`Release`/`Bury`/`Touch`; `Kill`/`Delete`/`Modify`/`Kick` are already minimal. Fix is bounded: trim those four to a key-only (plus minimal fields) wire request, keeping public signatures unchanged (Q4), coordinating `Touch` with #98, with tests asserting the request omits large fields. Folded into the #290 spec; ready to implement.
 
 ---
 

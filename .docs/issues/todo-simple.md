@@ -216,3 +216,25 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 - [x] Solved
 
 - **[#20 Status webpage: add rerun button](https://github.com/VertebrateResequencing/wr/issues/20)** — add a "Rerun" action/button to completed jobs in the web status UI that triggers a fresh run by re-adding the command with `rerun=true`, **reusing** the existing add+rerun mechanism (no dedicated new REST action). Available for any completed job. Show a confirmation dialog of the same style as the existing job-removal confirmation.
+
+## perf/client-payload-trim
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+Promoted from todo-complex now that the audit is done and every decision is made (single focused theme; no spec needed).
+
+- **[#290 Improve efficiency of client methods](https://github.com/VertebrateResequencing/wr/issues/290)** — `Archive` (`jobqueue/client.go:1742`), `Release` (`:1769`), `Bury` (`:1811`) and `Touch` (`:1681`) encode and send the whole `*Job` (including the compressed `EnvC` env blob, std-out/err, cmd, mounts, behaviours) when the server handlers only read the job key — plus `FailReason` for release/bury and `JobEndState.Stdout/Stderr` for archive/bury (see `jobqueue/serverCLI.go` `jarchive`/`jrelease`/`jbury`/`jtouch`, ~`:581-706`, which resolve the job via `cr.Job.Key()`). `Kill`/`Delete`/`Modify`/`Kick` already send keys only — follow that pattern. Trim the **wire payload only**: populate a key (plus `FailReason`/`JobEndState` where needed) in the `clientRequest` instead of the whole job and have the handlers read from it, keeping every public method signature and behaviour identical (the only stated constraint). **Coordinate `Touch` with #98** (live introspection adds peak-RAM/CPU + a stdout/err tail to the touch path) — trim Touch to "key + the fields #98 needs". Add a test asserting the built request omits the large fields (e.g. `EnvC`/`Cmd` empty) rather than checking exact wire bytes. Audit complete: these four are the only over-senders.
+
+## fix/memory-kill-attribution
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+Promoted from todo-complex now that the OOM-detection method is decided. Single focused theme (runner + one server condition); the cgroup-confirm path is hard to exercise in CI, so use a reviewer worker to cover it.
+
+- **[#502 Distinguish "killed for high memory" from "failed for another reason but used more memory than expected"](https://github.com/VertebrateResequencing/wr/issues/502)** — the runner's exit-handling switch tests `ranoutMem` (just `peakmem > job.Requirements.RAM`, set at `jobqueue/client.go:1225`) **before** every other reason (`client.go:1430`), so any job that merely peaked over its estimate is reported as `FailReasonRAM`, masking the real cause. Fix in three parts: (1) **only report `FailReasonRAM` when wr can attribute the death to memory** — read the cgroup OOM-kill counter where the job has its own cgroup (cgroup v2 `memory.events` `oom_kill`, v1 `memory.oom_control`; resolve via `/proc/<pid>/cgroup`), and where it isn't in its own attributable cgroup (cloud/`local` scheduler) fall back to the heuristic "child killed by SIGKILL (`WaitStatus.Signaled() && Signal()==SIGKILL`) with peak >= estimate"; (2) **otherwise report the real reason** (`FailReasonExit`/signal/disk/time) and, when peak also exceeded the estimate, append a non-authoritative note concatenating the memory message after it; (3) **decouple the auto-reschedule-with-more-RAM from `FailReason`** — the server bumps only on `case FailReasonRAM` (`server.go:1889`); change it to bump whenever `job.PeakRAM > job.Requirements.RAM`, so expected memory always grows on retry regardless of the reported reason. Scope: external OOM kills (wr-initiated kills almost never happen). Tests: the reorder/decouple/concat/SIGKILL-fallback paths TDD directly; the cgroup-confirm path needs a unit test over fabricated `memory.events` content (forcing a real kernel OOM in CI is impractical).
