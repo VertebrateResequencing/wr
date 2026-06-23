@@ -1477,11 +1477,17 @@ func TestJobqueueSignal(t *testing.T) {
 				}()
 				select {
 				case erre := <-errch:
-					if erre != nil && strings.Contains(erre.Error(), "exited with code -1") {
+					expectedSignalErr := fmt.Sprintf(
+						"terminated by signal %s (shell exit code %d)",
+						syscall.SIGKILL,
+						shellSignalExitCodeOffset+int(syscall.SIGKILL),
+					)
+					if erre != nil && strings.Contains(erre.Error(), expectedSignalErr) {
 						j2worked <- true
 						return
 					}
-					fmt.Printf("\njob2 had err %s\n", erre)
+
+					t.Logf("job2 had err %s, expected %q", erre, expectedSignalErr)
 					j2worked <- false
 					return
 				case <-giveUp2:
@@ -4925,8 +4931,14 @@ func TestJobqueueModify(t *testing.T) {
 				return
 			}
 
-			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
-			addJobs = append(addJobs, &Job{Cmd: "echo b && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "b"})
+			addJobs = append(addJobs, &Job{
+				Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup",
+				Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a",
+			})
+			addJobs = append(addJobs, &Job{
+				Cmd: "echo b && false", Cwd: tmp, ReqGroup: "rgroup",
+				Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "b",
+			})
 			add(2)
 
 			jm.SetCmd("echo b && false")
