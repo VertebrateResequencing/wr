@@ -107,6 +107,10 @@ type Config struct {
 	ManagerDir           string `default:"~/.wr"`
 	ManagerPidFile       string `default:"pid"`
 	ManagerLogFile       string `default:"log"`
+	LogsMaxSizeMB        int    `default:"500"`
+	LogsMaxBackups       int    `default:"3"`
+	LogsMaxAgeDays       int    `default:"28"`
+	LogsCompress         bool   `default:"true"`
 	ManagerDBFile        string `default:"db"`
 	ManagerDBBkFile      string `default:"db_bk"`
 	ManagerTokenFile     string `default:"client.token"`

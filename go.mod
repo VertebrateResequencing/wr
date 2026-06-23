@@ -44,6 +44,7 @@ require (
 	go.etcd.io/bbolt v1.4.3
 	go.nanomsg.org/mangos/v3 v3.4.2
 	golang.org/x/crypto v0.53.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	vimagination.zapto.org/parser v1.2.3
 )
 

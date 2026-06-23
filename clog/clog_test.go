@@ -31,8 +31,10 @@ import (
 	"io"
 	"log/syslog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -43,6 +45,85 @@ import (
 	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+func TestFileLogRotation(t *testing.T) {
+	Convey("File logging rotates when the active log grows beyond the configured size", t, func() {
+		logPath := filepath.Join(t.TempDir(), "clog.log")
+
+		ConfigureFileRotation(FileRotationConfig{
+			MaxSizeMB:  1,
+			MaxBackups: 2,
+			MaxAgeDays: 1,
+			Compress:   false,
+		})
+		defer ConfigureFileRotation(DefaultFileRotationConfig())
+		defer ToDefault()
+
+		err := ToFileAtLevel(logPath, "info")
+		So(err, ShouldBeNil)
+
+		payload := strings.Repeat("x", 300*1024)
+		for i := range 5 {
+			Info(context.Background(), "rotation test", "idx", i, "payload", payload)
+		}
+
+		activeInfo, err := os.Stat(logPath)
+		So(err, ShouldBeNil)
+		So(activeInfo.Size(), ShouldBeLessThanOrEqualTo, int64(1024*1024))
+
+		activeContent, err := os.ReadFile(logPath)
+		So(err, ShouldBeNil)
+		So(string(activeContent), ShouldContainSubstring, "idx=4")
+
+		rotatedLogs, err := filepath.Glob(filepath.Join(filepath.Dir(logPath), "clog-*.log"))
+		So(err, ShouldBeNil)
+		So(len(rotatedLogs), ShouldBeGreaterThan, 0)
+	})
+}
+
+func TestFileRotationConfig(t *testing.T) {
+	Convey("Non-positive file rotation sizes fall back to the package default", t, func() {
+		defaultConfig := DefaultFileRotationConfig()
+		defer ConfigureFileRotation(defaultConfig)
+
+		ConfigureFileRotation(FileRotationConfig{
+			MaxSizeMB:  0,
+			MaxBackups: 2,
+			MaxAgeDays: 7,
+			Compress:   false,
+		})
+
+		config := currentFileRotationConfig()
+		So(config.MaxSizeMB, ShouldEqual, defaultConfig.MaxSizeMB)
+		So(config.MaxBackups, ShouldEqual, 2)
+		So(config.MaxAgeDays, ShouldEqual, 7)
+		So(config.Compress, ShouldBeFalse)
+
+		ConfigureFileRotation(FileRotationConfig{
+			MaxSizeMB:  -1,
+			MaxBackups: 4,
+			MaxAgeDays: 21,
+			Compress:   true,
+		})
+
+		config = currentFileRotationConfig()
+		So(config.MaxSizeMB, ShouldEqual, defaultConfig.MaxSizeMB)
+		So(config.MaxBackups, ShouldEqual, 4)
+		So(config.MaxAgeDays, ShouldEqual, 21)
+		So(config.Compress, ShouldBeTrue)
+	})
+}
+
+func TestCreateFileHandlersAtLevels(t *testing.T) {
+	Convey("File handlers require at least one level", t, func() {
+		logPath := filepath.Join(t.TempDir(), "clog.log")
+
+		handlers, err := CreateFileHandlersAtLevels(logPath)
+
+		So(handlers, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+	})
+}
 
 func TestLogger(t *testing.T) {
 	background := context.Background()
@@ -356,10 +437,17 @@ func TestLogger(t *testing.T) {
 	})
 
 	Convey("CreateFileHandler can be used to create a file handler", t, func() {
+		oldUmask := syscall.Umask(0)
+		defer syscall.Umask(oldUmask)
+
 		logPath := ft.FilePathInTempDir(t, "clog.log")
 		fh, err := CreateFileHandlerAtLevel(logPath, "warn")
 		So(err, ShouldBeNil)
 		So(fh, ShouldNotBeNil)
+
+		logInfo, err := os.Stat(logPath)
+		So(err, ShouldBeNil)
+		So(logInfo.Mode().Perm(), ShouldEqual, os.FileMode(0o600))
 
 		Convey("Unless the path is invalid", func() {
 			fh, err := CreateFileHandlerAtLevel("", "warn")

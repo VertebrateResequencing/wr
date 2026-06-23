@@ -123,6 +123,12 @@ func init() {
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	config = internal.ConfigLoadFromCurrentDir(context.Background(), deployment)
+	clog.ConfigureFileRotation(clog.FileRotationConfig{
+		MaxSizeMB:  config.LogsMaxSizeMB,
+		MaxBackups: config.LogsMaxBackups,
+		MaxAgeDays: config.LogsMaxAgeDays,
+		Compress:   config.LogsCompress,
+	})
 	addr = config.ManagerHost + ":" + config.ManagerPort
 	caFile = config.ManagerCAFile
 }

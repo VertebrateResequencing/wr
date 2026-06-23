@@ -29,14 +29,113 @@ package clog
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"sync"
 
 	log "github.com/inconshreveable/log15/v3"
 	"github.com/sb10/l15h/v2"
+	"gopkg.in/natefinch/lumberjack.v2"
+)
+
+const (
+	defaultFileRotationMaxSizeMB  = 500
+	defaultFileRotationMaxBackups = 3
+	defaultFileRotationMaxAgeDays = 28
+	defaultFileRotationCompress   = true
+	logFilePerm                   = 0o600
 )
 
 // osExit is used to disable real os.Exit for testing purposes when calling Fatal.
 var osExit = os.Exit //nolint:gochecknoglobals // Fatal tests swap this process-exit hook.
+
+var fileRotationConfigMu sync.RWMutex //nolint:gochecknoglobals // File handlers use process-wide rotation config.
+
+var fileRotationConfig = DefaultFileRotationConfig() //nolint:gochecknoglobals // Updated during command initialization.
+
+var errNoFileHandlerLevels = errors.New("at least one file handler level is required")
+
+// FileRotationConfig controls how file-backed clog handlers rotate log files.
+type FileRotationConfig struct {
+	MaxSizeMB  int
+	MaxBackups int
+	MaxAgeDays int
+	Compress   bool
+}
+
+// DefaultFileRotationConfig returns the default log rotation settings.
+func DefaultFileRotationConfig() FileRotationConfig {
+	return FileRotationConfig{
+		MaxSizeMB:  defaultFileRotationMaxSizeMB,
+		MaxBackups: defaultFileRotationMaxBackups,
+		MaxAgeDays: defaultFileRotationMaxAgeDays,
+		Compress:   defaultFileRotationCompress,
+	}
+}
+
+func currentFileRotationConfig() FileRotationConfig {
+	fileRotationConfigMu.RLock()
+	defer fileRotationConfigMu.RUnlock()
+
+	return fileRotationConfig
+}
+
+// ConfigureFileRotation sets the rotation settings used by new file handlers.
+func ConfigureFileRotation(config FileRotationConfig) {
+	if config.MaxSizeMB <= 0 {
+		config.MaxSizeMB = defaultFileRotationMaxSizeMB
+	}
+
+	fileRotationConfigMu.Lock()
+	defer fileRotationConfigMu.Unlock()
+
+	fileRotationConfig = config
+}
+
+func createRotatingFileHandler(path string) (log.Handler, error) {
+	if err := validateFileHandlerPath(path); err != nil {
+		return nil, err
+	}
+
+	config := currentFileRotationConfig()
+	writer := &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    config.MaxSizeMB,
+		MaxBackups: config.MaxBackups,
+		MaxAge:     config.MaxAgeDays,
+		Compress:   config.Compress,
+	}
+
+	return log.StreamHandler(writer, log.LogfmtFormat()), nil
+}
+
+func validateFileHandlerPath(path string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, logFilePerm)
+	if err != nil {
+		return err
+	}
+
+	return file.Close()
+}
+
+// CreateFileHandlersAtLevels returns log15 file handlers for one shared file.
+func CreateFileHandlersAtLevels(path string, levels ...string) ([]log.Handler, error) {
+	if len(levels) == 0 {
+		return nil, errNoFileHandlerLevels
+	}
+
+	fh, err := createRotatingFileHandler(path)
+	if err != nil {
+		return nil, err
+	}
+
+	handlers := make([]log.Handler, 0, len(levels))
+	for _, lvl := range levels {
+		handlers = append(handlers, createFilteredInfoHandler(fh, lvlFromString(lvl)))
+	}
+
+	return handlers, nil
+}
 
 // init sets our default logging syle.
 func init() { //nolint:gochecknoinits // The package intentionally sets a default root logger.
@@ -133,12 +232,12 @@ func ContextWithFileHandler(ctx context.Context, path, lvl string) (context.Cont
 
 // CreateFileHandlerAtLevel returns a log15 file handler at the given level.
 func CreateFileHandlerAtLevel(path, lvl string) (log.Handler, error) {
-	fh, err := log.FileHandler(path, log.LogfmtFormat())
+	handlers, err := CreateFileHandlersAtLevels(path, lvl)
 	if err != nil {
 		return nil, err
 	}
 
-	return createFilteredInfoHandler(fh, lvlFromString(lvl)), nil
+	return handlers[0], nil
 }
 
 // AddHandler adds the given log15 handler to global logger.
