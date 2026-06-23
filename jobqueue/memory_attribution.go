@@ -36,8 +36,9 @@ import (
 )
 
 const (
-	cgroupV2OOMKillKey = "oom_kill"
-	cgroupV1OOMKillKey = "oom_kill"
+	cgroupOOMKillKey   = "oom_kill"
+	cgroupV2OOMKillKey = cgroupOOMKillKey
+	cgroupV1OOMKillKey = cgroupOOMKillKey
 	cgroupLineParts    = 3
 )
 
