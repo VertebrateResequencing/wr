@@ -207,7 +207,6 @@ func schedulerNeedsSigkillMemoryFallback(scheduler string) bool {
 }
 
 func sigkillMemoryFallback(status syscall.WaitStatus, peakRAM, requiredRAM int) bool {
-	return status.Signaled() && //nolint:misspell
-		status.Signal() == syscall.SIGKILL &&
+	return oomCompatibleExitStatus(status) &&
 		peakRAM >= requiredRAM
 }

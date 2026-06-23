@@ -123,18 +123,23 @@ func TestMemoryFailureAttribution(t *testing.T) {
 
 	Convey("Local and cloud schedulers use SIGKILL plus high peak as the memory fallback", t, func() {
 		status := syscall.WaitStatus(syscall.SIGKILL)
+		shellSIGKILL := syscall.WaitStatus((shellSignalExitCodeOffset + int(syscall.SIGKILL)) << 8)
 
 		So(attributedMemoryDeath(false, false, status, 200, 100, "local", true), ShouldBeTrue)
 		So(attributedMemoryDeath(false, false, status, 200, 100, "openstack", true), ShouldBeTrue)
+		So(attributedMemoryDeath(false, false, shellSIGKILL, 200, 100, "local", true), ShouldBeTrue)
 		So(attributedMemoryDeath(false, false, status, 100, 100, "local", true), ShouldBeTrue)
+		So(attributedMemoryDeath(false, false, shellSIGKILL, 50, 100, "local", true), ShouldBeFalse)
 		So(attributedMemoryDeath(false, false, status, 50, 100, "local", true), ShouldBeFalse)
 		So(attributedMemoryDeath(false, false, status, 200, 100, "lsf", true), ShouldBeFalse)
 	})
 
 	Convey("Scheduler SIGKILL fallback is suppressed after server contact is lost", t, func() {
 		status := syscall.WaitStatus(syscall.SIGKILL)
+		shellSIGKILL := syscall.WaitStatus((shellSignalExitCodeOffset + int(syscall.SIGKILL)) << 8)
 
 		So(attributedMemoryDeath(false, false, status, 200, 100, "local", false), ShouldBeFalse)
+		So(attributedMemoryDeath(false, false, shellSIGKILL, 200, 100, "local", false), ShouldBeFalse)
 		So(attributedMemoryDeath(false, true, status, 50, 100, "local", false), ShouldBeTrue)
 	})
 
@@ -168,10 +173,13 @@ func TestMemoryFailureAttribution(t *testing.T) {
 	Convey("wr's own memory kill still requires SIGKILL plus high peak", t, func() {
 		normalExit := syscall.WaitStatus(1 << 8)
 		sigkill := syscall.WaitStatus(syscall.SIGKILL)
+		shellSIGKILL := syscall.WaitStatus((shellSignalExitCodeOffset + int(syscall.SIGKILL)) << 8)
 
 		So(attributedMemoryDeath(true, false, normalExit, 200, 100, "lsf", true), ShouldBeFalse)
 		So(attributedMemoryDeath(true, false, sigkill, 200, 100, "lsf", true), ShouldBeTrue)
+		So(attributedMemoryDeath(true, false, shellSIGKILL, 200, 100, "lsf", true), ShouldBeTrue)
 		So(attributedMemoryDeath(true, false, sigkill, 50, 100, "lsf", true), ShouldBeFalse)
+		So(attributedMemoryDeath(true, false, shellSIGKILL, 50, 100, "lsf", true), ShouldBeFalse)
 	})
 }
 
