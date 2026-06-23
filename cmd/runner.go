@@ -28,6 +28,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/syslog"
 	"os"
@@ -261,7 +262,9 @@ complete.`,
 			numrun++
 			if err != nil {
 				warn("%s", err)
-				if jqerr, ok := err.(jobqueue.Error); ok {
+
+				var jqerr jobqueue.Error
+				if errors.As(err, &jqerr) {
 					if strings.Contains(jqerr.Err, jobqueue.FailReasonSignal) {
 						exitReason = "we received a signal to stop"
 						break
