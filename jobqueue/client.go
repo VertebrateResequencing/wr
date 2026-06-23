@@ -48,6 +48,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -124,6 +125,12 @@ const (
 	requestMethodSubscribe      = "subscribe"
 	requestMethodUnsubscribe    = "unsubscribe"
 	requestMethodWaitForUpdates = "waitForUpdates"
+)
+
+const (
+	exitCodeCommandPermission = 126
+	exitCodeCommandNotFound   = 127
+	exitCodeCommandInvalid    = 128
 )
 
 const (
@@ -216,6 +223,18 @@ func (cr *clientRequest) failReason() string {
 	}
 
 	return cr.Job.FailReason
+}
+
+type serverContactState struct {
+	lost atomic.Bool
+}
+
+func (state *serverContactState) recordTouchResult(err error) {
+	state.lost.Store(err != nil)
+}
+
+func (state *serverContactState) schedulerMemoryFallbackAllowed() bool {
+	return !state.lost.Load()
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -741,6 +760,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
 	var wkbsMutex sync.RWMutex
+
+	serverContact := &serverContactState{}
 	killDoneCh := make(chan bool, 1)
 	whenKilledByServer := func() {
 		killDoneCh <- true
@@ -764,9 +785,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
+					serverContact.recordTouchResult(errf)
 					clog.Warn(ctx, "could not touch", "err", errf)
 					continue
 				}
+
+				serverContact.recordTouchResult(nil)
 			case <-stopTouching:
 				touchTicker.Stop()
 				return
@@ -1044,6 +1068,13 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
 
+	var oomMonitor *cgroupOOMMonitor
+
+	monitor, errm := newCgroupOOMMonitor(cmd.Process.Pid, procRoot, cgroupRoot)
+	if errm == nil {
+		oomMonitor = monitor
+	}
+
 	// update the server that we've started the job
 	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
@@ -1072,7 +1103,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	dockerCPU := 0
 	resourceTicker := time.NewTicker(1 * time.Second)
 	machineRAM := 0
-	ranoutMem := false
+	exceededMemEstimate := false
+	killedForMem := false
 	ranoutTime := false
 	ranoutDisk := false
 	signalled := false
@@ -1270,12 +1302,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if errf == nil && mem > peakmem {
 					peakmem = mem
 
-					if peakmem > job.Requirements.RAM {
-						// if we later fail we'll assume it's because we used
-						// too much memory, but won't kill the cmd unless...
-						ranoutMem = true
+					if commandExceededMemoryEstimate(peakmem, job.Requirements.RAM) {
+						exceededMemEstimate = true
 
-						// ... it both uses more than exepected and more than
+						// ... it both uses more than expected and more than
 						// 90% of physical memory, since we could screw up the
 						// machine we're running on
 						if machineRAM == 0 {
@@ -1287,6 +1317,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 						if machineRAM > 0 && peakmem >= ((machineRAM/100)*c.percentMemoryKill) { //nolint:mnd
 							killErr = killCmd()
+							killedForMem = true
 							stateMutex.Unlock()
 							break CHECKING
 						}
@@ -1355,6 +1386,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	if errd == nil && finalDisk > peakdisk {
 		peakdisk = finalDisk
 	}
+
+	exceededMemEstimate = commandExceededMemoryEstimate(peakmem, job.Requirements.RAM)
 
 	// get the exit code and figure out what to do with the Job
 	var exitcode int
@@ -1459,48 +1492,105 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			exitcode = exitError.Sys().(syscall.WaitStatus).ExitStatus()
-			switch exitcode {
-			case 126:
-				dobury = true
-				failreason = FailReasonCPerm
-				myerr = fmt.Errorf("command [%s] exited with code %d (permission problem, or command is not executable), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
-			case 127:
-				dobury = true
-				failreason = FailReasonCFound
-				myerr = fmt.Errorf("command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
-			case 128:
-				dobury = true
-				failreason = FailReasonCExit
-				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
-			default:
+			waitStatus, ok := exitError.Sys().(syscall.WaitStatus)
+			if !ok {
+				exitcode = 255
 				dorelease = true
-				switch {
-				case ranoutMem:
-					failreason = FailReasonRAM
-					myerr = Error{"Execute", job.Key(), FailReasonRAM}
-				case ranoutDisk:
-					failreason = FailReasonDisk
-					myerr = Error{"Execute", job.Key(), FailReasonDisk}
-				case signalled:
-					if ranoutTime {
-						failreason = FailReasonTime
-						myerr = Error{"Execute", job.Key(), FailReasonTime}
-					} else {
-						failreason = FailReasonSignal
-						myerr = Error{"Execute", job.Key(), FailReasonSignal}
-					}
-				case killCalled:
+				failreason = FailReasonAbnormal
+				myerr = fmt.Errorf("command [%s] failed to complete normally (%w)%s%s", job.Cmd, err, mayBeTemp, cmdOut)
+			} else {
+				exitcode = waitStatus.ExitStatus()
+				cgroupOOM := oomMonitor.oomKillIncreased()
+
+				schedulerName := ""
+				if c.ServerInfo != nil {
+					schedulerName = c.ServerInfo.Scheduler
+				}
+
+				allowSchedulerMemoryFallback := serverContact.schedulerMemoryFallbackAllowed()
+
+				switch exitcode {
+				case exitCodeCommandPermission:
 					dobury = true
-					failreason = FailReasonKilled
-					myerr = Error{"Execute", job.Key(), FailReasonKilled}
-				case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
+					failreason = FailReasonCPerm
+					//nolint:err113
+					myerr = fmt.Errorf(
+						"command [%s] exited with code %d (permission problem, or command is not executable), "+
+							"which seems permanent, so it has been buried%s",
+						job.Cmd, exitcode, cmdOut,
+					)
+				case exitCodeCommandNotFound:
 					dobury = true
-					failreason = FailReasonExit
-					myerr = fmt.Errorf("command [%s] exited with code %d%s%s", job.Cmd, exitcode, ", after the noretries time, so will not be be tried again", cmdOut)
+					failreason = FailReasonCFound
+					//nolint:err113
+					myerr = fmt.Errorf(
+						"command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s",
+						job.Cmd, exitcode, cmdOut,
+					)
+				case exitCodeCommandInvalid:
+					dobury = true
+					failreason = FailReasonCExit
+					//nolint:err113
+					myerr = fmt.Errorf(
+						"command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s",
+						job.Cmd, exitcode, cmdOut,
+					)
 				default:
-					failreason = FailReasonExit
-					myerr = fmt.Errorf("command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
+					dorelease = true
+
+					switch {
+					case ranoutDisk:
+						failreason = FailReasonDisk
+						myerr = Error{"Execute", job.Key(), FailReasonDisk}
+					case signalled:
+						if ranoutTime {
+							failreason = FailReasonTime
+							myerr = Error{"Execute", job.Key(), FailReasonTime}
+						} else {
+							failreason = FailReasonSignal
+							myerr = Error{"Execute", job.Key(), FailReasonSignal}
+						}
+					case killCalled:
+						dobury = true
+						failreason = FailReasonKilled
+						myerr = Error{"Execute", job.Key(), FailReasonKilled}
+					case attributedMemoryDeath(
+						killedForMem,
+						cgroupOOM,
+						waitStatus,
+						peakmem,
+						job.Requirements.RAM,
+						schedulerName,
+						allowSchedulerMemoryFallback,
+					):
+						failreason = FailReasonRAM
+						myerr = Error{"Execute", job.Key(), FailReasonRAM}
+					case waitStatus.Signaled(): //nolint:misspell // Signaled is syscall's method name.
+						failreason = FailReasonSignal
+						shellExitCode := shellSignalExitCodeOffset + int(waitStatus.Signal())
+
+						//nolint:err113
+						myerr = fmt.Errorf(
+							"command [%s] terminated by signal %s (shell exit code %d)%s%s",
+							job.Cmd, waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
+						)
+					case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
+						dobury = true
+						failreason = FailReasonExit
+						//nolint:err113
+						myerr = fmt.Errorf(
+							"command [%s] exited with code %d%s%s",
+							job.Cmd, exitcode, ", after the noretries time, so will not be tried again", cmdOut,
+						)
+					default:
+						failreason = FailReasonExit
+						//nolint:err113
+						myerr = fmt.Errorf("command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
+					}
+
+					if failreason != FailReasonRAM && exceededMemEstimate {
+						myerr = appendHighMemoryNote(myerr, peakmem, job.Requirements.RAM)
+					}
 				}
 			}
 		} else {
