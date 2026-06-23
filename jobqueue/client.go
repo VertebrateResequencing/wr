@@ -119,6 +119,7 @@ var (
 )
 
 const (
+	requestMethodStart          = "jstart"
 	requestMethodSubscribe      = "subscribe"
 	requestMethodUnsubscribe    = "unsubscribe"
 	requestMethodWaitForUpdates = "waitForUpdates"
@@ -1712,7 +1713,7 @@ func (c *Client) Started(job *Job, pid int) error {
 	job.Pid = pid
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
-	_, err = c.request(&clientRequest{Method: "jstart", Job: job})
+	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: job})
 	return err
 }
 

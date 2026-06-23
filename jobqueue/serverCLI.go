@@ -552,8 +552,14 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					clog.Debug(ctx, "reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
 				}
 			} // else we'll return nothing, as if there were no jobs in the queue
-		case "jstart":
+		case requestMethodStart:
 			// update the job's cmd-started-related properties
+			if cr.Job == nil {
+				srerr = ErrBadRequest
+
+				break
+			}
+
 			var job *Job
 			_, job, srerr = s.getij(cr, true)
 			if srerr == "" {

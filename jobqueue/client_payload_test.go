@@ -26,11 +26,14 @@
 package jobqueue
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
@@ -40,8 +43,9 @@ import (
 var errCaptureSocketUnsupported = errors.New("unsupported capture socket operation")
 
 type captureSocket struct {
-	ch   codec.Handle
-	sent []byte
+	ch      codec.Handle
+	sent    []byte
+	sentMsg []byte
 }
 
 func newCaptureClient() (*Client, *captureSocket) {
@@ -75,8 +79,10 @@ func (s *captureSocket) Recv() ([]byte, error) {
 	return encoded, enc.Encode(&serverResponse{})
 }
 
-func (s *captureSocket) SendMsg(_ *mangos.Message) error {
-	return errCaptureSocketUnsupported
+func (s *captureSocket) SendMsg(msg *mangos.Message) error {
+	s.sentMsg = append([]byte(nil), msg.Body...)
+
+	return nil
 }
 
 func (s *captureSocket) RecvMsg() (*mangos.Message, error) {
@@ -132,6 +138,15 @@ func (s *captureSocket) request() *clientRequest {
 	return req
 }
 
+func (s *captureSocket) response() *serverResponse {
+	resp := &serverResponse{}
+	dec := codec.NewDecoderBytes(s.sentMsg, s.ch)
+	err := dec.Decode(resp)
+	So(err, ShouldBeNil)
+
+	return resp
+}
+
 func TestClientLifecycleRequestsTrimJobPayload(t *testing.T) {
 	Convey("Lifecycle methods send only keys and required state, not whole jobs", t, func() {
 		client, sock := newCaptureClient()
@@ -168,6 +183,47 @@ func TestClientLifecycleRequestsTrimJobPayload(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(killCalled, ShouldBeFalse)
 		assertTrimmedLifecycleRequest(sock.request(), "jtouch", job.Key(), "", touchEndState(job))
+	})
+}
+
+func TestServerRejectsKeyOnlyStartedRequest(t *testing.T) {
+	Convey("A malformed key-only jstart request is rejected instead of panicking", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			q:     queue.New(ctx, "payload-trim-start"),
+			up:    true,
+		}
+		clientID, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		job := &Job{Cmd: "echo key-only-start", ReservedBy: clientID}
+		key := job.Key()
+		_, err = server.q.Add(ctx, key, "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		So(err, ShouldBeNil)
+
+		var encoded []byte
+
+		enc := codec.NewEncoderBytes(&encoded, ch)
+		err = enc.Encode(&clientRequest{
+			Method:   requestMethodStart,
+			Token:    token,
+			ClientID: clientID,
+			Keys:     []string{key},
+		})
+		So(err, ShouldBeNil)
+
+		err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, ErrBadRequest)
+		So(sock.response().Err, ShouldEqual, ErrBadRequest)
 	})
 }
 
