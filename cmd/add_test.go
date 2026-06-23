@@ -48,7 +48,10 @@ var (
 	errUnexpectedSynchronousEnv     = errors.New("AddAndWait received unexpected env vars")
 )
 
-const synchronousAddBuriedHelper = "buried"
+const (
+	remoteManagerAddr          = "remote:1234"
+	synchronousAddBuriedHelper = "buried"
+)
 
 func TestAddQueuesAvoidDefault(t *testing.T) {
 	Convey("add queues_avoid default is applied when unset", t, func() {
@@ -67,51 +70,91 @@ func TestSynchronousAddDoesNotUsePollingHelper(t *testing.T) {
 	})
 }
 
-func TestAddEnvVarsForRemoteManagers(t *testing.T) {
+func TestAddRemoteSameAsLocal(t *testing.T) {
 	oldConfig := config
-	oldCmdRemoteEnvMerge := cmdRemoteEnvMerge
+	oldCmdRemoteSameAsLocal := cmdRemoteSameAsLocal
 
 	t.Cleanup(func() {
 		config = oldConfig
-		cmdRemoteEnvMerge = oldCmdRemoteEnvMerge
+		cmdRemoteSameAsLocal = oldCmdRemoteSameAsLocal
 	})
 
-	t.Setenv("WR_ADD_REMOTE_ENV_MERGE_TEST", "1")
+	t.Setenv("WR_ADD_REMOTE_SAME_AS_LOCAL_TEST", "1")
 
 	Convey("remote manager adds do not send submitter environment by default", t, func() {
 		config = &internal.Config{}
-		cmdRemoteEnvMerge = false
+		cmdRemoteSameAsLocal = false
 
-		envVars := addEnvVars(false, addRemoteEnvMerge(false))
+		envVars := addEnvVars(false, addRemoteSameAsLocal(false))
 
 		So(envVars, ShouldBeNil)
 	})
 
 	Convey("remote manager adds send submitter environment when config opts in", t, func() {
-		config = &internal.Config{ManagerRemoteEnvMerge: true}
-		cmdRemoteEnvMerge = false
+		config = &internal.Config{ManagerRemoteSameAsLocal: true}
+		cmdRemoteSameAsLocal = false
 
-		envVars := addEnvVars(false, addRemoteEnvMerge(false))
+		envVars := addEnvVars(false, addRemoteSameAsLocal(false))
 
-		So(slices.Contains(envVars, "WR_ADD_REMOTE_ENV_MERGE_TEST=1"), ShouldBeTrue)
+		So(slices.Contains(envVars, "WR_ADD_REMOTE_SAME_AS_LOCAL_TEST=1"), ShouldBeTrue)
 	})
 
 	Convey("remote manager adds send submitter environment when CLI opts in", t, func() {
 		config = &internal.Config{}
-		cmdRemoteEnvMerge = true
+		cmdRemoteSameAsLocal = true
 
-		envVars := addEnvVars(false, addRemoteEnvMerge(true))
+		envVars := addEnvVars(false, addRemoteSameAsLocal(true))
 
-		So(slices.Contains(envVars, "WR_ADD_REMOTE_ENV_MERGE_TEST=1"), ShouldBeTrue)
+		So(slices.Contains(envVars, "WR_ADD_REMOTE_SAME_AS_LOCAL_TEST=1"), ShouldBeTrue)
 	})
 
 	Convey("remote manager CLI can preserve default env suppression over config", t, func() {
-		config = &internal.Config{ManagerRemoteEnvMerge: true}
-		cmdRemoteEnvMerge = false
+		config = &internal.Config{ManagerRemoteSameAsLocal: true}
+		cmdRemoteSameAsLocal = false
 
-		envVars := addEnvVars(false, addRemoteEnvMerge(true))
+		envVars := addEnvVars(false, addRemoteSameAsLocal(true))
 
 		So(envVars, ShouldBeNil)
+	})
+}
+
+func TestAddRemoteSameAsLocalCwdDefault(t *testing.T) {
+	Convey("remote manager adds default cwd to /tmp by default", t, func() {
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("cmd one\n"), 0600)
+		So(err, ShouldBeNil)
+
+		wd := t.TempDir()
+		t.Chdir(wd)
+		configureAddParserTest(t, cmdPath)
+
+		cmdCwd = ""
+		cmdCwdMatters = false
+
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+		jobs, _, _ := parseCmdFile(jq, false, false)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].Cwd, ShouldEqual, "/tmp")
+	})
+
+	Convey("remote manager adds default cwd like local adds when opted in", t, func() {
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("cmd one\n"), 0600)
+		So(err, ShouldBeNil)
+
+		wd := t.TempDir()
+		t.Chdir(wd)
+		configureAddParserTest(t, cmdPath)
+
+		cmdCwd = ""
+		cmdCwdMatters = false
+
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].Cwd, ShouldEqual, wd)
 	})
 }
 
@@ -191,8 +234,8 @@ func TestAddHeadKeepsFirstParsedCommands(t *testing.T) {
 		configureAddParserTest(t, cmdPath)
 		So(addCmd.Flags().Set("head", "2"), ShouldBeNil)
 
-		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: "remote:1234"}}
-		jobs, _, _ := parseCmdFile(jq, false)
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+		jobs, _, _ := parseCmdFile(jq, false, false)
 
 		So(jobs, ShouldHaveLength, 2)
 		So(jobs[0].Cmd, ShouldEqual, "cmd one")
@@ -210,8 +253,8 @@ func TestAddHeadZeroKeepsAllParsedCommands(t *testing.T) {
 		configureAddParserTest(t, cmdPath)
 		So(addCmd.Flags().Set("head", "0"), ShouldBeNil)
 
-		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: "remote:1234"}}
-		jobs, _, _ := parseCmdFile(jq, false)
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+		jobs, _, _ := parseCmdFile(jq, false, false)
 
 		So(jobs, ShouldHaveLength, 3)
 		So(jobs[0].Cmd, ShouldEqual, "cmd one")
@@ -263,7 +306,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	oldCmdQueuesAvoidAdd := cmdQueuesAvoidAdd
 	oldCmdMisc := cmdMisc
 	oldCmdEnv := cmdEnv
-	oldCmdRemoteEnvMerge := cmdRemoteEnvMerge
+	oldCmdRemoteSameAsLocal := cmdRemoteSameAsLocal
 	oldCmdReRun := cmdReRun
 	oldCmdBsubMode := cmdBsubMode
 	oldCmdDisableRelativeCheck := cmdDisableRelativeCheck
@@ -311,7 +354,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 		cmdQueuesAvoidAdd = oldCmdQueuesAvoidAdd
 		cmdMisc = oldCmdMisc
 		cmdEnv = oldCmdEnv
-		cmdRemoteEnvMerge = oldCmdRemoteEnvMerge
+		cmdRemoteSameAsLocal = oldCmdRemoteSameAsLocal
 		cmdReRun = oldCmdReRun
 		cmdBsubMode = oldCmdBsubMode
 		cmdDisableRelativeCheck = oldCmdDisableRelativeCheck
@@ -365,7 +408,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdQueuesAvoidAdd = "interactive"
 	cmdMisc = ""
 	cmdEnv = ""
-	cmdRemoteEnvMerge = false
+	cmdRemoteSameAsLocal = false
 	cmdReRun = false
 	cmdBsubMode = false
 	cmdDisableRelativeCheck = true

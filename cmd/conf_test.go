@@ -33,8 +33,8 @@ import (
 )
 
 func TestDefaultConfigYML(t *testing.T) {
-	Convey("wr conf --default includes the remote environment merge option", t, func() {
-		So(defaultYML, ShouldContainSubstring, "managerremoteenvmerge: false")
-		So(strings.Count(defaultYML, "\nmanagerremoteenvmerge: false\n"), ShouldEqual, 1)
+	Convey("wr conf --default includes the remote same-as-local option", t, func() {
+		So(defaultYML, ShouldContainSubstring, "managerremotesameaslocal: false")
+		So(strings.Count(defaultYML, "\nmanagerremotesameaslocal: false\n"), ShouldEqual, 1)
 	})
 }
