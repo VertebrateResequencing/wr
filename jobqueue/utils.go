@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -77,6 +78,12 @@ var (
 	cr       = []byte("\r")
 	lf       = []byte("\n")
 	ellipses = []byte("[...]\n")
+)
+
+const (
+	liveStdRawTailLimit    = 64 * 1024
+	liveStdCompressedLimit = 4096
+	binarySearchDivisor    = 2
 )
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
@@ -376,6 +383,66 @@ func minInt(a, b int) int {
 	return b
 }
 
+type liveTailSaver struct {
+	sync.Mutex
+	tail  []byte
+	dirty bool
+}
+
+func (w *liveTailSaver) Write(p []byte) (int, error) {
+	w.Lock()
+	defer w.Unlock()
+
+	lenp := len(p)
+	if lenp == 0 {
+		return 0, nil
+	}
+
+	w.dirty = true
+	if lenp >= liveStdRawTailLimit {
+		w.tail = append(w.tail[:0], p[lenp-liveStdRawTailLimit:]...)
+
+		return lenp, nil
+	}
+
+	if overage := len(w.tail) + lenp - liveStdRawTailLimit; overage > 0 {
+		copy(w.tail, w.tail[overage:])
+		w.tail = w.tail[:len(w.tail)-overage]
+	}
+
+	w.tail = append(w.tail, p...)
+
+	return lenp, nil
+}
+
+func (w *liveTailSaver) FlushCompressed() []byte {
+	w.Lock()
+	defer w.Unlock()
+
+	if !w.dirty {
+		return nil
+	}
+
+	tail := w.tail
+	w.tail = nil
+	w.dirty = false
+
+	return compressedLiveTail(tail)
+}
+
+func compressedLiveTail(tail []byte) []byte {
+	compressed, err := compress(tail)
+	if err != nil {
+		return nil
+	}
+
+	if len(compressed) <= liveStdCompressedLimit {
+		return compressed
+	}
+
+	return compressedLiveTailSuffix(tail)
+}
+
 // stdFilter keeps only the first and last line of any contiguous block of \r
 // terminated lines (to mostly eliminate progress bars), intended for use with
 // stdout/err streaming input, outputting to a prefixSuffixSaver. Because you
@@ -446,6 +513,33 @@ func envOverride(orig []string, over []string) []string {
 		env = append(env, envvar)
 	}
 	return env
+}
+
+func compressedLiveTailSuffix(tail []byte) []byte {
+	low := 1
+	high := len(tail)
+
+	var best []byte
+
+	for low <= high {
+		mid := low + (high-low)/binarySearchDivisor
+
+		compressed, err := compress(tail[len(tail)-mid:])
+		if err != nil {
+			return nil
+		}
+
+		if len(compressed) <= liveStdCompressedLimit {
+			best = compressed
+			low = mid + 1
+
+			continue
+		}
+
+		high = mid - 1
+	}
+
+	return best
 }
 
 // calculateHashedDir returns the hashed directory structure corresponding to

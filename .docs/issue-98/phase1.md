@@ -19,7 +19,7 @@ helpers plus the `liveStdRawTailLimit` and `liveStdCompressedLimit` constants
 in `jobqueue/utils.go`. Add `jobqueue/utils_test.go` coverage for all 5
 acceptance tests from A1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1.2: A2 - Send live metrics on existing touches
@@ -32,5 +32,5 @@ snapshots using the A1 tail saver, actual cwd, resource metrics, and flushed
 stdout/stderr tails. Add `jobqueue/client_payload_test.go` coverage for all 5
 acceptance tests from A2. Depends on item 1.1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
