@@ -118,11 +118,11 @@ Tick the checklist as each branch progresses.
 ## feat/remote-manager-env-merge
 
 - [x] Implemented
-- [x] Reviewed
+- [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
 
-- **[#512 Choose if env is used with remote manager](https://github.com/VertebrateResequencing/wr/issues/512)** — add an opt-in setting that allows `wr add` to send the submitter's environment to a manager running on a different host. Keep the current conservative default for remote managers, where environment variables are not merged because the remote host may have incompatible paths/settings, but allow same-cluster users to enable environment merging when it is safe and desirable. Make this defaultable via config/env var so users do not need to specify the flag every time. Add tests covering both the default remote-manager behaviour and the opt-in path.
+- **[#512 Choose if env is used with remote manager](https://github.com/VertebrateResequencing/wr/issues/512)** — add an opt-in setting that makes `wr add` treat a remote manager like a local manager when selecting defaults. Keep the current conservative default for remote managers, where environment variables are not merged and cwd defaults to `/tmp` unless `cwd_matters` is enabled, but allow same-cluster users to keep local-style cwd and environment behaviour when it is safe and desirable. Make this defaultable via config/env var so users do not need to specify the flag every time. Add tests covering both the default remote-manager behaviour and the opt-in path.
 
 ## fix/small-fixes-batch
 
