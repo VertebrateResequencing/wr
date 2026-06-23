@@ -643,6 +643,10 @@ export function StatusViewModel() {
         actionHandlers.confirmRetry(self, job);
     };
 
+    self.confirmRerun = function (job) {
+        actionHandlers.confirmRerun(self, job);
+    };
+
     self.confirmRemoveFail = function (job) {
         actionHandlers.confirmRemoveFail(self, job);
     };

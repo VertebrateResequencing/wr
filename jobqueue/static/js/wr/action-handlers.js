@@ -40,6 +40,12 @@ export const actionHandlers = {
         viewModel.actionModalVisible(true);
     },
 
+    confirmRerun: function (viewModel, job) {
+        jobToActionDetails(viewModel, job, 'rerun', 'rerun');
+        viewModel.actionModalHeader('Rerun Completed Commands');
+        viewModel.actionModalVisible(true);
+    },
+
     confirmRemoveFail: function (viewModel, job) {
         jobToActionDetails(viewModel, job, 'remove', 'remove');
         viewModel.actionModalHeader('Remove Failed Commands');
