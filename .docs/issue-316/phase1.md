@@ -19,7 +19,7 @@ Add persistent dep-group seen storage in `jobqueue/db.go` and use it from
 non-empty `Job.DepGroups` values in the new bucket during new-job persistence.
 Cover all 3 acceptance tests from A2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1.2: A1 - Wait for never-seen dep-groups
@@ -32,7 +32,7 @@ with no live carriers and no seen record use synthetic dependency keys,
 populate the field, and remain unreservable until a carrier appears and
 completes. Cover all 3 acceptance tests from A1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1.3: A3 - Same-batch and live reblocking stay unchanged
@@ -43,7 +43,7 @@ Preserve existing same-batch and live dep-group reblocking behavior in
 `jobqueue/db.go` and `jobqueue/server.go`, including reverse dep-group
 reevaluation when new carriers appear. Cover all 3 acceptance tests from A3.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1.4: A4 - Command dependencies stay unchanged
@@ -55,5 +55,5 @@ Keep command and essence dependency semantics unchanged in
 to no dependency, do not set `WaitingForDepGroups`, and do not warn. Cover all
 3 acceptance tests from A4.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

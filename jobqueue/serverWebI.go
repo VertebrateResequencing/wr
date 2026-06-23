@@ -137,6 +137,7 @@ type JStatus struct {
 	DepGroups           []string
 	Modules             []string
 	Dependencies        []string
+	WaitingForDepGroups []string
 	OtherRequests       []string
 	Env                 []string
 	Key                 string

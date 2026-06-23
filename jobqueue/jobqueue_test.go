@@ -73,6 +73,7 @@ const (
 	manuallyAdded      = "manually_added"
 	reqGroupFake       = "fake_group"
 	reqGroupFallocate  = "fallocate"
+	futureDepGroup     = "future"
 	reqGroupPerl       = "perl"
 	reqGroupSleep      = "sleep"
 )
@@ -2437,6 +2438,618 @@ func TestRerunDependentJobWaitsOnIncompleteDependencies(t *testing.T) {
 	})
 }
 
+func TestSeenCompletedDepGroupsDoNotBlock(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("A dep group that completed earlier does not block later dependents", t, func() {
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			if jq != nil {
+				disconnect(jq)
+			}
+		}()
+
+		carrier := &Job{
+			Cmd:          "echo a2 done carrier",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "a2-done-carrier",
+			DepGroups:    []string{"done"},
+		}
+
+		inserts, already, err := jq.Add([]*Job{carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, carrier.Key())
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		dependent := &Job{
+			Cmd:          "echo a2 done dependent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "a2-done-dependent",
+			Dependencies: Dependencies{NewDepGroupDependency("done")},
+		}
+
+		inserts, already, err = jq.Add([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup("a2-done-dependent", false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateReady)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		disconnect(jq)
+		jq = nil
+
+		server.Stop(ctx, true)
+
+		serverConfig.dontWipeDevDB = true
+		server, _, token, err = serve(ctx, serverConfig)
+		serverConfig.dontWipeDevDB = false
+
+		So(err, ShouldBeNil)
+
+		jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		afterRestart := &Job{
+			Cmd:          "echo a2 done dependent after restart",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "a2-done-dependent-restart",
+			Dependencies: Dependencies{NewDepGroupDependency("done")},
+		}
+
+		inserts, already, err = jq.Add([]*Job{afterRestart}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err = jq.GetByRepGroup("a2-done-dependent-restart", false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateReady)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+	})
+}
+
+func TestNeverSeenDepGroupsWait(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	start := func() (internal.Config, *Server, *Client, *jqs.Requirements) {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		return config, server, jq, standardReqs
+	}
+
+	dependentJob := func(repGroup string, reqs *jqs.Requirements) *Job {
+		return &Job{
+			Cmd:          "echo " + repGroup,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			Retries:      uint8(0),
+			RepGroup:     repGroup,
+			Dependencies: Dependencies{NewDepGroupDependency(futureDepGroup)},
+		}
+	}
+
+	carrierJob := func(repGroup string, reqs *jqs.Requirements) *Job {
+		return &Job{
+			Cmd:          "echo " + repGroup,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			Retries:      uint8(0),
+			RepGroup:     repGroup,
+			DepGroups:    []string{futureDepGroup},
+		}
+	}
+
+	Convey("A never-seen dep-group dependency starts dependent and unreservable", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		dependent := dependentJob("a1-future-dependent", standardReqs)
+
+		inserts, already, err := jq.Add([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateDependent)
+		So(got[0].WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldBeNil)
+	})
+
+	Convey("A live carrier replaces the never-seen wait without releasing the dependent", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		dependent := dependentJob("a1-carrier-dependent", standardReqs)
+		carrier := carrierJob("a1-carrier", standardReqs)
+
+		inserts, already, err := jq.Add([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		inserts, already, err = jq.Add([]*Job{carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateDependent)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, carrier.Key())
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldBeNil)
+	})
+
+	Convey("Completing the carrier releases a dependent that waited on a never-seen dep group", t, func() {
+		config, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		dependent := dependentJob("a1-completed-carrier-dependent", standardReqs)
+		carrier := carrierJob("a1-completed-carrier", standardReqs)
+
+		inserts, already, err := jq.Add([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		inserts, already, err = jq.Add([]*Job{carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, carrier.Key())
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		got, err := jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateReady)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, dependent.Key())
+	})
+}
+
+func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	start := func() (internal.Config, *Server, *Client, *jqs.Requirements) {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		return config, server, jq, standardReqs
+	}
+
+	makeJob := func(cmd, repGroup string, reqs *jqs.Requirements) *Job {
+		return &Job{
+			Cmd:          cmd,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			Retries:      uint8(0),
+			RepGroup:     repGroup,
+		}
+	}
+
+	Convey("Same-batch dep-group carriers keep dependents blocked on live jobs", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		dependent := makeJob("echo a3 same batch dependent", "a3-same-batch-dependent", standardReqs)
+		dependent.Dependencies = Dependencies{NewDepGroupDependency("batch")}
+		carrier := makeJob("echo a3 same batch carrier", "a3-same-batch-carrier", standardReqs)
+		carrier.DepGroups = []string{"batch"}
+
+		inserts, already, err := jq.Add([]*Job{dependent, carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateDependent)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, carrier.Key())
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldBeNil)
+	})
+
+	Convey("A new live carrier reblocks a ready dependent until the carrier completes", t, func() {
+		config, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		firstCarrier := makeJob("echo a3 first live carrier", "a3-first-live-carrier", standardReqs)
+		firstCarrier.DepGroups = []string{"live"}
+
+		inserts, already, err := jq.Add([]*Job{firstCarrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, firstCarrier.Key())
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		dependent := makeJob("echo a3 live dependent", "a3-live-dependent", standardReqs)
+		dependent.Dependencies = Dependencies{NewDepGroupDependency("live")}
+
+		inserts, already, err = jq.Add([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateReady)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		secondCarrier := makeJob("echo a3 second live carrier", "a3-second-live-carrier", standardReqs)
+		secondCarrier.DepGroups = []string{"live"}
+
+		inserts, already, err = jq.Add([]*Job{secondCarrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err = jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateDependent)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, secondCarrier.Key())
+		reservedCarrier := reserved
+
+		blocked, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(blocked, ShouldBeNil)
+
+		So(jq.Execute(ctx, reservedCarrier, config.RunnerExecShell), ShouldBeNil)
+
+		got, err = jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateReady)
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, dependent.Key())
+	})
+
+	Convey("Adding a new carrier resurrects a completed dependent chain with existing counts", t, func() {
+		config, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		firstRoot := makeJob("echo a3 first root", "a3-chain", standardReqs)
+		firstRoot.DepGroups = []string{"root"}
+
+		inserts, already, err := jq.Add([]*Job{firstRoot}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, firstRoot.Key())
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		child := makeJob("echo a3 child", "a3-chain", standardReqs)
+		child.DepGroups = []string{"child"}
+		child.Dependencies = Dependencies{NewDepGroupDependency("root")}
+
+		inserts, already, err = jq.Add([]*Job{child}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, child.Key())
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		grandchild := makeJob("echo a3 grandchild", "a3-chain", standardReqs)
+		grandchild.Dependencies = Dependencies{NewDepGroupDependency("child")}
+
+		inserts, already, err = jq.Add([]*Job{grandchild}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, grandchild.Key())
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		secondRoot := makeJob("echo a3 second root", "a3-chain", standardReqs)
+		secondRoot.DepGroups = []string{"root"}
+
+		inserts, already, err = jq.Add([]*Job{secondRoot}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 3)
+		So(already, ShouldEqual, 0)
+
+		ready, err := jq.GetIncomplete(0, JobStateReady, false, false)
+		So(err, ShouldBeNil)
+		So(ready, ShouldHaveLength, 1)
+		So(ready[0].Key(), ShouldEqual, secondRoot.Key())
+
+		dependent, err := jq.GetIncomplete(0, JobStateDependent, false, false)
+		So(err, ShouldBeNil)
+		So(dependent, ShouldHaveLength, 2)
+
+		for _, job := range dependent {
+			So(job.WaitingForDepGroups, ShouldBeNil)
+		}
+
+		complete, err := jq.GetByRepGroup("a3-chain", false, 0, JobStateComplete, false, false)
+		So(err, ShouldBeNil)
+		So(complete, ShouldHaveLength, 1)
+		So(complete[0].Key(), ShouldEqual, firstRoot.Key())
+	})
+}
+
+func TestCommandDependenciesStayStatic(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	start := func() (internal.Config, *Server, *Client, *jqs.Requirements) {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		return config, server, jq, standardReqs
+	}
+
+	makeJob := func(cmd, repGroup string, reqs *jqs.Requirements) *Job {
+		return &Job{
+			Cmd:          cmd,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			Retries:      uint8(0),
+			RepGroup:     repGroup,
+		}
+	}
+
+	Convey("An absent command dependency still resolves to no dependency", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		job := makeJob("echo a4 actual", "a4-absent-command", standardReqs)
+		job.Dependencies = Dependencies{NewEssenceDependency("echo missing", "")}
+
+		inserts, already, err := jq.Add([]*Job{job}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup(job.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateReady)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, job.Key())
+	})
+
+	Convey("Same-batch command dependencies continue to wait for live command targets", t, func() {
+		config, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		dependent := makeJob("echo a4 command dependent", "a4-same-batch-command-dependent", standardReqs)
+		dependent.Dependencies = Dependencies{NewEssenceDependency("echo later", "")}
+		carrier := makeJob("echo later", "a4-same-batch-command-carrier", standardReqs)
+
+		inserts, already, err := jq.Add([]*Job{dependent, carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		got, err := jq.GetByRepGroup(dependent.RepGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(got, ShouldHaveLength, 1)
+		So(got[0].State, ShouldEqual, JobStateDependent)
+		So(got[0].WaitingForDepGroups, ShouldBeNil)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, carrier.Key())
+
+		blocked, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(blocked, ShouldBeNil)
+
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		reserved, err = jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(reserved.Key(), ShouldEqual, dependent.Key())
+	})
+}
+
 func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 	ctx := context.Background()
 
@@ -2600,6 +3213,7 @@ func TestJobqueueMedium(t *testing.T) {
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
+
 		defer func() {
 			server.Stop(ctx, true)
 		}()
@@ -2611,14 +3225,37 @@ func TestJobqueueMedium(t *testing.T) {
 
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
+
 			defer disconnect(jq)
+
 			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
+
 			defer disconnect(jq2)
 
-			var jobs []*Job
-			jobs = append(jobs, &Job{Cmd: "sleep 0.1 && true", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(2), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "sleep 0.1 && false", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(2), RepGroup: "manually_added"})
+			const (
+				sleepTrueCmd  = "sleep 0.1 && true"
+				sleepFalseCmd = "sleep 0.1 && false"
+			)
+
+			jobs := make([]*Job, 0, 2)
+
+			jobs = append(jobs, &Job{
+				Cmd:          sleepTrueCmd,
+				Cwd:          "/tmp",
+				ReqGroup:     "fake_group",
+				Requirements: standardReqs,
+				Retries:      uint8(2),
+				RepGroup:     "manually_added",
+			})
+			jobs = append(jobs, &Job{
+				Cmd:          sleepFalseCmd,
+				Cwd:          "/tmp",
+				ReqGroup:     "fake_group",
+				Requirements: standardReqs,
+				Retries:      uint8(2),
+				RepGroup:     "manually_added",
+			})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -2640,15 +3277,15 @@ func TestJobqueueMedium(t *testing.T) {
 				// job that succeeds, no std out
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
-				So(job.Cmd, ShouldEqual, "sleep 0.1 && true")
+				So(job.Cmd, ShouldEqual, sleepTrueCmd)
 				So(job.State, ShouldEqual, JobStateReserved)
 				So(job.Attempts, ShouldEqual, 0)
 				So(job.UntilBuried, ShouldEqual, 3)
 
-				job2, err := jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && true"}, false, false)
+				job2, err := jq2.GetByEssence(&JobEssence{Cmd: sleepTrueCmd}, false, false)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
-				So(job2.Cmd, ShouldEqual, "sleep 0.1 && true")
+				So(job2.Cmd, ShouldEqual, sleepTrueCmd)
 				So(job2.State, ShouldEqual, JobStateReserved)
 
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -2659,6 +3296,7 @@ func TestJobqueueMedium(t *testing.T) {
 				So(job.PeakRAM, ShouldBeGreaterThan, 0)
 				So(job.PeakDisk, ShouldEqual, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
+
 				host, err := os.Hostname()
 				So(err, ShouldBeNil)
 				So(job.Host, ShouldEqual, host)
@@ -2669,14 +3307,19 @@ func TestJobqueueMedium(t *testing.T) {
 				stdout, err := job.StdOut()
 				So(err, ShouldBeNil)
 				So(stdout, ShouldEqual, "")
+
 				stderr, err := job.StdErr()
 				So(err, ShouldBeNil)
 				So(stderr, ShouldEqual, "")
+
 				actualCwd := job.ActualCwd
-				So(actualCwd, ShouldStartWith, filepath.Join("/tmp", "jobqueue_cwd", "7", "4", "7", "27e23009c78b126f274aa64416f30"))
+				expectedCwdPrefix := filepath.Join(
+					"/tmp", "jobqueue_cwd", "7", "4", "7", "27e23009c78b126f274aa64416f30",
+				)
+				So(actualCwd, ShouldStartWith, expectedCwdPrefix)
 				So(actualCwd, ShouldEndWith, "cwd")
 
-				job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && true"}, false, false)
+				job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepTrueCmd}, false, false)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
 				So(job2.State, ShouldEqual, JobStateComplete)
@@ -2694,7 +3337,7 @@ func TestJobqueueMedium(t *testing.T) {
 				// job that fails, no std out
 				job, err = jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
-				So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+				So(job.Cmd, ShouldEqual, sleepFalseCmd)
 				So(job.State, ShouldEqual, JobStateReserved)
 				So(job.Attempts, ShouldEqual, 0)
 				So(job.UntilBuried, ShouldEqual, 3)
@@ -2702,7 +3345,7 @@ func TestJobqueueMedium(t *testing.T) {
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 
-				expectedErrPrefix := "command [sleep 0.1 && false] exited with code 1, " +
+				expectedErrPrefix := "command [" + sleepFalseCmd + "] exited with code 1, " +
 					"which may be a temporary issue, so it will be tried again"
 				So(err.Error(), ShouldStartWith, expectedErrPrefix)
 				So(job.State, ShouldEqual, JobStateDelayed)
@@ -2716,6 +3359,7 @@ func TestJobqueueMedium(t *testing.T) {
 				} else {
 					So(err.Error(), ShouldNotContainSubstring, FailReasonRAM)
 				}
+
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				So(job.Host, ShouldEqual, host)
 				So(job.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
@@ -2725,11 +3369,12 @@ func TestJobqueueMedium(t *testing.T) {
 				stdout, err = job.StdOut()
 				So(err, ShouldBeNil)
 				So(stdout, ShouldEqual, "")
+
 				stderr, err = job.StdErr()
 				So(err, ShouldBeNil)
 				So(stderr, ShouldEqual, "")
 
-				job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
+				job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
 				So(job2.State, ShouldEqual, JobStateDelayed)
@@ -2752,8 +3397,8 @@ func TestJobqueueMedium(t *testing.T) {
 						jobs, err = jq.GetIncomplete(0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 1)
-						So(jobs[0].Cmd, ShouldEqual, "sleep 0.1 && false")
-						//*** should probably have a better test, where there are incomplete jobs in each of the sub queues
+						So(jobs[0].Cmd, ShouldEqual, sleepFalseCmd)
+						// *** should probably have a better test, where there are incomplete jobs in each of the sub queues
 					})
 				})
 
@@ -2761,7 +3406,8 @@ func TestJobqueueMedium(t *testing.T) {
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
-					job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
+
+					job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateDelayed)
@@ -2772,11 +3418,12 @@ func TestJobqueueMedium(t *testing.T) {
 					job, err = jq.Reserve(serverConfig.Timings.ReleaseDelayMin)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
-					So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+					So(job.Cmd, ShouldEqual, sleepFalseCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 					So(job.Attempts, ShouldEqual, 1)
 					So(job.UntilBuried, ShouldEqual, 2)
-					job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
+
+					job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateReserved)
@@ -2794,17 +3441,18 @@ func TestJobqueueMedium(t *testing.T) {
 						delayEnd := job.EndTime.Add(job.DelayTime)
 
 						<-time.After(serverConfig.Timings.ReleaseDelayMin)
+
 						job, err = jq.Reserve(time.Until(delayEnd) - 10*time.Millisecond)
 						So(err, ShouldBeNil)
 						So(job, ShouldBeNil)
-						job, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
+						job, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
 						So(err, ShouldBeNil)
 						So(job, ShouldNotBeNil)
 						So(job.State, ShouldEqual, JobStateDelayed)
 
 						job, err = jq.Reserve(reserveWait)
 						So(err, ShouldBeNil)
-						So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+						So(job.Cmd, ShouldEqual, sleepFalseCmd)
 						So(job.State, ShouldEqual, JobStateReserved)
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
@@ -2825,24 +3473,24 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job, ShouldBeNil)
 
 						Convey("Once buried it can be kicked back to ready state and be reserved again", func() {
-							job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
+							job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
 							So(err, ShouldBeNil)
 							So(job2, ShouldNotBeNil)
 							So(job2.State, ShouldEqual, JobStateBuried)
 
-							kicked, err := jq.Kick([]*JobEssence{{Cmd: "sleep 0.1 && false"}})
+							kicked, err := jq.Kick([]*JobEssence{{Cmd: sleepFalseCmd}})
 							So(err, ShouldBeNil)
 							So(kicked, ShouldEqual, 1)
 
 							job, err = jq.Reserve(5 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(job, ShouldNotBeNil)
-							So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+							So(job.Cmd, ShouldEqual, sleepFalseCmd)
 							So(job.State, ShouldEqual, JobStateReserved)
 							So(job.Attempts, ShouldEqual, 3)
 							So(job.UntilBuried, ShouldEqual, 3)
 
-							job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
+							job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
 							So(err, ShouldBeNil)
 							So(job2, ShouldNotBeNil)
 							So(job2.State, ShouldEqual, JobStateReserved)
@@ -2854,7 +3502,7 @@ func TestJobqueueMedium(t *testing.T) {
 								// once its TTR expires; poll for that transition
 								// instead of sampling at a fixed offset, which
 								// races the server's TTR timer under load.
-								job2 = waitUntilJobState(jq2, &JobEssence{Cmd: "sleep 0.1 && false"}, JobStateDelayed, 30)
+								job2 = waitUntilJobState(jq2, &JobEssence{Cmd: sleepFalseCmd}, JobStateDelayed, 30)
 								So(job2, ShouldNotBeNil)
 								So(job2.State, ShouldEqual, JobStateDelayed)
 								So(job2.Attempts, ShouldEqual, 3)

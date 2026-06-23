@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -223,6 +224,53 @@ func runSynchronousAddHelper(exitCode int, stdout string, stderr string, exit fu
 		true,
 		exit,
 	)
+}
+
+func TestAddCommandDependenciesDoNotWarnForMissingTargets(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("wr add --cmd_deps keeps absent command targets ready and warning-free", t, func() {
+		testConfig, serverConfig, addr, _, server, token := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("echo actual\n"), 0o600)
+		So(err, ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+		timeoutint = 2
+		cmdRepGroup = "cmd-missing"
+		cmdCmdDeps = "echo missing,"
+
+		stderr := runAddForTest(t)
+		So(stderr, ShouldNotContainSubstring, "has not been seen")
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		jobs, err := jq.GetByRepGroup("cmd-missing", false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].State, ShouldEqual, jobqueue.JobStateReady)
+		So(jobs[0].WaitingForDepGroups, ShouldBeNil)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job, ShouldNotBeNil)
+
+		if job == nil {
+			return
+		}
+
+		So(job.Key(), ShouldEqual, jobs[0].Key())
+	})
 }
 
 func TestAddHeadKeepsFirstParsedCommands(t *testing.T) {
@@ -414,6 +462,31 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdDisableRelativeCheck = true
 	cmdGroup = ""
 	rtimeoutint = 1
+}
+
+func runAddForTest(t *testing.T) string {
+	t.Helper()
+
+	stderrReader, stderrWriter := synchronousAddPipe(t)
+	defer stderrReader.Close()
+
+	originalStderr := os.Stderr
+	os.Stderr = stderrWriter
+
+	func() {
+		defer func() {
+			os.Stderr = originalStderr
+
+			So(stderrWriter.Close(), ShouldBeNil)
+		}()
+
+		addCmd.Run(addCmd, nil)
+	}()
+
+	stderr, err := io.ReadAll(stderrReader)
+	So(err, ShouldBeNil)
+
+	return string(stderr)
 }
 
 func TestSynchronousAddPrintsStdoutAndExitsZero(t *testing.T) {

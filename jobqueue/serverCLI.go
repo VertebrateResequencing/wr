@@ -868,10 +868,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 								// dependant upon or their priority, that must be
 								// reflected in the queue as well
 								for _, job := range toModify {
-									deps, err := job.Dependencies.incompleteJobKeys(s.db)
-									if err != nil {
-										clog.Error(ctx, "failed to get job dependencies", "err", err)
+									deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
+									if depErr != nil {
+										clog.Error(ctx, "failed to get job dependencies", "err", depErr)
 									}
+
+									job.setWaitingForDepGroups(waitingForDepGroups)
 
 									err = s.q.Update(
 										ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
@@ -1161,6 +1163,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		EnvKey:                sjob.EnvKey,
 		EnvOverride:           sjob.EnvOverride,
 		Dependencies:          sjob.Dependencies,
+		WaitingForDepGroups:   sjob.WaitingForDepGroups,
 		Behaviours:            sjob.Behaviours,
 		MountConfigs:          sjob.MountConfigs,
 		MonitorDocker:         sjob.MonitorDocker,

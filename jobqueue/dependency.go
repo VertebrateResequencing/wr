@@ -27,7 +27,71 @@ package jobqueue
 
 // This file contains the dependency related code.
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+)
+
+const neverSeenDepGroupDependencyPrefix = "depgroup-not-seen:"
+
+func (d *Dependency) collectIncompleteJobKeys(
+	db *db,
+	seenDepGroups map[string]bool,
+	jobKeys, waitingForDepGroups map[string]bool,
+) error {
+	keys, waiting, err := d.incompleteJobKeys(db, seenDepGroups)
+	if err != nil {
+		return err
+	}
+
+	collectIncompleteJobKeys(keys, jobKeys, waitingForDepGroups)
+	collectStrings(waiting, waitingForDepGroups)
+
+	return nil
+}
+
+func collectStrings(values []string, set map[string]bool) {
+	for _, value := range values {
+		set[value] = true
+	}
+}
+
+func (d *Dependency) incompleteDepGroupJobKeys(db *db, seenDepGroups map[string]bool) ([]string, []string, error) {
+	keys, err := db.retrieveIncompleteJobKeysByDepGroup(d.DepGroup)
+	if err != nil {
+		return []string{}, []string{}, err
+	}
+
+	if len(keys) > 0 {
+		return keys, nil, nil
+	}
+
+	if seenDepGroups[d.DepGroup] {
+		return nil, nil, nil
+	}
+
+	return []string{neverSeenDepGroupDependencyKey(d.DepGroup)}, []string{d.DepGroup}, nil
+}
+
+func neverSeenDepGroupDependencyKey(depGroup string) string {
+	return neverSeenDepGroupDependencyPrefix + depGroup
+}
+
+func (d *Dependency) incompleteEssenceJobKeys(db *db) ([]string, []string, error) {
+	jobKey := d.Essence.Key()
+
+	live, err := db.checkIfLive(jobKey)
+	if err != nil {
+		return []string{}, []string{}, err
+	}
+
+	if live {
+		return []string{jobKey}, nil, nil
+	}
+
+	return []string{}, nil, nil
+}
 
 // Dependencies is a slice of *Dependency, for use in Job.Dependencies. It
 // describes the jobs that must be complete before the Job you associate this
@@ -92,27 +156,45 @@ func appendDependencyViaJSON(deps Dependencies, dep dependencyViaJSON) Dependenc
 // DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
 // are incomplete (they could have been Archive()d in the past if they are now
 // being re-run).
-func (d Dependencies) incompleteJobKeys(db *db) ([]string, error) {
-	// we initially store in a map to avoid duplicates
+func (d Dependencies) incompleteJobKeys(db *db) ([]string, []string, error) {
+	seenDepGroups, err := db.depGroupsEverSeen(d.DepGroups())
+	if err != nil {
+		return []string{}, []string{}, err
+	}
+
+	jobKeys, waitingForDepGroups, err := d.incompleteJobKeysByDependency(db, seenDepGroups)
+	if err != nil {
+		return []string{}, []string{}, err
+	}
+
+	return sortedStringSet(jobKeys), sortedStringSet(waitingForDepGroups), nil
+}
+
+func sortedStringSet(set map[string]bool) []string {
+	values := make([]string, 0, len(set))
+	for value := range set {
+		values = append(values, value)
+	}
+
+	slices.Sort(values)
+
+	return values
+}
+
+func (d Dependencies) incompleteJobKeysByDependency(
+	db *db,
+	seenDepGroups map[string]bool,
+) (map[string]bool, map[string]bool, error) {
 	jobKeys := make(map[string]bool)
+	waitingForDepGroups := make(map[string]bool)
+
 	for _, dep := range d {
-		keys, err := dep.incompleteJobKeys(db)
-		if err != nil {
-			return []string{}, err
-		}
-		for _, key := range keys {
-			jobKeys[key] = true
+		if err := dep.collectIncompleteJobKeys(db, seenDepGroups, jobKeys, waitingForDepGroups); err != nil {
+			return nil, nil, err
 		}
 	}
 
-	keys := make([]string, len(jobKeys))
-	i := 0
-	for key := range jobKeys {
-		keys[i] = key
-		i++
-	}
-
-	return keys, nil
+	return jobKeys, waitingForDepGroups, nil
 }
 
 // DepGroups returns all the DepGroups of our constituent Dependency structs.
@@ -154,22 +236,15 @@ type Dependency struct {
 // For a Dependency made with a DepGroup, you will get the *Job.key()s of all
 // the jobs in the queue and database that have that DepGroup in their
 // DepGroups. You will only get keys for jobs that are currently in the queue.
-func (d *Dependency) incompleteJobKeys(db *db) ([]string, error) {
+func (d *Dependency) incompleteJobKeys(db *db, seenDepGroups map[string]bool) ([]string, []string, error) {
 	if d.DepGroup != "" {
-		keys, err := db.retrieveIncompleteJobKeysByDepGroup(d.DepGroup)
-		return keys, err
+		return d.incompleteDepGroupJobKeys(db, seenDepGroups)
 	}
 	if d.Essence != nil {
-		jobKey := d.Essence.Key()
-		live, err := db.checkIfLive(jobKey)
-		if err != nil {
-			return []string{}, err
-		}
-		if live {
-			return []string{jobKey}, nil
-		}
+		return d.incompleteEssenceJobKeys(db)
 	}
-	return []string{}, nil
+
+	return []string{}, nil, nil
 }
 
 // NewEssenceDependency makes it a little easier to make a new *Dependency based
@@ -187,4 +262,17 @@ func NewDepGroupDependency(depgroup string) *Dependency {
 	return &Dependency{
 		DepGroup: depgroup,
 	}
+}
+
+func collectIncompleteJobKeys(keys []string, jobKeys, waitingForDepGroups map[string]bool) {
+	for _, key := range keys {
+		jobKeys[key] = true
+		if depGroup, ok := neverSeenDepGroupFromDependencyKey(key); ok {
+			waitingForDepGroups[depGroup] = true
+		}
+	}
+}
+
+func neverSeenDepGroupFromDependencyKey(key string) (string, bool) {
+	return strings.CutPrefix(key, neverSeenDepGroupDependencyPrefix)
 }

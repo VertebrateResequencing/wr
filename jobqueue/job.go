@@ -195,6 +195,10 @@ type Job struct {
 	// starts.
 	Dependencies Dependencies
 
+	// WaitingForDepGroups lists dependency groups this job is waiting on that
+	// have not yet appeared on any job.
+	WaitingForDepGroups []string
+
 	// Behaviours describe what should happen after Cmd is executed, depending
 	// on its success.
 	Behaviours Behaviours
@@ -932,6 +936,19 @@ func (j *Job) setSchedulerGroup(newval string) {
 	j.schedulerGroup = newval
 }
 
+func (j *Job) setWaitingForDepGroups(depGroups []string) {
+	j.Lock()
+	defer j.Unlock()
+
+	if len(depGroups) == 0 {
+		j.WaitingForDepGroups = nil
+
+		return
+	}
+
+	j.WaitingForDepGroups = append([]string(nil), depGroups...)
+}
+
 // ToStatus converts a job to a simplified JStatus, useful for output as JSON.
 func (j *Job) ToStatus() (JStatus, error) {
 	stderr, err := j.StdErr()
@@ -982,6 +999,7 @@ func (j *Job) ToStatus() (JStatus, error) {
 		LimitGroups:         limitGroups,
 		DepGroups:           j.DepGroups,
 		Dependencies:        j.Dependencies.Stringify(),
+		WaitingForDepGroups: j.WaitingForDepGroups,
 		Modules:             j.Modules,
 		Cmd:                 j.Cmd,
 		State:               state,

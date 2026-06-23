@@ -1734,11 +1734,17 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 		var itemdefs []*queue.ItemDef
 		for _, job := range priorJobs {
-			var deps []string
-			deps, err = job.Dependencies.incompleteJobKeys(s.db)
+			var (
+				deps                []string
+				waitingForDepGroups []string
+			)
+
+			deps, waitingForDepGroups, err = job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
 				return nil, msg, token, err
 			}
+
+			job.setWaitingForDepGroups(waitingForDepGroups)
 
 			itemdef := &queue.ItemDef{
 				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
@@ -2791,12 +2797,14 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 		// their DepGroup dependencies being in cr.Jobs
 		var itemdefs []*queue.ItemDef
 		for _, job := range jobsToQueue {
-			deps, err := job.Dependencies.incompleteJobKeys(s.db)
+			deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
 				srerr = ErrDBError
 				qerr = err
 				break
 			}
+
+			job.setWaitingForDepGroups(waitingForDepGroups)
 
 			itemdefs = append(itemdefs, &queue.ItemDef{
 				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
@@ -2879,22 +2887,23 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // jobs.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
 	type jobDeps struct {
-		job  *Job
-		deps []string
+		job                 *Job
+		deps                []string
+		waitingForDepGroups []string
 	}
 
 	updates := make([]jobDeps, 0, len(jobs))
 	readyCallbackExpected := false
 
 	for _, job := range jobs {
-		deps, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 		if err != nil {
 			srerr = ErrDBError
 			qerr = err
 			break
 		}
 
-		updates = append(updates, jobDeps{job: job, deps: deps})
+		updates = append(updates, jobDeps{job: job, deps: deps, waitingForDepGroups: waitingForDepGroups})
 
 		if len(deps) == 0 && !readyCallbackExpected {
 			item, errq := s.q.Get(job.Key())
@@ -2912,6 +2921,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 
 	for _, update := range updates {
 		job := update.job
+		job.setWaitingForDepGroups(update.waitingForDepGroups)
 
 		thisErr := s.q.Update(
 			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, s.itemTTRDuration(), update.deps,
