@@ -252,6 +252,15 @@ managercertdomain: "localhost"
 # records for managercertdomain.
 # managersetdomainip: false
 
+# managerremotesameaslocal: Should 'wr add' treat remote managers like local
+# managers when choosing defaults?
+# This defaults to false, preserving remote jobs' usual base environment and
+# defaulting the working directory to /tmp unless cwd_matters is enabled. Making
+# this option true means remote adds use the submitter's current environment as
+# the base and default to the submitter's current working directory, matching
+# local-manager adds.
+managerremotesameaslocal: false
+
 # managerumask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).

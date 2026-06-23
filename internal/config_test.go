@@ -375,6 +375,7 @@ func TestConfig(t *testing.T) {
 		So(defConfig.LogsMaxBackups, ShouldEqual, 3)
 		So(defConfig.LogsMaxAgeDays, ShouldEqual, 28)
 		So(defConfig.LogsCompress, ShouldBeTrue)
+		So(defConfig.ManagerRemoteSameAsLocal, ShouldBeFalse)
 
 		Convey("it can check if deployment is production", func() {
 			So(defConfig.IsProduction(), ShouldBeTrue)
@@ -555,6 +556,14 @@ func TestConfig(t *testing.T) {
 			So(defConfig.ManagerWeb, ShouldEqual, mweb2)
 			So(defConfig.Source("ManagerWeb"), ShouldEqual, path2)
 
+			remoteSameAsLocalPath := filepath.Join(dir, ".wr_config.remote-same-as-local.yml")
+			err = os.WriteFile(remoteSameAsLocalPath, []byte("managerremotesameaslocal: true\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			defConfig.configLoadFromFile(ctx, remoteSameAsLocalPath)
+			So(defConfig.ManagerRemoteSameAsLocal, ShouldBeTrue)
+			So(defConfig.Source("ManagerRemoteSameAsLocal"), ShouldEqual, remoteSameAsLocalPath)
+
 			_, _, err = fileTestSetup(dir, mport, mweb1, mweb2)
 			So(err, ShouldNotBeNil)
 		})
@@ -723,6 +732,7 @@ func TestConfig(t *testing.T) {
 		os.Setenv("WR_MANAGERPORT", "1234")
 		os.Setenv("WR_MANAGERUMASK", "77")
 		os.Setenv("WR_MANAGERSETDOMAINIP", "true")
+		os.Setenv("WR_MANAGERREMOTESAMEASLOCAL", "true")
 		os.Setenv("WR_LOGSMAXSIZEMB", "5")
 		os.Setenv("WR_LOGSMAXBACKUPS", "4")
 		os.Setenv("WR_LOGSMAXAGEDAYS", "21")
@@ -731,6 +741,7 @@ func TestConfig(t *testing.T) {
 			os.Unsetenv("WR_MANAGERPORT")
 			os.Unsetenv("WR_MANAGERUMASK")
 			os.Unsetenv("WR_MANAGERSETDOMAINIP")
+			os.Unsetenv("WR_MANAGERREMOTESAMEASLOCAL")
 			os.Unsetenv("WR_LOGSMAXSIZEMB")
 			os.Unsetenv("WR_LOGSMAXBACKUPS")
 			os.Unsetenv("WR_LOGSMAXAGEDAYS")
@@ -743,6 +754,7 @@ func TestConfig(t *testing.T) {
 		So(envVarConfig.ManagerWeb, ShouldBeEmpty)
 		So(envVarConfig.ManagerUmask, ShouldEqual, 77)
 		So(envVarConfig.ManagerSetDomainIP, ShouldBeTrue)
+		So(envVarConfig.ManagerRemoteSameAsLocal, ShouldBeTrue)
 		So(envVarConfig.LogsMaxSizeMB, ShouldEqual, 5)
 		So(envVarConfig.LogsMaxBackups, ShouldEqual, 4)
 		So(envVarConfig.LogsMaxAgeDays, ShouldEqual, 21)
@@ -753,11 +765,13 @@ func TestConfig(t *testing.T) {
 		os.Setenv("WR_MANAGERPORT", "1234")
 		os.Setenv("WR_MANAGERUMASK", "077")
 		os.Setenv("WR_MANAGERSETDOMAINIP", "true")
+		os.Setenv("WR_MANAGERREMOTESAMEASLOCAL", "true")
 		os.Setenv("WR_LOGSMAXSIZEMB", "5")
 		defer func() {
 			os.Unsetenv("WR_MANAGERPORT")
 			os.Unsetenv("WR_MANAGERUMASK")
 			os.Unsetenv("WR_MANAGERSETDOMAINIP")
+			os.Unsetenv("WR_MANAGERREMOTESAMEASLOCAL")
 			os.Unsetenv("WR_LOGSMAXSIZEMB")
 		}()
 
@@ -770,6 +784,8 @@ func TestConfig(t *testing.T) {
 		So(mergedConfig.Source("ManagerUmask"), ShouldEqual, ConfigSourceEnvVar)
 		So(mergedConfig.ManagerSetDomainIP, ShouldBeTrue)
 		So(mergedConfig.Source("ManagerSetDomainIP"), ShouldEqual, ConfigSourceEnvVar)
+		So(mergedConfig.ManagerRemoteSameAsLocal, ShouldBeTrue)
+		So(mergedConfig.Source("ManagerRemoteSameAsLocal"), ShouldEqual, ConfigSourceEnvVar)
 		So(mergedConfig.LogsMaxSizeMB, ShouldEqual, 5)
 		So(mergedConfig.Source("LogsMaxSizeMB"), ShouldEqual, ConfigSourceEnvVar)
 	})

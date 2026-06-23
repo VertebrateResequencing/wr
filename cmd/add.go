@@ -83,6 +83,7 @@ var (
 	cmdOnSuccess            string
 	cmdOnExit               string
 	cmdEnv                  string
+	cmdRemoteSameAsLocal    bool
 	cmdReRun                bool
 	cmdOsPrefix             string
 	cmdOsUsername           string
@@ -456,7 +457,8 @@ base variables as they were at the moment in time you run 'wr add', so to set a
 certain environment variable for all commands, you could instead just set it
 prior to calling 'wr add'. In the remote case the command will use base
 variables as they were on the machine where the command is executed when that
-machine was started.
+machine was started, unless --remote_same_as_local or the
+ManagerRemoteSameAsLocal config option is enabled.
 
 "bsub_mode" is a boolean that results in the job being assigned a unique (for
 this manager session) job id, and turns on bsub emulation, which means that if
@@ -490,16 +492,14 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 			}
 		}()
 
-		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"))
+		remoteSameAsLocalEnabled := remoteSameAsLocal(combraCmd.Flags().Changed("remote_same_as_local"))
+		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"), remoteSameAsLocalEnabled)
 
 		if syncMode && len(jobs) != 1 {
 			die("You must add exactly 1 command when using synchronous mode.")
 		}
 
-		var envVars []string
-		if isLocal {
-			envVars = os.Environ()
-		}
+		envVars := addEnvVars(isLocal, remoteSameAsLocalEnabled)
 
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
@@ -578,6 +578,8 @@ func init() {
 		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
 	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
+	addCmd.Flags().BoolVar(&cmdRemoteSameAsLocal, "remote_same_as_local", false,
+		"make remote-manager adds use the same cwd and environment behaviour as local-manager adds")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 	addCmd.Flags().BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
@@ -592,6 +594,22 @@ func init() {
 	if err != nil {
 		die("cloud not hide reserver_timeout option: %s", err)
 	}
+}
+
+func remoteSameAsLocal(flagChanged bool) bool {
+	if flagChanged {
+		return cmdRemoteSameAsLocal
+	}
+
+	return config != nil && config.ManagerRemoteSameAsLocal
+}
+
+func addEnvVars(isLocal bool, remoteSameAsLocal bool) []string {
+	if isLocal || remoteSameAsLocal {
+		return os.Environ()
+	}
+
+	return nil
 }
 
 type synchronousAddWaiter interface {
@@ -618,7 +636,9 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // defaults specified in other command line args. Returns job slice, bool for if
 // the manager is on the same host as us, and bool for if any job defaulted to
 // the default repgrp.
-func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, bool) {
+//
+//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // Legacy parser is broad; this change only threads remote defaults.
+func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
 	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
@@ -773,7 +793,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 	}
 
 	// we'll default to pwd if the manager is on the same host as us, or if
-	// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
+	// cwd matters, or if remote adds should behave like local adds; /tmp
+	// otherwise (and cmdCwd has not been supplied).
 	var pwd string
 	var remoteWarning bool
 	if cmdCwd == "" {
@@ -781,7 +802,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		if errg != nil {
 			die("%s", errg)
 		}
-		if isLocal || cmdCwdMatters {
+
+		if isLocal || cmdCwdMatters || remoteSameAsLocal {
 			pwd = wd
 		} else {
 			pwd = "/tmp"
