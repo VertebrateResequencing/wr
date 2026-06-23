@@ -57,10 +57,15 @@ import (
 func waitForRESTJobState(ctx context.Context, httpClient *http.Client, url, bearer string,
 	wanted JobState,
 ) ([]JStatus, bool) {
+	const pollAttemptTimeout = 5 * time.Second
+
 	var jstati []JStatus
 
 	ok := pollUntil(func() bool {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		attemptCtx, cancel := context.WithTimeout(ctx, pollAttemptTimeout)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
 		if err != nil {
 			return false
 		}
@@ -71,10 +76,13 @@ func waitForRESTJobState(ctx context.Context, httpClient *http.Client, url, bear
 		if err != nil {
 			return false
 		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return false
+		}
 
 		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-
 		if err != nil {
 			return false
 		}

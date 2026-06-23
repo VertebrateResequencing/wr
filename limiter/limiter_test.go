@@ -260,10 +260,13 @@ func TestLimiter(t *testing.T) {
 			// decremented under load, which changes how many increments succeed
 			// (the 125/75 split below depends on all 200 contending together).
 			start := make(chan struct{})
+			ready := make(chan struct{}, 200)
 			for i := 0; i < 200; i++ {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
+
+					ready <- struct{}{}
 
 					<-start
 
@@ -282,6 +285,10 @@ func TestLimiter(t *testing.T) {
 						}
 					}
 				}(i)
+			}
+
+			for range 200 {
+				<-ready
 			}
 
 			close(start)
