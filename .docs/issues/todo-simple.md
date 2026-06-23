@@ -115,6 +115,15 @@ local-tests → CI → Copilot-review cycle instead of paying it per tiny change
 
 Tick the checklist as each branch progresses.
 
+## feat/remote-manager-env-merge
+
+- [ ] Implemented
+- [ ] Reviewed
+- [ ] Merged
+- [ ] Solved
+
+- **[#512 Choose if env is used with remote manager](https://github.com/VertebrateResequencing/wr/issues/512)** — add an opt-in setting that allows `wr add` to send the submitter's environment to a manager running on a different host. Keep the current conservative default for remote managers, where environment variables are not merged because the remote host may have incompatible paths/settings, but allow same-cluster users to enable environment merging when it is safe and desirable. Add tests covering both the default remote-manager behaviour and the opt-in path.
+
 ## fix/small-fixes-batch
 
 - [x] Implemented
