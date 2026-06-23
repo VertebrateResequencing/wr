@@ -591,7 +591,8 @@ type Server struct {
 	ch        codec.Handle
 	// runner command string compatible with fmt.Sprintf(..., schedulerGroup,
 	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
-	rc                        string
+	rc string
+
 	ServerInfo                *ServerInfo
 	ServerVersions            *ServerVersions
 	db                        *db

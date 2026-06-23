@@ -153,13 +153,16 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		So(jqerr.Err, ShouldEqual, FailReasonSignal)
 	})
 
-	Convey("A cgroup OOM counter increase is authoritative", t, func() {
-		status := syscall.WaitStatus(1 << 8)
+	Convey("A cgroup OOM counter increase is authoritative for OOM-compatible exits", t, func() {
+		sigkill := syscall.WaitStatus(syscall.SIGKILL)
+		shellSIGKILL := syscall.WaitStatus((shellSignalExitCodeOffset + int(syscall.SIGKILL)) << 8)
+		normalExit := syscall.WaitStatus(1 << 8)
 
-		So(attributedMemoryDeath(false, true, status, 50, 100, "lsf", true), ShouldBeTrue)
-		So(attributedMemoryDeath(false, true, status, 50, 100, "local", false), ShouldBeTrue)
-		So(attributedMemoryDeath(false, true, status, 50, 100, "openstack", false), ShouldBeTrue)
-		So(attributedMemoryDeath(false, true, status, 50, 100, "", false), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, sigkill, 50, 100, "lsf", true), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, sigkill, 50, 100, "local", false), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, shellSIGKILL, 50, 100, "openstack", false), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, shellSIGKILL, 50, 100, "", false), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, normalExit, 200, 100, "local", true), ShouldBeFalse)
 	})
 
 	Convey("wr's own memory kill still requires SIGKILL plus high peak", t, func() {

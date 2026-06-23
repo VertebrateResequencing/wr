@@ -48,6 +48,8 @@ const (
 
 var errCgroupOOMKillCountMissing = errors.New("cgroup OOM kill count missing")
 
+const shellSignalExitCodeOffset = 128
+
 type cgroupOOMCounter struct {
 	path    string
 	key     string
@@ -179,7 +181,7 @@ func attributedMemoryDeath(
 	allowSchedulerFallback bool,
 ) bool {
 	if cgroupOOM {
-		return true
+		return oomCompatibleExitStatus(status)
 	}
 
 	if wrKilledForMemory {
@@ -189,6 +191,15 @@ func attributedMemoryDeath(
 	return allowSchedulerFallback &&
 		schedulerNeedsSigkillMemoryFallback(scheduler) &&
 		sigkillMemoryFallback(status, peakRAM, requiredRAM)
+}
+
+func oomCompatibleExitStatus(status syscall.WaitStatus) bool {
+	if status.Signaled() && status.Signal() == syscall.SIGKILL { //nolint:misspell
+		return true
+	}
+
+	return status.Exited() &&
+		status.ExitStatus() == shellSignalExitCodeOffset+int(syscall.SIGKILL)
 }
 
 func schedulerNeedsSigkillMemoryFallback(scheduler string) bool {
