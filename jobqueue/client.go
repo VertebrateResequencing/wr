@@ -1746,10 +1746,10 @@ func (c *Client) Touch(job *Job) (bool, error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 
-	job.RLock()
-	key := jobKeySnapshot(job)
+	job.Lock()
+	key := job.Key()
 	endState := touchEndState(job)
-	job.RUnlock()
+	job.Unlock()
 
 	resp, err := c.request(&clientRequest{
 		Method:      "jtouch",
@@ -1779,10 +1779,6 @@ type JobEndState struct {
 	Stdout   []byte
 	Stderr   []byte
 	Exited   bool
-}
-
-func jobKeySnapshot(job *Job) string {
-	return keyOnlyJob(job).Key()
 }
 
 // ended updates a Job for the benefit of the client only: this has no effect on
@@ -1817,9 +1813,9 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 
-	job.RLock()
-	key := jobKeySnapshot(job)
-	job.RUnlock()
+	job.Lock()
+	key := job.Key()
+	job.Unlock()
 
 	_, err := c.request(&clientRequest{Method: "jarchive", Keys: []string{key}, JobEndState: jes})
 	if err != nil {
@@ -1848,7 +1844,7 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 
 	job.Lock()
 	job.FailReason = failreason
-	key := jobKeySnapshot(job)
+	key := job.Key()
 	job.Unlock()
 
 	_, err := c.request(&clientRequest{
@@ -1898,7 +1894,7 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 
 	job.Lock()
 	job.FailReason = failreason
-	key := jobKeySnapshot(job)
+	key := job.Key()
 	job.Unlock()
 
 	_, err := c.request(&clientRequest{
