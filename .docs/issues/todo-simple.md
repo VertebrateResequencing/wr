@@ -219,7 +219,7 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 ## perf/client-payload-trim
 
-- [ ] Implemented
+- [x] Implemented
 - [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
