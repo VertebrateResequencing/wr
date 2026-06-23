@@ -200,7 +200,7 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 - **[#20 Status webpage: add rerun button](https://github.com/VertebrateResequencing/wr/issues/20)** — add a "Rerun" action/button to completed jobs in the web status UI that triggers a fresh run by re-adding the command with `rerun=true`, **reusing** the existing add+rerun mechanism (no dedicated new REST action). Available for any completed job. Show a confirmation dialog of the same style as the existing job-removal confirmation.
