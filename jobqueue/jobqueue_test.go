@@ -1908,13 +1908,19 @@ func TestJobqueueBasics(t *testing.T) {
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
 				}
-				// the recommendation is recalculated asynchronously after the
-				// stats are stored, so poll for it to settle rather than
-				// assuming it has happened within a fixed delay.
-				So(pollUntil(func() bool {
-					r, errr := server.db.recommendedReqGroupMemory("fake_group")
+				// the recommendations are recalculated asynchronously after the
+				// stats are stored, and each per-resource value settles
+				// independently, so poll for all of them to reach their expected
+				// values rather than assuming a fixed delay (or that memory
+				// settling implies disk and time have too).
+				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
 
-					return errr == nil && r == 100
+				So(pollUntil(func() bool {
+					m, e1 := server.db.recommendedReqGroupMemory("fake_group")
+					d, e2 := server.db.recommendedReqGroupDisk("fake_group")
+					tm, e3 := server.db.recommendedReqGroupTime("fake_group")
+
+					return e1 == nil && e2 == nil && e3 == nil && m == 100 && d == 100 && tm == expectedShort
 				}), ShouldBeTrue)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
@@ -1924,8 +1930,6 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 100)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
-
-				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
 				So(rtime, ShouldEqual, expectedShort)
 
 				for i := 11; i <= 100; i++ {
@@ -1946,12 +1950,15 @@ func TestJobqueueBasics(t *testing.T) {
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
 				}
-				// as above, wait for the asynchronous recalculation to settle on
-				// the expected values instead of relying on a fixed delay.
+				// as above, wait for every per-resource recalculation to settle
+				// on its expected value, not just memory.
 				So(pollUntil(func() bool {
-					r, errr := server.db.recommendedReqGroupMemory("fake_group")
+					m, e1 := server.db.recommendedReqGroupMemory("fake_group")
+					d, e2 := server.db.recommendedReqGroupDisk("fake_group")
+					tm, e3 := server.db.recommendedReqGroupTime("fake_group")
 
-					return errr == nil && r == 3400
+					return e1 == nil && e2 == nil && e3 == nil &&
+						m == 3400 && d == 12800 && tm >= 9500 && tm%RecSecRound == 0
 				}), ShouldBeTrue)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
