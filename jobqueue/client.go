@@ -131,6 +131,16 @@ const (
 	RepGroupMatchSuffix RepGroupMatch = "suffix"
 )
 
+func touchEndState(job *Job) *JobEndState {
+	return &JobEndState{
+		PeakRAM:  job.PeakRAM,
+		PeakDisk: job.PeakDisk,
+		CPUtime:  job.CPUtime,
+		Stdout:   job.StdOutC,
+		Stderr:   job.StdErrC,
+	}
+}
+
 // clientRequest is the struct that clients send to the server over the network
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
@@ -148,6 +158,7 @@ type clientRequest struct {
 	State                   JobState
 	Path                    string // desired path File should be stored at, can be blank
 	CloudServerID           string
+	FailReason              string
 	Job                     *Job
 	JobEndState             *JobEndState
 	Modifier                *JobModifier
@@ -183,6 +194,26 @@ func RepGroupMatches(jobRepGroup, repgroup string, match RepGroupMatch) bool {
 	default:
 		return jobRepGroup == repgroup
 	}
+}
+
+func (cr *clientRequest) key() string {
+	if len(cr.Keys) > 0 {
+		return cr.Keys[0]
+	}
+
+	if cr.Job != nil {
+		return cr.Job.Key()
+	}
+
+	return ""
+}
+
+func (cr *clientRequest) failReason() string {
+	if cr.FailReason != "" || cr.Job == nil {
+		return cr.FailReason
+	}
+
+	return cr.Job.FailReason
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -1694,7 +1725,12 @@ func (c *Client) Touch(job *Job) (bool, error) {
 	defer c.teMutex.Unlock()
 	job.RLock()
 	defer job.RUnlock()
-	resp, err := c.request(&clientRequest{Method: "jtouch", Job: job})
+
+	resp, err := c.request(&clientRequest{
+		Method:      "jtouch",
+		Keys:        []string{job.Key()},
+		JobEndState: touchEndState(job),
+	})
 	if err != nil {
 		return false, err
 	}
@@ -1755,7 +1791,7 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	job.RLock()
 	defer job.RUnlock()
 
-	_, err := c.request(&clientRequest{Method: "jarchive", Job: job, JobEndState: jes})
+	_, err := c.request(&clientRequest{Method: "jarchive", Keys: []string{job.Key()}, JobEndState: jes})
 	if err != nil {
 		return err
 	}
@@ -1782,7 +1818,12 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 
 	job.FailReason = failreason
 
-	_, err := c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
+	_, err := c.request(&clientRequest{
+		Method:      "jrelease",
+		Keys:        []string{job.Key()},
+		JobEndState: jes,
+		FailReason:  failreason,
+	})
 	if err != nil {
 		return err
 	}
@@ -1824,7 +1865,12 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 		jes.Stderr = compressStd([]byte(stderr[0].Error()))
 	}
 
-	_, err := c.request(&clientRequest{Method: "jbury", Job: job, JobEndState: jes})
+	_, err := c.request(&clientRequest{
+		Method:      "jbury",
+		Keys:        []string{job.Key()},
+		JobEndState: jes,
+		FailReason:  failreason,
+	})
 	if err != nil {
 		return err
 	}
@@ -2145,11 +2191,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 
 	// pull the error out of sr
 	if sr.Err != "" {
-		key := ""
-		if cr.Job != nil {
-			key = cr.Job.Key()
-		}
-		return sr, Error{cr.Method, key, sr.Err}
+		return sr, Error{cr.Method, cr.key(), sr.Err}
 	}
 	return sr, err
 }
