@@ -83,6 +83,7 @@ var (
 	cmdOnSuccess            string
 	cmdOnExit               string
 	cmdEnv                  string
+	cmdRemoteEnvMerge       bool
 	cmdReRun                bool
 	cmdOsPrefix             string
 	cmdOsUsername           string
@@ -456,7 +457,8 @@ base variables as they were at the moment in time you run 'wr add', so to set a
 certain environment variable for all commands, you could instead just set it
 prior to calling 'wr add'. In the remote case the command will use base
 variables as they were on the machine where the command is executed when that
-machine was started.
+machine was started, unless --remote_env_merge or the ManagerRemoteEnvMerge
+config option is enabled.
 
 "bsub_mode" is a boolean that results in the job being assigned a unique (for
 this manager session) job id, and turns on bsub emulation, which means that if
@@ -496,10 +498,7 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 			die("You must add exactly 1 command when using synchronous mode.")
 		}
 
-		var envVars []string
-		if isLocal {
-			envVars = os.Environ()
-		}
+		envVars := addEnvVars(isLocal, addRemoteEnvMerge(combraCmd.Flags().Changed("remote_env_merge")))
 
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
@@ -578,6 +577,8 @@ func init() {
 		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
 	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
+	addCmd.Flags().BoolVar(&cmdRemoteEnvMerge, "remote_env_merge", false,
+		"send submitter environment variables when adding jobs to a remote manager")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 	addCmd.Flags().BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
@@ -592,6 +593,22 @@ func init() {
 	if err != nil {
 		die("cloud not hide reserver_timeout option: %s", err)
 	}
+}
+
+func addRemoteEnvMerge(flagChanged bool) bool {
+	if flagChanged {
+		return cmdRemoteEnvMerge
+	}
+
+	return config != nil && config.ManagerRemoteEnvMerge
+}
+
+func addEnvVars(isLocal bool, mergeRemoteEnv bool) []string {
+	if isLocal || mergeRemoteEnv {
+		return os.Environ()
+	}
+
+	return nil
 }
 
 type synchronousAddWaiter interface {

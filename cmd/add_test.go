@@ -33,6 +33,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -63,6 +64,54 @@ func TestSynchronousAddDoesNotUsePollingHelper(t *testing.T) {
 		source, err := os.ReadFile(filepath.Join("..", "cmd", "add.go"))
 		So(err, ShouldBeNil)
 		So(string(source), ShouldNotContainSubstring, "waitForJobCompletion")
+	})
+}
+
+func TestAddEnvVarsForRemoteManagers(t *testing.T) {
+	oldConfig := config
+	oldCmdRemoteEnvMerge := cmdRemoteEnvMerge
+
+	t.Cleanup(func() {
+		config = oldConfig
+		cmdRemoteEnvMerge = oldCmdRemoteEnvMerge
+	})
+
+	t.Setenv("WR_ADD_REMOTE_ENV_MERGE_TEST", "1")
+
+	Convey("remote manager adds do not send submitter environment by default", t, func() {
+		config = &internal.Config{}
+		cmdRemoteEnvMerge = false
+
+		envVars := addEnvVars(false, addRemoteEnvMerge(false))
+
+		So(envVars, ShouldBeNil)
+	})
+
+	Convey("remote manager adds send submitter environment when config opts in", t, func() {
+		config = &internal.Config{ManagerRemoteEnvMerge: true}
+		cmdRemoteEnvMerge = false
+
+		envVars := addEnvVars(false, addRemoteEnvMerge(false))
+
+		So(slices.Contains(envVars, "WR_ADD_REMOTE_ENV_MERGE_TEST=1"), ShouldBeTrue)
+	})
+
+	Convey("remote manager adds send submitter environment when CLI opts in", t, func() {
+		config = &internal.Config{}
+		cmdRemoteEnvMerge = true
+
+		envVars := addEnvVars(false, addRemoteEnvMerge(true))
+
+		So(slices.Contains(envVars, "WR_ADD_REMOTE_ENV_MERGE_TEST=1"), ShouldBeTrue)
+	})
+
+	Convey("remote manager CLI can preserve default env suppression over config", t, func() {
+		config = &internal.Config{ManagerRemoteEnvMerge: true}
+		cmdRemoteEnvMerge = false
+
+		envVars := addEnvVars(false, addRemoteEnvMerge(true))
+
+		So(envVars, ShouldBeNil)
 	})
 }
 
@@ -214,6 +263,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	oldCmdQueuesAvoidAdd := cmdQueuesAvoidAdd
 	oldCmdMisc := cmdMisc
 	oldCmdEnv := cmdEnv
+	oldCmdRemoteEnvMerge := cmdRemoteEnvMerge
 	oldCmdReRun := cmdReRun
 	oldCmdBsubMode := cmdBsubMode
 	oldCmdDisableRelativeCheck := cmdDisableRelativeCheck
@@ -261,6 +311,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 		cmdQueuesAvoidAdd = oldCmdQueuesAvoidAdd
 		cmdMisc = oldCmdMisc
 		cmdEnv = oldCmdEnv
+		cmdRemoteEnvMerge = oldCmdRemoteEnvMerge
 		cmdReRun = oldCmdReRun
 		cmdBsubMode = oldCmdBsubMode
 		cmdDisableRelativeCheck = oldCmdDisableRelativeCheck
@@ -314,6 +365,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdQueuesAvoidAdd = "interactive"
 	cmdMisc = ""
 	cmdEnv = ""
+	cmdRemoteEnvMerge = false
 	cmdReRun = false
 	cmdBsubMode = false
 	cmdDisableRelativeCheck = true
