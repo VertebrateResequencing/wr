@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +68,11 @@ const (
 // made at the ~same time). The best we can do for now is to set this to sshd's
 // default MaxSessions, which is 10. *** can we do better?
 const maxSSHSessions = 10
+
+var (
+	errConnectionCouldNotBeEstablished = errors.New("connection could not be established")
+	errConnectionAttemptCancelled      = errors.New("connection attempt cancelled")
+)
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration
@@ -230,7 +236,7 @@ SENTINEL:
 	if files != "" {
 		err = s.CopyOver(ctx, files)
 		if err != nil {
-			return fmt.Errorf("cloud server files failed to upload: %s", err)
+			return fmt.Errorf("cloud server files failed to upload: %w", err)
 		}
 		s.ConfigFiles = files
 	}
@@ -604,7 +610,7 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 				// if it's a known "ssh still starting up" error, wait until the
 				// timeout, unless ssh had worked previously, in which case
 				// bail immediately if it's "no route to host"
-				if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
+				if sshMayStillBeStarting(err, s.created) {
 					if s.sshStarted && strings.HasSuffix(err.Error(), "no route to host") {
 						err = errors.New("ssh used to work, but now there's no route to host")
 						break DIAL
@@ -618,7 +624,8 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 				// brings up sshd and starts rejecting connections before
 				// the centos user gets added)
 				ticks++
-				if err != nil && err.Error() == "connection attempt cancelled" {
+
+				if errors.Is(err, errConnectionAttemptCancelled) {
 					ticker.Stop()
 					break DIAL
 				}
@@ -666,10 +673,27 @@ func sshDial(ctx context.Context, addr string, sshConfig *ssh.ClientConfig) (*ss
 	case err := <-errCh:
 		return <-clientCh, err
 	case <-deadline:
-		return nil, fmt.Errorf("connection could not be established")
+		return nil, errConnectionCouldNotBeEstablished
 	case <-ctx.Done():
-		return nil, fmt.Errorf("connection attempt cancelled")
+		return nil, errConnectionAttemptCancelled
 	}
+}
+
+func sshMayStillBeStarting(err error, created bool) bool {
+	if err == nil {
+		return false
+	}
+
+	if sshHasStartupSuffix(err.Error()) {
+		return true
+	}
+
+	if !created {
+		return false
+	}
+
+	return errors.Is(err, errConnectionCouldNotBeEstablished) ||
+		strings.HasSuffix(err.Error(), errConnectionCouldNotBeEstablished.Error())
 }
 
 // SSHSession returns an ssh.Session object that could be used to do things via
@@ -682,7 +706,8 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 	sshClient, clientIndex, err := s.SSHClient(ctx)
 	if err != nil {
 		clog.Debug(ctx, "server ssh could not be established", "err", err)
-		return nil, clientIndex, fmt.Errorf("cloud SSHSession() failed to get a client: %s", err.Error())
+
+		return nil, clientIndex, fmt.Errorf("cloud SSHSession() failed to get a client: %w", err)
 	}
 
 	// *** even though sshclient has a timeout, it still hangs forever if we
@@ -709,7 +734,8 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 		session, errf := sshClient.NewSession()
 		if errf != nil {
 			clog.Debug(ctx, "server ssh failed", "err", errf, "clientindex", clientIndex)
-			done <- fmt.Errorf("cloud SSHSession() failed to esatablish a session: %s", errf.Error())
+
+			done <- fmt.Errorf("cloud SSHSession() failed to esatablish a session: %w", errf)
 			return
 		}
 		worked <- true
@@ -748,9 +774,15 @@ func (s *Server) CloseSSHSession(ctx context.Context, session *ssh.Session, clie
 // closeWarning warns about the given error if not nil, unless it is expected
 // in a close situation.
 func (s *Server) closeWarning(ctx context.Context, err error) {
-	if err != nil && err.Error() != "EOF" && !strings.Contains(err.Error(), "use of closed network connection") {
+	if err != nil && !isExpectedCloseError(err) {
 		clog.Warn(ctx, "failed to close ssh session", "err", err)
 	}
+}
+
+func isExpectedCloseError(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		strings.Contains(err.Error(), "use of closed network connection")
 }
 
 // SFTPClient is like sftp.NewClient(), but the underlying
@@ -854,7 +886,7 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 			errCh <- ""
 		}
 		if errf != nil {
-			done <- fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, errf.Error())
+			done <- fmt.Errorf("cloud RunCmd(%s) failed: %w", cmd, errf)
 		} else {
 			done <- nil
 		}
@@ -1090,14 +1122,14 @@ func (s *Server) MkDir(ctx context.Context, dir string) error {
 	// try again with sudo
 	_, e, err := s.RunCmd(ctx, "sudo mkdir -p "+dir, false)
 	if err != nil {
-		return fmt.Errorf("%s; %s", e, err.Error())
+		return fmt.Errorf("%s; %w", e, err)
 	}
 
 	// correct permission on leaf dir *** not currently correcting permission on
 	// any parent dirs we might have just made
 	_, e, err = s.RunCmd(ctx, fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, dir), false)
 	if err != nil {
-		return fmt.Errorf("%s; %s", e, err.Error())
+		return fmt.Errorf("%s; %w", e, err)
 	}
 
 	return nil
@@ -1418,4 +1450,20 @@ func (s *Server) Known(ctx context.Context) bool {
 	}
 
 	return known
+}
+
+func sshHasStartupSuffix(errStr string) bool {
+	startupSuffixes := [...]string{
+		"connection timed out",
+		"no route to host",
+		"connection refused",
+	}
+
+	for _, suffix := range startupSuffixes {
+		if strings.HasSuffix(errStr, suffix) {
+			return true
+		}
+	}
+
+	return false
 }
