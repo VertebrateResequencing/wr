@@ -1046,7 +1046,7 @@ func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 		return false
 	}
 
-	return job.FailReason == FailReasonRAM || job.UntilBuried <= job.Retries
+	return job.FailReason == FailReasonRAM || job.State == JobStateDelayed
 }
 
 func increaseJobRAMAfterHighPeak(job *Job) {
@@ -2157,6 +2157,8 @@ func (s *Server) createQueue(ctx context.Context) {
 
 			job.RLock()
 			jobOverride := job.Override
+			reqGroup := job.ReqGroup
+			failReason := job.FailReason
 			shouldIncreaseRAM := shouldIncreaseJobRAMAfterHighPeak(job)
 			job.RUnlock()
 
@@ -2164,14 +2166,15 @@ func (s *Server) createQueue(ctx context.Context) {
 			// recommendations, which are rounded to get fewer larger
 			// groups
 			var recommendedReq *scheduler.Requirements
-			if rec, existed := reqGroupToReqs[job.ReqGroup]; existed {
+			if rec, existed := reqGroupToReqs[reqGroup]; existed { //nolint:nestif
 				recommendedReq = rec
 			} else {
-				recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
-				recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
-				recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
+				recm, errm := s.db.recommendedReqGroupMemory(reqGroup)
+				recd, errd := s.db.recommendedReqGroupDisk(reqGroup)
+
+				recs, errs := s.db.recommendedReqGroupTime(reqGroup)
 				if errm != nil || errd != nil || errs != nil {
-					reqGroupToReqs[job.ReqGroup] = nil
+					reqGroupToReqs[reqGroup] = nil
 				} else {
 					recmMBs := 0
 					if recm > 0 {
@@ -2192,14 +2195,14 @@ func (s *Server) createQueue(ctx context.Context) {
 						DiskSet: true,
 						Time:    time.Duration(recsSecs) * time.Second,
 					}
-					reqGroupToReqs[job.ReqGroup] = recommendedReq
+					reqGroupToReqs[reqGroup] = recommendedReq
 				}
 			}
 
 			shouldUpdateRequirements := recommendedReq != nil ||
 				shouldIncreaseRAM ||
-				job.FailReason == FailReasonDisk ||
-				job.FailReason == FailReasonTime
+				failReason == FailReasonDisk ||
+				failReason == FailReasonTime
 			if shouldUpdateRequirements { //nolint:nestif
 				job.Lock()
 				if job.RequirementsOrig == nil {
@@ -2263,7 +2266,7 @@ func (s *Server) createQueue(ctx context.Context) {
 						increaseJobRAMAfterHighPeak(job)
 					}
 
-					switch job.FailReason {
+					switch failReason {
 					case FailReasonDisk:
 						// flat increase of 30%
 						updatedMB := float64(job.PeakDisk) / float64(1024)

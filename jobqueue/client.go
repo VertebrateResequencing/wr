@@ -1056,11 +1056,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	var oomMonitor *cgroupOOMMonitor
 
-	if c.ServerInfo != nil && !schedulerNeedsSigkillMemoryFallback(c.ServerInfo.Scheduler) {
-		monitor, errm := newCgroupOOMMonitor(cmd.Process.Pid, procRoot, cgroupRoot)
-		if errm == nil {
-			oomMonitor = monitor
-		}
+	monitor, errm := newCgroupOOMMonitor(cmd.Process.Pid, procRoot, cgroupRoot)
+	if errm == nil {
+		oomMonitor = monitor
 	}
 
 	// update the server that we've started the job
@@ -1293,7 +1291,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					if commandExceededMemoryEstimate(peakmem, job.Requirements.RAM) {
 						exceededMemEstimate = true
 
-						// ... it both uses more than exepected and more than
+						// ... it both uses more than expected and more than
 						// 90% of physical memory, since we could screw up the
 						// machine we're running on
 						if machineRAM == 0 {

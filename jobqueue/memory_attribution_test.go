@@ -157,6 +157,9 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		status := syscall.WaitStatus(1 << 8)
 
 		So(attributedMemoryDeath(false, true, status, 50, 100, "lsf", true), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, status, 50, 100, "local", false), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, status, 50, 100, "openstack", false), ShouldBeTrue)
+		So(attributedMemoryDeath(false, true, status, 50, 100, "", false), ShouldBeTrue)
 	})
 
 	Convey("wr's own memory kill still requires SIGKILL plus high peak", t, func() {
@@ -170,11 +173,12 @@ func TestMemoryFailureAttribution(t *testing.T) {
 }
 
 func TestHighPeakMemoryRetryGrowth(t *testing.T) {
-	Convey("A retry gets more RAM whenever peak RAM exceeded the reservation, regardless of fail reason", t, func() {
+	Convey("An automatic retry grows RAM after a high peak, regardless of fail reason", t, func() {
 		job := &Job{
 			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
 			PeakRAM:      200,
 			FailReason:   FailReasonExit,
+			State:        JobStateDelayed,
 		}
 
 		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
@@ -200,8 +204,7 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
 			PeakRAM:      200,
 			FailReason:   FailReasonExit,
-			Retries:      3,
-			UntilBuried:  4,
+			State:        JobStateReady,
 		}
 
 		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeFalse)
