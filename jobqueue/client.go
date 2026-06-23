@@ -1551,7 +1551,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					):
 						failreason = FailReasonRAM
 						myerr = Error{"Execute", job.Key(), FailReasonRAM}
-					case waitStatus.Signaled(): //nolint:misspell
+					case waitStatus.Signaled(): //nolint:misspell // Signaled is syscall's method name.
 						failreason = FailReasonSignal
 						shellExitCode := shellSignalExitCodeOffset + int(waitStatus.Signal())
 

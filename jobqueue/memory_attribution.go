@@ -194,7 +194,7 @@ func attributedMemoryDeath(
 }
 
 func oomCompatibleExitStatus(status syscall.WaitStatus) bool {
-	if status.Signaled() && status.Signal() == syscall.SIGKILL { //nolint:misspell
+	if status.Signaled() && status.Signal() == syscall.SIGKILL { //nolint:misspell // Signaled is syscall's method name.
 		return true
 	}
 

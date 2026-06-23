@@ -1198,7 +1198,7 @@ func increaseJobRAMAfterHighPeak(job *Job) {
 	const ramIncreaseRoundMB = 100
 
 	// increase by 1GB or [100% if under 8GB, 30% if over],
-	// whichever is greater, and round up to nearest 100 ***
+	// whichever is greater, and round up to nearest 100MB.
 	// increase to greater than max seen for jobs in our ReqGroup?
 	updatedMB := float64(job.PeakRAM)
 	if updatedMB <= RAMIncreaseMultBreakpoint {
