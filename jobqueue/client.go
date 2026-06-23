@@ -48,6 +48,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -747,6 +748,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
 	var wkbsMutex sync.RWMutex
+
+	var serverContactLost atomic.Bool
 	killDoneCh := make(chan bool, 1)
 	whenKilledByServer := func() {
 		killDoneCh <- true
@@ -770,6 +773,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
+					serverContactLost.Store(true)
 					clog.Warn(ctx, "could not touch", "err", errf)
 					continue
 				}
@@ -1491,6 +1495,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					schedulerName = c.ServerInfo.Scheduler
 				}
 
+				allowSchedulerMemoryFallback := !serverContactLost.Load()
+
 				switch exitcode {
 				case exitCodeCommandPermission:
 					dobury = true
@@ -1521,9 +1527,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					dorelease = true
 
 					switch {
-					case killedForMem:
-						failreason = FailReasonRAM
-						myerr = Error{"Execute", job.Key(), FailReasonRAM}
 					case ranoutDisk:
 						failreason = FailReasonDisk
 						myerr = Error{"Execute", job.Key(), FailReasonDisk}
@@ -1539,7 +1542,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						dobury = true
 						failreason = FailReasonKilled
 						myerr = Error{"Execute", job.Key(), FailReasonKilled}
-					case attributedMemoryDeath(false, cgroupOOM, waitStatus, peakmem, job.Requirements.RAM, schedulerName):
+					case attributedMemoryDeath(
+						killedForMem,
+						cgroupOOM,
+						waitStatus,
+						peakmem,
+						job.Requirements.RAM,
+						schedulerName,
+						allowSchedulerMemoryFallback,
+					):
 						failreason = FailReasonRAM
 						myerr = Error{"Execute", job.Key(), FailReasonRAM}
 					case waitStatus.Signaled(): //nolint:misspell

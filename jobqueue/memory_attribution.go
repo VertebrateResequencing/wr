@@ -176,6 +176,7 @@ func attributedMemoryDeath(
 	peakRAM int,
 	requiredRAM int,
 	scheduler string,
+	allowSchedulerFallback bool,
 ) bool {
 	if cgroupOOM {
 		return true
@@ -185,7 +186,8 @@ func attributedMemoryDeath(
 		return sigkillMemoryFallback(status, peakRAM, requiredRAM)
 	}
 
-	return schedulerNeedsSigkillMemoryFallback(scheduler) &&
+	return allowSchedulerFallback &&
+		schedulerNeedsSigkillMemoryFallback(scheduler) &&
 		sigkillMemoryFallback(status, peakRAM, requiredRAM)
 }
 
