@@ -1143,6 +1143,12 @@ func TestServerWebI(t *testing.T) {
 	})
 }
 
+func clearReadDeadlineBestEffort(ws *websocket.Conn) {
+	if err := ws.SetReadDeadline(time.Time{}); err != nil {
+		return
+	}
+}
+
 func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1245,16 +1251,11 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 // Key), so a request's response has to be picked out rather than assuming it is
 // the very next message read - otherwise the read races those broadcasts under
 // load and sees the wrong message.
-func readJStatusMatching(ws *websocket.Conn, match func(JStatus) bool) (matched JStatus, ok bool) {
+func readJStatusMatching(ws *websocket.Conn, match func(JStatus) bool) (JStatus, bool) {
 	if err := ws.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return JStatus{}, false
 	}
-	defer func() {
-		if err := ws.SetReadDeadline(time.Time{}); err != nil {
-			matched = JStatus{}
-			ok = false
-		}
-	}()
+	defer clearReadDeadlineBestEffort(ws)
 
 	for {
 		var status JStatus
@@ -1641,15 +1642,17 @@ func serverSubscriptionClosed(sub *serverSubscription, timeout time.Duration) bo
 	}
 }
 
-func writeCurrentJStatusWithDeadline(ws *websocket.Conn) (err error) {
-	if err = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+func writeCurrentJStatusWithDeadline(ws *websocket.Conn) error {
+	if err := ws.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
 	}
-	defer func() {
-		if clearErr := ws.SetWriteDeadline(time.Time{}); err == nil {
-			err = clearErr
-		}
-	}()
+	defer clearWriteDeadlineBestEffort(ws)
 
 	return ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+}
+
+func clearWriteDeadlineBestEffort(ws *websocket.Conn) {
+	if err := ws.SetWriteDeadline(time.Time{}); err != nil {
+		return
+	}
 }
