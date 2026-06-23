@@ -1544,7 +1544,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						myerr = Error{"Execute", job.Key(), FailReasonRAM}
 					case waitStatus.Signaled(): //nolint:misspell
 						failreason = FailReasonSignal
-						myerr = Error{"Execute", job.Key(), FailReasonSignal}
+						//nolint:err113
+						myerr = fmt.Errorf(
+							"command [%s] exited with code %d after receiving signal %s%s%s",
+							job.Cmd, exitcode, waitStatus.Signal(), mayBeTemp, cmdOut,
+						)
 					case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
 						dobury = true
 						failreason = FailReasonExit
