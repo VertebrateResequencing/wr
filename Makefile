@@ -29,6 +29,11 @@ install:
 # tests get their own lane; the lighter jobqueue tests share two lanes. The
 # non-jobqueue lanes (client + everything else) are nice'd so the
 # timing-sensitive jobqueue lanes get CPU priority on a busy machine.
+#
+# Because of this parallelism a test can be starved of CPU at any moment, so
+# tests must poll for asynchronous state rather than assert on it after a fixed
+# sleep. See the "Test reliability conventions" comment near pollUntil in
+# jobqueue/jobqueue_test.go before adding or changing tests.
 ALL_SPLIT := TestJobqueueRunners|TestJobqueueRunners2|TestJobqueueSignal|TestJobqueueProduction|TestJobqueueMedium|TestJobqueueModify|TestServerWebI|TestJobqueueBasics|TestJobqueueLimitGroups|TestJobqueueModules|TestJobqueueHighMem|TestREST|TestJobqueueUtils|TestJobqueueMockRunner
 JQ_RESTA := ^(TestJobqueueLimitGroups|TestREST|TestJobqueueHighMem|TestJobqueueUtils|TestJobqueueModules)$$
 JQ_RESTB := ^(TestServerWebI|TestJobqueueBasics)$$

@@ -1313,15 +1313,35 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job2.State, ShouldEqual, JobStateReserved)
 
 			Convey("Signals are handled during execution, and we can see when jobs take too long", func() {
+				// Send the process-wide SIGTERM that the running job is meant to
+				// catch, but make the sender cancellable and stop it once the
+				// jobs have finished. Otherwise, if this leaf's jobs return (or
+				// the timer is delayed) before the signal fires, the stray
+				// SIGTERM leaks into a later test's Execute (which also registers
+				// a process-wide signal handler) and fails it spuriously.
+				sigDone := make(chan struct{})
+
+				var sigDoneOnce sync.Once
+
+				cancelSig := func() {
+					sigDoneOnce.Do(func() {
+						close(sigDone)
+					})
+				}
+
 				go func() {
-					<-time.After(2 * time.Second)
-					errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
-					if errk != nil {
-						fmt.Printf("failed to send SIGTERM: %s\n", errk)
+					select {
+					case <-time.After(2 * time.Second):
+						if errk := syscall.Kill(os.Getpid(), syscall.SIGTERM); errk != nil {
+							log.Printf("failed to send SIGTERM: %s\n", errk)
+						}
+					case <-sigDone:
 					}
 				}()
 
-				j1worked := make(chan bool)
+				defer cancelSig()
+
+				j1worked := make(chan bool, 1)
 				go func() {
 					err := jq.Execute(ctx, job, config.RunnerExecShell)
 					if err != nil {
@@ -1332,12 +1352,14 @@ func TestJobqueueSignal(t *testing.T) {
 							job.FailReason == FailReasonSignal
 						if gotSignalFailure {
 							j1worked <- true
+
+							return
 						}
 					}
 					j1worked <- false
 				}()
 
-				j2worked := make(chan bool)
+				j2worked := make(chan bool, 1)
 				go func() {
 					err := jq.Execute(ctx, job2, config.RunnerExecShell)
 					if err != nil {
@@ -1348,6 +1370,8 @@ func TestJobqueueSignal(t *testing.T) {
 							job2.FailReason == FailReasonTime
 						if gotTimeFailure {
 							j2worked <- true
+
+							return
 						}
 					}
 					j2worked <- false
@@ -1355,6 +1379,10 @@ func TestJobqueueSignal(t *testing.T) {
 
 				So(<-j1worked, ShouldBeTrue)
 				So(<-j2worked, ShouldBeTrue)
+
+				// the signal has now been delivered to and consumed by the jobs
+				// above; stop the sender so it can never fire into a later test.
+				cancelSig()
 
 				jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -1439,10 +1467,10 @@ func TestJobqueueSignal(t *testing.T) {
 				serverCmdCh <- newServerCmd
 			}()
 
-			j1worked := make(chan bool)
+			j1worked := make(chan bool, 1)
 			giveUp1 := time.After(30 * time.Second)
 			go func() {
-				errch := make(chan error)
+				errch := make(chan error, 1)
 				go func() {
 					errch <- jq.Execute(ctx, job, config.RunnerExecShell)
 				}()
@@ -1468,10 +1496,10 @@ func TestJobqueueSignal(t *testing.T) {
 				}
 			}()
 
-			j2worked := make(chan bool)
+			j2worked := make(chan bool, 1)
 			giveUp2 := time.After(30 * time.Second)
 			go func() {
-				errch := make(chan error)
+				errch := make(chan error, 1)
 				go func() {
 					errch <- jq.Execute(ctx, job2, config.RunnerExecShell)
 				}()
@@ -1891,7 +1919,20 @@ func TestJobqueueBasics(t *testing.T) {
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
 				}
-				<-time.After(200 * time.Millisecond)
+				// the recommendations are recalculated asynchronously after the
+				// stats are stored, and each per-resource value settles
+				// independently, so poll for all of them to reach their expected
+				// values rather than assuming a fixed delay (or that memory
+				// settling implies disk and time have too).
+				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
+
+				So(pollUntil(func() bool {
+					m, e1 := server.db.recommendedReqGroupMemory("fake_group")
+					d, e2 := server.db.recommendedReqGroupDisk("fake_group")
+					tm, e3 := server.db.recommendedReqGroupTime("fake_group")
+
+					return e1 == nil && e2 == nil && e3 == nil && m == 100 && d == 100 && tm == expectedShort
+				}), ShouldBeTrue)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 100)
@@ -1900,8 +1941,6 @@ func TestJobqueueBasics(t *testing.T) {
 				So(rdisk, ShouldEqual, 100)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
-
-				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
 				So(rtime, ShouldEqual, expectedShort)
 
 				for i := 11; i <= 100; i++ {
@@ -1922,7 +1961,16 @@ func TestJobqueueBasics(t *testing.T) {
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
 				}
-				<-time.After(500 * time.Millisecond)
+				// as above, wait for every per-resource recalculation to settle
+				// on its expected value, not just memory.
+				So(pollUntil(func() bool {
+					m, e1 := server.db.recommendedReqGroupMemory("fake_group")
+					d, e2 := server.db.recommendedReqGroupDisk("fake_group")
+					tm, e3 := server.db.recommendedReqGroupTime("fake_group")
+
+					return e1 == nil && e2 == nil && e3 == nil &&
+						m == 3400 && d == 12800 && tm >= 9500 && tm%RecSecRound == 0
+				}), ShouldBeTrue)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 3400)
@@ -2541,7 +2589,14 @@ func TestJobqueueMedium(t *testing.T) {
 	reserveWait := 5 * time.Second
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		serverConfig.Timings.ItemTTR = 200 * time.Millisecond
+		// Default to a TTR that comfortably outlasts the reserve->Started gap
+		// even when CI is heavily oversubscribed. A reserved job whose runner
+		// has not sent Started before the TTR elapses is auto-released from the
+		// run queue as "lost", so a too-short default makes every plain
+		// reserve+Execute scenario here intermittently fail with "bad job"
+		// under load. The few scenarios that actually exercise short-TTR
+		// behaviour (lost jobs, auto-revert) opt back into a short TTR locally.
+		serverConfig.Timings.ItemTTR = 2 * time.Second
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -2795,9 +2850,11 @@ func TestJobqueueMedium(t *testing.T) {
 							So(job2.UntilBuried, ShouldEqual, 3)
 
 							Convey("If you do nothing with a reserved job, it auto reverts back to delayed", func() {
-								<-time.After(210 * time.Millisecond)
-								job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
-								So(err, ShouldBeNil)
+								// With no touches the reserved job is auto-released
+								// once its TTR expires; poll for that transition
+								// instead of sampling at a fixed offset, which
+								// races the server's TTR timer under load.
+								job2 = waitUntilJobState(jq2, &JobEssence{Cmd: "sleep 0.1 && false"}, JobStateDelayed, 30)
 								So(job2, ShouldNotBeNil)
 								So(job2.State, ShouldEqual, JobStateDelayed)
 								So(job2.Attempts, ShouldEqual, 3)
@@ -3489,9 +3546,14 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, 1)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
 
-					<-time.After(100 * time.Millisecond)
-					jobs, err = jq.GetByRepGroup("should_fail", false, 0, JobStateBuried, false, false)
-					So(err, ShouldBeNil)
+					// poll for the buried job to become visible by rep group
+					// instead of assuming the server's view updates within a
+					// fixed delay.
+					So(pollUntil(func() bool {
+						jobs, err = jq.GetByRepGroup("should_fail", false, 0, JobStateBuried, false, false)
+
+						return err == nil && len(jobs) == 1
+					}), ShouldBeTrue)
 					So(len(jobs), ShouldEqual, 1)
 					jobs, err = jq.GetByRepGroup("should_delete", false, 0, JobStateBuried, false, false)
 					So(err, ShouldBeNil)
@@ -3499,6 +3561,13 @@ func TestJobqueueMedium(t *testing.T) {
 				})
 
 				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {
+					// This scenario deliberately exercises TTR/touch timing (a
+					// job that runs longer than the TTR, and a client whose
+					// touch interval exceeds the TTR so the job is briefly lost),
+					// so it opts into the short TTR that the suite no longer uses
+					// by default.
+					server.SetItemTTR(200 * time.Millisecond)
+
 					jobs = nil
 					cmd := "perl -MTime::HiRes=sleep -e 'sleep 0.8'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
@@ -3828,10 +3897,15 @@ func TestJobqueueMedium(t *testing.T) {
 				err = jq.Execute(ctx, j1, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				<-time.After(6 * time.Millisecond)
+				// poll for the server's view to reflect the completion instead
+				// of assuming it lands within a fixed few ms.
+				var gottenJobs []*Job
 
-				gottenJobs, err := jq.GetByRepGroup("dep1", false, 0, "", false, false)
-				So(err, ShouldBeNil)
+				So(pollUntil(func() bool {
+					gottenJobs, err = jq.GetByRepGroup("dep1", false, 0, "", false, false)
+
+					return err == nil && len(gottenJobs) == 1 && gottenJobs[0].State == JobStateComplete
+				}), ShouldBeTrue)
 				So(len(gottenJobs), ShouldEqual, 1)
 				So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
@@ -4072,10 +4146,15 @@ func TestJobqueueMedium(t *testing.T) {
 				err = jq.Execute(ctx, j1, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				<-time.After(6 * time.Millisecond)
+				// poll for the server's view to reflect the completion instead
+				// of assuming it lands within a fixed few ms.
+				var gottenJobs []*Job
 
-				gottenJobs, err := jq.GetByRepGroup("dep1", false, 0, "", false, false)
-				So(err, ShouldBeNil)
+				So(pollUntil(func() bool {
+					gottenJobs, err = jq.GetByRepGroup("dep1", false, 0, "", false, false)
+
+					return err == nil && len(gottenJobs) == 1 && gottenJobs[0].State == JobStateComplete
+				}), ShouldBeTrue)
 				So(len(gottenJobs), ShouldEqual, 1)
 				So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
@@ -4854,7 +4933,16 @@ func TestJobqueueModify(t *testing.T) {
 
 			add(7)
 
-			<-time.After(1000 * time.Millisecond) // wait for the jobs to be ready and assiged sched groups
+			// wait for every added job to become ready (and so have its
+			// scheduler group assigned) before reserving, so the highest-priority
+			// job is the one reserved; a fixed wait races the scheduler under
+			// load. The reserve helper then still polls for reservability.
+			So(pollUntil(func() bool {
+				a, e1 := jq.GetByRepGroup("a", false, 0, JobStateReady, false, false)
+				b, e2 := jq.GetByRepGroup("b", false, 0, JobStateReady, false, false)
+
+				return e1 == nil && e2 == nil && len(a) == 3 && len(b) == 4
+			}), ShouldBeTrue)
 
 			reserve(rgroup, "echo 4")
 
@@ -8433,6 +8521,40 @@ func setDomainIP(domain string) {
 		}
 	}
 }
+
+// Test reliability conventions
+//
+// The server/runner integration tests run as many concurrent `go test`
+// processes (see the Makefile), so on a busy or oversubscribed machine any
+// single test can be starved of CPU at an arbitrary moment. Tests must
+// therefore never depend on real-clock timing to observe asynchronous state.
+// When adding or changing tests, prefer these patterns over fixed delays:
+//
+//   - Don't assert on asynchronously-updated state (a job's server-side state,
+//     a count, a file, a websocket message) after a fixed sleep. Poll for the
+//     condition with a generous upper bound instead: pollUntil, waitUntilJobState
+//     and waitUntilFileExists here, waitForJobState in mockrunner_test.go, and
+//     the waitFor* helpers in jobqueue_runners2_test.go. A poll returns as soon
+//     as the condition holds, so it doesn't slow the happy path. A fixed sleep
+//     is only justified when the wait itself is under test, and even then poll
+//     for the resulting state rather than sampling once at a fixed offset.
+//
+//   - Give test servers timings that tolerate load by default. An ItemTTR short
+//     enough that a slow reserve->Started gap (under load) trips the lost-job
+//     logic makes unrelated reserve+Execute scenarios fail with "bad job"; use a
+//     TTR with headroom and set a short one only in the scenario that actually
+//     exercises TTR/lost-job behaviour.
+//
+//   - Don't fire-and-forget a goroutine with a process-wide effect (sending an
+//     OS signal, killing a shared server) on a fixed timer. Make it cancellable
+//     and stop it before the test returns, so a delayed effect can't leak into a
+//     later test.
+//
+//   - When reading from a stream that carries unsolicited messages as well as
+//     responses (e.g. the status websocket, which interleaves count broadcasts
+//     with request responses), read until the message that matches your request
+//     rather than asserting on the next one read - otherwise the assertion races
+//     whatever broadcast happens to arrive first.
 
 // testPortNext is the per-lane sequential offset used by freeTestPort. The
 // tests in a lane run sequentially, so it needs no synchronisation.

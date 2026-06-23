@@ -285,9 +285,10 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				var status JStatus
-				err = ws.ReadJSON(&status)
-				So(err, ShouldBeNil)
+				status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+					return s.RepGroup == "rg1" && s.State == JobStateComplete
+				})
+				So(ok, ShouldBeTrue)
 				So(status.RepGroup, ShouldEqual, "rg1")
 				So(status.State, ShouldEqual, JobStateComplete)
 				So(status.Cmd, ShouldEqual, "echo 2")
@@ -301,9 +302,10 @@ func TestServerWebI(t *testing.T) {
 					})
 				}()
 
-				var status2 JStatus
-				err = ws.ReadJSON(&status2)
-				So(err, ShouldBeNil)
+				status2, ok2 := readJStatusMatching(ws, func(s JStatus) bool {
+					return s.RepGroup == "rg1" && s.State == JobStateReserved
+				})
+				So(ok2, ShouldBeTrue)
 				So(status2.Cmd, ShouldEqual, "echo 1")
 				So(status2.RepGroup, ShouldEqual, "rg1")
 			})
@@ -347,13 +349,13 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				testStatusesReceived := func(ws *websocket.Conn, expectedNum, offset, exitCode int) {
-					time.Sleep(100 * time.Millisecond)
-
+					// The status websocket also carries unsolicited count
+					// broadcasts (which decode into a JStatus with an empty Key),
+					// so for each expected job read until the next real job status
+					// rather than asserting on whatever message arrives next.
 					for i := range expectedNum {
-						var status JStatus
-
-						err = ws.ReadJSON(&status)
-						So(err, ShouldBeNil)
+						status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
+						So(ok, ShouldBeTrue)
 						So(status.RepGroup, ShouldEqual, "pg_repgroup")
 						So(status.State, ShouldEqual, JobStateBuried)
 						So(status.Exitcode, ShouldEqual, exitCode)
@@ -468,6 +470,8 @@ func TestServerWebI(t *testing.T) {
 					err = ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 					So(err, ShouldBeNil)
 
+					defer clearReadDeadlineBestEffort(ws)
+
 				collectLoop:
 					for {
 						select {
@@ -479,6 +483,12 @@ func TestServerWebI(t *testing.T) {
 							errr := ws.ReadJSON(&status)
 							if errr != nil {
 								break collectLoop
+							}
+
+							if status.Key == "" {
+								// skip interleaved count broadcasts; only the
+								// search's job results have a Key.
+								continue
 							}
 
 							statuses = append(statuses, status)
@@ -557,12 +567,10 @@ func TestServerWebI(t *testing.T) {
 					})
 					So(err, ShouldBeNil)
 
-					time.Sleep(100 * time.Millisecond)
-
-					var status JStatus
-
-					err = ws.ReadJSON(&status)
-					So(err, ShouldBeNil)
+					// skip any interleaved count broadcast (empty Key) and read
+					// the real job status the request asked for.
+					status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
+					So(ok, ShouldBeTrue)
 					So(status.RepGroup, ShouldEqual, "pg_repgroup")
 					So(status.State, ShouldEqual, JobStateBuried)
 					So(status.Exitcode, ShouldEqual, 2)
@@ -583,9 +591,8 @@ func TestServerWebI(t *testing.T) {
 				err = ws.WriteJSON(jstatusReq{Key: jobKey})
 				So(err, ShouldBeNil)
 
-				var status JStatus
-				err = ws.ReadJSON(&status)
-				So(err, ShouldBeNil)
+				status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key == jobKey })
+				So(ok, ShouldBeTrue)
 				So(status.Key, ShouldEqual, jobKey)
 				So(status.State, ShouldEqual, JobStateComplete)
 			})
@@ -604,7 +611,11 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond) // wait for kick to process
+				So(pollUntil(func() bool {
+					kicked, errr := jq.GetByRepGroup("rg2", false, 0, JobStateReady, false, false)
+
+					return errr == nil && len(kicked) == 1
+				}), ShouldBeTrue)
 
 				kickedJobs, errg := jq.GetByRepGroup("rg2", false, 0, JobStateReady, false, false)
 				So(errg, ShouldBeNil)
@@ -799,7 +810,11 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond) // wait for deletion to process
+				So(pollUntil(func() bool {
+					remaining, errr := jq.GetByRepGroup("rg3", false, 0, "", false, false)
+
+					return errr == nil && len(remaining) == 0
+				}), ShouldBeTrue)
 
 				jobs, err = jq.GetByRepGroup("rg3", false, 0, "", false, false)
 				So(err, ShouldBeNil)
@@ -885,8 +900,6 @@ func TestServerWebI(t *testing.T) {
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
-
 				ws2.Close()
 
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
@@ -894,11 +907,21 @@ func TestServerWebI(t *testing.T) {
 
 				var sc jstateCount
 
+				// Read the count response with a deadline instead of pre-sleeping
+				// a fixed time: the explicit "current" request above guarantees a
+				// jstateCount is sent, and the deadline tolerates a slow response
+				// under heavy parallel-test load.
+				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws)
+
 				err = ws.ReadJSON(&sc)
 				So(err, ShouldBeNil)
 
 				err = ws3.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
+
+				So(ws3.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws3)
 
 				err = ws3.ReadJSON(&sc)
 				So(err, ShouldBeNil)
@@ -944,7 +967,7 @@ func TestServerWebI(t *testing.T) {
 						case <-resendStop:
 							return
 						case <-ticker.C:
-							if werr := ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}); werr != nil {
+							if werr := writeCurrentJStatusWithDeadline(ws); werr != nil {
 								return
 							}
 						}
@@ -952,6 +975,7 @@ func TestServerWebI(t *testing.T) {
 				}()
 
 				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws)
 
 				for {
 					_, data, errr := ws.ReadMessage()
@@ -978,7 +1002,7 @@ func TestServerWebI(t *testing.T) {
 				close(resendStop)
 				<-resendDone
 
-				So(ws.SetReadDeadline(time.Time{}), ShouldBeNil)
+				clearReadDeadlineBestEffort(ws)
 				So(foundMessage, ShouldBeTrue)
 
 				err = ws.WriteJSON(jstatusReq{
@@ -1036,19 +1060,47 @@ func TestServerWebI(t *testing.T) {
 
 				server.badServerCaster.Send(cloudServerToBadServer(testServer))
 
-				<-time.After(100 * time.Millisecond)
-
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				foundBadServer := false
 
-				for range 10 {
+				// The bad-server broadcast is lossy (the caster drops to any
+				// subscriber whose buffer is full), so under heavy parallel-test
+				// load the "current" we requested above can be dropped before this
+				// ws reads it. Re-request "current" periodically (it re-broadcasts
+				// the bad servers) while reading until we see our server, bounded
+				// by a read deadline; skip other message shapes.
+				resendStop := make(chan struct{})
+				resendDone := make(chan struct{})
+
+				go func() {
+					defer close(resendDone)
+
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-resendStop:
+							return
+						case <-ticker.C:
+							if werr := writeCurrentJStatusWithDeadline(ws); werr != nil {
+								return
+							}
+						}
+					}
+				}()
+
+				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws)
+
+				for {
 					var msg BadServer
 
 					errr := ws.ReadJSON(&msg)
 					if errr != nil {
-						continue
+						break // read deadline exceeded or connection closed
 					}
 
 					if msg.ID == testServer.ID {
@@ -1063,6 +1115,11 @@ func TestServerWebI(t *testing.T) {
 					}
 				}
 
+				close(resendStop)
+				<-resendDone
+
+				clearReadDeadlineBestEffort(ws)
+
 				So(foundBadServer, ShouldBeTrue)
 
 				err = ws.WriteJSON(jstatusReq{
@@ -1071,7 +1128,14 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
+				So(pollUntil(func() bool {
+					server.bsmutex.RLock()
+					_, stillBad := server.badServers[testServer.ID]
+					server.bsmutex.RUnlock()
+
+					return !stillBad
+				}), ShouldBeTrue)
+
 				server.bsmutex.RLock()
 				_, exists := server.badServers[testServer.ID]
 				server.bsmutex.RUnlock()
@@ -1083,6 +1147,12 @@ func TestServerWebI(t *testing.T) {
 			server.Stop(ctx, true)
 		})
 	})
+}
+
+func clearReadDeadlineBestEffort(ws *websocket.Conn) {
+	if err := ws.SetReadDeadline(time.Time{}); err != nil {
+		return
+	}
 }
 
 func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
@@ -1165,6 +1235,7 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 		close(releaseInitialStatus)
 
 		So(ws.SetReadDeadline(time.Now().Add(2*time.Second)), ShouldBeNil)
+		defer clearReadDeadlineBestEffort(ws)
 
 		initialStatus, err := readUntilStatus(ws)
 		So(err, ShouldBeNil)
@@ -1178,6 +1249,32 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 		So(pushStatus.State, ShouldEqual, JobStateRunning)
 		So(pushStatus.IsPushUpdate, ShouldBeTrue)
 	})
+}
+
+// readJStatusMatching reads JStatus messages from ws until one satisfies match
+// (or a generous deadline elapses), returning it and true, or a zero status and
+// false on timeout. The status websocket also carries unsolicited count and
+// state-change broadcast messages (a count decodes into a JStatus with an empty
+// Key), so a request's response has to be picked out rather than assuming it is
+// the very next message read - otherwise the read races those broadcasts under
+// load and sees the wrong message.
+func readJStatusMatching(ws *websocket.Conn, match func(JStatus) bool) (JStatus, bool) {
+	if err := ws.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return JStatus{}, false
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
+	for {
+		var status JStatus
+
+		if err := ws.ReadJSON(&status); err != nil {
+			return JStatus{}, false
+		}
+
+		if match(status) {
+			return status, true
+		}
+	}
 }
 
 func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
@@ -1219,6 +1316,7 @@ func testNoMoreMessages(ws *websocket.Conn) bool {
 	if err != nil {
 		return false
 	}
+	defer clearReadDeadlineBestEffort(ws)
 
 	err = ws.ReadJSON(&msg)
 
@@ -1549,5 +1647,20 @@ func serverSubscriptionClosed(sub *serverSubscription, timeout time.Duration) bo
 		return true
 	case <-time.After(timeout):
 		return false
+	}
+}
+
+func writeCurrentJStatusWithDeadline(ws *websocket.Conn) error {
+	if err := ws.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	defer clearWriteDeadlineBestEffort(ws)
+
+	return ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+}
+
+func clearWriteDeadlineBestEffort(ws *websocket.Conn) {
+	if err := ws.SetWriteDeadline(time.Time{}); err != nil {
+		return
 	}
 }

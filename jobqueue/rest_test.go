@@ -49,6 +49,52 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// waitForRESTJobState polls the REST job endpoint at url until it returns
+// exactly one job in the wanted state (or pollUntil's deadline elapses),
+// returning the last-decoded statuses and whether the state was reached. It
+// lets the buried/lost checks wait for the server's view to settle instead of
+// sleeping a fixed time that races the server under load.
+func waitForRESTJobState(ctx context.Context, httpClient *http.Client, url, bearer string,
+	wanted JobState,
+) ([]JStatus, bool) {
+	const pollAttemptTimeout = 5 * time.Second
+
+	var jstati []JStatus
+
+	ok := pollUntil(func() bool {
+		attemptCtx, cancel := context.WithTimeout(ctx, pollAttemptTimeout)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+
+		req.Header.Add("Authorization", bearer)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return false
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false
+		}
+
+		jstati = nil
+
+		return json.Unmarshal(body, &jstati) == nil && len(jstati) == 1 && jstati[0].State == wanted
+	})
+
+	return jstati, ok
+}
+
 func TestREST(t *testing.T) {
 	ctx := context.Background()
 
@@ -374,30 +420,27 @@ func TestREST(t *testing.T) {
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateRunning)
 
-					<-time.After(300 * time.Millisecond)
-
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err = client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err = io.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					jstati = []JStatus{}
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 1)
-					So(jstati[0].State, ShouldEqual, JobStateBuried)
-					So(jstati[0].Started, ShouldNotBeNil)
-					So(jstati[0].Ended, ShouldBeNil)
+					buried, ok := waitForRESTJobState(ctx, client,
+						jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", bearer, JobStateBuried)
+					So(ok, ShouldBeTrue)
+					So(len(buried), ShouldEqual, 1)
+					So(buried[0].State, ShouldEqual, JobStateBuried)
+					So(buried[0].Started, ShouldNotBeNil)
+					So(buried[0].Ended, ShouldBeNil)
 				})
 
 				Convey("You can DELETE lost jobs to bury them", func() {
 					err = jq.Started(job, 1)
 					So(err, ShouldBeNil)
 
-					<-time.After(300 * time.Millisecond)
+					// the job is never touched, so it becomes lost once its short
+					// TTR expires; poll for that state (a read-only GET) rather
+					// than waiting a fixed margin over the TTR, which races the
+					// server's timer under load. The DELETE below is then issued
+					// exactly once, against a confirmed-lost job.
+					_, lostOK := waitForRESTJobState(ctx, client,
+						jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", bearer, JobStateLost)
+					So(lostOK, ShouldBeTrue)
 
 					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
 					So(errr, ShouldBeNil)
@@ -413,21 +456,11 @@ func TestREST(t *testing.T) {
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateLost)
 
-					<-time.After(300 * time.Millisecond)
-
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err = client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err = io.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					jstati = []JStatus{}
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 1)
-					So(jstati[0].State, ShouldEqual, JobStateBuried)
+					buried, buriedOK := waitForRESTJobState(ctx, client,
+						jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", bearer, JobStateBuried)
+					So(buriedOK, ShouldBeTrue)
+					So(len(buried), ShouldEqual, 1)
+					So(buried[0].State, ShouldEqual, JobStateBuried)
 				})
 
 				Convey("Once executed...", func() {

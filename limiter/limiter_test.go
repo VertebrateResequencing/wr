@@ -253,17 +253,30 @@ func TestLimiter(t *testing.T) {
 			var incs uint64
 			var fails uint64
 			var wg sync.WaitGroup
+			// Release all workers at once and have each hold its slot long
+			// enough that every worker makes its single attempt before any
+			// successful worker releases. Spawning in a loop without this lets
+			// later workers run only after earlier ones have slept and
+			// decremented under load, which changes how many increments succeed
+			// (the 125/75 split below depends on all 200 contending together).
+			start := make(chan struct{})
+			ready := make(chan struct{}, 200)
 			for i := 0; i < 200; i++ {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
+
+					ready <- struct{}{}
+
+					<-start
+
 					groups := []string{"l4", "l5"}
 					if i%2 == 0 {
 						groups = []string{"l5", "l4"}
 					}
 					if l.Increment(ctx, groups) {
 						atomic.AddUint64(&incs, 1)
-						time.Sleep(100 * time.Millisecond)
+						time.Sleep(500 * time.Millisecond)
 						l.Decrement(groups)
 					} else {
 						atomic.AddUint64(&fails, 1)
@@ -273,6 +286,12 @@ func TestLimiter(t *testing.T) {
 					}
 				}(i)
 			}
+
+			for range 200 {
+				<-ready
+			}
+
+			close(start)
 			wg.Wait()
 
 			So(atomic.LoadUint64(&incs), ShouldEqual, 125)
