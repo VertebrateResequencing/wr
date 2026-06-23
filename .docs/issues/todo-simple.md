@@ -191,8 +191,8 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 - **[#251 Implement log rotation](https://github.com/VertebrateResequencing/wr/issues/251)** — add size-based rotation to the `clog` file writer using `gopkg.in/natefinch/lumberjack`. Expose config via `WR_LOGS*`-prefixed options with the values typical/expected for log rotation (max size MB, max backups, max age days, compress). Apply rotation to **both** the manager log and the runner file logs (`--runner_filelog`).
 
