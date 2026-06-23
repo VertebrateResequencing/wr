@@ -8538,6 +8538,12 @@ func setDomainIP(domain string) {
 //     OS signal, killing a shared server) on a fixed timer. Make it cancellable
 //     and stop it before the test returns, so a delayed effect can't leak into a
 //     later test.
+//
+//   - When reading from a stream that carries unsolicited messages as well as
+//     responses (e.g. the status websocket, which interleaves count broadcasts
+//     with request responses), read until the message that matches your request
+//     rather than asserting on the next one read - otherwise the assertion races
+//     whatever broadcast happens to arrive first.
 
 // testPortNext is the per-lane sequential offset used by freeTestPort. The
 // tests in a lane run sequentially, so it needs no synchronisation.
