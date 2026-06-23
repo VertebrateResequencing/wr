@@ -556,6 +556,14 @@ func TestConfig(t *testing.T) {
 			So(defConfig.ManagerWeb, ShouldEqual, mweb2)
 			So(defConfig.Source("ManagerWeb"), ShouldEqual, path2)
 
+			remoteEnvMergePath := filepath.Join(dir, ".wr_config.remote-env-merge.yml")
+			err = os.WriteFile(remoteEnvMergePath, []byte("managerremoteenvmerge: true\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			defConfig.configLoadFromFile(ctx, remoteEnvMergePath)
+			So(defConfig.ManagerRemoteEnvMerge, ShouldBeTrue)
+			So(defConfig.Source("ManagerRemoteEnvMerge"), ShouldEqual, remoteEnvMergePath)
+
 			_, _, err = fileTestSetup(dir, mport, mweb1, mweb2)
 			So(err, ShouldNotBeNil)
 		})

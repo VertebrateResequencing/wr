@@ -252,6 +252,13 @@ managercertdomain: "localhost"
 # records for managercertdomain.
 # managersetdomainip: false
 
+# managerremoteenvmerge: Should 'wr add' send the submitter's environment to a
+# remote manager?
+# This defaults to false, preserving remote jobs' usual base environment from
+# the machine where they execute. Making this option true means remote adds use
+# the submitter's current environment as the base, matching local-manager adds.
+managerremoteenvmerge: false
+
 # managerumask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).
