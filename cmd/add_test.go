@@ -85,7 +85,7 @@ func TestAddRemoteSameAsLocal(t *testing.T) {
 		config = &internal.Config{}
 		cmdRemoteSameAsLocal = false
 
-		envVars := addEnvVars(false, addRemoteSameAsLocal(false))
+		envVars := addEnvVars(false, remoteSameAsLocal(false))
 
 		So(envVars, ShouldBeNil)
 	})
@@ -94,7 +94,7 @@ func TestAddRemoteSameAsLocal(t *testing.T) {
 		config = &internal.Config{ManagerRemoteSameAsLocal: true}
 		cmdRemoteSameAsLocal = false
 
-		envVars := addEnvVars(false, addRemoteSameAsLocal(false))
+		envVars := addEnvVars(false, remoteSameAsLocal(false))
 
 		So(slices.Contains(envVars, "WR_ADD_REMOTE_SAME_AS_LOCAL_TEST=1"), ShouldBeTrue)
 	})
@@ -103,7 +103,7 @@ func TestAddRemoteSameAsLocal(t *testing.T) {
 		config = &internal.Config{}
 		cmdRemoteSameAsLocal = true
 
-		envVars := addEnvVars(false, addRemoteSameAsLocal(true))
+		envVars := addEnvVars(false, remoteSameAsLocal(true))
 
 		So(slices.Contains(envVars, "WR_ADD_REMOTE_SAME_AS_LOCAL_TEST=1"), ShouldBeTrue)
 	})
@@ -112,7 +112,7 @@ func TestAddRemoteSameAsLocal(t *testing.T) {
 		config = &internal.Config{ManagerRemoteSameAsLocal: true}
 		cmdRemoteSameAsLocal = false
 
-		envVars := addEnvVars(false, addRemoteSameAsLocal(true))
+		envVars := addEnvVars(false, remoteSameAsLocal(true))
 
 		So(envVars, ShouldBeNil)
 	})

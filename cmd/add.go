@@ -492,14 +492,14 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 			}
 		}()
 
-		remoteSameAsLocal := addRemoteSameAsLocal(combraCmd.Flags().Changed("remote_same_as_local"))
-		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"), remoteSameAsLocal)
+		remoteSameAsLocalEnabled := remoteSameAsLocal(combraCmd.Flags().Changed("remote_same_as_local"))
+		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"), remoteSameAsLocalEnabled)
 
 		if syncMode && len(jobs) != 1 {
 			die("You must add exactly 1 command when using synchronous mode.")
 		}
 
-		envVars := addEnvVars(isLocal, remoteSameAsLocal)
+		envVars := addEnvVars(isLocal, remoteSameAsLocalEnabled)
 
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
@@ -596,7 +596,7 @@ func init() {
 	}
 }
 
-func addRemoteSameAsLocal(flagChanged bool) bool {
+func remoteSameAsLocal(flagChanged bool) bool {
 	if flagChanged {
 		return cmdRemoteSameAsLocal
 	}
@@ -636,6 +636,7 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // defaults specified in other command line args. Returns job slice, bool for if
 // the manager is on the same host as us, and bool for if any job defaulted to
 // the default repgrp.
+//
 //nolint:gocognit,gocyclo,cyclop,funlen,maintidx // Legacy parser is broad; this change only threads remote defaults.
 func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
