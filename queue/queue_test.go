@@ -1738,6 +1738,7 @@ func TestQueue(t *testing.T) {
 func shouldBeQueueError(err error, target error) {
 	var qerr Error
 	So(errors.As(err, &qerr), ShouldBeTrue)
+	So(qerr.Err, ShouldEqual, target)
 	So(errors.Is(err, target), ShouldBeTrue)
 }
 
