@@ -152,8 +152,14 @@ feature worth speccing as a project (#207, #197, #98, #19).
    - external kills is the main scope; wr-initiated kills almost never happen in real life
 3. Exact wording of the clarified message(s)?
    - if the other reason already has a message, just list/concatenate the messages
+4. How should wr detect that a failure was genuinely caused by memory (the still-open detection method)?
+   - Read the cgroup OOM-kill counter where the job has its own cgroup — cgroup v2 `memory.events` `oom_kill` (cgroup v1: `memory.oom_control`); a non-zero delta over the run is a definitive kernel OOM-kill, reported as `FailReasonRAM`. Where the job is not in its own attributable cgroup (e.g. the cloud/`local` scheduler, which forks into a shared cgroup), fall back to the heuristic: the child was killed by SIGKILL (`WaitStatus.Signaled() && Signal()==SIGKILL`, i.e. "exit 137") together with peak >= estimate. Both paths must be testable (force a cgroup OOM with a low `memory.max`; simulate a SIGKILL for the fallback).
+5. The auto-reschedule with more RAM is currently keyed on `FailReason == FailReasonRAM` (`server.go:1889`). If we now report the real reason instead of RAM, does the memory bump still happen?
+   - Yes — always bump when peak exceeded the estimate. Decouple the bump from `FailReason`: trigger it whenever `job.PeakRAM > job.Requirements.RAM`, regardless of the reported reason (preserves the Q1 "must always happen" requirement while freeing `FailReason` to carry the true cause).
+6. Today `ranoutMem` is tested before every other reason (`client.go:1430`), so it masks the real cause. What is reported in each case after the change?
+   - If OOM is confirmed, or (off-cgroup) guessed per Q4: report `FailReasonRAM`. Otherwise report the real reason (e.g. `FailReasonExit`, signal, disk, time) as primary and, when peak also exceeded the estimate, append a clearly non-authoritative note concatenating the memory message after it (per Q3). Memory is bumped either way (per Q5).
 
-**Still open before this is implementation-ready:** the answers keep the memory-based rescheduling (always bump expected memory when peak exceeded) and ask to *also* surface any other known reason by concatenating messages — but the mechanism for knowing an "external OOM kill" happened (exit 137 / SIGKILL is unreliable; cgroup/dmesg needs privileges) still needs a chosen, testable approach. Spec that detection method first.
+**Decision (now implementation-ready):** detection method chosen (Q4) — cgroup `oom_kill` counter where the job has its own cgroup, SIGKILL/peak-exceeded heuristic fallback elsewhere; the memory bump is decoupled from `FailReason` and fires on `PeakRAM > Requirements.RAM` (Q5); the reported reason is the real cause with a concatenated non-authoritative memory note unless an OOM is confirmed (Q6). Ready to spec.
 
 ---
 
@@ -176,8 +182,14 @@ feature worth speccing as a project (#207, #197, #98, #19).
    - behaviour change with docs improvement
 2. If behaviour: opt-in flag name and exact semantics (how long to wait, how/when it resolves, interaction with normal live deps)?
    - not opt-in. Change the behaviour to always wait
+3. Does "always wait" apply only to dep-group deps (`--deps`), or also to command/essence deps (`--cmd_deps`)? Both currently run immediately when the target hasn't been added yet.
+   - Dep-group deps only — change `--deps` so a dependency on a dep group that has never existed blocks until such a group appears; `--cmd_deps`/essence deps keep today's behaviour (smaller blast radius, matches the issue).
+4. "Always wait" makes a dependency on a never-existing group block indefinitely (a typo'd group name, or a branch that never runs, would hang forever). How do we keep that from being a silent hang?
+   - Block, but make it visible and diagnosable: at `wr add` time, warn if a depended-on dep group has never been seen (it is still accepted and will wait); and in status, surface such jobs distinctly (e.g. "waiting on a dep group not yet seen") with a filter, so they can be fixed with `wr mod` or removed. Not a silent permanent wait.
+5. How is "never existed" distinguished from "existed and already completed" (which must stay satisfied), and what about manager restarts?
+   - Keep a persistent record of every dep group ever seen (beyond the live-jobs bucket), persisted with the manager DB, so "never existed -> block" is separable from "existed and completed -> satisfied". Existing "live" re-evaluation is unchanged (a group whose jobs all complete satisfies dependents; new jobs added to that group re-block them). Same-batch adds (the dependency and a carrier added in one `wr add`) continue to work.
 
-**Still open before this is implementation-ready:** "always wait, not opt-in" changes core scheduling semantics for *every* user, so it needs a careful spec: precisely, a dependency on a dep group becomes satisfied only once at least one job has carried that dep group and all such jobs are complete (a group that has *never* existed must now block, where today it is vacuously satisfied). The blast radius (dynamic workflows that add dep groups late, cmd-based deps, existing pipelines that rely on the current behaviour) is why this stays a spec'd project rather than a simple change.
+**Decision (now implementation-ready):** scope is dep-group deps only (Q3); a dep-group dependency is satisfied only once >=1 job has carried that group and all such carriers are complete, while a group that has *never* existed now blocks (needs a persistent "groups ever seen" record, Q5). To stop never-appearing groups becoming silent hangs, blocked jobs are warned at add time and shown distinctly/filterably in status (Q4). Existing live re-evaluation and same-batch adds are preserved. Ready to spec (release-note the behaviour change for existing pipelines).
 
 ---
 
@@ -200,8 +212,12 @@ feature worth speccing as a project (#207, #197, #98, #19).
    - Only need to ensure existing client pkg public methods don't change behaviour
 2. Scope — just the known offender(s) like `Archive()`, or a full audit of all client methods?
    - Full audit
+3. Treat the "full audit" as a standalone findings doc first, or fold it into the spec and fix directly?
+   - The audit is done and small: `Archive`, `Release`, `Bury`, `Touch` send the whole `Job` (incl. the compressed `EnvC` blob) when the server only needs the key (+ `FailReason` for Release/Bury, + `JobEndState` for Archive/Bury); `Kill`/`Delete`/`Modify`/`Kick` already send keys only. Fold the audit into the #290 spec and trim those four directly — no separate doc-only deliverable.
+4. How do we trim without breaking the public client API, and how is it tested?
+   - Trim the wire payload only — populate a key (plus the few needed fields) in the request instead of the whole `*Job` — keeping every public method signature and behaviour identical. `Touch` overlaps with #98 (which adds live peak-RAM/CPU + a stdout/err tail to the touch path), so trim Touch to "key + the live fields #98 needs" and coordinate the two. Tests assert the built request omits the large fields (e.g. `EnvC`/`Cmd` empty) rather than asserting exact wire bytes.
 
-**Still open before this is implementation-ready:** "full audit" is exploratory rather than a single predetermined change — the work is to enumerate every client→server call, measure what each currently sends vs what the server reads, and decide per-method what to trim. Best treated as: produce the audit (a short findings doc) first, then the audit itself defines the bounded set of edits (which can then become one or more simple PRs).
+**Decision (now implementation-ready):** the audit is complete (Q3) — the four over-senders are `Archive`/`Release`/`Bury`/`Touch`; `Kill`/`Delete`/`Modify`/`Kick` are already minimal. Fix is bounded: trim those four to a key-only (plus minimal fields) wire request, keeping public signatures unchanged (Q4), coordinating `Touch` with #98, with tests asserting the request omits large fields. Folded into the #290 spec; ready to implement.
 
 ---
 
