@@ -32,6 +32,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -966,7 +967,10 @@ func startJQ(postCreation, preDestroy []byte) {
 
 	if err != nil {
 		saddr := sAddr(server.ServerInfo)
-		jqerr, ok := err.(jobqueue.Error)
+
+		var jqerr jobqueue.Error
+
+		ok := errors.As(err, &jqerr)
 		switch {
 		case ok && jqerr.Err == jobqueue.ErrClosedTerm:
 			info("wr manager on %s gracefully stopped (received SIGTERM)", saddr)

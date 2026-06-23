@@ -261,6 +261,8 @@ complete.`,
 			numrun++
 			if err != nil {
 				warn("%s", err)
+
+				// Keep this as a direct assertion: wrapped jobqueue errors must not change runner control flow.
 				if jqerr, ok := err.(jobqueue.Error); ok {
 					if strings.Contains(jqerr.Err, jobqueue.FailReasonSignal) {
 						exitReason = "we received a signal to stop"
