@@ -28,6 +28,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -591,26 +592,27 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can't get a server flavor when your requirements are crazy", func() {
+					var perr Error
+
 					_, err := p.CheapestServerFlavor(ctx, 20, 9999999999, flavorRegex)
 					So(err, ShouldNotBeNil)
-					perr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
+					So(errors.As(err, &perr), ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
 				})
 
 				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
+					var perr Error
+
 					flavor2, err := p.CheapestServerFlavor(ctx, 1, 50, "^!!!!!!!!!!!!!!$")
 					So(err, ShouldNotBeNil)
 					So(flavor2, ShouldBeNil)
-					perr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
+					So(errors.As(err, &perr), ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
 
 					flavor2, err = p.CheapestServerFlavor(ctx, 1, 50, "^!!!!(")
 					So(err, ShouldNotBeNil)
 					So(flavor2, ShouldBeNil)
-					perr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
+					So(errors.As(err, &perr), ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrBadRegex)
 
 					flavor2, err = p.CheapestServerFlavor(ctx, 1, 50, ".*$")

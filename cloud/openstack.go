@@ -120,7 +120,10 @@ var (
 	openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
 )
 
-var errInvalidServerFlavorID = errors.New("server flavor id is not a string")
+var (
+	errInvalidFlavorID       = errors.New(invalidFlavorIDMsg)
+	errInvalidServerFlavorID = errors.New("server flavor id is not a string")
+)
 
 // openstackp is our implementer of provideri
 type openstackp struct {
@@ -311,7 +314,7 @@ func (p *openstackp) getFlavor(ctx context.Context, flavorID string) (*Flavor, e
 		flavor, found = p.fmap[flavorID]
 		p.fmapMutex.RUnlock()
 		if !found {
-			return nil, errors.New(invalidFlavorIDMsg + ": " + flavorID)
+			return nil, fmt.Errorf("%w: %s", errInvalidFlavorID, flavorID)
 		}
 	}
 	return flavor, nil
@@ -629,7 +632,8 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 
 	networkID, err := p.networkIDFromName(ctx, resources.ResourceName)
 	if err != nil {
-		if _, notfound := err.(gophercloud.ErrResourceNotFound); notfound {
+		var notFound gophercloud.ErrResourceNotFound
+		if errors.As(err, &notFound) {
 			// create a network for ourselves
 			createOpts := networks.CreateOpts{
 				Name:         resources.ResourceName,
@@ -857,7 +861,7 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 			// ourselves, it's possible that there is an old server with a
 			// flavor that no longer exists, so we allow invalid flavor errors
 			if errf != nil {
-				if strings.HasPrefix(errf.Error(), invalidFlavorIDMsg) {
+				if errors.Is(errf, errInvalidFlavorID) {
 					warnStr := "an old server has a flavor that no longer exists; our remaining quota estimation will be off"
 					clog.Warn(ctx, warnStr, "server", server.ID, "flavor", flavorID)
 				} else {
@@ -1052,7 +1056,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 
 		delerr := servers.Delete(ctx, p.computeClient, server.ID).ExtractErr()
 		if delerr != nil {
-			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
+			err = fmt.Errorf("%w\nadditionally, there was an error deleting the bad server: %w", err, delerr)
 		}
 		return serverID, serverIP, serverName, adminPass, err
 	}
@@ -1201,7 +1205,11 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 }
 
 func errorIsNotFound(err error) bool {
-	return gophercloud.ResponseCodeIs(err, http.StatusNotFound) || strings.Contains(err.Error(), "Resource not found")
+	var notFound gophercloud.ErrResourceNotFound
+
+	return errors.As(err, &notFound) ||
+		gophercloud.ResponseCodeIs(err, http.StatusNotFound) ||
+		strings.Contains(err.Error(), "Resource not found")
 }
 
 // checkServer achieves the aims of ServerIsKnown().

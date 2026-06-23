@@ -101,8 +101,8 @@ import (
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
-// cast and check if it's a certain type of error. ErrMissingEnv gets appended
-// to with missing environment variable names, so check based on prefix.
+// use errors.As and check if it's a certain type of error. ErrMissingEnv gets
+// appended to with missing environment variable names, so check based on prefix.
 var (
 	ErrBadProvider     = "unknown provider name"
 	ErrMissingEnv      = "missing environment variables: "
