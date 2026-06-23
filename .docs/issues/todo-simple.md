@@ -143,10 +143,13 @@ manual/browser verification.
 
 - [x] Implemented
 - [x] Reviewed
-- [x] Merged
+- [ ] Merged
 - [ ] Solved
 
 - **[#301 Update error handling](https://github.com/VertebrateResequencing/wr/issues/301)** — mechanical modernisation: replace `err == someErr` comparisons (other than `nil` / `io.EOF`) with `errors.Is`, replace `err.(*T)` type assertions with `errors.As`, and add `%w` wrapping where it adds useful context. **Scope note:** a full-repo sweep would be far too large for one reviewable PR (Copilot will refuse), so split the work one top-level package per PR (e.g. `jobqueue`, then `cloud`, `cmd`, `fs`, `queue`, ...). The checklist above tracks the overall effort; expect several PRs under this branch theme.
+
+  Split PRs: #513 `jobqueue` merged; #520 `cmd`, #521 `queue`/`rp`, #522
+  `cloud`, and #523 `internal`/`network` are queued.
 
 ## feat/status-cli-output
 
