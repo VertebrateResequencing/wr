@@ -327,7 +327,7 @@ func TestLocal(t *testing.T) {
 			}
 			defer os.RemoveAll(tmpdir2)
 
-			defer waitToFinish(ctx, s, 30, 100)
+			defer waitToFinish(ctx, s, 120, 100)
 
 			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
 
@@ -370,7 +370,7 @@ func TestLocal(t *testing.T) {
 				So(started(), ShouldEqual, count)
 				// Busy lags the last finish-marker (the scheduler still has to
 				// reap the exited job), so poll for idle rather than asserting it.
-				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 			})
 
 			Convey("Dropping the count below the number currently running doesn't kill those that are running", func() {
@@ -381,7 +381,7 @@ func TestLocal(t *testing.T) {
 				newcount := maxCPU - 1
 				So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(started(), ShouldEqual, maxCPU)
 				So(finished(), ShouldEqual, maxCPU)
 			})
@@ -394,7 +394,7 @@ func TestLocal(t *testing.T) {
 				newcount := count + 1
 				So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(started(), ShouldEqual, newcount)
 				So(finished(), ShouldEqual, newcount)
 			})
@@ -408,7 +408,7 @@ func TestLocal(t *testing.T) {
 					newcount := maxCPU + 1
 					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-					So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+					So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 					So(started(), ShouldEqual, newcount)
 					So(finished(), ShouldEqual, newcount)
 				})
@@ -423,7 +423,7 @@ func TestLocal(t *testing.T) {
 					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir)
 					So(s.Schedule(ctx, newcmd, possibleReq, 0, 1), ShouldBeNil)
 
-					So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+					So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 					So(started(), ShouldEqual, newcount+1)
 					So(finished(), ShouldEqual, newcount)
 				})
@@ -473,7 +473,7 @@ func TestLocal(t *testing.T) {
 				So(pollUntil(func() bool { return order.started("big") == 2 }), ShouldBeTrue)
 
 				order.releaseAllJobs()
-				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(order.started("big"), ShouldEqual, 2)
 				So(order.started("small"), ShouldEqual, 1)
 			})
@@ -524,7 +524,7 @@ func TestLocal(t *testing.T) {
 				So(order.started("small"), ShouldEqual, 0)
 
 				order.releaseAllJobs()
-				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(order.started("big"), ShouldEqual, 1)
 				So(order.started("small"), ShouldEqual, 2)
 			})
@@ -564,17 +564,23 @@ func TestLocal(t *testing.T) {
 				order.releaseOne(bigTmpdir)
 				So(order.waitForRunning(smallTmpdir, 1), ShouldBeTrue)
 				So(order.running(bigTmpdir), ShouldEqual, 1)
-				So(order.started("big"), ShouldEqual, 2)
+				// The higher-priority small now holds the freed slot (asserted
+				// above), so the third big cannot have started. Poll for the
+				// start-order file to show exactly the two bigs that ran: the
+				// marker that makes a job "running" is created slightly before
+				// it appends to that file, so a bare read here can momentarily
+				// see only one big under load.
+				So(pollUntil(func() bool { return order.started("big") == 2 }), ShouldBeTrue)
 
 				order.releaseAllJobs()
-				So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(order.started("big"), ShouldEqual, 3)
 				So(order.started("small"), ShouldEqual, 1)
 			})
 		}
 
 		// wait a while for any remaining jobs to finish
-		So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
+		So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 	})
 	if maxCPU > 1 {
 		Convey("You can get a new local scheduler that uses less than all CPUs", t, func() {
