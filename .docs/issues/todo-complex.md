@@ -135,7 +135,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 ## #316 Unexpected dependency behaviour
 
-- [ ] Spec produced
+- [x] Spec produced
 - [ ] Implemented
 - [ ] Reviewed
 - [ ] Merged
