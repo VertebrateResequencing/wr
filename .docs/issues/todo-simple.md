@@ -118,7 +118,7 @@ Tick the checklist as each branch progresses.
 ## feat/remote-manager-env-merge
 
 - [x] Implemented
-- [ ] Reviewed
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 
