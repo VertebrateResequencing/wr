@@ -298,7 +298,18 @@ func TestClientAddAndWait(t *testing.T) {
 
 		defer disconnect(runner)
 
-		waitCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		// The deadline must fire while the second job is still unfinished, but
+		// only after the first job's completion has been gathered. The first
+		// job can only be gathered while the wait is in progress (a job that is
+		// already complete when AddAndWait is called is excluded by
+		// AddAndReturnIDs), so the deadline has to outlast the runner
+		// reserve+start+archive round-trips and their event propagation. A few
+		// hundred ms is plenty on an idle machine, but under heavily
+		// oversubscribed CI those round-trips can stretch, so give a generous
+		// margin rather than racing a sub-second deadline (the previous 200ms
+		// intermittently fired before the first job was gathered, wrongly
+		// listing it among the unfinished keys).
+		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		input := subscriptionTestJobs("subscription-e1-deadline", standardReqs, 2)
@@ -307,7 +318,7 @@ func TestClientAddAndWait(t *testing.T) {
 		archiveNextAddAndWaitJob(runner)
 		_ = startNextAddAndWaitJob(runner)
 
-		result := receiveAddAndWaitResult(resultCh, time.Second)
+		result := receiveAddAndWaitResult(resultCh, 5*time.Second)
 		So(errors.Is(result.err, context.DeadlineExceeded), ShouldBeTrue)
 		So(result.err.Error(), ShouldContainSubstring, input[1].Key())
 		So(result.err.Error(), ShouldNotContainSubstring, input[0].Key())
