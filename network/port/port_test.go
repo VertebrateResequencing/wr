@@ -26,6 +26,7 @@
 package port
 
 import (
+	"errors"
 	"net"
 	"syscall"
 	"testing"
@@ -67,6 +68,7 @@ func TestPort(t *testing.T) {
 				checker.listeners[0] = &mockListener{tcpListener}
 				err = checker.release(err)
 				So(err, ShouldNotBeNil)
+				So(errors.Is(err, syscall.EINVAL), ShouldBeTrue)
 			})
 		})
 
