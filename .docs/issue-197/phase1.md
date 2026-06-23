@@ -20,7 +20,7 @@ Add GoConvey coverage in `jobqueue/serverWebI_test.go` for the websocket and
 `GET /rest/v1/jobs/<key>` paths. Cover all 2 acceptance tests from B1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1.2: A2 - Validate edits and editable states
 
@@ -37,4 +37,4 @@ responses. The broader A1/A3 field coverage, key mapping, auth integration,
 and bulk integration continue in phase 2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed

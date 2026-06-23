@@ -2034,8 +2034,15 @@ func (s *Server) updateModifiedQueueJobs(ctx context.Context, jobs []*Job) error
 			return err
 		}
 
+		item, err := s.q.Get(job.Key())
+		if err != nil {
+			return err
+		}
+
+		stats := item.Stats()
+
 		err = s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
-			0*time.Second, s.itemTTRDuration(), deps)
+			stats.Delay, stats.TTR, deps)
 		if err != nil {
 			return err
 		}
