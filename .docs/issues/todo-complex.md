@@ -63,11 +63,13 @@ Do **not** ask a worker to invoke `spec-writer`. The orchestrator builds the fea
 description from the section text (Issue + Current knowledge + Suggested way forward +
 every Question rewritten as a decision using the recorded answers), writes/updates
 `.docs/<branch-slug>/prompt.md`, and starts whatever author/review workers are needed to
-produce reviewed `spec.md` and `phaseN.md` files. **Bypass the human Q&A loop:** pre-bake
-the answers into the prompt's `## Notes` so clarification returns NONE; resolve residual
-ambiguity from the recorded answers or a sensible default and append it to Notes. If the
-spec workflow raises a genuine blocker, write `blocker.md`, stop that section, and surface
-the blocker to the human rather than opening a PR.
+produce reviewed `spec.md` and `phaseN.md` files. **Only surface human-choice-required
+questions:** pre-bake known answers into the prompt's `## Notes` so routine clarification
+returns NONE; resolve residual ambiguity from the recorded answers or a sensible default
+and append it to Notes. Surface questions to the human only when they require a product or
+maintainer choice rather than implementation judgment. If the spec workflow raises a
+genuine blocker, write `blocker.md`, stop that section, and surface the blocker to the
+human rather than opening a PR.
 
 For implementation, run the phase-orchestration semantics at the top level. For each
 `phaseN.md` in order, the orchestrator reads the phase checklist, starts implement/review
