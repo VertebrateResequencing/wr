@@ -26,6 +26,7 @@
 package rp
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"testing/synctest"
@@ -179,9 +180,7 @@ func testRPBody(t *testing.T) {
 			r, err := rp.Request(maxSimultaneous + 1)
 			So(string(r), ShouldBeBlank)
 			So(err, ShouldNotBeNil)
-			rperr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(rperr.Err, ShouldEqual, ErrOverMaximumTokens)
+			shouldBeRPError(err, ErrOverMaximumTokens)
 		})
 
 		Convey("You can't do anything with an invalid receipt", func() {
@@ -213,9 +212,7 @@ func testRPBody(t *testing.T) {
 			r3, err := rp.Request(1)
 			So(string(r3), ShouldBeBlank)
 			So(err, ShouldNotBeNil)
-			rperr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(rperr.Err, ShouldEqual, ErrShutDown)
+			shouldBeRPError(err, ErrShutDown)
 		})
 
 		Convey("WaitUntilGranted can time out and cancel the request", func() {
@@ -437,4 +434,10 @@ func testRPBody(t *testing.T) {
 			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*tooBusyFor)*time.Millisecond), begin.Add(time.Duration(delayInt*tooBusyFor)*time.Millisecond).Add(halfDelay))
 		})
 	})
+}
+
+func shouldBeRPError(err error, target string) {
+	var rperr Error
+	So(errors.As(err, &rperr), ShouldBeTrue)
+	So(rperr.Err, ShouldEqual, target)
 }
