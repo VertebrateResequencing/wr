@@ -170,9 +170,45 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 			FailReason:   FailReasonExit,
 		}
 
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
+
 		increaseJobRAMAfterHighPeak(job)
 
 		So(job.Requirements.RAM, ShouldEqual, 1200)
 		So(job.FailReason, ShouldEqual, FailReasonExit)
+	})
+
+	Convey("A high peak without a failure reason does not grow RAM", t, func() {
+		job := &Job{
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
+			PeakRAM:      200,
+		}
+
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeFalse)
+		So(job.Requirements.RAM, ShouldEqual, 100)
+	})
+
+	Convey("A kicked non-RAM failure does not grow RAM from stale peak usage", t, func() {
+		job := &Job{
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
+			PeakRAM:      200,
+			FailReason:   FailReasonExit,
+			Retries:      3,
+			UntilBuried:  4,
+		}
+
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeFalse)
+		So(job.Requirements.RAM, ShouldEqual, 100)
+	})
+
+	Convey("A kicked RAM failure still grows RAM from peak usage", t, func() {
+		job := &Job{
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
+			PeakRAM:      200,
+			FailReason:   FailReasonRAM,
+			UntilBuried:  1,
+		}
+
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
 	})
 }

@@ -1036,6 +1036,19 @@ func (s *Server) rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, key 
 	s.rememberRepGroupSubscriptionKey(newRepGroup, key)
 }
 
+func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
+	if job == nil || job.Requirements == nil || job.FailReason == "" {
+		return false
+	}
+
+	exceededRAM := commandExceededMemoryEstimate(job.PeakRAM, job.Requirements.RAM)
+	if !exceededRAM {
+		return false
+	}
+
+	return job.FailReason == FailReasonRAM || job.UntilBuried <= job.Retries
+}
+
 func increaseJobRAMAfterHighPeak(job *Job) {
 	const ramIncreaseRoundMB = 100
 
@@ -2144,7 +2157,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 			job.RLock()
 			jobOverride := job.Override
-			jobPeakExceededRAM := job.Requirements != nil && job.PeakRAM > job.Requirements.RAM
+			shouldIncreaseRAM := shouldIncreaseJobRAMAfterHighPeak(job)
 			job.RUnlock()
 
 			// depending on job.Override, get memory, disk and time
@@ -2184,7 +2197,7 @@ func (s *Server) createQueue(ctx context.Context) {
 			}
 
 			shouldUpdateRequirements := recommendedReq != nil ||
-				jobPeakExceededRAM ||
+				shouldIncreaseRAM ||
 				job.FailReason == FailReasonDisk ||
 				job.FailReason == FailReasonTime
 			if shouldUpdateRequirements { //nolint:nestif
@@ -2246,7 +2259,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				}
 
 				if jobOverride != 2 {
-					if jobPeakExceededRAM {
+					if shouldIncreaseRAM {
 						increaseJobRAMAfterHighPeak(job)
 					}
 
