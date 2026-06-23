@@ -910,6 +910,7 @@ func TestServerWebI(t *testing.T) {
 				// jstateCount is sent, and the deadline tolerates a slow response
 				// under heavy parallel-test load.
 				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws)
 
 				err = ws.ReadJSON(&sc)
 				So(err, ShouldBeNil)
@@ -918,6 +919,7 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(ws3.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+				defer clearReadDeadlineBestEffort(ws3)
 
 				err = ws3.ReadJSON(&sc)
 				So(err, ShouldBeNil)
