@@ -582,11 +582,13 @@ type repGroupStatusOptions struct {
 
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
-	token                     []byte
-	uploadDir                 string
-	sock                      mangos.Socket
-	ch                        codec.Handle
-	rc                        string // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	token     []byte
+	uploadDir string
+	sock      mangos.Socket
+	ch        codec.Handle
+	// runner command string compatible with fmt.Sprintf(..., schedulerGroup,
+	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
+	rc                        string
 	ServerInfo                *ServerInfo
 	ServerVersions            *ServerVersions
 	db                        *db
@@ -1029,6 +1031,29 @@ func (s *Server) rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, key 
 	}
 
 	s.rememberRepGroupSubscriptionKey(newRepGroup, key)
+}
+
+func increaseJobRAMAfterHighPeak(job *Job) {
+	const ramIncreaseRoundMB = 100
+
+	// increase by 1GB or [100% if under 8GB, 30% if over],
+	// whichever is greater, and round up to nearest 100 ***
+	// increase to greater than max seen for jobs in our ReqGroup?
+	updatedMB := float64(job.PeakRAM)
+	if updatedMB <= RAMIncreaseMultBreakpoint {
+		updatedMB *= RAMIncreaseMultLow
+	} else {
+		updatedMB *= RAMIncreaseMultHigh
+	}
+
+	if updatedMB < float64(job.PeakRAM)+RAMIncreaseMin {
+		updatedMB = float64(job.PeakRAM) + RAMIncreaseMin
+	}
+
+	newRAM := int(math.Ceil(updatedMB/ramIncreaseRoundMB) * ramIncreaseRoundMB)
+	if newRAM > job.Requirements.RAM {
+		job.Requirements.RAM = newRAM
+	}
 }
 
 func subscriptionUpdateState(_, to JobState) (JobState, bool) {
@@ -2116,6 +2141,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 			job.RLock()
 			jobOverride := job.Override
+			jobPeakExceededRAM := job.Requirements != nil && job.PeakRAM > job.Requirements.RAM
 			job.RUnlock()
 
 			// depending on job.Override, get memory, disk and time
@@ -2143,12 +2169,22 @@ func (s *Server) createQueue(ctx context.Context) {
 					if recs > 0 {
 						recsSecs = recs
 					}
-					recommendedReq = &scheduler.Requirements{RAM: recmMBs, Disk: recdGBs, DiskSet: true, Time: time.Duration(recsSecs) * time.Second}
+
+					recommendedReq = &scheduler.Requirements{
+						RAM:     recmMBs,
+						Disk:    recdGBs,
+						DiskSet: true,
+						Time:    time.Duration(recsSecs) * time.Second,
+					}
 					reqGroupToReqs[job.ReqGroup] = recommendedReq
 				}
 			}
 
-			if recommendedReq != nil || job.FailReason == FailReasonRAM || job.FailReason == FailReasonDisk || job.FailReason == FailReasonTime {
+			if recommendedReq != nil || //nolint:nestif
+				jobPeakExceededRAM ||
+				job.FailReason == FailReasonDisk ||
+				job.FailReason == FailReasonTime {
+
 				job.Lock()
 				if job.RequirementsOrig == nil {
 					job.RequirementsOrig = &scheduler.Requirements{
@@ -2159,71 +2195,59 @@ func (s *Server) createQueue(ctx context.Context) {
 					}
 				}
 
-				if recommendedReq.RAM > 0 {
-					if job.RequirementsOrig.RAM > 0 {
-						switch jobOverride {
-						case 0:
-							job.Requirements.RAM = recommendedReq.RAM
-						case 1:
-							if recommendedReq.RAM > job.Requirements.RAM {
+				if recommendedReq != nil {
+					if recommendedReq.RAM > 0 {
+						if job.RequirementsOrig.RAM > 0 {
+							switch jobOverride {
+							case 0:
 								job.Requirements.RAM = recommendedReq.RAM
+							case 1:
+								if recommendedReq.RAM > job.Requirements.RAM {
+									job.Requirements.RAM = recommendedReq.RAM
+								}
 							}
+						} else {
+							job.Requirements.RAM = recommendedReq.RAM
 						}
-					} else {
-						job.Requirements.RAM = recommendedReq.RAM
 					}
-				}
 
-				if recommendedReq.Disk > 0 {
-					if job.RequirementsOrig.Disk > 0 || job.RequirementsOrig.DiskSet {
-						switch jobOverride {
-						case 0:
-							job.Requirements.Disk = recommendedReq.Disk
-						case 1:
-							if recommendedReq.Disk > job.Requirements.Disk {
+					if recommendedReq.Disk > 0 {
+						if job.RequirementsOrig.Disk > 0 || job.RequirementsOrig.DiskSet {
+							switch jobOverride {
+							case 0:
 								job.Requirements.Disk = recommendedReq.Disk
+							case 1:
+								if recommendedReq.Disk > job.Requirements.Disk {
+									job.Requirements.Disk = recommendedReq.Disk
+								}
 							}
+						} else {
+							job.Requirements.Disk = recommendedReq.Disk
 						}
-					} else {
-						job.Requirements.Disk = recommendedReq.Disk
 					}
-				}
 
-				if recommendedReq.Time.Seconds() > 0 {
-					if job.RequirementsOrig.Time > 0 {
-						switch jobOverride {
-						case 0:
-							job.Requirements.Time = recommendedReq.Time
-						case 1:
-							if recommendedReq.Time > job.Requirements.Time {
+					if recommendedReq.Time.Seconds() > 0 {
+						if job.RequirementsOrig.Time > 0 {
+							switch jobOverride {
+							case 0:
 								job.Requirements.Time = recommendedReq.Time
+							case 1:
+								if recommendedReq.Time > job.Requirements.Time {
+									job.Requirements.Time = recommendedReq.Time
+								}
 							}
+						} else {
+							job.Requirements.Time = recommendedReq.Time
 						}
-					} else {
-						job.Requirements.Time = recommendedReq.Time
 					}
 				}
 
 				if jobOverride != 2 {
+					if jobPeakExceededRAM {
+						increaseJobRAMAfterHighPeak(job)
+					}
+
 					switch job.FailReason {
-					case FailReasonRAM:
-						// increase by 1GB or [100% if under 8GB, 30% if over],
-						// whichever is greater, and round up to nearest 100 ***
-						// increase to greater than max seen for jobs in our
-						// ReqGroup?
-						updatedMB := float64(job.PeakRAM)
-						if updatedMB <= RAMIncreaseMultBreakpoint {
-							updatedMB *= RAMIncreaseMultLow
-						} else {
-							updatedMB *= RAMIncreaseMultHigh
-						}
-						if updatedMB < float64(job.PeakRAM)+RAMIncreaseMin {
-							updatedMB = float64(job.PeakRAM) + RAMIncreaseMin
-						}
-						newRAM := int(math.Ceil(updatedMB/100) * 100)
-						if newRAM > job.Requirements.RAM {
-							job.Requirements.RAM = newRAM
-						}
 					case FailReasonDisk:
 						// flat increase of 30%
 						updatedMB := float64(job.PeakDisk) / float64(1024)
