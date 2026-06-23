@@ -1313,15 +1313,24 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job2.State, ShouldEqual, JobStateReserved)
 
 			Convey("Signals are handled during execution, and we can see when jobs take too long", func() {
+				// Send the process-wide SIGTERM that the running job is meant to
+				// catch, but make the sender cancellable and stop it once the
+				// jobs have finished. Otherwise, if this leaf's jobs return (or
+				// the timer is delayed) before the signal fires, the stray
+				// SIGTERM leaks into a later test's Execute (which also registers
+				// a process-wide signal handler) and fails it spuriously.
+				sigDone := make(chan struct{})
 				go func() {
-					<-time.After(2 * time.Second)
-					errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
-					if errk != nil {
-						fmt.Printf("failed to send SIGTERM: %s\n", errk)
+					select {
+					case <-time.After(2 * time.Second):
+						if errk := syscall.Kill(os.Getpid(), syscall.SIGTERM); errk != nil {
+							fmt.Printf("failed to send SIGTERM: %s\n", errk)
+						}
+					case <-sigDone:
 					}
 				}()
 
-				j1worked := make(chan bool)
+				j1worked := make(chan bool, 1)
 				go func() {
 					err := jq.Execute(ctx, job, config.RunnerExecShell)
 					if err != nil {
@@ -1332,12 +1341,14 @@ func TestJobqueueSignal(t *testing.T) {
 							job.FailReason == FailReasonSignal
 						if gotSignalFailure {
 							j1worked <- true
+
+							return
 						}
 					}
 					j1worked <- false
 				}()
 
-				j2worked := make(chan bool)
+				j2worked := make(chan bool, 1)
 				go func() {
 					err := jq.Execute(ctx, job2, config.RunnerExecShell)
 					if err != nil {
@@ -1348,6 +1359,8 @@ func TestJobqueueSignal(t *testing.T) {
 							job2.FailReason == FailReasonTime
 						if gotTimeFailure {
 							j2worked <- true
+
+							return
 						}
 					}
 					j2worked <- false
@@ -1355,6 +1368,10 @@ func TestJobqueueSignal(t *testing.T) {
 
 				So(<-j1worked, ShouldBeTrue)
 				So(<-j2worked, ShouldBeTrue)
+
+				// the signal has now been delivered to and consumed by the jobs
+				// above; stop the sender so it can never fire into a later test.
+				close(sigDone)
 
 				jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -1439,10 +1456,10 @@ func TestJobqueueSignal(t *testing.T) {
 				serverCmdCh <- newServerCmd
 			}()
 
-			j1worked := make(chan bool)
+			j1worked := make(chan bool, 1)
 			giveUp1 := time.After(30 * time.Second)
 			go func() {
-				errch := make(chan error)
+				errch := make(chan error, 1)
 				go func() {
 					errch <- jq.Execute(ctx, job, config.RunnerExecShell)
 				}()
@@ -1468,10 +1485,10 @@ func TestJobqueueSignal(t *testing.T) {
 				}
 			}()
 
-			j2worked := make(chan bool)
+			j2worked := make(chan bool, 1)
 			giveUp2 := time.After(30 * time.Second)
 			go func() {
-				errch := make(chan error)
+				errch := make(chan error, 1)
 				go func() {
 					errch <- jq.Execute(ctx, job2, config.RunnerExecShell)
 				}()
