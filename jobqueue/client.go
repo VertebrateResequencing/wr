@@ -45,6 +45,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -137,8 +138,8 @@ func touchEndState(job *Job) *JobEndState {
 		PeakRAM:  job.PeakRAM,
 		PeakDisk: job.PeakDisk,
 		CPUtime:  job.CPUtime,
-		Stdout:   job.StdOutC,
-		Stderr:   job.StdErrC,
+		Stdout:   slices.Clone(job.StdOutC),
+		Stderr:   slices.Clone(job.StdErrC),
 	}
 }
 
@@ -1703,18 +1704,38 @@ func (c *Client) Started(job *Job, pid int) error {
 	if err != nil {
 		host = localhost
 	}
-	job.Lock()
-	defer job.Unlock()
-	job.Host = host
-	job.HostIP, err = internal.CurrentIP("")
+
+	hostIP, err := internal.CurrentIP("")
 	if err != nil {
 		return err
 	}
+
+	job.Lock()
+	job.Host = host
+	job.HostIP = hostIP
 	job.Pid = pid
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
-	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: job})
+	requestJob := keyOnlyJob(job)
+	requestJob.Host = job.Host
+	requestJob.HostIP = job.HostIP
+	requestJob.Pid = job.Pid
+	job.Unlock()
+
+	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
 	return err
+}
+
+func keyOnlyJob(job *Job) *Job {
+	return &Job{
+		Cmd:             job.Cmd,
+		Cwd:             job.Cwd,
+		CwdMatters:      job.CwdMatters,
+		MountConfigs:    slices.Clone(job.MountConfigs),
+		WithDocker:      job.WithDocker,
+		WithSingularity: job.WithSingularity,
+		ContainerMounts: job.ContainerMounts,
+	}
 }
 
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
@@ -1724,13 +1745,16 @@ func (c *Client) Started(job *Job, pid int) error {
 func (c *Client) Touch(job *Job) (bool, error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+
 	job.RLock()
-	defer job.RUnlock()
+	key := jobKeySnapshot(job)
+	endState := touchEndState(job)
+	job.RUnlock()
 
 	resp, err := c.request(&clientRequest{
 		Method:      "jtouch",
-		Keys:        []string{job.Key()},
-		JobEndState: touchEndState(job),
+		Keys:        []string{key},
+		JobEndState: endState,
 	})
 	if err != nil {
 		return false, err
@@ -1755,6 +1779,10 @@ type JobEndState struct {
 	Stdout   []byte
 	Stderr   []byte
 	Exited   bool
+}
+
+func jobKeySnapshot(job *Job) string {
+	return keyOnlyJob(job).Key()
 }
 
 // ended updates a Job for the benefit of the client only: this has no effect on
@@ -1790,17 +1818,21 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	defer c.teMutex.Unlock()
 
 	job.RLock()
-	defer job.RUnlock()
+	key := jobKeySnapshot(job)
+	job.RUnlock()
 
-	_, err := c.request(&clientRequest{Method: "jarchive", Keys: []string{job.Key()}, JobEndState: jes})
+	_, err := c.request(&clientRequest{Method: "jarchive", Keys: []string{key}, JobEndState: jes})
 	if err != nil {
 		return err
 	}
 
+	job.Lock()
+	defer job.Unlock()
+
 	c.ended(job, jes)
 	job.State = JobStateComplete
 
-	return err
+	return nil
 }
 
 // Release places a job back on the jobqueue, for use when you can't handle the
@@ -1815,19 +1847,22 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	defer c.teMutex.Unlock()
 
 	job.Lock()
-	defer job.Unlock()
-
 	job.FailReason = failreason
+	key := jobKeySnapshot(job)
+	job.Unlock()
 
 	_, err := c.request(&clientRequest{
 		Method:      "jrelease",
-		Keys:        []string{job.Key()},
+		Keys:        []string{key},
 		JobEndState: jes,
 		FailReason:  failreason,
 	})
 	if err != nil {
 		return err
 	}
+
+	job.Lock()
+	defer job.Unlock()
 
 	c.ended(job, jes)
 
@@ -1853,11 +1888,6 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 
-	job.Lock()
-	defer job.Unlock()
-
-	job.FailReason = failreason
-
 	if len(stderr) == 1 && stderr[0] != nil {
 		if jes == nil {
 			jes = &JobEndState{}
@@ -1866,15 +1896,23 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 		jes.Stderr = compressStd([]byte(stderr[0].Error()))
 	}
 
+	job.Lock()
+	job.FailReason = failreason
+	key := jobKeySnapshot(job)
+	job.Unlock()
+
 	_, err := c.request(&clientRequest{
 		Method:      "jbury",
-		Keys:        []string{job.Key()},
+		Keys:        []string{key},
 		JobEndState: jes,
 		FailReason:  failreason,
 	})
 	if err != nil {
 		return err
 	}
+
+	job.Lock()
+	defer job.Unlock()
 
 	c.ended(job, jes)
 	job.State = JobStateBuried

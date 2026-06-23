@@ -75,8 +75,9 @@ func (s *captureSocket) Recv() ([]byte, error) {
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
+	err := enc.Encode(&serverResponse{})
 
-	return encoded, enc.Encode(&serverResponse{})
+	return encoded, err
 }
 
 func (s *captureSocket) SendMsg(msg *mangos.Message) error {
