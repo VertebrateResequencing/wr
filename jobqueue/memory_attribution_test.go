@@ -194,10 +194,43 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 
 		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
 
-		increaseJobRAMAfterHighPeak(job)
+		updateJobRequirementsForRetry(job, jobOverridePreferSystemReqs, nil)
 
 		So(job.Requirements.RAM, ShouldEqual, 1200)
 		So(job.FailReason, ShouldEqual, FailReasonExit)
+	})
+
+	Convey("A RAM failure grows RAM even when sampled peak did not exceed the request", t, func() {
+		job := &Job{
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
+			PeakRAM:      90,
+			FailReason:   FailReasonRAM,
+		}
+
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
+
+		updateJobRequirementsForRetry(job, jobOverridePreferSystemReqs, nil)
+
+		So(job.Requirements.RAM, ShouldEqual, 1100)
+		So(job.RequirementsOrig.RAM, ShouldEqual, 100)
+	})
+
+	Convey("Recommended RAM is applied before non-RAM high-peak retry growth is reconsidered", t, func() {
+		job := &Job{
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
+			PeakRAM:      200,
+			FailReason:   FailReasonExit,
+			State:        JobStateDelayed,
+		}
+		recommendedReq := &scheduler.Requirements{RAM: 300}
+
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
+
+		updateJobRequirementsForRetry(job, jobOverridePreferSystemReqs, recommendedReq)
+
+		So(job.Requirements.RAM, ShouldEqual, 300)
+		So(job.RequirementsOrig.RAM, ShouldEqual, 100)
+		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeFalse)
 	})
 
 	Convey("A high peak without a failure reason does not grow RAM", t, func() {
