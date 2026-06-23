@@ -735,7 +735,7 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 		if errf != nil {
 			clog.Debug(ctx, "server ssh failed", "err", errf, "clientindex", clientIndex)
 
-			done <- fmt.Errorf("cloud SSHSession() failed to esatablish a session: %w", errf)
+			done <- fmt.Errorf("cloud SSHSession() failed to establish a session: %w", errf)
 			return
 		}
 		worked <- true
