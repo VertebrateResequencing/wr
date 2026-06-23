@@ -922,6 +922,11 @@ func (j *Job) ToStatus() (JStatus, error) {
 	if err != nil {
 		return JStatus{}, err
 	}
+
+	envOverrides, err := j.envCurrentOverrides()
+	if err != nil {
+		return JStatus{}, err
+	}
 	var cwdLeaf string
 	j.RLock()
 	defer j.RUnlock()
@@ -942,44 +947,51 @@ func (j *Job) ToStatus() (JStatus, error) {
 	}
 
 	js := JStatus{
-		Key:             j.Key(),
-		RepGroup:        j.RepGroup,
-		LimitGroups:     j.LimitGroups,
-		DepGroups:       j.DepGroups,
-		Dependencies:    j.Dependencies.Stringify(),
-		Modules:         j.Modules,
-		Cmd:             j.Cmd,
-		State:           state,
-		CwdBase:         j.Cwd,
-		Cwd:             cwdLeaf,
-		HomeChanged:     j.ChangeHome,
-		Behaviours:      j.Behaviours.String(),
-		Mounts:          j.MountConfigs.String(),
-		MonitorDocker:   j.MonitorDocker,
-		WithDocker:      j.WithDocker,
-		WithSingularity: j.WithSingularity,
-		ContainerMounts: j.ContainerMounts,
-		ExpectedRAM:     j.Requirements.RAM,
-		ExpectedTime:    j.Requirements.Time.Seconds(),
-		RequestedDisk:   j.Requirements.Disk,
-		OtherRequests:   ot,
-		Cores:           j.Requirements.Cores,
-		PeakRAM:         j.PeakRAM,
-		PeakDisk:        j.PeakDisk,
-		Exited:          j.Exited,
-		Exitcode:        j.Exitcode,
-		FailReason:      j.FailReason,
-		Pid:             j.Pid,
-		Host:            j.Host,
-		HostID:          j.HostID,
-		HostIP:          j.HostIP,
-		Walltime:        j.WallTime().Seconds(),
-		CPUtime:         j.CPUtime.Seconds(),
-		Attempts:        j.Attempts,
-		Similar:         j.Similar,
-		StdErr:          stderr,
-		StdOut:          stdout,
-		Env:             env,
+		Key:                 j.Key(),
+		RepGroup:            j.RepGroup,
+		ReqGroup:            j.ReqGroup,
+		LimitGroups:         j.LimitGroups,
+		DepGroups:           j.DepGroups,
+		Dependencies:        j.Dependencies.Stringify(),
+		Modules:             j.Modules,
+		Cmd:                 j.Cmd,
+		State:               state,
+		CwdBase:             j.Cwd,
+		Cwd:                 cwdLeaf,
+		HomeChanged:         j.ChangeHome,
+		Behaviours:          j.Behaviours.String(),
+		Mounts:              j.MountConfigs.String(),
+		MonitorDocker:       j.MonitorDocker,
+		WithDocker:          j.WithDocker,
+		WithSingularity:     j.WithSingularity,
+		ContainerMounts:     j.ContainerMounts,
+		ExpectedRAM:         j.Requirements.RAM,
+		ExpectedTime:        j.Requirements.Time.Seconds(),
+		RequestedDisk:       j.Requirements.Disk,
+		EnvOverrides:        envOverrides,
+		OtherRequests:       ot,
+		Cores:               j.Requirements.Cores,
+		NoRetryOverWalltime: j.NoRetriesOverWalltime.Seconds(),
+		PeakRAM:             j.PeakRAM,
+		PeakDisk:            j.PeakDisk,
+		Exited:              j.Exited,
+		Exitcode:            j.Exitcode,
+		FailReason:          j.FailReason,
+		Pid:                 j.Pid,
+		Host:                j.Host,
+		HostID:              j.HostID,
+		HostIP:              j.HostIP,
+		Walltime:            j.WallTime().Seconds(),
+		CPUtime:             j.CPUtime.Seconds(),
+		Attempts:            j.Attempts,
+		Similar:             j.Similar,
+		Override:            j.Override,
+		Priority:            j.Priority,
+		Retries:             j.Retries,
+		CwdMatters:          j.CwdMatters,
+		StdErr:              stderr,
+		StdOut:              stdout,
+		Env:                 env,
 	}
 
 	if !j.StartTime.IsZero() {
@@ -1175,6 +1187,24 @@ func (j *JobModifier) SetEnvOverride(newVal string) error {
 	if newVal != "" {
 		var err error
 		compressedEnv, err = compressEnv(strings.Split(newVal, ","))
+		if err != nil {
+			return err
+		}
+	}
+
+	j.EnvOverride = compressedEnv
+	j.EnvOverrideSet = true
+
+	return nil
+}
+
+func (j *JobModifier) setEnvOverrideValues(newVal []string) error {
+	var compressedEnv []byte
+
+	if len(newVal) > 0 {
+		var err error
+
+		compressedEnv, err = compressEnv(newVal)
 		if err != nil {
 			return err
 		}

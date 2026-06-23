@@ -1136,6 +1136,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		ChangeHome:            sjob.ChangeHome,
 		ActualCwd:             sjob.ActualCwd,
 		Requirements:          req,
+		Override:              sjob.Override,
 		Priority:              sjob.Priority,
 		Retries:               sjob.Retries,
 		DelayTime:             sjob.DelayTime,

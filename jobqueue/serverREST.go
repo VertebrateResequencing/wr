@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,8 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
 )
 
@@ -63,7 +66,197 @@ const (
 	restInfoEndpoint       = "/rest/v" + restAPIVersion + "/info/"
 	restFormTrue           = "true"
 	bearerSchema           = "Bearer "
+	restJobKeyLength       = 32
+	restModifyOverrideMax  = 2
+	restModifyUint8Max     = 255
 )
+
+var (
+	errRESTModifyCmdEmpty        = errors.New("cmd cannot be empty")
+	errRESTModifyCwdEmpty        = errors.New("cwd cannot be empty")
+	errRESTModifyIdentifierEmpty = errors.New("job identifier is required")
+	errRESTModifyNoEditable      = errors.New("no editable jobs matched")
+	errRESTModifyCmdMultiJob     = errors.New("cmd can only be modified for one job")
+	errRESTModifyNoneModified    = errors.New("no jobs were modified")
+	errRESTModifyNotFound        = errors.New("job not found")
+)
+
+type restRangeError struct {
+	name  string
+	value int
+	limit int
+}
+
+func (e restRangeError) Error() string {
+	return fmt.Sprintf("%s value (%d) is not in the range 0..%d", e.name, e.value, e.limit)
+}
+
+func uint8ModificationValue(name string, value *int, limit int) (uint8, bool, error) {
+	if value == nil {
+		return 0, false, nil
+	}
+
+	if *value < 0 || *value > limit {
+		return 0, false, restRangeError{name: name, value: *value, limit: limit}
+	}
+
+	parsed, err := strconv.ParseUint(strconv.Itoa(*value), 10, 8)
+	if err != nil {
+		return 0, false, err
+	}
+
+	return uint8(parsed), true, nil
+}
+
+func restJobsModify(ctx context.Context, r *http.Request, s *Server) (*JobModifyResponse, int, error) {
+	ids, modifier, status, err := restJobModifierFromRequest(r)
+	if err != nil {
+		return nil, status, err
+	}
+
+	editableKeys, status, err := restEditableKeysForModification(ctx, s, ids, modifier)
+	if err != nil {
+		return nil, status, err
+	}
+
+	modified, err := s.modifyJobsByKeys(ctx, editableKeys, modifier)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	if len(modified) == 0 {
+		return nil, http.StatusConflict, errRESTModifyNoneModified
+	}
+
+	statuses, err := s.modifiedJobStatuses(ctx, modified)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	return &JobModifyResponse{Modified: modified, Jobs: statuses}, http.StatusOK, nil
+}
+
+func restJobModifierFromRequest(r *http.Request) (string, *JobModifier, int, error) {
+	ids := strings.TrimPrefix(r.URL.Path, restJobsEndpoint)
+	if ids == "" {
+		return "", nil, http.StatusBadRequest, errRESTModifyIdentifierEmpty
+	}
+
+	var modifyJSON JobModifyViaJSON
+	if err := json.NewDecoder(r.Body).Decode(&modifyJSON); err != nil {
+		return "", nil, http.StatusBadRequest, err
+	}
+
+	modifier, err := modifyJSON.Convert()
+	if err != nil {
+		return "", nil, http.StatusBadRequest, err
+	}
+
+	return ids, modifier, http.StatusOK, nil
+}
+
+func restEditableKeysForModification(ctx context.Context, s *Server, ids string,
+	modifier *JobModifier,
+) ([]string, int, error) {
+	targets, status, err := restJobsModificationTargets(ctx, s, ids)
+	if err != nil {
+		return nil, status, err
+	}
+
+	editableKeys := restEditableJobKeys(targets)
+	if len(editableKeys) == 0 {
+		return nil, http.StatusConflict, errRESTModifyNoEditable
+	}
+
+	if modifier.Cmd != "" && len(editableKeys) > 1 {
+		return nil, http.StatusBadRequest, errRESTModifyCmdMultiJob
+	}
+
+	return editableKeys, http.StatusOK, nil
+}
+
+func restJobsModificationTargets(ctx context.Context, s *Server, ids string) ([]*Job, int, error) {
+	var targets []*Job
+
+	for _, id := range strings.Split(ids, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+
+		jobs, status, err := restJobsModificationTarget(ctx, s, id)
+		if err != nil {
+			return nil, status, err
+		}
+
+		targets = append(targets, jobs...)
+	}
+
+	if len(targets) == 0 {
+		return nil, http.StatusNotFound, errRESTModifyNotFound
+	}
+
+	return targets, http.StatusOK, nil
+}
+
+func restJobsModificationTarget(ctx context.Context, s *Server, id string) ([]*Job, int, error) {
+	if len(id) != restJobKeyLength {
+		return restJobsModificationRepGroupTarget(ctx, s, id)
+	}
+
+	jobs, _, qerr := s.getJobsByKeys(ctx, []string{id}, false, false)
+	if qerr != "" {
+		return nil, http.StatusInternalServerError, Error{Err: qerr}
+	}
+
+	if len(jobs) > 0 {
+		return jobs, http.StatusOK, nil
+	}
+
+	return restJobsModificationRepGroupTarget(ctx, s, id)
+}
+
+func restJobsModificationRepGroupTarget(ctx context.Context, s *Server, id string) ([]*Job, int, error) {
+	opts := repGroupOptions{
+		RepGroup: id,
+		Match:    RepGroupMatchExact,
+	}
+
+	jobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
+	if qerr != "" {
+		return nil, http.StatusInternalServerError, Error{Err: qerr}
+	}
+
+	return jobs, http.StatusOK, nil
+}
+
+func restEditableJobKeys(jobs []*Job) []string {
+	keys := make(map[string]bool)
+
+	for _, job := range jobs {
+		if restEditableState(job.State) {
+			keys[job.Key()] = true
+		}
+	}
+
+	editable := make([]string, 0, len(keys))
+	for key := range keys {
+		editable = append(editable, key)
+	}
+
+	sort.Strings(editable)
+
+	return editable
+}
+
+func restEditableState(state JobState) bool {
+	switch state {
+	case JobStateDelayed, JobStateReady, JobStateDependent, JobStateBuried:
+		return true
+	default:
+		return false
+	}
+}
 
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
 // queue, convenient if they are supplying JSON.
@@ -557,6 +750,473 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}, nil
 }
 
+// JobModifyViaJSON describes the properties of queued jobs that a REST client
+// wishes to modify. Nil fields are left unchanged.
+type JobModifyViaJSON struct {
+	MountConfigs         *MountConfigs      `json:"mounts,omitempty"`
+	LimitGrps            *[]string          `json:"limit_grps,omitempty"`
+	Modules              *[]string          `json:"modules,omitempty"`
+	Deps                 *[]string          `json:"deps,omitempty"`
+	CmdDeps              *Dependencies      `json:"cmd_deps,omitempty"`
+	OnFailure            *BehavioursViaJSON `json:"on_failure,omitempty"`
+	OnSuccess            *BehavioursViaJSON `json:"on_success,omitempty"`
+	OnExit               *BehavioursViaJSON `json:"on_exit,omitempty"`
+	Env                  *[]string          `json:"env,omitempty"`
+	Other                *map[string]string `json:"other,omitempty"`
+	Cmd                  *string            `json:"cmd,omitempty"`
+	Cwd                  *string            `json:"cwd,omitempty"`
+	ReqGrp               *string            `json:"req_grp,omitempty"`
+	Group                *string            `json:"group,omitempty"`
+	Memory               *string            `json:"memory,omitempty"`
+	Time                 *string            `json:"time,omitempty"`
+	MonitorDocker        *string            `json:"monitor_docker,omitempty"`
+	WithDocker           *string            `json:"with_docker,omitempty"`
+	WithSingularity      *string            `json:"with_singularity,omitempty"`
+	ContainerMounts      *string            `json:"container_mounts,omitempty"`
+	SchedulerQueue       *string            `json:"queue,omitempty"`
+	SchedulerQueuesAvoid *string            `json:"queues_avoid,omitempty"`
+	SchedulerMisc        *string            `json:"misc,omitempty"`
+	CloudOS              *string            `json:"cloud_os,omitempty"`
+	CloudUser            *string            `json:"cloud_username,omitempty"`
+	CloudRAM             *int               `json:"cloud_ram,omitempty"`
+	CloudFlavor          *string            `json:"cloud_flavor,omitempty"`
+	CloudScript          *string            `json:"cloud_script,omitempty"`
+	CloudConfigFiles     *string            `json:"cloud_config_files,omitempty"`
+	CloudShared          *bool              `json:"cloud_shared,omitempty"`
+	CPUs                 *float64           `json:"cpus,omitempty"`
+	Disk                 *int               `json:"disk,omitempty"`
+	Override             *int               `json:"override,omitempty"`
+	Priority             *int               `json:"priority,omitempty"`
+	Retries              *int               `json:"retries,omitempty"`
+	NoRetryOverWalltime  *string            `json:"no_retry_over_walltime,omitempty"`
+	CwdMatters           *bool              `json:"cwd_matters,omitempty"`
+	ChangeHome           *bool              `json:"change_home,omitempty"`
+}
+
+// Convert converts REST JSON modification fields to a JobModifier.
+func (jvj *JobModifyViaJSON) Convert() (*JobModifier, error) {
+	modifier := NewJobModifer()
+
+	if err := jvj.setModifierIdentityFields(modifier); err != nil {
+		return nil, err
+	}
+
+	if err := jvj.setModifierRequirements(modifier); err != nil {
+		return nil, err
+	}
+
+	if err := jvj.setModifierRetryFields(modifier); err != nil {
+		return nil, err
+	}
+
+	jvj.setModifierSliceFields(modifier)
+
+	if err := jvj.setModifierEnv(modifier); err != nil {
+		return nil, err
+	}
+
+	jvj.setModifierBehaviours(modifier)
+	jvj.setModifierContainerFields(modifier)
+
+	return modifier, nil
+}
+
+func (jvj *JobModifyViaJSON) setModifierIdentityFields(modifier *JobModifier) error {
+	if err := jvj.setModifierCommandFields(modifier); err != nil {
+		return err
+	}
+
+	jvj.setModifierIdentityFlags(modifier)
+
+	return nil
+}
+
+func (jvj *JobModifyViaJSON) setModifierCommandFields(modifier *JobModifier) error {
+	if jvj.Cmd != nil {
+		if *jvj.Cmd == "" {
+			return errRESTModifyCmdEmpty
+		}
+
+		modifier.SetCmd(*jvj.Cmd)
+	}
+
+	if jvj.Cwd != nil {
+		if *jvj.Cwd == "" {
+			return errRESTModifyCwdEmpty
+		}
+
+		modifier.SetCwd(*jvj.Cwd)
+	}
+
+	return nil
+}
+
+func (jvj *JobModifyViaJSON) setModifierIdentityFlags(modifier *JobModifier) {
+	if jvj.CwdMatters != nil {
+		modifier.SetCwdMatters(*jvj.CwdMatters)
+	}
+
+	if jvj.ChangeHome != nil {
+		modifier.SetChangeHome(*jvj.ChangeHome)
+	}
+
+	if jvj.ReqGrp != nil {
+		modifier.SetReqGroup(*jvj.ReqGrp)
+	}
+
+	if jvj.Group != nil {
+		modifier.SetUnixGroup(*jvj.Group)
+	}
+}
+
+func (jvj *JobModifyViaJSON) setModifierRequirements(modifier *JobModifier) error {
+	req, set, err := jvj.requirements()
+	if err != nil {
+		return err
+	}
+
+	if set {
+		modifier.SetRequirements(req)
+	}
+
+	return nil
+}
+
+func (jvj *JobModifyViaJSON) requirements() (*jqs.Requirements, bool, error) {
+	req := &jqs.Requirements{}
+
+	var set bool
+
+	memorySet, err := jvj.setMemoryRequirement(req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	timeSet, err := jvj.setTimeRequirement(req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	set = anyTrue(memorySet, timeSet, jvj.setCPURequirement(req), jvj.setDiskRequirement(req))
+
+	other, otherSet, err := jvj.otherRequirements()
+	if err != nil {
+		return nil, false, err
+	}
+
+	if otherSet {
+		req.Other = other
+		req.OtherSet = true
+		set = true
+	}
+
+	return req, set, nil
+}
+
+func anyTrue(values ...bool) bool {
+	for _, value := range values {
+		if value {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (jvj *JobModifyViaJSON) setMemoryRequirement(req *jqs.Requirements) (bool, error) {
+	if jvj.Memory == nil {
+		return false, nil
+	}
+
+	mb, err := bytefmt.ToMegabytes(*jvj.Memory)
+	if err != nil {
+		return false, fmt.Errorf("memory value (%s) was not specified correctly: %w", *jvj.Memory, err)
+	}
+
+	maxInt := int(^uint(0) >> 1)
+	if mb > uint64(maxInt) {
+		return false, fmt.Errorf("memory value (%s) was not specified correctly: %w", *jvj.Memory, strconv.ErrRange)
+	}
+
+	ram, err := strconv.Atoi(strconv.FormatUint(mb, 10))
+	if err != nil {
+		return false, fmt.Errorf("memory value (%s) was not specified correctly: %w", *jvj.Memory, err)
+	}
+
+	req.RAM = ram
+
+	return true, nil
+}
+
+func (jvj *JobModifyViaJSON) setTimeRequirement(req *jqs.Requirements) (bool, error) {
+	if jvj.Time == nil {
+		return false, nil
+	}
+
+	dur, err := time.ParseDuration(*jvj.Time)
+	if err != nil {
+		return false, fmt.Errorf("time value (%s) was not specified correctly: %w", *jvj.Time, err)
+	}
+
+	req.Time = dur
+
+	return true, nil
+}
+
+func (jvj *JobModifyViaJSON) setCPURequirement(req *jqs.Requirements) bool {
+	if jvj.CPUs == nil {
+		return false
+	}
+
+	req.Cores = *jvj.CPUs
+	req.CoresSet = true
+
+	return true
+}
+
+func (jvj *JobModifyViaJSON) setDiskRequirement(req *jqs.Requirements) bool {
+	if jvj.Disk == nil {
+		return false
+	}
+
+	req.Disk = *jvj.Disk
+	req.DiskSet = true
+
+	return true
+}
+
+func (jvj *JobModifyViaJSON) otherRequirements() (map[string]string, bool, error) {
+	other := make(map[string]string)
+
+	var set bool
+
+	if jvj.Other != nil {
+		for key, val := range *jvj.Other {
+			other[key] = val
+		}
+
+		set = true
+	}
+
+	jvj.setStringOtherRequirements(other, &set)
+
+	if err := jvj.setCloudOtherRequirements(other, &set); err != nil {
+		return nil, false, err
+	}
+
+	return other, set, nil
+}
+
+func (jvj *JobModifyViaJSON) setStringOtherRequirements(other map[string]string, set *bool) {
+	setStringOther(other, "cloud_os", jvj.CloudOS, set)
+	setStringOther(other, "cloud_user", jvj.CloudUser, set)
+	setStringOther(other, "cloud_flavor", jvj.CloudFlavor, set)
+	setStringOther(other, "cloud_config_files", jvj.CloudConfigFiles, set)
+	setStringOther(other, "scheduler_queue", jvj.SchedulerQueue, set)
+	setStringOther(other, "scheduler_queues_avoid", jvj.SchedulerQueuesAvoid, set)
+	setStringOther(other, "scheduler_misc", jvj.SchedulerMisc, set)
+}
+
+func setStringOther(other map[string]string, key string, value *string, set *bool) {
+	if value == nil {
+		return
+	}
+
+	other[key] = *value
+	*set = true
+}
+
+func (jvj *JobModifyViaJSON) setCloudOtherRequirements(other map[string]string, set *bool) error {
+	if jvj.CloudRAM != nil {
+		other["cloud_os_ram"] = strconv.Itoa(*jvj.CloudRAM)
+		*set = true
+	}
+
+	if jvj.CloudShared != nil {
+		other["cloud_shared"] = strconv.FormatBool(*jvj.CloudShared)
+		*set = true
+	}
+
+	if jvj.CloudScript == nil {
+		return nil
+	}
+
+	content, err := internal.PathToContent(*jvj.CloudScript)
+	if err != nil {
+		return err
+	}
+
+	other["cloud_script"] = content
+	*set = true
+
+	return nil
+}
+
+func (jvj *JobModifyViaJSON) setModifierRetryFields(modifier *JobModifier) error {
+	if err := setUint8ModificationField("override", jvj.Override, restModifyOverrideMax,
+		modifier.SetOverride); err != nil {
+		return err
+	}
+
+	if err := setUint8ModificationField("priority", jvj.Priority, restModifyUint8Max, modifier.SetPriority); err != nil {
+		return err
+	}
+
+	if err := setUint8ModificationField("retries", jvj.Retries, restModifyUint8Max, modifier.SetRetries); err != nil {
+		return err
+	}
+
+	if jvj.NoRetryOverWalltime != nil {
+		dur, err := time.ParseDuration(*jvj.NoRetryOverWalltime)
+		if err != nil {
+			return fmt.Errorf("time value (%s) was not specified correctly: %w", *jvj.NoRetryOverWalltime, err)
+		}
+
+		modifier.SetNoRetriesOverWalltime(dur)
+	}
+
+	return nil
+}
+
+func setUint8ModificationField(name string, value *int, limit int, set func(uint8)) error {
+	converted, ok, err := uint8ModificationValue(name, value, limit)
+	if err != nil || !ok {
+		return err
+	}
+
+	set(converted)
+
+	return nil
+}
+
+func (jvj *JobModifyViaJSON) setModifierSliceFields(modifier *JobModifier) {
+	if jvj.LimitGrps != nil {
+		modifier.SetLimitGroups(*jvj.LimitGrps)
+	}
+
+	if jvj.Modules != nil {
+		modifier.SetModules(*jvj.Modules)
+	}
+
+	if jvj.MountConfigs != nil {
+		modifier.SetMountConfigs(*jvj.MountConfigs)
+	}
+
+	if jvj.Deps != nil || jvj.CmdDeps != nil {
+		modifier.SetDependencies(jvj.dependencies())
+	}
+}
+
+func (jvj *JobModifyViaJSON) dependencies() Dependencies {
+	var deps Dependencies
+	if jvj.CmdDeps != nil {
+		deps = append(deps, (*jvj.CmdDeps)...)
+	}
+
+	if jvj.Deps != nil {
+		for _, depgroup := range *jvj.Deps {
+			deps = append(deps, NewDepGroupDependency(depgroup))
+		}
+	}
+
+	return deps
+}
+
+func (jvj *JobModifyViaJSON) setModifierEnv(modifier *JobModifier) error {
+	if jvj.Env == nil {
+		return nil
+	}
+
+	return modifier.setEnvOverrideValues(*jvj.Env)
+}
+
+func (jvj *JobModifyViaJSON) setModifierBehaviours(modifier *JobModifier) {
+	var (
+		behaviours Behaviours
+		set        bool
+	)
+
+	if jvj.OnFailure != nil {
+		behaviours = append(behaviours, modifyBehaviours(*jvj.OnFailure, OnFailure)...)
+		set = true
+	}
+
+	if jvj.OnSuccess != nil {
+		behaviours = append(behaviours, modifyBehaviours(*jvj.OnSuccess, OnSuccess)...)
+		set = true
+	}
+
+	if jvj.OnExit != nil {
+		behaviours = append(behaviours, modifyBehaviours(*jvj.OnExit, OnExit)...)
+		set = true
+	}
+
+	if set {
+		modifier.SetBehaviours(behaviours)
+	}
+}
+
+func modifyBehaviours(bvj BehavioursViaJSON, when BehaviourTrigger) Behaviours {
+	if len(bvj) == 0 {
+		bvj = BehavioursViaJSON{{Nothing: true}}
+	}
+
+	return bvj.Behaviours(when)
+}
+
+func (jvj *JobModifyViaJSON) setModifierContainerFields(modifier *JobModifier) {
+	if jvj.MonitorDocker != nil {
+		modifier.SetMonitorDocker(*jvj.MonitorDocker)
+	}
+
+	if jvj.WithDocker != nil {
+		modifier.SetWithDocker(*jvj.WithDocker)
+	}
+
+	if jvj.WithSingularity != nil {
+		modifier.SetWithSingularity(*jvj.WithSingularity)
+	}
+
+	if jvj.ContainerMounts != nil {
+		modifier.SetContainerMounts(*jvj.ContainerMounts)
+	}
+}
+
+// JobModifyResponse describes the jobs changed by a REST modification request.
+type JobModifyResponse struct {
+	Modified map[string]string `json:"modified"`
+	Jobs     []JStatus         `json:"jobs"`
+}
+
+func restEditableItemState(state queue.ItemState) bool {
+	switch state {
+	case queue.ItemStateDelay, queue.ItemStateReady, queue.ItemStateDependent, queue.ItemStateBury:
+		return true
+	default:
+		return false
+	}
+}
+
+func modifiedJobs(modified map[string]string, byOldKey map[string]*Job) []*Job {
+	jobs := make([]*Job, 0, len(modified))
+	for _, old := range modified {
+		if job := byOldKey[old]; job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+func modifiedOldKeys(modified map[string]string, jobs []*Job) []string {
+	oldKeys := make([]string, len(jobs))
+	for i, job := range jobs {
+		oldKeys[i] = modified[job.Key()]
+	}
+
+	return oldKeys
+}
+
 // httpAuthorized checks for parameter 'token' and for Authorization header for
 // Bearer token; if not supplied, or the token is wrong, writes out an error to
 // w, otherwise returns true.
@@ -611,10 +1271,29 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 			jobs, status, err = restJobsStatus(ctx, r, s)
 		case http.MethodPost:
 			jobs, status, err = restJobsAdd(ctx, r, s)
+		case http.MethodPatch:
+			response, modifyStatus, modifyErr := restJobsModify(ctx, r, s)
+			if modifyStatus >= 400 || modifyErr != nil {
+				http.Error(w, modifyErr.Error(), modifyStatus)
+
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			w.WriteHeader(modifyStatus)
+			encoder := json.NewEncoder(w)
+			encoder.SetEscapeHTML(false)
+
+			erre := encoder.Encode(response)
+			if erre != nil {
+				clog.Warn(ctx, "restJobs failed to encode modified jobs", "err", erre)
+			}
+
+			return
 		case http.MethodDelete:
 			jobs, status, err = restJobsCancel(ctx, r, s)
 		default:
-			http.Error(w, "So far only GET, POST and DELETE are supported", http.StatusBadRequest)
+			http.Error(w, "So far only GET, POST, PATCH and DELETE are supported", http.StatusBadRequest)
 			return
 		}
 
@@ -1190,4 +1869,177 @@ func compressEnv(envars []string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(encoded)
+}
+
+func (s *Server) modifiedJobStatuses(ctx context.Context, modified map[string]string) ([]JStatus, error) {
+	keys := make([]string, 0, len(modified))
+	for key := range modified {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	jobs, _, qerr := s.getJobsByKeys(ctx, keys, false, false)
+	if qerr != "" {
+		return nil, Error{Err: qerr}
+	}
+
+	statuses := make([]JStatus, 0, len(jobs))
+	for _, job := range jobs {
+		status, err := job.ToStatus()
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, err
+		}
+
+		statuses = append(statuses, status)
+	}
+
+	sort.Slice(statuses, func(i, j int) bool {
+		return statuses[i].Key < statuses[j].Key
+	})
+
+	return statuses, nil
+}
+
+func (s *Server) modifyJobsByKeys(ctx context.Context, keys []string,
+	modifier *JobModifier,
+) (modified map[string]string, err error) {
+	paused, err := s.Pause()
+	if err != nil {
+		return nil, err
+	}
+	defer s.resumeAfterModify(ctx, &modified, &err)
+
+	if paused {
+		clog.Debug(ctx, "rest modify requested, paused server")
+	}
+
+	toModifyJobs, toModifyKeys := s.editableQueueJobs(keys)
+
+	modified, err = modifier.Modify(toModifyJobs, s)
+	if err != nil || len(modified) == 0 {
+		return modified, err
+	}
+
+	return modified, s.storeModifiedJobs(ctx, modified, toModifyKeys, modifier)
+}
+
+func (s *Server) resumeAfterModify(ctx context.Context, modified *map[string]string, modifyErr *error) {
+	resumed, resumeErr := s.Resume(ctx)
+	if resumeErr != nil && *modifyErr == nil {
+		*modifyErr = resumeErr
+
+		return
+	}
+
+	if resumed {
+		clog.Debug(ctx, "rest modify completed, resumed server", "count", len(*modified))
+	}
+}
+
+func (s *Server) editableQueueJobs(keys []string) ([]*Job, map[string]*Job) {
+	jobs := make([]*Job, 0, len(keys))
+	byOldKey := make(map[string]*Job, len(keys))
+
+	for _, key := range keys {
+		item, err := s.q.Get(key)
+		if err != nil || item == nil || !restEditableItemState(item.Stats().State) {
+			continue
+		}
+
+		job, ok := item.Data().(*Job)
+		if !ok {
+			continue
+		}
+
+		jobs = append(jobs, job)
+		byOldKey[key] = job
+	}
+
+	return jobs, byOldKey
+}
+
+func (s *Server) storeModifiedJobs(ctx context.Context, modified map[string]string, byOldKey map[string]*Job,
+	modifier *JobModifier,
+) error {
+	jobs := modifiedJobs(modified, byOldKey)
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	if err := s.changeModifiedQueueKeys(modified, jobs); err != nil {
+		return err
+	}
+
+	if err := s.db.modifyLiveJobs(ctx, modifiedOldKeys(modified, jobs), jobs); err != nil {
+		return err
+	}
+
+	s.storeModifiedLimitGroupsIfNeeded(ctx, jobs, modifier)
+
+	if modifier.DependenciesSet || modifier.PrioritySet {
+		return s.updateModifiedQueueJobs(ctx, jobs)
+	}
+
+	return nil
+}
+
+func (s *Server) storeModifiedLimitGroupsIfNeeded(ctx context.Context, jobs []*Job, modifier *JobModifier) {
+	if modifier.LimitGroupsSet {
+		s.storeModifiedLimitGroups(ctx, jobs)
+	}
+}
+
+func (s *Server) storeModifiedLimitGroups(ctx context.Context, jobs []*Job) {
+	limitGroups := make(map[string]*limiter.GroupData)
+	for _, job := range jobs {
+		s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+	}
+
+	if err := s.storeLimitGroups(limitGroups); err != nil {
+		clog.Error(ctx, "failed to store limit groups", "err", err)
+	}
+}
+
+func (s *Server) changeModifiedQueueKeys(modified map[string]string, jobs []*Job) error {
+	keyToRP := make(map[string]string, len(jobs))
+	for _, job := range jobs {
+		keyToRP[job.Key()] = job.RepGroup
+	}
+
+	s.rpl.Lock()
+	defer s.rpl.Unlock()
+
+	for newKey, oldKey := range modified {
+		if oldKey == newKey {
+			continue
+		}
+
+		if err := s.q.ChangeKey(oldKey, newKey); err != nil {
+			return err
+		}
+
+		rp := keyToRP[newKey]
+		s.rpl.Delete(rp, oldKey)
+		s.rpl.Add(rp, newKey)
+	}
+
+	return nil
+}
+
+func (s *Server) updateModifiedQueueJobs(ctx context.Context, jobs []*Job) error {
+	for _, job := range jobs {
+		deps, err := job.Dependencies.incompleteJobKeys(s.db)
+		if err != nil {
+			return err
+		}
+
+		err = s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
+			0*time.Second, s.itemTTRDuration(), deps)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

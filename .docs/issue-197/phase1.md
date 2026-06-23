@@ -19,7 +19,7 @@ websocket details and REST status rows expose `ReqGroup`, `EnvOverrides`,
 Add GoConvey coverage in `jobqueue/serverWebI_test.go` for the websocket and
 `GET /rest/v1/jobs/<key>` paths. Cover all 2 acceptance tests from B1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1.2: A2 - Validate edits and editable states
@@ -36,5 +36,5 @@ Depends on item 1.1 for the `JStatus` fields asserted by successful A2
 responses. The broader A1/A3 field coverage, key mapping, auth integration,
 and bulk integration continue in phase 2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

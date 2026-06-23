@@ -310,6 +310,67 @@ func TestServerWebI(t *testing.T) {
 				So(status2.RepGroup, ShouldEqual, "rg1")
 			})
 
+			Convey("The websocket and REST details expose editable status fields", func() {
+				statusJob := &Job{
+					Cmd:                   "echo web status fields",
+					Cwd:                   "/tmp",
+					CwdMatters:            true,
+					ChangeHome:            true,
+					ReqGroup:              "web-req",
+					Requirements:          standardReqs,
+					RepGroup:              "web-status-fields",
+					Override:              2,
+					Priority:              11,
+					Retries:               5,
+					NoRetriesOverWalltime: 3 * time.Minute,
+				}
+				err = statusJob.EnvAddOverride([]string{"WEB_ONLY=old"})
+				So(err, ShouldBeNil)
+
+				inserts, already, erra := jq.Add([]*Job{statusJob}, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				key := statusJob.Key()
+
+				Convey("via websocket details", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:  jstatusRequestDetails,
+						RepGroup: "web-status-fields",
+						State:    JobStateReady,
+					})
+					So(err, ShouldBeNil)
+
+					status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+						return s.Key == key
+					})
+					So(ok, ShouldBeTrue)
+					assertEditableStatusFields(status)
+				})
+
+				Convey("via REST GET by key", func() {
+					handler := restJobs(ctx, server)
+					w := httptest.NewRecorder()
+					r := httptest.NewRequestWithContext(ctx, http.MethodGet, restJobsEndpoint+key, nil)
+					r.Header.Set("Authorization", "Bearer "+string(token))
+
+					handler(w, r)
+
+					resp := w.Result()
+					defer resp.Body.Close()
+
+					So(resp.StatusCode, ShouldEqual, http.StatusOK)
+
+					var statuses []JStatus
+
+					err = json.NewDecoder(resp.Body).Decode(&statuses)
+					So(err, ShouldBeNil)
+					So(len(statuses), ShouldEqual, 1)
+					assertEditableStatusFields(statuses[0])
+				})
+			})
+
 			Convey("The websocket handler deals with paginated details requests", func() {
 				numPaginationJobs := 12
 				limit := 5
@@ -1147,6 +1208,17 @@ func TestServerWebI(t *testing.T) {
 			server.Stop(ctx, true)
 		})
 	})
+}
+
+func assertEditableStatusFields(status JStatus) {
+	So(status.ReqGroup, ShouldEqual, "web-req")
+	So(status.Override, ShouldEqual, 2)
+	So(status.Priority, ShouldEqual, 11)
+	So(status.Retries, ShouldEqual, 5)
+	So(status.NoRetryOverWalltime, ShouldEqual, 180)
+	So(status.CwdMatters, ShouldBeTrue)
+	So(status.HomeChanged, ShouldBeTrue)
+	So(status.EnvOverrides, ShouldResemble, []string{"WEB_ONLY=old"})
 }
 
 func clearReadDeadlineBestEffort(ws *websocket.Conn) {
