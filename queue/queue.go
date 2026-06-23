@@ -103,6 +103,20 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 )
 
+// recallBreak is how long we wait before recalling readyAdded.
+const recallBreak = 500 * time.Millisecond
+
+// Queue has some typical errors.
+var (
+	ErrQueueClosed   = errors.New("queue closed")
+	ErrNothingReady  = errors.New("ready queue is empty")
+	ErrAlreadyExists = errors.New("already exists")
+	ErrNotFound      = errors.New("not found")
+	ErrNotReady      = errors.New("not ready")
+	ErrNotRunning    = errors.New("not running")
+	ErrNotBuried     = errors.New("not buried")
+)
+
 // SubQueue is how we name the sub-queues of a Queue.
 type SubQueue string
 
@@ -119,19 +133,11 @@ const (
 	SubQueueRemoved   SubQueue = "removed"
 )
 
-// recallBreak is how long we wait before recalling readyAdded.
-const recallBreak = 500 * time.Millisecond
-
-// queue has some typical errors
-var (
-	ErrQueueClosed   = errors.New("queue closed")
-	ErrNothingReady  = errors.New("ready queue is empty")
-	ErrAlreadyExists = errors.New("already exists")
-	ErrNotFound      = errors.New("not found")
-	ErrNotReady      = errors.New("not ready")
-	ErrNotRunning    = errors.New("not running")
-	ErrNotBuried     = errors.New("not buried")
-)
+// defaultTTRCallback is used if the user never calls SetTTRCallback() and
+// always moves the items to the ready sub-queue.
+func defaultTTRCallback(_ interface{}) SubQueue {
+	return SubQueueReady
+}
 
 // Error records an error and the operation, item and queue that caused it.
 type Error struct {
@@ -161,12 +167,6 @@ type ChangedCallback func(from, to SubQueue, data []interface{})
 // SubQueueBury. SubQueueRun can be used to avoid changing subqueue. Other
 // values will be treated as SubQueueReady).
 type TTRCallback func(data interface{}) SubQueue
-
-// defaultTTRCallback is used if the the user never calls SetTTRCallback() and
-// always moves the items to the ready sub-queue.
-var defaultTTRCallback = func(data interface{}) SubQueue {
-	return SubQueueReady
-}
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
@@ -1385,4 +1385,9 @@ func (queue *Queue) ttrNotificationTrigger(item *Item) {
 	} else {
 		queue.mutex.RUnlock()
 	}
+}
+
+// Unwrap returns the underlying queue sentinel error.
+func (e Error) Unwrap() error {
+	return e.Err
 }

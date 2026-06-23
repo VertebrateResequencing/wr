@@ -28,6 +28,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -249,9 +250,7 @@ func TestQueue(t *testing.T) {
 			item, err := queue.Get("key_fake")
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrNotFound)
+			shouldBeQueueError(err, ErrNotFound)
 		})
 
 		Convey("You can get all items back out", func() {
@@ -266,9 +265,7 @@ func TestQueue(t *testing.T) {
 
 		Convey("You can't add the same item again", func() {
 			item, err := queue.Add(ctx, "key_0", "", "data new", 0, 100*time.Millisecond, 100*time.Millisecond, "")
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrAlreadyExists)
+			shouldBeQueueError(err, ErrAlreadyExists)
 			So(err.Error(), ShouldEqual, "queue(myqueue) Add(key_0): already exists")
 			So(item.Data(), ShouldEqual, "data")
 			So(item.creation, ShouldHappenOnOrBefore, items["key_0"].creation)
@@ -321,9 +318,7 @@ func TestQueue(t *testing.T) {
 				item4, err := queue.Reserve("", 0)
 				So(err, ShouldNotBeNil)
 				So(item4, ShouldBeNil)
-				qerr, ok := err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNothingReady)
+				shouldBeQueueError(err, ErrNothingReady)
 
 				stats = queue.Stats()
 				So(stats.Items, ShouldEqual, 10)
@@ -425,34 +420,22 @@ func TestQueue(t *testing.T) {
 					Convey("Releasing, touching, burying, kicking and updating fail after removal", func() {
 						err := queue.Release(ctx, item2.Key)
 						So(err, ShouldNotBeNil)
-						qerr, ok := err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 						err = queue.Touch(item2.Key)
 						So(err, ShouldNotBeNil)
-						qerr, ok = err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 						err = queue.Bury(item2.Key)
 						So(err, ShouldNotBeNil)
-						qerr, ok = err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 						err = queue.Kick(ctx, item2.Key)
 						So(err, ShouldNotBeNil)
-						qerr, ok = err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 						err = queue.Update(ctx, item2.Key, "", item2.Data(), 0, 0*time.Second, 0*time.Second)
 						So(err, ShouldNotBeNil)
-						qerr, ok = err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 						err = queue.SetDelay(item2.Key, 0*time.Second)
 						So(err, ShouldNotBeNil)
-						qerr, ok = err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 					})
 				})
 
@@ -505,18 +488,14 @@ func TestQueue(t *testing.T) {
 
 						err = queue.Remove(ctx, "key_2")
 						So(err, ShouldNotBeNil)
-						qerr, ok := err.(Error)
-						So(ok, ShouldBeTrue)
-						So(qerr.Err, ShouldEqual, ErrNotFound)
+						shouldBeQueueError(err, ErrNotFound)
 					})
 				})
 
 				Convey("If not buried you can't kick them", func() {
 					err := queue.Kick(ctx, item3.Key)
 					So(err, ShouldNotBeNil)
-					qerr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrNotBuried)
+					shouldBeQueueError(err, ErrNotBuried)
 					So(item3.State(), ShouldEqual, ItemStateRun)
 				})
 
@@ -618,9 +597,7 @@ func TestQueue(t *testing.T) {
 
 					err = queue.Touch("item_fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrNotFound)
+					shouldBeQueueError(err, ErrNotFound)
 				})
 
 				Convey("Touching doesn't mess with the correct queue order", func() {
@@ -668,89 +645,57 @@ func TestQueue(t *testing.T) {
 
 					_, err = queue.Add(ctx, "fake", "", "data", 0, 0*time.Second, 0*time.Second, "")
 					So(err, ShouldNotBeNil)
-					qerr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					_, err = queue.Get("fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Update(ctx, "fake", "", "data", 0, 0*time.Second, 0*time.Second)
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					_, err = queue.Reserve("", 0)
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					_, err = queue.Reserve("", 0)
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Touch("fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Release(ctx, "fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Bury("fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Kick(ctx, "fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Remove(ctx, "fake")
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.SetDelay("fake", 0*time.Second)
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 
 					err = queue.Destroy()
 					So(err, ShouldNotBeNil)
-					qerr, ok = err.(Error)
-					So(ok, ShouldBeTrue)
-					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					shouldBeQueueError(err, ErrQueueClosed)
 				})
 			})
 
 			Convey("If not reserved you can't release, touch, bury or kick them", func() {
 				err := queue.Release(ctx, "key_0")
 				So(err, ShouldNotBeNil)
-				qerr, ok := err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNotRunning)
+				shouldBeQueueError(err, ErrNotRunning)
 				err = queue.Touch("key_0")
 				So(err, ShouldNotBeNil)
-				qerr, ok = err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNotRunning)
+				shouldBeQueueError(err, ErrNotRunning)
 				err = queue.Bury("key_0")
 				So(err, ShouldNotBeNil)
-				qerr, ok = err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNotRunning)
+				shouldBeQueueError(err, ErrNotRunning)
 				err = queue.Kick(ctx, "key_0")
 				So(err, ShouldNotBeNil)
-				qerr, ok = err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNotBuried)
+				shouldBeQueueError(err, ErrNotBuried)
 			})
 
 			Convey("But you can remove them when ready", func() {
@@ -766,9 +711,7 @@ func TestQueue(t *testing.T) {
 
 				err = queue.Remove(ctx, "key_0")
 				So(err, ShouldNotBeNil)
-				qerr, ok := err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNotFound)
+				shouldBeQueueError(err, ErrNotFound)
 			})
 		})
 
@@ -776,9 +719,7 @@ func TestQueue(t *testing.T) {
 			item, err := queue.Reserve("", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrNothingReady)
+			shouldBeQueueError(err, ErrNothingReady)
 		})
 
 		Convey("But you can remove them when not ready", func() {
@@ -794,9 +735,7 @@ func TestQueue(t *testing.T) {
 
 			err = queue.Remove(ctx, "key_0")
 			So(err, ShouldNotBeNil)
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrNotFound)
+			shouldBeQueueError(err, ErrNotFound)
 		})
 	})
 
@@ -821,9 +760,7 @@ func TestQueue(t *testing.T) {
 			Convey("Once removed it can't be updated", func() {
 				err = queue.Update(ctx, "item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
 				So(err, ShouldNotBeNil)
-				qerr, ok := err.(Error)
-				So(ok, ShouldBeTrue)
-				So(qerr.Err, ShouldEqual, ErrNotFound)
+				shouldBeQueueError(err, ErrNotFound)
 			})
 		})
 
@@ -1092,9 +1029,7 @@ func TestQueue(t *testing.T) {
 			item, err := queue.Reserve("1001", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrNothingReady)
+			shouldBeQueueError(err, ErrNothingReady)
 
 			sort.Ints(dataids)
 			for _, dataid := range dataids {
@@ -1169,9 +1104,7 @@ func TestQueue(t *testing.T) {
 		item, err := q.Reserve("", 0)
 		So(err, ShouldNotBeNil)
 		So(item, ShouldBeNil)
-		qerr, ok := err.(Error)
-		So(ok, ShouldBeTrue)
-		So(qerr.Err, ShouldEqual, ErrNothingReady)
+		shouldBeQueueError(err, ErrNothingReady)
 
 		var itemdefs []*ItemDef
 		for i := 0; i < 10; i++ {
@@ -1226,9 +1159,7 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			_, _, err = q.AddMany(ctx, itemdefs)
 			So(err, ShouldNotBeNil)
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrQueueClosed)
+			shouldBeQueueError(err, ErrQueueClosed)
 		})
 	})
 
@@ -1467,21 +1398,15 @@ func TestQueue(t *testing.T) {
 
 			err = queue.ChangeKey("foo", "bar")
 			So(err, ShouldNotBeNil)
-			qerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrNotFound)
+			shouldBeQueueError(err, ErrNotFound)
 
 			err = queue.ChangeKey("key_1", "changed_3")
 			So(err, ShouldNotBeNil)
-			qerr, ok = err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrAlreadyExists)
+			shouldBeQueueError(err, ErrAlreadyExists)
 
 			_, err = queue.Get("key_3")
 			So(err, ShouldNotBeNil)
-			qerr, ok = err.(Error)
-			So(ok, ShouldBeTrue)
-			So(qerr.Err, ShouldEqual, ErrNotFound)
+			shouldBeQueueError(err, ErrNotFound)
 
 			item, err := queue.Get("changed_3")
 			So(err, ShouldBeNil)
@@ -1810,6 +1735,13 @@ func TestQueue(t *testing.T) {
 	})
 }
 
+func shouldBeQueueError(err error, target error) {
+	var qerr Error
+	So(errors.As(err, &qerr), ShouldBeTrue)
+	So(qerr.Err, ShouldEqual, target)
+	So(errors.Is(err, target), ShouldBeTrue)
+}
+
 func depTestFunc(ctx context.Context, queue *Queue, changed bool) {
 	key3 := "key_3"
 	key6 := "key_6"
@@ -1917,7 +1849,7 @@ func depTestFunc(ctx context.Context, queue *Queue, changed bool) {
 func qdestroy(q *Queue) {
 	err := q.Destroy()
 	if err != nil {
-		if qerr, ok := err.(Error); ok && qerr.Err == ErrQueueClosed {
+		if errors.Is(err, ErrQueueClosed) {
 			return
 		}
 		fmt.Printf("queue.Destroy failed: %s\n", err)
