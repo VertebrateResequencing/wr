@@ -45,6 +45,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -119,6 +120,7 @@ var (
 )
 
 const (
+	requestMethodStart          = "jstart"
 	requestMethodSubscribe      = "subscribe"
 	requestMethodUnsubscribe    = "unsubscribe"
 	requestMethodWaitForUpdates = "waitForUpdates"
@@ -130,6 +132,16 @@ const (
 	RepGroupMatchPrefix RepGroupMatch = "prefix"
 	RepGroupMatchSuffix RepGroupMatch = "suffix"
 )
+
+func touchEndState(job *Job) *JobEndState {
+	return &JobEndState{
+		PeakRAM:  job.PeakRAM,
+		PeakDisk: job.PeakDisk,
+		CPUtime:  job.CPUtime,
+		Stdout:   slices.Clone(job.StdOutC),
+		Stderr:   slices.Clone(job.StdErrC),
+	}
+}
 
 // clientRequest is the struct that clients send to the server over the network
 // to request it do something. (The properties are only exported so the
@@ -148,6 +160,7 @@ type clientRequest struct {
 	State                   JobState
 	Path                    string // desired path File should be stored at, can be blank
 	CloudServerID           string
+	FailReason              string
 	Job                     *Job
 	JobEndState             *JobEndState
 	Modifier                *JobModifier
@@ -183,6 +196,26 @@ func RepGroupMatches(jobRepGroup, repgroup string, match RepGroupMatch) bool {
 	default:
 		return jobRepGroup == repgroup
 	}
+}
+
+func (cr *clientRequest) key() string {
+	if len(cr.Keys) > 0 {
+		return cr.Keys[0]
+	}
+
+	if cr.Job != nil {
+		return cr.Job.Key()
+	}
+
+	return ""
+}
+
+func (cr *clientRequest) failReason() string {
+	if cr.FailReason != "" || cr.Job == nil {
+		return cr.FailReason
+	}
+
+	return cr.Job.FailReason
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -1671,18 +1704,38 @@ func (c *Client) Started(job *Job, pid int) error {
 	if err != nil {
 		host = localhost
 	}
-	job.Lock()
-	defer job.Unlock()
-	job.Host = host
-	job.HostIP, err = internal.CurrentIP("")
+
+	hostIP, err := internal.CurrentIP("")
 	if err != nil {
 		return err
 	}
+
+	job.Lock()
+	job.Host = host
+	job.HostIP = hostIP
 	job.Pid = pid
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
-	_, err = c.request(&clientRequest{Method: "jstart", Job: job})
+	requestJob := keyOnlyJob(job)
+	requestJob.Host = job.Host
+	requestJob.HostIP = job.HostIP
+	requestJob.Pid = job.Pid
+	job.Unlock()
+
+	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
 	return err
+}
+
+func keyOnlyJob(job *Job) *Job {
+	return &Job{
+		Cmd:             job.Cmd,
+		Cwd:             job.Cwd,
+		CwdMatters:      job.CwdMatters,
+		MountConfigs:    cloneMountConfigs(job.MountConfigs),
+		WithDocker:      job.WithDocker,
+		WithSingularity: job.WithSingularity,
+		ContainerMounts: job.ContainerMounts,
+	}
 }
 
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
@@ -1692,9 +1745,17 @@ func (c *Client) Started(job *Job, pid int) error {
 func (c *Client) Touch(job *Job) (bool, error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
-	job.RLock()
-	defer job.RUnlock()
-	resp, err := c.request(&clientRequest{Method: "jtouch", Job: job})
+
+	job.Lock()
+	key := job.Key()
+	endState := touchEndState(job)
+	job.Unlock()
+
+	resp, err := c.request(&clientRequest{
+		Method:      "jtouch",
+		Keys:        []string{key},
+		JobEndState: endState,
+	})
 	if err != nil {
 		return false, err
 	}
@@ -1752,18 +1813,22 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 
-	job.RLock()
-	defer job.RUnlock()
+	job.Lock()
+	key := job.Key()
+	job.Unlock()
 
-	_, err := c.request(&clientRequest{Method: "jarchive", Job: job, JobEndState: jes})
+	_, err := c.request(&clientRequest{Method: "jarchive", Keys: []string{key}, JobEndState: jes})
 	if err != nil {
 		return err
 	}
 
+	job.Lock()
+	defer job.Unlock()
+
 	c.ended(job, jes)
 	job.State = JobStateComplete
 
-	return err
+	return nil
 }
 
 // Release places a job back on the jobqueue, for use when you can't handle the
@@ -1778,14 +1843,22 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	defer c.teMutex.Unlock()
 
 	job.Lock()
-	defer job.Unlock()
-
 	job.FailReason = failreason
+	key := job.Key()
+	job.Unlock()
 
-	_, err := c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
+	_, err := c.request(&clientRequest{
+		Method:      "jrelease",
+		Keys:        []string{key},
+		JobEndState: jes,
+		FailReason:  failreason,
+	})
 	if err != nil {
 		return err
 	}
+
+	job.Lock()
+	defer job.Unlock()
 
 	c.ended(job, jes)
 
@@ -1811,11 +1884,6 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 
-	job.Lock()
-	defer job.Unlock()
-
-	job.FailReason = failreason
-
 	if len(stderr) == 1 && stderr[0] != nil {
 		if jes == nil {
 			jes = &JobEndState{}
@@ -1824,10 +1892,23 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 		jes.Stderr = compressStd([]byte(stderr[0].Error()))
 	}
 
-	_, err := c.request(&clientRequest{Method: "jbury", Job: job, JobEndState: jes})
+	job.Lock()
+	job.FailReason = failreason
+	key := job.Key()
+	job.Unlock()
+
+	_, err := c.request(&clientRequest{
+		Method:      "jbury",
+		Keys:        []string{key},
+		JobEndState: jes,
+		FailReason:  failreason,
+	})
 	if err != nil {
 		return err
 	}
+
+	job.Lock()
+	defer job.Unlock()
 
 	c.ended(job, jes)
 	job.State = JobStateBuried
@@ -2145,11 +2226,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 
 	// pull the error out of sr
 	if sr.Err != "" {
-		key := ""
-		if cr.Job != nil {
-			key = cr.Job.Key()
-		}
-		return sr, Error{cr.Method, key, sr.Err}
+		return sr, Error{cr.Method, cr.key(), sr.Err}
 	}
 	return sr, err
 }
@@ -2166,4 +2243,13 @@ func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(encoded)
+}
+
+func cloneMountConfigs(mountConfigs MountConfigs) MountConfigs {
+	clone := slices.Clone(mountConfigs)
+	for i := range clone {
+		clone[i].Targets = slices.Clone(clone[i].Targets)
+	}
+
+	return clone
 }

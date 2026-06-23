@@ -552,8 +552,14 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					clog.Debug(ctx, "reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
 				}
 			} // else we'll return nothing, as if there were no jobs in the queue
-		case "jstart":
+		case requestMethodStart:
 			// update the job's cmd-started-related properties
+			if cr.Job == nil {
+				srerr = ErrBadRequest
+
+				break
+			}
+
 			var job *Job
 			_, job, srerr = s.getij(cr, true)
 			if srerr == "" {
@@ -683,7 +689,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				if cr.JobEndState == nil {
 					cr.JobEndState = &JobEndState{}
 				}
-				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, false)
+
+				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, false)
 				if errq != nil {
 					srerr = ErrInternalError
 
@@ -700,7 +707,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					cr.JobEndState = &JobEndState{}
 				}
 
-				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, true)
+				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, true)
 				if errq != nil {
 					srerr = ErrInternalError
 
@@ -1044,11 +1051,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		if qerr == "" {
 			qerr = srerr
 		}
-		key := ""
-		if cr.Job != nil {
-			key = cr.Job.Key()
-		}
-		return Error{cr.Method, key, qerr}
+
+		return Error{cr.Method, cr.key(), qerr}
 	}
 
 	// some commands don't return anything to the client
@@ -1063,12 +1067,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 // for the many j* methods in handleRequest, we do this common stuff to get
 // the desired item and job. The returned string is one of our Err* constants.
 func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job, string) {
-	// clientRequest must have a Job
-	if cr.Job == nil {
+	key := cr.key()
+	if key == "" {
 		return nil, nil, ErrBadRequest
 	}
 
-	item, err := s.q.Get(cr.Job.Key())
+	item, err := s.q.Get(key)
 	if err != nil || (checkRunning && item.Stats().State != queue.ItemStateRun) {
 		return item, nil, ErrBadJob
 	}
