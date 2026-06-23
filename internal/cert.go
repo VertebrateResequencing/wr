@@ -100,6 +100,11 @@ func (ce CertError) Error() string {
 	return msg
 }
 
+// Unwrap returns the underlying certificate error.
+func (ce CertError) Unwrap() error {
+	return ce.Err
+}
+
 // NumberError records a number related error.
 type NumberError struct {
 	Err error
@@ -108,6 +113,15 @@ type NumberError struct {
 // Error returns a number related error.
 func (n *NumberError) Error() string {
 	return fmt.Sprintf("failed to generate serial number: %s", n.Err)
+}
+
+// Unwrap returns the underlying number generation error.
+func (n *NumberError) Unwrap() error {
+	if n == nil {
+		return nil
+	}
+
+	return n.Err
 }
 
 // GenerateCerts creates a CA certificate which is used to sign a created server

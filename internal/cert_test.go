@@ -32,6 +32,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -68,6 +69,7 @@ func TestCert(t *testing.T) {
 			errCertTmplt, err := certTemplate(certDomain, r)
 			So(err, ShouldNotBeNil)
 			So(errCertTmplt, ShouldBeNil)
+			So(wrappedErrIs(err), ShouldBeTrue)
 
 			certTmplt, err := certTemplate(certDomain, crand.Reader)
 			So(err, ShouldBeNil)
@@ -109,6 +111,7 @@ func TestCert(t *testing.T) {
 							errCert, err := parseCertAndSavePEM(empByte, caFile, certFileFlags)
 							So(errCert, ShouldBeNil)
 							So(err, ShouldNotBeNil)
+							So(wrappedErrIs(err), ShouldBeTrue)
 						})
 
 						Convey("and not when file cannot be written", func() {
@@ -241,4 +244,18 @@ func TestCert(t *testing.T) {
 			})
 		})
 	})
+}
+
+func wrappedErrIs(err error) bool {
+	var certErr *CertError
+	if errors.As(err, &certErr) && certErr.Err != nil {
+		return errors.Is(err, certErr.Err)
+	}
+
+	var numberErr *NumberError
+	if errors.As(err, &numberErr) && numberErr.Err != nil {
+		return errors.Is(err, numberErr.Err)
+	}
+
+	return false
 }

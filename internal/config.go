@@ -248,6 +248,15 @@ func ConfigLoadFromParentDir(ctx context.Context, deployment string) *Config {
 	return mergeAllConfigs(ctx, uid, deployment, pwd)
 }
 
+// Unwrap returns the underlying file existence error.
+func (f *FileExistsError) Unwrap() error {
+	if f == nil {
+		return nil
+	}
+
+	return f.Err
+}
+
 // getPWDAndUID returns present working directory and user id.
 func getPWDAndUID(ctx context.Context) (string, int) {
 	pwd := fsd.GetPWD(ctx)

@@ -172,9 +172,17 @@ func (c *Checker) portsBefore(start int) []int {
 func (c *Checker) release(err error) error {
 	for _, l := range c.listeners {
 		errl := l.Close()
-		if errl != nil {
-			err = fmt.Errorf("%w; %s", err, errl.Error())
+		if errl == nil {
+			continue
 		}
+
+		if err == nil {
+			err = errl
+
+			continue
+		}
+
+		err = fmt.Errorf("%w; %w", err, errl)
 	}
 
 	c.listeners = nil

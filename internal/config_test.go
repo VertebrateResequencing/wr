@@ -29,6 +29,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -147,6 +148,12 @@ func TestConfig(t *testing.T) {
 	Convey("Given a path", t, func() {
 		pathS3 := "s3://test1"
 		pathNotS3 := "/tmp/test2"
+
+		Convey("file exists errors can be matched against their cause", func() {
+			err := &FileExistsError{Path: pathNotS3, Err: os.ErrExist}
+
+			So(errors.Is(err, os.ErrExist), ShouldBeTrue)
+		})
 
 		Convey("we can see if it's in an S3 bucket", func() {
 			So(InS3(pathS3), ShouldEqual, true)

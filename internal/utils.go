@@ -33,6 +33,7 @@ import (
 	"context"
 	"crypto/md5" // #nosec not used for security purposes
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -214,7 +215,7 @@ func ProcMeminfoMBs() (int, error) {
 // args are passed as additional context for the logger.
 func LogClose(ctx context.Context, obj io.Closer, msg string, extra ...interface{}) {
 	err := obj.Close()
-	if err != nil && err.Error() != "EOF" {
+	if err != nil && err.Error() != "EOF" && !errors.Is(err, io.EOF) {
 		extra = append(extra, "err", err)
 		clog.Warn(ctx, "failed to close "+msg, extra...)
 	}
@@ -335,7 +336,7 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	// check if it's already set
 	objs, err := ib.FindRecordA(domain)
 	if err != nil {
-		return fmt.Errorf("finding A records failed: %s", err)
+		return fmt.Errorf("finding A records failed: %w", err)
 	}
 
 	if len(objs) == 1 {
@@ -348,7 +349,7 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	for _, obj := range objs {
 		err = ib.NetworkObject(obj.Ref).Delete(nil)
 		if err != nil {
-			return fmt.Errorf("delete of A record failed: %s", err)
+			return fmt.Errorf("delete of A record failed: %w", err)
 		}
 	}
 
@@ -358,7 +359,7 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	d.Set("name", domain)
 	_, err = ib.RecordA().Create(d, nil, nil)
 	if err != nil {
-		return fmt.Errorf("create of A record failed: %s", err)
+		return fmt.Errorf("create of A record failed: %w", err)
 	}
 
 	// wait a while for things to "really" work
@@ -503,7 +504,7 @@ func PathToContent(path string) (string, error) {
 	absPath := TildaToHome(path)
 	contents, err := os.ReadFile(absPath)
 	if err != nil {
-		return "", fmt.Errorf("path [%s] could not be read: %s", absPath, err)
+		return "", fmt.Errorf("path [%s] could not be read: %w", absPath, err)
 	}
 	return string(contents), nil
 }
