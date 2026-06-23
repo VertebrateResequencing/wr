@@ -2541,7 +2541,14 @@ func TestJobqueueMedium(t *testing.T) {
 	reserveWait := 5 * time.Second
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		serverConfig.Timings.ItemTTR = 200 * time.Millisecond
+		// Default to a TTR that comfortably outlasts the reserve->Started gap
+		// even when CI is heavily oversubscribed. A reserved job whose runner
+		// has not sent Started before the TTR elapses is auto-released from the
+		// run queue as "lost", so a too-short default makes every plain
+		// reserve+Execute scenario here intermittently fail with "bad job"
+		// under load. The few scenarios that actually exercise short-TTR
+		// behaviour (lost jobs, auto-revert) opt back into a short TTR locally.
+		serverConfig.Timings.ItemTTR = 2 * time.Second
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -2795,9 +2802,11 @@ func TestJobqueueMedium(t *testing.T) {
 							So(job2.UntilBuried, ShouldEqual, 3)
 
 							Convey("If you do nothing with a reserved job, it auto reverts back to delayed", func() {
-								<-time.After(210 * time.Millisecond)
-								job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
-								So(err, ShouldBeNil)
+								// With no touches the reserved job is auto-released
+								// once its TTR expires; poll for that transition
+								// instead of sampling at a fixed offset, which
+								// races the server's TTR timer under load.
+								job2 = waitUntilJobState(jq2, &JobEssence{Cmd: "sleep 0.1 && false"}, JobStateDelayed, 30)
 								So(job2, ShouldNotBeNil)
 								So(job2.State, ShouldEqual, JobStateDelayed)
 								So(job2.Attempts, ShouldEqual, 3)
@@ -3499,6 +3508,13 @@ func TestJobqueueMedium(t *testing.T) {
 				})
 
 				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {
+					// This scenario deliberately exercises TTR/touch timing (a
+					// job that runs longer than the TTR, and a client whose
+					// touch interval exceeds the TTR so the job is briefly lost),
+					// so it opts into the short TTR that the suite no longer uses
+					// by default.
+					server.SetItemTTR(200 * time.Millisecond)
+
 					jobs = nil
 					cmd := "perl -MTime::HiRes=sleep -e 'sleep 0.8'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
