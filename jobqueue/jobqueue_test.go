@@ -1908,7 +1908,14 @@ func TestJobqueueBasics(t *testing.T) {
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
 				}
-				<-time.After(200 * time.Millisecond)
+				// the recommendation is recalculated asynchronously after the
+				// stats are stored, so poll for it to settle rather than
+				// assuming it has happened within a fixed delay.
+				So(pollUntil(func() bool {
+					r, errr := server.db.recommendedReqGroupMemory("fake_group")
+
+					return errr == nil && r == 100
+				}), ShouldBeTrue)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 100)
@@ -1939,7 +1946,13 @@ func TestJobqueueBasics(t *testing.T) {
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
 				}
-				<-time.After(500 * time.Millisecond)
+				// as above, wait for the asynchronous recalculation to settle on
+				// the expected values instead of relying on a fixed delay.
+				So(pollUntil(func() bool {
+					r, errr := server.db.recommendedReqGroupMemory("fake_group")
+
+					return errr == nil && r == 3400
+				}), ShouldBeTrue)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 3400)
@@ -3515,9 +3528,14 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, 1)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
 
-					<-time.After(100 * time.Millisecond)
-					jobs, err = jq.GetByRepGroup("should_fail", false, 0, JobStateBuried, false, false)
-					So(err, ShouldBeNil)
+					// poll for the buried job to become visible by rep group
+					// instead of assuming the server's view updates within a
+					// fixed delay.
+					So(pollUntil(func() bool {
+						jobs, err = jq.GetByRepGroup("should_fail", false, 0, JobStateBuried, false, false)
+
+						return err == nil && len(jobs) == 1
+					}), ShouldBeTrue)
 					So(len(jobs), ShouldEqual, 1)
 					jobs, err = jq.GetByRepGroup("should_delete", false, 0, JobStateBuried, false, false)
 					So(err, ShouldBeNil)
@@ -3861,10 +3879,14 @@ func TestJobqueueMedium(t *testing.T) {
 				err = jq.Execute(ctx, j1, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				<-time.After(6 * time.Millisecond)
+				// poll for the server's view to reflect the completion instead
+				// of assuming it lands within a fixed few ms.
+				var gottenJobs []*Job
+				So(pollUntil(func() bool {
+					gottenJobs, err = jq.GetByRepGroup("dep1", false, 0, "", false, false)
 
-				gottenJobs, err := jq.GetByRepGroup("dep1", false, 0, "", false, false)
-				So(err, ShouldBeNil)
+					return err == nil && len(gottenJobs) == 1 && gottenJobs[0].State == JobStateComplete
+				}), ShouldBeTrue)
 				So(len(gottenJobs), ShouldEqual, 1)
 				So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
@@ -4105,10 +4127,14 @@ func TestJobqueueMedium(t *testing.T) {
 				err = jq.Execute(ctx, j1, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				<-time.After(6 * time.Millisecond)
+				// poll for the server's view to reflect the completion instead
+				// of assuming it lands within a fixed few ms.
+				var gottenJobs []*Job
+				So(pollUntil(func() bool {
+					gottenJobs, err = jq.GetByRepGroup("dep1", false, 0, "", false, false)
 
-				gottenJobs, err := jq.GetByRepGroup("dep1", false, 0, "", false, false)
-				So(err, ShouldBeNil)
+					return err == nil && len(gottenJobs) == 1 && gottenJobs[0].State == JobStateComplete
+				}), ShouldBeTrue)
 				So(len(gottenJobs), ShouldEqual, 1)
 				So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
@@ -4887,7 +4913,16 @@ func TestJobqueueModify(t *testing.T) {
 
 			add(7)
 
-			<-time.After(1000 * time.Millisecond) // wait for the jobs to be ready and assiged sched groups
+			// wait for every added job to become ready (and so have its
+			// scheduler group assigned) before reserving, so the highest-priority
+			// job is the one reserved; a fixed wait races the scheduler under
+			// load. The reserve helper then still polls for reservability.
+			So(pollUntil(func() bool {
+				a, e1 := jq.GetByRepGroup("a", false, 0, JobStateReady, false, false)
+				b, e2 := jq.GetByRepGroup("b", false, 0, JobStateReady, false, false)
+
+				return e1 == nil && e2 == nil && len(a) == 3 && len(b) == 4
+			}), ShouldBeTrue)
 
 			reserve(rgroup, "echo 4")
 

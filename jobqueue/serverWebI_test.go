@@ -347,7 +347,11 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				testStatusesReceived := func(ws *websocket.Conn, expectedNum, offset, exitCode int) {
-					time.Sleep(100 * time.Millisecond)
+					// Read with a deadline rather than pre-sleeping a fixed time:
+					// each ReadJSON below blocks until the next expected status
+					// arrives (or the deadline lapses), which is robust to the
+					// broadcast being slow under heavy parallel-test load.
+					So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
 
 					for i := range expectedNum {
 						var status JStatus
@@ -557,7 +561,10 @@ func TestServerWebI(t *testing.T) {
 					})
 					So(err, ShouldBeNil)
 
-					time.Sleep(100 * time.Millisecond)
+					// Read with a deadline instead of a fixed pre-sleep: the
+					// single matching status is awaited up to the deadline, which
+					// tolerates a slow broadcast under heavy parallel-test load.
+					So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
 
 					var status JStatus
 
@@ -604,7 +611,11 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond) // wait for kick to process
+				So(pollUntil(func() bool {
+					kicked, errr := jq.GetByRepGroup("rg2", false, 0, JobStateReady, false, false)
+
+					return errr == nil && len(kicked) == 1
+				}), ShouldBeTrue)
 
 				kickedJobs, errg := jq.GetByRepGroup("rg2", false, 0, JobStateReady, false, false)
 				So(errg, ShouldBeNil)
@@ -799,7 +810,11 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond) // wait for deletion to process
+				So(pollUntil(func() bool {
+					remaining, errr := jq.GetByRepGroup("rg3", false, 0, "", false, false)
+
+					return errr == nil && len(remaining) == 0
+				}), ShouldBeTrue)
 
 				jobs, err = jq.GetByRepGroup("rg3", false, 0, "", false, false)
 				So(err, ShouldBeNil)
@@ -885,8 +900,6 @@ func TestServerWebI(t *testing.T) {
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
-
 				ws2.Close()
 
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
@@ -894,11 +907,19 @@ func TestServerWebI(t *testing.T) {
 
 				var sc jstateCount
 
+				// Read the count response with a deadline instead of pre-sleeping
+				// a fixed time: the explicit "current" request above guarantees a
+				// jstateCount is sent, and the deadline tolerates a slow response
+				// under heavy parallel-test load.
+				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+
 				err = ws.ReadJSON(&sc)
 				So(err, ShouldBeNil)
 
 				err = ws3.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
+
+				So(ws3.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
 
 				err = ws3.ReadJSON(&sc)
 				So(err, ShouldBeNil)
@@ -1036,19 +1057,46 @@ func TestServerWebI(t *testing.T) {
 
 				server.badServerCaster.Send(cloudServerToBadServer(testServer))
 
-				<-time.After(100 * time.Millisecond)
-
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
 				foundBadServer := false
 
-				for range 10 {
+				// The bad-server broadcast is lossy (the caster drops to any
+				// subscriber whose buffer is full), so under heavy parallel-test
+				// load the "current" we requested above can be dropped before this
+				// ws reads it. Re-request "current" periodically (it re-broadcasts
+				// the bad servers) while reading until we see our server, bounded
+				// by a read deadline; skip other message shapes.
+				resendStop := make(chan struct{})
+				resendDone := make(chan struct{})
+
+				go func() {
+					defer close(resendDone)
+
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-resendStop:
+							return
+						case <-ticker.C:
+							if werr := ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}); werr != nil {
+								return
+							}
+						}
+					}
+				}()
+
+				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
+
+				for {
 					var msg BadServer
 
 					errr := ws.ReadJSON(&msg)
 					if errr != nil {
-						continue
+						break // read deadline exceeded or connection closed
 					}
 
 					if msg.ID == testServer.ID {
@@ -1063,6 +1111,11 @@ func TestServerWebI(t *testing.T) {
 					}
 				}
 
+				close(resendStop)
+				<-resendDone
+
+				So(ws.SetReadDeadline(time.Time{}), ShouldBeNil)
+
 				So(foundBadServer, ShouldBeTrue)
 
 				err = ws.WriteJSON(jstatusReq{
@@ -1071,7 +1124,14 @@ func TestServerWebI(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				<-time.After(100 * time.Millisecond)
+				So(pollUntil(func() bool {
+					server.bsmutex.RLock()
+					_, stillBad := server.badServers[testServer.ID]
+					server.bsmutex.RUnlock()
+
+					return !stillBad
+				}), ShouldBeTrue)
+
 				server.bsmutex.RLock()
 				_, exists := server.badServers[testServer.ID]
 				server.bsmutex.RUnlock()

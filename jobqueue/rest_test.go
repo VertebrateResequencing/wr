@@ -374,19 +374,29 @@ func TestREST(t *testing.T) {
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateRunning)
 
-					<-time.After(300 * time.Millisecond)
+					So(pollUntil(func() bool {
+						req, errp := http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+						if errp != nil {
+							return false
+						}
+						req.Header.Add("Authorization", bearer)
+						response, errp = client.Do(req)
+						if errp != nil {
+							return false
+						}
+						responseData, errp = io.ReadAll(response.Body)
+						if errp != nil {
+							return false
+						}
 
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err = client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err = io.ReadAll(response.Body)
-					So(err, ShouldBeNil)
+						jstati = []JStatus{}
+						if json.Unmarshal(responseData, &jstati) != nil || len(jstati) != 1 {
+							return false
+						}
 
-					jstati = []JStatus{}
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
+						return jstati[0].State == JobStateBuried
+					}), ShouldBeTrue)
+
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateBuried)
 					So(jstati[0].Started, ShouldNotBeNil)
@@ -397,7 +407,29 @@ func TestREST(t *testing.T) {
 					err = jq.Started(job, 1)
 					So(err, ShouldBeNil)
 
-					<-time.After(300 * time.Millisecond)
+					// the job is never touched, so it becomes lost once its short
+					// TTR expires; poll for that state (a read-only GET) rather
+					// than waiting a fixed margin over the TTR, which races the
+					// server's timer under load. The DELETE below is then issued
+					// exactly once, against a confirmed-lost job.
+					So(pollUntil(func() bool {
+						greq, errp := http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+						if errp != nil {
+							return false
+						}
+						greq.Header.Add("Authorization", bearer)
+						gresp, errp := client.Do(greq)
+						if errp != nil {
+							return false
+						}
+						gdata, errp := io.ReadAll(gresp.Body)
+						if errp != nil {
+							return false
+						}
+						var gjs []JStatus
+
+						return json.Unmarshal(gdata, &gjs) == nil && len(gjs) == 1 && gjs[0].State == JobStateLost
+					}), ShouldBeTrue)
 
 					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
 					So(errr, ShouldBeNil)
@@ -413,19 +445,29 @@ func TestREST(t *testing.T) {
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateLost)
 
-					<-time.After(300 * time.Millisecond)
+					So(pollUntil(func() bool {
+						req, errp := http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+						if errp != nil {
+							return false
+						}
+						req.Header.Add("Authorization", bearer)
+						response, errp = client.Do(req)
+						if errp != nil {
+							return false
+						}
+						responseData, errp = io.ReadAll(response.Body)
+						if errp != nil {
+							return false
+						}
 
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err = client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err = io.ReadAll(response.Body)
-					So(err, ShouldBeNil)
+						jstati = []JStatus{}
+						if json.Unmarshal(responseData, &jstati) != nil || len(jstati) != 1 {
+							return false
+						}
 
-					jstati = []JStatus{}
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
+						return jstati[0].State == JobStateBuried
+					}), ShouldBeTrue)
+
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateBuried)
 				})
