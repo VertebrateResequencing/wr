@@ -20,7 +20,7 @@ non-empty `Job.DepGroups` values in the new bucket during new-job persistence.
 Cover all 3 acceptance tests from A2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1.2: A1 - Wait for never-seen dep-groups
 
@@ -33,7 +33,7 @@ populate the field, and remain unreservable until a carrier appears and
 completes. Cover all 3 acceptance tests from A1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1.3: A3 - Same-batch and live reblocking stay unchanged
 
@@ -44,7 +44,7 @@ Preserve existing same-batch and live dep-group reblocking behavior in
 reevaluation when new carriers appear. Cover all 3 acceptance tests from A3.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1.4: A4 - Command dependencies stay unchanged
 
@@ -56,4 +56,4 @@ to no dependency, do not set `WaitingForDepGroups`, and do not warn. Cover all
 3 acceptance tests from A4.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed

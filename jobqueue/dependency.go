@@ -40,7 +40,7 @@ func (d *Dependency) collectIncompleteJobKeys(
 	seenDepGroups map[string]bool,
 	jobKeys, waitingForDepGroups map[string]bool,
 ) error {
-	keys, waiting, err := d.incompleteJobKeys(db, seenDepGroups)
+	keys, waiting, err := d.incompleteJobKeysWithSeen(db, seenDepGroups)
 	if err != nil {
 		return err
 	}
@@ -189,6 +189,18 @@ func (d Dependencies) incompleteJobKeysByDependency(
 	waitingForDepGroups := make(map[string]bool)
 
 	for _, dep := range d {
+		if dep.DepGroup == "" {
+			keys, waiting, err := dep.incompleteJobKeys(db)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			collectIncompleteJobKeys(keys, jobKeys, waitingForDepGroups)
+			collectStrings(waiting, waitingForDepGroups)
+
+			continue
+		}
+
 		if err := dep.collectIncompleteJobKeys(db, seenDepGroups, jobKeys, waitingForDepGroups); err != nil {
 			return nil, nil, err
 		}
@@ -236,10 +248,26 @@ type Dependency struct {
 // For a Dependency made with a DepGroup, you will get the *Job.key()s of all
 // the jobs in the queue and database that have that DepGroup in their
 // DepGroups. You will only get keys for jobs that are currently in the queue.
-func (d *Dependency) incompleteJobKeys(db *db, seenDepGroups map[string]bool) ([]string, []string, error) {
+func (d *Dependency) incompleteJobKeys(db *db) ([]string, []string, error) {
+	seenDepGroups := make(map[string]bool)
+
+	if d.DepGroup != "" {
+		seen, err := db.depGroupEverSeen(d.DepGroup)
+		if err != nil {
+			return []string{}, []string{}, err
+		}
+
+		seenDepGroups[d.DepGroup] = seen
+	}
+
+	return d.incompleteJobKeysWithSeen(db, seenDepGroups)
+}
+
+func (d *Dependency) incompleteJobKeysWithSeen(db *db, seenDepGroups map[string]bool) ([]string, []string, error) {
 	if d.DepGroup != "" {
 		return d.incompleteDepGroupJobKeys(db, seenDepGroups)
 	}
+
 	if d.Essence != nil {
 		return d.incompleteEssenceJobKeys(db)
 	}
