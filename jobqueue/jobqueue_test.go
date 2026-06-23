@@ -1320,6 +1320,15 @@ func TestJobqueueSignal(t *testing.T) {
 				// SIGTERM leaks into a later test's Execute (which also registers
 				// a process-wide signal handler) and fails it spuriously.
 				sigDone := make(chan struct{})
+
+				var sigDoneOnce sync.Once
+
+				cancelSig := func() {
+					sigDoneOnce.Do(func() {
+						close(sigDone)
+					})
+				}
+
 				go func() {
 					select {
 					case <-time.After(2 * time.Second):
@@ -1329,6 +1338,8 @@ func TestJobqueueSignal(t *testing.T) {
 					case <-sigDone:
 					}
 				}()
+
+				defer cancelSig()
 
 				j1worked := make(chan bool, 1)
 				go func() {
@@ -1371,7 +1382,7 @@ func TestJobqueueSignal(t *testing.T) {
 
 				// the signal has now been delivered to and consumed by the jobs
 				// above; stop the sender so it can never fire into a later test.
-				close(sigDone)
+				cancelSig()
 
 				jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)

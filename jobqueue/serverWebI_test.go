@@ -963,7 +963,7 @@ func TestServerWebI(t *testing.T) {
 						case <-resendStop:
 							return
 						case <-ticker.C:
-							if werr := ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}); werr != nil {
+							if werr := writeCurrentJStatusWithDeadline(ws); werr != nil {
 								return
 							}
 						}
@@ -1080,7 +1080,7 @@ func TestServerWebI(t *testing.T) {
 						case <-resendStop:
 							return
 						case <-ticker.C:
-							if werr := ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}); werr != nil {
+							if werr := writeCurrentJStatusWithDeadline(ws); werr != nil {
 								return
 							}
 						}
@@ -1245,10 +1245,16 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 // Key), so a request's response has to be picked out rather than assuming it is
 // the very next message read - otherwise the read races those broadcasts under
 // load and sees the wrong message.
-func readJStatusMatching(ws *websocket.Conn, match func(JStatus) bool) (JStatus, bool) {
+func readJStatusMatching(ws *websocket.Conn, match func(JStatus) bool) (matched JStatus, ok bool) {
 	if err := ws.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return JStatus{}, false
 	}
+	defer func() {
+		if err := ws.SetReadDeadline(time.Time{}); err != nil {
+			matched = JStatus{}
+			ok = false
+		}
+	}()
 
 	for {
 		var status JStatus
@@ -1633,4 +1639,17 @@ func serverSubscriptionClosed(sub *serverSubscription, timeout time.Duration) bo
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+func writeCurrentJStatusWithDeadline(ws *websocket.Conn) (err error) {
+	if err = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	defer func() {
+		if clearErr := ws.SetWriteDeadline(time.Time{}); err == nil {
+			err = clearErr
+		}
+	}()
+
+	return ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 }
