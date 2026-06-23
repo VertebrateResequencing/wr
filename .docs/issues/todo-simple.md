@@ -119,8 +119,8 @@ Tick the checklist as each branch progresses.
 
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 - **[#512 Choose if env is used with remote manager](https://github.com/VertebrateResequencing/wr/issues/512)** — add an opt-in setting that makes `wr add` treat a remote manager like a local manager when selecting defaults. Keep the current conservative default for remote managers, where environment variables are not merged and cwd defaults to `/tmp` unless `cwd_matters` is enabled, but allow same-cluster users to keep local-style cwd and environment behaviour when it is safe and desirable. Make this defaultable via config/env var so users do not need to specify the flag every time. Add tests covering both the default remote-manager behaviour and the opt-in path.
 
