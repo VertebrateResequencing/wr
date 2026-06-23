@@ -221,8 +221,8 @@ Two related additions to `wr status` CLI output (both centre on `cmd/status.go`)
 
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 Promoted from todo-complex now that the audit is done and every decision is made (single focused theme; no spec needed).
 
@@ -232,8 +232,8 @@ Promoted from todo-complex now that the audit is done and every decision is made
 
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 Promoted from todo-complex now that the OOM-detection method is decided. Single focused theme (runner + one server condition); the cgroup-confirm path is hard to exercise in CI, so use a reviewer worker to cover it.
 
