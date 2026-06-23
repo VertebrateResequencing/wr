@@ -461,6 +461,7 @@ func (s *sgroup) decrement(drop int) int {
 	}
 
 	prev := s.count
+
 	s.count -= drop
 	if s.count < 0 {
 		s.count = 0
@@ -469,6 +470,7 @@ func (s *sgroup) decrement(drop int) int {
 	if s.count == prev {
 		return -1
 	}
+
 	return s.count
 }
 
@@ -476,6 +478,7 @@ func (s *sgroup) decrement(drop int) int {
 func (s *sgroup) hasSkips() bool {
 	s.RLock()
 	defer s.RUnlock()
+
 	return s.skipped > 0
 }
 
@@ -2180,11 +2183,11 @@ func (s *Server) createQueue(ctx context.Context) {
 				}
 			}
 
-			if recommendedReq != nil || //nolint:nestif
+			shouldUpdateRequirements := recommendedReq != nil ||
 				jobPeakExceededRAM ||
 				job.FailReason == FailReasonDisk ||
-				job.FailReason == FailReasonTime {
-
+				job.FailReason == FailReasonTime
+			if shouldUpdateRequirements { //nolint:nestif
 				job.Lock()
 				if job.RequirementsOrig == nil {
 					job.RequirementsOrig = &scheduler.Requirements{

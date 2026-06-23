@@ -1050,6 +1050,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
 
+	var oomMonitor *cgroupOOMMonitor
+
+	if c.ServerInfo != nil && !schedulerNeedsSigkillMemoryFallback(c.ServerInfo.Scheduler) {
+		monitor, errm := newCgroupOOMMonitor(cmd.Process.Pid, procRoot, cgroupRoot)
+		if errm == nil {
+			oomMonitor = monitor
+		}
+	}
+
 	// update the server that we've started the job
 	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
@@ -1069,15 +1078,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
 		}
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %w%s", job.Cmd, err, extra)
-	}
-
-	var oomMonitor *cgroupOOMMonitor
-
-	if c.ServerInfo != nil && !schedulerNeedsSigkillMemoryFallback(c.ServerInfo.Scheduler) {
-		monitor, errm := newCgroupOOMMonitor(cmd.Process.Pid, procRoot, cgroupRoot)
-		if errm == nil {
-			oomMonitor = monitor
-		}
 	}
 
 	// update peak mem and disk used by command, and check if we use too much
@@ -1521,7 +1521,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					dorelease = true
 
 					switch {
-					case attributedMemoryDeath(killedForMem, cgroupOOM, waitStatus, peakmem, job.Requirements.RAM, schedulerName):
+					case killedForMem:
 						failreason = FailReasonRAM
 						myerr = Error{"Execute", job.Key(), FailReasonRAM}
 					case ranoutDisk:
@@ -1535,13 +1535,16 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 							failreason = FailReasonSignal
 							myerr = Error{"Execute", job.Key(), FailReasonSignal}
 						}
-					case waitStatus.Signaled(): //nolint:misspell
-						failreason = FailReasonSignal
-						myerr = Error{"Execute", job.Key(), FailReasonSignal}
 					case killCalled:
 						dobury = true
 						failreason = FailReasonKilled
 						myerr = Error{"Execute", job.Key(), FailReasonKilled}
+					case attributedMemoryDeath(false, cgroupOOM, waitStatus, peakmem, job.Requirements.RAM, schedulerName):
+						failreason = FailReasonRAM
+						myerr = Error{"Execute", job.Key(), FailReasonRAM}
+					case waitStatus.Signaled(): //nolint:misspell
+						failreason = FailReasonSignal
+						myerr = Error{"Execute", job.Key(), FailReasonSignal}
 					case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
 						dobury = true
 						failreason = FailReasonExit

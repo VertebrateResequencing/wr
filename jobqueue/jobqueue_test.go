@@ -2640,11 +2640,21 @@ func TestJobqueueMedium(t *testing.T) {
 
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
-				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again")
+
+				expectedErrPrefix := "command [sleep 0.1 && false] exited with code 1, " +
+					"which may be a temporary issue, so it will be tried again"
+				So(err.Error(), ShouldStartWith, expectedErrPrefix)
 				So(job.State, ShouldEqual, JobStateDelayed)
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 1)
+				So(job.FailReason, ShouldEqual, FailReasonExit)
 				So(job.PeakRAM, ShouldBeGreaterThan, 0)
+
+				if job.PeakRAM > job.Requirements.RAM {
+					So(err.Error(), ShouldContainSubstring, FailReasonRAM)
+				} else {
+					So(err.Error(), ShouldNotContainSubstring, FailReasonRAM)
+				}
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				So(job.Host, ShouldEqual, host)
 				So(job.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
@@ -2859,9 +2869,19 @@ func TestJobqueueMedium(t *testing.T) {
 
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldEqual, "command [sleep 0.5 && false] exited with code 1, after the noretries time, so will not be be tried again")
+
+					expectedErrPrefix := "command [sleep 0.5 && false] exited with code 1, " +
+						"after the noretries time, so will not be tried again"
+					So(err.Error(), ShouldStartWith, expectedErrPrefix)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
+
+					if job.PeakRAM > job.Requirements.RAM {
+						So(err.Error(), ShouldContainSubstring, FailReasonRAM)
+					} else {
+						So(err.Error(), ShouldNotContainSubstring, FailReasonRAM)
+					}
 				})
 			})
 
@@ -2915,11 +2935,20 @@ func TestJobqueueMedium(t *testing.T) {
 
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again") //*** can fail with a receive time out; why?!
+
+					expectedErrPrefix := "command [sleep 0.1 && true | false | true] exited with code 1, " +
+						"which may be a temporary issue, so it will be tried again"
+					So(err.Error(), ShouldStartWith, expectedErrPrefix) // *** can fail with a receive time out; why?!
 					So(job.State, ShouldEqual, JobStateDelayed)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
+
+					if job.PeakRAM > job.Requirements.RAM {
+						So(err.Error(), ShouldContainSubstring, FailReasonRAM)
+					} else {
+						So(err.Error(), ShouldNotContainSubstring, FailReasonRAM)
+					}
 				})
 
 				Convey("Invalid commands are immediately buried", func() {
@@ -4665,6 +4694,7 @@ func TestJobqueueModify(t *testing.T) {
 	learnedRAMNormal := 100
 	learnedRAMExtraRange := []int{200, 500}
 	tmp := "/tmp"
+	echoACmd := "echo a"
 
 	Convey("Once a new jobqueue server is up and client is connected", t, func() {
 		serverConfig.Timings.ItemTTR = 5 * time.Second
@@ -4955,7 +4985,7 @@ func TestJobqueueModify(t *testing.T) {
 				return
 			}
 
-			cmd := "echo a"
+			cmd := echoACmd
 			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "initial", Requirements: standardReqs, Override: uint8(0), Retries: uint8(0), RepGroup: "a"})
 			add(1)
 
@@ -4988,7 +5018,7 @@ func TestJobqueueModify(t *testing.T) {
 			// not actually using a scheduler to determine when and if jobs are
 			// allowed to run, so we're just doing a basic test that the reqs
 			// of the job change appropriately
-			cmd := "echo a"
+			cmd := echoACmd
 			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
 			add(1)
 
@@ -5099,12 +5129,15 @@ func TestJobqueueModify(t *testing.T) {
 				return
 			}
 
-			addJobs = append(addJobs, &Job{Cmd: "echo a", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", DepGroups: []string{"a"}})
+			addJobs = append(addJobs, &Job{
+				Cmd: echoACmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs,
+				Override: uint8(2), Retries: uint8(0), RepGroup: "a", DepGroups: []string{"a"},
+			})
 			addJobs = append(addJobs, &Job{Cmd: "echo b", Cwd: tmp, ReqGroup: "rgroup", Requirements: &jqs.Requirements{RAM: 400, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(2), Retries: uint8(0), RepGroup: "b", DepGroups: []string{"b"}})
 			addJobs = append(addJobs, &Job{Cmd: "echo c", Cwd: tmp, ReqGroup: "rgroup", Requirements: &jqs.Requirements{RAM: 800, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(2), Retries: uint8(0), RepGroup: "c", Dependencies: groupsToDeps("a,b")})
 			add(3)
 
-			jobA := reserve(rgroup, "echo a")
+			jobA := reserve(rgroup, echoACmd)
 			reserve("500:30:1:0", "echo b")
 
 			jobC, err := jq.ReserveScheduled(rtime, "900:30:1:0")

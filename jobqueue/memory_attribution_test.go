@@ -26,6 +26,7 @@
 package jobqueue
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -114,6 +115,10 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		annotated := appendHighMemoryNote(err, 200, 100)
 		So(annotated.Error(), ShouldContainSubstring, FailReasonExit)
 		So(annotated.Error(), ShouldContainSubstring, FailReasonRAM)
+
+		var jqerr Error
+		So(errors.As(annotated, &jqerr), ShouldBeTrue)
+		So(jqerr.Err, ShouldEqual, FailReasonExit)
 	})
 
 	Convey("Local and cloud schedulers use SIGKILL plus high peak as the memory fallback", t, func() {
@@ -135,6 +140,10 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		annotated := appendHighMemoryNote(err, 200, 100)
 		So(annotated.Error(), ShouldContainSubstring, FailReasonSignal)
 		So(annotated.Error(), ShouldContainSubstring, FailReasonRAM)
+
+		var jqerr Error
+		So(errors.As(annotated, &jqerr), ShouldBeTrue)
+		So(jqerr.Err, ShouldEqual, FailReasonSignal)
 	})
 
 	Convey("A cgroup OOM counter increase or wr's own memory kill is authoritative", t, func() {
