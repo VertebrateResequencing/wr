@@ -143,6 +143,25 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		So(attributedMemoryDeath(false, true, status, 50, 100, "local", false), ShouldBeTrue)
 	})
 
+	Convey("Scheduler SIGKILL fallback is restored after a successful touch", t, func() {
+		status := syscall.WaitStatus(syscall.SIGKILL)
+		contact := &serverContactState{}
+
+		So(contact.schedulerMemoryFallbackAllowed(), ShouldBeTrue)
+
+		contact.recordTouchResult(os.ErrClosed)
+		So(contact.schedulerMemoryFallbackAllowed(), ShouldBeFalse)
+		attributed := attributedMemoryDeath(false, false, status, 200, 100, "local",
+			contact.schedulerMemoryFallbackAllowed())
+		So(attributed, ShouldBeFalse)
+
+		contact.recordTouchResult(nil)
+		So(contact.schedulerMemoryFallbackAllowed(), ShouldBeTrue)
+		attributed = attributedMemoryDeath(false, false, status, 200, 100, "local",
+			contact.schedulerMemoryFallbackAllowed())
+		So(attributed, ShouldBeTrue)
+	})
+
 	Convey("A non-SIGKILL signal with high peak is not attributed to RAM", t, func() {
 		status := syscall.WaitStatus(syscall.SIGTERM)
 

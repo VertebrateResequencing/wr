@@ -225,6 +225,18 @@ func (cr *clientRequest) failReason() string {
 	return cr.Job.FailReason
 }
 
+type serverContactState struct {
+	lost atomic.Bool
+}
+
+func (state *serverContactState) recordTouchResult(err error) {
+	state.lost.Store(err != nil)
+}
+
+func (state *serverContactState) schedulerMemoryFallbackAllowed() bool {
+	return !state.lost.Load()
+}
+
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue.
 type Client struct {
@@ -749,7 +761,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	var wkbsMutex sync.RWMutex
 
-	var serverContactLost atomic.Bool
+	serverContact := &serverContactState{}
 	killDoneCh := make(chan bool, 1)
 	whenKilledByServer := func() {
 		killDoneCh <- true
@@ -773,10 +785,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
-					serverContactLost.Store(true)
+					serverContact.recordTouchResult(errf)
 					clog.Warn(ctx, "could not touch", "err", errf)
 					continue
 				}
+
+				serverContact.recordTouchResult(nil)
 			case <-stopTouching:
 				touchTicker.Stop()
 				return
@@ -1493,7 +1507,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					schedulerName = c.ServerInfo.Scheduler
 				}
 
-				allowSchedulerMemoryFallback := !serverContactLost.Load()
+				allowSchedulerMemoryFallback := serverContact.schedulerMemoryFallbackAllowed()
 
 				switch exitcode {
 				case exitCodeCommandPermission:
