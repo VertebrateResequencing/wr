@@ -1731,7 +1731,7 @@ func keyOnlyJob(job *Job) *Job {
 		Cmd:             job.Cmd,
 		Cwd:             job.Cwd,
 		CwdMatters:      job.CwdMatters,
-		MountConfigs:    slices.Clone(job.MountConfigs),
+		MountConfigs:    cloneMountConfigs(job.MountConfigs),
 		WithDocker:      job.WithDocker,
 		WithSingularity: job.WithSingularity,
 		ContainerMounts: job.ContainerMounts,
@@ -2247,4 +2247,13 @@ func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(encoded)
+}
+
+func cloneMountConfigs(mountConfigs MountConfigs) MountConfigs {
+	clone := slices.Clone(mountConfigs)
+	for i := range clone {
+		clone[i].Targets = slices.Clone(clone[i].Targets)
+	}
+
+	return clone
 }
