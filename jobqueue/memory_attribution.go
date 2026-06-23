@@ -162,7 +162,7 @@ func appendHighMemoryNote(err error, peakRAM, requiredRAM int) error {
 		return err
 	}
 
-	return fmt.Errorf("%w; %s", err, FailReasonRAM)
+	return fmt.Errorf("%w; note: %s", err, FailReasonRAM)
 }
 
 func commandExceededMemoryEstimate(peakRAM, requiredRAM int) bool {
@@ -177,8 +177,12 @@ func attributedMemoryDeath(
 	requiredRAM int,
 	scheduler string,
 ) bool {
-	if wrKilledForMemory || cgroupOOM {
+	if cgroupOOM {
 		return true
+	}
+
+	if wrKilledForMemory {
+		return sigkillMemoryFallback(status, peakRAM, requiredRAM)
 	}
 
 	return schedulerNeedsSigkillMemoryFallback(scheduler) &&

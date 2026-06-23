@@ -114,7 +114,7 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		err := Error{testExecuteOp, "job", FailReasonExit}
 		annotated := appendHighMemoryNote(err, 200, 100)
 		So(annotated.Error(), ShouldContainSubstring, FailReasonExit)
-		So(annotated.Error(), ShouldContainSubstring, FailReasonRAM)
+		So(annotated.Error(), ShouldContainSubstring, "note: "+FailReasonRAM)
 
 		var jqerr Error
 		So(errors.As(annotated, &jqerr), ShouldBeTrue)
@@ -139,18 +139,26 @@ func TestMemoryFailureAttribution(t *testing.T) {
 		err := Error{testExecuteOp, "job", FailReasonSignal}
 		annotated := appendHighMemoryNote(err, 200, 100)
 		So(annotated.Error(), ShouldContainSubstring, FailReasonSignal)
-		So(annotated.Error(), ShouldContainSubstring, FailReasonRAM)
+		So(annotated.Error(), ShouldContainSubstring, "note: "+FailReasonRAM)
 
 		var jqerr Error
 		So(errors.As(annotated, &jqerr), ShouldBeTrue)
 		So(jqerr.Err, ShouldEqual, FailReasonSignal)
 	})
 
-	Convey("A cgroup OOM counter increase or wr's own memory kill is authoritative", t, func() {
+	Convey("A cgroup OOM counter increase is authoritative", t, func() {
 		status := syscall.WaitStatus(1 << 8)
 
 		So(attributedMemoryDeath(false, true, status, 50, 100, "lsf"), ShouldBeTrue)
-		So(attributedMemoryDeath(true, false, status, 200, 100, "lsf"), ShouldBeTrue)
+	})
+
+	Convey("wr's own memory kill still requires SIGKILL plus high peak", t, func() {
+		normalExit := syscall.WaitStatus(1 << 8)
+		sigkill := syscall.WaitStatus(syscall.SIGKILL)
+
+		So(attributedMemoryDeath(true, false, normalExit, 200, 100, "lsf"), ShouldBeFalse)
+		So(attributedMemoryDeath(true, false, sigkill, 200, 100, "lsf"), ShouldBeTrue)
+		So(attributedMemoryDeath(true, false, sigkill, 50, 100, "lsf"), ShouldBeFalse)
 	})
 }
 
