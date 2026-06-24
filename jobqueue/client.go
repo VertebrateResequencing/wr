@@ -265,8 +265,6 @@ type executeLiveState struct {
 	peakRAM  int
 	peakDisk int64
 	cpuTime  time.Duration
-	cwdSent  bool
-	dirty    bool
 }
 
 func newExecuteLiveState(cwd string, stdout, stderr *liveTailSaver) *executeLiveState {
@@ -288,52 +286,23 @@ func (state *executeLiveState) updateResources(peakRAM int, peakDisk int64, cpuT
 	state.peakRAM = peakRAM
 	state.peakDisk = peakDisk
 	state.cpuTime = cpuTime
-	state.dirty = true
 }
 
 func (state *executeLiveState) snapshot() *JobEndState {
 	stdout := state.stdout.FlushCompressed()
 	stderr := state.stderr.FlushCompressed()
-	hasOutput := liveSnapshotHasOutput(stdout, stderr)
 
 	state.Lock()
 	defer state.Unlock()
 
-	cwd := state.snapshotCwd(hasOutput)
-	peakRAM, peakDisk, cpuTime := state.snapshotResources(hasOutput)
-
 	return &JobEndState{
-		Cwd:      cwd,
-		PeakRAM:  peakRAM,
-		PeakDisk: peakDisk,
-		CPUtime:  cpuTime,
+		Cwd:      state.cwd,
+		PeakRAM:  state.peakRAM,
+		PeakDisk: state.peakDisk,
+		CPUtime:  state.cpuTime,
 		Stdout:   stdout,
 		Stderr:   stderr,
 	}
-}
-
-func liveSnapshotHasOutput(stdout, stderr []byte) bool {
-	return len(stdout) != 0 || len(stderr) != 0
-}
-
-func (state *executeLiveState) snapshotCwd(hasOutput bool) string {
-	if state.cwdSent && !hasOutput && !state.dirty {
-		return ""
-	}
-
-	state.cwdSent = true
-
-	return state.cwd
-}
-
-func (state *executeLiveState) snapshotResources(hasOutput bool) (int, int64, time.Duration) {
-	if !state.dirty && !hasOutput {
-		return 0, 0, 0
-	}
-
-	state.dirty = false
-
-	return state.peakRAM, state.peakDisk, state.cpuTime
 }
 
 func currentProcessTreeCPUtime(pid int) time.Duration {

@@ -59,6 +59,29 @@ const (
 	liveExecuteDirMode       = 0o755
 )
 
+func TestExecuteLiveStateSnapshots(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Live execute snapshots keep cwd and resources on repeated touches", t, func() {
+		state := newExecuteLiveState("/work/actual", &liveTailSaver{}, &liveTailSaver{})
+		state.updateResources(123, 456, 7*time.Second)
+
+		first := state.snapshot()
+		second := state.snapshot()
+
+		So(first.Cwd, ShouldEqual, "/work/actual")
+		So(first.PeakRAM, ShouldEqual, 123)
+		So(first.PeakDisk, ShouldEqual, int64(456))
+		So(first.CPUtime, ShouldEqual, 7*time.Second)
+		So(second.Cwd, ShouldEqual, "/work/actual")
+		So(second.PeakRAM, ShouldEqual, 123)
+		So(second.PeakDisk, ShouldEqual, int64(456))
+		So(second.CPUtime, ShouldEqual, 7*time.Second)
+	})
+}
+
 type captureSocket struct {
 	ch      codec.Handle
 	sent    []byte
