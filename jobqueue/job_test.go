@@ -343,7 +343,7 @@ func TestJob(t *testing.T) {
 		So(status.StdOut, ShouldEqual, "out\n")
 		So(status.StdErr, ShouldEqual, "err\n")
 		So(status.SSHCommand, ShouldEqual,
-			"ssh ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+			"ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 	})
 
 	Convey("ToStatus() uses Host when a running job has no HostIP", t, func() {
@@ -353,7 +353,18 @@ func TestJob(t *testing.T) {
 		status, err := job.ToStatus()
 		So(err, ShouldBeNil)
 		So(status.SSHCommand, ShouldEqual,
-			"ssh worker1 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+			"ssh -- worker1 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+
+	Convey("ToStatus() separates ssh options from a target that starts with a hyphen", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Host = "-worker1"
+		job.HostIP = ""
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- -worker1 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 	})
 
 	Convey("ToStatus() leaves SSHCommand empty without a running host or cwd", t, func() {
@@ -381,7 +392,7 @@ func TestJob(t *testing.T) {
 		status, err := job.ToStatus()
 		So(err, ShouldBeNil)
 		So(status.SSHCommand, ShouldEqual,
-			`ssh worker1 'cd '"'"'/tmp/wr/live jobs/it'"'"'"'"'"'"'"'"'s-ok'"'"' `+
+			`ssh -- worker1 'cd '"'"'/tmp/wr/live jobs/it'"'"'"'"'"'"'"'"'s-ok'"'"' `+
 				`&& exec ${SHELL:-/bin/sh} -l'`)
 	})
 

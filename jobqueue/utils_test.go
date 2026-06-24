@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -101,6 +102,60 @@ func TestLiveTailSaver(t *testing.T) {
 
 		_, err = saver.Write([]byte("new\n"))
 		So(err, ShouldBeNil)
+		So(decompressLiveTail(saver.FlushCompressed()), ShouldResemble, []byte("new\n"))
+	})
+
+	Convey("A live tail saver lets writes continue while flushing compressed output", t, func() {
+		saver := &liveTailSaver{}
+
+		_, err := saver.Write([]byte("old\n"))
+		So(err, ShouldBeNil)
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		originalCompressor := liveTailCompressor
+
+		liveTailCompressor = func(tail []byte) []byte {
+			close(started)
+			<-release
+
+			return originalCompressor(tail)
+		}
+		defer func() {
+			liveTailCompressor = originalCompressor
+		}()
+
+		flushed := make(chan []byte, 1)
+		go func() {
+			flushed <- saver.FlushCompressed()
+		}()
+
+		<-started
+
+		writeDone := make(chan error, 1)
+
+		go func() {
+			_, writeErr := saver.Write([]byte("new\n"))
+			writeDone <- writeErr
+		}()
+
+		writeCompleted := false
+
+		select {
+		case writeErr := <-writeDone:
+			So(writeErr, ShouldBeNil)
+
+			writeCompleted = true
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		close(release)
+		So(writeCompleted, ShouldBeTrue)
+
+		flushedCompressed := <-flushed
+		liveTailCompressor = originalCompressor
+
+		So(decompressLiveTail(flushedCompressed), ShouldResemble, []byte("old\n"))
 		So(decompressLiveTail(saver.FlushCompressed()), ShouldResemble, []byte("new\n"))
 	})
 }

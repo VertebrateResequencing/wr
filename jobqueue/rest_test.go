@@ -1028,7 +1028,7 @@ func TestREST(t *testing.T) {
 			So(jstati[0].StdOut, ShouldEqual, "out\n")
 			So(jstati[0].StdErr, ShouldEqual, "err\n")
 			So(jstati[0].SSHCommand, ShouldEqual,
-				"ssh ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+				"ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 
 			req, err = http.NewRequestWithContext(ctx, http.MethodGet, liveURL, nil)
 			So(err, ShouldBeNil)

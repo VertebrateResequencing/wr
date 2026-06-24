@@ -117,7 +117,7 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 
 	remote := "cd " + quoteRemoteCwd(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
 
-	return "ssh " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
+	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
 
 func sshTarget(reqs *scheduler.Requirements, host, hostIP string) string {

@@ -86,6 +86,8 @@ const (
 	binarySearchDivisor    = 2
 )
 
+var liveTailCompressor = compressedLiveTail //nolint:gochecknoglobals // Test hook for FlushCompressed contention.
+
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
 // encoded string 43 bytes long. Used by the server to create a token passed to
 // to the caller for subsequent client authentication. If the given file exists
@@ -417,17 +419,19 @@ func (w *liveTailSaver) Write(p []byte) (int, error) {
 
 func (w *liveTailSaver) FlushCompressed() []byte {
 	w.Lock()
-	defer w.Unlock()
 
 	if !w.dirty {
+		w.Unlock()
+
 		return nil
 	}
 
-	tail := w.tail
+	tail := append([]byte(nil), w.tail...)
 	w.tail = w.tail[:0]
 	w.dirty = false
+	w.Unlock()
 
-	return compressedLiveTail(tail)
+	return liveTailCompressor(tail)
 }
 
 func compressedLiveTail(tail []byte) []byte {

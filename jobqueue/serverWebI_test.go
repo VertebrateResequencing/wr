@@ -1434,7 +1434,7 @@ func TestStatusDetailsLiveFields(t *testing.T) {
 		So(status.StdOut, ShouldEqual, "out\n")
 		So(status.StdErr, ShouldEqual, "err\n")
 		So(status.SSHCommand, ShouldEqual,
-			"ssh cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+			"ssh -- cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 	})
 }
 
@@ -1475,7 +1475,7 @@ func TestStatusDetailsLivePushUpdates(t *testing.T) {
 		So(status.StdOut, ShouldEqual, "out\n")
 		So(status.StdErr, ShouldEqual, "err\n")
 		So(status.SSHCommand, ShouldEqual,
-			"ssh cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+			"ssh -- cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 	})
 }
 
@@ -2549,7 +2549,7 @@ function assert(condition, message) {
     }
 }
 
-const sshCommand = "ssh ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'";
+const sshCommand = "ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'";
 const existing = {
     Key: 'k',
     RepGroup: 'rg1',
