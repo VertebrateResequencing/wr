@@ -137,7 +137,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 - [x] Spec produced
 - [x] Implemented
-- [ ] Reviewed
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 
@@ -223,7 +223,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 - [x] Spec produced
 - [x] Implemented
-- [ ] Reviewed
+- [x] Reviewed
 - [ ] Merged
 - [ ] Solved
 
