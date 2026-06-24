@@ -1372,6 +1372,7 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	if query.Get("waiting_deps") == restFormTrue {
 		waitingForDepGroups = true
 	}
+
 	if query.Get("limit") != "" {
 		limit, err = strconv.Atoi(query.Get("limit"))
 		if err != nil {
