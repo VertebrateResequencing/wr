@@ -21,7 +21,7 @@ Add `jobqueue/jobqueue_test.go` coverage for all 5 acceptance tests from B1.
 Depends on phase 1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 2.2: D1 - Preserve existing status behaviour without live data
 
@@ -33,4 +33,4 @@ semantics. Add `jobqueue/jobqueue_test.go` and `jobqueue/serverWebI_test.go`
 coverage for all 3 acceptance tests from D1. Depends on item 2.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
