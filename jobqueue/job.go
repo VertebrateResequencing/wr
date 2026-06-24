@@ -68,7 +68,7 @@ type JobState string
 // "lost" is also a "fake" state indicating the job was running and we lost
 // contact with it; it may be dead. "unknown" is an error case that shouldn't
 // happen. "deletable" is a meta state that can be used when filtering jobs to
-// mean !(running|complete).
+// mean !(reserved|running|complete).
 const (
 	JobStateNew       JobState = "new"
 	JobStateDelayed   JobState = "delayed"

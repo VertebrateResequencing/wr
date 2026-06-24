@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-// iid is used to give each item a unique incrementing id, necessay when locking
+// iid is used to give each item a unique incrementing id, necessary when locking
 // items during a sort, for lock order consistency.
 //
 //nolint:gochecknoglobals
