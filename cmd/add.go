@@ -59,7 +59,10 @@ const (
 	overrideAlways = 2
 )
 
-var errSynchronousSubscriptionClosed = errors.New("subscription closed before synchronous job completed")
+var (
+	errSynchronousJobMissing         = errors.New("synchronous job missing after terminal update")
+	errSynchronousSubscriptionClosed = errors.New("subscription closed before synchronous job completed")
+)
 
 // options for this cmd
 var (
@@ -659,7 +662,7 @@ func waitForSynchronousJob(ctx context.Context, jq synchronousAddWaiter, key str
 			continue
 		}
 
-		return jq.GetByEssence(&jobqueue.JobEssence{JobKey: key}, true, false)
+		return getSynchronousJobByKey(jq, key)
 	}
 }
 
@@ -682,6 +685,19 @@ func isSynchronousTerminalUpdate(update *jobqueue.JobUpdate, key string) bool {
 	}
 
 	return update.State == jobqueue.JobStateComplete || update.State == jobqueue.JobStateBuried
+}
+
+func getSynchronousJobByKey(jq synchronousAddWaiter, key string) (*jobqueue.Job, error) {
+	job, err := jq.GetByEssence(&jobqueue.JobEssence{JobKey: key}, true, false)
+	if err != nil {
+		return nil, err
+	}
+
+	if job == nil {
+		return nil, fmt.Errorf("%w: %s", errSynchronousJobMissing, key)
+	}
+
+	return job, nil
 }
 
 func addAndWaitSynchronousJob(

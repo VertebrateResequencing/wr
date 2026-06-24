@@ -336,11 +336,26 @@ func (c synchronousAddTestClient) GetByEssence(essence *jobqueue.JobEssence,
 		return nil, errUnexpectedSynchronousKeys
 	}
 
+	if c.missingJob {
+		return nil, nil //nolint:nilnil // Simulates jobqueue.Client.GetByEssence not finding a job.
+	}
+
 	return &jobqueue.Job{
 		Exitcode: c.exitCode,
 		StdOutC:  zlibCompress([]byte(c.stdout)),
 		StdErrC:  zlibCompress([]byte(c.stderr)),
 	}, nil
+}
+
+func TestWaitForSynchronousJobReportsMissingTerminalJob(t *testing.T) {
+	Convey("sync add reports an explicit error when a terminal job cannot be fetched", t, func() {
+		job, err := waitForSynchronousJob(context.Background(),
+			synchronousAddTestClient{missingJob: true}, testSyncJobKey)
+
+		So(job, ShouldBeNil)
+		So(errors.Is(err, errSynchronousJobMissing), ShouldBeTrue)
+		So(err.Error(), ShouldContainSubstring, testSyncJobKey)
+	})
 }
 
 func TestAddHelpDocumentsDependencySemantics(t *testing.T) {
@@ -448,9 +463,10 @@ func TestAddRemoteSameAsLocalCwdDefault(t *testing.T) {
 }
 
 type synchronousAddTestClient struct {
-	exitCode int
-	stdout   string
-	stderr   string
+	exitCode   int
+	missingJob bool
+	stdout     string
+	stderr     string
 }
 
 func (c synchronousAddTestClient) AddAndWait(ctx context.Context, jobs []*jobqueue.Job,
