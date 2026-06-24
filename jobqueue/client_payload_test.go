@@ -80,6 +80,23 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 		So(second.PeakDisk, ShouldEqual, int64(456))
 		So(second.CPUtime, ShouldEqual, 7*time.Second)
 	})
+
+	Convey("Live execute resource snapshots keep maximum observed values", t, func() {
+		state := newExecuteLiveState("/work/actual", &liveTailSaver{}, &liveTailSaver{})
+		state.updateResources(123, 456, 7*time.Second)
+		state.updateResources(111, 400, 6*time.Second)
+
+		snapshot := state.snapshot()
+		So(snapshot.PeakRAM, ShouldEqual, 123)
+		So(snapshot.PeakDisk, ShouldEqual, int64(456))
+		So(snapshot.CPUtime, ShouldEqual, 7*time.Second)
+
+		state.updateResources(124, 457, 8*time.Second)
+		snapshot = state.snapshot()
+		So(snapshot.PeakRAM, ShouldEqual, 124)
+		So(snapshot.PeakDisk, ShouldEqual, int64(457))
+		So(snapshot.CPUtime, ShouldEqual, 8*time.Second)
+	})
 }
 
 type captureSocket struct {

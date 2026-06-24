@@ -279,13 +279,17 @@ func (state *executeLiveState) updateResources(peakRAM int, peakDisk int64, cpuT
 	state.Lock()
 	defer state.Unlock()
 
-	if state.peakRAM == peakRAM && state.peakDisk == peakDisk && state.cpuTime == cpuTime {
-		return
+	if peakRAM > state.peakRAM {
+		state.peakRAM = peakRAM
 	}
 
-	state.peakRAM = peakRAM
-	state.peakDisk = peakDisk
-	state.cpuTime = cpuTime
+	if peakDisk > state.peakDisk {
+		state.peakDisk = peakDisk
+	}
+
+	if cpuTime > state.cpuTime {
+		state.cpuTime = cpuTime
+	}
 }
 
 func (state *executeLiveState) snapshot() *JobEndState {
