@@ -166,7 +166,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 ## #207 Allow to suspend and resume non-running jobs
 
 - [x] Spec produced
-- [ ] Implemented
+- [x] Implemented
 - [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
