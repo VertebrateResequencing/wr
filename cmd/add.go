@@ -370,12 +370,14 @@ another job's deps.
 "deps" or "cmd_deps" define the dependencies of this command. The commands that
 these refer to must complete before this command will start. The value for
 "deps" is an array of the dep_grp of other commands. Dependencies specified in
-this way are 'live', causing this command to be automatically re-run if any
-commands with any of the dep_grps it is dependent upon get added to the queue.
+this way are 'live'. Dep-group dependencies from "deps" and --deps wait even
+when the dep-group has not appeared yet, and cause this command to be
+automatically re-run if any commands with any of the dep_grps it is dependent
+upon get added to the queue.
 The value for "cmd_deps" is an array of JSON objects with "cmd" and "cwd"
 name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
-string). These are static dependencies; once resolved they do not get re-
-evaluated.
+string). Command dependencies from "cmd_deps" and --cmd_deps keep static
+behaviour; once resolved they do not get re-evaluated.
 
 "monitor_docker" turns on monitoring of a docker container identified by the
 given string, which could be the container's --name or path to its --cidfile. If
@@ -568,8 +570,10 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	addCmd.Flags().StringVarP(&cmdNoRetry, "no_retry_over_walltime", "n", "", "do not retry if cmd runs longer than this [specify units such as m for minutes or h for hours]")
-	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
-	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
+	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "",
+		"static command dependencies, in the form \"command1,cwd1,command2,cwd2...\"")
+	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "",
+		"live dep-group dependencies, in the form \"dep_grp1,dep_grp2...\"; unseen groups wait")
 	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
 	addCmd.Flags().StringVar(&cmdWithDocker, "with_docker", "", "run the cmd inside a docker container running this image")
 	addCmd.Flags().StringVar(&cmdWithSingularity, "with_singularity", "", "run the cmd inside a singularity container running this image")

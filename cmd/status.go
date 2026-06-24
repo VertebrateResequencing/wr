@@ -101,6 +101,9 @@ option that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.
 
+Use --missing_deps in default or report-group mode to show jobs waiting on
+dep-groups not yet seen.
+
 There are 6 output formats to choose from with -o (you can shorten the output
 name to just the first letter, eg. -o c):
   "counts" just displays the count of jobs in each possible state.

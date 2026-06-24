@@ -19,5 +19,5 @@ documents `--missing_deps`, and the newest changelog section records the
 changed dep-group semantics. Run focused GoConvey tests, then package-wide
 `go test` where practical. Cover all 3 acceptance tests from D1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

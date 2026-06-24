@@ -42,6 +42,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -340,6 +341,67 @@ func (c synchronousAddTestClient) GetByEssence(essence *jobqueue.JobEssence,
 		StdOutC:  zlibCompress([]byte(c.stdout)),
 		StdErrC:  zlibCompress([]byte(c.stderr)),
 	}, nil
+}
+
+func TestAddHelpDocumentsDependencySemantics(t *testing.T) {
+	Convey("wr add -h explains live dep-group waits and static command dependencies", t, func() {
+		help := compactWhitespace(commandHelpForTest(t, addCmd))
+
+		So(help, ShouldContainSubstring,
+			`Dep-group dependencies from "deps" and --deps wait even when the dep-group has not appeared yet`)
+		So(help, ShouldContainSubstring,
+			`Command dependencies from "cmd_deps" and --cmd_deps keep static behaviour`)
+	})
+}
+
+func TestChangelogDocumentsDepGroupSemantics(t *testing.T) {
+	Convey("the newest changelog section documents never-seen dep-group semantics", t, func() {
+		source, err := os.ReadFile(filepath.Join("..", "CHANGELOG.md"))
+		So(err, ShouldBeNil)
+
+		section := newestChangelogSection(string(source))
+		compactSection := compactWhitespace(section)
+
+		So(section, ShouldContainSubstring, "### Changed")
+		So(compactSection, ShouldContainSubstring, "`wr add --deps` now waits for never-seen dep-groups")
+		So(compactSection, ShouldContainSubstring, "typos can block indefinitely")
+	})
+}
+
+func newestChangelogSection(changelog string) string {
+	firstSection := strings.Index(changelog, "\n## [")
+	if firstSection == -1 {
+		return ""
+	}
+
+	section := changelog[firstSection+1:]
+
+	nextSection := strings.Index(section[1:], "\n## [")
+	if nextSection == -1 {
+		return section
+	}
+
+	return section[:nextSection+1]
+}
+
+func compactWhitespace(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func commandHelpForTest(t *testing.T, command *cobra.Command) string {
+	t.Helper()
+
+	var output bytes.Buffer
+
+	command.SetOut(&output)
+
+	command.SetErr(&output)
+	defer command.SetOut(os.Stdout)
+	defer command.SetErr(os.Stderr)
+
+	So(command.Help(), ShouldBeNil)
+
+	return output.String()
 }
 
 func TestAddRemoteSameAsLocalCwdDefault(t *testing.T) {

@@ -10,6 +10,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - New go client `Scheduler` method
   `GetLastCompletionTimeByRepGroup(repgroup, match)`
 
+### Changed
+- `wr add --deps` now waits for never-seen dep-groups and warns that typos can
+  block indefinitely.
+
 
 ## [0.36.4] - 2026-03-03
 ### Added

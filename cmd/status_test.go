@@ -74,6 +74,16 @@ func TestStatusAlertTimeFormatting(t *testing.T) {
 	})
 }
 
+func TestStatusHelpDocumentsMissingDepsFilter(t *testing.T) {
+	Convey("wr status -h documents the never-seen dep-group filter", t, func() {
+		help := compactWhitespace(commandHelpForTest(t, statusCmd))
+
+		So(help, ShouldContainSubstring, "--missing_deps")
+		So(help, ShouldContainSubstring,
+			"Use --missing_deps in default or report-group mode to show jobs waiting on dep-groups not yet seen.")
+	})
+}
+
 type statusAlertsGetterFunc func() (*jobqueue.SchedulerAlerts, error)
 
 func (f statusAlertsGetterFunc) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
