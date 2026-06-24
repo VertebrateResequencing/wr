@@ -224,8 +224,8 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 - [x] Spec produced
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 **Issue:** push live peak memory / CPU (and ideally stdout/stderr) for running jobs, and provide a quick way to ssh to where a job is running (or even a web terminal).
 
