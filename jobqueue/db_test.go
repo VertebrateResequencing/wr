@@ -126,6 +126,44 @@ func TestDBReverseLookupIndex(t *testing.T) {
 }
 
 func TestDBDepGroups(t *testing.T) {
+	Convey("Preparing new jobs records each seen dep group once per batch", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		const sharedDepGroup = "shared"
+
+		first := testDBJob("echo first", "first")
+		first.DepGroups = []string{sharedDepGroup, sharedDepGroup}
+		second := testDBJob("echo second", "second")
+		second.DepGroups = []string{sharedDepGroup, "other"}
+
+		_, _, _, depGroupsSeen, _, _, _, _, _, err := testDB.prepareNewJobs([]*Job{first, second}, false)
+		So(err, ShouldBeNil)
+		So(depGroupsSeen, ShouldHaveLength, 2)
+
+		seen := make(map[string]bool, len(depGroupsSeen))
+		for _, lookup := range depGroupsSeen {
+			seen[string(lookup[0])] = true
+		}
+
+		So(seen[sharedDepGroup], ShouldBeTrue)
+		So(seen["other"], ShouldBeTrue)
+	})
+
 	Convey("Opening an old DB rebuilds seen dep groups from historical dep group lookups", t, func() {
 		ctx := context.Background()
 		tmpdir := t.TempDir()

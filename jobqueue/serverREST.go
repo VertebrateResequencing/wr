@@ -1337,8 +1337,8 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 
 // restJobsStatus gets the status of the requested jobs in the queue. The
 // request url can be suffixed with comma separated job keys or RepGroups.
-// Possible query parameters are search, std, env, waiting_deps (which can take
-// a "true" value), limit (a number) and state (one of
+// Possible query parameters are search, std, env and waiting_deps (boolean
+// flags enabled by "true"), limit (a number) and state (one of
 // delayed|ready|reserved|running|lost|buried|dependent|complete|deletable),
 // where deletable == !(running|complete). Returns the Jobs, a http.Status*
 // value and error.

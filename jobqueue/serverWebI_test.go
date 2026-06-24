@@ -182,6 +182,9 @@ func TestServerWebI(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(string(body), ShouldContainSubstring, "Waiting for dep groups not yet seen")
 			So(string(body), ShouldContainSubstring, "WaitingForDepGroups")
+			So(string(body), ShouldContainSubstring, "foreach: WaitingForDepGroups")
+			So(string(body), ShouldContainSubstring, "text: $data")
+			So(string(body), ShouldNotContainSubstring, "html: WaitingForDepGroups")
 
 			w = httptest.NewRecorder()
 			r = httptest.NewRequest(http.MethodGet, "/nonexistent.html", nil)

@@ -647,7 +647,6 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		for _, depGroup := range job.DepGroups {
 			if depGroup != "" {
 				dgLookups = append(dgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
-				depGroupsSeen = append(depGroupsSeen, [2][]byte{[]byte(depGroup), nil})
 				depGroups[depGroup] = true
 			}
 		}
@@ -706,6 +705,10 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 		for rg := range repGroups {
 			rgs = append(rgs, [2][]byte{[]byte(rg), nil})
+		}
+
+		for depGroup := range depGroups {
+			depGroupsSeen = append(depGroupsSeen, [2][]byte{[]byte(depGroup), nil})
 		}
 	}
 
