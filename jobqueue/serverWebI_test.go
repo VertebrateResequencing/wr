@@ -1614,12 +1614,6 @@ func TestStatusDetailsLivePushUpdates(t *testing.T) {
 	})
 }
 
-func clearReadDeadlineBestEffort(ws *websocket.Conn) {
-	if err := ws.SetReadDeadline(time.Time{}); err != nil {
-		return
-	}
-}
-
 func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 	if runnermode || servermode {
 		return

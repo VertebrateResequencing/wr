@@ -776,7 +776,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						if err != nil {
 							clog.Warn(ctx, "failed to build live subscription update", "err", err)
 						} else {
-							s.enqueueSubscriptionUpdate(update)
+							s.enqueueSubscriptionUpdate(update, false)
 						}
 					}
 				}

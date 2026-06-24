@@ -50,6 +50,12 @@ const (
 	statusTestFalse           = "false"
 	statusTestFlagBury        = "buried"
 	statusTestHost            = "localhost"
+	statusTestFileMode        = "file mode"
+	statusTestCommandsFile    = "commands.txt"
+	statusTestCmdlineMode     = "cmdline mode"
+	statusTestInternalID      = "abc123"
+	statusTestInternalFlag    = "--internal"
+	statusTestInternalMode    = "internal identifier mode"
 	statusTestReqGroup        = "status"
 	statusTestRepGroup        = "status-filter"
 	statusTestRepGroupA       = "rg-a"
@@ -308,22 +314,22 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 			want  string
 		}{
 			{
-				name:  "file mode",
-				setup: func() { cmdFileStatus = "commands.txt" },
+				name:  statusTestFileMode,
+				setup: func() { cmdFileStatus = statusTestCommandsFile },
 				want:  "-f",
 			},
 			{
-				name:  "cmdline mode",
+				name:  statusTestCmdlineMode,
 				setup: func() { cmdLine = "echo status" },
 				want:  "-l",
 			},
 			{
-				name: "internal identifier mode",
+				name: statusTestInternalMode,
 				setup: func() {
-					cmdIDStatus = "abc123"
+					cmdIDStatus = statusTestInternalID
 					cmdIDIsInternal = true
 				},
-				want: "--internal",
+				want: statusTestInternalFlag,
 			},
 		} {
 			Convey("rejects state filters in "+tc.name, func() {
@@ -453,22 +459,22 @@ func TestStatusFiltersMissingDepGroups(t *testing.T) {
 			want  string
 		}{
 			{
-				name:  "file mode",
-				setup: func() { cmdFileStatus = "commands.txt" },
+				name:  statusTestFileMode,
+				setup: func() { cmdFileStatus = statusTestCommandsFile },
 				want:  "-f",
 			},
 			{
-				name:  "cmdline mode",
+				name:  statusTestCmdlineMode,
 				setup: func() { cmdLine = "echo status" },
 				want:  "-l",
 			},
 			{
-				name: "internal identifier mode",
+				name: statusTestInternalMode,
 				setup: func() {
-					cmdIDStatus = "abc123"
+					cmdIDStatus = statusTestInternalID
 					cmdIDIsInternal = true
 				},
-				want: "--internal",
+				want: statusTestInternalFlag,
 			},
 		} {
 			Convey("rejects the filter in "+tc.name, func() {
@@ -638,22 +644,22 @@ func TestStatusSuspendedFilterValidation(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "file mode",
-			setup: func() { cmdFileStatus = "commands.txt" },
+			name:  statusTestFileMode,
+			setup: func() { cmdFileStatus = statusTestCommandsFile },
 			want:  "-f",
 		},
 		{
-			name:  "cmdline mode",
+			name:  statusTestCmdlineMode,
 			setup: func() { cmdLine = "echo by-line" },
 			want:  "-l",
 		},
 		{
-			name: "internal identifier mode",
+			name: statusTestInternalMode,
 			setup: func() {
-				cmdIDStatus = "abc123"
+				cmdIDStatus = statusTestInternalID
 				cmdIDIsInternal = true
 			},
-			want: "--internal",
+			want: statusTestInternalFlag,
 		},
 	} {
 		Convey("wr status rejects --suspended in "+tc.name, t, func() {

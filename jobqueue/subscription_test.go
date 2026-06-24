@@ -611,7 +611,7 @@ func TestLiveJobSubscriptions(t *testing.T) {
 		resultCh := addAndWaitAsync(waitCtx, jq, input)
 
 		So(pollUntil(func() bool {
-			return server.hasClientSubscriptionsForJobUpdate(input[0].Key(), input[0].RepGroup, JobStateComplete)
+			return server.hasClientSubscriptionsForJobUpdate(input[0].Key(), input[0].RepGroup, JobStateComplete, false)
 		}), ShouldBeTrue)
 
 		job := startNextAddAndWaitJob(runner)
