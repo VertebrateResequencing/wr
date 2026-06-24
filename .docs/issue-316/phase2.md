@@ -20,7 +20,7 @@ public add method signatures and print `wr add --sync` warnings immediately
 after IDs are returned. Cover all 5 acceptance tests from B1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 2.2: B2 - Suppress warnings for seen or same-batch groups
 
@@ -32,4 +32,4 @@ carriers. De-duplicate and sort returned warning group names. Cover all 2
 acceptance tests from B2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
