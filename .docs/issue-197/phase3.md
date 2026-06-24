@@ -23,7 +23,7 @@ replace the old details row with the returned `JStatus`, and only show Modify
 for editable states. Cover all 5 acceptance tests from B2. Depends on phases 1
 and 2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 3.2: B3 - Edit env overrides only
@@ -37,7 +37,7 @@ preserve inherited env display while updating override values in the visible
 row. Cover all 3 acceptance tests from B3. Depends on item 3.1 and phase 1's
 `EnvOverrides` status field.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 3.3: B4 - Report web edit failures
@@ -49,5 +49,5 @@ so `400 Bad Request` and `409 Conflict` response bodies are shown without a
 trailing newline, the modal remains open, and the details row is unchanged.
 Cover all 2 acceptance tests from B4. Depends on item 3.1's submit path.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
