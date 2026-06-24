@@ -1343,7 +1343,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		job.State = JobStateRunning
 	}
 
-	if getStd && (job.State == JobStateRunning || job.State == JobStateLost) {
+	if getStd && (job.State == JobStateReserved || job.State == JobStateRunning || job.State == JobStateLost) {
 		job.StdErrC = sjob.StdErrC
 		job.StdOutC = sjob.StdOutC
 	}

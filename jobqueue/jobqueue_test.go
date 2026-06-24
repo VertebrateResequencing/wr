@@ -503,6 +503,36 @@ func TestManagerLiveJTouch(t *testing.T) {
 		assertLiveJTouchFields(fixture.job, liveJTouchActualCwd, 654, 12, 7*time.Second, "out\n", "err\n")
 	})
 
+	Convey("An authenticated reserved live jtouch is visible through itemToJob", t, func() {
+		ctx := context.Background()
+		fixture := newLiveJTouchFixture(ctx, "1234")
+		fixture.job.Lock()
+		fixture.job.State = JobStateReserved
+		fixture.job.StartTime = time.Time{}
+		fixture.job.Unlock()
+
+		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+			Stderr:  compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+		So(resp.KillCalled, ShouldBeFalse)
+
+		job := fixture.server.itemToJob(ctx, fixture.item, true, false)
+		So(job.State, ShouldEqual, JobStateReserved)
+
+		stdout, err := job.StdOut()
+		So(err, ShouldBeNil)
+		So(stdout, ShouldEqual, "out\n")
+
+		stderr, err := job.StdErr()
+		So(err, ShouldBeNil)
+		So(stderr, ShouldEqual, "err\n")
+	})
+
 	Convey("An older runner jtouch with no live fields only extends TTR", t, func() {
 		ctx := context.Background()
 		fixture := newLiveJTouchFixture(ctx, "1234")
