@@ -22,7 +22,7 @@ acceptance tests from A1. Depends on phase 1's status fields and validation
 helpers.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 2.2: A3 - Modify multiple jobs without changing identity fields
 
@@ -36,4 +36,4 @@ Add REST integration coverage in `jobqueue/rest_test.go`. Cover all 2
 acceptance tests from A3. Depends on item 2.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
