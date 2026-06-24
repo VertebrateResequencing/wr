@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -457,27 +458,31 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 		So(decompressLiveTouch(states[1].Stderr), ShouldEqual, "err-beta\n")
 	})
 
-	Convey("Execute sends cumulative CPU time and observed peak RAM", t, func() {
-		capture := &liveTouchCapture{}
-		client := newLiveExecuteCaptureClient(capture)
-		cwd := liveExecuteCwd(t)
-		job := liveExecuteJob(client, cwd, strings.Join([]string{
-			"python3 - <<'PY'",
-			"import time",
-			"x = bytearray(2 * 1024 * 1024)",
-			"end = time.time() + 3",
-			"while time.time() < end:",
-			"    x[0] = (x[0] + 1) % 256",
-			"PY",
-		}, "\n"))
+	if _, err := exec.LookPath("python3"); err != nil {
+		SkipConvey("Execute sends cumulative CPU time and observed peak RAM", t, func() {})
+	} else {
+		Convey("Execute sends cumulative CPU time and observed peak RAM", t, func() {
+			capture := &liveTouchCapture{}
+			client := newLiveExecuteCaptureClient(capture)
+			cwd := liveExecuteCwd(t)
+			job := liveExecuteJob(client, cwd, strings.Join([]string{
+				"python3 - <<'PY'",
+				"import time",
+				"x = bytearray(2 * 1024 * 1024)",
+				"end = time.time() + 3",
+				"while time.time() < end:",
+				"    x[0] = (x[0] + 1) % 256",
+				"PY",
+			}, "\n"))
 
-		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+			So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
-		states := capture.matching(func(state *JobEndState) bool {
-			return state.CPUtime >= time.Millisecond && state.PeakRAM >= 1
+			states := capture.matching(func(state *JobEndState) bool {
+				return state.CPUtime >= time.Millisecond && state.PeakRAM >= 1
+			})
+			So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
 		})
-		So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
-	})
+	}
 
 	Convey("Execute bounds live output tails without truncating final archives", t, func() {
 		capture := &liveTouchCapture{}
