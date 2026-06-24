@@ -194,7 +194,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 ## #197 Allow job modification using web/REST interfaces (folds #19)
 
 - [x] Spec produced
-- [ ] Implemented
+- [x] Implemented
 - [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
@@ -250,7 +250,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 ## #19 Cmd env vars and expected resource requirements should be editable (web)
 
 - [x] Spec produced
-- [ ] Implemented
+- [x] Implemented
 - [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
