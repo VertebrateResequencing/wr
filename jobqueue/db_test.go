@@ -144,12 +144,15 @@ func TestDBDepGroups(t *testing.T) {
 			So(testDB.close(ctx), ShouldBeNil)
 		}()
 
-		const sharedDepGroup = "shared"
+		const (
+			sharedDepGroup = "shared"
+			otherDepGroup  = "other"
+		)
 
 		first := testDBJob("echo first", "first")
 		first.DepGroups = []string{sharedDepGroup, sharedDepGroup}
 		second := testDBJob("echo second", "second")
-		second.DepGroups = []string{sharedDepGroup, "other"}
+		second.DepGroups = []string{sharedDepGroup, otherDepGroup}
 
 		_, _, _, depGroupsSeen, _, _, _, _, _, err := testDB.prepareNewJobs([]*Job{first, second}, false)
 		So(err, ShouldBeNil)
@@ -161,7 +164,7 @@ func TestDBDepGroups(t *testing.T) {
 		}
 
 		So(seen[sharedDepGroup], ShouldBeTrue)
-		So(seen["other"], ShouldBeTrue)
+		So(seen[otherDepGroup], ShouldBeTrue)
 	})
 
 	Convey("Opening an old DB rebuilds seen dep groups from historical dep group lookups", t, func() {

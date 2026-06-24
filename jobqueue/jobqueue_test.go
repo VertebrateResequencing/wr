@@ -76,6 +76,7 @@ const (
 	futureDepGroup      = "future"
 	testCarrierDepGroup = "carrier"
 	testLiveDepGroup    = "live"
+	testOtherRepGroup   = "other"
 	testRepGroupA       = "rg-a"
 	reqGroupPerl        = "perl"
 	reqGroupSleep       = "sleep"
@@ -2870,7 +2871,7 @@ func TestGetIncompleteWaitingForDepGroups(t *testing.T) {
 			ReqGroup:     reqGroupFake,
 			Requirements: standardReqs,
 			Retries:      uint8(0),
-			RepGroup:     "other",
+			RepGroup:     testOtherRepGroup,
 			Dependencies: Dependencies{NewDepGroupDependency("elsewhere")},
 		}
 		liveDependent := &Job{
