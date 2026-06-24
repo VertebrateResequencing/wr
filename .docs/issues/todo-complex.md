@@ -168,8 +168,8 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 - [x] Spec produced
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 **Issue:** ability to suspend and resume jobs (e.g. to push urgent work through) as a first-class state, rather than the current limit-group-to-0 workaround.
 
