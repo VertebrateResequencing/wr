@@ -14,6 +14,7 @@ import { setupWebSocket } from '/js/wr/websocket-handler.js';
 import { requestRepGroup, showGroupState, loadMoreJobs } from '/js/wr/repgroup-handler.js';
 import { modalHandlers, jobToActionDetails, commitAction } from '/js/wr/modal-handlers.js';
 import { actionHandlers } from '/js/wr/action-handlers.js';
+import { jobCanModify } from '/js/wr/modify-job.js';
 import {
     createMemoryChartConfig,
     createDiskChartConfig,
@@ -609,6 +610,18 @@ export function StatusViewModel() {
     self.jobDetailsData = ko.observable();
     self.showJobDetails = function (job) {
         modalHandlers.showJobDetails(self, job);
+    };
+
+    self.modifyJobModalVisible = ko.observable(false);
+    self.modifyJobForm = ko.observable();
+    self.modifyJobError = ko.observable('');
+    self.modifyJobSubmitting = ko.observable(false);
+    self.jobCanModify = jobCanModify;
+    self.showModifyJob = function (job) {
+        actionHandlers.showModifyJob(self, job);
+    };
+    self.submitModifyJob = function () {
+        return modalHandlers.submitModifyJob(self);
     };
 
     self.actionModalVisible = ko.observable(false);

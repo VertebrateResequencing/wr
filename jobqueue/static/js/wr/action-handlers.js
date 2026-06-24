@@ -2,7 +2,7 @@
  * Handles job actions for the WR status page.
  */
 import { removeBadServer, removeMessage } from '/js/wr/utility.js';
-import { jobToActionDetails } from '/js/wr/modal-handlers.js';
+import { jobToActionDetails, showModifyJob } from '/js/wr/modal-handlers.js';
 
 /**
  * Action handler functions for jobs
@@ -80,5 +80,9 @@ export const actionHandlers = {
         jobToActionDetails(viewModel, job, 'kill', 'confirm');
         viewModel.actionModalHeader('Confirm Commands are Dead');
         viewModel.actionModalVisible(true);
+    },
+
+    showModifyJob: function (viewModel, job) {
+        showModifyJob(viewModel, job);
     }
 };

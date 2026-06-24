@@ -36,9 +36,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +50,635 @@ import (
 	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+func TestRESTJobModificationEndpoint(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("Once the REST modification endpoint is up", t, func() {
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		handler := restJobs(ctx, server)
+		bearer := "Bearer " + string(token)
+
+		const restBulkCmdGroup = "rest-bulk-cmd"
+
+		addJob := func(job *Job) string {
+			inserts, already, erra := jq.Add([]*Job{job}, envVars, true)
+			So(erra, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			return job.Key()
+		}
+
+		patchJob := func(target, body, authHeader string) (int, string, JobModifyResponse) {
+			w := httptest.NewRecorder()
+
+			r := httptest.NewRequestWithContext(ctx, http.MethodPatch, target, strings.NewReader(body))
+			if authHeader != "" {
+				r.Header.Set("Authorization", authHeader)
+			}
+
+			r.Header.Set("Content-Type", "application/json")
+
+			handler(w, r)
+
+			resp := w.Result()
+			defer resp.Body.Close()
+
+			responseData, errr := io.ReadAll(resp.Body)
+			So(errr, ShouldBeNil)
+
+			var decoded JobModifyResponse
+			if resp.StatusCode == http.StatusOK {
+				errr = json.Unmarshal(responseData, &decoded)
+				So(errr, ShouldBeNil)
+			}
+
+			return resp.StatusCode, string(responseData), decoded
+		}
+
+		getJobStatuses := func(key string, getEnv bool) []JStatus {
+			target := restJobsEndpoint + key
+			if getEnv {
+				target += "?env=true"
+			}
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+			r.Header.Set("Authorization", bearer)
+
+			handler(w, r)
+
+			resp := w.Result()
+			defer resp.Body.Close()
+
+			So(resp.StatusCode, ShouldEqual, http.StatusOK)
+
+			var statuses []JStatus
+
+			errr := json.NewDecoder(resp.Body).Decode(&statuses)
+			So(errr, ShouldBeNil)
+
+			return statuses
+		}
+
+		reserveOnly := func(key string) *Job {
+			job, errr := jq.Reserve(50 * time.Millisecond)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Key(), ShouldEqual, key)
+
+			return job
+		}
+
+		Convey("PATCH modifies one ready job by key and returns fresh status rows", func() {
+			job := &Job{
+				Cmd:          "echo rest old",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-old",
+				Requirements: &jqs.Requirements{RAM: 50, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				Priority:     1,
+				Retries:      1,
+				Override:     0,
+				LimitGroups:  []string{"old:1"},
+				RepGroup:     "rest-a1-single",
+			}
+			err = job.EnvAddOverride([]string{"REST_MOD=old"})
+			So(err, ShouldBeNil)
+
+			oldKey := addJob(job)
+			body := `{
+				"cmd": "echo rest new",
+				"cwd": "/tmp/rest-new",
+				"cwd_matters": true,
+				"change_home": true,
+				"req_grp": "rest-new",
+				"memory": "64M",
+				"time": "2m",
+				"cpus": 0.5,
+				"disk": 2,
+				"priority": 7,
+				"retries": 4,
+				"override": 2,
+				"limit_grps": ["new:2"],
+				"modules": ["module-a"],
+				"env": ["REST_MOD=new", "REST_EXTRA=1"],
+				"other": {"scheduler_queue": "short"},
+				"on_exit": [{"nothing": true}]
+			}`
+
+			status, _, decoded := patchJob(restJobsEndpoint+oldKey, body, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Modified), ShouldEqual, 1)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+
+			newKey := decoded.Jobs[0].Key
+			So(newKey, ShouldNotEqual, "")
+			So(newKey, ShouldNotEqual, oldKey)
+			So(decoded.Modified[newKey], ShouldEqual, oldKey)
+
+			stored := getJobStatuses(newKey, true)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Cmd, ShouldEqual, "echo rest new")
+			So(stored[0].CwdBase, ShouldEqual, "/tmp/rest-new")
+			So(stored[0].ReqGroup, ShouldEqual, "rest-new")
+			So(stored[0].CwdMatters, ShouldBeTrue)
+			So(stored[0].HomeChanged, ShouldBeTrue)
+			So(stored[0].ExpectedRAM, ShouldEqual, 64)
+			So(stored[0].ExpectedTime, ShouldEqual, 120)
+			So(stored[0].Cores, ShouldEqual, 0.5)
+			So(stored[0].RequestedDisk, ShouldEqual, 2)
+			So(stored[0].Priority, ShouldEqual, 7)
+			So(stored[0].Retries, ShouldEqual, 4)
+			So(stored[0].Override, ShouldEqual, 2)
+			So(stored[0].LimitGroups, ShouldResemble, []string{"new:2"})
+			So(stored[0].Modules, ShouldResemble, []string{"module-a"})
+			So(stored[0].Env, ShouldContain, "REST_MOD=new")
+			So(stored[0].Env, ShouldContain, "REST_EXTRA=1")
+			So(stored[0].OtherRequests, ShouldContain, "scheduler_queue:short")
+			So(stored[0].Behaviours, ShouldEqual, `{"on_exit":[{"nothing":true}]}`)
+
+			storedWithoutEnv := getJobStatuses(newKey, false)
+			So(len(storedWithoutEnv), ShouldEqual, 1)
+			So(decoded.Jobs[0], ShouldResemble, storedWithoutEnv[0])
+
+			oldStatuses := getJobStatuses(oldKey, false)
+			So(len(oldStatuses), ShouldEqual, 0)
+		})
+
+		Convey("PATCH accepts the token query parameter without bearer auth", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest token auth",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-token",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				Priority:     1,
+				RepGroup:     "rest-a1-token",
+			})
+
+			status, _, decoded := patchJob(restJobsEndpoint+key+"?token="+string(token), `{"priority":9}`, "")
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Priority, ShouldEqual, 9)
+			So(decoded.Modified[decoded.Jobs[0].Key], ShouldEqual, key)
+
+			stored := getJobStatuses(key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Priority, ShouldEqual, 9)
+		})
+
+		Convey("PATCH accepts public command dependency JSON", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest cmd deps",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-cmd-deps",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-cmd-deps",
+			})
+
+			body := `{"deps":["dep-a"],"cmd_deps":[{"cmd":"echo dep","cwd":"/tmp/dep"}]}`
+			status, _, decoded := patchJob(restJobsEndpoint+key, body, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Dependencies, ShouldContain, "dep-a")
+			So(decoded.Jobs[0].Dependencies, ShouldContain, "echo dep [/tmp/dep]")
+
+			stored := getJobStatuses(key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Dependencies, ShouldContain, "dep-a")
+			So(stored[0].Dependencies, ShouldContain, "echo dep [/tmp/dep]")
+		})
+
+		Convey("PATCH rejects requests without token or bearer auth", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest no auth",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-no-auth",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-no-auth",
+			})
+
+			status, _, _ := patchJob(restJobsEndpoint+key, `{"priority":9}`, "")
+			So(status, ShouldEqual, http.StatusUnauthorized)
+		})
+
+		Convey("PATCH modifies multiple editable RepGroup jobs and leaves running jobs unchanged", func() {
+			runningKey := addJob(&Job{
+				Cmd:          "echo rest bulk running",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-bulk-running",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				Priority:     3,
+				LimitGroups:  []string{"running:1"},
+				RepGroup:     "rest-bulk",
+			})
+			runningJob := reserveOnly(runningKey)
+			err = jq.Started(runningJob, os.Getpid())
+			So(err, ShouldBeNil)
+
+			for i := range 3 {
+				addJob(&Job{
+					Cmd:          fmt.Sprintf("echo rest bulk %d", i),
+					Cwd:          testCwd,
+					ReqGroup:     "rest-bulk-editable",
+					Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+					Priority:     1,
+					LimitGroups:  []string{"oldbulk:2"},
+					RepGroup:     "rest-bulk",
+				})
+			}
+
+			status, _, decoded := patchJob(restJobsEndpoint+"rest-bulk", `{"priority":8,"limit_grps":["bulk:1"]}`, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Modified), ShouldEqual, 3)
+			So(len(decoded.Jobs), ShouldEqual, 3)
+
+			for _, job := range decoded.Jobs {
+				So(job.Priority, ShouldEqual, 8)
+				So(job.LimitGroups, ShouldResemble, []string{"bulk:1"})
+				So(decoded.Modified[job.Key], ShouldEqual, job.Key)
+				So(job.Key, ShouldNotEqual, runningKey)
+			}
+
+			runningStatuses := getJobStatuses(runningKey, false)
+			So(len(runningStatuses), ShouldEqual, 1)
+			So(runningStatuses[0].State, ShouldEqual, JobStateRunning)
+			So(runningStatuses[0].Priority, ShouldEqual, 3)
+			So(runningStatuses[0].LimitGroups, ShouldResemble, []string{"running:1"})
+		})
+
+		Convey("PATCH rejects command changes when a RepGroup matches multiple editable jobs", func() {
+			keyA := addJob(&Job{
+				Cmd:          "echo rest bulk cmd a",
+				Cwd:          testCwd,
+				ReqGroup:     restBulkCmdGroup,
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     restBulkCmdGroup,
+			})
+			keyB := addJob(&Job{
+				Cmd:          "echo rest bulk cmd b",
+				Cwd:          testCwd,
+				ReqGroup:     restBulkCmdGroup,
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     restBulkCmdGroup,
+			})
+
+			status, body, _ := patchJob(restJobsEndpoint+restBulkCmdGroup, `{"cmd":"echo same"}`, bearer)
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldEqual, "cmd can only be modified for one job\n")
+
+			storedA := getJobStatuses(keyA, false)
+			So(len(storedA), ShouldEqual, 1)
+			So(storedA[0].Cmd, ShouldEqual, "echo rest bulk cmd a")
+
+			storedB := getJobStatuses(keyB, false)
+			So(len(storedB), ShouldEqual, 1)
+			So(storedB[0].Cmd, ShouldEqual, "echo rest bulk cmd b")
+		})
+	})
+}
+
+func TestRESTJobModificationValidation(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	const restA2ReqGroup = "rest-a2"
+
+	Convey("Once the REST modification server is up", t, func() {
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		handler := restJobs(ctx, server)
+		bearer := "Bearer " + string(token)
+
+		addJob := func(job *Job) string {
+			inserts, already, erra := jq.Add([]*Job{job}, envVars, true)
+			So(erra, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			return job.Key()
+		}
+
+		patchJob := func(id, body string) (int, string, JobModifyResponse) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, http.MethodPatch, restJobsEndpoint+id, strings.NewReader(body))
+			r.Header.Set("Authorization", bearer)
+			r.Header.Set("Content-Type", "application/json")
+
+			handler(w, r)
+
+			resp := w.Result()
+			defer resp.Body.Close()
+
+			responseData, errr := io.ReadAll(resp.Body)
+			So(errr, ShouldBeNil)
+
+			var decoded JobModifyResponse
+			if resp.StatusCode == http.StatusOK {
+				errr = json.Unmarshal(responseData, &decoded)
+				So(errr, ShouldBeNil)
+			}
+
+			return resp.StatusCode, string(responseData), decoded
+		}
+
+		getJobStatus := func(key string, getEnv bool) JStatus {
+			target := restJobsEndpoint + key
+			if getEnv {
+				target += "?env=true"
+			}
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+			r.Header.Set("Authorization", bearer)
+
+			handler(w, r)
+
+			resp := w.Result()
+			defer resp.Body.Close()
+
+			So(resp.StatusCode, ShouldEqual, http.StatusOK)
+
+			var statuses []JStatus
+
+			errr := json.NewDecoder(resp.Body).Decode(&statuses)
+			So(errr, ShouldBeNil)
+			So(len(statuses), ShouldEqual, 1)
+
+			return statuses[0]
+		}
+
+		reserveOnly := func(key string) *Job {
+			job, errr := jq.Reserve(50 * time.Millisecond)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Key(), ShouldEqual, key)
+
+			return job
+		}
+
+		Convey("PATCH modifies delayed jobs and preserves their state", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest delayed", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-delayed", Priority: 1, Retries: 3,
+			})
+			job := reserveOnly(key)
+			err = jq.Release(job, &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()}, FailReasonExit)
+			So(err, ShouldBeNil)
+			So(waitUntilJobState(jq, &JobEssence{JobKey: key}, JobStateDelayed, 5).State, ShouldEqual, JobStateDelayed)
+
+			status, _, decoded := patchJob(key, `{"priority":9}`)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].State, ShouldEqual, JobStateDelayed)
+			So(decoded.Jobs[0].Priority, ShouldEqual, 9)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateDelayed)
+			So(getJobStatus(key, false).Priority, ShouldEqual, 9)
+			time.Sleep(50 * time.Millisecond)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateDelayed)
+		})
+
+		Convey("PATCH modifies dependent jobs and preserves their state", func() {
+			addJob(&Job{
+				Cmd: "echo rest dep parent", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-dep-parent", DepGroups: []string{"rest-a2-parent"},
+			})
+			key := addJob(&Job{
+				Cmd: "echo rest dep child", Cwd: testCwd, ReqGroup: "dep-old",
+				Requirements: standardReqs, RepGroup: "rest-a2-dependent",
+				Dependencies: Dependencies{NewDepGroupDependency("rest-a2-parent")},
+			})
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateDependent)
+
+			status, _, decoded := patchJob(key, `{"req_grp":"dep-new"}`)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].State, ShouldEqual, JobStateDependent)
+			So(decoded.Jobs[0].ReqGroup, ShouldEqual, "dep-new")
+
+			stored := getJobStatus(key, false)
+			So(stored.State, ShouldEqual, JobStateDependent)
+			So(stored.ReqGroup, ShouldEqual, "dep-new")
+		})
+
+		Convey("PATCH modifies buried jobs and preserves their state", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest buried", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-buried", Retries: 1,
+			})
+			job := reserveOnly(key)
+			err = jq.Bury(job, nil, "rest buried")
+			So(err, ShouldBeNil)
+			So(waitUntilJobState(jq, &JobEssence{JobKey: key}, JobStateBuried, 5).State, ShouldEqual, JobStateBuried)
+
+			status, _, decoded := patchJob(key, `{"retries":3}`)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].State, ShouldEqual, JobStateBuried)
+			So(decoded.Jobs[0].Retries, ShouldEqual, 3)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateBuried)
+			So(getJobStatus(key, false).Retries, ShouldEqual, 3)
+		})
+
+		Convey("PATCH rejects priority values outside 0..255", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest bad priority", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-bad-priority", Priority: 1,
+			})
+
+			status, body, _ := patchJob(key, `{"priority":256}`)
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldContainSubstring, "priority value (256) is not in the range 0..255")
+			So(getJobStatus(key, false).Priority, ShouldEqual, 1)
+		})
+
+		Convey("PATCH rejects an empty command", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest empty cmd", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-empty-cmd",
+			})
+
+			status, body, _ := patchJob(key, `{"cmd":""}`)
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldEqual, "cmd cannot be empty\n")
+			So(getJobStatus(key, false).Cmd, ShouldEqual, "echo rest empty cmd")
+		})
+
+		Convey("PATCH reports no-retry walltime parse errors with the field name", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest bad no retry", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-bad-no-retry",
+			})
+
+			status, body, _ := patchJob(key, `{"no_retry_over_walltime":"notaduration"}`)
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldContainSubstring, "no_retry_over_walltime value (notaduration) was not specified correctly")
+		})
+
+		Convey("PATCH rejects running jobs without changing them", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest running", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-running", Priority: 1,
+			})
+			job := reserveOnly(key)
+			err = jq.Started(job, os.Getpid())
+			So(err, ShouldBeNil)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateRunning)
+
+			status, body, _ := patchJob(key, `{"priority":9}`)
+			So(status, ShouldEqual, http.StatusConflict)
+			So(body, ShouldEqual, "no editable jobs matched\n")
+			So(getJobStatus(key, false).Priority, ShouldEqual, 1)
+		})
+
+		Convey("PATCH rejects complete jobs without creating ready jobs", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest complete", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-complete", Retries: 1,
+			})
+			job := reserveOnly(key)
+			err = jq.Started(job, os.Getpid())
+			So(err, ShouldBeNil)
+			err = jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+			So(err, ShouldBeNil)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateComplete)
+
+			status, body, _ := patchJob(key, `{"retries":9}`)
+			So(status, ShouldEqual, http.StatusConflict)
+			So(body, ShouldEqual, "no editable jobs matched\n")
+
+			jobs, errg := jq.GetByRepGroup("rest-a2-complete", false, 0, JobStateReady, false, false)
+			So(errg, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 0)
+		})
+
+		Convey("PATCH rejects reserved jobs without changing them", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest reserved", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-reserved", Priority: 1,
+			})
+			reserveOnly(key)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateReserved)
+
+			status, body, _ := patchJob(key, `{"priority":9}`)
+			So(status, ShouldEqual, http.StatusConflict)
+			So(body, ShouldEqual, "no editable jobs matched\n")
+			So(getJobStatus(key, false).Priority, ShouldEqual, 1)
+		})
+
+		Convey("PATCH reports no editable jobs when queue state changes before modification", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest stale editable", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-stale-editable", Priority: 1,
+			})
+			reserveOnly(key)
+
+			modifier := NewJobModifer()
+			modifier.SetPriority(9)
+
+			modified, errm := server.modifyJobsByKeys(ctx, []string{key}, modifier)
+			So(errm, ShouldBeNil)
+			So(len(modified), ShouldEqual, 0)
+			So(server.restModifyEmptyResultError([]string{key}), ShouldEqual, errRESTModifyNoEditable)
+		})
+
+		Convey("PATCH rejects lost jobs without changing them", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest lost", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-lost", Priority: 1,
+			})
+			job := reserveOnly(key)
+			err = jq.Started(job, os.Getpid())
+			So(err, ShouldBeNil)
+
+			item, errq := server.q.Get(key)
+			So(errq, ShouldBeNil)
+
+			serverJob, ok := item.Data().(*Job)
+			So(ok, ShouldBeTrue)
+			serverJob.Lock()
+			serverJob.Lost = true
+			serverJob.Unlock()
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateLost)
+
+			status, body, _ := patchJob(key, `{"priority":9}`)
+			So(status, ShouldEqual, http.StatusConflict)
+			So(body, ShouldEqual, "no editable jobs matched\n")
+			So(getJobStatus(key, false).Priority, ShouldEqual, 1)
+		})
+
+		Convey("PATCH returns not found for unknown jobs", func() {
+			status, body, _ := patchJob("0123456789abcdef0123456789abcdef", `{"priority":9}`)
+			So(status, ShouldEqual, http.StatusNotFound)
+			So(body, ShouldEqual, "job not found\n")
+
+			jobs, errg := jq.GetByRepGroup("0123456789abcdef0123456789abcdef", false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 0)
+		})
+
+		Convey("PATCH clears job-specific env overrides", func() {
+			job := &Job{
+				Cmd: "echo rest clear env", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-clear-env",
+			}
+			err = job.EnvAddOverride([]string{"REST_CLEAR=1"})
+			So(err, ShouldBeNil)
+
+			key := addJob(job)
+
+			status, _, _ := patchJob(key, `{"env":[]}`)
+			So(status, ShouldEqual, http.StatusOK)
+
+			stored := getJobStatus(key, true)
+			So(stored.Env, ShouldNotContain, "REST_CLEAR=1")
+			So(stored.EnvOverrides, ShouldBeEmpty)
+		})
+
+		Convey("PATCH reports duplicate-key command edits without changing either job", func() {
+			keyA := addJob(&Job{
+				Cmd: "echo rest duplicate a", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-duplicate-a",
+			})
+			keyB := addJob(&Job{
+				Cmd: "echo rest duplicate b", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-duplicate-b",
+			})
+
+			status, body, _ := patchJob(keyA, `{"cmd":"echo rest duplicate b"}`)
+			So(status, ShouldEqual, http.StatusConflict)
+			So(body, ShouldEqual, "no jobs were modified\n")
+			So(getJobStatus(keyA, false).Cmd, ShouldEqual, "echo rest duplicate a")
+			So(getJobStatus(keyB, false).Cmd, ShouldEqual, "echo rest duplicate b")
+		})
+	})
+}
 
 // waitForRESTJobState polls the REST job endpoint at url until it returns
 // exactly one job in the wanted state (or pollUntil's deadline elapses),

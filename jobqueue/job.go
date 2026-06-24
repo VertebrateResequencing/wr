@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -177,6 +178,10 @@ type Job struct {
 	// other jobs as the limit are currently running, this job will not start
 	// running. It's a way of not running too many of a type of job at once.
 	LimitGroups []string
+
+	// LimitGroupsForDisplay preserves any user-supplied limit suffixes for
+	// status output after LimitGroups has been normalised for scheduling.
+	LimitGroupsForDisplay []string
 
 	// Modules are the names of environment modules that should be loaded before
 	// running Cmd.
@@ -490,21 +495,33 @@ func (j *Job) Env() ([]string, error) {
 
 // envCurrentOverrides decompresses and decodes any existing EnvOverride.
 func (j *Job) envCurrentOverrides() ([]string, error) {
-	if len(j.EnvOverride) > 0 {
-		decompressed, err := decompress(j.EnvOverride)
-		if err != nil {
-			return nil, err
-		}
-		ch := new(codec.BincHandle)
-		dec := codec.NewDecoderBytes(decompressed, ch)
-		overrideEs := &envStr{}
-		err = dec.Decode(overrideEs)
-		if err != nil {
-			return nil, err
-		}
-		return overrideEs.Environ, err
+	envOverride := j.envOverrideSnapshot()
+	if len(envOverride) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+
+	decompressed, err := decompress(envOverride)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := new(codec.BincHandle)
+	dec := codec.NewDecoderBytes(decompressed, ch)
+	overrideEs := &envStr{}
+
+	err = dec.Decode(overrideEs)
+	if err != nil {
+		return nil, err
+	}
+
+	return overrideEs.Environ, err
+}
+
+func (j *Job) envOverrideSnapshot() []byte {
+	j.RLock()
+	defer j.RUnlock()
+
+	return slices.Clone(j.EnvOverride)
 }
 
 // EnvAddOverride adds additional overrides to the jobs existing overrides (if
@@ -518,9 +535,16 @@ func (j *Job) EnvAddOverride(env []string) error {
 		return err
 	}
 
-	j.EnvOverride, err = compressEnv(envOverride(current, env))
+	compressed, err := compressEnv(envOverride(current, env))
+	if err != nil {
+		return err
+	}
 
-	return err
+	j.Lock()
+	j.EnvOverride = compressed
+	j.Unlock()
+
+	return nil
 }
 
 // Getenv is like os.Getenv(), but for the environment variables stored in the
@@ -922,6 +946,11 @@ func (j *Job) ToStatus() (JStatus, error) {
 	if err != nil {
 		return JStatus{}, err
 	}
+
+	envOverrides, err := j.envCurrentOverrides()
+	if err != nil {
+		return JStatus{}, err
+	}
 	var cwdLeaf string
 	j.RLock()
 	defer j.RUnlock()
@@ -941,45 +970,57 @@ func (j *Job) ToStatus() (JStatus, error) {
 		ot = append(ot, key+":"+val)
 	}
 
+	limitGroups := j.LimitGroups
+	if len(j.LimitGroupsForDisplay) > 0 {
+		limitGroups = j.LimitGroupsForDisplay
+	}
+
 	js := JStatus{
-		Key:             j.Key(),
-		RepGroup:        j.RepGroup,
-		LimitGroups:     j.LimitGroups,
-		DepGroups:       j.DepGroups,
-		Dependencies:    j.Dependencies.Stringify(),
-		Modules:         j.Modules,
-		Cmd:             j.Cmd,
-		State:           state,
-		CwdBase:         j.Cwd,
-		Cwd:             cwdLeaf,
-		HomeChanged:     j.ChangeHome,
-		Behaviours:      j.Behaviours.String(),
-		Mounts:          j.MountConfigs.String(),
-		MonitorDocker:   j.MonitorDocker,
-		WithDocker:      j.WithDocker,
-		WithSingularity: j.WithSingularity,
-		ContainerMounts: j.ContainerMounts,
-		ExpectedRAM:     j.Requirements.RAM,
-		ExpectedTime:    j.Requirements.Time.Seconds(),
-		RequestedDisk:   j.Requirements.Disk,
-		OtherRequests:   ot,
-		Cores:           j.Requirements.Cores,
-		PeakRAM:         j.PeakRAM,
-		PeakDisk:        j.PeakDisk,
-		Exited:          j.Exited,
-		Exitcode:        j.Exitcode,
-		FailReason:      j.FailReason,
-		Pid:             j.Pid,
-		Host:            j.Host,
-		HostID:          j.HostID,
-		HostIP:          j.HostIP,
-		Walltime:        j.WallTime().Seconds(),
-		CPUtime:         j.CPUtime.Seconds(),
-		Attempts:        j.Attempts,
-		Similar:         j.Similar,
-		StdErr:          stderr,
-		StdOut:          stdout,
-		Env:             env,
+		Key:                 j.Key(),
+		RepGroup:            j.RepGroup,
+		ReqGroup:            j.ReqGroup,
+		LimitGroups:         limitGroups,
+		DepGroups:           j.DepGroups,
+		Dependencies:        j.Dependencies.Stringify(),
+		Modules:             j.Modules,
+		Cmd:                 j.Cmd,
+		State:               state,
+		CwdBase:             j.Cwd,
+		Cwd:                 cwdLeaf,
+		HomeChanged:         j.ChangeHome,
+		Behaviours:          j.Behaviours.String(),
+		Mounts:              j.MountConfigs.String(),
+		MonitorDocker:       j.MonitorDocker,
+		WithDocker:          j.WithDocker,
+		WithSingularity:     j.WithSingularity,
+		ContainerMounts:     j.ContainerMounts,
+		ExpectedRAM:         j.Requirements.RAM,
+		ExpectedTime:        j.Requirements.Time.Seconds(),
+		RequestedDisk:       j.Requirements.Disk,
+		EnvOverrides:        envOverrides,
+		OtherRequests:       ot,
+		Cores:               j.Requirements.Cores,
+		NoRetryOverWalltime: j.NoRetriesOverWalltime.Seconds(),
+		PeakRAM:             j.PeakRAM,
+		PeakDisk:            j.PeakDisk,
+		Exited:              j.Exited,
+		Exitcode:            j.Exitcode,
+		FailReason:          j.FailReason,
+		Pid:                 j.Pid,
+		Host:                j.Host,
+		HostID:              j.HostID,
+		HostIP:              j.HostIP,
+		Walltime:            j.WallTime().Seconds(),
+		CPUtime:             j.CPUtime.Seconds(),
+		Attempts:            j.Attempts,
+		Similar:             j.Similar,
+		Override:            j.Override,
+		Priority:            j.Priority,
+		Retries:             j.Retries,
+		CwdMatters:          j.CwdMatters,
+		StdErr:              stderr,
+		StdOut:              stdout,
+		Env:                 env,
 	}
 
 	if !j.StartTime.IsZero() {
@@ -1186,6 +1227,24 @@ func (j *JobModifier) SetEnvOverride(newVal string) error {
 	return nil
 }
 
+func (j *JobModifier) setEnvOverrideValues(newVal []string) error {
+	var compressedEnv []byte
+
+	if len(newVal) > 0 {
+		var err error
+
+		compressedEnv, err = compressEnv(newVal)
+		if err != nil {
+			return err
+		}
+	}
+
+	j.EnvOverride = compressedEnv
+	j.EnvOverrideSet = true
+
+	return nil
+}
+
 // SetLimitGroups notes that you want to modify the LimitGroups of Jobs.
 func (j *JobModifier) SetLimitGroups(newVal []string) {
 	j.LimitGroups = newVal
@@ -1377,7 +1436,8 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 			job.EnvOverride = j.EnvOverride
 		}
 		if j.LimitGroupsSet {
-			job.LimitGroups = j.LimitGroups
+			job.LimitGroups = slices.Clone(j.LimitGroups)
+			job.LimitGroupsForDisplay = nil
 		}
 
 		if j.ModulesSet {

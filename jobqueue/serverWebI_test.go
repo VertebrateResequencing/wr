@@ -32,6 +32,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -308,6 +310,67 @@ func TestServerWebI(t *testing.T) {
 				So(ok2, ShouldBeTrue)
 				So(status2.Cmd, ShouldEqual, "echo 1")
 				So(status2.RepGroup, ShouldEqual, "rg1")
+			})
+
+			Convey("The websocket and REST details expose editable status fields", func() {
+				statusJob := &Job{
+					Cmd:                   "echo web status fields",
+					Cwd:                   "/tmp",
+					CwdMatters:            true,
+					ChangeHome:            true,
+					ReqGroup:              "web-req",
+					Requirements:          standardReqs,
+					RepGroup:              "web-status-fields",
+					Override:              2,
+					Priority:              11,
+					Retries:               5,
+					NoRetriesOverWalltime: 3 * time.Minute,
+				}
+				err = statusJob.EnvAddOverride([]string{"WEB_ONLY=old"})
+				So(err, ShouldBeNil)
+
+				inserts, already, erra := jq.Add([]*Job{statusJob}, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				key := statusJob.Key()
+
+				Convey("via websocket details", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:  jstatusRequestDetails,
+						RepGroup: "web-status-fields",
+						State:    JobStateReady,
+					})
+					So(err, ShouldBeNil)
+
+					status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+						return s.Key == key
+					})
+					So(ok, ShouldBeTrue)
+					assertEditableStatusFields(status)
+				})
+
+				Convey("via REST GET by key", func() {
+					handler := restJobs(ctx, server)
+					w := httptest.NewRecorder()
+					r := httptest.NewRequestWithContext(ctx, http.MethodGet, restJobsEndpoint+key, nil)
+					r.Header.Set("Authorization", "Bearer "+string(token))
+
+					handler(w, r)
+
+					resp := w.Result()
+					defer resp.Body.Close()
+
+					So(resp.StatusCode, ShouldEqual, http.StatusOK)
+
+					var statuses []JStatus
+
+					err = json.NewDecoder(resp.Body).Decode(&statuses)
+					So(err, ShouldBeNil)
+					So(len(statuses), ShouldEqual, 1)
+					assertEditableStatusFields(statuses[0])
+				})
 			})
 
 			Convey("The websocket handler deals with paginated details requests", func() {
@@ -1149,6 +1212,17 @@ func TestServerWebI(t *testing.T) {
 	})
 }
 
+func assertEditableStatusFields(status JStatus) {
+	So(status.ReqGroup, ShouldEqual, "web-req")
+	So(status.Override, ShouldEqual, 2)
+	So(status.Priority, ShouldEqual, 11)
+	So(status.Retries, ShouldEqual, 5)
+	So(status.NoRetryOverWalltime, ShouldEqual, 180)
+	So(status.CwdMatters, ShouldBeTrue)
+	So(status.HomeChanged, ShouldBeTrue)
+	So(status.EnvOverrides, ShouldResemble, []string{"WEB_ONLY=old"})
+}
+
 func clearReadDeadlineBestEffort(ws *websocket.Conn) {
 	if err := ws.SetReadDeadline(time.Time{}); err != nil {
 		return
@@ -1663,4 +1737,544 @@ func clearWriteDeadlineBestEffort(ws *websocket.Conn) {
 	if err := ws.SetWriteDeadline(time.Time{}); err != nil {
 		return
 	}
+}
+
+func TestWebUIModificationStaticContract(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("The status page exposes Modify actions and modal fields", t, func() {
+		statusHTML := readStaticText("static/status.html")
+		actionHandlers := readStaticText("static/js/wr/action-handlers.js")
+		viewModel := readStaticText("static/js/wr/status-viewmodel.js")
+
+		So(statusHTML, ShouldContainSubstring, "jobCanModify")
+		So(statusHTML, ShouldContainSubstring, "showModifyJob")
+		So(statusHTML, ShouldContainSubstring, "submit: function() { $root.submitModifyJob(); return false; }")
+		So(actionHandlers, ShouldContainSubstring, "showModifyJob")
+		So(viewModel, ShouldContainSubstring, "jobCanModify")
+
+		for _, field := range []string{
+			"cmd",
+			"cwd",
+			"cwd_matters",
+			"change_home",
+			"req_grp",
+			"memory",
+			"time",
+			"cpus",
+			"disk",
+			"priority",
+			"retries",
+			"override",
+			"no_retry_over_walltime",
+			"limit_grps",
+			"modules",
+			"deps",
+			"cmd_deps",
+			"on_failure",
+			"on_success",
+			"on_exit",
+			"other",
+			"mounts",
+			"monitor_docker",
+			"with_docker",
+			"with_singularity",
+			"container_mounts",
+			"env",
+		} {
+			So(statusHTML, ShouldContainSubstring, `data-modify-field="`+field+`"`)
+		}
+	})
+
+	Convey("The browser modify module builds requests and applies responses", t, func() {
+		runNodeWebUITest(t, `
+import assert from 'node:assert/strict';
+import {
+  createModifyForm,
+  createModifyPayload,
+  createModifyRequest,
+  jobCanModify,
+  replaceModifiedJobs,
+  trimTrailingNewline
+} from './jobqueue/static/js/wr/modify-job.js';
+
+const oldKey = '11111111111111111111111111111111';
+const newKey = '22222222222222222222222222222222';
+const oldJob = {
+  Key: oldKey,
+  State: 'ready',
+  Cmd: 'echo web old',
+  CwdBase: '/tmp/web-old',
+  CwdMatters: false,
+  HomeChanged: false,
+  ReqGroup: 'web-old',
+  ExpectedRAM: 64,
+  ExpectedTime: 60,
+  Cores: 1,
+  RequestedDisk: 0,
+  Priority: 1,
+  Retries: 1,
+  Override: 0,
+  NoRetryOverWalltime: 0,
+  LimitGroups: ['old:1'],
+  Modules: ['oldmod'],
+  Dependencies: ['old-dep', 'echo dep [/tmp/dep-old]'],
+  Behaviours: '{"on_exit":[{"nothing":true}]}',
+  OtherRequests: ['scheduler_queue:old'],
+  Mounts: '[{"Mount":"oldmnt","Targets":[{"Profile":"old","Path":"old/data"}]}]',
+  MonitorDocker: 'old-docker',
+  WithDocker: '',
+  WithSingularity: 'old.sif',
+  ContainerMounts: '/old:/old',
+  Env: [],
+  EnvOverrides: []
+};
+
+const form = createModifyForm(oldJob);
+assert.equal(form.cmd, 'echo web old');
+assert.equal(form.cwd, '/tmp/web-old');
+assert.equal(form.cwdMatters, false);
+assert.equal(form.changeHome, false);
+assert.equal(form.reqGrp, 'web-old');
+assert.equal(form.memory, '64M');
+assert.equal(form.time, '1m');
+assert.equal(form.cpus, '1');
+assert.equal(form.disk, '0');
+assert.equal(form.priority, '1');
+assert.equal(form.retries, '1');
+assert.equal(form.override, '0');
+assert.equal(form.noRetryOverWalltime, '');
+assert.equal(form.limitGrps, 'old:1');
+assert.equal(form.modules, 'oldmod');
+assert.equal(form.deps, 'old-dep');
+assert.deepEqual(JSON.parse(form.cmdDeps), [{cmd: 'echo dep', cwd: '/tmp/dep-old'}]);
+assert.equal(form.onFailure, '');
+assert.equal(form.onSuccess, '');
+assert.deepEqual(JSON.parse(form.onExit), [{nothing: true}]);
+assert.equal(form.other, 'scheduler_queue:old');
+assert.deepEqual(JSON.parse(form.mounts), [{Mount: 'oldmnt', Targets: [{Profile: 'old', Path: 'old/data'}]}]);
+assert.equal(form.monitorDocker, 'old-docker');
+assert.equal(form.withDocker, '');
+assert.equal(form.withSingularity, 'old.sif');
+assert.equal(form.containerMounts, '/old:/old');
+
+const dayDurationForm = createModifyForm({
+  ...oldJob,
+  ExpectedTime: 86400,
+  NoRetryOverWalltime: 172800
+});
+assert.equal(dayDurationForm.time, '24h');
+assert.equal(dayDurationForm.noRetryOverWalltime, '48h');
+const dayDurationPayload = createModifyPayload(dayDurationForm);
+assert.equal(dayDurationPayload.time, '24h');
+assert.equal(dayDurationPayload.no_retry_over_walltime, '48h');
+
+Object.assign(form, {
+  cmd: 'echo web new',
+  cwd: '/tmp/web-new',
+  cwdMatters: true,
+  changeHome: true,
+  reqGrp: 'web-new',
+  memory: '128M',
+  time: '3m',
+  cpus: '2',
+  disk: '5',
+  priority: '12',
+  retries: '6',
+  override: '2',
+  noRetryOverWalltime: '10m',
+  limitGrps: 'new:2',
+  modules: 'mod-a\nmod-b',
+  deps: 'dep-a',
+  cmdDeps: '[{"cmd":"echo dep","cwd":"/tmp/dep"}]',
+  onFailure: '[{"cleanup":true}]',
+  onSuccess: '[{"remove":true}]',
+  onExit: '[{"nothing":true}]',
+  other: 'cloud_os:Ubuntu 22\nscheduler_queue:short',
+  mounts: '[{"Mount":"mnt","Targets":[{"Profile":"p","Path":"bucket/data"}]}]',
+  monitorDocker: 'dock-new',
+  withDocker: 'ubuntu:22.04',
+  withSingularity: '',
+  containerMounts: '/data:/data'
+});
+
+const expectedPayload = {
+  cmd: 'echo web new',
+  cwd: '/tmp/web-new',
+  cwd_matters: true,
+  change_home: true,
+  req_grp: 'web-new',
+  memory: '128M',
+  time: '3m',
+  cpus: 2,
+  disk: 5,
+  priority: 12,
+  retries: 6,
+  override: 2,
+  no_retry_over_walltime: '10m',
+  limit_grps: ['new:2'],
+  modules: ['mod-a', 'mod-b'],
+  deps: ['dep-a'],
+  cmd_deps: [{cmd: 'echo dep', cwd: '/tmp/dep'}],
+  on_failure: [{cleanup: true}],
+  on_success: [{remove: true}],
+  on_exit: [{nothing: true}],
+  other: {cloud_os: 'Ubuntu 22', scheduler_queue: 'short'},
+  mounts: [{Mount: 'mnt', Targets: [{Profile: 'p', Path: 'bucket/data'}]}],
+  monitor_docker: 'dock-new',
+  with_docker: 'ubuntu:22.04',
+  with_singularity: '',
+  container_mounts: '/data:/data'
+};
+
+assert.deepEqual(createModifyPayload(form), expectedPayload);
+assert.throws(
+  () => createModifyPayload({...form, cmdDeps: '{}'}),
+  /cmd_deps must be a JSON array/
+);
+assert.throws(
+  () => createModifyPayload({...form, mounts: '{}'}),
+  /mounts must be a JSON array/
+);
+
+const request = createModifyRequest(form, 'web-token');
+assert.equal(request.url, '/rest/v1/jobs/' + oldKey);
+assert.equal(request.options.method, 'PATCH');
+assert.equal(request.options.headers.Authorization, 'Bearer web-token');
+assert.deepEqual(JSON.parse(request.options.body), expectedPayload);
+
+const returnedJob = {
+  ...oldJob,
+  Key: newKey,
+  Cmd: 'echo web new',
+  CwdBase: '/tmp/web-new',
+  CwdMatters: true,
+  HomeChanged: true,
+  ReqGroup: 'web-new',
+  ExpectedRAM: 128,
+  ExpectedTime: 180,
+  Cores: 2,
+  RequestedDisk: 5,
+  Priority: 12,
+  Retries: 6,
+  Override: 2,
+  NoRetryOverWalltime: 600,
+  LimitGroups: ['new:2'],
+  Modules: ['mod-a', 'mod-b'],
+  Dependencies: ['dep-a', 'echo dep [/tmp/dep]'],
+  Behaviours: '{"on_failure":[{"cleanup":true}],"on_success":[{"remove":true}],"on_exit":[{"nothing":true}]}',
+  OtherRequests: ['cloud_os:Ubuntu 22', 'scheduler_queue:short'],
+  Mounts: '[{"Mount":"mnt","Targets":[{"Profile":"p","Path":"bucket/data"}]}]',
+  MonitorDocker: 'dock-new',
+  WithDocker: 'ubuntu:22.04',
+  WithSingularity: '',
+  ContainerMounts: '/data:/data'
+};
+const replaced = replaceModifiedJobs([oldJob], {modified: {[newKey]: oldKey}, jobs: [returnedJob]});
+assert.equal(replaced.length, 1);
+assert.equal(replaced[0].Key, newKey);
+assert.equal(replaced[0].Cmd, 'echo web new');
+assert.equal(replaced[0].CwdBase, '/tmp/web-new');
+assert.equal(replaced[0].CwdMatters, true);
+assert.equal(replaced[0].HomeChanged, true);
+assert.equal(replaced[0].ReqGroup, 'web-new');
+assert.equal(replaced[0].ExpectedRAM, 128);
+assert.equal(replaced[0].ExpectedTime, 180);
+assert.equal(replaced[0].RequestedDisk, 5);
+assert.equal(replaced[0].NoRetryOverWalltime, 600);
+assert.equal(replaced.some(job => job.Key === oldKey), false);
+
+for (const state of ['delayed', 'ready', 'dependent', 'buried']) {
+  assert.equal(jobCanModify({State: state}), true);
+}
+for (const state of ['reserved', 'running', 'lost', 'complete']) {
+  assert.equal(jobCanModify({State: state}), false);
+}
+assert.equal(trimTrailingNewline('no editable jobs matched\n'), 'no editable jobs matched');
+`)
+	})
+
+	Convey("The env editor uses only overrides and preserves inherited env", t, func() {
+		runNodeWebUITest(t, `
+import assert from 'node:assert/strict';
+import { createModifyForm, createModifyPayload, replaceModifiedJobs } from './jobqueue/static/js/wr/modify-job.js';
+
+const key = '33333333333333333333333333333333';
+const job = {
+  Key: key,
+  State: 'ready',
+  Cmd: 'echo env',
+  CwdBase: '/tmp',
+  ReqGroup: 'env',
+  ExpectedRAM: 1,
+  ExpectedTime: 60,
+  Cores: 1,
+  RequestedDisk: 0,
+  Priority: 1,
+  Retries: 1,
+  Override: 0,
+  LimitGroups: [],
+  Modules: [],
+  Dependencies: [],
+  OtherRequests: [],
+  Env: ['PATH=/bin', 'INHERITED=base', 'WEB_ONLY=old'],
+  EnvOverrides: ['WEB_ONLY=old']
+};
+
+const form = createModifyForm(job);
+assert.equal(form.env, 'WEB_ONLY=old');
+assert.equal(form.env.includes('PATH=/bin'), false);
+assert.equal(form.env.includes('INHERITED=base'), false);
+
+form.env = 'WEB_ONLY=new';
+const changedPayload = createModifyPayload(form);
+assert.deepEqual(changedPayload.env, ['WEB_ONLY=new']);
+assert.equal(JSON.stringify(changedPayload).includes('PATH=/bin'), false);
+assert.equal(JSON.stringify(changedPayload).includes('INHERITED=base'), false);
+
+let replaced = replaceModifiedJobs([job], {
+  modified: {[key]: key},
+  jobs: [{...job, Env: [], EnvOverrides: ['WEB_ONLY=new']}]
+});
+assert.deepEqual(replaced[0].Env, ['PATH=/bin', 'INHERITED=base', 'WEB_ONLY=new']);
+
+form.env = '';
+const clearedPayload = createModifyPayload(form);
+assert.deepEqual(clearedPayload.env, []);
+
+replaced = replaceModifiedJobs([job], {
+  modified: {[key]: key},
+  jobs: [{...job, Env: [], EnvOverrides: []}]
+});
+assert.deepEqual(replaced[0].EnvOverrides, []);
+assert.deepEqual(replaced[0].Env, ['PATH=/bin', 'INHERITED=base']);
+`)
+	})
+
+	Convey("The browser modify module reports failed edits without changing rows", t, func() {
+		runNodeWebUITest(t, `
+import assert from 'node:assert/strict';
+import { replaceModifiedJobs, trimTrailingNewline } from './jobqueue/static/js/wr/modify-job.js';
+
+const row = {Key: '44444444444444444444444444444444', State: 'ready', Priority: 1};
+const priorityError = 'priority value (300) is not in the range 0..255';
+assert.equal(trimTrailingNewline(priorityError + '\n'), priorityError);
+assert.equal(trimTrailingNewline('no editable jobs matched\n'), 'no editable jobs matched');
+assert.deepEqual(replaceModifiedJobs([row], {modified: {}, jobs: []}), [row]);
+`)
+	})
+
+	Convey("The real modal handler submits PATCHes and keeps validation errors visible", t, func() {
+		runNodeModalHandlerTest(t, `
+import assert from 'node:assert/strict';
+import { showModifyJob, submitModifyJob } from './jobqueue/static/js/wr/modal-handlers.js';
+
+globalThis.ko = {
+  observable(initial) {
+    let value = initial;
+    return function observable(next) {
+      if (arguments.length > 0) {
+        value = next;
+        return observable;
+      }
+
+      return value;
+    };
+  }
+};
+
+function viewModelWith(job) {
+  return {
+    token: 'web-token',
+    detailsOA: ko.observable([job]),
+    modifyJobModalVisible: ko.observable(false),
+    modifyJobForm: ko.observable(),
+    modifyJobError: ko.observable(''),
+    modifyJobSubmitting: ko.observable(false)
+  };
+}
+
+const oldKey = '55555555555555555555555555555555';
+const newKey = '66666666666666666666666666666666';
+const oldJob = {
+  Key: oldKey,
+  State: 'ready',
+  Cmd: 'echo modal old',
+  CwdBase: '/tmp/modal-old',
+  CwdMatters: false,
+  HomeChanged: false,
+  ReqGroup: 'modal-old',
+  ExpectedRAM: 64,
+  ExpectedTime: 60,
+  Cores: 1,
+  RequestedDisk: 0,
+  Priority: 1,
+  Retries: 1,
+  Override: 0,
+  NoRetryOverWalltime: 0,
+  LimitGroups: [],
+  Modules: [],
+  Dependencies: [],
+  Behaviours: '',
+  OtherRequests: [],
+  Mounts: '',
+  MonitorDocker: '',
+  WithDocker: '',
+  WithSingularity: '',
+  ContainerMounts: '',
+  Env: ['PATH=/bin'],
+  EnvOverrides: [],
+  Walltime: 0
+};
+
+const successVM = viewModelWith(oldJob);
+showModifyJob(successVM, oldJob);
+assert.equal(successVM.modifyJobModalVisible(), true);
+successVM.modifyJobForm().cmd('echo modal new');
+
+const fetchCalls = [];
+globalThis.fetch = async (url, options) => {
+  fetchCalls.push({url, options});
+
+  return {
+    ok: true,
+    json: async () => ({
+      modified: {[newKey]: oldKey},
+      jobs: [{...oldJob, Key: newKey, Cmd: 'echo modal new', Env: ['PATH=/bin'], Walltime: 0}]
+    })
+  };
+};
+
+assert.equal(await submitModifyJob(successVM), true);
+assert.equal(successVM.modifyJobModalVisible(), false);
+assert.equal(fetchCalls.length, 1);
+assert.equal(fetchCalls[0].url, '/rest/v1/jobs/' + oldKey);
+assert.equal(fetchCalls[0].options.method, 'PATCH');
+assert.equal(fetchCalls[0].options.headers.Authorization, 'Bearer web-token');
+assert.equal(JSON.parse(fetchCalls[0].options.body).cmd, 'echo modal new');
+assert.equal(successVM.detailsOA().length, 1);
+assert.equal(successVM.detailsOA()[0].Key, newKey);
+assert.equal(successVM.detailsOA()[0].Cmd, 'echo modal new');
+
+const errorVM = viewModelWith(oldJob);
+showModifyJob(errorVM, oldJob);
+errorVM.modifyJobForm().priority('300');
+const priorityError = 'priority value (300) is not in the range 0..255';
+globalThis.fetch = async () => ({
+  ok: false,
+  text: async () => priorityError + '\n'
+});
+
+assert.equal(await submitModifyJob(errorVM), false);
+assert.equal(errorVM.modifyJobModalVisible(), true);
+assert.equal(errorVM.modifyJobError(), priorityError);
+assert.equal(errorVM.detailsOA().length, 1);
+assert.equal(errorVM.detailsOA()[0].Key, oldKey);
+assert.equal(errorVM.detailsOA()[0].Priority, 1);
+
+globalThis.fetch = async () => ({
+  ok: false,
+  text: async () => 'no editable jobs matched\n'
+});
+
+assert.equal(await submitModifyJob(errorVM), false);
+assert.equal(errorVM.modifyJobModalVisible(), true);
+assert.equal(errorVM.modifyJobError(), 'no editable jobs matched');
+assert.equal(errorVM.detailsOA()[0].Key, oldKey);
+assert.equal(errorVM.detailsOA()[0].Priority, 1);
+`)
+	})
+}
+
+func readStaticText(path string) string {
+	data, err := staticFS.ReadFile(path)
+	So(err, ShouldBeNil)
+
+	return string(data)
+}
+
+func runNodeWebUITest(t *testing.T, source string) {
+	t.Helper()
+
+	repoRoot := repoRootForWebUITest(t)
+	moduleURL := fileURL(filepath.Join(repoRoot, "jobqueue/static/js/wr/modify-job.js"))
+	source = strings.ReplaceAll(source, "'./jobqueue/static/js/wr/modify-job.js'", fmt.Sprintf("%q", moduleURL))
+
+	runNodeScript(t, repoRoot, source)
+}
+
+func runNodeModalHandlerTest(t *testing.T, source string) {
+	t.Helper()
+
+	repoRoot := repoRootForWebUITest(t)
+	dir := t.TempDir()
+
+	utility := `export function capitalizeFirstLetter(value) {
+  return String(value || '').charAt(0).toUpperCase() + String(value || '').slice(1);
+}
+
+export function setupLiveWalltime(job, walltime) {
+  job.LiveWalltime = function () {
+    return walltime || 0;
+  };
+}
+`
+	utilityPath := filepath.Join(dir, "utility.js")
+	err := os.WriteFile(utilityPath, []byte(utility), 0600)
+	So(err, ShouldBeNil)
+
+	sourcePath := filepath.Join(repoRoot, "jobqueue/static/js/wr/modal-handlers.js")
+	modalSource, err := os.ReadFile(sourcePath)
+	So(err, ShouldBeNil)
+
+	rewritten := strings.ReplaceAll(string(modalSource), "'/js/wr/modify-job.js'",
+		fmt.Sprintf("%q", fileURL(filepath.Join(repoRoot, "jobqueue/static/js/wr/modify-job.js"))))
+	rewritten = strings.ReplaceAll(rewritten, "'/js/wr/utility.js'", fmt.Sprintf("%q", fileURL(utilityPath)))
+
+	modalPath := filepath.Join(dir, "modal-handlers.js")
+	// #nosec G703 -- modalPath is generated inside t.TempDir for a test-only module.
+	err = os.WriteFile(modalPath, []byte(rewritten), 0600)
+	So(err, ShouldBeNil)
+
+	source = strings.ReplaceAll(source, "'./jobqueue/static/js/wr/modal-handlers.js'",
+		fmt.Sprintf("%q", fileURL(modalPath)))
+
+	runNodeScript(t, repoRoot, source)
+}
+
+func runNodeScript(t *testing.T, repoRoot, source string) {
+	t.Helper()
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not found on PATH; skipping browser module contract test")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "web_ui_modify_test.mjs")
+	err := os.WriteFile(script, []byte(source), 0600)
+	So(err, ShouldBeNil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "node", script)
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	So(string(output), ShouldEqual, "")
+	So(err, ShouldBeNil)
+}
+
+func fileURL(path string) string {
+	return "file://" + filepath.ToSlash(path)
+}
+
+func repoRootForWebUITest(t *testing.T) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	So(err, ShouldBeNil)
+
+	return filepath.Dir(wd)
 }
