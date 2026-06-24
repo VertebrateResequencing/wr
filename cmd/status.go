@@ -52,6 +52,7 @@ var (
 		"supported in default or report group (-i) mode; remove them when using -l")
 	errStatusStateFiltersInternal = errors.New("state filters (--buried/--running/--pending/--dependent) cannot " +
 		"be used with --internal because internal job lookups cannot be state-filtered")
+	statusExit = os.Exit
 )
 
 // statusExit exists so tests can exercise output modes that otherwise exit the

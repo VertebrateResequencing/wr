@@ -61,6 +61,7 @@ func TestSuspendCommand(t *testing.T) {
 			output, err := runSuspendForTest(t, "-i", "rg-suspend")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Suspended 3 queued commands (out of 3 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateSuspended, 3, "-i", "rg-suspend", "-o", "plain")
 			So(jobStateByEssence(jq, delayed), ShouldEqual, jobqueue.JobStateSuspended)
 			So(jobStateByEssence(jq, dependent), ShouldEqual, jobqueue.JobStateSuspended)
 			So(jobStateByEssence(jq, ready), ShouldEqual, jobqueue.JobStateSuspended)
@@ -76,6 +77,7 @@ func TestSuspendCommand(t *testing.T) {
 			output, err := runSuspendForTest(t, "-i", "team-a", "-z")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Suspended 2 queued commands (out of 2 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateSuspended, 2, "-i", "team-a", "-z", "-o", "plain")
 			So(jobStateByEssence(jq, one), ShouldEqual, jobqueue.JobStateSuspended)
 			So(jobStateByEssence(jq, two), ShouldEqual, jobqueue.JobStateSuspended)
 		})
@@ -89,6 +91,8 @@ func TestSuspendCommand(t *testing.T) {
 			output, err := runSuspendForTest(t, "-i", job.Key(), "-y")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Suspended 1 queued commands (out of 1 matching)\n")
+			assertStatusPlainOutput(t, job.Key()+"\t"+string(jobqueue.JobStateSuspended)+"\n",
+				"-i", job.Key(), "-y", "-o", "plain")
 			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateSuspended)
 		})
 	})
@@ -107,6 +111,7 @@ func TestSuspendCommand(t *testing.T) {
 			output, err := runSuspendForTest(t, "-f", cmdPath)
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Suspended 2 queued commands (out of 2 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateSuspended, 2, "-f", cmdPath, "-o", "plain")
 			So(jobStateByEssence(jq, one), ShouldEqual, jobqueue.JobStateSuspended)
 			So(jobStateByEssence(jq, two), ShouldEqual, jobqueue.JobStateSuspended)
 		})
@@ -123,6 +128,8 @@ func TestSuspendCommand(t *testing.T) {
 			output, err := runSuspendForTest(t, "-l", "echo by-line", "-c", cwd)
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Suspended 1 queued commands (out of 1 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateSuspended, 1, "-l", "echo by-line", "-c", cwd,
+				"-o", "plain")
 			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateSuspended)
 		})
 	})
@@ -306,6 +313,80 @@ func runSelectionCommandForTest(
 	So(err, ShouldBeNil)
 
 	return string(output), runErr
+}
+
+type statusExitPanic struct {
+	code int
+}
+
+func runStatusPlainForTest(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+
+	resetStatusForTest(t)
+	So(statusCmd.ParseFlags(args), ShouldBeNil)
+
+	reader, writer, err := os.Pipe()
+	So(err, ShouldBeNil)
+
+	defer reader.Close()
+
+	originalStdout := os.Stdout
+	originalStatusExit := statusExit
+
+	os.Stdout = writer
+	statusExit = func(code int) {
+		panic(statusExitPanic{code: code})
+	}
+
+	defer func() {
+		os.Stdout = originalStdout
+		statusExit = originalStatusExit
+	}()
+
+	exitCode := 0
+
+	func() {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+
+			exitPanic, ok := recovered.(statusExitPanic)
+			if !ok {
+				panic(recovered)
+			}
+
+			exitCode = exitPanic.code
+		}()
+
+		statusCmd.Run(statusCmd, nil)
+	}()
+
+	So(writer.Close(), ShouldBeNil)
+
+	output, err := io.ReadAll(reader)
+	So(err, ShouldBeNil)
+
+	return string(output), exitCode
+}
+
+func assertStatusPlainStateCount(t *testing.T, state jobqueue.JobState, count int, args ...string) {
+	t.Helper()
+
+	output, exitCode := runStatusPlainForTest(t, args...)
+
+	So(exitCode, ShouldEqual, 0)
+	So(strings.Count(output, "\t"+string(state)+"\n"), ShouldEqual, count)
+}
+
+func assertStatusPlainOutput(t *testing.T, expected string, args ...string) {
+	t.Helper()
+
+	output, exitCode := runStatusPlainForTest(t, args...)
+
+	So(exitCode, ShouldEqual, 0)
+	So(output, ShouldEqual, expected)
 }
 
 func resetSelectionCommandForTest(t *testing.T, command *cobra.Command) {

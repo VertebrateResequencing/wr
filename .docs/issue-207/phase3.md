@@ -18,7 +18,7 @@ matching-count output, live-job filtering for `-a`, and `cmd/suspend_test.go`,
 covering all 11 acceptance tests from C1. Depends on phase 2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 3.2: C2 - Resume Selected Jobs
 
@@ -30,4 +30,4 @@ suspended jobs, dependent and delayed resume behaviour, and
 item 3.1 for shared selector and validation patterns.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed

@@ -47,6 +47,7 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-i", "rg-resume")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 2 suspended commands (out of 2 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateReady, 2, "-i", "rg-resume", "-o", "plain")
 			So(jobStateByEssence(jq, one), ShouldEqual, jobqueue.JobStateReady)
 			So(jobStateByEssence(jq, two), ShouldEqual, jobqueue.JobStateReady)
 		})
@@ -62,6 +63,7 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-i", "team-b", "-z")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 2 suspended commands (out of 2 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateReady, 2, "-i", "team-b", "-z", "-o", "plain")
 			So(jobStateByEssence(jq, one), ShouldEqual, jobqueue.JobStateReady)
 			So(jobStateByEssence(jq, two), ShouldEqual, jobqueue.JobStateReady)
 		})
@@ -76,6 +78,8 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-i", job.Key(), "-y")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 1 suspended commands (out of 1 matching)\n")
+			assertStatusPlainOutput(t, job.Key()+"\t"+string(jobqueue.JobStateReady)+"\n",
+				"-i", job.Key(), "-y", "-o", "plain")
 			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
 		})
 	})
@@ -95,6 +99,7 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-f", cmdPath)
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 2 suspended commands (out of 2 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateReady, 2, "-f", cmdPath, "-o", "plain")
 			So(jobStateByEssence(jq, one), ShouldEqual, jobqueue.JobStateReady)
 			So(jobStateByEssence(jq, two), ShouldEqual, jobqueue.JobStateReady)
 		})
@@ -112,6 +117,8 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-l", "echo by-line", "-c", cwd)
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 1 suspended commands (out of 1 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateReady, 1, "-l", "echo by-line", "-c", cwd,
+				"-o", "plain")
 			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
 		})
 	})
@@ -142,6 +149,8 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-i", "rg-resume-child")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 1 suspended commands (out of 1 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateDependent, 1, "-i", "rg-resume-child",
+				"-o", "plain")
 			So(jobStateByEssence(jq, child), ShouldEqual, jobqueue.JobStateDependent)
 		})
 	})
@@ -157,6 +166,7 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-i", "rg-resume-delay")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 1 suspended commands (out of 1 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateReady, 1, "-i", "rg-resume-delay", "-o", "plain")
 			So(jobStateByEssence(jq, delayed), ShouldEqual, jobqueue.JobStateReady)
 
 			reserved, err := jq.Reserve(2 * time.Second)
@@ -180,6 +190,8 @@ func TestResumeCommand(t *testing.T) {
 			output, err := runResumeForTest(t, "-i", "rg-resume-delay-dep")
 			So(err, ShouldBeNil)
 			So(output, ShouldEqual, "Resumed 1 suspended commands (out of 1 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateDependent, 1, "-i", "rg-resume-delay-dep",
+				"-o", "plain")
 			So(jobStateByEssence(jq, delayed), ShouldEqual, jobqueue.JobStateDependent)
 
 			reserved, err := jq.Reserve(50 * time.Millisecond)
