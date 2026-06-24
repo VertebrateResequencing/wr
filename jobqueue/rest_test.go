@@ -1016,12 +1016,11 @@ func TestREST(t *testing.T) {
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
 
-			defer response.Body.Close()
-
 			var jstati []JStatus
 
 			err = json.NewDecoder(response.Body).Decode(&jstati)
 			So(err, ShouldBeNil)
+			So(response.Body.Close(), ShouldBeNil)
 			So(jstati, ShouldHaveLength, 1)
 			So(jstati[0].PeakRAM, ShouldEqual, 321)
 			So(jstati[0].CPUtime, ShouldEqual, 4)
