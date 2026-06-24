@@ -20,4 +20,4 @@ changed dep-group semantics. Run focused GoConvey tests, then package-wide
 `go test` where practical. Cover all 3 acceptance tests from D1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
