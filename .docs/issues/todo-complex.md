@@ -137,7 +137,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 - [x] Spec produced
 - [x] Implemented
-- [x] Reviewed
+- [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
 
@@ -196,8 +196,8 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 - [x] Spec produced
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 **Issue:** expose the modification that `wr mod` performs on the CLI via the web UI and the public REST API. Per the answers below this now **also subsumes #19** (web editing of env vars + resource requirements).
 
@@ -252,8 +252,8 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 - [x] Spec produced
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 **Issue:** make buried/delayed (and other non-running incomplete) commands editable from the web status page — override env vars and resource requirements (memory/time/cpu).
 
