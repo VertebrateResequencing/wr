@@ -19,7 +19,7 @@ state updates, status grouping, and `jobqueue/job.go`, `jobqueue/server.go`,
 acceptance tests from B1. Depends on phase 1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 2.2: B2 - Client And Server APIs
 
@@ -31,7 +31,7 @@ conversion, server request handling, and related `jobqueue/client.go`,
 acceptance tests from B2. Depends on item 2.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 2.3: B3 - Preserve Limit-Group Scheduling Accounting
 
@@ -43,4 +43,4 @@ scheduler behaviour in `jobqueue/server.go` and `jobqueue/serverCLI.go`,
 covering all 3 acceptance tests from B3. Depends on item 2.2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
