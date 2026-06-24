@@ -680,6 +680,141 @@ func TestRESTJobModificationValidation(t *testing.T) {
 	})
 }
 
+func TestRESTWaitingDepGroups(t *testing.T) {
+	ctx := context.Background()
+
+	if runnermode {
+		return
+	}
+
+	Convey("REST status exposes and filters never-seen dependency group waits", t, func() {
+		config, serverConfig, addr, reqs, clientConnectTime := jobqueueTestInit(true)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		waiting := &Job{
+			Cmd:          "echo rest waiting dep",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			RepGroup:     "rest-waiting",
+			DepGroups:    []string{testCarrierDepGroup},
+			Dependencies: Dependencies{NewDepGroupDependency(futureDepGroup)},
+		}
+		liveDependent := &Job{
+			Cmd:          "echo rest live dependent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			RepGroup:     "rest-live",
+			Dependencies: Dependencies{NewDepGroupDependency(testLiveDepGroup)},
+		}
+		liveCarrier := &Job{
+			Cmd:          "echo rest live carrier",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			RepGroup:     "rest-live",
+			DepGroups:    []string{testLiveDepGroup},
+		}
+
+		inserts, already, err := jq.Add([]*Job{waiting, liveDependent, liveCarrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 3)
+		So(already, ShouldEqual, 0)
+
+		client := newRESTTestHTTPClient(t, config.ManagerCAFile, config.ManagerCertDomain)
+		bearer := "Bearer " + string(token)
+		jobsEndpoint := "https://" + config.ManagerCertDomain + ":" + config.ManagerWeb + "/rest/v1/jobs"
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndpoint+"/"+waiting.RepGroup, nil)
+		So(err, ShouldBeNil)
+		req.Header.Add("Authorization", bearer)
+
+		resp, err := client.Do(req)
+		So(err, ShouldBeNil)
+
+		defer resp.Body.Close()
+
+		So(resp.StatusCode, ShouldEqual, http.StatusOK)
+
+		responseData, err := io.ReadAll(resp.Body)
+		So(err, ShouldBeNil)
+
+		var rawStatuses []map[string]json.RawMessage
+
+		err = json.Unmarshal(responseData, &rawStatuses)
+		So(err, ShouldBeNil)
+		So(rawStatuses, ShouldHaveLength, 1)
+
+		var state string
+		So(json.Unmarshal(rawStatuses[0]["State"], &state), ShouldBeNil)
+		So(state, ShouldEqual, string(JobStateDependent))
+
+		var depGroups []string
+		So(json.Unmarshal(rawStatuses[0]["DepGroups"], &depGroups), ShouldBeNil)
+		So(depGroups, ShouldResemble, []string{testCarrierDepGroup})
+
+		var waitingGroups []string
+		So(json.Unmarshal(rawStatuses[0]["WaitingForDepGroups"], &waitingGroups), ShouldBeNil)
+		So(waitingGroups, ShouldResemble, []string{futureDepGroup})
+
+		_, hasLowerState := rawStatuses[0]["state"]
+		_, hasSnakeDepGroups := rawStatuses[0]["dep_groups"]
+		_, hasSnakeWaitingGroups := rawStatuses[0]["waiting_for_dep_groups"]
+
+		So(hasLowerState, ShouldBeFalse)
+		So(hasSnakeDepGroups, ShouldBeFalse)
+		So(hasSnakeWaitingGroups, ShouldBeFalse)
+
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, jobsEndpoint+"?waiting_deps=true", nil)
+		So(err, ShouldBeNil)
+		req.Header.Add("Authorization", bearer)
+
+		filterResp, err := client.Do(req)
+		So(err, ShouldBeNil)
+
+		defer filterResp.Body.Close()
+
+		So(filterResp.StatusCode, ShouldEqual, http.StatusOK)
+
+		filteredData, err := io.ReadAll(filterResp.Body)
+		So(err, ShouldBeNil)
+
+		var filtered []JStatus
+
+		err = json.Unmarshal(filteredData, &filtered)
+		So(err, ShouldBeNil)
+		So(filtered, ShouldHaveLength, 1)
+		So(filtered[0].Key, ShouldEqual, waiting.Key())
+		So(filtered[0].WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
+	})
+}
+
+func newRESTTestHTTPClient(t *testing.T, caFile, serverName string) *http.Client {
+	t.Helper()
+
+	tlsConfig := &tls.Config{ServerName: serverName}
+	caCert, err := os.ReadFile(caFile)
+	So(err, ShouldBeNil)
+
+	certPool := x509.NewCertPool()
+	So(certPool.AppendCertsFromPEM(caCert), ShouldBeTrue)
+	tlsConfig.RootCAs = certPool
+
+	return &http.Client{Transport: &http.Transport{
+		Proxy:           nil,
+		TLSClientConfig: tlsConfig,
+	}}
+}
+
 // waitForRESTJobState polls the REST job endpoint at url until it returns
 // exactly one job in the wanted state (or pollUntil's deadline elapses),
 // returning the last-decoded statuses and whether the state was reached. It
@@ -1262,12 +1397,13 @@ func TestREST(t *testing.T) {
 			So(len(jstati), ShouldEqual, 1)
 
 			So(jstati[0].Key, ShouldEqual, "b17c665295e0a3fcf2e07c6d7ad6ddd4")
-			So(jstati[0].State, ShouldEqual, JobStateReady)
+			So(jstati[0].State, ShouldEqual, JobStateDependent)
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp/foo")
 			So(jstati[0].RepGroup, ShouldEqual, "defaultedRepGrp")
 			So(jstati[0].Cores, ShouldEqual, 2)
 			So(jstati[0].DepGroups, ShouldResemble, []string{"a", "b", "c"})
 			So(jstati[0].Dependencies, ShouldResemble, []string{"x", "y"})
+			So(jstati[0].WaitingForDepGroups, ShouldResemble, []string{"x", "y"})
 			So(jstati[0].HomeChanged, ShouldBeTrue)
 			So(jstati[0].ExpectedRAM, ShouldEqual, 3072)
 			So(jstati[0].ExpectedTime, ShouldEqual, 240)

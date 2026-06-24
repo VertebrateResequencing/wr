@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -177,12 +178,22 @@ func TestServerWebI(t *testing.T) {
 			So(resp.StatusCode, ShouldEqual, http.StatusOK)
 			So(resp.Header.Get("Content-Type"), ShouldEqual, "text/html; charset=utf-8")
 
+			body, err := io.ReadAll(resp.Body)
+			So(err, ShouldBeNil)
+			So(resp.Body.Close(), ShouldBeNil)
+			So(string(body), ShouldContainSubstring, "Waiting for dep groups not yet seen")
+			So(string(body), ShouldContainSubstring, "WaitingForDepGroups")
+			So(string(body), ShouldContainSubstring, "foreach: WaitingForDepGroups")
+			So(string(body), ShouldContainSubstring, "text: $data")
+			So(string(body), ShouldNotContainSubstring, "html: WaitingForDepGroups")
+
 			w = httptest.NewRecorder()
 			r = httptest.NewRequest(http.MethodGet, "/nonexistent.html", nil)
 			r.Header.Set("Authorization", "Bearer "+string(token))
 			handler(w, r)
 			resp = w.Result()
 			So(resp.StatusCode, ShouldEqual, http.StatusNotFound)
+			So(resp.Body.Close(), ShouldBeNil)
 
 			fileTypes := map[string]string{
 				"static/js/test.js":      "text/javascript; charset=utf-8",
@@ -371,6 +382,40 @@ func TestServerWebI(t *testing.T) {
 					So(len(statuses), ShouldEqual, 1)
 					assertEditableStatusFields(statuses[0])
 				})
+			})
+
+			Convey("The websocket handler sends never-seen dependency group waits for details", func() {
+				waiting := &Job{
+					Cmd:          "echo web waiting dep",
+					Cwd:          "/tmp",
+					ReqGroup:     "web_group",
+					Requirements: standardReqs,
+					RepGroup:     "web-waiting",
+					Dependencies: Dependencies{NewDepGroupDependency(futureDepGroup)},
+				}
+
+				inserts, already, erra := jq.Add([]*Job{waiting}, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				ws, err = drainWebSocket(wsURL, header)
+				So(err, ShouldBeNil)
+
+				err = ws.WriteJSON(jstatusReq{
+					Request:  jstatusRequestDetails,
+					RepGroup: waiting.RepGroup,
+					State:    JobStateDependent,
+				})
+				So(err, ShouldBeNil)
+
+				status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+					return s.Key == waiting.Key()
+				})
+				So(ok, ShouldBeTrue)
+				So(status.RepGroup, ShouldEqual, waiting.RepGroup)
+				So(status.State, ShouldEqual, JobStateDependent)
+				So(status.WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
 			})
 
 			Convey("The websocket handler deals with paginated details requests", func() {

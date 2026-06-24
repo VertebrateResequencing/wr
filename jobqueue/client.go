@@ -140,6 +140,12 @@ const (
 	RepGroupMatchSuffix RepGroupMatch = "suffix"
 )
 
+// AddWarnings describes non-fatal add-time conditions callers may want to
+// surface to users.
+type AddWarnings struct {
+	NeverSeenDepGroups []string
+}
+
 func touchEndState(job *Job) *JobEndState {
 	return &JobEndState{
 		PeakRAM:  job.PeakRAM,
@@ -181,6 +187,7 @@ type clientRequest struct {
 	IncludeComplete         bool
 	IncludeStatusDetails    bool
 	Search                  bool
+	WaitingForDepGroups     bool
 	RepGroupMatch           RepGroupMatch
 	ConfirmDeadCloudServers bool
 	DestroyCloudHost        string
@@ -522,30 +529,58 @@ func (c *Client) BackupDB(path string) error {
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
 func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added, existed int, err error) {
+	added, existed, _, err = c.AddWithWarnings(jobs, envVars, ignoreComplete)
+
+	return added, existed, err
+}
+
+// AddWithWarnings is like Add, and also returns non-fatal warnings about the
+// added jobs.
+func (c *Client) AddWithWarnings(
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (added int, existed int, warnings AddWarnings, err error) {
 	compressed, err := c.CompressEnv(envVars)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, AddWarnings{}, err
 	}
+
 	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, AddWarnings{}, err
 	}
-	return resp.Added, resp.Existed, err
+
+	return resp.Added, resp.Existed, resp.AddWarnings, err
 }
 
 // AddAndReturnIDs is like Add(), except that the internal IDs of jobs that are
 // now in the queue are returned (including dups, excluding complete jobs). This
 // is potentially expensive, so use Add() if you don't need these.
 func (c *Client) AddAndReturnIDs(jobs []*Job, envVars []string, ignoreComplete bool) ([]string, error) {
+	ids, _, err := c.AddAndReturnIDsWithWarnings(jobs, envVars, ignoreComplete)
+
+	return ids, err
+}
+
+// AddAndReturnIDsWithWarnings is like AddAndReturnIDs, and also returns
+// non-fatal warnings about the added jobs.
+func (c *Client) AddAndReturnIDsWithWarnings(
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (ids []string, warnings AddWarnings, err error) {
 	compressed, err := c.CompressEnv(envVars)
 	if err != nil {
-		return nil, err
+		return nil, AddWarnings{}, err
 	}
+
 	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true})
 	if err != nil {
-		return nil, err
+		return nil, AddWarnings{}, err
 	}
-	return resp.AddedIDs, err
+
+	return resp.AddedIDs, resp.AddWarnings, err
 }
 
 // Modify modifies previously Add()ed jobs that are incomplete and not currently
@@ -2162,6 +2197,21 @@ func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMat
 	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
 		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
 		State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
+// GetIncompleteWaitingForDepGroups gets all non-archived jobs currently in the
+// queue whose WaitingForDepGroups field is non-empty. If repgroup is supplied,
+// only jobs whose RepGroup matches according to match are returned.
+func (c *Client) GetIncompleteWaitingForDepGroups(repgroup string, match RepGroupMatch,
+	limit int, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		GetStd: getStd, GetEnv: getEnv, WaitingForDepGroups: true})
 	if err != nil {
 		return nil, err
 	}

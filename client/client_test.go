@@ -1206,7 +1206,14 @@ func TestScheduler(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						info := server.GetServerStats()
-						So(info.Ready, ShouldEqual, 2)
+						So(info.Ready, ShouldEqual, 1)
+
+						dependent, errg := s.FindIncompleteJobsByRepGroupAndState("rep",
+							jobqueue.RepGroupMatchExact, jobqueue.JobStateDependent)
+						So(errg, ShouldBeNil)
+						So(dependent, ShouldHaveLength, 1)
+						So(dependent[0].Key(), ShouldEqual, job2.Key())
+						So(dependent[0].WaitingForDepGroups, ShouldResemble, []string{"b"})
 
 						Convey("but you get an error if there are duplicates", func() {
 							err = s.SubmitJobs([]*jobqueue.Job{job, job2})
@@ -1215,7 +1222,14 @@ func TestScheduler(t *testing.T) {
 							So(err.Error(), ShouldEqual, "some of the added jobs were duplicates")
 
 							info := server.GetServerStats()
-							So(info.Ready, ShouldEqual, 2)
+							So(info.Ready, ShouldEqual, 1)
+
+							dependent, errg = s.FindIncompleteJobsByRepGroupAndState("rep",
+								jobqueue.RepGroupMatchExact, jobqueue.JobStateDependent)
+							So(errg, ShouldBeNil)
+							So(dependent, ShouldHaveLength, 1)
+							So(dependent[0].Key(), ShouldEqual, job2.Key())
+							So(dependent[0].WaitingForDepGroups, ShouldResemble, []string{"b"})
 						})
 					})
 

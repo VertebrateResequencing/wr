@@ -397,7 +397,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					qerr = err.Error()
 				} else if srerr == "" {
 					// create the jobs server-side
-					added, dups, alreadyComplete, thisSrerr, err := s.createJobs(ctx, cr.Jobs, envkey, cr.IgnoreComplete)
+					added, dups, alreadyComplete, warnings, thisSrerr, err := s.createJobs(
+						ctx,
+						cr.Jobs,
+						envkey,
+						cr.IgnoreComplete,
+					)
 					if err != nil {
 						srerr = thisSrerr
 						qerr = err.Error()
@@ -409,9 +414,15 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							for _, job := range jobs {
 								ids = append(ids, job.Key())
 							}
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddedIDs: ids}
+
+							sr = &serverResponse{
+								Added:       added,
+								Existed:     dups + alreadyComplete,
+								AddedIDs:    ids,
+								AddWarnings: warnings,
+							}
 						} else {
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddWarnings: warnings}
 						}
 					}
 				}
@@ -868,10 +879,14 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 								// dependant upon or their priority, that must be
 								// reflected in the queue as well
 								for _, job := range toModify {
-									deps, err := job.Dependencies.incompleteJobKeys(s.db)
-									if err != nil {
-										clog.Error(ctx, "failed to get job dependencies", "err", err)
+									deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
+									if depErr != nil {
+										clog.Error(ctx, "failed to get job dependencies", "err", depErr)
+
+										continue
 									}
+
+									job.setWaitingForDepGroups(waitingForDepGroups)
 
 									err = s.q.Update(
 										ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
@@ -942,10 +957,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					RepGroup: cr.Job.RepGroup,
 					Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
 					limitJobsOptions: limitJobsOptions{
-						Limit:  cr.Limit,
-						State:  cr.State,
-						GetStd: cr.GetStd,
-						GetEnv: cr.GetEnv,
+						Limit:               cr.Limit,
+						State:               cr.State,
+						GetStd:              cr.GetStd,
+						GetEnv:              cr.GetEnv,
+						WaitingForDepGroups: cr.WaitingForDepGroups,
 					},
 				}
 
@@ -984,7 +1000,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
 
 			jobs := s.getJobsCurrent(ctx, repGroup, match, cr.Limit, cr.State,
-				cr.GetStd, cr.GetEnv)
+				cr.GetStd, cr.GetEnv, cr.WaitingForDepGroups)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
@@ -1161,6 +1177,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		EnvKey:                sjob.EnvKey,
 		EnvOverride:           sjob.EnvOverride,
 		Dependencies:          sjob.Dependencies,
+		WaitingForDepGroups:   sjob.WaitingForDepGroups,
 		Behaviours:            sjob.Behaviours,
 		MountConfigs:          sjob.MountConfigs,
 		MonitorDocker:         sjob.MonitorDocker,

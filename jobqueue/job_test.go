@@ -242,11 +242,12 @@ func TestJob(t *testing.T) {
 		started := time.Unix(100, 123456789)
 		ended := started.Add(25 * time.Millisecond)
 		job := &Job{
-			Cmd:          "true",
-			Cwd:          "/cwd",
-			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
-			StartTime:    started,
-			EndTime:      ended,
+			Cmd:                 "true",
+			Cwd:                 "/cwd",
+			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+			WaitingForDepGroups: []string{futureDepGroup},
+			StartTime:           started,
+			EndTime:             ended,
 		}
 
 		status, err := job.ToStatus()
@@ -261,6 +262,24 @@ func TestJob(t *testing.T) {
 		So(*status.Started, ShouldEqual, started.UnixNano())
 		So(*status.Ended, ShouldEqual, ended.UnixNano())
 		So(*status.Ended, ShouldBeGreaterThan, *status.Started)
+		So(status.WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
+	})
+
+	Convey("ToStatus() reports never-seen dependency group waits", t, func() {
+		job := &Job{
+			Cmd:                 "true",
+			Cwd:                 "/cwd",
+			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+			DepGroups:           []string{testCarrierDepGroup},
+			WaitingForDepGroups: []string{futureDepGroup},
+			State:               JobStateDependent,
+		}
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.State, ShouldEqual, JobStateDependent)
+		So(status.DepGroups, ShouldResemble, []string{testCarrierDepGroup})
+		So(status.WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
 	})
 
 	Convey("ToStatus() safely reports env overrides while they change", t, func() {

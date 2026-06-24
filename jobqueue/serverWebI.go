@@ -137,6 +137,7 @@ type JStatus struct {
 	DepGroups           []string
 	Modules             []string
 	Dependencies        []string
+	WaitingForDepGroups []string
 	OtherRequests       []string
 	Env                 []string
 	Key                 string
@@ -389,7 +390,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					switch req.Request {
 					case jstatusRequestCurrent:
 						// get all current jobs
-						jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false)
+						jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false, false)
 						writeMutex.Lock()
 						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs)
 						if err != nil {
@@ -775,7 +776,7 @@ func (s *Server) rerunCompletedJobs(ctx context.Context, jobs []*Job) {
 	}
 
 	for envkey, envJobs := range jobsByEnvKey {
-		added, dups, _, srerr, err := s.createJobs(ctx, envJobs, envkey, false)
+		added, dups, _, _, srerr, err := s.createJobs(ctx, envJobs, envkey, false)
 		if err != nil {
 			clog.Warn(ctx, "web interface rerun failed", "err", err, "srerr", srerr)
 

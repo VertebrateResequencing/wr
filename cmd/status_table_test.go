@@ -115,6 +115,25 @@ func TestStatusTableRows(t *testing.T) {
 		So(lines[2], ShouldContainSubstring, "buried")
 		So(lines[2], ShouldContainSubstring, "4")
 	})
+
+	Convey("wr status table renders never-seen dep-group waits as waiting-deps", t, func() {
+		t.Setenv(statusFormatEnv, "status:12 count:5")
+
+		jobs := []*jobqueue.Job{
+			{
+				State:               jobqueue.JobStateDependent,
+				WaitingForDepGroups: []string{"future"},
+			},
+		}
+
+		var output bytes.Buffer
+
+		err := writeStatusTable(&output, jobs)
+
+		So(err, ShouldBeNil)
+		So(output.String(), ShouldContainSubstring, "waiting-deps")
+		So(output.String(), ShouldNotContainSubstring, "dependent")
+	})
 }
 
 func TestStatusLimitHelp(t *testing.T) {

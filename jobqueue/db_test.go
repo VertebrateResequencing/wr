@@ -125,6 +125,86 @@ func TestDBReverseLookupIndex(t *testing.T) {
 	})
 }
 
+func TestDBDepGroups(t *testing.T) {
+	Convey("Preparing new jobs records each seen dep group once per batch", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		const (
+			sharedDepGroup = "shared"
+			otherDepGroup  = "other"
+		)
+
+		first := testDBJob("echo first", "first")
+		first.DepGroups = []string{sharedDepGroup, sharedDepGroup}
+		second := testDBJob("echo second", "second")
+		second.DepGroups = []string{sharedDepGroup, otherDepGroup}
+
+		_, _, _, depGroupsSeen, _, _, _, _, _, err := testDB.prepareNewJobs([]*Job{first, second}, false)
+		So(err, ShouldBeNil)
+		So(depGroupsSeen, ShouldHaveLength, 2)
+
+		seen := make(map[string]bool, len(depGroupsSeen))
+		for _, lookup := range depGroupsSeen {
+			seen[string(lookup[0])] = true
+		}
+
+		So(seen[sharedDepGroup], ShouldBeTrue)
+		So(seen[otherDepGroup], ShouldBeTrue)
+	})
+
+	Convey("Opening an old DB rebuilds seen dep groups from historical dep group lookups", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		legacy := testDBJob("echo legacy", "legacy")
+		legacy.DepGroups = []string{"legacy"}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{legacy}, false)
+		So(err, ShouldBeNil)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			return tx.DeleteBucket(bucketDepGroups)
+		})
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		seen, err := testDB.depGroupEverSeen("legacy")
+		So(err, ShouldBeNil)
+		So(seen, ShouldBeTrue)
+
+		seen, err = testDB.depGroupEverSeen("absent")
+		So(err, ShouldBeNil)
+		So(seen, ShouldBeFalse)
+	})
+}
+
 func BenchmarkModifyLiveJobsReverseLookup(b *testing.B) {
 	ctx := context.Background()
 	tmpdir := b.TempDir()

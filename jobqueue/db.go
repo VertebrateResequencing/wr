@@ -76,6 +76,7 @@ var (
 	bucketRGs              = []byte("repgroups")
 	bucketLGs              = []byte("limitgroups")
 	bucketDTK              = []byte("depgroupToKey")
+	bucketDepGroups        = []byte("depgroups")
 	bucketRDTK             = []byte("reverseDepgroupToKey")
 	bucketJobLookupEntries = []byte("jobLookupEntries")
 	bucketEnvs             = []byte("envs")
@@ -315,6 +316,20 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketDTK, errf)
 		}
+
+		hadDepGroups := tx.Bucket(bucketDepGroups) != nil
+
+		_, errf = tx.CreateBucketIfNotExists(bucketDepGroups)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketDepGroups, errf)
+		}
+
+		if !hadDepGroups {
+			errf = rebuildDepGroups(tx)
+			if errf != nil {
+				return fmt.Errorf("rebuild bucket %s: %w", bucketDepGroups, errf)
+			}
+		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketRDTK, errf)
@@ -483,7 +498,8 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 //
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
-	encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
+	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
 	if err != nil {
 		return jobsToQueue, jobsToUpdate, alreadyAdded, err
 	}
@@ -495,6 +511,10 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 			numStores++
 		}
 		if len(dgLookups) > 0 {
+			numStores++
+		}
+
+		if len(depGroupsSeen) > 0 {
 			numStores++
 		}
 		if len(rdgLookups) > 0 {
@@ -528,6 +548,19 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 				defer db.wg.Done(wgk3)
 				sort.Sort(dgLookups)
 				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
+			}()
+		}
+
+		if len(depGroupsSeen) > 0 {
+			wgk3b := db.wg.Add(1)
+
+			go func() {
+				defer internal.LogPanic(ctx, "jobqueue database depGroupsSeen", true)
+				defer db.wg.Done(wgk3b)
+
+				sort.Sort(depGroupsSeen)
+
+				errors <- db.storeBatched(bucketDepGroups, depGroupsSeen, db.storeLookups)
 			}()
 		}
 
@@ -579,7 +612,8 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	return jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
-func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, dgLookups, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
+//nolint:gocognit,gocyclo,cyclop,funlen,lll // Legacy persistence path coordinates several lookup buckets.
+func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
 	repGroups := make(map[string]bool)
@@ -593,7 +627,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 			var added bool
 			added, err = db.checkIfAdded(keyStr)
 			if err != nil {
-				return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+				return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+					jobsToQueue, jobsToUpdate, alreadyAdded, err
 			}
 			if added {
 				alreadyAdded++
@@ -627,7 +662,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		err = enc.Encode(job)
 		job.RUnlock()
 		if err != nil {
-			return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+			return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+				jobsToQueue, jobsToUpdate, alreadyAdded, err
 		}
 		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 	}
@@ -652,7 +688,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 				err = enc.Encode(job)
 				job.RUnlock()
 				if err != nil {
-					return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+					return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+						jobsToQueue, jobsToUpdate, alreadyAdded, err
 				}
 				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 			}
@@ -669,9 +706,13 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		for rg := range repGroups {
 			rgs = append(rgs, [2][]byte{[]byte(rg), nil})
 		}
+
+		for depGroup := range depGroups {
+			depGroupsSeen = append(depGroupsSeen, [2][]byte{[]byte(depGroup), nil})
+		}
 	}
 
-	return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+	return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
 // generateLookupKey creates a lookup key understood by the retrieval methods,
@@ -1090,6 +1131,34 @@ func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, er
 	return jobKeys, err
 }
 
+func (db *db) depGroupEverSeen(depGroup string) (bool, error) {
+	var seen bool
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketDepGroups)
+		seen = b.Get([]byte(depGroup)) != nil
+
+		return nil
+	})
+
+	return seen, err
+}
+
+func (db *db) depGroupsEverSeen(depGroups []string) (map[string]bool, error) {
+	seen := make(map[string]bool, len(depGroups))
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketDepGroups)
+		for _, depGroup := range depGroups {
+			seen[depGroup] = b.Get([]byte(depGroup)) != nil
+		}
+
+		return nil
+	})
+
+	return seen, err
+}
+
 // storeEnv stores a clientRequest.Env in db unless cached, which means it must
 // already be there. Returns a key by which the stored Env can be retrieved.
 func (db *db) storeEnv(env []byte) (string, error) {
@@ -1282,13 +1351,15 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // the old Key() of jobs[0]. This is so that any stdout/err of old jobs is
 // associated with the new jobs.
 func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job) error {
-	encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
+	//nolint:dogsled // modifyLiveJobs only needs the persistence fields from prepareNewJobs.
+	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
 	if err != nil {
 		return err
 	}
 	sort.Sort(rgLookups)
 	sort.Sort(rgs)
 	sort.Sort(dgLookups)
+	sort.Sort(depGroupsSeen)
 	sort.Sort(rdgLookups)
 	sort.Sort(encodedJobs)
 
@@ -1350,6 +1421,13 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 
 			if len(dgLookups) > 0 {
 				errs = db.putLookups(tx, bucketDTK, dgLookups)
+				if errs != nil {
+					return errs
+				}
+			}
+
+			if len(depGroupsSeen) > 0 {
+				errs = db.putLookups(tx, bucketDepGroups, depGroupsSeen)
 				if errs != nil {
 					return errs
 				}
@@ -1974,6 +2052,24 @@ func rebuildJobLookupEntries(tx *bolt.Tx) error {
 
 func indexedLookupBuckets() [][]byte {
 	return [][]byte{bucketRTK, bucketDTK, bucketRDTK}
+}
+
+func rebuildDepGroups(tx *bolt.Tx) error {
+	depGroupBucket := tx.Bucket(bucketDepGroups)
+
+	lookupBucket := tx.Bucket(bucketDTK)
+	if depGroupBucket == nil || lookupBucket == nil {
+		return nil
+	}
+
+	return lookupBucket.ForEach(func(k, _ []byte) error {
+		idx := bytes.Index(k, []byte(dbDelimiter))
+		if idx <= 0 {
+			return nil
+		}
+
+		return depGroupBucket.Put(k[:idx], nil)
+	})
 }
 
 func lookupEntryJobKey(lookupKey []byte) []byte {

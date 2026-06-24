@@ -271,6 +271,7 @@ type serverResponse struct {
 	Added           int
 	Existed         int
 	AddedIDs        []string
+	AddWarnings     AddWarnings
 	Modified        map[string]string
 	KillCalled      bool
 	Job             *Job
@@ -1083,6 +1084,17 @@ func updateJobRequirementsForRetry(
 	}
 }
 
+func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
+	if !filter {
+		return true
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return len(job.WaitingForDepGroups) > 0
+}
+
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 	if job == nil || job.Requirements == nil || job.FailReason == "" {
 		return false
@@ -1734,11 +1746,17 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 		var itemdefs []*queue.ItemDef
 		for _, job := range priorJobs {
-			var deps []string
-			deps, err = job.Dependencies.incompleteJobKeys(s.db)
+			var (
+				deps                []string
+				waitingForDepGroups []string
+			)
+
+			deps, waitingForDepGroups, err = job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
 				return nil, msg, token, err
 			}
+
+			job.setWaitingForDepGroups(waitingForDepGroups)
 
 			itemdef := &queue.ItemDef{
 				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
@@ -2739,13 +2757,22 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 // createJobs creates new jobs, adding them to the database and the in-memory
 // queue. It returns 2 errors; the first is one of our Err constant strings,
 // the second is the actual error with more details.
-func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
+//
+//nolint:gocognit,gocyclo,cyclop,funlen // Legacy coordinator for persistence, dependency, and queue updates.
+func (s *Server) createJobs(
+	ctx context.Context,
+	inputJobs []*Job,
+	envkey string,
+	ignoreComplete bool,
+) (added int, dups int, alreadyComplete int, warnings AddWarnings, srerr string, qerr error) {
 	s.racmutex.RLock()
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
 
 	// create itemdefs for the jobs
 	limitGroups := make(map[string]*limiter.GroupData)
+
+	inputJobKeys := make(map[string]bool, len(inputJobs))
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -2761,12 +2788,14 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 			s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 		}
 
+		inputJobKeys[job.Key()] = true
+
 		job.Unlock()
 	}
 
 	err := s.storeLimitGroups(limitGroups)
 	if err != nil {
-		return added, dups, alreadyComplete, ErrDBError, err
+		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -2790,12 +2819,20 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 		// previously Archive()d jobs that were resurrected because of one of
 		// their DepGroup dependencies being in cr.Jobs
 		var itemdefs []*queue.ItemDef
+
+		warningDepGroups := make(map[string]bool)
 		for _, job := range jobsToQueue {
-			deps, err := job.Dependencies.incompleteJobKeys(s.db)
+			deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
 				srerr = ErrDBError
 				qerr = err
 				break
+			}
+
+			job.setWaitingForDepGroups(waitingForDepGroups)
+
+			if inputJobKeys[job.Key()] {
+				collectStrings(waitingForDepGroups, warningDepGroups)
 			}
 
 			itemdefs = append(itemdefs, &queue.ItemDef{
@@ -2804,6 +2841,8 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 				Dependencies: deps,
 			})
 		}
+
+		warnings.NeverSeenDepGroups = sortedStringSet(warningDepGroups)
 
 		srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
 
@@ -2823,7 +2862,8 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 			}
 		}
 	}
-	return added, dups, alreadyComplete, srerr, qerr
+
+	return added, dups, alreadyComplete, warnings, srerr, qerr
 }
 
 // handleUserSpecifiedJobLimitGroups takes limit groups on a job that may have
@@ -2879,22 +2919,23 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // jobs.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
 	type jobDeps struct {
-		job  *Job
-		deps []string
+		job                 *Job
+		deps                []string
+		waitingForDepGroups []string
 	}
 
 	updates := make([]jobDeps, 0, len(jobs))
 	readyCallbackExpected := false
 
 	for _, job := range jobs {
-		deps, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 		if err != nil {
 			srerr = ErrDBError
 			qerr = err
 			break
 		}
 
-		updates = append(updates, jobDeps{job: job, deps: deps})
+		updates = append(updates, jobDeps{job: job, deps: deps, waitingForDepGroups: waitingForDepGroups})
 
 		if len(deps) == 0 && !readyCallbackExpected {
 			item, errq := s.q.Get(job.Key())
@@ -2912,6 +2953,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 
 	for _, update := range updates {
 		job := update.job
+		job.setWaitingForDepGroups(update.waitingForDepGroups)
 
 		thisErr := s.q.Update(
 			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, s.itemTTRDuration(), update.deps,
@@ -3203,10 +3245,9 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 	var jobs []*Job
 	if len(serverIDs) > 0 {
 		running := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
-			JobStateRunning, false,
-			false)
+			JobStateRunning, false, false, false)
 		lost := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
-			JobStateLost, false, false)
+			JobStateLost, false, false, false)
 		for _, job := range append(running, lost...) {
 			if serverIDs[job.HostID] {
 				k, err := s.killJob(ctx, job.Key())
@@ -3337,13 +3378,14 @@ type repGroupOptions struct {
 
 func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 	return limitJobsOptions{
-		Limit:      opts.Limit,
-		Offset:     opts.Offset,
-		State:      opts.State,
-		ExitCode:   opts.ExitCode,
-		FailReason: opts.FailReason,
-		GetStd:     opts.GetStd,
-		GetEnv:     opts.GetEnv,
+		Limit:               opts.Limit,
+		Offset:              opts.Offset,
+		State:               opts.State,
+		ExitCode:            opts.ExitCode,
+		FailReason:          opts.FailReason,
+		GetStd:              opts.GetStd,
+		GetEnv:              opts.GetEnv,
+		WaitingForDepGroups: opts.WaitingForDepGroups,
 	}
 }
 
@@ -3464,14 +3506,15 @@ func (s *Server) getLastCompletionTimeByRepGroup(repGroup string,
 // blank, only jobs whose RepGroup matches repGroup according to match are
 // returned.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch,
-	limit int, state JobState, getStd bool, getEnv bool) []*Job {
+	limit int, state JobState, getStd bool, getEnv bool, waitingForDepGroups bool) []*Job {
 	jobs := s.getQueueJobsCurrent(ctx, repGroup, match)
 
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
-		Limit:  limit,
-		State:  state,
-		GetStd: getStd,
-		GetEnv: getEnv,
+		Limit:               limit,
+		State:               state,
+		GetStd:              getStd,
+		GetEnv:              getEnv,
+		WaitingForDepGroups: waitingForDepGroups,
 	})
 
 	return jobs
@@ -3580,20 +3623,21 @@ func normalizeRepGroupMatch(match RepGroupMatch, search bool) RepGroupMatch {
 }
 
 type limitJobsOptions struct {
-	Limit      int      // Maximum number of jobs to return (<1 = no limit)
-	Offset     int      // Starting offset for pagination
-	FailReason string   // Fail reason to filter jobs by
-	ExitCode   int      // Exit code to filter jobs by (if FailReason is set)
-	State      JobState // Filter jobs by this state
-	GetStd     bool     // If true, populate StdOut and StdErr of jobs
-	GetEnv     bool     // If true, populate Env of jobs
+	Limit               int      // Maximum number of jobs to return (<1 = no limit)
+	Offset              int      // Starting offset for pagination
+	FailReason          string   // Fail reason to filter jobs by
+	ExitCode            int      // Exit code to filter jobs by (if FailReason is set)
+	State               JobState // Filter jobs by this state
+	GetStd              bool     // If true, populate StdOut and StdErr of jobs
+	GetEnv              bool     // If true, populate Env of jobs
+	WaitingForDepGroups bool     // If true, return jobs waiting on never-seen dep groups
 }
 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
 func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptions) []*Job {
-	if !(opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv) {
+	if opts.Limit <= 0 && opts.State == "" && !opts.GetStd && !opts.GetEnv && !opts.WaitingForDepGroups {
 		return jobs
 	}
 
@@ -3650,7 +3694,8 @@ func (s *Server) jobMatchesFilters(job *Job, opts limitJobsOptions) bool {
 	jState = s.normalizeJobState(jState, jLost)
 
 	return s.matchesStateFilter(jState, opts.State) &&
-		s.matchesFailureFilter(jFailReason, jExitCode, opts.FailReason, opts.ExitCode)
+		s.matchesFailureFilter(jFailReason, jExitCode, opts.FailReason, opts.ExitCode) &&
+		matchesWaitingForDepGroupsFilter(job, opts.WaitingForDepGroups)
 }
 
 func getJobProps(job *Job) (JobState, int, string, bool) {
