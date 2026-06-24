@@ -1859,6 +1859,17 @@ assert.equal(form.withDocker, '');
 assert.equal(form.withSingularity, 'old.sif');
 assert.equal(form.containerMounts, '/old:/old');
 
+const dayDurationForm = createModifyForm({
+  ...oldJob,
+  ExpectedTime: 86400,
+  NoRetryOverWalltime: 172800
+});
+assert.equal(dayDurationForm.time, '24h');
+assert.equal(dayDurationForm.noRetryOverWalltime, '48h');
+const dayDurationPayload = createModifyPayload(dayDurationForm);
+assert.equal(dayDurationPayload.time, '24h');
+assert.equal(dayDurationPayload.no_retry_over_walltime, '48h');
+
 Object.assign(form, {
   cmd: 'echo web new',
   cwd: '/tmp/web-new',

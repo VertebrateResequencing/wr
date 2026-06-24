@@ -221,10 +221,6 @@ function durationText(seconds) {
         return '';
     }
 
-    if (value % 86400 === 0) {
-        return `${value / 86400}d`;
-    }
-
     if (value % 3600 === 0) {
         return `${value / 3600}h`;
     }
