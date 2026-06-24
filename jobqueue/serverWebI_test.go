@@ -180,6 +180,7 @@ func TestServerWebI(t *testing.T) {
 
 			body, err := io.ReadAll(resp.Body)
 			So(err, ShouldBeNil)
+			So(resp.Body.Close(), ShouldBeNil)
 			So(string(body), ShouldContainSubstring, "Waiting for dep groups not yet seen")
 			So(string(body), ShouldContainSubstring, "WaitingForDepGroups")
 			So(string(body), ShouldContainSubstring, "foreach: WaitingForDepGroups")
@@ -192,6 +193,7 @@ func TestServerWebI(t *testing.T) {
 			handler(w, r)
 			resp = w.Result()
 			So(resp.StatusCode, ShouldEqual, http.StatusNotFound)
+			So(resp.Body.Close(), ShouldBeNil)
 
 			fileTypes := map[string]string{
 				"static/js/test.js":      "text/javascript; charset=utf-8",
