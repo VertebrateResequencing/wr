@@ -477,6 +477,32 @@ func TestManagerLiveJTouch(t *testing.T) {
 		assertLiveJTouchFields(fixture.job, liveJTouchActualCwd, 321, 9, 4*time.Second, "out\n", "err\n")
 	})
 
+	Convey("An authenticated resource-only live jtouch preserves existing output tails", t, func() {
+		ctx := context.Background()
+		fixture := newLiveJTouchFixture(ctx, "1234")
+
+		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
+			Cwd:      liveJTouchActualCwd,
+			PeakRAM:  321,
+			PeakDisk: 9,
+			CPUtime:  4 * time.Second,
+			Stdout:   compressStd([]byte("out\n")),
+			Stderr:   compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+		So(resp.KillCalled, ShouldBeFalse)
+
+		resp, err = fixture.touch(ctx, fixture.token, &JobEndState{
+			Cwd:      liveJTouchActualCwd,
+			PeakRAM:  654,
+			PeakDisk: 12,
+			CPUtime:  7 * time.Second,
+		})
+		So(err, ShouldBeNil)
+		So(resp.KillCalled, ShouldBeFalse)
+		assertLiveJTouchFields(fixture.job, liveJTouchActualCwd, 654, 12, 7*time.Second, "out\n", "err\n")
+	})
+
 	Convey("An older runner jtouch with no live fields only extends TTR", t, func() {
 		ctx := context.Background()
 		fixture := newLiveJTouchFixture(ctx, "1234")

@@ -343,8 +343,14 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
-	job.StdOutC = jes.Stdout
-	job.StdErrC = jes.Stderr
+
+	if len(jes.Stdout) != 0 {
+		job.StdOutC = jes.Stdout
+	}
+
+	if len(jes.Stderr) != 0 {
+		job.StdErrC = jes.Stderr
+	}
 }
 
 func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
