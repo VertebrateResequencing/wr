@@ -955,10 +955,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					RepGroup: cr.Job.RepGroup,
 					Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
 					limitJobsOptions: limitJobsOptions{
-						Limit:  cr.Limit,
-						State:  cr.State,
-						GetStd: cr.GetStd,
-						GetEnv: cr.GetEnv,
+						Limit:               cr.Limit,
+						State:               cr.State,
+						GetStd:              cr.GetStd,
+						GetEnv:              cr.GetEnv,
+						WaitingForDepGroups: cr.WaitingForDepGroups,
 					},
 				}
 
@@ -997,7 +998,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
 
 			jobs := s.getJobsCurrent(ctx, repGroup, match, cr.Limit, cr.State,
-				cr.GetStd, cr.GetEnv)
+				cr.GetStd, cr.GetEnv, cr.WaitingForDepGroups)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}

@@ -38,10 +38,11 @@ import (
 
 const (
 	statusFormatEnv                  = "WR_STATUS_FORMAT"
-	defaultStatusTableColumns        = "command:36 id:32 status:10 attempts:8 host:16 reqgroup:18 count:5"
+	defaultStatusTableColumns        = "command:36 id:32 status:12 attempts:8 host:16 reqgroup:18 count:5"
 	statusTableColumnSeparator       = "  "
 	statusTableDefaultTruncateMarker = "..."
 	statusTableStatusFieldName       = "status"
+	statusDisplayStateWaitingDeps    = jobqueue.JobState("waiting-deps")
 	statusOutputFormatCounts         = "counts"
 	statusOutputFormatCountsAlias    = "c"
 	statusOutputFormatSummary        = "summary"
@@ -182,18 +183,27 @@ func statusTableGroupTotals(jobs []*jobqueue.Job) map[statusTableGroupKey]int {
 
 func statusTableGroupKeyForJob(job *jobqueue.Job) statusTableGroupKey {
 	return statusTableGroupKey{
-		state:      statusTableDisplayState(job.State),
+		state:      statusTableDisplayState(job),
 		exitcode:   job.Exitcode,
 		failReason: job.FailReason,
 	}
 }
 
-func statusTableDisplayState(state jobqueue.JobState) jobqueue.JobState {
+func statusTableDisplayState(job *jobqueue.Job) jobqueue.JobState {
+	state := statusDisplayState(job)
 	if state == jobqueue.JobStateReserved {
 		return jobqueue.JobStateRunning
 	}
 
 	return state
+}
+
+func statusDisplayState(job *jobqueue.Job) jobqueue.JobState {
+	if len(job.WaitingForDepGroups) > 0 {
+		return statusDisplayStateWaitingDeps
+	}
+
+	return job.State
 }
 
 func statusTableFieldForName(name string) (statusTableField, error) {

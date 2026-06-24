@@ -21,7 +21,7 @@ request handling in `jobqueue/serverCLI.go`, server filtering in
 `--missing_deps`. Cover the filtering and validation behavior from C3; Item
 3.3 covers the shared `waiting-deps` plain-output assertion.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Batch 1 (parallel, after Item 3.1 is reviewed)
@@ -36,7 +36,7 @@ JSON, REST `waiting_deps=true`, and web status details in `jobqueue/job.go`,
 `jobqueue/static/status.html` plus `jobqueue/static/js/wr/*.js`. Preserve
 exported Go field JSON names. Cover all 4 acceptance tests from C1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 #### Item 3.3: C2 - Display never-seen waits in CLI status [parallel with C1]
@@ -48,7 +48,7 @@ never-seen dep-group waits, table and plain output show `waiting-deps`, JSON
 retains `State:"dependent"` and exported field names, and counts still report
 these jobs as dependent. Cover all 5 acceptance tests from C2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 For parallel batch items, use separate subagents per item.

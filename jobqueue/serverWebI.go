@@ -390,7 +390,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					switch req.Request {
 					case jstatusRequestCurrent:
 						// get all current jobs
-						jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false)
+						jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false, false)
 						writeMutex.Lock()
 						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs)
 						if err != nil {

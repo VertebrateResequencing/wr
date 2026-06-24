@@ -2204,6 +2204,21 @@ func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMat
 	return resp.Jobs, err
 }
 
+// GetIncompleteWaitingForDepGroups gets all non-archived jobs currently in the
+// queue whose WaitingForDepGroups field is non-empty. If repgroup is supplied,
+// only jobs whose RepGroup matches according to match are returned.
+func (c *Client) GetIncompleteWaitingForDepGroups(repgroup string, match RepGroupMatch,
+	limit int, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		GetStd: getStd, GetEnv: getEnv, WaitingForDepGroups: true})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
 // GetLastCompletionTimeByRepGroup returns the most recent completion time for
 // each matched RepGroup.
 func (c *Client) GetLastCompletionTimeByRepGroup(repgroup string,

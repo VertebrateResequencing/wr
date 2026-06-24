@@ -265,6 +265,23 @@ func TestJob(t *testing.T) {
 		So(status.WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
 	})
 
+	Convey("ToStatus() reports never-seen dependency group waits", t, func() {
+		job := &Job{
+			Cmd:                 "true",
+			Cwd:                 "/cwd",
+			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+			DepGroups:           []string{testCarrierDepGroup},
+			WaitingForDepGroups: []string{futureDepGroup},
+			State:               JobStateDependent,
+		}
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.State, ShouldEqual, JobStateDependent)
+		So(status.DepGroups, ShouldResemble, []string{testCarrierDepGroup})
+		So(status.WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
+	})
+
 	Convey("ToStatus() safely reports env overrides while they change", t, func() {
 		job := &Job{
 			Cmd:          "true",

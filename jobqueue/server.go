@@ -1084,6 +1084,17 @@ func updateJobRequirementsForRetry(
 	}
 }
 
+func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
+	if !filter {
+		return true
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return len(job.WaitingForDepGroups) > 0
+}
+
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 	if job == nil || job.Requirements == nil || job.FailReason == "" {
 		return false
@@ -3234,10 +3245,9 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 	var jobs []*Job
 	if len(serverIDs) > 0 {
 		running := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
-			JobStateRunning, false,
-			false)
+			JobStateRunning, false, false, false)
 		lost := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
-			JobStateLost, false, false)
+			JobStateLost, false, false, false)
 		for _, job := range append(running, lost...) {
 			if serverIDs[job.HostID] {
 				k, err := s.killJob(ctx, job.Key())
@@ -3368,13 +3378,14 @@ type repGroupOptions struct {
 
 func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 	return limitJobsOptions{
-		Limit:      opts.Limit,
-		Offset:     opts.Offset,
-		State:      opts.State,
-		ExitCode:   opts.ExitCode,
-		FailReason: opts.FailReason,
-		GetStd:     opts.GetStd,
-		GetEnv:     opts.GetEnv,
+		Limit:               opts.Limit,
+		Offset:              opts.Offset,
+		State:               opts.State,
+		ExitCode:            opts.ExitCode,
+		FailReason:          opts.FailReason,
+		GetStd:              opts.GetStd,
+		GetEnv:              opts.GetEnv,
+		WaitingForDepGroups: opts.WaitingForDepGroups,
 	}
 }
 
@@ -3495,14 +3506,15 @@ func (s *Server) getLastCompletionTimeByRepGroup(repGroup string,
 // blank, only jobs whose RepGroup matches repGroup according to match are
 // returned.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch,
-	limit int, state JobState, getStd bool, getEnv bool) []*Job {
+	limit int, state JobState, getStd bool, getEnv bool, waitingForDepGroups bool) []*Job {
 	jobs := s.getQueueJobsCurrent(ctx, repGroup, match)
 
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
-		Limit:  limit,
-		State:  state,
-		GetStd: getStd,
-		GetEnv: getEnv,
+		Limit:               limit,
+		State:               state,
+		GetStd:              getStd,
+		GetEnv:              getEnv,
+		WaitingForDepGroups: waitingForDepGroups,
 	})
 
 	return jobs
@@ -3611,20 +3623,21 @@ func normalizeRepGroupMatch(match RepGroupMatch, search bool) RepGroupMatch {
 }
 
 type limitJobsOptions struct {
-	Limit      int      // Maximum number of jobs to return (<1 = no limit)
-	Offset     int      // Starting offset for pagination
-	FailReason string   // Fail reason to filter jobs by
-	ExitCode   int      // Exit code to filter jobs by (if FailReason is set)
-	State      JobState // Filter jobs by this state
-	GetStd     bool     // If true, populate StdOut and StdErr of jobs
-	GetEnv     bool     // If true, populate Env of jobs
+	Limit               int      // Maximum number of jobs to return (<1 = no limit)
+	Offset              int      // Starting offset for pagination
+	FailReason          string   // Fail reason to filter jobs by
+	ExitCode            int      // Exit code to filter jobs by (if FailReason is set)
+	State               JobState // Filter jobs by this state
+	GetStd              bool     // If true, populate StdOut and StdErr of jobs
+	GetEnv              bool     // If true, populate Env of jobs
+	WaitingForDepGroups bool     // If true, return jobs waiting on never-seen dep groups
 }
 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
 func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptions) []*Job {
-	if !(opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv) {
+	if opts.Limit <= 0 && opts.State == "" && !opts.GetStd && !opts.GetEnv && !opts.WaitingForDepGroups {
 		return jobs
 	}
 
@@ -3681,7 +3694,8 @@ func (s *Server) jobMatchesFilters(job *Job, opts limitJobsOptions) bool {
 	jState = s.normalizeJobState(jState, jLost)
 
 	return s.matchesStateFilter(jState, opts.State) &&
-		s.matchesFailureFilter(jFailReason, jExitCode, opts.FailReason, opts.ExitCode)
+		s.matchesFailureFilter(jFailReason, jExitCode, opts.FailReason, opts.ExitCode) &&
+		matchesWaitingForDepGroupsFilter(job, opts.WaitingForDepGroups)
 }
 
 func getJobProps(job *Job) (JobState, int, string, bool) {

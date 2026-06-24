@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -176,6 +177,11 @@ func TestServerWebI(t *testing.T) {
 			resp := w.Result()
 			So(resp.StatusCode, ShouldEqual, http.StatusOK)
 			So(resp.Header.Get("Content-Type"), ShouldEqual, "text/html; charset=utf-8")
+
+			body, err := io.ReadAll(resp.Body)
+			So(err, ShouldBeNil)
+			So(string(body), ShouldContainSubstring, "Waiting for dep groups not yet seen")
+			So(string(body), ShouldContainSubstring, "WaitingForDepGroups")
 
 			w = httptest.NewRecorder()
 			r = httptest.NewRequest(http.MethodGet, "/nonexistent.html", nil)

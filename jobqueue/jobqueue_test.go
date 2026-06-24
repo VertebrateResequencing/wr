@@ -66,16 +66,19 @@ import (
 )
 
 const (
-	localSchedulerName = "local"
-	maxSpawnTime       = 240 * time.Second
-	serverRC           = `echo %s %s %s %s %d %d`
-	testCwd            = "/tmp"
-	manuallyAdded      = "manually_added"
-	reqGroupFake       = "fake_group"
-	reqGroupFallocate  = "fallocate"
-	futureDepGroup     = "future"
-	reqGroupPerl       = "perl"
-	reqGroupSleep      = "sleep"
+	localSchedulerName  = "local"
+	maxSpawnTime        = 240 * time.Second
+	serverRC            = `echo %s %s %s %s %d %d`
+	testCwd             = "/tmp"
+	manuallyAdded       = "manually_added"
+	reqGroupFake        = "fake_group"
+	reqGroupFallocate   = "fallocate"
+	futureDepGroup      = "future"
+	testCarrierDepGroup = "carrier"
+	testLiveDepGroup    = "live"
+	testRepGroupA       = "rg-a"
+	reqGroupPerl        = "perl"
+	reqGroupSleep       = "sleep"
 )
 
 var (
@@ -2832,6 +2835,97 @@ func TestAddWarnings(t *testing.T) {
 	})
 }
 
+func TestGetIncompleteWaitingForDepGroups(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("GetIncompleteWaitingForDepGroups returns only jobs waiting on never-seen dep groups", t, func() {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		missing := &Job{
+			Cmd:          "echo c3 missing dependent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     testRepGroupA,
+			Dependencies: Dependencies{NewDepGroupDependency(futureDepGroup)},
+		}
+		otherMissing := &Job{
+			Cmd:          "echo c3 other missing dependent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "other",
+			Dependencies: Dependencies{NewDepGroupDependency("elsewhere")},
+		}
+		liveDependent := &Job{
+			Cmd:          "echo c3 live dependent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     testRepGroupA,
+			Dependencies: Dependencies{NewDepGroupDependency(testLiveDepGroup)},
+		}
+		liveCarrier := &Job{
+			Cmd:          "echo c3 live carrier",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     testRepGroupA,
+			DepGroups:    []string{testLiveDepGroup},
+		}
+		ready := &Job{
+			Cmd:          "echo c3 ready",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     testRepGroupA,
+		}
+
+		inserts, already, err := jq.Add(
+			[]*Job{missing, otherMissing, liveDependent, liveCarrier, ready},
+			envVars,
+			true,
+		)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 5)
+		So(already, ShouldEqual, 0)
+
+		allWaiting, err := jq.GetIncompleteWaitingForDepGroups("", RepGroupMatchExact, 0, false, false)
+		So(err, ShouldBeNil)
+		So(allWaiting, ShouldHaveLength, 2)
+
+		exactWaiting, err := jq.GetIncompleteWaitingForDepGroups(testRepGroupA, RepGroupMatchExact, 0, false, false)
+		So(err, ShouldBeNil)
+		So(exactWaiting, ShouldHaveLength, 1)
+		So(exactWaiting[0].Key(), ShouldEqual, missing.Key())
+		So(exactWaiting[0].WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
+
+		searchWaiting, err := jq.GetIncompleteWaitingForDepGroups("rg-", RepGroupMatchSubStr, 0, false, false)
+		So(err, ShouldBeNil)
+		So(searchWaiting, ShouldHaveLength, 1)
+		So(searchWaiting[0].Key(), ShouldEqual, missing.Key())
+	})
+}
+
 func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -2904,7 +2998,7 @@ func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
 		defer disconnect(jq)
 
 		firstCarrier := makeJob("echo a3 first live carrier", "a3-first-live-carrier", standardReqs)
-		firstCarrier.DepGroups = []string{"live"}
+		firstCarrier.DepGroups = []string{testLiveDepGroup}
 
 		inserts, already, err := jq.Add([]*Job{firstCarrier}, envVars, true)
 		So(err, ShouldBeNil)
@@ -2923,7 +3017,7 @@ func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
 		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
 
 		dependent := makeJob("echo a3 live dependent", "a3-live-dependent", standardReqs)
-		dependent.Dependencies = Dependencies{NewDepGroupDependency("live")}
+		dependent.Dependencies = Dependencies{NewDepGroupDependency(testLiveDepGroup)}
 
 		inserts, already, err = jq.Add([]*Job{dependent}, envVars, true)
 		So(err, ShouldBeNil)
@@ -2937,7 +3031,7 @@ func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
 		So(got[0].WaitingForDepGroups, ShouldBeNil)
 
 		secondCarrier := makeJob("echo a3 second live carrier", "a3-second-live-carrier", standardReqs)
-		secondCarrier.DepGroups = []string{"live"}
+		secondCarrier.DepGroups = []string{testLiveDepGroup}
 
 		inserts, already, err = jq.Add([]*Job{secondCarrier}, envVars, true)
 		So(err, ShouldBeNil)

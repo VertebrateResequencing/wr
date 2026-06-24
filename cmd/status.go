@@ -54,6 +54,10 @@ var (
 		"be used with --internal because internal job lookups cannot be state-filtered")
 )
 
+// statusExit exists so tests can exercise output modes that otherwise exit the
+// process.
+var statusExit = os.Exit
+
 // options for this cmd
 var (
 	cmdFileStatus   string
@@ -65,6 +69,7 @@ var (
 	showRunning     bool
 	showPending     bool
 	showDependent   bool
+	showMissingDeps bool
 	showEnv         bool
 	outputFormat    string
 	statusLimit     int
@@ -222,15 +227,20 @@ redirect (eg. "mycmd > stdout.txt").
 		case statusOutputFormatPlain, statusOutputFormatPlainAlias:
 			buried := false
 			for _, job := range jobs {
-				fmt.Printf("%s\t%s\n", job.Key(), job.State)
+				fmt.Printf("%s\t%s\n", job.Key(), statusDisplayState(job))
 				if job.State == jobqueue.JobStateBuried {
 					buried = true
 				}
 			}
 			if buried {
-				os.Exit(1)
+				statusExit(1)
+
+				return
 			}
-			os.Exit(0)
+
+			statusExit(0)
+
+			return
 		case statusOutputFormatSummary, statusOutputFormatSummaryAlias:
 			if useFastStatus {
 				printStatusSummaries(statusSummaries)
@@ -420,7 +430,12 @@ redirect (eg. "mycmd > stdout.txt").
 				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
 				case jobqueue.JobStateDependent:
-					fmt.Println("Status: dependent on other jobs")
+					if len(job.WaitingForDepGroups) > 0 {
+						fmt.Printf("Status: waiting on dep group(s) not yet seen: %s\n",
+							strings.Join(job.WaitingForDepGroups, ", "))
+					} else {
+						fmt.Println("Status: dependent on other jobs")
+					}
 				case jobqueue.JobStateBuried:
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
@@ -553,6 +568,8 @@ func init() {
 		"in default or -i mode only, only show the status of pending commands")
 	statusCmd.Flags().BoolVar(&showDependent, "dependent", false,
 		"in default or -i mode only, only show the status of dependent commands")
+	statusCmd.Flags().BoolVar(&showMissingDeps, "missing_deps", false,
+		"in default or -i mode only, only show jobs waiting on dep-groups not yet seen")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
 		"['counts','summary','details','plain','table','json'] output format")
@@ -602,7 +619,7 @@ func statusStateFilters() []jobqueue.JobState {
 }
 
 func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
-	if len(cmdStates) == 0 {
+	if len(cmdStates) == 0 && !showMissingDeps {
 		return nil
 	}
 
@@ -619,7 +636,7 @@ func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
 }
 
 func canUseFastStatusOutput(format string) bool {
-	if fromHost != "" || cmdFileStatus != "" || cmdLine != "" || (cmdIDStatus != "" && cmdIDIsInternal) {
+	if statusRequiresFullJobFetch() {
 		return false
 	}
 
@@ -629,6 +646,11 @@ func canUseFastStatusOutput(format string) bool {
 	default:
 		return false
 	}
+}
+
+func statusRequiresFullJobFetch() bool {
+	return showMissingDeps || fromHost != "" || cmdFileStatus != "" || cmdLine != "" ||
+		(cmdIDStatus != "" && cmdIDIsInternal)
 }
 
 func getFastStatusSummaries(jq *jobqueue.Client, cmdStates []jobqueue.JobState, useFastStatus bool,
@@ -766,6 +788,12 @@ func statusSummaryBuried(summary *jobqueue.RepGroupStatus) string {
 
 func getJobsForStates(jq *jobqueue.Client, cmdStates []jobqueue.JobState, all bool,
 	statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
+	if showMissingDeps {
+		jobs := getJobsWaitingForDepGroups(jq, all, statusLimit, showStd, showEnv)
+
+		return filterJobsByStatusStates(jobs, cmdStates)
+	}
+
 	if len(cmdStates) == 0 {
 		return getJobs(jq, "", all, statusLimit, showStd, showEnv)
 	}
@@ -776,6 +804,60 @@ func getJobsForStates(jq *jobqueue.Client, cmdStates []jobqueue.JobState, all bo
 	}
 
 	return jobs
+}
+
+func getJobsWaitingForDepGroups(jq *jobqueue.Client, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
+	match := jobqueue.RepGroupMatchExact
+	if cmdIDIsSubStr {
+		match = jobqueue.RepGroupMatchSubStr
+	}
+
+	repgroup := ""
+	if !all && cmdIDStatus != "" {
+		repgroup = cmdIDStatus
+	}
+
+	jobs, err := jq.GetIncompleteWaitingForDepGroups(repgroup, match, statusLimit, showStd, showEnv)
+	if err != nil {
+		die("failed to get jobs corresponding to your settings: %s", err)
+	}
+
+	return jobs
+}
+
+func filterJobsByStatusStates(jobs []*jobqueue.Job, states []jobqueue.JobState) []*jobqueue.Job {
+	if len(states) == 0 {
+		return jobs
+	}
+
+	var filtered []*jobqueue.Job
+
+	for _, job := range jobs {
+		if jobMatchesAnyStatusState(job, states) {
+			filtered = append(filtered, job)
+		}
+	}
+
+	return filtered
+}
+
+func jobMatchesAnyStatusState(job *jobqueue.Job, states []jobqueue.JobState) bool {
+	for _, state := range states {
+		if jobMatchesStatusState(job, state) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func jobMatchesStatusState(job *jobqueue.Job, state jobqueue.JobState) bool {
+	switch state {
+	case jobqueue.JobStateRunning:
+		return job.State == jobqueue.JobStateRunning || job.State == jobqueue.JobStateReserved
+	default:
+		return job.State == state
+	}
 }
 
 func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {

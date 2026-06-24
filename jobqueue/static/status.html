@@ -1121,6 +1121,14 @@
             </div>
             <!-- /ko -->
 
+            <!-- Waiting Dependency Groups Section -->
+            <!-- ko if: WaitingForDepGroups && WaitingForDepGroups.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Waiting for dep groups not yet seen</h4>
+                <div class="details-content" data-bind="html: WaitingForDepGroups.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
+
             <!-- Modules Section -->
             <!-- ko if: Modules && Modules.length > 0 -->
             <div class="details-section">

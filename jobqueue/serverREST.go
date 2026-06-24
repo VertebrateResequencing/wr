@@ -1337,14 +1337,14 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 
 // restJobsStatus gets the status of the requested jobs in the queue. The
 // request url can be suffixed with comma separated job keys or RepGroups.
-// Possible query parameters are search, std, env (which can take a "true"
-// value), limit (a number) and state (one of
+// Possible query parameters are search, std, env, waiting_deps (which can take
+// a "true" value), limit (a number) and state (one of
 // delayed|ready|reserved|running|lost|buried|dependent|complete|deletable),
 // where deletable == !(running|complete). Returns the Jobs, a http.Status*
 // value and error.
 func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
-	var search, getStd, getEnv bool
+	var search, getStd, getEnv, waitingForDepGroups bool
 	var limit int
 	var state JobState
 	var err error
@@ -1357,6 +1357,10 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	}
 	if r.Form.Get("env") == restFormTrue {
 		getEnv = true
+	}
+
+	if r.Form.Get("waiting_deps") == restFormTrue {
+		waitingForDepGroups = true
 	}
 	if r.Form.Get("limit") != "" {
 		limit, err = strconv.Atoi(r.Form.Get("limit"))
@@ -1406,10 +1410,11 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 				RepGroup: id,
 				Match:    normalizeRepGroupMatch("", search),
 				limitJobsOptions: limitJobsOptions{
-					Limit:  limit,
-					State:  state,
-					GetStd: getStd,
-					GetEnv: getEnv,
+					Limit:               limit,
+					State:               state,
+					GetStd:              getStd,
+					GetEnv:              getEnv,
+					WaitingForDepGroups: waitingForDepGroups,
 				},
 			}
 			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
@@ -1425,7 +1430,7 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 
 	// get all current jobs
 	return s.getJobsCurrent(ctx, "", RepGroupMatchExact, limit, state, getStd,
-		getEnv), http.StatusOK, err
+		getEnv, waitingForDepGroups), http.StatusOK, err
 }
 
 // restJobsAdd creates and adds jobs to the queue and returns them on success.

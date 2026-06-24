@@ -28,6 +28,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -44,13 +45,17 @@ import (
 )
 
 const (
-	statusTestCwd      = "/tmp"
-	statusTestDetails  = statusOutputFormatDetails
-	statusTestFalse    = "false"
-	statusTestFlagBury = "buried"
-	statusTestHost     = "localhost"
-	statusTestReqGroup = "status"
-	statusTestRepGroup = "status-filter"
+	statusTestCwd             = "/tmp"
+	statusTestDetails         = statusOutputFormatDetails
+	statusTestFalse           = "false"
+	statusTestFlagBury        = "buried"
+	statusTestHost            = "localhost"
+	statusTestReqGroup        = "status"
+	statusTestRepGroup        = "status-filter"
+	statusTestRepGroupA       = "rg-a"
+	statusTestFutureDepGroup  = "future"
+	statusTestCarrierDepGroup = "carrier"
+	statusTestLiveDepGroup    = "live"
 )
 
 //nolint:gosmopolitan // This test fixes time.Local to assert local CLI rendering.
@@ -331,6 +336,215 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 	})
 }
 
+func TestStatusFiltersMissingDepGroups(t *testing.T) {
+	Convey("wr status --missing_deps filters jobs waiting on never-seen dep groups", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		missing := &jobqueue.Job{
+			Cmd:          "echo status missing dep",
+			Cwd:          statusTestCwd,
+			ReqGroup:     statusTestReqGroup,
+			Requirements: reqs,
+			RepGroup:     statusTestRepGroupA,
+			Dependencies: jobqueue.Dependencies{
+				jobqueue.NewDepGroupDependency(statusTestFutureDepGroup),
+			},
+		}
+		liveDependent := &jobqueue.Job{
+			Cmd:          "echo status live dependent",
+			Cwd:          statusTestCwd,
+			ReqGroup:     statusTestReqGroup,
+			Requirements: reqs,
+			RepGroup:     statusTestRepGroupA,
+			Dependencies: jobqueue.Dependencies{
+				jobqueue.NewDepGroupDependency(statusTestLiveDepGroup),
+			},
+		}
+		liveCarrier := &jobqueue.Job{
+			Cmd:          "echo status live carrier",
+			Cwd:          statusTestCwd,
+			ReqGroup:     statusTestReqGroup,
+			Requirements: reqs,
+			RepGroup:     statusTestRepGroupA,
+			DepGroups:    []string{statusTestLiveDepGroup},
+		}
+		ready := &jobqueue.Job{
+			Cmd:          "echo status ready",
+			Cwd:          statusTestCwd,
+			ReqGroup:     statusTestReqGroup,
+			Requirements: reqs,
+			RepGroup:     statusTestRepGroupA,
+		}
+		otherMissing := &jobqueue.Job{
+			Cmd:          "echo status other missing dep",
+			Cwd:          statusTestCwd,
+			ReqGroup:     statusTestReqGroup,
+			Requirements: reqs,
+			RepGroup:     "other",
+			Dependencies: jobqueue.Dependencies{
+				jobqueue.NewDepGroupDependency("elsewhere"),
+			},
+		}
+
+		inserts, already, err := jq.Add(
+			[]*jobqueue.Job{missing, liveDependent, liveCarrier, ready, otherMissing},
+			os.Environ(),
+			true,
+		)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 5)
+		So(already, ShouldEqual, 0)
+
+		output := runStatusForTest(t, "--missing_deps", "--output", "counts")
+		So(output, ShouldContainSubstring, "dependent: 2\n")
+		So(output, ShouldContainSubstring, "ready: 0\n")
+		So(output, ShouldContainSubstring, "buried: 0\n")
+
+		output = runStatusForTest(t, "--identifier", statusTestRepGroupA, "--missing_deps", "--output", "counts")
+		So(output, ShouldContainSubstring, "dependent: 1\n")
+		So(output, ShouldContainSubstring, "ready: 0\n")
+		So(output, ShouldContainSubstring, "buried: 0\n")
+
+		output = runStatusForTest(t, "--identifier", "rg-", "--search", "--missing_deps", "--output", "counts")
+		So(output, ShouldContainSubstring, "dependent: 1\n")
+		So(output, ShouldContainSubstring, "ready: 0\n")
+		So(output, ShouldContainSubstring, "buried: 0\n")
+	})
+
+	Convey("wr status --missing_deps validates where scoped filters can apply", t, func() {
+		Convey("allows the filter in default and report group modes", func() {
+			resetStatusForTest(t)
+
+			showMissingDeps = true
+
+			So(validateStatusStateFilters(statusStateFilters()), ShouldBeNil)
+
+			cmdIDStatus = statusTestRepGroup
+
+			So(validateStatusStateFilters(statusStateFilters()), ShouldBeNil)
+		})
+
+		for _, tc := range []struct {
+			name  string
+			setup func()
+			want  string
+		}{
+			{
+				name:  "file mode",
+				setup: func() { cmdFileStatus = "commands.txt" },
+				want:  "-f",
+			},
+			{
+				name:  "cmdline mode",
+				setup: func() { cmdLine = "echo status" },
+				want:  "-l",
+			},
+			{
+				name: "internal identifier mode",
+				setup: func() {
+					cmdIDStatus = "abc123"
+					cmdIDIsInternal = true
+				},
+				want: "--internal",
+			},
+		} {
+			Convey("rejects the filter in "+tc.name, func() {
+				resetStatusForTest(t)
+
+				showMissingDeps = true
+
+				tc.setup()
+
+				err := validateStatusStateFilters(statusStateFilters())
+				So(err, ShouldNotBeNil)
+				So(err.Error(), ShouldContainSubstring, "state filters")
+				So(err.Error(), ShouldContainSubstring, tc.want)
+			})
+		}
+	})
+}
+
+func TestStatusDisplaysMissingDepGroups(t *testing.T) {
+	Convey("wr status displays never-seen dep-group waits distinctly", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		waiting := addStatusWaitingDepJob(t, jq, reqs)
+
+		details := runStatusForTest(t, "--identifier", waiting.RepGroup, "--output", "details")
+		So(details, ShouldContainSubstring, "Status: waiting on dep group(s) not yet seen: "+statusTestFutureDepGroup)
+
+		table := runStatusForTest(t, "--identifier", waiting.RepGroup, "--output", "table")
+		So(table, ShouldContainSubstring, "waiting-deps")
+
+		plain, exitCode := runStatusForTestWithExit(t, "--identifier", waiting.RepGroup, "--output", "plain")
+		So(exitCode, ShouldEqual, 0)
+		So(plain, ShouldContainSubstring, waiting.Key()+"\twaiting-deps\n")
+
+		jsonOutput := runStatusForTest(t, "--identifier", waiting.RepGroup, "--output", "json")
+
+		var statuses []map[string]json.RawMessage
+		So(json.Unmarshal([]byte(jsonOutput), &statuses), ShouldBeNil)
+		So(statuses, ShouldHaveLength, 1)
+
+		var state string
+		So(json.Unmarshal(statuses[0]["State"], &state), ShouldBeNil)
+		So(state, ShouldEqual, string(jobqueue.JobStateDependent))
+
+		var depGroups []string
+		So(json.Unmarshal(statuses[0]["DepGroups"], &depGroups), ShouldBeNil)
+		So(depGroups, ShouldResemble, []string{statusTestCarrierDepGroup})
+
+		var waitingGroups []string
+		So(json.Unmarshal(statuses[0]["WaitingForDepGroups"], &waitingGroups), ShouldBeNil)
+		So(waitingGroups, ShouldResemble, []string{statusTestFutureDepGroup})
+
+		_, hasLowerState := statuses[0]["state"]
+		_, hasSnakeDepGroups := statuses[0]["dep_groups"]
+		_, hasSnakeWaitingGroups := statuses[0]["waiting_for_dep_groups"]
+
+		So(hasLowerState, ShouldBeFalse)
+		So(hasSnakeDepGroups, ShouldBeFalse)
+		So(hasSnakeWaitingGroups, ShouldBeFalse)
+
+		counts := runStatusForTest(t, "--identifier", waiting.RepGroup, "--output", "counts")
+		So(counts, ShouldContainSubstring, "dependent: 1\n")
+	})
+}
+
 func TestStatusTableOutput(t *testing.T) {
 	Convey("wr status renders an aligned table", t, func() {
 		ctx := context.Background()
@@ -478,6 +692,45 @@ func freeStatusTestPorts(t *testing.T) (string, string) {
 	return strconv.Itoa(a1.Port), strconv.Itoa(a2.Port)
 }
 
+func addStatusWaitingDepJob(t *testing.T, jq *jobqueue.Client, reqs *jqs.Requirements) *jobqueue.Job {
+	t.Helper()
+
+	waiting := &jobqueue.Job{
+		Cmd:          "echo status waiting dep",
+		Cwd:          statusTestCwd,
+		ReqGroup:     statusTestReqGroup,
+		Requirements: reqs,
+		RepGroup:     "status-waiting-deps",
+		DepGroups:    []string{statusTestCarrierDepGroup},
+		Dependencies: jobqueue.Dependencies{
+			jobqueue.NewDepGroupDependency(statusTestFutureDepGroup),
+		},
+	}
+
+	inserts, already, err := jq.Add([]*jobqueue.Job{waiting}, os.Environ(), true)
+	So(err, ShouldBeNil)
+	So(inserts, ShouldEqual, 1)
+	So(already, ShouldEqual, 0)
+
+	return waiting
+}
+
+func runStatusForTestWithExit(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+
+	exitCode := -1
+	oldStatusExit := statusExit
+
+	statusExit = func(code int) {
+		exitCode = code
+	}
+	defer func() {
+		statusExit = oldStatusExit
+	}()
+
+	return runStatusForTest(t, args...), exitCode
+}
+
 func runStatusForTest(t *testing.T, args ...string) string {
 	t.Helper()
 
@@ -522,6 +775,7 @@ func resetStatusForTest(t *testing.T) {
 	showRunning = false
 	showPending = false
 	showDependent = false
+	showMissingDeps = false
 	showEnv = false
 	outputFormat = statusTestDetails
 	statusLimit = 1
@@ -536,6 +790,7 @@ func resetStatusForTest(t *testing.T) {
 		{"running", statusTestFalse},
 		{"pending", statusTestFalse},
 		{"dependent", statusTestFalse},
+		{"missing_deps", statusTestFalse},
 		{"env", statusTestFalse},
 		{"output", statusTestDetails},
 		{"limit", "1"},
