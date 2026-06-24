@@ -393,11 +393,14 @@ func commandHelpForTest(t *testing.T, command *cobra.Command) string {
 
 	var output bytes.Buffer
 
-	command.SetOut(&output)
+	oldOut := command.OutOrStdout()
+	oldErr := command.ErrOrStderr()
 
+	command.SetOut(&output)
 	command.SetErr(&output)
-	defer command.SetOut(os.Stdout)
-	defer command.SetErr(os.Stderr)
+
+	defer command.SetOut(oldOut)
+	defer command.SetErr(oldErr)
 
 	So(command.Help(), ShouldBeNil)
 

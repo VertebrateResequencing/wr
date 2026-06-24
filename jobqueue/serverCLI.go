@@ -882,6 +882,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 									deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
 									if depErr != nil {
 										clog.Error(ctx, "failed to get job dependencies", "err", depErr)
+
+										continue
 									}
 
 									job.setWaitingForDepGroups(waitingForDepGroups)
