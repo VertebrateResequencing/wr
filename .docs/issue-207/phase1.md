@@ -19,7 +19,7 @@ Implement `ItemStateSuspended`, `SubQueueSuspended`, suspended queue storage,
 from A1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1.2: A2 - Preserve Dependency Accounting
 
@@ -30,4 +30,4 @@ accounting for suspended parent and child items in `queue/queue.go`, covering
 all 4 acceptance tests from A2. Depends on item 1.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
