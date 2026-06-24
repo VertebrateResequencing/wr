@@ -184,7 +184,7 @@ export function copyTextToClipboard(text) {
     }
 
     if (navigator.clipboard && window.isSecureContext) {
-        return navigator.clipboard.writeText(value).then(() => true);
+        return navigator.clipboard.writeText(value).then(() => true).catch(() => false);
     }
 
     const textArea = document.createElement('textarea');
@@ -198,6 +198,8 @@ export function copyTextToClipboard(text) {
 
     try {
         return Promise.resolve(document.execCommand('copy'));
+    } catch {
+        return Promise.resolve(false);
     } finally {
         document.body.removeChild(textArea);
     }

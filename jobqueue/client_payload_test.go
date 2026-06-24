@@ -165,6 +165,10 @@ func (s *captureSocket) response() *serverResponse {
 }
 
 func TestClientLifecycleRequestsTrimJobPayload(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	Convey("Lifecycle methods send only keys and required state, not whole jobs", t, func() {
 		client, sock := newCaptureClient()
 		job := newLargePayloadJob(client.clientid)
@@ -204,6 +208,10 @@ func TestClientLifecycleRequestsTrimJobPayload(t *testing.T) {
 }
 
 func TestClientTouchSendsLiveEndState(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	Convey("Touch sends a key-only jtouch request with current live end state fields", t, func() {
 		client, sock := newCaptureClient()
 		stdout := compressStd([]byte("out\n"))
@@ -239,6 +247,10 @@ func TestClientTouchSendsLiveEndState(t *testing.T) {
 }
 
 func TestServerRejectsKeyOnlyStartedRequest(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	Convey("A malformed key-only jstart request is rejected instead of panicking", t, func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -395,6 +407,10 @@ func cloneTestJobEndState(state *JobEndState) *JobEndState {
 }
 
 func TestClientExecuteLiveTouchPayloads(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	Convey("Execute sends stdout tails once per touch from the actual cwd", t, func() {
 		capture := &liveTouchCapture{}
 		client := newLiveExecuteCaptureClient(capture)

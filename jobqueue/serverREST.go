@@ -1315,11 +1315,17 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 
 		// convert jobs to jstatus
 		jstati := make([]JStatus, len(jobs))
+		includeStd := r.Form.Get("std") == restFormTrue
 		for i, job := range jobs {
 			jstati[i], err = job.ToStatus()
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 				http.Error(w, err.Error(), status)
 				return
+			}
+
+			if !includeStd {
+				jstati[i].StdErr = ""
+				jstati[i].StdOut = ""
 			}
 		}
 

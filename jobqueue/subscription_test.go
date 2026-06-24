@@ -63,6 +63,32 @@ var (
 	errAsyncDriverWait   = errors.New("timed out waiting for async job driver")
 )
 
+func TestLiveJobUpdateCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Live job updates normalise cwd display paths", t, func() {
+		cwdBase := filepath.Dir(liveJTouchActualCwd)
+		outsideCwd := filepath.Join(filepath.Dir(cwdBase), "other", "job1")
+		job := &Job{
+			Cmd:       "echo cwd",
+			Cwd:       cwdBase,
+			ActualCwd: cwdBase,
+			State:     JobStateRunning,
+		}
+
+		update, err := jobUpdateFromLiveJob(job)
+		So(err, ShouldBeNil)
+		So(update.Cwd, ShouldEqual, "/")
+
+		job.ActualCwd = outsideCwd
+		update, err = jobUpdateFromLiveJob(job)
+		So(err, ShouldBeNil)
+		So(update.Cwd, ShouldEqual, outsideCwd)
+	})
+}
+
 type addAndWaitResult struct {
 	jobs []*Job
 	err  error
@@ -827,6 +853,8 @@ func assertLiveJobUpdate(update *JobUpdate, key string) {
 	So(update.Host, ShouldEqual, "worker1")
 	So(update.HostIP, ShouldEqual, "10.0.0.8")
 	So(update.Pid, ShouldEqual, 44)
+	So(update.CwdBase, ShouldEqual, testCwd)
+	So(update.Cwd, ShouldEqual, "/wr/job1")
 	So(update.SSHCommand, ShouldNotBeBlank)
 }
 

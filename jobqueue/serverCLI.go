@@ -361,6 +361,14 @@ func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
 		return "", err
 	}
 
+	if rel == "." {
+		return "/", nil
+	}
+
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return cwd, nil
+	}
+
 	return "/" + rel, nil
 }
 

@@ -424,7 +424,7 @@ func (w *liveTailSaver) FlushCompressed() []byte {
 	}
 
 	tail := w.tail
-	w.tail = nil
+	w.tail = w.tail[:0]
 	w.dirty = false
 
 	return compressedLiveTail(tail)

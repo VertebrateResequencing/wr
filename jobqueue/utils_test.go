@@ -34,6 +34,10 @@ import (
 )
 
 func TestLiveTailSaver(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	Convey("A live tail saver flushes a compressed recent tail", t, func() {
 		saver := &liveTailSaver{}
 

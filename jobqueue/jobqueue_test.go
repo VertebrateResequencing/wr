@@ -453,6 +453,10 @@ func assertLiveJTouchFields(
 }
 
 func TestManagerLiveJTouch(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	Convey("An authenticated live jtouch stores a live snapshot behind the secure gate", t, func() {
 		ctx := context.Background()
 		fixture := newLiveJTouchFixture(ctx, "1234")

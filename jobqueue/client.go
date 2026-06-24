@@ -259,13 +259,14 @@ func (state *serverContactState) schedulerMemoryFallbackAllowed() bool {
 
 type executeLiveState struct {
 	sync.Mutex
-	stdout    *liveTailSaver
-	stderr    *liveTailSaver
-	cwd       string
-	pid       int
-	peakRAM   int
-	peakDisk  int64
-	dockerCPU int
+	stdout   *liveTailSaver
+	stderr   *liveTailSaver
+	cwd      string
+	peakRAM  int
+	peakDisk int64
+	cpuTime  time.Duration
+	cwdSent  bool
+	dirty    bool
 }
 
 func newExecuteLiveState(cwd string, stdout, stderr *liveTailSaver) *executeLiveState {
@@ -276,39 +277,63 @@ func newExecuteLiveState(cwd string, stdout, stderr *liveTailSaver) *executeLive
 	}
 }
 
-func (state *executeLiveState) setPid(pid int) {
+func (state *executeLiveState) updateResources(peakRAM int, peakDisk int64, cpuTime time.Duration) {
 	state.Lock()
 	defer state.Unlock()
 
-	state.pid = pid
-}
-
-func (state *executeLiveState) updateResources(peakRAM int, peakDisk int64, dockerCPU int) {
-	state.Lock()
-	defer state.Unlock()
+	if state.peakRAM == peakRAM && state.peakDisk == peakDisk && state.cpuTime == cpuTime {
+		return
+	}
 
 	state.peakRAM = peakRAM
 	state.peakDisk = peakDisk
-	state.dockerCPU = dockerCPU
+	state.cpuTime = cpuTime
+	state.dirty = true
 }
 
 func (state *executeLiveState) snapshot() *JobEndState {
+	stdout := state.stdout.FlushCompressed()
+	stderr := state.stderr.FlushCompressed()
+	hasOutput := liveSnapshotHasOutput(stdout, stderr)
+
 	state.Lock()
-	cwd := state.cwd
-	pid := state.pid
-	peakRAM := state.peakRAM
-	peakDisk := state.peakDisk
-	dockerCPU := state.dockerCPU
-	state.Unlock()
+	defer state.Unlock()
+
+	cwd := state.snapshotCwd(hasOutput)
+	peakRAM, peakDisk, cpuTime := state.snapshotResources(hasOutput)
 
 	return &JobEndState{
 		Cwd:      cwd,
 		PeakRAM:  peakRAM,
 		PeakDisk: peakDisk,
-		CPUtime:  currentProcessTreeCPUtime(pid) + time.Duration(dockerCPU)*time.Second,
-		Stdout:   state.stdout.FlushCompressed(),
-		Stderr:   state.stderr.FlushCompressed(),
+		CPUtime:  cpuTime,
+		Stdout:   stdout,
+		Stderr:   stderr,
 	}
+}
+
+func liveSnapshotHasOutput(stdout, stderr []byte) bool {
+	return len(stdout) != 0 || len(stderr) != 0
+}
+
+func (state *executeLiveState) snapshotCwd(hasOutput bool) string {
+	if state.cwdSent && !hasOutput && !state.dirty {
+		return ""
+	}
+
+	state.cwdSent = true
+
+	return state.cwd
+}
+
+func (state *executeLiveState) snapshotResources(hasOutput bool) (int, int64, time.Duration) {
+	if !state.dirty && !hasOutput {
+		return 0, 0, 0
+	}
+
+	state.dirty = false
+
+	return state.peakRAM, state.peakDisk, state.cpuTime
 }
 
 func currentProcessTreeCPUtime(pid int) time.Duration {
@@ -1201,7 +1226,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
-	liveState.setPid(cmd.Process.Pid)
 
 	var oomMonitor *cgroupOOMMonitor
 
@@ -1465,7 +1489,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					peakdisk = disk
 				}
 
-				liveState.updateResources(peakmem, peakdisk, dockerCPU)
+				cpuTime := currentProcessTreeCPUtime(cmd.Process.Pid) + time.Duration(dockerCPU)*time.Second
+				liveState.updateResources(peakmem, peakdisk, cpuTime)
 				stateMutex.Unlock()
 			case <-stopChecking:
 				closeReaders()
