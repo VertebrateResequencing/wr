@@ -549,7 +549,8 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		var err error
 		noRetry, err = time.ParseDuration(jvj.NoRetriesOverWalltime)
 		if err != nil {
-			return nil, fmt.Errorf("time value (%s) was not specified correctly: %w", jvj.NoRetriesOverWalltime, err)
+			return nil, fmt.Errorf("no_retry_over_walltime value (%s) was not specified correctly: %w",
+				jvj.NoRetriesOverWalltime, err)
 		}
 	}
 
@@ -1069,7 +1070,8 @@ func (jvj *JobModifyViaJSON) setModifierRetryFields(modifier *JobModifier) error
 	if jvj.NoRetryOverWalltime != nil {
 		dur, err := time.ParseDuration(*jvj.NoRetryOverWalltime)
 		if err != nil {
-			return fmt.Errorf("time value (%s) was not specified correctly: %w", *jvj.NoRetryOverWalltime, err)
+			return fmt.Errorf("no_retry_over_walltime value (%s) was not specified correctly: %w",
+				*jvj.NoRetryOverWalltime, err)
 		}
 
 		modifier.SetNoRetriesOverWalltime(dur)

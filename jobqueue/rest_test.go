@@ -530,6 +530,17 @@ func TestRESTJobModificationValidation(t *testing.T) {
 			So(getJobStatus(key, false).Cmd, ShouldEqual, "echo rest empty cmd")
 		})
 
+		Convey("PATCH reports no-retry walltime parse errors with the field name", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest bad no retry", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-bad-no-retry",
+			})
+
+			status, body, _ := patchJob(key, `{"no_retry_over_walltime":"notaduration"}`)
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldContainSubstring, "no_retry_over_walltime value (notaduration) was not specified correctly")
+		})
+
 		Convey("PATCH rejects running jobs without changing them", func() {
 			key := addJob(&Job{
 				Cmd: "echo rest running", Cwd: testCwd, ReqGroup: restA2ReqGroup,

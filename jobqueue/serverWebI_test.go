@@ -1930,6 +1930,14 @@ const expectedPayload = {
 };
 
 assert.deepEqual(createModifyPayload(form), expectedPayload);
+assert.throws(
+  () => createModifyPayload({...form, cmdDeps: '{}'}),
+  /cmd_deps must be a JSON array/
+);
+assert.throws(
+  () => createModifyPayload({...form, mounts: '{}'}),
+  /mounts must be a JSON array/
+);
 
 const request = createModifyRequest(form, 'web-token');
 assert.equal(request.url, '/rest/v1/jobs/' + oldKey);

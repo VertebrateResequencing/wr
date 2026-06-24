@@ -271,14 +271,18 @@ function jsonArrayText(value) {
     return Array.isArray(value) && value.length > 0 ? JSON.stringify(value) : '';
 }
 
-function parseJSONList(text) {
+function parseJSONList(text, fieldName) {
     const value = String(text || '').trim();
     if (value === '') {
         return [];
     }
 
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) {
+        throw new Error(`${fieldName} must be a JSON array`);
+    }
+
+    return parsed;
 }
 
 function setJSONPayloadField(payload, payloadField, form, formField, originalField) {
@@ -286,7 +290,7 @@ function setJSONPayloadField(payload, payloadField, form, formField, originalFie
     const original = textField(form, originalField).trim();
 
     if (current !== '' || original !== '') {
-        payload[payloadField] = parseJSONList(current);
+        payload[payloadField] = parseJSONList(current, payloadField);
     }
 }
 
@@ -316,7 +320,7 @@ function setMountPayloadField(payload, form) {
     const original = textField(form, 'originalMounts').trim();
 
     if (current !== '' || original !== '') {
-        payload.mounts = parseJSONList(current);
+        payload.mounts = parseJSONList(current, 'mounts');
     }
 }
 
