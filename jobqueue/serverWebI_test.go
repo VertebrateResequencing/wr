@@ -1381,6 +1381,104 @@ func TestStatusDetailsLiveCompatibility(t *testing.T) {
 	})
 }
 
+func TestStatusDetailsLiveFields(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status details include running job live fields and SSH command", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "status-details-c1-live")
+		killCalled, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+			Stderr:  compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: job.RepGroup,
+			State:    JobStateRunning,
+		})
+		So(err, ShouldBeNil)
+
+		status, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && !status.IsPushUpdate
+		})
+		So(ok, ShouldBeTrue)
+		So(status.State, ShouldEqual, JobStateRunning)
+		So(status.PeakRAM, ShouldEqual, 321)
+		So(status.CPUtime, ShouldEqual, 4)
+		So(status.StdOut, ShouldEqual, "out\n")
+		So(status.StdErr, ShouldEqual, "err\n")
+		So(status.SSHCommand, ShouldEqual,
+			"ssh cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
+func TestStatusDetailsLivePushUpdates(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status details websocket pushes running job live fields and SSH command", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "status-details-c2-live")
+
+		ws, cleanup := openStatusDetailsSubscription(ctx, server, token, job.RepGroup, job.Key())
+		defer cleanup()
+
+		killCalled, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+			Stderr:  compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		status, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.PeakRAM == 321
+		})
+		So(ok, ShouldBeTrue)
+		So(status.State, ShouldEqual, JobStateRunning)
+		So(status.CPUtime, ShouldEqual, 4)
+		So(status.StdOut, ShouldEqual, "out\n")
+		So(status.StdErr, ShouldEqual, "err\n")
+		So(status.SSHCommand, ShouldEqual,
+			"ssh cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
 func clearReadDeadlineBestEffort(ws *websocket.Conn) {
 	if err := ws.SetReadDeadline(time.Time{}); err != nil {
 		return
@@ -2346,8 +2444,49 @@ assert.equal(errorVM.detailsOA()[0].Priority, 1);
 	})
 }
 
+func TestStatusPageLiveIntrospectionAssets(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status page assets render live introspection without an embedded terminal", t, func() {
+		html := readTextAsset(t, "static/status.html")
+		handler := readTextAsset(t, "static/js/wr/websocket-handler.js")
+		utility := readTextAsset(t, "static/js/wr/utility.js")
+		css := readTextAsset(t, "static/css/wr-0.36.0.css")
+
+		So(html, ShouldContainSubstring, "!Exited && (State == 'running' || State == 'reserved') && PeakRAM > 0")
+		So(html, ShouldContainSubstring, "text: window.wrUtils.mbIEC(PeakRAM)")
+		So(html, ShouldContainSubstring, "!Exited && (State == 'running' || State == 'reserved') && CPUtime > 0")
+		So(html, ShouldContainSubstring, "text: 'CPU: ' + window.wrUtils.toDuration(CPUtime)")
+		So(html, ShouldContainSubstring, "ko if: StdOut")
+		So(html, ShouldContainSubstring, "ko if: StdErr")
+		So(html, ShouldContainSubstring, "ko if: SSHCommand")
+		So(html, ShouldContainSubstring, "data-clipboard-text': SSHCommand")
+		So(html, ShouldContainSubstring, "ssh-command-text")
+		So(html, ShouldNotContainSubstring, "xterm")
+		So(html, ShouldNotContainSubstring, "web-terminal")
+
+		So(handler, ShouldContainSubstring, "mergeJobDetailsPushUpdate")
+		So(handler, ShouldContainSubstring, "viewModel.detailsOA.splice(index, 1, merged)")
+		So(utility, ShouldContainSubstring, "copyTextToClipboard")
+		So(utility, ShouldContainSubstring, "navigator.clipboard.writeText")
+		So(css, ShouldContainSubstring, ".ssh-command-control")
+		So(css, ShouldContainSubstring, ".ssh-command-text")
+	})
+}
+
 func readStaticText(path string) string {
 	data, err := staticFS.ReadFile(path)
+	So(err, ShouldBeNil)
+
+	return string(data)
+}
+
+func readTextAsset(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
 	So(err, ShouldBeNil)
 
 	return string(data)

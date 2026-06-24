@@ -329,4 +329,91 @@ func TestJob(t *testing.T) {
 		wg.Wait()
 		So(readErrors, ShouldEqual, 0)
 	})
+
+	Convey("ToStatus() includes live fields and an SSH command for running jobs", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Requirements.Other["cloud_user"] = "ubuntu"
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, "/tmp/wr")
+		So(status.Cwd, ShouldEqual, "/job1")
+		So(status.PeakRAM, ShouldEqual, 321)
+		So(status.CPUtime, ShouldEqual, 4)
+		So(status.StdOut, ShouldEqual, "out\n")
+		So(status.StdErr, ShouldEqual, "err\n")
+		So(status.SSHCommand, ShouldEqual,
+			"ssh ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+
+	Convey("ToStatus() uses Host when a running job has no HostIP", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.HostIP = ""
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh worker1 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+
+	Convey("ToStatus() leaves SSHCommand empty without a running host or cwd", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Host = ""
+		job.HostIP = ""
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.SSHCommand, ShouldEqual, "")
+
+		job = liveStatusJob(JobStateRunning)
+		job.ActualCwd = ""
+
+		status, err = job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.SSHCommand, ShouldEqual, "")
+	})
+
+	Convey("ToStatus() shell-quotes a running job's actual cwd in SSHCommand", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.HostIP = ""
+		job.ActualCwd = "/tmp/wr/live jobs/it's-ok"
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.SSHCommand, ShouldEqual,
+			`ssh worker1 'cd '"'"'/tmp/wr/live jobs/it'"'"'"'"'"'"'"'"'s-ok'"'"' `+
+				`&& exec ${SHELL:-/bin/sh} -l'`)
+	})
+
+	Convey("ToStatus() hides SSHCommand for non-running status details", t, func() {
+		for _, state := range []JobState{JobStateComplete, JobStateBuried, JobStateLost} {
+			job := liveStatusJob(state)
+
+			status, err := job.ToStatus()
+			So(err, ShouldBeNil)
+			So(status.SSHCommand, ShouldEqual, "")
+		}
+	})
+}
+
+func liveStatusJob(state JobState) *Job {
+	return &Job{
+		Cmd:       "echo live status",
+		Cwd:       "/tmp/wr",
+		ActualCwd: "/tmp/wr/job1",
+		Requirements: &scheduler.Requirements{
+			RAM:   1,
+			Time:  time.Minute,
+			Cores: 1,
+			Other: map[string]string{},
+		},
+		State:   state,
+		Host:    liveStatusHost,
+		HostIP:  liveStatusHostIP,
+		Pid:     44,
+		PeakRAM: 321,
+		CPUtime: 4 * time.Second,
+		StdOutC: compressStd([]byte("out\n")),
+		StdErrC: compressStd([]byte("err\n")),
+	}
 }

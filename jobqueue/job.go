@@ -115,9 +115,9 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 		return ""
 	}
 
-	remote := "cd " + shellquote.Join(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
+	remote := "cd " + quoteRemoteCwd(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
 
-	return "ssh " + shellquote.Join(target, remote)
+	return "ssh " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
 
 func sshTarget(reqs *scheduler.Requirements, host, hostIP string) string {
@@ -1056,6 +1056,7 @@ func (j *Job) ToStatus() (JStatus, error) {
 		Host:                j.Host,
 		HostID:              j.HostID,
 		HostIP:              j.HostIP,
+		SSHCommand:          sshCommandForRunningJob(state, j.Requirements, j.Host, j.HostIP, j.ActualCwd),
 		Walltime:            j.WallTime().Seconds(),
 		CPUtime:             j.CPUtime.Seconds(),
 		Attempts:            j.Attempts,
@@ -1535,4 +1536,31 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		job.Unlock()
 	}
 	return keys, nil
+}
+
+func quoteRemoteCwd(cwd string) string {
+	if isShellSafeUnquoted(cwd) {
+		return cwd
+	}
+
+	return singleQuoteShellArg(cwd)
+}
+
+func isShellSafeUnquoted(arg string) bool {
+	if arg == "" {
+		return false
+	}
+
+	const safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+-./:=@%"
+	for _, char := range arg {
+		if !strings.ContainsRune(safe, char) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func singleQuoteShellArg(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }

@@ -129,6 +129,39 @@
     cursor: default;
 }
 
+.ssh-command-control {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(91, 192, 222, 0.35);
+    border-radius: 3px;
+}
+
+.ssh-copy-button {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    line-height: 1.4;
+}
+
+.ssh-command-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: #d9edf7;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    white-space: nowrap;
+    overflow-x: auto;
+}
+
+.live-value {
+    color: #31708f;
+    font-weight: 500;
+}
+
 u.dotted {
     border-bottom: 1px dashed #999;
     text-decoration: none;
@@ -602,6 +635,15 @@ u.dotted {
 @media (max-width: 480px) {
     .command-path {
         font-size: 0.7em;
+    }
+
+    .ssh-command-control {
+        align-items: flex-start;
+    }
+
+    .ssh-command-text {
+        white-space: pre-wrap;
+        word-break: break-word;
     }
 
     .keyvals dl {

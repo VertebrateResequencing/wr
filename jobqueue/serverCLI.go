@@ -1307,6 +1307,8 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		HostID:                sjob.HostID,
 		HostIP:                sjob.HostIP,
 		CPUtime:               sjob.CPUtime,
+		StdErrC:               sjob.StdErrC,
+		StdOutC:               sjob.StdOutC,
 		State:                 state,
 		Attempts:              sjob.Attempts,
 		UntilBuried:           sjob.UntilBuried,

@@ -335,6 +335,9 @@ func waitForFileToDisappear(path string, maxWait time.Duration) error {
 const (
 	liveJTouchActualCwd = "/tmp/wr/job1"
 	liveJTouchTTR       = time.Second
+	liveStatusCloudUser = "cloud_user"
+	liveStatusHost      = "worker1"
+	liveStatusHostIP    = "10.0.0.8"
 )
 
 type liveJTouchFixture struct {

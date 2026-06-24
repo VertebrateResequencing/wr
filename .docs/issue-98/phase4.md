@@ -21,7 +21,7 @@ details. Add `jobqueue/job_test.go`, `jobqueue/serverWebI_test.go`, and
 `jobqueue/rest_test.go` coverage for all 7 acceptance tests from C1. Depends
 on phase 2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 4.2: C2 - Render live introspection in running job details
@@ -36,5 +36,5 @@ stderr, and a copyable SSH command for running job details without adding an
 embedded terminal. Add `jobqueue/serverWebI_test.go` coverage for all 6
 acceptance tests from C2. Depends on item 4.1 and phase 3.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

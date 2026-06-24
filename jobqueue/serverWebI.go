@@ -215,10 +215,6 @@ func (s *Server) statusFromSubscriptionUpdate(ctx context.Context, update *JobUp
 		return nil
 	}
 
-	if update.Kind == JobUpdateLive {
-		return statusFromJobUpdate(update)
-	}
-
 	jobs, _, errstr := s.getJobsByKeys(ctx, []string{update.Key}, true, true)
 	if errstr != "" || len(jobs) != 1 {
 		return statusFromJobUpdate(update)

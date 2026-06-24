@@ -741,7 +741,7 @@ func addAndStartLiveSubscriptionJob(
 	prefix string,
 ) *Job {
 	reqs := *standardReqs
-	reqs.Other = map[string]string{"cloud_user": "cloud_user"}
+	reqs.Other = map[string]string{liveStatusCloudUser: liveStatusCloudUser}
 	job := &Job{
 		Cmd:          "echo " + prefix,
 		Cwd:          testCwd,
@@ -765,8 +765,8 @@ func addAndStartLiveSubscriptionJob(
 	So(running.Key(), ShouldEqual, ids[0])
 	So(runner.Started(running, 44), ShouldBeNil)
 
-	running.Host = "worker1"
-	running.HostIP = "10.0.0.8"
+	running.Host = liveStatusHost
+	running.HostIP = liveStatusHostIP
 	running.Pid = 44
 	item, err := server.q.Get(running.Key())
 	So(err, ShouldBeNil)
@@ -774,8 +774,8 @@ func addAndStartLiveSubscriptionJob(
 	serverJob, ok := item.Data().(*Job)
 	So(ok, ShouldBeTrue)
 	serverJob.Lock()
-	serverJob.Host = "worker1"
-	serverJob.HostIP = "10.0.0.8"
+	serverJob.Host = liveStatusHost
+	serverJob.HostIP = liveStatusHostIP
 	serverJob.Pid = 44
 	serverJob.Unlock()
 
