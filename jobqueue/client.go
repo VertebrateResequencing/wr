@@ -123,6 +123,7 @@ var (
 const (
 	requestMethodStart          = "jstart"
 	requestMethodSubscribe      = "subscribe"
+	requestMethodTouch          = "jtouch"
 	requestMethodUnsubscribe    = "unsubscribe"
 	requestMethodWaitForUpdates = "waitForUpdates"
 )
@@ -2006,7 +2007,7 @@ func (c *Client) touch(job *Job, endState *JobEndState) (bool, error) {
 	c.inspectLiveTouch(endState)
 
 	resp, err := c.request(&clientRequest{
-		Method:      "jtouch",
+		Method:      requestMethodTouch,
 		Keys:        []string{key},
 		JobEndState: endState,
 	})

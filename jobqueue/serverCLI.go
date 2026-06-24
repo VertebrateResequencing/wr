@@ -245,6 +245,34 @@ func subscriptionCatchUpRepGroupUpdate(repGroup string, records map[string]subsc
 	return update
 }
 
+func liveSnapshotPresent(jes *JobEndState) bool {
+	if jes == nil {
+		return false
+	}
+
+	return jes.Cwd != "" ||
+		jes.PeakRAM != 0 ||
+		jes.PeakDisk != 0 ||
+		jes.CPUtime != 0 ||
+		len(jes.Stdout) != 0 ||
+		len(jes.Stderr) != 0
+}
+
+func applyLiveSnapshot(job *Job, jes *JobEndState) {
+	job.Lock()
+	defer job.Unlock()
+
+	if jes.Cwd != "" {
+		job.ActualCwd = jes.Cwd
+	}
+
+	job.PeakRAM = jes.PeakRAM
+	job.PeakDisk = jes.PeakDisk
+	job.CPUtime = jes.CPUtime
+	job.StdOutC = jes.Stdout
+	job.StdErrC = jes.Stderr
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -599,7 +627,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					s.db.updateJobAfterChange(ctx, job)
 				}
 			}
-		case "jtouch":
+		case requestMethodTouch:
 			var job *Job
 			var item *queue.Item
 			item, job, srerr = s.getij(cr, true)
@@ -634,6 +662,10 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						// this transition from lost to running state
 						s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, JobStateRunning, 1})
 						s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateLost, JobStateRunning, 1})
+					}
+
+					if srerr == "" && s.liveJTouchEnabled() && liveSnapshotPresent(cr.JobEndState) {
+						applyLiveSnapshot(job, cr.JobEndState)
 					}
 				}
 				sr = &serverResponse{KillCalled: killCalled}
@@ -1099,6 +1131,13 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 	}
 
 	return item, job, ""
+}
+
+func (s *Server) liveJTouchEnabled() bool {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.ServerInfo != nil && s.ServerInfo.WebPort != ""
 }
 
 func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobState {

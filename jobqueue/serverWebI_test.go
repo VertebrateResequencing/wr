@@ -1268,6 +1268,119 @@ func assertEditableStatusFields(status JStatus) {
 	So(status.EnvOverrides, ShouldResemble, []string{"WEB_ONLY=old"})
 }
 
+func TestStatusDetailsLiveCompatibility(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status details preserve compatibility without active live data", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		addRunningJob := func(repGroup, cmd string) *Job {
+			ids, erra := jq.AddAndReturnIDs([]*Job{{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			}}, envVars, true)
+			So(erra, ShouldBeNil)
+			So(ids, ShouldHaveLength, 1)
+
+			job, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+
+			if job == nil {
+				return &Job{}
+			}
+
+			So(job.Key(), ShouldEqual, ids[0])
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			return job
+		}
+
+		requestDetails := func(repGroup string, state JobState, key string) JStatus {
+			errw := ws.WriteJSON(jstatusReq{
+				Request:  jstatusRequestDetails,
+				RepGroup: repGroup,
+				State:    state,
+			})
+			So(errw, ShouldBeNil)
+
+			status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key == key })
+			So(ok, ShouldBeTrue)
+
+			return status
+		}
+
+		noLiveJob := addRunningJob("status-details-no-live", "echo status details no live")
+		noLiveStatus := requestDetails(noLiveJob.RepGroup, JobStateRunning, noLiveJob.Key())
+
+		So(noLiveStatus.PeakRAM, ShouldEqual, 0)
+		So(noLiveStatus.CPUtime, ShouldEqual, 0)
+		So(noLiveStatus.StdOut, ShouldEqual, "")
+		So(noLiveStatus.StdErr, ShouldEqual, "")
+		So(noLiveStatus.SSHCommand, ShouldEqual, "")
+		So(noLiveStatus.Started, ShouldNotBeNil)
+		So(noLiveStatus.Ended, ShouldBeNil)
+		So(noLiveStatus.Walltime, ShouldBeGreaterThanOrEqualTo, 0)
+
+		completeJob := addRunningJob("status-details-live-archive", "echo status details live archive")
+		completeJob.ActualCwd = liveJTouchActualCwd
+		completeJob.PeakRAM = 321
+		completeJob.CPUtime = 4 * time.Second
+		completeJob.StdOutC = compressStd([]byte("live\n"))
+		completeJob.StdErrC = compressStd([]byte("stale\n"))
+
+		killCalled, errt := jq.Touch(completeJob)
+		So(errt, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		So(jq.Archive(completeJob, &JobEndState{
+			Exited:   true,
+			Exitcode: 0,
+			PeakRAM:  654,
+			CPUtime:  8 * time.Second,
+			EndTime:  time.Now(),
+			Stdout:   compressStd([]byte("final\n")),
+			Stderr:   compressStd([]byte("done\n")),
+		}), ShouldBeNil)
+
+		completeStatus := requestDetails(completeJob.RepGroup, JobStateComplete, completeJob.Key())
+
+		So(completeStatus.StdOut, ShouldEqual, "final\n")
+		So(completeStatus.StdErr, ShouldEqual, "done\n")
+		So(completeStatus.Exited, ShouldBeTrue)
+		So(completeStatus.PeakRAM, ShouldEqual, 654)
+		So(completeStatus.CPUtime, ShouldEqual, 8)
+		So(completeStatus.SSHCommand, ShouldEqual, "")
+	})
+}
+
 func clearReadDeadlineBestEffort(ws *websocket.Conn) {
 	if err := ws.SetReadDeadline(time.Time{}); err != nil {
 		return

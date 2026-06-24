@@ -157,6 +157,7 @@ type JStatus struct {
 	Host                string
 	HostID              string
 	HostIP              string
+	SSHCommand          string
 	StdErr              string
 	StdOut              string
 	ExpectedRAM         int     // ExpectedRAM is in Megabytes.

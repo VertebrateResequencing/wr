@@ -20,7 +20,7 @@ gate, applies live fields to running jobs, and avoids setting terminal state.
 Add `jobqueue/jobqueue_test.go` coverage for all 5 acceptance tests from B1.
 Depends on phase 1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 2.2: D1 - Preserve existing status behaviour without live data
@@ -32,5 +32,5 @@ archives, and `KillCalled` running jobs preserve existing status and touch
 semantics. Add `jobqueue/jobqueue_test.go` and `jobqueue/serverWebI_test.go`
 coverage for all 3 acceptance tests from D1. Depends on item 2.1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
