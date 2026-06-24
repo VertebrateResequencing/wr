@@ -887,7 +887,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		}
 	case cmdFileStatus != "":
 		// parse the supplied commands
-		parsedJobs, _, _ := parseCmdFile(jq, false, remoteSameAsLocal(false))
+		parsedJobs := parseCmdFileStatusSelection(jq)
 
 		// round-trip via the server to get those that actually exist in
 		// the queue
@@ -914,6 +914,19 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 	}
 
 	return jobs
+}
+
+func parseCmdFileStatusSelection(jq *jobqueue.Client) []*jobqueue.Job {
+	oldCmdFile := cmdFile
+
+	cmdFile = cmdFileStatus
+	defer func() {
+		cmdFile = oldCmdFile
+	}()
+
+	parsedJobs, _, _ := parseCmdFile(jq, false, remoteSameAsLocal(false))
+
+	return parsedJobs
 }
 
 func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
