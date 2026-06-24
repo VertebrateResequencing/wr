@@ -20,7 +20,7 @@ subscriptions, and `Job.ToStatus` through `jobqueue/client.go`,
 Depends on phase 2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Batch 1 (parallel, after item 4.1 is reviewed)
 
@@ -33,7 +33,7 @@ and filter validation in `cmd/status.go` and `cmd/status_table.go`, covering
 all 10 acceptance tests from D1. Depends on item 4.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 #### Item 4.3: D3 - Show Suspended In Web And LSF Views [parallel with D1]
 
@@ -44,7 +44,7 @@ text, JavaScript/CSS assets, and `cmd/lsf.go` mapping of suspended jobs to
 `PEND`, covering all 5 acceptance tests from D3. Depends on item 4.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

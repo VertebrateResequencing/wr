@@ -68,8 +68,8 @@ const (
 	// JobUpdateResync means the client re-subscribed after reconnecting.
 	JobUpdateResync
 	// JobUpdateStateChange means a subscribed job changed to a non-terminal
-	// state. Only server-side status websocket detail subscriptions request
-	// these updates.
+	// state. Server-side status websocket detail subscriptions request all of
+	// these updates; job-key subscriptions receive suspend/resume transitions.
 	JobUpdateStateChange
 	// JobUpdateLive means a subscribed running job has fresh live output or
 	// resource details.

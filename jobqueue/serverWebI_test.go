@@ -168,8 +168,12 @@ func TestServerWebISuspendedStatus(t *testing.T) {
 			handler(w, r)
 
 			So(w.Result().StatusCode, ShouldEqual, http.StatusOK)
-			So(w.Body.String(), ShouldContainSubstring, "suspended")
-			So(w.Body.String(), ShouldContainSubstring, "suspended - use wr resume to make it schedulable again")
+			body := w.Body.String()
+			So(body, ShouldContainSubstring, "selectedState() === 'suspended'")
+			So(body, ShouldContainSubstring, "counts.suspended")
+			So(body, ShouldContainSubstring, "showRepgroupSuspended")
+			So(body, ShouldContainSubstring, "State == 'delayed' || State == 'dependent' || State == 'suspended'")
+			So(body, ShouldContainSubstring, "suspended - use wr resume to make it schedulable again")
 		})
 
 		Convey("The websocket returns suspended current counts and details", func() {
