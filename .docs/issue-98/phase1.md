@@ -20,7 +20,7 @@ in `jobqueue/utils.go`. Add `jobqueue/utils_test.go` coverage for all 5
 acceptance tests from A1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1.2: A2 - Send live metrics on existing touches
 
@@ -33,4 +33,4 @@ stdout/stderr tails. Add `jobqueue/client_payload_test.go` coverage for all 5
 acceptance tests from A2. Depends on item 1.1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
