@@ -22,4 +22,4 @@ RepGroup semantics. Add `jobqueue/subscription_test.go` coverage for all 6
 acceptance tests from B2. Depends on phase 2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
