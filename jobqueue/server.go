@@ -1106,7 +1106,7 @@ func (s *Server) resumeJob(ctx context.Context, key string) bool {
 		return false
 	}
 
-	if !s.resumeQueueItem(ctx, key, len(item.UnresolvedDependencies()) == 0) {
+	if !s.resumeQueueItem(ctx, item, key) {
 		return false
 	}
 
@@ -1133,18 +1133,18 @@ func (s *Server) suspendedItem(key string) (*queue.Item, *Job, bool) {
 	return item, job, true
 }
 
-func (s *Server) resumeQueueItem(ctx context.Context, key string, readyCallbackExpected bool) bool {
-	if readyCallbackExpected {
-		s.setRACPending()
-	}
+func (s *Server) resumeQueueItem(ctx context.Context, item *queue.Item, key string) bool {
+	s.setRACPending()
 
 	err := s.q.Resume(ctx, key)
 	if err != nil {
-		if readyCallbackExpected {
-			s.clearRACPending()
-		}
+		s.clearRACPending()
 
 		return false
+	}
+
+	if item.Stats().State != queue.ItemStateReady {
+		s.clearRACPending()
 	}
 
 	return true
