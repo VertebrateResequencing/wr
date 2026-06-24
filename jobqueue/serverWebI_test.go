@@ -2483,6 +2483,145 @@ func readStaticText(path string) string {
 	return string(data)
 }
 
+func TestStatusPageLivePushUpdateBehaviour(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required to exercise the status page JavaScript")
+	}
+
+	Convey("Status page job details push updates replace visible live data", t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		//nolint:gosec // The Node script is a constant test harness.
+		cmd := exec.CommandContext(ctx, "node", "-e", statusPageLivePushUpdateScript())
+		output, err := cmd.CombinedOutput()
+		So(string(output), ShouldBeBlank)
+		So(err, ShouldBeNil)
+	})
+}
+
+func statusPageLivePushUpdateScript() string {
+	return `
+const fs = require('fs');
+const vm = require('vm');
+
+let source = fs.readFileSync('static/js/wr/websocket-handler.js', 'utf8');
+source = source
+    .replace(/^import .*;\n/gm, '')
+    .replace(/export function /g, 'function ');
+
+const context = {
+    console,
+    createRepGroupTracker() {
+        return {};
+    },
+    setupLiveWalltime(job, walltime) {
+        job.LiveWalltime = () => walltime;
+    }
+};
+context.globalThis = context;
+vm.createContext(context);
+vm.runInContext(source + '\nglobalThis.handleJobDetailsMessage = handleJobDetailsMessage;', context,
+    { filename: 'websocket-handler.js' });
+
+function observableArray(initial) {
+    const values = initial.slice();
+    function observable(next) {
+        if (arguments.length > 0) {
+            values.splice(0, values.length, ...next);
+            return values;
+        }
+
+        return values;
+    }
+    observable.push = value => values.push(value);
+    observable.splice = (...args) => values.splice(...args);
+    return observable;
+}
+
+function assert(condition, message) {
+    if (!condition) {
+        throw new Error(message);
+    }
+}
+
+const sshCommand = "ssh ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'";
+const existing = {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'running',
+    Exited: false,
+    PeakRAM: 0,
+    CPUtime: 0,
+    StdOut: '',
+    StdErr: '',
+    SSHCommand: '',
+    Walltime: 12,
+    Started: 123,
+    Cmd: 'sleep 60',
+    ExpectedRAM: 100,
+    ExpectedTime: 60,
+    RequestedDisk: 0,
+    Cores: 1,
+    Attempts: 1
+};
+const viewModel = {
+    detailsRepgroup: 'rg1',
+    detailsOA: observableArray([existing]),
+    isSearchMode: () => false,
+    repGroups: [{ id: 'rg1' }],
+    newJobsInfo: {}
+};
+
+context.handleJobDetailsMessage(viewModel, {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'running',
+    IsPushUpdate: true,
+    PeakRAM: 321,
+    CPUtime: 4,
+    StdOut: 'alpha-out\n',
+    StdErr: 'alpha-err\n',
+    SSHCommand: sshCommand
+});
+
+let job = viewModel.detailsOA()[0];
+assert(viewModel.detailsOA().length === 1, 'push update must replace the existing detail row');
+assert(job.PeakRAM === 321, 'first push PeakRAM was not applied');
+assert(job.CPUtime === 4, 'first push CPUtime was not applied');
+assert(job.StdOut === 'alpha-out\n', 'first push stdout was not applied');
+assert(job.StdErr === 'alpha-err\n', 'first push stderr was not applied');
+assert(job.SSHCommand === sshCommand, 'first push SSH command was not applied');
+assert(job.Cmd === 'sleep 60', 'push update should preserve existing command text');
+assert(job.LiveWalltime() === 12, 'push update should preserve live walltime fallback');
+
+context.handleJobDetailsMessage(viewModel, {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'running',
+    IsPushUpdate: true,
+    PeakRAM: 654,
+    CPUtime: 8,
+    StdOut: 'beta-out\n',
+    StdErr: 'beta-err\n',
+    SSHCommand: sshCommand
+});
+
+job = viewModel.detailsOA()[0];
+assert(viewModel.detailsOA().length === 1, 'second push update must keep one detail row');
+assert(job.PeakRAM === 654, 'second push PeakRAM was not applied');
+assert(job.CPUtime === 8, 'second push CPUtime was not applied');
+assert(job.StdOut === 'beta-out\n', 'second push stdout was not applied');
+assert(job.StdErr === 'beta-err\n', 'second push stderr was not applied');
+assert(!job.StdOut.includes('alpha-out'), 'old stdout should not remain visible');
+assert(!job.StdErr.includes('alpha-err'), 'old stderr should not remain visible');
+`
+}
+
 func readTextAsset(t *testing.T, path string) string {
 	t.Helper()
 

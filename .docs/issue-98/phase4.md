@@ -22,7 +22,7 @@ details. Add `jobqueue/job_test.go`, `jobqueue/serverWebI_test.go`, and
 on phase 2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 4.2: C2 - Render live introspection in running job details
 
@@ -37,4 +37,4 @@ embedded terminal. Add `jobqueue/serverWebI_test.go` coverage for all 6
 acceptance tests from C2. Depends on item 4.1 and phase 3.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
