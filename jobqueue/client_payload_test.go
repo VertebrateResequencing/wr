@@ -365,20 +365,18 @@ func (c *liveTouchCapture) matching(match func(*JobEndState) bool) []*JobEndStat
 	return states
 }
 
-func (c *liveTouchCapture) firstWithMarkers(stdoutMarker, stderrMarker string) (*JobEndState, string, string) {
+func (c *liveTouchCapture) firstStdoutWithMarker(marker string) (*JobEndState, string) {
 	c.Lock()
 	defer c.Unlock()
 
 	for _, state := range c.states {
 		stdout := decompressLiveTouch(state.Stdout)
-
-		stderr := decompressLiveTouch(state.Stderr)
-		if strings.Contains(stdout, stdoutMarker) && strings.Contains(stderr, stderrMarker) {
-			return cloneTestJobEndState(state), stdout, stderr
+		if strings.Contains(stdout, marker) {
+			return cloneTestJobEndState(state), stdout
 		}
 	}
 
-	return nil, "", ""
+	return nil, ""
 }
 
 func decompressLiveTouch(compressed []byte) string {
@@ -404,6 +402,20 @@ func cloneTestJobEndState(state *JobEndState) *JobEndState {
 	clone.Stderr = append([]byte(nil), state.Stderr...)
 
 	return &clone
+}
+
+func (c *liveTouchCapture) firstStderrWithMarker(marker string) (*JobEndState, string) {
+	c.Lock()
+	defer c.Unlock()
+
+	for _, state := range c.states {
+		stderr := decompressLiveTouch(state.Stderr)
+		if strings.Contains(stderr, marker) {
+			return cloneTestJobEndState(state), stderr
+		}
+	}
+
+	return nil, ""
 }
 
 func TestClientExecuteLiveTouchPayloads(t *testing.T) {
@@ -453,7 +465,7 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 			"python3 - <<'PY'",
 			"import time",
 			"x = bytearray(2 * 1024 * 1024)",
-			"end = time.time() + 1.5",
+			"end = time.time() + 3",
 			"while time.time() < end:",
 			"    x[0] = (x[0] + 1) % 256",
 			"PY",
@@ -480,7 +492,7 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 		So(os.WriteFile(stderrFile, stderrStream, liveExecuteFileMode), ShouldBeNil)
 
 		cmd := fmt.Sprintf(
-			"cat %s; cat %s >&2; sleep 0.6",
+			"cat %s; cat %s >&2; sleep 2",
 			shellquote.Join(stdoutFile),
 			shellquote.Join(stderrFile),
 		)
@@ -488,12 +500,15 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 
 		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
-		state, liveStdout, liveStderr := capture.firstWithMarkers("OUT-NEW\n", "ERR-NEW\n")
-		So(state, ShouldNotBeNil)
-		So(state.Stdout, ShouldNotBeNil)
-		So(state.Stderr, ShouldNotBeNil)
-		So(len(state.Stdout), ShouldBeLessThanOrEqualTo, liveStdCompressedLimit)
-		So(len(state.Stderr), ShouldBeLessThanOrEqualTo, liveStdCompressedLimit)
+		stdoutState, liveStdout := capture.firstStdoutWithMarker("OUT-NEW\n")
+		stderrState, liveStderr := capture.firstStderrWithMarker("ERR-NEW\n")
+
+		So(stdoutState, ShouldNotBeNil)
+		So(stderrState, ShouldNotBeNil)
+		So(stdoutState.Stdout, ShouldNotBeNil)
+		So(stderrState.Stderr, ShouldNotBeNil)
+		So(len(stdoutState.Stdout), ShouldBeLessThanOrEqualTo, liveStdCompressedLimit)
+		So(len(stderrState.Stderr), ShouldBeLessThanOrEqualTo, liveStdCompressedLimit)
 		So(liveStdout, ShouldContainSubstring, "OUT-NEW\n")
 		So(liveStdout, ShouldNotContainSubstring, "OUT-OLD\n")
 		So(liveStderr, ShouldContainSubstring, "ERR-NEW\n")

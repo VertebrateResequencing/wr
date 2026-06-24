@@ -116,7 +116,7 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 	repGroup string,
 ) (map[string]subscriptionCatchUpRecord, bool, error) {
 	records := make(map[string]subscriptionCatchUpRecord)
-	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup))
+	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup, false))
 
 	complete, err := s.db.retrieveCompleteJobsByRepGroup(repGroup)
 	if err != nil {
@@ -1315,8 +1315,6 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		HostID:                sjob.HostID,
 		HostIP:                sjob.HostIP,
 		CPUtime:               sjob.CPUtime,
-		StdErrC:               sjob.StdErrC,
-		StdOutC:               sjob.StdOutC,
 		State:                 state,
 		Attempts:              sjob.Attempts,
 		UntilBuried:           sjob.UntilBuried,
@@ -1337,6 +1335,11 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 
 	if state == JobStateReserved && !sjob.StartTime.IsZero() {
 		job.State = JobStateRunning
+	}
+
+	if getStd && (job.State == JobStateRunning || job.State == JobStateLost) {
+		job.StdErrC = sjob.StdErrC
+		job.StdOutC = sjob.StdOutC
 	}
 	sjob.RUnlock()
 	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
