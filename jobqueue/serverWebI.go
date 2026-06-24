@@ -190,8 +190,20 @@ func statusFromJobUpdate(update *JobUpdate) *JStatus {
 		Key:          update.Key,
 		RepGroup:     update.RepGroup,
 		State:        update.State,
+		Cwd:          update.Cwd,
+		CwdBase:      update.CwdBase,
 		FailReason:   update.FailReason,
+		Host:         update.Host,
+		HostID:       update.HostID,
+		HostIP:       update.HostIP,
+		SSHCommand:   update.SSHCommand,
+		StdErr:       update.StdErr,
+		StdOut:       update.StdOut,
+		PeakRAM:      update.PeakRAM,
+		PeakDisk:     update.PeakDisk,
 		Exitcode:     update.Exitcode,
+		Pid:          update.Pid,
+		CPUtime:      update.CPUtime.Seconds(),
 		Started:      statusTimeFromJobUpdateTime(update.Started),
 		Ended:        statusTimeFromJobUpdateTime(update.Ended),
 		IsPushUpdate: true,
@@ -201,6 +213,10 @@ func statusFromJobUpdate(update *JobUpdate) *JStatus {
 func (s *Server) statusFromSubscriptionUpdate(ctx context.Context, update *JobUpdate) *JStatus {
 	if update == nil || update.Key == "" {
 		return nil
+	}
+
+	if update.Kind == JobUpdateLive {
+		return statusFromJobUpdate(update)
 	}
 
 	jobs, _, errstr := s.getJobsByKeys(ctx, []string{update.Key}, true, true)

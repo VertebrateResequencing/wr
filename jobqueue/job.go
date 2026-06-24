@@ -48,6 +48,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/kballard/go-shellquote"
 	"github.com/ugorji/go/codec"
 )
 
@@ -102,6 +103,33 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateBury:      JobStateBuried,
 	queue.ItemStateDependent: JobStateDependent,
 	queue.ItemStateRemoved:   JobStateComplete,
+}
+
+func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, actualCwd string) string {
+	if state != JobStateRunning || actualCwd == "" {
+		return ""
+	}
+
+	target := sshTarget(reqs, host, hostIP)
+	if target == "" {
+		return ""
+	}
+
+	remote := "cd " + shellquote.Join(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
+
+	return "ssh " + shellquote.Join(target, remote)
+}
+
+func sshTarget(reqs *scheduler.Requirements, host, hostIP string) string {
+	if hostIP == "" {
+		return host
+	}
+
+	if reqs != nil && reqs.Other["cloud_user"] != "" && hostIP != "" {
+		return reqs.Other["cloud_user"] + "@" + hostIP
+	}
+
+	return hostIP
 }
 
 // Job is a struct that represents a command that needs to be run and some

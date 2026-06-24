@@ -21,5 +21,5 @@ websocket detail subscriptions. Preserve `AddAndWait` terminal waiting and
 RepGroup semantics. Add `jobqueue/subscription_test.go` coverage for all 6
 acceptance tests from B2. Depends on phase 2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

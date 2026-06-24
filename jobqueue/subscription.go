@@ -71,6 +71,9 @@ const (
 	// state. Only server-side status websocket detail subscriptions request
 	// these updates.
 	JobUpdateStateChange
+	// JobUpdateLive means a subscribed running job has fresh live output or
+	// resource details.
+	JobUpdateLive
 )
 
 // JobUpdate is the single event type delivered on Subscription.
@@ -89,6 +92,18 @@ type JobUpdate struct {
 	Buried     int
 	Lost       int
 	Total      int
+	PeakRAM    int
+	PeakDisk   int64
+	Pid        int
+	CPUtime    time.Duration
+	Host       string
+	HostID     string
+	HostIP     string
+	CwdBase    string
+	Cwd        string
+	StdOut     string
+	StdErr     string
+	SSHCommand string
 }
 
 func receiveJobUpdate(ctx context.Context, updates <-chan *JobUpdate) (*JobUpdate, error) {

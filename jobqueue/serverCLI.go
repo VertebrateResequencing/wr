@@ -33,6 +33,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -245,6 +247,78 @@ func subscriptionCatchUpRepGroupUpdate(repGroup string, records map[string]subsc
 	return update
 }
 
+type liveJobUpdateData struct {
+	update  *JobUpdate
+	stdoutC []byte
+	stderrC []byte
+}
+
+func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
+	job.RLock()
+	defer job.RUnlock()
+
+	cwdLeaf, err := liveJobCwdLeaf(job.Cwd, job.ActualCwd)
+	if err != nil {
+		return nil, err
+	}
+
+	return &liveJobUpdateData{
+		update: &JobUpdate{
+			Kind:       JobUpdateLive,
+			Key:        job.Key(),
+			RepGroup:   job.RepGroup,
+			State:      job.State,
+			PeakRAM:    job.PeakRAM,
+			PeakDisk:   job.PeakDisk,
+			Pid:        job.Pid,
+			CPUtime:    job.CPUtime,
+			Host:       job.Host,
+			HostID:     job.HostID,
+			HostIP:     job.HostIP,
+			CwdBase:    job.Cwd,
+			Cwd:        cwdLeaf,
+			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.ActualCwd),
+		},
+		stdoutC: slices.Clone(job.StdOutC),
+		stderrC: slices.Clone(job.StdErrC),
+	}, nil
+}
+
+func jobUpdateFromLiveJob(job *Job) (*JobUpdate, error) {
+	data, err := liveJobUpdateDataFromJob(job)
+	if err != nil {
+		return nil, err
+	}
+
+	stdout, err := compressedStdString(data.stdoutC)
+	if err != nil {
+		return nil, err
+	}
+
+	stderr, err := compressedStdString(data.stderrC)
+	if err != nil {
+		return nil, err
+	}
+
+	data.update.StdOut = stdout
+	data.update.StdErr = stderr
+
+	return data.update, nil
+}
+
+func compressedStdString(compressed []byte) (string, error) {
+	if len(compressed) == 0 {
+		return "", nil
+	}
+
+	decompressed, err := decompress(compressed)
+	if err != nil {
+		return "", err
+	}
+
+	return string(decompressed), nil
+}
+
 func liveSnapshotPresent(jes *JobEndState) bool {
 	if jes == nil {
 		return false
@@ -271,6 +345,23 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	job.CPUtime = jes.CPUtime
 	job.StdOutC = jes.Stdout
 	job.StdErrC = jes.Stderr
+}
+
+func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
+	if cwd == "" {
+		return "", nil
+	}
+
+	if cwdBase == "" {
+		return cwd, nil
+	}
+
+	rel, err := filepath.Rel(cwdBase, cwd)
+	if err != nil {
+		return "", err
+	}
+
+	return "/" + rel, nil
 }
 
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
@@ -666,6 +757,13 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 					if srerr == "" && s.liveJTouchEnabled() && liveSnapshotPresent(cr.JobEndState) {
 						applyLiveSnapshot(job, cr.JobEndState)
+
+						update, err := jobUpdateFromLiveJob(job)
+						if err != nil {
+							clog.Warn(ctx, "failed to build live subscription update", "err", err)
+						} else {
+							s.enqueueSubscriptionUpdate(update)
+						}
 					}
 				}
 				sr = &serverResponse{KillCalled: killCalled}
