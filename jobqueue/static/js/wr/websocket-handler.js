@@ -254,7 +254,7 @@ function livePushValue(value, fallback) {
 function mergeJobDetailsPushUpdate(existing, update) {
     const merged = Object.assign({}, existing, update);
 
-    if (update.State === 'running') {
+    if (update.State === 'running' || update.State === 'reserved') {
         merged.Walltime = update.Walltime > 0 ? update.Walltime : existing.Walltime;
         merged.Started = livePushValue(update.Started, existing.Started);
         merged.Cmd = update.Cmd || existing.Cmd;

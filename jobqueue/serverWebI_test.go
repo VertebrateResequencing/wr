@@ -2602,6 +2602,31 @@ assert(job.LiveWalltime() === 12, 'push update should preserve live walltime fal
 context.handleJobDetailsMessage(viewModel, {
     Key: 'k',
     RepGroup: 'rg1',
+    State: 'reserved',
+    IsPushUpdate: true,
+    PeakRAM: 222,
+    CPUtime: 5,
+    Cmd: '',
+    ExpectedRAM: 0,
+    ExpectedTime: 0,
+    RequestedDisk: 0,
+    Cores: 0,
+    Attempts: 0
+});
+
+job = viewModel.detailsOA()[0];
+assert(job.State === 'reserved', 'reserved push State was not applied');
+assert(job.PeakRAM === 222, 'reserved push PeakRAM was not applied');
+assert(job.CPUtime === 5, 'reserved push CPUtime was not applied');
+assert(job.Cmd === 'sleep 60', 'reserved push should preserve existing command text');
+assert(job.ExpectedRAM === 100, 'reserved push should preserve expected RAM');
+assert(job.ExpectedTime === 60, 'reserved push should preserve expected time');
+assert(job.Cores === 1, 'reserved push should preserve cores');
+assert(job.Attempts === 1, 'reserved push should preserve attempts');
+
+context.handleJobDetailsMessage(viewModel, {
+    Key: 'k',
+    RepGroup: 'rg1',
     State: 'running',
     IsPushUpdate: true,
     PeakRAM: 654,
