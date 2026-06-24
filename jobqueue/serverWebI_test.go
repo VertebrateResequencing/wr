@@ -2045,6 +2045,127 @@ assert.equal(trimTrailingNewline('no editable jobs matched\n'), 'no editable job
 assert.deepEqual(replaceModifiedJobs([row], {modified: {}, jobs: []}), [row]);
 `)
 	})
+
+	Convey("The real modal handler submits PATCHes and keeps validation errors visible", t, func() {
+		runNodeModalHandlerTest(t, `
+import assert from 'node:assert/strict';
+import { showModifyJob, submitModifyJob } from './jobqueue/static/js/wr/modal-handlers.js';
+
+globalThis.ko = {
+  observable(initial) {
+    let value = initial;
+    return function observable(next) {
+      if (arguments.length > 0) {
+        value = next;
+        return observable;
+      }
+
+      return value;
+    };
+  }
+};
+
+function viewModelWith(job) {
+  return {
+    token: 'web-token',
+    detailsOA: ko.observable([job]),
+    modifyJobModalVisible: ko.observable(false),
+    modifyJobForm: ko.observable(),
+    modifyJobError: ko.observable(''),
+    modifyJobSubmitting: ko.observable(false)
+  };
+}
+
+const oldKey = '55555555555555555555555555555555';
+const newKey = '66666666666666666666666666666666';
+const oldJob = {
+  Key: oldKey,
+  State: 'ready',
+  Cmd: 'echo modal old',
+  CwdBase: '/tmp/modal-old',
+  CwdMatters: false,
+  HomeChanged: false,
+  ReqGroup: 'modal-old',
+  ExpectedRAM: 64,
+  ExpectedTime: 60,
+  Cores: 1,
+  RequestedDisk: 0,
+  Priority: 1,
+  Retries: 1,
+  Override: 0,
+  NoRetryOverWalltime: 0,
+  LimitGroups: [],
+  Modules: [],
+  Dependencies: [],
+  Behaviours: '',
+  OtherRequests: [],
+  Mounts: '',
+  MonitorDocker: '',
+  WithDocker: '',
+  WithSingularity: '',
+  ContainerMounts: '',
+  Env: ['PATH=/bin'],
+  EnvOverrides: [],
+  Walltime: 0
+};
+
+const successVM = viewModelWith(oldJob);
+showModifyJob(successVM, oldJob);
+assert.equal(successVM.modifyJobModalVisible(), true);
+successVM.modifyJobForm().cmd('echo modal new');
+
+const fetchCalls = [];
+globalThis.fetch = async (url, options) => {
+  fetchCalls.push({url, options});
+
+  return {
+    ok: true,
+    json: async () => ({
+      modified: {[newKey]: oldKey},
+      jobs: [{...oldJob, Key: newKey, Cmd: 'echo modal new', Env: ['PATH=/bin'], Walltime: 0}]
+    })
+  };
+};
+
+assert.equal(await submitModifyJob(successVM), true);
+assert.equal(successVM.modifyJobModalVisible(), false);
+assert.equal(fetchCalls.length, 1);
+assert.equal(fetchCalls[0].url, '/rest/v1/jobs/' + oldKey);
+assert.equal(fetchCalls[0].options.method, 'PATCH');
+assert.equal(fetchCalls[0].options.headers.Authorization, 'Bearer web-token');
+assert.equal(JSON.parse(fetchCalls[0].options.body).cmd, 'echo modal new');
+assert.equal(successVM.detailsOA().length, 1);
+assert.equal(successVM.detailsOA()[0].Key, newKey);
+assert.equal(successVM.detailsOA()[0].Cmd, 'echo modal new');
+
+const errorVM = viewModelWith(oldJob);
+showModifyJob(errorVM, oldJob);
+errorVM.modifyJobForm().priority('300');
+const priorityError = 'priority value (300) is not in the range 0..255';
+globalThis.fetch = async () => ({
+  ok: false,
+  text: async () => priorityError + '\n'
+});
+
+assert.equal(await submitModifyJob(errorVM), false);
+assert.equal(errorVM.modifyJobModalVisible(), true);
+assert.equal(errorVM.modifyJobError(), priorityError);
+assert.equal(errorVM.detailsOA().length, 1);
+assert.equal(errorVM.detailsOA()[0].Key, oldKey);
+assert.equal(errorVM.detailsOA()[0].Priority, 1);
+
+globalThis.fetch = async () => ({
+  ok: false,
+  text: async () => 'no editable jobs matched\n'
+});
+
+assert.equal(await submitModifyJob(errorVM), false);
+assert.equal(errorVM.modifyJobModalVisible(), true);
+assert.equal(errorVM.modifyJobError(), 'no editable jobs matched');
+assert.equal(errorVM.detailsOA()[0].Key, oldKey);
+assert.equal(errorVM.detailsOA()[0].Priority, 1);
+`)
+	})
 }
 
 func readStaticText(path string) string {
@@ -2058,8 +2179,53 @@ func runNodeWebUITest(t *testing.T, source string) {
 	t.Helper()
 
 	repoRoot := repoRootForWebUITest(t)
-	moduleURL := "file://" + filepath.ToSlash(filepath.Join(repoRoot, "jobqueue/static/js/wr/modify-job.js"))
+	moduleURL := fileURL(filepath.Join(repoRoot, "jobqueue/static/js/wr/modify-job.js"))
 	source = strings.ReplaceAll(source, "'./jobqueue/static/js/wr/modify-job.js'", fmt.Sprintf("%q", moduleURL))
+
+	runNodeScript(t, repoRoot, source)
+}
+
+func runNodeModalHandlerTest(t *testing.T, source string) {
+	t.Helper()
+
+	repoRoot := repoRootForWebUITest(t)
+	dir := t.TempDir()
+
+	utility := `export function capitalizeFirstLetter(value) {
+  return String(value || '').charAt(0).toUpperCase() + String(value || '').slice(1);
+}
+
+export function setupLiveWalltime(job, walltime) {
+  job.LiveWalltime = function () {
+    return walltime || 0;
+  };
+}
+`
+	utilityPath := filepath.Join(dir, "utility.js")
+	err := os.WriteFile(utilityPath, []byte(utility), 0600)
+	So(err, ShouldBeNil)
+
+	sourcePath := filepath.Join(repoRoot, "jobqueue/static/js/wr/modal-handlers.js")
+	modalSource, err := os.ReadFile(sourcePath)
+	So(err, ShouldBeNil)
+
+	rewritten := strings.ReplaceAll(string(modalSource), "'/js/wr/modify-job.js'",
+		fmt.Sprintf("%q", fileURL(filepath.Join(repoRoot, "jobqueue/static/js/wr/modify-job.js"))))
+	rewritten = strings.ReplaceAll(rewritten, "'/js/wr/utility.js'", fmt.Sprintf("%q", fileURL(utilityPath)))
+
+	modalPath := filepath.Join(dir, "modal-handlers.js")
+	// #nosec G703 -- modalPath is generated inside t.TempDir for a test-only module.
+	err = os.WriteFile(modalPath, []byte(rewritten), 0600)
+	So(err, ShouldBeNil)
+
+	source = strings.ReplaceAll(source, "'./jobqueue/static/js/wr/modal-handlers.js'",
+		fmt.Sprintf("%q", fileURL(modalPath)))
+
+	runNodeScript(t, repoRoot, source)
+}
+
+func runNodeScript(t *testing.T, repoRoot, source string) {
+	t.Helper()
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "web_ui_modify_test.mjs")
@@ -2074,6 +2240,10 @@ func runNodeWebUITest(t *testing.T, source string) {
 	output, err := cmd.CombinedOutput()
 	So(string(output), ShouldEqual, "")
 	So(err, ShouldBeNil)
+}
+
+func fileURL(path string) string {
+	return "file://" + filepath.ToSlash(path)
 }
 
 func repoRootForWebUITest(t *testing.T) string {

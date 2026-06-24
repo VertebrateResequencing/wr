@@ -241,6 +241,28 @@ func TestRESTJobModificationEndpoint(t *testing.T) {
 			So(stored[0].Priority, ShouldEqual, 9)
 		})
 
+		Convey("PATCH accepts public command dependency JSON", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest cmd deps",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-cmd-deps",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-cmd-deps",
+			})
+
+			body := `{"deps":["dep-a"],"cmd_deps":[{"cmd":"echo dep","cwd":"/tmp/dep"}]}`
+			status, _, decoded := patchJob(restJobsEndpoint+key, body, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Dependencies, ShouldContain, "dep-a")
+			So(decoded.Jobs[0].Dependencies, ShouldContain, "echo dep [/tmp/dep]")
+
+			stored := getJobStatuses(key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Dependencies, ShouldContain, "dep-a")
+			So(stored[0].Dependencies, ShouldContain, "echo dep [/tmp/dep]")
+		})
+
 		Convey("PATCH rejects requests without token or bearer auth", func() {
 			key := addJob(&Job{
 				Cmd:          "echo rest no auth",

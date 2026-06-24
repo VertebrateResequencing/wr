@@ -27,10 +27,63 @@ package jobqueue
 
 // This file contains the dependency related code.
 
+import "encoding/json"
+
 // Dependencies is a slice of *Dependency, for use in Job.Dependencies. It
 // describes the jobs that must be complete before the Job you associate this
 // with will start.
 type Dependencies []*Dependency
+
+// UnmarshalJSON accepts the public REST command dependency shape
+// [{"cmd":"...","cwd":"..."}] as well as the historical struct-shaped JSON.
+func (d *Dependencies) UnmarshalJSON(data []byte) error {
+	var deps []dependencyViaJSON
+	if err := json.Unmarshal(data, &deps); err != nil {
+		return err
+	}
+
+	converted := make(Dependencies, 0, len(deps))
+	for _, dep := range deps {
+		converted = appendDependencyViaJSON(converted, dep)
+	}
+
+	*d = converted
+
+	return nil
+}
+
+type dependencyViaJSON struct {
+	Essence       *JobEssence `json:"essence"`
+	LegacyEssence *JobEssence `json:"Essence"`
+	Cmd           string      `json:"cmd"`
+	Cwd           string      `json:"cwd"`
+	DepGroup      string      `json:"dep_group"`
+	LegacyDepGrp  string      `json:"DepGroup"`
+}
+
+func appendDependencyViaJSON(deps Dependencies, dep dependencyViaJSON) Dependencies {
+	if dep.DepGroup != "" {
+		return append(deps, NewDepGroupDependency(dep.DepGroup))
+	}
+
+	if dep.LegacyDepGrp != "" {
+		return append(deps, NewDepGroupDependency(dep.LegacyDepGrp))
+	}
+
+	if dep.Cmd != "" || dep.Cwd != "" {
+		return append(deps, NewEssenceDependency(dep.Cmd, dep.Cwd))
+	}
+
+	if dep.Essence != nil {
+		return append(deps, &Dependency{Essence: dep.Essence})
+	}
+
+	if dep.LegacyEssence != nil {
+		return append(deps, &Dependency{Essence: dep.LegacyEssence})
+	}
+
+	return deps
+}
 
 // incompleteJobKeys converts the constituent Dependency structs in to internal
 // job keys that uniquely identify the jobs we are dependent upon. Note that if

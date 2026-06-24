@@ -24,7 +24,7 @@ for editable states. Cover all 5 acceptance tests from B2. Depends on phases 1
 and 2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 3.2: B3 - Edit env overrides only
 
@@ -38,7 +38,7 @@ row. Cover all 3 acceptance tests from B3. Depends on item 3.1 and phase 1's
 `EnvOverrides` status field.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 3.3: B4 - Report web edit failures
 
@@ -50,4 +50,4 @@ trailing newline, the modal remains open, and the details row is unchanged.
 Cover all 2 acceptance tests from B4. Depends on item 3.1's submit path.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
