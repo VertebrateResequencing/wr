@@ -138,8 +138,8 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 - [x] Spec produced
 - [x] Implemented
 - [x] Reviewed
-- [ ] Merged
-- [ ] Solved
+- [x] Merged
+- [x] Solved
 
 **Issue:** `wr add --deps foo` runs immediately if nothing with dep group `foo` has been added yet (because dependencies are "live"); users expect it to wait. The maintainer floated either clearer help text or a deliberate "wait for a future dep group" mode.
 
@@ -167,7 +167,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 - [x] Spec produced
 - [x] Implemented
-- [x] Reviewed
+- [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
 
