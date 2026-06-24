@@ -122,7 +122,8 @@ name to just the first letter, eg. -o c):
 	STDERR are not shown.
   "plain" outputs 2 tab separated columns: internal job id and current state of
 	that job. Possible states are: delayed, ready, reserved, running, lost,
-	buried, suspended, complete. If any jobs are buried, exits non-0 as well.
+	buried, dependent, suspended, complete. If any jobs are buried, exits non-0 as
+	well.
   "table" outputs aligned rows for the grouped jobs returned by the status
     query. As with details/json, --limit controls how many matching jobs can be
     shown from each status group. Columns can be customised with WR_STATUS_FORMAT

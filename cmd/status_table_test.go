@@ -156,6 +156,13 @@ func TestStatusTableOutputHelp(t *testing.T) {
 	})
 }
 
+func TestStatusPlainOutputHelp(t *testing.T) {
+	Convey("wr status plain output help lists dependent jobs", t, func() {
+		So(statusCmd.Long, ShouldContainSubstring, `"plain" outputs 2 tab separated columns`)
+		So(statusCmd.Long, ShouldContainSubstring, "dependent, suspended")
+	})
+}
+
 func TestStatusOutputRetrievalNeeds(t *testing.T) {
 	Convey("wr status only retrieves stdout and stderr for outputs that render them", t, func() {
 		for _, tc := range []struct {
