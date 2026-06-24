@@ -82,9 +82,9 @@ report/tick **Implemented**.
 
 - Is the **single writer of this file's checkboxes**, ticking **Spec produced** /
   **Implemented** / **Reviewed** only after the relevant commits are pushed and verified.
-- Opens PRs against **develop** once implementation is pushed. PR bodies must include the
-  generated `.docs/<branch-slug>/` spec + phase files and must **solve** the issues:
-  `Solves #N`, not `Fixes/Closes #N`.
+- Opens PRs against **develop** once implementation is pushed. PR titles must include
+  the issue number(s). PR bodies must start with standalone `Solves #N` line(s), then
+  include the generated `.docs/<branch-slug>/` spec + phase files.
 - Tells you each ready PR; **monitors each ready PR until merged** by polling with
   `gh pr view` / `gh pr checks` or by using any available Codex automation. Whenever CI
   fails or **new human review comments** land, the orchestrator starts a PR-resolution
