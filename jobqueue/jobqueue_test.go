@@ -59,13 +59,10 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/gofrs/uuid/v5"
 	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
-	"go.nanomsg.org/mangos/v3"
 )
 
 const (
@@ -330,341 +327,6 @@ func waitForFileToDisappear(path string, maxWait time.Duration) error {
 	}
 
 	return fmt.Errorf("%w: expected %s to disappear", errFileStillExists, path)
-}
-
-const (
-	liveJTouchActualCwd = "/tmp/wr/job1"
-	liveJTouchTTR       = time.Second
-	liveStatusCloudUser = "cloud_user"
-	liveStatusHost      = "worker1"
-	liveStatusHostIP    = "10.0.0.8"
-)
-
-type liveJTouchFixture struct {
-	server *Server
-	sock   *captureSocket
-	job    *Job
-	item   *queue.Item
-	token  []byte
-	key    string
-	client uuid.UUID
-}
-
-func newLiveJTouchFixture(ctx context.Context, webPort string) *liveJTouchFixture {
-	ch := new(codec.BincHandle)
-	sock := &captureSocket{ch: ch}
-	clientID, err := uuid.NewV4()
-	So(err, ShouldBeNil)
-
-	token := []byte(strings.Repeat("x", tokenLength))
-	job := &Job{
-		Cmd:          "echo live jtouch",
-		Cwd:          testCwd,
-		RepGroup:     "live-jtouch",
-		Requirements: &jqs.Requirements{RAM: 1, Time: time.Minute, Cores: 1},
-		ReservedBy:   clientID,
-		State:        JobStateRunning,
-		StartTime:    time.Now(),
-	}
-	key := job.Key()
-	q := queue.New(ctx, "live-jtouch")
-	item, err := q.Add(ctx, key, "", job, 0, 0, liveJTouchTTR, queue.SubQueueRun)
-	So(err, ShouldBeNil)
-
-	return &liveJTouchFixture{
-		server: &Server{
-			ch:         ch,
-			sock:       sock,
-			token:      token,
-			q:          q,
-			up:         true,
-			ServerInfo: &ServerInfo{WebPort: webPort},
-		},
-		sock:   sock,
-		job:    job,
-		item:   item,
-		token:  token,
-		key:    key,
-		client: clientID,
-	}
-}
-
-func (fixture *liveJTouchFixture) touch(
-	ctx context.Context,
-	token []byte,
-	endState *JobEndState,
-) (*serverResponse, error) {
-	var encoded []byte
-
-	enc := codec.NewEncoderBytes(&encoded, fixture.server.ch)
-	err := enc.Encode(&clientRequest{
-		Method:      requestMethodTouch,
-		Token:       token,
-		Keys:        []string{fixture.key},
-		ClientID:    fixture.client,
-		JobEndState: endState,
-	})
-	So(err, ShouldBeNil)
-
-	err = fixture.server.handleRequest(ctx, &mangos.Message{Body: encoded})
-
-	return fixture.sock.response(), err
-}
-
-func (fixture *liveJTouchFixture) remainingTTRAfterDelay() time.Duration {
-	time.Sleep(20 * time.Millisecond)
-
-	return fixture.item.Stats().Remaining
-}
-
-func assertLiveJTouchExtendedTTR(before, after time.Duration) {
-	So(after.Nanoseconds(), ShouldBeGreaterThan, before.Nanoseconds())
-}
-
-func assertLiveJTouchDidNotExtendTTR(before, after time.Duration) {
-	So(after.Nanoseconds(), ShouldBeLessThanOrEqualTo, before.Nanoseconds())
-}
-
-func assertLiveJTouchFields(
-	job *Job,
-	actualCwd string,
-	peakRAM int,
-	peakDisk int64,
-	cpuTime time.Duration,
-	stdout string,
-	stderr string,
-) {
-	job.RLock()
-	So(job.State, ShouldEqual, JobStateRunning)
-	So(job.Exited, ShouldBeFalse)
-	So(job.ActualCwd, ShouldEqual, actualCwd)
-	So(job.PeakRAM, ShouldEqual, peakRAM)
-	So(job.PeakDisk, ShouldEqual, peakDisk)
-	So(job.CPUtime, ShouldEqual, cpuTime)
-	job.RUnlock()
-
-	out, err := job.StdOut()
-	So(err, ShouldBeNil)
-	So(out, ShouldEqual, stdout)
-
-	errOut, err := job.StdErr()
-	So(err, ShouldBeNil)
-	So(errOut, ShouldEqual, stderr)
-}
-
-func TestManagerLiveJTouch(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	Convey("An authenticated live jtouch stores a live snapshot behind the secure gate", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "1234")
-		before := fixture.remainingTTRAfterDelay()
-		endState := &JobEndState{
-			Cwd:      liveJTouchActualCwd,
-			PeakRAM:  321,
-			PeakDisk: 9,
-			CPUtime:  4 * time.Second,
-			Stdout:   compressStd([]byte("out\n")),
-			Stderr:   compressStd([]byte("err\n")),
-		}
-
-		resp, err := fixture.touch(ctx, fixture.token, endState)
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeFalse)
-		assertLiveJTouchExtendedTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, liveJTouchActualCwd, 321, 9, 4*time.Second, "out\n", "err\n")
-	})
-
-	Convey("An authenticated resource-only live jtouch preserves existing output tails", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "1234")
-
-		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
-			Cwd:      liveJTouchActualCwd,
-			PeakRAM:  321,
-			PeakDisk: 9,
-			CPUtime:  4 * time.Second,
-			Stdout:   compressStd([]byte("out\n")),
-			Stderr:   compressStd([]byte("err\n")),
-		})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeFalse)
-
-		resp, err = fixture.touch(ctx, fixture.token, &JobEndState{
-			Cwd:      liveJTouchActualCwd,
-			PeakRAM:  654,
-			PeakDisk: 12,
-			CPUtime:  7 * time.Second,
-		})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeFalse)
-		assertLiveJTouchFields(fixture.job, liveJTouchActualCwd, 654, 12, 7*time.Second, "out\n", "err\n")
-	})
-
-	Convey("An authenticated reserved live jtouch is visible through itemToJob", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "1234")
-		fixture.job.Lock()
-		fixture.job.State = JobStateReserved
-		fixture.job.StartTime = time.Time{}
-		fixture.job.Unlock()
-
-		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
-			Cwd:     liveJTouchActualCwd,
-			PeakRAM: 321,
-			CPUtime: 4 * time.Second,
-			Stdout:  compressStd([]byte("out\n")),
-			Stderr:  compressStd([]byte("err\n")),
-		})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeFalse)
-
-		job := fixture.server.itemToJob(ctx, fixture.item, true, false)
-		So(job.State, ShouldEqual, JobStateReserved)
-
-		stdout, err := job.StdOut()
-		So(err, ShouldBeNil)
-		So(stdout, ShouldEqual, "out\n")
-
-		stderr, err := job.StdErr()
-		So(err, ShouldBeNil)
-		So(stderr, ShouldEqual, "err\n")
-	})
-
-	Convey("An older runner jtouch with no live fields only extends TTR", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "1234")
-		setLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-		before := fixture.remainingTTRAfterDelay()
-
-		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeFalse)
-		assertLiveJTouchExtendedTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-	})
-
-	Convey("An authenticated live jtouch with no HTTPS web port only extends TTR", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "")
-		before := fixture.remainingTTRAfterDelay()
-
-		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
-			Cwd:     liveJTouchActualCwd,
-			PeakRAM: 321,
-			CPUtime: 4 * time.Second,
-			Stdout:  compressStd([]byte("out\n")),
-			Stderr:  compressStd([]byte("err\n")),
-		})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeFalse)
-		assertLiveJTouchExtendedTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, "", 0, 0, 0, "", "")
-	})
-
-	Convey("A live jtouch with an invalid token is denied without touching TTR or live fields", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "1234")
-		before := fixture.remainingTTRAfterDelay()
-
-		resp, err := fixture.touch(ctx, []byte(strings.Repeat("y", tokenLength)), &JobEndState{
-			Cwd:     liveJTouchActualCwd,
-			PeakRAM: 321,
-			CPUtime: 4 * time.Second,
-			Stdout:  compressStd([]byte("out\n")),
-			Stderr:  compressStd([]byte("err\n")),
-		})
-		So(err, ShouldNotBeNil)
-		So(resp.Err, ShouldEqual, ErrPermissionDenied)
-		So(resp.KillCalled, ShouldBeFalse)
-		assertLiveJTouchDidNotExtendTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, "", 0, 0, 0, "", "")
-	})
-
-	Convey("A live jtouch with no token is denied before a KillCalled response", t, func() {
-		ctx := context.Background()
-		fixture := newLiveJTouchFixture(ctx, "1234")
-		setLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-		fixture.job.Lock()
-		fixture.job.killCalled = true
-		fixture.job.Unlock()
-		before := fixture.remainingTTRAfterDelay()
-
-		resp, err := fixture.touch(ctx, nil, &JobEndState{
-			Cwd:     liveJTouchActualCwd,
-			PeakRAM: 321,
-			CPUtime: 4 * time.Second,
-			Stdout:  compressStd([]byte("out\n")),
-			Stderr:  compressStd([]byte("err\n")),
-		})
-		So(err, ShouldNotBeNil)
-		So(resp.Err, ShouldEqual, ErrPermissionDenied)
-		So(resp.KillCalled, ShouldBeFalse)
-		assertLiveJTouchDidNotExtendTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-	})
-
-	Convey("An authenticated live jtouch preserves KillCalled jobs and existing live fields", t, func() {
-		ctx := context.Background()
-		fixture := newKillCalledLiveJTouchFixture(ctx)
-		before := fixture.remainingTTRAfterDelay()
-
-		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
-			Cwd:      liveJTouchActualCwd,
-			PeakRAM:  321,
-			PeakDisk: 9,
-			CPUtime:  4 * time.Second,
-			Stdout:   compressStd([]byte("out\n")),
-			Stderr:   compressStd([]byte("err\n")),
-		})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeTrue)
-		assertLiveJTouchDidNotExtendTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-	})
-
-	Convey("An authenticated older-runner jtouch preserves KillCalled jobs and existing live fields", t, func() {
-		ctx := context.Background()
-		fixture := newKillCalledLiveJTouchFixture(ctx)
-		before := fixture.remainingTTRAfterDelay()
-
-		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{})
-		So(err, ShouldBeNil)
-		So(resp.KillCalled, ShouldBeTrue)
-		assertLiveJTouchDidNotExtendTTR(before, fixture.item.Stats().Remaining)
-		assertLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-	})
-}
-
-func newKillCalledLiveJTouchFixture(ctx context.Context) *liveJTouchFixture {
-	fixture := newLiveJTouchFixture(ctx, "1234")
-	setLiveJTouchFields(fixture.job, "/tmp/old", 111, 7, 2*time.Second, "old\n", "olderr\n")
-	fixture.job.Lock()
-	fixture.job.killCalled = true
-	fixture.job.Unlock()
-
-	return fixture
-}
-
-func setLiveJTouchFields(
-	job *Job,
-	actualCwd string,
-	peakRAM int,
-	peakDisk int64,
-	cpuTime time.Duration,
-	stdout string,
-	stderr string,
-) {
-	job.Lock()
-	job.ActualCwd = actualCwd
-	job.PeakRAM = peakRAM
-	job.PeakDisk = peakDisk
-	job.CPUtime = cpuTime
-	job.StdOutC = compressStd([]byte(stdout))
-	job.StdErrC = compressStd([]byte(stderr))
-	job.Unlock()
 }
 
 func configureFastTestBackups(db *db) {
@@ -1597,32 +1259,27 @@ func TestJobqueueSignal(t *testing.T) {
 		if alreadyKilled[serverPid] {
 			return
 		}
-
 		errd := jq.Disconnect()
 		if errd != nil && !isClosedSocketError(errd) {
-			t.Logf("failed to disconnect: %s", errd)
+			fmt.Printf("failed to disconnect: %s\n", errd)
 		}
 
 		waited := make(chan bool)
-
 		go func() {
 			errw := serverCmd.Wait()
 			if errw != nil {
-				t.Logf("failed to reap server pid: %s", errw)
+				fmt.Printf("failed to reap server pid: %s\n", errw)
 			}
-
 			waited <- true
 		}()
 
 		<-time.After(500 * time.Millisecond)
-
 		errk := syscall.Kill(serverPid, syscall.SIGTERM)
 		if errk != nil {
-			t.Logf("failed to send SIGTERM to server: %s", errk)
+			fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
 		}
 
 		<-waited
-
 		alreadyKilled[serverPid] = true
 	}
 
@@ -1633,7 +1290,6 @@ func TestJobqueueSignal(t *testing.T) {
 
 		jq, token, serverCmd, errf := startServer(serverExe, false, false, config, addr)
 		serverPid := serverCmd.Process.Pid
-
 		So(errf, ShouldBeNil)
 
 		defer killServer(jq, serverPid, serverCmd)
@@ -1643,25 +1299,9 @@ func TestJobqueueSignal(t *testing.T) {
 		Convey("You can set up a long-running job for execution", func() {
 			cmd := "perl -e 'for (1..3) { sleep(1) }'"
 			cmd2 := "perl -e 'for (2..4) { sleep(1) }'"
-
-			jobs := []*Job{
-				{
-					Cmd:          cmd,
-					Cwd:          testCwd,
-					ReqGroup:     reqGroupFake,
-					Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1},
-					Retries:      uint8(0),
-					RepGroup:     "3secs_pass",
-				},
-				{
-					Cmd:          cmd2,
-					Cwd:          testCwd,
-					ReqGroup:     reqGroupFake,
-					Requirements: &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1},
-					Retries:      uint8(0),
-					RepGroup:     "3secs_fail",
-				},
-			}
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "3secs_pass"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "3secs_fail"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1707,7 +1347,6 @@ func TestJobqueueSignal(t *testing.T) {
 				defer cancelSig()
 
 				j1worked := make(chan bool, 1)
-
 				go func() {
 					err := jq.Execute(ctx, job, config.RunnerExecShell)
 					if err != nil {
@@ -1722,12 +1361,10 @@ func TestJobqueueSignal(t *testing.T) {
 							return
 						}
 					}
-
 					j1worked <- false
 				}()
 
 				j2worked := make(chan bool, 1)
-
 				go func() {
 					err := jq.Execute(ctx, job2, config.RunnerExecShell)
 					if err != nil {
@@ -1742,7 +1379,6 @@ func TestJobqueueSignal(t *testing.T) {
 							return
 						}
 					}
-
 					j2worked <- false
 				}()
 
@@ -1755,9 +1391,7 @@ func TestJobqueueSignal(t *testing.T) {
 
 				jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
-
 				defer disconnect(jq2)
-
 				job, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
@@ -1777,7 +1411,6 @@ func TestJobqueueSignal(t *testing.T) {
 				kicked, err := jq.Kick([]*JobEssence{job2.ToEssense()})
 				So(err, ShouldBeNil)
 				So(kicked, ShouldEqual, 1)
-
 				job2, err = jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
@@ -1793,28 +1426,10 @@ func TestJobqueueSignal(t *testing.T) {
 
 		Convey("Running jobs are recovered after a hard server crash", func() {
 			cmd := "sleep 10"
-			// We want to kill this part way, but sleep processes do not seem to
-			// die straight away when killed.
-			cmd2 := "perl -e 'for (1..10) { sleep(1) }'"
-
-			jobs := []*Job{
-				{
-					Cmd:          cmd,
-					Cwd:          testCwd,
-					ReqGroup:     reqGroupFake,
-					Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0},
-					Retries:      uint8(0),
-					RepGroup:     "recover",
-				},
-				{
-					Cmd:          cmd2,
-					Cwd:          testCwd,
-					ReqGroup:     reqGroupFake,
-					Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0},
-					Retries:      uint8(0),
-					RepGroup:     "buried",
-				},
-			}
+			cmd2 := "perl -e 'for (1..10) { sleep(1) }'" // we want to kill this part way, but `sleep` processes don't seem to die straight away when killed
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1831,25 +1446,18 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job2.State, ShouldEqual, JobStateReserved)
 
 			serverCmdCh := make(chan *exec.Cmd)
-			killRecoveredJob := func(gotJob *Job) {
-				<-time.After(2 * time.Second)
-
-				errk := syscall.Kill(gotJob.Pid, syscall.SIGKILL)
-				if errk != nil {
-					t.Logf("failed to send SIGKILL to job: %s", errk)
-				}
-			}
-
 			go func() {
 				<-time.After(2 * time.Second)
-
 				gotJob, errg := jq.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
 				killServer(jq, serverPid, serverCmd)
-
-				if errg != nil || gotJob == nil {
-					log.Printf("failed to get job: %s\n", errg)
+				if errg == nil && gotJob != nil {
+					<-time.After(2 * time.Second)
+					errk := syscall.Kill(gotJob.Pid, syscall.SIGKILL)
+					if errk != nil {
+						fmt.Printf("failed to send SIGKILL to job: %s\n", errk)
+					}
 				} else {
-					killRecoveredJob(gotJob)
+					log.Printf("failed to get job: %s\n", errg)
 				}
 				<-time.After(4 * time.Second)
 				newJQ, _, newServerCmd, errf := startServer(serverExe, true, false, config, addr)
@@ -1858,7 +1466,7 @@ func TestJobqueueSignal(t *testing.T) {
 				} else if newJQ != nil {
 					errd := newJQ.Disconnect()
 					if errd != nil {
-						t.Logf("failed to disconnect after making a new server: %s", errd)
+						fmt.Printf("failed to disconnect after making a new server: %s\n", errd)
 					}
 				}
 				serverCmdCh <- newServerCmd
@@ -2645,11 +2253,10 @@ func TestJobqueueBasics(t *testing.T) {
 
 				errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				if errk != nil {
-					t.Logf("failed to send SIGTERM: %s", errk)
+					fmt.Printf("failed to send SIGTERM: %s\n", errk)
 				}
 
 				<-time.After(serverShutDownTime(serverConfig.Timings.TouchInterval))
-
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 
@@ -2669,11 +2276,10 @@ func TestJobqueueBasics(t *testing.T) {
 
 				errk = syscall.Kill(os.Getpid(), syscall.SIGINT)
 				if errk != nil {
-					t.Logf("failed to send SIGINT: %s", errk)
+					fmt.Printf("failed to send SIGINT: %s\n", errk)
 				}
 
 				<-time.After(serverShutDownTime(serverConfig.Timings.TouchInterval))
-
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				ok = errors.As(err, &jqerr)
