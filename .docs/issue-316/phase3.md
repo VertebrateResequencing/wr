@@ -22,7 +22,7 @@ request handling in `jobqueue/serverCLI.go`, server filtering in
 3.3 covers the shared `waiting-deps` plain-output assertion.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Batch 1 (parallel, after Item 3.1 is reviewed)
 
@@ -37,7 +37,7 @@ JSON, REST `waiting_deps=true`, and web status details in `jobqueue/job.go`,
 exported Go field JSON names. Cover all 4 acceptance tests from C1.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 #### Item 3.3: C2 - Display never-seen waits in CLI status [parallel with C1]
 
@@ -49,7 +49,7 @@ retains `State:"dependent"` and exported field names, and counts still report
 these jobs as dependent. Cover all 5 acceptance tests from C2.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill

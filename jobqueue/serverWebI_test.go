@@ -379,6 +379,40 @@ func TestServerWebI(t *testing.T) {
 				})
 			})
 
+			Convey("The websocket handler sends never-seen dependency group waits for details", func() {
+				waiting := &Job{
+					Cmd:          "echo web waiting dep",
+					Cwd:          "/tmp",
+					ReqGroup:     "web_group",
+					Requirements: standardReqs,
+					RepGroup:     "web-waiting",
+					Dependencies: Dependencies{NewDepGroupDependency(futureDepGroup)},
+				}
+
+				inserts, already, erra := jq.Add([]*Job{waiting}, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				ws, err = drainWebSocket(wsURL, header)
+				So(err, ShouldBeNil)
+
+				err = ws.WriteJSON(jstatusReq{
+					Request:  jstatusRequestDetails,
+					RepGroup: waiting.RepGroup,
+					State:    JobStateDependent,
+				})
+				So(err, ShouldBeNil)
+
+				status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+					return s.Key == waiting.Key()
+				})
+				So(ok, ShouldBeTrue)
+				So(status.RepGroup, ShouldEqual, waiting.RepGroup)
+				So(status.State, ShouldEqual, JobStateDependent)
+				So(status.WaitingForDepGroups, ShouldResemble, []string{futureDepGroup})
+			})
+
 			Convey("The websocket handler deals with paginated details requests", func() {
 				numPaginationJobs := 12
 				limit := 5
