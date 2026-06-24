@@ -856,7 +856,7 @@
 
         <script type="text/html" id="modifyJobModalBodyTemplate">
             <!-- ko if: $data -->
-            <form class="form-horizontal" data-bind="submit: $root.submitModifyJob">
+            <form class="form-horizontal" data-bind="submit: function() { $root.submitModifyJob(); return false; }">
                 <!-- ko if: $root.modifyJobError() -->
                 <div class="alert alert-danger" data-bind="text: $root.modifyJobError"></div>
                 <!-- /ko -->

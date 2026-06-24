@@ -125,7 +125,7 @@ func restJobsModify(ctx context.Context, r *http.Request, s *Server) (*JobModify
 	}
 
 	if len(modified) == 0 {
-		return nil, http.StatusConflict, errRESTModifyNoneModified
+		return nil, http.StatusConflict, s.restModifyEmptyResultError(editableKeys)
 	}
 
 	statuses, err := s.modifiedJobStatuses(ctx, modified)
@@ -1215,6 +1215,15 @@ func modifiedOldKeys(modified map[string]string, jobs []*Job) []string {
 	}
 
 	return oldKeys
+}
+
+func (s *Server) restModifyEmptyResultError(editableKeys []string) error {
+	editableJobs, _ := s.editableQueueJobs(editableKeys)
+	if len(editableJobs) == 0 {
+		return errRESTModifyNoEditable
+	}
+
+	return errRESTModifyNoneModified
 }
 
 // httpAuthorized checks for parameter 'token' and for Authorization header for

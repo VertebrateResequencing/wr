@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -260,5 +261,53 @@ func TestJob(t *testing.T) {
 		So(*status.Started, ShouldEqual, started.UnixNano())
 		So(*status.Ended, ShouldEqual, ended.UnixNano())
 		So(*status.Ended, ShouldBeGreaterThan, *status.Started)
+	})
+
+	Convey("ToStatus() safely reports env overrides while they change", t, func() {
+		job := &Job{
+			Cmd:          "true",
+			Cwd:          "/cwd",
+			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+			State:        JobStateReady,
+		}
+		overrideA, erra := compressEnv([]string{"WR_RACE=A"})
+		So(erra, ShouldBeNil)
+
+		overrideB, errb := compressEnv([]string{"WR_RACE=B"})
+		So(errb, ShouldBeNil)
+
+		start := make(chan struct{})
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			<-start
+
+			for i := range 5000 {
+				job.Lock()
+				if i%2 == 0 {
+					job.EnvOverride = overrideA
+				} else {
+					job.EnvOverride = overrideB
+				}
+				job.Unlock()
+			}
+		}()
+
+		close(start)
+
+		readErrors := 0
+
+		for range 5000 {
+			if _, err := job.ToStatus(); err != nil {
+				readErrors++
+			}
+		}
+
+		wg.Wait()
+		So(readErrors, ShouldEqual, 0)
 	})
 }

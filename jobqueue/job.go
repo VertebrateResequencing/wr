@@ -495,21 +495,33 @@ func (j *Job) Env() ([]string, error) {
 
 // envCurrentOverrides decompresses and decodes any existing EnvOverride.
 func (j *Job) envCurrentOverrides() ([]string, error) {
-	if len(j.EnvOverride) > 0 {
-		decompressed, err := decompress(j.EnvOverride)
-		if err != nil {
-			return nil, err
-		}
-		ch := new(codec.BincHandle)
-		dec := codec.NewDecoderBytes(decompressed, ch)
-		overrideEs := &envStr{}
-		err = dec.Decode(overrideEs)
-		if err != nil {
-			return nil, err
-		}
-		return overrideEs.Environ, err
+	envOverride := j.envOverrideSnapshot()
+	if len(envOverride) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+
+	decompressed, err := decompress(envOverride)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := new(codec.BincHandle)
+	dec := codec.NewDecoderBytes(decompressed, ch)
+	overrideEs := &envStr{}
+
+	err = dec.Decode(overrideEs)
+	if err != nil {
+		return nil, err
+	}
+
+	return overrideEs.Environ, err
+}
+
+func (j *Job) envOverrideSnapshot() []byte {
+	j.RLock()
+	defer j.RUnlock()
+
+	return slices.Clone(j.EnvOverride)
 }
 
 // EnvAddOverride adds additional overrides to the jobs existing overrides (if
@@ -523,9 +535,16 @@ func (j *Job) EnvAddOverride(env []string) error {
 		return err
 	}
 
-	j.EnvOverride, err = compressEnv(envOverride(current, env))
+	compressed, err := compressEnv(envOverride(current, env))
+	if err != nil {
+		return err
+	}
 
-	return err
+	j.Lock()
+	j.EnvOverride = compressed
+	j.Unlock()
+
+	return nil
 }
 
 // Getenv is like os.Getenv(), but for the environment variables stored in the

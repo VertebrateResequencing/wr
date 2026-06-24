@@ -581,6 +581,22 @@ func TestRESTJobModificationValidation(t *testing.T) {
 			So(getJobStatus(key, false).Priority, ShouldEqual, 1)
 		})
 
+		Convey("PATCH reports no editable jobs when queue state changes before modification", func() {
+			key := addJob(&Job{
+				Cmd: "echo rest stale editable", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-stale-editable", Priority: 1,
+			})
+			reserveOnly(key)
+
+			modifier := NewJobModifer()
+			modifier.SetPriority(9)
+
+			modified, errm := server.modifyJobsByKeys(ctx, []string{key}, modifier)
+			So(errm, ShouldBeNil)
+			So(len(modified), ShouldEqual, 0)
+			So(server.restModifyEmptyResultError([]string{key}), ShouldEqual, errRESTModifyNoEditable)
+		})
+
 		Convey("PATCH rejects lost jobs without changing them", func() {
 			key := addJob(&Job{
 				Cmd: "echo rest lost", Cwd: testCwd, ReqGroup: restA2ReqGroup,

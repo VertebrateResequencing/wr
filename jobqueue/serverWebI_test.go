@@ -1751,6 +1751,7 @@ func TestWebUIModificationStaticContract(t *testing.T) {
 
 		So(statusHTML, ShouldContainSubstring, "jobCanModify")
 		So(statusHTML, ShouldContainSubstring, "showModifyJob")
+		So(statusHTML, ShouldContainSubstring, "submit: function() { $root.submitModifyJob(); return false; }")
 		So(actionHandlers, ShouldContainSubstring, "showModifyJob")
 		So(viewModel, ShouldContainSubstring, "jobCanModify")
 
@@ -2237,6 +2238,10 @@ export function setupLiveWalltime(job, walltime) {
 
 func runNodeScript(t *testing.T, repoRoot, source string) {
 	t.Helper()
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not found on PATH; skipping browser module contract test")
+	}
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "web_ui_modify_test.mjs")
