@@ -249,7 +249,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 
 ## #19 Cmd env vars and expected resource requirements should be editable (web)
 
-- [ ] Spec produced
+- [x] Spec produced
 - [ ] Implemented
 - [ ] Reviewed
 - [ ] Merged
