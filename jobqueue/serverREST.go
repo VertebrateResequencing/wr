@@ -1315,11 +1315,17 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 
 		// convert jobs to jstatus
 		jstati := make([]JStatus, len(jobs))
+		includeStd := r.URL.Query().Get("std") == restFormTrue
 		for i, job := range jobs {
 			jstati[i], err = job.ToStatus()
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 				http.Error(w, err.Error(), status)
 				return
+			}
+
+			if !includeStd {
+				jstati[i].StdErr = ""
+				jstati[i].StdOut = ""
 			}
 		}
 
@@ -1349,27 +1355,33 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	var state JobState
 	var err error
 
-	if r.Form.Get("search") == restFormTrue {
+	query := r.URL.Query()
+
+	if query.Get("search") == restFormTrue {
 		search = true
 	}
-	if r.Form.Get("std") == restFormTrue {
+
+	if query.Get("std") == restFormTrue {
 		getStd = true
 	}
-	if r.Form.Get("env") == restFormTrue {
+
+	if query.Get("env") == restFormTrue {
 		getEnv = true
 	}
 
-	if r.Form.Get("waiting_deps") == restFormTrue {
+	if query.Get("waiting_deps") == restFormTrue {
 		waitingForDepGroups = true
 	}
-	if r.Form.Get("limit") != "" {
-		limit, err = strconv.Atoi(r.Form.Get("limit"))
+
+	if query.Get("limit") != "" {
+		limit, err = strconv.Atoi(query.Get("limit"))
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 	}
-	if r.Form.Get("state") != "" {
-		switch r.Form.Get("state") {
+
+	if query.Get("state") != "" {
+		switch query.Get("state") {
 		case "delayed":
 			state = JobStateDelayed
 		case "ready":

@@ -3315,7 +3315,7 @@ func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, 
 		item, err := s.q.Get(jobkey)
 		var job *Job
 		if err == nil && item != nil {
-			job = s.itemToJob(ctx, item, false, false)
+			job = s.itemToJob(ctx, item, getStd, false)
 		} else {
 			notfound = append(notfound, jobkey)
 		}
@@ -3398,7 +3398,7 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 
 	for i := range rgs {
 		rg := rgs[i]
-		queueJobs := s.getQueueJobsByRepGroup(ctx, rg)
+		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd)
 		jobs = append(jobs, queueJobs...)
 
 		complete := s.getDBJobsByRepGroup(rg, opts.State, &srerr, &qerr)
@@ -3435,13 +3435,13 @@ func (s *Server) getRepGroupsList(repGroup string, match RepGroupMatch) ([]strin
 
 // getQueueJobsByRepGroup gets jobs from the in-memory queue for a given
 // RepGroup.
-func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string) []*Job {
+func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, getStd bool) []*Job {
 	var jobs []*Job
 
 	for _, key := range s.rpl.Values(repGroup) {
 		item, _ := s.q.Get(key) //nolint:errcheck
 		if item != nil {
-			job := s.itemToJob(ctx, item, false, false)
+			job := s.itemToJob(ctx, item, getStd, false)
 			jobs = append(jobs, job)
 		}
 	}
@@ -3507,7 +3507,7 @@ func (s *Server) getLastCompletionTimeByRepGroup(repGroup string,
 // returned.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool, waitingForDepGroups bool) []*Job {
-	jobs := s.getQueueJobsCurrent(ctx, repGroup, match)
+	jobs := s.getQueueJobsCurrent(ctx, repGroup, match, getStd)
 
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
 		Limit:               limit,
@@ -3520,36 +3520,36 @@ func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, match RepG
 	return jobs
 }
 
-func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch) []*Job {
+func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch, getStd bool) []*Job {
 	if repGroup == "" {
-		return s.getAllQueueJobs(ctx)
+		return s.getAllQueueJobs(ctx, getStd)
 	}
 
 	if match == RepGroupMatchExact {
-		return s.getQueueJobsByRepGroup(ctx, repGroup)
+		return s.getQueueJobsByRepGroup(ctx, repGroup, getStd)
 	}
 
-	return s.getQueueJobsByRepGroupMatch(ctx, repGroup, match)
+	return s.getQueueJobsByRepGroupMatch(ctx, repGroup, match, getStd)
 }
 
-func (s *Server) getAllQueueJobs(ctx context.Context) []*Job {
+func (s *Server) getAllQueueJobs(ctx context.Context, getStd bool) []*Job {
 	allItems := s.q.AllItems()
 	jobs := make([]*Job, 0, len(allItems))
 
 	for _, item := range allItems {
-		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
+		jobs = append(jobs, s.itemToJob(ctx, item, getStd, false))
 	}
 
 	return jobs
 }
 
 func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup string,
-	match RepGroupMatch) []*Job {
+	match RepGroupMatch, getStd bool) []*Job {
 	allItems := s.q.AllItems()
 	jobs := make([]*Job, 0, len(allItems))
 
 	for _, item := range allItems {
-		job := s.itemToJob(ctx, item, false, false)
+		job := s.itemToJob(ctx, item, getStd, false)
 		if job == nil || !RepGroupMatches(job.RepGroup, repGroup, match) {
 			continue
 		}

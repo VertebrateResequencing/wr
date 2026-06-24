@@ -123,6 +123,7 @@ var (
 const (
 	requestMethodStart          = "jstart"
 	requestMethodSubscribe      = "subscribe"
+	requestMethodTouch          = "jtouch"
 	requestMethodUnsubscribe    = "unsubscribe"
 	requestMethodWaitForUpdates = "waitForUpdates"
 )
@@ -154,6 +155,18 @@ func touchEndState(job *Job) *JobEndState {
 		Stdout:   slices.Clone(job.StdOutC),
 		Stderr:   slices.Clone(job.StdErrC),
 	}
+}
+
+func cloneJobEndState(endState *JobEndState) *JobEndState {
+	if endState == nil {
+		return nil
+	}
+
+	clone := *endState
+	clone.Stdout = slices.Clone(endState.Stdout)
+	clone.Stderr = slices.Clone(endState.Stderr)
+
+	return &clone
 }
 
 // clientRequest is the struct that clients send to the server over the network
@@ -244,6 +257,83 @@ func (state *serverContactState) schedulerMemoryFallbackAllowed() bool {
 	return !state.lost.Load()
 }
 
+type executeLiveState struct {
+	sync.Mutex
+	stdout   *liveTailSaver
+	stderr   *liveTailSaver
+	cwd      string
+	peakRAM  int
+	peakDisk int64
+	cpuTime  time.Duration
+}
+
+func newExecuteLiveState(cwd string, stdout, stderr *liveTailSaver) *executeLiveState {
+	return &executeLiveState{
+		stdout: stdout,
+		stderr: stderr,
+		cwd:    cwd,
+	}
+}
+
+func (state *executeLiveState) updateResources(peakRAM int, peakDisk int64, cpuTime time.Duration) {
+	state.Lock()
+	defer state.Unlock()
+
+	if peakRAM > state.peakRAM {
+		state.peakRAM = peakRAM
+	}
+
+	if peakDisk > state.peakDisk {
+		state.peakDisk = peakDisk
+	}
+
+	if cpuTime > state.cpuTime {
+		state.cpuTime = cpuTime
+	}
+}
+
+func (state *executeLiveState) snapshot() *JobEndState {
+	stdout := state.stdout.FlushCompressed()
+	stderr := state.stderr.FlushCompressed()
+
+	state.Lock()
+	defer state.Unlock()
+
+	return &JobEndState{
+		Cwd:      state.cwd,
+		PeakRAM:  state.peakRAM,
+		PeakDisk: state.peakDisk,
+		CPUtime:  state.cpuTime,
+		Stdout:   stdout,
+		Stderr:   stderr,
+	}
+}
+
+func currentProcessTreeCPUtime(pid int) time.Duration {
+	pid32, ok := processPID(pid)
+	if !ok {
+		return 0
+	}
+
+	root, err := process.NewProcess(pid32)
+	if err != nil {
+		return 0
+	}
+
+	total := currentProcessCPUtime(root)
+
+	children, err := getChildProcesses(pid32)
+	if err != nil {
+		return total
+	}
+
+	for _, child := range children {
+		total += currentProcessCPUtime(child)
+	}
+
+	return total
+}
+
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue.
 type Client struct {
@@ -272,6 +362,10 @@ type Client struct {
 	// command may use before we kill it. Defaults to ClientPercentMemoryKill,
 	// but may be overridden locally before Execute() (used by tests).
 	percentMemoryKill int
+
+	// liveTouchHook is used by in-package tests to inspect the live touch state
+	// assembled during Execute().
+	liveTouchHook func(*JobEndState)
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -746,13 +840,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return fmt.Errorf("failed to create a pipe for STDERR from cmd [%s]: %w", jc, err)
 	}
 	stderr := &prefixSuffixSaver{N: 4096}
-	stderrWait := stdFilter(errReader, stderr)
+	liveStderr := &liveTailSaver{}
+	stderrWait := stdFilter(errReader, io.MultiWriter(stderr, liveStderr))
 	outReader, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create a pipe for STDOUT from cmd [%s]: %w", jc, err)
 	}
 	stdout := &prefixSuffixSaver{N: 4096}
-	stdoutWait := stdFilter(outReader, stdout)
+	liveStdout := &liveTailSaver{}
+	stdoutWait := stdFilter(outReader, io.MultiWriter(stdout, liveStdout))
 
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
@@ -792,6 +888,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// before doing any other pre-start tasks, which might take time, start
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
+	liveState := newExecuteLiveState(cmd.Dir, liveStdout, liveStderr)
 	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
 	var wkbsMutex sync.RWMutex
@@ -807,7 +904,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		for {
 			select {
 			case <-touchTicker.C:
-				kc, errf := c.Touch(job)
+				kc, errf := c.touch(job, liveState.snapshot())
 				if kc {
 					wkbsMutex.RLock()
 					defer wkbsMutex.RUnlock()
@@ -1364,6 +1461,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if errd == nil && disk > peakdisk {
 					peakdisk = disk
 				}
+
+				cpuTime := currentProcessTreeCPUtime(cmd.Process.Pid) + time.Duration(dockerCPU)*time.Second
+				liveState.updateResources(peakmem, peakdisk, cpuTime)
 				stateMutex.Unlock()
 			case <-stopChecking:
 				closeReaders()
@@ -1868,23 +1968,11 @@ func keyOnlyJob(job *Job) *Job {
 // is true, you stop doing what you're doing and bury the job, since this means
 // that Kill() has been called for this job.
 func (c *Client) Touch(job *Job) (bool, error) {
-	c.teMutex.Lock()
-	defer c.teMutex.Unlock()
-
 	job.Lock()
-	key := job.Key()
 	endState := touchEndState(job)
 	job.Unlock()
 
-	resp, err := c.request(&clientRequest{
-		Method:      "jtouch",
-		Keys:        []string{key},
-		JobEndState: endState,
-	})
-	if err != nil {
-		return false, err
-	}
-	return resp.KillCalled, err
+	return c.touch(job, endState)
 }
 
 // JobEndState is used to describe the state of a job after it has (tried to)
@@ -1904,6 +1992,36 @@ type JobEndState struct {
 	Stdout   []byte
 	Stderr   []byte
 	Exited   bool
+}
+
+func (c *Client) touch(job *Job, endState *JobEndState) (bool, error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
+
+	job.Lock()
+	key := job.Key()
+	job.Unlock()
+
+	c.inspectLiveTouch(endState)
+
+	resp, err := c.request(&clientRequest{
+		Method:      requestMethodTouch,
+		Keys:        []string{key},
+		JobEndState: endState,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return resp.KillCalled, err
+}
+
+func (c *Client) inspectLiveTouch(endState *JobEndState) {
+	if c.liveTouchHook == nil {
+		return
+	}
+
+	c.liveTouchHook(cloneJobEndState(endState))
 }
 
 // ended updates a Job for the benefit of the client only: this has no effect on
@@ -2383,6 +2501,25 @@ func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(encoded)
+}
+
+func processPID(pid int) (int32, bool) {
+	const maxProcessPID = int(^uint32(0) >> 1)
+
+	if pid <= 0 || pid > maxProcessPID {
+		return 0, false
+	}
+
+	return int32(pid), true
+}
+
+func currentProcessCPUtime(proc *process.Process) time.Duration {
+	times, err := proc.Times()
+	if err != nil {
+		return 0
+	}
+
+	return time.Duration((times.User + times.System) * float64(time.Second))
 }
 
 func cloneMountConfigs(mountConfigs MountConfigs) MountConfigs {

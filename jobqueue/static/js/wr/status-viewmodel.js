@@ -7,7 +7,8 @@ import {
     toDate,
     mbIEC,
     capitalizeFirstLetter,
-    setupLiveWalltime
+    setupLiveWalltime,
+    copyTextToClipboard
 } from '/js/wr/utility.js';
 import { setupInflightTracking, createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 import { setupWebSocket } from '/js/wr/websocket-handler.js';
@@ -622,6 +623,10 @@ export function StatusViewModel() {
     };
     self.submitModifyJob = function () {
         return modalHandlers.submitModifyJob(self);
+    };
+    self.copySSHCommand = function (job) {
+        copyTextToClipboard(job.SSHCommand);
+        return false;
     };
 
     self.actionModalVisible = ko.observable(false);

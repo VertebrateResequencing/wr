@@ -1268,6 +1268,217 @@ func assertEditableStatusFields(status JStatus) {
 	So(status.EnvOverrides, ShouldResemble, []string{"WEB_ONLY=old"})
 }
 
+func TestStatusDetailsLiveCompatibility(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status details preserve compatibility without active live data", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		addRunningJob := func(repGroup, cmd string) *Job {
+			ids, erra := jq.AddAndReturnIDs([]*Job{{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			}}, envVars, true)
+			So(erra, ShouldBeNil)
+			So(ids, ShouldHaveLength, 1)
+
+			job, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+
+			if job == nil {
+				return &Job{}
+			}
+
+			So(job.Key(), ShouldEqual, ids[0])
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			return job
+		}
+
+		requestDetails := func(repGroup string, state JobState, key string) JStatus {
+			errw := ws.WriteJSON(jstatusReq{
+				Request:  jstatusRequestDetails,
+				RepGroup: repGroup,
+				State:    state,
+			})
+			So(errw, ShouldBeNil)
+
+			status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key == key })
+			So(ok, ShouldBeTrue)
+
+			return status
+		}
+
+		noLiveJob := addRunningJob("status-details-no-live", "echo status details no live")
+		noLiveStatus := requestDetails(noLiveJob.RepGroup, JobStateRunning, noLiveJob.Key())
+
+		So(noLiveStatus.PeakRAM, ShouldEqual, 0)
+		So(noLiveStatus.CPUtime, ShouldEqual, 0)
+		So(noLiveStatus.StdOut, ShouldEqual, "")
+		So(noLiveStatus.StdErr, ShouldEqual, "")
+		So(noLiveStatus.SSHCommand, ShouldEqual, "")
+		So(noLiveStatus.Started, ShouldNotBeNil)
+		So(noLiveStatus.Ended, ShouldBeNil)
+		So(noLiveStatus.Walltime, ShouldBeGreaterThanOrEqualTo, 0)
+
+		completeJob := addRunningJob("status-details-live-archive", "echo status details live archive")
+		completeJob.ActualCwd = liveJTouchActualCwd
+		completeJob.PeakRAM = 321
+		completeJob.CPUtime = 4 * time.Second
+		completeJob.StdOutC = compressStd([]byte("live\n"))
+		completeJob.StdErrC = compressStd([]byte("stale\n"))
+
+		killCalled, errt := jq.Touch(completeJob)
+		So(errt, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		So(jq.Archive(completeJob, &JobEndState{
+			Exited:   true,
+			Exitcode: 0,
+			PeakRAM:  654,
+			CPUtime:  8 * time.Second,
+			EndTime:  time.Now(),
+			Stdout:   compressStd([]byte("final\n")),
+			Stderr:   compressStd([]byte("done\n")),
+		}), ShouldBeNil)
+
+		completeStatus := requestDetails(completeJob.RepGroup, JobStateComplete, completeJob.Key())
+
+		So(completeStatus.StdOut, ShouldEqual, "final\n")
+		So(completeStatus.StdErr, ShouldEqual, "done\n")
+		So(completeStatus.Exited, ShouldBeTrue)
+		So(completeStatus.PeakRAM, ShouldEqual, 654)
+		So(completeStatus.CPUtime, ShouldEqual, 8)
+		So(completeStatus.SSHCommand, ShouldEqual, "")
+	})
+}
+
+func TestStatusDetailsLiveFields(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status details include running job live fields and SSH command", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "status-details-c1-live")
+		killCalled, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+			Stderr:  compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: job.RepGroup,
+			State:    JobStateRunning,
+		})
+		So(err, ShouldBeNil)
+
+		status, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && !status.IsPushUpdate
+		})
+		So(ok, ShouldBeTrue)
+		So(status.State, ShouldEqual, JobStateRunning)
+		So(status.PeakRAM, ShouldEqual, 321)
+		So(status.CPUtime, ShouldEqual, 4)
+		So(status.StdOut, ShouldEqual, "out\n")
+		So(status.StdErr, ShouldEqual, "err\n")
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
+func TestStatusDetailsLivePushUpdates(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status details websocket pushes running job live fields and SSH command", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "status-details-c2-live")
+
+		ws, cleanup := openStatusDetailsSubscription(ctx, server, token, job.RepGroup, job.Key())
+		defer cleanup()
+
+		killCalled, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+			Stderr:  compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		status, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.PeakRAM == 321
+		})
+		So(ok, ShouldBeTrue)
+		So(status.State, ShouldEqual, JobStateRunning)
+		So(status.CPUtime, ShouldEqual, 4)
+		So(status.StdOut, ShouldEqual, "out\n")
+		So(status.StdErr, ShouldEqual, "err\n")
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
 func clearReadDeadlineBestEffort(ws *websocket.Conn) {
 	if err := ws.SetReadDeadline(time.Time{}); err != nil {
 		return
@@ -2233,8 +2444,213 @@ assert.equal(errorVM.detailsOA()[0].Priority, 1);
 	})
 }
 
+func TestStatusPageLiveIntrospectionAssets(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status page assets render live introspection without an embedded terminal", t, func() {
+		html := readTextAsset(t, "static/status.html")
+		handler := readTextAsset(t, "static/js/wr/websocket-handler.js")
+		utility := readTextAsset(t, "static/js/wr/utility.js")
+		css := readTextAsset(t, "static/css/wr-0.36.0.css")
+
+		So(html, ShouldContainSubstring, "!Exited && (State == 'running' || State == 'reserved') && PeakRAM > 0")
+		So(html, ShouldContainSubstring, "text: window.wrUtils.mbIEC(PeakRAM)")
+		So(html, ShouldContainSubstring, "!Exited && (State == 'running' || State == 'reserved') && CPUtime > 0")
+		So(html, ShouldContainSubstring, "text: 'CPU: ' + window.wrUtils.toDuration(CPUtime)")
+		So(html, ShouldContainSubstring, "ko if: StdOut")
+		So(html, ShouldContainSubstring, "ko if: StdErr")
+		So(html, ShouldContainSubstring, "ko if: SSHCommand")
+		So(html, ShouldContainSubstring, "data-clipboard-text': SSHCommand")
+		So(html, ShouldContainSubstring, "ssh-command-text")
+		So(html, ShouldNotContainSubstring, "xterm")
+		So(html, ShouldNotContainSubstring, "web-terminal")
+
+		So(handler, ShouldContainSubstring, "mergeJobDetailsPushUpdate")
+		So(handler, ShouldContainSubstring, "viewModel.detailsOA.splice(index, 1, merged)")
+		So(utility, ShouldContainSubstring, "copyTextToClipboard")
+		So(utility, ShouldContainSubstring, "navigator.clipboard.writeText")
+		So(css, ShouldContainSubstring, ".ssh-command-control")
+		So(css, ShouldContainSubstring, ".ssh-command-text")
+	})
+}
+
 func readStaticText(path string) string {
 	data, err := staticFS.ReadFile(path)
+	So(err, ShouldBeNil)
+
+	return string(data)
+}
+
+func TestStatusPageLivePushUpdateBehaviour(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required to exercise the status page JavaScript")
+	}
+
+	Convey("Status page job details push updates replace visible live data", t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		//nolint:gosec // The Node script is a constant test harness.
+		cmd := exec.CommandContext(ctx, "node", "-e", statusPageLivePushUpdateScript())
+		output, err := cmd.CombinedOutput()
+		So(string(output), ShouldBeBlank)
+		So(err, ShouldBeNil)
+	})
+}
+
+func statusPageLivePushUpdateScript() string {
+	return `
+const fs = require('fs');
+const vm = require('vm');
+
+let source = fs.readFileSync('static/js/wr/websocket-handler.js', 'utf8');
+source = source
+    .replace(/^import .*;\n/gm, '')
+    .replace(/export function /g, 'function ');
+
+const context = {
+    console,
+    createRepGroupTracker() {
+        return {};
+    },
+    setupLiveWalltime(job, walltime) {
+        job.LiveWalltime = () => walltime;
+    }
+};
+context.globalThis = context;
+vm.createContext(context);
+vm.runInContext(source + '\nglobalThis.handleJobDetailsMessage = handleJobDetailsMessage;', context,
+    { filename: 'websocket-handler.js' });
+
+function observableArray(initial) {
+    const values = initial.slice();
+    function observable(next) {
+        if (arguments.length > 0) {
+            values.splice(0, values.length, ...next);
+            return values;
+        }
+
+        return values;
+    }
+    observable.push = value => values.push(value);
+    observable.splice = (...args) => values.splice(...args);
+    return observable;
+}
+
+function assert(condition, message) {
+    if (!condition) {
+        throw new Error(message);
+    }
+}
+
+const sshCommand = "ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'";
+const existing = {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'running',
+    Exited: false,
+    PeakRAM: 0,
+    CPUtime: 0,
+    StdOut: '',
+    StdErr: '',
+    SSHCommand: '',
+    Walltime: 12,
+    Started: 123,
+    Cmd: 'sleep 60',
+    ExpectedRAM: 100,
+    ExpectedTime: 60,
+    RequestedDisk: 0,
+    Cores: 1,
+    Attempts: 1
+};
+const viewModel = {
+    detailsRepgroup: 'rg1',
+    detailsOA: observableArray([existing]),
+    isSearchMode: () => false,
+    repGroups: [{ id: 'rg1' }],
+    newJobsInfo: {}
+};
+
+context.handleJobDetailsMessage(viewModel, {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'running',
+    IsPushUpdate: true,
+    PeakRAM: 321,
+    CPUtime: 4,
+    StdOut: 'alpha-out\n',
+    StdErr: 'alpha-err\n',
+    SSHCommand: sshCommand
+});
+
+let job = viewModel.detailsOA()[0];
+assert(viewModel.detailsOA().length === 1, 'push update must replace the existing detail row');
+assert(job.PeakRAM === 321, 'first push PeakRAM was not applied');
+assert(job.CPUtime === 4, 'first push CPUtime was not applied');
+assert(job.StdOut === 'alpha-out\n', 'first push stdout was not applied');
+assert(job.StdErr === 'alpha-err\n', 'first push stderr was not applied');
+assert(job.SSHCommand === sshCommand, 'first push SSH command was not applied');
+assert(job.Cmd === 'sleep 60', 'push update should preserve existing command text');
+assert(job.LiveWalltime() === 12, 'push update should preserve live walltime fallback');
+
+context.handleJobDetailsMessage(viewModel, {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'reserved',
+    IsPushUpdate: true,
+    PeakRAM: 222,
+    CPUtime: 5,
+    Cmd: '',
+    ExpectedRAM: 0,
+    ExpectedTime: 0,
+    RequestedDisk: 0,
+    Cores: 0,
+    Attempts: 0
+});
+
+job = viewModel.detailsOA()[0];
+assert(job.State === 'reserved', 'reserved push State was not applied');
+assert(job.PeakRAM === 222, 'reserved push PeakRAM was not applied');
+assert(job.CPUtime === 5, 'reserved push CPUtime was not applied');
+assert(job.Cmd === 'sleep 60', 'reserved push should preserve existing command text');
+assert(job.ExpectedRAM === 100, 'reserved push should preserve expected RAM');
+assert(job.ExpectedTime === 60, 'reserved push should preserve expected time');
+assert(job.Cores === 1, 'reserved push should preserve cores');
+assert(job.Attempts === 1, 'reserved push should preserve attempts');
+
+context.handleJobDetailsMessage(viewModel, {
+    Key: 'k',
+    RepGroup: 'rg1',
+    State: 'running',
+    IsPushUpdate: true,
+    PeakRAM: 654,
+    CPUtime: 8,
+    StdOut: 'beta-out\n',
+    StdErr: 'beta-err\n',
+    SSHCommand: sshCommand
+});
+
+job = viewModel.detailsOA()[0];
+assert(viewModel.detailsOA().length === 1, 'second push update must keep one detail row');
+assert(job.PeakRAM === 654, 'second push PeakRAM was not applied');
+assert(job.CPUtime === 8, 'second push CPUtime was not applied');
+assert(job.StdOut === 'beta-out\n', 'second push stdout was not applied');
+assert(job.StdErr === 'beta-err\n', 'second push stderr was not applied');
+assert(!job.StdOut.includes('alpha-out'), 'old stdout should not remain visible');
+assert(!job.StdErr.includes('alpha-err'), 'old stderr should not remain visible');
+`
+}
+
+func readTextAsset(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
 	So(err, ShouldBeNil)
 
 	return string(data)

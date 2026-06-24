@@ -30,6 +30,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +44,7 @@ import (
 
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gorilla/websocket"
 	gpnet "github.com/shirou/gopsutil/v4/net"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
@@ -49,13 +52,42 @@ import (
 	"go.nanomsg.org/mangos/v3"
 )
 
-const subscriptionA1ReqGroup = "subscription-a1"
+const (
+	subscriptionA1ReqGroup          = "subscription-a1"
+	liveSubscriptionNoUpdateTimeout = 100 * time.Millisecond
+)
 
 var (
 	errAddAndWaitTimeout = errors.New("timed out waiting for AddAndWait")
 	errNoReservedJob     = errors.New("reserve returned no job")
 	errAsyncDriverWait   = errors.New("timed out waiting for async job driver")
 )
+
+func TestLiveJobUpdateCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Live job updates normalise cwd display paths", t, func() {
+		cwdBase := filepath.Dir(liveJTouchActualCwd)
+		outsideCwd := filepath.Join(filepath.Dir(cwdBase), "other", "job1")
+		job := &Job{
+			Cmd:       "echo cwd",
+			Cwd:       cwdBase,
+			ActualCwd: cwdBase,
+			State:     JobStateRunning,
+		}
+
+		update, err := jobUpdateFromLiveJob(job)
+		So(err, ShouldBeNil)
+		So(update.Cwd, ShouldEqual, "/")
+
+		job.ActualCwd = outsideCwd
+		update, err = jobUpdateFromLiveJob(job)
+		So(err, ShouldBeNil)
+		So(update.Cwd, ShouldEqual, outsideCwd)
+	})
+}
 
 type addAndWaitResult struct {
 	jobs []*Job
@@ -517,6 +549,367 @@ func addAndWaitAsyncWithIgnoreComplete(
 	return resultCh
 }
 
+func TestLiveJobSubscriptions(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A live jtouch is delivered to key and status details subscribers", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "subscription-b2-live")
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{job.Key()})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		ws, cleanup := openStatusDetailsSubscription(ctx, server, token, job.RepGroup, job.Key())
+		defer cleanup()
+
+		_, err = runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+			Stderr:  compressStd([]byte("err\n")),
+		})
+		So(err, ShouldBeNil)
+
+		updates, ok := collectSubscriptionUpdates(sub, 1)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, 1)
+		assertLiveJobUpdate(updates[0], job.Key())
+
+		status, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.PeakRAM == 321
+		})
+		So(ok, ShouldBeTrue)
+		So(status.State, ShouldEqual, JobStateRunning)
+		So(status.CPUtime, ShouldEqual, 4)
+		So(status.StdOut, ShouldEqual, "out\n")
+		So(status.StdErr, ShouldEqual, "err\n")
+	})
+
+	Convey("AddAndWait ignores live updates and waits for the terminal event", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, _, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		input := subscriptionTestJobs("subscription-b2-add-and-wait-live", standardReqs, 1)
+
+		waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+
+		resultCh := addAndWaitAsync(waitCtx, jq, input)
+
+		So(pollUntil(func() bool {
+			return server.hasClientSubscriptionsForJobUpdate(input[0].Key(), input[0].RepGroup, JobStateComplete)
+		}), ShouldBeTrue)
+
+		job := startNextAddAndWaitJob(runner)
+		_, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("out\n")),
+		})
+		So(err, ShouldBeNil)
+
+		select {
+		case result := <-resultCh:
+			So(result.err, ShouldNotBeNil)
+			So("AddAndWait returned after a live update", ShouldBeBlank)
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		So(runner.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		result := receiveAddAndWaitResult(resultCh, 3*time.Second)
+		So(result.err, ShouldBeNil)
+		So(result.jobs, ShouldHaveLength, 1)
+		So(result.jobs[0].State, ShouldEqual, JobStateComplete)
+		So(result.jobs[0].Key(), ShouldEqual, input[0].Key())
+	})
+
+	Convey("A RepGroup subscription does not complete from a live update", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, _, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "subscription-b2-repgroup-live")
+		sub, err := jq.SubscribeToRepGroup(ctx, job.RepGroup)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		_, err = runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			Stdout:  compressStd([]byte("out\n")),
+		})
+		So(err, ShouldBeNil)
+
+		assertNoJobUpdateKind(sub.Updates(), JobUpdateRepGroupDone)
+	})
+
+	Convey("An older runner touch sends no live subscription or status update", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job, sub, ws, cleanup := watchLiveSubscriptionJob(ctx, server, jq, runner, token, standardReqs,
+			"subscription-b2-older-runner")
+		defer sub.Unsubscribe()
+		defer cleanup()
+
+		_, err := runner.touch(job, &JobEndState{})
+		So(err, ShouldBeNil)
+
+		assertNoJobUpdateKind(sub.Updates(), JobUpdateLive)
+		assertNoPushedJStatus(ws, job.Key(), 100*time.Millisecond)
+	})
+
+	Convey("A live touch with the secure gate disabled sends no live updates", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job, sub, ws, cleanup := watchLiveSubscriptionJob(ctx, server, jq, runner, token, standardReqs,
+			"subscription-b2-disabled-live")
+		defer sub.Unsubscribe()
+		defer cleanup()
+
+		server.ssmutex.Lock()
+		server.ServerInfo.WebPort = ""
+		server.ssmutex.Unlock()
+
+		_, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			Stdout:  compressStd([]byte("out\n")),
+		})
+		So(err, ShouldBeNil)
+
+		assertNoJobUpdateKind(sub.Updates(), JobUpdateLive)
+		assertNoPushedJStatus(ws, job.Key(), 100*time.Millisecond)
+	})
+
+	Convey("A live touch with an invalid token is denied without live updates", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job, sub, ws, cleanup := watchLiveSubscriptionJob(ctx, server, jq, runner, token, standardReqs,
+			"subscription-b2-invalid-live")
+		defer sub.Unsubscribe()
+		defer cleanup()
+
+		runner.token = []byte(strings.Repeat("y", tokenLength))
+		_, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			Stdout:  compressStd([]byte("out\n")),
+		})
+		So(err, ShouldNotBeNil)
+
+		var jqErr Error
+		So(errors.As(err, &jqErr), ShouldBeTrue)
+		So(jqErr.Err, ShouldEqual, ErrPermissionDenied)
+		assertNoJobUpdateKind(sub.Updates(), JobUpdateLive)
+		assertNoPushedJStatus(ws, job.Key(), 100*time.Millisecond)
+	})
+}
+
+func startSubscriptionIntegration(
+	ctx context.Context,
+	t *testing.T,
+) (*Server, *Client, *Client, []byte, *jqs.Requirements) {
+	t.Helper()
+
+	serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+	server, _, token, err := serve(ctx, serverConfig)
+	So(err, ShouldBeNil)
+
+	jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+	So(err, ShouldBeNil)
+
+	runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+	So(err, ShouldBeNil)
+
+	return server, jq, runner, token, standardReqs
+}
+
+func addAndStartLiveSubscriptionJob(
+	server *Server,
+	jq *Client,
+	runner *Client,
+	standardReqs *jqs.Requirements,
+	prefix string,
+) *Job {
+	reqs := *standardReqs
+	reqs.Other = map[string]string{liveStatusCloudUser: liveStatusCloudUser}
+	job := &Job{
+		Cmd:          "echo " + prefix,
+		Cwd:          testCwd,
+		ReqGroup:     prefix,
+		Requirements: &reqs,
+		RepGroup:     prefix,
+	}
+
+	ids, err := jq.AddAndReturnIDs([]*Job{job}, envVars, true)
+	So(err, ShouldBeNil)
+	So(ids, ShouldHaveLength, 1)
+
+	running, err := runner.Reserve(2 * time.Second)
+	So(err, ShouldBeNil)
+	So(running, ShouldNotBeNil)
+
+	if running == nil {
+		return &Job{}
+	}
+
+	So(running.Key(), ShouldEqual, ids[0])
+	So(runner.Started(running, 44), ShouldBeNil)
+
+	running.Host = liveStatusHost
+	running.HostIP = liveStatusHostIP
+	running.Pid = 44
+	item, err := server.q.Get(running.Key())
+	So(err, ShouldBeNil)
+
+	serverJob, ok := item.Data().(*Job)
+	So(ok, ShouldBeTrue)
+	serverJob.Lock()
+	serverJob.Host = liveStatusHost
+	serverJob.HostIP = liveStatusHostIP
+	serverJob.Pid = 44
+	serverJob.Unlock()
+
+	return running
+}
+
+func openStatusDetailsSubscription(
+	ctx context.Context,
+	server *Server,
+	token []byte,
+	repGroup string,
+	key string,
+) (*websocket.Conn, func()) {
+	testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+	header := http.Header{}
+	header.Add("Authorization", "Bearer "+string(token))
+
+	ws, err := drainWebSocket(wsURL, header)
+	So(err, ShouldBeNil)
+
+	err = ws.WriteJSON(jstatusReq{
+		Request:  jstatusRequestDetails,
+		RepGroup: repGroup,
+		State:    JobStateRunning,
+	})
+	So(err, ShouldBeNil)
+
+	status, ok := readJStatusMatching(ws, func(status JStatus) bool {
+		return status.Key == key && !status.IsPushUpdate
+	})
+	So(ok, ShouldBeTrue)
+	So(status.State, ShouldEqual, JobStateRunning)
+
+	return ws, func() {
+		_ = ws.Close()
+		testServer.Close()
+	}
+}
+
+func assertLiveJobUpdate(update *JobUpdate, key string) {
+	So(update.Kind, ShouldEqual, JobUpdateLive)
+	So(update.Key, ShouldEqual, key)
+	So(update.State, ShouldEqual, JobStateRunning)
+	So(update.PeakRAM, ShouldEqual, 321)
+	So(update.CPUtime, ShouldEqual, 4*time.Second)
+	So(update.StdOut, ShouldEqual, "out\n")
+	So(update.StdErr, ShouldEqual, "err\n")
+	So(update.Host, ShouldEqual, "worker1")
+	So(update.HostIP, ShouldEqual, "10.0.0.8")
+	So(update.Pid, ShouldEqual, 44)
+	So(update.CwdBase, ShouldEqual, testCwd)
+	So(update.Cwd, ShouldEqual, "/wr/job1")
+	So(update.SSHCommand, ShouldNotBeBlank)
+}
+
+func assertNoJobUpdateKind(updates <-chan *JobUpdate, kind JobUpdateKind) {
+	timer := time.NewTimer(liveSubscriptionNoUpdateTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case update, ok := <-updates:
+			if !ok {
+				return
+			}
+
+			So(update.Kind, ShouldNotEqual, kind)
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+func watchLiveSubscriptionJob(
+	ctx context.Context,
+	server *Server,
+	jq *Client,
+	runner *Client,
+	token []byte,
+	standardReqs *jqs.Requirements,
+	prefix string,
+) (*Job, *Subscription, *websocket.Conn, func()) {
+	job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, prefix)
+	sub, err := jq.SubscribeToJobKeys(ctx, []string{job.Key()})
+	So(err, ShouldBeNil)
+
+	ws, cleanup := openStatusDetailsSubscription(ctx, server, token, job.RepGroup, job.Key())
+
+	return job, sub, ws, cleanup
+}
+
+func assertNoPushedJStatus(ws *websocket.Conn, key string, timeout time.Duration) {
+	So(ws.SetReadDeadline(time.Now().Add(timeout)), ShouldBeNil)
+	defer clearReadDeadlineBestEffort(ws)
+
+	for {
+		var status JStatus
+
+		err := ws.ReadJSON(&status)
+		if err != nil {
+			return
+		}
+
+		So(status.Key == key && status.IsPushUpdate, ShouldBeFalse)
+	}
+}
+
 func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -889,7 +1282,7 @@ func TestSubscriptionAtLeastOnceDedup(t *testing.T) {
 
 		defer result.sub.Unsubscribe()
 
-		updates, ok := collectSubscriptionUpdates(result.sub, 1, 2*time.Second)
+		updates, ok := collectSubscriptionUpdates(result.sub, 1)
 		So(ok, ShouldBeTrue)
 		So(updates, ShouldHaveLength, 1)
 
@@ -1029,7 +1422,7 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 
 		So(catchUpClient.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
 
-		updates, ok := collectSubscriptionUpdates(sub, 2, 2*time.Second)
+		updates, ok := collectSubscriptionUpdates(sub, 2)
 		So(ok, ShouldBeTrue)
 		So(updates, ShouldHaveLength, 2)
 		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
@@ -1594,7 +1987,7 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 			So(errr, ShouldBeNil)
 		}
 
-		updates, ok := collectSubscriptionUpdates(sub, 3, 2*time.Second)
+		updates, ok := collectSubscriptionUpdates(sub, 3)
 		So(ok, ShouldBeTrue)
 		So(updates, ShouldHaveLength, 3)
 
@@ -2505,8 +2898,8 @@ func subscriptionTestJobs(prefix string, standardReqs *jqs.Requirements, count i
 	return jobs
 }
 
-func collectSubscriptionUpdates(sub *Subscription, count int, timeout time.Duration) ([]*JobUpdate, bool) {
-	deadline := time.After(timeout)
+func collectSubscriptionUpdates(sub *Subscription, count int) ([]*JobUpdate, bool) {
+	deadline := time.After(2 * time.Second)
 	updates := make([]*JobUpdate, 0, count)
 
 	for len(updates) < count {

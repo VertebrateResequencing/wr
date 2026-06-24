@@ -173,6 +173,39 @@ export function capitalizeFirstLetter(str) {
 }
 
 /**
+ * Copy text to the clipboard.
+ * @param {string} text - The text to copy
+ * @returns {Promise<boolean>} Whether the copy action was attempted successfully
+ */
+export function copyTextToClipboard(text) {
+    const value = text || '';
+    if (value === '') {
+        return Promise.resolve(false);
+    }
+
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(value).then(() => true).catch(() => false);
+    }
+
+    const textArea = document.createElement('textarea');
+    textArea.value = value;
+    textArea.setAttribute('readonly', '');
+    textArea.style.position = 'fixed';
+    textArea.style.top = '-1000px';
+    textArea.style.left = '-1000px';
+    document.body.appendChild(textArea);
+    textArea.select();
+
+    try {
+        return Promise.resolve(document.execCommand('copy'));
+    } catch {
+        return Promise.resolve(false);
+    } finally {
+        document.body.removeChild(textArea);
+    }
+}
+
+/**
  * Setup Knockout custom bindings
  */
 export function initKnockoutBindings() {

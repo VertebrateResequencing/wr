@@ -33,6 +33,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -114,7 +116,7 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 	repGroup string,
 ) (map[string]subscriptionCatchUpRecord, bool, error) {
 	records := make(map[string]subscriptionCatchUpRecord)
-	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup))
+	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup, false))
 
 	complete, err := s.db.retrieveCompleteJobsByRepGroup(repGroup)
 	if err != nil {
@@ -243,6 +245,137 @@ func subscriptionCatchUpRepGroupUpdate(repGroup string, records map[string]subsc
 	}
 
 	return update
+}
+
+type liveJobUpdateData struct {
+	update  *JobUpdate
+	stdoutC []byte
+	stderrC []byte
+}
+
+func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
+	job.RLock()
+	defer job.RUnlock()
+
+	cwdLeaf, err := liveJobCwdLeaf(job.Cwd, job.ActualCwd)
+	if err != nil {
+		return nil, err
+	}
+
+	return &liveJobUpdateData{
+		update: &JobUpdate{
+			Kind:       JobUpdateLive,
+			Key:        job.Key(),
+			RepGroup:   job.RepGroup,
+			State:      job.State,
+			PeakRAM:    job.PeakRAM,
+			PeakDisk:   job.PeakDisk,
+			Pid:        job.Pid,
+			CPUtime:    job.CPUtime,
+			Host:       job.Host,
+			HostID:     job.HostID,
+			HostIP:     job.HostIP,
+			CwdBase:    job.Cwd,
+			Cwd:        cwdLeaf,
+			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.ActualCwd),
+		},
+		stdoutC: slices.Clone(job.StdOutC),
+		stderrC: slices.Clone(job.StdErrC),
+	}, nil
+}
+
+func jobUpdateFromLiveJob(job *Job) (*JobUpdate, error) {
+	data, err := liveJobUpdateDataFromJob(job)
+	if err != nil {
+		return nil, err
+	}
+
+	stdout, err := compressedStdString(data.stdoutC)
+	if err != nil {
+		return nil, err
+	}
+
+	stderr, err := compressedStdString(data.stderrC)
+	if err != nil {
+		return nil, err
+	}
+
+	data.update.StdOut = stdout
+	data.update.StdErr = stderr
+
+	return data.update, nil
+}
+
+func compressedStdString(compressed []byte) (string, error) {
+	if len(compressed) == 0 {
+		return "", nil
+	}
+
+	decompressed, err := decompress(compressed)
+	if err != nil {
+		return "", err
+	}
+
+	return string(decompressed), nil
+}
+
+func liveSnapshotPresent(jes *JobEndState) bool {
+	if jes == nil {
+		return false
+	}
+
+	return jes.Cwd != "" ||
+		jes.PeakRAM != 0 ||
+		jes.PeakDisk != 0 ||
+		jes.CPUtime != 0 ||
+		len(jes.Stdout) != 0 ||
+		len(jes.Stderr) != 0
+}
+
+func applyLiveSnapshot(job *Job, jes *JobEndState) {
+	job.Lock()
+	defer job.Unlock()
+
+	if jes.Cwd != "" {
+		job.ActualCwd = jes.Cwd
+	}
+
+	job.PeakRAM = jes.PeakRAM
+	job.PeakDisk = jes.PeakDisk
+	job.CPUtime = jes.CPUtime
+
+	if len(jes.Stdout) != 0 {
+		job.StdOutC = jes.Stdout
+	}
+
+	if len(jes.Stderr) != 0 {
+		job.StdErrC = jes.Stderr
+	}
+}
+
+func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
+	if cwd == "" {
+		return "", nil
+	}
+
+	if cwdBase == "" {
+		return cwd, nil
+	}
+
+	rel, err := filepath.Rel(cwdBase, cwd)
+	if err != nil {
+		return "", err
+	}
+
+	if rel == "." {
+		return "/", nil
+	}
+
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return cwd, nil
+	}
+
+	return "/" + rel, nil
 }
 
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
@@ -599,7 +732,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					s.db.updateJobAfterChange(ctx, job)
 				}
 			}
-		case "jtouch":
+		case requestMethodTouch:
 			var job *Job
 			var item *queue.Item
 			item, job, srerr = s.getij(cr, true)
@@ -634,6 +767,17 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						// this transition from lost to running state
 						s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, JobStateRunning, 1})
 						s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateLost, JobStateRunning, 1})
+					}
+
+					if srerr == "" && s.liveJTouchEnabled() && liveSnapshotPresent(cr.JobEndState) {
+						applyLiveSnapshot(job, cr.JobEndState)
+
+						update, err := jobUpdateFromLiveJob(job)
+						if err != nil {
+							clog.Warn(ctx, "failed to build live subscription update", "err", err)
+						} else {
+							s.enqueueSubscriptionUpdate(update)
+						}
 					}
 				}
 				sr = &serverResponse{KillCalled: killCalled}
@@ -1101,6 +1245,13 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 	return item, job, ""
 }
 
+func (s *Server) liveJTouchEnabled() bool {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.ServerInfo != nil && s.ServerInfo.WebPort != ""
+}
+
 func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobState {
 	state := itemsStateToJobState[itemState]
 	if state == "" {
@@ -1190,6 +1341,11 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 
 	if state == JobStateReserved && !sjob.StartTime.IsZero() {
 		job.State = JobStateRunning
+	}
+
+	if getStd && (job.State == JobStateReserved || job.State == JobStateRunning || job.State == JobStateLost) {
+		job.StdErrC = sjob.StdErrC
+		job.StdOutC = sjob.StdOutC
 	}
 	sjob.RUnlock()
 	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)

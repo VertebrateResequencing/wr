@@ -157,6 +157,7 @@ type JStatus struct {
 	Host                string
 	HostID              string
 	HostIP              string
+	SSHCommand          string
 	StdErr              string
 	StdOut              string
 	ExpectedRAM         int     // ExpectedRAM is in Megabytes.
@@ -189,8 +190,20 @@ func statusFromJobUpdate(update *JobUpdate) *JStatus {
 		Key:          update.Key,
 		RepGroup:     update.RepGroup,
 		State:        update.State,
+		Cwd:          update.Cwd,
+		CwdBase:      update.CwdBase,
 		FailReason:   update.FailReason,
+		Host:         update.Host,
+		HostID:       update.HostID,
+		HostIP:       update.HostIP,
+		SSHCommand:   update.SSHCommand,
+		StdErr:       update.StdErr,
+		StdOut:       update.StdOut,
+		PeakRAM:      update.PeakRAM,
+		PeakDisk:     update.PeakDisk,
 		Exitcode:     update.Exitcode,
+		Pid:          update.Pid,
+		CPUtime:      update.CPUtime.Seconds(),
 		Started:      statusTimeFromJobUpdateTime(update.Started),
 		Ended:        statusTimeFromJobUpdateTime(update.Ended),
 		IsPushUpdate: true,

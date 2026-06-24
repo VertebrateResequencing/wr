@@ -958,6 +958,92 @@ func TestREST(t *testing.T) {
 			So(response.StatusCode, ShouldEqual, http.StatusUnauthorized)
 		})
 
+		Convey("Authenticated GET returns running job live fields and SSH command", func() {
+			reqs := &jqs.Requirements{
+				RAM:   1,
+				Time:  time.Minute,
+				Cores: 1,
+				Other: map[string]string{liveStatusCloudUser: "ubuntu"},
+			}
+			input := &Job{
+				Cmd:          "echo rest live status",
+				Cwd:          "/tmp/wr",
+				ReqGroup:     "rest-live-status",
+				Requirements: reqs,
+				RepGroup:     "rest-live-status",
+			}
+
+			ids, err := jq.AddAndReturnIDs([]*Job{input}, envVars, true)
+			So(err, ShouldBeNil)
+			So(ids, ShouldHaveLength, 1)
+
+			running, err := jq.Reserve(2 * time.Second)
+			So(err, ShouldBeNil)
+			So(running, ShouldNotBeNil)
+
+			if running == nil {
+				return
+			}
+
+			So(running.Key(), ShouldEqual, ids[0])
+			So(jq.Started(running, 44), ShouldBeNil)
+
+			item, err := server.q.Get(running.Key())
+			So(err, ShouldBeNil)
+
+			serverJob, ok := item.Data().(*Job)
+			So(ok, ShouldBeTrue)
+			serverJob.Lock()
+			serverJob.Host = liveStatusHost
+			serverJob.HostIP = liveStatusHostIP
+			serverJob.Pid = 44
+			serverJob.Unlock()
+
+			killCalled, err := jq.touch(running, &JobEndState{
+				Cwd:     "/tmp/wr/job1",
+				PeakRAM: 321,
+				CPUtime: 4 * time.Second,
+				Stdout:  compressStd([]byte("out\n")),
+				Stderr:  compressStd([]byte("err\n")),
+			})
+			So(err, ShouldBeNil)
+			So(killCalled, ShouldBeFalse)
+
+			liveURL := jobsEndPoint + "/" + running.Key() + "?std=true"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, liveURL, nil)
+			So(err, ShouldBeNil)
+			req.Header.Add("Authorization", bearer)
+			response, err := client.Do(req)
+			So(err, ShouldBeNil)
+
+			var jstati []JStatus
+
+			err = json.NewDecoder(response.Body).Decode(&jstati)
+			So(err, ShouldBeNil)
+			So(response.Body.Close(), ShouldBeNil)
+			So(jstati, ShouldHaveLength, 1)
+			So(jstati[0].PeakRAM, ShouldEqual, 321)
+			So(jstati[0].CPUtime, ShouldEqual, 4)
+			So(jstati[0].StdOut, ShouldEqual, "out\n")
+			So(jstati[0].StdErr, ShouldEqual, "err\n")
+			So(jstati[0].SSHCommand, ShouldEqual,
+				"ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
+
+			req, err = http.NewRequestWithContext(ctx, http.MethodGet, liveURL, nil)
+			So(err, ShouldBeNil)
+			response, err = client.Do(req)
+			So(err, ShouldBeNil)
+
+			defer response.Body.Close()
+
+			So(response.StatusCode, ShouldEqual, http.StatusUnauthorized)
+
+			responseData, err := io.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldNotBeNil)
+		})
+
 		Convey("Initial GET queries return nothing", func() {
 			req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
 			So(err, ShouldBeNil)

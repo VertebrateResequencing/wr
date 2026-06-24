@@ -48,6 +48,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/kballard/go-shellquote"
 	"github.com/ugorji/go/codec"
 )
 
@@ -102,6 +103,33 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateBury:      JobStateBuried,
 	queue.ItemStateDependent: JobStateDependent,
 	queue.ItemStateRemoved:   JobStateComplete,
+}
+
+func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, actualCwd string) string {
+	if state != JobStateRunning || actualCwd == "" {
+		return ""
+	}
+
+	target := sshTarget(reqs, host, hostIP)
+	if target == "" {
+		return ""
+	}
+
+	remote := "cd " + quoteRemoteCwd(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
+
+	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
+}
+
+func sshTarget(reqs *scheduler.Requirements, host, hostIP string) string {
+	if hostIP == "" {
+		return host
+	}
+
+	if reqs != nil && reqs.Other["cloud_user"] != "" && hostIP != "" {
+		return reqs.Other["cloud_user"] + "@" + hostIP
+	}
+
+	return hostIP
 }
 
 // Job is a struct that represents a command that needs to be run and some
@@ -1028,6 +1056,7 @@ func (j *Job) ToStatus() (JStatus, error) {
 		Host:                j.Host,
 		HostID:              j.HostID,
 		HostIP:              j.HostIP,
+		SSHCommand:          sshCommandForRunningJob(state, j.Requirements, j.Host, j.HostIP, j.ActualCwd),
 		Walltime:            j.WallTime().Seconds(),
 		CPUtime:             j.CPUtime.Seconds(),
 		Attempts:            j.Attempts,
@@ -1507,4 +1536,31 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		job.Unlock()
 	}
 	return keys, nil
+}
+
+func quoteRemoteCwd(cwd string) string {
+	if isShellSafeUnquoted(cwd) {
+		return cwd
+	}
+
+	return singleQuoteShellArg(cwd)
+}
+
+func isShellSafeUnquoted(arg string) bool {
+	if arg == "" {
+		return false
+	}
+
+	const safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+-./:=@%"
+	for _, char := range arg {
+		if !strings.ContainsRune(safe, char) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func singleQuoteShellArg(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }

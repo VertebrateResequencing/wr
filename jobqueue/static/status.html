@@ -570,6 +570,17 @@
 
                                 <h5 style="margin: 0; padding: 0">$ <span data-bind="text: Cmd"></span></h5>
 
+                                <!-- ko if: SSHCommand -->
+                                <div class="ssh-command-control">
+                                    <button type="button" class="btn btn-xs btn-default ssh-copy-button"
+                                        data-bind="click: $root.copySSHCommand, attr: { 'data-clipboard-text': SSHCommand, title: SSHCommand }"
+                                        aria-label="Copy SSH command">
+                                        <span class="glyphicon glyphicon-copy"></span>
+                                    </button>
+                                    <code class="ssh-command-text" data-bind="text: SSHCommand"></code>
+                                </div>
+                                <!-- /ko -->
+
                                 <!-- ko if: StdOut -->
                                 <div class="output-divider">
                                     <span class="output-label stdout-label">STDOUT</span>
@@ -606,6 +617,11 @@
                                                 <span class="actual-value"
                                                     data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
                                                 <!-- /ko -->
+                                                <!-- ko if: !Exited && (State == 'running' || State == 'reserved') && PeakRAM > 0 -->
+                                                <span class="prop-separator">→</span>
+                                                <span class="actual-value live-value"
+                                                    data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                                <!-- /ko -->
                                             </span>
                                         </div>
 
@@ -627,6 +643,11 @@
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
                                                     data-bind="text: window.wrUtils.toDuration(LiveWalltime()), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
+                                                <!-- ko if: !Exited && (State == 'running' || State == 'reserved') && CPUtime > 0 -->
+                                                <span class="prop-separator">•</span>
+                                                <span class="live-value"
+                                                    data-bind="text: 'CPU: ' + window.wrUtils.toDuration(CPUtime)"></span>
+                                                <!-- /ko -->
                                                 <!-- /ko -->
 
                                                 <!-- ko if: !Exited && State == 'lost' -->

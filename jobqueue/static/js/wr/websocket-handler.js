@@ -243,6 +243,31 @@ function jobExists(detailsArray, key) {
     return detailsArray().some(job => job.Key === key);
 }
 
+function livePushValue(value, fallback) {
+    if (value === null || value === undefined) {
+        return fallback;
+    }
+
+    return value;
+}
+
+function mergeJobDetailsPushUpdate(existing, update) {
+    const merged = Object.assign({}, existing, update);
+
+    if (update.State === 'running' || update.State === 'reserved') {
+        merged.Walltime = update.Walltime > 0 ? update.Walltime : existing.Walltime;
+        merged.Started = livePushValue(update.Started, existing.Started);
+        merged.Cmd = update.Cmd || existing.Cmd;
+        merged.ExpectedRAM = update.ExpectedRAM > 0 ? update.ExpectedRAM : existing.ExpectedRAM;
+        merged.ExpectedTime = update.ExpectedTime > 0 ? update.ExpectedTime : existing.ExpectedTime;
+        merged.RequestedDisk = update.RequestedDisk > 0 ? update.RequestedDisk : existing.RequestedDisk;
+        merged.Cores = update.Cores > 0 ? update.Cores : existing.Cores;
+        merged.Attempts = update.Attempts > 0 ? update.Attempts : existing.Attempts;
+    }
+
+    return merged;
+}
+
 /**
  * Handles job details messages from the WebSocket
  * @param {StatusViewModel} viewModel - The main view model
@@ -293,12 +318,14 @@ function handleJobDetailsMessage(viewModel, json) {
             const jobs = viewModel.detailsOA();
             for (const job of jobs) {
                 if (job.Key === json.Key) {
+                    const merged = mergeJobDetailsPushUpdate(job, json);
+
                     // Set up LiveWalltime for the job
-                    setupLiveWalltime(json, json['Walltime'], viewModel);
+                    setupLiveWalltime(merged, merged['Walltime'], viewModel);
 
                     // Simply replace the job at the same index
                     const index = jobs.indexOf(job);
-                    viewModel.detailsOA.splice(index, 1, json);
+                    viewModel.detailsOA.splice(index, 1, merged);
                     return;
                 }
             }
