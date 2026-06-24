@@ -222,7 +222,7 @@ multi-layer feature worth speccing as a project (#316, #207, #197, #98, #19).
 ## #98 "Live" job introspection
 
 - [x] Spec produced
-- [ ] Implemented
+- [x] Implemented
 - [ ] Reviewed
 - [ ] Merged
 - [ ] Solved
