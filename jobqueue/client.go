@@ -2171,6 +2171,34 @@ func (c *Client) Kick(jes []*JobEssence) (int, error) {
 	return resp.Existed, err
 }
 
+// Suspend moves delayed, ready, and dependent jobs out of reservation until
+// they are resumed. It returns a count of jobs that were actually suspended.
+// Errors will only be related to not being able to contact the server.
+func (c *Client) Suspend(jes []*JobEssence) (int, error) {
+	keys := c.jesToKeys(jes)
+
+	resp, err := c.request(&clientRequest{Method: "jsuspend", Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Existed, err
+}
+
+// Resume moves suspended jobs back to ready or dependent according to their
+// current dependencies. It returns a count of jobs that were actually resumed.
+// Errors will only be related to not being able to contact the server.
+func (c *Client) Resume(jes []*JobEssence) (int, error) {
+	keys := c.jesToKeys(jes)
+
+	resp, err := c.request(&clientRequest{Method: "jresume", Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Existed, err
+}
+
 // Delete removes incomplete, not currently running jobs from the queue
 // completely. For use when jobs were created incorrectly/ by accident, or they
 // can never be fixed. It returns a count of jobs that it actually removed.

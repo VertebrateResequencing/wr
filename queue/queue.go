@@ -103,18 +103,23 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 )
 
-// recallBreak is how long we wait before recalling readyAdded.
-const recallBreak = 500 * time.Millisecond
+const (
+	// recallBreak is how long we wait before recalling readyAdded.
+	recallBreak = 500 * time.Millisecond
+	opSuspend   = "Suspend"
+)
 
 // Queue has some typical errors.
 var (
-	ErrQueueClosed   = errors.New("queue closed")
-	ErrNothingReady  = errors.New("ready queue is empty")
-	ErrAlreadyExists = errors.New("already exists")
-	ErrNotFound      = errors.New("not found")
-	ErrNotReady      = errors.New("not ready")
-	ErrNotRunning    = errors.New("not running")
-	ErrNotBuried     = errors.New("not buried")
+	ErrQueueClosed    = errors.New("queue closed")
+	ErrNothingReady   = errors.New("ready queue is empty")
+	ErrAlreadyExists  = errors.New("already exists")
+	ErrNotFound       = errors.New("not found")
+	ErrNotReady       = errors.New("not ready")
+	ErrNotRunning     = errors.New("not running")
+	ErrNotBuried      = errors.New("not buried")
+	ErrNotSuspendable = errors.New("not suspendable")
+	ErrNotSuspended   = errors.New("not suspended")
 )
 
 // SubQueue is how we name the sub-queues of a Queue.
@@ -130,6 +135,7 @@ const (
 	SubQueueRun       SubQueue = "run"
 	SubQueueBury      SubQueue = "bury"
 	SubQueueDependent SubQueue = "dependent"
+	SubQueueSuspended SubQueue = "suspended"
 	SubQueueRemoved   SubQueue = "removed"
 )
 
@@ -137,6 +143,101 @@ const (
 // always moves the items to the ready sub-queue.
 func defaultTTRCallback(_ interface{}) SubQueue {
 	return SubQueueReady
+}
+
+// Suspend moves a delayed, ready, or dependent item to the suspended sub-queue.
+func (queue *Queue) Suspend(_ context.Context, key string) error {
+	queue.mutex.Lock()
+
+	if queue.closed {
+		queue.mutex.Unlock()
+
+		return Error{queue.Name, opSuspend, key, ErrQueueClosed}
+	}
+
+	item, ok := queue.items[key]
+	if !ok {
+		queue.mutex.Unlock()
+
+		return Error{queue.Name, opSuspend, key, ErrNotSuspendable}
+	}
+
+	from, moved := queue.suspendItem(item)
+	if !moved {
+		queue.mutex.Unlock()
+
+		return Error{queue.Name, opSuspend, key, ErrNotSuspendable}
+	}
+
+	queue.suspendedQueue.push(item)
+	queue.mutex.Unlock()
+	queue.changed(from, SubQueueSuspended, []*Item{item})
+
+	return nil
+}
+
+func (queue *Queue) suspendItem(item *Item) (SubQueue, bool) {
+	switch item.state {
+	case ItemStateDelay:
+		queue.delayQueue.remove(item)
+		item.switchDelaySuspended()
+
+		return SubQueueDelay, true
+	case ItemStateReady:
+		queue.readyQueue.remove(item)
+		item.switchReadySuspended()
+
+		return SubQueueReady, true
+	case ItemStateDependent:
+		queue.depQueue.remove(item)
+		item.switchDependentSuspended()
+
+		return SubQueueDependent, true
+	default:
+		return "", false
+	}
+}
+
+// Resume moves a suspended item back to ready, or dependent if dependencies
+// remain unresolved.
+func (queue *Queue) Resume(ctx context.Context, key string) error {
+	queue.mutex.Lock()
+
+	if queue.closed {
+		queue.mutex.Unlock()
+
+		return Error{queue.Name, "Resume", key, ErrQueueClosed}
+	}
+
+	item, ok := queue.items[key]
+	if !ok || item.state != ItemStateSuspended {
+		queue.mutex.Unlock()
+
+		return Error{queue.Name, "Resume", key, ErrNotSuspended}
+	}
+
+	queue.resumeSuspendedItem(ctx, item)
+
+	return nil
+}
+
+func (queue *Queue) resumeSuspendedItem(ctx context.Context, item *Item) {
+	queue.suspendedQueue.remove(item)
+
+	if len(item.UnresolvedDependencies()) > 0 {
+		queue.depQueue.push(item)
+		item.switchSuspendedDependent()
+		queue.mutex.Unlock()
+		queue.changed(SubQueueSuspended, SubQueueDependent, []*Item{item})
+
+		return
+	}
+
+	queue.readyQueue.push(item)
+	item.switchSuspendedReady()
+	queue.mutex.Unlock()
+	queue.changed(SubQueueSuspended, SubQueueReady, []*Item{item})
+	queue.readyAdded(ctx, "resumed")
 }
 
 // Error records an error and the operation, item and queue that caused it.
@@ -182,6 +283,7 @@ type Queue struct {
 	runQueue               *subQueue
 	buryQueue              *buryQueue
 	depQueue               *depQueue
+	suspendedQueue         *depQueue
 	delayNotification      chan bool
 	startedDelayProcessing chan bool
 	delayClose             chan bool
@@ -206,6 +308,7 @@ type Stats struct {
 	Running   int
 	Buried    int
 	Dependant int
+	Suspended int
 }
 
 // ItemDef makes it possible to supply a slice of Add() args to AddMany().
@@ -231,6 +334,7 @@ func New(ctx context.Context, name string) *Queue {
 		runQueue:               newSubQueue(2),
 		buryQueue:              newBuryQueue(),
 		depQueue:               newDependencyQueue(),
+		suspendedQueue:         newSuspendedQueue(),
 		ttrNotification:        make(chan bool, 1),
 		startedTTRProcessing:   make(chan bool),
 		ttrClose:               make(chan bool, 1),
@@ -369,6 +473,7 @@ func (queue *Queue) Destroy() error {
 	queue.runQueue.empty()
 	queue.buryQueue.empty()
 	queue.depQueue.empty()
+	queue.suspendedQueue.empty()
 	queue.closed = true
 	return nil
 }
@@ -386,6 +491,7 @@ func (queue *Queue) Stats() *Stats {
 		Running:   queue.runQueue.len(),
 		Buried:    queue.buryQueue.len(),
 		Dependant: queue.depQueue.len(),
+		Suspended: queue.suspendedQueue.len(),
 	}
 }
 
@@ -451,6 +557,16 @@ func (queue *Queue) newItemForAdd(key string, reserveGroup string, data interfac
 func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue SubQueue, delay time.Duration, deps ...[]string) {
 	// check dependencies
 	if len(deps) == 1 && len(deps[0]) > 0 {
+		if startQueue == SubQueueSuspended {
+			item.setDependencies(deps[0])
+			queue.setQueueDeps(item)
+			item.switchDelaySuspended()
+			queue.suspendedQueue.push(item)
+			queue.mutex.Unlock()
+			queue.changed(SubQueueNew, SubQueueSuspended, []*Item{item})
+
+			return
+		}
 		queue.setItemDependencies(item, deps[0])
 		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
@@ -472,6 +588,11 @@ func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue
 		item.switchRunBury()
 		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueBury, []*Item{item})
+	case SubQueueSuspended:
+		item.switchDelaySuspended()
+		queue.suspendedQueue.push(item)
+		queue.mutex.Unlock()
+		queue.changed(SubQueueNew, SubQueueSuspended, []*Item{item})
 	default:
 		if delay.Nanoseconds() == 0 {
 			// put it directly on the ready queue
@@ -553,11 +674,15 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 
 	deferredDelayTrigger := false
 	deferredTTRTrigger := false
-	var addedReadyItems []*Item
-	var addedDelayItems []*Item
-	var addedDepItems []*Item
-	var addedRunItems []*Item
-	var addedBuryItems []*Item
+
+	var (
+		addedReadyItems     []*Item
+		addedDelayItems     []*Item
+		addedDepItems       []*Item
+		addedRunItems       []*Item
+		addedBuryItems      []*Item
+		addedSuspendedItems []*Item
+	)
 	for _, def := range items {
 		_, existed := queue.items[def.Key]
 		if existed {
@@ -568,10 +693,17 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 		item := newItem(def.Key, def.ReserveGroup, def.Data, def.Priority, def.Delay, def.TTR)
 		queue.items[def.Key] = item
 
-		if len(def.Dependencies) > 0 {
+		switch {
+		case len(def.Dependencies) > 0 && def.StartQueue == SubQueueSuspended:
+			item.setDependencies(def.Dependencies)
+			queue.setQueueDeps(item)
+			item.switchDelaySuspended()
+			queue.suspendedQueue.push(item)
+			addedSuspendedItems = append(addedSuspendedItems, item)
+		case len(def.Dependencies) > 0:
 			queue.setItemDependencies(item, def.Dependencies)
 			addedDepItems = append(addedDepItems, item)
-		} else {
+		default:
 			switch def.StartQueue {
 			case SubQueueRun:
 				item.switchDelayReady()
@@ -589,6 +721,10 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 				item.switchReadyRun()
 				item.switchRunBury()
 				addedBuryItems = append(addedBuryItems, item)
+			case SubQueueSuspended:
+				item.switchDelaySuspended()
+				queue.suspendedQueue.push(item)
+				addedSuspendedItems = append(addedSuspendedItems, item)
 			default:
 				if def.Delay.Nanoseconds() == 0 {
 					// put it directly on the ready queue
@@ -625,6 +761,10 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 	}
 	if len(addedBuryItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueBury, addedBuryItems)
+	}
+
+	if len(addedSuspendedItems) > 0 {
+		queue.changed(SubQueueNew, SubQueueSuspended, addedSuspendedItems)
 	}
 
 	return added, dups, err
@@ -751,16 +891,25 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 					// leave buried things buried; Kick() will put it on the
 					// dependent queue if they are still unresolved by then
 					pushToDep = false
+				case ItemStateSuspended:
+					pushToDep = false
 				}
 				if pushToDep {
 					queue.depQueue.push(item)
 				}
 			} else if len(deps[0]) == 0 {
 				// switch to ready queue
-				queue.depQueue.remove(item)
-				item.switchDependentReady()
-				queue.readyQueue.push(item)
-				addedReady = true
+				item.mutex.RLock()
+				iState := item.state
+				item.mutex.RUnlock()
+
+				if iState == ItemStateDependent {
+					queue.depQueue.remove(item)
+					item.switchDependentReady()
+					queue.readyQueue.push(item)
+
+					addedReady = true
+				}
 			}
 		}
 	}
@@ -1203,6 +1352,9 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 	case ItemStateDependent:
 		queue.depQueue.remove(item)
 		queue.changed(SubQueueDependent, SubQueueRemoved, []*Item{item})
+	case ItemStateSuspended:
+		queue.suspendedQueue.remove(item)
+		queue.changed(SubQueueSuspended, SubQueueRemoved, []*Item{item})
 	}
 	item.removalCleanup()
 

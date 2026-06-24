@@ -78,6 +78,18 @@ func newStatusServerSubscription() *serverSubscription {
 	return sub
 }
 
+func subscriptionKeyUpdateRecipient(
+	sub *serverSubscription,
+	update *JobUpdate,
+	includeStateChange bool,
+) *serverSubscription {
+	if sub.matchesKey(update.Key) && sub.acceptsKeyUpdate(update, includeStateChange) {
+		return sub
+	}
+
+	return nil
+}
+
 func (s *serverSubscription) addKeys(keys []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,6 +141,10 @@ func (s *serverSubscription) acceptsUpdate(update *JobUpdate) bool {
 	}
 
 	return true
+}
+
+func (s *serverSubscription) acceptsKeyUpdate(update *JobUpdate, includeStateChange bool) bool {
+	return s.acceptsUpdate(update) || (includeStateChange && update.Kind == JobUpdateStateChange)
 }
 
 func (s *serverSubscription) enqueue(update *JobUpdate) bool {
@@ -362,7 +378,10 @@ type repGroupSubscriptionUpdate struct {
 	update *JobUpdate
 }
 
-func (s *Server) subscriptionUpdatesForJob(update *JobUpdate) ([]*serverSubscription, []repGroupSubscriptionUpdate) {
+func (s *Server) subscriptionUpdatesForJob(
+	update *JobUpdate,
+	includeKeyStateChange bool,
+) ([]*serverSubscription, []repGroupSubscriptionUpdate) {
 	s.csmutex.RLock()
 	defer s.csmutex.RUnlock()
 
@@ -370,25 +389,24 @@ func (s *Server) subscriptionUpdatesForJob(update *JobUpdate) ([]*serverSubscrip
 	repGroupUpdates := make([]repGroupSubscriptionUpdate, 0)
 
 	for _, sub := range s.clientSubscriptions {
-		if !sub.acceptsUpdate(update) {
-			continue
+		if keySub := subscriptionKeyUpdateRecipient(sub, update, includeKeyStateChange); keySub != nil {
+			keySubs = append(keySubs, keySub)
 		}
 
-		if sub.matchesKey(update.Key) {
-			keySubs = append(keySubs, sub)
-		}
-
-		if !sub.matchesRepGroup(update.RepGroup) {
-			continue
-		}
-
-		repGroupUpdate := sub.recordRepGroupUpdate(update)
-		if repGroupUpdate != nil {
+		if repGroupUpdate := subscriptionRepGroupUpdate(sub, update); repGroupUpdate != nil {
 			repGroupUpdates = append(repGroupUpdates, repGroupSubscriptionUpdate{sub: sub, update: repGroupUpdate})
 		}
 	}
 
 	return keySubs, repGroupUpdates
+}
+
+func subscriptionRepGroupUpdate(sub *serverSubscription, update *JobUpdate) *JobUpdate {
+	if !sub.acceptsUpdate(update) || !sub.matchesRepGroup(update.RepGroup) {
+		return nil
+	}
+
+	return sub.recordRepGroupUpdate(update)
 }
 
 func serverSubscriptionDeliveryQueueSize(keyCount, repGroupKeyCount int) int {
@@ -483,8 +501,8 @@ func (s *Server) seedRepGroupSubscription(id string, records map[string]subscrip
 	return sub.recordRepGroupCatchUp(records)
 }
 
-func (s *Server) enqueueSubscriptionUpdate(update *JobUpdate) {
-	keySubs, repGroupUpdates := s.subscriptionUpdatesForJob(update)
+func (s *Server) enqueueSubscriptionUpdate(update *JobUpdate, includeKeyStateChange bool) {
+	keySubs, repGroupUpdates := s.subscriptionUpdatesForJob(update, includeKeyStateChange)
 	deliveries := make([]repGroupSubscriptionUpdate, 0, len(keySubs)+len(repGroupUpdates))
 
 	for _, sub := range keySubs {
@@ -502,7 +520,11 @@ func (s *Server) enqueueSubscriptionDeliveries(deliveries []repGroupSubscription
 	}
 }
 
-func (s *Server) hasClientSubscriptionsForJobUpdate(key, repGroup string, state JobState) bool {
+func (s *Server) hasClientSubscriptionsForJobUpdate(
+	key, repGroup string,
+	state JobState,
+	includeKeyStateChange bool,
+) bool {
 	s.csmutex.RLock()
 	defer s.csmutex.RUnlock()
 
@@ -514,11 +536,11 @@ func (s *Server) hasClientSubscriptionsForJobUpdate(key, repGroup string, state 
 	}
 
 	for _, sub := range s.clientSubscriptions {
-		if !sub.acceptsUpdate(update) {
-			continue
+		if sub.matchesKey(key) && sub.acceptsKeyUpdate(update, includeKeyStateChange) {
+			return true
 		}
 
-		if sub.matchesKey(key) || sub.matchesRepGroup(repGroup) {
+		if sub.acceptsUpdate(update) && sub.matchesRepGroup(repGroup) {
 			return true
 		}
 	}

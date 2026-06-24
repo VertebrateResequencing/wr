@@ -405,6 +405,21 @@ func TestJob(t *testing.T) {
 			So(status.SSHCommand, ShouldEqual, "")
 		}
 	})
+
+	Convey("ToStatus() reports a never-run suspended job without start or end times", t, func() {
+		job := &Job{
+			Cmd:          "true",
+			Cwd:          "/cwd",
+			State:        JobStateSuspended,
+			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
+		}
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.State, ShouldEqual, JobStateSuspended)
+		So(status.Started, ShouldBeNil)
+		So(status.Ended, ShouldBeNil)
+	})
 }
 
 func liveStatusJob(state JobState) *Job {

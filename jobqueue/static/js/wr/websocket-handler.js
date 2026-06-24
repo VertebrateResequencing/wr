@@ -4,8 +4,8 @@
 import { removeBadServer, setupLiveWalltime } from '/js/wr/utility.js';
 import { createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 
-const countProperties = ['delayed', 'dependent', 'ready', 'running', 'lost', 'buried', 'deleted', 'complete'];
-const percentProperties = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
+const countProperties = ['delayed', 'dependent', 'suspended', 'ready', 'running', 'lost', 'buried', 'deleted', 'complete'];
+const percentProperties = ['delayPct', 'dependentPct', 'suspendedPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
 const unixNanoThreshold = 1000000000000000;
 
 function resetTrackerCounts(tracker) {
@@ -163,6 +163,7 @@ function handleStateChangeMessage(viewModel, json) {
     switch (json['FromState']) {
         case 'delayed': from = repgroup['delayed']; break;
         case 'dependent': from = repgroup['dependent']; break;
+        case 'suspended': from = repgroup['suspended']; break;
         case 'ready': from = repgroup['ready']; break;
         case 'running': from = repgroup['running']; break;
         case 'lost': from = repgroup['lost']; break;
@@ -188,6 +189,7 @@ function handleStateChangeMessage(viewModel, json) {
         switch (json['ToState']) {
             case 'delayed': to = repgroup['delayed']; break;
             case 'dependent': to = repgroup['dependent']; break;
+            case 'suspended': to = repgroup['suspended']; break;
             case 'ready': to = repgroup['ready']; break;
             case 'running': to = repgroup['running']; break;
             case 'lost': to = repgroup['lost']; break;

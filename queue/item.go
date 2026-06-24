@@ -36,6 +36,12 @@ import (
 	"time"
 )
 
+// iid is used to give each item a unique incrementing id, necessary when locking
+// items during a sort, for lock order consistency.
+//
+//nolint:gochecknoglobals
+var iid uint64
+
 // ItemState is how we describe the possible item states.
 type ItemState string
 
@@ -46,12 +52,9 @@ const (
 	ItemStateRun       ItemState = "run"
 	ItemStateBury      ItemState = "bury"
 	ItemStateDependent ItemState = "dependent"
+	ItemStateSuspended ItemState = "suspended"
 	ItemStateRemoved   ItemState = "removed"
 )
-
-// iid is used to give each item a unique incrementing id, necessay when locking
-// items during a sort, for lock order consistency.
-var iid uint64
 
 // Item holds the information about each item in our queue, and has thread-safe
 // functions to update properties as we switch between sub-queues.
@@ -75,7 +78,7 @@ type Item struct {
 	dependencies  []string
 	remainingDeps map[string]bool
 	mutex         sync.RWMutex
-	queueIndexes  [5]int
+	queueIndexes  [6]int
 	iid           uint64
 }
 
@@ -327,12 +330,31 @@ func (item *Item) switchDelayDependent() {
 	item.state = ItemStateDependent
 }
 
+// update after we've switched from the delay to the suspended sub-queue.
+func (item *Item) switchDelaySuspended() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[0] = -1
+	item.readyAt = time.Time{}
+	item.state = ItemStateSuspended
+}
+
 // update after we've switched from the dependent to the ready sub-queue
 func (item *Item) switchDependentReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[4] = -1
 	item.state = ItemStateReady
+}
+
+// update after we've switched from the dependent to the suspended sub-queue.
+func (item *Item) switchDependentSuspended() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[4] = -1
+	item.state = ItemStateSuspended
 }
 
 // update after we've switched from the ready to the run sub-queue
@@ -350,6 +372,15 @@ func (item *Item) switchReadyDependent() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[1] = -1
 	item.state = ItemStateDependent
+}
+
+// update after we've switched from the ready to the suspended sub-queue.
+func (item *Item) switchReadySuspended() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[1] = -1
+	item.state = ItemStateSuspended
 }
 
 // update after we've switched from the run to the ready sub-queue
@@ -417,6 +448,24 @@ func (item *Item) switchBuryDependent() {
 	item.state = ItemStateDependent
 }
 
+// update after we've switched from the suspended to the ready sub-queue.
+func (item *Item) switchSuspendedReady() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[5] = -1
+	item.state = ItemStateReady
+}
+
+// update after we've switched from the suspended to the dependent sub-queue.
+func (item *Item) switchSuspendedDependent() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[5] = -1
+	item.state = ItemStateDependent
+}
+
 // once removed from its queue, we clear out various properties just in case
 func (item *Item) removalCleanup() {
 	item.mutex.Lock()
@@ -428,5 +477,6 @@ func (item *Item) removalCleanup() {
 	item.readyAt = time.Time{}
 	item.queueIndexes[3] = -1
 	item.queueIndexes[4] = -1
+	item.queueIndexes[5] = -1
 	item.state = ItemStateRemoved
 }

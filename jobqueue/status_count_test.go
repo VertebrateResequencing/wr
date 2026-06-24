@@ -178,3 +178,79 @@ func TestClientRepGroupStatusCounts(t *testing.T) {
 		So(detailed["status-count-a"].EndTime.IsZero(), ShouldBeFalse)
 	})
 }
+
+func TestClientRepGroupStatusCountsIncludeSuspended(t *testing.T) {
+	Convey("Given a report group with ready, suspended, and complete jobs", t, func() {
+		ctx := context.Background()
+		_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "rg-api"
+		ready := &Job{
+			Cmd:          "echo api status ready",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}
+		suspended := &Job{
+			Cmd:          "echo api status suspended",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}
+		complete := &Job{
+			Cmd:          "echo api status complete",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}
+
+		added, existed, err := jq.Add([]*Job{ready, suspended, complete}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 3)
+		So(existed, ShouldEqual, 0)
+
+		changed, err := jq.Suspend([]*JobEssence{suspended.ToEssense()})
+		So(err, ShouldBeNil)
+		So(changed, ShouldEqual, 1)
+
+		item, err := server.q.Get(complete.Key())
+		So(err, ShouldBeNil)
+
+		archived, ok := item.Data().(*Job)
+		So(ok, ShouldBeTrue)
+
+		archived.StartTime = time.Now().Add(-2 * time.Second)
+		archived.EndTime = time.Now().Add(-1 * time.Second)
+		archived.State = JobStateComplete
+		archived.Exited = true
+
+		So(server.q.Remove(ctx, complete.Key()), ShouldBeNil)
+		So(server.db.archiveJob(ctx, complete.Key(), archived), ShouldBeNil)
+
+		summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
+		So(err, ShouldBeNil)
+		So(summaries[repGroup].Counts[JobStateReady], ShouldEqual, 1)
+		So(summaries[repGroup].Counts[JobStateSuspended], ShouldEqual, 1)
+		So(summaries[repGroup].Counts[JobStateComplete], ShouldEqual, 1)
+
+		filtered, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact,
+			[]JobState{JobStateSuspended}, false, false)
+		So(err, ShouldBeNil)
+		So(filtered[repGroup].Counts[JobStateSuspended], ShouldEqual, 1)
+		So(filtered[repGroup].Counts[JobStateReady], ShouldEqual, 0)
+		So(filtered[repGroup].Counts[JobStateComplete], ShouldEqual, 0)
+	})
+}

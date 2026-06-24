@@ -236,6 +236,16 @@
                                     <span data-bind="text: counts.dependent"></span> dependent
                                     <!-- /ko -->
                                 </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning state-filter"
+                                    role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="css: { 'clickable': counts.suspended > 0, 'selected-state': selectedState() === 'suspended' },
+                                              style: { width: (counts.suspended/total*100) + '%' },
+                                              attr: { 'aria-valuenow': counts.suspended/total*100 },
+                                              click: function() { if (counts.suspended > 0) $parent.setSelectedState($data, 'suspended') }">
+                                    <!-- ko if: counts.suspended > 0 -->
+                                    <span data-bind="text: counts.suspended"></span> suspended
+                                    <!-- /ko -->
+                                </div>
                                 <div class="progress-bar progress-bar-striped active progress-bar-info state-filter"
                                     role="progressbar" aria-valuemin="0" aria-valuemax="100"
                                     data-bind="css: { 'clickable': counts.ready > 0, 'selected-state': selectedState() === 'ready' }, 
@@ -430,6 +440,12 @@
                             <span data-bind="text: inflight.dependent"></span> dependent
                             <!-- /ko -->
                         </div>
+                        <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar"
+                            data-bind="style: { width: inflight.suspendedPct() + '%' }">
+                            <!-- ko if: inflight.suspended() > 0 -->
+                            <span data-bind="text: inflight.suspended"></span> suspended
+                            <!-- /ko -->
+                        </div>
                         <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar"
                             data-bind="style: { width: inflight.readyPct() + '%' }">
                             <!-- ko if: inflight.ready() > 0 -->
@@ -494,6 +510,13 @@
                                 <span data-bind="text: dependent"></span> dependent
                                 <!-- /ko -->
                             </div>
+                            <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: suspendedPct() + '%' }, click: $parent.showRepgroupSuspended, attr: { 'aria-valuenow': suspendedPct() }"
+                                role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                                <!-- ko if: suspended() > 0 -->
+                                <span data-bind="text: suspended"></span> suspended
+                                <!-- /ko -->
+                            </div>
                             <div class="progress-bar progress-bar-striped active progress-bar-info"
                                 data-bind="css: { 'clickable': id.indexOf('search:') !== 0 }, style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady, attr: { 'aria-valuenow': readyPct() }"
                                 role="progressbar" aria-valuemin="0" aria-valuemax="100">
@@ -542,10 +565,10 @@
                     <!-- ====================== JOB DETAILS PANEL ====================== -->
                     <!-- ko foreach: details -->
                     <div class="top-margin panel" style="margin-bottom: 0"
-                        data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready' || State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
+                        data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent' || State == 'suspended', 'panel-info': State == 'ready' || State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
                         <div class="panel-heading">
                             <div class="terminal"
-                                data-bind="css: { 'border-warning': State == 'delayed' || State == 'dependent', 'border-info': State == 'ready', 'border-primary': State == 'running', 'border-danger': State == 'buried' || State == 'lost', 'border-success': State == 'complete' }">
+                                data-bind="css: { 'border-warning': State == 'delayed' || State == 'dependent' || State == 'suspended', 'border-info': State == 'ready', 'border-primary': State == 'running', 'border-danger': State == 'buried' || State == 'lost', 'border-success': State == 'complete' }">
                                 <small>
                                     <div class="command-path"
                                         data-bind="attr: {'data-expanded': false}, click: $root.togglePathExpansion">
@@ -689,6 +712,13 @@
                                             <span class="prop-name">Attempts</span>
                                             <span class="prop-value" data-bind="text: Attempts"></span>
                                         </div>
+
+                                        <!-- ko if: State == "suspended" -->
+                                        <div class="prop-tag">
+                                            <span class="prop-name">State</span>
+                                            <span class="prop-value">suspended - use wr resume to make it schedulable again</span>
+                                        </div>
+                                        <!-- /ko -->
 
                                         <!-- Exit code, only visible when job has exited -->
                                         <!-- ko if: Exited -->

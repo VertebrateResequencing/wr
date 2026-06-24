@@ -194,6 +194,7 @@ export function StatusViewModel() {
             repgroup.buried(summary.counts.buried || 0);
             repgroup.delayed(summary.counts.delayed || 0);
             repgroup.dependent(summary.counts.dependent || 0);
+            repgroup.suspended(summary.counts.suspended || 0);
             repgroup.ready(summary.counts.ready || 0);
             repgroup.running(summary.counts.running || 0);
             repgroup.lost(summary.counts.lost || 0);
@@ -203,6 +204,7 @@ export function StatusViewModel() {
             repgroup.buried(currentSelectedState === 'buried' ? summary.counts.buried || 0 : 0);
             repgroup.delayed(currentSelectedState === 'delayed' ? summary.counts.delayed || 0 : 0);
             repgroup.dependent(currentSelectedState === 'dependent' ? summary.counts.dependent || 0 : 0);
+            repgroup.suspended(currentSelectedState === 'suspended' ? summary.counts.suspended || 0 : 0);
             repgroup.ready(currentSelectedState === 'ready' ? summary.counts.ready || 0 : 0);
             repgroup.running(currentSelectedState === 'running' ? summary.counts.running || 0 : 0);
             repgroup.lost(currentSelectedState === 'lost' ? summary.counts.lost || 0 : 0);
@@ -290,6 +292,7 @@ export function StatusViewModel() {
             running: 0,
             ready: 0,
             dependent: 0,
+            suspended: 0,
             lost: 0,
             delayed: 0,
             buried: 0
@@ -567,6 +570,11 @@ export function StatusViewModel() {
     self.showRepgroupDependent = function (repGroup) {
         if (repGroup.id.startsWith('search:')) return;
         showGroupState(self, repGroup, 'dependent');
+    };
+
+    self.showRepgroupSuspended = function (repGroup) {
+        if (repGroup.id.startsWith('search:')) return;
+        showGroupState(self, repGroup, 'suspended');
     };
 
     self.showRepgroupReady = function (repGroup) {

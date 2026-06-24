@@ -4,13 +4,13 @@
 import { percentRounder, percentScaler } from '/js/wr/utility.js';
 
 // Define the standard property sets first
-const STANDARD_COUNT_PROPS = ['delayed', 'dependent', 'ready', 'running', 'lost', 'buried'];
+const STANDARD_COUNT_PROPS = ['delayed', 'dependent', 'suspended', 'ready', 'running', 'lost', 'buried'];
 
 // Define RepGroup properties by extending the standard ones
 const REPGROUP_COUNT_PROPS = [...STANDARD_COUNT_PROPS, 'deleted', 'complete'];
 
 // Define corresponding percentage property names
-const STANDARD_PCT_PROPS = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct'];
+const STANDARD_PCT_PROPS = ['delayPct', 'dependentPct', 'suspendedPct', 'readyPct', 'runPct', 'lostPct', 'buryPct'];
 const REPGROUP_PCT_PROPS = [...STANDARD_PCT_PROPS, 'deletePct', 'completePct'];
 
 /**
@@ -74,12 +74,14 @@ export function setupInflightTracking(rateLimit) {
     const inflight = {
         delayed: ko.observable(0).extend({ rateLimit }),
         dependent: ko.observable(0).extend({ rateLimit }),
+        suspended: ko.observable(0).extend({ rateLimit }),
         ready: ko.observable(0).extend({ rateLimit }),
         running: ko.observable(0).extend({ rateLimit }),
         lost: ko.observable(0).extend({ rateLimit }),
         buried: ko.observable(0).extend({ rateLimit }),
         delayPct: ko.observable(0).extend({ rateLimit }),
         dependentPct: ko.observable(0).extend({ rateLimit }),
+        suspendedPct: ko.observable(0).extend({ rateLimit }),
         readyPct: ko.observable(0).extend({ rateLimit }),
         runPct: ko.observable(0).extend({ rateLimit }),
         lostPct: ko.observable(0).extend({ rateLimit }),
@@ -90,7 +92,7 @@ export function setupInflightTracking(rateLimit) {
     // Create a computed for the total that updates the percentage values
     inflight.total = ko.computed(() => {
         const total = inflight.delayed() + inflight.dependent() +
-            inflight.ready() + inflight.running() +
+            inflight.suspended() + inflight.ready() + inflight.running() +
             inflight.lost() + inflight.buried();
 
         if (total > 0) {
@@ -115,6 +117,7 @@ export function createRepGroupTracker(rg, rateLimit) {
         id: rg,
         delayed: ko.observable(0).extend({ rateLimit }),
         dependent: ko.observable(0).extend({ rateLimit }),
+        suspended: ko.observable(0).extend({ rateLimit }),
         ready: ko.observable(0).extend({ rateLimit }),
         running: ko.observable(0).extend({ rateLimit }),
         lost: ko.observable(0).extend({ rateLimit }),
@@ -123,6 +126,7 @@ export function createRepGroupTracker(rg, rateLimit) {
         complete: ko.observable(0).extend({ rateLimit }),
         delayPct: ko.observable(0),
         dependentPct: ko.observable(0),
+        suspendedPct: ko.observable(0),
         readyPct: ko.observable(0),
         runPct: ko.observable(0),
         lostPct: ko.observable(0),
@@ -135,7 +139,7 @@ export function createRepGroupTracker(rg, rateLimit) {
 
     repgroup.total = ko.computed(() => {
         const total = repgroup.delayed() + repgroup.dependent() +
-            repgroup.ready() + repgroup.running() +
+            repgroup.suspended() + repgroup.ready() + repgroup.running() +
             repgroup.lost() + repgroup.buried() +
             repgroup.deleted() + repgroup.complete();
 

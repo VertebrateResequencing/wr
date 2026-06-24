@@ -51,6 +51,7 @@ var jobStateToLSFState = map[jobqueue.JobState]string{
 	jobqueue.JobStateNew:       "PEND",
 	jobqueue.JobStateDelayed:   "PEND",
 	jobqueue.JobStateDependent: "PEND",
+	jobqueue.JobStateSuspended: "PEND",
 	jobqueue.JobStateReady:     "PEND",
 	jobqueue.JobStateReserved:  "PEND",
 	jobqueue.JobStateRunning:   "RUN",
@@ -215,8 +216,6 @@ var lsfBsubCmd = &cobra.Command{
 		fmt.Printf("Job <%d> is submitted to default queue <wr>.\n", j.BsubID)
 	},
 }
-
-type lsfFieldDisplay func(*jobqueue.Job) string
 
 // bjobs sub-command emulates bjobs.
 var lsfBjobsCmd = &cobra.Command{
@@ -450,6 +449,8 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 		}
 	},
 }
+
+type lsfFieldDisplay func(*jobqueue.Job) string
 
 func init() {
 	// custom handling of LSF args with their single dashes

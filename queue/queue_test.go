@@ -1855,3 +1855,329 @@ func qdestroy(q *Queue) {
 		fmt.Printf("queue.Destroy failed: %s\n", err)
 	}
 }
+
+func containsSingleItemChange(records []*changedStruct, from, to SubQueue) bool {
+	for _, record := range records {
+		if record.from == from && record.to == to && record.count == 1 {
+			return true
+		}
+	}
+
+	return false
+}
+
+type queueCallbackRecorder struct {
+	mutex      sync.Mutex
+	readyCalls int
+	changes    []*changedStruct
+}
+
+func (recorder *queueCallbackRecorder) ready(_ string, _ []interface{}) {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+
+	recorder.readyCalls++
+}
+
+func (recorder *queueCallbackRecorder) changed(from, to SubQueue, data []interface{}) {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+
+	recorder.changes = append(recorder.changes, &changedStruct{from: from, to: to, count: len(data)})
+}
+
+func (recorder *queueCallbackRecorder) readyCallCount() int {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+
+	return recorder.readyCalls
+}
+
+func (recorder *queueCallbackRecorder) changeRecords() []*changedStruct {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+
+	records := make([]*changedStruct, len(recorder.changes))
+	copy(records, recorder.changes)
+
+	return records
+}
+
+func TestQueueSuspendDependencyAccounting(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Suspending a parent does not unblock dependent children", func() {
+		queue := New(ctx, "suspend parent dependency queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, "p", "", "parent", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		child, err := queue.Add(ctx, "c", "", "child", 0, 0, time.Minute, "", []string{"p"})
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		err = queue.Suspend(ctx, "p")
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(child.Stats().State, ShouldEqual, ItemStateDependent)
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+		So(containsSingleItemChange(recorder.changeRecords(), SubQueueDependent, SubQueueReady), ShouldBeFalse)
+	})
+
+	synctestConvey(t, "A suspended child stays suspended when its dependencies resolve until resumed", func() {
+		queue := New(ctx, "suspend child dependency queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, "p", "", "parent", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		child, err := queue.Add(ctx, "c", "", "child", 0, 0, time.Minute, "", []string{"p"})
+		So(err, ShouldBeNil)
+
+		err = queue.Suspend(ctx, child.Key)
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetReadyAddedCallback(recorder.ready)
+
+		err = queue.Remove(ctx, "p")
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(child.Stats().State, ShouldEqual, ItemStateSuspended)
+		So(child.UnresolvedDependencies(), ShouldBeEmpty)
+		So(recorder.readyCallCount(), ShouldEqual, 0)
+
+		err = queue.Resume(ctx, child.Key)
+		So(err, ShouldBeNil)
+		So(child.Stats().State, ShouldEqual, ItemStateReady)
+
+		reserved, err := queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+		So(reserved.Key, ShouldEqual, child.Key)
+	})
+
+	synctestConvey(t, "A suspended child with unresolved dependencies resumes to dependent", func() {
+		queue := New(ctx, "resume child dependency queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, "p", "", "parent", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		_, err = queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+		child, err := queue.Add(ctx, "c", "", "child", 0, 0, time.Minute, "", []string{"p"})
+		So(err, ShouldBeNil)
+
+		err = queue.Suspend(ctx, child.Key)
+		So(err, ShouldBeNil)
+		err = queue.Resume(ctx, child.Key)
+		So(err, ShouldBeNil)
+
+		So(child.Stats().State, ShouldEqual, ItemStateDependent)
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+	})
+}
+
+func TestQueueSuspendResume(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Suspending and resuming a ready item updates state, stats, and reservability", func() {
+		queue := New(ctx, "suspend ready queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, "ready", "", "data", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateSuspended)
+
+		stats := queue.Stats()
+		So(stats.Ready, ShouldEqual, 0)
+		So(stats.Suspended, ShouldEqual, 1)
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+
+		err = queue.Resume(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+
+		stats = queue.Stats()
+		So(stats.Ready, ShouldEqual, 1)
+		So(stats.Suspended, ShouldEqual, 0)
+
+		reserved, err = queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+		So(reserved.Key, ShouldEqual, item.Key)
+	})
+
+	synctestConvey(t, "Delayed ready and dependent items all suspend without becoming reservable", func() {
+		queue := New(ctx, "suspend multiple queue")
+		defer qdestroy(queue)
+
+		delayed, err := queue.Add(ctx, "delayed", "", "delayed data", 0, time.Minute, time.Minute, "")
+		So(err, ShouldBeNil)
+		ready, err := queue.Add(ctx, "ready", "", "ready data", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		dependent, err := queue.Add(ctx, "dependent", "", "dependent data", 0, 0, time.Minute, "", []string{"missing"})
+		So(err, ShouldBeNil)
+
+		for _, key := range []string{delayed.Key, ready.Key, dependent.Key} {
+			err = queue.Suspend(ctx, key)
+			So(err, ShouldBeNil)
+		}
+
+		So(delayed.Stats().State, ShouldEqual, ItemStateSuspended)
+		So(ready.Stats().State, ShouldEqual, ItemStateSuspended)
+		So(dependent.Stats().State, ShouldEqual, ItemStateSuspended)
+		So(queue.Stats().Suspended, ShouldEqual, 3)
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+	})
+
+	synctestConvey(t, "Suspending a delayed item prevents delay expiry callbacks and promotion", func() {
+		queue := New(ctx, "suspend delayed queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, "delayed", "", "data", 0, 50*time.Millisecond, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetReadyAddedCallback(recorder.ready)
+		queue.SetChangedCallback(recorder.changed)
+
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		<-time.After(60 * time.Millisecond)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateSuspended)
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+		So(recorder.readyCallCount(), ShouldEqual, 0)
+
+		records := recorder.changeRecords()
+		So(containsSingleItemChange(records, SubQueueDelay, SubQueueSuspended), ShouldBeTrue)
+		So(containsSingleItemChange(records, SubQueueDelay, SubQueueReady), ShouldBeFalse)
+	})
+
+	synctestConvey(t, "Resuming an expired delayed item makes it ready when dependencies are resolved", func() {
+		queue := New(ctx, "resume expired delayed queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, "delayed", "", "data", 0, 50*time.Millisecond, time.Minute, "")
+		So(err, ShouldBeNil)
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+
+		<-time.After(60 * time.Millisecond)
+
+		err = queue.Resume(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+
+		reserved, err := queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+		So(reserved.Key, ShouldEqual, item.Key)
+	})
+
+	synctestConvey(t, "Resuming an expired delayed item with unresolved dependencies makes it dependent", func() {
+		queue := New(ctx, "resume dependent delayed queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, "p", "", "parent", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		_, err = queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+
+		item, err := queue.Add(ctx, "delayed", "", "child", 0, 50*time.Millisecond, time.Minute, "")
+		So(err, ShouldBeNil)
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+
+		itemStats := item.Stats()
+		err = queue.Update(ctx, item.Key, "", item.Data(), itemStats.Priority, itemStats.Delay, itemStats.TTR, []string{"p"})
+		So(err, ShouldBeNil)
+
+		<-time.After(60 * time.Millisecond)
+
+		err = queue.Resume(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+		So(item.UnresolvedDependencies(), ShouldResemble, []string{"p"})
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+	})
+
+	synctestConvey(t, "Running buried and missing items are not suspendable", func() {
+		queue := New(ctx, "not suspendable queue")
+		defer qdestroy(queue)
+
+		run, err := queue.Add(ctx, "run", "", "run data", 0, 0, time.Minute, SubQueueRun)
+		So(err, ShouldBeNil)
+		bury, err := queue.Add(ctx, "bury", "", "bury data", 0, 0, time.Minute, SubQueueBury)
+		So(err, ShouldBeNil)
+
+		err = queue.Suspend(ctx, run.Key)
+		shouldBeQueueError(err, ErrNotSuspendable)
+		err = queue.Suspend(ctx, bury.Key)
+		shouldBeQueueError(err, ErrNotSuspendable)
+		err = queue.Suspend(ctx, "missing")
+		shouldBeQueueError(err, ErrNotSuspendable)
+
+		So(run.Stats().State, ShouldEqual, ItemStateRun)
+		So(bury.Stats().State, ShouldEqual, ItemStateBury)
+	})
+
+	synctestConvey(t, "A non-suspended ready item cannot be resumed", func() {
+		queue := New(ctx, "not suspended queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, "ready", "", "data", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		err = queue.Resume(ctx, item.Key)
+		shouldBeQueueError(err, ErrNotSuspended)
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
+	synctestConvey(t, "Suspending and resuming a ready item reports exact changed callbacks", func() {
+		queue := New(ctx, "suspend callback queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, "ready", "", "data", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+		err = queue.Resume(ctx, item.Key)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		records := recorder.changeRecords()
+		So(records, ShouldHaveLength, 2)
+		So(containsSingleItemChange(records, SubQueueReady, SubQueueSuspended), ShouldBeTrue)
+		So(containsSingleItemChange(records, SubQueueSuspended, SubQueueReady), ShouldBeTrue)
+	})
+}
