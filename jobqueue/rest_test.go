@@ -1059,6 +1059,71 @@ func TestREST(t *testing.T) {
 			So(len(jstati), ShouldEqual, 0)
 		})
 
+		Convey("Suspended jobs can be retrieved through REST state filters", func() {
+			repGroup := "rg-rest-suspended"
+			requirements := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0}
+			suspended := &Job{
+				Cmd:          "echo rest suspended",
+				Cwd:          testCwd,
+				ReqGroup:     reqGroupFake,
+				Requirements: requirements,
+				RepGroup:     repGroup,
+			}
+			running := &Job{
+				Cmd:          "echo rest running",
+				Cwd:          testCwd,
+				ReqGroup:     reqGroupFake,
+				Requirements: requirements,
+				RepGroup:     repGroup,
+			}
+
+			added, existed, err := jq.Add([]*Job{suspended, running}, envVars, true)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 2)
+			So(existed, ShouldEqual, 0)
+
+			changed, err := jq.Suspend([]*JobEssence{suspended.ToEssense()})
+			So(err, ShouldBeNil)
+			So(changed, ShouldEqual, 1)
+
+			reserved, err := jq.Reserve(2 * time.Second)
+			So(err, ShouldBeNil)
+			So(reserved, ShouldNotBeNil)
+			So(reserved.Key(), ShouldEqual, running.Key())
+			So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/?state=suspended", nil)
+			So(err, ShouldBeNil)
+			req.Header.Add("Authorization", bearer)
+			response, err := client.Do(req)
+			So(err, ShouldBeNil)
+			responseData, err := io.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+
+			var jstati []JStatus
+
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldBeNil)
+			So(jstati, ShouldHaveLength, 1)
+			So(jstati[0].Key, ShouldEqual, suspended.Key())
+			So(jstati[0].State, ShouldEqual, JobStateSuspended)
+
+			req, err = http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/"+repGroup+"?state=deletable", nil)
+			So(err, ShouldBeNil)
+			req.Header.Add("Authorization", bearer)
+			response, err = client.Do(req)
+			So(err, ShouldBeNil)
+			responseData, err = io.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+
+			jstati = nil
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldBeNil)
+			So(jstati, ShouldHaveLength, 1)
+			So(jstati[0].Key, ShouldEqual, suspended.Key())
+			So(jstati[0].State, ShouldEqual, JobStateSuspended)
+		})
+
 		Convey("You can POST to add jobs to the queue", func() {
 			var inputJobs []*JobViaJSON
 			pri := 2

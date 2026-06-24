@@ -45,6 +45,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const webStatusAllRepGroups = "+all+"
+
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -104,6 +106,135 @@ func TestCaster(t *testing.T) {
 		case <-time.After(100 * time.Millisecond):
 		}
 	})
+}
+
+type expectedJStateCount struct {
+	repGroup string
+	state    JobState
+	count    int
+}
+
+func TestServerWebISuspendedStatus(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("The status web interface shows suspended jobs", t, func() {
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "rg-web"
+		ready := &Job{
+			Cmd:          "echo web ready",
+			Cwd:          testCwd,
+			ReqGroup:     "web-group",
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}
+		suspended := &Job{
+			Cmd:          "echo web suspended",
+			Cwd:          testCwd,
+			ReqGroup:     "web-group",
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}
+
+		inserts, already, err := jq.Add([]*Job{ready, suspended}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		changed, err := jq.Suspend([]*JobEssence{suspended.ToEssense()})
+		So(err, ShouldBeNil)
+		So(changed, ShouldEqual, 1)
+
+		Convey("The static page labels suspended state filters and details", func() {
+			handler := webInterfaceStatic(ctx, server)
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, http.MethodGet, "/status.html", nil)
+			r.Header.Set("Authorization", "Bearer "+string(token))
+
+			handler(w, r)
+
+			So(w.Result().StatusCode, ShouldEqual, http.StatusOK)
+			So(w.Body.String(), ShouldContainSubstring, "suspended")
+			So(w.Body.String(), ShouldContainSubstring, "suspended - use wr resume to make it schedulable again")
+		})
+
+		Convey("The websocket returns suspended current counts and details", func() {
+			testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+			defer testServer.Close()
+
+			wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+			header := http.Header{}
+			header.Add("Authorization", "Bearer "+string(token))
+
+			ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+			So(err, ShouldBeNil)
+
+			defer ws.Close()
+
+			err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+			So(err, ShouldBeNil)
+
+			So(readJStateCounts(ws, []expectedJStateCount{
+				{repGroup: webStatusAllRepGroups, state: JobStateSuspended, count: 1},
+				{repGroup: repGroup, state: JobStateReady, count: 1},
+				{repGroup: repGroup, state: JobStateSuspended, count: 1},
+			}, 3*time.Second), ShouldBeTrue)
+
+			err = ws.WriteJSON(jstatusReq{
+				Request:  jstatusRequestDetails,
+				RepGroup: repGroup,
+				State:    JobStateSuspended,
+			})
+			So(err, ShouldBeNil)
+
+			status, ok := readJStatusMatching(ws, func(s JStatus) bool {
+				return s.RepGroup == repGroup && s.State == JobStateSuspended && s.Key == suspended.Key()
+			})
+			So(ok, ShouldBeTrue)
+			So(status.Cmd, ShouldEqual, suspended.Cmd)
+		})
+	})
+}
+
+func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeout time.Duration) bool {
+	remaining := make(map[expectedJStateCount]struct{}, len(expected))
+	for _, count := range expected {
+		remaining[count] = struct{}{}
+	}
+
+	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return false
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
+	for len(remaining) > 0 {
+		var count jstateCount
+		if err := ws.ReadJSON(&count); err != nil {
+			return false
+		}
+
+		delete(remaining, expectedJStateCount{
+			repGroup: count.RepGroup,
+			state:    count.ToState,
+			count:    count.Count,
+		})
+	}
+
+	return true
 }
 
 func TestServerWebI(t *testing.T) {
@@ -1579,6 +1710,12 @@ func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
 		So(pushStatus.State, ShouldEqual, JobStateRunning)
 		So(pushStatus.IsPushUpdate, ShouldBeTrue)
 	})
+}
+
+func clearReadDeadlineBestEffort(ws *websocket.Conn) {
+	if err := ws.SetReadDeadline(time.Time{}); err != nil {
+		return
+	}
 }
 
 // readJStatusMatching reads JStatus messages from ws until one satisfies match

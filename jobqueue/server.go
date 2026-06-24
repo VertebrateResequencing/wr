@@ -2719,7 +2719,8 @@ func (s *Server) createQueue(ctx context.Context) {
 				continue
 			}
 
-			if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state) {
+			includeKeyStateChange := from == JobStateSuspended || to == JobStateSuspended
+			if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state, includeKeyStateChange) {
 				continue
 			}
 
@@ -2737,7 +2738,7 @@ func (s *Server) createQueue(ctx context.Context) {
 			status.IsPushUpdate = true
 
 			started, ended := jobUpdateTimes(job)
-			s.enqueueSubscriptionUpdate(jobUpdateFromStatus(status, state, started, ended))
+			s.enqueueSubscriptionUpdate(jobUpdateFromStatus(status, state, started, ended), includeKeyStateChange)
 		}
 	})
 
@@ -2770,7 +2771,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				job.Unlock()
 
 				if !wasLost {
-					s.enqueueSubscriptionUpdate(lostUpdate)
+					s.enqueueSubscriptionUpdate(lostUpdate, false)
 				}
 
 				go func() {
@@ -3840,7 +3841,7 @@ func (s *Server) matchesStateFilter(jobState JobState, filterState JobState) boo
 	}
 
 	if filterState == JobStateDeletable {
-		return jobState != JobStateRunning && jobState != JobStateComplete
+		return jobState != JobStateReserved && jobState != JobStateRunning && jobState != JobStateComplete
 	}
 
 	return jobState == filterState

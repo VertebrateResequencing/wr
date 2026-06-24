@@ -555,6 +555,126 @@ func TestStatusDisplaysMissingDepGroups(t *testing.T) {
 	})
 }
 
+func TestStatusShowsAndFiltersSuspendedJobs(t *testing.T) {
+	Convey("wr status shows and filters suspended jobs", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile, oldStatusExit := config, caFile, statusExit
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		statusExit = func(int) {}
+
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+			statusExit = oldStatusExit
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		summaryRepGroup := "rg-status-summary"
+		ready := statusTestJob("echo status suspended ready", summaryRepGroup, reqs)
+		dependent := statusTestJob("echo status suspended dependent", summaryRepGroup, reqs)
+		dependent.Dependencies = jobqueue.Dependencies{
+			jobqueue.NewEssenceDependency(ready.Cmd, ""),
+		}
+		suspended := statusTestJob("echo status suspended counts", summaryRepGroup, reqs)
+
+		addStatusJobs(jq, ready)
+		addStatusJobs(jq, dependent, suspended)
+		suspendedCount, err := jq.Suspend([]*jobqueue.JobEssence{suspended.ToEssense()})
+		So(err, ShouldBeNil)
+		So(suspendedCount, ShouldEqual, 1)
+
+		suspendedOnlyRepGroup := "rg-status-suspended"
+		suspendedOnly := statusTestJob("echo status suspended only", suspendedOnlyRepGroup, reqs)
+		addStatusJobs(jq, suspendedOnly)
+		suspendedCount, err = jq.Suspend([]*jobqueue.JobEssence{suspendedOnly.ToEssense()})
+		So(err, ShouldBeNil)
+		So(suspendedCount, ShouldEqual, 1)
+
+		countsOutput := runStatusForTest(t, "--output", "counts")
+		So(countsOutput, ShouldContainSubstring, "ready: 1\n")
+		So(countsOutput, ShouldContainSubstring, "dependent: 1\n")
+		So(countsOutput, ShouldContainSubstring, "suspended: 2\n")
+
+		summaryOutput := runStatusForTest(t, "--output", "summary")
+		So(summaryOutput, ShouldContainSubstring, summaryRepGroup+" :")
+		So(summaryOutput, ShouldContainSubstring, "ready=1")
+		So(summaryOutput, ShouldContainSubstring, "suspended=1")
+
+		onlySuspendedOutput := runStatusForTest(t, "--suspended", "--output", "counts")
+		So(onlySuspendedOutput, ShouldContainSubstring, "ready: 0\n")
+		So(onlySuspendedOutput, ShouldContainSubstring, "dependent: 0\n")
+		So(onlySuspendedOutput, ShouldContainSubstring, "suspended: 2\n")
+
+		combinedOutput := runStatusForTest(t, "--pending", "--dependent", "--suspended", "--output", "counts")
+		So(combinedOutput, ShouldContainSubstring, "ready: 1\n")
+		So(combinedOutput, ShouldContainSubstring, "dependent: 1\n")
+		So(combinedOutput, ShouldContainSubstring, "suspended: 2\n")
+
+		plainOutput := runStatusForTest(t, "--identifier", suspendedOnlyRepGroup, "--output", "plain")
+		So(strings.TrimSpace(plainOutput), ShouldEqual, suspendedOnly.Key()+"\tsuspended")
+
+		detailsOutput := runStatusForTest(t, "--identifier", suspendedOnlyRepGroup, "--output", "details")
+		So(detailsOutput, ShouldContainSubstring,
+			"Status: suspended - use `wr resume` to make it schedulable again")
+
+		t.Setenv("WR_STATUS_FORMAT", "status:9 count:5")
+
+		tableOutput := runStatusForTest(t, "--identifier", suspendedOnlyRepGroup, "--output", "table")
+		So(tableOutput, ShouldContainSubstring, "suspended")
+		So(tableOutput, ShouldNotContainSubstring, "suspen...")
+	})
+}
+
+func TestStatusSuspendedFilterValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func()
+		want  string
+	}{
+		{
+			name:  "file mode",
+			setup: func() { cmdFileStatus = "commands.txt" },
+			want:  "-f",
+		},
+		{
+			name:  "cmdline mode",
+			setup: func() { cmdLine = "echo by-line" },
+			want:  "-l",
+		},
+		{
+			name: "internal identifier mode",
+			setup: func() {
+				cmdIDStatus = "abc123"
+				cmdIDIsInternal = true
+			},
+			want: "--internal",
+		},
+	} {
+		Convey("wr status rejects --suspended in "+tc.name, t, func() {
+			resetStatusForTest(t)
+
+			showSuspended = true
+
+			tc.setup()
+
+			err := validateStatusStateFilters(statusStateFilters())
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "--suspended")
+			So(err.Error(), ShouldContainSubstring, tc.want)
+		})
+	}
+}
+
 func TestStatusTableOutput(t *testing.T) {
 	Convey("wr status renders an aligned table", t, func() {
 		ctx := context.Background()
@@ -741,6 +861,23 @@ func runStatusForTestWithExit(t *testing.T, args ...string) (string, int) {
 	return runStatusForTest(t, args...), exitCode
 }
 
+func statusTestJob(cmd, repGroup string, reqs *jqs.Requirements) *jobqueue.Job {
+	return &jobqueue.Job{
+		Cmd:          cmd,
+		Cwd:          statusTestCwd,
+		ReqGroup:     statusTestReqGroup,
+		Requirements: reqs,
+		RepGroup:     repGroup,
+	}
+}
+
+func addStatusJobs(jq *jobqueue.Client, jobs ...*jobqueue.Job) {
+	inserts, already, err := jq.Add(jobs, os.Environ(), true)
+	So(err, ShouldBeNil)
+	So(inserts, ShouldEqual, len(jobs))
+	So(already, ShouldEqual, 0)
+}
+
 func runStatusForTest(t *testing.T, args ...string) string {
 	t.Helper()
 
@@ -786,6 +923,7 @@ func resetStatusForTest(t *testing.T) {
 	showPending = false
 	showDependent = false
 	showMissingDeps = false
+	showSuspended = false
 	showEnv = false
 	outputFormat = statusTestDetails
 	statusLimit = 1
@@ -801,6 +939,7 @@ func resetStatusForTest(t *testing.T) {
 		{"pending", statusTestFalse},
 		{"dependent", statusTestFalse},
 		{"missing_deps", statusTestFalse},
+		{"suspended", statusTestFalse},
 		{"env", statusTestFalse},
 		{"output", statusTestDetails},
 		{"limit", "1"},

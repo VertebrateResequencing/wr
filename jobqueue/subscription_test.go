@@ -995,6 +995,56 @@ func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
 		}
 	})
 
+	Convey("A subscribed job receives suspended and resumed state changes", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		job := &Job{
+			Cmd:          "echo subscription suspend resume",
+			Cwd:          testCwd,
+			ReqGroup:     subscriptionA1ReqGroup,
+			Requirements: standardReqs,
+			RepGroup:     subscriptionA1ReqGroup,
+		}
+		ids, err := jq.AddAndReturnIDs([]*Job{job}, envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		changed, err := jq.Suspend([]*JobEssence{job.ToEssense()})
+		So(err, ShouldBeNil)
+		So(changed, ShouldEqual, 1)
+
+		update := receiveSubscriptionUpdate(sub, time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateStateChange)
+		So(update.Key, ShouldEqual, ids[0])
+		So(update.State, ShouldEqual, JobStateSuspended)
+
+		changed, err = jq.Resume([]*JobEssence{job.ToEssense()})
+		So(err, ShouldBeNil)
+		So(changed, ShouldEqual, 1)
+
+		update = receiveSubscriptionUpdate(sub, time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateStateChange)
+		So(update.Key, ShouldEqual, ids[0])
+		So(update.State, ShouldEqual, JobStateReady)
+	})
+
 	Convey("Active subscriptions do not add any new server listening ports", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)

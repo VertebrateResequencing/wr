@@ -19,7 +19,7 @@ subscriptions, and `Job.ToStatus` through `jobqueue/client.go`,
 `jobqueue/server_subscription.go`, covering all 6 acceptance tests from D2.
 Depends on phase 2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Batch 1 (parallel, after item 4.1 is reviewed)
@@ -32,7 +32,7 @@ Add `--suspended`, count and summary output, plain/details/table status text,
 and filter validation in `cmd/status.go` and `cmd/status_table.go`, covering
 all 10 acceptance tests from D1. Depends on item 4.1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 #### Item 4.3: D3 - Show Suspended In Web And LSF Views [parallel with D1]
@@ -43,7 +43,7 @@ Update web status websocket counts, static status filters, details styling and
 text, JavaScript/CSS assets, and `cmd/lsf.go` mapping of suspended jobs to
 `PEND`, covering all 5 acceptance tests from D3. Depends on item 4.1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 For parallel batch items, use separate subagents per item.

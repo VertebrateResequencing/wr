@@ -41,18 +41,18 @@ import (
 )
 
 const (
-	shortTimeFormat = "06/1/2-15:04:05"
-	allRepGrps      = "all above"
+	shortTimeFormat        = "06/1/2-15:04:05"
+	allRepGrps             = "all above"
+	statusStateFilterFlags = "--buried/--running/--pending/--dependent/--missing_deps/--suspended"
 )
 
 var (
-	errStatusStateFiltersFile = errors.New("state filters (--buried/--running/--pending/--dependent) are only " +
+	errStatusStateFiltersFile = errors.New("state filters (" + statusStateFilterFlags + ") are only " +
 		"supported in default or report group (-i) mode; remove them when using -f")
-	errStatusStateFiltersCmdLine = errors.New("state filters (--buried/--running/--pending/--dependent) are only " +
+	errStatusStateFiltersCmdLine = errors.New("state filters (" + statusStateFilterFlags + ") are only " +
 		"supported in default or report group (-i) mode; remove them when using -l")
-	errStatusStateFiltersInternal = errors.New("state filters (--buried/--running/--pending/--dependent) cannot " +
+	errStatusStateFiltersInternal = errors.New("state filters (" + statusStateFilterFlags + ") cannot " +
 		"be used with --internal because internal job lookups cannot be state-filtered")
-	statusExit = os.Exit
 )
 
 // statusExit exists so tests can exercise output modes that otherwise exit the
@@ -71,6 +71,7 @@ var (
 	showPending     bool
 	showDependent   bool
 	showMissingDeps bool
+	showSuspended   bool
 	showEnv         bool
 	outputFormat    string
 	statusLimit     int
@@ -121,7 +122,7 @@ name to just the first letter, eg. -o c):
 	STDERR are not shown.
   "plain" outputs 2 tab separated columns: internal job id and current state of
 	that job. Possible states are: delayed, ready, reserved, running, lost,
-	buried, complete. If any jobs are buried, exits non-0 as well.
+	buried, suspended, complete. If any jobs are buried, exits non-0 as well.
   "table" outputs aligned rows for the grouped jobs returned by the status
     query. As with details/json, --limit controls how many matching jobs can be
     shown from each status group. Columns can be customised with WR_STATUS_FORMAT
@@ -199,7 +200,7 @@ redirect (eg. "mycmd > stdout.txt").
 				break
 			}
 
-			var d, re, b, ru, l, c, dep int
+			var d, re, b, ru, l, c, dep, sus int
 			for _, job := range jobs {
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -216,6 +217,8 @@ redirect (eg. "mycmd > stdout.txt").
 					c += 1 + job.Similar
 				case jobqueue.JobStateDependent:
 					dep += 1 + job.Similar
+				case jobqueue.JobStateSuspended:
+					sus += 1 + job.Similar
 				}
 			}
 
@@ -224,6 +227,7 @@ redirect (eg. "mycmd > stdout.txt").
 				jobqueue.JobStateRunning:   ru,
 				jobqueue.JobStateReady:     re,
 				jobqueue.JobStateDependent: dep,
+				jobqueue.JobStateSuspended: sus,
 				jobqueue.JobStateLost:      l,
 				jobqueue.JobStateDelayed:   d,
 				jobqueue.JobStateBuried:    b,
@@ -356,7 +360,19 @@ redirect (eg. "mycmd > stdout.txt").
 					}
 				}
 
-				fmt.Printf("%s : complete=%d running=%d ready=%d dependent=%d lost=%d delayed=%d buried=%d%s%s\n", rg, counts[rg][jobqueue.JobStateComplete], counts[rg][jobqueue.JobStateRunning], counts[rg][jobqueue.JobStateReady], counts[rg][jobqueue.JobStateDependent], counts[rg][jobqueue.JobStateLost], counts[rg][jobqueue.JobStateDelayed], counts[rg][jobqueue.JobStateBuried], usage, dead)
+				fmt.Printf("%s : complete=%d running=%d ready=%d dependent=%d suspended=%d "+
+					"lost=%d delayed=%d buried=%d%s%s\n",
+					rg,
+					counts[rg][jobqueue.JobStateComplete],
+					counts[rg][jobqueue.JobStateRunning],
+					counts[rg][jobqueue.JobStateReady],
+					counts[rg][jobqueue.JobStateDependent],
+					counts[rg][jobqueue.JobStateSuspended],
+					counts[rg][jobqueue.JobStateLost],
+					counts[rg][jobqueue.JobStateDelayed],
+					counts[rg][jobqueue.JobStateBuried],
+					usage,
+					dead)
 			}
 		case statusOutputFormatDetails, statusOutputFormatDetailsAlias:
 			// print out status information for each job
@@ -440,6 +456,8 @@ redirect (eg. "mycmd > stdout.txt").
 					} else {
 						fmt.Println("Status: dependent on other jobs")
 					}
+				case jobqueue.JobStateSuspended:
+					fmt.Println("Status: suspended - use `wr resume` to make it schedulable again")
 				case jobqueue.JobStateBuried:
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
@@ -574,6 +592,8 @@ func init() {
 		"in default or -i mode only, only show the status of dependent commands")
 	statusCmd.Flags().BoolVar(&showMissingDeps, "missing_deps", false,
 		"in default or -i mode only, only show jobs waiting on dep-groups not yet seen")
+	statusCmd.Flags().BoolVar(&showSuspended, "suspended", false,
+		"in default or -i mode only, only show the status of suspended commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
 		"['counts','summary','details','plain','table','json'] output format")
@@ -617,6 +637,10 @@ func statusStateFilters() []jobqueue.JobState {
 
 	if showDependent {
 		states = append(states, jobqueue.JobStateDependent)
+	}
+
+	if showSuspended {
+		states = append(states, jobqueue.JobStateSuspended)
 	}
 
 	return states
@@ -684,11 +708,13 @@ func getFastStatusSummaries(jq *jobqueue.Client, cmdStates []jobqueue.JobState, 
 }
 
 func printStatusCounts(counts map[jobqueue.JobState]int) {
-	fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n",
+	fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nsuspended: %d\n"+
+		"lost contact: %d\ndelayed: %d\nburied: %d\n",
 		counts[jobqueue.JobStateComplete],
 		counts[jobqueue.JobStateRunning]+counts[jobqueue.JobStateReserved],
 		counts[jobqueue.JobStateReady],
 		counts[jobqueue.JobStateDependent],
+		counts[jobqueue.JobStateSuspended],
 		counts[jobqueue.JobStateLost],
 		counts[jobqueue.JobStateDelayed],
 		counts[jobqueue.JobStateBuried])
@@ -732,12 +758,13 @@ func printRepGroupStatusSummary(rg string, summary *jobqueue.RepGroupStatus) {
 	usage := statusSummaryUsage(summary)
 	dead := statusSummaryBuried(summary)
 
-	fmt.Printf("%s : complete=%d running=%d ready=%d dependent=%d lost=%d delayed=%d buried=%d%s%s\n",
+	fmt.Printf("%s : complete=%d running=%d ready=%d dependent=%d suspended=%d lost=%d delayed=%d buried=%d%s%s\n",
 		rg,
 		counts[jobqueue.JobStateComplete],
 		counts[jobqueue.JobStateRunning]+counts[jobqueue.JobStateReserved],
 		counts[jobqueue.JobStateReady],
 		counts[jobqueue.JobStateDependent],
+		counts[jobqueue.JobStateSuspended],
 		counts[jobqueue.JobStateLost],
 		counts[jobqueue.JobStateDelayed],
 		counts[jobqueue.JobStateBuried],

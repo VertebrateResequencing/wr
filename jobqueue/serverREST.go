@@ -1345,7 +1345,7 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 // request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are search, std, env and waiting_deps (boolean
 // flags enabled by "true"), limit (a number) and state (one of
-// delayed|ready|reserved|running|lost|buried|dependent|complete|deletable),
+// delayed|ready|reserved|running|lost|buried|dependent|suspended|complete|deletable),
 // where deletable == !(running|complete). Returns the Jobs, a http.Status*
 // value and error.
 func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
@@ -1396,6 +1396,8 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			state = JobStateBuried
 		case "dependent":
 			state = JobStateDependent
+		case "suspended":
+			state = JobStateSuspended
 		case "complete":
 			state = JobStateComplete
 		case "deletable":
