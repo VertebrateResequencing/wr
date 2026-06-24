@@ -58,19 +58,15 @@ const (
 	statusTestLiveDepGroup    = "live"
 )
 
-//nolint:gosmopolitan // This test fixes time.Local to assert local CLI rendering.
+//nolint:gosmopolitan // This test asserts local CLI rendering.
 func TestStatusAlertTimeFormatting(t *testing.T) {
 	Convey("wr status renders scheduler alert Unix timestamps in local time", t, func() {
-		oldLocal := time.Local
-
-		time.Local = time.FixedZone("status-alert-test", 90*60)
-		defer func() {
-			time.Local = oldLocal
-		}()
-
 		unixSeconds := time.Date(2024, 3, 9, 12, 0, 0, 0, time.UTC).Unix()
 
-		So(formatStatusAlertTime(unixSeconds), ShouldEqual, "24/3/9-13:30:00")
+		So(formatStatusAlertTime(unixSeconds), ShouldEqual,
+			time.Unix(unixSeconds, 0).Local().Format(shortTimeFormat))
+		So(formatStatusAlertTimeInLocation(unixSeconds, time.FixedZone("status-alert-test", 90*60)),
+			ShouldEqual, "24/3/9-13:30:00")
 	})
 }
 

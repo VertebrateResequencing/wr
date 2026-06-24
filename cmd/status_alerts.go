@@ -118,6 +118,10 @@ func statusIssueAlertSuffix(issue *jobqueue.SchedulerIssue) string {
 	}
 }
 
+func formatStatusAlertTimeInLocation(unixSeconds int64, loc *time.Location) string {
+	return time.Unix(unixSeconds, 0).In(loc).Format(shortTimeFormat)
+}
+
 func writeStatusBadServerAlerts(w io.Writer, badServers []*jobqueue.BadServer) {
 	for _, server := range sortedStatusBadServers(badServers) {
 		if server == nil || !server.IsBad {
@@ -173,5 +177,5 @@ func statusBadServerAlertState(server *jobqueue.BadServer) string {
 
 //nolint:gosmopolitan // wr status intentionally renders alert times in the user's local timezone.
 func formatStatusAlertTime(unixSeconds int64) string {
-	return time.Unix(unixSeconds, 0).Local().Format(shortTimeFormat)
+	return formatStatusAlertTimeInLocation(unixSeconds, time.Local)
 }
