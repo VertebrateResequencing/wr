@@ -890,6 +890,26 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				kicked := s.kickJobs(ctx, jobs)
 				sr = &serverResponse{Existed: kicked}
 			}
+		case "jsuspend":
+			// suspend eligible jobs; client doesn't have to be the Reserve()
+			// owner and ineligible or missing keys are ignored.
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
+			} else {
+				suspended := s.suspendJobs(ctx, cr.Keys)
+				clog.Debug(ctx, "suspended jobs", "count", suspended)
+				sr = &serverResponse{Existed: suspended}
+			}
+		case "jresume":
+			// resume suspended jobs; client doesn't have to be the Reserve()
+			// owner and ineligible or missing keys are ignored.
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
+			} else {
+				resumed := s.resumeJobs(ctx, cr.Keys)
+				clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
+				sr = &serverResponse{Existed: resumed}
+			}
 		case "jdel":
 			// remove the jobs from the bury/delay/dependent/ready queue and the
 			// live bucket

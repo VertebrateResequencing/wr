@@ -1042,6 +1042,114 @@ func (s *Server) rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, key 
 	s.rememberRepGroupSubscriptionKey(newRepGroup, key)
 }
 
+// suspendJobs suspends matching eligible jobs and returns the number affected.
+func (s *Server) suspendJobs(ctx context.Context, keys []string) (suspended int) {
+	readyCallbackNeeded := false
+
+	for _, key := range keys {
+		changed, wasReady := s.suspendJob(ctx, key)
+		if !changed {
+			continue
+		}
+
+		suspended++
+		readyCallbackNeeded = readyCallbackNeeded || wasReady
+	}
+
+	if readyCallbackNeeded {
+		s.triggerReadyAddedCallback(ctx)
+	}
+
+	return suspended
+}
+
+func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
+	item, err := s.q.Get(key)
+	if err != nil || item == nil {
+		return false, false
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return false, false
+	}
+
+	wasReady := item.Stats().State == queue.ItemStateReady
+
+	if err = s.q.Suspend(ctx, key); err != nil {
+		return false, false
+	}
+
+	job.Lock()
+	job.State = JobStateSuspended
+	job.Unlock()
+
+	s.db.updateJobAfterChange(ctx, job)
+
+	return true, wasReady
+}
+
+// resumeJobs resumes matching suspended jobs and returns the number affected.
+func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
+	for _, key := range keys {
+		if s.resumeJob(ctx, key) {
+			resumed++
+		}
+	}
+
+	return resumed
+}
+
+func (s *Server) resumeJob(ctx context.Context, key string) bool {
+	item, job, ok := s.suspendedItem(key)
+	if !ok {
+		return false
+	}
+
+	if !s.resumeQueueItem(ctx, key, len(item.UnresolvedDependencies()) == 0) {
+		return false
+	}
+
+	job.Lock()
+	job.State = s.itemStateToJobState(item.Stats().State, job.Lost)
+	job.Unlock()
+
+	s.db.updateJobAfterChange(ctx, job)
+
+	return true
+}
+
+func (s *Server) suspendedItem(key string) (*queue.Item, *Job, bool) {
+	item, err := s.q.Get(key)
+	if err != nil || item == nil || item.Stats().State != queue.ItemStateSuspended {
+		return nil, nil, false
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return nil, nil, false
+	}
+
+	return item, job, true
+}
+
+func (s *Server) resumeQueueItem(ctx context.Context, key string, readyCallbackExpected bool) bool {
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
+	err := s.q.Resume(ctx, key)
+	if err != nil {
+		if readyCallbackExpected {
+			s.clearRACPending()
+		}
+
+		return false
+	}
+
+	return true
+}
+
 func failureMayUpdateJobRequirements(job *Job) bool {
 	if job == nil {
 		return false
@@ -1232,7 +1340,8 @@ func increaseJobRAMAfterHighPeak(job *Job) {
 func subscriptionUpdateState(_, to JobState) (JobState, bool) {
 	switch to {
 	case JobStateDelayed, JobStateDependent, JobStateReady, JobStateReserved,
-		JobStateRunning, JobStateComplete, JobStateBuried, JobStateDeleted:
+		JobStateRunning, JobStateComplete, JobStateBuried, JobStateSuspended,
+		JobStateDeleted:
 		return to, true
 	default:
 	}
@@ -1319,6 +1428,10 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobRetryCheck, bool) {
 
 func itemDefTriggersReadyAdded(itemdef *queue.ItemDef) bool {
 	if itemdef.StartQueue == queue.SubQueueRun || itemdef.StartQueue == queue.SubQueueBury {
+		return false
+	}
+
+	if itemdef.StartQueue == queue.SubQueueSuspended {
 		return false
 	}
 
@@ -1784,6 +1897,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 				s.recoveredRunningJobs[job.Key()] = true
 			case JobStateBuried:
 				itemdef.StartQueue = queue.SubQueueBury
+			case JobStateSuspended:
+				itemdef.StartQueue = queue.SubQueueSuspended
 			}
 
 			itemdefs = append(itemdefs, itemdef)

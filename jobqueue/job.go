@@ -78,6 +78,7 @@ const (
 	JobStateLost      JobState = "lost"
 	JobStateBuried    JobState = "buried"
 	JobStateDependent JobState = "dependent"
+	JobStateSuspended JobState = "suspended"
 	JobStateComplete  JobState = "complete"
 	JobStateDeleted   JobState = "deleted"
 	JobStateDeletable JobState = "deletable"
@@ -92,6 +93,7 @@ var subqueueToJobState = map[queue.SubQueue]JobState{
 	queue.SubQueueRun:       JobStateRunning,
 	queue.SubQueueBury:      JobStateBuried,
 	queue.SubQueueDependent: JobStateDependent,
+	queue.SubQueueSuspended: JobStateSuspended,
 	queue.SubQueueRemoved:   JobStateComplete,
 }
 
@@ -102,6 +104,7 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateRun:       JobStateReserved,
 	queue.ItemStateBury:      JobStateBuried,
 	queue.ItemStateDependent: JobStateDependent,
+	queue.ItemStateSuspended: JobStateSuspended,
 	queue.ItemStateRemoved:   JobStateComplete,
 }
 

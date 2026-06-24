@@ -287,6 +287,36 @@ func TestClientTouchSendsLiveEndState(t *testing.T) {
 	})
 }
 
+func TestClientSuspendResumeRequests(t *testing.T) {
+	Convey("Suspend and Resume send typed methods with JobEssence keys", t, func() {
+		jes := []*JobEssence{
+			{Cmd: "echo suspend by essence"},
+			{JobKey: "already-known-key"},
+		}
+		expectedKeys := []string{jes[0].Key(), jes[1].Key()}
+
+		client, sock := newCaptureClient()
+		suspended, err := client.Suspend(jes)
+		So(err, ShouldBeNil)
+		So(suspended, ShouldEqual, 0)
+
+		req := sock.request()
+		So(req.Method, ShouldEqual, "jsuspend")
+		So(req.Keys, ShouldResemble, expectedKeys)
+		So(req.Job, ShouldBeNil)
+
+		client, sock = newCaptureClient()
+		resumed, err := client.Resume(jes)
+		So(err, ShouldBeNil)
+		So(resumed, ShouldEqual, 0)
+
+		req = sock.request()
+		So(req.Method, ShouldEqual, "jresume")
+		So(req.Keys, ShouldResemble, expectedKeys)
+		So(req.Job, ShouldBeNil)
+	})
+}
+
 func TestServerRejectsKeyOnlyStartedRequest(t *testing.T) {
 	if runnermode || servermode {
 		return
