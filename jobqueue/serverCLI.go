@@ -397,7 +397,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					qerr = err.Error()
 				} else if srerr == "" {
 					// create the jobs server-side
-					added, dups, alreadyComplete, thisSrerr, err := s.createJobs(ctx, cr.Jobs, envkey, cr.IgnoreComplete)
+					added, dups, alreadyComplete, warnings, thisSrerr, err := s.createJobs(
+						ctx,
+						cr.Jobs,
+						envkey,
+						cr.IgnoreComplete,
+					)
 					if err != nil {
 						srerr = thisSrerr
 						qerr = err.Error()
@@ -409,9 +414,15 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							for _, job := range jobs {
 								ids = append(ids, job.Key())
 							}
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddedIDs: ids}
+
+							sr = &serverResponse{
+								Added:       added,
+								Existed:     dups + alreadyComplete,
+								AddedIDs:    ids,
+								AddWarnings: warnings,
+							}
 						} else {
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddWarnings: warnings}
 						}
 					}
 				}

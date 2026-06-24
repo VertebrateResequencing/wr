@@ -19,7 +19,7 @@ plumbing, and `wr add` warning output in `cmd/add.go`. Preserve existing
 public add method signatures and print `wr add --sync` warnings immediately
 after IDs are returned. Cover all 5 acceptance tests from B1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 2.2: B2 - Suppress warnings for seen or same-batch groups
@@ -31,5 +31,5 @@ real never-seen waits, with no warnings for completed seen groups or same-batch
 carriers. De-duplicate and sort returned warning group names. Cover all 2
 acceptance tests from B2.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed

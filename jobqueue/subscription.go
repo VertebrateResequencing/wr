@@ -743,15 +743,34 @@ func distinctKeysInOrder(keys []string) []string {
 // ctx cancellation returns the terminal jobs gathered so far plus an error
 // naming the unfinished keys.
 func (c *Client) AddAndWait(ctx context.Context, jobs []*Job, envVars []string, ignoreComplete bool) ([]*Job, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	jobsDone, _, err := c.AddAndWaitWithWarnings(ctx, jobs, envVars, ignoreComplete)
+
+	return jobsDone, err
+}
+
+// AddAndWaitWithWarnings is like AddAndWait, and also returns non-fatal
+// warnings from the add step.
+func (c *Client) AddAndWaitWithWarnings(
+	ctx context.Context,
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (jobsDone []*Job, warnings AddWarnings, err error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, AddWarnings{}, ctxErr
 	}
 
-	keys, err := c.AddAndReturnIDs(jobs, envVars, ignoreComplete)
+	keys, warnings, err := c.AddAndReturnIDsWithWarnings(jobs, envVars, ignoreComplete)
 	if err != nil {
-		return nil, err
+		return nil, AddWarnings{}, err
 	}
 
+	jobsDone, err = c.waitForAddedJobKeys(ctx, keys)
+
+	return jobsDone, warnings, err
+}
+
+func (c *Client) waitForAddedJobKeys(ctx context.Context, keys []string) ([]*Job, error) {
 	keys = distinctKeysInOrder(keys)
 	if len(keys) == 0 {
 		return []*Job{}, nil

@@ -34,6 +34,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -57,6 +58,8 @@ const (
 	overrideHigher = 1
 	overrideAlways = 2
 )
+
+var errSynchronousSubscriptionClosed = errors.New("subscription closed before synchronous job completed")
 
 // options for this cmd
 var (
@@ -504,10 +507,13 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
 		if simpleOutput {
-			ids, err := jq.AddAndReturnIDs(jobs, envVars, !cmdReRun)
+			ids, warnings, err := jq.AddAndReturnIDsWithWarnings(jobs, envVars, !cmdReRun)
 			if err != nil {
 				die("%s", err)
 			}
+
+			printAddWarnings(warnings)
+
 			if len(ids) == 0 {
 				os.Exit(1)
 			}
@@ -518,15 +524,22 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 		} else if syncMode {
 			synchronousAdd(jq, jobs[0], envVars, !cmdReRun)
 		} else {
-			inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
+			inserts, dups, warnings, err := jq.AddWithWarnings(jobs, envVars, !cmdReRun)
 			if err != nil {
 				die("%s", err)
 			}
 
+			printAddWarnings(warnings)
+
 			if defaultedRepG {
-				info("Added %d new commands (%d were duplicates) to the queue using default identifier '%s'", inserts, dups, cmdRepGroup)
+				fmt.Printf(
+					"Added %d new commands (%d were duplicates) to the queue using default identifier '%s'\n",
+					inserts,
+					dups,
+					cmdRepGroup,
+				)
 			} else {
-				info("Added %d new commands (%d were duplicates) to the queue", inserts, dups)
+				fmt.Printf("Added %d new commands (%d were duplicates) to the queue\n", inserts, dups)
 			}
 		}
 	},
@@ -612,8 +625,115 @@ func addEnvVars(isLocal bool, remoteSameAsLocal bool) []string {
 	return nil
 }
 
+type jobUpdateSubscription interface {
+	Updates() <-chan *jobqueue.JobUpdate
+	Unsubscribe()
+}
+
+type synchronousAddClient struct {
+	*jobqueue.Client
+}
+
+func (c synchronousAddClient) SubscribeToJobKeys(ctx context.Context, keys []string) (jobUpdateSubscription, error) {
+	return c.Client.SubscribeToJobKeys(ctx, keys)
+}
+
+func waitForSynchronousJob(ctx context.Context, jq synchronousAddWaiter, key string) (*jobqueue.Job, error) {
+	sub, err := jq.SubscribeToJobKeys(ctx, []string{key})
+	if err != nil {
+		return nil, err
+	}
+	defer sub.Unsubscribe()
+
+	for {
+		update, err := receiveSynchronousJobUpdate(ctx, sub.Updates())
+		if err != nil {
+			return nil, err
+		}
+
+		if !isSynchronousTerminalUpdate(update, key) {
+			continue
+		}
+
+		return jq.GetByEssence(&jobqueue.JobEssence{JobKey: key}, true, false)
+	}
+}
+
+func receiveSynchronousJobUpdate(ctx context.Context, updates <-chan *jobqueue.JobUpdate) (*jobqueue.JobUpdate, error) {
+	select {
+	case update, ok := <-updates:
+		if !ok {
+			return nil, errSynchronousSubscriptionClosed
+		}
+
+		return update, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func isSynchronousTerminalUpdate(update *jobqueue.JobUpdate, key string) bool {
+	if update == nil || update.Kind != jobqueue.JobUpdateTerminal || update.Key != key {
+		return false
+	}
+
+	return update.State == jobqueue.JobStateComplete || update.State == jobqueue.JobStateBuried
+}
+
+func addAndWaitSynchronousJob(
+	jq synchronousAddWaiter,
+	job *jobqueue.Job,
+	envVars []string,
+	ignoreComplete bool,
+) (*jobqueue.Job, bool) {
+	ctx := context.Background()
+
+	ids, warnings, err := jq.AddAndReturnIDsWithWarnings([]*jobqueue.Job{job}, envVars, ignoreComplete)
+	if err != nil {
+		die("%s", err)
+	}
+
+	printAddWarnings(warnings)
+
+	if len(ids) == 0 {
+		return nil, false
+	}
+
+	job, err = waitForSynchronousJob(ctx, jq, ids[0])
+	if err != nil {
+		die("%s", err)
+	}
+
+	return job, true
+}
+
+func printAddWarnings(warnings jobqueue.AddWarnings) {
+	for _, group := range warnings.NeverSeenDepGroups {
+		fmt.Fprintf(
+			os.Stderr,
+			"dependency group %q has not been seen; dependent job(s) will wait until it appears\n",
+			group,
+		)
+	}
+}
+
+func printSynchronousJobOutput(job *jobqueue.Job) {
+	stdout, err := job.StdOut()
+	if err == nil && stdout != "" {
+		fmt.Println(stdout)
+	}
+
+	stderr, err := job.StdErr()
+	if err == nil && stderr != "" {
+		fmt.Fprintln(os.Stderr, stderr)
+	}
+}
+
 type synchronousAddWaiter interface {
-	AddAndWait(ctx context.Context, jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) ([]*jobqueue.Job, error)
+	AddAndReturnIDsWithWarnings(jobs []*jobqueue.Job, envVars []string,
+		ignoreComplete bool) ([]string, jobqueue.AddWarnings, error)
+	SubscribeToJobKeys(ctx context.Context, keys []string) (jobUpdateSubscription, error)
+	GetByEssence(essence *jobqueue.JobEssence, getStd bool, getEnv bool) (*jobqueue.Job, error)
 }
 
 // convert cmd,cwd columns in to Dependency.
@@ -960,35 +1080,20 @@ func checkForRelativePathsInNonCwdMatters(
 
 // synchronousAdd adds one job and waits for it to complete, then outputs its
 // stdout&err and exits with its exit code.
-func synchronousAdd(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string, ignoreComplete bool) {
-	synchronousAddWithExit(jq, job, envVars, ignoreComplete, os.Exit)
+func synchronousAdd(jq *jobqueue.Client, job *jobqueue.Job, envVars []string, ignoreComplete bool) {
+	synchronousAddWithExit(synchronousAddClient{Client: jq}, job, envVars, ignoreComplete, os.Exit)
 }
 
 func synchronousAddWithExit(jq synchronousAddWaiter, job *jobqueue.Job, envVars []string, ignoreComplete bool,
 	exit func(int)) {
-	jobs, err := jq.AddAndWait(context.Background(), []*jobqueue.Job{job}, envVars, ignoreComplete)
-	if err != nil {
-		die("%s", err)
-	}
-
-	if len(jobs) == 0 {
+	job, added := addAndWaitSynchronousJob(jq, job, envVars, ignoreComplete)
+	if !added {
 		exit(1)
 
 		return
 	}
 
-	job = jobs[0]
-
-	stdout, err := job.StdOut()
-	if err == nil && stdout != "" {
-		fmt.Println(stdout)
-	}
-
-	stderr, err := job.StdErr()
-	if err == nil && stderr != "" {
-		fmt.Fprintln(os.Stderr, stderr)
-	}
-
+	printSynchronousJobOutput(job)
 	exit(job.Exitcode)
 }
 

@@ -271,6 +271,7 @@ type serverResponse struct {
 	Added           int
 	Existed         int
 	AddedIDs        []string
+	AddWarnings     AddWarnings
 	Modified        map[string]string
 	KillCalled      bool
 	Job             *Job
@@ -2745,13 +2746,22 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 // createJobs creates new jobs, adding them to the database and the in-memory
 // queue. It returns 2 errors; the first is one of our Err constant strings,
 // the second is the actual error with more details.
-func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
+//
+//nolint:gocognit,gocyclo,cyclop,funlen // Legacy coordinator for persistence, dependency, and queue updates.
+func (s *Server) createJobs(
+	ctx context.Context,
+	inputJobs []*Job,
+	envkey string,
+	ignoreComplete bool,
+) (added int, dups int, alreadyComplete int, warnings AddWarnings, srerr string, qerr error) {
 	s.racmutex.RLock()
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
 
 	// create itemdefs for the jobs
 	limitGroups := make(map[string]*limiter.GroupData)
+
+	inputJobKeys := make(map[string]bool, len(inputJobs))
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -2767,12 +2777,14 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 			s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 		}
 
+		inputJobKeys[job.Key()] = true
+
 		job.Unlock()
 	}
 
 	err := s.storeLimitGroups(limitGroups)
 	if err != nil {
-		return added, dups, alreadyComplete, ErrDBError, err
+		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -2796,6 +2808,8 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 		// previously Archive()d jobs that were resurrected because of one of
 		// their DepGroup dependencies being in cr.Jobs
 		var itemdefs []*queue.ItemDef
+
+		warningDepGroups := make(map[string]bool)
 		for _, job := range jobsToQueue {
 			deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
@@ -2806,12 +2820,18 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 
 			job.setWaitingForDepGroups(waitingForDepGroups)
 
+			if inputJobKeys[job.Key()] {
+				collectStrings(waitingForDepGroups, warningDepGroups)
+			}
+
 			itemdefs = append(itemdefs, &queue.ItemDef{
 				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
 				Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
 				Dependencies: deps,
 			})
 		}
+
+		warnings.NeverSeenDepGroups = sortedStringSet(warningDepGroups)
 
 		srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
 
@@ -2831,7 +2851,8 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 			}
 		}
 	}
-	return added, dups, alreadyComplete, srerr, qerr
+
+	return added, dups, alreadyComplete, warnings, srerr, qerr
 }
 
 // handleUserSpecifiedJobLimitGroups takes limit groups on a job that may have

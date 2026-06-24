@@ -1571,7 +1571,8 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 		return nil, http.StatusInternalServerError, err
 	}
 
-	_, _, _, _, err = s.createJobs(ctx, inputJobs, envkey, !rerun)
+	//nolint:dogsled // REST add only needs to know whether the shared add path failed.
+	_, _, _, _, _, err = s.createJobs(ctx, inputJobs, envkey, !rerun)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}

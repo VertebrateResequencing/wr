@@ -2700,6 +2700,138 @@ func TestNeverSeenDepGroupsWait(t *testing.T) {
 	})
 }
 
+func TestAddWarnings(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	start := func() (internal.Config, *Server, *Client, *jqs.Requirements) {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		return config, server, jq, standardReqs
+	}
+
+	dependentJob := func(repGroup string, reqs *jqs.Requirements) *Job {
+		return &Job{
+			Cmd:          "echo " + repGroup,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			Retries:      uint8(0),
+			RepGroup:     repGroup,
+			Dependencies: Dependencies{NewDepGroupDependency(futureDepGroup)},
+		}
+	}
+
+	Convey("AddWithWarnings returns never-seen dependency groups", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		added, existed, warnings, err := jq.AddWithWarnings(
+			[]*Job{dependentJob("b1-future-dependent", standardReqs)},
+			envVars,
+			true,
+		)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+		So(warnings.NeverSeenDepGroups, ShouldResemble, []string{futureDepGroup})
+	})
+
+	Convey("AddWithWarnings de-duplicates never-seen dependency groups", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		first := dependentJob("b1-future-dependent-a", standardReqs)
+		second := dependentJob("b1-future-dependent-b", standardReqs)
+
+		_, _, warnings, err := jq.AddWithWarnings([]*Job{first, second}, envVars, true)
+		So(err, ShouldBeNil)
+		So(warnings.NeverSeenDepGroups, ShouldResemble, []string{futureDepGroup})
+	})
+
+	Convey("AddWithWarnings stays quiet for a completed seen dep group", t, func() {
+		config, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		carrier := &Job{
+			Cmd:          "echo b2 done carrier",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "b2-done-carrier",
+			DepGroups:    []string{"done"},
+		}
+
+		added, existed, warnings, err := jq.AddWithWarnings([]*Job{carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+		So(warnings.NeverSeenDepGroups, ShouldBeEmpty)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+
+		dependent := &Job{
+			Cmd:          "echo b2 done dependent",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "b2-done-dependent",
+			Dependencies: Dependencies{NewDepGroupDependency("done")},
+		}
+
+		_, _, warnings, err = jq.AddWithWarnings([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(warnings.NeverSeenDepGroups, ShouldBeEmpty)
+	})
+
+	Convey("AddWithWarnings stays quiet for same-batch dep-group carriers", t, func() {
+		_, server, jq, standardReqs := start()
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		dependent := dependentJob("b2-same-batch-dependent", standardReqs)
+		dependent.Dependencies = Dependencies{NewDepGroupDependency("batch")}
+
+		carrier := &Job{
+			Cmd:          "echo b2 same batch carrier",
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: standardReqs,
+			Retries:      uint8(0),
+			RepGroup:     "b2-same-batch-carrier",
+			DepGroups:    []string{"batch"},
+		}
+
+		added, existed, warnings, err := jq.AddWithWarnings([]*Job{dependent, carrier}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 2)
+		So(existed, ShouldEqual, 0)
+		So(warnings.NeverSeenDepGroups, ShouldBeEmpty)
+	})
+}
+
 func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
 	if runnermode || servermode {
 		return
