@@ -1971,11 +1971,11 @@ func (s *Server) storeModifiedJobs(ctx context.Context, modified map[string]stri
 		return err
 	}
 
+	s.storeModifiedLimitGroupsIfNeeded(ctx, jobs, modifier)
+
 	if err := s.db.modifyLiveJobs(ctx, modifiedOldKeys(modified, jobs), jobs); err != nil {
 		return err
 	}
-
-	s.storeModifiedLimitGroupsIfNeeded(ctx, jobs, modifier)
 
 	if modifier.DependenciesSet || modifier.PrioritySet {
 		return s.updateModifiedQueueJobs(ctx, jobs)

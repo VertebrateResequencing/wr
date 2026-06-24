@@ -2832,9 +2832,12 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 // latest limit on groups, if any were specified. You should hold the lock on
 // the Job before calling this.
 func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[string]*limiter.GroupData) {
+	displayByName := make(map[string]string, len(job.LimitGroups))
+
 	// remove limit suffixes and remember the last limit per group specified
 	for i, group := range job.LimitGroups {
 		name, limit := s.splitSuffixedLimitGroup(group)
+		displayByName[name] = group
 
 		if limit != nil {
 			job.LimitGroups[i] = name
@@ -2846,6 +2849,11 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 	// them in sorted order, with no duplicates
 	if len(job.LimitGroups) > 1 {
 		job.LimitGroups = internal.DedupSortStrings(job.LimitGroups)
+	}
+
+	job.LimitGroupsForDisplay = make([]string, 0, len(job.LimitGroups))
+	for _, group := range job.LimitGroups {
+		job.LimitGroupsForDisplay = append(job.LimitGroupsForDisplay, displayByName[group])
 	}
 }
 

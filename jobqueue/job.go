@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -177,6 +178,10 @@ type Job struct {
 	// other jobs as the limit are currently running, this job will not start
 	// running. It's a way of not running too many of a type of job at once.
 	LimitGroups []string
+
+	// LimitGroupsForDisplay preserves any user-supplied limit suffixes for
+	// status output after LimitGroups has been normalised for scheduling.
+	LimitGroupsForDisplay []string
 
 	// Modules are the names of environment modules that should be loaded before
 	// running Cmd.
@@ -946,11 +951,16 @@ func (j *Job) ToStatus() (JStatus, error) {
 		ot = append(ot, key+":"+val)
 	}
 
+	limitGroups := j.LimitGroups
+	if len(j.LimitGroupsForDisplay) > 0 {
+		limitGroups = j.LimitGroupsForDisplay
+	}
+
 	js := JStatus{
 		Key:                 j.Key(),
 		RepGroup:            j.RepGroup,
 		ReqGroup:            j.ReqGroup,
-		LimitGroups:         j.LimitGroups,
+		LimitGroups:         limitGroups,
 		DepGroups:           j.DepGroups,
 		Dependencies:        j.Dependencies.Stringify(),
 		Modules:             j.Modules,
@@ -1407,7 +1417,8 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 			job.EnvOverride = j.EnvOverride
 		}
 		if j.LimitGroupsSet {
-			job.LimitGroups = j.LimitGroups
+			job.LimitGroups = slices.Clone(j.LimitGroups)
+			job.LimitGroupsForDisplay = nil
 		}
 
 		if j.ModulesSet {

@@ -1128,6 +1128,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		ReqGroup:              sjob.ReqGroup,
 		Group:                 sjob.Group,
 		LimitGroups:           sjob.LimitGroups,
+		LimitGroupsForDisplay: sjob.LimitGroupsForDisplay,
 		Modules:               sjob.Modules,
 		DepGroups:             sjob.DepGroups,
 		Cmd:                   sjob.Cmd,

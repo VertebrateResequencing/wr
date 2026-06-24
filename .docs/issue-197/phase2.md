@@ -21,7 +21,7 @@ stored status, old-key disappearance, and response shape. Cover all 5
 acceptance tests from A1. Depends on phase 1's status fields and validation
 helpers.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
 
 ### Item 2.2: A3 - Modify multiple jobs without changing identity fields
@@ -35,5 +35,5 @@ existing GET path semantics for ids, and return stable fresh `JStatus` rows.
 Add REST integration coverage in `jobqueue/rest_test.go`. Cover all 2
 acceptance tests from A3. Depends on item 2.1.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
