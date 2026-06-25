@@ -21,7 +21,7 @@ you've run the test and seen the expected result.
 
 ## A. Adding commands (`wr add`)
 
-- [ ] **1. Only add the first N commands from a file**
+- [x] **1. Only add the first N commands from a file**
   1. `printf 'echo 1\necho 2\necho 3\necho 4\necho 5\n' > /tmp/cmds.txt`
   2. `wr add -f /tmp/cmds.txt --head 2 -i headtest`
   3. Confirm it reports `Added 2 new commands ...` and `wr status -i headtest -o c`
@@ -29,7 +29,7 @@ you've run the test and seen the expected result.
   4. Confirm `wr add -f /tmp/cmds.txt --head 0 -i headtest0` adds all **5**, and
      `wr add -f /tmp/cmds.txt --head -1 -i x` errors with `--head can't be negative`.
 
-- [ ] **2. Re-running a command that has incomplete dependencies waits (not skipped, not run immediately)**
+- [x] **2. Re-running a command that has incomplete dependencies waits (not skipped, not run immediately)**
   1. `echo 'echo parent' | wr add -i dep-parent -e groupA` then
      `echo 'echo child' | wr add -i dep-child -d groupA`. Wait until
      `wr status -i dep-child -o c` shows `complete: 1`.
@@ -37,12 +37,12 @@ you've run the test and seen the expected result.
      `echo 'sleep 300' | wr add -i dep-parent -e groupA`.
   3. Re-add the identical child with rerun:
      `echo 'echo child' | wr add -i dep-child -d groupA --rerun`.
-  4. Confirm the add reports it as **1 new command** (it is *not* counted as a
+  4. Confirm the add reports it as **1 new command** (it is _not_ counted as a
      duplicate), and `wr status -i dep-child` shows it as
      `Status: dependent on other jobs` — i.e. it is **waiting**, not running.
   5. Confirm it only runs after the `sleep 300` carrier finishes.
 
-- [ ] **3. Depending on a dependency group that doesn't exist yet blocks (and is visible)**
+- [x] **3. Depending on a dependency group that doesn't exist yet blocks (and is visible)**
   1. `echo 'echo waiter' | wr add -i futuretest -d futuregrp`
   2. Confirm a warning is printed to stderr at add time:
      `dependency group "futuregrp" has not been seen; dependent job(s) will wait until it appears`.
@@ -53,9 +53,9 @@ you've run the test and seen the expected result.
   6. Confirm that once the carrier completes, the waiting job becomes runnable,
      runs, and no longer appears under `wr status --missing_deps`.
 
-- [ ] **4. Remote manager can use local-style cwd and environment (opt-in)**
-  *(Needs a remote/cloud-deployed manager — against a local manager there is no
-  difference.)*
+- [x] **4. Remote manager can use local-style cwd and environment (opt-in)**
+      _(Needs a remote/cloud-deployed manager — against a local manager there is no
+      difference.)_
   1. With the option OFF (default), add a job to the remote manager and check
      `wr status -i ... -o d`: its working directory defaults to `/tmp` and your
      submitting environment is not carried.
@@ -70,7 +70,7 @@ you've run the test and seen the expected result.
 
 ## B. Command-line status (`wr status`)
 
-- [ ] **5. Table output mode**
+- [x] **5. Table output mode**
   1. `printf 'echo a\necho b\n' | wr add -i tabletest`
   2. `wr status -i tabletest -o table` (or `-o t`). Confirm an aligned table with
      header columns: `Command  ID  Status  Attempts  Host  Requirements group  Count`.
@@ -83,6 +83,9 @@ you've run the test and seen the expected result.
 - [ ] **6. Scheduler problems shown as a footer on the command line**
   1. Cause a scheduler issue, e.g. ask for impossible resources:
      `echo 'echo toobig' | wr add -i toobig --cpus 100000` (or `-m 100000G`).
+     - This does not cause a scheduler alert since the job just gets buried with
+       "resource requirements cannot be met". Need another way of triggering
+       this to test the feature; will have to try in openstack
   2. Run `wr status` (details), `-o summary`, or `-o table`. Confirm the output
      ends with a `Scheduler alerts:` section listing entries such as
      `- Scheduler Issue: <message>` and, where applicable,
@@ -91,7 +94,7 @@ you've run the test and seen the expected result.
      shown in `-o counts`, `-o plain` or `-o json` modes.
 
 - [ ] **7. Quick jobs report distinct start and end times**
-  *(The CLI rounds times to whole seconds, so check via the API or web timeline.)*
+      _(The CLI rounds times to whole seconds, so check via the API or web timeline.)_
   1. `echo 'echo quick' | wr add -i quicktime`; wait for it to complete.
   2. `TOKEN=$(cat ~/.wr_development/client.token)`
   3. `curl -ks -H "Authorization: Bearer $TOKEN" "https://localhost:11302/rest/v1/jobs/quicktime?state=complete" | jq '.[]|{Started,Ended,Walltime}'`
@@ -99,20 +102,20 @@ you've run the test and seen the expected result.
      timestamps) and `Walltime` is greater than 0 (≈ `(Ended-Started)/1e9`) — i.e.
      a sub-second job no longer shows `Started == Ended`.
 
-- [ ] **8. Counts and summary stay fast on large histories**
+- [x] **8. Counts and summary stay fast on large histories**
   1. On a manager with many completed jobs in one report group (tens of
      thousands+), time them: `time wr status -i <biggroup> -o c` and
      `time wr status -i <biggroup> -o summary`.
   2. Confirm both return in about a second (not tens of seconds or a client
      timeout) and the printed counts match what `-o d` reports.
-  *(To create load: `seq 1 30000 | sed 's/^/echo /' | wr add -i biggroup`, then
-  wait for completion.)*
+     _(To create load: `seq 1 30000 | sed 's/^/echo /' | wr add -i biggroup`, then
+     wait for completion.)_
 
 ---
 
 ## C. Modifying commands (`wr mod`)
 
-- [ ] **9. `wr mod` is fast with many jobs**
+- [x] **9. `wr mod` is fast with many jobs**
   1. Add many jobs that stay queued (block them on an unseen group so they don't
      run): `seq 1 15000 | sed 's/^/echo /' | wr add -i bigmod -d neverappears`.
      Confirm `wr status -i bigmod -o c` shows ~15000 waiting.
@@ -134,6 +137,8 @@ you've run the test and seen the expected result.
      **real** reason with a memory note appended:
      `command exited non-zero; note: command used too much RAM` — **not** just
      `command used too much RAM`.
+     - The note did not appear; memory did get bumped though. Need to also test
+       in LSF mode to see the message from a real memory kill
   4. Confirm the memory requirement grew for the retry: `wr status -i memtest -o d`
      shows an expected RAM well above the original 10M, even though this was not a
      memory kill. (A genuine OOM-killed job would instead report
@@ -143,8 +148,7 @@ you've run the test and seen the expected result.
 
 ## E. Suspending and resuming
 
-- [ ] **11. Suspend and resume queued commands**
-  *(Not on `develop` yet — build the suspend/resume feature branch to test.)*
+- [x] **11. Suspend and resume queued commands**
   1. Add a job that stays non-running by waiting on an unseen group (the
      "has not been seen" warning here is expected):
      `echo 'echo hello' | wr add -i suspendtest -d holdgroup`.
@@ -165,7 +169,7 @@ you've run the test and seen the expected result.
 
 ## F. Status web page
 
-*(Open the URL the manager prints, e.g. `https://localhost:11302/`.)*
+_(Open the URL the manager prints, e.g. `https://localhost:11302/`.)_
 
 - [ ] **12. The status page reconnects on its own**
   1. Open the status page; confirm jobs and counts load.
@@ -174,8 +178,9 @@ you've run the test and seen the expected result.
   3. **Without refreshing**, start the manager again. Confirm that within a few
      seconds the page reconnects by itself, the banner clears, and the counts /
      job list resync to the current state — no manual refresh needed.
+     - banners do not clear
 
-- [ ] **13. Rerun button on completed commands**
+- [x] **13. Rerun button on completed commands**
   1. `echo 'echo done' | wr add -i reruntest`; wait for it to complete.
   2. On the status page, open the completed group. Confirm a blue **Rerun** button
      is shown for the completed command.
@@ -193,9 +198,11 @@ you've run the test and seen the expected result.
      RAM), a live **CPU** time, a live **wall time** that counts up each second,
      **STDOUT**/**STDERR** tail panels with the latest output, and an
      **ssh command** (`ssh user@host && cd <dir>`) with a copy button.
+     - stdout appears, but ram is not shown. `wr status` also doesn't show
+       anything.
   3. (This live detail is served only over the authenticated https interface.)
 
-- [ ] **15. Edit a command from the web page**
+- [x] **15. Edit a command from the web page**
   1. Get a job into a non-running incomplete state, e.g. bury one:
      `wr add -f /tmp/fail.txt -i modtest -r 0` (fails → buried).
   2. On the status page, open that job. Confirm a blue **Modify** button is shown
@@ -213,7 +220,7 @@ you've run the test and seen the expected result.
 
 ## G. REST API
 
-- [ ] **16. Modify a command over REST**
+- [x] **16. Modify a command over REST**
   1. Get a job into a modifiable state (delayed / ready / dependent / buried) and
      note its key (`wr status -i modtest -o d`, or list via REST).
   2. `TOKEN=$(cat ~/.wr_development/client.token)`
@@ -231,7 +238,7 @@ you've run the test and seen the expected result.
 
 ## H. Logging and configuration
 
-- [ ] **17. Log rotation**
+- [x] **17. Log rotation**
   1. Start the manager with a tiny max log size and compression off so rotation is
      easy to see: `WR_LOGSMAXSIZEMB=1 WR_LOGSCOMPRESS=false wr manager start`.
   2. Generate log volume (add/run plenty of jobs) until the manager log passes ~1MB.
@@ -247,13 +254,13 @@ you've run the test and seen the expected result.
 
 ## I. Sanity checks (nothing user-visible should have changed)
 
-- [ ] **18. Errors are still reported clearly**
+- [x] **18. Errors are still reported clearly**
   1. With no manager running, `wr status` → confirm a clear connection error, not a
      panic or stack trace.
   2. `echo 'echo x' | wr add -m notabytesize` → confirm a clear error message about
      the bad memory value, not a crash.
 
-- [ ] **19. Completing, retrying, burying and heartbeating still work**
+- [x] **19. Completing, retrying, burying and heartbeating still work**
   1. Complete: `echo 'echo ok' | wr add -i trim-ok` → reaches `complete`.
   2. Bury then retry: `wr add -f /tmp/fail.txt -i trim-bury -r 0` → reaches
      `buried`; `wr retry -i trim-bury` → it runs again.
@@ -268,10 +275,11 @@ you've run the test and seen the expected result.
 - [ ] **20. OpenStack doesn't leak reserved quota on a bad image**
   1. Deploy a cloud manager configured to use an OS image name that doesn't exist /
      isn't available.
+     - not tried yet
   2. Add several jobs that require spawning new servers.
   3. Confirm spawns fail (bad image) but the manager stays responsive and the
      reserved-resource counters (reserved cores / RAM / instances) do **not** keep
      climbing with each failed spawn — the reservation is released every time, so
      the manager never locks up from exhausted quota.
-  *(No cloud to hand? The release-on-failure path is covered by the automated
-  scheduler tests: `go test ./jobqueue/scheduler/`.)*
+     _(No cloud to hand? The release-on-failure path is covered by the automated
+     scheduler tests: `go test ./jobqueue/scheduler/`.)_
