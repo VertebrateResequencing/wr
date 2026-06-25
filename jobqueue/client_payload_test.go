@@ -50,13 +50,14 @@ import (
 var errCaptureSocketUnsupported = errors.New("unsupported capture socket operation")
 
 const (
-	liveExecuteTouchInterval = 100 * time.Millisecond
-	liveExecuteRetryWait     = 10 * time.Millisecond
-	liveExecuteRetryTime     = time.Second
-	liveExecuteTimeLimit     = 10 * time.Second
-	liveExecuteOutputSize    = 128 * 1024
-	liveExecuteFileMode      = 0o600
-	liveExecuteDirMode       = 0o755
+	liveExecuteTouchInterval      = 100 * time.Millisecond
+	liveExecuteRetryWait          = 10 * time.Millisecond
+	liveExecuteRetryTime          = time.Second
+	liveExecuteTimeLimit          = 10 * time.Second
+	liveExecuteOutputSize         = 128 * 1024
+	liveExecuteMarkerWaitAttempts = 80
+	liveExecuteFileMode           = 0o600
+	liveExecuteDirMode            = 0o755
 )
 
 func TestExecuteLiveStateSnapshots(t *testing.T) {
@@ -412,7 +413,11 @@ func newLiveExecuteCaptureClient(capture *liveTouchCapture) *Client {
 
 type liveTouchCapture struct {
 	sync.Mutex
-	states []*JobEndState
+	states             []*JobEndState
+	releaseStdoutSeen  bool
+	releaseStderrSeen  bool
+	releaseMarkersDone bool
+	releaseMarkersErr  error
 }
 
 func (c *liveTouchCapture) record(state *JobEndState) {
@@ -420,6 +425,60 @@ func (c *liveTouchCapture) record(state *JobEndState) {
 	defer c.Unlock()
 
 	c.states = append(c.states, cloneTestJobEndState(state))
+}
+
+func (c *liveTouchCapture) recordAndReleaseOnMarkers(
+	releaseFile string,
+	stdoutMarker string,
+	stderrMarker string,
+) func(*JobEndState) {
+	return func(state *JobEndState) {
+		c.record(state)
+		c.releaseOnMarkers(state, releaseFile, stdoutMarker, stderrMarker)
+	}
+}
+
+func (c *liveTouchCapture) releaseOnMarkers(
+	state *JobEndState,
+	releaseFile string,
+	stdoutMarker string,
+	stderrMarker string,
+) {
+	stdout := decompressLiveTouch(state.Stdout)
+	stderr := decompressLiveTouch(state.Stderr)
+
+	c.Lock()
+	if strings.Contains(stdout, stdoutMarker) {
+		c.releaseStdoutSeen = true
+	}
+
+	if strings.Contains(stderr, stderrMarker) {
+		c.releaseStderrSeen = true
+	}
+
+	release := c.releaseStdoutSeen && c.releaseStderrSeen && !c.releaseMarkersDone
+	if release {
+		c.releaseMarkersDone = true
+	}
+	c.Unlock()
+
+	if !release {
+		return
+	}
+
+	if err := os.WriteFile(releaseFile, []byte("ok"), liveExecuteFileMode); err != nil {
+		c.Lock()
+		c.releaseMarkersErr = err
+		c.releaseMarkersDone = false
+		c.Unlock()
+	}
+}
+
+func (c *liveTouchCapture) releaseErr() error {
+	c.Lock()
+	defer c.Unlock()
+
+	return c.releaseMarkersErr
 }
 
 func (c *liveTouchCapture) matching(match func(*JobEndState) bool) []*JobEndState {
@@ -558,22 +617,28 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 		capture := &liveTouchCapture{}
 		client := newLiveExecuteCaptureClient(capture)
 		cwd := liveExecuteCwd(t)
+		releaseFile := filepath.Join(cwd, "live-release")
 		stdoutStream := liveMarkedStream("OUT-OLD\n", "OUT-NEW\n")
 		stderrStream := liveMarkedStream("ERR-OLD\n", "ERR-NEW\n")
 		stdoutFile := filepath.Join(cwd, "stdout.bin")
 		stderrFile := filepath.Join(cwd, "stderr.bin")
+		client.liveTouchHook = capture.recordAndReleaseOnMarkers(releaseFile, "OUT-NEW\n", "ERR-NEW\n")
 
 		So(os.WriteFile(stdoutFile, stdoutStream, liveExecuteFileMode), ShouldBeNil)
 		So(os.WriteFile(stderrFile, stderrStream, liveExecuteFileMode), ShouldBeNil)
 
 		cmd := fmt.Sprintf(
-			"cat %s; cat %s >&2; sleep 2",
+			"cat %s; cat %s >&2; i=0; while [ ! -f %s ] && [ \"$i\" -lt %d ]; do i=$((i + 1)); sleep %.2f; done",
 			shellquote.Join(stdoutFile),
 			shellquote.Join(stderrFile),
+			shellquote.Join(releaseFile),
+			liveExecuteMarkerWaitAttempts,
+			(liveExecuteTouchInterval / 2).Seconds(),
 		)
 		job := liveExecuteJob(client, cwd, cmd)
 
 		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+		So(capture.releaseErr(), ShouldBeNil)
 
 		stdoutState, liveStdout := capture.firstStdoutWithMarker("OUT-NEW\n")
 		stderrState, liveStderr := capture.firstStderrWithMarker("ERR-NEW\n")

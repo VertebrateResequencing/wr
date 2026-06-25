@@ -700,6 +700,13 @@ func (s *Server) SetLostJobCheckRetryTime(d time.Duration) {
 	s.timingMu.Unlock()
 }
 
+func (s *Server) queueIfPresent() *queue.Queue {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.q
+}
+
 func (s *Server) setRACPending() {
 	s.rpmutex.Lock()
 	s.racPending = true
@@ -1205,6 +1212,10 @@ func updateJobRequirementsForRetry(
 	case FailReasonTime:
 		increaseJobTimeAfterFailure(job)
 	}
+}
+
+func queueClosedError(op, key string) error {
+	return queue.Error{Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -3114,7 +3125,14 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 		if errk != nil {
 			clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
 		} else {
-			item, errg := s.q.Get(jobKey)
+			q := s.queueIfPresent()
+			if q == nil {
+				clog.Warn(ctx, "failed to get a killed lost job", "err", queueClosedError("Get", jobKey))
+
+				return
+			}
+
+			item, errg := q.Get(jobKey)
 			if errg != nil {
 				clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
 				return
@@ -3177,7 +3195,12 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	currentState := job.State
 	job.RUnlock()
 
-	item, err := s.q.Get(key)
+	q := s.queueIfPresent()
+	if q == nil {
+		return queueClosedError("Get", key)
+	}
+
+	item, err := q.Get(key)
 	if err != nil {
 		return err
 	}
@@ -3189,7 +3212,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 				return nil
 			}
 		} else {
-			errq = s.q.Bury(key)
+			errq = q.Bury(key)
 			if errq == nil {
 				s.deleteJobIfRequested(ctx, job)
 			}
@@ -3199,7 +3222,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 			return nil
 		}
 	} else {
-		errq = s.q.Release(ctx, key)
+		errq = q.Release(ctx, key)
 	}
 
 	if errq != nil {
@@ -3266,7 +3289,12 @@ func (s *Server) inputToQueuedJobs(ctx context.Context, inputJobs []*Job) []*Job
 // If the job wasn't running, returned bool will be false and nothing will have
 // been done.
 func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
-	item, err := s.q.Get(jobkey)
+	q := s.queueIfPresent()
+	if q == nil {
+		return false, queueClosedError("Get", jobkey)
+	}
+
+	item, err := q.Get(jobkey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
 		return false, err
 	}
