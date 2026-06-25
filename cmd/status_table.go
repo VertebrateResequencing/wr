@@ -63,6 +63,11 @@ type statusTableField struct {
 	value  func(statusTableRow) string
 }
 
+type statusTableFieldOption struct {
+	names []string
+	field statusTableField
+}
+
 var (
 	errStatusFormatEmpty    = errors.New("no fields supplied")
 	errStatusFormatBadField = errors.New("field must use FIELD:width syntax")
@@ -98,24 +103,26 @@ var (
 		right:  true,
 		value:  func(row statusTableRow) string { return strconv.Itoa(row.count) },
 	}
-	statusTableFieldsByName = map[string]statusTableField{
-		"command":                  statusTableCommandField,
-		"cmd":                      statusTableCommandField,
-		"id":                       statusTableIDField,
-		"jobid":                    statusTableIDField,
-		"key":                      statusTableIDField,
-		statusTableStatusFieldName: statusTableStatusField,
-		"state":                    statusTableStatusField,
-		"attempts":                 statusTableAttemptsField,
-		"tries":                    statusTableAttemptsField,
-		"host":                     statusTableHostField,
-		"reqgroup":                 statusTableReqGroupField,
-		"requirements":             statusTableReqGroupField,
-		"requirementsgroup":        statusTableReqGroupField,
-		"count":                    statusTableCountField,
-		"similar":                  statusTableCountField,
+	statusTableFieldOptions = []statusTableFieldOption{
+		{names: []string{"command", "cmd"}, field: statusTableCommandField},
+		{names: []string{"id", "jobid", "key"}, field: statusTableIDField},
+		{names: []string{statusTableStatusFieldName, "state"}, field: statusTableStatusField},
+		{names: []string{"attempts", "tries"}, field: statusTableAttemptsField},
+		{names: []string{"host"}, field: statusTableHostField},
+		{names: []string{"reqgroup", "requirements", "requirementsgroup"}, field: statusTableReqGroupField},
+		{names: []string{"count", "similar"}, field: statusTableCountField},
 	}
+	statusTableFieldsByName = newStatusTableFieldsByName(statusTableFieldOptions)
 )
+
+func statusTableFormatFieldsHelp() string {
+	groups := make([]string, 0, len(statusTableFieldOptions))
+	for _, option := range statusTableFieldOptions {
+		groups = append(groups, strings.Join(option.names, "/"))
+	}
+
+	return strings.Join(groups, ", ")
+}
 
 func statusOutputShowsAlerts(format string) bool {
 	switch format {
@@ -217,6 +224,18 @@ func statusTableFieldForName(name string) (statusTableField, error) {
 	}
 
 	return field, nil
+}
+
+func newStatusTableFieldsByName(options []statusTableFieldOption) map[string]statusTableField {
+	fields := make(map[string]statusTableField)
+
+	for _, option := range options {
+		for _, name := range option.names {
+			fields[normaliseStatusTableFieldName(name)] = option.field
+		}
+	}
+
+	return fields
 }
 
 type statusTableGroupKey struct {

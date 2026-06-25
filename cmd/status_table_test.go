@@ -154,6 +154,24 @@ func TestStatusTableOutputHelp(t *testing.T) {
 		So(statusCmd.Long, ShouldContainSubstring, "WR_STATUS_FORMAT")
 		So(statusCmd.Long, ShouldNotContainSubstring, "one aligned row per status group")
 	})
+
+	Convey("wr status help lists valid WR_STATUS_FORMAT fields", t, func() {
+		help := compactWhitespace(commandHelpForTest(t, statusCmd))
+
+		So(help, ShouldContainSubstring, "Valid WR_STATUS_FORMAT FIELD names:")
+
+		for _, fields := range []string{
+			"command/cmd",
+			"id/jobid/key",
+			"status/state",
+			"attempts/tries",
+			"host",
+			"reqgroup/requirements/requirementsgroup",
+			"count/similar",
+		} {
+			So(help, ShouldContainSubstring, fields)
+		}
+	})
 }
 
 func TestStatusPlainOutputHelp(t *testing.T) {
