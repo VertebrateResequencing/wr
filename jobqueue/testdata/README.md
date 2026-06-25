@@ -46,6 +46,14 @@ not accumulate while the manager is down, then delivers a current snapshot plus
 new completion activity and verifies that the lost-manager and websocket
 warnings are cleared.
 
+## Live heartbeat details
+
+`live-heartbeat-details/` contains a browser fixture for running-job heartbeat
+updates in the status page. It serves the real status page, injects a fake
+websocket, opens a running job details row whose live stdout/stderr are already
+visible, then delivers a live heartbeat push and asserts that peak RAM, CPU
+time, STDOUT, and STDERR are all visible together.
+
 ## Local dependency and artifact locations
 
 Browser-test dependencies and artifacts must stay repo-local:

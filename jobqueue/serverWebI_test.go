@@ -1788,6 +1788,67 @@ func TestStatusDetailsLivePushUpdates(t *testing.T) {
 		So(status.SSHCommand, ShouldEqual,
 			"ssh -- cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 	})
+
+	Convey("Status details preserve live output when a later heartbeat updates only resources", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "status-details-c3-live")
+
+		ws, cleanup := openStatusDetailsSubscription(ctx, server, token, job.RepGroup, job.Key())
+		defer cleanup()
+
+		killCalled, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("progress 1\n")),
+			Stderr:  compressStd([]byte("warning 1\n")),
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		_, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.StdOut == "progress 1\n"
+		})
+		So(ok, ShouldBeTrue)
+
+		killCalled, err = runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 654,
+			CPUtime: 7 * time.Second,
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		pushStatus, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.PeakRAM == 654
+		})
+		So(ok, ShouldBeTrue)
+		So(pushStatus.State, ShouldEqual, JobStateRunning)
+		So(pushStatus.CPUtime, ShouldEqual, 7)
+		So(pushStatus.StdOut, ShouldEqual, "progress 1\n")
+		So(pushStatus.StdErr, ShouldEqual, "warning 1\n")
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: job.RepGroup,
+			State:    JobStateRunning,
+		})
+		So(err, ShouldBeNil)
+
+		requestedStatus, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && !status.IsPushUpdate && status.PeakRAM == 654
+		})
+		So(ok, ShouldBeTrue)
+		So(requestedStatus.CPUtime, ShouldEqual, 7)
+		So(requestedStatus.StdOut, ShouldEqual, "progress 1\n")
+		So(requestedStatus.StdErr, ShouldEqual, "warning 1\n")
+	})
 }
 
 func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
