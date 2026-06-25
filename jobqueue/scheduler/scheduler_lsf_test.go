@@ -23,10 +23,12 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  ******************************************************************************/
 
+//nolint:gochecknoinits,goconst,lll // Legacy LSF integration tests keep setup and command literals close to assertions.
 package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -65,6 +67,7 @@ func TestLSF(t *testing.T) {
 	if err == nil {
 		_, err = exec.LookPath("bqueues")
 	}
+
 	if err != nil {
 		SkipConvey("You can't get a new lsf scheduler without LSF being installed", t, func() {
 			_, err = New(ctx, "lsf", &ConfigLSF{"development", "bash", "~/.ssh/id_rsa"})
@@ -118,7 +121,7 @@ func TestLSF(t *testing.T) {
 		So(ok, ShouldBeTrue)
 
 		// author specific tests, based on hostname, where we know what the
-		// expected queue names are *** could also break out initialize() to
+		// expected queue names are *** could also break out initialise() to
 		// mock some textual input instead of taking it from lsadmin...
 		if host == devHost {
 			Convey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
@@ -325,7 +328,10 @@ func TestLSF(t *testing.T) {
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
 			err := s.Schedule(ctx, "foo", impossibleReq, 0, 1)
 			So(err, ShouldNotBeNil)
-			serr, ok := err.(Error)
+
+			var serr Error
+
+			ok := errors.As(err, &serr)
 			So(ok, ShouldBeTrue)
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
@@ -349,7 +355,7 @@ func TestLSF(t *testing.T) {
 			// }
 			// defer os.RemoveAll(tmpdir)
 
-			// cmd := fmt.Sprintf("ssh %s 'perl -MFile::Temp=tempfile -e '"'"'$sleep = rand(60); select(undef, undef, undef, $sleep); @a = tempfile(DIR => q[%s]); select(undef, undef, undef, 5 - $sleep); exit(0);'"'"'", host, tmpdir) // sleep for a random amount of time so that ssh does not fail due to too many run at once, then ssh back to us and create a file in our tmp dir
+			// cmd := fmt.Sprintf("ssh %s 'perl -MFile::Temp=tempfile -e '"'"'$sleep = rand(60); select(undef, undef, $sleep); @a = tempfile(DIR => q[%s]); select(undef, undef, 5 - $sleep); exit(0);'"'"'", host, tmpdir) // sleep for a random amount of time so that ssh does not fail due to too many run at once, then ssh back to us and create a file in our tmp dir
 
 			// the above wouldn't work due to some issue with all the ssh's not
 			// working and some high proportion of the LSF jobs immediately
@@ -377,6 +383,7 @@ func TestLSF(t *testing.T) {
 
 			Convey("It eventually runs them all", func() {
 				So(waitToFinish(ctx, s, 300, 1000), ShouldBeTrue)
+
 				startedFiles := testDirForFiles(startedDir, count)
 				So(startedFiles, ShouldEqual, count)
 				finishedFiles := testDirForFiles(finishedDir, count)
@@ -393,6 +400,7 @@ func TestLSF(t *testing.T) {
 				err = s.Schedule(ctx, cmd, possibleReq, 0, newcount)
 				So(err, ShouldBeNil)
 				So(waitToFinish(ctx, s, 300, 1000), ShouldBeTrue)
+
 				startedFiles := testDirForFiles(startedDir, newcount)
 				So(startedFiles, ShouldEqual, newcount)
 				finishedFiles := testDirForFiles(finishedDir, newcount)
@@ -402,9 +410,11 @@ func TestLSF(t *testing.T) {
 			Convey("You can Schedule() a new job and have it run while the first is still running", func() {
 				running, ok := waitForLSFRunningJobs(ctx, s, startedDir, finishedDir, count, 120*time.Second)
 				So(ok, ShouldBeTrue)
+
 				if !ok {
 					return
 				}
+
 				So(running, ShouldBeBetweenOrEqual, 1, count)
 
 				newcmd := lsfMarkerCmd(startedDir, finishedDir, 1)
@@ -412,6 +422,7 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(ctx, s, 300, 1000), ShouldBeTrue)
+
 				startedFiles := testDirForFiles(startedDir, count+1)
 				So(startedFiles, ShouldEqual, count+1)
 				finishedFiles := testDirForFiles(finishedDir, count+1)
@@ -442,6 +453,7 @@ func TestLSF(t *testing.T) {
 			Convey("It runs some of them and you can Schedule() again to drop the count", func() {
 				numfiles, ok := waitForLSFStartedJobs(ctx, s, startedDir, 1, count-(maxCPU*2)-2, 120*time.Second)
 				So(ok, ShouldBeTrue)
+
 				if !ok {
 					return
 				}
@@ -451,6 +463,7 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(ctx, s, 300, 1000), ShouldBeTrue)
+
 				startedFiles := testDirForFiles(startedDir, newcount)
 				So(startedFiles, ShouldBeGreaterThanOrEqualTo, newcount)
 				finishedFiles := testDirForFiles(finishedDir, newcount)

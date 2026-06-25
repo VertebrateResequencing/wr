@@ -1,0 +1,752 @@
+/*******************************************************************************
+ * Copyright (c) 2026 Genome Research Ltd.
+ *
+ * Author: Sendu Bala <sb10@sanger.ac.uk>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ ******************************************************************************/
+
+//nolint:goconst,wsl_v5 // Lane-name tables and straightforward command steps are clearer as-is.
+package testsuite
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	envRunnerExecShell    = "WR_RUNNEREXECSHELL"
+	envTestPortBase       = "WR_TEST_PORT_BASE"
+	envMaxParallel        = "WR_TESTSUITE_MAX_PARALLEL"
+	defaultExecShell      = "/bin/bash"
+	minDefaultParallel    = 4
+	maxDefaultParallel    = 24
+	parallelPerCPU        = 6
+	minTestPortBase       = 10000
+	lanePortSpan          = 200
+	defaultEphemeralStart = 32768
+	maxTCPPort            = 65535
+)
+
+var (
+	errMissingCompiledBinary = errors.New("missing compiled binary")
+	errNoPortRange           = errors.New("not enough port space")
+	errNoFreePortRange       = errors.New("could not find a free port range")
+	errUnexpectedModule      = errors.New("unexpected module discovery output")
+	errUnknownLaneKind       = errors.New("unknown lane kind")
+)
+
+// Run discovers packages, plans the requested suite mode, and executes it.
+func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, mode Mode) error {
+	root, module, packages, err := discover(ctx)
+	if err != nil {
+		return err
+	}
+
+	return RunPlan(ctx, stdout, stderr, root, NewPlan(mode, module, packages))
+}
+
+// RunPlan executes an already-created test-suite plan.
+func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root string, plan Plan) error {
+	base, err := os.MkdirTemp("", tempPrefix(plan.Mode))
+	if err != nil {
+		return fmt.Errorf("create test-suite temp dir: %w", err)
+	}
+
+	defer removeTemp(stderr, base)
+	cleanupSharedJobqueueCwd(stderr)
+	defer cleanupSharedJobqueueCwd(stderr)
+
+	restorePortBase, err := setRunPortBase(ctx, plan)
+	if err != nil {
+		return err
+	}
+
+	defer restorePortBase()
+
+	binaries, err := compileBinaries(ctx, stdout, stderr, base, plan.Compiles)
+	if err != nil {
+		return err
+	}
+
+	results := runSerialLanes(ctx, root, base, binaries, plan.Serial)
+	results = append(results, runParallelLanes(ctx, root, base, binaries, plan.Parallel)...)
+
+	return reportResults(stdout, results)
+}
+
+func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
+	if os.Getenv(envTestPortBase) != "" {
+		return func() {}, nil
+	}
+
+	base, err := chooseRunPortBase(ctx, plan)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.Setenv(envTestPortBase, strconv.Itoa(base)); err != nil {
+		return nil, fmt.Errorf("set %s: %w", envTestPortBase, err)
+	}
+
+	return func() { _ = os.Unsetenv(envTestPortBase) }, nil
+}
+
+func chooseRunPortBase(ctx context.Context, plan Plan) (int, error) {
+	maxLane := maxPlanLane(plan)
+	maxBase := min(ephemeralPortStart()-1, maxTCPPort) - ((maxLane + 1) * lanePortSpan)
+	if maxBase < minTestPortBase {
+		return 0, fmt.Errorf("%w for WR_TEST_LANE=%d", errNoPortRange, maxLane)
+	}
+
+	width := maxBase - minTestPortBase + 1
+	startOffset, err := cryptoRandomInt(width)
+	if err != nil {
+		return 0, err
+	}
+
+	for offset := range width {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+
+		base := minTestPortBase + ((startOffset + offset) % width)
+
+		if runPortBaseAvailable(ctx, base, maxLane) {
+			return base, nil
+		}
+	}
+
+	return 0, fmt.Errorf("%w for %s", errNoFreePortRange, envTestPortBase)
+}
+
+func ephemeralPortStart() int {
+	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return defaultEphemeralStart
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return defaultEphemeralStart
+	}
+
+	start, err := strconv.Atoi(fields[0])
+	if err != nil || start <= minTestPortBase {
+		return defaultEphemeralStart
+	}
+
+	return start
+}
+
+func cryptoRandomInt(limit int) (int, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(limit)))
+	if err != nil {
+		return 0, fmt.Errorf("choose random port base: %w", err)
+	}
+
+	return int(n.Int64()), nil
+}
+
+func runPortBaseAvailable(ctx context.Context, base int, maxLane int) bool {
+	for lane := range maxLane + 1 {
+		for _, offset := range []int{1, 2, 3} {
+			if !portAvailable(ctx, base+lane*lanePortSpan+offset) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func portAvailable(ctx context.Context, port int) bool {
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(ctx, "tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+
+	return listener.Close() == nil
+}
+
+func maxPlanLane(plan Plan) int {
+	maxLane := 0
+
+	for _, lane := range append(plan.Serial, plan.Parallel...) {
+		value, err := strconv.Atoi(lane.Env["WR_TEST_LANE"])
+		if err == nil && value > maxLane {
+			maxLane = value
+		}
+	}
+
+	return maxLane
+}
+
+func discover(ctx context.Context) (string, string, []string, error) {
+	root, module, err := discoverModule(ctx)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	packages, err := discoverPackages(ctx)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	return root, module, packages, nil
+}
+
+func discoverModule(ctx context.Context) (string, string, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}\n{{.Path}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("discover module: %w", err)
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	fields := make([]string, 0, 2)
+
+	for scanner.Scan() {
+		fields = append(fields, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", "", fmt.Errorf("read module discovery output: %w", err)
+	}
+
+	if len(fields) != 2 {
+		return "", "", fmt.Errorf("%w: expected 2 fields, got %d", errUnexpectedModule, len(fields))
+	}
+
+	return fields[0], fields[1], nil
+}
+
+func discoverPackages(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "./...")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("discover packages: %w", err)
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	packages := make([]string, 0, 64)
+
+	for scanner.Scan() {
+		packages = append(packages, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read package discovery output: %w", err)
+	}
+
+	return packages, nil
+}
+
+func compileBinaries(
+	ctx context.Context,
+	stdout io.Writer,
+	stderr io.Writer,
+	base string,
+	compiles []Compile,
+) (map[string]string, error) {
+	results := make([]compileResult, len(compiles))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, compileParallelism(len(compiles)))
+
+	for index, compile := range compiles {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			results[index] = compileBinary(ctx, stdout, stderr, base, compile)
+		}()
+	}
+
+	wg.Wait()
+
+	binaries := make(map[string]string, len(compiles))
+
+	for _, result := range results {
+		if result.err != nil {
+			return nil, result.err
+		}
+
+		binaries[result.name] = result.path
+	}
+
+	return binaries, nil
+}
+
+type compileResult struct {
+	name string
+	path string
+	err  error
+}
+
+func compileBinary(
+	ctx context.Context,
+	stdout io.Writer,
+	stderr io.Writer,
+	base string,
+	compile Compile,
+) compileResult {
+	output := filepath.Join(base, compile.Name+".test")
+	args := []string{"test", "-tags", "netgo"}
+
+	if compile.Race {
+		args = append(args, "-race")
+	}
+
+	args = append(args, "-c", "-o", output, compile.Package)
+
+	if err := runCommand(ctx, "", stdout, stderr, "go", args, nil); err != nil {
+		return compileResult{name: compile.Name, path: output, err: fmt.Errorf("compile %s: %w", compile.Name, err)}
+	}
+
+	return compileResult{name: compile.Name, path: output}
+}
+
+func compileParallelism(compileCount int) int {
+	return compileParallelismForCPU(compileCount, runtime.GOMAXPROCS(0))
+}
+
+func compileParallelismForCPU(compileCount int, cpus int) int {
+	if compileCount < 1 {
+		return 1
+	}
+
+	return min(compileCount, max(cpus, 1))
+}
+
+func runSerialLanes(
+	ctx context.Context,
+	root string,
+	base string,
+	binaries map[string]string,
+	lanes []Lane,
+) []laneResult {
+	results := make([]laneResult, 0, len(lanes))
+
+	for _, lane := range lanes {
+		results = append(results, runLane(ctx, root, base, binaries, lane))
+	}
+
+	return results
+}
+
+func runParallelLanes(
+	ctx context.Context,
+	root string,
+	base string,
+	binaries map[string]string,
+	lanes []Lane,
+) []laneResult {
+	lanes = prioritizedLanes(lanes)
+	results := make([]laneResult, len(lanes))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxParallel(len(lanes)))
+
+	for index, lane := range lanes {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			results[index] = runLane(ctx, root, base, binaries, lane)
+		}()
+	}
+
+	wg.Wait()
+
+	return results
+}
+
+func prioritizedLanes(lanes []Lane) []Lane {
+	ordered := slices.Clone(lanes)
+
+	slices.SortStableFunc(ordered, func(left Lane, right Lane) int {
+		return lanePriority(right.Name) - lanePriority(left.Name)
+	})
+
+	return ordered
+}
+
+func lanePriority(name string) int {
+	weights := map[string]int{
+		"runners":               100,
+		"signal_b":              98,
+		"medium_a":              96,
+		"runners2_a":            94,
+		"server_webi":           92,
+		"other":                 90,
+		"jq_sub_live":           88,
+		"jq_sub_aggregate":      86,
+		"jq_dependency":         84,
+		"subscription_catchup":  82,
+		"jq_sub_add":            80,
+		"jq_sub_long":           78,
+		"production":            76,
+		"client_wait":           74,
+		"client_a":              72,
+		"jqA1":                  70,
+		"signal_a":              68,
+		"cmd_resume":            66,
+		"subscription_teardown": 64,
+		"runners2_b":            62,
+		"modify_a":              60,
+		"modify_b":              58,
+		"jq_status":             56,
+		"cmd_suspend":           54,
+		"cmd_status":            52,
+		"client_wait_jobs":      50,
+		"client_basics":         48,
+		"scheduler":             46,
+		"cmd_add":               44,
+	}
+
+	return weights[name]
+}
+
+func maxParallel(laneCount int) int {
+	raw := os.Getenv(envMaxParallel)
+	if raw == "" {
+		return defaultParallelLimit(laneCount)
+	}
+
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > laneCount {
+		return laneCount
+	}
+
+	return limit
+}
+
+func defaultParallelLimit(laneCount int) int {
+	return defaultParallelLimitForCPU(laneCount, runtime.GOMAXPROCS(0))
+}
+
+func defaultParallelLimitForCPU(laneCount int, cpus int) int {
+	limit := cpus * parallelPerCPU
+	limit = max(limit, minDefaultParallel)
+	limit = min(limit, maxDefaultParallel)
+
+	return min(limit, laneCount)
+}
+
+type laneResult struct {
+	lane     Lane
+	log      string
+	duration time.Duration
+	err      error
+}
+
+func runLane(
+	ctx context.Context,
+	root string,
+	base string,
+	binaries map[string]string,
+	lane Lane,
+) laneResult {
+	start := time.Now()
+	logPath := filepath.Join(base, lane.Name+".log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return laneResult{
+			lane:     lane,
+			log:      logPath,
+			duration: time.Since(start),
+			err:      fmt.Errorf("create lane log: %w", err),
+		}
+	}
+
+	defer closeLog(logFile)
+
+	name, args, err := laneCommand(lane, binaries)
+	if err != nil {
+		if _, writeErr := io.WriteString(logFile, err.Error()+"\n"); writeErr != nil {
+			err = errors.Join(err, writeErr)
+		}
+
+		return laneResult{lane: lane, log: logPath, duration: time.Since(start), err: err}
+	}
+
+	if lane.Nice {
+		args = append([]string{"-n", "19", name}, args...)
+		name = "nice"
+	}
+
+	err = runCommand(ctx, laneWorkDir(root, lane), logFile, logFile, name, args, lane.Env)
+
+	return laneResult{lane: lane, log: logPath, duration: time.Since(start), err: err}
+}
+
+func laneCommand(lane Lane, binaries map[string]string) (string, []string, error) {
+	switch lane.Kind {
+	case LaneKindBinary:
+		binary, ok := binaries[lane.Binary]
+		if !ok {
+			return "", nil, fmt.Errorf("%w %q", errMissingCompiledBinary, lane.Binary)
+		}
+
+		return binary, binaryArgs(lane), nil
+	case LaneKindGoTest:
+		return "go", goTestArgs(lane), nil
+	default:
+		return "", nil, fmt.Errorf("%w %q", errUnknownLaneKind, lane.Kind)
+	}
+}
+
+func binaryArgs(lane Lane) []string {
+	args := []string{"-test.timeout=" + defaultTimeout, "-test.failfast"}
+
+	if lane.RunPattern != "" {
+		args = append(args, "-test.run", lane.RunPattern)
+	}
+
+	if lane.SkipPattern != "" {
+		args = append(args, "-test.skip", lane.SkipPattern)
+	}
+
+	return args
+}
+
+func goTestArgs(lane Lane) []string {
+	args := []string{"test", "-tags", "netgo", "-timeout", defaultTimeout, "--count", "1", "-failfast"}
+
+	if lane.Race {
+		args = append(args, "-race")
+	}
+
+	if lane.Parallelism > 0 {
+		args = append(args, "-p", strconv.Itoa(lane.Parallelism))
+	}
+
+	return append(args, lane.Packages...)
+}
+
+func laneWorkDir(root string, lane Lane) string {
+	if lane.Dir == "" {
+		return root
+	}
+
+	return filepath.Join(root, lane.Dir)
+}
+
+func runCommand(
+	ctx context.Context,
+	dir string,
+	stdout io.Writer,
+	stderr io.Writer,
+	name string,
+	args []string,
+	extraEnv map[string]string,
+) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = commandEnv(extraEnv)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+
+	return nil
+}
+
+func commandEnv(extra map[string]string) []string {
+	env := envMap(os.Environ())
+
+	if env[envRunnerExecShell] == "" {
+		env[envRunnerExecShell] = defaultExecShell
+	}
+
+	for key, value := range extra {
+		env[key] = value
+	}
+
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+
+	slices.Sort(keys)
+
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+env[key])
+	}
+
+	return out
+}
+
+func envMap(values []string) map[string]string {
+	env := make(map[string]string, len(values))
+
+	for _, value := range values {
+		key, val, ok := strings.Cut(value, "=")
+		if ok {
+			env[key] = val
+		}
+	}
+
+	return env
+}
+
+func reportResults(stdout io.Writer, results []laneResult) error {
+	if os.Getenv("WR_TESTSUITE_TIMINGS") != "" {
+		if err := printTimings(stdout, results); err != nil {
+			return err
+		}
+	}
+
+	failed := failedResults(results)
+	if len(failed) == 0 {
+		return nil
+	}
+
+	if err := printLaneLogs(stdout, failed); err != nil {
+		return err
+	}
+
+	return suiteFailedError{}
+}
+
+type suiteFailedError struct{}
+
+func (suiteFailedError) Error() string {
+	return "test suite failed"
+}
+
+func failedResults(results []laneResult) []laneResult {
+	failed := make([]laneResult, 0)
+
+	for _, result := range results {
+		if result.err != nil {
+			failed = append(failed, result)
+		}
+	}
+
+	return failed
+}
+
+func printTimings(stdout io.Writer, results []laneResult) error {
+	slices.SortFunc(results, func(left laneResult, right laneResult) int {
+		if left.duration > right.duration {
+			return -1
+		}
+
+		if left.duration < right.duration {
+			return 1
+		}
+
+		return 0
+	})
+
+	for _, result := range results {
+		timing := result.lane.Name + " " + result.duration.Round(time.Millisecond).String() + "\n"
+		if _, err := io.WriteString(stdout, timing); err != nil {
+			return fmt.Errorf("write lane timing: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func printLaneLogs(stdout io.Writer, results []laneResult) error {
+	for _, result := range results {
+		if _, err := io.WriteString(stdout, "===== "+result.lane.Name+" =====\n"); err != nil {
+			return fmt.Errorf("write lane header: %w", err)
+		}
+
+		if err := copyLaneLog(stdout, result); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func copyLaneLog(stdout io.Writer, result laneResult) error {
+	file, err := os.Open(result.log)
+	if err != nil {
+		return fmt.Errorf("open lane log %s: %w", result.lane.Name, err)
+	}
+
+	defer closeLog(file)
+
+	if _, err := io.Copy(stdout, file); err != nil {
+		return fmt.Errorf("copy lane log %s: %w", result.lane.Name, err)
+	}
+
+	return nil
+}
+
+func closeLog(file *os.File) {
+	_ = file.Close()
+}
+
+func removeTemp(stderr io.Writer, path string) {
+	if err := os.RemoveAll(path); err != nil {
+		writeCleanupWarning(stderr, path, err)
+	}
+}
+
+func cleanupSharedJobqueueCwd(stderr io.Writer) {
+	path := filepath.Join("/tmp", "jobqueue_cwd")
+
+	if err := os.RemoveAll(path); err != nil {
+		writeCleanupWarning(stderr, path, err)
+	}
+}
+
+func writeCleanupWarning(stderr io.Writer, path string, err error) {
+	_, _ = io.WriteString(stderr, "warning: cleanup "+path+": "+err.Error()+"\n") //nolint:errcheck
+}
+
+func tempPrefix(mode Mode) string {
+	if mode == ModeRace {
+		return "wrrace."
+	}
+
+	return "wrtest."
+}

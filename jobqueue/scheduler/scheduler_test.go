@@ -27,6 +27,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  ******************************************************************************/
 
+//nolint:forbidigo,gochecknoglobals,lll // Legacy scheduler integration tests use diagnostic prints and shared CPU sizing.
 package scheduler
 
 import (
@@ -184,6 +185,7 @@ func pollUntil(cond func() bool) bool {
 // as cond returns true and false on timeout.
 func pollUntilFor(maxWait, interval time.Duration, cond func() bool) bool {
 	limit := time.After(maxWait)
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -1456,6 +1458,7 @@ func waitForProcessNotRunningOnHost(ctx context.Context, s *Scheduler, pid int, 
 	return pollUntilFor(30*time.Second, 250*time.Millisecond, func() bool {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		notRunning := s.ProcessNotRunningOnHost(probeCtx, pid, host)
+
 		cancel()
 
 		return notRunning
@@ -1465,6 +1468,7 @@ func waitForProcessNotRunningOnHost(ctx context.Context, s *Scheduler, pid int, 
 func parsePidHostFile(path string, maxWait time.Duration) (int, string, bool) {
 	dir := filepath.Dir(path)
 	limit := time.After(maxWait)
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 

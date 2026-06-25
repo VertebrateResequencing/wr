@@ -101,6 +101,10 @@ func TestJobqueueRunners2(t *testing.T) {
 		runtime.GOMAXPROCS(maxCPU)
 
 		Convey("You can connect, and add some jobs with fractional CPU requirements", func() {
+			if skipInShard("a") {
+				return
+			}
+
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 
@@ -194,6 +198,10 @@ func TestJobqueueRunners2(t *testing.T) {
 		})
 
 		Convey("You can connect, and add some 0 CPU jobs, which are limited by memory", func() {
+			if skipInShard("a") {
+				return
+			}
+
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 
@@ -282,8 +290,12 @@ func TestJobqueueRunners2(t *testing.T) {
 			})
 		})
 
-		if maxCPU > 2 {
+		if maxCPU > 2 { //nolint:nestif // Existing scenario gate keeps the low-core skip message beside the test.
 			Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
+				if skipInShard("a") {
+					return
+				}
+
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
@@ -332,6 +344,10 @@ func TestJobqueueRunners2(t *testing.T) {
 
 		if runtime.NumCPU() >= 2 {
 			Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
+				if skipInShard("b") {
+					return
+				}
+
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
@@ -383,6 +399,10 @@ func TestJobqueueRunners2(t *testing.T) {
 		}
 
 		Convey("You can connect, and add 2 large batches of jobs sequentially", func() {
+			if skipInShard("b") {
+				return
+			}
+
 			count := 200
 			count2 := 50
 

@@ -734,6 +734,21 @@ func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.q.TriggerReadyAddedCallback(ctx)
 }
 
+func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+
+	// We could be trying to set the reserve group after the job has already
+	// completed, if it completed almost instantly.
+	var qerr queue.Error
+	if errors.As(err, &qerr) && errors.Is(qerr.Err, queue.ErrNotFound) {
+		return
+	}
+
+	clog.Warn(ctx, "readycallback queue setreservegroup failed", "err", err)
+}
+
 func (s *Server) waitForClientHandling(ctx context.Context) {
 	timer := time.NewTimer(ServerShutdownWaitTime)
 	defer timer.Stop()
@@ -2484,22 +2499,14 @@ func (s *Server) createQueue(ctx context.Context) {
 				job.Unlock()
 			}
 
-			req := reqForScheduler(job.Requirements)
+			snapshot := job.schedulerGroupSnapshot()
+			req := snapshot.requirements
+			schedulerGroup := snapshot.group
 
-			prevSchedGroup := job.getSchedulerGroup()
-			schedulerGroup := job.generateSchedulerGroup(req)
-			if rc != "" && prevSchedGroup != schedulerGroup {
+			if rc != "" && snapshot.previousGroup != schedulerGroup {
 				job.setSchedulerGroup(schedulerGroup)
-				errs := q.SetReserveGroup(job.Key(), schedulerGroup)
-				if errs != nil {
-					// we could be trying to set the reserve group after the
-					// job has already completed, if they complete
-					// ~instantly
-					var qerr queue.Error
-					if !errors.As(errs, &qerr) || !errors.Is(qerr.Err, queue.ErrNotFound) {
-						clog.Warn(ctx, "readycallback queue setreservegroup failed", "err", errs)
-					}
-				}
+
+				warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, schedulerGroup))
 			}
 
 			if rc != "" {
@@ -2530,8 +2537,8 @@ func (s *Server) createQueue(ctx context.Context) {
 
 				group.count++
 
-				if job.Priority > group.priority {
-					group.priority = job.Priority
+				if snapshot.priority > group.priority {
+					group.priority = snapshot.priority
 				}
 			}
 		}

@@ -737,13 +737,21 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 		d += reqSchedTimeRound
 	}
 
-	return &scheduler.Requirements{
+	out := &scheduler.Requirements{
 		RAM:   ram,
 		Time:  d,
 		Cores: req.Cores,
 		Disk:  req.Disk,
-		Other: req.Other,
 	}
+
+	if len(req.Other) > 0 {
+		out.Other = make(map[string]string, len(req.Other))
+		for key, val := range req.Other {
+			out.Other[key] = val
+		}
+	}
+
+	return out
 }
 
 // calculateItemDelay returns a delay based on a backoff and the number of

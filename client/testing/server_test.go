@@ -97,6 +97,25 @@ func TestLaneFreePort(t *testing.T) {
 			So(probe.Close(), ShouldBeNil)
 		}()
 	})
+
+	Convey("Lane free port uses a suite-provided port base", t, func() {
+		const (
+			base = 20000
+			lane = 1
+		)
+
+		setLaneForTest(t, strconv.Itoa(lane), 0)
+		setPortBaseForTest(t, strconv.Itoa(base))
+
+		port, err := laneFreePort()
+		So(err, ShouldBeNil)
+		So(port, ShouldBeBetweenOrEqual, base+lane*laneSpan, base+(lane+1)*laneSpan-1)
+
+		probe := listenOnPort(t, port)
+		defer func() {
+			So(probe.Close(), ShouldBeNil)
+		}()
+	})
 }
 
 func reserveFirstLanePort(t *testing.T) (int, int, net.Listener) {
@@ -106,7 +125,7 @@ func reserveFirstLanePort(t *testing.T) (int, int, net.Listener) {
 
 	for laneOffset := range 20 {
 		lane := 30 + laneOffset
-		port := laneBasePort + lane*laneSpan + firstCandidateOffset
+		port := defaultLaneBasePort + lane*laneSpan + firstCandidateOffset
 
 		listener, err := tryListenOnPort(port)
 		if err == nil {
@@ -140,6 +159,24 @@ func setLaneForTest(t *testing.T, lane string, next int) {
 	So(os.Setenv("WR_TEST_LANE", lane), ShouldBeNil)
 
 	laneTestPortNext = next
+}
+
+func setPortBaseForTest(t *testing.T, base string) {
+	t.Helper()
+
+	priorBase, hadPriorBase := os.LookupEnv(testPortBaseEnv)
+
+	t.Cleanup(func() {
+		if hadPriorBase {
+			_ = os.Setenv(testPortBaseEnv, priorBase)
+
+			return
+		}
+
+		_ = os.Unsetenv(testPortBaseEnv)
+	})
+
+	So(os.Setenv(testPortBaseEnv, base), ShouldBeNil)
 }
 
 func listenOnPort(t *testing.T, port int) net.Listener {

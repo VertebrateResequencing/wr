@@ -944,10 +944,38 @@ func (j *Job) Key() string {
 // assume that LimitGroups was sorted and deduplicated when it was set on the
 // job (this happens in server.createJobs()).
 func (j *Job) generateSchedulerGroup(req *scheduler.Requirements) string {
-	var lgs string
-	if len(j.LimitGroups) > 0 {
-		lgs = jobSchedLimitGroupSeparator + strings.Join(j.LimitGroups, jobLimitGroupSeparator)
+	return schedulerGroupString(req, j.LimitGroups)
+}
+
+type schedulerGroupSnapshot struct {
+	key           string
+	requirements  *scheduler.Requirements
+	previousGroup string
+	group         string
+	priority      uint8
+}
+
+func (j *Job) schedulerGroupSnapshot() schedulerGroupSnapshot {
+	j.RLock()
+	defer j.RUnlock()
+
+	req := reqForScheduler(j.Requirements)
+
+	return schedulerGroupSnapshot{
+		key:           j.Key(),
+		requirements:  req,
+		previousGroup: j.schedulerGroup,
+		group:         schedulerGroupString(req, j.LimitGroups),
+		priority:      j.Priority,
 	}
+}
+
+func schedulerGroupString(req *scheduler.Requirements, limitGroups []string) string {
+	var lgs string
+	if len(limitGroups) > 0 {
+		lgs = jobSchedLimitGroupSeparator + strings.Join(limitGroups, jobLimitGroupSeparator)
+	}
+
 	return req.Stringify() + lgs
 }
 
