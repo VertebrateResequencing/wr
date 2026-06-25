@@ -471,7 +471,13 @@ func (c *liveTouchCapture) releaseOnMarkers(
 		c.releaseMarkersErr = err
 		c.releaseMarkersDone = false
 		c.Unlock()
+
+		return
 	}
+
+	c.Lock()
+	c.releaseMarkersErr = nil
+	c.Unlock()
 }
 
 func (c *liveTouchCapture) releaseErr() error {
@@ -546,6 +552,34 @@ func (c *liveTouchCapture) firstStderrWithMarker(marker string) (*JobEndState, s
 	}
 
 	return nil, ""
+}
+
+func TestLiveTouchCaptureReleaseOnMarkersRetry(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Live touch release retry clears stale marker errors", t, func() {
+		capture := &liveTouchCapture{}
+		releaseDir := filepath.Join(t.TempDir(), "missing")
+		releaseFile := filepath.Join(releaseDir, "release")
+		state := &JobEndState{
+			Stdout: compressStd([]byte("stdout-marker\n")),
+			Stderr: compressStd([]byte("stderr-marker\n")),
+		}
+
+		capture.releaseOnMarkers(state, releaseFile, "stdout-marker\n", "stderr-marker\n")
+		So(capture.releaseErr(), ShouldNotBeNil)
+
+		So(os.Mkdir(releaseDir, liveExecuteDirMode), ShouldBeNil)
+		capture.releaseOnMarkers(state, releaseFile, "stdout-marker\n", "stderr-marker\n")
+
+		So(capture.releaseErr(), ShouldBeNil)
+
+		release, err := os.ReadFile(releaseFile)
+		So(err, ShouldBeNil)
+		So(string(release), ShouldEqual, "ok")
+	})
 }
 
 func TestClientExecuteLiveTouchPayloads(t *testing.T) {
