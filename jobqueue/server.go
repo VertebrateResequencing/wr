@@ -101,6 +101,7 @@ const (
 	serverWaitPeriodToStartRunning = 1 * time.Millisecond
 	serverMaxRetriesToStartRunning = 50
 	serverSocketWait               = 50 * time.Millisecond
+	serverQueueName                = "cmds"
 	jobOverridePreferSystemReqs    = uint8(0)
 	jobOverridePreferHigherReqs    = uint8(1)
 	jobOverrideAlwaysUseJobReqs    = uint8(2)
@@ -1215,7 +1216,7 @@ func updateJobRequirementsForRetry(
 }
 
 func queueClosedError(op, key string) error {
-	return queue.Error{Op: op, Item: key, Err: queue.ErrQueueClosed}
+	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -2418,7 +2419,7 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 // createQueue creates and stores a queue.Queue on the Server and sets up its
 // callbacks.
 func (s *Server) createQueue(ctx context.Context) {
-	q := queue.New(ctx, "cmds")
+	q := queue.New(ctx, serverQueueName)
 	s.q = q
 
 	// we set a callback for things entering this queue's ready sub-queue.
