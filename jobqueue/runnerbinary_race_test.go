@@ -36,6 +36,8 @@ import (
 	"testing"
 )
 
+const envTestRunnerBinary = "WR_TEST_RUNNER_BINARY"
+
 //nolint:gochecknoglobals // TestMain cleans up the process-wide compiled binary.
 var runnerBinaryTempDir string
 
@@ -62,6 +64,19 @@ func TestMain(m *testing.M) {
 // for them instead - the runner code paths are still race-checked by the
 // in-process server during the rest of the suite.
 func runnerBinary() (string, error) {
+	if path := os.Getenv(envTestRunnerBinary); path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("%s=%q is not usable: %w", envTestRunnerBinary, path, err)
+		}
+
+		if info.IsDir() {
+			return "", fmt.Errorf("%s=%q is a directory", envTestRunnerBinary, path)
+		}
+
+		return path, nil
+	}
+
 	dir, err := os.MkdirTemp("", "wr_self_test")
 	if err != nil {
 		return "", err

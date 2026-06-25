@@ -101,6 +101,7 @@ const (
 	serverWaitPeriodToStartRunning = 1 * time.Millisecond
 	serverMaxRetriesToStartRunning = 50
 	serverSocketWait               = 50 * time.Millisecond
+	serverQueueName                = "cmds"
 	jobOverridePreferSystemReqs    = uint8(0)
 	jobOverridePreferHigherReqs    = uint8(1)
 	jobOverrideAlwaysUseJobReqs    = uint8(2)
@@ -700,6 +701,13 @@ func (s *Server) SetLostJobCheckRetryTime(d time.Duration) {
 	s.timingMu.Unlock()
 }
 
+func (s *Server) queueIfPresent() *queue.Queue {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.q
+}
+
 func (s *Server) setRACPending() {
 	s.rpmutex.Lock()
 	s.racPending = true
@@ -732,6 +740,21 @@ func (s *Server) finishRAC() {
 func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.setRACPending()
 	s.q.TriggerReadyAddedCallback(ctx)
+}
+
+func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+
+	// We could be trying to set the reserve group after the job has already
+	// completed, if it completed almost instantly.
+	var qerr queue.Error
+	if errors.As(err, &qerr) && errors.Is(qerr.Err, queue.ErrNotFound) {
+		return
+	}
+
+	clog.Warn(ctx, "readycallback queue setreservegroup failed", "err", err)
 }
 
 func (s *Server) waitForClientHandling(ctx context.Context) {
@@ -1190,6 +1213,10 @@ func updateJobRequirementsForRetry(
 	case FailReasonTime:
 		increaseJobTimeAfterFailure(job)
 	}
+}
+
+func queueClosedError(op, key string) error {
+	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -2392,7 +2419,7 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 // createQueue creates and stores a queue.Queue on the Server and sets up its
 // callbacks.
 func (s *Server) createQueue(ctx context.Context) {
-	q := queue.New(ctx, "cmds")
+	q := queue.New(ctx, serverQueueName)
 	s.q = q
 
 	// we set a callback for things entering this queue's ready sub-queue.
@@ -2484,22 +2511,14 @@ func (s *Server) createQueue(ctx context.Context) {
 				job.Unlock()
 			}
 
-			req := reqForScheduler(job.Requirements)
+			snapshot := job.schedulerGroupSnapshot()
+			req := snapshot.requirements
+			schedulerGroup := snapshot.group
 
-			prevSchedGroup := job.getSchedulerGroup()
-			schedulerGroup := job.generateSchedulerGroup(req)
-			if rc != "" && prevSchedGroup != schedulerGroup {
+			if rc != "" && snapshot.previousGroup != schedulerGroup {
 				job.setSchedulerGroup(schedulerGroup)
-				errs := q.SetReserveGroup(job.Key(), schedulerGroup)
-				if errs != nil {
-					// we could be trying to set the reserve group after the
-					// job has already completed, if they complete
-					// ~instantly
-					var qerr queue.Error
-					if !errors.As(errs, &qerr) || !errors.Is(qerr.Err, queue.ErrNotFound) {
-						clog.Warn(ctx, "readycallback queue setreservegroup failed", "err", errs)
-					}
-				}
+
+				warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, schedulerGroup))
 			}
 
 			if rc != "" {
@@ -2530,8 +2549,8 @@ func (s *Server) createQueue(ctx context.Context) {
 
 				group.count++
 
-				if job.Priority > group.priority {
-					group.priority = job.Priority
+				if snapshot.priority > group.priority {
+					group.priority = snapshot.priority
 				}
 			}
 		}
@@ -3107,7 +3126,14 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 		if errk != nil {
 			clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
 		} else {
-			item, errg := s.q.Get(jobKey)
+			q := s.queueIfPresent()
+			if q == nil {
+				clog.Warn(ctx, "failed to get a killed lost job", "err", queueClosedError("Get", jobKey))
+
+				return
+			}
+
+			item, errg := q.Get(jobKey)
 			if errg != nil {
 				clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
 				return
@@ -3170,7 +3196,12 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	currentState := job.State
 	job.RUnlock()
 
-	item, err := s.q.Get(key)
+	q := s.queueIfPresent()
+	if q == nil {
+		return queueClosedError("Get", key)
+	}
+
+	item, err := q.Get(key)
 	if err != nil {
 		return err
 	}
@@ -3182,7 +3213,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 				return nil
 			}
 		} else {
-			errq = s.q.Bury(key)
+			errq = q.Bury(key)
 			if errq == nil {
 				s.deleteJobIfRequested(ctx, job)
 			}
@@ -3192,7 +3223,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 			return nil
 		}
 	} else {
-		errq = s.q.Release(ctx, key)
+		errq = q.Release(ctx, key)
 	}
 
 	if errq != nil {
@@ -3259,7 +3290,12 @@ func (s *Server) inputToQueuedJobs(ctx context.Context, inputJobs []*Job) []*Job
 // If the job wasn't running, returned bool will be false and nothing will have
 // been done.
 func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
-	item, err := s.q.Get(jobkey)
+	q := s.queueIfPresent()
+	if q == nil {
+		return false, queueClosedError("Get", jobkey)
+	}
+
+	item, err := q.Get(jobkey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
 		return false, err
 	}

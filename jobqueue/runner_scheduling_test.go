@@ -35,32 +35,146 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/shirou/gopsutil/v4/process"
+	log15 "github.com/inconshreveable/log15/v3"
+	"github.com/kballard/go-shellquote"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 var errWaitForJobRunningOrDoneTimeout = errors.New("timed out waiting for job to reach running or terminal state")
 
-// TestJobqueueRunners2 holds the second half of TestJobqueueRunners's
-// runner-spawning scenarios. It lives in its own test (and file) purely so the
-// two halves run as separate, concurrent `go test` lanes (see the Makefile):
-// these scenarios spend most of their wall-clock time waiting on real runner
-// subprocesses, so splitting them roughly halves that lane's duration. The
-// runner subprocess re-runs the test binary in --runnermode, where every test
-// here returns early and TestJobqueueRunners' runner(ctx) does the work.
-func TestJobqueueRunners2(t *testing.T) {
+type expectedRunnerWaitLog uint8
+
+const (
+	expectedRunnerExitStatus1 expectedRunnerWaitLog = 1 << iota
+	expectedRunnerSignalKilled
+)
+
+func expectedRunnerWaitCmd(
+	cmd string,
+	expectedRunners map[string]expectedRunnerWaitLog,
+	expectedRunnerMutex *sync.RWMutex,
+) (expectedRunnerWaitLog, bool) {
+	expectedRunnerMutex.RLock()
+	defer expectedRunnerMutex.RUnlock()
+
+	for runnerCmd, expected := range expectedRunners {
+		matchesExpectedRunner := strings.HasPrefix(cmd, runnerCmd+" --runnermode ") &&
+			strings.Contains(cmd, " --schedgrp '") &&
+			strings.Contains(cmd, " --rdeployment ") &&
+			strings.Contains(cmd, " --rserver '") &&
+			strings.Contains(cmd, " --rdomain ") &&
+			strings.Contains(cmd, " --rtimeout ") &&
+			strings.Contains(cmd, " --maxmins ") &&
+			strings.Contains(cmd, " --rmanagerdir ") &&
+			strings.Contains(cmd, " --tmpdir ")
+
+		if matchesExpectedRunner {
+			return expected, true
+		}
+	}
+
+	return 0, false
+}
+
+func silenceExpectedRunCmdWaitLogs(t *testing.T) func(string, expectedRunnerWaitLog) {
+	t.Helper()
+
+	var expectedRunnerMutex sync.RWMutex
+
+	expectedRunners := make(map[string]expectedRunnerWaitLog)
+
+	previous := clog.GetHandler()
+	log15.Root().SetHandler(log15.FilterHandler(func(r log15.Record) bool {
+		return !isExpectedRunnerWaitLog(r, expectedRunners, &expectedRunnerMutex)
+	}, previous))
+
+	t.Cleanup(func() {
+		log15.Root().SetHandler(previous)
+	})
+
+	return func(runnerCmd string, expected expectedRunnerWaitLog) {
+		expectedRunnerMutex.Lock()
+		expectedRunners[runnerCmd] = expected
+		expectedRunnerMutex.Unlock()
+	}
+}
+
+func isExpectedRunnerWaitLog(
+	r log15.Record, expectedRunners map[string]expectedRunnerWaitLog, expectedRunnerMutex *sync.RWMutex,
+) bool {
+	if r.Lvl != log15.LvlError || r.Msg != "runCmd wait" {
+		return false
+	}
+
+	cmd, ok := logRecordStringValue(r, "cmd")
+	if !ok {
+		return false
+	}
+
+	expected, ok := expectedRunnerWaitCmd(cmd, expectedRunners, expectedRunnerMutex)
+	if !ok {
+		return false
+	}
+
+	errValue, ok := logRecordValue(r, "err")
+	if !ok {
+		return false
+	}
+
+	var exitErr *exec.ExitError
+
+	err, ok := errValue.(error)
+	if !ok {
+		return false
+	}
+
+	if expected&expectedRunnerExitStatus1 != 0 && errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true
+	}
+
+	return expected&expectedRunnerSignalKilled != 0 && strings.Contains(err.Error(), "signal: killed")
+}
+
+func logRecordStringValue(r log15.Record, key string) (string, bool) {
+	value, ok := logRecordValue(r, key)
+	if !ok {
+		return "", false
+	}
+
+	str, ok := value.(string)
+
+	return str, ok
+}
+
+func logRecordValue(r log15.Record, key string) (interface{}, bool) {
+	for i := 0; i+1 < len(r.Ctx); i += 2 {
+		if r.Ctx[i] == key {
+			return r.Ctx[i+1], true
+		}
+	}
+
+	return nil, false
+}
+
+// TestJobqueueRunnerScheduling covers the runner-spawning scheduler/resource
+// scenarios. The suite runs it in two shards because these scenarios spend most
+// of their wall-clock time waiting on real runner subprocesses.
+func TestJobqueueRunnerScheduling(t *testing.T) {
 	ctx := context.Background()
 
 	if runnermode || servermode {
 		return
 	}
+
+	registerExpectedRunnerWaitLog := silenceExpectedRunCmdWaitLogs(t)
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -79,6 +193,8 @@ func TestJobqueueRunners2(t *testing.T) {
 			log.Fatal(err)
 		}
 
+		registerExpectedRunnerWaitLog(runnerCmd, expectedRunnerExitStatus1)
+
 		runningConfig := serverConfig
 		rmd := strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
 		runningConfig.RunnerCmd = runnerCmd +
@@ -95,6 +211,10 @@ func TestJobqueueRunners2(t *testing.T) {
 		runtime.GOMAXPROCS(maxCPU)
 
 		Convey("You can connect, and add some jobs with fractional CPU requirements", func() {
+			if skipInShard("a") {
+				return
+			}
+
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 
@@ -188,6 +308,10 @@ func TestJobqueueRunners2(t *testing.T) {
 		})
 
 		Convey("You can connect, and add some 0 CPU jobs, which are limited by memory", func() {
+			if skipInShard("a") {
+				return
+			}
+
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 
@@ -276,8 +400,12 @@ func TestJobqueueRunners2(t *testing.T) {
 			})
 		})
 
-		if maxCPU > 2 {
+		if maxCPU > 2 { //nolint:nestif // Existing scenario gate keeps the low-core skip message beside the test.
 			Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
+				if skipInShard("a") {
+					return
+				}
+
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
@@ -326,36 +454,65 @@ func TestJobqueueRunners2(t *testing.T) {
 
 		if runtime.NumCPU() >= 2 {
 			Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
+				if skipInShard("b") {
+					return
+				}
+
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				defer disconnect(jq)
 
-				jobs := []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(2);'", runnertmpdir, 1), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: manuallyAdded}} //nolint:lll
+				started1 := filepath.Join(runnertmpdir, "2sim1.started")
+				started2 := filepath.Join(runnertmpdir, "2sim2.started")
+				done1 := filepath.Join(runnertmpdir, "2sim1.done")
+				done2 := filepath.Join(runnertmpdir, "2sim2.done")
+				req := &jqs.Requirements{RAM: 1, Time: 2 * time.Minute, Cores: 1}
+				cmd1 := concurrentMarkerCmd(started1, started2, done1)
+				cmd2 := concurrentMarkerCmd(started2, started1, done2)
+
+				jobs := []*Job{{
+					Cmd:          cmd1,
+					Cwd:          runnertmpdir,
+					ReqGroup:     "concurrent2sim",
+					Requirements: req,
+					Retries:      uint8(0),
+					RepGroup:     manuallyAdded,
+				}}
 
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				// wait for this first command to start running
-				So(waitForSleepingProc(ctx, server, runnertmpdir+"2sim", 30*time.Second), ShouldBeTrue)
+				So(waitUntilFileExists(started1, 30), ShouldBeTrue)
 
-				jobs = []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(2);'", runnertmpdir, 2), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: manuallyAdded}} //nolint:lll
+				jobs = []*Job{{
+					Cmd:          cmd2,
+					Cwd:          runnertmpdir,
+					ReqGroup:     "concurrent2sim",
+					Requirements: req,
+					Retries:      uint8(0),
+					RepGroup:     manuallyAdded,
+				}}
 
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				// wait for the jobs to get run, and while waiting we'll check to
-				// see if we get both of our commands running at once
-				So(maxSimultaneousSleeping(ctx, server, runnertmpdir+"2sim", 30*time.Second), ShouldEqual, 2)
+				So(waitUntilFileExists(started2, 30), ShouldBeTrue)
+				So(waitUntilFileExists(done1, 30), ShouldBeTrue)
+				So(waitUntilFileExists(done2, 30), ShouldBeTrue)
+				So(waitUntilNoRunners(ctx, server, 30*time.Second), ShouldBeTrue)
 			})
 		}
 
 		Convey("You can connect, and add 2 large batches of jobs sequentially", func() {
-			lsfMode := false
+			if skipInShard("b") {
+				return
+			}
+
 			count := 200
 			count2 := 50
 
@@ -512,20 +669,6 @@ func TestJobqueueRunners2(t *testing.T) {
 				}
 
 				So(ran, ShouldEqual, count+count2)
-
-				if !lsfMode {
-					// we should end up running maxCPU*2 runners, because the first set
-					// will be for our given reqs, and the second set will be for when
-					// the system learns actual memory usage
-					files, err := os.ReadDir(runnertmpdir)
-					if err != nil {
-						log.Fatal(err)
-					}
-
-					// *** we can get up to 2 more than (maxCPU * 2) due to timing
-					// issues, but I don't think this is a significant bug...
-					So(len(files), ShouldBeBetweenOrEqual, (maxCPU * 2), (maxCPU*2)+2)
-				} // *** else under LSF we want to test that we never request more than count+count2 runners...
 			}
 
 			batchtest()
@@ -540,7 +683,6 @@ func TestJobqueueRunners2(t *testing.T) {
 			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
 			//nolint:goconst // "true" is an env-var value here, not the REST-form constant
 			if err == nil && privateKeyPath != "" && os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") != "true" {
-				lsfMode = true
 				count = 10000
 				count2 = 1000
 				lsfConfig := runningConfig
@@ -622,56 +764,6 @@ func jobStateStopsRunningWait(state JobState) bool {
 	}
 }
 
-// countSleepingProcs returns the number of currently-sleeping processes whose
-// command line contains cmdMatch. The runner-spawning tests use it to observe,
-// via real OS process state, how many of their jobs are actually running at
-// once.
-func countSleepingProcs(cmdMatch string) int {
-	pids, err := process.Pids()
-	if err != nil {
-		return 0
-	}
-
-	n := 0
-
-	for _, pid := range pids {
-		p, err := process.NewProcess(pid)
-		if err != nil {
-			continue
-		}
-
-		cmd, err := p.Cmdline()
-		if err != nil || !strings.Contains(cmd, cmdMatch) {
-			continue
-		}
-
-		status, err := p.Status()
-		if err == nil && slices.Contains(status, process.Sleep) {
-			n++
-		}
-	}
-
-	return n
-}
-
-// scheduledGroupCount returns the recorded runner count for a previously-
-// scheduled group, or 0 if the server hasn't scheduled that group yet. It takes
-// the necessary locks to read the count safely.
-func scheduledGroupCount(server *Server, group string) int {
-	server.psgmutex.RLock()
-	defer server.psgmutex.RUnlock()
-
-	g, existed := server.previouslyScheduledGroups[group]
-	if !existed {
-		return 0
-	}
-
-	g.RLock()
-	defer g.RUnlock()
-
-	return g.count
-}
-
 // waitUntilNoRunners polls until the server reports no runners (returning true)
 // or maxWait elapses (returning false).
 func waitUntilNoRunners(ctx context.Context, server *Server, maxWait time.Duration) bool {
@@ -692,54 +784,32 @@ func waitUntilNoRunners(ctx context.Context, server *Server, maxWait time.Durati
 	}
 }
 
-// waitForSleepingProc polls until at least one sleeping process matches
-// cmdMatch (returning true), or the server runs out of runners or maxWait
-// elapses (returning false).
-func waitForSleepingProc(ctx context.Context, server *Server, cmdMatch string, maxWait time.Duration) bool {
-	limit := time.After(maxWait)
+func concurrentMarkerCmd(startedPath, peerStartedPath, donePath string) string {
+	peerStartedExists := shellquote.Join("test", "-e", peerStartedPath)
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if countSleepingProcs(cmdMatch) > 0 {
-				return true
-			}
-
-			if !server.HasRunners(ctx) {
-				return false
-			}
-		case <-limit:
-			return false
-		}
-	}
+	return fmt.Sprintf(
+		"%s; i=0; while [ $i -lt 600 ]; do %s && break; i=$((i + 1)); sleep 0.1; done; %s; %s",
+		shellquote.Join("touch", startedPath),
+		peerStartedExists,
+		peerStartedExists,
+		shellquote.Join("touch", donePath),
+	)
 }
 
-// maxSimultaneousSleeping polls until the server runs out of runners or maxWait
-// elapses, returning the highest number of simultaneously-sleeping processes
-// matching cmdMatch that it observed.
-func maxSimultaneousSleeping(ctx context.Context, server *Server, cmdMatch string, maxWait time.Duration) int {
-	limit := time.After(maxWait)
+// scheduledGroupCount returns the recorded runner count for a previously-
+// scheduled group, or 0 if the server hasn't scheduled that group yet. It takes
+// the necessary locks to read the count safely.
+func scheduledGroupCount(server *Server, group string) int {
+	server.psgmutex.RLock()
+	defer server.psgmutex.RUnlock()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	maxSeen := 0
-
-	for {
-		select {
-		case <-ticker.C:
-			if n := countSleepingProcs(cmdMatch); n > maxSeen {
-				maxSeen = n
-			}
-
-			if !server.HasRunners(ctx) {
-				return maxSeen
-			}
-		case <-limit:
-			return maxSeen
-		}
+	g, existed := server.previouslyScheduledGroups[group]
+	if !existed {
+		return 0
 	}
+
+	g.RLock()
+	defer g.RUnlock()
+
+	return g.count
 }

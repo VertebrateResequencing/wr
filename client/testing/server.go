@@ -56,8 +56,9 @@ const (
 	testReleaseDelayMin = 100 * time.Millisecond
 	testSocketWait      = 1 * time.Millisecond
 
-	laneBasePort = 10000
-	laneSpan     = 1000
+	defaultLaneBasePort = 10000
+	laneSpan            = 200
+	testPortBaseEnv     = "WR_TEST_PORT_BASE"
 )
 
 // laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
@@ -127,7 +128,8 @@ func getPorts(t *testing.T) (int, int) {
 // each lane draws from its own disjoint range (matching jobqueue's freeTestPort
 // so the two packages' lanes never overlap); within a lane the tests run
 // sequentially, so an incrementing counter never repeats a port before it would
-// wrap. Falls back to the global picker when WR_TEST_LANE is unset.
+// wrap. WR_TEST_PORT_BASE lets the suite runner choose a fresh run-specific
+// base range. Falls back to the global picker when WR_TEST_LANE is unset.
 func laneFreePort() (int, error) {
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
@@ -137,6 +139,11 @@ func laneFreePort() (int, error) {
 	lane, err := strconv.Atoi(laneStr)
 	if err != nil {
 		return freeport.GetFreePort()
+	}
+
+	laneBasePort := defaultLaneBasePort
+	if base, err := strconv.Atoi(os.Getenv(testPortBaseEnv)); err == nil && base > 0 {
+		laneBasePort = base
 	}
 
 	for range laneSpan {
