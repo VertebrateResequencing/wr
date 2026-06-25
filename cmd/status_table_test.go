@@ -28,6 +28,7 @@ package cmd
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -171,6 +172,34 @@ func TestStatusTableOutputHelp(t *testing.T) {
 		} {
 			So(help, ShouldContainSubstring, fields)
 		}
+	})
+
+	Convey("wr status help wraps the WR_STATUS_FORMAT FIELD list within 80 columns", t, func() {
+		lines := strings.Split(commandHelpForTest(t, statusCmd), "\n")
+		checkFieldHelpLine := false
+		checked := 0
+
+		for _, line := range lines {
+			if strings.Contains(line, "Valid WR_STATUS_FORMAT FIELD names:") {
+				checkFieldHelpLine = true
+
+				continue
+			}
+
+			if !checkFieldHelpLine {
+				continue
+			}
+
+			So(len(line), ShouldBeLessThanOrEqualTo, 80)
+
+			checked++
+
+			if strings.Contains(line, "Field names are case-insensitive") {
+				break
+			}
+		}
+
+		So(checked, ShouldBeGreaterThan, 0)
 	})
 }
 

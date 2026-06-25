@@ -38,6 +38,8 @@ import (
 
 const (
 	statusFormatEnv                  = "WR_STATUS_FORMAT"
+	statusHelpIndent                 = "    "
+	statusHelpMaxColumns             = 80
 	defaultStatusTableColumns        = "command:36 id:32 status:12 attempts:8 host:16 reqgroup:18 count:5"
 	statusTableColumnSeparator       = "  "
 	statusTableDefaultTruncateMarker = "..."
@@ -116,12 +118,7 @@ var (
 )
 
 func statusTableFormatFieldsHelp() string {
-	groups := make([]string, 0, len(statusTableFieldOptions))
-	for _, option := range statusTableFieldOptions {
-		groups = append(groups, strings.Join(option.names, "/"))
-	}
-
-	return strings.Join(groups, ", ")
+	return wrapStatusTableFieldHelpGroups(statusTableFieldHelpGroups())
 }
 
 func statusOutputShowsAlerts(format string) bool {
@@ -349,6 +346,52 @@ func fitStatusTableValue(value string, width int) string {
 	}
 
 	return string(runes[:width-len(truncateMarkerRunes)]) + statusTableDefaultTruncateMarker
+}
+
+func wrapStatusTableFieldHelpGroups(groups []string) string {
+	lines := make([]string, 0, len(groups))
+	line := statusHelpIndent
+
+	for n, group := range groups {
+		nextLine := appendStatusTableFieldHelpGroup(line, group, n == len(groups)-1)
+		if line != statusHelpIndent && len(nextLine) > statusHelpMaxColumns {
+			lines = append(lines, line)
+			line = appendStatusTableFieldHelpGroup(statusHelpIndent, group, n == len(groups)-1)
+
+			continue
+		}
+
+		line = nextLine
+	}
+
+	if line != statusHelpIndent {
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func appendStatusTableFieldHelpGroup(line, group string, last bool) string {
+	separator := " "
+	if line == statusHelpIndent {
+		separator = ""
+	}
+
+	suffix := ","
+	if last {
+		suffix = "."
+	}
+
+	return line + separator + group + suffix
+}
+
+func statusTableFieldHelpGroups() []string {
+	groups := make([]string, 0, len(statusTableFieldOptions))
+	for _, option := range statusTableFieldOptions {
+		groups = append(groups, strings.Join(option.names, "/"))
+	}
+
+	return groups
 }
 
 func parseStatusTableColumnWidth(widthText string) (int, error) {

@@ -128,7 +128,8 @@ name to just the first letter, eg. -o c):
     query. As with details/json, --limit controls how many matching jobs can be
     shown from each status group. Columns can be customised with WR_STATUS_FORMAT
     using FIELD:width entries. Valid WR_STATUS_FORMAT FIELD names:
-    ` + statusTableFormatFieldsHelp() + `. Field names are case-insensitive and
+` + statusTableFormatFieldsHelp() + `
+    Field names are case-insensitive and
     '-'/'_' are ignored.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
