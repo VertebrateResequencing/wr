@@ -200,11 +200,11 @@ func TestRunnerPrioritizesLongLanes(t *testing.T) {
 			{Name: "client_wait"},
 			{Name: "other"},
 			{Name: "cmd_add"},
-			{Name: "runners"},
+			{Name: "runner_lifecycle"},
 		})
 
 		So(laneNames(lanes), ShouldResemble, []string{
-			"runners",
+			"runner_lifecycle",
 			"other",
 			"client_wait",
 			"cmd_add",

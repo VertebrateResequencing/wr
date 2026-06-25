@@ -49,6 +49,13 @@ const (
 	ModeRace Mode = "race"
 )
 
+const (
+	// LaneKindBinary runs a compiled Go test binary.
+	LaneKindBinary LaneKind = "binary"
+	// LaneKindGoTest runs go test over one or more packages.
+	LaneKindGoTest LaneKind = "go-test"
+)
+
 // UnknownModeError reports an unsupported test-suite mode.
 type UnknownModeError string
 
@@ -85,13 +92,6 @@ type Compile struct {
 
 // LaneKind describes how a Lane is executed.
 type LaneKind string
-
-const (
-	// LaneKindBinary runs a compiled Go test binary.
-	LaneKindBinary LaneKind = "binary"
-	// LaneKindGoTest runs go test over one or more packages.
-	LaneKindGoTest LaneKind = "go-test"
-)
 
 // Lane describes one independently logged test-suite lane.
 type Lane struct {
@@ -251,8 +251,8 @@ type jobqueueRunLaneConfig struct {
 
 func jobqueueRunLaneConfigs() []jobqueueRunLaneConfig {
 	return []jobqueueRunLaneConfig{
-		jqConfig("runners", 0, "TestJobqueueRunners"),
-		jqShardConfig("runners2_a", 1, "a", "TestJobqueueRunners2"),
+		jqConfig("runner_lifecycle", 0, "TestJobqueueRunnerLifecycle"),
+		jqShardConfig("runner_scheduling_a", 1, "a", "TestJobqueueRunnerScheduling"),
 		jqShardConfig("signal_a", 2, "a", "TestJobqueueSignal"),
 		jqConfig("production", 3, "TestJobqueueProduction"),
 		jqShardConfig("medium_a", 4, "a", "TestJobqueueMedium"),
@@ -281,7 +281,8 @@ func jobqueueRunLaneConfigs() []jobqueueRunLaneConfig {
 		jqShardConfig("signal_b", 14, "b", "TestJobqueueSignal"),
 		jqShardConfig("medium_b", 15, "b", "TestJobqueueMedium"),
 		jqShardConfig("modify_b", 16, "b", "TestJobqueueModify"),
-		jqShardConfig("runners2_b", 37, "b", "TestJobqueueRunners2"),
+		jqShardConfig("runner_scheduling_b", 37, "b", "TestJobqueueRunnerScheduling"),
+		jqShardConfig("medium_c", 38, "c", "TestJobqueueMedium"),
 		jqConfig(
 			"jq_payload",
 			18,

@@ -50,14 +50,124 @@ import (
 
 var errWaitForJobRunningOrDoneTimeout = errors.New("timed out waiting for job to reach running or terminal state")
 
-// TestJobqueueRunners2 holds the second half of TestJobqueueRunners's
-// runner-spawning scenarios. It lives in its own test (and file) purely so the
-// two halves run as separate, concurrent `go test` lanes (see the Makefile):
-// these scenarios spend most of their wall-clock time waiting on real runner
-// subprocesses, so splitting them roughly halves that lane's duration. The
-// runner subprocess re-runs the test binary in --runnermode, where every test
-// here returns early and TestJobqueueRunners' runner(ctx) does the work.
-func TestJobqueueRunners2(t *testing.T) {
+type expectedRunnerWaitLog uint8
+
+const (
+	expectedRunnerExitStatus1 expectedRunnerWaitLog = 1 << iota
+	expectedRunnerSignalKilled
+)
+
+func expectedRunnerWaitCmd(
+	cmd string,
+	expectedRunners map[string]expectedRunnerWaitLog,
+	expectedRunnerMutex *sync.RWMutex,
+) (expectedRunnerWaitLog, bool) {
+	expectedRunnerMutex.RLock()
+	defer expectedRunnerMutex.RUnlock()
+
+	for runnerCmd, expected := range expectedRunners {
+		matchesExpectedRunner := strings.HasPrefix(cmd, runnerCmd+" --runnermode ") &&
+			strings.Contains(cmd, " --schedgrp '") &&
+			strings.Contains(cmd, " --rdeployment ") &&
+			strings.Contains(cmd, " --rserver '") &&
+			strings.Contains(cmd, " --rdomain ") &&
+			strings.Contains(cmd, " --rtimeout ") &&
+			strings.Contains(cmd, " --maxmins ") &&
+			strings.Contains(cmd, " --rmanagerdir ") &&
+			strings.Contains(cmd, " --tmpdir ")
+
+		if matchesExpectedRunner {
+			return expected, true
+		}
+	}
+
+	return 0, false
+}
+
+func silenceExpectedRunCmdWaitLogs(t *testing.T) func(string, expectedRunnerWaitLog) {
+	t.Helper()
+
+	var expectedRunnerMutex sync.RWMutex
+
+	expectedRunners := make(map[string]expectedRunnerWaitLog)
+
+	previous := clog.GetHandler()
+	log15.Root().SetHandler(log15.FilterHandler(func(r log15.Record) bool {
+		return !isExpectedRunnerWaitLog(r, expectedRunners, &expectedRunnerMutex)
+	}, previous))
+
+	t.Cleanup(func() {
+		log15.Root().SetHandler(previous)
+	})
+
+	return func(runnerCmd string, expected expectedRunnerWaitLog) {
+		expectedRunnerMutex.Lock()
+		expectedRunners[runnerCmd] = expected
+		expectedRunnerMutex.Unlock()
+	}
+}
+
+func isExpectedRunnerWaitLog(
+	r log15.Record, expectedRunners map[string]expectedRunnerWaitLog, expectedRunnerMutex *sync.RWMutex,
+) bool {
+	if r.Lvl != log15.LvlError || r.Msg != "runCmd wait" {
+		return false
+	}
+
+	cmd, ok := logRecordStringValue(r, "cmd")
+	if !ok {
+		return false
+	}
+
+	expected, ok := expectedRunnerWaitCmd(cmd, expectedRunners, expectedRunnerMutex)
+	if !ok {
+		return false
+	}
+
+	errValue, ok := logRecordValue(r, "err")
+	if !ok {
+		return false
+	}
+
+	var exitErr *exec.ExitError
+
+	err, ok := errValue.(error)
+	if !ok {
+		return false
+	}
+
+	if expected&expectedRunnerExitStatus1 != 0 && errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true
+	}
+
+	return expected&expectedRunnerSignalKilled != 0 && strings.Contains(err.Error(), "signal: killed")
+}
+
+func logRecordStringValue(r log15.Record, key string) (string, bool) {
+	value, ok := logRecordValue(r, key)
+	if !ok {
+		return "", false
+	}
+
+	str, ok := value.(string)
+
+	return str, ok
+}
+
+func logRecordValue(r log15.Record, key string) (interface{}, bool) {
+	for i := 0; i+1 < len(r.Ctx); i += 2 {
+		if r.Ctx[i] == key {
+			return r.Ctx[i+1], true
+		}
+	}
+
+	return nil, false
+}
+
+// TestJobqueueRunnerScheduling covers the runner-spawning scheduler/resource
+// scenarios. The suite runs it in two shards because these scenarios spend most
+// of their wall-clock time waiting on real runner subprocesses.
+func TestJobqueueRunnerScheduling(t *testing.T) {
 	ctx := context.Background()
 
 	if runnermode || servermode {
@@ -83,7 +193,7 @@ func TestJobqueueRunners2(t *testing.T) {
 			log.Fatal(err)
 		}
 
-		registerExpectedRunnerWaitLog(runnerCmd)
+		registerExpectedRunnerWaitLog(runnerCmd, expectedRunnerExitStatus1)
 
 		runningConfig := serverConfig
 		rmd := strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
@@ -599,97 +709,6 @@ func TestJobqueueRunners2(t *testing.T) {
 	})
 }
 
-func silenceExpectedRunCmdWaitLogs(t *testing.T) func(string) {
-	t.Helper()
-
-	var expectedRunnerMutex sync.RWMutex
-
-	expectedRunners := make(map[string]struct{})
-
-	previous := clog.GetHandler()
-	log15.Root().SetHandler(log15.FilterHandler(func(r log15.Record) bool {
-		return !isExpectedRunnerWaitLog(r, expectedRunners, &expectedRunnerMutex)
-	}, previous))
-
-	t.Cleanup(func() {
-		log15.Root().SetHandler(previous)
-	})
-
-	return func(runnerCmd string) {
-		expectedRunnerMutex.Lock()
-		expectedRunners[runnerCmd] = struct{}{}
-		expectedRunnerMutex.Unlock()
-	}
-}
-
-func isExpectedRunnerWaitLog(
-	r log15.Record, expectedRunners map[string]struct{}, expectedRunnerMutex *sync.RWMutex,
-) bool {
-	if r.Lvl != log15.LvlError || r.Msg != "runCmd wait" {
-		return false
-	}
-
-	cmd, ok := logRecordStringValue(r, "cmd")
-	if !ok || !isExpectedRunnerWaitCmd(cmd, expectedRunners, expectedRunnerMutex) {
-		return false
-	}
-
-	errValue, ok := logRecordValue(r, "err")
-	if !ok {
-		return false
-	}
-
-	var exitErr *exec.ExitError
-
-	err, ok := errValue.(error)
-
-	return ok && errors.As(err, &exitErr) && exitErr.ExitCode() == 1
-}
-
-func logRecordStringValue(r log15.Record, key string) (string, bool) {
-	value, ok := logRecordValue(r, key)
-	if !ok {
-		return "", false
-	}
-
-	str, ok := value.(string)
-
-	return str, ok
-}
-
-func isExpectedRunnerWaitCmd(cmd string, expectedRunners map[string]struct{}, expectedRunnerMutex *sync.RWMutex) bool {
-	expectedRunnerMutex.RLock()
-	defer expectedRunnerMutex.RUnlock()
-
-	for runnerCmd := range expectedRunners {
-		matchesExpectedRunner := strings.HasPrefix(cmd, runnerCmd+" --runnermode ") &&
-			strings.Contains(cmd, " --schedgrp '") &&
-			strings.Contains(cmd, " --rdeployment ") &&
-			strings.Contains(cmd, " --rserver '") &&
-			strings.Contains(cmd, " --rdomain ") &&
-			strings.Contains(cmd, " --rtimeout ") &&
-			strings.Contains(cmd, " --maxmins ") &&
-			strings.Contains(cmd, " --rmanagerdir ") &&
-			strings.Contains(cmd, " --tmpdir ")
-
-		if matchesExpectedRunner {
-			return true
-		}
-	}
-
-	return false
-}
-
-func logRecordValue(r log15.Record, key string) (interface{}, bool) {
-	for i := 0; i+1 < len(r.Ctx); i += 2 {
-		if r.Ctx[i] == key {
-			return r.Ctx[i+1], true
-		}
-	}
-
-	return nil, false
-}
-
 // waitForJobRunningOrDone polls until the job starts running, reaches a state
 // that means it will not become running, or maxWait elapses.
 func waitForJobRunningOrDone(jq *Client, essence *JobEssence, maxWait time.Duration) (*Job, error) {
@@ -745,6 +764,26 @@ func jobStateStopsRunningWait(state JobState) bool {
 	}
 }
 
+// waitUntilNoRunners polls until the server reports no runners (returning true)
+// or maxWait elapses (returning false).
+func waitUntilNoRunners(ctx context.Context, server *Server, maxWait time.Duration) bool {
+	limit := time.After(maxWait)
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if !server.HasRunners(ctx) {
+				return true
+			}
+		case <-limit:
+			return false
+		}
+	}
+}
+
 func concurrentMarkerCmd(startedPath, peerStartedPath, donePath string) string {
 	peerStartedExists := shellquote.Join("test", "-e", peerStartedPath)
 
@@ -773,24 +812,4 @@ func scheduledGroupCount(server *Server, group string) int {
 	defer g.RUnlock()
 
 	return g.count
-}
-
-// waitUntilNoRunners polls until the server reports no runners (returning true)
-// or maxWait elapses (returning false).
-func waitUntilNoRunners(ctx context.Context, server *Server, maxWait time.Duration) bool {
-	limit := time.After(maxWait)
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if !server.HasRunners(ctx) {
-				return true
-			}
-		case <-limit:
-			return false
-		}
-	}
 }
