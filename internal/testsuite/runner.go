@@ -64,6 +64,8 @@ var (
 	errMissingCompiledBinary = errors.New("missing compiled binary")
 	errNoPortRange           = errors.New("not enough port space")
 	errNoFreePortRange       = errors.New("could not find a free port range")
+	errInvalidPortBase       = errors.New("invalid test port base")
+	errUnsafePortBase        = errors.New("test port base enters ephemeral port range")
 	errUnexpectedModule      = errors.New("unexpected module discovery output")
 	errUnknownLaneKind       = errors.New("unknown lane kind")
 )
@@ -108,8 +110,8 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
 }
 
 func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
-	if os.Getenv(envTestPortBase) != "" {
-		return func() {}, nil
+	if baseEnv := os.Getenv(envTestPortBase); baseEnv != "" {
+		return useConfiguredRunPortBase(ctx, plan, baseEnv)
 	}
 
 	base, err := chooseRunPortBase(ctx, plan)
@@ -124,11 +126,47 @@ func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
 	return func() { _ = os.Unsetenv(envTestPortBase) }, nil
 }
 
+func useConfiguredRunPortBase(ctx context.Context, plan Plan, baseEnv string) (func(), error) {
+	base, err := strconv.Atoi(baseEnv)
+	if err != nil || base < minTestPortBase {
+		return nil, fmt.Errorf("%w: %s=%q", errInvalidPortBase, envTestPortBase, baseEnv)
+	}
+
+	if err := validateRunPortBase(ctx, plan, base); err != nil {
+		return nil, err
+	}
+
+	return func() {}, nil
+}
+
+func validateRunPortBase(ctx context.Context, plan Plan, base int) error {
+	return validateRunPortBaseWithEphemeralStart(ctx, plan, base, ephemeralPortStart())
+}
+
+func validateRunPortBaseWithEphemeralStart(ctx context.Context, plan Plan, base int, ephemeralStart int) error {
+	maxLane := maxPlanLane(plan)
+	maxBase, err := maxRunPortBase(maxLane, ephemeralStart)
+	if err != nil {
+		return err
+	}
+
+	if base > maxBase {
+		return fmt.Errorf("%w: %s=%d would use ports at or above ephemeral port start %d",
+			errUnsafePortBase, envTestPortBase, base, ephemeralStart)
+	}
+
+	if !runPortBaseAvailable(ctx, base, maxLane) {
+		return fmt.Errorf("%w for %s=%d", errNoFreePortRange, envTestPortBase, base)
+	}
+
+	return nil
+}
+
 func chooseRunPortBase(ctx context.Context, plan Plan) (int, error) {
 	maxLane := maxPlanLane(plan)
-	maxBase := min(ephemeralPortStart()-1, maxTCPPort) - ((maxLane + 1) * lanePortSpan)
-	if maxBase < minTestPortBase {
-		return 0, fmt.Errorf("%w for WR_TEST_LANE=%d", errNoPortRange, maxLane)
+	maxBase, err := maxRunPortBase(maxLane, ephemeralPortStart())
+	if err != nil {
+		return 0, err
 	}
 
 	width := maxBase - minTestPortBase + 1
@@ -152,6 +190,15 @@ func chooseRunPortBase(ctx context.Context, plan Plan) (int, error) {
 	return 0, fmt.Errorf("%w for %s", errNoFreePortRange, envTestPortBase)
 }
 
+func maxRunPortBase(maxLane int, ephemeralStart int) (int, error) {
+	maxBase := min(ephemeralStart-1, maxTCPPort) - ((maxLane + 1) * lanePortSpan)
+	if maxBase < minTestPortBase {
+		return 0, fmt.Errorf("%w for WR_TEST_LANE=%d", errNoPortRange, maxLane)
+	}
+
+	return maxBase, nil
+}
+
 func ephemeralPortStart() int {
 	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
 	if err != nil {
@@ -164,7 +211,7 @@ func ephemeralPortStart() int {
 	}
 
 	start, err := strconv.Atoi(fields[0])
-	if err != nil || start <= minTestPortBase {
+	if err != nil || start <= 0 {
 		return defaultEphemeralStart
 	}
 

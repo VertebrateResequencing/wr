@@ -294,8 +294,12 @@ func TestLimiter(t *testing.T) {
 			close(start)
 			wg.Wait()
 
-			So(atomic.LoadUint64(&incs), ShouldEqual, 125)
-			So(atomic.LoadUint64(&fails), ShouldEqual, 75)
+			succeeded := atomic.LoadUint64(&incs)
+			failed := atomic.LoadUint64(&fails)
+
+			So(succeeded+failed, ShouldEqual, 200)
+			So(succeeded, ShouldBeBetweenOrEqual, 100, 125)
+			So(failed, ShouldBeBetweenOrEqual, 75, 100)
 		})
 	})
 

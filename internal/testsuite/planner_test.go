@@ -27,6 +27,7 @@
 package testsuite
 
 import (
+	"context"
 	"regexp"
 	"slices"
 	"testing"
@@ -148,7 +149,7 @@ func TestCompileParallelismScalesWithCPUs(t *testing.T) {
 }
 
 func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
-	Convey("the configured lane range fits below the default Linux ephemeral range", t, func() {
+	Convey("the highest selectable lane range fits below the default Linux ephemeral range", t, func() {
 		plan := NewPlan(ModeTest, testModule, []string{
 			pkg(testModule, "client"),
 			pkg(testModule, "cmd"),
@@ -156,9 +157,20 @@ func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
 			pkg(testModule, "jobqueue/scheduler"),
 		})
 
-		maxPort := minTestPortBase + ((maxPlanLane(plan) + 1) * lanePortSpan)
+		maxLane := maxPlanLane(plan)
+		maxBase, err := maxRunPortBase(maxLane, defaultEphemeralStart)
+		So(err, ShouldBeNil)
 
+		maxPort := maxBase + ((maxLane + 1) * lanePortSpan)
 		So(maxPort, ShouldBeLessThan, defaultEphemeralStart)
+	})
+
+	Convey("a caller-provided lane base inside the ephemeral range is rejected", t, func() {
+		plan := Plan{Parallel: []Lane{{Env: laneEnv(1)}}}
+
+		err := validateRunPortBaseWithEphemeralStart(context.Background(), plan, defaultEphemeralStart, defaultEphemeralStart)
+
+		So(err, ShouldNotBeNil)
 	})
 }
 

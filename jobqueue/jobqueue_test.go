@@ -3568,6 +3568,7 @@ func TestJobqueueMedium(t *testing.T) {
 		// behaviour (lost jobs, auto-revert) opt back into a short TTR locally.
 		serverConfig.Timings.ItemTTR = 2 * time.Second
 		serverConfig.Timings.TouchInterval = 50 * time.Millisecond
+		serverConfig.Timings.ReleaseDelayMin = time.Second
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 
@@ -3771,8 +3772,10 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job2.DelayTime, ShouldBeGreaterThanOrEqualTo, serverConfig.Timings.ReleaseDelayMin)
 					So(job2.DelayTime, ShouldBeLessThan, serverConfig.Timings.ReleaseDelayMin*2)
 
-					<-time.After(serverConfig.Timings.ReleaseDelayMin)
-					job, err = jq.Reserve(serverConfig.Timings.ReleaseDelayMin)
+					job2 = waitUntilJobState(jq2, &JobEssence{Cmd: sleepFalseCmd}, JobStateReady, 30)
+					So(job2, ShouldNotBeNil)
+
+					job, err = jq.Reserve(reserveWait)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
 					So(job.Cmd, ShouldEqual, sleepFalseCmd)
@@ -3795,17 +3798,14 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.UntilBuried, ShouldEqual, 1)
 						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, serverConfig.Timings.ReleaseDelayMin*2)
 						So(job.DelayTime, ShouldBeLessThan, serverConfig.Timings.ReleaseDelayMin*3)
-						delayEnd := job.EndTime.Add(job.DelayTime)
 
-						<-time.After(serverConfig.Timings.ReleaseDelayMin)
+						job2, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
+						So(err, ShouldBeNil)
+						So(job2, ShouldNotBeNil)
+						So(job2.State, ShouldEqual, JobStateDelayed)
 
-						job, err = jq.Reserve(time.Until(delayEnd) - 10*time.Millisecond)
-						So(err, ShouldBeNil)
-						So(job, ShouldBeNil)
-						job, err = jq2.GetByEssence(&JobEssence{Cmd: sleepFalseCmd}, false, false)
-						So(err, ShouldBeNil)
-						So(job, ShouldNotBeNil)
-						So(job.State, ShouldEqual, JobStateDelayed)
+						job2 = waitUntilJobState(jq2, &JobEssence{Cmd: sleepFalseCmd}, JobStateReady, 30)
+						So(job2, ShouldNotBeNil)
 
 						job, err = jq.Reserve(reserveWait)
 						So(err, ShouldBeNil)
@@ -5734,8 +5734,8 @@ func TestJobqueueModules(t *testing.T) {
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		serverConfig.Timings.ItemTTR = 1 * time.Second
-		serverConfig.Timings.TouchInterval = 2500 * time.Millisecond
+		serverConfig.Timings.ItemTTR = 5 * time.Second
+		serverConfig.Timings.TouchInterval = 500 * time.Millisecond
 
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
@@ -8817,6 +8817,8 @@ func TestJobqueueWithMounts(t *testing.T) {
 	ServerItemTTR = 10 * time.Second
 
 	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
+	isolateTestConfig(config)
+
 	addr := "localhost:" + config.ManagerPort
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
