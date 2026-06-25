@@ -500,7 +500,11 @@ func maxParallel(laneCount int) int {
 	}
 
 	limit, err := strconv.Atoi(raw)
-	if err != nil || limit < 1 || limit > laneCount {
+	if err != nil || limit < 1 {
+		return defaultParallelLimit(laneCount)
+	}
+
+	if limit > laneCount {
 		return laneCount
 	}
 
@@ -754,14 +758,12 @@ func printLaneLogs(stdout io.Writer, results []laneResult) error {
 }
 
 func copyLaneLog(stdout io.Writer, result laneResult) error {
-	file, err := os.Open(result.log)
+	content, err := os.ReadFile(result.log)
 	if err != nil {
 		return fmt.Errorf("open lane log %s: %w", result.lane.Name, err)
 	}
 
-	defer closeLog(file)
-
-	if _, err := io.Copy(stdout, file); err != nil {
+	if _, err := io.WriteString(stdout, formatLaneLog(string(content))); err != nil {
 		return fmt.Errorf("copy lane log %s: %w", result.lane.Name, err)
 	}
 

@@ -626,7 +626,7 @@ func laneEnv(lane int) map[string]string {
 }
 
 func conveyEnv() map[string]string {
-	return map[string]string{"GOCONVEY_REPORTER": "silent"}
+	return map[string]string{"GOCONVEY_REPORTER": "json"}
 }
 
 func pkg(module string, relative string) string {

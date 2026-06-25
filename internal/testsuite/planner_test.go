@@ -135,6 +135,25 @@ func TestDefaultParallelismIsBounded(t *testing.T) {
 
 		So(maxParallel(maxDefaultParallel+20), ShouldEqual, 7)
 	})
+
+	Convey("invalid caller overrides fall back to the default cap", t, func() {
+		laneCount := maxDefaultParallel + 20
+
+		t.Setenv(envMaxParallel, "many")
+		So(maxParallel(laneCount), ShouldEqual, defaultParallelLimit(laneCount))
+
+		t.Setenv(envMaxParallel, "0")
+		So(maxParallel(laneCount), ShouldEqual, defaultParallelLimit(laneCount))
+
+		t.Setenv(envMaxParallel, "-1")
+		So(maxParallel(laneCount), ShouldEqual, defaultParallelLimit(laneCount))
+	})
+
+	Convey("caller overrides above the lane count clamp to available lanes", t, func() {
+		t.Setenv(envMaxParallel, "200")
+
+		So(maxParallel(7), ShouldEqual, 7)
+	})
 }
 
 func TestCompileParallelismScalesWithCPUs(t *testing.T) {
