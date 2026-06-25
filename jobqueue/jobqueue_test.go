@@ -40,6 +40,7 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,6 +105,7 @@ var (
 	errMissingLiveJobsBucket = errors.New("missing live jobs bucket")
 	errUnexpectedLiveJobs    = errors.New("unexpected live job count")
 	errFileStillExists       = errors.New("file still exists")
+	errNoFreeLanePort        = errors.New("no free test port in lane range")
 )
 
 func init() {
@@ -2207,12 +2209,14 @@ func TestJobqueueBasics(t *testing.T) {
 				server.rc = ""
 				server.racmutex.Unlock()
 
-				groups, err := os.Getgroups()
+				second, ok, err := resolvableSupplementaryGroup()
 				So(err, ShouldBeNil)
-				So(len(groups), ShouldBeGreaterThan, 1)
 
-				second, err := user.LookupGroupId(strconv.Itoa(groups[1]))
-				So(err, ShouldBeNil)
+				if !ok {
+					SkipConvey("Skipping different-group execution because no supplementary group can be resolved by name", func() {})
+
+					return
+				}
 
 				inserts, already, err := jq.Add([]*Job{
 					{Cmd: "id", Cwd: t.TempDir(), Requirements: standardReqs, RepGroup: "manually_added"},
@@ -5563,6 +5567,26 @@ func jobsToJobEssenses(jobs []*Job) []*JobEssence {
 		jes = append(jes, job.ToEssense())
 	}
 	return jes
+}
+
+func resolvableSupplementaryGroup() (*user.Group, bool, error) {
+	groups, err := os.Getgroups()
+	if err != nil {
+		return nil, false, err
+	}
+
+	for _, gid := range groups {
+		if gid == os.Getgid() {
+			continue
+		}
+
+		group, err := user.LookupGroupId(strconv.Itoa(gid))
+		if err == nil {
+			return group, true, nil
+		}
+	}
+
+	return nil, false, nil
 }
 
 func TestJobqueueModules(t *testing.T) {
@@ -9443,10 +9467,10 @@ var testPortNext int //nolint:gochecknoglobals
 // failures). So when the Makefile runs a lane it sets WR_TEST_LANE, and each
 // lane draws from its own disjoint port range; since a lane's tests run
 // sequentially, an incrementing counter never repeats a port before it would
-// wrap (far more ports than any lane uses), so no two servers anywhere contend
-// for a port. When WR_TEST_LANE is unset (e.g. a direct `go test` run) it falls
-// back to the global picker, whose race only matters with many concurrent
-// lanes.
+// wrap. Each candidate is still bind-checked so a port already occupied by some
+// unrelated process on the same machine is skipped. When WR_TEST_LANE is unset
+// (e.g. a direct `go test` run) it falls back to the global picker, whose race
+// only matters with many concurrent lanes.
 func freeTestPort() (int, error) {
 	const (
 		laneBasePort = 10000
@@ -9463,9 +9487,33 @@ func freeTestPort() (int, error) {
 		return freeport.GetFreePort()
 	}
 
-	testPortNext++
+	for range laneSpan {
+		testPortNext++
+		port := laneBasePort + lane*laneSpan + testPortNext%laneSpan
 
-	return laneBasePort + lane*laneSpan + testPortNext%laneSpan, nil
+		if portCanListen(port) {
+			return port, nil
+		}
+	}
+
+	return 0, fmt.Errorf(
+		"%w: WR_TEST_LANE=%d range %d-%d",
+		errNoFreeLanePort,
+		lane,
+		laneBasePort+lane*laneSpan,
+		laneBasePort+(lane+1)*laneSpan-1,
+	)
+}
+
+func portCanListen(port int) bool {
+	listenConfig := net.ListenConfig{}
+
+	listener, err := listenConfig.Listen(context.Background(), "tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		return false
+	}
+
+	return listener.Close() == nil
 }
 
 // skipInShard lets a long test split its independent scenarios across parallel
