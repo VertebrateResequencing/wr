@@ -28,6 +28,14 @@ injects a fake websocket, opens the dependent-job details row, asserts that the
 visible status row explains the missing dependency group wait, and writes a
 screenshot.
 
+## Suspended job actions
+
+`suspended-job-actions/` contains a browser fixture for suspended jobs in the
+status page. It serves the real status page, injects a fake websocket, opens a
+suspended-job details row, asserts that the visible state text is exactly
+`suspended`, clicks the Resume action, verifies a single-job resume websocket
+request, and writes a screenshot.
+
 ## Local dependency and artifact locations
 
 Browser-test dependencies and artifacts must stay repo-local:

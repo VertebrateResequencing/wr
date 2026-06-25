@@ -731,7 +731,7 @@
                                         <!-- ko if: State == "suspended" -->
                                         <div class="prop-tag">
                                             <span class="prop-name">State</span>
-                                            <span class="prop-value">suspended - use wr resume to make it schedulable again</span>
+                                            <span class="prop-value">suspended</span>
                                         </div>
                                         <!-- /ko -->
 
@@ -833,6 +833,10 @@
                             <!-- ko if: State == "dependent" -->
                             <button type="button" class="btn btn-danger pull-right"
                                 data-bind="click: $root.confirmRemoveDep">Remove</button>
+                            <!-- /ko -->
+                            <!-- ko if: State == "suspended" -->
+                            <button type="button" class="btn btn-primary pull-right"
+                                data-bind="click: $root.confirmResume">Resume</button>
                             <!-- /ko -->
                             <!-- ko if: State == "running" -->
                             <button type="button" class="btn btn-danger pull-right"

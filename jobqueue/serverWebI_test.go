@@ -173,10 +173,20 @@ func TestServerWebISuspendedStatus(t *testing.T) {
 			So(body, ShouldContainSubstring, "counts.suspended")
 			So(body, ShouldContainSubstring, "showRepgroupSuspended")
 			So(body, ShouldContainSubstring, "State == 'delayed' || State == 'dependent' || State == 'suspended'")
-			So(body, ShouldContainSubstring, "suspended - use wr resume to make it schedulable again")
+			So(body, ShouldContainSubstring, `<span class="prop-value">suspended</span>`)
+			So(body, ShouldContainSubstring, "confirmResume")
+			So(body, ShouldNotContainSubstring, "suspended - use wr resume to make it schedulable again")
+
+			w = httptest.NewRecorder()
+			r = httptest.NewRequestWithContext(ctx, http.MethodGet, "/js/wr/action-handlers.js", nil)
+
+			handler(w, r)
+
+			So(w.Result().StatusCode, ShouldEqual, http.StatusOK)
+			So(w.Body.String(), ShouldContainSubstring, "Resume Suspended Commands")
 		})
 
-		Convey("The websocket returns suspended current counts and details", func() {
+		Convey("The websocket returns suspended current counts, details, and resumes a single suspended job", func() {
 			testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
 			defer testServer.Close()
 
@@ -210,6 +220,13 @@ func TestServerWebISuspendedStatus(t *testing.T) {
 			})
 			So(ok, ShouldBeTrue)
 			So(status.Cmd, ShouldEqual, suspended.Cmd)
+
+			err = ws.WriteJSON(jstatusReq{
+				Request: jstatusRequestResume,
+				Key:     suspended.Key(),
+			})
+			So(err, ShouldBeNil)
+			So(waitForJobState(jq, repGroup, JobStateReady, 2), ShouldEqual, 2)
 		})
 	})
 }

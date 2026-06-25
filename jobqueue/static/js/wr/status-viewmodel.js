@@ -689,6 +689,10 @@ export function StatusViewModel() {
         actionHandlers.confirmRemoveDelay(self, job);
     };
 
+    self.confirmResume = function (job) {
+        actionHandlers.confirmResume(self, job);
+    };
+
     self.confirmKill = function (job) {
         actionHandlers.confirmKill(self, job);
     };

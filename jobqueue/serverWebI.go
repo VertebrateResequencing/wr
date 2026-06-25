@@ -50,6 +50,7 @@ const (
 	jstatusRequestCurrent     = "current"
 	jstatusRequestDetails     = "details"
 	jstatusRequestRemove      = "remove"
+	jstatusRequestResume      = "resume"
 	jstatusRequestRerun       = "rerun"
 	jstatusRequestUnsubscribe = requestMethodUnsubscribe
 	statusAllRepGroups        = "+all+"
@@ -63,6 +64,7 @@ type jstatusReq struct {
 	// details = get example job details for jobs in the RepGroup, grouped by
 	//           having the same Status, Exitcode and FailReason.
 	// rerun = add completed jobs to the queue again, using Key or RepGroup.
+	// resume = resume suspended jobs using Key or RepGroup.
 	// retry = retry buried jobs.
 	// remove = remove non-running jobs.
 	// kill = kill running jobs or confirm lost jobs are dead.
@@ -579,6 +581,16 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						deleted := s.deleteJobs(ctx, jobs)
 						clog.Debug(ctx, "removed jobs", "count", len(deleted))
+					case jstatusRequestResume:
+						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateSuspended})
+
+						keys := make([]string, 0, len(jobs))
+						for _, job := range jobs {
+							keys = append(keys, job.Key())
+						}
+
+						resumed := s.resumeJobs(ctx, keys)
+						clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
 					case "kill":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
 						for _, job := range jobs {
