@@ -472,7 +472,7 @@ redirect (eg. "mycmd > stdout.txt").
 				}
 
 				if job.FailReason != "" {
-					fmt.Printf("Previous problem: %s\n", job.FailReason)
+					fmt.Printf("Previous problem: %s\n", statusPreviousProblem(job))
 				}
 
 				var hostID string
@@ -664,6 +664,37 @@ func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
 	}
 
 	return nil
+}
+
+func statusPreviousProblem(job *jobqueue.Job) string {
+	problem := job.FailReason
+	if statusShouldShowHighMemoryNote(job) {
+		problem += "; note: " + jobqueue.FailReasonRAM
+	}
+
+	return problem
+}
+
+func statusShouldShowHighMemoryNote(job *jobqueue.Job) bool {
+	if job == nil || job.FailReason == "" || job.FailReason == jobqueue.FailReasonRAM || !job.Exited {
+		return false
+	}
+
+	requiredRAM := statusRequiredRAMForProblem(job)
+
+	return requiredRAM > 0 && job.PeakRAM > requiredRAM
+}
+
+func statusRequiredRAMForProblem(job *jobqueue.Job) int {
+	if job.RequirementsOrig != nil && job.RequirementsOrig.RAM > 0 {
+		return job.RequirementsOrig.RAM
+	}
+
+	if job.Requirements == nil {
+		return 0
+	}
+
+	return job.Requirements.RAM
 }
 
 func canUseFastStatusOutput(format string) bool {

@@ -557,6 +557,51 @@ func TestStatusDisplaysMissingDepGroups(t *testing.T) {
 	})
 }
 
+func TestStatusDetailsPreservesHighMemoryFailureNote(t *testing.T) {
+	Convey("wr status details shows the RAM note on non-RAM failures that exceeded requested memory", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		repGroup := "status-ram-note"
+		failed := statusTestJob("perl -e 'exit 1'", repGroup, reqs)
+		addStatusJobs(jq, failed)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved.Key(), ShouldEqual, failed.Key())
+		So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+		endTime := time.Now()
+		err = jq.Release(reserved, &jobqueue.JobEndState{
+			Exitcode: 1,
+			PeakRAM:  reqs.RAM + 1,
+			EndTime:  endTime,
+			Exited:   true,
+		}, jobqueue.FailReasonExit)
+		So(err, ShouldBeNil)
+
+		details := runStatusForTest(t, "--identifier", repGroup, "--output", "details")
+		So(details, ShouldContainSubstring,
+			"Previous problem: command exited non-zero; note: command used too much RAM")
+	})
+}
+
 func TestStatusShowsAndFiltersSuspendedJobs(t *testing.T) {
 	Convey("wr status shows and filters suspended jobs", t, func() {
 		ctx := context.Background()
