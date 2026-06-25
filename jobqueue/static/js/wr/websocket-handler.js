@@ -76,6 +76,28 @@ function trackerTotal(tracker) {
     return total;
 }
 
+function snapshotCountTotal(counts) {
+    let total = 0;
+
+    for (const property of countProperties) {
+        total += counts[property] || 0;
+    }
+
+    return total;
+}
+
+function completedRepGroupCounts(viewModel) {
+    const completed = {};
+
+    for (const repgroup of viewModel.repGroups) {
+        if (!repgroup.id.startsWith('search:') && typeof repgroup.complete === 'function' && repgroup.complete() > 0) {
+            completed[repgroup.id] = repgroup.complete();
+        }
+    }
+
+    return completed;
+}
+
 function removeFromSortableRepGroups(viewModel, repgroup) {
     if (viewModel.sortableRepGroups && typeof viewModel.sortableRepGroups.remove === 'function') {
         viewModel.sortableRepGroups.remove(repgroup);
@@ -126,6 +148,18 @@ function getOrCreateRepGroupTracker(viewModel, rg) {
     viewModel.sortableRepGroups.push(repgroup);
 
     return repgroup;
+}
+
+function restoreCompletedRepGroupsMissingFromSnapshot(viewModel, snapshot, completedCounts) {
+    for (const [rg, complete] of Object.entries(completedCounts)) {
+        const snapshotCounts = snapshot.repGroups[rg];
+        if (snapshotCounts && snapshotCountTotal(snapshotCounts) > 0) {
+            continue;
+        }
+
+        const repgroup = getOrCreateRepGroupTracker(viewModel, rg);
+        repgroup.complete(complete);
+    }
 }
 
 function pruneEmptyLiveRepGroups(viewModel) {
@@ -187,6 +221,8 @@ function stageStatusSnapshotCount(viewModel, json) {
 }
 
 function applyStatusSnapshot(viewModel, snapshot) {
+    const completedCounts = completedRepGroupCounts(viewModel);
+
     setTrackerCounts(viewModel.inflight, snapshot.inflight);
     viewModel.ignore = {};
 
@@ -201,6 +237,7 @@ function applyStatusSnapshot(viewModel, snapshot) {
         setTrackerCounts(repgroup, counts);
     }
 
+    restoreCompletedRepGroupsMissingFromSnapshot(viewModel, snapshot, completedCounts);
     pruneEmptyLiveRepGroups(viewModel);
 }
 

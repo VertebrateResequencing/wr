@@ -65,6 +65,15 @@ snapshot is incomplete. It also asserts that the status page does not register
 the old blind 10-second current-status polling timer. It is wired into
 `make browser-test`.
 
+## Completed RepGroup visibility
+
+`completed-repgroup-visibility/` contains a browser regression fixture for a
+RepGroup that transitions from pending to all complete while the status page is
+open. It serves the real status page, injects a fake websocket, drives live
+completion messages, then sends an explicit resync/current snapshot and asserts
+that the completed RepGroup remains visible with the correct completed
+count/bar. It is wired into `make browser-test`.
+
 ## Local dependency and artifact locations
 
 Browser-test dependencies and artifacts must stay repo-local:
