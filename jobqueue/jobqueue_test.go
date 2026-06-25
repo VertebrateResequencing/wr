@@ -61,6 +61,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	log15 "github.com/inconshreveable/log15/v3"
 	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
@@ -3551,7 +3552,7 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 	})
 }
 
-func TestJobqueueMedium(t *testing.T) {
+func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 	ctx := context.Background()
 
 	if runnermode || servermode {
@@ -4115,6 +4116,8 @@ func TestJobqueueMedium(t *testing.T) {
 				})
 
 				Convey("Jobs that fork and change processgroup can still be fully killed", func() {
+					silenceExpectedKillRequestedLogs(t)
+
 					jobs = nil
 					tmpdir, err := os.MkdirTemp("", "wr_kill_test")
 					So(err, ShouldBeNil)
@@ -9143,6 +9146,19 @@ func skipUnlessShard(homeShards ...string) bool {
 	}
 
 	return true
+}
+
+func silenceExpectedKillRequestedLogs(t *testing.T) {
+	t.Helper()
+
+	previous := clog.GetHandler()
+	log15.Root().SetHandler(log15.FilterHandler(func(r log15.Record) bool {
+		return r.Lvl != log15.LvlWarn || r.Msg != "kill requested externally"
+	}, previous))
+
+	t.Cleanup(func() {
+		log15.Root().SetHandler(previous)
+	})
 }
 
 // pollUntil polls cond every 20ms for up to 30s, returning true as soon as cond

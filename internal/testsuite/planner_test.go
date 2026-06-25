@@ -84,6 +84,20 @@ func TestPlannerCoversRacePackagesAutomatically(t *testing.T) {
 	})
 }
 
+func TestPlannerCompilesSharedRaceRunnerBinary(t *testing.T) {
+	Convey("race mode compiles one non-race jobqueue helper for runner subprocesses", t, func() {
+		plan := NewPlan(ModeRace, testModule, []string{pkg(testModule, "jobqueue")})
+
+		So(compileNames(plan.Compiles), ShouldResemble, []string{"jobqueue", "jobqueue_runner"})
+	})
+
+	Convey("normal test mode reuses the running jobqueue test binary", t, func() {
+		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
+
+		So(compileNames(plan.Compiles), ShouldResemble, []string{"jobqueue"})
+	})
+}
+
 func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 	Convey("known prefix-collision tests are explicit and future tests fall into the default lane", t, func() {
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
@@ -102,6 +116,26 @@ func TestPlannerPreservesShardLanes(t *testing.T) {
 		So(jobqueueLanesForTest(plan, "TestJobqueueSignal"), ShouldResemble, []string{"signal_a", "signal_b"})
 		So(laneNamed(plan, "signal_a").Env["WR_TEST_SHARD"], ShouldEqual, "a")
 		So(laneNamed(plan, "signal_b").Env["WR_TEST_SHARD"], ShouldEqual, "b")
+	})
+}
+
+func TestRunnerPassesSharedRunnerBinaryToJobqueueLanes(t *testing.T) {
+	Convey("jobqueue binary lanes receive the shared runner helper path", t, func() {
+		lane := Lane{Binary: "jobqueue", Env: map[string]string{"WR_TEST_LANE": "1"}}
+
+		env := laneEnvWithBinaries(lane, map[string]string{"jobqueue_runner": "/tmp/wr-runner.test"})
+
+		So(env[envTestRunnerBinary], ShouldEqual, "/tmp/wr-runner.test")
+		So(env["WR_TEST_LANE"], ShouldEqual, "1")
+		So(lane.Env[envTestRunnerBinary], ShouldBeBlank)
+	})
+
+	Convey("other lanes are not given a jobqueue-specific helper path", t, func() {
+		lane := Lane{Binary: "client", Env: map[string]string{"WR_TEST_LANE": "2"}}
+
+		env := laneEnvWithBinaries(lane, map[string]string{"jobqueue_runner": "/tmp/wr-runner.test"})
+
+		So(env[envTestRunnerBinary], ShouldBeBlank)
 	})
 }
 
@@ -200,11 +234,11 @@ func TestRunnerPrioritizesLongLanes(t *testing.T) {
 			{Name: "client_wait"},
 			{Name: "other"},
 			{Name: "cmd_add"},
-			{Name: "runner_lifecycle"},
+			{Name: "runner_lost_jobs"},
 		})
 
 		So(laneNames(lanes), ShouldResemble, []string{
-			"runner_lifecycle",
+			"runner_lost_jobs",
 			"other",
 			"client_wait",
 			"cmd_add",
@@ -228,6 +262,16 @@ func laneNames(lanes []Lane) []string {
 
 	for _, lane := range lanes {
 		names = append(names, lane.Name)
+	}
+
+	return names
+}
+
+func compileNames(compiles []Compile) []string {
+	names := make([]string, 0, len(compiles))
+
+	for _, compile := range compiles {
+		names = append(names, compile.Name)
 	}
 
 	return names

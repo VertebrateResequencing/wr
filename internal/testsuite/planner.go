@@ -151,6 +151,7 @@ func compilePlan(module string, packages []string, mode Mode) []Compile {
 
 	if mode == ModeRace {
 		specs = append(specs, Compile{Name: "cloud", Package: pkg(module, "cloud"), Race: true})
+		specs = append(specs, Compile{Name: "jobqueue_runner", Package: pkg(module, "jobqueue"), Race: false})
 	}
 
 	return keepExistingCompiles(specs, packages)
@@ -251,11 +252,11 @@ type jobqueueRunLaneConfig struct {
 
 func jobqueueRunLaneConfigs() []jobqueueRunLaneConfig {
 	return []jobqueueRunLaneConfig{
-		jqConfig("runner_lifecycle", 0, "TestJobqueueRunnerLifecycle"),
+		jqConfig("runner_lost_jobs", 0, "TestJobqueueRunnerModeEntrypoint", "TestJobqueueRunnerLostJobs"),
 		jqShardConfig("runner_scheduling_a", 1, "a", "TestJobqueueRunnerScheduling"),
 		jqShardConfig("signal_a", 2, "a", "TestJobqueueSignal"),
 		jqConfig("production", 3, "TestJobqueueProduction"),
-		jqShardConfig("medium_a", 4, "a", "TestJobqueueMedium"),
+		jqShardConfig("jq_execution_retries", 4, "a", "TestJobqueueExecutionAndDependencyScenarios"),
 		jqShardConfig("modify_a", 5, "a", "TestJobqueueModify"),
 		jqConfig(
 			"jqA1",
@@ -279,10 +280,14 @@ func jobqueueRunLaneConfigs() []jobqueueRunLaneConfig {
 		),
 		jqConfig("mock", 10, "TestJobqueueMockRunner"),
 		jqShardConfig("signal_b", 14, "b", "TestJobqueueSignal"),
-		jqShardConfig("medium_b", 15, "b", "TestJobqueueMedium"),
+		jqShardConfig("jq_repgroup_dependencies", 15, "b", "TestJobqueueExecutionAndDependencyScenarios"),
 		jqShardConfig("modify_b", 16, "b", "TestJobqueueModify"),
 		jqShardConfig("runner_scheduling_b", 37, "b", "TestJobqueueRunnerScheduling"),
-		jqShardConfig("medium_c", 38, "c", "TestJobqueueMedium"),
+		jqShardConfig("jq_execution_details", 38, "c", "TestJobqueueExecutionAndDependencyScenarios"),
+		jqConfig("runner_resource_learning", 39, "TestJobqueueRunnerResourceLearning"),
+		jqConfig("runner_kill_requests", 40, "TestJobqueueRunnerKillRequests"),
+		jqConfig("runner_auto_execution", 41, "TestJobqueueRunnerAutomaticExecution"),
+		jqConfig("runner_failure_retry", 42, "TestJobqueueRunnerFailureRetry"),
 		jqConfig(
 			"jq_payload",
 			18,

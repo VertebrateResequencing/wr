@@ -48,6 +48,7 @@ import (
 
 const (
 	envRunnerExecShell    = "WR_RUNNEREXECSHELL"
+	envTestRunnerBinary   = "WR_TEST_RUNNER_BINARY"
 	envTestPortBase       = "WR_TEST_PORT_BASE"
 	envMaxParallel        = "WR_TESTSUITE_MAX_PARALLEL"
 	defaultExecShell      = "/bin/bash"
@@ -459,36 +460,40 @@ func prioritizedLanes(lanes []Lane) []Lane {
 
 func lanePriority(name string) int {
 	weights := map[string]int{
-		"medium_a":              104,
-		"signal_b":              102,
-		"runner_lifecycle":      100,
-		"runner_scheduling_a":   98,
-		"runner_scheduling_b":   96,
-		"server_webi":           94,
-		"other":                 92,
-		"jq_sub_live":           90,
-		"jq_sub_aggregate":      88,
-		"jq_dependency":         86,
-		"subscription_catchup":  84,
-		"jq_sub_add":            82,
-		"jq_sub_long":           80,
-		"production":            78,
-		"medium_c":              76,
-		"client_wait":           74,
-		"client_a":              72,
-		"jqA1":                  70,
-		"signal_a":              68,
-		"cmd_resume":            66,
-		"subscription_teardown": 64,
-		"modify_a":              60,
-		"modify_b":              58,
-		"jq_status":             56,
-		"cmd_suspend":           54,
-		"cmd_status":            52,
-		"client_wait_jobs":      50,
-		"client_basics":         48,
-		"scheduler":             46,
-		"cmd_add":               44,
+		"jq_execution_retries":     112,
+		"signal_b":                 110,
+		"runner_lost_jobs":         108,
+		"runner_scheduling_a":      106,
+		"runner_scheduling_b":      104,
+		"runner_resource_learning": 102,
+		"runner_kill_requests":     100,
+		"runner_auto_execution":    98,
+		"runner_failure_retry":     96,
+		"server_webi":              94,
+		"other":                    92,
+		"jq_sub_live":              90,
+		"jq_sub_aggregate":         88,
+		"jq_dependency":            86,
+		"subscription_catchup":     84,
+		"jq_sub_add":               82,
+		"jq_sub_long":              80,
+		"production":               78,
+		"jq_execution_details":     76,
+		"client_wait":              74,
+		"client_a":                 72,
+		"jqA1":                     70,
+		"signal_a":                 68,
+		"cmd_resume":               66,
+		"subscription_teardown":    64,
+		"modify_a":                 60,
+		"modify_b":                 58,
+		"jq_status":                56,
+		"cmd_suspend":              54,
+		"cmd_status":               52,
+		"client_wait_jobs":         50,
+		"client_basics":            48,
+		"scheduler":                46,
+		"cmd_add":                  44,
 	}
 
 	return weights[name]
@@ -566,9 +571,29 @@ func runLane(
 		name = "nice"
 	}
 
-	err = runCommand(ctx, laneWorkDir(root, lane), logFile, logFile, name, args, lane.Env)
+	err = runCommand(ctx, laneWorkDir(root, lane), logFile, logFile, name, args, laneEnvWithBinaries(lane, binaries))
 
 	return laneResult{lane: lane, log: logPath, duration: time.Since(start), err: err}
+}
+
+func laneEnvWithBinaries(lane Lane, binaries map[string]string) map[string]string {
+	if lane.Binary != "jobqueue" {
+		return lane.Env
+	}
+
+	runnerBinary, ok := binaries["jobqueue_runner"]
+	if !ok {
+		return lane.Env
+	}
+
+	env := make(map[string]string, len(lane.Env)+1)
+	for key, value := range lane.Env {
+		env[key] = value
+	}
+
+	env[envTestRunnerBinary] = runnerBinary
+
+	return env
 }
 
 func laneCommand(lane Lane, binaries map[string]string) (string, []string, error) {

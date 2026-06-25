@@ -37,8 +37,8 @@ WR_TEST_RUNNEREXECSHELL ?= /bin/bash
 #       Override the first port in the suite's run-specific lane port block.
 #       Normally auto-selected below the OS ephemeral port range; intended for
 #       debugging unusual port conflicts.
-# WR_TEST_LANE and WR_TEST_SHARD are internal lane controls set by the suite
-# runner, not normal user-facing inputs.
+# WR_TEST_LANE, WR_TEST_SHARD and WR_TEST_RUNNER_BINARY are internal lane
+# controls set by the suite runner, not normal user-facing inputs.
 test: export CGO_ENABLED = 0
 test: export WR_RUNNEREXECSHELL ?= $(WR_TEST_RUNNEREXECSHELL)
 test:
