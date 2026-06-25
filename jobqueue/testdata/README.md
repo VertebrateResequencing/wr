@@ -54,6 +54,17 @@ websocket, opens a running job details row whose live stdout/stderr are already
 visible, then delivers a live heartbeat push and asserts that peak RAM, CPU
 time, STDOUT, and STDERR are all visible together.
 
+## Status page snapshot twitch
+
+`status-page-snapshot-twitch/` contains a browser regression fixture for
+current-status snapshot twitching in an existing steady-state RepGroup. It
+serves the real status page, injects a fake websocket, sends an explicit
+loss/resync signal, delays the resulting RepGroup snapshot count, and asserts
+that the visible `bigmod` row remains at 15,000 dependent jobs while the
+snapshot is incomplete. It also asserts that the status page does not register
+the old blind 10-second current-status polling timer. It is wired into
+`make browser-test`.
+
 ## Local dependency and artifact locations
 
 Browser-test dependencies and artifacts must stay repo-local:

@@ -106,6 +106,120 @@ func TestCaster(t *testing.T) {
 		case <-time.After(100 * time.Millisecond):
 		}
 	})
+
+	Convey("A full caster member receives an explicit status resync signal", t, func() {
+		caster := newCaster()
+		receiver := caster.Join()
+
+		defer receiver.Close()
+
+		receiver.In <- &jstateCount{
+			RepGroup:  "status-loss",
+			FromState: JobStateReady,
+			ToState:   JobStateRunning,
+			Count:     1,
+		}
+
+		sent := make(chan struct{})
+
+		go func() {
+			caster.Send(&jstateCount{
+				RepGroup:  "status-loss",
+				FromState: JobStateRunning,
+				ToState:   JobStateComplete,
+				Count:     1,
+			})
+			close(sent)
+		}()
+
+		select {
+		case <-sent:
+		case <-time.After(time.Second):
+			So("timed out waiting for nonblocking status caster send", ShouldBeBlank)
+		}
+
+		select {
+		case msg := <-receiver.In:
+			count, ok := msg.(*jstateCount)
+			So(ok, ShouldBeTrue)
+			So(count.StatusResync, ShouldBeTrue)
+			So(count.RepGroup, ShouldEqual, webStatusAllRepGroups)
+		case <-time.After(time.Second):
+			So("timed out waiting for status resync signal", ShouldBeBlank)
+		}
+	})
+
+	Convey("Concurrent status overflows preserve the explicit resync signal", t, func() {
+		caster := newCaster()
+		receiver := caster.Join()
+
+		defer receiver.Close()
+
+		const (
+			attempts           = 5000
+			senders            = 2
+			concurrentRepGroup = "status-concurrent-loss"
+		)
+
+		lostResyncs := 0
+		timedOutSends := 0
+
+		for range attempts {
+			drainCasterMember(receiver)
+
+			receiver.In <- &jstateCount{
+				RepGroup:  concurrentRepGroup,
+				FromState: JobStateReady,
+				ToState:   JobStateRunning,
+				Count:     1,
+			}
+
+			start := make(chan struct{})
+			done := make(chan struct{})
+
+			var wg sync.WaitGroup
+
+			for sender := range senders {
+				wg.Add(1)
+
+				go func(sender int) {
+					defer wg.Done()
+
+					<-start
+
+					caster.Send(&jstateCount{
+						RepGroup:  concurrentRepGroup,
+						FromState: JobStateRunning,
+						ToState:   JobStateComplete,
+						Count:     sender + 1,
+					})
+				}(sender)
+			}
+
+			close(start)
+
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				timedOutSends++
+			}
+
+			msg := <-receiver.In
+
+			count, ok := msg.(*jstateCount)
+			if !ok || !count.StatusResync {
+				lostResyncs++
+			}
+		}
+
+		So(timedOutSends, ShouldEqual, 0)
+		So(lostResyncs, ShouldEqual, 0)
+	})
 }
 
 type expectedJStateCount struct {
@@ -413,6 +527,16 @@ func readJStateSnapshot(ws *websocket.Conn, timeout time.Duration) (jstateSnapsh
 type jstateSnapshot struct {
 	id     uint64
 	counts map[expectedJStateCount]bool
+}
+
+func drainCasterMember(receiver *casterMember) {
+	for {
+		select {
+		case <-receiver.In:
+		default:
+			return
+		}
+	}
 }
 
 func TestServerWebI(t *testing.T) {
@@ -728,8 +852,12 @@ func TestServerWebI(t *testing.T) {
 			})
 
 			Convey("The websocket handler deals with paginated details requests", func() {
-				numPaginationJobs := 12
-				limit := 5
+				const (
+					numPaginationJobs  = 12
+					limit              = 5
+					paginationRepGroup = "pg_repgroup"
+				)
+
 				paginationJobs := make([]*Job, numPaginationJobs)
 
 				for i := range numPaginationJobs {
@@ -738,7 +866,7 @@ func TestServerWebI(t *testing.T) {
 						Cwd:          "/tmp",
 						ReqGroup:     "pg_group",
 						Requirements: standardReqs,
-						RepGroup:     "pg_repgroup",
+						RepGroup:     paginationRepGroup,
 					}
 				}
 
@@ -758,7 +886,7 @@ func TestServerWebI(t *testing.T) {
 					So(job.FailReason, ShouldEqual, FailReasonExit)
 				}
 
-				buriedJobs, errg := jq.GetByRepGroup("pg_repgroup", false, 0, JobStateBuried, false, false)
+				buriedJobs, errg := jq.GetByRepGroup(paginationRepGroup, false, 0, JobStateBuried, false, false)
 				So(errg, ShouldBeNil)
 				So(len(buriedJobs), ShouldEqual, numPaginationJobs)
 
@@ -773,7 +901,7 @@ func TestServerWebI(t *testing.T) {
 					for i := range expectedNum {
 						status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
 						So(ok, ShouldBeTrue)
-						So(status.RepGroup, ShouldEqual, "pg_repgroup")
+						So(status.RepGroup, ShouldEqual, paginationRepGroup)
 						So(status.State, ShouldEqual, JobStateBuried)
 						So(status.Exitcode, ShouldEqual, exitCode)
 						So(status.FailReason, ShouldEqual, FailReasonExit)
@@ -786,7 +914,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns the first page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -801,7 +929,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns the second page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -816,7 +944,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns a partial page when reaching the end", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -831,7 +959,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns no jobs when offset is beyond available results", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -846,7 +974,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns all jobs when limit is 0", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -934,7 +1062,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It handles negative offset gracefully", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -954,7 +1082,7 @@ func TestServerWebI(t *testing.T) {
 						Cwd:          "/tmp",
 						ReqGroup:     "pg_group",
 						Requirements: standardReqs,
-						RepGroup:     "pg_repgroup",
+						RepGroup:     paginationRepGroup,
 					})
 
 					inserts, _, erra := jq.Add(differentJob, envVars, true)
@@ -975,7 +1103,7 @@ func TestServerWebI(t *testing.T) {
 
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   2,
 						FailReason: FailReasonExit,
@@ -988,7 +1116,7 @@ func TestServerWebI(t *testing.T) {
 					// the real job status the request asked for.
 					status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
 					So(ok, ShouldBeTrue)
-					So(status.RepGroup, ShouldEqual, "pg_repgroup")
+					So(status.RepGroup, ShouldEqual, paginationRepGroup)
 					So(status.State, ShouldEqual, JobStateBuried)
 					So(status.Exitcode, ShouldEqual, 2)
 					So(status.Cmd, ShouldEqual, "echo different_exitcode && exit 2")

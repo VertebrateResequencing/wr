@@ -120,6 +120,10 @@ function fakeWebSocketScript() {
       { RepGroup: 'deletebulk', FromState: 'ready', ToState: 'deleted', Count: 2 }
     ];
 
+    const explicitLossSignal = [
+      { RepGroup: '+all+', StatusResync: true }
+    ];
+
     function emptySnapshot(snapshotID) {
       return [
         { RepGroup: '+all+', FromState: 'new', ToState: '', Count: 0, SnapshotID: snapshotID },
@@ -187,7 +191,10 @@ function fakeWebSocketScript() {
 
           if (this.currentRequests === 1) {
             this.emitEach(initialSnapshot);
-            setTimeout(() => this.emitEach(droppedLiveDeltas), 80);
+            setTimeout(() => {
+              this.emitEach(droppedLiveDeltas);
+              setTimeout(() => this.emitEach(explicitLossSignal), 80);
+            }, 80);
           } else {
             this.emitEach(emptySnapshot(this.currentRequests));
           }
@@ -247,19 +254,19 @@ async function captureScreenshot() {
     await page.waitForSelector('body.ko-initialized', { timeout: 10000 });
     await page.waitForFunction(() => {
       return window.__wrFixtureRequests.filter(raw => raw.includes('"current"')).length >= 2;
-    }, { timeout: 10000 });
+    }, undefined, { timeout: 10000 });
     await page.waitForFunction(() => {
       const bodyText = document.body.innerText;
 
       return !bodyText.includes('1 running') && !bodyText.includes('2 pending');
-    }, { timeout: 10000 });
+    }, undefined, { timeout: 10000 });
     const searchBox = page.getByRole('textbox');
     await searchBox.click();
     await searchBox.pressSequentially('tabletest');
     await page.getByRole('button', { name: /Search/ }).click();
     await page.waitForFunction(() => {
       return window.__wrFixtureRequests.some(raw => raw.includes('"details"'));
-    }, { timeout: 10000 });
+    }, undefined, { timeout: 10000 });
     try {
       await page.getByText('2 jobs found across 1').waitFor({ timeout: 10000 });
     } catch (error) {

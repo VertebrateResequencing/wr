@@ -42,6 +42,28 @@ function resetLiveCounts(viewModel) {
     }
 }
 
+function emptyCountSnapshot() {
+    return Object.fromEntries(countProperties.map(property => [property, 0]));
+}
+
+function addSnapshotCount(counts, state, count) {
+    if (!countProperties.includes(state) || count <= 0) {
+        return;
+    }
+
+    counts[state] += count;
+}
+
+function setTrackerCounts(tracker, counts) {
+    resetTrackerCounts(tracker);
+
+    for (const property of countProperties) {
+        if (tracker && typeof tracker[property] === 'function') {
+            tracker[property](counts[property] || 0);
+        }
+    }
+}
+
 function trackerTotal(tracker) {
     let total = 0;
 
@@ -92,6 +114,20 @@ function removeRepGroupAt(viewModel, index) {
     }
 }
 
+function getOrCreateRepGroupTracker(viewModel, rg) {
+    if (viewModel.repGroupLookup.hasOwnProperty(rg)) {
+        return viewModel.repGroups[viewModel.repGroupLookup[rg]];
+    }
+
+    const repgroup = createRepGroupTracker(rg, viewModel.rateLimit);
+
+    viewModel.repGroups.push(repgroup);
+    viewModel.repGroupLookup[rg] = viewModel.repGroups.length - 1;
+    viewModel.sortableRepGroups.push(repgroup);
+
+    return repgroup;
+}
+
 function pruneEmptyLiveRepGroups(viewModel) {
     for (let index = viewModel.repGroups.length - 1; index >= 0; index--) {
         const repgroup = viewModel.repGroups[index];
@@ -112,21 +148,69 @@ function isSnapshotDoneMessage(json) {
     return isSnapshotMessage(json) && json['SnapshotDone'] === true;
 }
 
+function isStatusResyncMessage(json) {
+    return json['StatusResync'] === true;
+}
+
 function beginStatusSnapshot(viewModel, json) {
     if (!isSnapshotMessage(json) || viewModel.statusSnapshotID === json['SnapshotID']) {
         return;
     }
 
     viewModel.statusSnapshotID = json['SnapshotID'];
-    resetLiveCounts(viewModel);
+    viewModel.statusSnapshot = {
+        id: json['SnapshotID'],
+        inflight: emptyCountSnapshot(),
+        repGroups: {}
+    };
 }
 
-function finishStatusSnapshot(viewModel, json) {
-    if (!isSnapshotDoneMessage(json) || viewModel.statusSnapshotID !== json['SnapshotID']) {
+function stageStatusSnapshotCount(viewModel, json) {
+    beginStatusSnapshot(viewModel, json);
+
+    const snapshot = viewModel.statusSnapshot;
+    if (!snapshot || snapshot.id !== json['SnapshotID']) {
         return;
     }
 
+    if (json['RepGroup'] === '+all+') {
+        addSnapshotCount(snapshot.inflight, json['ToState'], json['Count']);
+
+        return;
+    }
+
+    if (!snapshot.repGroups[json['RepGroup']]) {
+        snapshot.repGroups[json['RepGroup']] = emptyCountSnapshot();
+    }
+
+    addSnapshotCount(snapshot.repGroups[json['RepGroup']], json['ToState'], json['Count']);
+}
+
+function applyStatusSnapshot(viewModel, snapshot) {
+    setTrackerCounts(viewModel.inflight, snapshot.inflight);
+    viewModel.ignore = {};
+
+    for (const repgroup of viewModel.repGroups) {
+        if (!repgroup.id.startsWith('search:')) {
+            resetTrackerCounts(repgroup);
+        }
+    }
+
+    for (const [rg, counts] of Object.entries(snapshot.repGroups)) {
+        const repgroup = getOrCreateRepGroupTracker(viewModel, rg);
+        setTrackerCounts(repgroup, counts);
+    }
+
     pruneEmptyLiveRepGroups(viewModel);
+}
+
+function finishStatusSnapshot(viewModel, json) {
+    if (!isSnapshotDoneMessage(json) || viewModel.statusSnapshotID !== json['SnapshotID'] || !viewModel.statusSnapshot) {
+        return;
+    }
+
+    applyStatusSnapshot(viewModel, viewModel.statusSnapshot);
+    viewModel.statusSnapshot = null;
 }
 
 function normalizeStatusTimestamp(timestamp) {
@@ -157,51 +241,28 @@ export function setupWebSocket(viewModel) {
     const currentRequest = JSON.stringify({ Request: "current" });
     const reconnectInitialDelay = 1000;
     const reconnectMaxDelay = 30000;
-    const statusResyncDelay = 1000;
-    const statusResyncInterval = 10000;
     let reconnectDelay = reconnectInitialDelay;
     let reconnectTimer = null;
-    let statusResyncTimer = null;
-    let periodicStatusResyncTimer = null;
+    let currentStatusInFlight = false;
+    let resyncAfterCurrentStatus = false;
     let reportedClose = false;
     const renderedWebSocketErrors = new Set();
 
     const sendCurrentStatus = (ws) => {
         if (viewModel.ws === ws && ws.readyState === 1) {
             ws.send(currentRequest);
+            currentStatusInFlight = true;
         }
     };
 
-    const clearStatusResync = () => {
-        if (statusResyncTimer !== null) {
-            window.clearTimeout(statusResyncTimer);
-            statusResyncTimer = null;
-        }
-    };
+    const requestCurrentStatusAfterLoss = (ws) => {
+        if (currentStatusInFlight) {
+            resyncAfterCurrentStatus = true;
 
-    const scheduleStatusResync = (ws) => {
-        if (statusResyncTimer !== null) {
             return;
         }
 
-        statusResyncTimer = window.setTimeout(() => {
-            statusResyncTimer = null;
-            sendCurrentStatus(ws);
-        }, statusResyncDelay);
-    };
-
-    const stopPeriodicStatusResync = () => {
-        if (periodicStatusResyncTimer !== null) {
-            window.clearInterval(periodicStatusResyncTimer);
-            periodicStatusResyncTimer = null;
-        }
-    };
-
-    const startPeriodicStatusResync = (ws) => {
-        stopPeriodicStatusResync();
-        periodicStatusResyncTimer = window.setInterval(() => {
-            sendCurrentStatus(ws);
-        }, statusResyncInterval);
+        sendCurrentStatus(ws);
     };
 
     const scheduleReconnect = () => {
@@ -225,8 +286,8 @@ export function setupWebSocket(viewModel) {
 
             ws.onopen = () => {
                 reconnectDelay = reconnectInitialDelay;
-                clearStatusResync();
-                startPeriodicStatusResync(ws);
+                currentStatusInFlight = false;
+                resyncAfterCurrentStatus = false;
                 clearConnectionStatusWarnings(viewModel);
                 if (reportedClose) {
                     resetLiveCounts(viewModel);
@@ -241,8 +302,8 @@ export function setupWebSocket(viewModel) {
                     return;
                 }
 
-                clearStatusResync();
-                stopPeriodicStatusResync();
+                currentStatusInFlight = false;
+                resyncAfterCurrentStatus = false;
 
                 if (!reportedClose) {
                     viewModel.statuserror.push(managerLostWarning);
@@ -266,12 +327,15 @@ export function setupWebSocket(viewModel) {
 
                     if (isSnapshotDoneMessage(json)) {
                         finishStatusSnapshot(viewModel, json);
+                        currentStatusInFlight = false;
+                        if (resyncAfterCurrentStatus) {
+                            resyncAfterCurrentStatus = false;
+                            sendCurrentStatus(ws);
+                        }
+                    } else if (isStatusResyncMessage(json)) {
+                        requestCurrentStatusAfterLoss(ws);
                     } else if (json.hasOwnProperty('FromState')) {
                         handleStateChangeMessage(viewModel, json);
-
-                        if (!isSnapshotMessage(json)) {
-                            scheduleStatusResync(ws);
-                        }
                     } else if (json.hasOwnProperty('State')) {
                         handleJobDetailsMessage(viewModel, json);
                     } else if (json.hasOwnProperty('IP')) {
@@ -306,7 +370,9 @@ function handleStateChangeMessage(viewModel, json) {
     }
 
     if (isSnapshotMessage(json)) {
-        beginStatusSnapshot(viewModel, json);
+        stageStatusSnapshotCount(viewModel, json);
+
+        return;
     }
 
     var rg = json['RepGroup'];
@@ -314,15 +380,8 @@ function handleStateChangeMessage(viewModel, json) {
 
     if (rg == "+all+") {
         repgroup = viewModel.inflight;
-    } else if (viewModel.repGroupLookup.hasOwnProperty(rg)) {
-        repgroup = viewModel.repGroups[viewModel.repGroupLookup[rg]];
     } else {
-        // Create a new rep group tracker
-        repgroup = createRepGroupTracker(rg, viewModel.rateLimit);
-
-        viewModel.repGroups.push(repgroup);
-        viewModel.repGroupLookup[rg] = viewModel.repGroups.length - 1;
-        viewModel.sortableRepGroups.push(repgroup);
+        repgroup = getOrCreateRepGroupTracker(viewModel, rg);
     }
 
     var from, to;

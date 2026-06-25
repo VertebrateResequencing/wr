@@ -381,6 +381,7 @@ type jstateCount struct {
 	Count        int    // num in FromState drop by this much, num in ToState rise by this much
 	SnapshotID   uint64 `json:",omitempty"`
 	SnapshotDone bool   `json:",omitempty"`
+	StatusResync bool   `json:",omitempty"`
 }
 
 // BadServer is the details of servers that have gone bad that we send to the
@@ -494,6 +495,7 @@ type casterMember struct {
 	group *caster
 	In    chan interface{}
 	done  chan struct{}
+	send  sync.Mutex
 	once  sync.Once
 }
 
@@ -551,11 +553,7 @@ func (c *caster) Send(val interface{}) {
 	c.RUnlock()
 
 	for _, member := range members {
-		select {
-		case <-member.done:
-		case member.In <- val:
-		default:
-		}
+		member.sendOrReplace(val)
 	}
 }
 
@@ -573,6 +571,53 @@ func (c *caster) Close() {
 
 	for _, member := range members {
 		member.Close()
+	}
+}
+
+func (cm *casterMember) sendOrReplace(val interface{}) {
+	cm.send.Lock()
+	defer cm.send.Unlock()
+
+	select {
+	case <-cm.done:
+	case cm.In <- val:
+	default:
+		cm.replacePending(casterOverflowValue(val))
+	}
+}
+
+func casterOverflowValue(val interface{}) interface{} {
+	count, ok := val.(*jstateCount)
+	if !ok || count.SnapshotID != 0 || count.SnapshotDone || count.StatusResync {
+		return nil
+	}
+
+	return &jstateCount{
+		RepGroup:     statusAllRepGroups,
+		StatusResync: true,
+	}
+}
+
+func (cm *casterMember) replacePending(val interface{}) {
+	if val == nil {
+		return
+	}
+
+	select {
+	case <-cm.done:
+		return
+	default:
+	}
+
+	select {
+	case <-cm.In:
+	default:
+	}
+
+	select {
+	case <-cm.done:
+	case cm.In <- val:
+	default:
 	}
 }
 
