@@ -6,6 +6,16 @@ LDFLAGS = -s -w -X ${PKG}/jobqueue.ServerVersion=${VERSION}
 GOLANGCI_LINT_ARGS ?=
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
+WEBUI_TEST_STEP_TIMEOUT ?= timeout 8m
+WEBUI_TEST_PLAYWRIGHT_VERSION ?= 1.56.1
+WEBUI_TEST_SCRATCH ?= $(CURDIR)/.tmp/agent
+WEBUI_TEST_ARTIFACT_DIR ?= $(WEBUI_TEST_SCRATCH)/webui-test
+WEBUI_TEST_NPM_CACHE ?= $(WEBUI_TEST_SCRATCH)/npm-cache
+WEBUI_TEST_PLAYWRIGHT_ROOT ?= $(WEBUI_TEST_SCRATCH)/playwright
+WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR ?= $(WEBUI_TEST_PLAYWRIGHT_ROOT)/node_modules/playwright
+WEBUI_TEST_BROWSER_CACHE ?= $(WEBUI_TEST_SCRATCH)/ms-playwright
+WEBUI_TEST_REPRO_HTML ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-stale-counts.html
+WEBUI_TEST_SCREENSHOT ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-webui-stale-running-resolved.png
 
 default: install
 
@@ -53,6 +63,25 @@ race:
 lint:
 	@golangci-lint run ${GOLANGCI_LINT_ARGS}
 
+# Browser-only status page regression gate. It is intentionally not a
+# prerequisite of test/race because it may install Playwright/Chromium into
+# repo-local scratch space under .tmp/agent.
+browser-test:
+	@mkdir -p "$(WEBUI_TEST_PLAYWRIGHT_ROOT)" "$(WEBUI_TEST_ARTIFACT_DIR)" "$(WEBUI_TEST_NPM_CACHE)" "$(WEBUI_TEST_BROWSER_CACHE)"
+	@if [ ! -d "$(WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR)" ]; then \
+		cd "$(WEBUI_TEST_PLAYWRIGHT_ROOT)" && \
+		npm_config_cache="$(WEBUI_TEST_NPM_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) npm install --no-audit --no-fund "playwright@$(WEBUI_TEST_PLAYWRIGHT_VERSION)"; \
+	fi
+	@PLAYWRIGHT_BROWSERS_PATH="$(WEBUI_TEST_BROWSER_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) "$(WEBUI_TEST_PLAYWRIGHT_ROOT)/node_modules/.bin/playwright" install chromium
+	@$(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/repro.mjs --assert
+	@$(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/repro.mjs "$(WEBUI_TEST_REPRO_HTML)"
+	@PLAYWRIGHT_PACKAGE_DIR="$(WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR)" PLAYWRIGHT_BROWSERS_PATH="$(WEBUI_TEST_BROWSER_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/screenshot.mjs "$(WEBUI_TEST_SCREENSHOT)"
+	@echo "browser-test artifacts:"
+	@echo "  $(WEBUI_TEST_REPRO_HTML)"
+	@echo "  $(WEBUI_TEST_SCREENSHOT)"
+
+webui-test: browser-test
+
 clean:
 	@rm -f ./wr
 	@rm -f ./dist.zip
@@ -65,4 +94,4 @@ dist: export WR_LDFLAGS = $(LDFLAGS)
 dist:
 	goreleaser release --clean
 
-.PHONY: build test race lint lintextra install clean dist
+.PHONY: browser-test build test race lint lintextra install clean dist webui-test

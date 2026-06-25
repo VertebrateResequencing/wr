@@ -33,6 +33,7 @@ import (
 	"embed"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -48,8 +49,10 @@ var staticFS embed.FS
 const (
 	jstatusRequestCurrent     = "current"
 	jstatusRequestDetails     = "details"
+	jstatusRequestRemove      = "remove"
 	jstatusRequestRerun       = "rerun"
 	jstatusRequestUnsubscribe = requestMethodUnsubscribe
+	statusAllRepGroups        = "+all+"
 )
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
@@ -86,6 +89,44 @@ type jstatusReq struct {
 	FailReason string
 	ServerID   string // required argument for confirmBadServer
 	Msg        string // required argument for dismissMsg
+}
+
+func statusStateCounts(jobs []*Job) map[JobState]int {
+	stateCounts := make(map[JobState]int)
+
+	for _, job := range jobs {
+		var state JobState
+
+		// for display simplicity purposes, merge reserved in to running
+		switch job.State {
+		case JobStateReserved, JobStateRunning:
+			state = JobStateRunning
+		default:
+			state = job.State
+		}
+
+		stateCounts[state]++
+	}
+
+	return stateCounts
+}
+
+func writeJStateSnapshotCount(conn *websocket.Conn, repGroup string, to JobState, count int, snapshotID uint64) error {
+	return conn.WriteJSON(&jstateCount{
+		RepGroup:   repGroup,
+		FromState:  JobStateNew,
+		ToState:    to,
+		Count:      count,
+		SnapshotID: snapshotID,
+	})
+}
+
+func webInterfaceStatusSendSnapshotDone(conn *websocket.Conn, snapshotID uint64) error {
+	return conn.WriteJSON(&jstateCount{
+		RepGroup:     statusAllRepGroups,
+		SnapshotID:   snapshotID,
+		SnapshotDone: true,
+	})
 }
 
 // reqToCompletedJobs takes a rerun request from the status webpage and returns
@@ -402,10 +443,13 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				case req.Request != "":
 					switch req.Request {
 					case jstatusRequestCurrent:
+						snapshotID := atomic.AddUint64(&s.nextStatusSnapshotID, 1)
+
 						// get all current jobs
 						jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false, false)
 						writeMutex.Lock()
-						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs)
+
+						err := webInterfaceStatusSendGroupStateCount(conn, statusAllRepGroups, jobs, snapshotID)
 						if err != nil {
 							writeMutex.Unlock()
 							break
@@ -424,8 +468,10 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 								failed = true
 								break
 							}
+
 							jobs = append(jobs, complete...)
-							err := webInterfaceStatusSendGroupStateCount(conn, repGroup, jobs)
+
+							err = webInterfaceStatusSendGroupStateCount(conn, repGroup, jobs, snapshotID)
 							if err != nil {
 								failed = true
 								break
@@ -444,8 +490,13 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						}
 						s.simutex.RUnlock()
 
+						if !failed {
+							err = webInterfaceStatusSendSnapshotDone(conn, snapshotID)
+						}
+
 						writeMutex.Unlock()
-						if failed {
+
+						if failed || err != nil {
 							break
 						}
 					case jstatusRequestDetails:
@@ -524,7 +575,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						}
 
 						s.rerunCompletedJobs(ctx, jobs)
-					case "remove":
+					case jstatusRequestRemove:
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						deleted := s.deleteJobs(ctx, jobs)
 						clog.Debug(ctx, "removed jobs", "count", len(deleted))
@@ -752,27 +803,25 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 
 // webInterfaceStatusSendGroupStateCount sends the per-repgroup state counts
 // to the status webpage websocket
-func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) error {
-	stateCounts := make(map[JobState]int)
-	for _, job := range jobs {
-		var state JobState
+func webInterfaceStatusSendGroupStateCount(
+	conn *websocket.Conn,
+	repGroup string,
+	jobs []*Job,
+	snapshotID uint64,
+) error {
+	stateCounts := statusStateCounts(jobs)
 
-		// for display simplicity purposes, merge reserved in to running
-		switch job.State {
-		case JobStateReserved, JobStateRunning:
-			state = JobStateRunning
-		default:
-			state = job.State
-		}
-
-		stateCounts[state]++
+	if len(stateCounts) == 0 {
+		return writeJStateSnapshotCount(conn, repGroup, "", 0, snapshotID)
 	}
+
 	for to, count := range stateCounts {
-		err := conn.WriteJSON(&jstateCount{repGroup, JobStateNew, to, count})
+		err := writeJStateSnapshotCount(conn, repGroup, to, count, snapshotID)
 		if err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 

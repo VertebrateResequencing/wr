@@ -45,7 +45,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const webStatusAllRepGroups = "+all+"
+const webStatusAllRepGroups = statusAllRepGroups
 
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
@@ -241,6 +241,163 @@ func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeou
 	return true
 }
 
+func TestStatusCurrentSnapshotsAreAuthoritative(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Status current websocket responses delimit authoritative snapshots", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "status-current-snapshot"
+		jobs := []*Job{
+			{
+				Cmd:          "echo status current snapshot 1",
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			},
+			{
+				Cmd:          "echo status current snapshot 2",
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			},
+		}
+		added, already, err := jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+		So(err, ShouldBeNil)
+
+		snapshot, ok := readJStateSnapshot(ws, 3*time.Second)
+		So(ok, ShouldBeTrue)
+		So(snapshot.id, ShouldNotEqual, 0)
+		So(snapshot.counts[expectedJStateCount{
+			repGroup: webStatusAllRepGroups,
+			state:    JobStateReady,
+			count:    2,
+		}], ShouldBeTrue)
+		So(snapshot.counts[expectedJStateCount{
+			repGroup: repGroup,
+			state:    JobStateReady,
+			count:    2,
+		}], ShouldBeTrue)
+
+		err = ws.Close()
+		So(err, ShouldBeNil)
+
+		ws, err = drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestRemove,
+			RepGroup: repGroup,
+		})
+		So(err, ShouldBeNil)
+
+		So(pollUntil(func() bool {
+			remaining, errr := jq.GetByRepGroup(repGroup, false, 0, "", false, false)
+
+			return errr == nil && len(remaining) == 0
+		}), ShouldBeTrue)
+
+		err = ws.Close()
+		So(err, ShouldBeNil)
+
+		ws, err = drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+		So(err, ShouldBeNil)
+
+		emptySnapshot, ok := readJStateSnapshot(ws, 3*time.Second)
+		So(ok, ShouldBeTrue)
+		So(emptySnapshot.id, ShouldNotEqual, 0)
+		So(emptySnapshot.id, ShouldNotEqual, snapshot.id)
+		So(len(emptySnapshot.counts), ShouldEqual, 0)
+	})
+}
+
+func readJStateSnapshot(ws *websocket.Conn, timeout time.Duration) (jstateSnapshot, bool) {
+	snapshot := jstateSnapshot{
+		counts: make(map[expectedJStateCount]bool),
+	}
+
+	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return snapshot, false
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
+	for {
+		var count jstateCount
+		if err := ws.ReadJSON(&count); err != nil {
+			return snapshot, false
+		}
+
+		if count.SnapshotID == 0 {
+			continue
+		}
+
+		if snapshot.id == 0 {
+			snapshot.id = count.SnapshotID
+		}
+
+		if count.SnapshotID != snapshot.id {
+			continue
+		}
+
+		if count.SnapshotDone {
+			return snapshot, true
+		}
+
+		if count.Count == 0 || count.ToState == "" {
+			continue
+		}
+
+		snapshot.counts[expectedJStateCount{
+			repGroup: count.RepGroup,
+			state:    count.ToState,
+			count:    count.Count,
+		}] = true
+	}
+}
+
+type jstateSnapshot struct {
+	id     uint64
+	counts map[expectedJStateCount]bool
+}
+
 func TestServerWebI(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -409,14 +566,14 @@ func TestServerWebI(t *testing.T) {
 						receivedToRunning += stateCount.Count
 					}
 
-					if stateCount.RepGroup == "+all+" {
+					if stateCount.RepGroup == webStatusAllRepGroups {
 						receivedJobs[stateCount.RepGroup] = true
 					} else {
 						receivedGroups[stateCount.RepGroup] = true
 					}
 				}
 
-				So(receivedJobs, ShouldContainKey, "+all+")
+				So(receivedJobs, ShouldContainKey, webStatusAllRepGroups)
 				So(receivedGroups, ShouldContainKey, "rg1")
 				So(receivedGroups, ShouldContainKey, "rg2")
 				So(receivedFromNews, ShouldEqual, 5)
@@ -1048,7 +1205,7 @@ func TestServerWebI(t *testing.T) {
 				So(len(jobs), ShouldEqual, 1)
 
 				err = ws.WriteJSON(jstatusReq{
-					Request:  "remove",
+					Request:  jstatusRequestRemove,
 					RepGroup: "rg3",
 				})
 				So(err, ShouldBeNil)
@@ -1067,10 +1224,12 @@ func TestServerWebI(t *testing.T) {
 			Convey("The websocket handler supports multiple concurrent clients", func() {
 				ws2, _, errw := websocket.DefaultDialer.Dial(wsURL, header)
 				So(errw, ShouldBeNil)
+
 				defer ws2.Close()
 
 				ws3, _, errw := websocket.DefaultDialer.Dial(wsURL, header)
 				So(errw, ShouldBeNil)
+
 				defer ws3.Close()
 
 				var broadcastJobs []*Job

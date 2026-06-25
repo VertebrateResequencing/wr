@@ -375,10 +375,12 @@ func (r *rgToKeys) Values(rg string) []string {
 // jstateCount is the state count change we send to the status webpage; we are
 // representing the jobs moving from one state to another.
 type jstateCount struct {
-	RepGroup  string // "+all+" is the special group representing all live jobs across all RepGroups
-	FromState JobState
-	ToState   JobState
-	Count     int // num in FromState drop by this much, num in ToState rise by this much
+	RepGroup     string // "+all+" is the special group representing all live jobs across all RepGroups
+	FromState    JobState
+	ToState      JobState
+	Count        int    // num in FromState drop by this much, num in ToState rise by this much
+	SnapshotID   uint64 `json:",omitempty"`
+	SnapshotDone bool   `json:",omitempty"`
 }
 
 // BadServer is the details of servers that have gone bad that we send to the
@@ -644,6 +646,7 @@ type Server struct {
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
 	nextSubscriptionID   uint64
+	nextStatusSnapshotID uint64
 
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
@@ -2714,15 +2717,35 @@ func (s *Server) createQueue(ctx context.Context) {
 		}
 
 		// send out the counts
-		s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data) - lost})
+		s.statusCaster.Send(&jstateCount{
+			RepGroup:  statusAllRepGroups,
+			FromState: from,
+			ToState:   to,
+			Count:     len(data) - lost,
+		})
 		for group, count := range groups {
-			s.statusCaster.Send(&jstateCount{group, from, to, count})
+			s.statusCaster.Send(&jstateCount{
+				RepGroup:  group,
+				FromState: from,
+				ToState:   to,
+				Count:     count,
+			})
 		}
 
 		if lost > 0 {
-			s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
+			s.statusCaster.Send(&jstateCount{
+				RepGroup:  statusAllRepGroups,
+				FromState: JobStateLost,
+				ToState:   to,
+				Count:     lost,
+			})
 			for group, count := range groupsLost {
-				s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
+				s.statusCaster.Send(&jstateCount{
+					RepGroup:  group,
+					FromState: JobStateLost,
+					ToState:   to,
+					Count:     count,
+				})
 			}
 		}
 
@@ -2825,8 +2848,18 @@ func (s *Server) createQueue(ctx context.Context) {
 
 			// since our changed callback won't be called, send out this
 			// transition from running to lost state
-			defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
-			defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
+			defer s.statusCaster.Send(&jstateCount{
+				RepGroup:  statusAllRepGroups,
+				FromState: JobStateRunning,
+				ToState:   JobStateLost,
+				Count:     1,
+			})
+			defer s.statusCaster.Send(&jstateCount{
+				RepGroup:  job.RepGroup,
+				FromState: JobStateRunning,
+				ToState:   JobStateLost,
+				Count:     1,
+			})
 
 			return queue.SubQueueRun
 		}

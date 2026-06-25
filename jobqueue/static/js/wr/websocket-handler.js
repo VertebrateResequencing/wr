@@ -31,6 +31,93 @@ function resetLiveCounts(viewModel) {
     }
 }
 
+function trackerTotal(tracker) {
+    let total = 0;
+
+    for (const property of countProperties) {
+        if (tracker && typeof tracker[property] === 'function') {
+            total += tracker[property]();
+        }
+    }
+
+    return total;
+}
+
+function removeFromSortableRepGroups(viewModel, repgroup) {
+    if (viewModel.sortableRepGroups && typeof viewModel.sortableRepGroups.remove === 'function') {
+        viewModel.sortableRepGroups.remove(repgroup);
+
+        return;
+    }
+
+    if (Array.isArray(viewModel.sortableRepGroups)) {
+        const index = viewModel.sortableRepGroups.indexOf(repgroup);
+        if (index >= 0) {
+            viewModel.sortableRepGroups.splice(index, 1);
+        }
+    }
+}
+
+function removeRepGroupAt(viewModel, index) {
+    const repgroup = viewModel.repGroups[index];
+    removeFromSortableRepGroups(viewModel, repgroup);
+    viewModel.repGroups.splice(index, 1);
+    delete viewModel.repGroupLookup[repgroup.id];
+
+    for (const rgId in viewModel.repGroupLookup) {
+        if (viewModel.repGroupLookup[rgId] > index) {
+            viewModel.repGroupLookup[rgId]--;
+        }
+    }
+
+    if (viewModel.detailsRepgroup === repgroup.id) {
+        if (viewModel.detailsOA && typeof viewModel.detailsOA === 'function') {
+            viewModel.detailsOA([]);
+        }
+
+        viewModel.detailsRepgroup = '';
+        viewModel.detailsState = '';
+        viewModel.detailsOA = '';
+    }
+}
+
+function pruneEmptyLiveRepGroups(viewModel) {
+    for (let index = viewModel.repGroups.length - 1; index >= 0; index--) {
+        const repgroup = viewModel.repGroups[index];
+
+        if (repgroup.id.startsWith('search:') || trackerTotal(repgroup) > 0) {
+            continue;
+        }
+
+        removeRepGroupAt(viewModel, index);
+    }
+}
+
+function isSnapshotMessage(json) {
+    return json.hasOwnProperty('SnapshotID') && json['SnapshotID'] > 0;
+}
+
+function isSnapshotDoneMessage(json) {
+    return isSnapshotMessage(json) && json['SnapshotDone'] === true;
+}
+
+function beginStatusSnapshot(viewModel, json) {
+    if (!isSnapshotMessage(json) || viewModel.statusSnapshotID === json['SnapshotID']) {
+        return;
+    }
+
+    viewModel.statusSnapshotID = json['SnapshotID'];
+    resetLiveCounts(viewModel);
+}
+
+function finishStatusSnapshot(viewModel, json) {
+    if (!isSnapshotDoneMessage(json) || viewModel.statusSnapshotID !== json['SnapshotID']) {
+        return;
+    }
+
+    pruneEmptyLiveRepGroups(viewModel);
+}
+
 function normalizeStatusTimestamp(timestamp) {
     if (typeof timestamp !== 'number' || Math.abs(timestamp) < unixNanoThreshold) {
         return timestamp;
@@ -59,9 +146,51 @@ export function setupWebSocket(viewModel) {
     const currentRequest = JSON.stringify({ Request: "current" });
     const reconnectInitialDelay = 1000;
     const reconnectMaxDelay = 30000;
+    const statusResyncDelay = 1000;
+    const statusResyncInterval = 10000;
     let reconnectDelay = reconnectInitialDelay;
     let reconnectTimer = null;
+    let statusResyncTimer = null;
+    let periodicStatusResyncTimer = null;
     let reportedClose = false;
+
+    const sendCurrentStatus = (ws) => {
+        if (viewModel.ws === ws && ws.readyState === 1) {
+            ws.send(currentRequest);
+        }
+    };
+
+    const clearStatusResync = () => {
+        if (statusResyncTimer !== null) {
+            window.clearTimeout(statusResyncTimer);
+            statusResyncTimer = null;
+        }
+    };
+
+    const scheduleStatusResync = (ws) => {
+        if (statusResyncTimer !== null) {
+            return;
+        }
+
+        statusResyncTimer = window.setTimeout(() => {
+            statusResyncTimer = null;
+            sendCurrentStatus(ws);
+        }, statusResyncDelay);
+    };
+
+    const stopPeriodicStatusResync = () => {
+        if (periodicStatusResyncTimer !== null) {
+            window.clearInterval(periodicStatusResyncTimer);
+            periodicStatusResyncTimer = null;
+        }
+    };
+
+    const startPeriodicStatusResync = (ws) => {
+        stopPeriodicStatusResync();
+        periodicStatusResyncTimer = window.setInterval(() => {
+            sendCurrentStatus(ws);
+        }, statusResyncInterval);
+    };
 
     const scheduleReconnect = () => {
         if (reconnectTimer !== null) {
@@ -84,17 +213,22 @@ export function setupWebSocket(viewModel) {
 
             ws.onopen = () => {
                 reconnectDelay = reconnectInitialDelay;
+                clearStatusResync();
+                startPeriodicStatusResync(ws);
                 if (reportedClose) {
                     resetLiveCounts(viewModel);
                 }
                 reportedClose = false;
-                ws.send(currentRequest);
+                sendCurrentStatus(ws);
             };
 
             ws.onclose = () => {
                 if (viewModel.ws !== ws) {
                     return;
                 }
+
+                clearStatusResync();
+                stopPeriodicStatusResync();
 
                 if (!reportedClose) {
                     viewModel.statuserror.push("Connection to the manager has been lost!");
@@ -112,8 +246,14 @@ export function setupWebSocket(viewModel) {
                 try {
                     const json = JSON.parse(e.data);
 
-                    if (json.hasOwnProperty('FromState')) {
+                    if (isSnapshotDoneMessage(json)) {
+                        finishStatusSnapshot(viewModel, json);
+                    } else if (json.hasOwnProperty('FromState')) {
                         handleStateChangeMessage(viewModel, json);
+
+                        if (!isSnapshotMessage(json)) {
+                            scheduleStatusResync(ws);
+                        }
                     } else if (json.hasOwnProperty('State')) {
                         handleJobDetailsMessage(viewModel, json);
                     } else if (json.hasOwnProperty('IP')) {
@@ -141,6 +281,16 @@ export function setupWebSocket(viewModel) {
  * @param {object} json - The JSON message data
  */
 function handleStateChangeMessage(viewModel, json) {
+    if (isSnapshotDoneMessage(json)) {
+        finishStatusSnapshot(viewModel, json);
+
+        return;
+    }
+
+    if (isSnapshotMessage(json)) {
+        beginStatusSnapshot(viewModel, json);
+    }
+
     var rg = json['RepGroup'];
     var repgroup;
 
@@ -209,7 +359,7 @@ function handleStateChangeMessage(viewModel, json) {
 
     // Update the counts
 
-    if (from) {
+    if (!isSnapshotMessage(json) && from) {
         var newfrom = from() - json['Count'];
 
         if (newfrom >= 0) {
@@ -231,7 +381,11 @@ function handleStateChangeMessage(viewModel, json) {
     }
 
     if (to) {
-        to(to() + json['Count']);
+        if (isSnapshotMessage(json)) {
+            to(Math.max(json['Count'], 0));
+        } else {
+            to(to() + json['Count']);
+        }
     }
 }
 

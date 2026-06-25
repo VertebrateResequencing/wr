@@ -765,8 +765,18 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 						// since our changed callback won't be called, send out
 						// this transition from lost to running state
-						s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, JobStateRunning, 1})
-						s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateLost, JobStateRunning, 1})
+						s.statusCaster.Send(&jstateCount{
+							RepGroup:  statusAllRepGroups,
+							FromState: JobStateLost,
+							ToState:   JobStateRunning,
+							Count:     1,
+						})
+						s.statusCaster.Send(&jstateCount{
+							RepGroup:  job.RepGroup,
+							FromState: JobStateLost,
+							ToState:   JobStateRunning,
+							Count:     1,
+						})
 					}
 
 					if srerr == "" && s.liveJTouchEnabled() && liveSnapshotPresent(cr.JobEndState) {
