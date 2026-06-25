@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 PKG := github.com/VertebrateResequencing/wr
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
@@ -42,8 +44,10 @@ JQ_RESTB := ^(TestServerWebI|TestJobqueueBasics)$$
 JQ_B1 := TestJobSubscriptions|TestSubscriptionCatchUp|TestSubscriptionReconnectResync|TestSubscriptionTeardown|TestSubscriptionAtLeastOnceDedup|TestSubscriptionStateChangeEvents
 OTHER_PKGS := $(shell go list ${PKG}/... | grep -v /vendor/ | grep -v '^${PKG}/jobqueue$$' | grep -v '^${PKG}/client$$' | grep -v '^${PKG}/jobqueue/scheduler$$')
 GO_TEST := go test -tags netgo -timeout 40m --count 1 -failfast
+WR_TEST_RUNNEREXECSHELL ?= /bin/bash
 
 test: export CGO_ENABLED = 0
+test: export WR_RUNNEREXECSHELL ?= $(WR_TEST_RUNNEREXECSHELL)
 test:
 	@set -e; \
 	base=$$(mktemp -d "$${TMPDIR:-/tmp}/wrtest.XXXXXX"); \
@@ -84,6 +88,7 @@ test:
 # slow serial `go test`. queue has a real-clock timing test that must not be
 # starved (see queue_test.go), so it runs first, on its own.
 race: export CGO_ENABLED = 1
+race: export WR_RUNNEREXECSHELL ?= $(WR_TEST_RUNNEREXECSHELL)
 race:
 	@set -e; \
 	base=$$(mktemp -d "$${TMPDIR:-/tmp}/wrrace.XXXXXX"); \
