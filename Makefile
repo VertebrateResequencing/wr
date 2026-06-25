@@ -16,6 +16,7 @@ WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR ?= $(WEBUI_TEST_PLAYWRIGHT_ROOT)/node_modules/
 WEBUI_TEST_BROWSER_CACHE ?= $(WEBUI_TEST_SCRATCH)/ms-playwright
 WEBUI_TEST_REPRO_HTML ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-stale-counts.html
 WEBUI_TEST_SCREENSHOT ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-webui-stale-running-resolved.png
+WEBUI_TEST_DEPENDENT_SCREENSHOT ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-webui-dependent-job-details.png
 
 default: install
 
@@ -76,9 +77,11 @@ browser-test:
 	@$(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/repro.mjs --assert
 	@$(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/repro.mjs "$(WEBUI_TEST_REPRO_HTML)"
 	@PLAYWRIGHT_PACKAGE_DIR="$(WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR)" PLAYWRIGHT_BROWSERS_PATH="$(WEBUI_TEST_BROWSER_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/screenshot.mjs "$(WEBUI_TEST_SCREENSHOT)"
+	@PLAYWRIGHT_PACKAGE_DIR="$(WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR)" PLAYWRIGHT_BROWSERS_PATH="$(WEBUI_TEST_BROWSER_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/dependent-job-details/screenshot.mjs "$(WEBUI_TEST_DEPENDENT_SCREENSHOT)"
 	@echo "browser-test artifacts:"
 	@echo "  $(WEBUI_TEST_REPRO_HTML)"
 	@echo "  $(WEBUI_TEST_SCREENSHOT)"
+	@echo "  $(WEBUI_TEST_DEPENDENT_SCREENSHOT)"
 
 webui-test: browser-test
 

@@ -713,6 +713,21 @@
                                             <span class="prop-value" data-bind="text: Attempts"></span>
                                         </div>
 
+                                        <!-- ko if: WaitingForDepGroups && WaitingForDepGroups.length > 0 -->
+                                        <div class="prop-tag">
+                                            <span class="prop-name">State</span>
+                                            <span class="prop-value"
+                                                data-bind="text: 'waiting on dep group(s) not yet seen: ' + WaitingForDepGroups.join(', ')"></span>
+                                        </div>
+                                        <!-- /ko -->
+
+                                        <!-- ko if: State == "dependent" && (!WaitingForDepGroups || WaitingForDepGroups.length === 0) -->
+                                        <div class="prop-tag">
+                                            <span class="prop-name">State</span>
+                                            <span class="prop-value">dependent on other jobs</span>
+                                        </div>
+                                        <!-- /ko -->
+
                                         <!-- ko if: State == "suspended" -->
                                         <div class="prop-tag">
                                             <span class="prop-name">State</span>

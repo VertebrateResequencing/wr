@@ -20,6 +20,14 @@ Use `make browser-test` (or the alias `make webui-test`) to run these browser
 fixtures as a discoverable gate. The normal `make test` and `make race` targets
 do not run browser tests.
 
+## Dependent job details
+
+`dependent-job-details/` contains a browser fixture for dependent jobs waiting
+on a dependency group that has not appeared yet. It serves the real status page,
+injects a fake websocket, opens the dependent-job details row, asserts that the
+visible status row explains the missing dependency group wait, and writes a
+screenshot.
+
 ## Local dependency and artifact locations
 
 Browser-test dependencies and artifacts must stay repo-local:

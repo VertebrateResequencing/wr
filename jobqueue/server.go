@@ -745,6 +745,27 @@ func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.q.TriggerReadyAddedCallback(ctx)
 }
 
+func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) ([]*Job, int) {
+	if !ignoreComplete {
+		return inputJobs, 0
+	}
+
+	filtered := make([]*Job, 0, len(inputJobs))
+	queuedDups := 0
+
+	for _, job := range inputJobs {
+		if _, err := s.q.Get(job.Key()); err == nil {
+			queuedDups++
+
+			continue
+		}
+
+		filtered = append(filtered, job)
+	}
+
+	return filtered, queuedDups
+}
+
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
 	if err == nil {
 		return
@@ -2937,6 +2958,10 @@ func (s *Server) createJobs(
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
 
+	var queuedDups int
+
+	inputJobs, queuedDups = s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
+
 	// create itemdefs for the jobs
 	limitGroups := make(map[string]*limiter.GroupData)
 
@@ -3024,6 +3049,7 @@ func (s *Server) createJobs(
 		} else {
 			// add the jobs to the in-memory job queue
 			added, dups, qerr = s.enqueueItems(ctx, itemdefs)
+			dups += queuedDups
 			added += replaced
 			if qerr != nil {
 				srerr = ErrInternalError

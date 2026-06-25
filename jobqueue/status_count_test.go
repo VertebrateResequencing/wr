@@ -27,11 +27,13 @@ package jobqueue
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
 )
@@ -253,4 +255,80 @@ func TestClientRepGroupStatusCountsIncludeSuspended(t *testing.T) {
 		So(filtered[repGroup].Counts[JobStateReady], ShouldEqual, 0)
 		So(filtered[repGroup].Counts[JobStateComplete], ShouldEqual, 0)
 	})
+}
+
+func TestAddBulkDependentJobsRequeuesPersistedLiveOrphans(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a few jobs persisted before they reached the live queue", t, func() {
+		ctx := context.Background()
+		_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		const (
+			totalJobs    = 15000
+			orphanJobs   = 5
+			repGroup     = "bigmod"
+			missingGroup = "neverappears"
+		)
+
+		jobs := makeBulkDependentStatusCountJobs(totalJobs, repGroup, missingGroup, standardReqs)
+		_, _, _, err = server.db.storeNewJobs(ctx, jobs[:orphanJobs], true)
+		So(err, ShouldBeNil)
+
+		if clientConnectTime < 30*time.Second {
+			clientConnectTime = 30 * time.Second
+		}
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		added, existed, err := jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, totalJobs)
+		So(existed, ShouldEqual, 0)
+		assertRepGroupDependentCount(jq, repGroup, totalJobs)
+
+		added, existed, err = jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 0)
+		So(existed, ShouldEqual, totalJobs)
+		assertRepGroupDependentCount(jq, repGroup, totalJobs)
+	})
+}
+
+func makeBulkDependentStatusCountJobs(
+	total int,
+	repGroup string,
+	missingGroup string,
+	reqs *jqs.Requirements,
+) []*Job {
+	jobs := make([]*Job, 0, total)
+
+	for i := range total {
+		jobs = append(jobs, &Job{
+			Cmd:          fmt.Sprintf("echo %d", i+1),
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			RepGroup:     repGroup,
+			Dependencies: Dependencies{NewDepGroupDependency(missingGroup)},
+		})
+	}
+
+	return jobs
+}
+
+func assertRepGroupDependentCount(jq *Client, repGroup string, expected int) {
+	summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, false, false)
+	So(err, ShouldBeNil)
+	So(summaries[repGroup].Counts[JobStateDependent], ShouldEqual, expected)
 }
