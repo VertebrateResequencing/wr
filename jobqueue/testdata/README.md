@@ -36,6 +36,16 @@ suspended-job details row, asserts that the visible state text is exactly
 `suspended`, clicks the Resume action, verifies a single-job resume websocket
 request, and writes a screenshot.
 
+## Websocket reconnect warnings
+
+`websocket-reconnect-warnings/` contains a browser fixture for manager
+disconnect/reconnect handling in the status page. It serves the real status
+page, injects a fake websocket that fails while preserving the same token on
+reconnect, asserts that repeated `WebSocket error: Unknown error` warnings do
+not accumulate while the manager is down, then delivers a current snapshot plus
+new completion activity and verifies that the lost-manager and websocket
+warnings are cleared.
+
 ## Local dependency and artifact locations
 
 Browser-test dependencies and artifacts must stay repo-local:

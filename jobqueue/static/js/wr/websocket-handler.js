@@ -7,6 +7,17 @@ import { createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 const countProperties = ['delayed', 'dependent', 'suspended', 'ready', 'running', 'lost', 'buried', 'deleted', 'complete'];
 const percentProperties = ['delayPct', 'dependentPct', 'suspendedPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
 const unixNanoThreshold = 1000000000000000;
+const managerLostWarning = "Connection to the manager has been lost!";
+const webSocketErrorPrefix = "WebSocket error:";
+
+function isConnectionStatusWarning(message) {
+    return message === managerLostWarning ||
+        (typeof message === 'string' && message.startsWith(webSocketErrorPrefix));
+}
+
+function clearConnectionStatusWarnings(viewModel) {
+    viewModel.statuserror.remove(isConnectionStatusWarning);
+}
 
 function resetTrackerCounts(tracker) {
     for (const property of countProperties.concat(percentProperties)) {
@@ -153,6 +164,7 @@ export function setupWebSocket(viewModel) {
     let statusResyncTimer = null;
     let periodicStatusResyncTimer = null;
     let reportedClose = false;
+    const renderedWebSocketErrors = new Set();
 
     const sendCurrentStatus = (ws) => {
         if (viewModel.ws === ws && ws.readyState === 1) {
@@ -215,10 +227,12 @@ export function setupWebSocket(viewModel) {
                 reconnectDelay = reconnectInitialDelay;
                 clearStatusResync();
                 startPeriodicStatusResync(ws);
+                clearConnectionStatusWarnings(viewModel);
                 if (reportedClose) {
                     resetLiveCounts(viewModel);
                 }
                 reportedClose = false;
+                renderedWebSocketErrors.clear();
                 sendCurrentStatus(ws);
             };
 
@@ -231,7 +245,7 @@ export function setupWebSocket(viewModel) {
                 stopPeriodicStatusResync();
 
                 if (!reportedClose) {
-                    viewModel.statuserror.push("Connection to the manager has been lost!");
+                    viewModel.statuserror.push(managerLostWarning);
                     reportedClose = true;
                 }
 
@@ -239,7 +253,11 @@ export function setupWebSocket(viewModel) {
             };
 
             ws.onerror = (error) => {
-                viewModel.statuserror.push(`WebSocket error: ${error.message || 'Unknown error'}`);
+                const message = `WebSocket error: ${error.message || 'Unknown error'}`;
+                if (!renderedWebSocketErrors.has(message)) {
+                    viewModel.statuserror.push(message);
+                    renderedWebSocketErrors.add(message);
+                }
             };
 
             ws.onmessage = (e) => {
