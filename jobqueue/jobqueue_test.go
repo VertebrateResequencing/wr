@@ -128,6 +128,33 @@ func init() {
 	ServerLogClientErrors = false
 }
 
+func envWithoutLoadedModuleState(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+
+	for _, envvar := range environ {
+		name, _, _ := strings.Cut(envvar, "=")
+		if isLoadedModuleStateEnv(name) {
+			continue
+		}
+
+		filtered = append(filtered, envvar)
+	}
+
+	return filtered
+}
+
+func isLoadedModuleStateEnv(name string) bool {
+	switch name {
+	case "LOADEDMODULES", "_LMFILES_", "__Init_Default_Modules":
+		return true
+	default:
+		return strings.HasPrefix(name, "_ModuleTable") ||
+			strings.HasPrefix(name, "__LMOD_REF_COUNT_") ||
+			strings.HasPrefix(name, "__MODULES_") ||
+			strings.HasPrefix(name, "LMOD_FAMILY_")
+	}
+}
+
 func serverShutDownTime(touchInterval time.Duration) time.Duration {
 	// golang can't actually do exec.Command.Start() in parallel and has a
 	// global lock on them, so we have to allow the 500ms of time to any pending
@@ -5890,7 +5917,10 @@ func TestJobqueueModify(t *testing.T) {
 					RepGroup: repgrp,
 				})
 
-				add(1)
+				inserts, already, err := jq.Add(addJobs, envWithoutLoadedModuleState(envVars), true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
 
 				job := reserve(rgroup, cmd)
 				job = execute(job, false, "")
