@@ -64,7 +64,7 @@ var (
 	errSynchronousSubscriptionClosed = errors.New("subscription closed before synchronous job completed")
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	reqGroup                string
 	cmdTime                 string
@@ -113,7 +113,7 @@ var (
 	syncMode                bool
 )
 
-// addCmd represents the add command
+// addCmd represents the add command.
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add commands to the queue",
@@ -492,6 +492,7 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -761,6 +762,7 @@ func colsToDeps(cols []string) (deps jobqueue.Dependencies) {
 	for i := 0; i < len(cols); i += 2 {
 		deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
 	}
+
 	return
 }
 
@@ -769,6 +771,7 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 	for depgroup := range strings.SplitSeq(groups, ",") {
 		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
+
 	return
 }
 
@@ -780,10 +783,12 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 //nolint:gocognit,gocyclo,cyclop,funlen,maintidx // Legacy parser is broad; this change only threads remote defaults.
 func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
+
 	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
 		warn("Could not get current IP: %s", errc)
 	}
+
 	if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
 		isLocal = true
 	}
@@ -841,6 +846,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	}
 
 	var err error
+
 	if cmdMem == "" {
 		jd.Memory = 0
 	} else {
@@ -848,8 +854,10 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		if errf != nil {
 			die("--memory was not specified correctly: %s", errf)
 		}
+
 		jd.Memory = int(mb)
 	}
+
 	if cmdTime == "" {
 		jd.Time = 0 * time.Second
 	} else {
@@ -885,34 +893,44 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		if len(cols)%2 != 0 {
 			die("--cmd_deps must have an even number of comma-separated entries")
 		}
+
 		jd.Deps = colsToDeps(cols)
 	}
+
 	if cmdGroupDeps != "" {
 		jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
 	}
 
 	if cmdOnFailure != "" {
 		var bjs jobqueue.BehavioursViaJSON
+
 		err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
 		if err != nil {
 			die("bad --on_failure: %s", err)
 		}
+
 		jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
 	}
+
 	if cmdOnSuccess != "" {
 		var bjs jobqueue.BehavioursViaJSON
+
 		err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
 		if err != nil {
 			die("bad --on_success: %s", err)
 		}
+
 		jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
 	}
+
 	if cmdOnExit != "" {
 		var bjs jobqueue.BehavioursViaJSON
+
 		err = json.Unmarshal([]byte(cmdOnExit), &bjs)
 		if err != nil {
 			die("bad --on_exit: %s", err)
 		}
+
 		jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
 	}
 
@@ -935,8 +953,11 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	// we'll default to pwd if the manager is on the same host as us, or if
 	// cwd matters, or if remote adds should behave like local adds; /tmp
 	// otherwise (and cmdCwd has not been supplied).
-	var pwd string
-	var remoteWarning bool
+	var (
+		pwd           string
+		remoteWarning bool
+	)
+
 	if cmdCwd == "" {
 		wd, errg := os.Getwd()
 		if errg != nil {
@@ -954,9 +975,11 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	// for network efficiency, read in all commands and create a big slice
 	// of Jobs and Add() them in one go afterwards
 	var jobs []*jobqueue.Job
+
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, maxScanTokenSize)
 	scanner.Buffer(buf, maxScanTokenSize)
+
 	defaultedRepG := false
 	lineNum := 0
 	validator := make(jscheduler.BsubValidator)
@@ -966,17 +989,21 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	for scanner.Scan() {
 		lineNum++
 		cols := strings.Split(scanner.Text(), "\t")
+
 		colsn := len(cols)
 		if colsn < 1 || cols[0] == "" {
 			continue
 		}
+
 		if colsn > 2 {
 			die("line %d has too many columns; check `wr add -h`", lineNum)
 		}
 
 		// determine all the options for this command
-		var jvj *jobqueue.JobViaJSON
-		var jsonErr error
+		var (
+			jvj     *jobqueue.JobViaJSON
+			jsonErr error
+		)
 		if colsn == 2 {
 			jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
 			if jsonErr == nil {
@@ -1002,6 +1029,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 			if remoteWarning {
 				warn("command working directories defaulting to %s since the manager is running remotely", pwd)
 			}
+
 			jd.Cwd = pwd
 		}
 
@@ -1020,7 +1048,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 
 		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" &&
 			jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm, job.Requirements.Other["scheduler_queue"]) {
-			die("invalid lsf resource string") //nolint:whitespace
+
+			die("invalid lsf resource string")
 		}
 
 		checkForRelativePathsInNonCwdMatters(&warnedAboutRelative, cwdContents, job)
@@ -1045,13 +1074,16 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 // alter path specs for config files that don't exist locally.
 func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 	cfs := strings.Split(configFiles, ",")
+
 	remoteConfigFiles := make([]string, 0, len(cfs))
 	for _, cf := range cfs {
 		parts := strings.Split(cf, ":")
 		local := internal.TildaToHome(parts[0])
+
 		_, err := os.Stat(local)
 		if err != nil {
 			remoteConfigFiles = append(remoteConfigFiles, cf)
+
 			continue
 		}
 
@@ -1065,12 +1097,15 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 		remote, err := jq.UploadFile(local, "")
 		if err != nil {
 			warn("failed to upload [%s] to a unique location: %s", local, err)
+
 			remoteConfigFiles = append(remoteConfigFiles, cf)
+
 			continue
 		}
 
 		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
 	}
+
 	return strings.Join(remoteConfigFiles, ",")
 }
 

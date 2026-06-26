@@ -121,7 +121,9 @@ func TestOpenStack(t *testing.T) {
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	ofs := os.Getenv("OS_FLAVOR_SETS")
+
 	var flavorSets [][]string
+
 	if ofs != "" {
 		sets := strings.SplitSeq(ofs, ";")
 		for set := range sets {
@@ -129,10 +131,12 @@ func TestOpenStack(t *testing.T) {
 			flavorSets = append(flavorSets, flavors)
 		}
 	}
+
 	host, errh := os.Hostname()
 	if errh != nil {
 		t.Fatal(errh)
 	}
+
 	resourceName := "wr-testing-" + localUser
 
 	if osPrefix == "" || osUser == "" || localUser == "" || flavorRegex == "" {
@@ -143,6 +147,7 @@ func TestOpenStack(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(crdir)
+
 		crfileprefix := filepath.Join(crdir, "resources")
 
 		Convey("You can find out the required environment variables for providers before creating instances with New()", t, func() {
@@ -172,6 +177,7 @@ func TestOpenStack(t *testing.T) {
 
 			Convey("You can get a new OpenStack Provider with just OS_PROJECT_NAME set", t, func() {
 				os.Unsetenv("OS_PROJECT_ID")
+
 				p, err := New(ctx, "openstack", resourceName, crfileprefix)
 				So(err, ShouldBeNil)
 				So(p, ShouldNotBeNil)
@@ -190,8 +196,9 @@ func TestOpenStack(t *testing.T) {
 			inCloud := p.InCloud()
 
 			Convey("Debug log contains cloud context type as openstack", func() {
-				ctx = p.cloudContext(ctx)
+				ctx := p.cloudContext(ctx)
 				buff := clog.ToBufferAtLevel("debug")
+
 				clog.Debug(ctx, "msg", "foo", 1)
 				So(buff.String(), ShouldContainSubstring, "cloudtype=openstack")
 			})
@@ -204,7 +211,7 @@ func TestOpenStack(t *testing.T) {
 					So(q.MaxCores, ShouldEqual, 446)
 					So(q.MaxInstances, ShouldEqual, 446)
 					So(q.MaxRAM, ShouldEqual, 3584000)
-					//*** gophercloud API doesn't tell us about volume quota :(
+					// *** gophercloud API doesn't tell us about volume quota :(
 					//*** not reliable to try and test for the .Used* values...
 				}
 			})
@@ -218,6 +225,7 @@ func TestOpenStack(t *testing.T) {
 				So(p.PrivateKey(), ShouldEqual, p.resources.PrivateKey)
 
 				So(p.resources.Details["keypair"], ShouldEqual, resourceName)
+
 				if inCloud {
 					So(p.resources.Details["secgroup"], ShouldNotBeBlank)
 					So(p.resources.Details["network"], ShouldBeBlank)
@@ -338,14 +346,17 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
 					server, err := p.Spawn(ctx, osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
+
 					defer func() {
 						errd := server.Destroy(ctx)
 						if errd != nil {
 							fmt.Printf("deferred server.Destroy failed: %s", errd)
 						}
 					}()
+
 					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
+
 					ok := server.Alive(ctx, true)
 					So(ok, ShouldBeTrue)
 
@@ -356,8 +367,10 @@ func TestOpenStack(t *testing.T) {
 					So(worked, ShouldEqual, false)
 					worked = server.Allocate(ctx, float64(flavor.Cores), 100, 0)
 					So(worked, ShouldEqual, true)
+
 					n = server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, 0)
+
 					worked = server.Allocate(ctx, 1, 0, 0)
 					So(worked, ShouldEqual, false)
 
@@ -414,18 +427,22 @@ func TestOpenStack(t *testing.T) {
 							// the network
 							intf, _, err := server.RunCmd(context.Background(), "route | grep '^default' | grep -o '[^ ]*$'", false)
 							So(err, ShouldBeNil)
+
 							intf = strings.TrimSpace(intf)
 							So(intf, ShouldNotBeBlank)
 
 							num := 3
+
 							results := make(chan bool, num)
 							for i := 1; i <= num; i++ {
 								go func(i int) {
 									cmd := "sleep 5"
 									if i == num {
 										cmd = fmt.Sprintf("sudo ifconfig %s down", intf)
+
 										go func() {
 											<-time.After(2 * time.Second)
+
 											alive := server.Alive(ctx, true)
 											if !alive {
 												errd := server.Destroy(ctx)
@@ -435,6 +452,7 @@ func TestOpenStack(t *testing.T) {
 											}
 										}()
 									}
+
 									_, _, err := server.RunCmd(context.Background(), cmd, false)
 									if err != nil {
 										results <- true
@@ -451,6 +469,7 @@ func TestOpenStack(t *testing.T) {
 
 						Convey("You can run many commands at once without hitting ssh problems", func() {
 							num := 30
+
 							results := make(chan bool, num)
 							for i := 1; i <= num; i++ {
 								go func() {
@@ -475,6 +494,7 @@ func TestOpenStack(t *testing.T) {
 					So(err, ShouldBeNil)
 					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\n>&2 echo foo\nfalse"))
 					So(err, ShouldNotBeNil)
+
 					ok := server.Alive(ctx, true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server script failed: cloud RunCmd(/tmp/.server_script) failed: Process exited with status 1\nSTDERR:\nfoo")
@@ -485,12 +505,15 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawning with a start up script that takes too long returns an error as well", func() {
 					server, err := p.Spawn(ctx, osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
+
 					pcsTimeOut = 1 * time.Second
 					defer func() {
 						pcsTimeOut = 15 * time.Minute
 					}()
+
 					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\nsleep 5"))
 					So(err, ShouldNotBeNil)
+
 					ok := server.Alive(ctx, true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server script failed to complete within")
@@ -501,16 +524,21 @@ func TestOpenStack(t *testing.T) {
 				Convey("WaitUntilReady can be cancelled", func() {
 					server, err := p.Spawn(ctx, osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
+
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
+
 					go func() {
 						<-time.After(2 * time.Second)
 						cancel()
 					}()
+
 					t := time.Now()
 					err = server.WaitUntilReady(ctx, "", []byte("#!/bin/bash\nsleep 5"))
 					took := time.Since(t)
+
 					So(err, ShouldNotBeNil)
+
 					ok := server.Alive(ctx, true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldContainSubstring, "cancelled")
@@ -525,6 +553,7 @@ func TestOpenStack(t *testing.T) {
 					So(err, ShouldBeNil)
 					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\ncat /tmp/foo"))
 					So(err, ShouldNotBeNil)
+
 					ok := server.Alive(ctx, true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server script failed: cloud RunCmd(/tmp/.server_script) failed: Process exited with status 1")
@@ -534,11 +563,14 @@ func TestOpenStack(t *testing.T) {
 					Convey("But supplying the file makes it work", func() {
 						server, err := p.Spawn(ctx, osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 						So(err, ShouldBeNil)
+
 						_, filename, _, _ := runtime.Caller(0)
 						err = server.WaitUntilReady(context.Background(), filename+":/tmp/foo", []byte("#!/bin/bash\ncat /tmp/foo"))
 						So(err, ShouldBeNil)
+
 						ok := server.Alive(ctx, true)
 						So(ok, ShouldBeTrue)
+
 						err = server.Destroy(ctx)
 						So(err, ShouldBeNil)
 					})
@@ -623,6 +655,7 @@ func TestOpenStack(t *testing.T) {
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
 					server, err := p.Spawn(ctx, osPrefix, osUser, flavor.ID, flavor.Disk+10, 0*time.Second, true)
 					So(err, ShouldBeNil)
+
 					ok := server.Alive(ctx, true)
 					So(ok, ShouldBeTrue)
 

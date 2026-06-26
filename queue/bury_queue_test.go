@@ -37,6 +37,7 @@ func TestBuryQueue(t *testing.T) {
 	Convey("Once 10 items have been pushed to the queue", t, func() {
 		queue := newBuryQueue()
 		items := make(map[string]*Item)
+
 		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			items[key] = newItem(key, "", "data", 0, 0*time.Second, 0*time.Second)
@@ -55,8 +56,10 @@ func TestBuryQueue(t *testing.T) {
 				if item == nil {
 					break
 				}
+
 				So(item.Key, ShouldNotEqual, "key_2")
 			}
+
 			So(queue.len(), ShouldEqual, 0)
 		})
 
@@ -76,6 +79,7 @@ func TestBuryQueue(t *testing.T) {
 	Convey("Once a single item has been pushed to the queue", t, func() {
 		queue := newBuryQueue()
 		items := make(map[string]*Item)
+
 		for i := range 1 {
 			key := fmt.Sprintf("key_%d", i)
 			items[key] = newItem(key, "", "data", 0, 0*time.Second, 0*time.Second)

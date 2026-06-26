@@ -110,11 +110,12 @@ func (s sobsd) Swap(i, j int) {
 
 func (s sobsd) Less(i, j int) bool {
 	cmp := bytes.Compare(s[i][0], s[j][0])
+
 	return cmp == -1
 }
 
 // sobsdStorer is the kind of function that stores the contents of a sobsd in
-// a particular bucket
+// a particular bucket.
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
@@ -173,11 +174,13 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 			path := strings.TrimPrefix(dbBkFile, internal.S3Prefix)
 			pp := strings.Split(path, "@")
+
 			profile := "default"
 			if len(pp) == 2 {
 				profile = pp[0]
 				path = pp[1]
 			}
+
 			path = filepath.Dir(path)
 
 			accessorConfig, err := muxfys.S3ConfigFromEnvironment(profile, path)
@@ -191,6 +194,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			dbBkFile = filepath.Join(path, filepath.Base(dbBkFile))
+
 			dbBkFile, err = stripBucketFromS3Path(dbBkFile)
 			if err != nil {
 				return nil, "", err
@@ -224,8 +228,10 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 	}
 
-	var boltdb *bolt.DB
-	var err error
+	var (
+		boltdb *bolt.DB
+		err    error
+	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
 			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
@@ -235,6 +241,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			if err != nil {
 				return nil, msg, err
 			}
+
 			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 		}
@@ -272,20 +279,24 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 					}
 
 					origerr := err
+
 					err = os.Remove(dbFile)
 					if err != nil {
 						return nil, msg, err
 					}
+
 					err = copyFile(bkPath, dbFile)
 					if err != nil {
 						return nil, msg, err
 					}
+
 					boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
 			}
 		}
 	}
+
 	if err != nil {
 		return nil, msg, err
 	}
@@ -296,22 +307,27 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketJobsLive, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketJobsComplete)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketJobsComplete, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketRTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketRTK, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketRGs)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketRGs, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketLGs)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketLGs, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketDTK, errf)
@@ -330,6 +346,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return fmt.Errorf("rebuild bucket %s: %w", bucketDepGroups, errf)
 			}
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketRDTK, errf)
@@ -348,26 +365,32 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return fmt.Errorf("rebuild bucket %s: %w", bucketJobLookupEntries, errf)
 			}
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketEnvs)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketEnvs, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketStdO)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketStdO, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketStdE)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketStdE, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketJobRAM)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketJobRAM, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketJobDisk)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketJobDisk, errf)
 		}
+
 		_, errf = tx.CreateBucketIfNotExists(bucketJobSecs)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketJobSecs, errf)
@@ -436,13 +459,16 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 					if errd != nil {
 						return errd
 					}
+
 					removed = append(removed, group)
+
 					continue
 				}
 
 				if binary.BigEndian.Uint64(v) == uint64(limit) {
 					continue
 				}
+
 				changed = append(changed, group)
 			} else if limit < 0 {
 				continue
@@ -450,6 +476,7 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 
 			v = make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(limit))
+
 			errp := b.Put(key, v)
 			if errp != nil {
 				return errp
@@ -458,6 +485,7 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 
 		return nil
 	})
+
 	return changed, removed, err
 }
 
@@ -511,6 +539,7 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 		if len(rgs) > 0 {
 			numStores++
 		}
+
 		if len(dgLookups) > 0 {
 			numStores++
 		}
@@ -518,36 +547,47 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 		if len(depGroupsSeen) > 0 {
 			numStores++
 		}
+
 		if len(rdgLookups) > 0 {
 			numStores++
 		}
+
 		errors := make(chan error, numStores)
 
 		db.wgMutex.Lock()
 		wgk := db.wg.Add(1)
+
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue database storeNewJobs rglookups", true)
 			defer db.wg.Done(wgk)
+
 			sort.Sort(rgLookups)
+
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
 		}()
 
 		if len(rgs) > 0 {
 			wgk2 := db.wg.Add(1)
+
 			go func() {
 				defer internal.LogPanic(ctx, "jobqueue database storeNewJobs repGroups", true)
 				defer db.wg.Done(wgk2)
+
 				sort.Sort(rgs)
+
 				errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
 			}()
 		}
 
 		if len(dgLookups) > 0 {
 			wgk3 := db.wg.Add(1)
+
 			go func() {
 				defer internal.LogPanic(ctx, "jobqueue database dgLookups", true)
 				defer db.wg.Done(wgk3)
+
 				sort.Sort(dgLookups)
+
 				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
 			}()
 		}
@@ -567,24 +607,31 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 
 		if len(rdgLookups) > 0 {
 			wgk4 := db.wg.Add(1)
+
 			go func() {
 				defer internal.LogPanic(ctx, "jobqueue database storeNewJobs rdgLookups", true)
 				defer db.wg.Done(wgk4)
+
 				sort.Sort(rdgLookups)
+
 				errors <- db.storeBatched(bucketRDTK, rdgLookups, db.storeLookups)
 			}()
 		}
 
 		wgk5 := db.wg.Add(1)
+
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue database storeNewJobs encodedJobs", true)
 			defer db.wg.Done(wgk5)
+
 			sort.Sort(encodedJobs)
+
 			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
 		}()
 		db.wgMutex.Unlock()
 
 		seen := 0
+
 		for thisErr := range errors {
 			if thisErr != nil {
 				err = thisErr
@@ -593,6 +640,7 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 			seen++
 			if seen == numStores {
 				close(errors)
+
 				break
 			}
 		}
@@ -620,7 +668,9 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 	repGroups := make(map[string]bool)
 	depGroups := make(map[string]bool)
 	newJobKeys := make(map[string]bool)
+
 	var keptJobs []*Job
+
 	for _, job := range jobs {
 		keyStr := job.Key()
 
@@ -632,10 +682,13 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 				return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
 					jobsToQueue, jobsToUpdate, alreadyAdded, err
 			}
+
 			if added {
 				alreadyAdded++
+
 				continue
 			}
+
 			keptJobs = append(keptJobs, job)
 		}
 
@@ -656,17 +709,22 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		for _, depGroup := range job.Dependencies.DepGroups() {
 			rdgLookups = append(rdgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
 		}
+
 		job.RUnlock()
 
 		var encoded []byte
+
 		enc := codec.NewEncoderBytes(&encoded, db.ch)
+
 		job.RLock()
 		err = enc.Encode(job)
 		job.RUnlock()
+
 		if err != nil {
 			return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
 				jobsToQueue, jobsToUpdate, alreadyAdded, err
 		}
+
 		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 	}
 
@@ -684,15 +742,20 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 			// bucket again
 			for _, job := range jobsToQueue {
 				key := []byte(job.Key())
+
 				var encoded []byte
+
 				enc := codec.NewEncoderBytes(&encoded, db.ch)
+
 				job.RLock()
 				err = enc.Encode(job)
 				job.RUnlock()
+
 				if err != nil {
 					return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
 						jobsToQueue, jobsToUpdate, alreadyAdded, err
 				}
+
 				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 			}
 
@@ -721,6 +784,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 // concatenating prefix with a delimiter and the job key.
 func (db *db) generateLookupKey(prefix string, jobKey []byte) []byte {
 	key := append([]byte(prefix), []byte(dbDelimiter)...)
+
 	return append(key, jobKey...)
 }
 
@@ -728,13 +792,16 @@ func (db *db) generateLookupKey(prefix string, jobKey []byte) []byte {
 // bucket.
 func (db *db) checkIfLive(key string) (bool, error) {
 	var isLive bool
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		if newJobBucket.Get([]byte(key)) != nil {
 			isLive = true
 		}
+
 		return nil
 	})
+
 	return isLive, err
 }
 
@@ -742,6 +809,7 @@ func (db *db) checkIfLive(key string) (bool, error) {
 // complete bucket.
 func (db *db) checkIfComplete(key string) (bool, error) {
 	var isComplete bool
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		isComplete = completeJobBucket.Get([]byte(key)) != nil
@@ -762,10 +830,13 @@ func (db *db) checkIfComplete(key string) (bool, error) {
 // happen - no checking is done! A backgroundBackup() is triggered afterwards.
 func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
+
 	job.RLock()
 	err := enc.Encode(job)
 	job.RUnlock()
+
 	if err != nil {
 		return err
 	}
@@ -774,37 +845,45 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		bo := tx.Bucket(bucketStdO)
 		be := tx.Bucket(bucketStdE)
 		key := []byte(key)
+
 		errf := bo.Delete(key)
 		if errf != nil {
 			return errf
 		}
+
 		errf = be.Delete(key)
 		if errf != nil {
 			return errf
 		}
 
 		b := tx.Bucket(bucketJobsLive)
+
 		errf = b.Delete(key)
 		if errf != nil {
 			return errf
 		}
 
 		b = tx.Bucket(bucketJobsComplete)
+
 		errf = b.Put(key, encoded)
 		if errf != nil {
 			return errf
 		}
 
 		b = tx.Bucket(bucketJobRAM)
+
 		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM), []byte(strconv.Itoa(job.PeakRAM)))
 		if errf != nil {
 			return errf
 		}
+
 		b = tx.Bucket(bucketJobDisk)
+
 		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakDisk), []byte(strconv.Itoa(int(job.PeakDisk))))
 		if errf != nil {
 			return errf
 		}
+
 		b = tx.Bucket(bucketJobSecs)
 		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
 
@@ -848,6 +927,7 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 				return errd
 			}
 		}
+
 		return nil
 	})
 	if err != nil {
@@ -870,21 +950,27 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 // is kicked.
 func (db *db) recoverIncompleteJobs() ([]*Job, error) {
 	var jobs []*Job
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsLive)
+
 		return b.ForEach(func(key, encoded []byte) error {
 			if encoded != nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
+
 				errf := dec.Decode(job)
 				if errf != nil {
 					return errf
 				}
+
 				jobs = append(jobs, job)
 			}
+
 			return nil
 		})
 	})
+
 	return jobs, err
 }
 
@@ -892,6 +978,7 @@ func (db *db) recoverIncompleteJobs() ([]*Job, error) {
 // jobs bucket (ie. those that have gone through the queue and been Remove()d).
 func (db *db) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 	var jobs []*Job
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsComplete)
 		for _, key := range keys {
@@ -899,27 +986,34 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 			if encoded != nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
+
 				err := dec.Decode(job)
 				if err == nil {
 					jobs = append(jobs, job)
 				}
 			}
 		}
+
 		return nil
 	})
+
 	return jobs, err
 }
 
 // retrieveRepGroups gets the rep groups of all jobs that have ever been added.
 func (db *db) retrieveRepGroups() ([]string, error) {
 	var rgs []string
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketRGs)
+
 		return b.ForEach(func(k, v []byte) error {
 			rgs = append(rgs, string(k))
+
 			return nil
 		})
 	})
+
 	return rgs, err
 }
 
@@ -952,26 +1046,33 @@ func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[stri
 // re-run).
 func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 	var jobs []*Job
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		lookupBucket := tx.Bucket(bucketRTK).Cursor()
+
 		prefix := []byte(repgroup + dbDelimiter)
 		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 			key := bytes.TrimPrefix(k, prefix)
+
 			encoded := completeJobBucket.Get(key)
 			if len(encoded) > 0 && newJobBucket.Get(key) == nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
+
 				err := dec.Decode(job)
 				if err != nil {
 					return err
 				}
+
 				jobs = append(jobs, job)
 			}
 		}
+
 		return nil
 	})
+
 	return jobs, err
 }
 
@@ -1042,24 +1143,29 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 	for depGroup := range depGroups {
 		prefixes = append(prefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
 	}
+
 	sort.Sort(prefixes)
 
 	err = db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		lookupBucket := tx.Bucket(bucketRDTK).Cursor()
+
 		doneKeys := make(map[string]bool)
 		for {
 			newDepGroups := make(map[string]bool)
+
 			for _, bsd := range prefixes {
 				for k, _ := lookupBucket.Seek(bsd[0]); bytes.HasPrefix(k, bsd[0]); k, _ = lookupBucket.Next() {
 					key := bytes.TrimPrefix(k, bsd[0])
+
 					keyStr := string(key)
 					if doneKeys[keyStr] {
 						continue
 					}
 
 					encoded := newJobBucket.Get(key)
+
 					live := false
 					if len(encoded) > 0 {
 						live = true
@@ -1070,6 +1176,7 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 					if len(encoded) > 0 {
 						dec := codec.NewDecoderBytes(encoded, db.ch)
 						job := &Job{}
+
 						errf := dec.Decode(job)
 						if errf != nil {
 							return errf
@@ -1101,14 +1208,17 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 					newPrefixes = append(newPrefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
 					depGroups[depGroup] = true
 				}
+
 				sort.Sort(newPrefixes)
 				prefixes = newPrefixes
 			} else {
 				break
 			}
 		}
+
 		return nil
 	})
+
 	return jobsToQueue, jobsToUpdate, err
 }
 
@@ -1117,9 +1227,11 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 // Archive()d - even if they've been added and archived in the past).
 func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, error) {
 	var jobKeys []string
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		lookupBucket := tx.Bucket(bucketDTK).Cursor()
+
 		prefix := []byte(depgroup + dbDelimiter)
 		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 			key := bytes.TrimPrefix(k, prefix)
@@ -1127,8 +1239,10 @@ func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, er
 				jobKeys = append(jobKeys, string(key))
 			}
 		}
+
 		return nil
 	})
+
 	return jobKeys, err
 }
 
@@ -1169,8 +1283,10 @@ func (db *db) storeEnv(env []byte) (string, error) {
 		if err != nil {
 			return envkey, err
 		}
+
 		db.envcache.Add(envkey, env)
 	}
+
 	return envkey, nil
 }
 
@@ -1184,6 +1300,7 @@ func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 
 	envc := db.retrieve(ctx, bucketEnvs, envkey)
 	db.envcache.Add(envkey, envc)
+
 	return envc
 }
 
@@ -1207,12 +1324,15 @@ func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 // write to bolt in a goroutine, giving us a significant speed boost.
 func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, stde []byte, forceStorage bool) {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
 	db.Lock()
 	defer db.Unlock()
+
 	if db.closed {
 		return
 	}
+
 	jobkey := job.Key()
 	job.RLock()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
@@ -1223,8 +1343,10 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 	jfr := job.FailReason
 	err := enc.Encode(job)
 	job.RUnlock()
+
 	if err != nil {
 		clog.Error(ctx, "Database operation updateJobAfterExit failed due to Encode failure", "err", err)
+
 		return
 	}
 
@@ -1232,7 +1354,9 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
+
 	wgk := db.wg.Add(1)
+
 	go func() {
 		defer internal.LogPanic(ctx, "updateJobAfterExit", true)
 
@@ -1249,10 +1373,12 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 
 			bo := tx.Bucket(bucketStdO)
 			be := tx.Bucket(bucketStdE)
+
 			errf := bo.Delete(key)
 			if errf != nil {
 				return errf
 			}
+
 			errf = be.Delete(key)
 			if errf != nil {
 				return errf
@@ -1262,10 +1388,12 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 				if len(stdo) > 0 {
 					errf = bo.Put(key, stdo)
 				}
+
 				if len(stde) > 0 {
 					errf = be.Put(key, stde)
 				}
 			}
+
 			if errf != nil {
 				return errf
 			}
@@ -1281,12 +1409,15 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 				b := tx.Bucket(bucketJobSecs)
 				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, secs), []byte(strconv.Itoa(secs)))
 			}
+
 			return errf
 		})
 		db.wg.Done(wgk)
+
 		if err != nil {
 			clog.Error(ctx, "Database operation updateJobAfterExit failed", "err", err)
 		}
+
 		db.Lock()
 		db.updatingAfterJobExit--
 		db.Unlock()
@@ -1298,24 +1429,32 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 // essential this happens, and we benefit from the speed.
 func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
+
 	db.RLock()
 	defer db.RUnlock()
+
 	if db.closed {
 		return
 	}
+
 	key := []byte(job.Key())
 	job.RLock()
 	err := enc.Encode(job)
 	job.RUnlock()
+
 	if err != nil {
 		clog.Error(ctx, "Database operation updateJobAfterChange failed due to Encode failure", "err", err)
+
 		return
 	}
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
+
 	wgk := db.wg.Add(1)
+
 	go func() {
 		defer internal.LogPanic(ctx, "updateJobAfterChange", true)
 
@@ -1329,11 +1468,14 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 				// case, don't add it back to the live bucket here.
 				return nil
 			}
+
 			return bjl.Put(key, encoded)
 		})
 		db.wg.Done(wgk)
+
 		if err != nil {
 			clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
+
 			return
 		}
 
@@ -1357,6 +1499,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 	if err != nil {
 		return err
 	}
+
 	sort.Sort(rgLookups)
 	sort.Sort(rgs)
 	sort.Sort(dgLookups)
@@ -1371,7 +1514,9 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 		be := tx.Bucket(bucketStdE)
 		os := make([][]byte, len(oldKeys))
 		es := make([][]byte, len(oldKeys))
+
 		var hadStd bool
+
 		for i, oldKey := range oldKeys {
 			key := []byte(oldKey)
 
@@ -1388,20 +1533,24 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 			o := bo.Get(key)
 			if o != nil {
 				os[i] = o
+
 				errd = bo.Delete(key)
 				if errd != nil {
 					return errd
 				}
+
 				hadStd = true
 			}
 
 			e := be.Get(key)
 			if e != nil {
 				es[i] = e
+
 				errd = be.Delete(key)
 				if errd != nil {
 					return errd
 				}
+
 				hadStd = true
 			}
 		}
@@ -1449,6 +1598,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 							return errs
 						}
 					}
+
 					if es[i] != nil {
 						errs = be.Put([]byte(job.Key()), es[i])
 						if errs != nil {
@@ -1460,6 +1610,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 
 			return db.putEncodedJobs(tx, bucketJobsLive, encodedJobs)
 		}
+
 		return nil
 	})
 	if err != nil {
@@ -1505,14 +1656,17 @@ func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
 // given job.
 func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, stde []byte) {
 	// first wait for any existing updateJobAfterExit() calls to complete
-	//*** this method of waiting seems really bad and should be improved, but in
+	// *** this method of waiting seems really bad and should be improved, but in
 	//    practice we probably never wait
 	for {
 		db.RLock()
+
 		if db.updatingAfterJobExit == 0 {
 			db.RUnlock()
+
 			break
 		}
+
 		db.RUnlock()
 		<-time.After(10 * time.Millisecond)
 	}
@@ -1521,16 +1675,19 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 		bo := tx.Bucket(bucketStdO)
 		be := tx.Bucket(bucketStdE)
 		key := []byte(jobkey)
+
 		o := bo.Get(key)
 		if o != nil {
 			stdo = make([]byte, len(o))
 			copy(stdo, o)
 		}
+
 		e := be.Get(key)
 		if e != nil {
 			stde = make([]byte, len(e))
 			copy(stde, e)
 		}
+
 		return nil
 	})
 	if err != nil {
@@ -1538,6 +1695,7 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 		// the future
 		clog.Error(ctx, "Database retrieve failed", "err", err)
 	}
+
 	return stdo, stde
 }
 
@@ -1591,7 +1749,9 @@ func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
 func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundAmount int) (int, error) {
 	prefix := []byte(reqGroup)
 	max := 0
+
 	var recommendation int
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(statBucket).Cursor()
 
@@ -1601,8 +1761,11 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		// window fills
 		count := 0
 		window := jobStatWindowPercent
-		var prev []int
-		var erra error
+
+		var (
+			prev []int
+			erra error
+		)
 		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
 			max, erra = strconv.Atoi(string(v))
 			if erra != nil {
@@ -1630,6 +1793,7 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		if max == 0 {
 			return recommendation, err
 		}
+
 		recommendation = max
 	}
 
@@ -1648,13 +1812,15 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 	return recommendation, err
 }
 
-// store does a basic set of a key/val in a given bucket
+// store does a basic set of a key/val in a given bucket.
 func (db *db) store(bucket []byte, key string, val []byte) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
 		err := b.Put([]byte(key), val)
+
 		return err
 	})
+
 	return err
 }
 
@@ -1662,13 +1828,16 @@ func (db *db) store(bucket []byte, key string, val []byte) error {
 // possible here.
 func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 	var val []byte
+
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
+
 		v := b.Get([]byte(key))
 		if v != nil {
 			val = make([]byte, len(v))
 			copy(val, v)
 		}
+
 		return nil
 	})
 	if err != nil {
@@ -1676,6 +1845,7 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 		// the future
 		clog.Error(ctx, "Database retrieve failed", "err", err)
 	}
+
 	return val
 }
 
@@ -1686,12 +1856,14 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 	// the nearest 1000
 	num := len(data)
 	batchSize := num / 10
+
 	rem := batchSize % 1000
 	if rem > 500 {
 		batchSize = batchSize - rem + 1000
 	} else {
 		batchSize -= rem
 	}
+
 	if batchSize < 1000 {
 		batchSize = 1000
 	}
@@ -1717,6 +1889,7 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -1726,6 +1899,7 @@ func (db *db) storeLookups(bucket []byte, lookups sobsd) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
 		return db.putLookups(tx, bucket, lookups)
 	})
+
 	return err
 }
 
@@ -1746,6 +1920,7 @@ func (db *db) putLookups(tx *bolt.Tx, bucket []byte, lookups sobsd) error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -1774,6 +1949,7 @@ func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
 		return db.putEncodedJobs(tx, bucket, encodes)
 	})
+
 	return err
 }
 
@@ -1787,6 +1963,7 @@ func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -1796,6 +1973,7 @@ func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
 func (db *db) close(ctx context.Context) error {
 	db.Lock()
 	defer db.Unlock()
+
 	if !db.closed {
 		db.closed = true
 
@@ -1835,8 +2013,10 @@ func (db *db) close(ctx context.Context) error {
 				}
 			}
 		}
+
 		return err
 	}
+
 	return nil
 }
 
@@ -1849,15 +2029,19 @@ func (db *db) close(ctx context.Context) error {
 func (db *db) backgroundBackup(ctx context.Context) {
 	db.Lock()
 	defer db.Unlock()
+
 	if db.closed || !db.backupsEnabled {
 		return
 	}
+
 	if db.backingUp {
 		db.backupQueued = true
+
 		return
 	}
 
 	db.backingUp = true
+
 	slowBackups := db.slowBackups
 	go func(last time.Time, wait time.Duration, doNotWait bool) {
 		defer internal.LogPanic(ctx, "backgroundBackup", true)
@@ -1888,6 +2072,7 @@ func (db *db) backgroundBackup(ctx context.Context) {
 		db.Lock()
 		db.backingUp = false
 		db.backupLast = time.Now()
+
 		duration := time.Since(start)
 		if duration > minimumTimeBetweenBackups {
 			db.backupWait = duration
@@ -1899,7 +2084,9 @@ func (db *db) backgroundBackup(ctx context.Context) {
 			db.backupFinal = false
 			db.backupStopWait = make(chan bool)
 			db.Unlock()
+
 			db.backupNotification <- true
+
 			return
 		}
 
@@ -1923,6 +2110,7 @@ func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
 	db.wg.Wait(dbRunningTransactionsWaitTime)
 
 	wgk := db.wg.Add(1)
+
 	db.wgMutex.Unlock()
 	defer db.wg.Done(wgk)
 
@@ -1956,7 +2144,6 @@ func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
 			}
 
 			errr = os.Remove(tmpBackupPath)
-
 			if errr != nil {
 				clog.Warn(ctx, "failed to delete temporary backup file after uploading to s3", "path", tmpBackupPath, "err", errr)
 			}
@@ -1976,14 +2163,18 @@ func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
 // interrupted by calling db.close().
 func (db *db) backup(w io.Writer) error {
 	db.RLock()
+
 	if db.closed {
 		db.RUnlock()
+
 		return fmt.Errorf("database closed")
 	}
+
 	db.RUnlock()
 
 	return db.bolt.View(func(tx *bolt.Tx) error {
 		_, txErr := tx.WriteTo(w)
+
 		return txErr
 	})
 }

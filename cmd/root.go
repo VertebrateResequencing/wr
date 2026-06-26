@@ -100,11 +100,14 @@ func Execute() {
 // the LSF emulation to work.
 func ExecuteLSF(cmd string) {
 	args := append([]string{"lsf", cmd}, os.Args[1:]...)
+
 	command, _, err := RootCmd.Find(args)
 	if err != nil {
 		die("%s", err.Error())
 	}
+
 	RootCmd.SetArgs(args)
+
 	if err := command.Execute(); err != nil {
 		die("%s", err.Error())
 	}
@@ -146,6 +149,7 @@ func token() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return token, nil
 }
 
@@ -166,6 +170,7 @@ func realUsername() string {
 	if err != nil {
 		die("could not get username: %s", err)
 	}
+
 	return username
 }
 
@@ -176,12 +181,14 @@ func cloudResourceName(username string) string {
 	if username == "" {
 		username = realUsername()
 	}
+
 	var dep string
 	if config.Deployment == internal.Production {
 		dep = "prod"
 	} else {
 		dep = "dev"
 	}
+
 	return "wr-" + dep + "-" + username
 }
 
@@ -201,7 +208,7 @@ func die(msg string, a ...any) {
 	os.Exit(1)
 }
 
-// createWorkingDir ensures the main working directory is available
+// createWorkingDir ensures the main working directory is available.
 func createWorkingDir() {
 	_, err := os.Stat(config.ManagerDir)
 	if err != nil {
@@ -224,6 +231,7 @@ func createWorkingDir() {
 // path).
 func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *daemon.Context) {
 	args := os.Args
+
 	hadDeployment := slices.Contains(args, "--deployment")
 	if !hadDeployment {
 		args = append(args, "--deployment")
@@ -253,15 +261,17 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 			die("failed to daemonize: %s", err)
 		}
 	}
+
 	return child, dContext
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
-// checking it really exited
+// checking it really exited.
 func stopdaemon(pid int, source string) bool {
 	err := syscall.Kill(pid, syscall.SIGTERM)
 	if err != nil {
 		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
+
 		return false
 	}
 
@@ -270,6 +280,7 @@ func stopdaemon(pid int, source string) bool {
 	giveup := time.After(time.Duration(giveupseconds) * time.Second)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	stopped := make(chan bool, 1)
+
 	go func() {
 		for {
 			select {
@@ -281,15 +292,20 @@ func stopdaemon(pid int, source string) bool {
 				}
 				// assume the error was "no such process" *** should I do a string comparison to confirm?
 				ticker.Stop()
+
 				stopped <- true
+
 				return
 			case <-giveup:
 				ticker.Stop()
+
 				stopped <- false
+
 				return
 			}
 		}
 	}()
+
 	ok := <-stopped
 
 	// if it didn't stop, offer to force kill it? That's a bit dangerous...
@@ -302,7 +318,7 @@ func stopdaemon(pid int, source string) bool {
 }
 
 // sAddr gets a nice manager address to report in logs, preferring hostname,
-// falling back on the ip address if that wasn't set
+// falling back on the ip address if that wasn't set.
 func sAddr(s *jobqueue.ServerInfo) string {
 	saddr := s.Host
 	if saddr == "localhost" {
@@ -310,6 +326,7 @@ func sAddr(s *jobqueue.ServerInfo) string {
 	} else {
 		saddr += ":" + s.Port
 	}
+
 	return saddr
 }
 
@@ -317,7 +334,7 @@ func sAddr(s *jobqueue.ServerInfo) string {
 // token file. Does not die or report any kind of error if an optional bool is
 // supplied true.
 func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
-	shouldWarn := !(len(expectedToBeDown) == 1 && expectedToBeDown[0])
+	shouldWarn := len(expectedToBeDown) != 1 || !expectedToBeDown[0]
 
 	token, err := token()
 	if err != nil && shouldWarn {

@@ -82,6 +82,7 @@ func TestCert(t *testing.T) {
 
 					Convey("and given a pemblock, it can encode and save pem file", func() {
 						pemBlock := &pem.Block{Type: "CERTIFICATE", Bytes: certByte}
+
 						Convey("when file can be written", func() {
 							err = encodeAndSavePEM(pemBlock, caFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, fileMode)
 							So(err, ShouldBeNil)

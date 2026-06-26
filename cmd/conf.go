@@ -596,10 +596,10 @@ cloudconfigfiles: "~/.s3cfg,~/.aws/credentials,~/.aws/config"
 # deploysuccessscript: ""
 `
 
-// options for this cmd
+// options for this cmd.
 var confDefault bool
 
-// confCmd represents the conf command
+// confCmd represents the conf command.
 var confCmd = &cobra.Command{
 	Use:   "conf",
 	Short: "See wr's configuration",

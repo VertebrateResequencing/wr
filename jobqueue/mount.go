@@ -148,11 +148,13 @@ func (mcs MountConfigs) String() string {
 	if len(mcs) == 0 {
 		return ""
 	}
+
 	b, err := json.Marshal(mcs)
 	if err != nil {
 		// *** throwing away this error...
 		return ""
 	}
+
 	return string(b)
 }
 
@@ -175,11 +177,13 @@ func (mcs MountConfigs) Key() string {
 	}
 
 	var key bytes.Buffer
+
 	for _, mc := range mcs {
 		mount := mc.Mount
 		if mount == "" {
 			mount = "mnt"
 		}
+
 		key.WriteString(mount)
 		key.WriteString(":")
 
@@ -188,6 +192,7 @@ func (mcs MountConfigs) Key() string {
 			if profile == "" {
 				profile = "default"
 			}
+
 			key.WriteString(profile)
 			key.WriteString("-")
 			key.WriteString(t.Path)

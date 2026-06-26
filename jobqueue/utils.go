@@ -60,10 +60,10 @@ import (
 // working directories during Client.Execute().
 var AppName = "jobqueue"
 
-// mkHashedLevels is the number of directory levels we create in mkHashedDirs
+// mkHashedLevels is the number of directory levels we create in mkHashedDirs.
 const mkHashedLevels = 4
 
-// tokenLength is the fixed size of our authentication token
+// tokenLength is the fixed size of our authentication token.
 const tokenLength = 43
 
 const (
@@ -74,7 +74,7 @@ const (
 
 var pss = []byte("Pss:")
 
-// cr, lf and ellipses get used by stdFilter()
+// cr, lf and ellipses get used by stdFilter().
 var (
 	cr       = []byte("\r")
 	lf       = []byte("\n")
@@ -99,12 +99,15 @@ func generateToken(tokenFile string) ([]byte, error) {
 	}
 
 	b := make([]byte, 32)
+
 	_, err := crand.Read(b)
 	if err != nil {
 		return nil, err
 	}
+
 	token := make([]byte, tokenLength)
 	base64.URLEncoding.WithPadding(base64.NoPadding).Encode(token, b)
+
 	return token, err
 }
 
@@ -113,12 +116,14 @@ func generateToken(tokenFile string) ([]byte, error) {
 // cryptographically secure way (avoiding timing attacks).
 func tokenMatches(input, expected []byte) bool {
 	result := subtle.ConstantTimeCompare(input, expected)
+
 	return result == 1
 }
 
 // byteKey calculates a unique key that describes a byte slice.
 func byteKey(b []byte) string {
 	l, h := farm.Hash128(b)
+
 	return fmt.Sprintf("%016x%016x", l, h)
 }
 
@@ -139,10 +144,12 @@ func copyFile(source string, dest string) error {
 			}
 		}
 	}()
+
 	out, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
+
 	defer func() {
 		errc := out.Close()
 		if errc != nil {
@@ -153,7 +160,9 @@ func copyFile(source string, dest string) error {
 			}
 		}
 	}()
+
 	_, err = io.Copy(out, in)
+
 	return err
 }
 
@@ -162,33 +171,41 @@ func copyFile(source string, dest string) error {
 // of same on disk.
 func compress(data []byte) ([]byte, error) {
 	var compressed bytes.Buffer
+
 	w, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
 	if err != nil {
 		return nil, err
 	}
+
 	_, err = w.Write(data)
 	if err != nil {
 		return nil, err
 	}
+
 	err = w.Close()
 	if err != nil {
 		return nil, err
 	}
+
 	return compressed.Bytes(), nil
 }
 
 // decompress uses zlib to decompress stuff compressed by compress().
 func decompress(compressed []byte) ([]byte, error) {
 	b := bytes.NewReader(compressed)
+
 	r, err := zlib.NewReader(b)
 	if err != nil {
 		return nil, err
 	}
+
 	buf := new(bytes.Buffer)
+
 	_, err = buf.ReadFrom(r)
 	if err != nil {
 		return nil, err
 	}
+
 	return buf.Bytes(), err
 }
 
@@ -211,18 +228,22 @@ func currentMemory(pid int) (int, error) {
 	}()
 
 	kb := uint64(0)
+
 	r := bufio.NewScanner(f)
 	for r.Scan() {
 		line := r.Bytes()
 		if bytes.HasPrefix(line, pss) {
 			var size uint64
+
 			_, err = fmt.Sscanf(string(line[4:]), "%d", &size)
 			if err != nil {
 				return 0, err
 			}
+
 			kb += size
 		}
 	}
+
 	if err = r.Err(); err != nil {
 		return 0, err
 	}
@@ -235,15 +256,18 @@ func currentMemory(pid int) (int, error) {
 	if err != nil {
 		return mem, err
 	}
+
 	children, err := p.Children()
 	if err != nil && !errors.Is(err, process.ErrorNoChildren) {
 		return mem, err
 	}
+
 	for _, child := range children {
 		childMem, errr := currentMemory(int(child.Pid))
 		if errr != nil {
 			continue
 		}
+
 		mem += childMem
 	}
 
@@ -279,10 +303,12 @@ func currentDisk(path string, ignore ...map[string]bool) (int64, error) {
 			if skip[abs] {
 				continue
 			}
+
 			recurse, errr := currentDisk(abs, ignore...)
 			if errr != nil {
 				return disk, errr
 			}
+
 			disk += recurse
 		} else {
 			disk += file.Size() / (1024 * 1024)
@@ -295,6 +321,7 @@ func currentDisk(path string, ignore ...map[string]bool) (int64, error) {
 // getChildProcesses gets the child processes of the given pid, recursively.
 func getChildProcesses(pid int32) ([]*process.Process, error) {
 	var children []*process.Process
+
 	p, err := process.NewProcess(pid)
 	if err != nil {
 		// we ignore errors, since we allow for working on processes that we're in
@@ -312,6 +339,7 @@ func getChildProcesses(pid int32) ([]*process.Process, error) {
 		if errk != nil {
 			continue
 		}
+
 		if len(theseKids) > 0 {
 			children = append(children, theseKids...)
 		}
@@ -334,21 +362,25 @@ type prefixSuffixSaver struct {
 
 func (w *prefixSuffixSaver) Write(p []byte) (int, error) {
 	lenp := len(p)
+
 	p = w.fill(&w.prefix, p)
 	if overage := len(p) - w.N; overage > 0 {
 		p = p[overage:]
 		w.skipped += int64(overage)
 	}
+
 	p = w.fill(&w.suffix, p)
 	for len(p) > 0 { // 0, 1, or 2 iterations.
 		n := copy(w.suffix[w.suffixOff:], p)
 		p = p[n:]
 		w.skipped += int64(n)
+
 		w.suffixOff += n
 		if w.suffixOff == w.N {
 			w.suffixOff = 0
 		}
 	}
+
 	return lenp, nil
 }
 
@@ -358,6 +390,7 @@ func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) []byte {
 		*dst = append(*dst, p[:add]...)
 		p = p[add:]
 	}
+
 	return p
 }
 
@@ -365,9 +398,11 @@ func (w *prefixSuffixSaver) Bytes() []byte {
 	if w.suffix == nil {
 		return w.prefix
 	}
+
 	if w.skipped == 0 {
 		return append(w.prefix, w.suffix...)
 	}
+
 	var buf bytes.Buffer
 	buf.Grow(len(w.prefix) + len(w.suffix) + 50)
 	buf.Write(w.prefix)
@@ -376,6 +411,7 @@ func (w *prefixSuffixSaver) Bytes() []byte {
 	buf.WriteString(" bytes ...\n")
 	buf.Write(w.suffix[w.suffixOff:])
 	buf.Write(w.suffix[:w.suffixOff])
+
 	return buf.Bytes()
 }
 
@@ -383,6 +419,7 @@ func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
+
 	return b
 }
 
@@ -456,31 +493,38 @@ func compressedLiveTail(tail []byte) []byte {
 func stdFilter(std io.Reader, out io.Writer) chan error {
 	reader := bufio.NewReader(std)
 	done := make(chan error)
+
 	go func() {
 		var merr *multierror.Error
+
 		for {
 			p, err := reader.ReadBytes('\n')
 
 			lines := bytes.Split(p, cr)
+
 			_, errw := out.Write(lines[0])
 			if errw != nil {
 				merr = multierror.Append(merr, errw)
 			}
+
 			if len(lines) > 2 {
 				_, errw = out.Write(lf)
 				if errw != nil {
 					merr = multierror.Append(merr, errw)
 				}
+
 				if len(lines) > 3 {
 					_, errw = out.Write(ellipses)
 					if errw != nil {
 						merr = multierror.Append(merr, errw)
 					}
 				}
+
 				_, errw = out.Write(lines[len(lines)-2])
 				if errw != nil {
 					merr = multierror.Append(merr, errw)
 				}
+
 				_, errw = out.Write(lf)
 				if errw != nil {
 					merr = multierror.Append(merr, errw)
@@ -491,8 +535,10 @@ func stdFilter(std io.Reader, out io.Writer) chan error {
 				break
 			}
 		}
+
 		done <- merr.ErrorOrNil()
 	}()
+
 	return done
 }
 
@@ -500,6 +546,7 @@ func stdFilter(std io.Reader, out io.Writer) chan error {
 // with values from another. Returns the new slice of environment variables.
 func envOverride(orig []string, over []string) []string {
 	override := make(map[string]string)
+
 	for _, envvar := range over {
 		pair := strings.Split(envvar, "=")
 		override[pair[0]] = envvar
@@ -510,6 +557,7 @@ func envOverride(orig []string, over []string) []string {
 		pair := strings.Split(envvar, "=")
 		if replace, do := override[pair[0]]; do {
 			env[i] = replace
+
 			delete(override, pair[0])
 		}
 	}
@@ -517,6 +565,7 @@ func envOverride(orig []string, over []string) []string {
 	for _, envvar := range override {
 		env = append(env, envvar)
 	}
+
 	return env
 }
 
@@ -553,6 +602,7 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 	dirs := strings.SplitN(tohash, "", mkHashedLevels)
 	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
 	dirs = append([]string{baseDir}, dirs...)
+
 	return filepath.Join(dirs...), leaf
 }
 
@@ -562,6 +612,7 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 // there were problems making the directories.
 func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+"_cwd"), tohash)
+
 	holdFile := filepath.Join(dir, ".hold")
 	defer func() {
 		errr := os.Remove(holdFile)
@@ -573,7 +624,9 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 			}
 		}
 	}()
+
 	tries := 0
+
 	for {
 		err = os.MkdirAll(dir, os.ModePerm)
 		if err != nil {
@@ -583,21 +636,26 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 				// rmEmptyDirs on the same baseDir and so conflicting with us
 				continue
 			}
+
 			return cwd, tmpDir, err
 		}
 
 		// and drop a temp file in here so rmEmptyDirs will not immediately
 		// remove these dirs
 		tries = 0
+
 		var f *os.File
+
 		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0o600)
 		if err != nil {
 			tries++
 			if tries <= 3 {
 				continue
 			}
+
 			return cwd, tmpDir, err
 		}
+
 		err = f.Close()
 		if err != nil {
 			return cwd, tmpDir, err
@@ -618,12 +676,14 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	}
 
 	cwd = filepath.Join(dir, "cwd")
+
 	err = os.Mkdir(cwd, os.ModePerm)
 	if err != nil {
 		return cwd, tmpDir, err
 	}
 
 	tmpDir = filepath.Join(dir, "tmp")
+
 	return cwd, tmpDir, os.Mkdir(tmpDir, os.ModePerm)
 }
 
@@ -633,12 +693,15 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 func rmEmptyDirs(leafDir, baseDir string) error {
 	err := os.Remove(leafDir)
 	if err != nil && !os.IsNotExist(err) {
-		if strings.Contains(err.Error(), "directory not empty") { //*** not sure where this string comes; probably not cross platform!
+		if strings.Contains(err.Error(), "directory not empty") { // *** not sure where this string comes; probably not cross platform!
 			return nil
 		}
+
 		return err
 	}
+
 	current := leafDir
+
 	parent := filepath.Dir(current)
 	for ; parent != baseDir; parent = filepath.Dir(current) {
 		thisErr := os.Remove(parent)
@@ -648,8 +711,10 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 			// parent dir is not empty
 			break
 		}
+
 		current = parent
 	}
+
 	return nil
 }
 
@@ -658,15 +723,15 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 func removeAllExcept(path string, exceptions []string) error {
 	keepDirs := make(map[string]bool)
 	checkDirs := make(map[string]bool)
+
 	path = filepath.Clean(path)
 	for _, dir := range exceptions {
 		abs := filepath.Join(path, dir)
 		keepDirs[abs] = true
+
 		parent := filepath.Dir(abs)
-		for {
-			if parent == path {
-				break
-			}
+		for parent != path {
+
 			checkDirs[parent] = true
 			parent = filepath.Dir(parent)
 		}
@@ -682,6 +747,7 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 	if errr != nil {
 		return errr
 	}
+
 	for _, entry := range entries {
 		abs := filepath.Join(path, entry.Name())
 		if !entry.IsDir() {
@@ -689,6 +755,7 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 			if err != nil {
 				return err
 			}
+
 			continue
 		}
 
@@ -708,6 +775,7 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -715,10 +783,12 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 // this happens in memory, only suitable for small files!
 func compressFile(path string) ([]byte, error) {
 	path = internal.TildaToHome(path)
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+
 	return compress(content)
 }
 

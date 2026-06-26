@@ -55,10 +55,10 @@ import (
 )
 
 // ZeroCoreMultiplier is the multipler of actual cores we use for the maximum of
-// zero core jobs
+// zero core jobs.
 const ZeroCoreMultiplier = 2
 
-// for the RandomString implementation
+// for the RandomString implementation.
 const (
 	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	randIdxBits = 6                  // 6 bits to represent a rand index
@@ -80,6 +80,7 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 	for key, val := range imap {
 		valToKeys[val] = append(valToKeys[val], key)
 	}
+
 	vals := make([]int, 0, len(valToKeys))
 	for val := range valToKeys {
 		vals = append(vals, val)
@@ -96,6 +97,7 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 		sort.Sort(sort.Reverse(sort.StringSlice(valToKeys[val])))
 		sortedKeys = append(sortedKeys, valToKeys[val]...)
 	}
+
 	return sortedKeys
 }
 
@@ -108,6 +110,7 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 		val := submap[criterion]
 		criterionValueToKeys[val] = append(criterionValueToKeys[val], key)
 	}
+
 	criterionValues := make([]int, 0, len(criterionValueToKeys))
 	for val := range criterionValueToKeys {
 		criterionValues = append(criterionValues, val)
@@ -123,6 +126,7 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 	for _, val := range criterionValues {
 		sortedKeys = append(sortedKeys, criterionValueToKeys[val]...)
 	}
+
 	return sortedKeys
 }
 
@@ -131,16 +135,20 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 func DedupSortStrings(s []string) []string {
 	seen := make(map[string]struct{}, len(s))
 	i := 0
+
 	for _, v := range s {
 		if _, exists := seen[v]; exists {
 			continue
 		}
+
 		seen[v] = struct{}{}
 		s[i] = v
 		i++
 	}
+
 	dedup := s[:i]
 	sort.Strings(dedup)
+
 	return dedup
 }
 
@@ -150,11 +158,13 @@ func DedupSortStrings(s []string) []string {
 func Username() (string, error) {
 	if CachedUsername == "" {
 		var err error
+
 		CachedUsername, err = parseIDCmd("-u", "-n")
 		if err != nil {
 			return "", err
 		}
 	}
+
 	return CachedUsername, nil
 }
 
@@ -167,21 +177,25 @@ func Userid() (int, error) {
 		if err != nil {
 			return 0, err
 		}
+
 		userid, err = strconv.Atoi(uidStr)
 		if err != nil {
 			return 0, err
 		}
 	}
+
 	return userid, nil
 }
 
 // parseIDCmd parses the output of the unix 'id' command.
 func parseIDCmd(idopts ...string) (string, error) {
 	idcmd := exec.Command("/usr/bin/id", idopts...) // #nosec
+
 	idout, err := idcmd.Output()
 	if err != nil {
 		return "", err
 	}
+
 	return strings.TrimSuffix(string(idout), "\n"), err
 }
 
@@ -194,6 +208,7 @@ func TildaToHome(path string) string {
 		path = strings.TrimLeft(path, "~/")
 		path = filepath.Join(home, path)
 	}
+
 	return path
 }
 
@@ -229,6 +244,7 @@ func LogClose(ctx context.Context, obj io.Closer, msg string, extra ...any) {
 func LogPanic(ctx context.Context, desc string, die bool) {
 	if err := recover(); err != nil {
 		clog.Crit(ctx, desc+" panic", "err", err)
+
 		if die {
 			os.Exit(1)
 		}
@@ -243,6 +259,7 @@ func Which(exeName string) string {
 	if err != nil {
 		self = ""
 	}
+
 	self, err = filepath.EvalSymlinks(self)
 	if err != nil {
 		self = ""
@@ -263,6 +280,7 @@ func Which(exeName string) string {
 			if exe.Name() != exeName {
 				continue
 			}
+
 			path := filepath.Join(dir, exe.Name())
 
 			// check that it's not a symlink to ourselves
@@ -289,17 +307,21 @@ func Which(exeName string) string {
 func WaitForFile(file string, after time.Time, timeout time.Duration) bool {
 	limit := time.After(timeout)
 	ticker := time.NewTicker(50 * time.Millisecond)
+
 	for {
 		select {
 		case <-ticker.C:
 			info, err := os.Stat(file)
 			if err == nil && info.ModTime().After(after) {
 				ticker.Stop()
+
 				return true
 			}
+
 			continue
 		case <-limit:
 			ticker.Stop()
+
 			return false
 		}
 	}
@@ -321,10 +343,12 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	if host == "" {
 		return fmt.Errorf("INFOBLOX_HOST env var not set")
 	}
+
 	user := os.Getenv("INFOBLOX_USER")
 	if user == "" {
 		return fmt.Errorf("INFOBLOX_USER env var not set")
 	}
+
 	password := os.Getenv("INFOBLOX_PASS")
 	if password == "" {
 		return fmt.Errorf("INFOBLOX_PASS env var not set")
@@ -357,6 +381,7 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	d := url.Values{}
 	d.Set("ipv4addr", ip)
 	d.Set("name", domain)
+
 	_, err = ib.RecordA().Create(d, nil, nil)
 	if err != nil {
 		return fmt.Errorf("create of A record failed: %w", err)
@@ -390,18 +415,22 @@ func FileMD5(ctx context.Context, path string) (string, error) {
 func RandomString() string {
 	// based on http://stackoverflow.com/a/31832326/675083
 	b := make([]byte, 8)
+
 	src := rand.NewSource(time.Now().UnixNano())
 	for i, cache, remain := 7, src.Int63(), randIdxMax; i >= 0; {
 		if remain == 0 {
 			cache, remain = src.Int63(), randIdxMax
 		}
+
 		if idx := int(cache & randIdxMask); idx < len(randBytes) {
 			b[i] = randBytes[idx]
 			i--
 		}
+
 		cache >>= randIdxBits
 		remain--
 	}
+
 	return string(b)
 }
 
@@ -411,6 +440,7 @@ func RandomString() string {
 // address (for when there are multiple network interfaces on the machine).
 func CurrentIP(cidr string) (string, error) {
 	var ipNet *net.IPNet
+
 	if cidr != "" {
 		_, ipn, err := net.ParseCIDR(cidr)
 		if err == nil {
@@ -427,7 +457,9 @@ func CurrentIP(cidr string) (string, error) {
 		// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
 		// cross-linux&MacOS solution that works reliably...
 		var out []byte
+
 		out, err = exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
+
 		var ip string
 		if err != nil {
 			ip = string(out)
@@ -455,6 +487,7 @@ func CurrentIP(cidr string) (string, error) {
 	defer func() {
 		err = conn.Close()
 	}()
+
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	ip := localAddr.IP
 
@@ -474,26 +507,32 @@ func CurrentIP(cidr string) (string, error) {
 // address by going through all our network interfaces.
 func currentIPFallback(ipNet *net.IPNet) (string, error) {
 	var addrs []net.Addr
+
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "", err
 	}
+
 	var ip string
+
 	for _, address := range addrs {
 		if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
 			if thisIPNet.IP.To4() != nil {
 				if ipNet != nil {
 					if ipNet.Contains(thisIPNet.IP) {
 						ip = thisIPNet.IP.String()
+
 						break
 					}
 				} else {
 					ip = thisIPNet.IP.String()
+
 					break
 				}
 			}
 		}
 	}
+
 	return ip, nil
 }
 
@@ -502,9 +541,11 @@ func currentIPFallback(ipNet *net.IPNet) (string, error) {
 // to an absolute path, in order to find the file.
 func PathToContent(path string) (string, error) {
 	absPath := TildaToHome(path)
+
 	contents, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("path [%s] could not be read: %w", absPath, err)
 	}
+
 	return string(contents), nil
 }

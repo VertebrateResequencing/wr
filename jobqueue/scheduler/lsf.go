@@ -58,7 +58,7 @@ const scanBufferSize = 1000 * bufio.MaxScanTokenSize
 
 const ErrInvalidBsubOpts = "invalid lsf bsub options"
 
-// lsf is our implementer of scheduleri
+// lsf is our implementer of scheduleri.
 type lsf struct {
 	config             *ConfigLSF
 	months             map[string]int
@@ -89,7 +89,7 @@ type ConfigLSF struct {
 	PrivateKeyPath string
 }
 
-// initialize finds out about lsf's hosts and queues
+// initialize finds out about lsf's hosts and queues.
 func (s *lsf) initialize(ctx context.Context, config any) error {
 	s.config = config.(*ConfigLSF)
 
@@ -119,13 +119,16 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 	s.bsubRegex = regexp.MustCompile(`^Job <(\d+)>`)
 
 	// use lsadmin to see what units memlimit (bsub -M) is in
-	s.memLimitMultiplier = float32(1000)                                                                          // by default assume it's KB
+	s.memLimitMultiplier = float32(1000) // by default assume it's KB
+
 	cmdout, err := exec.Command(s.config.Shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output() // #nosec
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to run [lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS]: %s", err)}
 	}
+
 	if len(cmdout) > 0 {
 		uflRegex := regexp.MustCompile(`=\s*(\w)`)
+
 		unit := uflRegex.FindStringSubmatch(string(cmdout))
 		if len(unit) == 2 && unit[1] != "" {
 			switch unit[1] {
@@ -143,13 +146,16 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 
 	// parse bqueues -l to figure out what usable queues we have
 	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l") // #nosec
+
 	bqout, err := bqcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bqueues -l]: %s", err)}
 	}
+
 	if err = bqcmd.Start(); err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bqueues -l]: %s", err)}
 	}
+
 	bqScanner := bufio.NewScanner(bqout)
 	s.queues = make(map[string]map[string]int)
 	queue := ""
@@ -173,12 +179,14 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 	reParseRunlimit := regexp.MustCompile(`^\s*(\d+)(?:\.\d+)? min`)
 	reUserHosts := regexp.MustCompile(`^(USERS|HOSTS):\s+(.+?)\s*$`)
 	reChunkJobSize := regexp.MustCompile(`^CHUNK_JOB_SIZE:\s+(\d+)`)
+
 	for bqScanner.Scan() {
 		line := bqScanner.Text()
 
 		if matches := reQueue.FindStringSubmatch(line); len(matches) == 2 {
 			queue = matches[1]
 			s.queues[queue] = make(map[string]int)
+
 			continue
 		}
 
@@ -187,32 +195,40 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 			continue
 		case rePrio.MatchString(line):
 			nextIsPrio = true
+
 			continue
 		case nextIsPrio:
 			fields := strings.Fields(line)
+
 			s.queues[queue]["prio"], err = strconv.Atoi(fields[0])
 			if err != nil {
 				return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 			}
+
 			if fields[3] != "-" {
 				i, err := strconv.Atoi(fields[3])
 				if err != nil {
 					return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 				}
+
 				s.queues[queue]["max"] = i
 				updateHighest("max", i)
 			}
+
 			if fields[4] != "-" {
 				i, err := strconv.Atoi(fields[4])
 				if err != nil {
 					return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 				}
+
 				s.queues[queue]["max_user"] = i
 				updateHighest("max_user", i)
 			}
+
 			nextIsPrio = false
 		case reDefaultLimits.MatchString(line):
 			lookingAtDefaults = true
+
 			continue
 		case reDefaultsFinished.MatchString(line) || !lookingAtDefaults:
 			lookingAtDefaults = false
@@ -222,10 +238,12 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 				nextIsMemlimit = 0
 				for word := range strings.FieldsSeq(line) {
 					nextIsMemlimit++
+
 					if word == "MEMLIMIT" {
 						break
 					}
 				}
+
 				continue
 			case nextIsMemlimit > 0:
 				if matches := reNumUnit.FindAllStringSubmatch(line, -1); matches != nil && len(matches) >= nextIsMemlimit-1 {
@@ -233,6 +251,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 					if err != nil {
 						return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 					}
+
 					unit := matches[nextIsMemlimit-1][2]
 					switch unit {
 					case "T":
@@ -242,12 +261,15 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 					case "K":
 						val /= 1000
 					}
+
 					s.queues[queue]["memlimit"] = int(val)
 					updateHighest("memlimit", int(val))
 				}
+
 				nextIsMemlimit = 0
 			case reRunLimit.MatchString(line):
 				nextIsRunlimit = true
+
 				continue
 			case nextIsRunlimit:
 				if matches := reParseRunlimit.FindStringSubmatch(line); len(matches) == 2 {
@@ -255,18 +277,21 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 					if err != nil {
 						return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 					}
+
 					s.queues[queue]["runlimit"] = mins * 60
 					// updateHighest("runlimit", ...) for queues that do not
 					// specify a run limit, we won't base the default on the
 					// highest value seen on other queues, but on a hard-coded 1
 					// year
 				}
+
 				nextIsRunlimit = false
 			}
 		}
 
 		if matches := reUserHosts.FindStringSubmatch(line); len(matches) == 3 {
 			kind := strings.ToLower(matches[1])
+
 			vals := strings.Fields(matches[2])
 			if kind == "users" {
 				users := make(map[string]bool)
@@ -290,6 +315,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 				}
 			} else if matches[2] != "all" {
 				hosts := make(map[string]bool)
+
 				for _, val := range vals {
 					if strings.HasSuffix(val, "/") {
 						// this is a group name, look it up in bmgroup
@@ -298,8 +324,10 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 							if perr != nil {
 								return perr
 							}
+
 							parsedBmgroups = true
 						}
+
 						val = strings.TrimSuffix(val, "/")
 						if servers, exists := bmgroups[val]; exists {
 							for server := range servers {
@@ -312,6 +340,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 						hosts[val] = true
 					}
 				}
+
 				s.queues[queue][kind] = len(hosts)
 				updateHighest(kind, len(hosts))
 			}
@@ -322,6 +351,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 			if err != nil {
 				return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 			}
+
 			s.queues[queue]["chunk_size"] = chunks
 		}
 	}
@@ -329,6 +359,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 	if serr := bqScanner.Err(); serr != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to read everything from [bqueues -l]: %s", serr)}
 	}
+
 	if err := bqcmd.Wait(); err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to finish running [bqueues -l]: %s", err)}
 	}
@@ -352,11 +383,13 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 	// fill in some default values for the criteria on all the queues
 	defaults := map[string]int{"num_users": 10000, "runlimit": 31536000, "memlimit": 10000000, //nolint:mnd
 		"max": 10000000, "max_user": 10000000, "users": 10000000, "hosts": 10000000, "chunk_size": 0} //nolint:mnd
+
 	for criterion, highest := range highest {
 		if highest > 0 {
 			defaults[criterion] = highest + 1
 		}
 	}
+
 	for _, qmap := range s.queues {
 		for criterion, cdefault := range defaults {
 			if _, wasSet := qmap[criterion]; !wasSet {
@@ -379,6 +412,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 		weight := criteriaHandling[criterion][0]
 		prevVal := -1
 		rank := 0
+
 		for _, queue := range sorted {
 			val := s.queues[queue][criterion]
 			if prevVal != -1 {
@@ -400,7 +434,7 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 	// and other numbers which can be tested against any global maximum number
 	// of jobs that we should submit to LSF, and if lower than any of those
 	// we prefer the order described there
-	//*** we probably don't need this if we won't be having a global max
+	// *** we probably don't need this if we won't be having a global max
 	// specified by the user
 
 	// if a job becomes lost, scheduler needs to ssh to the host to check on the
@@ -416,27 +450,34 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 // the supplied map, with a map of hosts in that group as the value.
 func (s *lsf) parseBmgroups(groups map[string]map[string]bool) error {
 	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup -w") // #nosec
+
 	bmgout, err := bmgcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bmgroup]: %s", err)}
 	}
+
 	if err = bmgcmd.Start(); err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bmgroup]: %s", err)}
 	}
+
 	bmgScanner := bufio.NewScanner(bmgout)
 	for bmgScanner.Scan() {
 		line := bmgScanner.Text()
+
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
+
 		for i, field := range fields {
 			if i == 0 {
 				continue
 			}
+
 			if groups[fields[0]] == nil {
 				groups[fields[0]] = make(map[string]bool)
 			}
+
 			if before, ok := strings.CutSuffix(field, "/"); ok {
 				lookup := before
 				for server := range groups[lookup] {
@@ -447,6 +488,7 @@ func (s *lsf) parseBmgroups(groups map[string]map[string]bool) error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -456,10 +498,13 @@ func (s *lsf) reserveTimeout(ctx context.Context, req *Requirements) int {
 		timeout, err := strconv.Atoi(val)
 		if err != nil {
 			clog.Error(ctx, fmt.Sprintf("Failed to convert timeout to integer: %s", err))
+
 			return defaultReserveTimeout
 		}
+
 		return timeout
 	}
+
 	return defaultReserveTimeout
 }
 
@@ -469,6 +514,7 @@ func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
 	if err == nil {
 		return time.Duration(s.queues[queue]["runlimit"]) * time.Second
 	}
+
 	return infiniteQueueTime
 }
 
@@ -490,6 +536,7 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, prior
 	if err != nil {
 		return err
 	}
+
 	stillNeeded := count - scheduledCount
 	if stillNeeded < 1 {
 		return nil
@@ -499,6 +546,7 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, prior
 
 	// submit to the queue
 	bsubcmd := exec.Command(s.bsubExe, bsubArgs...) // #nosec
+
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
 		return Error{"lsf", "schedule", fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)}
@@ -514,32 +562,42 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, prior
 	// means the job completed and we're really not busy.
 	if matches := s.bsubRegex.FindStringSubmatch(string(bsubout)); len(matches) == 2 {
 		ready := make(chan bool, 1)
+
 		go func() {
 			defer internal.LogPanic(ctx, "lsf scheduling", true)
 
 			limit := time.After(10 * time.Second)
 			ticker := time.NewTicker(100 * time.Millisecond)
+
 			for {
 				select {
 				case <-ticker.C:
 					bjcmd := exec.Command(s.bjobsExe, "-w", matches[1]) // #nosec
+
 					bjout, errf := bjcmd.CombinedOutput()
 					if errf != nil {
 						continue
 					}
+
 					if len(bjout) > 46 {
 						ticker.Stop()
+
 						ready <- true
+
 						return
 					}
+
 					continue
 				case <-limit:
 					ticker.Stop()
+
 					ready <- false
+
 					return
 				}
 			}
 		}()
+
 		ok := <-ready
 		if !ok {
 			return Error{"lsf", "schedule", "after running bsub, failed to find the submitted jobs in bjobs"}
@@ -557,7 +615,7 @@ func (s *lsf) scheduled(ctx context.Context, cmd string) (int, error) {
 }
 
 // generateBsubArgs generates the appropriate bsub args for the given req and
-// cmd and queue
+// cmd and queue.
 func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requirements, cmd string, needed int) []string {
 	args, err := generateBsubArgs(queue, req, cmd, s.config.Deployment, needed, s.memLimitMultiplier)
 	if err != nil {
@@ -570,6 +628,7 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 func generateBsubArgs(queue string, req *Requirements, cmd, deployment string,
 	needed int, memLimitMultiplier float32) ([]string, error) {
 	var bsubArgs []string
+
 	megabytes := req.RAM
 	m := float32(megabytes) * memLimitMultiplier
 
@@ -661,6 +720,7 @@ func (s BsubValidator) Validate(opts, queue string) (valid bool) {
 	}
 
 	cmd := exec.Command("bsub", args...)
+
 	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
 	err = cmd.Run()
 	valid = err == nil
@@ -676,13 +736,14 @@ func (s *lsf) recover(ctx context.Context, cmd string, req *Requirements, host *
 
 // busy returns true if there are any jobs with our jobName() prefix in any
 // queue. It also returns true if the most recently submitted job is pending or
-// running
+// running.
 func (s *lsf) busy(ctx context.Context) bool {
 	count, err := s.checkCmd(ctx, "", -1)
 	if err != nil {
 		// busy() doesn't return an error, so just assume we're busy
 		return true
 	}
+
 	return count > 0
 }
 
@@ -787,9 +848,11 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, max int) (count int, err
 				} else if aidmatch := reAid.FindStringSubmatch(jobName); len(aidmatch) == 2 {
 					sidaid = jobID + "[" + aidmatch[1] + "]"
 				}
+
 				if sidaid != "" {
 					toKill = append(toKill, sidaid)
 				}
+
 				count--
 			}
 		}
@@ -797,6 +860,7 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, max int) (count int, err
 
 		if len(toKill) > 1 {
 			killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
+
 			out, errk := killcmd.CombinedOutput()
 			if errk != nil && !strings.HasPrefix(string(out), "Job has already finished") {
 				clog.Warn(ctx, "checkCmd bkill failed", "cmd", s.bkillExe, "toKill", toKill, "err", errk, "out", string(out))
@@ -819,14 +883,17 @@ type bjobsCB func(jobID, stat, jobName string)
 // bjobs output line.
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w") // #nosec
+
 	bjout, err := bjcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
 	}
+
 	err = bjcmd.Start()
 	if err != nil {
 		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
 	}
+
 	bjScanner := bufio.NewScanner(bjout)
 	bjScanner.Buffer([]byte{}, scanBufferSize)
 
@@ -838,6 +905,7 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 			if fields[2] == "EXIT" || fields[2] == "DONE" || !strings.HasPrefix(fields[6], jobPrefix) {
 				continue
 			}
+
 			callback(fields[0], fields[2], fields[6])
 		}
 	}
@@ -845,10 +913,12 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	if err = bjScanner.Err(); err != nil {
 		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", err)}
 	}
+
 	err = bjcmd.Wait()
 	if err != nil {
 		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
 	}
+
 	return err
 }
 
@@ -879,18 +949,21 @@ func (s *lsf) setMessageCallBack(ctx context.Context, cb MessageCallBack) {}
 // setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
 func (s *lsf) setBadServerCallBack(ctx context.Context, cb BadServerCallBack) {}
 
-// cleanup bkills any remaining jobs we created
+// cleanup bkills any remaining jobs we created.
 func (s *lsf) cleanup(ctx context.Context) {
 	toKill := []string{"-b"}
 	cb := func(jobID, stat, jobName string) {
 		toKill = append(toKill, jobID)
 	}
+
 	err := s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
 	if err != nil {
 		clog.Error(ctx, "cleaup parse bjobs failed", "err", err)
 	}
+
 	if len(toKill) > 1 {
 		killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
+
 		err = killcmd.Run()
 		if err != nil {
 			clog.Warn(ctx, "cleanup bkill failed", "err", err)

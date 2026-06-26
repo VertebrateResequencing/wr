@@ -63,6 +63,7 @@ func BenchmarkLimiterIncDec(b *testing.B) {
 	}
 	both := []string{"l1", "l2"}
 	first := []string{"l1"}
+
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
@@ -116,19 +117,23 @@ func BenchmarkLimiterCapacity(b *testing.B) {
 		return NewCountGroupData(-1)
 	}
 	both := []string{"l1", "l2"}
+
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
 		l := New(cb)
 		for {
 			l.Increment(ctx, both)
+
 			cap := l.GetRemainingCapacity(ctx, both)
 			if cap == 0 {
 				break
 			}
 		}
+
 		for {
 			l.Decrement(both)
+
 			cap := l.GetRemainingCapacity(ctx, both)
 			if cap == 5 {
 				break
@@ -139,6 +144,7 @@ func BenchmarkLimiterCapacity(b *testing.B) {
 
 func TestLimiter(t *testing.T) {
 	ctx := context.Background()
+
 	Convey("You can make a new Limiter with a limit defining callback", t, func() {
 		limits := make(map[string]int64)
 		limits["l1"] = 3
@@ -176,6 +182,7 @@ func TestLimiter(t *testing.T) {
 		Convey("You can change limits with SetLimit(), and Decrement() forgets about unused groups", func() {
 			groups := []string{"l1", "l2"}
 			two := []string{"l2"}
+
 			So(l.GetLowestLimit(ctx, groups), ShouldEqual, 2)
 			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 2)
 			So(l.Increment(ctx, two), ShouldBeTrue)
@@ -206,7 +213,9 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment(ctx, two), ShouldBeFalse)
 			l.Decrement(two)
 			l.Decrement(two)
+
 			limits["l2"] = 3
+
 			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 3)
 			So(l.Increment(ctx, two), ShouldBeTrue)
 			So(l.GetLowestLimit(ctx, groups), ShouldEqual, 3)
@@ -228,11 +237,13 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeFalse)
 
 			limits["l2"] = 0
+
 			l.RemoveLimit("l2")
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeFalse)
 			So(l.GetLimit(ctx, "l2"), ShouldResemble, NewCountGroupData(0))
 
 			limits["l2"] = -1
+
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeFalse)
 			So(l.GetLimit(ctx, "l2"), ShouldResemble, NewCountGroupData(0))
 
@@ -250,9 +261,11 @@ func TestLimiter(t *testing.T) {
 		})
 
 		Convey("Concurrent SetLimit(), Increment() and Decrement() work", func() {
-			var incs uint64
-			var fails uint64
-			var wg sync.WaitGroup
+			var (
+				incs  uint64
+				fails uint64
+				wg    sync.WaitGroup
+			)
 			// Release all workers at once and have each hold its slot long
 			// enough that every worker makes its single attempt before any
 			// successful worker releases. Spawning in a loop without this lets
@@ -261,6 +274,7 @@ func TestLimiter(t *testing.T) {
 			// (the 125/75 split below depends on all 200 contending together).
 			start := make(chan struct{})
 			ready := make(chan struct{}, 200)
+
 			for i := range 200 {
 				wg.Add(1)
 				go func(i int) {
@@ -274,12 +288,14 @@ func TestLimiter(t *testing.T) {
 					if i%2 == 0 {
 						groups = []string{"l5", "l4"}
 					}
+
 					if l.Increment(ctx, groups) {
 						atomic.AddUint64(&incs, 1)
 						time.Sleep(500 * time.Millisecond)
 						l.Decrement(groups)
 					} else {
 						atomic.AddUint64(&fails, 1)
+
 						if atomic.LoadUint64(&fails) == 50 {
 							l.SetLimit("l4", *NewCountGroupData(125))
 						}

@@ -32,10 +32,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var cmdAll bool
 
-// retryCmd represents the retry command
+// retryCmd represents the retry command.
 var retryCmd = &cobra.Command{
 	Use:   "retry",
 	Short: "Retry failed commands",
@@ -63,12 +63,14 @@ same file you gave to "wr add" in -f mode.`,
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
 		}
+
 		if set == 0 {
 			die("1 of -f, -i, -l or -a is required")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -84,10 +86,12 @@ same file you gave to "wr add" in -f mode.`,
 		}
 
 		jes := jobsToJobEssenses(jobs)
+
 		kicked, err := jq.Kick(jes)
 		if err != nil {
 			die("failed to retry desired jobs: %s", err)
 		}
+
 		info("Initiated retry of %d buried commands (out of %d eligible)", kicked, len(jobs))
 	},
 }

@@ -75,7 +75,7 @@ var (
 )
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
-// configuration
+// configuration.
 type Flavor struct {
 	ID    string
 	Name  string
@@ -103,6 +103,7 @@ func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	} else {
 		canDo = int(math.Floor(float64(f.Cores) / cores))
 	}
+
 	if canDo > 1 {
 		var n int
 		if ramMB > 0 {
@@ -111,6 +112,7 @@ func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 				canDo = n
 			}
 		}
+
 		if diskGB > 0 {
 			n = f.Disk / diskGB
 			if n < canDo {
@@ -118,6 +120,7 @@ func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 			}
 		}
 	}
+
 	return canDo
 }
 
@@ -207,6 +210,7 @@ func (s *Server) WaitUntilReady(ctx context.Context, files string, postCreationS
 	// really ready to use
 	limit := time.After(sentinelTimeOut)
 	ticker := time.NewTicker(1 * time.Second)
+
 SENTINEL:
 	for {
 		select {
@@ -220,14 +224,18 @@ SENTINEL:
 				if rmErr != nil {
 					clog.Warn(ctx, "failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
 				}
+
 				break SENTINEL
 			}
+
 			continue SENTINEL
 		case <-limit:
 			ticker.Stop()
+
 			return errors.New("cloud server never became ready to use")
 		case <-ctx.Done():
 			ticker.Stop()
+
 			return errors.New("cloud server waiting for ready was cancelled")
 		}
 	}
@@ -238,6 +246,7 @@ SENTINEL:
 		if err != nil {
 			return fmt.Errorf("cloud server files failed to upload: %w", err)
 		}
+
 		s.ConfigFiles = files
 	}
 
@@ -258,6 +267,7 @@ SENTINEL:
 				clog.Warn(ctx, "failed to close client ssh connection", "err", err)
 			}
 		}
+
 		s.sshClients = []*ssh.Client{}
 		s.sshClientSessions = []int{}
 	}
@@ -293,6 +303,7 @@ func (s *Server) runScript(ctx context.Context, script []byte) error {
 
 	go func() {
 		var runerr error
+
 		_, stderr, runerr = s.RunCmd(ctx, path, false)
 		exiterr <- runerr
 	}()
@@ -324,6 +335,7 @@ func (s *Server) runScript(ctx context.Context, script []byte) error {
 func (s *Server) SetDestroyScript(preDestroyScript []byte) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	s.DestroyScript = preDestroyScript
 }
 
@@ -344,6 +356,7 @@ func (s *Server) Allocate(ctx context.Context, cores float64, ramMB, diskGB int)
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	if s.checkSpace(cores, ramMB, diskGB) == 0 {
 		return false
 	}
@@ -355,6 +368,7 @@ func (s *Server) Allocate(ctx context.Context, cores float64, ramMB, diskGB int)
 	} else {
 		s.usedCores = mth.FloatAdd(s.usedCores, cores)
 	}
+
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
@@ -386,6 +400,7 @@ func (s *Server) getContextWithServerID(ctx context.Context) context.Context {
 func (s *Server) Used() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+
 	return s.used
 }
 
@@ -395,11 +410,13 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	if cores == 0 {
 		s.usedZeroCores--
 	} else {
 		s.usedCores = mth.FloatSubtract(s.usedCores, cores)
 	}
+
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
 	clog.Debug(ctx, "server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores,
@@ -416,18 +433,22 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 			if s.onDeathrow {
 				s.mutex.Unlock()
 				clog.Debug(ctx, "server already on deathrow")
+
 				return
 			} else if s.usedCores > 0 || s.usedRAM > 0 {
 				s.mutex.Unlock()
 				clog.Debug(ctx, "allocated before entering deathrow")
+
 				return
 			}
+
 			s.cancelDestruction = make(chan bool)
 			s.onDeathrow = true
 			s.mutex.Unlock()
 
 			timeToDie := time.After(s.TTD)
 			clog.Debug(ctx, "server entering deathrow", "death", time.Now().Add(s.TTD))
+
 			for {
 				select {
 				case <-s.cancelDestruction:
@@ -445,11 +466,13 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 					for i := 1; i < s.cancels; i++ {
 						<-s.cancelDestruction
 					}
+
 					s.cancels = 0
 					s.onDeathrow = false
 
 					s.mutex.Unlock()
 					clog.Debug(ctx, "server cancelled deathrow")
+
 					return
 				case <-timeToDie:
 					// destroy the server
@@ -459,6 +482,7 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 					s.mutex.Unlock()
 					err := s.Destroy(ctx)
 					clog.Debug(ctx, "server died on deathrow", "err", err)
+
 					return
 				}
 			}
@@ -472,6 +496,7 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+
 	return s.checkSpace(cores, ramMB, diskGB)
 }
 
@@ -480,11 +505,13 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 	if s.destroyed {
 		return 0
 	}
+
 	if mth.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
 
 	var canDo int
+
 	if cores == 0 {
 		// rather than allow an infinite or very large number of cmds to run on
 		// this server, because there are still real limits on the number of
@@ -501,6 +528,7 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 	} else {
 		canDo = int(math.Floor(mth.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}
+
 	if canDo > 1 {
 		var n int
 		if ramMB > 0 {
@@ -509,6 +537,7 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 				canDo = n
 			}
 		}
+
 		if diskGB > 0 {
 			n = (s.Disk - s.usedDisk) / diskGB
 			if n < canDo {
@@ -516,6 +545,7 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 			}
 		}
 	}
+
 	return canDo
 }
 
@@ -536,10 +566,12 @@ func (s *Server) createSSHClientConfig(ctx context.Context) error {
 		if s.provider != nil {
 			path = s.provider.savePath
 		}
+
 		clog.Error(ctx, "failed to parse private key", "path", path, "err", err)
 
 		return err
 	}
+
 	s.sshClientConfig = &ssh.ClientConfig{
 		User: s.UserName,
 		Auth: []ssh.AuthMethod{
@@ -564,16 +596,22 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	// return a client that is still good (most likely to be a more recent
 	// client)
 	numClients := len(s.sshClients)
-	var client *ssh.Client
-	var index int
+
+	var (
+		client *ssh.Client
+		index  int
+	)
+
 	for i := numClients - 1; i >= 0; i-- {
 		if s.sshClientSessions[i] < maxSSHSessions {
 			client = s.sshClients[i]
 			s.sshClientSessions[i]++
 			index = i
+
 			break
 		}
 	}
+
 	if client != nil {
 		return client, index, nil
 	}
@@ -590,6 +628,7 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	// network or server isn't really ready for ssh yet; wait for up to
 	// 5mins for success, if we had only just created this server
 	hostAndPort := s.IP + ":22"
+
 	client, err := sshDial(ctx, hostAndPort, s.sshClientConfig)
 	if err != nil {
 		// if we're trying to destroy this server, just give up straight away
@@ -601,6 +640,7 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 		limit := time.After(sshTimeOut)
 		ticker := time.NewTicker(1 * time.Second)
 		ticks := 0
+
 	DIAL:
 		for {
 			select {
@@ -613,8 +653,10 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 				if sshMayStillBeStarting(err, s.created) {
 					if s.sshStarted && strings.HasSuffix(err.Error(), "no route to host") {
 						err = errors.New("ssh used to work, but now there's no route to host")
+
 						break DIAL
 					}
+
 					continue DIAL
 				}
 
@@ -627,24 +669,32 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 
 				if errors.Is(err, errConnectionAttemptCancelled) {
 					ticker.Stop()
+
 					break DIAL
 				}
+
 				if err == nil || ticks == 9 || !s.created {
 					ticker.Stop()
+
 					break DIAL
 				} else {
 					continue DIAL
 				}
 			case <-limit:
 				ticker.Stop()
+
 				err = errors.New("giving up waiting for ssh to work")
+
 				break DIAL
 			case <-ctx.Done():
 				ticker.Stop()
+
 				err = errors.New("cancelled waiting for ssh to work")
+
 				break DIAL
 			}
 		}
+
 		if err != nil {
 			return nil, index, err
 		}
@@ -662,12 +712,16 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 func sshDial(ctx context.Context, addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
 	clientCh := make(chan *ssh.Client, 1)
 	errCh := make(chan error, 1)
+
 	go func() {
 		defer internal.LogPanic(ctx, "sshDial", false)
+
 		sshClient, err := ssh.Dial("tcp", addr, sshConfig)
 		clientCh <- sshClient
+
 		errCh <- err
 	}()
+
 	deadline := time.After(sshConfig.Timeout + 1*time.Second)
 	select {
 	case err := <-errCh:
@@ -703,6 +757,7 @@ func sshMayStillBeStarting(err error, created bool) bool {
 // returned session.
 func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 	ctx = s.getContextWithServerID(ctx)
+
 	sshClient, clientIndex, err := s.SSHClient(ctx)
 	if err != nil {
 		clog.Debug(ctx, "server ssh could not be established", "err", err)
@@ -717,13 +772,16 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 	done := make(chan error, 1)
 	worked := make(chan bool, 1)
 	sessionCh := make(chan *ssh.Session, 1)
+
 	go func() {
 		select {
 		case <-time.After(sshShortTimeOut):
 			clog.Debug(ctx, "server ssh timed out", "clientindex", clientIndex)
+
 			done <- fmt.Errorf("cloud SSHSession() timed out")
 		case <-ctx.Done():
 			clog.Debug(ctx, "server ssh cancelled", "clientindex", clientIndex)
+
 			done <- fmt.Errorf("cloud SSHSession() cancelled")
 		case <-worked:
 			return
@@ -731,15 +789,20 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 	}()
 	go func() {
 		defer internal.LogPanic(ctx, "server sshsession", false)
+
 		session, errf := sshClient.NewSession()
 		if errf != nil {
 			clog.Debug(ctx, "server ssh failed", "err", errf, "clientindex", clientIndex)
 
 			done <- fmt.Errorf("cloud SSHSession() failed to establish a session: %w", errf)
+
 			return
 		}
+
 		worked <- true
+
 		done <- nil
+
 		sessionCh <- session
 	}()
 
@@ -751,6 +814,7 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 		// start working again
 		s.sshClientSessions[clientIndex] = maxSSHSessions
 		s.mutex.Unlock()
+
 		return nil, clientIndex, err
 	}
 
@@ -768,6 +832,7 @@ func (s *Server) CloseSSHSession(ctx context.Context, session *ssh.Session, clie
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	s.sshClientSessions[clientIndex]--
 }
 
@@ -793,14 +858,18 @@ func SFTPClient(conn *ssh.Client) (*sftp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if err = s.RequestSubsystem("sftp"); err != nil {
 		return nil, err
 	}
+
 	pw, err := s.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
+
 	pw = &threadSafeWriteCloser{WriteCloser: pw}
+
 	pr, err := s.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -817,6 +886,7 @@ type threadSafeWriteCloser struct {
 func (c *threadSafeWriteCloser) Close() error {
 	c.Lock()
 	defer c.Unlock()
+
 	return c.WriteCloser.Close()
 }
 
@@ -843,20 +913,27 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 	outCh := make(chan string, 1)
 	errCh := make(chan string, 1)
 	finished := make(chan bool, 1)
+
 	go func() {
 		defer internal.LogPanic(ctx, "server runcmd cancellation", false)
+
 		select {
 		case <-cancelCh:
 			outCh <- ""
+
 			errCh <- ""
+
 			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
 		case <-ctx.Done():
 			outCh <- ""
+
 			errCh <- ""
+
 			done <- fmt.Errorf("cloud RunCmd() on server %s cancelled on request", s.ID)
 		case <-finished:
 			// end select
 		}
+
 		s.mutex.Lock()
 		close(cancelCh)
 		delete(s.cancelRunCmd, cancelID)
@@ -869,22 +946,30 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 		if background {
 			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
 		}
-		var o bytes.Buffer
-		var e bytes.Buffer
+
+		var (
+			o bytes.Buffer
+			e bytes.Buffer
+		)
+
 		session.Stdout = &o
 		session.Stderr = &e
 		errf := session.Run(cmd)
+
 		finished <- true
+
 		if o.Len() > 0 {
 			outCh <- o.String()
 		} else {
 			outCh <- ""
 		}
+
 		if e.Len() > 0 {
 			errCh <- e.String()
 		} else {
 			errCh <- ""
 		}
+
 		if errf != nil {
 			done <- fmt.Errorf("cloud RunCmd(%s) failed: %w", cmd, errf)
 		} else {
@@ -896,12 +981,14 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 	err = <-done
 	stdout = <-outCh
 	stderr = <-errCh
+
 	return stdout, stderr, err
 }
 
 // UploadFile uploads a local file to the given location on the server.
 func (s *Server) UploadFile(ctx context.Context, source string, dest string) error {
 	ctx = s.getContextWithServerID(ctx)
+
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
@@ -935,6 +1022,7 @@ func (s *Server) UploadFile(ctx context.Context, source string, dest string) err
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
+
 	return err
 }
 
@@ -954,8 +1042,10 @@ func (s *Server) UploadFile(ctx context.Context, source string, dest string) err
 // NB: currently only works if the server supports the command 'pwd'.
 func (s *Server) CopyOver(ctx context.Context, files string) error {
 	ctx = s.getContextWithServerID(ctx)
+
 	for path := range strings.SplitSeq(files, ",") {
 		split := strings.Split(path, ":")
+
 		var localPath, remotePath string
 		if len(split) == 2 {
 			localPath = split[0]
@@ -967,9 +1057,11 @@ func (s *Server) CopyOver(ctx context.Context, files string) error {
 
 		// ignore if it doesn't exist locally
 		localPath = internal.TildaToHome(localPath)
+
 		info, err := os.Stat(localPath)
 		if err != nil {
 			err = nil
+
 			continue
 		}
 
@@ -978,6 +1070,7 @@ func (s *Server) CopyOver(ctx context.Context, files string) error {
 			if errh != nil {
 				return errh
 			}
+
 			remotePath = strings.TrimLeft(remotePath, "~/")
 			remotePath = filepath.Join(homeDir, remotePath)
 		}
@@ -1012,6 +1105,7 @@ func (s *Server) HomeDir(ctx context.Context) (string, error) {
 	ctx = s.getContextWithServerID(ctx)
 	s.hmutex.Lock()
 	defer s.hmutex.Unlock()
+
 	if s.homeDir != "" {
 		return s.homeDir, nil
 	}
@@ -1020,13 +1114,16 @@ func (s *Server) HomeDir(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	s.homeDir = strings.TrimSuffix(stdout, "\n")
+
 	return s.homeDir, nil
 }
 
 // CreateFile creates a new file with the given content on the server.
 func (s *Server) CreateFile(ctx context.Context, content string, dest string) error {
 	ctx = s.getContextWithServerID(ctx)
+
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
@@ -1061,6 +1158,7 @@ func (s *Server) CreateFile(ctx context.Context, content string, dest string) er
 // directory for your local file must already exist.
 func (s *Server) DownloadFile(ctx context.Context, source string, dest string) error {
 	ctx = s.getContextWithServerID(ctx)
+
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
@@ -1099,11 +1197,12 @@ func (s *Server) DownloadFile(ctx context.Context, source string, dest string) e
 // Requires sudo.
 func (s *Server) MkDir(ctx context.Context, dir string) error {
 	ctx = s.getContextWithServerID(ctx)
+
 	if dir == "." {
 		return nil
 	}
 
-	//*** it would be nice to do this with client.Mkdir, but that doesn't do
+	// *** it would be nice to do this with client.Mkdir, but that doesn't do
 	// the equivalent of mkdir -p, and errors out if dirs already exist... for
 	// now it's easier to just call mkdir
 	_, _, err := s.RunCmd(ctx, fmt.Sprintf("[ -d %s ]", dir), false)
@@ -1144,6 +1243,7 @@ func (s *Server) MkDir(ctx context.Context, dir string) error {
 func (s *Server) CreateSharedDisk() error {
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
+
 	if s.createdShare {
 		return nil
 	}
@@ -1152,6 +1252,7 @@ func (s *Server) CreateSharedDisk() error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get update && sudo apt-get install nfs-kernel-server -y") // #nosec
+
 	err := cmd.Run()
 	if err != nil {
 		return err
@@ -1165,15 +1266,20 @@ func (s *Server) CreateSharedDisk() error {
 	defer internal.LogClose(ctx, f, "/etc/exports")
 
 	scanner := bufio.NewScanner(f)
+
 	var found bool
+
 	for scanner.Scan() {
 		if strings.HasPrefix(scanner.Text(), sharePath) {
 			found = true
+
 			break
 		}
 	}
+
 	if !found {
 		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath)) // #nosec
+
 		err = cmd.Run()
 		if err != nil {
 			return err
@@ -1182,12 +1288,14 @@ func (s *Server) CreateSharedDisk() error {
 
 	if _, errs := os.Stat(sharePath); errs != nil && os.IsNotExist(errs) {
 		cmd = exec.CommandContext(ctx, "bash", "-c", "sudo mkdir "+sharePath) // #nosec
+
 		errs = cmd.Run()
 		if errs != nil {
 			return errs
 		}
 
 		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, sharePath)) // #nosec
+
 		errs = cmd.Run()
 		if errs != nil {
 			return errs
@@ -1195,6 +1303,7 @@ func (s *Server) CreateSharedDisk() error {
 	}
 
 	cmd = exec.CommandContext(ctx, "bash", "-c", "sudo systemctl start nfs-kernel-server.service && sudo export"+"fs -a") // #nosec (the split is to avoid a false-positive spelling mistake)
+
 	err = cmd.Run()
 	if err != nil {
 		return err
@@ -1202,6 +1311,7 @@ func (s *Server) CreateSharedDisk() error {
 
 	s.createdShare = true
 	s.SharedDisk = true
+
 	return nil
 }
 
@@ -1215,6 +1325,7 @@ func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error 
 	ctx = s.getContextWithServerID(ctx)
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
+
 	if s.createdShare {
 		return nil
 	}
@@ -1234,6 +1345,7 @@ func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error 
 	stdo, stde, err := s.RunCmd(ctx, fmt.Sprintf("sudo mount %s:%s %s", nfsServerIP, sharePath, sharePath), false)
 	if err != nil {
 		clog.Error(ctx, "mount attempt failed", "stdout", stdo, "stderr", stde)
+
 		return err
 	}
 
@@ -1258,6 +1370,7 @@ func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error 
 func (s *Server) GoneBad(permanentProblem ...string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	s.goneBad = time.Now()
 
 	if len(permanentProblem) == 1 {
@@ -1271,10 +1384,13 @@ func (s *Server) GoneBad(permanentProblem ...string) {
 func (s *Server) NotBad() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	if !s.destroyed && !s.toBeDestroyed && s.permanentProblem == "" {
 		s.goneBad = time.Time{}
+
 		return true
 	}
+
 	return false
 }
 
@@ -1282,6 +1398,7 @@ func (s *Server) NotBad() bool {
 func (s *Server) IsBad() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+
 	return !s.goneBad.IsZero()
 }
 
@@ -1291,9 +1408,11 @@ func (s *Server) IsBad() bool {
 func (s *Server) BadDuration() time.Duration {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+
 	if s.goneBad.IsZero() {
 		return 0 * time.Second
 	}
+
 	return time.Since(s.goneBad)
 }
 
@@ -1302,6 +1421,7 @@ func (s *Server) BadDuration() time.Duration {
 func (s *Server) PermanentProblem() string {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+
 	return s.permanentProblem
 }
 
@@ -1311,6 +1431,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 	ctx = s.getContextWithServerID(ctx)
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	if s.destroyed {
 		return nil
 	}
@@ -1334,6 +1455,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 
 		// sync the filesystem and run any user script
 		t := time.Now()
+
 		session, clientIndex, err := s.SSHSession(context.Background())
 		if err != nil {
 			clog.Warn(ctx, "failed to ssh to cleanly shutdown", "took", time.Since(t), "err", err)
@@ -1341,6 +1463,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 			if len(destroyScript) > 0 {
 				t = time.Now()
 				err = s.runScript(ctx, destroyScript)
+
 				rt := time.Since(t)
 				if err != nil {
 					clog.Warn(ctx, "user destroy script failed", "took", rt, "err", err)
@@ -1351,6 +1474,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 
 			t = time.Now()
 			stdo, stde, err := s.RunCmd(context.Background(), cleanShutDownCmd, false)
+
 			rt := time.Since(t)
 			if err != nil {
 				clog.Warn(ctx, "clean shutdown failed", "took", rt, "err", err, "stdout", stdo, "stderr", stde)
@@ -1360,6 +1484,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 
 			s.CloseSSHSession(ctx, session, clientIndex)
 		}
+
 		s.mutex.Lock()
 	}
 
@@ -1380,6 +1505,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 
 	err := s.provider.DestroyServer(ctx, s.ID)
 	clog.Debug(ctx, "server destroyed", "err", err)
+
 	if err != nil {
 		// check if the server exists
 		ok, errc := s.provider.CheckServer(ctx, s.ID)
@@ -1400,6 +1526,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 func (s *Server) Destroyed() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	return s.destroyed || s.toBeDestroyed
 }
 
@@ -1412,12 +1539,14 @@ func (s *Server) Alive(ctx context.Context, checkSSH ...bool) bool {
 	s.mutex.Lock()
 	if s.destroyed || s.toBeDestroyed {
 		s.mutex.Unlock()
+
 		return false
 	}
 
 	ok, errc := s.provider.CheckServer(ctx, s.ID)
 	if !ok || errc != nil {
 		s.mutex.Unlock()
+
 		return false
 	}
 	s.mutex.Unlock()
@@ -1444,6 +1573,7 @@ func (s *Server) Alive(ctx context.Context, checkSSH ...bool) bool {
 // credentials.
 func (s *Server) Known(ctx context.Context) bool {
 	ctx = s.getContextWithServerID(ctx)
+
 	known, err := s.provider.ServerIsKnown(s.ID)
 	if err != nil {
 		clog.Warn(ctx, "could not check if the server is known about", "err", err)

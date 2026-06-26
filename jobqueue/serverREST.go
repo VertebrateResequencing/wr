@@ -373,6 +373,7 @@ func (jd *JobDefaults) DefaultCwd() string {
 	if jd.Cwd == "" {
 		return "/tmp"
 	}
+
 	return jd.Cwd
 }
 
@@ -381,6 +382,7 @@ func (jd *JobDefaults) DefaultCPUs() float64 {
 	if jd.CPUs < 0 {
 		return 0
 	}
+
 	return jd.CPUs
 }
 
@@ -389,6 +391,7 @@ func (jd *JobDefaults) DefaultMemory() int {
 	if jd.Memory < 1 {
 		return 1000
 	}
+
 	return jd.Memory
 }
 
@@ -397,6 +400,7 @@ func (jd *JobDefaults) DefaultTime() time.Duration {
 	if jd.Time == 0 {
 		return 1 * time.Hour
 	}
+
 	return jd.Time
 }
 
@@ -406,6 +410,7 @@ func (jd *JobDefaults) DefaultEnv() ([]byte, error) {
 	if len(jd.compressedEnv) == 0 {
 		jd.compressedEnv, err = compressEnv(strings.Split(jd.Env, ","))
 	}
+
 	return jd.compressedEnv, err
 }
 
@@ -417,8 +422,10 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 		if ram == 0 {
 			ram = 1000
 		}
+
 		jd.osRAM = strconv.Itoa(ram)
 	}
+
 	return jd.osRAM
 }
 
@@ -496,6 +503,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		if err != nil {
 			return nil, fmt.Errorf("memory value (%s) was not specified correctly: %w", jvj.Memory, err)
 		}
+
 		mb = int(thismb)
 	}
 
@@ -503,6 +511,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		dur = jd.DefaultTime()
 	} else {
 		var err error
+
 		dur, err = time.ParseDuration(jvj.Time)
 		if err != nil {
 			return nil, fmt.Errorf("time value (%s) was not specified correctly: %w", jvj.Time, err)
@@ -514,6 +523,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else {
 		override = *jvj.Override
 	}
+
 	if override < 0 || override > 2 {
 		return nil, fmt.Errorf("override value (%d) is not in the range 0..2", override)
 	}
@@ -531,6 +541,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else {
 		priority = *jvj.Priority
 	}
+
 	if priority < 0 || priority > 255 {
 		return nil, fmt.Errorf("priority value (%d) is not in the range 0..255", priority)
 	}
@@ -540,6 +551,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else {
 		retries = *jvj.Retries
 	}
+
 	if retries < 0 || retries > 255 {
 		return nil, fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
 	}
@@ -548,6 +560,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		noRetry = jd.NoRetriesOverWalltime
 	} else {
 		var err error
+
 		noRetry, err = time.ParseDuration(jvj.NoRetriesOverWalltime)
 		if err != nil {
 			return nil, fmt.Errorf("no_retry_over_walltime value (%s) was not specified correctly: %w",
@@ -579,6 +592,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		if len(jvj.CmdDeps) > 0 {
 			deps = jvj.CmdDeps
 		}
+
 		if len(jvj.Deps) > 0 {
 			for _, depgroup := range jvj.Deps {
 				deps = append(deps, NewDepGroupDependency(depgroup))
@@ -588,12 +602,14 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 
 	if len(jvj.Env) > 0 {
 		var err error
+
 		envOverride, err = compressEnv(jvj.Env)
 		if err != nil {
 			return nil, err
 		}
 	} else if len(jd.Env) > 0 {
 		var err error
+
 		envOverride, err = jd.DefaultEnv()
 		if err != nil {
 			return nil, err
@@ -605,11 +621,13 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else if len(jd.OnFailure) > 0 {
 		behaviours = append(behaviours, jd.OnFailure...)
 	}
+
 	if len(jvj.OnSuccess) > 0 {
 		behaviours = append(behaviours, jvj.OnSuccess.Behaviours(OnSuccess)...)
 	} else if len(jd.OnSuccess) > 0 {
 		behaviours = append(behaviours, jd.OnSuccess...)
 	}
+
 	if len(jvj.OnExit) > 0 {
 		behaviours = append(behaviours, jvj.OnExit.Behaviours(OnExit)...)
 	} else if len(jd.OnExit) > 0 {
@@ -632,16 +650,19 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else {
 		monitorDocker = jvj.MonitorDocker
 	}
+
 	if jvj.WithDocker == "" {
 		withDocker = jd.WithDocker
 	} else {
 		withDocker = jvj.WithDocker
 	}
+
 	if jvj.WithSingularity == "" {
 		withSingularity = jd.WithSingularity
 	} else {
 		withSingularity = jvj.WithSingularity
 	}
+
 	if jvj.ContainerMounts == "" {
 		containerMounts = jd.ContainerMounts
 	} else {
@@ -674,11 +695,13 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else if jd.CloudScript != "" {
 		cloudScriptPath = jd.CloudScript
 	}
+
 	if cloudScriptPath != "" {
 		scriptContent, err := internal.PathToContent(cloudScriptPath)
 		if err != nil {
 			return nil, err
 		}
+
 		other["cloud_script"] = scriptContent
 	}
 
@@ -1234,6 +1257,7 @@ func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+
 		return false
 	}
 
@@ -1244,11 +1268,13 @@ func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+
 			return false
 		}
 
 		if !strings.HasPrefix(authHeader, bearerSchema) {
 			http.Error(w, "Authorization requires Bearer scheme", http.StatusUnauthorized)
+
 			return false
 		}
 
@@ -1257,8 +1283,10 @@ func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
 
 	if !tokenMatches([]byte(token), s.token) {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
+
 		return false
 	}
+
 	return true
 }
 
@@ -1273,9 +1301,12 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 		}
 
 		// carry out a different action based on the HTTP Verb
-		var jobs []*Job
-		var status int
-		var err error
+		var (
+			jobs   []*Job
+			status int
+			err    error
+		)
+
 		switch r.Method {
 		case http.MethodGet:
 			jobs, status, err = restJobsStatus(ctx, r, s)
@@ -1304,21 +1335,25 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 			jobs, status, err = restJobsCancel(ctx, r, s)
 		default:
 			http.Error(w, "So far only GET, POST, PATCH and DELETE are supported", http.StatusBadRequest)
+
 			return
 		}
 
 		if status >= 400 || err != nil {
 			http.Error(w, err.Error(), status)
+
 			return
 		}
 
 		// convert jobs to jstatus
 		jstati := make([]JStatus, len(jobs))
 		includeStd := r.URL.Query().Get("std") == restFormTrue
+
 		for i, job := range jobs {
 			jstati[i], err = job.ToStatus()
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 				http.Error(w, err.Error(), status)
+
 				return
 			}
 
@@ -1333,6 +1368,7 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 		w.WriteHeader(status)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
+
 		erre := encoder.Encode(jstati)
 		if erre != nil {
 			clog.Warn(ctx, "restJobs failed to encode job statuses", "err", erre)
@@ -1349,10 +1385,12 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 // Jobs, a http.Status* value and error.
 func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
-	var search, getStd, getEnv, waitingForDepGroups bool
-	var limit int
-	var state JobState
-	var err error
+	var (
+		search, getStd, getEnv, waitingForDepGroups bool
+		limit                                       int
+		state                                       JobState
+		err                                         error
+	)
 
 	query := r.URL.Query()
 
@@ -1407,13 +1445,16 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	if len(r.URL.Path) > len(restJobsEndpoint) {
 		// get the requested jobs
 		ids := r.URL.Path[len(restJobsEndpoint):]
+
 		var jobs []*Job
+
 		for id := range strings.SplitSeq(ids, ",") {
 			if len(id) == 32 {
 				// id might be a Job.key()
 				theseJobs, _, qerr := s.getJobsByKeys(ctx, []string{id}, getStd, getEnv)
 				if qerr == "" && len(theseJobs) > 0 {
 					jobs = append(jobs, theseJobs...)
+
 					continue
 				}
 			}
@@ -1430,14 +1471,17 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 					WaitingForDepGroups: waitingForDepGroups,
 				},
 			}
+
 			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
 			if qerr != "" {
 				return nil, http.StatusInternalServerError, Error{Err: qerr}
 			}
+
 			if len(theseJobs) > 0 {
 				jobs = append(jobs, theseJobs...)
 			}
 		}
+
 		return jobs, http.StatusOK, err
 	}
 
@@ -1459,6 +1503,7 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	_, diskSet := r.Form["disk"]
+
 	jd := &JobDefaults{
 		Cwd:             r.Form.Get("cwd"),
 		RepGrp:          r.Form.Get("rep_grp"),
@@ -1486,82 +1531,105 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 	if jd.RepGrp == "" {
 		jd.RepGrp = "manually_added"
 	}
+
 	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true
 	}
+
 	if r.Form.Get("change_home") == restFormTrue {
 		jd.ChangeHome = true
 	}
+
 	if r.Form.Get("cloud_shared") == restFormTrue {
 		jd.CloudShared = true
 	}
+
 	if r.Form.Get("memory") != "" {
 		mb, err := bytefmt.ToMegabytes(r.Form.Get("memory"))
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+
 		jd.Memory = int(mb)
 	}
+
 	if r.Form.Get("time") != "" {
 		var err error
+
 		jd.Time, err = time.ParseDuration(r.Form.Get("time"))
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 	}
+
 	if r.Form.Get("no_retry_over_walltime") != "" {
 		var err error
+
 		jd.NoRetriesOverWalltime, err = time.ParseDuration(r.Form.Get("no_retry_over_walltime"))
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 	}
+
 	var rerun bool
 	if r.Form.Get("rerun") == restFormTrue {
 		rerun = true
 	}
+
 	defaultDeps := urlStringToSlice(r.Form.Get("deps"))
 	if len(defaultDeps) > 0 {
 		for _, depgroup := range defaultDeps {
 			jd.Deps = append(jd.Deps, NewDepGroupDependency(depgroup))
 		}
 	}
+
 	if r.Form.Get("on_failure") != "" {
 		var bvj BehavioursViaJSON
+
 		err := urlStringToStruct(r.Form.Get("on_failure"), &bvj)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+
 		if bvj != nil {
 			jd.OnFailure = bvj.Behaviours(OnFailure)
 		}
 	}
+
 	if r.Form.Get("on_success") != "" {
 		var bvj BehavioursViaJSON
+
 		err := urlStringToStruct(r.Form.Get("on_success"), &bvj)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+
 		if bvj != nil {
 			jd.OnSuccess = bvj.Behaviours(OnSuccess)
 		}
 	}
+
 	if r.Form.Get("on_exit") != "" {
 		var bvj BehavioursViaJSON
+
 		err := urlStringToStruct(r.Form.Get("on_exit"), &bvj)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+
 		if bvj != nil {
 			jd.OnExit = bvj.Behaviours(OnExit)
 		}
 	}
+
 	if r.Form.Get("mounts") != "" {
 		var mcs MountConfigs
+
 		err := urlStringToStruct(r.Form.Get("mounts"), &mcs)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+
 		if mcs != nil {
 			jd.MountConfigs = mcs
 		}
@@ -1569,6 +1637,7 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 
 	// decode the posted JSON
 	var jvjs []*JobViaJSON
+
 	err := json.NewDecoder(r.Body).Decode(&jvjs)
 	if err != nil {
 		return nil, http.StatusBadRequest, err
@@ -1581,6 +1650,7 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 		if errf != nil {
 			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %w", errf)
 		}
+
 		inputJobs = append(inputJobs, job)
 	}
 
@@ -1608,6 +1678,7 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 // http.Status* value and error.
 func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
 	var state JobState
+
 	if r.Form.Get("state") != "" {
 		switch r.Form.Get("state") {
 		case "running":
@@ -1618,6 +1689,7 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			state = JobStateDeletable
 		}
 	}
+
 	if state == "" {
 		return nil, http.StatusBadRequest, fmt.Errorf("state must be supplied as one of running|lost|deletable")
 	}
@@ -1628,15 +1700,18 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	}
 
 	var handled []*Job
+
 	returnStatus := http.StatusAccepted
 	if state == JobStateDeletable {
 		returnStatus = http.StatusOK
 
 		deleted := s.deleteJobs(ctx, jobs)
+
 		d := make(map[string]bool, len(deleted))
 		for _, key := range deleted {
 			d[key] = true
 		}
+
 		for _, job := range jobs {
 			if d[job.Key()] {
 				job.State = JobStateDeleted
@@ -1649,11 +1724,13 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			if err != nil {
 				return handled, http.StatusInternalServerError, err
 			}
+
 			if k {
 				handled = append(handled, job)
 			}
 		}
 	}
+
 	return handled, returnStatus, nil
 }
 
@@ -1670,16 +1747,19 @@ func restWarnings(ctx context.Context, s *Server) http.HandlerFunc {
 
 		// carry out a different action based on the HTTP Verb
 		sis := []*schedulerIssue{}
+
 		switch r.Method {
 		case http.MethodGet:
 			s.simutex.Lock()
 			for key, si := range s.schedIssues {
 				sis = append(sis, si)
+
 				delete(s.schedIssues, key)
 			}
 			s.simutex.Unlock()
 		default:
 			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+
 			return
 		}
 
@@ -1688,6 +1768,7 @@ func restWarnings(ctx context.Context, s *Server) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
+
 		erre := encoder.Encode(sis)
 		if erre != nil {
 			clog.Warn(ctx, "restWarnings failed to encode scheduler issues", "err", erre)
@@ -1714,40 +1795,52 @@ func restBadServers(ctx context.Context, s *Server) http.HandlerFunc {
 			if len(servers) == 0 {
 				servers = []*BadServer{}
 			}
+
 			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 			w.WriteHeader(http.StatusOK)
 			encoder := json.NewEncoder(w)
 			encoder.SetEscapeHTML(false)
+
 			erre := encoder.Encode(servers)
 			if erre != nil {
 				clog.Warn(ctx, "restBadServers failed to encode servers", "err", erre)
 			}
+
 			return
 		case http.MethodDelete:
 			serverID := r.Form.Get("id")
 			if serverID == "" {
 				http.Error(w, "id parameter is required", http.StatusBadRequest)
+
 				return
 			}
+
 			s.bsmutex.Lock()
 			server := s.badServers[serverID]
 			delete(s.badServers, serverID)
 			s.bsmutex.Unlock()
+
 			if server == nil {
 				http.Error(w, "Server was not known to be bad", http.StatusNotFound)
+
 				return
 			}
+
 			if server.IsBad() {
 				err := server.Destroy(ctx)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Server was bad but could not be destroyed: %s", err), http.StatusNotModified)
+
 					return
 				}
 			}
+
 			w.WriteHeader(http.StatusOK)
+
 			return
 		default:
 			http.Error(w, "Only GET and DELETE are supported", http.StatusBadRequest)
+
 			return
 		}
 	}
@@ -1766,12 +1859,14 @@ func restFileUpload(ctx context.Context, s *Server) http.HandlerFunc {
 
 		if r.Method != http.MethodPut {
 			http.Error(w, "Only PUT is supported", http.StatusBadRequest)
+
 			return
 		}
 
 		savePath, err := s.uploadFile(ctx, r.Body, r.Form.Get("path"))
 		if err != nil {
 			http.Error(w, "file upload failed", http.StatusInternalServerError)
+
 			return
 		}
 
@@ -1779,8 +1874,10 @@ func restFileUpload(ctx context.Context, s *Server) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
+
 		msg := make(map[string]string)
 		msg["path"] = savePath
+
 		err = encoder.Encode(msg)
 		if err != nil {
 			clog.Warn(ctx, "restFileUpload failed to encode success msg", "err", err)
@@ -1800,6 +1897,7 @@ func restInfo(ctx context.Context, s *Server) http.HandlerFunc {
 
 		if r.Method != http.MethodGet {
 			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+
 			return
 		}
 
@@ -1807,6 +1905,7 @@ func restInfo(ctx context.Context, s *Server) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
+
 		err := encoder.Encode(s.ServerInfo)
 		if err != nil {
 			clog.Warn(ctx, "restInfo failed to encode ServerInfo", "err", err)
@@ -1823,6 +1922,7 @@ func restVersion(ctx context.Context, s *Server) http.HandlerFunc {
 
 		if r.Method != http.MethodGet {
 			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+
 			return
 		}
 
@@ -1830,6 +1930,7 @@ func restVersion(ctx context.Context, s *Server) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
+
 		err := encoder.Encode(s.ServerVersions)
 		if err != nil {
 			clog.Warn(ctx, "restVersion failed to encode ServerVersions", "err", err)
@@ -1844,10 +1945,12 @@ func urlStringToInt(value string) int {
 	if value == "" {
 		return 0
 	}
+
 	num, err := strconv.Atoi(value)
 	if err != nil {
 		return 0
 	}
+
 	return num
 }
 
@@ -1858,10 +1961,12 @@ func urlStringToFloat(value string) float64 {
 	if value == "" {
 		return 0
 	}
+
 	num, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return 0
 	}
+
 	return num
 }
 
@@ -1872,6 +1977,7 @@ func urlStringToSlice(value string) []string {
 	if value == "" {
 		return nil
 	}
+
 	return strings.Split(value, ",")
 }
 
@@ -1882,22 +1988,27 @@ func urlStringToStruct(value string, v any) error {
 	if value == "" {
 		return nil
 	}
+
 	jsonString, err := url.QueryUnescape(value)
 	if err != nil {
 		return err
 	}
+
 	return json.Unmarshal([]byte(jsonString), v)
 }
 
 // compressEnv is a slower (?) version of Client.CompressEnv since we have to
-// make a new codec each time
+// make a new codec each time.
 func compressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, new(codec.BincHandle))
+
 	err := enc.Encode(&envStr{envars})
 	if err != nil {
 		return nil, err
 	}
+
 	return compress(encoded)
 }
 

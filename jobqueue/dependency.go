@@ -212,11 +212,13 @@ func (d Dependencies) incompleteJobKeysByDependency(
 // DepGroups returns all the DepGroups of our constituent Dependency structs.
 func (d Dependencies) DepGroups() []string {
 	var depGroups []string
+
 	for _, dep := range d {
 		if dep.DepGroup != "" {
 			depGroups = append(depGroups, dep.DepGroup)
 		}
 	}
+
 	return depGroups
 }
 
@@ -224,6 +226,7 @@ func (d Dependencies) DepGroups() []string {
 // strings, each of which could be JobEssence or DepGroup based.
 func (d Dependencies) Stringify() []string {
 	var strings []string
+
 	for _, dep := range d {
 		if dep.DepGroup != "" {
 			strings = append(strings, dep.DepGroup)
@@ -231,6 +234,7 @@ func (d Dependencies) Stringify() []string {
 			strings = append(strings, dep.Essence.Stringify())
 		}
 	}
+
 	return strings
 }
 

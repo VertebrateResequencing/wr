@@ -32,6 +32,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -238,6 +239,7 @@ func TestStartOrderRecorder(t *testing.T) {
 
 func TestLocal(t *testing.T) {
 	ctx := context.Background()
+
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
@@ -251,8 +253,9 @@ func TestLocal(t *testing.T) {
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
 
 		Convey("Debug log contains context based on scheduler type", func() {
-			ctx = s.typeContext(ctx)
+			ctx := s.typeContext(ctx)
 			buff := clog.ToBufferAtLevel("debug")
+
 			clog.Debug(ctx, "msg", "foo", 1)
 			So(buff.String(), ShouldContainSubstring, "schedulertype=local")
 		})
@@ -265,6 +268,7 @@ func TestLocal(t *testing.T) {
 				otherRTReqs := make(map[string]string)
 				otherRTReqs["rtimeout"] = "foo"
 				_ = s.ReserveTimeout(ctx, &Requirements{Other: otherRTReqs})
+
 				So(buff.String(), ShouldContainSubstring, "schedulertype=local")
 			})
 		})
@@ -279,8 +283,10 @@ func TestLocal(t *testing.T) {
 
 		Convey("Requirements.Stringify() works", func() {
 			So(possibleReq.Stringify(), ShouldEqual, "1:0:1:20")
+
 			testReq := &Requirements{RAM: 300, Time: 2 * time.Hour, Cores: 2}
 			So(testReq.Stringify(), ShouldEqual, "300:120:2:0")
+
 			other := make(map[string]string)
 			other["foo"] = "bar"
 			other["goo"] = "lar"
@@ -291,7 +297,8 @@ func TestLocal(t *testing.T) {
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
 			err := s.Schedule(ctx, "foo", impossibleReq, 0, 1)
 			So(err, ShouldNotBeNil)
-			serr, ok := err.(Error)
+			var serr Error
+			ok := errors.As(err, &serr)
 			So(ok, ShouldBeTrue)
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
@@ -306,6 +313,7 @@ func TestLocal(t *testing.T) {
 				log.Fatal(err)
 			}
 			defer os.RemoveAll(tmpdir)
+
 			tmpdir2, err := os.MkdirTemp("", "wr_schedulers_local_test_end_output_dir_")
 			if err != nil {
 				log.Fatal(err)
@@ -405,6 +413,7 @@ func TestLocal(t *testing.T) {
 
 					newcount := maxCPU + 1
 					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
+
 					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir)
 					So(s.Schedule(ctx, newcmd, possibleReq, 0, 1), ShouldBeNil)
 
@@ -567,6 +576,7 @@ func TestLocal(t *testing.T) {
 		// wait a while for any remaining jobs to finish
 		So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 	})
+
 	if maxCPU > 1 {
 		Convey("You can get a new local scheduler that uses less than all CPUs", t, func() {
 			otherReqs := make(map[string]string)
@@ -586,21 +596,21 @@ func TestLocal(t *testing.T) {
 			err = s.Schedule(ctx, cmd, sleepReq, 0, 2)
 			So(err, ShouldBeNil)
 
-			for {
-				if !s.Busy(ctx) {
-					break
-				}
+			for s.Busy(ctx) {
+
 				<-time.After(1 * time.Millisecond)
 			}
 
 			times := mtimesOfFilesInDir(tmpDir, 2)
 			So(len(times), ShouldEqual, 2)
 			first := times[0]
+
 			second := times[1]
 			if second.Before(first) {
 				first = times[1]
 				second = times[0]
 			}
+
 			So(first, ShouldHappenBefore, second)
 			So(first, ShouldHappenBefore, second.Add(-400*time.Millisecond))
 		})
@@ -616,6 +626,7 @@ func TestOpenstack(t *testing.T) {
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	rName := "wr-testing-" + localUser
 	keepTime := 5 * time.Second
+
 	config := &ConfigOpenStack{
 		ResourceName:              rName,
 		OSPrefix:                  osPrefix,
@@ -638,12 +649,16 @@ func TestOpenstack(t *testing.T) {
 			_, err := New(ctx, "openstack", config)
 			So(err, ShouldNotBeNil)
 		})
+
 		return
 	}
+
 	if flavorRegex == "" {
 		SkipConvey("OpenStack scheduler tests are skipped without special OS_FLAVOR_REGEX environment variable being set", t, func() {})
+
 		return
 	}
+
 	host, err := os.Hostname()
 	if err != nil {
 		log.Fatal(err)
@@ -664,11 +679,14 @@ func TestOpenstack(t *testing.T) {
 			log.Fatal(errt)
 		}
 		defer os.RemoveAll(tmpdir)
+
 		config.SavePath = filepath.Join(tmpdir, "os_resources")
 		s, errn := New(ctx, "openstack", config)
 		So(errn, ShouldBeNil)
+
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup(ctx)
+
 		oss := s.impl.(*opst)
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs, true, true, true}
@@ -753,7 +771,8 @@ func TestOpenstack(t *testing.T) {
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
 			err := s.Schedule(ctx, "foo", impossibleReq, 0, 1)
 			So(err, ShouldNotBeNil)
-			serr, ok := err.(Error)
+			var serr Error
+			ok := errors.As(err, &serr)
 			So(ok, ShouldBeTrue)
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
@@ -762,12 +781,14 @@ func TestOpenstack(t *testing.T) {
 			Convey("Schedule() gives impossible error when reqs don't fit in the requested flavor", func() {
 				flavor, err := oss.determineFlavor(ctx, possibleReq, "a")
 				So(err, ShouldBeNil)
+
 				other := make(map[string]string)
 				other["cloud_flavor"] = flavor.Name
 				brokenReq := &Requirements{flavor.RAM + 1, 1 * time.Minute, 1, 1, other, true, true, true}
 				err = s.Schedule(ctx, "foo", brokenReq, 0, 1)
 				So(err, ShouldNotBeNil)
-				serr, ok := err.(Error)
+				var serr Error
+				ok := errors.As(err, &serr)
 				So(ok, ShouldBeTrue)
 				So(serr.Err, ShouldEqual, ErrImpossible)
 			})
@@ -799,9 +820,11 @@ func TestOpenstack(t *testing.T) {
 						wg.Add(1)
 						go func(i int) {
 							defer wg.Done()
+
 							s.Schedule(ctx, fmt.Sprintf("echo %d", i), thisReq, 0, count)
 						}(i)
 					}
+
 					wg.Wait()
 
 					// the test is that we don't hit a deadlock
@@ -822,6 +845,7 @@ func TestOpenstack(t *testing.T) {
 							remoteReq.RAM = server.Flavor.RAM + 1000
 						}
 					}
+
 					remoteReq.Other = other
 					cmd = "cat /tmp/foo > /shared/test2; cat /tmp/a > /shared/test3"
 					err = s.Schedule(ctx, cmd, remoteReq, 0, 1)
@@ -842,6 +866,7 @@ func TestOpenstack(t *testing.T) {
 					So(string(content), ShouldEqual, "b\n")
 
 					<-time.After(keepTime)
+
 					content, err = os.ReadFile("/shared/test4")
 					So(err, ShouldBeNil)
 					So(string(content), ShouldEqual, "b\n")
@@ -868,9 +893,11 @@ func TestOpenstack(t *testing.T) {
 
 						spawnedCh := make(chan int)
 						stopCh := make(chan bool)
+
 						go func() {
 							max := 0
 							ticker := time.NewTicker(5 * time.Second)
+
 							for {
 								select {
 								case <-ticker.C:
@@ -878,17 +905,22 @@ func TestOpenstack(t *testing.T) {
 									if novaCount > max {
 										max = novaCount
 									}
+
 									continue
 								case <-stopCh:
 									ticker.Stop()
+
 									spawnedCh <- max
+
 									return
 								}
 							}
 						}()
 
 						So(waitToFinish(ctx, s, 120, 1000), ShouldBeTrue)
+
 						stopCh <- true
+
 						spawned := <-spawnedCh
 						close(spawnedCh)
 						So(spawned, ShouldEqual, 1)
@@ -914,9 +946,11 @@ func TestOpenstack(t *testing.T) {
 
 					spawnedCh := make(chan int)
 					stopCh := make(chan bool)
+
 					go func() {
 						max := 0
 						ticker := time.NewTicker(5 * time.Second)
+
 						for {
 							select {
 							case <-ticker.C:
@@ -924,17 +958,22 @@ func TestOpenstack(t *testing.T) {
 								if novaCount > max {
 									max = novaCount
 								}
+
 								continue
 							case <-stopCh:
 								ticker.Stop()
+
 								spawnedCh <- max
+
 								return
 							}
 						}
 					}()
 
 					So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+
 					stopCh <- true
+
 					spawned := <-spawnedCh
 					close(spawnedCh)
 					So(spawned, ShouldBeBetweenOrEqual, 2, count)
@@ -1007,24 +1046,31 @@ func TestOpenstack(t *testing.T) {
 						So(s.Busy(ctx), ShouldBeTrue)
 
 						spawned := 0
+
 						var ssync sync.Mutex
+
 						go func() {
 							ticker := time.NewTicker(1 * time.Second)
 							limit := time.After(time.Duration(eta-5) * time.Second)
+
 							for {
 								select {
 								case <-ticker.C:
 									ssync.Lock()
+
 									spawned = novaCountServers(novaCmd, rName, oReqs["cloud_os"])
 									if spawned > 0 {
 										ticker.Stop()
 										ssync.Unlock()
+
 										return
 									}
 									ssync.Unlock()
+
 									continue
 								case <-limit:
 									ticker.Stop()
+
 									return
 								}
 							}
@@ -1049,6 +1095,7 @@ func TestOpenstack(t *testing.T) {
 
 				numCores := 5
 				oReqsm := make(map[string]string)
+
 				multiCoreFlavor, err := oss.determineFlavor(ctx, &Requirements{
 					1024, 1 * time.Minute, float64(numCores), 0, oReqsm,
 					true, true, true,
@@ -1057,6 +1104,7 @@ func TestOpenstack(t *testing.T) {
 					oReqs := make(map[string]string)
 					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
 					jobReq := &Requirements{multiCoreFlavor.RAM / numCores, 1 * time.Minute, 1, 0, oReqs, true, true, true}
+
 					confirmFlavor, err := oss.determineFlavor(ctx, oss.reqForSpawn(jobReq), "v")
 					if err == nil && confirmFlavor.Cores >= numCores {
 						Convey("Run multiple jobs at once on multi-core servers", func() {
@@ -1068,10 +1116,12 @@ func TestOpenstack(t *testing.T) {
 
 							waitSecs := 150
 							spawnedCh := make(chan int, 1)
+
 							go func() {
 								maxSpawned := 0
 								ticker := time.NewTicker(1 * time.Second)
 								limit := time.After(time.Duration(waitSecs-5) * time.Second)
+
 								for {
 									select {
 									case <-ticker.C:
@@ -1079,10 +1129,13 @@ func TestOpenstack(t *testing.T) {
 										if spawned > maxSpawned {
 											maxSpawned = spawned
 										}
+
 										continue
 									case <-limit:
 										ticker.Stop()
+
 										spawnedCh <- maxSpawned
+
 										return
 									}
 								}
@@ -1095,6 +1148,7 @@ func TestOpenstack(t *testing.T) {
 							// will vary...) we need better confirmation of
 							// parallel run...
 							So(waitToFinish(ctx, s, waitSecs, 1000), ShouldBeTrue)
+
 							spawned := <-spawnedCh
 							So(spawned, ShouldEqual, 1)
 						})
@@ -1124,48 +1178,61 @@ func TestOpenstack(t *testing.T) {
 				log.Fatal(errt)
 			}
 			defer os.RemoveAll(tmpdir)
+
 			config.SavePath = filepath.Join(tmpdir, "os_resources")
 			config.SimultaneousSpawns = 5
 			s, errn := New(ctx, "openstack", config)
 			So(errn, ShouldBeNil)
+
 			So(s, ShouldNotBeNil)
 			defer func() {
 				s.Cleanup(ctx)
 			}()
+
 			oss := s.impl.(*opst)
 
 			if oss.provider.InCloud() {
 				ignoreServers := make(map[string]bool)
+
 				oss.serversMutex.RLock()
+
 				for _, server := range oss.servers {
 					ignoreServers[server.ID] = true
 				}
+
 				oss.serversMutex.RUnlock()
 
 				getServerFlavors := func() map[int]int {
 					oss.serversMutex.RLock()
 					defer oss.serversMutex.RUnlock()
+
 					flavors := make(map[int]int)
+
 					for _, server := range oss.servers {
 						if ignoreServers[server.ID] {
 							continue
 						}
+
 						flavors[server.Flavor.Cores]++
 					}
+
 					return flavors
 				}
 
 				waitForServers := func(wanted map[int]int) bool {
 					limit := time.After(120 * time.Second)
 					ticker := time.NewTicker(1 * time.Second)
+
 					for {
 						select {
 						case <-ticker.C:
 							if len(wanted) == 0 {
 								oss.stateUpdate(ctx)
 							}
+
 							have := getServerFlavors()
 							ok := true
+
 							for cpus, desired := range wanted {
 								if actual, exists := have[cpus]; exists {
 									if actual < desired {
@@ -1179,6 +1246,7 @@ func TestOpenstack(t *testing.T) {
 									break
 								}
 							}
+
 							for cpus := range have {
 								if _, exists := wanted[cpus]; !exists {
 									ok = false
@@ -1190,11 +1258,14 @@ func TestOpenstack(t *testing.T) {
 							if ok {
 								ticker.Stop()
 								<-time.After(2 * time.Second)
+
 								return true
 							}
+
 							continue
 						case <-limit:
 							ticker.Stop()
+
 							return false
 						}
 					}
@@ -1262,9 +1333,11 @@ func TestOpenstack(t *testing.T) {
 					So(waitForServers(wanted), ShouldBeTrue)
 
 					oss.serversMutex.RLock()
+
 					eightcores := 0
 					twocores := 0
 					space := 0
+
 					for _, server := range oss.servers {
 						if server.Flavor.Cores == 8 {
 							eightcores++
@@ -1274,6 +1347,7 @@ func TestOpenstack(t *testing.T) {
 							twocores++
 						}
 					}
+
 					oss.serversMutex.RUnlock()
 
 					err = s.Schedule(ctx, smallCmd, smallReq, 0, 0)
@@ -1298,18 +1372,22 @@ func getInfoOfFilesInDir(tmpdir string, expected int) []fs.DirEntry {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	if len(files) < expected {
 		// wait a little longer for things to sync up, by running ls
 		cmd := exec.Command("ls", tmpdir)
+
 		err = cmd.Run()
 		if err != nil {
 			log.Fatal(err)
 		}
+
 		files, err = os.ReadDir(tmpdir)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
+
 	return files
 }
 
@@ -1319,46 +1397,59 @@ func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 
 func mtimesOfFilesInDir(tmpdir string, expected int) []time.Time {
 	files := getInfoOfFilesInDir(tmpdir, expected)
+
 	times := make([]time.Time, 0, len(files))
 	for _, entry := range files {
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
+
 		times = append(times, info.ModTime())
 		os.Remove(filepath.Join(tmpdir, info.Name()))
 	}
+
 	return times
 }
 
 func waitToFinish(ctx context.Context, s *Scheduler, maxS int, interval int) bool {
 	done := make(chan bool, 1)
+
 	go func() {
 		limit := time.After(time.Duration(maxS) * time.Second)
 		ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
+
 		for {
 			select {
 			case <-ticker.C:
 				if !s.Busy(ctx) {
 					ticker.Stop()
+
 					done <- true
+
 					return
 				}
+
 				continue
 			case <-limit:
 				ticker.Stop()
+
 				done <- false
+
 				return
 			}
 		}
 	}()
+
 	answer := <-done
+
 	return answer
 }
 
 func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	var extra string
 	if len(flavor) == 1 {
 		extra = "--flavor " + flavor[0] + " "
@@ -1370,13 +1461,17 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 	} else {
 		cmdStr += "| grep "
 	}
+
 	cmdStr += rName
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 	out, err := cmd.Output()
+
 	if ctx.Err() != nil {
 		log.Printf("exec of [%s] timed out\n", cmdStr)
+
 		return 0
 	}
+
 	if err != nil {
 		// uncomment if debugging failures where count is always 0:
 		// log.Printf("cmd [%s] failed: %s\n", cmdStr, err)
@@ -1388,13 +1483,16 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 		if err == nil {
 			return count
 		}
+
 		log.Printf("Atoi following [%s] failed: %s\n", cmdStr, err)
 	} else {
 		r := regexp.MustCompile(rName + "-\\S+")
 		count := 0
+
 		for _, name := range r.FindAll(out, -1) {
 			showCmdStr := novaCmd + " show " + string(name) + " | grep image"
 			showCmd := exec.Command("bash", "-c", showCmdStr)
+
 			showOut, err := showCmd.Output()
 			if err == nil {
 				if strings.Contains(string(showOut), osPrefix) {
@@ -1404,18 +1502,22 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 				log.Printf("cmd [%s] failed: %s\n", showCmdStr, err)
 			}
 		}
+
 		return count
 	}
+
 	return 0
 }
 
 func testProcessNotRunning(ctx context.Context, s *Scheduler, r *Requirements) {
 	tmpdir, err := os.MkdirTemp("./", "wr_schedulers_test_output_dir_")
 	So(err, ShouldBeNil)
+
 	defer os.RemoveAll(tmpdir)
 
 	pidHostFile, err := filepath.Abs(path.Join(tmpdir, "pid.host"))
 	So(err, ShouldBeNil)
+
 	pidHostFileTmp := pidHostFile + ".tmp"
 
 	cmd := fmt.Sprintf("perl -e '$tmp = shift; $path = shift; open($fh, q[>], $tmp); print $fh qq[$$\n]; use Sys::Hostname qw(hostname); print $fh hostname(), qq[\n]; close($fh); rename $tmp, $path; for (1..120) { sleep(1) }' %s %s", pidHostFileTmp, pidHostFile)

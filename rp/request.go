@@ -31,7 +31,7 @@ import (
 	"sync"
 )
 
-// Receipt is the unique id of a request
+// Receipt is the unique id of a request.
 type Receipt string
 
 // request struct describes a request for tokens tied to a particular resource
@@ -60,13 +60,17 @@ func (r *request) waitUntilGranted() bool {
 	r.mu.Lock()
 	if r.done || r.waiting {
 		r.mu.Unlock()
+
 		return false
 	} else if r.active {
 		r.mu.Unlock()
+
 		return true
 	}
+
 	r.waiting = true
 	r.mu.Unlock()
+
 	select {
 	case <-r.grantedCh:
 		return true
@@ -75,6 +79,7 @@ func (r *request) waitUntilGranted() bool {
 		r.done = true
 		r.waiting = false
 		r.mu.Unlock()
+
 		return false
 	}
 }
@@ -84,9 +89,11 @@ func (r *request) waitUntilGranted() bool {
 func (r *request) touch() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if !r.active || r.done {
 		return
 	}
+
 	r.touchCh <- true
 }
 
@@ -95,9 +102,11 @@ func (r *request) touch() {
 func (r *request) release() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if !r.active || r.done {
 		return
 	}
+
 	r.done = true
 	r.releaseCh <- true
 }
@@ -106,6 +115,7 @@ func (r *request) release() {
 func (r *request) grant() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	r.active = true
 	if r.waiting {
 		r.waiting = false
@@ -118,6 +128,7 @@ func (r *request) grant() {
 func (r *request) finish() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	r.done = true
 }
 
@@ -126,6 +137,7 @@ func (r *request) finish() {
 func (r *request) granted() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
 	return r.active && !r.done
 }
 
@@ -133,5 +145,6 @@ func (r *request) granted() bool {
 func (r *request) finished() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
 	return r.done
 }

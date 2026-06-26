@@ -93,7 +93,6 @@ func TestStatusStateLockOrder(t *testing.T) {
 		// concurrent drainers take statusState.mu alone (leaf).
 		for range 4 {
 			wg.Go(func() {
-
 				sub := ss.subscribe()
 				defer ss.unsubscribe(sub)
 
@@ -149,7 +148,6 @@ func TestStatusStateLockOrder(t *testing.T) {
 		// reservers move ready->run, then let some hit TTR (running->lost).
 		for range 4 {
 			wg.Go(func() {
-
 				for {
 					select {
 					case <-stop:

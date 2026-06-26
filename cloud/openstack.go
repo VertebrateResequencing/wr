@@ -102,7 +102,7 @@ const minimumServerSpawnTimeoutSecs = 180
 
 const ipVersion4 = 4
 
-// invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
+// invalidFlavorIDMsg is used to report when a certain flavor ID does not exist.
 const invalidFlavorIDMsg = "invalid flavor ID"
 
 // openstack only allows certain chars in resource names, so we have a regexp to
@@ -126,7 +126,7 @@ var (
 	errInvalidServerFlavorID = errors.New("server flavor id is not a string")
 )
 
-// openstackp is our implementer of provideri
+// openstackp is our implementer of provideri.
 type openstackp struct {
 	lastFlavorCache   time.Time
 	externalNetworkID string
@@ -294,6 +294,7 @@ func (p *openstackp) cacheFlavors(ctx context.Context) error {
 				Disk:  f.Disk,
 			}
 		}
+
 		return true, nil
 	})
 }
@@ -305,6 +306,7 @@ func (p *openstackp) getFlavor(ctx context.Context, flavorID string) (*Flavor, e
 	p.fmapMutex.RLock()
 	flavor, found := p.fmap[flavorID]
 	p.fmapMutex.RUnlock()
+
 	if !found {
 		err := p.cacheFlavors(ctx)
 		if err != nil {
@@ -314,10 +316,12 @@ func (p *openstackp) getFlavor(ctx context.Context, flavorID string) (*Flavor, e
 		p.fmapMutex.RLock()
 		flavor, found = p.fmap[flavorID]
 		p.fmapMutex.RUnlock()
+
 		if !found {
 			return nil, fmt.Errorf("%w: %s", errInvalidFlavorID, flavorID)
 		}
 	}
+
 	return flavor, nil
 }
 
@@ -384,6 +388,7 @@ func (p *openstackp) getImageFromCache(prefix string) *imageimages.Image {
 			return i
 		}
 	}
+
 	return nil
 }
 
@@ -456,6 +461,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	// spawn() needs to figure out which of a server's ips are local, so we
 	// parse and store the CIDR
 	var err error
+
 	_, p.ipNet, err = net.ParseCIDR(cidr)
 	if err != nil {
 		return err
@@ -474,12 +480,15 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			if errk != nil {
 				return errk
 			}
+
 			privateKeyPEM := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}
 			privateKeyPEMBytes := pem.EncodeToMemory(privateKeyPEM)
+
 			pub, errk := ssh.NewPublicKey(&privateKey.PublicKey)
 			if errk != nil {
 				return errk
 			}
+
 			publicKeyStr := ssh.MarshalAuthorizedKey(pub)
 
 			createOpts := keypairs.CreateOpts{
@@ -491,6 +500,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			if err != nil {
 				return err
 			}
+
 			p.createdKeyPair = true
 
 			resources.PrivateKey = string(privateKeyPEMBytes)
@@ -500,12 +510,15 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			return err
 		}
 	}
+
 	resources.Details["keypair"] = kp.Name
 
 	if len(requiredPorts) > 0 {
 		// get/create security group, and see if there's a default group
 		pager := secgroups.List(p.computeClient)
+
 		var group *secgroups.SecurityGroup
+
 		defaultGroupExists := false
 		foundGroup := false
 
@@ -520,12 +533,15 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 					g := g // pin
 					group = &g
 					foundGroup = true
+
 					if defaultGroupExists {
 						return false, nil
 					}
 				}
+
 				if g.Name == "default" {
 					defaultGroupExists = true
+
 					if foundGroup {
 						return false, nil
 					}
@@ -537,6 +553,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		if err != nil {
 			return err
 		}
+
 		if !foundGroup {
 			// create a new security group with rules allowing the desired ports
 			createOpts := secgroups.CreateOpts{
@@ -549,7 +566,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 				return err
 			}
 
-			//*** check if the rules are already there, in case we previously died
+			// *** check if the rules are already there, in case we previously died
 			// between previous line and this one
 			for _, port := range requiredPorts {
 				_, err = secgroups.CreateRule(ctx, p.computeClient, secgroups.CreateRuleOpts{
@@ -576,14 +593,18 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 				return err
 			}
 		}
+
 		resources.Details["secgroup"] = group.ID
 		p.securityGroup = resources.ResourceName
 		p.hasDefaultGroup = defaultGroupExists
 	}
 
 	// don't create any more resources if we're already running in OpenStack
-	var mainNetworkUUID string
-	var otherNetworkUUIDs []string
+	var (
+		mainNetworkUUID   string
+		otherNetworkUUIDs []string
+	)
+
 	if p.inCloud(ctx) {
 		// work out our network uuid, needed for spawning later
 		for networkName := range p.ownServer.Addresses {
@@ -597,11 +618,13 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 				if errg != nil {
 					return errg
 				}
+
 				for _, subnetID := range network.Subnets {
 					subnet, errg := subnets.Get(ctx, p.networkClient, subnetID).Extract()
 					if errg != nil {
 						return errg
 					}
+
 					if subnet.CIDR == cidr {
 						p.networkName = networkName
 						mainNetworkUUID = networkUUID
@@ -645,6 +668,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			if err != nil {
 				return err
 			}
+
 			networkID = network.ID
 		} else {
 			return err
@@ -655,6 +679,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			return err
 		}
 	}
+
 	resources.Details["network"] = networkID
 	p.networkName = resources.ResourceName
 	p.networks = append(p.networks, servers.Network{UUID: networkID})
@@ -668,6 +693,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		// add a big enough subnet
 		gip := new(string)
 		*gip = gatewayIP
+
 		var subnet *subnets.Subnet
 
 		subnet, err = subnets.Create(ctx, p.networkClient, subnets.CreateOpts{
@@ -681,12 +707,15 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		if err != nil {
 			return err
 		}
+
 		subnetID = subnet.ID
 	}
+
 	resources.Details["subnet"] = subnetID
 
 	// get/create router
 	var routerID string
+
 	pager := routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
 
 	err = pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
@@ -694,6 +723,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		if errf != nil {
 			return false, errf
 		}
+
 		routerID = routerList[0].ID
 		// *** check it's valid? could we end up with more than 1 router?
 		return false, nil
@@ -701,6 +731,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	if err != nil {
 		return err
 	}
+
 	if routerID == "" {
 		// get the external network id
 		if p.externalNetworkID == "" {
@@ -729,9 +760,11 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 			// if this fails, we'd be stuck with a useless router, so we try and
 			// delete it
 			routers.Delete(ctx, p.networkClient, router.ID)
+
 			return err
 		}
 	}
+
 	resources.Details["router"] = routerID
 
 	return err
@@ -741,6 +774,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 // name prefix.
 func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error) {
 	var sdetails [][]string
+
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err := pager.EachPage(context.Background(), func(ctx context.Context, page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -762,6 +796,7 @@ func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error)
 
 		return true, nil
 	})
+
 	return sdetails, err
 }
 
@@ -770,6 +805,7 @@ func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error)
 func (p *openstackp) inCloud(ctx context.Context) bool {
 	hostname, err := os.Hostname()
 	inCloud := false
+
 	if err == nil {
 		pager := servers.List(p.computeClient, servers.ListOpts{})
 
@@ -785,6 +821,7 @@ func (p *openstackp) inCloud(ctx context.Context) bool {
 					server := server // pin (not needed since we return, but just to be careful)
 					p.ownServer = &server
 					inCloud = true
+
 					return false, nil
 				}
 			}
@@ -803,6 +840,7 @@ func (p *openstackp) inCloud(ctx context.Context) bool {
 func (p *openstackp) flavors(ctx context.Context) map[string]*Flavor {
 	// update the cached flavors at most once every half hour
 	p.fmapMutex.RLock()
+
 	if time.Since(p.lastFlavorCache) > 30*time.Minute {
 		p.fmapMutex.RUnlock()
 
@@ -810,11 +848,14 @@ func (p *openstackp) flavors(ctx context.Context) map[string]*Flavor {
 		if err != nil {
 			clog.Warn(ctx, "failed to cache available flavors", "err", err)
 		}
+
 		p.fmapMutex.RLock()
 	}
+
 	fmap := make(map[string]*Flavor)
 	maps.Copy(fmap, p.fmap)
 	p.fmapMutex.RUnlock()
+
 	return fmap
 }
 
@@ -825,6 +866,7 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	quota := &Quota{
 		MaxRAM:       q.RAM,
 		MaxCores:     q.Cores,
@@ -840,6 +882,7 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 	if err != nil {
 		clog.Warn(ctx, "failed to cache available flavors", "err", err)
 	}
+
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err = pager.EachPage(ctx, func(ctx context.Context, page pagination.Page) (bool, error) {
 		serverList, errf := servers.ExtractServers(page)
@@ -867,11 +910,12 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 					return false, errf
 				}
 			}
+
 			if f != nil {
 				quota.UsedCores += f.Cores
 				quota.UsedRAM += f.RAM
 			}
-			//*** how to find out how much volume storage this is using?...
+			// *** how to find out how much volume storage this is using?...
 		}
 
 		return true, nil
@@ -880,7 +924,7 @@ func (p *openstackp) getQuota(ctx context.Context) (*Quota, error) {
 	return quota, err
 }
 
-// spawn achieves the aims of Spawn()
+// spawn achieves the aims of Spawn().
 func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error) {
 	// get the image that matches desired OS
 	image, err := p.getImage(ctx, osPrefix)
@@ -904,6 +948,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 	p.spMutex.RLock()
 	sf := p.spawnFailed
 	p.spMutex.RUnlock()
+
 	if sf {
 		wait := p.errorBackoff.Duration()
 		clog.Warn(ctx, "server spawn waiting due to prior failures", "wait", wait)
@@ -922,6 +967,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 
 	// create the server with a unique name
 	var server *servers.Server
+
 	serverName = uniqueResourceName(resources.ResourceName)
 	createOpts := servers.CreateOpts{
 		Name:           serverName,
@@ -932,8 +978,11 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 		ConfigDrive:    &p.useConfigDrive,
 		UserData:       sentinelInitScript,
 	}
+
 	var createdVolume bool
+
 	t := time.Now()
+
 	if diskGB > flavor.Disk {
 		createOpts.BlockDevice = []servers.BlockDevice{
 			{
@@ -968,18 +1017,24 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 		p.spMutex.Lock()
 		p.spawnFailed = true
 		p.spMutex.Unlock()
+
 		return serverID, serverIP, serverName, adminPass, err
 	}
 
 	// wait for it to come up; servers.WaitForStatus has a timeout, but it
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
+
 	go func() {
 		defer internal.LogPanic(ctx, "spawn", false)
 
-		var timeoutS float64
-		var typical int
+		var (
+			timeoutS float64
+			typical  int
+		)
+
 		p.stMutex.RLock()
+
 		if createdVolume {
 			timeoutS = p.spawnTimesVolume.Value() * 4
 			typical = int(p.spawnTimesVolume.Value())
@@ -987,31 +1042,41 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			timeoutS = p.spawnTimes.Value() * 4
 			typical = int(p.spawnTimes.Value())
 		}
+
 		p.stMutex.RUnlock()
+
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
 		}
+
 		if timeoutS < minimumServerSpawnTimeoutSecs {
 			timeoutS = minimumServerSpawnTimeoutSecs
 		}
+
 		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		start := time.Now()
 		attempts := 0
+
 		for {
 			select {
 			case <-ticker.C:
 				current, errf := servers.Get(ctx, p.computeClient, serverID).Extract()
 				attempts++
+
 				if errf != nil {
 					ticker.Stop()
+
 					waitForActive <- errf
+
 					return
 				}
+
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
 					clog.Debug(ctx, "server became ACTIVE", "id", serverID, "took", time.Since(start), "polls", attempts)
 					spawnSecs := time.Since(start).Seconds()
+
 					p.stMutex.Lock()
 					if createdVolume {
 						p.spawnTimesVolume.Add(spawnSecs)
@@ -1019,32 +1084,43 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 						p.spawnTimes.Add(spawnSecs)
 					}
 					p.stMutex.Unlock()
+
 					waitForActive <- nil
+
 					return
 				}
+
 				if current.Status == "ERROR" {
 					ticker.Stop()
+
 					msg := current.Fault.Message
 					if msg == "" {
 						msg = "unknown problem"
 					}
+
 					waitForActive <- fmt.Errorf("server %s is in ERROR state after %s and %d polls: %s", serverID, time.Since(start), attempts, msg)
+
 					return
 				}
+
 				continue
 			case <-timeout:
 				ticker.Stop()
 
 				current, errf := servers.Get(ctx, p.computeClient, serverID).Extract()
+
 				status := "unknown"
 				if errf == nil {
 					status = current.Status
 				}
+
 				waitForActive <- fmt.Errorf("server %s is %s after %ds, timing out on it ever becoming ACTIVE (typical time to becoming active has been %ds)", server.ID, status, int(time.Since(start).Seconds()), typical)
+
 				return
 			}
 		}
 	}()
+
 	err = <-waitForActive
 	if err != nil {
 		// since we're going to return an error that we failed to spawn, try and
@@ -1057,12 +1133,15 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 		if delerr != nil {
 			err = fmt.Errorf("%w\nadditionally, there was an error deleting the bad server: %w", err, delerr)
 		}
+
 		return serverID, serverIP, serverName, adminPass, err
 	}
+
 	p.spMutex.Lock()
 	if p.spawnFailed {
 		p.errorBackoff.Reset()
 	}
+
 	p.spawnFailed = false
 	p.spMutex.Unlock()
 
@@ -1080,6 +1159,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			if errd != nil {
 				clog.Warn(ctx, "server destruction after no IP failed", "server", serverID, "err", errd)
 			}
+
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 
@@ -1103,6 +1183,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			if errd != nil {
 				clog.Warn(ctx, "server destruction after not associating IP failed", "server", serverID, "err", errd)
 			}
+
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 
@@ -1116,6 +1197,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 			if errd != nil {
 				clog.Warn(ctx, "server destruction after not finding ip", "server", serverID, "err", errd)
 			}
+
 			return serverID, serverIP, serverName, adminPass, errg
 		}
 	}
@@ -1139,6 +1221,7 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 
 				continue
 			}
+
 			p.createdPorts[serverID] = append(p.createdPorts[serverID], port.ID)
 
 			attachOpts := attachinterfaces.CreateOpts{
@@ -1173,10 +1256,12 @@ func (p *openstackp) getServerIP(ctx context.Context, serverID string) (string, 
 	if err != nil {
 		return "", err
 	}
+
 	allNetworkAddresses, err := servers.ExtractNetworkAddresses(allNetworkAddressPages)
 	if err != nil {
 		return "", err
 	}
+
 	for _, address := range allNetworkAddresses {
 		if address.Version != ipVersion4 {
 			continue
@@ -1187,6 +1272,7 @@ func (p *openstackp) getServerIP(ctx context.Context, serverID string) (string, 
 			return address.Address, nil
 		}
 	}
+
 	return "", nil
 }
 
@@ -1197,6 +1283,7 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 		if errorIsNotFound(err) {
 			return false, nil
 		}
+
 		return false, err
 	}
 
@@ -1232,6 +1319,7 @@ func (p *openstackp) destroyServer(ctx context.Context, serverID string) error {
 		if errorIsNotFound(err) {
 			return nil
 		}
+
 		return err
 	}
 
@@ -1241,7 +1329,9 @@ func (p *openstackp) destroyServer(ctx context.Context, serverID string) error {
 	// just wait up to 2mins to get a Resource not found error
 	limit := time.After(destroyServerTimeout)
 	ticker := time.NewTicker(destroyServerCheckFrequency)
+
 	var server *servers.Server
+
 WAIT:
 	for {
 		select {
@@ -1250,28 +1340,36 @@ WAIT:
 			// time out as well
 			serverCh := make(chan *servers.Server, 1)
 			getErrCh := make(chan error, 1)
+
 			go func() {
 				s, e := servers.Get(ctx, p.computeClient, serverID).Extract()
 				serverCh <- s
+
 				getErrCh <- e
 			}()
+
 			select {
 			case server = <-serverCh:
 				err = <-getErrCh
 				if err != nil {
 					ticker.Stop()
+
 					break WAIT
 				}
 			case <-limit:
 				ticker.Stop()
+
 				err = fmt.Errorf("server not deleted? timed out getting its status")
+
 				break WAIT
 			}
 		case <-limit:
 			ticker.Stop()
+
 			break WAIT
 		}
 	}
+
 	if err == nil {
 		err = fmt.Errorf("server not deleted, still has status '%s'", server.Status)
 	}
@@ -1288,13 +1386,14 @@ WAIT:
 				clog.Warn(ctx, "failed to delete a port", "id", uuid, "server", serverID)
 			}
 		}
+
 		delete(p.createdPorts, serverID)
 	}
 
 	return err
 }
 
-// tearDown achieves the aims of TearDown()
+// tearDown achieves the aims of TearDown().
 func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 	// throughout we'll ignore errors because we want to try and delete
 	// as much as possible; we'll end up returning a concatenation of all of
@@ -1303,6 +1402,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 
 	// delete servers, except for ourselves
 	var toDestroy []string
+
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err := pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -1324,6 +1424,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 	if len(toDestroy) > 0 {
 		didSomething = true
 		wg := waitgroup.New()
+
 		wgk := wg.Add(len(toDestroy))
 		for _, sid := range toDestroy {
 			go func(id string) {
@@ -1333,12 +1434,14 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 				t := time.Now()
 				errd := p.destroyServer(ctx, id)
 				clog.Debug(ctx, "delete server", "time", time.Since(t), "id", id)
+
 				if errd != nil {
 					// ignore errors, just try to delete others
 					clog.Warn(ctx, "server destruction during teardown failed", "server", id, "err", errd)
 				}
 			}(sid)
 		}
+
 		wg.Wait(destroyServersTimeout)
 	}
 
@@ -1350,6 +1453,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 				// few seconds on failure, since destroyed servers may not have
 				// fully terminated yet
 				tries := 0
+
 				for {
 					t := time.Now()
 					removeOpts := routers.RemoveInterfaceOpts{
@@ -1358,24 +1462,32 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 					_, errr := routers.RemoveInterface(ctx, p.networkClient, id, removeOpts).Extract()
 					clog.Debug(ctx, "remove router interface", "time", time.Since(t), "routerid",
 						id, "subnetid", subnetid, "err", errr)
+
 					if errr != nil {
 						tries++
 						if tries >= 10 {
 							merr = p.combineError(merr, errr)
+
 							break
 						}
+
 						<-time.After(1 * time.Second)
+
 						continue
 					}
+
 					break
 				}
 			}
+
 			t := time.Now()
 			err := routers.Delete(ctx, p.networkClient, id).ExtractErr()
 			clog.Debug(ctx, "delete router", "time", time.Since(t), "id", id, "err", err)
+
 			if err == nil {
 				didSomething = true
 			}
+
 			merr = p.combineError(merr, err)
 		}
 
@@ -1384,9 +1496,11 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 			t := time.Now()
 			err := networks.Delete(ctx, p.networkClient, id).ExtractErr()
 			clog.Debug(ctx, "delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
+
 			if err == nil {
 				didSomething = true
 			}
+
 			merr = p.combineError(merr, err)
 		}
 
@@ -1395,9 +1509,11 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 			t := time.Now()
 			err := secgroups.Delete(ctx, p.computeClient, id).ExtractErr()
 			clog.Debug(ctx, "delete security group", "time", time.Since(t), "id", id, "err", err)
+
 			if err == nil {
 				didSomething = true
 			}
+
 			merr = p.combineError(merr, err)
 		}
 	}
@@ -1436,7 +1552,7 @@ func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror
 	return merr
 }
 
-// getAvailableFloatingIP gets or creates an unused floating ip
+// getAvailableFloatingIP gets or creates an unused floating ip.
 func (p *openstackp) getAvailableFloatingIP(ctx context.Context) (*networkfloatingips.FloatingIP, error) {
 	// find any existing floating ips
 	allFloatingIPPages, err := networkfloatingips.List(p.networkClient, networkfloatingips.ListOpts{}).AllPages(ctx)

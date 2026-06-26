@@ -37,6 +37,7 @@ func TestDelayQueue(t *testing.T) {
 	Convey("Once 10 items of differing delay have been pushed to the queue", t, func() {
 		queue := newSubQueue(0)
 		items := make(map[string]*Item)
+
 		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			delay := time.Duration((9 - i + 1)) * time.Second
@@ -54,12 +55,15 @@ func TestDelayQueue(t *testing.T) {
 				So(item, ShouldHaveSameTypeAs, exampleItem)
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i))
 			}
+
 			So(queue.Len(), ShouldEqual, 5)
+
 			for i := range 5 {
 				item := queue.pop()
 				So(item, ShouldHaveSameTypeAs, exampleItem)
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i-5))
 			}
+
 			So(queue.Len(), ShouldEqual, 0)
 
 			item := queue.pop()
@@ -76,8 +80,10 @@ func TestDelayQueue(t *testing.T) {
 				if item == nil {
 					break
 				}
+
 				So(item.Key, ShouldNotEqual, "key_2")
 			}
+
 			So(queue.Len(), ShouldEqual, 0)
 		})
 

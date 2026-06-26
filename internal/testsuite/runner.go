@@ -337,7 +337,6 @@ func compileBinaries(
 	sem := make(chan struct{}, compileParallelism(len(compiles)))
 
 	for index, compile := range compiles {
-
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -431,7 +430,6 @@ func runParallelLanes(
 	sem := make(chan struct{}, maxParallel(len(lanes)))
 
 	for index, lane := range lanes {
-
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()

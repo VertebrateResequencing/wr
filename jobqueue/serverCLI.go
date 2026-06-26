@@ -393,10 +393,11 @@ func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup str
 
 // handleRequest parses the bytes received from a connected client in to a
 // clientRequest, does the requested work, then responds back to the client with
-// a serverResponse
+// a serverResponse.
 func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 	dec := codec.NewDecoderBytes(m.Body, s.ch)
 	cr := &clientRequest{}
+
 	errd := dec.Decode(cr)
 	if errd != nil {
 		m.Free()
@@ -404,9 +405,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		return errd
 	}
 
-	var sr *serverResponse
-	var srerr string
-	var qerr string
+	var (
+		sr    *serverResponse
+		srerr string
+		qerr  string
+	)
 
 	s.ssmutex.RLock()
 	up := s.up
@@ -428,15 +431,18 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			// avoid a later race condition when we try to encode ServerInfo by
 			// doing the read here, copying it under read lock
 			s.ssmutex.RLock()
+
 			si := &ServerInfo{}
 			*si = *s.ServerInfo
 			s.ssmutex.RUnlock()
+
 			sr = &serverResponse{SInfo: si}
 		case "backup":
 			clog.Debug(ctx, "backup requested")
 			// make an io.Writer that writes to a byte slice, so we can return
 			// the db as that
 			var b bytes.Buffer
+
 			err := s.BackupDB(&b)
 			if err != nil {
 				srerr = ErrInternalError
@@ -446,6 +452,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			}
 		case "pause":
 			clog.Debug(ctx, "pause requested")
+
 			paused, err := s.Pause()
 			if err != nil {
 				var jqerr Error
@@ -454,6 +461,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				} else {
 					srerr = ErrInternalError
 				}
+
 				qerr = err.Error()
 			} else {
 				if paused {
@@ -469,10 +477,12 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						clog.Error(ctx, "resumed incorrectly succeeded following a pause that did not")
 					}
 				}
+
 				sr = &serverResponse{SStats: s.GetServerStats()}
 			}
 		case "resume":
 			clog.Debug(ctx, "resume requested")
+
 			resumed, err := s.Resume(ctx)
 			if err != nil {
 				var jqerr Error
@@ -481,12 +491,14 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				} else {
 					srerr = ErrInternalError
 				}
+
 				qerr = err.Error()
 			} else if resumed {
 				clog.Info(ctx, "resumed on request")
 			}
 		case "drain":
 			clog.Info(ctx, "drain requested")
+
 			err := s.Drain(ctx)
 			if err != nil {
 				srerr = ErrInternalError
@@ -508,6 +520,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					qerr = err.Error()
 				} else {
 					r := bytes.NewReader(data)
+
 					path, err := s.uploadFile(ctx, r, cr.Path)
 					if err != nil {
 						srerr = ErrInternalError
@@ -541,8 +554,10 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						qerr = err.Error()
 					} else {
 						clog.Debug(ctx, "added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
+
 						if cr.ReturnIDs {
 							jobs := s.inputToQueuedJobs(ctx, cr.Jobs)
+
 							var ids []string
 							for _, job := range jobs {
 								ids = append(ids, job.Key())
@@ -617,22 +632,27 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else if !drain {
 				// first just try to Reserve normally
-				var item *queue.Item
-				var err error
+				var (
+					item *queue.Item
+					err  error
+				)
 
 				// don't proceed when we're expecting new/changed items
 				s.rpmutex.Lock()
+
 				var wch chan struct{}
 				if s.racPending || s.racRunning {
 					wch = make(chan struct{})
 					s.waitingReserves = append(s.waitingReserves, wch)
 				}
 				s.rpmutex.Unlock()
+
 				if wch != nil {
 					<-wch
 				}
 
 				skip := false
+
 				if cr.SchedulerGroup != "" {
 					// if this is the first job that the client is trying to
 					// reserve, and if we don't actually want any more clients
@@ -640,9 +660,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					// nothing was ready. Likewise if in drain mode.
 					if cr.FirstReserve && s.rc != "" {
 						s.psgmutex.RLock()
+
 						if group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]; !existed || group.getCount() == 0 {
 							skip = true
 						}
+
 						s.psgmutex.RUnlock()
 					}
 				}
@@ -668,11 +690,13 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					// clean up any past state to have a fresh job ready to run
 					sjob := item.Data().(*Job)
 					sjob.Lock()
-					sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
+					sjob.ReservedBy = cr.ClientID // *** we should unset this on moving out of run state, to save space
 					sjob.Exited = false
 					sjob.Pid = 0
 					sjob.Host = ""
+
 					var tnil time.Time
+
 					sjob.StartTime = tnil
 					sjob.EndTime = tnil
 					sjob.PeakRAM = 0
@@ -685,6 +709,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sjob.Unlock()
 
 					delay := s.setItemDelay(ctx, item.Key, retries, ub)
+
 					sjob.Lock()
 					sjob.DelayTime = delay
 					sjob.Unlock()
@@ -705,6 +730,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			}
 
 			var job *Job
+
 			_, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				job.Lock()
@@ -716,10 +742,13 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					if job.Host != "" {
 						job.HostID = s.scheduler.HostToID(job.Host)
 					}
+
 					job.HostIP = cr.Job.HostIP
 					job.Pid = cr.Job.Pid
 					job.StartTime = time.Now()
+
 					var tend time.Time
+
 					job.EndTime = tend
 					job.Attempts++
 					job.Lost = false
@@ -733,8 +762,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				}
 			}
 		case requestMethodTouch:
-			var job *Job
-			var item *queue.Item
+			var (
+				job  *Job
+				item *queue.Item
+			)
+
 			item, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				// if kill has been called for this job, just return KillCalled
@@ -799,13 +831,17 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						}
 					})
 				}
+
 				sr = &serverResponse{KillCalled: killCalled}
 			}
 		case "jarchive":
 			// remove the job from the queue, rpl and live bucket and add to
 			// complete bucket
-			var item *queue.Item
-			var job *Job
+			var (
+				item *queue.Item
+				job  *Job
+			)
+
 			item, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				// first check the item is still in the run queue (eg. the job
@@ -814,6 +850,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				// Remove()ing, since you can remove from any queue)
 				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
+
 				running := item.Stats().State == queue.ItemStateRun
 				switch {
 				case !running:
@@ -835,6 +872,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sgroup := job.schedulerGroup
 					rgroup := job.RepGroup
 					job.Unlock()
+
 					err := s.db.archiveJob(ctx, key, job)
 					if err != nil {
 						srerr = ErrDBError
@@ -858,6 +896,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			// move the job from the run queue to the delay queue, unless it has
 			// failed too many times, in which case bury
 			var job *Job
+
 			_, job, srerr = s.getij(cr, false)
 			if srerr == "" {
 				if cr.JobEndState == nil {
@@ -875,6 +914,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		case "jbury":
 			// move the job from the run queue to the bury queue
 			var job *Job
+
 			_, job, srerr = s.getij(cr, false)
 			if srerr == "" {
 				if cr.JobEndState == nil {
@@ -897,6 +937,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
+
 				for _, key := range cr.Keys {
 					item, err := s.q.Get(key)
 					if err != nil || item.Stats().State != queue.ItemStateBury {
@@ -936,6 +977,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
+
 				for _, key := range cr.Keys {
 					item, err := s.q.Get(key)
 					if err != nil || item == nil {
@@ -972,6 +1014,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					} else {
 						srerr = ErrInternalError
 					}
+
 					qerr = err.Error()
 				} else if paused {
 					clog.Debug(ctx, "modify requested, paused server")
@@ -981,16 +1024,20 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 				if err == nil {
 					var toModifyJobs []*Job
+
 					toModifyKeys := make(map[string]*Job)
+
 					for _, jobkey := range cr.Keys {
 						item, err := s.q.Get(jobkey)
 						if err != nil || item == nil {
 							continue
 						}
+
 						iState := item.Stats().State
 						if iState == queue.ItemStateRun {
 							continue
 						}
+
 						toModifyJobs = append(toModifyJobs, item.Data().(*Job))
 						toModifyKeys[jobkey] = item.Data().(*Job)
 					}
@@ -1003,11 +1050,13 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						} else {
 							srerr = ErrInternalError
 						}
+
 						qerr = err.Error()
 					}
 
 					if err == nil && len(modified) > 0 {
 						var toModify []*Job
+
 						for _, old := range modified {
 							job := toModifyKeys[old]
 							if job != nil {
@@ -1021,6 +1070,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							for _, job := range toModify {
 								s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 							}
+
 							err := s.storeLimitGroups(limitGroups)
 							if err != nil {
 								clog.Error(ctx, "failed to store limit groups", "err", err)
@@ -1032,11 +1082,13 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						for _, job := range toModify {
 							keyToRP[job.Key()] = job.RepGroup
 						}
+
 						s.rpl.Lock()
 						for new, old := range modified {
 							if old == new {
 								continue
 							}
+
 							errc := s.q.ChangeKey(old, new)
 							if errc != nil {
 								clog.Error(ctx, "failed to change a job key in the queue", "err", errc)
@@ -1054,6 +1106,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							for i, job := range toModify {
 								oldKeys[i] = modified[job.Key()]
 							}
+
 							errm := s.db.modifyLiveJobs(ctx, oldKeys, toModify)
 							if errm != nil {
 								clog.Error(ctx, "job modification in database failed", "err", errm)
@@ -1105,6 +1158,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				killable := 0
+
 				for _, jobkey := range cr.Keys {
 					k, err := s.killJob(ctx, jobkey)
 					if err != nil {
@@ -1115,6 +1169,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						killable++
 					}
 				}
+
 				clog.Debug(ctx, "killed jobs", "count", killable)
 				sr = &serverResponse{Existed: killable}
 			}
@@ -1124,6 +1179,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
+
 				jobs, srerr, qerr = s.getJobsByKeys(ctx, cr.Keys, cr.GetStd, cr.GetEnv)
 				if len(jobs) > 0 {
 					sr = &serverResponse{Jobs: jobs}
@@ -1247,6 +1303,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		if errr != nil {
 			clog.Warn(ctx, "reply to client failed", "err", errr)
 		}
+
 		if qerr == "" {
 			qerr = srerr
 		}
@@ -1275,6 +1332,7 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 	if err != nil || (checkRunning && item.Stats().State != queue.ItemStateRun) {
 		return item, nil, ErrBadJob
 	}
+
 	job := item.Data().(*Job)
 
 	if cr.ClientID != job.ReservedBy {
@@ -1298,6 +1356,7 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 	} else if state == JobStateReserved && lost {
 		state = JobStateLost
 	}
+
 	return state
 }
 
@@ -1386,8 +1445,10 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		job.StdErrC = sjob.StdErrC
 		job.StdOutC = sjob.StdOutC
 	}
+
 	sjob.RUnlock()
 	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+
 	return job
 }
 
@@ -1453,9 +1514,11 @@ func (s *Server) subscriptionCatchUp(ctx context.Context, keys []string, repGrou
 // On success we reserve and return as normal. On failure, we act as if the
 // queue was empty.
 func (s *Server) reserveWithLimits(ctx context.Context, group string, wait time.Duration) (*queue.Item, error) {
-	var item *queue.Item
-	var err error
-	var limitGroups []string
+	var (
+		item        *queue.Item
+		err         error
+		limitGroups []string
+	)
 	if group != "" {
 		limitGroups = s.schedGroupToLimitGroups(group)
 		if len(limitGroups) > 0 {
@@ -1468,6 +1531,7 @@ func (s *Server) reserveWithLimits(ctx context.Context, group string, wait time.
 			if !s.limiter.Increment(ctx, limitGroups, wait) {
 				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}
+
 			wait -= time.Since(t)
 		}
 	}
@@ -1487,26 +1551,31 @@ func (s *Server) reserveWithLimits(ctx context.Context, group string, wait time.
 
 // schedGroupToLimitGroups takes a scheduler group that may be suffixed with
 // limit groups (by Job.generateSchedulerGroup()), and returns the extracted
-// limit groups
+// limit groups.
 func (s *Server) schedGroupToLimitGroups(group string) []string {
 	parts := strings.Split(group, jobSchedLimitGroupSeparator)
 	if len(parts) == 2 {
 		return strings.Split(parts[1], jobLimitGroupSeparator)
 	}
+
 	return nil
 }
 
-// reply to a client
+// reply to a client.
 func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
+
 	err := enc.Encode(sr)
 	if err != nil {
 		m.Free()
 
 		return err
 	}
+
 	m.Body = encoded
+
 	err = s.sock.SendMsg(m)
 	if err != nil {
 		m.Free()

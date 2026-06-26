@@ -106,6 +106,7 @@ func (l *Limiter) GetLimits() map[string]int {
 func (l *Limiter) RemoveLimit(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	delete(l.groups, name)
 }
 
@@ -128,11 +129,13 @@ func (l *Limiter) Increment(ctx context.Context, groups []string, wait ...time.D
 	if l.checkGroups(ctx, groups) {
 		l.incrementGroups(ctx, groups)
 		l.mu.Unlock()
+
 		return true
 	}
 
 	if len(wait) != 1 {
 		l.mu.Unlock()
+
 		return false
 	}
 
@@ -141,6 +144,7 @@ func (l *Limiter) Increment(ctx context.Context, groups []string, wait ...time.D
 	l.mu.Unlock()
 
 	limit := time.After(wait[0])
+
 	for {
 		select {
 		case <-ch:
@@ -148,11 +152,14 @@ func (l *Limiter) Increment(ctx context.Context, groups []string, wait ...time.D
 			if l.checkGroups(ctx, groups) {
 				l.incrementGroups(ctx, groups)
 				l.mu.Unlock()
+
 				return true
 			}
+
 			ch = make(chan bool, len(groups))
 			l.registerGroupNotifications(ctx, groups, ch)
 			l.mu.Unlock()
+
 			continue
 		case <-limit:
 			return false
@@ -172,6 +179,7 @@ func (l *Limiter) checkGroups(ctx context.Context, groups []string) bool {
 			}
 		}
 	}
+
 	return true
 }
 
@@ -198,6 +206,7 @@ func (l *Limiter) vivifyGroup(ctx context.Context, name string) *group {
 			l.groups[name] = group
 		}
 	}
+
 	return group
 }
 
@@ -239,12 +248,14 @@ func (l *Limiter) GetLowestLimit(ctx context.Context, groups []string) int {
 	defer l.mu.Unlock()
 
 	lowest := -1
+
 	for _, name := range groups {
 		group := l.vivifyGroup(ctx, name)
 		if group != nil && (lowest == -1 || int(group.limit) < lowest) {
 			lowest = int(group.limit)
 		}
 	}
+
 	return lowest
 }
 
@@ -255,6 +266,7 @@ func (l *Limiter) GetRemainingCapacity(ctx context.Context, groups []string) int
 	defer l.mu.Unlock()
 
 	lowest := -1
+
 	for _, name := range groups {
 		group := l.vivifyGroup(ctx, name)
 		if group != nil {
@@ -264,5 +276,6 @@ func (l *Limiter) GetRemainingCapacity(ctx context.Context, groups []string) int
 			}
 		}
 	}
+
 	return lowest
 }

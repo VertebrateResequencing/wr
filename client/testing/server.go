@@ -228,7 +228,7 @@ func writeConfig(t *testing.T, dir, managerDir string, config jobqueue.ServerCon
 managerweb: "%s"
 managerdir: "%s"`
 
-	_, err = f.WriteString(fmt.Sprintf(configData, config.Port, config.WebPort, managerDir))
+	_, err = fmt.Fprintf(f, configData, config.Port, config.WebPort, managerDir)
 	if err != nil {
 		t.Fatal(err)
 	}

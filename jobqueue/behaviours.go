@@ -134,6 +134,7 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	case Remove, Nothing:
 		return nil
 	}
+
 	return fmt.Errorf("invalid status %d", status)
 }
 
@@ -141,6 +142,7 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 // will add to it.
 func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 	var bvj BehaviourViaJSON
+
 	switch b.Do {
 	case Run:
 		var arg string
@@ -149,6 +151,7 @@ func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 		} else {
 			arg = "!invalid!"
 		}
+
 		bvj = BehaviourViaJSON{Run: arg}
 	case CopyToManager:
 		var arg []string
@@ -157,6 +160,7 @@ func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 		} else {
 			arg = []string{"!invalid!"}
 		}
+
 		bvj = BehaviourViaJSON{CopyToManager: arg}
 	case Cleanup:
 		bvj = BehaviourViaJSON{Cleanup: true}
@@ -196,6 +200,7 @@ func (b *Behaviour) String() string {
 	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	encoder.SetEscapeHTML(false)
+
 	err := encoder.Encode(bvjm)
 	if err != nil {
 		panic(fmt.Sprintf("Encoding a bvjm failed: %s", err))
@@ -227,13 +232,18 @@ func (b *Behaviour) cleanup(j *Job, all bool) error {
 		// if we have mounts, we don't want to delete the cache dirs or any
 		// mounted directories, so we'll have to go through and delete
 		// everything else manually
-		var keepDirs []string
-		var keepActualCwd bool
+		var (
+			keepDirs      []string
+			keepActualCwd bool
+		)
+
 		for _, mc := range j.MountConfigs {
 			if mc.Mount == "" {
 				keepActualCwd = true
+
 				break
 			}
+
 			if !filepath.IsAbs(mc.Mount) {
 				keepDirs = append(keepDirs, mc.Mount)
 			}
@@ -259,6 +269,7 @@ func (b *Behaviour) cleanup(j *Job, all bool) error {
 		if err != nil {
 			return err
 		}
+
 		for _, entry := range entries {
 			if entry.Name() != "cwd" && !strings.HasPrefix(entry.Name(), ".muxfys") {
 				err = os.RemoveAll(filepath.Join(workSpace, entry.Name()))
@@ -290,6 +301,7 @@ func (b *Behaviour) run(j *Job) error {
 	if !wasStr {
 		return fmt.Errorf("arg %s is type %T, not string", b.Arg, b.Arg)
 	}
+
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
 	}
@@ -299,10 +311,12 @@ func (b *Behaviour) run(j *Job) error {
 	// so can do whatever they can do...
 	cmd := exec.Command("/bin/bash", "-c", bc) // #nosec
 	cmd.Dir = actualCwd
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("run behaviour failed: %w\n%s", err, string(out))
 	}
+
 	return err
 }
 
@@ -337,6 +351,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	}
 
 	var merr *multierror.Error
+
 	for _, b := range bs {
 		err := b.Trigger(status, j)
 		if err != nil {
@@ -374,6 +389,7 @@ func (bs Behaviours) String() string {
 	if len(bs) == 0 {
 		return ""
 	}
+
 	bvjm := &bvjMapping{}
 	for _, b := range bs {
 		b.fillBVJM(bvjm)
@@ -382,6 +398,7 @@ func (bs Behaviours) String() string {
 	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	encoder.SetEscapeHTML(false)
+
 	err := encoder.Encode(bvjm)
 	if err != nil {
 		panic(fmt.Sprintf("Encoding a bvjm failed: %s", err))
@@ -403,8 +420,10 @@ type BehaviourViaJSON struct {
 
 // Behaviour converts the friendly BehaviourViaJSON struct to real Behaviour.
 func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
-	var do BehaviourAction
-	var arg any
+	var (
+		do  BehaviourAction
+		arg any
+	)
 
 	switch {
 	case bj.Run != "":
@@ -441,6 +460,7 @@ func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) Behaviours {
 	for _, bj := range bjs {
 		bs = append(bs, bj.Behaviour(when))
 	}
+
 	return bs
 }
 

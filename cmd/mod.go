@@ -42,7 +42,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	cmdCwdMattersUnset      bool
 	cmdChangeHomeUnset      bool
@@ -52,7 +52,7 @@ var (
 
 const nothingBehaviour = `[{"Nothing":true}]`
 
-// modCmd represents the mod command
+// modCmd represents the mod command.
 var modCmd *cobra.Command = &cobra.Command{
 	Use:   "mod",
 	Short: "Modify commands previously added to the queue",
@@ -107,12 +107,15 @@ new internal ids is printed.`,
 		if cmdAll && cmdIDStatus != "" {
 			die("-a and -i are mutually exclusive")
 		}
+
 		if cmdAll && cmdLine != "" {
 			die("-a is not compatible with --cmdline")
 		}
+
 		if cmdIDStatus == "" && (cmdIDIsSubStr || cmdIDIsInternal) {
 			die("-z and -y require -i")
 		}
+
 		if !cmdAll && cmdIDStatus == "" {
 			die("one of -i or -a is required")
 		}
@@ -120,6 +123,7 @@ new internal ids is printed.`,
 		// we call getJobs() later, which finds jobs based on -f and -l, but
 		// we don't want that
 		cmdFile = ""
+
 		var newCmdLine string
 		if cmdLine != "" {
 			newCmdLine = cmdLine
@@ -128,6 +132,7 @@ new internal ids is printed.`,
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -153,6 +158,7 @@ new internal ids is printed.`,
 		if newCmdLine != "" {
 			jm.SetCmd(newCmdLine)
 		}
+
 		if cobraCmd.Flags().Changed("limit_grps") {
 			jm.SetLimitGroups(strings.Split(cmdLimitGroups, ","))
 		}
@@ -169,16 +175,19 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("cwd") {
 			jm.SetCwd(cmdCwd)
 		}
+
 		if cmdCwdMatters {
 			jm.SetCwdMatters(true)
 		} else if cmdCwdMattersUnset {
 			jm.SetCwdMatters(false)
 		}
+
 		if cmdChangeHome {
 			jm.SetChangeHome(true)
 		} else if cmdChangeHomeUnset {
 			jm.SetChangeHome(false)
 		}
+
 		if cobraCmd.Flags().Changed("req_grp") {
 			jm.SetReqGroup(reqGroup)
 		}
@@ -188,28 +197,35 @@ new internal ids is printed.`,
 		}
 
 		req := &jqs.Requirements{}
+
 		var setReq bool
+
 		if cobraCmd.Flags().Changed("memory") {
 			mb, errt := bytefmt.ToMegabytes(cmdMem)
 			if errt != nil {
 				die("--memory was not specified correctly: %s", errt)
 			}
+
 			req.RAM = int(mb)
 			setReq = true
 		}
+
 		if cobraCmd.Flags().Changed("time") {
 			t, errp := time.ParseDuration(cmdTime)
 			if errp != nil {
 				die("--time was not specified correctly: %s", errp)
 			}
+
 			req.Time = t
 			setReq = true
 		}
+
 		if cobraCmd.Flags().Changed("cpus") {
 			req.Cores = cmdCPUs
 			req.CoresSet = true
 			setReq = true
 		}
+
 		if cobraCmd.Flags().Changed("disk") {
 			req.Disk = cmdDisk
 			req.DiskSet = true
@@ -217,16 +233,21 @@ new internal ids is printed.`,
 		}
 
 		other := make(map[string]string)
+
 		var otherSet bool
+
 		if cobraCmd.Flags().Changed("cloud_os") {
 			other["cloud_os"] = cmdOsPrefix
 		}
+
 		if cobraCmd.Flags().Changed("cloud_username") {
 			other["cloud_user"] = cmdOsUsername
 		}
+
 		if cobraCmd.Flags().Changed("cloud_ram") {
 			other["cloud_os_ram"] = strconv.Itoa(cmdOsRAM)
 		}
+
 		if cobraCmd.Flags().Changed("cloud_flavor") {
 			if cmdFlavor == "" {
 				otherSet = true
@@ -234,17 +255,20 @@ new internal ids is printed.`,
 				other["cloud_flavor"] = cmdFlavor
 			}
 		}
+
 		if cobraCmd.Flags().Changed("cloud_script") {
 			if cmdPostCreationScript != "" {
 				scriptContent, errp := internal.PathToContent(cmdPostCreationScript)
 				if errp != nil {
 					die("%s", errp.Error())
 				}
+
 				other["cloud_script"] = scriptContent
 			} else {
 				other["cloud_script"] = ""
 			}
 		}
+
 		if cobraCmd.Flags().Changed("cloud_config_files") {
 			if cmdCloudConfigs == "" {
 				otherSet = true
@@ -252,17 +276,21 @@ new internal ids is printed.`,
 				other["cloud_config_files"] = copyCloudConfigFiles(jq, cmdCloudConfigs)
 			}
 		}
+
 		if cmdCloudSharedDisk {
 			other["cloud_shared"] = "true"
 		} else if cmdCloudSharedDiskUnset {
 			other["cloud_shared"] = "false"
 		}
+
 		if cmdQueue != "" {
 			other["scheduler_queue"] = cmdQueue
 		}
+
 		if cmdQueuesAvoidMod != "" {
 			other["scheduler_queues_avoid"] = cmdQueuesAvoidMod
 		}
+
 		if len(other) > 0 || otherSet {
 			req.Other = other
 			req.OtherSet = true
@@ -276,27 +304,35 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("override") {
 			jm.SetOverride(uint8(overrideStringToInt(cmdOvr)))
 		}
+
 		if cobraCmd.Flags().Changed("priority") {
 			jm.SetPriority(uint8(cmdPri))
 		}
+
 		if cobraCmd.Flags().Changed("retries") {
 			jm.SetRetries(uint8(cmdRet))
 		}
 
-		var deps jobqueue.Dependencies
-		var depsSet bool
+		var (
+			deps    jobqueue.Dependencies
+			depsSet bool
+		)
+
 		if cobraCmd.Flags().Changed("cmd_deps") {
 			cols := strings.Split(cmdCmdDeps, ",")
 			if len(cols)%2 != 0 {
 				die("--cmd_deps must have an even number of comma-separated entries")
 			}
+
 			deps = colsToDeps(cols)
 			depsSet = true
 		}
+
 		if cobraCmd.Flags().Changed("deps") {
 			deps = append(deps, groupsToDeps(cmdGroupDeps)...)
 			depsSet = true
 		}
+
 		if depsSet {
 			jm.SetDependencies(deps)
 		}
@@ -304,54 +340,72 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("monitor_docker") {
 			jm.SetMonitorDocker(cmdMonitorDocker)
 		}
+
 		if cobraCmd.Flags().Changed("with_docker") {
 			jm.SetWithDocker(cmdWithDocker)
 		}
+
 		if cobraCmd.Flags().Changed("with_singularity") {
 			jm.SetWithSingularity(cmdWithSingularity)
 		}
+
 		if cobraCmd.Flags().Changed("container_mounts") {
 			jm.SetContainerMounts(cmdContainerMounts)
 		}
 
-		var behaviours jobqueue.Behaviours
-		var behavioursSet bool
+		var (
+			behaviours    jobqueue.Behaviours
+			behavioursSet bool
+		)
+
 		if cobraCmd.Flags().Changed("on_failure") {
 			if cmdOnFailure == "" {
 				cmdOnFailure = nothingBehaviour
 			}
+
 			var bjs jobqueue.BehavioursViaJSON
+
 			err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
 			if err != nil {
 				die("bad --on_failure: %s", err)
 			}
+
 			behaviours = bjs.Behaviours(jobqueue.OnFailure)
 			behavioursSet = true
 		}
+
 		if cobraCmd.Flags().Changed("on_success") {
 			if cmdOnSuccess == "" {
 				cmdOnSuccess = nothingBehaviour
 			}
+
 			var bjs jobqueue.BehavioursViaJSON
+
 			err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
 			if err != nil {
 				die("bad --on_success: %s", err)
 			}
+
 			behaviours = append(behaviours, bjs.Behaviours(jobqueue.OnSuccess)...)
 			behavioursSet = true
 		}
+
 		if cobraCmd.Flags().Changed("on_exit") {
 			if cmdOnExit == "" {
 				cmdOnExit = nothingBehaviour
 			}
+
 			var bjs jobqueue.BehavioursViaJSON
+
 			err = json.Unmarshal([]byte(cmdOnExit), &bjs)
 			if err != nil {
 				die("bad --on_exit: %s", err)
 			}
+
 			behaviours = append(behaviours, bjs.Behaviours(jobqueue.OnExit)...)
 			behavioursSet = true
 		}
+
 		if behavioursSet {
 			jm.SetBehaviours(behaviours)
 		}
@@ -365,6 +419,7 @@ new internal ids is printed.`,
 				jm.SetMountConfigs(mountParse(mountJSON, mountSimple))
 			}
 		}
+
 		if cobraCmd.Flags().Changed("env") {
 			errs := jm.SetEnvOverride(cmdEnv)
 			if errs != nil {
@@ -380,11 +435,14 @@ new internal ids is printed.`,
 
 		// make the modifications
 		jes := jobsToJobEssenses(jobs)
+
 		modified, err := jq.Modify(jes, jm)
 		if err != nil {
 			die("failed to modify desired jobs: %s", err)
 		}
+
 		info("Modified %d incomplete, non-running commands (out of %d eligible)", len(modified), len(jobs))
+
 		for to, from := range modified {
 			fmt.Printf(" %s => %s\n", from, to)
 		}

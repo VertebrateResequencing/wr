@@ -41,14 +41,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	mountSimple  string
 	mountJSON    string
 	mountVerbose bool
 )
 
-// mountCmd represents the mount command
+// mountCmd represents the mount command.
 var mountCmd = &cobra.Command{
 	Use:   "mount",
 	Short: "Mount an S3 bucket",
@@ -214,6 +214,7 @@ not cached, only serial writes are possible.`,
 						warn("daemon release failed: %s", err)
 					}
 				}()
+
 				mountAndWait()
 			}
 		}
@@ -234,13 +235,16 @@ func init() {
 func mountAndWait() {
 	// mount everything
 	var mounted []*muxfys.MuxFys
+
 	for _, mc := range mountParse(mountJSON, mountSimple) {
 		var rcs []*muxfys.RemoteConfig
+
 		for _, mt := range mc.Targets {
 			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
 			if err != nil {
 				die("had a problem reading S3 config values from the environment: %s", err)
 			}
+
 			accessor, err := muxfys.NewS3Accessor(accessorConfig)
 			if err != nil {
 				die("had a problem creating an S3 accessor: %s", err)
@@ -288,12 +292,14 @@ func mountAndWait() {
 		deathSignals := make(chan os.Signal, 2)
 		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 		<-deathSignals
+
 		for _, fs := range mounted {
 			err := fs.Unmount()
 			if err != nil {
 				fs.Error("Failed to unmount", "err", err)
 			}
 		}
+
 		return
 	}
 }
@@ -304,6 +310,7 @@ func mountParse(jsonString, simpleString string) jobqueue.MountConfigs {
 	if jsonString == "" && simpleString == "" {
 		die("--mounts or --mount_json is required")
 	}
+
 	if jsonString != "" && simpleString != "" {
 		die("--mounts and --mount_json are mutually exclusive")
 	}
@@ -319,6 +326,7 @@ func mountParse(jsonString, simpleString string) jobqueue.MountConfigs {
 // to a MountConfig for each mount defined.
 func mountParseJSON(jsonString string) jobqueue.MountConfigs {
 	var mcs jobqueue.MountConfigs
+
 	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
@@ -332,6 +340,7 @@ func mountParseJSON(jsonString string) jobqueue.MountConfigs {
 // mountParseJSON).
 func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 	ss := strings.Split(simpleString, ",")
+
 	targets := make([]jobqueue.MountTarget, 0, len(ss))
 	for _, simple := range ss {
 		parts := strings.Split(simple, ":")
@@ -340,6 +349,7 @@ func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 		}
 
 		var cache, write bool
+
 		switch parts[0][0] {
 		case 'c':
 			cache = true
@@ -348,6 +358,7 @@ func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 		default:
 			die("'%s' did not start with c or u", simple)
 		}
+
 		switch parts[0][1] {
 		case 'w':
 			write = true
@@ -358,7 +369,9 @@ func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 		}
 
 		path := parts[1]
+
 		var profile string
+
 		if strings.Contains(path, "@") {
 			parts := strings.Split(path, "@")
 			profile = parts[0]

@@ -99,6 +99,7 @@ type AvailabilityCallback func() (numTokens int)
 func (p *Protector) SetAvailabilityCallback(callback AvailabilityCallback) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	p.availabilityCb = callback
 }
 
@@ -118,6 +119,7 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	if err != nil {
 		return Receipt(""), err
 	}
+
 	r := &request{
 		id:        Receipt(u.String()),
 		grantedCh: make(chan bool, 1),
@@ -137,12 +139,14 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	}
 
 	p.pending = append(p.pending, r)
+
 	p.requests[r.id] = r
 	if p.lastProcess.IsZero() && len(p.pending) == 1 {
 		go p.process()
 	} else {
 		go p.reprocess()
 	}
+
 	return r.id, nil
 }
 
@@ -162,6 +166,7 @@ func (p *Protector) WaitUntilGranted(receipt Receipt, timeout ...time.Duration) 
 	p.mu.RLock()
 	r, found := p.requests[receipt]
 	p.mu.RUnlock()
+
 	if found {
 		if len(timeout) == 1 && timeout[0] > 0 {
 			go func() {
@@ -173,17 +178,22 @@ func (p *Protector) WaitUntilGranted(receipt Receipt, timeout ...time.Duration) 
 					for i, req := range p.pending {
 						if req.id == receipt {
 							p.pending = append(p.pending[:i], p.pending[i+1:]...)
+
 							break
 						}
 					}
+
 					delete(p.requests, receipt)
+
 					r.cancelCh <- true
 				}
 				p.mu.Unlock()
 			}()
 		}
+
 		return r.waitUntilGranted()
 	}
+
 	return false
 }
 
@@ -201,13 +211,16 @@ func (p *Protector) Granted(receipt Receipt) (granted, keepChecking bool) {
 	p.mu.RLock()
 	r, found := p.requests[receipt]
 	p.mu.RUnlock()
+
 	if found {
 		granted = r.granted()
 		if !granted {
 			keepChecking = !r.finished()
 		}
+
 		return granted, keepChecking
 	}
+
 	return granted, keepChecking
 }
 
@@ -221,12 +234,15 @@ func (p *Protector) Granted(receipt Receipt) (granted, keepChecking bool) {
 // one receipt.
 func (p *Protector) Touch(receipts ...Receipt) {
 	var rs []*request
+
 	p.mu.RLock()
+
 	for _, receipt := range receipts {
 		if r, found := p.requests[receipt]; found {
 			rs = append(rs, r)
 		}
 	}
+
 	p.mu.RUnlock()
 
 	for _, r := range rs {
@@ -241,6 +257,7 @@ func (p *Protector) Release(receipt Receipt) {
 	p.mu.RLock()
 	r, found := p.requests[receipt]
 	p.mu.RUnlock()
+
 	if found {
 		r.release()
 	}
@@ -252,6 +269,7 @@ func (p *Protector) ReleaseAfter(receipt Receipt, delay time.Duration) {
 	p.mu.RLock()
 	_, found := p.requests[receipt]
 	p.mu.RUnlock()
+
 	if found {
 		go func() {
 			<-time.After(delay)
@@ -266,10 +284,12 @@ func (p *Protector) ReleaseAfter(receipt Receipt, delay time.Duration) {
 func (p *Protector) Shutdown() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	p.disabled = true
 	for _, r := range p.requests {
 		r.release()
 	}
+
 	p.requests = make(map[Receipt]*request)
 	p.usedTokens = 0
 }
@@ -280,19 +300,24 @@ func (p *Protector) Shutdown() {
 func (p *Protector) process() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	pendingLen := len(p.pending)
 	if p.usedTokens == p.maxTokens || pendingLen == 0 {
 		return
 	}
+
 	availableTokens, checked := p.availableTokens()
+
 	r := p.pending[0]
 	if checked && availableTokens < r.numTokens {
 		// more resources could turn up later, outside of our control and
 		// knowledge, so call this again after the standard delay
 		p.lastProcess = time.Now() // act as if we processed successfully so that reprocess() will wait
 		go p.reprocess()
+
 		return
 	}
+
 	if r.numTokens > 1 && p.maxTokens-p.usedTokens < r.numTokens {
 		// we're tracking that we've used these tokens, and when we release them
 		// we'll call process() again at that time
@@ -304,6 +329,7 @@ func (p *Protector) process() {
 	p.pending = p.pending[1:]
 	p.usedTokens += r.numTokens
 	p.lastProcess = time.Now()
+
 	r.grant()
 
 	// manage the deliberate or automatic release of these resource "tokens" in
@@ -327,6 +353,7 @@ func (p *Protector) process() {
 			p.mu.Lock()
 			p.usedTokens -= r.numTokens
 			delete(p.requests, r.id)
+
 			if len(p.pending) > 0 {
 				// now that we've released tokens, call process() again, making
 				// sure we obey delayBetween
@@ -335,6 +362,7 @@ func (p *Protector) process() {
 			} else {
 				p.mu.Unlock()
 			}
+
 			break
 		}
 	}()
@@ -352,8 +380,10 @@ func (p *Protector) reprocess() {
 	p.mu.Lock()
 	if p.reprocessing {
 		p.mu.Unlock()
+
 		return
 	}
+
 	p.reprocessing = true
 
 	if p.lastProcess.IsZero() {
@@ -381,7 +411,9 @@ func (p *Protector) reprocess() {
 func (p *Protector) availableTokens() (int, bool) {
 	if p.availabilityCb != nil {
 		availableTokens := min(p.availabilityCb(), p.maxTokens)
+
 		return availableTokens, true
 	}
+
 	return 0, false
 }

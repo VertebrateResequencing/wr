@@ -60,7 +60,7 @@ var jobStateToLSFState = map[jobqueue.JobState]string{
 	jobqueue.JobStateComplete:  "DONE",
 }
 
-// options for this cmd
+// options for this cmd.
 var (
 	lsfNoHeader bool
 	lsfFormat   string
@@ -129,6 +129,7 @@ var lsfBsubCmd = &cobra.Command{
 				job.Requirements.Other = configJob.Requirements.Other
 				job.BsubMode = configJob.BsubMode
 				deployment = configJob.BsubMode
+
 				initConfig()
 			}
 		}
@@ -137,8 +138,11 @@ var lsfBsubCmd = &cobra.Command{
 		// rMem := regexp.MustCompile(`mem[>=](\d+)`)
 
 		fmt.Printf("bsub> ")
+
 		scanner := bufio.NewScanner(os.Stdin)
+
 		var possibleExe string
+
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 
@@ -168,6 +172,7 @@ var lsfBsubCmd = &cobra.Command{
 					parts := strings.Split(line, " ")
 					possibleExe = parts[0]
 				}
+
 				job.Cmd += line + "\n"
 			}
 
@@ -189,6 +194,7 @@ var lsfBsubCmd = &cobra.Command{
 
 		// connect to the server
 		jq := connect(10 * time.Second)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -284,12 +290,16 @@ other than providing compatibility with real bjobs command line args.`,
 		}
 
 		// parse -o
-		var delimiter string
-		var fields []string
-		var w io.Writer
+		var (
+			delimiter string
+			fields    []string
+			w         io.Writer
+		)
+
 		if lsfFormat != "" {
 			// parse -o format
 			re := regexp.MustCompile(`(?i)\s*delimiter=["'](.*)["']\s*`)
+
 			matches := re.FindStringSubmatch(lsfFormat)
 			if matches != nil {
 				delimiter = matches[1]
@@ -297,11 +307,13 @@ other than providing compatibility with real bjobs command line args.`,
 			} else {
 				delimiter = " "
 			}
+
 			for field := range strings.SplitSeq(lsfFormat, " ") {
 				field = strings.ToUpper(field)
 				if _, exists := fieldLookup[field]; !exists {
 					die("unsupported field '%s'", field)
 				}
+
 				fields = append(fields, field)
 			}
 
@@ -322,6 +334,7 @@ other than providing compatibility with real bjobs command line args.`,
 
 		// print out details about the ones that have BsubIDs
 		found := false
+
 		for _, job := range jobs {
 			jid := job.BsubID
 			if jid == 0 {
@@ -336,6 +349,7 @@ other than providing compatibility with real bjobs command line args.`,
 						warn("failed to print header: %s", errp)
 					}
 				}
+
 				found = true
 			}
 
@@ -343,6 +357,7 @@ other than providing compatibility with real bjobs command line args.`,
 			for _, field := range fields {
 				vals = append(vals, fieldLookup[field](job))
 			}
+
 			_, errp := fmt.Fprintln(w, strings.Join(vals, delimiter))
 			if errp != nil {
 				warn("failed to print line: %s", errp)
@@ -351,6 +366,7 @@ other than providing compatibility with real bjobs command line args.`,
 
 		if lsfFormat == "" {
 			tw := w.(*tabwriter.Writer)
+
 			errf := tw.Flush()
 			if errf != nil {
 				warn("failed to flush output: %s", errf)
@@ -377,19 +393,23 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// convert args to uint64s
 		desired := make(map[uint64]bool)
+
 		for _, arg := range args {
 			i, err := strconv.Atoi(arg)
 			if err != nil {
 				die("could not convert jobID [%s] to an int: %s", arg, err)
 			}
+
 			desired[uint64(i)] = true
 		}
+
 		if len(desired) == 0 {
 			die("job ID must be specified")
 		}
 
 		// connect to the server
 		jq := connect(10 * time.Second)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -416,15 +436,18 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 				_, errk := jq.Kill([]*jobqueue.JobEssence{job.ToEssense()})
 				if errk != nil {
 					warn("error trying to kill job %d: %s", jid, errk)
+
 					continue
 				}
 
 				// wait until it gets buried
 				for {
 					<-time.After(500 * time.Millisecond)
+
 					got, errg := jq.GetByEssence(job.ToEssense(), false, false)
 					if errg != nil {
 						warn("error trying confirm job %d was killed: %s", jid, errg)
+
 						continue JOBS
 					}
 
@@ -437,6 +460,7 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 			_, errd := jq.Delete([]*jobqueue.JobEssence{job.ToEssense()})
 			if errd != nil {
 				warn("error trying to delete job %d: %s", jid, errd)
+
 				continue
 			}
 
@@ -461,6 +485,7 @@ func init() {
 	oldState := *goflag.CommandLine
 
 	goflag.BoolVar(&lsfNoHeader, "noheader", false, "disable header output")
+
 	if err := goflag.CommandLine.Parse(lsfArgs); err != nil {
 		die("error parsing LSF args: %s", err)
 	}
@@ -483,22 +508,28 @@ func init() {
 func filterGoFlags(args []string, prefixes map[string]bool) ([]string, []string) {
 	// from https://gist.github.com/doublerebel/8b95c5c118e958e495d2
 	var goFlags []string
+
 	for i := 0; 0 < len(args) && i < len(args); i++ {
 		for prefix, hasValue := range prefixes {
 			if strings.HasPrefix(args[i], "-"+prefix) {
 				goFlags = append(goFlags, args[i])
 				skip := 1
+
 				if hasValue && i+1 < len(args) {
 					goFlags = append(goFlags, args[i+1])
 					skip = 2
 				}
+
 				if i+skip <= len(args) {
 					args = append(args[:i], args[i+skip:]...)
 				}
+
 				i--
+
 				break
 			}
 		}
 	}
+
 	return args, goFlags
 }

@@ -470,6 +470,7 @@ func (j *Job) containerEnv() ([]string, error) {
 // time taken so far if it is currently running.
 func (j *Job) WallTime() time.Duration {
 	var d time.Duration
+
 	if !j.StartTime.IsZero() {
 		if j.EndTime.IsZero() || j.State == JobStateReserved {
 			d = time.Since(j.StartTime)
@@ -477,6 +478,7 @@ func (j *Job) WallTime() time.Duration {
 			d = j.EndTime.Sub(j.StartTime)
 		}
 	}
+
 	return d
 }
 
@@ -500,8 +502,10 @@ func (j *Job) Env() ([]string, error) {
 			if len(overrideEs) > 0 {
 				env = envOverride(env, overrideEs)
 			}
+
 			return env, err
 		}
+
 		return nil, nil
 	}
 
@@ -509,13 +513,16 @@ func (j *Job) Env() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	ch := new(codec.BincHandle)
 	dec := codec.NewDecoderBytes(decompressed, ch)
 	es := &envStr{}
+
 	err = dec.Decode(es)
 	if err != nil {
 		return nil, err
 	}
+
 	env := es.Environ
 	if env == nil {
 		env = os.Environ()
@@ -590,12 +597,14 @@ func (j *Job) Getenv(key string) string {
 	if err != nil {
 		return ""
 	}
+
 	for _, envvar := range env {
 		pair := strings.Split(envvar, "=")
 		if pair[0] == key {
 			return pair[1]
 		}
 	}
+
 	return ""
 }
 
@@ -665,6 +674,7 @@ func (j *Job) RemovalRequested() bool {
 func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 	cwd := j.Cwd
 	defaultMount := filepath.Join(j.Cwd, "mnt")
+
 	defaultCacheBase := cwd
 	if j.ActualCwd != "" {
 		cwd = j.ActualCwd
@@ -675,10 +685,14 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		defaultCacheBase = filepath.Dir(j.Cwd)
 	}
 
-	var uniqueCacheDirs []string
-	var uniqueMountedDirs []string
+	var (
+		uniqueCacheDirs   []string
+		uniqueMountedDirs []string
+	)
+
 	for _, mc := range j.MountConfigs {
 		var rcs []*muxfys.RemoteConfig
+
 		for _, mt := range mc.Targets {
 			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
 			if err != nil {
@@ -686,14 +700,17 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 				if erru != nil {
 					err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 				}
+
 				return uniqueCacheDirs, uniqueMountedDirs, err
 			}
+
 			accessor, err := muxfys.NewS3Accessor(accessorConfig)
 			if err != nil {
 				_, erru := j.Unmount()
 				if erru != nil {
 					err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 				}
+
 				return uniqueCacheDirs, uniqueMountedDirs, err
 			}
 
@@ -705,6 +722,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 				// a non-empty dir, which we don't know about at this point...
 				uniqueCacheDirs = append(uniqueCacheDirs, cacheDir)
 			} // *** else, the cache is in a unique dir that I don't know about?
+
 			rc := &muxfys.RemoteConfig{
 				Accessor:  accessor,
 				CacheData: mt.Cache,
@@ -717,10 +735,12 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 
 		if len(rcs) == 0 {
 			err := fmt.Errorf("no Targets specified")
+
 			_, erru := j.Unmount()
 			if erru != nil {
 				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 			}
+
 			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
@@ -739,6 +759,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 			mount = defaultMount
 			uniqueMountedDirs = append(uniqueMountedDirs, mount)
 		}
+
 		cacheBase := mc.CacheBase
 		if cacheBase != "" {
 			if !filepath.IsAbs(cacheBase) {
@@ -747,6 +768,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		} else {
 			cacheBase = defaultCacheBase
 		}
+
 		cfg := &muxfys.Config{
 			Mount:     mount,
 			CacheBase: cacheBase,
@@ -760,6 +782,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 			if erru != nil {
 				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 			}
+
 			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
@@ -769,6 +792,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 			if erru != nil {
 				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
 			}
+
 			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
@@ -781,16 +805,20 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 	// unmount all on death without trying to upload
 	if len(j.mountedFS) > 0 {
 		deathSignals := make(chan os.Signal, 2)
+
 		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 		go func() {
 			<-deathSignals
+
 			var merr *multierror.Error
+
 			for _, fs := range j.mountedFS {
 				erru := fs.Unmount(true)
 				if erru != nil {
 					merr = multierror.Append(merr, erru)
 				}
 			}
+
 			if len(merr.Errors) > 0 {
 				panic(merr)
 			}
@@ -815,24 +843,30 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	// j.Lock()
 	// defer j.Unlock()
-
 	var doNotUpload bool
 	if len(stopUploads) == 1 {
 		doNotUpload = stopUploads[0]
 	}
-	var merr *multierror.Error
-	var allLogs []string
+
+	var (
+		merr    *multierror.Error
+		allLogs []string
+	)
+
 	for _, fs := range j.mountedFS {
 		uerr := fs.Unmount(doNotUpload)
 		if uerr != nil {
 			merr = multierror.Append(merr, uerr)
 		}
+
 		theseLogs := fs.Logs()
 		if len(theseLogs) > 0 {
 			allLogs = append(allLogs, theseLogs...)
 		}
 	}
+
 	j.mountedFS = nil
+
 	if len(allLogs) > 0 {
 		logs = strings.TrimSpace(strings.Join(allLogs, ""))
 	}
@@ -872,6 +906,7 @@ func (j *Job) ToEssense() *JobEssence {
 func (j *Job) noteIncrementedLimitGroups(groups []string) {
 	j.Lock()
 	defer j.Unlock()
+
 	j.incrementedLimitGroups = groups
 }
 
@@ -880,10 +915,13 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 // It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.RLock()
+
 	if j.Exited {
 		j.RUnlock()
+
 		return
 	}
+
 	j.RUnlock()
 	j.decrementLimitGroups(lim)
 
@@ -897,6 +935,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.PeakRAM = jes.PeakRAM
 	j.PeakDisk = jes.PeakDisk
 	j.CPUtime = jes.CPUtime
+
 	j.EndTime = jes.EndTime
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
@@ -910,6 +949,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 	j.Lock()
 	defer j.Unlock()
+
 	if len(j.incrementedLimitGroups) > 0 {
 		lim.Decrement(j.incrementedLimitGroups)
 		j.incrementedLimitGroups = []string{}
@@ -984,6 +1024,7 @@ func schedulerGroupString(req *scheduler.Requirements, limitGroups []string) str
 func (j *Job) getSchedulerGroup() string {
 	j.RLock()
 	defer j.RUnlock()
+
 	return j.schedulerGroup
 }
 
@@ -992,6 +1033,7 @@ func (j *Job) getSchedulerGroup() string {
 func (j *Job) setSchedulerGroup(newval string) {
 	j.Lock()
 	defer j.Unlock()
+
 	j.schedulerGroup = newval
 }
 
@@ -1014,10 +1056,12 @@ func (j *Job) ToStatus() (JStatus, error) {
 	if err != nil {
 		return JStatus{}, err
 	}
+
 	stdout, err := j.StdOut()
 	if err != nil {
 		return JStatus{}, err
 	}
+
 	env, err := j.Env()
 	if err != nil {
 		return JStatus{}, err
@@ -1027,20 +1071,26 @@ func (j *Job) ToStatus() (JStatus, error) {
 	if err != nil {
 		return JStatus{}, err
 	}
+
 	var cwdLeaf string
+
 	j.RLock()
 	defer j.RUnlock()
+
 	if j.ActualCwd != "" {
 		cwdLeaf, err = filepath.Rel(j.Cwd, j.ActualCwd)
 		if err != nil {
 			return JStatus{}, err
 		}
+
 		cwdLeaf = "/" + cwdLeaf
 	}
+
 	state := j.State
 	if state == JobStateRunning && j.Lost {
 		state = JobStateLost
 	}
+
 	ot := make([]string, 0, len(j.Requirements.Other))
 	for key, val := range j.Requirements.Other {
 		ot = append(ot, key+":"+val)
@@ -1142,6 +1192,7 @@ func (j *JobEssence) Key() string {
 	if j.Cwd != "" {
 		return byteKey(fmt.Appendf(nil, "%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key()))
 	}
+
 	return byteKey(fmt.Appendf(nil, "%s.%s", j.Cmd, j.MountConfigs.Key()))
 }
 
@@ -1150,10 +1201,12 @@ func (j *JobEssence) Stringify() string {
 	if j.JobKey != "" {
 		return j.JobKey
 	}
+
 	out := j.Cmd
 	if j.Cwd != "" {
 		out += " [" + j.Cwd + "]"
 	}
+
 	return out
 }
 
@@ -1293,6 +1346,7 @@ func (j *JobModifier) SetEnvOverride(newVal string) error {
 
 	if newVal != "" {
 		var err error
+
 		compressedEnv, err = compressEnv(strings.Split(newVal, ","))
 		if err != nil {
 			return err
@@ -1402,6 +1456,7 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 // Returns a REVERSE mapping of new to old Job keys.
 func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
 	keys := make(map[string]string)
+
 	for _, job := range jobs {
 		job.Lock()
 		before := job.Key()
@@ -1420,40 +1475,52 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		if j.Cmd != "" {
 			new.Cmd = j.Cmd
 		}
+
 		if j.Cwd != "" {
 			new.Cwd = j.Cwd
 		}
+
 		if j.CwdMattersSet {
 			new.CwdMatters = j.CwdMatters
 		}
+
 		if j.MountConfigsSet {
 			new.MountConfigs = j.MountConfigs
 		}
+
 		if j.WithDockerSet {
 			new.WithDocker = j.WithDocker
 		}
+
 		if j.WithSingularitySet {
 			new.WithSingularity = j.WithSingularity
 		}
+
 		if j.ContainerMountsSet {
 			new.ContainerMounts = j.ContainerMounts
 		}
+
 		newKey := new.Key()
 		if _, done := keys[newKey]; done {
 			// duplicate of prior job in this loop, ignore
 			job.Unlock()
+
 			continue
 		}
+
 		if newKey != before {
 			// check queue and db
 			exists, err := server.checkJobByKey(newKey)
 			if err != nil {
 				job.Unlock()
+
 				return keys, err
 			}
+
 			if exists {
 				// duplicate of queued or complete job, ignore
 				job.Unlock()
+
 				continue
 			}
 		}
@@ -1461,18 +1528,22 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		if j.Cmd != "" {
 			job.Cmd = j.Cmd
 		}
+
 		if j.Cwd != "" {
 			job.Cwd = j.Cwd
 		}
+
 		if j.CwdMattersSet {
 			job.CwdMatters = j.CwdMatters
 			if j.CwdMatters {
 				job.ActualCwd = job.Cwd
 			}
 		}
+
 		if j.ChangeHomeSet {
 			job.ChangeHome = j.ChangeHome
 		}
+
 		if j.ReqGroupSet {
 			job.ReqGroup = j.ReqGroup
 		}
@@ -1485,34 +1556,44 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 			if j.Requirements.RAM != 0 {
 				job.Requirements.RAM = j.Requirements.RAM
 			}
+
 			if j.Requirements.Time != 0 {
 				job.Requirements.Time = j.Requirements.Time
 			}
+
 			if j.Requirements.CoresSet {
 				job.Requirements.Cores = j.Requirements.Cores
 			}
+
 			if j.Requirements.DiskSet {
 				job.Requirements.Disk = j.Requirements.Disk
 			}
+
 			if j.Requirements.OtherSet {
 				job.Requirements.Other = j.Requirements.Other
 			}
 		}
+
 		if j.OverrideSet {
 			job.Override = j.Override
 		}
+
 		if j.PrioritySet {
 			job.Priority = j.Priority
 		}
+
 		if j.RetriesSet {
 			job.Retries = j.Retries
 		}
+
 		if j.NoRetriesOverWalltimeSet {
 			job.NoRetriesOverWalltime = j.NoRetriesOverWalltime
 		}
+
 		if j.EnvOverrideSet {
 			job.EnvOverride = j.EnvOverride
 		}
+
 		if j.LimitGroupsSet {
 			job.LimitGroups = slices.Clone(j.LimitGroups)
 			job.LimitGroupsForDisplay = nil
@@ -1525,47 +1606,61 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		if j.DepGroupsSet {
 			job.DepGroups = j.DepGroups
 		}
+
 		if j.DependenciesSet {
 			job.Dependencies = j.Dependencies
 		}
+
 		if j.BehavioursSet {
 			for _, new := range j.Behaviours {
 				var found bool
+
 				for i, old := range job.Behaviours {
 					if old.When == new.When {
 						job.Behaviours[i] = new
 						found = true
+
 						break
 					}
 				}
+
 				if !found {
 					job.Behaviours = append(job.Behaviours, new)
 				}
 			}
 		}
+
 		if j.MountConfigsSet {
 			job.MountConfigs = j.MountConfigs
 		}
+
 		if j.BsubModeSet {
 			job.BsubMode = j.BsubMode
+
 			atomic.AddUint64(&BsubID, 1)
 			job.BsubID = atomic.LoadUint64(&BsubID)
 		}
+
 		if j.MonitorDockerSet {
 			job.MonitorDocker = j.MonitorDocker
 		}
+
 		if j.WithDockerSet {
 			job.WithDocker = j.WithDocker
 		}
+
 		if j.WithSingularitySet {
 			job.WithSingularity = j.WithSingularity
 		}
+
 		if j.ContainerMountsSet {
 			job.ContainerMounts = j.ContainerMounts
 		}
+
 		keys[job.Key()] = before
 		job.Unlock()
 	}
+
 	return keys, nil
 }
 

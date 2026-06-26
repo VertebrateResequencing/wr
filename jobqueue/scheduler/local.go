@@ -33,6 +33,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -61,7 +62,7 @@ const (
 )
 
 // cmdProcessSanitiser is used to make cmds look like their process
-// representation
+// representation.
 var cmdProcessSanitiser = strings.NewReplacer("'", "")
 
 // reqCheckers are functions used by schedule() to see if it is at all possible
@@ -186,15 +187,19 @@ type job struct {
 // only!
 func (s *local) initialize(ctx context.Context, config any) error {
 	s.config = config.(*ConfigLocal)
+
 	s.maxCores = runtime.NumCPU()
 	if s.config.MaxCores > 0 && s.config.MaxCores < s.maxCores {
 		s.maxCores = max(s.config.MaxCores, 1)
 	}
+
 	var err error
+
 	s.maxRAM, err = internal.ProcMeminfoMBs()
 	if err != nil {
 		return err
 	}
+
 	if s.config.MaxRAM > 0 && s.config.MaxRAM < s.maxRAM {
 		s.maxRAM = max(s.config.MaxRAM, 1)
 	}
@@ -211,10 +216,12 @@ func (s *local) initialize(ctx context.Context, config any) error {
 	s.cantFunc = s.cant
 	s.runCmdFunc = s.runCmd
 	s.stateUpdateFunc = s.stateUpdate
+
 	s.stateUpdateFreq = s.config.StateUpdateFrequency
 	if s.stateUpdateFreq == 0 {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
+
 	s.postProcessFunc = s.postProcess
 	s.cmdNotNeededFunc = s.cmdNotNeeded
 
@@ -234,10 +241,13 @@ func (s *local) reserveTimeout(ctx context.Context, req *Requirements) int {
 		timeout, err := strconv.Atoi(val)
 		if err != nil {
 			clog.Error(ctx, "Failed to convert rtimeout to integer", "error", err)
+
 			return localReserveTimeout
 		}
+
 		return timeout
 	}
+
 	return localReserveTimeout
 }
 
@@ -271,10 +281,12 @@ func (s *local) schedule(ctx context.Context, cmd string, req *Requirements, pri
 	maxCPU := s.maxCPUFunc()
 	percentMemNeeded := (float64(req.RAM) / float64(maxMem)) * float64(100)
 	percentCPUNeeded := (req.Cores / float64(maxCPU)) * float64(100)
+
 	percentMachineNeeded := percentMemNeeded
 	if percentCPUNeeded > percentMachineNeeded {
 		percentMachineNeeded = percentCPUNeeded
 	}
+
 	size := uint8(math.Round(priorityScaler * percentMachineNeeded))
 
 	// add to the queue
@@ -285,6 +297,7 @@ func (s *local) schedule(ctx context.Context, cmd string, req *Requirements, pri
 		priority: priority,
 		count:    count,
 	}
+
 	s.mutex.Lock()
 	if s.cleanedUp() {
 		return nil
@@ -292,20 +305,23 @@ func (s *local) schedule(ctx context.Context, cmd string, req *Requirements, pri
 
 	item, err := s.queue.AddWithSize(ctx, key, "", data, priority, size, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
-		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
+		if qerr, ok := err.(queue.Error); ok && errors.Is(qerr.Err, queue.ErrAlreadyExists) {
 			// update the job's count and item priority (only)
 			j := item.Data().(*job)
 			j.Lock()
 			s.runMutex.RLock()
 			running := s.running[key]
 			s.runMutex.RUnlock()
+
 			before := j.count
+
 			j.count = count
 			if count < running {
 				j.scheduleDecrements = running - count
 			} else {
 				j.scheduleDecrements = 0
 			}
+
 			if j.priority != priority {
 				err = s.queue.Update(ctx, key, "", j, priority, 0*time.Second, 30*time.Second)
 				if err != nil {
@@ -316,9 +332,11 @@ func (s *local) schedule(ctx context.Context, cmd string, req *Requirements, pri
 				}
 			}
 			j.Unlock()
+
 			if count != before {
 				clog.Debug(ctx, "schedule changed number needed", "cmd", cmd, "before", before, "needs", count)
 			}
+
 			if count == 0 {
 				s.removeKey(ctx, key)
 				clog.Debug(ctx, "schedule removed cmd", "cmd", cmd)
@@ -327,10 +345,12 @@ func (s *local) schedule(ctx context.Context, cmd string, req *Requirements, pri
 			if !s.checkNeeded(ctx, cmd, key, count, running) {
 				// bypass a pointless processQueue call
 				s.mutex.Unlock()
+
 				return nil
 			}
 		} else {
 			s.mutex.Unlock()
+
 			return err
 		}
 	} else {
@@ -351,20 +371,25 @@ func (s *local) scheduled(ctx context.Context, cmd string) (int, error) {
 	if s.cleanedUp() {
 		return 0, nil
 	}
+
 	s.rcMutex.RLock()
 	defer s.rcMutex.RUnlock()
+
 	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
 		return 0, nil
 	}
 
 	key := jobName(cmd, "n/a", false)
+
 	item, err := s.queue.Get(key)
 	if err != nil {
-		if qerr, ok := err.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+		if qerr, ok := err.(queue.Error); !ok || !errors.Is(qerr.Err, queue.ErrNotFound) {
 			return 0, err
 		}
+
 		return 0, nil
 	}
+
 	if item == nil {
 		return 0, nil
 	}
@@ -384,8 +409,10 @@ func (s *local) checkNeeded(ctx context.Context, cmd, key string, needed, runnin
 	if needed <= running {
 		clog.Debug(ctx, "checkNeeded not needed", "cmd", cmd, "key", key, "needed", needed, "running", running)
 		s.cmdNotNeededFunc(cmd)
+
 		return false
 	}
+
 	return true
 }
 
@@ -394,6 +421,7 @@ func (s *local) checkNeeded(ctx context.Context, cmd, key string, needed, runnin
 // currently running. Returns 0 if the cmd isn't known about.
 func (s *local) cmdCountRemaining(cmd string) int {
 	key := jobName(cmd, "n/a", false)
+
 	item, err := s.queue.Get(key)
 	if err != nil || item == nil {
 		return 0
@@ -421,8 +449,10 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, host
 	}
 
 	cmd = cmdProcessSanitiser.Replace(cmd)
+
 	s.rpMutex.Lock()
 	defer s.rpMutex.Unlock()
+
 	for _, p := range processes {
 		thisCmd, err := p.Cmdline()
 		if err != nil {
@@ -430,6 +460,7 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, host
 			// Processes() and now, just ignore this one
 			continue
 		}
+
 		if cmd == thisCmd {
 			pid := int(p.Pid)
 			if s.recoveredPids[pid] {
@@ -437,6 +468,7 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, host
 			}
 
 			s.resourceMutex.Lock()
+
 			s.ram += req.RAM
 			if req.Cores == 0 {
 				s.zeroCores++
@@ -451,10 +483,12 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, host
 				// periodically check on this pid; when it has exited, update
 				// our resource usage
 				ticker := time.NewTicker(1 * time.Second)
+
 				for {
 					select {
 					case <-ticker.C:
 						process, errf := os.FindProcess(pid)
+
 						alive := true
 						if errf != nil {
 							alive = false
@@ -469,6 +503,7 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, host
 							ticker.Stop()
 
 							s.resourceMutex.Lock()
+
 							s.ram -= req.RAM
 							if req.Cores == 0 {
 								s.zeroCores--
@@ -486,15 +521,18 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, host
 						}
 					case <-s.stopPidMonitoring:
 						ticker.Stop()
+
 						return
 					}
 				}
 			}()
 
 			s.recoveredPids[pid] = true
+
 			break
 		}
 	}
+
 	return nil
 }
 
@@ -503,6 +541,7 @@ func (s *local) reqCheck(ctx context.Context, req *Requirements) error {
 	if req.RAM > s.maxRAM || int(math.Ceil(req.Cores)) > s.maxCores {
 		return Error{"local", "schedule", ErrImpossible}
 	}
+
 	return nil
 }
 
@@ -523,15 +562,16 @@ func (s *local) removeKey(ctx context.Context, key string) {
 	if err != nil {
 		qerr, ok := err.(queue.Error)
 
-		if ok && qerr.Err == queue.ErrQueueClosed {
+		if ok && errors.Is(qerr.Err, queue.ErrQueueClosed) {
 			return
 		}
 
 		// warn unless we've already removed this key
-		if !ok || qerr.Err != queue.ErrNotFound {
+		if !ok || !errors.Is(qerr.Err, queue.ErrNotFound) {
 			clog.Warn(ctx, "processQueue item removal failed", "err", err)
 		}
 	}
+
 	if s.queue.Stats().Items == 0 {
 		s.stopAutoProcessing()
 	}
@@ -547,13 +587,17 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 	s.mutex.Lock()
 	if s.cleanedUp() {
 		s.mutex.Unlock()
+
 		return nil
 	}
+
 	if s.processing {
 		s.recall = true
 		s.mutex.Unlock()
+
 		return nil
 	}
+
 	s.processing = true
 	s.mutex.Unlock()
 	clog.Debug(ctx, "processQueue starting", "reason", reason)
@@ -562,12 +606,13 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 	s.stateUpdateFunc(ctx)
 
 	stats := s.queue.Stats()
+
 	toRelease := make([]string, 0, stats.Items)
 	defer func() {
 		for _, key := range toRelease {
 			errr := s.queue.Release(ctx, key)
 			if errr != nil {
-				if qerr, ok := errr.(queue.Error); !ok || (qerr.Err != queue.ErrNotFound && qerr.Err != queue.ErrQueueClosed) {
+				if qerr, ok := errr.(queue.Error); !ok || (!errors.Is(qerr.Err, queue.ErrNotFound) && !errors.Is(qerr.Err, queue.ErrQueueClosed)) {
 					clog.Warn(ctx, "processQueue item release failed", "err", errr)
 				}
 			}
@@ -580,9 +625,11 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 		recall := s.recall
 		s.recall = false
 		s.mutex.Unlock()
+
 		if recall {
 			go func() {
 				defer internal.LogPanic(ctx, "processQueue recall", true)
+
 				errp := s.processQueue(ctx, "recall")
 				if errp != nil {
 					clog.Warn(ctx, "processQueue recall failed", "err", errp)
@@ -597,11 +644,13 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 	for {
 		item, err := s.queue.Reserve("", 0)
 		if err != nil {
-			if qerr, ok := err.(queue.Error); ok && (qerr.Err == queue.ErrNothingReady || qerr.Err == queue.ErrQueueClosed) {
+			if qerr, ok := err.(queue.Error); ok && (errors.Is(qerr.Err, queue.ErrNothingReady) || errors.Is(qerr.Err, queue.ErrQueueClosed)) {
 				return nil
 			}
+
 			return err
 		}
+
 		key := item.Key
 		j := item.Data().(*job)
 		j.RLock()
@@ -612,6 +661,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 		s.runMutex.Lock()
 		running := s.running[key]
 		clog.Debug(ctx, "processQueue binpacking", "needs", count, "current", running, "cmd", cmd)
+
 		if count == 0 && running == 0 {
 			// a cancellation has come in, and somehow we didn't remove this
 			// from the queue; do so now
@@ -619,24 +669,29 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 			s.removeKey(ctx, key)
 			s.runMutex.Unlock()
 			j.RUnlock()
+
 			continue
 		}
+
 		toRelease = append(toRelease, key)
+
 		shouldCount := count - running
 		if shouldCount <= 0 {
 			// we're already running everything for this job, try the next
 			// largest cmd
 			s.runMutex.Unlock()
 			j.RUnlock()
+
 			continue
 		}
 
 		// now see if there's remaining capacity to run the job
 		call := logext.RandId(8)
-		ctx = clog.ContextWithCallValue(ctx, call)
+		ctx := clog.ContextWithCallValue(ctx, call)
 
 		canCount := s.canCountFunc(ctx, cmd, req, call)
 		clog.Debug(ctx, "processQueue canCount", "can", canCount, "running", running, "should", shouldCount)
+
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -650,11 +705,13 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 			// with lesser resource requirements can be run
 			s.runMutex.Unlock()
 			j.RUnlock()
+
 			continue
 		}
 
 		// start running what we can
 		clog.Debug(ctx, "processQueue runCmdFunc", "count", canCount)
+
 		reserved := make(chan bool, canCount)
 		for i := 0; i < canCount; i++ {
 			s.running[key]++
@@ -669,6 +726,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 
 				j.Lock()
 				s.runMutex.Lock()
+
 				s.running[key]--
 				if s.running[key] <= 0 {
 					delete(s.running, key)
@@ -682,6 +740,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 					} else {
 						j.count--
 					}
+
 					jCount := j.count
 					if jCount <= 0 {
 						s.removeKey(ctx, key)
@@ -713,11 +772,14 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 		// goes wrong sending on the reserved channel, we don't get stuck here
 		ch := make(chan bool, 1)
 		done := make(chan bool, 1)
+
 		go func() {
 			for i := 0; i < canCount; i++ {
 				<-reserved
 			}
+
 			done <- true
+
 			ch <- true
 		}()
 		go func() {
@@ -728,6 +790,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 				return
 			}
 		}()
+
 		sentAll := <-ch
 		if !sentAll {
 			clog.Warn(ctx, "processQueue failed to reserve all resources")
@@ -753,6 +816,7 @@ func (s *local) canCount(ctx context.Context, cmd string, req *Requirements, cal
 		clog.Warn(ctx, "negative canCount", "can", canCount, "maxRam", s.maxRAM, "ram", s.ram, "reqRam", req.RAM)
 		canCount = 0
 	}
+
 	if canCount >= 1 {
 		var canCount2 int
 		if req.Cores == 0 {
@@ -766,6 +830,7 @@ func (s *local) canCount(ctx context.Context, cmd string, req *Requirements, cal
 		} else {
 			canCount2 = int(math.Floor(mth.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
 		}
+
 		if canCount2 < canCount {
 			canCount = canCount2
 			if canCount < 0 {
@@ -775,6 +840,7 @@ func (s *local) canCount(ctx context.Context, cmd string, req *Requirements, cal
 			}
 		}
 	}
+
 	return canCount
 }
 
@@ -793,9 +859,12 @@ func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reser
 		// sure we don't get stuck on this send
 		ch := make(chan bool, 1)
 		done := make(chan bool, 1)
+
 		go func() {
 			reservedCh <- v
+
 			done <- true
+
 			ch <- true
 		}()
 		go func() {
@@ -806,6 +875,7 @@ func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reser
 				return
 			}
 		}()
+
 		sentReserved := <-ch
 		if !sentReserved {
 			clog.Warn(ctx, "failed to send on reservedCh")
@@ -814,10 +884,12 @@ func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reser
 
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	ec.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	err := ec.Start()
 	if err != nil {
 		clog.Error(ctx, "runCmd start", "cmd", cmd, "err", err)
 		sr(false)
+
 		return err
 	}
 
@@ -826,16 +898,18 @@ func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reser
 	s.rcMutex.Unlock()
 
 	s.resourceMutex.Lock()
+
 	s.ram += req.RAM
 	if req.Cores == 0 {
 		s.zeroCores++
 	} else {
 		s.cores += req.Cores
 	}
+
 	sr(true)
 	s.resourceMutex.Unlock()
 
-	//*** set up monitoring of RAM and time usage and kill if >> than
+	// *** set up monitoring of RAM and time usage and kill if >> than
 	// req.RAM or req.Time
 
 	err = ec.Wait()
@@ -844,6 +918,7 @@ func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reser
 	}
 
 	s.rcMutex.Lock()
+
 	s.rcount--
 	if s.rcount < 0 {
 		s.rcount = 0
@@ -851,6 +926,7 @@ func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reser
 	s.rcMutex.Unlock()
 
 	s.resourceMutex.Lock()
+
 	s.ram -= req.RAM
 	if req.Cores == 0 {
 		s.zeroCores--
@@ -881,11 +957,14 @@ func (s *local) cmdNotNeeded(cmd string) {}
 func (s *local) startAutoProcessing(ctx context.Context) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	if s.cleanedUp() {
 		return
 	}
+
 	s.apMutex.Lock()
 	defer s.apMutex.Unlock()
+
 	if s.autoProcessing {
 		return
 	}
@@ -894,6 +973,7 @@ func (s *local) startAutoProcessing(ctx context.Context) {
 		defer internal.LogPanic(ctx, "auto processQueue", false)
 
 		ticker := time.NewTicker(s.stateUpdateFreq)
+
 		for {
 			select {
 			case <-ticker.C:
@@ -907,9 +987,11 @@ func (s *local) startAutoProcessing(ctx context.Context) {
 						clog.Error(ctx, "Automated processQueue call failed", "err", err)
 					}
 				}()
+
 				continue
 			case <-s.stopAuto:
 				ticker.Stop()
+
 				return
 			}
 		}
@@ -923,6 +1005,7 @@ func (s *local) startAutoProcessing(ctx context.Context) {
 func (s *local) stopAutoProcessing() {
 	s.apMutex.Lock()
 	defer s.apMutex.Unlock()
+
 	if !s.autoProcessing {
 		return
 	}
@@ -938,11 +1021,14 @@ func (s *local) busy(ctx context.Context) bool {
 	if s.cleanedUp() {
 		return false
 	}
+
 	s.rcMutex.RLock()
 	defer s.rcMutex.RUnlock()
+
 	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
 		return false
 	}
+
 	return true
 }
 
@@ -1007,11 +1093,13 @@ func (l *localHost) RunCmd(ctx context.Context, cmd string, background bool) (st
 		} else {
 			outCh <- ""
 		}
+
 		if erre == nil && len(stderr) > 0 {
 			errCh <- string(stderr)
 		} else {
 			errCh <- ""
 		}
+
 		done <- nil
 	}()
 
@@ -1041,22 +1129,27 @@ func (s *local) setBadServerCallBack(ctx context.Context, cb BadServerCallBack) 
 func (s *local) cleanup(ctx context.Context) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	s.runMutex.Lock()
 	defer s.runMutex.Unlock()
+
 	s.stopAutoProcessing()
 	s.cleanMutex.Lock()
 	defer s.cleanMutex.Unlock()
+
 	close(s.stopPidMonitoring)
 	s.cleaned = true
+
 	err := s.queue.Destroy()
 	if err != nil {
 		clog.Warn(ctx, "local scheduler cleanup failed", "err", err)
 	}
 }
 
-// cleanedUp returns true if cleanup() has been called
+// cleanedUp returns true if cleanup() has been called.
 func (s *local) cleanedUp() bool {
 	s.cleanMutex.RLock()
 	defer s.cleanMutex.RUnlock()
+
 	return s.cleaned
 }

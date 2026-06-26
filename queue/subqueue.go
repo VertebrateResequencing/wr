@@ -67,7 +67,9 @@ func newSubQueue(sqIndex int) *subQueue {
 	if sqIndex == 1 {
 		queue.groupedItems = make(map[string][]*Item)
 	}
+
 	heap.Init(queue)
+
 	return queue
 }
 
@@ -92,15 +94,19 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 	} else {
 		chans = make(map[string]*pushNotification)
 	}
+
 	id := logext.RandId(8)
 
 	timer := time.AfterFunc(timeout, func() {
 		q.mutex.Lock()
 		defer q.mutex.Unlock()
+
 		if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
 			if pn, ok := chans[id]; ok {
 				pn.ch <- false
+
 				delete(chans, id)
+
 				if len(q.pushNotificationChannels[reserveGroup]) == 0 {
 					delete(q.pushNotificationChannels, reserveGroup)
 				}
@@ -133,59 +139,72 @@ func (q *subQueue) triggerNotify(reserveGroup string) {
 	}
 }
 
-// push adds an item to the queue
+// push adds an item to the queue.
 func (q *subQueue) push(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	if q.sqIndex == 1 {
 		q.reserveGroup = item.ReserveGroup
 	}
 	defer q.triggerNotify(q.reserveGroup)
+
 	heap.Push(q, item)
 }
 
-// pop removes the next item from the queue according to its "priority"
+// pop removes the next item from the queue according to its "priority".
 func (q *subQueue) pop(reserveGroup ...string) *Item {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	var itemList []*Item
+
 	if q.sqIndex == 1 {
 		var group string
 		if len(reserveGroup) == 1 {
 			group = reserveGroup[0]
 		}
+
 		var existed bool
 		if itemList, existed = q.groupedItems[group]; !existed {
 			return nil
 		}
+
 		q.reserveGroup = group
 	} else {
 		itemList = q.items
 	}
+
 	if len(itemList) == 0 {
 		return nil
 	}
+
 	return heap.Pop(q).(*Item)
 }
 
-// remove removes a given item from the queue
+// remove removes a given item from the queue.
 func (q *subQueue) remove(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	if q.sqIndex == 1 {
 		q.reserveGroup = item.ReserveGroup
 	}
+
 	heap.Remove(q, item.queueIndexes[q.sqIndex])
 }
 
-// len tells you how many items are in the queue
+// len tells you how many items are in the queue.
 func (q *subQueue) len(reserveGroup ...string) int {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
+
 	var itemList []*Item
+
 	if q.sqIndex == 1 {
 		if len(reserveGroup) == 1 {
 			group := reserveGroup[0]
+
 			var existed bool
 			if itemList, existed = q.groupedItems[group]; !existed {
 				return 0
@@ -195,11 +214,13 @@ func (q *subQueue) len(reserveGroup ...string) int {
 			for _, il := range q.groupedItems {
 				num += len(il)
 			}
+
 			return num
 		}
 	} else {
 		itemList = q.items
 	}
+
 	return len(itemList)
 }
 
@@ -208,6 +229,7 @@ func (q *subQueue) len(reserveGroup ...string) int {
 func (q *subQueue) firstItem() *Item {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
+
 	return q.items[0]
 }
 
@@ -217,21 +239,27 @@ func (q *subQueue) firstItem() *Item {
 func (q *subQueue) update(item *Item, oldGroup ...string) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	if q.sqIndex == 1 && len(oldGroup) == 1 && oldGroup[0] != item.ReserveGroup {
 		q.reserveGroup = oldGroup[0]
 		heap.Remove(q, item.queueIndexes[q.sqIndex])
+
 		q.reserveGroup = item.ReserveGroup
 		defer q.triggerNotify(q.reserveGroup)
+
 		heap.Push(q, item)
+
 		return
 	}
+
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
 }
 
-// empty clears out a queue, setting it back to its new state
+// empty clears out a queue, setting it back to its new state.
 func (q *subQueue) empty() {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	if q.sqIndex == 1 {
 		q.groupedItems = make(map[string][]*Item)
 	} else {
@@ -245,6 +273,7 @@ func (q *subQueue) empty() {
 
 func (q *subQueue) Len() int {
 	var itemList []*Item
+
 	if q.sqIndex == 1 {
 		var existed bool
 		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
@@ -253,6 +282,7 @@ func (q *subQueue) Len() int {
 	} else {
 		itemList = q.items
 	}
+
 	return len(itemList)
 }
 
@@ -262,6 +292,7 @@ func (q *subQueue) Less(i, j int) bool {
 		if q.items[i].readyAt.Equal(q.items[j].readyAt) {
 			return q.items[i].iid < q.items[j].iid
 		}
+
 		return q.items[i].readyAt.Before(q.items[j].readyAt)
 	case 1:
 		if itemList, existed := q.groupedItems[q.reserveGroup]; existed {
@@ -270,23 +301,29 @@ func (q *subQueue) Less(i, j int) bool {
 					if itemList[i].creation.Equal(itemList[j].creation) {
 						return itemList[i].iid < itemList[j].iid
 					}
+
 					return itemList[i].creation.Before(itemList[j].creation)
 				}
+
 				return itemList[i].size > itemList[j].size
 			}
+
 			return itemList[i].priority > itemList[j].priority
 		}
+
 		return false
 	}
 	// case 2, outside the switch, because we need to return
 	if q.items[i].releaseAt.Equal(q.items[j].releaseAt) {
 		return q.items[i].iid < q.items[j].iid
 	}
+
 	return q.items[i].releaseAt.Before(q.items[j].releaseAt)
 }
 
 func (q *subQueue) Swap(i, j int) {
 	var itemList []*Item
+
 	if q.sqIndex == 1 {
 		var existed bool
 		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
@@ -298,13 +335,16 @@ func (q *subQueue) Swap(i, j int) {
 
 	itemList[i], itemList[j] = itemList[j], itemList[i]
 	lockFirst := i
+
 	lockSecond := j
 	if itemList[i].iid > itemList[j].iid {
 		lockFirst = j
 		lockSecond = i
 	}
+
 	itemList[lockFirst].mutex.Lock()
 	defer itemList[lockFirst].mutex.Unlock()
+
 	if i != j {
 		itemList[lockSecond].mutex.Lock()
 		defer itemList[lockSecond].mutex.Unlock()
@@ -316,7 +356,9 @@ func (q *subQueue) Swap(i, j int) {
 
 func (q *subQueue) Push(x any) {
 	item := x.(*Item)
+
 	var itemList []*Item
+
 	if q.sqIndex == 1 {
 		var existed bool
 		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
@@ -325,9 +367,11 @@ func (q *subQueue) Push(x any) {
 	} else {
 		itemList = q.items
 	}
+
 	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = len(itemList)
 	item.mutex.Unlock()
+
 	itemList = append(itemList, item)
 	if q.sqIndex == 1 {
 		q.groupedItems[q.reserveGroup] = itemList
@@ -338,6 +382,7 @@ func (q *subQueue) Push(x any) {
 
 func (q *subQueue) Pop() any {
 	var itemList []*Item
+
 	if q.sqIndex == 1 {
 		var existed bool
 		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
@@ -346,16 +391,19 @@ func (q *subQueue) Pop() any {
 	} else {
 		itemList = q.items
 	}
+
 	lasti := len(itemList) - 1
 	item := itemList[lasti]
 	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = -1
 	item.mutex.Unlock()
+
 	itemList = itemList[:lasti]
 	if q.sqIndex == 1 {
 		q.groupedItems[q.reserveGroup] = itemList
 	} else {
 		q.items = itemList
 	}
+
 	return item
 }

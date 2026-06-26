@@ -34,7 +34,7 @@ import (
 
 var onlyBuried bool
 
-// removeCmd represents the remove command
+// removeCmd represents the remove command.
 var removeCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "Remove added commands",
@@ -77,12 +77,14 @@ command line of a job with dependants, you can either:
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
 		}
+
 		if set == 0 {
 			die("1 of -f, -i, -l or -a is required")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -93,6 +95,7 @@ command line of a job with dependants, you can either:
 
 		cmdState := jobqueue.JobStateDeletable
 		desc := "incomplete, non-running"
+
 		if onlyBuried {
 			cmdState = jobqueue.JobStateBuried
 			desc = "buried"
@@ -105,10 +108,12 @@ command line of a job with dependants, you can either:
 		}
 
 		jes := jobsToJobEssenses(jobs)
+
 		removed, err := jq.Delete(jes)
 		if err != nil {
 			die("failed to remove desired jobs: %s", err)
 		}
+
 		info("Removed %d %s commands (out of %d eligible)", removed, desc, len(jobs))
 	},
 }

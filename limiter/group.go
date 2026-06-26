@@ -325,6 +325,7 @@ func (g *group) decrement() bool {
 	if len(g.toNotify) > 0 {
 		chans := g.toNotify
 		g.toNotify = []chan bool{}
+
 		go func() {
 			for _, ch := range chans {
 				ch <- true

@@ -28,6 +28,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/syslog"
 	"os"
@@ -46,7 +47,7 @@ import (
 
 const logDirPerm = 0o770
 
-// options for this cmd
+// options for this cmd.
 var (
 	schedgrp         string
 	timeoutintRunner int
@@ -58,7 +59,7 @@ var (
 	logToDir         string
 )
 
-// runnerCmd represents the runner command
+// runnerCmd represents the runner command.
 var runnerCmd = &cobra.Command{
 	Use:   "runner",
 	Short: "Run queued commands",
@@ -100,6 +101,7 @@ complete.`,
 
 				logPath := filepath.Join(logDir, fmt.Sprintf("%s.%s.%d",
 					time.Now().Format("15-04-05"), host, os.Getpid()))
+
 				handler, err := clog.CreateFileHandlerAtLevel(logPath, "info")
 				if err != nil {
 					warn("failed to set up file logging: %s", err)
@@ -130,15 +132,18 @@ complete.`,
 		if timeoutintRunner < (reserveint + 5) {
 			timeoutintRunner = reserveint + 5
 		}
+
 		timeout := time.Duration(timeoutintRunner) * time.Second
 		rtimeout := time.Duration(reserveint) * time.Second
 
 		jobqueue.AppName = "wr"
 
 		token, err := token()
+
 		if err != nil {
 			die("%s", err)
 		}
+
 		jq, err := jobqueue.Connect(rserver, caFile, rdomain, token, timeout)
 		if err != nil {
 			die("%s", err)
@@ -152,14 +157,18 @@ complete.`,
 
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
-		var envOverrides []string
-		var exePath string
+		var (
+			envOverrides []string
+			exePath      string
+		)
+
 		if rserver != "" {
 			hostPort := strings.Split(rserver, ":")
 			if len(hostPort) == 2 {
 				envOverrides = append(envOverrides, "WR_MANAGERHOST="+hostPort[0])
 				envOverrides = append(envOverrides, "WR_MANAGERPORT="+hostPort[1])
 			}
+
 			envOverrides = append(envOverrides, "WR_MANAGERCERTDOMAIN="+rdomain)
 
 			// later we will add our own wr exe to the path if not there
@@ -167,6 +176,7 @@ complete.`,
 			if err != nil {
 				die("%s", err)
 			}
+
 			exePath = filepath.Dir(exe)
 		}
 
@@ -182,17 +192,21 @@ complete.`,
 		// aren't any more commands in the queue
 		numrun := 0
 		exitReason := fmt.Sprintf("there are no more commands in scheduler group '%s'", schedgrp)
+
 		var jobTime time.Duration
 		for {
 			// see if we have enough time to run a new job before we should
 			// exit
 			if time.Now().Add(jobTime).After(endTime) {
 				exitReason = "we're about to hit our maximum time limit"
+
 				break
 			}
 
-			var job *jobqueue.Job
-			var err error
+			var (
+				job *jobqueue.Job
+				err error
+			)
 			if schedgrp == "" {
 				job, err = jq.Reserve(rtimeout)
 			} else {
@@ -202,6 +216,7 @@ complete.`,
 			if err != nil {
 				die("%s", err)
 			}
+
 			if job == nil {
 				break
 			}
@@ -217,7 +232,9 @@ complete.`,
 						// oh well?
 						warn("job release after running out of time failed: %s", err)
 					}
+
 					exitReason = "we're about to hit our maximum time limit"
+
 					break
 				}
 			}
@@ -231,15 +248,19 @@ complete.`,
 					if err != nil {
 						warn("job release after Env() fail: %s", erre)
 					}
+
 					exitReason = "Env failed"
+
 					break
 				}
+
 				for _, envvar := range env {
 					pair := strings.Split(envvar, "=")
 					if pair[0] == "PATH" {
 						if !strings.Contains(pair[1], exePath) {
 							envOverrides = append(envOverrides, envvar+":"+exePath)
 						}
+
 						break
 					}
 				}
@@ -251,7 +272,9 @@ complete.`,
 						// oh well?
 						warn("job release after envaddoverride fail: %s", err)
 					}
+
 					exitReason = "EnvAddOverride failed"
+
 					break
 				}
 			}
@@ -259,16 +282,20 @@ complete.`,
 			info("will start executing [%s]", job.Cmd)
 			err = jq.Execute(context.Background(), job, config.RunnerExecShell)
 			numrun++
+
 			if err != nil {
 				warn("%s", err)
 
 				// Keep this as a direct assertion: wrapped jobqueue errors must not change runner control flow.
-				if jqerr, ok := err.(jobqueue.Error); ok {
+				var jqerr jobqueue.Error
+				if errors.As(err, &jqerr) {
 					if strings.Contains(jqerr.Err, jobqueue.FailReasonSignal) {
 						exitReason = "we received a signal to stop"
+
 						break
 					} else if strings.Contains(jqerr.Err, jobqueue.ErrStopReserving) {
 						exitReason = "we reconnected to a new server"
+
 						break
 					}
 				}
@@ -283,6 +310,7 @@ complete.`,
 
 func init() {
 	ctx := context.Background()
+
 	RootCmd.AddCommand(runnerCmd)
 
 	// flags specific to this sub-command

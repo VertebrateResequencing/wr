@@ -66,13 +66,16 @@ func (q *depQueue) push(item *Item) {
 func (q *depQueue) pop() *Item {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	lasti := len(q.items) - 1
 	if lasti == -1 {
 		return nil
 	}
+
 	item := q.items[lasti]
 	item.queueIndexes[q.index] = -1
 	q.items = q.items[:lasti]
+
 	return item
 }
 
@@ -99,11 +102,13 @@ func (q *depQueue) remove(item *Item) {
 func (q *depQueue) len() int {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
+
 	return len(q.items)
 }
 
 func (q *depQueue) empty() {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+
 	q.items = nil
 }

@@ -110,7 +110,7 @@ const (
 )
 
 // ServerVersion gets set during build:
-// go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
+// go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`".
 var ServerVersion string
 
 // these global variables hold the default values for the corresponding
@@ -1743,20 +1743,26 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	caFile := config.CAFile
 	certFile := config.CertFile
 	keyFile := config.KeyFile
+
 	certDomain := config.CertDomain
 	if certDomain == "" {
 		certDomain = localhost
 	}
+
 	err = internal.CheckCerts(certFile, keyFile)
+
 	var certMsg string
+
 	if err != nil {
 		// if not, generate our own
 		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain,
 			internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
+
 			return s, msg, token, err
 		}
+
 		certMsg = "created a new key and certificate for TLS"
 	}
 
@@ -1772,6 +1778,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 			msg = certMsg + ". " + msg
 		}
 	}
+
 	if err != nil {
 		return s, msg, token, err
 	}
@@ -1821,16 +1828,20 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		return s, msg, token, err
 	}
+
 	if time.Now().After(expiry) {
 		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
 	}
+
 	expiry2, err := internal.CertExpiry(certFile)
 	if err != nil {
 		return s, msg, token, err
 	}
+
 	if time.Now().After(expiry2) {
 		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: certFile}
 	}
+
 	if expiry2.Before(expiry) {
 		expiry = expiry2
 	}
@@ -1840,14 +1851,17 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		return s, msg, token, err
 	}
+
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
 	listenOpts := make(map[string]any)
+
 	caCert, err := os.ReadFile(caFile)
 	if err == nil {
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(caCert)
 		tlsConfig.RootCAs = certPool
 	}
+
 	listenOpts[mangos.OptionTLSConfig] = tlsConfig
 	if err = sock.ListenOptions("tls+tcp://0.0.0.0:"+config.Port, listenOpts); err != nil {
 		return s, msg, token, err
@@ -1862,6 +1876,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// waitgroup as well.
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+
 	stopSigHandling := make(chan bool, 1)
 	stopClientHandling := make(chan bool)
 	clientHandlingDone := make(chan struct{})
@@ -1878,6 +1893,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		if err != nil {
 			serverLogger.Error("getting current IP failed", "err", err)
 		}
+
 		if ip == "" {
 			return s, msg, token, Error{"Serve", "", ErrNoHost}
 		}
@@ -1962,9 +1978,13 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		return nil, msg, token, err
 	}
+
 	if len(priorJobs) > 0 {
-		var loginUser string
-		var ttd time.Duration
+		var (
+			loginUser string
+			ttd       time.Duration
+		)
+
 		if cloudConfig, ok := config.SchedulerConfig.(scheduler.CloudConfig); ok {
 			// *** for server recovery purposes, which involves ssh'ing to
 			// existing servers and monitoring them, we need to know the login
@@ -1975,6 +1995,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		}
 
 		var itemdefs []*queue.ItemDef
+
 		for _, job := range priorJobs {
 			var (
 				deps                []string
@@ -2007,10 +2028,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 				}
 
 				req := reqForScheduler(job.Requirements)
+
 				errr := s.scheduler.Recover(ctx, fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(ctx, req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
 				if errr != nil {
 					clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 				}
+
 				s.recoveredRunningJobs[job.Key()] = true
 			case JobStateBuried:
 				itemdef.StartQueue = queue.SubQueueBury
@@ -2030,6 +2053,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
 	certExpired := time.After(time.Until(expiry))
+
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(ctx, "jobqueue serving", true)
@@ -2038,20 +2062,24 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 			select {
 			case sig := <-sigs:
 				var reason string
+
 				switch sig {
 				case os.Interrupt:
 					reason = ErrClosedInt
 				case syscall.SIGTERM:
 					reason = ErrClosedTerm
 				}
+
 				signal.Stop(sigs)
 				s.shutdown(ctx, reason, true, false)
+
 				return
 			case <-certExpired:
 				signal.Stop(sigs)
 				s.shutdown(ctx, ErrClosedCert, true, false)
 			case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
 				signal.Stop(sigs)
+
 				return
 			}
 		}
@@ -2060,6 +2088,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// set up the web interface
 	ready := make(chan bool)
 	wgk := wg.Add(1)
+
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(ctx, "jobqueue web server", true)
@@ -2076,32 +2105,41 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		mux.HandleFunc(restVersionEndpoint, restVersion(ctx, s))
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wgk2 := wg.Add(1)
+
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server listenAndServe", true)
 			defer wg.Done(wgk2)
+
 			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && !errors.Is(errs, http.ErrServerClosed) {
 				clog.Error(ctx, "server web interface had problems", "err", errs)
 			}
 		}()
+
 		s.httpServer = srv
 
 		wgk4 := wg.Add(1)
+
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server server casting", true)
 			defer wg.Done(wgk4)
+
 			s.badServerCaster.Broadcasting(0)
 		}()
+
 		wgk5 := wg.Add(1)
+
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server scheduler casting", true)
 			defer wg.Done(wgk5)
+
 			s.schedCaster.Broadcasting(0)
 		}()
 
 		badServerCB := func(server *cloud.Server) {
 			s.bsmutex.Lock()
 			skip := false
+
 			if server.IsBad() {
 				// double check that due to timing issues this server hasn't
 				// been destroyed, which is not something to warn anyone about
@@ -2116,11 +2154,14 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 							<-time.After(config.AutoConfirmDead)
 							s.bsmutex.Lock()
 							defer s.bsmutex.Unlock()
+
 							if badServer, exists := s.badServers[id]; exists && badServer.BadDuration() >= config.AutoConfirmDead {
 								delete(s.badServers, id)
+
 								waited := badServer.BadDuration()
 								errd := badServer.Destroy(ctx)
 								clog.Warn(ctx, "server destroyed after remaining bad for some time", "server", id, "waited", waited, "err", errd)
+
 								serverIDs := make(map[string]bool)
 								serverIDs[id] = true
 								s.killJobsOnServers(ctx, serverIDs)
@@ -2161,8 +2202,11 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 		messageCB := func(msg string) {
 			s.simutex.Lock()
-			var si *schedulerIssue
-			var existed bool
+
+			var (
+				si      *schedulerIssue
+				existed bool
+			)
 			if si, existed = s.schedIssues[msg]; existed {
 				si.LastDate = time.Now().Unix()
 				si.Count++
@@ -2182,8 +2226,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 		// wait a while for ListenAndServe() to start listening
 		<-time.After(10 * time.Millisecond)
+
 		ready <- true
 	}()
+
 	<-ready
 
 	// store token on disk
@@ -2196,6 +2242,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// now that we're ready, set up responding to command-line clients
 	wgk = wg.Add(1)
+
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(ctx, "jobqueue serving", true)
@@ -2217,11 +2264,13 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 					if !inShutdown && !errors.Is(rerr, mangos.ErrRecvTimeout) {
 						clog.Error(ctx, "Server socket Receive error", "err", rerr)
 					}
+
 					continue
 				}
 
 				// parse the request, do the desired work and respond to the client
 				wgk2 := wg.Add(1)
+
 				go func() {
 					// log panics and continue
 					defer internal.LogPanic(ctx, "jobqueue server client handling", false)
@@ -2232,6 +2281,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 						s.krmutex.RLock()
 						inShutdown := s.killRunners
 						s.krmutex.RUnlock()
+
 						if !inShutdown {
 							clog.Error(ctx, "Server handle client request error", "err", herr)
 						}
@@ -2246,11 +2296,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 // Block makes you block while the server does the job of serving clients. This
 // will return with an error indicating why it stopped blocking, which will
-// be due to receiving a signal or because you called Stop()
+// be due to receiving a signal or because you called Stop().
 func (s *Server) Block() error {
 	s.ssmutex.Lock()
 	s.blocking = true
 	s.ssmutex.Unlock()
+
 	return <-s.done
 }
 
@@ -2266,15 +2317,18 @@ func (s *Server) Stop(ctx context.Context, wait ...bool) {
 func (s *Server) Drain(ctx context.Context) error {
 	s.ssmutex.Lock()
 	defer s.ssmutex.Unlock()
+
 	if !s.up {
 		return Error{"Drain", "", ErrNoServer}
 	}
+
 	if s.drain && s.ServerInfo.Mode == ServerModeDrain {
 		return nil
 	}
 
 	s.drain = true
 	s.ServerInfo.Mode = ServerModeDrain
+
 	go func() {
 		defer internal.LogPanic(ctx, "jobqueue drain", true)
 
@@ -2307,6 +2361,7 @@ func (s *Server) Drain(ctx context.Context) error {
 			return
 		}
 	}()
+
 	return nil
 }
 
@@ -2315,17 +2370,21 @@ func (s *Server) Drain(ctx context.Context) error {
 func (s *Server) Pause() (bool, error) {
 	s.ssmutex.Lock()
 	defer s.ssmutex.Unlock()
+
 	if !s.up {
 		return false, Error{"Pause", "", ErrNoServer}
 	}
+
 	if s.drain {
 		if s.ServerInfo.Mode == ServerModeDrain {
 			return false, Error{"Pause", "", ErrBeingDrained}
 		}
 	}
+
 	s.drain = true
 	s.ServerInfo.Mode = ServerModePause
 	s.pauseRequests++
+
 	return s.pauseRequests == 1, nil
 }
 
@@ -2336,24 +2395,30 @@ func (s *Server) Pause() (bool, error) {
 func (s *Server) Resume(ctx context.Context) (bool, error) {
 	s.ssmutex.Lock()
 	defer s.ssmutex.Unlock()
+
 	if !s.up {
 		return false, Error{"Resume", "", ErrNoServer}
 	}
+
 	if !s.drain {
 		return false, nil
 	}
+
 	if s.ServerInfo.Mode == ServerModeDrain {
 		return false, Error{"Resume", "", ErrBeingDrained}
 	}
+
 	s.pauseRequests--
 	if s.pauseRequests > 0 {
 		return false, nil
 	} else if s.pauseRequests < 0 {
 		s.pauseRequests = 0
 	}
+
 	s.drain = false
 	s.ServerInfo.Mode = ServerModeNormal
 	s.triggerReadyAddedCallback(ctx)
+
 	return true, nil
 }
 
@@ -2361,6 +2426,7 @@ func (s *Server) Resume(ctx context.Context) (bool, error) {
 // server's queue.
 func (s *Server) GetServerStats() *ServerStats {
 	var delayed, ready, running, buried int
+
 	now := time.Now()
 	etc := now
 
@@ -2375,12 +2441,14 @@ func (s *Server) GetServerStats() *ServerStats {
 		// work out when this Job is going to end, and update etc if later
 		job := inter.(*Job)
 		job.RLock()
+
 		if !job.StartTime.IsZero() && job.Requirements.Time.Seconds() > 0 {
 			endTime := job.StartTime.Add(job.Requirements.Time)
 			if endTime.After(etc) {
 				etc = endTime
 			}
 		}
+
 		job.RUnlock()
 	}
 
@@ -2416,34 +2484,46 @@ func (s *Server) HasRunners(ctx context.Context) bool {
 //
 // Returns the absolute path to the file that now contains the given file data.
 func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath string) (string, error) {
-	var file *os.File
-	var err error
+	var (
+		file *os.File
+		err  error
+	)
+
 	usedTempFile := false
+
 	if savePath == "" {
 		if _, err = os.Stat(s.uploadDir); err != nil && os.IsNotExist(err) {
 			err = os.MkdirAll(s.uploadDir, os.ModePerm)
 			if err != nil {
 				clog.Error(ctx, "uploadFile create directory error", "err", err)
+
 				return "", err
 			}
 		}
+
 		file, err = os.CreateTemp(s.uploadDir, "file_upload")
 		if err != nil {
 			clog.Error(ctx, "uploadFile temp file create error", "err", err)
+
 			return "", err
 		}
+
 		savePath = file.Name()
 		usedTempFile = true
 	} else {
 		savePath = internal.TildaToHome(savePath)
+
 		err = os.MkdirAll(filepath.Dir(savePath), os.ModePerm)
 		if err != nil {
 			clog.Error(ctx, "uploadFile create directory error", "err", err)
+
 			return "", err
 		}
+
 		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0o600)
 		if err != nil {
 			clog.Error(ctx, "uploadFile create file error", "err", err)
+
 			return "", err
 		}
 	}
@@ -2451,8 +2531,10 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 	_, err = io.Copy(file, source)
 	if err != nil {
 		clog.Error(ctx, "uploadFile store file error", "err", err)
+
 		return "", err
 	}
+
 	err = file.Close()
 	if err != nil {
 		clog.Warn(ctx, "uploadFile close file error", "err", err)
@@ -2461,30 +2543,37 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 	if usedTempFile {
 		// rename the file to one based on the md5 checksum of the file
 		var md5 string
+
 		md5, err = internal.FileMD5(ctx, savePath)
 		if err != nil {
 			clog.Error(ctx, "uploadFile md5 calculation error", "err", err)
+
 			return "", err
 		}
 
 		dir, leaf := calculateHashedDir(s.uploadDir, md5)
+
 		err = os.MkdirAll(dir, os.ModePerm)
 		if err != nil {
 			clog.Error(ctx, "uploadFile create directory error", "err", err)
+
 			return "", err
 		}
 
 		finalPath := path.Join(dir, leaf)
+
 		_, err = os.Stat(finalPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				err = os.Rename(savePath, finalPath)
 				if err != nil {
 					clog.Error(ctx, "uploadFile rename file error", "err", err)
+
 					return "", err
 				}
 			} else {
 				clog.Error(ctx, "uploadFile stat file error", "err", err)
+
 				return "", err
 			}
 		} else {
@@ -2494,6 +2583,7 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 				clog.Warn(ctx, "uploadFile file removal error", "err", err)
 			}
 		}
+
 		savePath = finalPath
 	}
 
@@ -2521,10 +2611,13 @@ func (s *Server) createQueue(ctx context.Context) {
 		defer clog.Debug(ctx, "rac finished")
 
 		s.ssmutex.RLock()
+
 		if s.drain || !s.up {
 			s.ssmutex.RUnlock()
+
 			return
 		}
+
 		s.ssmutex.RUnlock()
 
 		s.rpmutex.Lock()
@@ -2541,6 +2634,7 @@ func (s *Server) createQueue(ctx context.Context) {
 		groups := make(map[string]*sgroup)
 		reqGroupToReqs := make(map[string]*scheduler.Requirements)
 		groupLimits := make(map[string]int)
+
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
 
@@ -2565,10 +2659,12 @@ func (s *Server) createQueue(ctx context.Context) {
 					reqGroupToReqs[reqGroup] = nil
 				} else {
 					recmMBs := max(recm, 0)
+
 					recdGBs := 0
 					if recd > 0 {
 						recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
 					}
+
 					recsSecs := max(recs, 0)
 
 					recommendedReq = &scheduler.Requirements{
@@ -2618,10 +2714,13 @@ func (s *Server) createQueue(ctx context.Context) {
 					} else {
 						groupLimits[schedulerGroup] = -1
 					}
+
 					limit = groupLimits[schedulerGroup]
 				}
+
 				if limit >= 0 && group.count == limit {
 					group.skipped++
+
 					continue
 				}
 
@@ -2643,6 +2742,7 @@ func (s *Server) createQueue(ctx context.Context) {
 			for _, inter := range q.GetRunningData() {
 				job := inter.(*Job)
 				schedulerGroup := job.getSchedulerGroup()
+
 				group, set := groups[schedulerGroup]
 				if !set {
 					group, set = s.previouslyScheduledGroups[schedulerGroup]
@@ -2659,8 +2759,10 @@ func (s *Server) createQueue(ctx context.Context) {
 						}
 						job.Unlock()
 					}
+
 					groups[schedulerGroup] = group
 				}
+
 				group.count++
 			}
 
@@ -2671,12 +2773,15 @@ func (s *Server) createQueue(ctx context.Context) {
 				}
 
 				wgk := s.wg.Add(1)
+
 				go func(group *sgroup) {
 					defer internal.LogPanic(ctx, "jobqueue unschedule runners", true)
 					defer s.wg.Done(wgk)
+
 					clog.Debug(ctx, "rac unscheduling uneeded group", "group", group.name)
 					s.scheduleRunners(ctx, group.clone(0))
 				}(group.clone(0))
+
 				delete(s.previouslyScheduledGroups, name)
 				clog.Debug(ctx, "rac deleted previous unneeded group", "group", name)
 			}
@@ -2692,10 +2797,12 @@ func (s *Server) createQueue(ctx context.Context) {
 				s.previouslyScheduledGroups[name] = group
 
 				wgk := s.wg.Add(1)
+
 				group.Lock()
 				go func(group *sgroup) {
 					defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
 					defer s.wg.Done(wgk)
+
 					s.scheduleRunners(ctx, group)
 					group.Unlock()
 				}(group)
@@ -2708,6 +2815,7 @@ func (s *Server) createQueue(ctx context.Context) {
 			// new jobs get added
 			s.racmutex.Lock()
 			defer s.racmutex.Unlock()
+
 			if s.racChecking {
 				if !s.racCheckTimer.Stop() {
 					<-s.racCheckTimer.C
@@ -2718,6 +2826,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				s.racCheckTimer = time.NewTimer(s.timings.CheckRunnerTime)
 
 				wgk := s.wg.Add(1)
+
 				go func() {
 					defer internal.LogPanic(ctx, "jobqueue rac checking", true)
 					defer s.wg.Done(wgk)
@@ -2833,6 +2942,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 		job.Unlock()
 		job.decrementLimitGroups(s.limiter)
+
 		return queue.SubQueueDelay
 	})
 }
@@ -2863,6 +2973,7 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 		repGroup string
 		key      string
 	}, 0, len(itemdefs))
+
 	s.rpl.Lock()
 	for _, itemdef := range itemdefs {
 		rp := itemdef.Data.(*Job).RepGroup
@@ -2907,10 +3018,12 @@ func (s *Server) createJobs(
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
+
 		job.UntilBuried = job.Retries + 1
 		if rcSet {
 			job.schedulerGroup = job.generateSchedulerGroup(job.Requirements)
 		}
+
 		if job.BsubMode != "" {
 			job.BsubID = atomic.AddUint64(&BsubID, 1)
 		}
@@ -2952,11 +3065,13 @@ func (s *Server) createJobs(
 		var itemdefs []*queue.ItemDef
 
 		warningDepGroups := make(map[string]bool)
+
 		for _, job := range jobsToQueue {
 			deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
 				srerr = ErrDBError
 				qerr = err
+
 				break
 			}
 
@@ -2989,6 +3104,7 @@ func (s *Server) createJobs(
 			added, dups, qerr = s.enqueueItems(ctx, itemdefs)
 			dups += queuedDups
 			added += replaced
+
 			if qerr != nil {
 				srerr = ErrInternalError
 			}
@@ -3036,12 +3152,15 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 	if err != nil {
 		return err
 	}
+
 	for _, group := range changed {
 		s.limiter.SetLimit(group, *limitGroups[group])
 	}
+
 	for _, group := range removed {
 		s.limiter.RemoveLimit(group)
 	}
+
 	return nil
 }
 
@@ -3064,6 +3183,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 		if err != nil {
 			srerr = ErrDBError
 			qerr = err
+
 			break
 		}
 
@@ -3133,10 +3253,12 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 			item, errg := q.Get(jobKey)
 			if errg != nil {
 				clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
+
 				return
 			}
 
 			job := item.Data().(*Job)
+
 			errt := job.TriggerBehaviours(false)
 			if errt != nil {
 				clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
@@ -3185,10 +3307,12 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	// first check the job hasn't already been released/buried, only attempt
 	// queue changes if not
 	job.RLock()
+
 	bury := forceBury
 	if !bury && !job.StartTime.IsZero() {
 		bury = job.UntilBuried == 1
 	}
+
 	key := job.Key()
 	currentState := job.State
 	job.RUnlock()
@@ -3204,6 +3328,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	}
 
 	var errq error
+
 	if bury {
 		if item.Stats().State == queue.ItemStateBury {
 			if currentState == JobStateBuried {
@@ -3239,7 +3364,9 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	}
 
 	sgroup := job.schedulerGroup
+
 	var msg string
+
 	if job.UntilBuried <= 0 {
 		job.State = JobStateBuried
 		msg = "buried job"
@@ -3247,23 +3374,26 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 		job.State = JobStateDelayed
 		msg = "released job"
 	}
+
 	job.FailReason = failReason
 	job.Unlock()
 
 	s.decrementGroupCount(ctx, sgroup)
 	s.db.updateJobAfterExit(ctx, job, endState.Stdout, endState.Stderr, forceStorage)
 	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
+
 	return nil
 }
 
 // inputToQueuedJobs shows you which of the inputJobs are now actually in the
-// queue
+// queue.
 func (s *Server) inputToQueuedJobs(ctx context.Context, inputJobs []*Job) []*Job {
 	// *** queue.AddMany doesn't currently return which jobs were added and
 	// which were dups, and server.createJobs doesn't know which were ignored
 	// due to being incomplete, so we do this loop even though it's probably
 	// slow and wasteful?...
 	var jobs []*Job
+
 	for _, job := range inputJobs {
 		item, qerr := s.q.Get(job.Key())
 		if qerr == nil && item != nil {
@@ -3273,6 +3403,7 @@ func (s *Server) inputToQueuedJobs(ctx context.Context, inputJobs []*Job) []*Job
 			jobs = append(jobs, s.itemToJob(ctx, item, false, false))
 		}
 	}
+
 	return jobs
 }
 
@@ -3304,10 +3435,12 @@ func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
 	if job.Lost {
 		job.Unlock()
 		err = s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
+
 		return true, err
 	}
 
 	job.Unlock()
+
 	return true, err
 }
 
@@ -3317,11 +3450,17 @@ func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
 // time (in any order). Returns the keys of jobs actually deleted.
 func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 	var deleted []string
+
 	for {
-		var skippedDeps []*Job
-		var toDelete []string
+		var (
+			skippedDeps []*Job
+			toDelete    []string
+		)
+
 		schedGroups := make(map[string]int)
+
 		var repGroups []string
+
 		for _, job := range jobs {
 			jobkey := job.Key()
 
@@ -3333,6 +3472,7 @@ func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 				if hasDeps {
 					skippedDeps = append(skippedDeps, job)
 				}
+
 				continue
 			}
 
@@ -3371,9 +3511,11 @@ func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 			// dependency tree
 			if len(skippedDeps) > 0 {
 				jobs = skippedDeps
+
 				continue
 			}
 		}
+
 		break
 	}
 
@@ -3392,9 +3534,11 @@ func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
 // hosts with the given IDs. Returns the affected jobs.
 func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]bool) []*Job {
 	var jobs []*Job
+
 	if len(serverIDs) > 0 {
 		running := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
 			JobStateRunning, false, false, false)
+
 		lost := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
 			JobStateLost, false, false, false)
 		for _, job := range append(running, lost...) {
@@ -3409,6 +3553,7 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 					if item, err := s.q.Get(job.Key()); err == nil && item != nil {
 						liveJob := item.Data().(*Job)
 						job.State = liveJob.State
+
 						job.UntilBuried = liveJob.UntilBuried
 						if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
 							// we're going to release the job as
@@ -3416,6 +3561,7 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 							job.UntilBuried--
 						}
 					}
+
 					jobs = append(jobs, job)
 				}
 			}
@@ -3423,6 +3569,7 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 
 		clog.Debug(ctx, "killed jobs on bad servers", "number", len(jobs))
 	}
+
 	return jobs
 }
 
@@ -3445,6 +3592,7 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 			clog.Debug(ctx, "unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
 			job.State = JobStateReady
 			job.Unlock()
+
 			kicked++
 
 			s.db.updateJobAfterChange(ctx, job)
@@ -3459,9 +3607,11 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 // getJobsByKeys gets jobs with the given keys (current and complete).
 func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
+
 	for _, jobkey := range keys {
 		// try and get the job from the in-memory queue
 		item, err := s.q.Get(jobkey)
+
 		var job *Job
 		if err == nil && item != nil {
 			job = s.itemToJob(ctx, item, getStd, false)
@@ -3494,6 +3644,7 @@ func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, 
 					s.jobPopulateStdEnv(ctx, job, false, getEnv)
 				}
 			}
+
 			jobs = append(jobs, found...)
 		}
 	}
@@ -3511,11 +3662,13 @@ func (s *Server) checkJobByKey(key string) (bool, error) {
 			return false, err
 		}
 	}
+
 	if item != nil {
 		return true, nil
 	}
 
 	found, err := s.db.retrieveCompleteJobsByKeys([]string{key})
+
 	return len(found) == 1, err
 }
 
@@ -3827,6 +3980,7 @@ func (s *Server) filterAndGroupJobs(jobs []*Job, opts limitJobsOptions) []*Job {
 // filterJobsByState returns only jobs matching the state filters.
 func (s *Server) filterJobsByState(jobs []*Job, opts limitJobsOptions) []*Job {
 	var limited []*Job
+
 	for _, job := range jobs {
 		if s.jobMatchesFilters(job, opts) {
 			limited = append(limited, job)
@@ -4000,12 +4154,15 @@ func shouldPopulateStd(jobs []*Job, getStd bool) bool {
 func (s *Server) schedulerGroupDetails() []string {
 	s.psgmutex.RLock()
 	defer s.psgmutex.RUnlock()
+
 	result := make([]string, len(s.previouslyScheduledGroups))
+
 	i := 0
 	for name, group := range s.previouslyScheduledGroups {
 		result[i] = fmt.Sprintf("%s (%d jobs)", name, group.getCount())
 		i++
 	}
+
 	return result
 }
 
@@ -4017,6 +4174,7 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 	s.racmutex.RLock()
 	rc := s.rc
 	s.racmutex.RUnlock()
+
 	if rc == "" {
 		return
 	}
@@ -4029,23 +4187,29 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 		if errors.As(err, &serr) && serr.Err == scheduler.ErrImpossible {
 			// bury all jobs in this scheduler group
 			problem = false
+
 			for {
 				item, errr := s.q.Reserve(group.name, 0)
 				if errr != nil {
 					var qerr queue.Error
 					if !errors.As(errr, &qerr) || !errors.Is(qerr.Err, queue.ErrNothingReady) {
 						clog.Warn(ctx, "scheduleRunners failed to reserve an item", "group", group, "err", errr)
+
 						problem = true
 					}
+
 					break
 				}
+
 				if item == nil {
 					break
 				}
+
 				job := item.Data().(*Job)
 				job.Lock()
 				job.FailReason = FailReasonResource
 				job.Unlock()
+
 				errb := s.q.Bury(item.Key)
 				if errb != nil {
 					clog.Warn(ctx, "scheduleRunners failed to bury an item", "err", errb)
@@ -4064,6 +4228,7 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 
 			// retry the schedule in a while
 			wgk := s.wg.Add(1)
+
 			go func() {
 				defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
 				defer s.wg.Done(wgk)
@@ -4079,6 +4244,7 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 				s.scheduleRunners(ctx, group)
 				group.Unlock()
 			}()
+
 			return
 		}
 	}
@@ -4091,9 +4257,11 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 	if len(optionalDrop) == 1 {
 		drop = optionalDrop[0]
 	}
+
 	s.racmutex.RLock()
 	rc := s.rc
 	s.racmutex.RUnlock()
+
 	if rc == "" {
 		return
 	}
@@ -4109,6 +4277,7 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 			break
 		}
 	}
+
 	s.psgmutex.RUnlock()
 
 	if hasSkippedGroups {
@@ -4130,11 +4299,14 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 // slice of badServer structs.
 func (s *Server) getBadServers() []*BadServer {
 	s.bsmutex.RLock()
+
 	bs := make([]*BadServer, 0, len(s.badServers))
 	for _, server := range s.badServers {
 		bs = append(bs, cloudServerToBadServer(server))
 	}
+
 	s.bsmutex.RUnlock()
+
 	return bs
 }
 
@@ -4156,7 +4328,7 @@ func cloudServerToBadServer(server *cloud.Server) *BadServer {
 // one, if it is amongst the bad servers.
 func (s *Server) killBadCloudServers(ctx context.Context, servers []*BadServer, onlyid string) ([]*BadServer, []*Job) {
 	// first destroy or confirm dead currently bad servers
-	var confirmed []*BadServer //nolint:prealloc
+	var confirmed []*BadServer
 
 	serverIDs := make(map[string]bool)
 
@@ -4283,9 +4455,11 @@ func (s *Server) splitSuffixedLimitGroup(group string) (string, *limiter.GroupDa
 func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
 	s.wsmutex.Lock()
 	defer s.wsmutex.Unlock()
+
 	unique := logext.RandId(8)
 	s.wsconns[unique] = conn
 	s.wsWriteMutexes[unique] = &sync.Mutex{}
+
 	return unique
 }
 
@@ -4324,8 +4498,10 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	if !s.up {
 		s.ssmutex.Unlock()
+
 		return
 	}
+
 	if stopSigHandling {
 		close(s.stopSigHandling)
 	}
@@ -4357,6 +4533,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 		for range ticker.C {
 			if !s.HasRunners(ctx) {
 				ticker.Stop()
+
 				break
 			}
 		}
@@ -4372,6 +4549,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 		if errc != nil {
 			clog.Warn(ctx, "server shutdown failed to close a websocket", "err", errc)
 		}
+
 		delete(s.wsconns, unique)
 		delete(s.wsWriteMutexes, unique)
 	}
@@ -4383,6 +4561,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	// not-fully graceful shutdown of http server, since it takes too long to
 	// shutdown normally due to a fixed 500ms poll
 	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
+
 	go func() {
 		<-time.After(httpServerShutdownTime)
 		cancel()
@@ -4398,6 +4577,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	close(s.stopClientHandling)
 	s.waitForClientHandling(ctx)
 	time.Sleep(s.timings.ShutdownSocketWait)
+
 	err = s.sock.Close()
 	if err != nil {
 		clog.Warn(ctx, "server shutdown socket close failed", "err", err)
@@ -4429,16 +4609,20 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 			if errc != nil {
 				clog.Warn(ctx, "server shutdown port close failed", "port", s.ServerInfo.WebPort, "err", errc)
 			}
+
 			continue
 		}
+
 		conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
 		if conn != nil {
 			errc := conn.Close()
 			if errc != nil {
 				clog.Warn(ctx, "server shutdown port close failed", "port", s.ServerInfo.WebPort, "err", errc)
 			}
+
 			continue
 		}
+
 		break
 	}
 

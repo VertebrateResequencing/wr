@@ -110,12 +110,15 @@ type Requirements struct {
 // so you cannot recreate the Requirements from the the output of this method.
 func (req *Requirements) Stringify() string {
 	var other string
+
 	if len(req.Other) > 0 {
 		otherKeys := make([]string, 0, len(req.Other))
 		for key := range req.Other {
 			otherKeys = append(otherKeys, key)
 		}
+
 		sort.Strings(otherKeys)
+
 		for _, key := range otherKeys {
 			other += ":" + key + "=" + req.Other[key]
 		}
@@ -145,6 +148,7 @@ func (req *Requirements) Clone() *Requirements {
 		maps.Copy(newOther, req.Other)
 		new.Other = newOther
 	}
+
 	return new
 }
 
@@ -242,6 +246,7 @@ type Scheduler struct {
 // logger that discards all log messages.
 func New(ctx context.Context, name string, config any) (*Scheduler, error) {
 	var s *Scheduler
+
 	switch name {
 	case "lsf":
 		s = &Scheduler{impl: new(lsf)}
@@ -312,8 +317,10 @@ func (s *Scheduler) Schedule(ctx context.Context, cmd string, req *Requirements,
 	if _, limited := s.limiter[cmd]; limited {
 		s.limiter[cmd] = count
 		s.Unlock()
+
 		return nil
 	}
+
 	s.limiter[cmd] = count
 	s.Unlock()
 
@@ -324,12 +331,14 @@ func (s *Scheduler) Schedule(ctx context.Context, cmd string, req *Requirements,
 		if newcount != count {
 			go func() {
 				defer internal.LogPanic(ctx, "schedule recall", true)
+
 				errf := s.Schedule(ctx, cmd, req, priority, newcount)
 				if errf != nil {
 					clog.Error(s.typeContext(ctx), "schedule recall", "err", errf)
 				}
 			}()
 		}
+
 		delete(s.limiter, cmd)
 	}
 	s.Unlock()
@@ -382,6 +391,7 @@ func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 		// minimal amount of work, but not earlier than 1min to aid efficiency
 		return req.Time + minimumQueueTime
 	}
+
 	return d
 }
 

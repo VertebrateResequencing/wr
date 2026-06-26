@@ -83,6 +83,7 @@ func TestJob(t *testing.T) {
 		job1 := &Job{Cmd: "a", Cwd: "cwd/1"}
 		job2 := &Job{Cmd: "b", Cwd: "cwd/1"}
 		job3 := &Job{Cmd: "a", Cwd: "cwd/2"}
+
 		So(job1.Key(), ShouldNotEqual, job2.Key())
 		So(job1.Key(), ShouldEqual, job3.Key())
 		So(job1.Key(), ShouldEqual, "4d846ed67258e4c39a4840eea4d851dd")
@@ -179,6 +180,7 @@ func TestJob(t *testing.T) {
 			defer cleanup()
 
 			So(cmd, ShouldStartWith, "cat ")
+
 			dockerPrefix := " | docker run --rm --name %s -w $PWD --mount type=bind,source=$PWD,target=$PWD"
 			dockerSuffix := " -i %s /bin/sh"
 			So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+dockerSuffix, job.Key(), image))
@@ -300,7 +302,6 @@ func TestJob(t *testing.T) {
 		var wg sync.WaitGroup
 
 		wg.Go(func() {
-
 			<-start
 
 			for i := range 5000 {

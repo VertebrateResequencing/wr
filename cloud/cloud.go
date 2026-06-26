@@ -295,12 +295,14 @@ type DeployConfig struct {
 // provider before New() will work for it. See New() for possible providerNames.
 func RequiredEnv(providerName string) ([]string, error) {
 	var p *Provider
+
 	switch providerName {
 	case openstackName:
 		p = &Provider{impl: new(openstackp)}
 	default:
 		return nil, Error{providerName, "RequiredEnv", ErrBadProvider}
 	}
+
 	return p.impl.requiredEnv(), nil
 }
 
@@ -309,12 +311,14 @@ func RequiredEnv(providerName string) ([]string, error) {
 // appear from New() or later in subsequent attempted method usage.
 func MaybeEnv(providerName string) ([]string, error) {
 	var p *Provider
+
 	switch providerName {
 	case openstackName:
 		p = &Provider{impl: new(openstackp)}
 	default:
 		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
 	}
+
 	return p.impl.maybeEnv(), nil
 }
 
@@ -322,6 +326,7 @@ func MaybeEnv(providerName string) ([]string, error) {
 // would return.
 func AllEnv(providerName string) ([]string, error) {
 	var p *Provider
+
 	switch providerName {
 	case openstackName:
 		p = &Provider{impl: new(openstackp)}
@@ -330,8 +335,10 @@ func AllEnv(providerName string) ([]string, error) {
 	}
 
 	var all []string
+
 	all = append(all, p.impl.requiredEnv()...)
 	all = append(all, p.impl.maybeEnv()...)
+
 	return all, nil
 }
 
@@ -349,6 +356,7 @@ func AllEnv(providerName string) ([]string, error) {
 // logger that discards all log messages.
 func New(ctx context.Context, name string, resourceName string, savePath string) (*Provider, error) {
 	var p *Provider
+
 	switch name {
 	case openstackName:
 		p = &Provider{impl: new(openstackp)}
@@ -362,6 +370,7 @@ func New(ctx context.Context, name string, resourceName string, savePath string)
 	// load any resources we previously saved, or get an empty set to work
 	// with
 	var err error
+
 	p.resources, err = p.loadResources(ctx, resourceName)
 	if err != nil {
 		return nil, err
@@ -373,11 +382,13 @@ func New(ctx context.Context, name string, resourceName string, savePath string)
 	}
 
 	var missingEnv []string
+
 	for _, envKey := range p.impl.requiredEnv() {
 		if os.Getenv(envKey) == "" {
 			missingEnv = append(missingEnv, envKey)
 		}
 	}
+
 	if len(missingEnv) > 0 {
 		return nil, Error{name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
 	}
@@ -388,6 +399,7 @@ func New(ctx context.Context, name string, resourceName string, savePath string)
 	}
 
 	p.inCloud = p.impl.inCloud(p.cloudContext(ctx))
+
 	return p, nil
 }
 
@@ -421,10 +433,12 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 	if gatewayIP == "" {
 		gatewayIP = defaultGateWayIP
 	}
+
 	cidr := config.CIDR
 	if cidr == "" {
 		cidr = defaultCIDR
 	}
+
 	dnsNameServers := config.DNSNameServers
 	if dnsNameServers == nil {
 		dnsNameServers = defaultDNSNameServers[:]
@@ -447,12 +461,14 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 	privateKey := p.PrivateKey()
 	p.Lock()
 	defer p.Unlock()
+
 	for _, server := range p.resources.Servers {
 		if server.IsHeadNode {
 			known, errk := p.ServerIsKnown(server.ID)
 			if errk != nil {
 				return errk
 			}
+
 			if known {
 				p.madeHeadNode = true
 
@@ -518,6 +534,7 @@ func (p *Provider) CheapestServerFlavor(ctx context.Context, cores, ramMB int, r
 	if f == nil {
 		return nil, Error{"cloud", "CheapestServerFlavor", ErrNoFlavor}
 	}
+
 	return f, nil
 }
 
@@ -527,10 +544,12 @@ func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
 	if regex == "" {
 		return nil, nil
 	}
+
 	r, err := regexp.Compile(regex)
 	if err != nil {
 		return nil, Error{"cloud", "CheapestServerFlavor", ErrBadRegex}
 	}
+
 	return r, nil
 }
 
@@ -631,6 +650,7 @@ func (p *Provider) CheapestServerFlavors(ctx context.Context, cores, ramMB int,
 ) ([]*Flavor, error) {
 	if len(sets) == 0 {
 		f, err := p.CheapestServerFlavor(ctx, cores, ramMB, regex)
+
 		return []*Flavor{f}, err
 	}
 
@@ -650,6 +670,7 @@ func (p *Provider) CheapestServerFlavors(ctx context.Context, cores, ramMB int,
 			if err != nil {
 				return nil, err
 			}
+
 			subset[j] = rf
 		}
 
@@ -669,6 +690,7 @@ func (p *Provider) GetServerFlavor(ctx context.Context, idOrName string) (*Flavo
 		for _, f := range flavors {
 			if f.Name == idOrName {
 				fr = f
+
 				break
 			}
 		}
@@ -749,6 +771,7 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 	if err != nil {
 		close(usingQuotaDone)
 		usingQuotaOnce.Do(callUsingQuotaCB)
+
 		return nil, err
 	}
 
@@ -854,6 +877,7 @@ func (p *Provider) DestroyServer(ctx context.Context, serverID string) error {
 func (p *Provider) Servers() map[string]*Server {
 	p.RLock()
 	defer p.RUnlock()
+
 	return p.resources.Servers
 }
 
@@ -862,6 +886,7 @@ func (p *Provider) Servers() map[string]*Server {
 func (p *Provider) GetServerByName(name string) *Server {
 	p.RLock()
 	defer p.RUnlock()
+
 	return p.servers[name]
 }
 
@@ -870,11 +895,13 @@ func (p *Provider) GetServerByName(name string) *Server {
 func (p *Provider) HeadNode() *Server {
 	p.RLock()
 	defer p.RUnlock()
+
 	for _, server := range p.resources.Servers {
 		if server.IsHeadNode {
 			return server
 		}
 	}
+
 	return nil
 }
 
@@ -921,6 +948,7 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 func (p *Provider) PrivateKey() string {
 	p.RLock()
 	defer p.RUnlock()
+
 	return p.resources.PrivateKey
 }
 
@@ -932,6 +960,7 @@ func (p *Provider) PrivateKey() string {
 func (p *Provider) TearDown(ctx context.Context) error {
 	p.RLock()
 	defer p.RUnlock()
+
 	err := p.impl.tearDown(p.cloudContext(ctx), p.resources)
 	if err != nil {
 		return err
@@ -945,6 +974,7 @@ func (p *Provider) TearDown(ctx context.Context) error {
 			err = nil
 		}
 	}
+
 	return err
 }
 
@@ -953,6 +983,7 @@ func (p *Provider) TearDown(ctx context.Context) error {
 func (p *Provider) saveResources(ctx context.Context) error {
 	p.Lock()
 	defer p.Unlock()
+
 	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
@@ -961,6 +992,7 @@ func (p *Provider) saveResources(ctx context.Context) error {
 	defer internal.LogClose(p.cloudContext(ctx), file, "resource file", "path", p.savePath)
 
 	encoder := gob.NewEncoder(file)
+
 	return encoder.Encode(p.resources)
 }
 
@@ -980,6 +1012,7 @@ func (p *Provider) loadResources(ctx context.Context, resourceName string) (*Res
 	defer internal.LogClose(p.cloudContext(ctx), file, "resource file", "path", p.savePath)
 
 	decoder := gob.NewDecoder(file)
+
 	err = decoder.Decode(resources)
 	if err != nil {
 		return nil, err
@@ -990,6 +1023,7 @@ func (p *Provider) loadResources(ctx context.Context, resourceName string) (*Res
 		server.provider = p
 		server.cancelRunCmd = make(map[int]chan bool)
 	}
+
 	return resources, nil
 }
 
@@ -1002,6 +1036,7 @@ func (p *Provider) deleteResourceFile() error {
 // (a uuid).
 func uniqueResourceName(prefix string) string {
 	u, _ := uuid.NewV4() // this used to return no error, and now I don't want to change my own method signature...
+
 	return prefix + "-" + u.String()
 }
 
@@ -1010,9 +1045,11 @@ func uniqueResourceName(prefix string) string {
 // [a-z1-9\-] characters to - characters. Also truncates to 63 characters.
 func nameToHostName(name string) string {
 	hostname := strings.ToLower(name)
+
 	hostname = hostNameRegex.ReplaceAllString(hostname, "-")
 	if len(hostname) > 63 {
 		hostname = hostname[0:63]
 	}
+
 	return hostname
 }

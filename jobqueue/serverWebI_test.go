@@ -471,6 +471,7 @@ func TestServerWebI(t *testing.T) {
 		defer disconnect(jq)
 
 		var jobs []*Job
+
 		jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "group1",
 			Requirements: standardReqs, RepGroup: "rg1"})
 		jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "group1",
@@ -1260,6 +1261,7 @@ func TestServerWebI(t *testing.T) {
 				defer ws3.Close()
 
 				var broadcastJobs []*Job
+
 				broadcastJobs = append(broadcastJobs, &Job{Cmd: "echo broadcast", Cwd: "/tmp",
 					ReqGroup: "group4", Requirements: standardReqs, RepGroup: "rg4"})
 				inserts, _, erra := jq.Add(broadcastJobs, envVars, true)
@@ -1287,6 +1289,7 @@ func TestServerWebI(t *testing.T) {
 					var sc jstateAbsolute
 
 					ws.ReadJSON(&sc) //nolint:errcheck
+
 					r1ch <- sc
 				}()
 
@@ -1296,6 +1299,7 @@ func TestServerWebI(t *testing.T) {
 					var sc jstateAbsolute
 
 					ws2.ReadJSON(&sc) //nolint:errcheck
+
 					r2ch <- sc
 				}()
 
@@ -1305,6 +1309,7 @@ func TestServerWebI(t *testing.T) {
 					var sc jstateAbsolute
 
 					ws3.ReadJSON(&sc) //nolint:errcheck
+
 					r3ch <- sc
 				}()
 
@@ -2122,6 +2127,7 @@ func TestJobSubscriptions(t *testing.T) {
 		defer disconnect(jq)
 
 		var repGroupJobs []*Job
+
 		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_1", Cwd: "/tmp", ReqGroup: "sub_group1",
 			Requirements: standardReqs, RepGroup: "sub_rg1"})
 		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_2", Cwd: "/tmp", ReqGroup: "sub_group2",
@@ -2142,14 +2148,17 @@ func TestJobSubscriptions(t *testing.T) {
 		Convey("Multiple clients can connect and subscribe to different job updates", func() {
 			ws1, err := drainWebSocket(wsURL, header)
 			So(err, ShouldBeNil)
+
 			defer ws1.Close()
 
 			ws2, err := drainWebSocket(wsURL, header)
 			So(err, ShouldBeNil)
+
 			defer ws2.Close()
 
 			ws3, err := drainWebSocket(wsURL, header)
 			So(err, ShouldBeNil)
+
 			defer ws3.Close()
 
 			rg1Jobs, err := jq.GetByRepGroup("sub_rg1", false, 0, "", false, false)
@@ -2205,6 +2214,7 @@ func TestJobSubscriptions(t *testing.T) {
 				So(testNoMoreMessages(ws1), ShouldBeTrue)
 
 				var msg any
+
 				err = ws3.ReadJSON(&msg)
 				So(err, ShouldBeNil)
 
@@ -2216,6 +2226,7 @@ func TestJobSubscriptions(t *testing.T) {
 
 				ws2, err = drainWebSocket(wsURL, header)
 				So(err, ShouldBeNil)
+
 				defer ws2.Close()
 
 				err = ws2.WriteJSON(jstatusReq{
@@ -2252,6 +2263,7 @@ func TestJobSubscriptions(t *testing.T) {
 			Convey("Clients can unsubscribe to stop receiving updates", func() {
 				ws1, err = drainWebSocket(wsURL, header)
 				So(err, ShouldBeNil)
+
 				defer ws1.Close()
 
 				err = ws1.WriteJSON(jstatusReq{

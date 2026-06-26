@@ -34,10 +34,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var limitGroup string
 
-// limitCmd represents the remove command
+// limitCmd represents the remove command.
 var limitCmd = &cobra.Command{
 	Use:   "limit",
 	Short: "Limit how many jobs in a group run at once",
@@ -70,6 +70,7 @@ Supplying no options lists all limits that are currently in place.`,
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -80,6 +81,7 @@ Supplying no options lists all limits that are currently in place.`,
 
 		if limitGroup == "" {
 			var limits map[string]int
+
 			limits, err = jq.GetLimitGroups()
 			if err != nil {
 				die("%s", err.Error())
@@ -89,6 +91,7 @@ Supplying no options lists all limits that are currently in place.`,
 			for key := range limits {
 				keys = append(keys, key)
 			}
+
 			sort.Strings(keys)
 
 			for _, key := range keys {
@@ -102,6 +105,7 @@ Supplying no options lists all limits that are currently in place.`,
 		if err != nil {
 			die("%s", err.Error())
 		}
+
 		fmt.Printf("%d\n", limit)
 	},
 }

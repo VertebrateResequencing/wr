@@ -59,7 +59,7 @@ var (
 // process.
 var statusExit = os.Exit
 
-// options for this cmd
+// options for this cmd.
 var (
 	cmdFileStatus   string
 	cmdIDStatus     string
@@ -78,7 +78,7 @@ var (
 	fromHost        string
 )
 
-// statusCmd represents the status command
+// statusCmd represents the status command.
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of commands",
@@ -157,6 +157,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 		timeout := time.Duration(timeoutint) * time.Second
 
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -179,6 +180,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 		}
 
 		var jobs []*jobqueue.Job
+
 		showextra := cmdFileStatus == ""
 
 		if !useFastStatus {
@@ -206,6 +208,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			}
 
 			var d, re, b, ru, l, c, dep, sus int
+
 			for _, job := range jobs {
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -239,12 +242,15 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			})
 		case statusOutputFormatPlain, statusOutputFormatPlainAlias:
 			buried := false
+
 			for _, job := range jobs {
 				fmt.Printf("%s\t%s\n", job.Key(), statusDisplayState(job))
+
 				if job.State == jobqueue.JobStateBuried {
 					buried = true
 				}
 			}
+
 			if buried {
 				statusExit(1)
 
@@ -268,15 +274,18 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			walltime := make(map[string]*runningvariance.RunningStat)
 			cputime := make(map[string]*runningvariance.RunningStat)
 			startends := make(map[string][]time.Time)
+
 			counts[allRepGrps] = make(map[jobqueue.JobState]int)
 			for _, job := range jobs {
 				if _, exists := counts[job.RepGroup]; !exists {
 					counts[job.RepGroup] = make(map[jobqueue.JobState]int)
 				}
+
 				state := job.State
 				if state == jobqueue.JobStateReserved {
 					state = jobqueue.JobStateRunning
 				}
+
 				counts[job.RepGroup][job.State]++
 				counts[allRepGrps][job.State]++
 
@@ -285,6 +294,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					if _, exists := buried[job.RepGroup]; !exists {
 						buried[job.RepGroup] = make(map[string][]string)
 					}
+
 					group := fmt.Sprintf("exitcode.%d,\"%s\"", job.Exitcode, job.FailReason)
 					buried[job.RepGroup][group] = append(buried[job.RepGroup][group], job.Key())
 				case jobqueue.JobStateComplete:
@@ -295,13 +305,16 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						cputime[job.RepGroup] = runningvariance.NewRunningStat()
 						startends[job.RepGroup] = []time.Time{job.StartTime, job.EndTime}
 					}
+
 					memory[job.RepGroup].Push(float64(job.PeakRAM))
 					disk[job.RepGroup].Push(float64(job.PeakDisk))
 					walltime[job.RepGroup].Push(float64(job.WallTime()))
 					cputime[job.RepGroup].Push(float64(job.CPUtime))
+
 					if job.StartTime.Before(startends[job.RepGroup][0]) {
 						startends[job.RepGroup][0] = job.StartTime
 					}
+
 					if job.EndTime.After(startends[job.RepGroup][1]) {
 						startends[job.RepGroup][1] = job.EndTime
 					}
@@ -313,13 +326,16 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						cputime[allRepGrps] = runningvariance.NewRunningStat()
 						startends[allRepGrps] = []time.Time{job.StartTime, job.EndTime}
 					}
+
 					memory[allRepGrps].Push(float64(job.PeakRAM))
 					disk[allRepGrps].Push(float64(job.PeakDisk))
 					walltime[allRepGrps].Push(float64(job.WallTime()))
 					cputime[allRepGrps].Push(float64(job.CPUtime))
+
 					if job.StartTime.Before(startends[allRepGrps][0]) {
 						startends[allRepGrps][0] = job.StartTime
 					}
+
 					if job.EndTime.After(startends[allRepGrps][1]) {
 						startends[allRepGrps][1] = job.EndTime
 					}
@@ -329,10 +345,12 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			// sort RepGroups for a nicer display
 			all := counts[allRepGrps]
 			delete(counts, allRepGrps)
+
 			var rgs []string
 			for rg := range counts {
 				rgs = append(rgs, rg)
 			}
+
 			sort.Strings(rgs)
 
 			if len(rgs) > 1 {
@@ -352,16 +370,18 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 				}
 
 				var dead strings.Builder
+
 				if counts[rg][jobqueue.JobStateBuried] > 0 {
 					// sort the bury groups
 					var bgs []string
 					for bg := range buried[rg] {
 						bgs = append(bgs, bg)
 					}
+
 					sort.Strings(bgs)
 
 					for _, bg := range bgs {
-						dead.WriteString(fmt.Sprintf(" %s=%s", bg, strings.Join(buried[rg][bg], ",")))
+						fmt.Fprintf(&dead, " %s=%s", bg, strings.Join(buried[rg][bg], ","))
 					}
 				}
 
@@ -383,58 +403,74 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			// print out status information for each job
 			for _, job := range jobs {
 				cwd := job.Cwd
+
 				var mounts string
 				if len(job.MountConfigs) > 0 {
 					mounts = fmt.Sprintf("Mounts: %s\n", job.MountConfigs)
 				}
+
 				var homeChanged string
+
 				if job.ActualCwd != "" {
 					cwd = job.ActualCwd
 					if job.ChangeHome {
 						homeChanged = "Changed home: true\n"
 					}
 				}
+
 				var modules string
 				if len(job.Modules) > 0 {
 					modules += fmt.Sprintf("Modules: %s; ", strings.Join(job.Modules, ", "))
 				}
+
 				var groups string
 				if len(job.DepGroups) > 0 {
 					groups = fmt.Sprintf("Dependency groups: %s; ", strings.Join(job.DepGroups, ", "))
 				}
+
 				if len(job.Dependencies) > 0 {
 					groups += fmt.Sprintf("Dependencies: %s; ", strings.Join(job.Dependencies.Stringify(), ", "))
 				}
+
 				if len(job.LimitGroups) > 0 {
 					groups += fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
 				}
+
 				var containerInfo string
 				if job.WithDocker != "" {
 					containerInfo = fmt.Sprintf("Cmd running inside docker container running image: %s\n", job.WithDocker)
 				}
+
 				if job.WithSingularity != "" {
 					containerInfo = fmt.Sprintf("Cmd running inside singularity container running image: %s\n", job.WithSingularity)
 				}
+
 				if job.ContainerMounts != "" {
 					containerInfo += fmt.Sprintf("Container has these mounts: %s\n", job.ContainerMounts)
 				}
+
 				if job.MonitorDocker != "" {
 					dockerID := job.MonitorDocker
 					if dockerID == "?" {
 						dockerID += " (first container started after cmd)"
 					}
+
 					containerInfo += fmt.Sprintf("Docker container monitoring turned on for: %s\n", dockerID)
 				}
+
 				var behaviours string
 				if len(job.Behaviours) > 0 {
 					behaviours = fmt.Sprintf("Behaviours: %s\n", job.Behaviours)
 				}
+
 				var other string
+
 				if len(job.Requirements.Other) > 0 {
 					var others []string
 					for key, val := range job.Requirements.Other {
 						others = append(others, key+":"+val)
 					}
+
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
 
@@ -487,7 +523,9 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
+
 					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
+
 					if showextra && job.Exitcode != 0 {
 						stdout, errs := job.StdOut()
 						if errs != nil {
@@ -497,6 +535,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						} else {
 							fmt.Printf("StdOut: [none]\n")
 						}
+
 						stderr, errs := job.StdErr()
 						if errs != nil {
 							warn("problem reading the cmd's STDERR: %s", errs)
@@ -554,7 +593,9 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					if job.FailReason != "" {
 						fr = " and problem"
 					}
+
 					er := ""
+
 					if job.Exited && job.Exitcode != 0 {
 						if fr != "" {
 							er = ", exit code"
@@ -562,6 +603,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 							er = " and exit code"
 						}
 					}
+
 					fmt.Printf("+ %d other commands with the same status%s%s\n", job.Similar, er, fr)
 				}
 			}
@@ -576,6 +618,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 
 			encoder := json.NewEncoder(os.Stdout)
 			encoder.SetEscapeHTML(false)
+
 			err = encoder.Encode(jstati)
 			if err != nil {
 				die("failed to encode jobs: %s", err)
@@ -633,15 +676,19 @@ func countGetJobArgs() int {
 	if cmdFileStatus != "" {
 		set++
 	}
+
 	if cmdIDStatus != "" {
 		set++
 	}
+
 	if cmdLine != "" {
 		set++
 	}
+
 	if cmdAll {
 		set++
 	}
+
 	return set
 }
 
@@ -947,8 +994,10 @@ func jobMatchesStatusState(job *jobqueue.Job, state jobqueue.JobState) bool {
 }
 
 func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
-	var jobs []*jobqueue.Job
-	var err error
+	var (
+		jobs []*jobqueue.Job
+		err  error
+	)
 
 	switch {
 	case all:
@@ -958,6 +1007,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		if cmdIDIsInternal {
 			// get the job with this internal id
 			var job *jobqueue.Job
+
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{
 				JobKey: cmdIDStatus,
 			}, showStd, showEnv)
@@ -975,6 +1025,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		// round-trip via the server to get those that actually exist in
 		// the queue
 		jes := jobsToJobEssenses(parsedJobs)
+
 		jobs, err = jq.GetByEssences(jes)
 		if len(jobs) < len(parsedJobs) {
 			warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
@@ -985,7 +1036,9 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		if mountJSON != "" || mountSimple != "" {
 			defaultMounts = mountParse(mountJSON, mountSimple)
 		}
+
 		var job *jobqueue.Job
+
 		job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
 		if job != nil {
 			jobs = append(jobs, job)
@@ -1017,5 +1070,6 @@ func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
 	}
+
 	return jes
 }

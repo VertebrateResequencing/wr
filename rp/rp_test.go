@@ -38,6 +38,7 @@ import (
 func BenchmarkRP(b *testing.B) {
 	delayBetween := 0 * time.Millisecond
 	releaseTimeout := 200 * time.Millisecond
+
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
@@ -123,6 +124,7 @@ func getRequest(rp *Protector, numTokens int) Receipt {
 	if err != nil {
 		fmt.Printf("Request had an error: %s\n", err)
 	}
+
 	return r
 }
 
@@ -157,6 +159,7 @@ func testRPBody(t *testing.T) {
 
 				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
+
 					grantedCh <- time.Now()
 				}(r)
 			}
@@ -356,11 +359,13 @@ func testRPBody(t *testing.T) {
 			So(keepChecking, ShouldBeTrue)
 
 			<-time.After(halfDelay)
+
 			granted, keepChecking = rp.Granted(r2)
 			So(granted, ShouldBeFalse)
 			So(keepChecking, ShouldBeTrue)
 
 			<-time.After(oneFiftyPercentDelay)
+
 			granted, keepChecking = rp.Granted(r2)
 			So(granted, ShouldBeTrue)
 			So(keepChecking, ShouldBeFalse)
@@ -379,7 +384,9 @@ func testRPBody(t *testing.T) {
 
 				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
+
 					grantedCh <- time.Now()
+
 					<-time.After(halfDelay)
 					rp.Release(r)
 				}(r)
@@ -403,7 +410,9 @@ func testRPBody(t *testing.T) {
 
 				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
+
 					grantedCh <- time.Now()
+
 					rp.Release(r)
 				}(r)
 			}
@@ -423,6 +432,7 @@ func testRPBody(t *testing.T) {
 				if cbCalls <= tooBusyFor {
 					return maxSimultaneous - 1
 				}
+
 				return maxSimultaneous
 			}
 			rp.SetAvailabilityCallback(cb)

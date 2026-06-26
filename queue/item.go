@@ -126,6 +126,7 @@ func newItem(key string, reserveGroup string, data any, priority uint8, delay ti
 func (item *Item) Data() any {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	return item.data
 }
 
@@ -133,6 +134,7 @@ func (item *Item) Data() any {
 func (item *Item) SetData(data any) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.data = data
 }
 
@@ -140,8 +142,11 @@ func (item *Item) SetData(data any) {
 func (item *Item) Stats() *ItemStats {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	age := time.Since(item.creation)
+
 	var remaining time.Duration
+
 	switch item.state {
 	case ItemStateDelay:
 		remaining = time.Until(item.readyAt)
@@ -150,6 +155,7 @@ func (item *Item) Stats() *ItemStats {
 	default:
 		remaining = time.Duration(0) * time.Second
 	}
+
 	return &ItemStats{
 		State:     item.state,
 		Reserves:  item.reserves,
@@ -171,6 +177,7 @@ func (item *Item) Stats() *ItemStats {
 func (item *Item) State() ItemState {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	return item.state
 }
 
@@ -179,6 +186,7 @@ func (item *Item) State() ItemState {
 func (item *Item) ReleaseAt() time.Time {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	return item.releaseAt
 }
 
@@ -187,6 +195,7 @@ func (item *Item) ReleaseAt() time.Time {
 func (item *Item) ReadyAt() time.Time {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	return item.readyAt
 }
 
@@ -203,12 +212,15 @@ func (item *Item) Dependencies() []string {
 func (item *Item) UnresolvedDependencies() []string {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
+
 	deps := make([]string, len(item.remainingDeps))
+
 	i := 0
 	for dep := range item.remainingDeps {
 		deps[i] = dep
 		i++
 	}
+
 	return deps
 }
 
@@ -220,12 +232,14 @@ func (item *Item) ChangedKey(old, new string) {
 
 	if item.Key == old {
 		item.Key = new
+
 		return
 	}
 
 	for i, dep := range item.dependencies {
 		if dep == old {
 			item.dependencies[i] = new
+
 			break
 		}
 	}
@@ -242,7 +256,9 @@ func (item *Item) ChangedKey(old, new string) {
 func (item *Item) setDependencies(deps []string) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.dependencies = deps
+
 	item.remainingDeps = make(map[string]bool)
 	for _, key := range item.dependencies {
 		item.remainingDeps[key] = true
@@ -256,18 +272,22 @@ func (item *Item) setDependencies(deps []string) {
 func (item *Item) resolveDependency(key string) bool {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	delete(item.remainingDeps, key)
+
 	if item.state == ItemStateDependent {
 		return len(item.remainingDeps) == 0
 	}
+
 	return false
 }
 
 // restart is a thread-safe way to reset the readyAt time, for when the item
-// is put back in to the delay queue
+// is put back in to the delay queue.
 func (item *Item) restart() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.readyAt = time.Now().Add(item.delay)
 }
 
@@ -276,6 +296,7 @@ func (item *Item) restart() {
 func (item *Item) touch() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.releaseAt = time.Now().Add(item.ttr)
 }
 
@@ -309,22 +330,25 @@ func (item *Item) releasable() bool {
 func (item *Item) tempDisableTTR() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.releaseAt = time.Now().Add(8760 * time.Hour)
 }
 
-// update after we've switched from the delay to the ready sub-queue
+// update after we've switched from the delay to the ready sub-queue.
 func (item *Item) switchDelayReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[0] = -1
 	item.readyAt = time.Time{}
 	item.state = ItemStateReady
 }
 
-// update after we've switched from the delay to the dependent sub-queue
+// update after we've switched from the delay to the dependent sub-queue.
 func (item *Item) switchDelayDependent() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[0] = -1
 	item.readyAt = time.Time{}
 	item.state = ItemStateDependent
@@ -340,10 +364,11 @@ func (item *Item) switchDelaySuspended() {
 	item.state = ItemStateSuspended
 }
 
-// update after we've switched from the dependent to the ready sub-queue
+// update after we've switched from the dependent to the ready sub-queue.
 func (item *Item) switchDependentReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[4] = -1
 	item.state = ItemStateReady
 }
@@ -357,19 +382,21 @@ func (item *Item) switchDependentSuspended() {
 	item.state = ItemStateSuspended
 }
 
-// update after we've switched from the ready to the run sub-queue
+// update after we've switched from the ready to the run sub-queue.
 func (item *Item) switchReadyRun() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[1] = -1
 	item.reserves++
 	item.state = ItemStateRun
 }
 
-// update after we've switched from the ready to the dependent sub-queue
+// update after we've switched from the ready to the dependent sub-queue.
 func (item *Item) switchReadyDependent() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[1] = -1
 	item.state = ItemStateDependent
 }
@@ -383,66 +410,76 @@ func (item *Item) switchReadySuspended() {
 	item.state = ItemStateSuspended
 }
 
-// update after we've switched from the run to the ready sub-queue
+// update after we've switched from the run to the ready sub-queue.
 func (item *Item) switchRunReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 	item.timeouts++
 	item.state = ItemStateReady
 }
 
-// update after we've switched from the run to the delay sub-queue
+// update after we've switched from the run to the delay sub-queue.
 func (item *Item) switchRunDelay(timedOut ...bool) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[2] = -1
+
 	item.releaseAt = time.Time{}
 	if len(timedOut) == 1 && timedOut[0] {
 		item.timeouts++
 	} else {
 		item.releases++
 	}
+
 	item.state = ItemStateDelay
 }
 
-// update after we've switched from the run to the bury sub-queue
+// update after we've switched from the run to the bury sub-queue.
 func (item *Item) switchRunBury(timedOut ...bool) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[2] = -1
+
 	item.releaseAt = time.Time{}
 	if len(timedOut) == 1 && timedOut[0] {
 		item.timeouts++
 	}
+
 	item.buries++
 	item.state = ItemStateBury
 }
 
-// update after we've switched from the run to the dependent sub-queue
+// update after we've switched from the run to the dependent sub-queue.
 func (item *Item) switchRunDependent() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 	item.releases++
 	item.state = ItemStateDependent
 }
 
-// update after we've switched from the bury to the ready sub-queue
+// update after we've switched from the bury to the ready sub-queue.
 func (item *Item) switchBuryReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[3] = -1
 	item.kicks++
 	item.state = ItemStateReady
 }
 
-// update after we've switched from the bury to the dependent sub-queue
+// update after we've switched from the bury to the dependent sub-queue.
 func (item *Item) switchBuryDependent() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[3] = -1
 	item.kicks++
 	item.state = ItemStateDependent
@@ -466,10 +503,11 @@ func (item *Item) switchSuspendedDependent() {
 	item.state = ItemStateDependent
 }
 
-// once removed from its queue, we clear out various properties just in case
+// once removed from its queue, we clear out various properties just in case.
 func (item *Item) removalCleanup() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
+
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 	item.queueIndexes[1] = -1

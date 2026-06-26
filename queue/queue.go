@@ -346,9 +346,12 @@ func New(ctx context.Context, name string) *Queue {
 		ttrCb:                  defaultTTRCallback,
 	}
 	go queue.startDelayProcessing(ctx)
+
 	<-queue.startedDelayProcessing
 	go queue.startTTRProcessing(ctx)
+
 	<-queue.startedTTRProcessing
+
 	return queue
 }
 
@@ -382,25 +385,31 @@ func (queue *Queue) readyAdded(ctx context.Context, source string) {
 		if queue.readyAddedCbRunning {
 			queue.readyAddedCbRecall = true
 			queue.readyAddedCbMutex.Unlock()
+
 			return
 		}
+
 		queue.readyAddedCbRunning = true
 		queue.readyAddedCbMutex.Unlock()
 
 		go func() {
 			queue.mutex.RLock()
+
 			var data []any
+
 			for _, il := range queue.readyQueue.groupedItems {
 				for _, item := range il {
 					data = append(data, item.Data())
 				}
 			}
+
 			queue.mutex.RUnlock()
 			clog.Debug(ctx, "ready items available, triggering callback", "source", source, "items", len(data))
 			queue.readyAddedCb(queue.Name, data)
 			clog.Debug(ctx, "finished triggering callback for ready items", "source", source, "items", len(data))
 
 			queue.readyAddedCbMutex.Lock()
+
 			recall := false
 			if queue.readyAddedCbRecall {
 				recall = true
@@ -415,6 +424,7 @@ func (queue *Queue) readyAdded(ctx context.Context, source string) {
 				<-time.After(recallBreak)
 				queue.readyAddedCbMutex.Lock()
 				queue.readyAddedCbRunning = false
+
 				queue.readyAddedCbRecall = false
 				defer queue.readyAdded(ctx, "recall")
 				queue.readyAddedCbMutex.Unlock()
@@ -441,6 +451,7 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 		for _, item := range items {
 			data = append(data, item.Data())
 		}
+
 		go queue.changedCb(from, to, data)
 	}
 }
@@ -452,6 +463,7 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 func (queue *Queue) SetTTRCallback(callback TTRCallback) {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
+
 	queue.ttrCb = callback
 }
 
@@ -466,7 +478,9 @@ func (queue *Queue) Destroy() error {
 	}
 
 	queue.ttrClose <- true
+
 	queue.delayClose <- true
+
 	queue.items = nil
 	queue.delayQueue.empty()
 	queue.readyQueue.empty()
@@ -475,6 +489,7 @@ func (queue *Queue) Destroy() error {
 	queue.depQueue.empty()
 	queue.suspendedQueue.empty()
 	queue.closed = true
+
 	return nil
 }
 
@@ -525,12 +540,16 @@ func (queue *Queue) Stats() *Stats {
 // was actually added or changed).
 func (queue *Queue) Add(ctx context.Context, key string, reserveGroup string, data any, priority uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
+
 	item, err := queue.newItemForAdd(key, reserveGroup, data, priority, 0, delay, ttr)
 	if err != nil {
 		queue.mutex.Unlock()
+
 		return item, err
 	}
+
 	queue.handleItemForAdd(ctx, item, startQueue, delay, deps...)
+
 	return item, nil
 }
 
@@ -549,6 +568,7 @@ func (queue *Queue) newItemForAdd(key string, reserveGroup string, data any, pri
 	item = newItem(key, reserveGroup, data, priority, delay, ttr)
 	item.size = size
 	queue.items[key] = item
+
 	return item, nil
 }
 
@@ -567,9 +587,11 @@ func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue
 
 			return
 		}
+
 		queue.setItemDependencies(item, deps[0])
 		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
+
 		return
 	}
 
@@ -616,12 +638,16 @@ func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue
 // also have the same size, then they will be Reserve()d in fifo order.
 func (queue *Queue) AddWithSize(ctx context.Context, key string, reserveGroup string, data any, priority uint8, size uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
+
 	item, err := queue.newItemForAdd(key, reserveGroup, data, priority, size, delay, ttr)
 	if err != nil {
 		queue.mutex.Unlock()
+
 		return item, err
 	}
+
 	queue.handleItemForAdd(ctx, item, startQueue, delay, deps...)
+
 	return item, nil
 }
 
@@ -645,6 +671,7 @@ func (queue *Queue) setQueueDeps(item *Item) {
 		if _, exists := queue.dependants[dep]; !exists {
 			queue.dependants[dep] = make(map[string]*Item)
 		}
+
 		queue.dependants[dep][item.Key] = item
 	}
 }
@@ -657,6 +684,7 @@ func (queue *Queue) itemHasDeps(item *Item) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -669,6 +697,7 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return 0, 0, Error{queue.Name, "AddMany", "", ErrQueueClosed}
 	}
 
@@ -683,10 +712,12 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 		addedBuryItems      []*Item
 		addedSuspendedItems []*Item
 	)
+
 	for _, def := range items {
 		_, existed := queue.items[def.Key]
 		if existed {
 			dups++
+
 			continue
 		}
 
@@ -710,9 +741,11 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 				item.touch()
 				queue.runQueue.push(item)
 				item.switchReadyRun()
+
 				addedRunItems = append(addedRunItems, item)
 				if !deferredTTRTrigger && queue.ttrTime.After(time.Now().Add(item.ttr)) {
 					defer queue.ttrNotificationTrigger(item)
+
 					deferredTTRTrigger = true
 				}
 			case SubQueueBury:
@@ -733,9 +766,11 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 					addedReadyItems = append(addedReadyItems, item)
 				} else {
 					queue.delayQueue.push(item)
+
 					addedDelayItems = append(addedDelayItems, item)
 					if !deferredDelayTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
 						defer queue.delayNotificationTrigger(item)
+
 						deferredDelayTrigger = true
 					}
 				}
@@ -746,19 +781,24 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 	}
 
 	queue.mutex.Unlock()
+
 	if len(addedReadyItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueReady, addedReadyItems)
 		queue.readyAdded(ctx, "new")
 	}
+
 	if len(addedDelayItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueDelay, addedDelayItems)
 	}
+
 	if len(addedDepItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueDependent, addedDepItems)
 	}
+
 	if len(addedRunItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueRun, addedRunItems)
 	}
+
 	if len(addedBuryItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueBury, addedBuryItems)
 	}
@@ -783,6 +823,7 @@ func (queue *Queue) Get(key string) (*Item, error) {
 	if !exists {
 		return nil, Error{queue.Name, "Get", key, ErrNotFound}
 	}
+
 	return item, nil
 }
 
@@ -791,10 +832,12 @@ func (queue *Queue) Get(key string) (*Item, error) {
 func (queue *Queue) GetRunningData() []any {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
+
 	data := make([]any, 0, len(queue.runQueue.items))
 	for _, item := range queue.runQueue.items {
 		data = append(data, item.Data())
 	}
+
 	return data
 }
 
@@ -803,10 +846,12 @@ func (queue *Queue) GetRunningData() []any {
 func (queue *Queue) AllItems() []*Item {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
+
 	items := make([]*Item, 0, len(queue.items))
 	for _, item := range queue.items {
 		items = append(items, item)
 	}
+
 	return items
 }
 
@@ -822,31 +867,41 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Update", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Update", key, ErrNotFound}
 	}
 
-	var changedFrom SubQueue
-	var addedReady bool
+	var (
+		changedFrom SubQueue
+		addedReady  bool
+	)
+
 	item.SetData(data)
+
 	if len(deps) == 1 {
 		// check if dependencies actually changed
 		oldDeps := make(map[string]bool)
 		for _, dep := range item.UnresolvedDependencies() {
 			oldDeps[dep] = true
 		}
+
 		newDeps := 0
+
 		for _, dep := range deps[0] {
 			if !oldDeps[dep] {
 				newDeps++
 			}
+
 			delete(oldDeps, dep)
 		}
+
 		var toRemove []string
 		for dep := range oldDeps {
 			toRemove = append(toRemove, dep)
@@ -857,6 +912,7 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 			for _, dep := range toRemove {
 				if _, exists := queue.items[dep]; exists {
 					delete(queue.dependants[dep], key)
+
 					if len(queue.dependants[dep]) == 0 {
 						delete(queue.dependants, dep)
 					}
@@ -872,20 +928,25 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 			item.mutex.RLock()
 			iState := item.state
 			item.mutex.RUnlock()
+
 			if len(deps[0]) > 0 && iState != ItemStateDependent {
 				pushToDep := true
+
 				switch iState {
 				case ItemStateDelay:
 					queue.delayQueue.remove(item)
 					item.switchDelayDependent()
+
 					changedFrom = SubQueueDelay
 				case ItemStateReady:
 					queue.readyQueue.remove(item)
 					item.switchReadyDependent()
+
 					changedFrom = SubQueueReady
 				case ItemStateRun:
 					queue.runQueue.remove(item)
 					item.switchRunDependent()
+
 					changedFrom = SubQueueRun
 				case ItemStateBury:
 					// leave buried things buried; Kick() will put it on the
@@ -894,6 +955,7 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 				case ItemStateSuspended:
 					pushToDep = false
 				}
+
 				if pushToDep {
 					queue.depQueue.push(item)
 				}
@@ -928,6 +990,7 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 	case item.priority != priority || item.ReserveGroup != reserveGroup || addedReady:
 		item.priority = priority
 		oldGroup := item.ReserveGroup
+
 		item.ReserveGroup = reserveGroup
 		if item.state == ItemStateReady {
 			item.mutex.Unlock()
@@ -1011,12 +1074,14 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) error {
 	queue.mutex.Lock()
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "SetDelay", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "SetDelay", key, ErrNotFound}
 	}
 
@@ -1029,11 +1094,13 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) error {
 			queue.delayQueue.update(item)
 			queue.mutex.Unlock()
 			queue.delayNotificationTrigger(item)
+
 			return nil
 		}
 	}
 	item.mutex.Unlock()
 	queue.mutex.Unlock()
+
 	return nil
 }
 
@@ -1042,16 +1109,19 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) error {
 	queue.mutex.Lock()
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "SetReserveGroup", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "SetReserveGroup", key, ErrNotFound}
 	}
 
 	item.mutex.Lock()
+
 	oldGroup := item.ReserveGroup
 	if oldGroup != newGroup {
 		item.ReserveGroup = newGroup
@@ -1065,6 +1135,7 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) error {
 		item.mutex.Unlock()
 	}
 	queue.mutex.Unlock()
+
 	return nil
 }
 
@@ -1094,6 +1165,7 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return nil, Error{queue.Name, "Reserve", "", ErrQueueClosed}
 	}
 
@@ -1110,6 +1182,7 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 			tryAgain := <-ch
 			if tryAgain {
 				queue.mutex.Lock()
+
 				item = queue.readyQueue.pop(reserveGroup)
 				if item == nil {
 					queue.mutex.Unlock()
@@ -1142,6 +1215,7 @@ func (queue *Queue) Touch(key string) error {
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Touch", key, ErrQueueClosed}
 	}
 
@@ -1149,12 +1223,14 @@ func (queue *Queue) Touch(key string) error {
 	item, ok := queue.items[key]
 	if !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Touch", key, ErrNotFound}
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Touch", key, ErrNotRunning}
 	}
 
@@ -1175,6 +1251,7 @@ func (queue *Queue) Release(ctx context.Context, key string) error {
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Release", key, ErrQueueClosed}
 	}
 
@@ -1182,18 +1259,21 @@ func (queue *Queue) Release(ctx context.Context, key string) error {
 	item, ok := queue.items[key]
 	if !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Release", key, ErrNotFound}
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Release", key, ErrNotRunning}
 	}
 
 	// switch from run to delay queue (unless there is no delay, in which case
 	// straight to ready)
 	queue.runQueue.remove(item)
+
 	if item.delay.Nanoseconds() == 0 {
 		item.switchRunReady()
 		queue.readyQueue.push(item)
@@ -1220,6 +1300,7 @@ func (queue *Queue) Bury(key string) error {
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Bury", key, ErrQueueClosed}
 	}
 
@@ -1227,12 +1308,14 @@ func (queue *Queue) Bury(key string) error {
 	item, ok := queue.items[key]
 	if !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Bury", key, ErrNotFound}
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Bury", key, ErrNotRunning}
 	}
 
@@ -1253,6 +1336,7 @@ func (queue *Queue) Kick(ctx context.Context, key string) error {
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Kick", key, ErrQueueClosed}
 	}
 
@@ -1260,17 +1344,20 @@ func (queue *Queue) Kick(ctx context.Context, key string) error {
 	item, ok := queue.items[key]
 	if !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Kick", key, ErrNotFound}
 	}
 
 	// and it must be in the bury queue
 	if ok = item.state == ItemStateBury; !ok {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Kick", key, ErrNotBuried}
 	}
 
 	// switch from bury to ready or dependent queue
 	queue.buryQueue.remove(item)
+
 	if queue.itemHasDeps(item) {
 		queue.depQueue.push(item)
 		item.switchBuryDependent()
@@ -1283,6 +1370,7 @@ func (queue *Queue) Kick(ctx context.Context, key string) error {
 		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
 		queue.readyAdded(ctx, "kicked")
 	}
+
 	return nil
 }
 
@@ -1292,6 +1380,7 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 
 	if queue.closed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Remove", key, ErrQueueClosed}
 	}
 
@@ -1299,12 +1388,15 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 	item, existed := queue.items[key]
 	if !existed {
 		queue.mutex.Unlock()
+
 		return Error{queue.Name, "Remove", key, ErrNotFound}
 	}
 
 	// transfer any dependants to the ready queue
 	addedReady := false
+
 	var addedReadyItems []*Item
+
 	if deps, exists := queue.dependants[key]; exists {
 		for _, dep := range deps {
 			done := dep.resolveDependency(key)
@@ -1318,6 +1410,7 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 				addedReady = true
 			}
 		}
+
 		delete(queue.dependants, key)
 	}
 
@@ -1326,6 +1419,7 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 	for _, parent := range item.dependencies {
 		if deps, exists := queue.dependants[parent]; exists {
 			delete(deps, key)
+
 			if len(deps) == 0 {
 				delete(queue.dependants, parent)
 			}
@@ -1356,9 +1450,11 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 		queue.suspendedQueue.remove(item)
 		queue.changed(SubQueueSuspended, SubQueueRemoved, []*Item{item})
 	}
+
 	item.removalCleanup()
 
 	queue.mutex.Unlock()
+
 	if addedReady {
 		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
 		queue.readyAdded(ctx, "dependent")
@@ -1380,13 +1476,16 @@ func (queue *Queue) HasDependents(key string) (bool, error) {
 	}
 
 	_, has := queue.dependants[key]
+
 	return has, nil
 }
 
 func (queue *Queue) startDelayProcessing(ctx context.Context) {
 	sendStarted := true
+
 	for {
 		queue.mutex.Lock()
+
 		var sleepTime time.Duration
 		if queue.delayQueue.len() > 0 {
 			sleepTime = time.Until(queue.delayQueue.firstItem().ReadyAt())
@@ -1396,6 +1495,7 @@ func (queue *Queue) startDelayProcessing(ctx context.Context) {
 
 		queue.delayTime = time.Now().Add(sleepTime)
 		queue.mutex.Unlock()
+
 		if sendStarted {
 			queue.startedDelayProcessing <- true
 		}
@@ -1405,7 +1505,9 @@ func (queue *Queue) startDelayProcessing(ctx context.Context) {
 			queue.mutex.Lock()
 			len := queue.delayQueue.len()
 			addedReady := false
+
 			var items []*Item
+
 			for range len {
 				item := queue.delayQueue.firstItem()
 
@@ -1422,13 +1524,16 @@ func (queue *Queue) startDelayProcessing(ctx context.Context) {
 				addedReady = true
 			}
 			queue.mutex.Unlock()
+
 			if addedReady {
 				queue.changed(SubQueueDelay, SubQueueReady, items)
 				queue.readyAdded(ctx, "delayed")
 			}
+
 			sendStarted = false
 		case <-queue.delayNotification:
 			sendStarted = true
+
 			continue
 		case <-queue.delayClose:
 			return
@@ -1438,9 +1543,12 @@ func (queue *Queue) startDelayProcessing(ctx context.Context) {
 
 func (queue *Queue) delayNotificationTrigger(item *Item) {
 	queue.mutex.RLock()
+
 	if queue.delayTime.After(time.Now().Add(item.delay)) {
 		queue.mutex.RUnlock()
+
 		queue.delayNotification <- true
+
 		<-queue.startedDelayProcessing
 	} else {
 		queue.mutex.RUnlock()
@@ -1449,8 +1557,10 @@ func (queue *Queue) delayNotificationTrigger(item *Item) {
 
 func (queue *Queue) startTTRProcessing(ctx context.Context) {
 	sendStarted := true
+
 	for {
 		var sleepTime time.Duration
+
 		queue.mutex.Lock()
 		if queue.runQueue.len() > 0 {
 			sleepTime = time.Until(queue.runQueue.firstItem().ReleaseAt())
@@ -1460,6 +1570,7 @@ func (queue *Queue) startTTRProcessing(ctx context.Context) {
 
 		queue.ttrTime = time.Now().Add(sleepTime)
 		queue.mutex.Unlock()
+
 		if sendStarted {
 			queue.startedTTRProcessing <- true
 		}
@@ -1468,7 +1579,9 @@ func (queue *Queue) startTTRProcessing(ctx context.Context) {
 		case <-time.After(time.Until(queue.ttrTime)):
 			queue.mutex.Lock()
 			length := queue.runQueue.len()
+
 			var delayedItems, buriedItems, readyItems []*Item
+
 			for range length {
 				item := queue.runQueue.firstItem()
 
@@ -1486,6 +1599,7 @@ func (queue *Queue) startTTRProcessing(ctx context.Context) {
 				} else {
 					// remove it from the ttr sub-queue and move to another
 					queue.runQueue.remove(item)
+
 					switch moveTo {
 					case SubQueueDelay:
 						item.restart()
@@ -1505,22 +1619,28 @@ func (queue *Queue) startTTRProcessing(ctx context.Context) {
 			}
 
 			queue.mutex.Unlock()
+
 			if len(delayedItems) > 0 {
 				for _, item := range delayedItems {
 					queue.delayNotificationTrigger(item)
 				}
+
 				queue.changed(SubQueueRun, SubQueueDelay, delayedItems)
 			}
+
 			if len(buriedItems) > 0 {
 				queue.changed(SubQueueRun, SubQueueBury, buriedItems)
 			}
+
 			if len(readyItems) > 0 {
 				queue.changed(SubQueueRun, SubQueueReady, readyItems)
 				queue.readyAdded(ctx, "ttr")
 			}
+
 			sendStarted = false
 		case <-queue.ttrNotification:
 			sendStarted = true
+
 			continue
 		case <-queue.ttrClose:
 			return
@@ -1530,9 +1650,12 @@ func (queue *Queue) startTTRProcessing(ctx context.Context) {
 
 func (queue *Queue) ttrNotificationTrigger(item *Item) {
 	queue.mutex.RLock()
+
 	if queue.ttrTime.After(time.Now().Add(item.ttr)) {
 		queue.mutex.RUnlock()
+
 		queue.ttrNotification <- true
+
 		<-queue.startedTTRProcessing
 	} else {
 		queue.mutex.RUnlock()

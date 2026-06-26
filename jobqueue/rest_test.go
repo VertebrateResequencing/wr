@@ -876,6 +876,7 @@ func TestREST(t *testing.T) {
 		log.Fatalf("could not create tempdir: %s\n", errt)
 	}
 	defer os.RemoveAll(dir)
+
 	uploadsDir := filepath.Join(dir, "uploads")
 
 	// load our config to know where our development manager port is supposed to
@@ -920,25 +921,31 @@ func TestREST(t *testing.T) {
 	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
 
-	var server *Server
-	var token []byte
+	var (
+		server *Server
+		token  []byte
+	)
+
 	Convey("Once the jobqueue server is up", t, func() {
 		server, _, token, errt = Serve(ctx, serverConfig)
 		So(errt, ShouldBeNil)
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
+
 		defer disconnect(jq)
 
 		bearer := "Bearer " + string(token)
 
 		tlsConfig := &tls.Config{ServerName: config.ManagerCertDomain}
+
 		caCert, errr := os.ReadFile(config.ManagerCAFile)
 		if errr == nil {
 			certPool := x509.NewCertPool()
 			certPool.AppendCertsFromPEM(caCert)
 			tlsConfig.RootCAs = certPool
 		}
+
 		var noProxyTransport http.RoundTripper = &http.Transport{
 			Proxy:           nil,
 			TLSClientConfig: tlsConfig,
@@ -1062,6 +1069,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 0)
@@ -1134,6 +1142,7 @@ func TestREST(t *testing.T) {
 
 		Convey("You can POST to add jobs to the queue", func() {
 			var inputJobs []*JobViaJSON
+
 			pri := 2
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", Retries: &pri, NoRetriesOverWalltime: "5m"})
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
@@ -1150,7 +1159,9 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
+
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 3)
@@ -1196,6 +1207,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
+
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 3)
@@ -1211,6 +1223,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
+
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 1)
@@ -1225,6 +1238,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati2 []JStatus
+
 				err = json.Unmarshal(responseData, &jstati2)
 				So(err, ShouldBeNil)
 				So(len(jstati2), ShouldEqual, 2)
@@ -1242,13 +1256,16 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
+
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 2)
+
 				keys := make(map[string]bool)
 				for _, j := range jstati {
 					keys[j.Key] = true
 				}
+
 				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
 
 				Convey("And you can modify the results by changing limit", func() {
@@ -1261,6 +1278,7 @@ func TestREST(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
+
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -1289,14 +1307,17 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
+
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 2)
+
 				keys := make(map[string]bool)
 				for _, j := range jstati {
 					keys[j.Key] = true
 					So(j.State, ShouldEqual, JobStateDeleted)
 				}
+
 				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
 			})
 
@@ -1340,6 +1361,7 @@ func TestREST(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
+
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -1376,6 +1398,7 @@ func TestREST(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
+
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -1406,13 +1429,16 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati []JStatus
+
 						err = json.Unmarshal(responseData, &jstati)
 						So(err, ShouldBeNil)
 						So(len(jstati), ShouldEqual, 2)
+
 						keys := make(map[string]bool)
 						for _, j := range jstati {
 							keys[j.Key] = true
 						}
+
 						So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "f5c0d6240167a6e0b803e23f74e3a085": true})
 
 						req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=true", nil)
@@ -1424,6 +1450,7 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati2 []JStatus
+
 						err = json.Unmarshal(responseData, &jstati2)
 						So(err, ShouldBeNil)
 						So(len(jstati2), ShouldEqual, 1)
@@ -1446,6 +1473,7 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati3 []JStatus
+
 						err = json.Unmarshal(responseData, &jstati3)
 						So(err, ShouldBeNil)
 						So(len(jstati3), ShouldEqual, 1)
@@ -1466,6 +1494,7 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati []JStatus
+
 						err = json.Unmarshal(responseData, &jstati)
 						So(err, ShouldBeNil)
 						So(len(jstati), ShouldEqual, 1)
@@ -1477,6 +1506,7 @@ func TestREST(t *testing.T) {
 
 		Convey("You can POST to add a job with a cloud_flavor to the queue", func() {
 			var inputJobs []*JobViaJSON
+
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", CloudFlavor: "o1.tiny"})
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
@@ -1489,7 +1519,9 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
+
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 1)
@@ -1498,6 +1530,7 @@ func TestREST(t *testing.T) {
 			So(jstati[0].State, ShouldEqual, JobStateReady)
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
 			So(jstati[0].RepGroup, ShouldEqual, "rp1")
+
 			other := []string{"cloud_flavor:o1.tiny"}
 			So(jstati[0].OtherRequests, ShouldResemble, other)
 
@@ -1511,6 +1544,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
+
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 1)
@@ -1539,6 +1573,7 @@ func TestREST(t *testing.T) {
 			inputJobs := []*JobViaJSON{{Cmd: "echo defaults"}}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
+
 			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
 			mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
 			mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
@@ -1550,7 +1585,9 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
+
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 1)
@@ -1588,6 +1625,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldNotBeNil)
 
 			var inputJobs []*JobViaJSON
+
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", CloudScript: uploadedScript})
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
@@ -1691,6 +1729,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var sis []*schedulerIssue
+
 			err = json.Unmarshal(responseData, &sis)
 			So(err, ShouldBeNil)
 			So(len(sis), ShouldEqual, 0)
@@ -1721,6 +1760,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var sis []*schedulerIssue
+
 				err = json.Unmarshal(responseData, &sis)
 				So(err, ShouldBeNil)
 				So(len(sis), ShouldEqual, 2)
@@ -1741,6 +1781,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var servers []*BadServer
+
 			err = json.Unmarshal(responseData, &servers)
 			So(err, ShouldBeNil)
 			So(len(servers), ShouldEqual, 0)
@@ -1766,6 +1807,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var servers []*BadServer
+
 				err = json.Unmarshal(responseData, &servers)
 				So(err, ShouldBeNil)
 				So(len(servers), ShouldEqual, 1)

@@ -38,7 +38,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-
 	"math/big"
 	"net"
 	"os"

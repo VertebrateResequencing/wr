@@ -302,6 +302,7 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// our home page is /status.html
 		path := r.URL.Path
+
 		path = strings.TrimPrefix(path, "/")
 		if path == "" || path == "status" {
 			path = "status.html"
@@ -315,6 +316,7 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 		}
 
 		path = "static/" + path
+
 		doc, err := staticFS.ReadFile(path)
 		if err != nil {
 			clog.Warn(ctx, "not found", "err", err)
@@ -360,22 +362,25 @@ func getContentTypeForPath(path string) string { //nolint:gocyclo
 	return "text/html; charset=utf-8"
 }
 
-// webSocket upgrades a http connection to a websocket
+// webSocket upgrades a http connection to a websocket.
 func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		http.Error(w, "Could not open websocket connection", http.StatusBadRequest)
+
 		return conn, false
 	}
+
 	return conn, true
 }
 
 // webInterfaceStatusWS reads from and writes to the websocket on the status
-// webpage
+// webpage.
 func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ok := s.httpAuthorized(w, r)
@@ -386,6 +391,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 		conn, ok := webSocket(w, r)
 		if !ok {
 			clog.Error(ctx, "Failed to set up websocket", "Host", r.Host)
+
 			return
 		}
 
@@ -412,6 +418,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 
 			for {
 				req := jstatusReq{}
+
 				errr := conn.ReadJSON(&req)
 				if errr != nil {
 					// browser was refreshed or server shutdown
@@ -444,9 +451,11 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						}
 
 						s.simutex.RLock()
+
 						for _, si := range s.schedIssues {
 							s.schedCaster.Send(si)
 						}
+
 						s.simutex.RUnlock()
 					case jstatusRequestDetails:
 						opts := repGroupOptions{
@@ -473,6 +482,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 								status, err := job.ToStatus()
 								if err != nil {
 									failed = true
+
 									break
 								}
 
@@ -506,6 +516,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							}
 
 							writeMutex.Unlock()
+
 							if failed {
 								break
 							}
@@ -552,6 +563,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							server := s.badServers[req.ServerID]
 							delete(s.badServers, req.ServerID)
 							s.bsmutex.Unlock()
+
 							if server != nil && server.IsBad() {
 								err := server.Destroy(ctx)
 								if err != nil {
@@ -587,6 +599,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						err = conn.WriteJSON(status)
 
 						writeMutex.Unlock()
+
 						if err != nil {
 							break
 						}
@@ -726,16 +739,19 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 	}
 
 	var jobs []*Job
+
 	if req.RepGroup != "" {
 		for _, key := range s.rpl.Values(req.RepGroup) {
 			item, err := s.q.Get(key)
 			if item == nil || err != nil {
 				continue
 			}
+
 			stats := item.Stats()
 			if allowed[stats.State] {
 				job := item.Data().(*Job)
 				job.Lock()
+
 				job.State = s.itemStateToJobState(stats.State, job.Lost)
 				if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
 					jobs = append(jobs, job)
@@ -748,6 +764,7 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 		if item == nil || err != nil {
 			return nil
 		}
+
 		stats := item.Stats()
 		if allowed[stats.State] {
 			job := item.Data().(*Job)
@@ -757,6 +774,7 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 			jobs = append(jobs, job)
 		}
 	}
+
 	return jobs
 }
 

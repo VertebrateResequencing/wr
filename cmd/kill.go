@@ -32,13 +32,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	confirmDead bool
 	cmdAge      string
 )
 
-// killCmd represents the kill command
+// killCmd represents the kill command.
 var killCmd = &cobra.Command{
 	Use:   "kill",
 	Short: "Kill running commands",
@@ -71,12 +71,14 @@ same file you gave to "wr add" in -f mode.`,
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
 		}
+
 		if set == 0 {
 			die("1 of -f, -i, -l or -a is required")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -89,6 +91,7 @@ same file you gave to "wr add" in -f mode.`,
 		if confirmDead {
 			jstate = jobqueue.JobStateLost
 		}
+
 		jobs := getJobs(jq, jstate, cmdAll, 0, false, false)
 
 		if len(jobs) == 0 {
@@ -105,6 +108,7 @@ same file you gave to "wr add" in -f mode.`,
 
 		if age != 0 {
 			var oldJobs []*jobqueue.Job
+
 			for _, job := range jobs {
 				var thisAge time.Duration
 				if confirmDead {
@@ -126,10 +130,12 @@ same file you gave to "wr add" in -f mode.`,
 		}
 
 		jes := jobsToJobEssenses(jobs)
+
 		killed, err := jq.Kill(jes)
 		if err != nil {
 			die("failed to kill desired jobs: %s", err)
 		}
+
 		info("Initiated the termination of %d running commands (out of %d eligible)", killed, len(jobs))
 	},
 }

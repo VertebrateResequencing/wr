@@ -57,7 +57,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	foreground            bool
 	scheduler             string
@@ -84,7 +84,7 @@ const (
 
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
 
-// managerCmd represents the manager command
+// managerCmd represents the manager command.
 var managerCmd = &cobra.Command{
 	Use:   "manager",
 	Short: "Workflow manager",
@@ -113,7 +113,7 @@ state. You will have to then confirm them as dead and retry them from the start
 (even though they had actually completed).`,
 }
 
-// start sub-command starts the daemon
+// start sub-command starts the daemon.
 var managerStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start workflow management",
@@ -167,6 +167,7 @@ fully.`,
 		}
 
 		var extraArgs []string
+
 		postCreation := handleScript(postCreationScript, "cloud_script", &extraArgs)
 		preDestroy := handleScript(preDestroyScript, "cloud_destroy_script", &extraArgs)
 
@@ -194,17 +195,20 @@ fully.`,
 			startJQ(postCreation, preDestroy)
 		} else {
 			config.ToEnv()
+
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
 				internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
+
 				jq := connect(mTimeout, true)
 				if jq == nil {
 					printLines(getBadLogLines())
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
+
 				token, err := token()
 				if err != nil {
 					warn("token could not be read! [%s]", err)
@@ -219,13 +223,14 @@ fully.`,
 						warn("daemon release failed: %s", err)
 					}
 				}()
+
 				startJQ(postCreation, preDestroy)
 			}
 		}
 	},
 }
 
-// stop sub-command stops the daemon by sending it a term signal
+// stop sub-command stops the daemon by sending it a term signal.
 var managerStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop workflow management",
@@ -239,6 +244,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// eventualities we check the pid file first, try and terminate its pid,
 		// then confirm we can't connect
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
+
 		var stopped bool
 		if err == nil {
 			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile)
@@ -260,6 +266,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
 				deleteToken()
+
 				return
 			}
 		} else {
@@ -279,13 +286,16 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		if err != nil {
 			warn("Could not get current IP: %s", err)
 		}
+
 		myAddr := currentIP + ":" + config.ManagerPort
+
 		sAddr := jq.ServerInfo.Addr
 		if myAddr == sAddr {
 			err = jq.Disconnect()
 			if err != nil {
 				warn("Disconnecting from the server failed: %s", err)
 			}
+
 			stopped = stopdaemon(jq.ServerInfo.PID, "the manager itself")
 		} else {
 			// use the client command to stop it
@@ -297,6 +307,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 				jq = connect(1*time.Second, true)
 				if jq != nil {
 					warn("I requested shut down of the remote manager at %s, but it's still up!", sAddr)
+
 					stopped = false
 				}
 			}
@@ -313,7 +324,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 
 // drain sub-command makes the server stop spawning new runners and stops it
 // letting existing runners reserve jobs, and when there are no more runners
-// running it will exit by itself
+// running it will exit by itself.
 var managerDrainCmd = &cobra.Command{
 	Use:   "drain",
 	Short: "Drain the workflow manager of running jobs and then stop",
@@ -444,7 +455,7 @@ of the manager.`,
 	},
 }
 
-// status sub-command tells if the manger is up or down
+// status sub-command tells if the manger is up or down.
 var managerStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of the workflow manager",
@@ -460,6 +471,7 @@ using, and other details about the manager.`,
 			jq := connect(5 * time.Second)
 			if jq != nil {
 				reportLiveStatus(jq)
+
 				return
 			}
 
@@ -477,7 +489,7 @@ using, and other details about the manager.`,
 	},
 }
 
-// backup sub-command does a database backup
+// backup sub-command does a database backup.
 var managerBackupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Backup wr's database",
@@ -495,6 +507,7 @@ somewhere.)`,
 		if backupPath == "" {
 			die("--path is required")
 		}
+
 		timeout := time.Duration(timeoutint) * time.Second
 
 		jq := connect(timeout)
@@ -727,6 +740,7 @@ func init() {
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(context.Background())
+
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
 	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
@@ -778,6 +792,7 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 		if err != nil {
 			warn("could not get IP address of localhost: %s", err)
 		}
+
 		err = internal.InfobloxSetDomainIP(s.Host, ip)
 		if err != nil {
 			warn("failed to set domain IP: %s", err)
@@ -831,7 +846,9 @@ func startJQ(postCreation, preDestroy []byte) {
 	}
 
 	var schedulerConfig any
+
 	serverCIDR := ""
+
 	switch scheduler {
 	case "local":
 		schedulerConfig = &jqs.ConfigLocal{
@@ -894,6 +911,7 @@ func startJQ(postCreation, preDestroy []byte) {
 		// files in ConfigFiles, so that they will be copied to all servers
 		// that get created.
 		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
+
 		if config.ManagerCAFile != "" {
 			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
 		}
@@ -920,6 +938,7 @@ func startJQ(postCreation, preDestroy []byte) {
 	}
 
 	var wgDebug strings.Builder
+
 	waitgroup.Opts.Logger = &wgDebug
 	waitgroup.Opts.Disable = false
 
