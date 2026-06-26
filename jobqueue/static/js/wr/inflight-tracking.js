@@ -25,7 +25,24 @@ function updateProgressBars(tracker, countProps, pctProps) {
     const counts = countProps.map(prop => tracker[prop]());
     const total = counts.reduce((sum, count) => sum + count, 0);
 
-    if (total <= 0) return false;
+    // When a tracker drains to empty, clear the segment widths smoothly here
+    // rather than relying on a wholesale reset that would zero the widths
+    // mid-storm. Setting the (rate-limited) pct observables to 0 lets the CSS
+    // width transition animate the bar away; the bound `if: total() > 0`
+    // wrapper then hides it once Knockout settles.
+    if (total <= 0) {
+        const hasNonZeroPct = pctProps.some(prop => tracker[prop]() !== 0);
+        if (hasNonZeroPct) {
+            const clear = () => pctProps.forEach(prop => tracker[prop](0));
+            if (window.requestAnimationFrame) {
+                window.requestAnimationFrame(clear);
+            } else {
+                clear();
+            }
+        }
+
+        return false;
+    }
 
     // Calculate percentages
     const multiplier = 100 / total;
@@ -95,7 +112,11 @@ export function setupInflightTracking(rateLimit) {
             inflight.suspended() + inflight.ready() + inflight.running() +
             inflight.lost() + inflight.buried();
 
-        if (total > 0) {
+        // Recompute the segment widths while there are jobs, and also on the
+        // transition to empty so a drained tracker clears its widths smoothly
+        // (updateProgressBars zeroes the pcts when total <= 0). When it is
+        // already empty there is nothing to update.
+        if (total > 0 || inflight.old_total > 0) {
             updateProgressBars(inflight, STANDARD_COUNT_PROPS, STANDARD_PCT_PROPS);
         }
 
@@ -124,15 +145,19 @@ export function createRepGroupTracker(rg, rateLimit) {
         buried: ko.observable(0).extend({ rateLimit }),
         deleted: ko.observable(0).extend({ rateLimit }),
         complete: ko.observable(0).extend({ rateLimit }),
-        delayPct: ko.observable(0),
-        dependentPct: ko.observable(0),
-        suspendedPct: ko.observable(0),
-        readyPct: ko.observable(0),
-        runPct: ko.observable(0),
-        lostPct: ko.observable(0),
-        buryPct: ko.observable(0),
-        deletePct: ko.observable(0),
-        completePct: ko.observable(0),
+        // The pct observables drive the bound segment widths. Rate-limit them
+        // (like the inflight tracker's) so they only change smoothly via
+        // updateProgressBars and are never driven straight to 0 by a wholesale
+        // reset, which would collapse the bar on every storm message.
+        delayPct: ko.observable(0).extend({ rateLimit }),
+        dependentPct: ko.observable(0).extend({ rateLimit }),
+        suspendedPct: ko.observable(0).extend({ rateLimit }),
+        readyPct: ko.observable(0).extend({ rateLimit }),
+        runPct: ko.observable(0).extend({ rateLimit }),
+        lostPct: ko.observable(0).extend({ rateLimit }),
+        buryPct: ko.observable(0).extend({ rateLimit }),
+        deletePct: ko.observable(0).extend({ rateLimit }),
+        completePct: ko.observable(0).extend({ rateLimit }),
         details: ko.observableArray(),
         old_total: 0
     };
@@ -143,7 +168,11 @@ export function createRepGroupTracker(rg, rateLimit) {
             repgroup.lost() + repgroup.buried() +
             repgroup.deleted() + repgroup.complete();
 
-        if (total > 0) {
+        // Recompute the segment widths while there are jobs, and also on the
+        // transition to empty so a drained RepGroup clears its widths smoothly
+        // (updateProgressBars zeroes the pcts when total <= 0). When it is
+        // already empty there is nothing to update.
+        if (total > 0 || repgroup.old_total > 0) {
             updateProgressBars(repgroup, REPGROUP_COUNT_PROPS, REPGROUP_PCT_PROPS);
         }
 

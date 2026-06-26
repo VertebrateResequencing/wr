@@ -29,6 +29,35 @@ non-idempotent delta protocol over a model of the lossy 1-slot coalescing caster
 against the pre-fix `websocket-handler.js` that variant reproduces both symptoms
 and fails. It is wired into `make browser-test`.
 
+## Repgroup bar flicker
+
+`repgroup-bar-flicker/` contains the regression fixture for the residual status
+web UI bar-rendering bug after the absolute-state migration (commit 4e306f7).
+The per-RepGroup totals are correct, but during a high-rate job-state storm the
+progress bar "is basically invisible due to flickering": the previous wholesale
+apply path zeroed every per-RepGroup percentage observable on each update, so
+the bound segment widths collapsed to 0% on every message instead of the bar
+staying full and only its colour proportions shifting. The requirement is that
+"bars in the frontend should smoothly reduce or increase in size as their
+numbers change, not be cleared and redrawn on every change."
+
+`screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, and drives
+a realistic storm of idempotent absolute-state messages for one RepGroup
+(`echo`), moving ~10000 jobs ready -> running -> complete over hundreds of
+messages at storm rate (~20/sec), ending all-complete. A requestAnimationFrame
+sampler reads the ACTUAL rendered segment widths of
+`[data-repgroup="echo"] .progress-bar` (summed segment pixel width / container
+pixel width = filled %) throughout, and asserts: (a) the summed filled width
+never collapses while jobs exist (0 collapse frames where filled < 50%, minimum
+filled >= 95%); (c) the bar stays ~full essentially all the time (it is the
+*share* of frames below 95% that discriminates, since the CSS width transition
+makes each per-frame step small) and converges to ~99.9% complete; and (b) the
+segment DOM nodes are stamped once and persist (a guard that the fix does not
+start tearing the bar down). On the pre-fix code (a)/(c) fail: ~872/938
+populated frames collapse and ~94% are below 95% (minimum filled 0%); after the
+fix all are 0 and the minimum filled is ~97%. It is wired into
+`make browser-test`.
+
 ## Status page stale counts
 
 `status-page-stale-counts/` contains the issue-260625-5 web UI regression

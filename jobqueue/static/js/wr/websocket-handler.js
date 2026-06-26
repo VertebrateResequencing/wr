@@ -41,11 +41,23 @@ function resetLiveCounts(viewModel) {
     }
 }
 
+// setTrackerCounts applies an authoritative absolute count map to a tracker by
+// writing each count observable directly to its new value (states absent from
+// the message become 0). It deliberately does NOT zero-then-set and does NOT
+// touch the pct observables: writing the pcts to 0 between updates would
+// collapse every bound bar segment to 0 width on each storm message (the bar
+// "flickers so fast it looks like it's not there"). The count observables are
+// rate-limited and idempotent, so unchanged states do not notify and changed
+// ones transition smoothly; the rate-limited `total` computed then recomputes
+// the pcts via updateProgressBars so the bar animates its proportions instead
+// of being cleared and redrawn.
 function setTrackerCounts(tracker, counts) {
-    resetTrackerCounts(tracker);
+    if (!tracker) {
+        return;
+    }
 
     for (const property of countProperties) {
-        if (tracker && typeof tracker[property] === 'function') {
+        if (typeof tracker[property] === 'function') {
             tracker[property](counts[property] || 0);
         }
     }
