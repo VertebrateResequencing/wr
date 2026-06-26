@@ -80,6 +80,21 @@ const (
 	lumberjackBackupTimeFormat = "2006-01-02T15-04-05.000"
 	lumberjackCompressedLogExt = ".gz"
 	ownerReadWrite             = 0600
+
+	// schedulerLSF is the name of the LSF job scheduler.
+	schedulerLSF = "lsf"
+
+	// managerConnectTimeout is how long to wait when checking whether the
+	// manager is currently reachable.
+	managerConnectTimeout = 5 * time.Second
+
+	// minManagerProcs is the minimum number of OS threads the manager runs with;
+	// we need at least 2 to avoid locking up when mounting on a single-core host.
+	minManagerProcs = 2
+
+	// defaultManagerStartTimeout is the default value (in seconds) for the
+	// manager start command's --timeout flag.
+	defaultManagerStartTimeout = 10
 )
 
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
@@ -154,7 +169,7 @@ unique, since it is used to name the private key that will be created in
 OpenStack, and if a key with that name already exists, the manager will not be
 able to create a new one (or get the existing one), and so will not function
 fully.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// first we need our working directory to exist
 		createWorkingDir()
 
@@ -238,7 +253,7 @@ var managerStopCmd = &cobra.Command{
 
 Note that any runners that are currently running will die, along with any
 commands they were running. It is more graceful to use 'drain' instead.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
 		// eventualities we check the pid file first, try and terminate its pid,
@@ -262,7 +277,9 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			// we'll do a quick test to confirm the daemon is down
 			jq = connect(1*time.Second, true)
 			if jq != nil {
-				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
+				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated "+
+					"that pid, but the manager is still up on port %s!",
+					config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
 				deleteToken()
@@ -272,9 +289,13 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		} else {
 			// we failed to SIGTERM the pid in the pid file, let's take some
 			// time to confirm the daemon is really up
-			jq = connect(5*time.Second, true)
+			jq = connect(managerConnectTimeout, true)
 			if jq == nil {
-				die("according to the pid file %s, wr manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.ManagerPidFile, config.ManagerPort, pid)
+				die("according to the pid file %s, wr manager for port %s was running with pid %d, but that "+
+					"process could not be terminated and the manager could not be connected to; most likely "+
+					"the pid file is wrong and the manager is not running - after confirming, delete the pid "+
+					"file before trying to start the manager again",
+					config.ManagerPidFile, config.ManagerPort, pid)
 			}
 		}
 
@@ -341,11 +362,12 @@ NB: if using 'wr cloud deploy --deployment production', do not use drain without
 also configuring an S3 location for your database backup, as otherwise any
 changes to the database between calling drain and the manager finally shutting
 down will be lost.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// first try and connect
-		jq := connect(5*time.Second, true)
+		jq := connect(managerConnectTimeout, true)
 		if jq == nil {
-			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.ManagerPort)
+			die("could not connect to the manager on port %s, so could not initiate a drain; "+
+				"has it already been stopped?", config.ManagerPort)
 			// *** this would happen after calling drain a few times and the
 			// manager has finally stopped itself, but we don't know if the
 			// manager stopped cleanly in response to our drain, or if it
@@ -365,7 +387,8 @@ down will be lost.`,
 
 		switch numLeft {
 		case 0:
-			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
+			info("wr manager running on port %s is drained: there were no jobs still running, "+
+				"so the manger should stop right away.", config.ManagerPort)
 			deleteToken()
 		case 1:
 			info("wr manager running on port %s is now draining; there is a job still running, and it should %s",
@@ -395,9 +418,9 @@ the manager.
 
 It is safe to repeat this command to get an update on how long before your last
 running job will finish.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// first try and connect
-		jq := connect(5*time.Second, true)
+		jq := connect(managerConnectTimeout, true)
 		if jq == nil {
 			die("could not connect to the manager on port %s, so could not initiate a pause", config.ManagerPort)
 		}
@@ -412,9 +435,11 @@ running job will finish.`,
 		case 0:
 			info("wr manager running on port %s is paused: there were no jobs still running.", config.ManagerPort)
 		case 1:
-			info("wr manager running on port %s is now paused; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
+			info("wr manager running on port %s is now paused; there is a job still running, and it "+
+				"should complete in less than %s", config.ManagerPort, etc)
 		default:
-			info("wr manager running on port %s is now paused; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
+			info("wr manager running on port %s is now paused; there are %d jobs still running, and they "+
+				"should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
 
 		err = jq.Disconnect()
@@ -433,9 +458,9 @@ var managerResumeCmd = &cobra.Command{
 
 If you have used the "pause" command, running this will resume normal operation
 of the manager.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// first try and connect
-		jq := connect(5*time.Second, true)
+		jq := connect(managerConnectTimeout, true)
 		if jq == nil {
 			die("could not connect to the manager on port %s, so could not initiate a pause", config.ManagerPort)
 		}
@@ -463,12 +488,12 @@ var managerStatusCmd = &cobra.Command{
 
 If it's running, find out the status website URL, what scheduler the manager is
 using, and other details about the manager.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// see if pid file suggests it is supposed to be running
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		if err == nil {
 			// confirm
-			jq := connect(5 * time.Second)
+			jq := connect(managerConnectTimeout)
 			if jq != nil {
 				reportLiveStatus(jq)
 
@@ -503,7 +528,7 @@ Note that the manager must be running.
 
 (When the manager is stopped, you can backup the database by simply copying it
 somewhere.)`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		if backupPath == "" {
 			die("--path is required")
 		}
@@ -741,37 +766,99 @@ func init() {
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(context.Background())
 
-	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
-	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
-	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
-	managerStartCmd.Flags().IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(), "maximum number of local cores to use to run cmds; -1 means unlimited, 0 allows only 0-core jobs")
-	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "maximum MB of local memory to use to run cmds; -1 means unlimited, 0 prevents jobs running locally")
-	managerStartCmd.Flags().IntVar(&cloudSpawns, "cloud_spawns", defaultConfig.CloudSpawns, "for cloud schedulers, maximum number of simultaneous server spawns during scale-up")
-	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
-	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
-	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), fmt.Sprintf("for cloud schedulers, your local username outside of the cloud (max length %d)", maxCloudResourceUsernameLength))
-	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
-	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
-	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
-	managerStartCmd.Flags().StringVar(&flavorSets, "cloud_flavor_sets", defaultConfig.CloudFlavorSets, "for cloud schedulers, sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
-	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
-	managerStartCmd.Flags().StringVarP(&preDestroyScript, "cloud_destroy_script", "y", defaultConfig.CloudDestroyScript, "for cloud schedulers, path to a script that will be run on each server before it is destroyed")
-	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
-	managerStartCmd.Flags().IntVar(&cloudServersAutoConfirmDead, "cloud_auto_confirm_dead", defaultConfig.CloudAutoConfirmDead, "for cloud schedulers, how long to wait in minutes before destroying bad servers; 0 means forever")
-	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
-	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the subnet to spawn servers in")
-	managerStartCmd.Flags().BoolVar(&cloudUseConfigDrive, "cloud_use_config_drives", false, "for cloud schedulers, spawn servers with configuration drives")
-	managerStartCmd.Flags().BoolVar(&cloudNoSecurityGroups, "cloud_disable_security_groups", false, "for cloud schedulers, disable the use of security groups on spawned servers")
-	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
-	managerStartCmd.Flags().StringVarP(&mountJSON, "cloud_mount_json", "j", "", "for cloud schedulers, remote file systems to mount on all servers at bootup, in JSON format; see 'wr mount -h'")
-	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
-	managerStartCmd.Flags().BoolVar(&useCertDomain, "use_cert_domain", false, "if cert domain is configured, provide it to spawned clients instead of our IP address")
-	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
-	managerStartCmd.Flags().BoolVar(&runnerSyslog, "runner_syslog", false, "have runners log to syslog on their machines")
-	managerStartCmd.Flags().StringVar(&runnerFilelog, "runner_filelog", "",
-		"have runners log to unique files in the given folder")
+	addManagerStartFlags(defaultConfig, defaultMaxRAM)
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
+}
+
+// addManagerStartFlags registers all the flags for the manager start
+// sub-command.
+func addManagerStartFlags(defaultConfig *internal.Config, defaultMaxRAM int) {
+	addManagerStartLocalFlags(defaultConfig, defaultMaxRAM)
+	addManagerStartCloudFlags(defaultConfig)
+}
+
+// addManagerStartLocalFlags registers the non-cloud flags for the manager start
+// sub-command.
+func addManagerStartLocalFlags(defaultConfig *internal.Config, defaultMaxRAM int) {
+	flags := managerStartCmd.Flags()
+
+	flags.BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
+	flags.StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler,
+		"['local','lsf','openstack'] job scheduler")
+	flags.IntVarP(&managerTimeoutSeconds, "timeout", "t", defaultManagerStartTimeout,
+		"how long to wait in seconds for the manager to start up")
+	flags.IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(),
+		"maximum number of local cores to use to run cmds; -1 means unlimited, 0 allows only 0-core jobs")
+	flags.IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM,
+		"maximum MB of local memory to use to run cmds; -1 means unlimited, 0 prevents jobs running locally")
+	flags.BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP,
+		"on success, use infoblox to set your domain's IP")
+	flags.BoolVar(&useCertDomain, "use_cert_domain", false,
+		"if cert domain is configured, provide it to spawned clients instead of our IP address")
+	flags.BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
+	flags.BoolVar(&runnerSyslog, "runner_syslog", false, "have runners log to syslog on their machines")
+	flags.StringVar(&runnerFilelog, "runner_filelog", "",
+		"have runners log to unique files in the given folder")
+}
+
+// addManagerStartCloudFlags registers the cloud-scheduler flags for the manager
+// start sub-command.
+func addManagerStartCloudFlags(defaultConfig *internal.Config) {
+	addManagerStartCloudImageFlags(defaultConfig)
+	addManagerStartCloudServerFlags(defaultConfig)
+}
+
+// addManagerStartCloudImageFlags registers the cloud OS-image and flavor flags
+// for the manager start sub-command.
+func addManagerStartCloudImageFlags(defaultConfig *internal.Config) {
+	flags := managerStartCmd.Flags()
+
+	flags.StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS,
+		"for cloud schedulers, prefix name of the OS image your servers should use")
+	flags.StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser,
+		"for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
+	flags.StringVar(&localUsername, "local_username", realUsername(),
+		fmt.Sprintf("for cloud schedulers, your local username outside of the cloud (max length %d)",
+			maxCloudResourceUsernameLength))
+	flags.IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM,
+		"for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+	flags.IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk,
+		"for cloud schedulers, minimum disk (GB) for servers")
+	flags.StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor,
+		"for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
+	flags.StringVar(&flavorSets, "cloud_flavor_sets", defaultConfig.CloudFlavorSets,
+		"for cloud schedulers, sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
+	flags.StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript,
+		"for cloud schedulers, path to a start-up script that will be run on each server created")
+	flags.StringVarP(&preDestroyScript, "cloud_destroy_script", "y", defaultConfig.CloudDestroyScript,
+		"for cloud schedulers, path to a script that will be run on each server before it is destroyed")
+}
+
+// addManagerStartCloudServerFlags registers the cloud server/network flags for
+// the manager start sub-command.
+func addManagerStartCloudServerFlags(defaultConfig *internal.Config) {
+	flags := managerStartCmd.Flags()
+
+	flags.IntVar(&cloudSpawns, "cloud_spawns", defaultConfig.CloudSpawns,
+		"for cloud schedulers, maximum number of simultaneous server spawns during scale-up")
+	flags.IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive,
+		"for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
+	flags.IntVar(&cloudServersAutoConfirmDead, "cloud_auto_confirm_dead", defaultConfig.CloudAutoConfirmDead,
+		"for cloud schedulers, how long to wait in minutes before destroying bad servers; 0 means forever")
+	flags.IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers,
+		"for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
+	flags.StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR,
+		"for cloud schedulers, CIDR of the subnet to spawn servers in")
+	flags.BoolVar(&cloudUseConfigDrive, "cloud_use_config_drives", false,
+		"for cloud schedulers, spawn servers with configuration drives")
+	flags.BoolVar(&cloudNoSecurityGroups, "cloud_disable_security_groups", false,
+		"for cloud schedulers, disable the use of security groups on spawned servers")
+	flags.StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles,
+		"for cloud schedulers, comma separated paths of config files to copy to spawned servers")
+	flags.StringVarP(&mountJSON, "cloud_mount_json", "j", "",
+		"for cloud schedulers, remote file systems to mount on all servers at bootup, in JSON format; "+
+			"see 'wr mount -h'")
 }
 
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
@@ -788,147 +875,62 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr's web interface can be reached at %s", websiteURL(s, token))
 
 	if setDomainIP {
-		ip, err := internal.CurrentIP("")
-		if err != nil {
-			warn("could not get IP address of localhost: %s", err)
-		}
-
-		err = internal.InfobloxSetDomainIP(s.Host, ip)
-		if err != nil {
-			warn("failed to set domain IP: %s", err)
-		} else {
-			info("set IP of %s to %s", s.Host, ip)
-		}
+		setManagerDomainIP(s.Host)
 	}
+}
+
+// setManagerDomainIP points the configured domain at this host's IP using
+// infoblox, warning on failure.
+func setManagerDomainIP(host string) {
+	ip, err := internal.CurrentIP("")
+	if err != nil {
+		warn("could not get IP address of localhost: %s", err)
+	}
+
+	if err := internal.InfobloxSetDomainIP(host, ip); err != nil {
+		warn("failed to set domain IP: %s", err)
+
+		return
+	}
+
+	info("set IP of %s to %s", host, ip)
 }
 
 func websiteURL(s *jobqueue.ServerInfo, token []byte) string {
 	return fmt.Sprintf("https://%s/?token=%s", net.JoinHostPort(s.FQDN, s.WebPort), string(token))
 }
 
-func startJQ(postCreation, preDestroy []byte) {
-	ctx := context.Background()
-
-	if runtime.NumCPU() == 1 {
-		// we might lock up with only 1 proc if we mount
-		runtime.GOMAXPROCS(2)
-	} else {
-		runtime.GOMAXPROCS(runtime.NumCPU())
-	}
-
+// setupManagerLogging configures logging to both STDERR and the configured log
+// file. It returns the context to pass to the jobqueue server (which carries
+// the file log handler) and a function that re-adds the file handler (used
+// after logStarted temporarily disables file logging).
+func setupManagerLogging() (context.Context, func()) {
 	logLevel := "warn"
-
 	if managerDebug {
 		logLevel = "debug"
 	}
 
-	// change the logger to log to both STDERR and our configured log file
-	ctxf := ctx
+	ctx := context.Background()
 	addManagerFileHandler := func() {}
 
 	fileHandlers, err := clog.CreateFileHandlersAtLevels(config.ManagerLogFile, "info", logLevel)
 	if err != nil {
 		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
-	} else {
-		addManagerFileHandler = func() {
-			clog.AddHandler(fileHandlers[0])
-		}
-		addManagerFileHandler()
 
-		ctxf = clog.ContextWithLogHandler(ctx, fileHandlers[1])
+		return ctx, addManagerFileHandler
 	}
 
-	// we will spawn runners, which means we need to know the path to ourselves
-	// in case we're not in the user's $PATH
-	exe, err := osext.Executable()
-	if err != nil {
-		die("wr manager failed to start : %s\n", err)
+	addManagerFileHandler = func() {
+		clog.AddHandler(fileHandlers[0])
 	}
+	addManagerFileHandler()
 
-	var schedulerConfig any
+	return clog.ContextWithLogHandler(ctx, fileHandlers[1]), addManagerFileHandler
+}
 
-	serverCIDR := ""
-
-	switch scheduler {
-	case "local":
-		schedulerConfig = &jqs.ConfigLocal{
-			Shell:    config.RunnerExecShell,
-			MaxCores: maxLocalCores,
-			MaxRAM:   maxLocalRAM,
-		}
-	case "lsf":
-		schedulerConfig = &jqs.ConfigLSF{
-			Deployment:     config.Deployment,
-			Shell:          config.RunnerExecShell,
-			PrivateKeyPath: config.PrivateKeyPath,
-		}
-	case "openstack":
-		mport, errf := strconv.Atoi(config.ManagerPort)
-		if errf != nil {
-			die("wr manager failed to start : %s\n", errf)
-		}
-
-		var serverPorts []int
-		if !cloudNoSecurityGroups {
-			serverPorts = []int{22, mport}
-		}
-
-		var postCreationForcedCommand string
-		if mountJSON != "" {
-			postCreationForcedCommand = fmt.Sprintf("%s mount -j '%s'", exe, mountJSON)
-		}
-
-		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:              cloudResourceName(localUsername),
-			SavePath:                  filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
-			ServerPorts:               serverPorts,
-			UseConfigDrive:            cloudUseConfigDrive,
-			OSPrefix:                  osPrefix,
-			OSUser:                    osUsername,
-			OSRAM:                     osRAM,
-			OSDisk:                    osDisk,
-			FlavorRegex:               flavorRegex,
-			FlavorSets:                flavorSets,
-			PostCreationScript:        postCreation,
-			PostCreationForcedCommand: postCreationForcedCommand,
-			PreDestroyScript:          preDestroy,
-			ConfigFiles:               cloudConfigFiles,
-			ServerKeepTime:            time.Duration(serverKeepAlive) * time.Second,
-			StateUpdateFrequency:      1 * time.Minute,
-			MaxInstances:              maxServers,
-			SimultaneousSpawns:        cloudSpawns,
-			MaxLocalCores:             &maxLocalCores,
-			MaxLocalRAM:               &maxLocalRAM,
-			Shell:                     config.RunnerExecShell,
-			CIDR:                      cloudCIDR,
-			Umask:                     config.ManagerUmask,
-		}
-		serverCIDR = cloudCIDR
-	}
-
-	if cloudConfig, ok := schedulerConfig.(jqs.CloudConfig); ok {
-		// this is a cloud scheduler, so include our ca.pem and client.token
-		// files in ConfigFiles, so that they will be copied to all servers
-		// that get created.
-		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
-
-		if config.ManagerCAFile != "" {
-			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
-		}
-
-		// also check that we're actually in the cloud, or this is not going to
-		// work
-		provider, errc := cloud.New(ctx, scheduler, cloudResourceName(localUsername),
-			filepath.Join(config.ManagerDir, "cloud_resources."+scheduler))
-		if errc != nil {
-			die("could not connect to %s: %s", scheduler, errc)
-		}
-
-		if !provider.InCloud() {
-			die("according to hostname, this is not an instance in %s", scheduler)
-		}
-	}
-
+// buildRunnerCmd builds the command template used to spawn runners, including
+// any syslog or file-logging options.
+func buildRunnerCmd(exe string) string {
 	runnerCmd := logRotationEnv() + exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
 
 	if runnerSyslog {
@@ -937,13 +939,63 @@ func startJQ(postCreation, preDestroy []byte) {
 		runnerCmd += " --logdir " + runnerFilelog
 	}
 
+	return runnerCmd
+}
+
+func startJQ(postCreation, preDestroy []byte) {
+	configureManagerProcs()
+
+	// log to both STDERR and our configured log file
+	ctxf, addManagerFileHandler := setupManagerLogging()
+
+	// we will spawn runners, so we need the path to ourselves
+	exe, err := osext.Executable()
+	if err != nil {
+		die("wr manager failed to start : %s\n", err)
+	}
+
+	schedulerConfig, serverCIDR := buildSchedulerConfig(exe, postCreation, preDestroy)
+	applyCloudConfigFiles(schedulerConfig)
+
+	runnerCmd := buildRunnerCmd(exe)
+
+	// configureWaitgroupLogging must happen before the server starts
+	wgDebug := configureWaitgroupLogging()
+
+	server, msg, token, err := serveManager(ctxf, schedulerConfig, runnerCmd, serverCIDR)
+	if msg != "" {
+		info("wr manager : %s", msg)
+	}
+
+	if err != nil {
+		die("wr manager failed to start : %s", err)
+	}
+
+	// logStarted disables file logging, so re-add the handler for the final
+	// message logged after blocking
+	logStarted(server.ServerInfo, token)
+	addManagerFileHandler()
+
+	logServerStop(server, blockManager(ctxf, server, wgDebug))
+}
+
+// configureWaitgroupLogging enables waitgroup logging into the returned builder;
+// it must be called before the jobqueue server starts.
+func configureWaitgroupLogging() *strings.Builder {
 	var wgDebug strings.Builder
 
 	waitgroup.Opts.Logger = &wgDebug
 	waitgroup.Opts.Disable = false
 
-	// start the jobqueue server
-	server, msg, token, err := jobqueue.Serve(ctxf, jobqueue.ServerConfig{
+	return &wgDebug
+}
+
+// serveManager starts the jobqueue server with the given scheduler
+// configuration, returning the server, any startup message, the auth token and
+// any error.
+func serveManager(ctxf context.Context, schedulerConfig any, runnerCmd, serverCIDR string,
+) (*jobqueue.Server, string, []byte, error) {
+	return jobqueue.Serve(ctxf, jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
@@ -962,44 +1014,158 @@ func startJQ(postCreation, preDestroy []byte) {
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
 	})
+}
 
-	if msg != "" {
-		info("wr manager : %s", msg)
-	}
-
-	if err != nil {
-		die("wr manager failed to start : %s", err)
-	}
-
-	logStarted(server.ServerInfo, token)
-	// logStarted disabled logging to file; re-adding file handler
-	// to get final message below
-	addManagerFileHandler()
-
+// blockManager blocks until the jobqueue server stops, returning the error (if
+// any) it stopped with. It also logs any outstanding waitgroups afterwards.
+func blockManager(ctxf context.Context, server *jobqueue.Server, wgDebug *strings.Builder) error {
 	// block forever while the jobqueue does its work
-	err = server.Block()
+	err := server.Block()
 
 	wgMsg := wgDebug.String()
 	if wgMsg != "" {
 		clog.Warn(ctxf, "waitgroups waiting", "msgs", wgMsg)
 	}
 
+	return err
+}
+
+// configureManagerProcs sets GOMAXPROCS for the manager, ensuring at least
+// minManagerProcs threads so we don't lock up when mounting on a single-core
+// host.
+func configureManagerProcs() {
+	if runtime.NumCPU() == 1 {
+		runtime.GOMAXPROCS(minManagerProcs)
+	} else {
+		runtime.GOMAXPROCS(runtime.NumCPU())
+	}
+}
+
+// buildSchedulerConfig builds the scheduler-specific configuration for the
+// configured scheduler, returning the config and the server CIDR (empty unless
+// a cloud scheduler).
+func buildSchedulerConfig(exe string, postCreation, preDestroy []byte) (any, string) {
+	switch scheduler {
+	case "local":
+		return &jqs.ConfigLocal{
+			Shell:    config.RunnerExecShell,
+			MaxCores: maxLocalCores,
+			MaxRAM:   maxLocalRAM,
+		}, ""
+	case schedulerLSF:
+		return &jqs.ConfigLSF{
+			Deployment:     config.Deployment,
+			Shell:          config.RunnerExecShell,
+			PrivateKeyPath: config.PrivateKeyPath,
+		}, ""
+	case "openstack":
+		return buildOpenStackConfig(exe, postCreation, preDestroy), cloudCIDR
+	default:
+		return nil, ""
+	}
+}
+
+// buildOpenStackConfig builds the OpenStack scheduler configuration.
+//
+//nolint:funlen // length is dominated by the many-field ConfigOpenStack literal.
+func buildOpenStackConfig(exe string, postCreation, preDestroy []byte) *jqs.ConfigOpenStack {
+	mport, err := strconv.Atoi(config.ManagerPort)
 	if err != nil {
-		saddr := sAddr(server.ServerInfo)
+		die("wr manager failed to start : %s\n", err)
+	}
 
-		var jqerr jobqueue.Error
+	var serverPorts []int
+	if !cloudNoSecurityGroups {
+		serverPorts = []int{22, mport}
+	}
 
-		ok := errors.As(err, &jqerr)
-		switch {
-		case ok && jqerr.Err == jobqueue.ErrClosedTerm:
-			info("wr manager on %s gracefully stopped (received SIGTERM)", saddr)
-		case ok && jqerr.Err == jobqueue.ErrClosedInt:
-			info("wr manager on %s gracefully stopped (received SIGINT)", saddr)
-		case ok && jqerr.Err == jobqueue.ErrClosedStop:
-			info("wr manager on %s gracefully stopped (following a drain)", saddr)
-		default:
-			warn("wr manager on %s exited unexpectedly: %s", saddr, err)
-		}
+	var postCreationForcedCommand string
+	if mountJSON != "" {
+		postCreationForcedCommand = fmt.Sprintf("%s mount -j '%s'", exe, mountJSON)
+	}
+
+	return &jqs.ConfigOpenStack{
+		ResourceName:              cloudResourceName(localUsername),
+		SavePath:                  filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+		ServerPorts:               serverPorts,
+		UseConfigDrive:            cloudUseConfigDrive,
+		OSPrefix:                  osPrefix,
+		OSUser:                    osUsername,
+		OSRAM:                     osRAM,
+		OSDisk:                    osDisk,
+		FlavorRegex:               flavorRegex,
+		FlavorSets:                flavorSets,
+		PostCreationScript:        postCreation,
+		PostCreationForcedCommand: postCreationForcedCommand,
+		PreDestroyScript:          preDestroy,
+		ConfigFiles:               cloudConfigFiles,
+		ServerKeepTime:            time.Duration(serverKeepAlive) * time.Second,
+		StateUpdateFrequency:      1 * time.Minute,
+		MaxInstances:              maxServers,
+		SimultaneousSpawns:        cloudSpawns,
+		MaxLocalCores:             &maxLocalCores,
+		MaxLocalRAM:               &maxLocalRAM,
+		Shell:                     config.RunnerExecShell,
+		CIDR:                      cloudCIDR,
+		Umask:                     config.ManagerUmask,
+	}
+}
+
+// applyCloudConfigFiles adds wr's CA and token files to the scheduler's config
+// files (so they get copied to spawned servers) and verifies we're really
+// running in the cloud, when the scheduler is a cloud scheduler.
+func applyCloudConfigFiles(schedulerConfig any) {
+	cloudConfig, ok := schedulerConfig.(jqs.CloudConfig)
+	if !ok {
+		return
+	}
+
+	// this is a cloud scheduler, so include our ca.pem and client.token
+	// files in ConfigFiles, so that they will be copied to all servers
+	// that get created.
+	cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
+
+	if config.ManagerCAFile != "" {
+		cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
+	}
+
+	// also check that we're actually in the cloud, or this is not going to work
+	provider, err := cloud.New(context.Background(), scheduler, cloudResourceName(localUsername),
+		filepath.Join(config.ManagerDir, "cloud_resources."+scheduler))
+	if err != nil {
+		die("could not connect to %s: %s", scheduler, err)
+	}
+
+	if !provider.InCloud() {
+		die("according to hostname, this is not an instance in %s", scheduler)
+	}
+}
+
+// logServerStop logs the reason the manager's jobqueue server stopped.
+func logServerStop(server *jobqueue.Server, err error) {
+	if err == nil {
+		return
+	}
+
+	saddr := sAddr(server.ServerInfo)
+
+	var jqerr jobqueue.Error
+
+	if !errors.As(err, &jqerr) {
+		warn("wr manager on %s exited unexpectedly: %s", saddr, err)
+
+		return
+	}
+
+	switch jqerr.Err {
+	case jobqueue.ErrClosedTerm:
+		info("wr manager on %s gracefully stopped (received SIGTERM)", saddr)
+	case jobqueue.ErrClosedInt:
+		info("wr manager on %s gracefully stopped (received SIGINT)", saddr)
+	case jobqueue.ErrClosedStop:
+		info("wr manager on %s gracefully stopped (following a drain)", saddr)
+	default:
+		warn("wr manager on %s exited unexpectedly: %s", saddr, err)
 	}
 }
 
