@@ -298,10 +298,8 @@ func TestJob(t *testing.T) {
 		start := make(chan struct{})
 
 		var wg sync.WaitGroup
-		wg.Add(1)
 
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			<-start
 
@@ -314,7 +312,7 @@ func TestJob(t *testing.T) {
 				}
 				job.Unlock()
 			}
-		}()
+		})
 
 		close(start)
 

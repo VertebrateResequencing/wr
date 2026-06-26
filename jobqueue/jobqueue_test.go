@@ -49,6 +49,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1326,7 +1327,7 @@ func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, e
 // the map to not exist. The pids are deleted from the map when they no longer
 // exist. Returns true if all pids gone (and the map will be empty).
 func waitUntilPidsAreGone(pids map[int]bool, seconds int) bool {
-	for i := 0; i < seconds; i++ {
+	for range seconds {
 		for pid := range pids {
 			process, errf := os.FindProcess(pid)
 			if errf != nil && process == nil {
@@ -2078,7 +2079,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(job, ShouldBeNil)
 
 				var jes []*JobEssence
-				for i := 0; i < 10; i++ {
+				for i := range 10 {
 					jes = append(jes, &JobEssence{Cmd: fmt.Sprintf("test cmd %d", i)})
 				}
 
@@ -3612,7 +3613,7 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 		}
 		defer release()
 
-		server.q.SetReadyAddedCallback(func(string, []interface{}) {
+		server.q.SetReadyAddedCallback(func(string, []any) {
 			startOnce.Do(func() {
 				close(callbackStarted)
 			})
@@ -4440,25 +4441,25 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					// job that outputs tons of stdout and stderr and fails
 					expectedout := ""
-					expectederr := ""
+					var expectederr strings.Builder
 					for i := 1; i <= 60; i++ {
 						if i > 21 && i < 46 {
 							continue
 						}
 						if i == 21 {
 							expectedout += "21212121212121212121212121\n... omitting 6358 bytes ...\n45454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545p\n"
-							expectederr += "21212121212121212121212121\n... omitting 6377 bytes ...\n5454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545w\n"
+							expectederr.WriteString("21212121212121212121212121\n... omitting 6377 bytes ...\n5454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545w\n")
 						} else {
 							s := strconv.Itoa(i)
 							for j := 1; j <= 130; j++ {
 								expectedout += s
-								expectederr += s
+								expectederr.WriteString(s)
 							}
 							expectedout += "p\n"
-							expectederr += "w\n"
+							expectederr.WriteString("w\n")
 						}
 					}
-					expectederr += "Died at -e line 1."
+					expectederr.WriteString("Died at -e line 1.")
 					expectedout = strings.TrimSpace(expectedout)
 
 					job, err := jq.Reserve(50 * time.Millisecond)
@@ -4476,7 +4477,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(stdout, ShouldEqual, expectedout)
 					stderr, err := job.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, expectederr)
+					So(stderr, ShouldEqual, expectederr.String())
 
 					job2, err := jq2.GetByEssence(&JobEssence{Cmd: "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'"}, true, false)
 					So(err, ShouldBeNil)
@@ -4487,7 +4488,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(stdout, ShouldEqual, expectedout)
 					stderr, err = job2.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, expectederr)
+					So(stderr, ShouldEqual, expectederr.String())
 
 					Convey("If you don't ask for stdout, you don't get it", func() {
 						job2, err = jq2.GetByEssence(&JobEssence{Cmd: "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'"}, false, false)
@@ -4787,7 +4788,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			defer disconnect(jq)
 
 			var jobs []*Job
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp1"})
 			}
 			inserts, already, err := jq.Add(jobs, envVars, true)
@@ -4796,7 +4797,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			Convey("You can reserve and execute those", func() {
-				for i := 0; i < 3; i++ {
+				for range 3 {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -4805,7 +4806,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 				Convey("Then you can add dups and a new one under a new RepGroup and reserve/execute all of them", func() {
 					jobs = nil
-					for i := 0; i < 4; i++ {
+					for i := range 4 {
 						jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp2"})
 					}
 					inserts, already, err := jq.Add(jobs, envVars, false)
@@ -4813,7 +4814,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(inserts, ShouldEqual, 4)
 					So(already, ShouldEqual, 0)
 
-					for i := 0; i < 4; i++ {
+					for range 4 {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
 						err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -4843,7 +4844,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 			Convey("You can add dups and a new one under a new RepGroup", func() {
 				jobs = nil
-				for i := 0; i < 4; i++ {
+				for i := range 4 {
 					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp2"})
 				}
 				inserts, already, err := jq.Add(jobs, envVars, false)
@@ -4852,7 +4853,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				So(already, ShouldEqual, 3)
 
 				Convey("You can then reserve and execute the only 4 jobs", func() {
-					for i := 0; i < 4; i++ {
+					for range 4 {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
 						err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -5218,7 +5219,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 				Convey("You can add jobs with non-existent dependencies", func() {
 					// first get rid of the jobs added earlier
-					for i := 0; i < 2; i++ {
+					for range 2 {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
 						err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -5614,7 +5615,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 				Convey("You can add jobs with non-existent depgroup dependencies", func() {
 					// first get rid of the jobs added earlier
-					for i := 0; i < 2; i++ {
+					for range 2 {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
 						err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -6111,7 +6112,7 @@ func TestJobqueueModify(t *testing.T) {
 		}
 
 		groupsToDeps := func(groups string) (deps Dependencies) {
-			for _, depgroup := range strings.Split(groups, ",") {
+			for depgroup := range strings.SplitSeq(groups, ",") {
 				deps = append(deps, NewDepGroupDependency(depgroup))
 			}
 
@@ -7515,7 +7516,7 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 
-			for _, m := range strings.Split(buff.String(), "\n") {
+			for m := range strings.SplitSeq(buff.String(), "\n") {
 				if strings.Contains(m, "server allocate") {
 					So(m, ShouldContainSubstring, "serverid=localhost")
 				}
@@ -8755,7 +8756,7 @@ func TestJobqueueSpeed(t *testing.T) {
 
 	before := time.Now()
 	jobs := make([]*Job, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 	}
 	inserts, already, err := jq.Add(jobs, envVars, true)
@@ -8786,7 +8787,7 @@ func TestJobqueueSpeed(t *testing.T) {
 			<-start
 			reserved := 0
 			na := 0
-			for j := 0; j < m; j++ {
+			for j := range m {
 				job, err := gjq.Reserve(5 * time.Second)
 				if err != nil || job == nil {
 					for k := j; k < m; k++ {
@@ -8804,7 +8805,7 @@ func TestJobqueueSpeed(t *testing.T) {
 
 	r := 0
 	na := 0
-	for i := 0; i < n; i++ {
+	for range n {
 		res := <-reserves
 		if res >= 0 {
 			r++
@@ -9258,13 +9259,7 @@ func skipUnlessShard(homeShards ...string) bool {
 		return false
 	}
 
-	for _, homeShard := range homeShards {
-		if shard == homeShard {
-			return false
-		}
-	}
-
-	return true
+	return !slices.Contains(homeShards, shard)
 }
 
 func silenceExpectedKillRequestedLogs(t *testing.T) {

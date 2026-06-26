@@ -80,7 +80,7 @@ func (c *Checker) AvailableRange(size int) (int, int, error) {
 
 	var first, last int
 
-	for i := 0; i < maxTries; i++ {
+	for range maxTries {
 		var port int
 
 		port, err = c.availablePort()

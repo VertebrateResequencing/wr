@@ -348,7 +348,7 @@ func TestLogger(t *testing.T) {
 			})
 		})
 
-		checkMethod := func(method func(context.Context, string, ...interface{}), lvl1, lvl2 string) {
+		checkMethod := func(method func(context.Context, string, ...any), lvl1, lvl2 string) {
 			method(ctx, "msg", "foo", 1)
 
 			lmsg := buff.String()

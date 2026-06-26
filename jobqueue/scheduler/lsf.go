@@ -90,7 +90,7 @@ type ConfigLSF struct {
 }
 
 // initialize finds out about lsf's hosts and queues
-func (s *lsf) initialize(ctx context.Context, config interface{}) error {
+func (s *lsf) initialize(ctx context.Context, config any) error {
 	s.config = config.(*ConfigLSF)
 
 	// find the real paths to the main LSF exes, since thanks to wr's LSF
@@ -220,7 +220,7 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 			switch {
 			case reMemlimit.MatchString(line):
 				nextIsMemlimit = 0
-				for _, word := range strings.Fields(line) {
+				for word := range strings.FieldsSeq(line) {
 					nextIsMemlimit++
 					if word == "MEMLIMIT" {
 						break
@@ -437,8 +437,8 @@ func (s *lsf) parseBmgroups(groups map[string]map[string]bool) error {
 			if groups[fields[0]] == nil {
 				groups[fields[0]] = make(map[string]bool)
 			}
-			if strings.HasSuffix(field, "/") {
-				lookup := strings.TrimSuffix(field, "/")
+			if before, ok := strings.CutSuffix(field, "/"); ok {
+				lookup := before
 				for server := range groups[lookup] {
 					groups[fields[0]][server] = true
 				}

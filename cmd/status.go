@@ -351,7 +351,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					}
 				}
 
-				var dead string
+				var dead strings.Builder
 				if counts[rg][jobqueue.JobStateBuried] > 0 {
 					// sort the bury groups
 					var bgs []string
@@ -361,7 +361,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					sort.Strings(bgs)
 
 					for _, bg := range bgs {
-						dead += fmt.Sprintf(" %s=%s", bg, strings.Join(buried[rg][bg], ","))
+						dead.WriteString(fmt.Sprintf(" %s=%s", bg, strings.Join(buried[rg][bg], ",")))
 					}
 				}
 
@@ -377,7 +377,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					counts[rg][jobqueue.JobStateDelayed],
 					counts[rg][jobqueue.JobStateBuried],
 					usage,
-					dead)
+					dead.String())
 			}
 		case statusOutputFormatDetails, statusOutputFormatDetailsAlias:
 			// print out status information for each job

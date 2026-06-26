@@ -314,7 +314,7 @@ func (q *subQueue) Swap(i, j int) {
 	itemList[j].queueIndexes[q.sqIndex] = j
 }
 
-func (q *subQueue) Push(x interface{}) {
+func (q *subQueue) Push(x any) {
 	item := x.(*Item)
 	var itemList []*Item
 	if q.sqIndex == 1 {
@@ -336,7 +336,7 @@ func (q *subQueue) Push(x interface{}) {
 	}
 }
 
-func (q *subQueue) Pop() interface{} {
+func (q *subQueue) Pop() any {
 	var itemList []*Item
 	if q.sqIndex == 1 {
 		var existed bool

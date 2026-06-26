@@ -1140,9 +1140,9 @@ func (j *JobEssence) Key() string {
 	}
 
 	if j.Cwd != "" {
-		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
+		return byteKey(fmt.Appendf(nil, "%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key()))
 	}
-	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
+	return byteKey(fmt.Appendf(nil, "%s.%s", j.Cmd, j.MountConfigs.Key()))
 }
 
 // Stringify returns a nice printable form of a JobEssence.

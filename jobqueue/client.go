@@ -434,7 +434,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		tlsConfig.RootCAs = certPool
 	}
 
-	dialOpts := make(map[string]interface{})
+	dialOpts := make(map[string]any)
 	dialOpts[mangos.OptionTLSConfig] = tlsConfig
 	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
 		errc := sock.Close()

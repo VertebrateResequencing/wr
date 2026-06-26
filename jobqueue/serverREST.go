@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -178,7 +179,7 @@ func restEditableKeysForModification(ctx context.Context, s *Server, ids string,
 func restJobsModificationTargets(ctx context.Context, s *Server, ids string) ([]*Job, int, error) {
 	var targets []*Job
 
-	for _, id := range strings.Split(ids, ",") {
+	for id := range strings.SplitSeq(ids, ",") {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
@@ -992,9 +993,7 @@ func (jvj *JobModifyViaJSON) otherRequirements() (map[string]string, bool, error
 	var set bool
 
 	if jvj.Other != nil {
-		for key, val := range *jvj.Other {
-			other[key] = val
-		}
+		maps.Copy(other, *jvj.Other)
 
 		set = true
 	}
@@ -1409,7 +1408,7 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 		// get the requested jobs
 		ids := r.URL.Path[len(restJobsEndpoint):]
 		var jobs []*Job
-		for _, id := range strings.Split(ids, ",") {
+		for id := range strings.SplitSeq(ids, ",") {
 			if len(id) == 32 {
 				// id might be a Job.key()
 				theseJobs, _, qerr := s.getJobsByKeys(ctx, []string{id}, getStd, getEnv)
@@ -1879,7 +1878,7 @@ func urlStringToSlice(value string) []string {
 // urlStringToStruct takes a possible query escaped JSON string from a url
 // parameter value and unmarshals it in to the pointed to struct. If the value
 // is "", does nothing.
-func urlStringToStruct(value string, v interface{}) error {
+func urlStringToStruct(value string, v any) error {
 	if value == "" {
 		return nil
 	}

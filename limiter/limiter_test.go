@@ -261,7 +261,7 @@ func TestLimiter(t *testing.T) {
 			// (the 125/75 split below depends on all 200 contending together).
 			start := make(chan struct{})
 			ready := make(chan struct{}, 200)
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()

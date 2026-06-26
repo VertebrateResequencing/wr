@@ -184,14 +184,11 @@ type job struct {
 
 // initialize finds out about the local machine. Compatible with amd64 archs
 // only!
-func (s *local) initialize(ctx context.Context, config interface{}) error {
+func (s *local) initialize(ctx context.Context, config any) error {
 	s.config = config.(*ConfigLocal)
 	s.maxCores = runtime.NumCPU()
 	if s.config.MaxCores > 0 && s.config.MaxCores < s.maxCores {
-		s.maxCores = s.config.MaxCores
-		if s.maxCores < 1 {
-			s.maxCores = 1
-		}
+		s.maxCores = max(s.config.MaxCores, 1)
 	}
 	var err error
 	s.maxRAM, err = internal.ProcMeminfoMBs()
@@ -199,10 +196,7 @@ func (s *local) initialize(ctx context.Context, config interface{}) error {
 		return err
 	}
 	if s.config.MaxRAM > 0 && s.config.MaxRAM < s.maxRAM {
-		s.maxRAM = s.config.MaxRAM
-		if s.maxRAM < 1 {
-			s.maxRAM = 1
-		}
+		s.maxRAM = max(s.config.MaxRAM, 1)
 	}
 
 	// make our queue

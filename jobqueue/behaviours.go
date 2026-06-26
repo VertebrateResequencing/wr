@@ -112,7 +112,7 @@ const (
 type Behaviour struct {
 	When BehaviourTrigger
 	Do   BehaviourAction
-	Arg  interface{} // the arg needed by your chosen action
+	Arg  any // the arg needed by your chosen action
 }
 
 // Trigger will carry out our BehaviourAction if the supplied status matches our
@@ -404,7 +404,7 @@ type BehaviourViaJSON struct {
 // Behaviour converts the friendly BehaviourViaJSON struct to real Behaviour.
 func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
 	var do BehaviourAction
-	var arg interface{}
+	var arg any
 
 	switch {
 	case bj.Run != "":

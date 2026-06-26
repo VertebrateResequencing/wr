@@ -142,11 +142,11 @@ func ExampleScheduler_NewJobFromJSON() {
 	spec := &jobqueue.JobViaJSON{
 		Cmd:       "cram_to_bam input.cram output.bam",
 		RepGrp:    "sample-convert",
-		Retries:   ptr(exampleJSONRetries),
+		Retries:   new(exampleJSONRetries),
 		LimitGrps: []string{"s3:1"},
 		Memory:    "8G",
 		Time:      "8h",
-		Override:  ptr(exampleJSONOverride),
+		Override:  new(exampleJSONOverride),
 		MountConfigs: jobqueue.MountConfigs{
 			{
 				Mount: "/mnt/sample-data",
@@ -179,6 +179,7 @@ func checkExampleErr(err error) {
 	}
 }
 
+//go:fix inline
 func ptr[T any](value T) *T {
-	return &value
+	return new(value)
 }

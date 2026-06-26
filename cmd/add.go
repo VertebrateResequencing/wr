@@ -766,7 +766,7 @@ func colsToDeps(cols []string) (deps jobqueue.Dependencies) {
 
 // convert group1,group2,... in to a Dependency.
 func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
-	for _, depgroup := range strings.Split(groups, ",") {
+	for depgroup := range strings.SplitSeq(groups, ",") {
 		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
 	return

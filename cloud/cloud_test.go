@@ -123,8 +123,8 @@ func TestOpenStack(t *testing.T) {
 	ofs := os.Getenv("OS_FLAVOR_SETS")
 	var flavorSets [][]string
 	if ofs != "" {
-		sets := strings.Split(ofs, ";")
-		for _, set := range sets {
+		sets := strings.SplitSeq(ofs, ";")
+		for set := range sets {
 			flavors := strings.Split(set, ",")
 			flavorSets = append(flavorSets, flavors)
 		}

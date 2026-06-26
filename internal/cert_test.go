@@ -33,7 +33,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -215,7 +214,7 @@ func TestCert(t *testing.T) {
 				})
 
 				Convey("Find PEM Block in a file and Return Certifcate", func() {
-					certPEMBlock, err := ioutil.ReadFile(certFile)
+					certPEMBlock, err := os.ReadFile(certFile)
 					So(err, ShouldBeNil)
 
 					ccert := findPEMBlockAndReturnCert(certPEMBlock)
@@ -234,7 +233,7 @@ func TestCert(t *testing.T) {
 					So(err, ShouldNotBeNil)
 
 					empCertFile := filepath.Join(certtmpdir, "emp.pem")
-					err = ioutil.WriteFile(empCertFile, []byte{0}, fileMode)
+					err = os.WriteFile(empCertFile, []byte{0}, fileMode)
 					So(err, ShouldBeNil)
 
 					expiry, err = CertExpiry(empCertFile)

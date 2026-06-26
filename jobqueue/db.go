@@ -796,12 +796,12 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		}
 
 		b = tx.Bucket(bucketJobRAM)
-		errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM), []byte(strconv.Itoa(job.PeakRAM)))
 		if errf != nil {
 			return errf
 		}
 		b = tx.Bucket(bucketJobDisk)
-		errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakDisk)), []byte(strconv.Itoa(int(job.PeakDisk))))
+		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakDisk), []byte(strconv.Itoa(int(job.PeakDisk))))
 		if errf != nil {
 			return errf
 		}
@@ -1273,13 +1273,13 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 			switch jfr {
 			case FailReasonRAM:
 				b := tx.Bucket(bucketJobRAM)
-				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpr)), []byte(strconv.Itoa(jpr)))
+				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, jpr), []byte(strconv.Itoa(jpr)))
 			case FailReasonDisk:
 				b := tx.Bucket(bucketJobDisk)
-				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpd)), []byte(strconv.Itoa(int(jpd))))
+				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, jpd), []byte(strconv.Itoa(int(jpd))))
 			case FailReasonTime:
 				b := tx.Bucket(bucketJobSecs)
-				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
+				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, secs), []byte(strconv.Itoa(secs)))
 			}
 			return errf
 		})
@@ -1704,7 +1704,7 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 	batches := num / batchSize
 	offset := num - (num % batchSize)
 
-	for i := 0; i < batches; i++ {
+	for i := range batches {
 		err := storer(bucket, data[i*batchSize:(i+1)*batchSize])
 		if err != nil {
 			return err
@@ -2107,8 +2107,8 @@ func reverseLookupEntryPrefix(jobKey []byte) []byte {
 // stripBucketFromS3Path removes the first directory from the given path. If
 // there are no directories, returns an error.
 func stripBucketFromS3Path(path string) (string, error) {
-	if idx := strings.IndexByte(path, '/'); idx >= 0 {
-		return path[idx+1:], nil
+	if _, after, ok := strings.Cut(path, "/"); ok {
+		return after, nil
 	}
 
 	return "", Error{Err: ErrS3DBBackupPath}

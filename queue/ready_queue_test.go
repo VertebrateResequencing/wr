@@ -37,7 +37,7 @@ func TestReadyQueue(t *testing.T) {
 	Convey("Once 10 items of equal priority have been pushed to the queue", t, func() {
 		queue := newSubQueue(1)
 		items := make(map[string]*Item)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			items[key] = newItem(key, "", "data", 0, 0*time.Second, 0*time.Second)
 			queue.push(items[key])
@@ -48,13 +48,13 @@ func TestReadyQueue(t *testing.T) {
 		Convey("Popping them should remove them in fifo order", func() {
 			exampleItem := items["key_1"]
 
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				item := queue.pop()
 				So(item, ShouldHaveSameTypeAs, exampleItem)
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
 			}
 			So(queue.Len(), ShouldEqual, 5)
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				item := queue.pop()
 				So(item, ShouldHaveSameTypeAs, exampleItem)
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i+5))
@@ -97,7 +97,7 @@ func TestReadyQueue(t *testing.T) {
 	Convey("Once 10 items of differing priority have been pushed to the queue", t, func() {
 		queue := newSubQueue(1)
 		items := make(map[string]*Item)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			p := i
 			if i == 4 {
@@ -110,7 +110,7 @@ func TestReadyQueue(t *testing.T) {
 		So(queue.Len(), ShouldEqual, 10)
 
 		Convey("Popping them should remove them in priority and then fifo order", func() {
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				item := queue.pop()
 				p := 9 - i
 				if i == 4 {
@@ -127,7 +127,7 @@ func TestReadyQueue(t *testing.T) {
 	Convey("Once 10 items of equal priority and 2 different ReserveGroups have been pushed to the queue", t, func() {
 		queue := newSubQueue(1)
 		items := make(map[string]*Item)
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			key := fmt.Sprintf("key_%d", i)
 			items[key] = newItem(key, "group1", "data", 0, 0*time.Second, 0*time.Second)
 			queue.push(items[key])
@@ -149,7 +149,7 @@ func TestReadyQueue(t *testing.T) {
 			exampleItem := items["key_1"]
 
 			So(queue.len("group1"), ShouldEqual, 5)
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				item := queue.pop("group1")
 				So(item, ShouldHaveSameTypeAs, exampleItem)
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
@@ -159,7 +159,7 @@ func TestReadyQueue(t *testing.T) {
 			So(item, ShouldBeNil)
 
 			So(queue.len("group2"), ShouldEqual, 5)
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				itemp := queue.pop("group2")
 				So(itemp, ShouldHaveSameTypeAs, exampleItem)
 				So(itemp.Key, ShouldEqual, fmt.Sprintf("key_%d", i+5))

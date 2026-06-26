@@ -297,7 +297,7 @@ other than providing compatibility with real bjobs command line args.`,
 			} else {
 				delimiter = " "
 			}
-			for _, field := range strings.Split(lsfFormat, " ") {
+			for field := range strings.SplitSeq(lsfFormat, " ") {
 				field = strings.ToUpper(field)
 				if _, exists := fieldLookup[field]; !exists {
 					die("unsupported field '%s'", field)

@@ -830,7 +830,7 @@ func startJQ(postCreation, preDestroy []byte) {
 		die("wr manager failed to start : %s\n", err)
 	}
 
-	var schedulerConfig interface{}
+	var schedulerConfig any
 	serverCIDR := ""
 	switch scheduler {
 	case "local":

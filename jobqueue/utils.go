@@ -38,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net"
 	"os"
@@ -746,9 +747,7 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 
 	if len(req.Other) > 0 {
 		out.Other = make(map[string]string, len(req.Other))
-		for key, val := range req.Other {
-			out.Other[key] = val
-		}
+		maps.Copy(out.Other, req.Other)
 	}
 
 	return out

@@ -954,7 +954,7 @@ func (s *Server) UploadFile(ctx context.Context, source string, dest string) err
 // NB: currently only works if the server supports the command 'pwd'.
 func (s *Server) CopyOver(ctx context.Context, files string) error {
 	ctx = s.getContextWithServerID(ctx)
-	for _, path := range strings.Split(files, ",") {
+	for path := range strings.SplitSeq(files, ",") {
 		split := strings.Split(path, ":")
 		var localPath, remotePath string
 		if len(split) == 2 {

@@ -179,13 +179,10 @@ func TestBackoff(t *testing.T) {
 			go sleep()
 		}
 
-		wg.Add(1)
-
-		go func() {
+		wg.Go(func() {
 			b.Reset()
 			b.Sleep(ctx)
-			wg.Done()
-		}()
+		})
 
 		wg.Wait()
 

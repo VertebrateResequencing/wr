@@ -37,6 +37,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -812,9 +813,7 @@ func (p *openstackp) flavors(ctx context.Context) map[string]*Flavor {
 		p.fmapMutex.RLock()
 	}
 	fmap := make(map[string]*Flavor)
-	for key, val := range p.fmap {
-		fmap[key] = val
-	}
+	maps.Copy(fmap, p.fmap)
 	p.fmapMutex.RUnlock()
 	return fmap
 }

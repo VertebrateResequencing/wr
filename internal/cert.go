@@ -38,7 +38,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"io/ioutil"
+
 	"math/big"
 	"net"
 	"os"
@@ -177,7 +177,7 @@ func generateCertificates(caFile, domain string, rootKey *rsa.PrivateKey, server
 	serverPemFile string, randReader io.Reader, fileFlags int,
 ) error {
 	rootServerTemplates := make([]*x509.Certificate, 2)
-	for i := 0; i < len(rootServerTemplates); i++ {
+	for i := range rootServerTemplates {
 		certTmplt, err := certTemplate(domain, randReader)
 		if err != nil {
 			return err
@@ -245,8 +245,8 @@ func generateRootCert(caFile string, template *x509.Certificate, rootKey *rsa.Pr
 
 // createCertFromTemplate creates a certificate given a template, siginign it
 // against its parent. Returned in DER encoding.
-func createCertFromTemplate(template, parentCert *x509.Certificate, pubKey interface{},
-	parentPvtKey interface{}, randReader io.Reader,
+func createCertFromTemplate(template, parentCert *x509.Certificate, pubKey any,
+	parentPvtKey any, randReader io.Reader,
 ) ([]byte, error) {
 	certDER, err := x509.CreateCertificate(randReader, template, parentCert, pubKey, parentPvtKey)
 	if err != nil {
@@ -324,7 +324,7 @@ func CheckCerts(serverPemFile string, serverKeyFile string) error {
 // CertExpiry returns the time that the certificate given by the path to a pem
 // file will expire.
 func CertExpiry(certFile string) (time.Time, error) {
-	certPEMBlock, err := ioutil.ReadFile(certFile)
+	certPEMBlock, err := os.ReadFile(certFile)
 	if err != nil {
 		return time.Now(), err
 	}

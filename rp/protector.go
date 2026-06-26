@@ -380,10 +380,7 @@ func (p *Protector) reprocess() {
 // set. Never returns a value higher than maxTokens.
 func (p *Protector) availableTokens() (int, bool) {
 	if p.availabilityCb != nil {
-		availableTokens := p.availabilityCb()
-		if availableTokens > p.maxTokens {
-			availableTokens = p.maxTokens
-		}
+		availableTokens := min(p.availabilityCb(), p.maxTokens)
 		return availableTokens, true
 	}
 	return 0, false

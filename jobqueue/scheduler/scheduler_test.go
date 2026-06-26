@@ -166,7 +166,7 @@ func (r *startOrderRecorder) started(label string) int {
 
 	n := 0
 
-	for _, field := range strings.Fields(string(data)) {
+	for field := range strings.FieldsSeq(string(data)) {
 		if field == label {
 			n++
 		}
@@ -795,7 +795,7 @@ func TestOpenstack(t *testing.T) {
 
 					// now Schedule a bunch of cmds in quick succession
 					var wg sync.WaitGroup
-					for i := 0; i < count; i++ {
+					for i := range count {
 						wg.Add(1)
 						go func(i int) {
 							defer wg.Done()

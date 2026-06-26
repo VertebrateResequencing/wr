@@ -30,6 +30,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -436,9 +437,7 @@ func (c *Config) clone() *Config {
 	}
 
 	newC.sources = make(map[string]string)
-	for key, val := range c.sources {
-		newC.sources[key] = val
-	}
+	maps.Copy(newC.sources, c.sources)
 
 	return newC
 }

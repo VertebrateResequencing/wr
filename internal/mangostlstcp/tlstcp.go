@@ -66,7 +66,7 @@ type connPipe struct {
 	c       net.Conn
 	proto   transport.ProtocolInfo
 	closed  bool
-	options map[string]interface{}
+	options map[string]any
 	maxrx   int
 	sync.Mutex
 }
@@ -75,7 +75,7 @@ func newConnPipe(c net.Conn, proto transport.ProtocolInfo) *connPipe {
 	p := &connPipe{
 		c:       c,
 		proto:   proto,
-		options: make(map[string]interface{}),
+		options: make(map[string]any),
 	}
 
 	p.options[mangos.OptionMaxRecvSize] = 0
@@ -141,7 +141,7 @@ func (p *connPipe) Close() error {
 	return conn.Close()
 }
 
-func (p *connPipe) GetOption(n string) (interface{}, error) {
+func (p *connPipe) GetOption(n string) (any, error) {
 	p.Lock()
 	defer p.Unlock()
 
@@ -156,7 +156,7 @@ func (p *connPipe) GetOption(n string) (interface{}, error) {
 	return nil, mangos.ErrBadProperty
 }
 
-func (p *connPipe) SetOption(n string, v interface{}) {
+func (p *connPipe) SetOption(n string, v any) {
 	p.Lock()
 	defer p.Unlock()
 
@@ -385,7 +385,7 @@ func (d *dialer) Dial() (transport.Pipe, error) {
 }
 
 //nolint:dupl,gocyclo // Dialers and listeners intentionally support the same transport options.
-func (d *dialer) SetOption(n string, v interface{}) error {
+func (d *dialer) SetOption(n string, v any) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
@@ -433,7 +433,7 @@ func (d *dialer) SetOption(n string, v interface{}) error {
 	return mangos.ErrBadOption
 }
 
-func intOption(v interface{}) (int, error) {
+func intOption(v any) (int, error) {
 	if i, ok := v.(int); ok {
 		return i, nil
 	}
@@ -441,7 +441,7 @@ func intOption(v interface{}) (int, error) {
 	return 0, mangos.ErrBadValue
 }
 
-func tlsConfigOption(v interface{}) (*tls.Config, error) {
+func tlsConfigOption(v any) (*tls.Config, error) {
 	if config, ok := v.(*tls.Config); ok {
 		return config, nil
 	}
@@ -449,7 +449,7 @@ func tlsConfigOption(v interface{}) (*tls.Config, error) {
 	return nil, mangos.ErrBadValue
 }
 
-func durationOption(v interface{}) (time.Duration, error) {
+func durationOption(v any) (time.Duration, error) {
 	if d, ok := v.(time.Duration); ok {
 		return d, nil
 	}
@@ -457,7 +457,7 @@ func durationOption(v interface{}) (time.Duration, error) {
 	return 0, mangos.ErrBadValue
 }
 
-func boolOption(v interface{}) error {
+func boolOption(v any) error {
 	if _, ok := v.(bool); ok {
 		return nil
 	}
@@ -465,7 +465,7 @@ func boolOption(v interface{}) error {
 	return mangos.ErrBadValue
 }
 
-func keepAliveDuration(v interface{}) (time.Duration, error) {
+func keepAliveDuration(v any) (time.Duration, error) {
 	b, ok := v.(bool)
 	if !ok {
 		return 0, mangos.ErrBadValue
@@ -478,7 +478,7 @@ func keepAliveDuration(v interface{}) (time.Duration, error) {
 	return -1, nil
 }
 
-func (d *dialer) GetOption(n string) (interface{}, error) {
+func (d *dialer) GetOption(n string) (any, error) {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
@@ -612,7 +612,7 @@ func (l *listener) Close() error {
 }
 
 //nolint:dupl,gocyclo // Dialers and listeners intentionally support the same transport options.
-func (l *listener) SetOption(n string, v interface{}) error {
+func (l *listener) SetOption(n string, v any) error {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
@@ -660,7 +660,7 @@ func (l *listener) SetOption(n string, v interface{}) error {
 	return mangos.ErrBadOption
 }
 
-func (l *listener) GetOption(n string) (interface{}, error) {
+func (l *listener) GetOption(n string) (any, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 

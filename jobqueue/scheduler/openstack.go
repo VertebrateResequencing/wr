@@ -276,7 +276,7 @@ func (c *ConfigOpenStack) GetServerKeepTime() time.Duration {
 }
 
 // initialize sets up an openstack scheduler.
-func (s *opst) initialize(ctx context.Context, config interface{}) error {
+func (s *opst) initialize(ctx context.Context, config any) error {
 	s.config = config.(*ConfigOpenStack)
 	if s.config.OSRAM == 0 {
 		s.config.OSRAM = 2048
@@ -390,8 +390,8 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 	s.spawnCanceller = make(map[string]map[string]chan struct{})
 
 	if s.config.FlavorSets != "" {
-		sets := strings.Split(s.config.FlavorSets, ";")
-		for _, set := range sets {
+		sets := strings.SplitSeq(s.config.FlavorSets, ";")
+		for set := range sets {
 			flavors := strings.Split(set, ",")
 			s.flavorSets = append(s.flavorSets, flavors)
 		}
@@ -674,10 +674,7 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 		clog.Debug(ctx, "spawnMultiple is spawning enough for cmd already", "cmd", cmd, "todo", todo, "already", spawningCmd)
 		return
 	}
-	todo = needed
-	if spawnable < todo {
-		todo = spawnable
-	}
+	todo = min(spawnable, needed)
 	var allowed int
 	if s.config.SimultaneousSpawns > 0 {
 		allowed = s.config.SimultaneousSpawns - spawningTotal

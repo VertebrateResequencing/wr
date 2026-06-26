@@ -754,10 +754,7 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 
 	close(usingQuotaDone)
 
-	maxDisk := f.Disk
-	if diskGB > maxDisk {
-		maxDisk = diskGB
-	}
+	maxDisk := max(diskGB, f.Disk)
 
 	server := &Server{
 		ID:           serverID,

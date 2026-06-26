@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -185,17 +186,17 @@ func cloudResourceName(username string) string {
 }
 
 // info is a convenience to log a message at the Info level.
-func info(msg string, a ...interface{}) {
+func info(msg string, a ...any) {
 	clog.Info(context.Background(), fmt.Sprintf(msg, a...))
 }
 
 // warn is a convenience to log a message at the Warn level.
-func warn(msg string, a ...interface{}) {
+func warn(msg string, a ...any) {
 	clog.Warn(context.Background(), fmt.Sprintf(msg, a...))
 }
 
 // die is a convenience to log a message at the Error level and exit non zero.
-func die(msg string, a ...interface{}) {
+func die(msg string, a ...any) {
 	clog.Error(context.Background(), fmt.Sprintf(msg, a...))
 	os.Exit(1)
 }
@@ -223,13 +224,7 @@ func createWorkingDir() {
 // path).
 func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *daemon.Context) {
 	args := os.Args
-	hadDeployment := false
-	for _, arg := range args {
-		if arg == "--deployment" {
-			hadDeployment = true
-			break
-		}
-	}
+	hadDeployment := slices.Contains(args, "--deployment")
 	if !hadDeployment {
 		args = append(args, "--deployment")
 		args = append(args, config.Deployment)

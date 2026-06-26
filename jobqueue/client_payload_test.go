@@ -152,11 +152,11 @@ func (s *captureSocket) Dial(_ string) error {
 	return errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) DialOptions(_ string, _ map[string]interface{}) error {
+func (s *captureSocket) DialOptions(_ string, _ map[string]any) error {
 	return errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) NewDialer(_ string, _ map[string]interface{}) (mangos.Dialer, error) {
+func (s *captureSocket) NewDialer(_ string, _ map[string]any) (mangos.Dialer, error) {
 	return nil, errCaptureSocketUnsupported
 }
 
@@ -164,19 +164,19 @@ func (s *captureSocket) Listen(_ string) error {
 	return errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) ListenOptions(_ string, _ map[string]interface{}) error {
+func (s *captureSocket) ListenOptions(_ string, _ map[string]any) error {
 	return errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) NewListener(_ string, _ map[string]interface{}) (mangos.Listener, error) {
+func (s *captureSocket) NewListener(_ string, _ map[string]any) (mangos.Listener, error) {
 	return nil, errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) GetOption(_ string) (interface{}, error) {
+func (s *captureSocket) GetOption(_ string) (any, error) {
 	return nil, errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) SetOption(_ string, _ interface{}) error {
+func (s *captureSocket) SetOption(_ string, _ any) error {
 	return errCaptureSocketUnsupported
 }
 

@@ -54,7 +54,7 @@ func TestStatusStateLockOrder(t *testing.T) {
 
 		// changed callback: detached goroutine (queue unlocked) -> job lock ->
 		// statusState.mu, exactly like the production server.
-		q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
+		q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any) {
 			from := subqueueToJobState[fromQ]
 			to := subqueueToJobState[toQ]
 			groups := make(map[string]int)
@@ -76,7 +76,7 @@ func TestStatusStateLockOrder(t *testing.T) {
 		// TTR callback: runs while holding queue.mutex, takes job lock then
 		// statusState.mu (the running->lost transition). This is the path that
 		// must never invert against a snapshot taking statusState.mu first.
-		q.SetTTRCallback(func(data interface{}) queue.SubQueue {
+		q.SetTTRCallback(func(data any) queue.SubQueue {
 			job := data.(*Job) //nolint:errcheck,forcetypeassert
 			job.Lock()
 			rg := job.RepGroup
@@ -92,9 +92,7 @@ func TestStatusStateLockOrder(t *testing.T) {
 
 		// concurrent drainers take statusState.mu alone (leaf).
 		for range 4 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 
 				sub := ss.subscribe()
 				defer ss.unsubscribe(sub)
@@ -113,7 +111,7 @@ func TestStatusStateLockOrder(t *testing.T) {
 						}
 					}
 				}
-			}()
+			})
 		}
 
 		// concurrent adders + reservers drive transitions and TTR expiry.
@@ -150,9 +148,7 @@ func TestStatusStateLockOrder(t *testing.T) {
 
 		// reservers move ready->run, then let some hit TTR (running->lost).
 		for range 4 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 
 				for {
 					select {
@@ -170,7 +166,7 @@ func TestStatusStateLockOrder(t *testing.T) {
 						q.Touch(item.Key) //nolint:errcheck
 					}
 				}
-			}()
+			})
 		}
 
 		// run the storm for a bounded window, then stop everything.

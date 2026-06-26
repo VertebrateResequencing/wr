@@ -61,7 +61,7 @@ delay queue.
 
 	    import "github.com/VertebrateResequencing/wr/queue"
 	    q = queue.New("myQueue")
-	    q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+	    q.SetReadyAddedCallback(func(queuename string, allitemdata []any) {
 	        for _, item := range allitemdata {
 	            // cast item to the original type, then arrange to do something now
 	            // you know that the item is ready to be processed
@@ -141,7 +141,7 @@ const (
 
 // defaultTTRCallback is used if the user never calls SetTTRCallback() and
 // always moves the items to the ready sub-queue.
-func defaultTTRCallback(_ interface{}) SubQueue {
+func defaultTTRCallback(_ any) SubQueue {
 	return SubQueueReady
 }
 
@@ -254,20 +254,20 @@ func (e Error) Error() string {
 
 // ReadyAddedCallback is used as a callback to know when new items have been
 // added to the ready sub-queue, getting /all/ items in the ready sub-queue.
-type ReadyAddedCallback func(queuename string, allitemdata []interface{})
+type ReadyAddedCallback func(queuename string, allitemdata []any)
 
 // ChangedCallback is used as a callback to know when items change sub-queues,
 // telling you what item.Data() moved from which sub-queue to which other sub-
 // queue. For new items in the queue, `from` will be SubQueueNew, and for items
 // leaving the queue, `to` will be SubQueueRemoved.
-type ChangedCallback func(from, to SubQueue, data []interface{})
+type ChangedCallback func(from, to SubQueue, data []any)
 
 // TTRCallback is used as a callback to decide which sub-queue an item should
 // move to when a an item in the run sub-queue hits its TTR, based on that
 // item's data. Valid return values are SubQueueDelay, SubQueueReady and
 // SubQueueBury. SubQueueRun can be used to avoid changing subqueue. Other
 // values will be treated as SubQueueReady).
-type TTRCallback func(data interface{}) SubQueue
+type TTRCallback func(data any) SubQueue
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
@@ -315,7 +315,7 @@ type Stats struct {
 type ItemDef struct {
 	Key          string
 	ReserveGroup string
-	Data         interface{}
+	Data         any
 	Priority     uint8 // highest priority is 255
 	Delay        time.Duration
 	TTR          time.Duration
@@ -389,7 +389,7 @@ func (queue *Queue) readyAdded(ctx context.Context, source string) {
 
 		go func() {
 			queue.mutex.RLock()
-			var data []interface{}
+			var data []any
 			for _, il := range queue.readyQueue.groupedItems {
 				for _, item := range il {
 					data = append(data, item.Data())
@@ -437,7 +437,7 @@ func (queue *Queue) SetChangedCallback(callback ChangedCallback) {
 // routine.
 func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 	if queue.changedCb != nil {
-		var data []interface{}
+		var data []any
 		for _, item := range items {
 			data = append(data, item.Data())
 		}
@@ -523,7 +523,7 @@ func (queue *Queue) Stats() *Stats {
 //
 // Add() returns an item, which may have already existed (in which case, nothing
 // was actually added or changed).
-func (queue *Queue) Add(ctx context.Context, key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
+func (queue *Queue) Add(ctx context.Context, key string, reserveGroup string, data any, priority uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
 	item, err := queue.newItemForAdd(key, reserveGroup, data, priority, 0, delay, ttr)
 	if err != nil {
@@ -536,7 +536,7 @@ func (queue *Queue) Add(ctx context.Context, key string, reserveGroup string, da
 
 // newItemForAdd prepares a new item for Add() and AddWithSize() methods. You
 // must hold the mutex lock before calling this.
-func (queue *Queue) newItemForAdd(key string, reserveGroup string, data interface{}, priority uint8, size uint8, delay time.Duration, ttr time.Duration) (*Item, error) {
+func (queue *Queue) newItemForAdd(key string, reserveGroup string, data any, priority uint8, size uint8, delay time.Duration, ttr time.Duration) (*Item, error) {
 	if queue.closed {
 		return nil, Error{queue.Name, "Add", key, ErrQueueClosed}
 	}
@@ -614,7 +614,7 @@ func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue
 // Size alters the way priority is handled. For items with the same priority,
 // the next to be Reserve()d will be the item with the highest size. If they
 // also have the same size, then they will be Reserve()d in fifo order.
-func (queue *Queue) AddWithSize(ctx context.Context, key string, reserveGroup string, data interface{}, priority uint8, size uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
+func (queue *Queue) AddWithSize(ctx context.Context, key string, reserveGroup string, data any, priority uint8, size uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
 	item, err := queue.newItemForAdd(key, reserveGroup, data, priority, size, delay, ttr)
 	if err != nil {
@@ -788,10 +788,10 @@ func (queue *Queue) Get(key string) (*Item, error) {
 
 // GetRunningData gets all the item.Data() of items currently in the run sub-
 // queue.
-func (queue *Queue) GetRunningData() []interface{} {
+func (queue *Queue) GetRunningData() []any {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
-	data := make([]interface{}, 0, len(queue.runQueue.items))
+	data := make([]any, 0, len(queue.runQueue.items))
 	for _, item := range queue.runQueue.items {
 		data = append(data, item.Data())
 	}
@@ -817,7 +817,7 @@ func (queue *Queue) AllItems() []*Item {
 // the item with Get() (giving you item.Key, item.ReserveGroup, item.Data() and
 // item.UnresolvedDependencies()), and then calling item.Stats() to get
 // stats.Priority, stats.Delay and stats.TTR.
-func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) error {
+func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string, data any, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -1406,7 +1406,7 @@ func (queue *Queue) startDelayProcessing(ctx context.Context) {
 			len := queue.delayQueue.len()
 			addedReady := false
 			var items []*Item
-			for i := 0; i < len; i++ {
+			for range len {
 				item := queue.delayQueue.firstItem()
 
 				if !item.isready() {
@@ -1469,7 +1469,7 @@ func (queue *Queue) startTTRProcessing(ctx context.Context) {
 			queue.mutex.Lock()
 			length := queue.runQueue.len()
 			var delayedItems, buriedItems, readyItems []*Item
-			for i := 0; i < length; i++ {
+			for range length {
 				item := queue.runQueue.firstItem()
 
 				if !item.releasable() {

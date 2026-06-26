@@ -964,16 +964,16 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if erra != nil {
 			die("failed to get needed environment variables: %s", erra)
 		}
-		envvarExports := ""
+		var envvarExports strings.Builder
 		for _, env := range envvars {
 			val := os.Getenv(env)
 			if val == "" {
 				continue
 			}
 			// *** this is bash-like only; is that a problem?
-			envvarExports += fmt.Sprintf("export %s=\"%s\"\n", env, val)
+			envvarExports.WriteString(fmt.Sprintf("export %s=\"%s\"\n", env, val))
 		}
-		err = server.CreateFile(ctx, envvarExports, wrEnvFileName)
+		err = server.CreateFile(ctx, envvarExports.String(), wrEnvFileName)
 		if err != nil {
 			teardown(ctx, provider)
 			die("failed to create our environment variables file on the server at %s: %s", server.IP, err)
@@ -1015,7 +1015,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if cloudConfigFiles != "" {
 			// strip any local file locations
 			var remoteConfigFiles []string
-			for _, cf := range strings.Split(cloudConfigFiles, ",") {
+			for cf := range strings.SplitSeq(cloudConfigFiles, ",") {
 				parts := strings.Split(cf, ":")
 				if len(parts) == 2 {
 					remoteConfigFiles = append(remoteConfigFiles, parts[1])

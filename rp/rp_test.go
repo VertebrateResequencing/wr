@@ -171,7 +171,7 @@ func testRPBody(t *testing.T) {
 			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(releaseTimeout), begin.Add(releaseTimeout).Add(halfDelay))
 			rp.Release(r)
 
-			for i := 0; i < maxSimultaneous; i++ {
+			for i := range maxSimultaneous {
 				So(<-grantedCh, ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*i)*time.Millisecond), begin.Add(time.Duration(delayInt*i)*time.Millisecond).Add(halfDelay))
 			}
 		})

@@ -29,6 +29,7 @@ package container
 
 import (
 	"context"
+	"slices"
 	"strings"
 )
 
@@ -73,11 +74,5 @@ func (c *Container) TrimNamePrefixes() {
 // HasName checks if a given name is one of this container's names. Make sure to
 // call the TrimNamePrefixes on the container before calling this function.
 func (c *Container) HasName(name string) bool {
-	for _, cname := range c.Names {
-		if cname == name {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(c.Names, name)
 }

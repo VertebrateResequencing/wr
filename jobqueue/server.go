@@ -45,6 +45,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -498,7 +499,7 @@ func (s *sgroup) hasSkips() bool {
 
 type casterMember struct {
 	group *caster
-	In    chan interface{}
+	In    chan any
 	done  chan struct{}
 	send  sync.Mutex
 	once  sync.Once
@@ -528,7 +529,7 @@ func (c *caster) Broadcasting(time.Duration) {}
 func (c *caster) Join() *casterMember {
 	member := &casterMember{
 		group: c,
-		In:    make(chan interface{}, 1),
+		In:    make(chan any, 1),
 		done:  make(chan struct{}),
 	}
 
@@ -541,7 +542,7 @@ func (c *caster) Join() *casterMember {
 	return member
 }
 
-func (c *caster) Send(val interface{}) {
+func (c *caster) Send(val any) {
 	c.RLock()
 
 	if c.closed {
@@ -587,7 +588,7 @@ func (c *caster) Close() {
 // set, so a dropped update is harmless. The status counts no longer use the
 // caster at all; they use the idempotent absolute statusState, so there is no
 // overflow-to-resync conversion anywhere.
-func (cm *casterMember) trySend(val interface{}) {
+func (cm *casterMember) trySend(val any) {
 	cm.send.Lock()
 	defer cm.send.Unlock()
 
@@ -1567,7 +1568,7 @@ type ServerConfig struct {
 	// SchedulerConfig should define the config options needed by the chosen
 	// scheduler, eg. scheduler.ConfigLocal{Deployment: "production", Shell:
 	// "bash"} if using the local scheduler.
-	SchedulerConfig interface{}
+	SchedulerConfig any
 
 	// The command line needed to bring up a jobqueue runner client, which
 	// should contain 6 %s parts which will be replaced with the scheduler
@@ -1840,7 +1841,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		return s, msg, token, err
 	}
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
-	listenOpts := make(map[string]interface{})
+	listenOpts := make(map[string]any)
 	caCert, err := os.ReadFile(caFile)
 	if err == nil {
 		certPool := x509.NewCertPool()
@@ -2513,7 +2514,7 @@ func (s *Server) createQueue(ctx context.Context) {
 	// resource reservations the job scheduler will run them under. queue
 	// package will only call this once at a time, so we don't need to worry
 	// about locking across the whole function.
-	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+	q.SetReadyAddedCallback(func(queuename string, allitemdata []any) {
 		defer internal.LogPanic(ctx, "jobqueue ready added callback", true)
 
 		clog.Debug(ctx, "rac started")
@@ -2563,18 +2564,12 @@ func (s *Server) createQueue(ctx context.Context) {
 				if errm != nil || errd != nil || errs != nil {
 					reqGroupToReqs[reqGroup] = nil
 				} else {
-					recmMBs := 0
-					if recm > 0 {
-						recmMBs = recm
-					}
+					recmMBs := max(recm, 0)
 					recdGBs := 0
 					if recd > 0 {
 						recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
 					}
-					recsSecs := 0
-					if recs > 0 {
-						recsSecs = recs
-					}
+					recsSecs := max(recs, 0)
 
 					recommendedReq = &scheduler.Requirements{
 						RAM:     recmMBs,
@@ -2753,7 +2748,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
-	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
+	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any) {
 		s.emitChangeCallbackTransition(ctx, fromQ, toQ, data)
 	})
 
@@ -2763,7 +2758,7 @@ func (s *Server) createQueue(ctx context.Context) {
 	// up the user if they want to confirm the jobs are dead by killing
 	// them or leaving them to spring back to life if not. If they already
 	// killed it, however, we'll do normal releasing behaviour afterwards.
-	q.SetTTRCallback(func(data interface{}) queue.SubQueue {
+	q.SetTTRCallback(func(data any) queue.SubQueue {
 		job := data.(*Job)
 
 		job.Lock()
@@ -2844,15 +2839,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	readyCallbackExpected := false
-
-	for _, itemdef := range itemdefs {
-		if itemDefTriggersReadyAdded(itemdef) {
-			readyCallbackExpected = true
-
-			break
-		}
-	}
+	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
 
 	if readyCallbackExpected {
 		s.setRACPending()

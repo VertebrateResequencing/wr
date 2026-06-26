@@ -213,7 +213,7 @@ func ProcMeminfoMBs() (int, error) {
 // LogClose is for use to Close() an object during a defer when you don't care
 // if the Close() returns an error, but do want non-EOF errors logged. Extra
 // args are passed as additional context for the logger.
-func LogClose(ctx context.Context, obj io.Closer, msg string, extra ...interface{}) {
+func LogClose(ctx context.Context, obj io.Closer, msg string, extra ...any) {
 	err := obj.Close()
 	if err != nil && err.Error() != "EOF" && !errors.Is(err, io.EOF) {
 		extra = append(extra, "err", err)
@@ -248,7 +248,7 @@ func Which(exeName string) string {
 		self = ""
 	}
 
-	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+	for dir := range strings.SplitSeq(os.Getenv("PATH"), string(os.PathListSeparator)) {
 		stat, err := os.Stat(dir)
 		if err != nil || !stat.IsDir() {
 			continue

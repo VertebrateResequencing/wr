@@ -52,6 +52,7 @@ import (
 	"context"
 	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,9 +142,7 @@ func (req *Requirements) Clone() *Requirements {
 	}
 	if req.OtherSet || len(req.Other) > 0 {
 		newOther := make(map[string]string, len(req.Other))
-		for key, val := range req.Other {
-			newOther[key] = val
-		}
+		maps.Copy(newOther, req.Other)
 		new.Other = newOther
 	}
 	return new
@@ -193,7 +192,7 @@ type Host interface {
 // scheduleri interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize(ctx context.Context, config interface{}) error                                     // do any initial set up to be able to use the job scheduler
+	initialize(ctx context.Context, config any) error                                             // do any initial set up to be able to use the job scheduler
 	schedule(ctx context.Context, cmd string, req *Requirements, priority uint8, count int) error // achieve the aims of Schedule()
 	scheduled(ctx context.Context, cmd string) (int, error)                                       // achieve the aims of Scheduled()
 	recover(ctx context.Context, cmd string, req *Requirements, host *RecoveredHostDetails) error // achieve the aims of Recover()
@@ -241,7 +240,7 @@ type Scheduler struct {
 // Providing a logger allows for debug messages to be logged somewhere, along
 // with any "harmless" or unreturnable errors. If not supplied, we use a default
 // logger that discards all log messages.
-func New(ctx context.Context, name string, config interface{}) (*Scheduler, error) {
+func New(ctx context.Context, name string, config any) (*Scheduler, error) {
 	var s *Scheduler
 	switch name {
 	case "lsf":

@@ -67,9 +67,9 @@ func TestQueue(t *testing.T) {
 		// so no wall-clock timeout watchdog is needed.
 		done := make(chan bool, 1)
 		go func() {
-			for l := 0; l < 1000; l++ {
+			for range 1000 {
 				queue := New(ctx, "myqueue")
-				for i := 0; i < 10; i++ {
+				for i := range 10 {
 					key := fmt.Sprintf("key_%d", i)
 					t := time.Duration((i+1)*100) * time.Millisecond
 					_, erra := queue.Add(ctx, key, "", "data", 0, t, 0*time.Millisecond, "")
@@ -88,9 +88,9 @@ func TestQueue(t *testing.T) {
 		// as above, synctest's deadlock detection replaces the timeout watchdog.
 		done := make(chan bool, 1)
 		go func() {
-			for l := 0; l < 1000; l++ {
+			for range 1000 {
 				queue := New(ctx, "myqueue")
-				for i := 0; i < 10; i++ {
+				for i := range 10 {
 					key := fmt.Sprintf("key_%d", i)
 					t := time.Duration((i+1)*100) * time.Millisecond
 					_, erra := queue.Add(ctx, key, "", "data", 0, 0*time.Millisecond, t, "")
@@ -99,7 +99,7 @@ func TestQueue(t *testing.T) {
 						done <- false
 					}
 				}
-				for i := 0; i < 10; i++ {
+				for range 10 {
 					_, errr := queue.Reserve("", 0)
 					if errr != nil {
 						fmt.Printf("\nqueue.Reserve() failed: %s\n", errr)
@@ -124,7 +124,7 @@ func TestQueue(t *testing.T) {
 		)
 
 		waitForReadyAdded := make(chan bool, 1)
-		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+		queue.SetReadyAddedCallback(func(queuename string, allitemdata []any) {
 			callBackLock.Lock()
 			numReadyAdded = len(allitemdata)
 
@@ -151,7 +151,7 @@ func TestQueue(t *testing.T) {
 		var enableWaitForChanged bool
 		var enableChangedCollection bool
 		waitForChanged := make(chan bool)
-		queue.SetChangedCallback(func(from, to SubQueue, data []interface{}) {
+		queue.SetChangedCallback(func(from, to SubQueue, data []any) {
 			callBackLock2.Lock()
 			defer callBackLock2.Unlock()
 			changed = &changedStruct{from, to, len(data)}
@@ -224,7 +224,7 @@ func TestQueue(t *testing.T) {
 		}
 
 		items := make(map[string]*Item)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			t := time.Duration((i+1)*100) * time.Millisecond
 			item, err := queue.Add(ctx, key, "", "data", 0, t, t, "")
@@ -526,7 +526,7 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("When they hit their ttr you can choose to delay them", func() {
-					queue.SetTTRCallback(func(data interface{}) SubQueue {
+					queue.SetTTRCallback(func(data any) SubQueue {
 						return SubQueueDelay
 					})
 					defer queue.SetTTRCallback(defaultTTRCallback)
@@ -548,7 +548,7 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("When they hit their ttr you can choose to bury them", func() {
-					queue.SetTTRCallback(func(data interface{}) SubQueue {
+					queue.SetTTRCallback(func(data any) SubQueue {
 						return SubQueueBury
 					})
 					defer queue.SetTTRCallback(defaultTTRCallback)
@@ -932,7 +932,7 @@ func TestQueue(t *testing.T) {
 		type testdata struct {
 			ID int
 		}
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
 			_, err := queue.Add(ctx, key, "", &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second, "")
@@ -948,7 +948,7 @@ func TestQueue(t *testing.T) {
 			So(stats.Buried, ShouldEqual, 0)
 
 			Convey("And can all be reserved", func() {
-				for i := 0; i < 1000; i++ {
+				for i := range 1000 {
 					item, err := queue.Reserve("", 0)
 					So(err, ShouldBeNil)
 					So(item, ShouldNotBeNil)
@@ -1008,7 +1008,7 @@ func TestQueue(t *testing.T) {
 			ID int
 		}
 		var dataids []int
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
 			dataids = append(dataids, dataid)
@@ -1060,7 +1060,7 @@ func TestQueue(t *testing.T) {
 		queue := New(ctx, "1000 queue")
 		defer qdestroy(queue)
 		t := time.Now()
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			key := fmt.Sprintf("key_%d", i)
 			_, err := queue.Add(ctx, key, "", "data", 0, 100*time.Millisecond, 30*time.Second, "")
 			So(err, ShouldBeNil)
@@ -1087,7 +1087,7 @@ func TestQueue(t *testing.T) {
 			So(stats.Buried, ShouldEqual, 0)
 
 			Convey("And can all be reserved", func() {
-				for i := 0; i < 1000; i++ {
+				for i := range 1000 {
 					item, err := queue.Reserve("", 0)
 					So(err, ShouldBeNil)
 					So(item, ShouldNotBeNil)
@@ -1107,7 +1107,7 @@ func TestQueue(t *testing.T) {
 		shouldBeQueueError(err, ErrNothingReady)
 
 		var itemdefs []*ItemDef
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			itemdefs = append(itemdefs, &ItemDef{
 				Key:      fmt.Sprintf("key_%d", i),
 				Data:     "data",
@@ -1172,7 +1172,7 @@ func TestQueue(t *testing.T) {
 
 		queues := []SubQueue{SubQueueRun, SubQueueBury}
 		var itemdefs []*ItemDef
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			for _, subQueue := range queues {
 				itemdefs = append(itemdefs, &ItemDef{
 					Key:        fmt.Sprintf("key_%d_%s", i, subQueue),
@@ -1872,14 +1872,14 @@ type queueCallbackRecorder struct {
 	changes    []*changedStruct
 }
 
-func (recorder *queueCallbackRecorder) ready(_ string, _ []interface{}) {
+func (recorder *queueCallbackRecorder) ready(_ string, _ []any) {
 	recorder.mutex.Lock()
 	defer recorder.mutex.Unlock()
 
 	recorder.readyCalls++
 }
 
-func (recorder *queueCallbackRecorder) changed(from, to SubQueue, data []interface{}) {
+func (recorder *queueCallbackRecorder) changed(from, to SubQueue, data []any) {
 	recorder.mutex.Lock()
 	defer recorder.mutex.Unlock()
 
