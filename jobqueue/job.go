@@ -30,6 +30,7 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -246,7 +247,7 @@ type Job struct {
 	// CwdMatters == false). If a MountConfig.Mount is not specified, it
 	// defaults to Cwd/mnt if CwdMatters, otherwise ActualCwd itself will be the
 	// mount point. If a MountConfig.CachBase is not specified, it defaults to
-	// to Cwd if CwdMatters, otherwise it will be a sister directory of
+	// Cwd if CwdMatters, otherwise it will be a sister directory of
 	// ActualCwd.
 	MountConfigs MountConfigs
 
@@ -313,7 +314,7 @@ type Job struct {
 	// true if the Cmd was run and exited.
 	Exited bool
 	// if the job ran and exited, its exit code is recorded here, but check
-	// Exited because when this is not set it could like like exit code 0.
+	// Exited because when this is not set it could like exit code 0.
 	Exitcode int
 	// true if the job was running but we've lost contact with it
 	Lost bool
@@ -590,7 +591,7 @@ func (j *Job) EnvAddOverride(env []string) error {
 }
 
 // Getenv is like os.Getenv(), but for the environment variables stored in the
-// the job, including any overrides. Returns blank if Env() would have returned
+// job, including any overrides. Returns blank if Env() would have returned
 // an error.
 func (j *Job) Getenv(key string) string {
 	env, err := j.Env()
@@ -734,7 +735,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		}
 
 		if len(rcs) == 0 {
-			err := fmt.Errorf("no Targets specified")
+			err := errors.New("no Targets specified")
 
 			_, erru := j.Unmount()
 			if erru != nil {

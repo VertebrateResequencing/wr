@@ -778,11 +778,11 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 		case <-time.After(sshShortTimeOut):
 			clog.Debug(ctx, "server ssh timed out", "clientindex", clientIndex)
 
-			done <- fmt.Errorf("cloud SSHSession() timed out")
+			done <- errors.New("cloud SSHSession() timed out")
 		case <-ctx.Done():
 			clog.Debug(ctx, "server ssh cancelled", "clientindex", clientIndex)
 
-			done <- fmt.Errorf("cloud SSHSession() cancelled")
+			done <- errors.New("cloud SSHSession() cancelled")
 		case <-worked:
 			return
 		}
@@ -1500,7 +1500,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 
 	// for testing purposes, we anticipate that provider isn't set
 	if s.provider == nil {
-		return fmt.Errorf("provider not set")
+		return errors.New("provider not set")
 	}
 
 	err := s.provider.DestroyServer(ctx, s.ID)

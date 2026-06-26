@@ -455,7 +455,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 
 	cmd = jvj.Cmd
 	if cmd == "" {
-		return nil, fmt.Errorf("cmd was not specified")
+		return nil, errors.New("cmd was not specified")
 	}
 
 	if jvj.Cwd == "" {
@@ -1691,7 +1691,7 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	}
 
 	if state == "" {
-		return nil, http.StatusBadRequest, fmt.Errorf("state must be supplied as one of running|lost|deletable")
+		return nil, http.StatusBadRequest, errors.New("state must be supplied as one of running|lost|deletable")
 	}
 
 	jobs, status, err := restJobsStatus(ctx, r, s)

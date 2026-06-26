@@ -645,7 +645,7 @@ func generateBsubArgs(queue string, req *Requirements, cmd, deployment string,
 	}
 
 	if req.Cores > 1 {
-		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
+		bsubArgs = append(bsubArgs, "-n", strconv.Itoa(int(math.Ceil(req.Cores))))
 	}
 
 	name := generateBsubName(cmd, deployment, needed)

@@ -26,7 +26,7 @@
 /*
 Package internal houses code for wr's general utility functions.
 
-It also implements the the config system used by the cmd package (see
+It also implements the config system used by the cmd package (see
 config.go).
 
 	import "github.com/VertebrateResequencing/wr/internal"

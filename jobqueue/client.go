@@ -553,7 +553,7 @@ func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 
 // DrainServer tells the server to stop spawning new runners, stop letting
 // existing runners reserve new jobs, and exit once existing runners stop
-// running. You get back a count of existing runners and and an estimated time
+// running. You get back a count of existing runners and an estimated time
 // until completion for the last of those runners.
 func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	return c.drainOrPauseServer("drain")
@@ -575,7 +575,7 @@ func (c *Client) drainOrPauseServer(method string) (running int, etc time.Durati
 
 // PauseServer tells the server to stop spawning new runners and stop letting
 // existing runners reserve new jobs. (It is like DrainServer(), without
-// stopping the server). You get back a count of existing runners and and an
+// stopping the server). You get back a count of existing runners and an
 // estimated time until completion for the last of those runners.
 func (c *Client) PauseServer() (running int, etc time.Duration, err error) {
 	return c.drainOrPauseServer("pause")
@@ -2299,7 +2299,7 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
 // something to perhaps make it runnable and kicks the job). Note that you must
 // reserve a job before you can bury it. Optionally supply an error that will
-// be be displayed as the Job's stderr.
+// be displayed as the Job's stderr.
 func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...error) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
@@ -2464,7 +2464,7 @@ func (c *Client) jesToKeys(jes []*JobEssence) []string {
 // a substring of.
 //
 // 'limit', if greater than 0, limits the number of jobs returned that have the
-// same State, FailReason and Exitcode, and on the the last job of each
+// same State, FailReason and Exitcode, and on the last job of each
 // State+FailReason group it populates 'Similar' with the number of other
 // excluded jobs there were in that group.
 //

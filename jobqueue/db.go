@@ -36,6 +36,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -2167,7 +2168,7 @@ func (db *db) backup(w io.Writer) error {
 	if db.closed {
 		db.RUnlock()
 
-		return fmt.Errorf("database closed")
+		return errors.New("database closed")
 	}
 
 	db.RUnlock()

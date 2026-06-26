@@ -33,7 +33,7 @@ import (
 
 const (
 	mockSchedulerName   = "mock"
-	mockInitializeOp    = "initialize" //nolint:misspell
+	mockInitializeOp    = "initialize"
 	errMockConfig       = "SchedulerConfig must be ConfigMock or *ConfigMock with RunnerFunc"
 	errMockNoRunnerFunc = "SchedulerConfig must include RunnerFunc"
 )
@@ -74,7 +74,7 @@ type mock struct {
 }
 
 // sets up the mock scheduler before use (method named to satisfy scheduleri).
-func (s *mock) initialize(_ context.Context, config any) error { //nolint:misspell
+func (s *mock) initialize(_ context.Context, config any) error {
 	switch conf := config.(type) {
 	case *ConfigMock:
 		if conf == nil {

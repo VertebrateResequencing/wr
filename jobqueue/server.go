@@ -2121,7 +2121,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		wgk4 := wg.Add(1)
 
 		go func() {
-			defer internal.LogPanic(ctx, "jobqueue web server server casting", true)
+			defer internal.LogPanic(ctx, "jobqueue web server casting", true)
 			defer wg.Done(wgk4)
 
 			s.badServerCaster.Broadcasting(0)
@@ -2478,7 +2478,7 @@ func (s *Server) HasRunners(ctx context.Context) bool {
 //
 // Files stored will only be readable by the user that started the server.
 //
-// Note that this is only intended for a a few small files, such as config files
+// Note that this is only intended for a few small files, such as config files
 // that need to be passed through to spawned cloud servers, when doing a cloud
 // deployment.
 //

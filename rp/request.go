@@ -54,7 +54,7 @@ type request struct {
 // waitUntilGranted blocks until the Protector that created us sends on our
 // grantedCh. Returns false if finished(), or if cancelled by the Protector
 // sending on our cancelCh, or if another caller is waiting on this method.
-// Returns true if granted while calling this method, if if it had been
+// Returns true if granted while calling this method, if it had been
 // previously granted and the grant is still valid.
 func (r *request) waitUntilGranted() bool {
 	r.mu.Lock()

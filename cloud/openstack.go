@@ -222,7 +222,7 @@ func (p *openstackp) initialize() error {
 		}
 
 		if project.ID == "" {
-			return fmt.Errorf("either OS_TENANT_ID or OS_PROJECT_ID must be set")
+			return errors.New("either OS_TENANT_ID or OS_PROJECT_ID must be set")
 		}
 
 		p.tenantID = project.ID
@@ -1359,7 +1359,7 @@ WAIT:
 			case <-limit:
 				ticker.Stop()
 
-				err = fmt.Errorf("server not deleted? timed out getting its status")
+				err = errors.New("server not deleted? timed out getting its status")
 
 				break WAIT
 			}

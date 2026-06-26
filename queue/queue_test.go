@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -1079,7 +1080,7 @@ func TestQueue(t *testing.T) {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
 			dataids = append(dataids, dataid)
-			_, err := queue.Add(ctx, key, fmt.Sprintf("%d", dataid), &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second, "")
+			_, err := queue.Add(ctx, key, strconv.Itoa(dataid), &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second, "")
 			So(err, ShouldBeNil)
 		}
 
@@ -1101,7 +1102,7 @@ func TestQueue(t *testing.T) {
 			sort.Ints(dataids)
 
 			for _, dataid := range dataids {
-				item, err := queue.Reserve(fmt.Sprintf("%d", dataid), 0)
+				item, err := queue.Reserve(strconv.Itoa(dataid), 0)
 				So(err, ShouldBeNil)
 				So(item, ShouldNotBeNil)
 				So(item.Data().(*testdata).ID, ShouldEqual, dataid)

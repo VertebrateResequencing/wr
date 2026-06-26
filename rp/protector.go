@@ -36,7 +36,7 @@ import (
 )
 
 // Protector struct is used to Protect a particular resource by granting tokens
-// tokens when the resource has capacity.
+// when the resource has capacity.
 type Protector struct {
 	pending        []*request
 	lastProcess    time.Time

@@ -331,7 +331,7 @@ func WaitForFile(file string, after time.Time, timeout time.Duration) bool {
 // if INFOBLOX_HOST, INFOBLOX_USER or INFOBLOX_PASS env vars are not set.
 func InfobloxSetDomainIP(domain, ip string) error {
 	if domain == "localhost" {
-		return fmt.Errorf("can't set domain IP when domain is configured as localhost")
+		return errors.New("can't set domain IP when domain is configured as localhost")
 	}
 
 	// turn off logging built in to go-infoblox
@@ -341,17 +341,17 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	// check env vars are defined
 	host := os.Getenv("INFOBLOX_HOST")
 	if host == "" {
-		return fmt.Errorf("INFOBLOX_HOST env var not set")
+		return errors.New("INFOBLOX_HOST env var not set")
 	}
 
 	user := os.Getenv("INFOBLOX_USER")
 	if user == "" {
-		return fmt.Errorf("INFOBLOX_USER env var not set")
+		return errors.New("INFOBLOX_USER env var not set")
 	}
 
 	password := os.Getenv("INFOBLOX_PASS")
 	if password == "" {
-		return fmt.Errorf("INFOBLOX_PASS env var not set")
+		return errors.New("INFOBLOX_PASS env var not set")
 	}
 
 	// create infoblox client

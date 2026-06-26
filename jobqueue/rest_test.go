@@ -1576,7 +1576,7 @@ func TestREST(t *testing.T) {
 
 			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
 			mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
-			mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
+			mounts := "&mounts=" + url.QueryEscape(mountJSON)
 			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m&no_retry_over_walltime=5m"+bs+mounts, bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)

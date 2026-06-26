@@ -222,7 +222,7 @@ func TestJob(t *testing.T) {
 			defer cleanup()
 
 			So(cmd, ShouldStartWith, "cat ")
-			So(cmd, ShouldEndWith, fmt.Sprintf(" | singularity shell %s", image))
+			So(cmd, ShouldEndWith, " | singularity shell "+image)
 			So(job.MonitorDocker, ShouldBeBlank)
 
 			Convey("That can include additional mounts", func() {
@@ -235,7 +235,7 @@ func TestJob(t *testing.T) {
 
 				defer cleanup()
 
-				So(cmd, ShouldEndWith, fmt.Sprintf(" | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz %s", image))
+				So(cmd, ShouldEndWith, " | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz "+image)
 			})
 		})
 	})

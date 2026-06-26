@@ -4468,7 +4468,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(inserts, ShouldEqual, 1)
 
 					// job that outputs tons of stdout and stderr and fails
-					expectedout := ""
+					var expectedoutBuilder strings.Builder
 
 					var expectederr strings.Builder
 
@@ -4478,17 +4478,17 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 						}
 
 						if i == 21 {
-							expectedout += "21212121212121212121212121\n... omitting 6358 bytes ...\n45454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545p\n"
+							expectedoutBuilder.WriteString("21212121212121212121212121\n... omitting 6358 bytes ...\n45454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545p\n")
 
 							expectederr.WriteString("21212121212121212121212121\n... omitting 6377 bytes ...\n5454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545w\n")
 						} else {
 							s := strconv.Itoa(i)
 							for j := 1; j <= 130; j++ {
-								expectedout += s
+								expectedoutBuilder.WriteString(s)
 								expectederr.WriteString(s)
 							}
 
-							expectedout += "p\n"
+							expectedoutBuilder.WriteString("p\n")
 
 							expectederr.WriteString("w\n")
 						}
@@ -4496,7 +4496,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					expectederr.WriteString("Died at -e line 1.")
 
-					expectedout = strings.TrimSpace(expectedout)
+					expectedout := strings.TrimSpace(expectedoutBuilder.String())
 
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
@@ -7928,7 +7928,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err := got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, fmt.Sprintf("%d", cores))
+			So(stdout, ShouldEqual, strconv.Itoa(cores))
 
 			jm := NewJobModifer()
 			other = make(map[string]string)
@@ -7955,7 +7955,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err = got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, fmt.Sprintf("%d", coresMore))
+			So(stdout, ShouldEqual, strconv.Itoa(coresMore))
 
 			jm = NewJobModifer()
 			other = make(map[string]string)
@@ -7983,7 +7983,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err = got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, fmt.Sprintf("%d", cores))
+			So(stdout, ShouldEqual, strconv.Itoa(cores))
 		})
 
 		Convey("You can modify MonitorDocker of a job", func() {

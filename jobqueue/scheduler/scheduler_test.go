@@ -322,7 +322,7 @@ func TestLocal(t *testing.T) {
 
 			defer waitToFinish(ctx, s, 120, 100)
 
-			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
+			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) //nolint:dupword // perl select() needs three undef args; sleeps 0.75s then makes another file
 
 			// different machines take different amounts of times to actually
 			// run the above command, so we first need to run the command (in
@@ -414,7 +414,7 @@ func TestLocal(t *testing.T) {
 					newcount := maxCPU + 1
 					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
 
-					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir)
+					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir) //nolint:dupword // perl select() needs three undef args to sleep 0.75s
 					So(s.Schedule(ctx, newcmd, possibleReq, 0, 1), ShouldBeNil)
 
 					So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)

@@ -117,6 +117,7 @@ var (
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add commands to the queue",
+	//nolint:dupword // help text intentionally repeats date/time format tokens
 	Long: `Manually add commands you want run to the queue.
 
 In normal usage, after you add commands to the queue, this will tell you how

@@ -107,7 +107,7 @@ type Requirements struct {
 // Stringify represents the contents of the Requirements as a string, sorting
 // the keys of Other to ensure the same result is returned for the same content
 // every time. Note that the data in Other undergoes a 1-way transformation,
-// so you cannot recreate the Requirements from the the output of this method.
+// so you cannot recreate the Requirements from the output of this method.
 func (req *Requirements) Stringify() string {
 	var other string
 
@@ -119,9 +119,11 @@ func (req *Requirements) Stringify() string {
 
 		sort.Strings(otherKeys)
 
+		var otherSb122 strings.Builder
 		for _, key := range otherKeys {
-			other += ":" + key + "=" + req.Other[key]
+			otherSb122.WriteString(":" + key + "=" + req.Other[key])
 		}
+		other += otherSb122.String()
 
 		// now convert it all in to an md5sum, to avoid any problems with some
 		// key values having line returns etc. *** we might like to use

@@ -348,7 +348,7 @@ down will be lost.`,
 			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.ManagerPort)
 			// *** this would happen after calling drain a few times and the
 			// manager has finally stopped itself, but we don't know if the
-			// the manager stopped cleanly in response to our drain, or if it
+			// manager stopped cleanly in response to our drain, or if it
 			// crashed and there are still runners, so we can't deleteToken()...
 		}
 

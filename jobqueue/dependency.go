@@ -152,7 +152,7 @@ func appendDependencyViaJSON(deps Dependencies, dep dependencyViaJSON) Dependenc
 // incompleteJobKeys converts the constituent Dependency structs in to internal
 // job keys that uniquely identify the jobs we are dependent upon. Note that if
 // you have dependencies that are specified with DepGroups, then you should re-
-// call this and update every time a new Job is added with with one of our
+// call this and update every time a new Job is added with one of our
 // DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
 // are incomplete (they could have been Archive()d in the past if they are now
 // being re-run).

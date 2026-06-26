@@ -269,7 +269,7 @@ type ChangedCallback func(from, to SubQueue, data []any)
 // values will be treated as SubQueueReady).
 type TTRCallback func(data any) SubQueue
 
-// Queue is a synchronized map of items that can shift to different sub-queues,
+// Queue is a synchronised map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
 type Queue struct {

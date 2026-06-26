@@ -72,7 +72,7 @@ var cmdProcessSanitiser = strings.NewReplacer("'", "")
 type reqChecker func(ctx context.Context, req *Requirements) error
 
 // maxResourceGetter are functions used by schedule() to see what the maximum of
-// of a resource like memory or time is. (We make use of this in the local
+// a resource like memory or time is. (We make use of this in the local
 // struct so that other implementers of scheduleri can embed local, use local's
 // schedule(), but have their own maxResourceGetter implementation.)
 type maxResourceGetter func() int
