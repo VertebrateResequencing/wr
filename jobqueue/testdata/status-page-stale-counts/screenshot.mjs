@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../../..');
 const staticRoot = path.join(repoRoot, 'jobqueue/static');
-const defaultOutput = path.join(repoRoot, '.tmp/agent/status-webui-stale-running-resolved.png');
+const defaultOutput = path.join(repoRoot, '.tmp/agent/webui-test/status-webui-stale-running-resolved.png');
 const outputPath = path.resolve(process.cwd(), process.argv[2] || defaultOutput);
 
 if (outputPath !== repoRoot && !outputPath.startsWith(repoRoot + path.sep)) {

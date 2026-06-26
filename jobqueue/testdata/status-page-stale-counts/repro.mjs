@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../../..');
-const defaultOutput = path.join(repoRoot, '.tmp/agent/status-stale-counts.html');
+const defaultOutput = path.join(repoRoot, '.tmp/agent/webui-test/status-stale-counts.html');
 const outputPath = path.resolve(process.cwd(), process.argv[2] || defaultOutput);
 
 if (outputPath !== repoRoot && !outputPath.startsWith(repoRoot + path.sep)) {

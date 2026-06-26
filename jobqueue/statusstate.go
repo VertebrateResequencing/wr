@@ -143,8 +143,8 @@ func cleanCountCopy(stateCounts map[JobState]int) map[JobState]int {
 
 // liveCountCopy returns a fresh copy of a per-RepGroup state-count map with the
 // terminal deleted state dropped and non-positive entries removed, but ONLY if
-// the RepGroup has at least one live (non-terminal) job; otherwise it returns an
-// empty map so the caller omits the RepGroup. complete is retained (a live
+// the RepGroup has at least one live (non-terminal) job; otherwise it returns
+// nil so the caller omits the RepGroup. complete is retained (a live
 // RepGroup keeps its already-finished progress); deleted is never seeded.
 func liveCountCopy(stateCounts map[JobState]int) map[JobState]int {
 	if !hasLiveJob(stateCounts) {
