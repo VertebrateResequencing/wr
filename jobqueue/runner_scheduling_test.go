@@ -297,17 +297,14 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 				So(ran, ShouldEqual, count)
 
-				files, err := os.ReadDir(runnertmpdir)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				ranClean := 0
-				for range files {
-					ranClean++
-				}
-
-				So(ranClean, ShouldEqual, count+1) // +1 for the runner exe
+				// Confirm the runners exited cleanly and the runner exe is present.
+				// We can't assert an exact runner count: these short fractional-CPU
+				// jobs let a single runner finish one and reserve another before a
+				// fresh runner spawns, so the number of "ok" markers is a range
+				// (1..count), not one-per-job. The simultaneous>maxCPU and ran==count
+				// checks above already prove the fractional-CPU parallelism and that
+				// every job ran.
+				assertCleanRunnerMarkers(runnertmpdir, count)
 			})
 		})
 
