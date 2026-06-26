@@ -114,6 +114,7 @@ var (
 	ClientShutdownTimeout                = 120 * time.Second
 	ClientShutdownTestInterval           = 100 * time.Millisecond
 	ClientSuggestedPingTimeout           = 10 * time.Millisecond
+	ClientMinRequestTimeout              = 60 * time.Second //nolint:gochecknoglobals // exported for tests, as siblings.
 	RAMIncreaseMin               float64 = 1000
 	RAMIncreaseMultLow                   = 2.0
 	RAMIncreaseMultHigh                  = 1.3
@@ -410,6 +411,13 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return nil, err
 	}
 
+	// while connecting, bound send/recv by the supplied timeout so that
+	// connect-readiness (the initial Ping below) fails fast if the server can be
+	// dialled but does not respond. Once connected, the receive deadline is
+	// widened to a generous floor (see requestTimeout / ClientMinRequestTimeout)
+	// so individual requests are not subject to spurious 'receive time out's
+	// under load; the send deadline stays short so requests still fail fast when
+	// the server has gone away.
 	if err = sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
 		return nil, err
 	}
@@ -479,6 +487,18 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	c.retryWait = dfltDuration(si.RetryWait, ClientRetryWait)
 	c.retryTime = dfltDuration(si.RetryTime, ClientRetryTime)
 	c.percentMemoryKill = ClientPercentMemoryKill
+
+	// now that connect-readiness has been confirmed, decouple the per-request
+	// RECEIVE deadline from the (possibly short) connect timeout, giving it a
+	// generous floor so that a slow-but-alive server reply is not mistaken for a
+	// timeout (the cause of the spurious 'receive time out' flake). We do NOT
+	// widen the SEND deadline: the req socket blocks Send until it has a live
+	// pipe to write to, so a short send deadline is what makes a NEW request to a
+	// gone-away server fail fast (with 'send time out'), which is how unreachable
+	// servers are detected promptly.
+	if err = sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout)); err != nil {
+		return nil, err
+	}
 
 	return c, err
 }
@@ -2529,6 +2549,24 @@ func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(encoded)
+}
+
+// requestTimeout returns the receive deadline to apply to the socket while
+// waiting for the server's reply to a request. It is the larger of the supplied
+// connect timeout and ClientMinRequestTimeout, so that callers who pass a short
+// connect timeout (to fail fast when the server is unreachable) still tolerate a
+// slow reply from a reachable-but-busy server: e.g. a large bulk Add, or any
+// request on a heavily contended or CPU-starved machine, or under the race
+// detector, must not be mistaken for a dead server via a spurious 'receive time
+// out'. This is safe because an unreachable server is still detected promptly:
+// a new request to a server with no live pipe fails fast on the short send
+// deadline, well before this receive deadline is ever reached.
+func requestTimeout(connectTimeout time.Duration) time.Duration {
+	if connectTimeout > ClientMinRequestTimeout {
+		return connectTimeout
+	}
+
+	return ClientMinRequestTimeout
 }
 
 func processPID(pid int) (int32, bool) {
