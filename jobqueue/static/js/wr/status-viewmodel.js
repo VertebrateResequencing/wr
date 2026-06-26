@@ -55,7 +55,6 @@ export function StatusViewModel() {
     self.repGroups = [];
     self.repGroupLookup = {};
     self.sortableRepGroups = ko.observableArray();
-    self.ignore = {};
 
     //-------------------------------------------------------------------------
     // SEARCH FUNCTIONALITY

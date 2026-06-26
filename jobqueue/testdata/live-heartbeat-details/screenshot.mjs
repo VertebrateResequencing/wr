@@ -153,9 +153,8 @@ function fakeWebSocketScript() {
     window.__wrLiveHeartbeatFixtureRequests = [];
 
     const currentSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'running', Count: 1, SnapshotID: 1 },
-      { RepGroup: 'livetest', FromState: 'new', ToState: 'running', Count: 1, SnapshotID: 1 },
-      { RepGroup: '+all+', SnapshotID: 1, SnapshotDone: true }
+      { RepGroup: '+all+', Counts: { running: 1 } },
+      { RepGroup: 'livetest', Counts: { running: 1 } }
     ];
 
     const initialJob = ${JSON.stringify(liveJob())};

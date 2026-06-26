@@ -64,7 +64,7 @@ const jobLimitGroupSeparator = ","
 type JobState string
 
 // JobState* constants represent all the possible job states. The fake "new" and
-// "deleted" states are for the benefit of the web interface (jstateCount).
+// "deleted" states are for the benefit of the web interface (jstateAbsolute).
 // "lost" is also a "fake" state indicating the job was running and we lost
 // contact with it; it may be dead. "unknown" is an error case that shouldn't
 // happen. "deletable" is a meta state that can be used when filtering jobs to

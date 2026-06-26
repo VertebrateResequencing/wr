@@ -1,5 +1,19 @@
 #!/usr/bin/env node
 
+// Regression fixture for the issue-1 web UI stale-count bug, migrated to the
+// idempotent absolute per-RepGroup status protocol (issue 260625-7).
+//
+// Previously the status page applied non-idempotent count deltas, so a dropped
+// running->complete or ready->removed delta left a stale running/ready count
+// that only an authoritative current snapshot could clear. The protocol now
+// sends absolute per-RepGroup counts ({ RepGroup, Counts }); the client replaces
+// a RepGroup's counts wholesale, so the displayed state always converges to the
+// latest absolute value no matter what intermediate messages were dropped.
+//
+// The behavioural assertions are unchanged: after the authoritative state
+// arrives, the previously-shown stale running/ready counts are gone and the
+// RepGroup shows the real terminal state (complete / removed).
+
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -54,7 +68,6 @@ function createRepGroupTracker(id) {
 function createViewModel() {
   return {
     rateLimit: 0,
-    ignore: {},
     inflight: createRepGroupTracker('+all+'),
     repGroups: [],
     repGroupLookup: {},
@@ -78,33 +91,18 @@ function loadStatusHandler() {
 
   vm.createContext(context);
   vm.runInContext(
-    `${source}\nglobalThis.handleStateChangeMessage = handleStateChangeMessage;`,
+    `${source}\nglobalThis.handleAbsoluteStateMessage = handleAbsoluteStateMessage;`,
     context,
     { filename: 'websocket-handler.js' }
   );
 
-  return context.handleStateChangeMessage;
+  return context.handleAbsoluteStateMessage;
 }
 
-const handleStateChangeMessage = loadStatusHandler();
+const handleAbsoluteStateMessage = loadStatusHandler();
 
-function deliver(viewModel, event) {
-  handleStateChangeMessage(viewModel, event);
-}
-
-function deliverEmptyAuthoritativeSnapshot(viewModel, snapshotID) {
-  deliver(viewModel, {
-    RepGroup: '+all+',
-    FromState: 'new',
-    ToState: '',
-    Count: 0,
-    SnapshotID: snapshotID
-  });
-  deliver(viewModel, {
-    RepGroup: '+all+',
-    SnapshotID: snapshotID,
-    SnapshotDone: true
-  });
+function deliverAbsolute(viewModel, repGroup, counts) {
+  handleAbsoluteStateMessage(viewModel, { RepGroup: repGroup, Counts: counts });
 }
 
 function snapshotTracker(tracker) {
@@ -129,53 +127,51 @@ function snapshotGroup(viewModel, id) {
   return snapshotTracker(viewModel.repGroups[index]);
 }
 
+// runTabletestStaleRunningFixture: the page first shows jobs as running (a
+// running->complete delta would have been dropped under the old protocol).
 function runTabletestStaleRunningFixture() {
   const viewModel = createViewModel();
-  const events = [
-    { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 2 },
-    { RepGroup: 'tabletest', FromState: 'new', ToState: 'ready', Count: 2 },
-    { RepGroup: '+all+', FromState: 'ready', ToState: 'running', Count: 2 },
-    { RepGroup: 'tabletest', FromState: 'ready', ToState: 'running', Count: 2 },
-
-    // Reproduces the lossy websocket path: one running->complete delta is
-    // visible, while the other terminal delta has been dropped before the
-    // browser can apply it.
-    { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 1 },
-    { RepGroup: 'tabletest', FromState: 'running', ToState: 'complete', Count: 1 }
+  const messages = [
+    { repGroup: '+all+', counts: { running: 2 } },
+    { repGroup: 'tabletest', counts: { running: 2 } }
   ];
 
-  for (const event of events) {
-    deliver(viewModel, event);
+  for (const message of messages) {
+    deliverAbsolute(viewModel, message.repGroup, message.counts);
   }
 
   return {
     name: 'tabletest stale running',
-    events,
+    messages,
     live: {
       incomplete: snapshotTracker(viewModel.inflight),
       group: snapshotGroup(viewModel, 'tabletest')
     },
     truth: {
-      note: 'Fresh page + search for tabletest reads archived jobs, not the dropped delta stream.',
+      note: 'After the real completion arrives the jobs are complete, not running.',
       incomplete: { total: 0, running: 0 },
       group: { total: 2, running: 0, complete: 2 }
     }
   };
 }
 
+// runTabletestResyncedFixture: an authoritative absolute update arrives (the two
+// jobs are complete, none running). The wholesale replace clears the stale
+// running count.
 function runTabletestResyncedFixture() {
   const result = runTabletestStaleRunningFixture();
   const viewModel = createViewModel();
 
-  for (const event of result.events) {
-    deliver(viewModel, event);
+  for (const message of result.messages) {
+    deliverAbsolute(viewModel, message.repGroup, message.counts);
   }
 
-  deliverEmptyAuthoritativeSnapshot(viewModel, 1);
+  deliverAbsolute(viewModel, '+all+', {});
+  deliverAbsolute(viewModel, 'tabletest', { complete: 2 });
 
   return {
-    name: 'tabletest after authoritative current snapshot',
-    events: result.events,
+    name: 'tabletest after authoritative absolute state',
+    messages: result.messages,
     live: {
       incomplete: snapshotTracker(viewModel.inflight),
       group: snapshotGroup(viewModel, 'tabletest')
@@ -184,49 +180,50 @@ function runTabletestResyncedFixture() {
   };
 }
 
+// runBulkRemoveStaleFixture: the page first shows jobs as ready (a
+// ready->removed delta would have been dropped under the old protocol).
 function runBulkRemoveStaleFixture() {
   const viewModel = createViewModel();
-  const events = [
-    { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 4 },
-    { RepGroup: 'deletebulk', FromState: 'new', ToState: 'ready', Count: 4 },
-
-    // Only half of a four-job remove burst reaches the browser.
-    { RepGroup: '+all+', FromState: 'ready', ToState: 'deleted', Count: 2 },
-    { RepGroup: 'deletebulk', FromState: 'ready', ToState: 'deleted', Count: 2 }
+  const messages = [
+    { repGroup: '+all+', counts: { ready: 4 } },
+    { repGroup: 'deletebulk', counts: { ready: 4 } }
   ];
 
-  for (const event of events) {
-    deliver(viewModel, event);
+  for (const message of messages) {
+    deliverAbsolute(viewModel, message.repGroup, message.counts);
   }
 
   return {
     name: 'deletebulk stale removed',
-    events,
+    messages,
     live: {
       incomplete: snapshotTracker(viewModel.inflight),
       group: snapshotGroup(viewModel, 'deletebulk')
     },
     truth: {
-      note: 'Fresh page no longer sees removed jobs in current status.',
+      note: 'After the bulk remove the jobs are gone from current status.',
       incomplete: { total: 0, ready: 0 },
       group: { total: 0, ready: 0, deleted: 0 }
     }
   };
 }
 
+// runBulkRemoveResyncedFixture: an authoritative absolute update arrives showing
+// the RepGroup empty; the wholesale replace clears the stale ready count.
 function runBulkRemoveResyncedFixture() {
   const result = runBulkRemoveStaleFixture();
   const viewModel = createViewModel();
 
-  for (const event of result.events) {
-    deliver(viewModel, event);
+  for (const message of result.messages) {
+    deliverAbsolute(viewModel, message.repGroup, message.counts);
   }
 
-  deliverEmptyAuthoritativeSnapshot(viewModel, 2);
+  deliverAbsolute(viewModel, '+all+', {});
+  deliverAbsolute(viewModel, 'deletebulk', {});
 
   return {
-    name: 'deletebulk after authoritative current snapshot',
-    events: result.events,
+    name: 'deletebulk after authoritative absolute state',
+    messages: result.messages,
     live: {
       incomplete: snapshotTracker(viewModel.inflight),
       group: snapshotGroup(viewModel, 'deletebulk')
@@ -241,6 +238,7 @@ function assertResolvedScenario(scenario) {
   assert.equal(scenario.live.incomplete.total || 0, scenario.truth.incomplete.total || 0);
   assert.equal(scenario.live.group.running || 0, scenario.truth.group.running || 0);
   assert.equal(scenario.live.group.ready || 0, scenario.truth.group.ready || 0);
+  assert.equal(scenario.live.group.complete || 0, scenario.truth.group.complete || 0);
 }
 
 if (process.argv.includes('--assert')) {
@@ -305,9 +303,10 @@ function renderTruth(title, truth) {
   </section>`;
 }
 
-function renderEvents(events) {
-  return `<ol>${events.map(event => {
-    const label = `${event.RepGroup}: ${event.FromState} -> ${event.ToState} x${event.Count}`;
+function renderMessages(messages) {
+  return `<ol>${messages.map(message => {
+    const counts = Object.entries(message.counts).map(([state, count]) => `${state}=${count}`).join(', ') || 'empty';
+    const label = `${message.repGroup}: { ${counts} }`;
 
     return `<li><code>${esc(label)}</code></li>`;
   }).join('')}</ol>`;
@@ -317,13 +316,13 @@ function renderScenario(scenario) {
   return `<article>
     <h2>${esc(scenario.name)}</h2>
     <div class="grid">
-      ${renderCounts('Live browser state after dropped deltas: Incomplete', scenario.live.incomplete)}
-      ${renderCounts('Live browser state after dropped deltas: RepGroup', scenario.live.group)}
-      ${renderTruth('Refresh/search truth', scenario.truth)}
+      ${renderCounts('Live browser state after stale messages: Incomplete', scenario.live.incomplete)}
+      ${renderCounts('Live browser state after stale messages: RepGroup', scenario.live.group)}
+      ${renderTruth('Authoritative truth', scenario.truth)}
     </div>
     <details>
-      <summary>Delivered websocket count deltas</summary>
-      ${renderEvents(scenario.events)}
+      <summary>Delivered absolute status messages</summary>
+      ${renderMessages(scenario.messages)}
     </details>
   </article>`;
 }
@@ -434,12 +433,12 @@ const html = `<!doctype html>
   <p>
     Generated by <code>jobqueue/testdata/status-page-stale-counts/repro.mjs</code>
     from the real <code>jobqueue/static/js/wr/websocket-handler.js</code>
-    <code>handleStateChangeMessage</code> function.
+    <code>handleAbsoluteStateMessage</code> function.
   </p>
   <p>
-    The live panels show the status page state after one or more websocket count
-    deltas are dropped. The truth panel shows what a refresh/search obtains from
-    server state after the jobs have actually completed or been removed.
+    The live panels show the status page state after stale absolute messages.
+    The truth panel shows the state once the authoritative absolute update has
+    arrived; the wholesale replace clears any stale running/ready counts.
   </p>
   ${scenarios.map(renderScenario).join('\n')}
 </body>

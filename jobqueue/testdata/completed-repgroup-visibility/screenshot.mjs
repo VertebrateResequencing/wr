@@ -120,26 +120,31 @@ function fakeWebSocketScript() {
       return originalSetInterval(callback, delay, ...args);
     };
 
-    const initialSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 2, SnapshotID: 1 },
-      { RepGroup: 'done-rg', FromState: 'new', ToState: 'ready', Count: 2, SnapshotID: 1 },
-      { RepGroup: '+all+', SnapshotID: 1, SnapshotDone: true }
+    // The RepGroup starts with 2 ready jobs, runs them, then completes them. The
+    // server holds the absolute counts and sends them as { RepGroup, Counts };
+    // the client replaces the RepGroup's counts wholesale.
+    const initialState = [
+      { RepGroup: '+all+', Counts: { ready: 2 } },
+      { RepGroup: 'done-rg', Counts: { ready: 2 } }
     ];
 
-    const completionDeltas = [
-      { RepGroup: '+all+', FromState: 'ready', ToState: 'running', Count: 2 },
-      { RepGroup: 'done-rg', FromState: 'ready', ToState: 'running', Count: 2 },
-      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 2 },
-      { RepGroup: 'done-rg', FromState: 'running', ToState: 'complete', Count: 2 }
+    const runningState = [
+      { RepGroup: '+all+', Counts: { running: 2 } },
+      { RepGroup: 'done-rg', Counts: { running: 2 } }
     ];
 
-    const explicitLossSignal = [
-      { RepGroup: '+all+', StatusResync: true }
+    const completedState = [
+      // +all+ counts only live jobs, so it is now empty ...
+      { RepGroup: '+all+', Counts: {} },
+      // ... but the completed RepGroup keeps its complete count and stays visible.
+      { RepGroup: 'done-rg', Counts: { complete: 2 } }
     ];
 
-    const emptyCurrentSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: '', Count: 0, SnapshotID: 2 },
-      { RepGroup: '+all+', SnapshotID: 2, SnapshotDone: true }
+    // A later steady-state re-send of the (now empty) live aggregate must not
+    // remove the completed RepGroup row: complete counts are not "live", but the
+    // row stays visible with its complete count under the absolute protocol.
+    const liveAggregateResend = [
+      { RepGroup: '+all+', Counts: {} }
     ];
 
     class FixtureWebSocket {
@@ -171,25 +176,20 @@ function fakeWebSocketScript() {
 
         window.__wrCompletedRepGroupFixture.currentRequests += 1;
 
-        if (window.__wrCompletedRepGroupFixture.currentRequests === 1) {
-          window.__wrCompletedRepGroupFixture.phase = 'initial-current';
-          this.emitEach(initialSnapshot, 5);
-          setTimeout(() => {
-            window.__wrCompletedRepGroupFixture.phase = 'live-completing';
-            this.emitEach(completionDeltas, 5);
-          }, 700);
-          setTimeout(() => {
-            window.__wrCompletedRepGroupFixture.phase = 'loss-signal';
-            this.emitEach(explicitLossSignal, 5);
-          }, 1500);
-
-          return;
-        }
-
-        if (window.__wrCompletedRepGroupFixture.currentRequests === 2) {
-          window.__wrCompletedRepGroupFixture.phase = 'resync-current';
-          this.emitEach(emptyCurrentSnapshot, 5);
-        }
+        window.__wrCompletedRepGroupFixture.phase = 'initial-current';
+        this.emitEach(initialState, 5);
+        setTimeout(() => {
+          window.__wrCompletedRepGroupFixture.phase = 'live-running';
+          this.emitEach(runningState, 5);
+        }, 700);
+        setTimeout(() => {
+          window.__wrCompletedRepGroupFixture.phase = 'live-completing';
+          this.emitEach(completedState, 5);
+        }, 1500);
+        setTimeout(() => {
+          window.__wrCompletedRepGroupFixture.phase = 'live-aggregate-resend';
+          this.emitEach(liveAggregateResend, 5);
+        }, 2400);
       }
 
       close() {
@@ -335,12 +335,13 @@ async function captureScreenshot() {
     trace.samples.push(afterLiveComplete);
     assertCompletedRepGroupVisible(afterLiveComplete);
 
+    // After a later re-send of the (now empty) live aggregate, the completed
+    // RepGroup row must remain visible with its complete count.
     await page.waitForFunction(() => {
-      return window.__wrCompletedRepGroupFixture.currentRequests >= 2 &&
-        window.__wrCompletedRepGroupFixture.messages.some((message) => message.SnapshotID === 2 && message.SnapshotDone === true);
+      return window.__wrCompletedRepGroupFixture.phase === 'live-aggregate-resend';
     }, undefined, { timeout: 10000 });
     await page.waitForTimeout(500);
-    const afterResync = await sampleStatus(page, 'after empty current resync');
+    const afterResync = await sampleStatus(page, 'after empty live aggregate resend');
     trace.samples.push(afterResync);
     assertCompletedRepGroupVisible(afterResync);
 

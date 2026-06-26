@@ -33,25 +33,12 @@ function resetTrackerCounts(tracker) {
 
 function resetLiveCounts(viewModel) {
     resetTrackerCounts(viewModel.inflight);
-    viewModel.ignore = {};
 
     for (const repgroup of viewModel.repGroups) {
         if (!repgroup.id.startsWith('search:')) {
             resetTrackerCounts(repgroup);
         }
     }
-}
-
-function emptyCountSnapshot() {
-    return Object.fromEntries(countProperties.map(property => [property, 0]));
-}
-
-function addSnapshotCount(counts, state, count) {
-    if (!countProperties.includes(state) || count <= 0) {
-        return;
-    }
-
-    counts[state] += count;
 }
 
 function setTrackerCounts(tracker, counts) {
@@ -61,78 +48,6 @@ function setTrackerCounts(tracker, counts) {
         if (tracker && typeof tracker[property] === 'function') {
             tracker[property](counts[property] || 0);
         }
-    }
-}
-
-function trackerTotal(tracker) {
-    let total = 0;
-
-    for (const property of countProperties) {
-        if (tracker && typeof tracker[property] === 'function') {
-            total += tracker[property]();
-        }
-    }
-
-    return total;
-}
-
-function snapshotCountTotal(counts) {
-    let total = 0;
-
-    for (const property of countProperties) {
-        total += counts[property] || 0;
-    }
-
-    return total;
-}
-
-function completedRepGroupCounts(viewModel) {
-    const completed = {};
-
-    for (const repgroup of viewModel.repGroups) {
-        if (!repgroup.id.startsWith('search:') && typeof repgroup.complete === 'function' && repgroup.complete() > 0) {
-            completed[repgroup.id] = repgroup.complete();
-        }
-    }
-
-    return completed;
-}
-
-function removeFromSortableRepGroups(viewModel, repgroup) {
-    if (viewModel.sortableRepGroups && typeof viewModel.sortableRepGroups.remove === 'function') {
-        viewModel.sortableRepGroups.remove(repgroup);
-
-        return;
-    }
-
-    if (Array.isArray(viewModel.sortableRepGroups)) {
-        const index = viewModel.sortableRepGroups.indexOf(repgroup);
-        if (index >= 0) {
-            viewModel.sortableRepGroups.splice(index, 1);
-        }
-    }
-}
-
-function removeRepGroupAt(viewModel, index) {
-    const repgroup = viewModel.repGroups[index];
-    removeFromSortableRepGroups(viewModel, repgroup);
-    viewModel.repGroups.splice(index, 1);
-    delete viewModel.repGroupLookup[repgroup.id];
-
-    for (const rgId in viewModel.repGroupLookup) {
-        if (viewModel.repGroupLookup[rgId] > index) {
-            viewModel.repGroupLookup[rgId]--;
-        }
-    }
-
-    if (viewModel.detailsRepgroup === repgroup.id) {
-        if (viewModel.detailsOA && typeof viewModel.detailsOA === 'function') {
-            viewModel.detailsOA([]);
-        }
-
-        viewModel.detailsRepgroup = '';
-        viewModel.detailsState = '';
-        viewModel.detailsOA = '';
     }
 }
 
@@ -148,106 +63,6 @@ function getOrCreateRepGroupTracker(viewModel, rg) {
     viewModel.sortableRepGroups.push(repgroup);
 
     return repgroup;
-}
-
-function restoreCompletedRepGroupsMissingFromSnapshot(viewModel, snapshot, completedCounts) {
-    for (const [rg, complete] of Object.entries(completedCounts)) {
-        const snapshotCounts = snapshot.repGroups[rg];
-        if (snapshotCounts && snapshotCountTotal(snapshotCounts) > 0) {
-            continue;
-        }
-
-        const repgroup = getOrCreateRepGroupTracker(viewModel, rg);
-        repgroup.complete(complete);
-    }
-}
-
-function pruneEmptyLiveRepGroups(viewModel) {
-    for (let index = viewModel.repGroups.length - 1; index >= 0; index--) {
-        const repgroup = viewModel.repGroups[index];
-
-        if (repgroup.id.startsWith('search:') || trackerTotal(repgroup) > 0) {
-            continue;
-        }
-
-        removeRepGroupAt(viewModel, index);
-    }
-}
-
-function isSnapshotMessage(json) {
-    return json.hasOwnProperty('SnapshotID') && json['SnapshotID'] > 0;
-}
-
-function isSnapshotDoneMessage(json) {
-    return isSnapshotMessage(json) && json['SnapshotDone'] === true;
-}
-
-function isStatusResyncMessage(json) {
-    return json['StatusResync'] === true;
-}
-
-function beginStatusSnapshot(viewModel, json) {
-    if (!isSnapshotMessage(json) || viewModel.statusSnapshotID === json['SnapshotID']) {
-        return;
-    }
-
-    viewModel.statusSnapshotID = json['SnapshotID'];
-    viewModel.statusSnapshot = {
-        id: json['SnapshotID'],
-        inflight: emptyCountSnapshot(),
-        repGroups: {}
-    };
-}
-
-function stageStatusSnapshotCount(viewModel, json) {
-    beginStatusSnapshot(viewModel, json);
-
-    const snapshot = viewModel.statusSnapshot;
-    if (!snapshot || snapshot.id !== json['SnapshotID']) {
-        return;
-    }
-
-    if (json['RepGroup'] === '+all+') {
-        addSnapshotCount(snapshot.inflight, json['ToState'], json['Count']);
-
-        return;
-    }
-
-    if (!snapshot.repGroups[json['RepGroup']]) {
-        snapshot.repGroups[json['RepGroup']] = emptyCountSnapshot();
-    }
-
-    addSnapshotCount(snapshot.repGroups[json['RepGroup']], json['ToState'], json['Count']);
-}
-
-function applyStatusSnapshot(viewModel, snapshot) {
-    const completedCounts = completedRepGroupCounts(viewModel);
-
-    setTrackerCounts(viewModel.inflight, snapshot.inflight);
-    viewModel.ignore = {};
-
-    for (const repgroup of viewModel.repGroups) {
-        if (!repgroup.id.startsWith('search:')) {
-            resetTrackerCounts(repgroup);
-        }
-    }
-
-    for (const [rg, counts] of Object.entries(snapshot.repGroups)) {
-        const repgroup = getOrCreateRepGroupTracker(viewModel, rg);
-        setTrackerCounts(repgroup, counts);
-    }
-
-    restoreCompletedRepGroupsMissingFromSnapshot(viewModel, snapshot, completedCounts);
-    pruneEmptyLiveRepGroups(viewModel);
-}
-
-function finishStatusSnapshot(viewModel, json) {
-    if (!isSnapshotDoneMessage(json) || viewModel.statusSnapshotID !== json['SnapshotID'] || !viewModel.statusSnapshot) {
-        return;
-    }
-
-    applyStatusSnapshot(viewModel, viewModel.statusSnapshot);
-    viewModel.statusSnapshot = null;
 }
 
 function normalizeStatusTimestamp(timestamp) {
@@ -280,26 +95,17 @@ export function setupWebSocket(viewModel) {
     const reconnectMaxDelay = 30000;
     let reconnectDelay = reconnectInitialDelay;
     let reconnectTimer = null;
-    let currentStatusInFlight = false;
-    let resyncAfterCurrentStatus = false;
     let reportedClose = false;
     const renderedWebSocketErrors = new Set();
 
+    // The server pushes idempotent absolute per-RepGroup state, sending the full
+    // current map as soon as we connect (and again on reconnect, since that is a
+    // fresh connection). The "current" request only (re)broadcasts the bad-server
+    // and scheduler-issue sets; status counts need no resync.
     const sendCurrentStatus = (ws) => {
         if (viewModel.ws === ws && ws.readyState === 1) {
             ws.send(currentRequest);
-            currentStatusInFlight = true;
         }
-    };
-
-    const requestCurrentStatusAfterLoss = (ws) => {
-        if (currentStatusInFlight) {
-            resyncAfterCurrentStatus = true;
-
-            return;
-        }
-
-        sendCurrentStatus(ws);
     };
 
     const scheduleReconnect = () => {
@@ -323,10 +129,10 @@ export function setupWebSocket(viewModel) {
 
             ws.onopen = () => {
                 reconnectDelay = reconnectInitialDelay;
-                currentStatusInFlight = false;
-                resyncAfterCurrentStatus = false;
                 clearConnectionStatusWarnings(viewModel);
                 if (reportedClose) {
+                    // A reconnect delivers a fresh full-state push, so clear the
+                    // stale live counts before it arrives.
                     resetLiveCounts(viewModel);
                 }
                 reportedClose = false;
@@ -338,9 +144,6 @@ export function setupWebSocket(viewModel) {
                 if (viewModel.ws !== ws) {
                     return;
                 }
-
-                currentStatusInFlight = false;
-                resyncAfterCurrentStatus = false;
 
                 if (!reportedClose) {
                     viewModel.statuserror.push(managerLostWarning);
@@ -362,17 +165,8 @@ export function setupWebSocket(viewModel) {
                 try {
                     const json = JSON.parse(e.data);
 
-                    if (isSnapshotDoneMessage(json)) {
-                        finishStatusSnapshot(viewModel, json);
-                        currentStatusInFlight = false;
-                        if (resyncAfterCurrentStatus) {
-                            resyncAfterCurrentStatus = false;
-                            sendCurrentStatus(ws);
-                        }
-                    } else if (isStatusResyncMessage(json)) {
-                        requestCurrentStatusAfterLoss(ws);
-                    } else if (json.hasOwnProperty('FromState')) {
-                        handleStateChangeMessage(viewModel, json);
+                    if (json.hasOwnProperty('Counts')) {
+                        handleAbsoluteStateMessage(viewModel, json);
                     } else if (json.hasOwnProperty('State')) {
                         handleJobDetailsMessage(viewModel, json);
                     } else if (json.hasOwnProperty('IP')) {
@@ -395,112 +189,25 @@ export function setupWebSocket(viewModel) {
 }
 
 /**
- * Handles state change messages from the WebSocket
+ * Handles an absolute per-RepGroup status message from the WebSocket by
+ * replacing that RepGroup's counts wholesale. This is idempotent: applying the
+ * same message twice is a no-op, and a dropped intermediate message is harmless
+ * because the next one overwrites it. "+all+" updates the live in-flight totals.
  * @param {StatusViewModel} viewModel - The main view model
- * @param {object} json - The JSON message data
+ * @param {object} json - The JSON message data ({ RepGroup, Counts })
  */
-function handleStateChangeMessage(viewModel, json) {
-    if (isSnapshotDoneMessage(json)) {
-        finishStatusSnapshot(viewModel, json);
+function handleAbsoluteStateMessage(viewModel, json) {
+    const rg = json['RepGroup'];
+    const counts = json['Counts'] || {};
 
-        return;
-    }
-
-    if (isSnapshotMessage(json)) {
-        stageStatusSnapshotCount(viewModel, json);
-
-        return;
-    }
-
-    var rg = json['RepGroup'];
-    var repgroup;
-
+    let tracker;
     if (rg == "+all+") {
-        repgroup = viewModel.inflight;
+        tracker = viewModel.inflight;
     } else {
-        repgroup = getOrCreateRepGroupTracker(viewModel, rg);
+        tracker = getOrCreateRepGroupTracker(viewModel, rg);
     }
 
-    var from, to;
-
-    // Determine the 'from' state
-    switch (json['FromState']) {
-        case 'delayed': from = repgroup['delayed']; break;
-        case 'dependent': from = repgroup['dependent']; break;
-        case 'suspended': from = repgroup['suspended']; break;
-        case 'ready': from = repgroup['ready']; break;
-        case 'running': from = repgroup['running']; break;
-        case 'lost': from = repgroup['lost']; break;
-        case 'buried': from = repgroup['buried']; break;
-    }
-
-    // Check if we should ignore this transition
-    if (viewModel.ignore.hasOwnProperty(json['RepGroup']) &&
-        viewModel.ignore[json['RepGroup']].hasOwnProperty(json['ToState']) &&
-        viewModel.ignore[json['RepGroup']][json['ToState']] >= json['Count']) {
-
-        viewModel.ignore[json['RepGroup']][json['ToState']] -= json['Count'];
-
-        if (viewModel.ignore[json['RepGroup']][json['ToState']] == 0) {
-            delete viewModel.ignore[json['RepGroup']][json['ToState']];
-
-            if (Object.keys(viewModel.ignore[json['RepGroup']]).length == 0) {
-                delete viewModel.ignore[json['RepGroup']];
-            }
-        }
-    } else {
-        // Determine the 'to' state
-        switch (json['ToState']) {
-            case 'delayed': to = repgroup['delayed']; break;
-            case 'dependent': to = repgroup['dependent']; break;
-            case 'suspended': to = repgroup['suspended']; break;
-            case 'ready': to = repgroup['ready']; break;
-            case 'running': to = repgroup['running']; break;
-            case 'lost': to = repgroup['lost']; break;
-            case 'buried': to = repgroup['buried']; break;
-            case 'complete':
-                if (rg != "+all+") {
-                    to = repgroup['complete'];
-                }
-                break;
-            case 'deleted':
-                if (rg != "+all+") {
-                    to = repgroup['deleted'];
-                }
-                break;
-        }
-    }
-
-    // Update the counts
-
-    if (!isSnapshotMessage(json) && from) {
-        var newfrom = from() - json['Count'];
-
-        if (newfrom >= 0) {
-            from(newfrom);
-        } else {
-            // Handle out-of-order transitions
-            if (!viewModel.ignore.hasOwnProperty(json['RepGroup'])) {
-                viewModel.ignore[json['RepGroup']] = {};
-            }
-
-            if (viewModel.ignore[json['RepGroup']].hasOwnProperty(json['FromState'])) {
-                viewModel.ignore[json['RepGroup']][json['FromState']] += json['Count'];
-            } else {
-                viewModel.ignore[json['RepGroup']][json['FromState']] = json['Count'];
-            }
-
-            from(0);
-        }
-    }
-
-    if (to) {
-        if (isSnapshotMessage(json)) {
-            to(Math.max(json['Count'], 0));
-        } else {
-            to(to() + json['Count']);
-        }
-    }
+    setTrackerCounts(tracker, counts);
 }
 
 /**
@@ -561,7 +268,7 @@ function handleJobDetailsMessage(viewModel, json) {
     }
 
     if (viewModel.detailsOA && rg == viewModel.detailsRepgroup) {
-        // Get the current rep group object 
+        // Get the current rep group object
         const repgroupId = viewModel.detailsRepgroup;
         let repgroup = null;
 

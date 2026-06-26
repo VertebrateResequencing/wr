@@ -761,22 +761,14 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						job.Lock()
 						job.Lost = false
 						job.EndTime = time.Time{}
+						repGroup := job.RepGroup
 						job.Unlock()
 
-						// since our changed callback won't be called, send out
-						// this transition from lost to running state
-						s.statusCaster.Send(&jstateCount{
-							RepGroup:  statusAllRepGroups,
-							FromState: JobStateLost,
-							ToState:   JobStateRunning,
-							Count:     1,
-						})
-						s.statusCaster.Send(&jstateCount{
-							RepGroup:  job.RepGroup,
-							FromState: JobStateLost,
-							ToState:   JobStateRunning,
-							Count:     1,
-						})
+						// since our changed callback won't be called, record this
+						// transition from lost to running state in the absolute
+						// status state (the statusAllRepGroups aggregate is
+						// maintained internally).
+						s.statusState.applyTransition(JobStateLost, JobStateRunning, repGroup, 1)
 					}
 
 					if srerr == "" && s.liveJTouchEnabled() && liveSnapshotPresent(cr.JobEndState) {

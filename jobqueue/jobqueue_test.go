@@ -605,7 +605,7 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 		})
 		So(err, ShouldBeNil)
 
-		limitedDrain(ws, 1)
+		drainSetupUntilDetails(ws)
 
 		job, err := jq.Reserve(50 * time.Millisecond)
 		So(err, ShouldBeNil)

@@ -103,9 +103,8 @@ function fakeWebSocketScript() {
     window.__wrSuspendedFixtureRequests = [];
 
     const currentSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'suspended', Count: 2, SnapshotID: 1 },
-      { RepGroup: 'rg-suspended', FromState: 'new', ToState: 'suspended', Count: 2, SnapshotID: 1 },
-      { RepGroup: '+all+', SnapshotID: 1, SnapshotDone: true }
+      { RepGroup: '+all+', Counts: { suspended: 2 } },
+      { RepGroup: 'rg-suspended', Counts: { suspended: 2 } }
     ];
 
     const suspendedJob = {

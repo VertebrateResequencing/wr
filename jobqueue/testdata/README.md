@@ -4,17 +4,45 @@ This directory holds data and small executable fixtures for `jobqueue` tests.
 Browser/UI repro scripts belong here, under a directory named for the behaviour
 they exercise, rather than in ad-hoc scratch paths or package roots.
 
+## Status page absolute count protocol
+
+The status page receives idempotent absolute per-RepGroup counts over the
+websocket as `{ RepGroup, Counts }` messages (issue 260625-7). The client
+replaces a RepGroup's displayed counts wholesale, so dropped or duplicated
+messages are harmless. The fixtures below drive this absolute protocol; older
+fixtures that previously injected non-idempotent count deltas / snapshot+resync
+messages have been migrated to it while keeping their behavioural assertions.
+
+## Repgroup flicker and overcount
+
+`repgroup-flicker-overcount/` contains the issue-260625-7 regression fixture for
+the status web UI that "flickers so fast it looks like it's not there" with a
+per-RepGroup total that "keeps rising above the total number of jobs actually
+added". `screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, and
+drives a high-rate `ready -> running -> complete` transition storm for a fixed
+number of jobs in one RepGroup while a ~200 Hz in-page sampler watches the
+Knockout view model. It asserts the row never drops to 0 / disappears while jobs
+exist (no flicker) and never exceeds the number of jobs added (no overcount), and
+converges exactly. By default it drives the idempotent absolute protocol (which
+passes). Set `WR_FIXTURE_PROTOCOL=delta` to instead drive the legacy
+non-idempotent delta protocol over a model of the lossy 1-slot coalescing caster;
+against the pre-fix `websocket-handler.js` that variant reproduces both symptoms
+and fails. It is wired into `make browser-test`.
+
 ## Status page stale counts
 
-`status-page-stale-counts/` contains the issue-1 web UI regression fixtures:
+`status-page-stale-counts/` contains the issue-260625-5 web UI regression
+fixtures, migrated to the absolute protocol:
 
 - `repro.mjs` loads the real status-page websocket handler and checks that an
-  authoritative current-status snapshot clears stale live counts after dropped
-  websocket deltas. Run it with `--assert` for the regression check, or without
-  that flag to generate an HTML repro artifact.
-- `screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, runs the
-  same stale-count scenario in Chromium, searches for `tabletest`, and writes a
-  post-fix screenshot.
+  authoritative absolute per-RepGroup update clears stale live counts (e.g. a
+  RepGroup left showing jobs running/pending) by replacing the counts wholesale.
+  Run it with `--assert` for the regression check, or without that flag to
+  generate an HTML repro artifact.
+- `screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, delivers
+  stale then authoritative absolute state, verifies the stale running/pending
+  counts clear and the RepGroup shows its real terminal state, searches for
+  `tabletest`, and writes a post-fix screenshot.
 
 Use `make browser-test` (or the alias `make webui-test`) to run these browser
 fixtures as a discoverable gate. The normal `make test` and `make race` targets
@@ -57,22 +85,24 @@ time, STDOUT, and STDERR are all visible together.
 ## Status page snapshot twitch
 
 `status-page-snapshot-twitch/` contains a browser regression fixture for
-current-status snapshot twitching in an existing steady-state RepGroup. It
-serves the real status page, injects a fake websocket, sends an explicit
-loss/resync signal, delays the resulting RepGroup snapshot count, and asserts
-that the visible `bigmod` row remains at 15,000 dependent jobs while the
-snapshot is incomplete. It also asserts that the status page does not register
-the old blind 10-second current-status polling timer. It is wired into
+steady-state RepGroup twitching (issue 260625-6), migrated to the absolute
+protocol. It serves the real status page, injects a fake websocket, pushes the
+steady-state absolute counts (`bigmod` = 15,000 dependent), then re-sends the
+same absolute state with the per-RepGroup part delayed, and asserts that the
+visible `bigmod` row remains at exactly 15,000 dependent jobs throughout (no
+twitch to a partial/zero value). It also asserts that the status page does not
+register the old blind 10-second current-status polling timer. It is wired into
 `make browser-test`.
 
 ## Completed RepGroup visibility
 
 `completed-repgroup-visibility/` contains a browser regression fixture for a
 RepGroup that transitions from pending to all complete while the status page is
-open. It serves the real status page, injects a fake websocket, drives live
-completion messages, then sends an explicit resync/current snapshot and asserts
-that the completed RepGroup remains visible with the correct completed
-count/bar. It is wired into `make browser-test`.
+open (issue 260625-6), migrated to the absolute protocol. It serves the real
+status page, injects a fake websocket, drives the RepGroup through
+ready/running/complete absolute states, then re-sends the (now empty) live
+`+all+` aggregate and asserts that the completed RepGroup remains visible with
+the correct completed count/bar. It is wired into `make browser-test`.
 
 ## Local dependency and artifact locations
 

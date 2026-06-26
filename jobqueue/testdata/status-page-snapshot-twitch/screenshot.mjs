@@ -122,23 +122,13 @@ function fakeWebSocketScript() {
       return originalSetInterval(callback, delay, ...args);
     };
 
-    const initialSteadyStateSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'dependent', Count: 15000, SnapshotID: 1 },
-      { RepGroup: 'bigmod', FromState: 'new', ToState: 'dependent', Count: 15000, SnapshotID: 1 },
-      { RepGroup: '+all+', SnapshotID: 1, SnapshotDone: true }
-    ];
-
-    const explicitLossSignal = [
-      { RepGroup: '+all+', StatusResync: true }
-    ];
-
-    const delayedCurrentSnapshotStart = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'dependent', Count: 15000, SnapshotID: 2 }
-    ];
-
-    const delayedCurrentSnapshotFinish = [
-      { RepGroup: 'bigmod', FromState: 'new', ToState: 'dependent', Count: 15000, SnapshotID: 2 },
-      { RepGroup: '+all+', SnapshotID: 2, SnapshotDone: true }
+    // The server holds the steady-state absolute counts for bigmod: 15000 jobs,
+    // all dependent. Under the idempotent absolute protocol there is no snapshot
+    // staging that could transiently reset the row, so re-sending the same
+    // absolute state must not twitch the displayed count.
+    const steadyState = [
+      { RepGroup: '+all+', Counts: { dependent: 15000 } },
+      { RepGroup: 'bigmod', Counts: { dependent: 15000 } }
     ];
 
     class FixtureWebSocket {
@@ -170,31 +160,22 @@ function fakeWebSocketScript() {
 
         window.__wrTwitchFixture.currentRequests += 1;
 
-        if (window.__wrTwitchFixture.currentRequests === 1) {
-          window.__wrTwitchFixture.phase = 'initial-current';
-          this.emitEach(initialSteadyStateSnapshot, 5);
-          setTimeout(() => {
-            window.__wrTwitchFixture.phase = 'loss-signal';
-            this.emitEach(explicitLossSignal, 5);
-          }, 80);
+        // On connect, push the full current absolute state.
+        window.__wrTwitchFixture.phase = 'initial-current';
+        this.emitEach(steadyState, 5);
 
-          return;
-        }
-
-        if (window.__wrTwitchFixture.currentRequests === 2) {
-          window.__wrTwitchFixture.phase = 'explicit-resync-current-started';
-          this.emitEach(delayedCurrentSnapshotStart, 5);
+        // Then, after a steady-state period with no real change, re-send the
+        // SAME absolute state (as a coalescing sender might on any wake). Because
+        // the payload is idempotent and applied wholesale, the row must stay at
+        // exactly 15000 with no twitch to a partial/zero value.
+        setTimeout(() => {
+          window.__wrTwitchFixture.phase = 'steady-resend-start';
+          this.emitEach([steadyState[0]], 5);
           setTimeout(() => {
-            window.__wrTwitchFixture.phase = 'explicit-resync-current-finishing';
-            this.emitEach(delayedCurrentSnapshotFinish, 5);
+            window.__wrTwitchFixture.phase = 'steady-resend-finishing';
+            this.emitEach([steadyState[1]], 5);
           }, 2500);
-
-          return;
-        }
-
-        this.emitEach(initialSteadyStateSnapshot.map((message) => {
-          return Object.assign({}, message, { SnapshotID: window.__wrTwitchFixture.currentRequests });
-        }), 5);
+        }, 80);
       }
 
       close() {
@@ -302,34 +283,30 @@ async function captureScreenshot() {
     await page.locator('[data-repgroup="bigmod"] .progress-bar', { hasText: '15000 dependent' })
       .waitFor({ timeout: 10000 });
     trace.samples.push(await sampleStatus(page, 'initial steady-state visible'));
+    // Wait until the steady-state re-send has begun (the +all+ part arrives
+    // first; the bigmod part is delayed), reproducing the window in which the
+    // old snapshot machinery used to transiently twitch the row to zero.
     await page.waitForFunction(() => {
-      return window.__wrTwitchFixture.messages.some((message) => message.StatusResync === true);
+      return window.__wrTwitchFixture.phase === 'steady-resend-start' ||
+        window.__wrTwitchFixture.phase === 'steady-resend-finishing';
     }, undefined, { timeout: 10000 });
-    trace.samples.push(await sampleStatus(page, 'after explicit status resync signal'));
-    await page.waitForTimeout(150);
-    const resyncStart = await sampleStatus(page, 'after explicit resync current start');
-    trace.samples.push(resyncStart);
-    if (resyncStart.currentRequests < 2 ||
-      resyncStart.phase !== 'explicit-resync-current-started') {
-      throw new Error(`expected explicit status resync to request current snapshot, saw ${JSON.stringify(resyncStart)}`);
-    }
+    trace.samples.push(await sampleStatus(page, 'after steady-state resend start'));
 
     await page.waitForTimeout(900);
-    const gapSample = await sampleStatus(page, 'during explicit resync snapshot gap');
+    const gapSample = await sampleStatus(page, 'during steady-state resend gap');
     trace.samples.push(gapSample);
     if (gapSample.repGroupTotal !== 15000 || gapSample.repGroupBadgeText !== '15000' || !gapSample.repGroupProgressVisible) {
-      throw new Error(`expected bigmod to stay at 15000 during snapshot gap, saw ${JSON.stringify(gapSample)}`);
+      throw new Error(`expected bigmod to stay at 15000 during resend gap, saw ${JSON.stringify(gapSample)}`);
     }
     await page.screenshot({ path: gapOutputPath, fullPage: true });
 
     await page.waitForTimeout(1900);
-    const restoredSample = await sampleStatus(page, 'after delayed repgroup snapshot count');
+    const restoredSample = await sampleStatus(page, 'after delayed repgroup resend');
     trace.samples.push(restoredSample);
-    if (restoredSample.phase !== 'explicit-resync-current-finishing' ||
-      restoredSample.messageCount < 7 ||
+    if (restoredSample.phase !== 'steady-resend-finishing' ||
       restoredSample.repGroupTotal !== 15000 ||
       restoredSample.repGroupDependent !== 15000) {
-      throw new Error(`expected delayed snapshot to complete with bigmod still at 15000, saw ${JSON.stringify(restoredSample)}`);
+      throw new Error(`expected delayed resend to complete with bigmod still at 15000, saw ${JSON.stringify(restoredSample)}`);
     }
     await page.screenshot({ path: restoredOutputPath, fullPage: true });
 
@@ -344,13 +321,13 @@ async function captureScreenshot() {
     trace.intervalTimers = fixtureState.intervalTimers;
     trace.browserSamples = fixtureState.samples;
 
-    const gap = trace.samples.find(sample => sample.label === 'during explicit resync snapshot gap');
-    const restored = trace.samples.find(sample => sample.label === 'after delayed repgroup snapshot count');
+    const gap = trace.samples.find(sample => sample.label === 'during steady-state resend gap');
+    const restored = trace.samples.find(sample => sample.label === 'after delayed repgroup resend');
     if (!gap || gap.repGroupTotal !== 15000 || gap.repGroupBadgeText !== '15000' || !gap.repGroupProgressVisible) {
-      throw new Error(`expected bigmod to stay at 15000 during snapshot gap, saw ${JSON.stringify(gap)}`);
+      throw new Error(`expected bigmod to stay at 15000 during resend gap, saw ${JSON.stringify(gap)}`);
     }
     if (!restored || restored.repGroupTotal !== 15000 || restored.repGroupDependent !== 15000) {
-      throw new Error(`expected bigmod to restore to 15000 dependent, saw ${JSON.stringify(restored)}`);
+      throw new Error(`expected bigmod to stay at 15000 dependent, saw ${JSON.stringify(restored)}`);
     }
     if (trace.intervalTimers.some((timer) => timer.delay === 10000)) {
       throw new Error(`status page registered blind periodic current timer: ${JSON.stringify(trace.intervalTimers)}`);

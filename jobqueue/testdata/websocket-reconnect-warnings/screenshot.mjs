@@ -110,21 +110,21 @@ function fakeWebSocketScript() {
       urls: []
     };
 
+    // Absolute per-RepGroup state. On (re)connect the server pushes the full
+    // current map as { RepGroup, Counts }.
     const initialSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 1, SnapshotID: 1 },
-      { RepGroup: 'reconnect-rg', FromState: 'new', ToState: 'ready', Count: 1, SnapshotID: 1 },
-      { RepGroup: '+all+', SnapshotID: 1, SnapshotDone: true }
+      { RepGroup: '+all+', Counts: { ready: 1 } },
+      { RepGroup: 'reconnect-rg', Counts: { ready: 1 } }
     ];
 
     const reconnectedSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'running', Count: 1, SnapshotID: 2 },
-      { RepGroup: 'reconnect-rg', FromState: 'new', ToState: 'running', Count: 1, SnapshotID: 2 },
-      { RepGroup: '+all+', SnapshotID: 2, SnapshotDone: true }
+      { RepGroup: '+all+', Counts: { running: 1 } },
+      { RepGroup: 'reconnect-rg', Counts: { running: 1 } }
     ];
 
     const completionActivity = [
-      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 1 },
-      { RepGroup: 'reconnect-rg', FromState: 'running', ToState: 'complete', Count: 1 }
+      { RepGroup: '+all+', Counts: {} },
+      { RepGroup: 'reconnect-rg', Counts: { complete: 1 } }
     ];
 
     class FixtureWebSocket {

@@ -102,34 +102,23 @@ function fakeWebSocketScript() {
     window.__wrFixtureRequests = [];
     window.__wrFixtureMessages = [];
 
-    const initialSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: '', Count: 0, SnapshotID: 1 },
-      { RepGroup: '+all+', SnapshotID: 1, SnapshotDone: true }
+    // Stale absolute state: the page first shows tabletest jobs running and
+    // deletebulk jobs pending (this is the state that would have been left
+    // behind by dropped deltas under the old protocol).
+    const staleState = [
+      { RepGroup: '+all+', Counts: { running: 1, ready: 2 } },
+      { RepGroup: 'tabletest', Counts: { running: 1, complete: 1 } },
+      { RepGroup: 'deletebulk', Counts: { ready: 2 } }
     ];
 
-    const droppedLiveDeltas = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 2 },
-      { RepGroup: 'tabletest', FromState: 'new', ToState: 'ready', Count: 2 },
-      { RepGroup: '+all+', FromState: 'ready', ToState: 'running', Count: 2 },
-      { RepGroup: 'tabletest', FromState: 'ready', ToState: 'running', Count: 2 },
-      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 1 },
-      { RepGroup: 'tabletest', FromState: 'running', ToState: 'complete', Count: 1 },
-      { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 4 },
-      { RepGroup: 'deletebulk', FromState: 'new', ToState: 'ready', Count: 4 },
-      { RepGroup: '+all+', FromState: 'ready', ToState: 'deleted', Count: 2 },
-      { RepGroup: 'deletebulk', FromState: 'ready', ToState: 'deleted', Count: 2 }
+    // Authoritative absolute state: tabletest jobs are actually complete, and
+    // the deletebulk jobs have been removed. The client replaces each RepGroup's
+    // counts wholesale, so the stale running/pending counts are cleared.
+    const authoritativeState = [
+      { RepGroup: '+all+', Counts: {} },
+      { RepGroup: 'tabletest', Counts: { complete: 2 } },
+      { RepGroup: 'deletebulk', Counts: {} }
     ];
-
-    const explicitLossSignal = [
-      { RepGroup: '+all+', StatusResync: true }
-    ];
-
-    function emptySnapshot(snapshotID) {
-      return [
-        { RepGroup: '+all+', FromState: 'new', ToState: '', Count: 0, SnapshotID: snapshotID },
-        { RepGroup: '+all+', SnapshotID: snapshotID, SnapshotDone: true }
-      ];
-    }
 
     const tabletestSearchResults = [
       {
@@ -189,15 +178,11 @@ function fakeWebSocketScript() {
         if (request.Request === 'current') {
           this.currentRequests += 1;
 
-          if (this.currentRequests === 1) {
-            this.emitEach(initialSnapshot);
-            setTimeout(() => {
-              this.emitEach(droppedLiveDeltas);
-              setTimeout(() => this.emitEach(explicitLossSignal), 80);
-            }, 80);
-          } else {
-            this.emitEach(emptySnapshot(this.currentRequests));
-          }
+          // Deliver the stale absolute state first, then the authoritative
+          // absolute state that converges the counts; the wholesale replace
+          // clears the stale running/pending counts.
+          this.emitEach(staleState);
+          setTimeout(() => this.emitEach(authoritativeState), 200);
         }
 
         if (request.Request === 'details' && request.RepGroup === 'tabletest') {
@@ -252,8 +237,13 @@ async function captureScreenshot() {
       timeout: 30000
     });
     await page.waitForSelector('body.ko-initialized', { timeout: 10000 });
+    // The authoritative absolute state replaces each RepGroup's counts wholesale,
+    // so the previously-shown stale running/pending counts are gone and the
+    // RepGroup shows its real terminal state (tabletest = 2 complete).
     await page.waitForFunction(() => {
-      return window.__wrFixtureRequests.filter(raw => raw.includes('"current"')).length >= 2;
+      const tabletest = document.querySelector('[data-repgroup="tabletest"]');
+
+      return tabletest && tabletest.innerText.includes('2 complete');
     }, undefined, { timeout: 10000 });
     await page.waitForFunction(() => {
       const bodyText = document.body.innerText;
