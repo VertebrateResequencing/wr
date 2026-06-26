@@ -151,7 +151,7 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  new-from-rev: master
+  # new-from-rev: master  # TEMPORARILY DISABLED for full-codebase modernisation
 formatters:
   enable:
     - gci
