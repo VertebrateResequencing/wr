@@ -45,7 +45,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const webStatusAllRepGroups = "+all+"
+const webStatusAllRepGroups = statusAllRepGroups
 
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
@@ -105,6 +105,43 @@ func TestCaster(t *testing.T) {
 			So(fmt.Sprintf("received update after close: %v", msg), ShouldBeBlank)
 		case <-time.After(100 * time.Millisecond):
 		}
+	})
+
+	Convey("Sending to a full caster member never blocks the sender", t, func() {
+		// The remaining casters (bad servers, scheduler issues) are recoverable:
+		// on overflow the newest update is dropped rather than blocking the
+		// sender, and a later "current" request re-broadcasts the latest set. The
+		// status counts no longer use the caster at all.
+		caster := newCaster()
+		receiver := caster.Join()
+
+		defer receiver.Close()
+
+		// fill the member's 1-slot buffer.
+		receiver.In <- &BadServer{ID: "queued", IsBad: true}
+
+		sent := make(chan struct{})
+
+		go func() {
+			for range 1000 {
+				caster.Send(&BadServer{ID: "overflowing", IsBad: true})
+			}
+
+			close(sent)
+		}()
+
+		select {
+		case <-sent:
+		case <-time.After(time.Second):
+			So("a full caster member blocked the sender", ShouldBeBlank)
+		}
+
+		// the originally queued value is still there; overflowing sends were
+		// dropped, not converted into any resync marker.
+		msg := <-receiver.In
+		bs, ok := msg.(*BadServer)
+		So(ok, ShouldBeTrue)
+		So(bs.ID, ShouldEqual, "queued")
 	})
 }
 
@@ -173,10 +210,20 @@ func TestServerWebISuspendedStatus(t *testing.T) {
 			So(body, ShouldContainSubstring, "counts.suspended")
 			So(body, ShouldContainSubstring, "showRepgroupSuspended")
 			So(body, ShouldContainSubstring, "State == 'delayed' || State == 'dependent' || State == 'suspended'")
-			So(body, ShouldContainSubstring, "suspended - use wr resume to make it schedulable again")
+			So(body, ShouldContainSubstring, `<span class="prop-value">suspended</span>`)
+			So(body, ShouldContainSubstring, "confirmResume")
+			So(body, ShouldNotContainSubstring, "suspended - use wr resume to make it schedulable again")
+
+			w = httptest.NewRecorder()
+			r = httptest.NewRequestWithContext(ctx, http.MethodGet, "/js/wr/action-handlers.js", nil)
+
+			handler(w, r)
+
+			So(w.Result().StatusCode, ShouldEqual, http.StatusOK)
+			So(w.Body.String(), ShouldContainSubstring, "Resume Suspended Commands")
 		})
 
-		Convey("The websocket returns suspended current counts and details", func() {
+		Convey("The websocket returns suspended current counts, details, and resumes a single suspended job", func() {
 			testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
 			defer testServer.Close()
 
@@ -210,14 +257,172 @@ func TestServerWebISuspendedStatus(t *testing.T) {
 			})
 			So(ok, ShouldBeTrue)
 			So(status.Cmd, ShouldEqual, suspended.Cmd)
+
+			err = ws.WriteJSON(jstatusReq{
+				Request: jstatusRequestResume,
+				Key:     suspended.Key(),
+			})
+			So(err, ShouldBeNil)
+			So(waitForJobState(jq, repGroup, JobStateReady, 2), ShouldEqual, 2)
 		})
 	})
 }
 
+func TestStatusCurrentAbsoluteState(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("On connect the status websocket pushes the full current absolute state", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "status-current-snapshot"
+		jobs := []*Job{
+			{
+				Cmd:          "echo status current snapshot 1",
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			},
+			{
+				Cmd:          "echo status current snapshot 2",
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			},
+		}
+		added, already, err := jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 2)
+		So(already, ShouldEqual, 0)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+		So(err, ShouldBeNil)
+
+		// the absolute state is pushed on connect: both jobs ready, in the
+		// RepGroup and the +all+ live aggregate.
+		So(readJStateCounts(ws, []expectedJStateCount{
+			{repGroup: webStatusAllRepGroups, state: JobStateReady, count: 2},
+			{repGroup: repGroup, state: JobStateReady, count: 2},
+		}, 3*time.Second), ShouldBeTrue)
+
+		err = ws.Close()
+		So(err, ShouldBeNil)
+
+		ws, err = drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestRemove,
+			RepGroup: repGroup,
+		})
+		So(err, ShouldBeNil)
+
+		So(pollUntil(func() bool {
+			remaining, errr := jq.GetByRepGroup(repGroup, false, 0, "", false, false)
+
+			return errr == nil && len(remaining) == 0
+		}), ShouldBeTrue)
+
+		err = ws.Close()
+		So(err, ShouldBeNil)
+
+		// a fresh connection (reconnect) gets the full current state again, now
+		// showing the RepGroup as empty (the jobs were removed).
+		ws, err = drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
+		So(err, ShouldBeNil)
+
+		So(readAbsoluteStateUntil(ws, 3*time.Second, func(latest map[string]map[JobState]int) bool {
+			return statusCountsTotal(latest[repGroup]) == 0 && statusCountsTotal(latest[webStatusAllRepGroups]) == 0
+		}), ShouldBeTrue)
+	})
+}
+
+// readAbsoluteStateUntil reads absolute per-RepGroup messages, applying each
+// wholesale to a running view, until the predicate holds or the timeout expires.
+func readAbsoluteStateUntil(ws *websocket.Conn, timeout time.Duration,
+	until func(latest map[string]map[JobState]int) bool) bool {
+	latest := make(map[string]map[JobState]int)
+
+	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return false
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
+	for {
+		if until(latest) {
+			return true
+		}
+
+		var msg jstateAbsolute
+		if err := ws.ReadJSON(&msg); err != nil {
+			return false
+		}
+
+		if msg.RepGroup == "" {
+			continue
+		}
+
+		latest[msg.RepGroup] = msg.Counts
+	}
+}
+
+func statusCountsTotal(counts map[JobState]int) int {
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+
+	return total
+}
+
+// readJStateCounts reads absolute per-RepGroup status messages until every
+// expected (repGroup, state, count) tuple is present in the latest absolute
+// state seen for that RepGroup, or the timeout expires. Because absolute
+// messages are last-write-wins per RepGroup, it tracks the most recent counts
+// for each RepGroup rather than matching individual messages.
 func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeout time.Duration) bool {
-	remaining := make(map[expectedJStateCount]struct{}, len(expected))
-	for _, count := range expected {
-		remaining[count] = struct{}{}
+	latest := make(map[string]map[JobState]int)
+
+	allPresent := func() bool {
+		for _, want := range expected {
+			if latest[want.repGroup][want.state] != want.count {
+				return false
+			}
+		}
+
+		return true
 	}
 
 	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
@@ -225,17 +430,17 @@ func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeou
 	}
 	defer clearReadDeadlineBestEffort(ws)
 
-	for len(remaining) > 0 {
-		var count jstateCount
-		if err := ws.ReadJSON(&count); err != nil {
+	for !allPresent() {
+		var msg jstateAbsolute
+		if err := ws.ReadJSON(&msg); err != nil {
 			return false
 		}
 
-		delete(remaining, expectedJStateCount{
-			repGroup: count.RepGroup,
-			state:    count.ToState,
-			count:    count.Count,
-		})
+		if msg.RepGroup == "" || msg.Counts == nil {
+			continue
+		}
+
+		latest[msg.RepGroup] = msg.Counts
 	}
 
 	return true
@@ -384,45 +589,20 @@ func TestServerWebI(t *testing.T) {
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
-				receivedJobs := make(map[string]bool)
-				receivedGroups := make(map[string]bool)
-				receivedFromNews := 0
-				receivedToBuried := 0
-				receivedToComplete := 0
-				receivedToRunning := 0
+				// At this point: rg1 has 1 running + 1 complete, rg2 has 1
+				// complete + 1 buried; the +all+ live aggregate has 1 running + 1
+				// buried (complete is terminal, so not in +all+). The absolute
+				// state pushed on connect must reflect exactly this.
+				ok := readAbsoluteStateUntil(ws, 5*time.Second, func(latest map[string]map[JobState]int) bool {
+					all := latest[webStatusAllRepGroups]
+					rg1 := latest["rg1"]
+					rg2 := latest["rg2"]
 
-				for range 5 {
-					var stateCount jstateCount
-					err = ws.ReadJSON(&stateCount)
-					So(err, ShouldBeNil)
-
-					if stateCount.FromState == JobStateNew {
-						receivedFromNews += stateCount.Count
-					}
-
-					switch stateCount.ToState { //nolint:exhaustive
-					case JobStateBuried:
-						receivedToBuried += stateCount.Count
-					case JobStateComplete:
-						receivedToComplete += stateCount.Count
-					case JobStateRunning:
-						receivedToRunning += stateCount.Count
-					}
-
-					if stateCount.RepGroup == "+all+" {
-						receivedJobs[stateCount.RepGroup] = true
-					} else {
-						receivedGroups[stateCount.RepGroup] = true
-					}
-				}
-
-				So(receivedJobs, ShouldContainKey, "+all+")
-				So(receivedGroups, ShouldContainKey, "rg1")
-				So(receivedGroups, ShouldContainKey, "rg2")
-				So(receivedFromNews, ShouldEqual, 5)
-				So(receivedToBuried, ShouldBeGreaterThanOrEqualTo, 1)
-				So(receivedToRunning, ShouldBeGreaterThanOrEqualTo, 1)
-				So(receivedToComplete, ShouldBeGreaterThanOrEqualTo, 1)
+					return all[JobStateRunning] == 1 && all[JobStateBuried] == 1 &&
+						rg1[JobStateRunning] == 1 && rg1[JobStateComplete] == 1 &&
+						rg2[JobStateComplete] == 1 && rg2[JobStateBuried] == 1
+				})
+				So(ok, ShouldBeTrue)
 			})
 
 			Convey("The websocket handler responds to details requests", func() {
@@ -554,8 +734,12 @@ func TestServerWebI(t *testing.T) {
 			})
 
 			Convey("The websocket handler deals with paginated details requests", func() {
-				numPaginationJobs := 12
-				limit := 5
+				const (
+					numPaginationJobs  = 12
+					limit              = 5
+					paginationRepGroup = "pg_repgroup"
+				)
+
 				paginationJobs := make([]*Job, numPaginationJobs)
 
 				for i := range numPaginationJobs {
@@ -564,7 +748,7 @@ func TestServerWebI(t *testing.T) {
 						Cwd:          "/tmp",
 						ReqGroup:     "pg_group",
 						Requirements: standardReqs,
-						RepGroup:     "pg_repgroup",
+						RepGroup:     paginationRepGroup,
 					}
 				}
 
@@ -584,7 +768,7 @@ func TestServerWebI(t *testing.T) {
 					So(job.FailReason, ShouldEqual, FailReasonExit)
 				}
 
-				buriedJobs, errg := jq.GetByRepGroup("pg_repgroup", false, 0, JobStateBuried, false, false)
+				buriedJobs, errg := jq.GetByRepGroup(paginationRepGroup, false, 0, JobStateBuried, false, false)
 				So(errg, ShouldBeNil)
 				So(len(buriedJobs), ShouldEqual, numPaginationJobs)
 
@@ -599,7 +783,7 @@ func TestServerWebI(t *testing.T) {
 					for i := range expectedNum {
 						status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
 						So(ok, ShouldBeTrue)
-						So(status.RepGroup, ShouldEqual, "pg_repgroup")
+						So(status.RepGroup, ShouldEqual, paginationRepGroup)
 						So(status.State, ShouldEqual, JobStateBuried)
 						So(status.Exitcode, ShouldEqual, exitCode)
 						So(status.FailReason, ShouldEqual, FailReasonExit)
@@ -612,7 +796,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns the first page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -627,7 +811,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns the second page of jobs", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -642,7 +826,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns a partial page when reaching the end", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -657,7 +841,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns no jobs when offset is beyond available results", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -672,7 +856,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It returns all jobs when limit is 0", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -760,7 +944,7 @@ func TestServerWebI(t *testing.T) {
 				Convey("It handles negative offset gracefully", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   1,
 						FailReason: FailReasonExit,
@@ -780,7 +964,7 @@ func TestServerWebI(t *testing.T) {
 						Cwd:          "/tmp",
 						ReqGroup:     "pg_group",
 						Requirements: standardReqs,
-						RepGroup:     "pg_repgroup",
+						RepGroup:     paginationRepGroup,
 					})
 
 					inserts, _, erra := jq.Add(differentJob, envVars, true)
@@ -801,7 +985,7 @@ func TestServerWebI(t *testing.T) {
 
 					err = ws.WriteJSON(jstatusReq{
 						Request:    jstatusRequestDetails,
-						RepGroup:   "pg_repgroup",
+						RepGroup:   paginationRepGroup,
 						State:      JobStateBuried,
 						Exitcode:   2,
 						FailReason: FailReasonExit,
@@ -814,7 +998,7 @@ func TestServerWebI(t *testing.T) {
 					// the real job status the request asked for.
 					status, ok := readJStatusMatching(ws, func(s JStatus) bool { return s.Key != "" })
 					So(ok, ShouldBeTrue)
-					So(status.RepGroup, ShouldEqual, "pg_repgroup")
+					So(status.RepGroup, ShouldEqual, paginationRepGroup)
 					So(status.State, ShouldEqual, JobStateBuried)
 					So(status.Exitcode, ShouldEqual, 2)
 					So(status.Cmd, ShouldEqual, "echo different_exitcode && exit 2")
@@ -1048,7 +1232,7 @@ func TestServerWebI(t *testing.T) {
 				So(len(jobs), ShouldEqual, 1)
 
 				err = ws.WriteJSON(jstatusReq{
-					Request:  "remove",
+					Request:  jstatusRequestRemove,
 					RepGroup: "rg3",
 				})
 				So(err, ShouldBeNil)
@@ -1067,10 +1251,12 @@ func TestServerWebI(t *testing.T) {
 			Convey("The websocket handler supports multiple concurrent clients", func() {
 				ws2, _, errw := websocket.DefaultDialer.Dial(wsURL, header)
 				So(errw, ShouldBeNil)
+
 				defer ws2.Close()
 
 				ws3, _, errw := websocket.DefaultDialer.Dial(wsURL, header)
 				So(errw, ShouldBeNil)
+
 				defer ws3.Close()
 
 				var broadcastJobs []*Job
@@ -1091,14 +1277,14 @@ func TestServerWebI(t *testing.T) {
 
 				wg.Add(3)
 
-				r1ch := make(chan jstateCount, 1)
-				r2ch := make(chan jstateCount, 1)
-				r3ch := make(chan jstateCount, 1)
+				r1ch := make(chan jstateAbsolute, 1)
+				r2ch := make(chan jstateAbsolute, 1)
+				r3ch := make(chan jstateAbsolute, 1)
 
 				go func() {
 					defer wg.Done()
 
-					var sc jstateCount
+					var sc jstateAbsolute
 
 					ws.ReadJSON(&sc) //nolint:errcheck
 					r1ch <- sc
@@ -1107,7 +1293,7 @@ func TestServerWebI(t *testing.T) {
 				go func() {
 					defer wg.Done()
 
-					var sc jstateCount
+					var sc jstateAbsolute
 
 					ws2.ReadJSON(&sc) //nolint:errcheck
 					r2ch <- sc
@@ -1116,7 +1302,7 @@ func TestServerWebI(t *testing.T) {
 				go func() {
 					defer wg.Done()
 
-					var sc jstateCount
+					var sc jstateAbsolute
 
 					ws3.ReadJSON(&sc) //nolint:errcheck
 					r3ch <- sc
@@ -1148,11 +1334,11 @@ func TestServerWebI(t *testing.T) {
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
-				var sc jstateCount
+				var sc jstateAbsolute
 
-				// Read the count response with a deadline instead of pre-sleeping
-				// a fixed time: the explicit "current" request above guarantees a
-				// jstateCount is sent, and the deadline tolerates a slow response
+				// Read an absolute status message with a deadline instead of
+				// pre-sleeping: the per-client sender pushes the current absolute
+				// state on connect, and the deadline tolerates a slow response
 				// under heavy parallel-test load.
 				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
 				defer clearReadDeadlineBestEffort(ws)
@@ -1403,6 +1589,18 @@ func assertEditableStatusFields(status JStatus) {
 	So(status.EnvOverrides, ShouldResemble, []string{"WEB_ONLY=old"})
 }
 
+// drainSetupUntilDetails consumes the connect-time messages on a status
+// websocket up to and including the response to a details request: the server
+// pushes the full absolute per-RepGroup state on connect (count broadcasts with
+// no Key) followed by the details-request job status (with a Key). It reads only
+// COMPLETE messages and never relies on a read timeout, so it does not leave the
+// gorilla connection in the undefined post-timeout state (which would break the
+// ordered push-update reads that follow). Callers must have issued a details
+// request whose response is a job status.
+func drainSetupUntilDetails(ws *websocket.Conn) {
+	readUntilStatus(ws) //nolint:errcheck
+}
+
 func TestStatusDetailsLiveCompatibility(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1612,6 +1810,67 @@ func TestStatusDetailsLivePushUpdates(t *testing.T) {
 		So(status.SSHCommand, ShouldEqual,
 			"ssh -- cloud_user@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'")
 	})
+
+	Convey("Status details preserve live output when a later heartbeat updates only resources", t, func() {
+		ctx := context.Background()
+
+		server, jq, runner, token, standardReqs := startSubscriptionIntegration(ctx, t)
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+		defer disconnect(runner)
+
+		job := addAndStartLiveSubscriptionJob(server, jq, runner, standardReqs, "status-details-c3-live")
+
+		ws, cleanup := openStatusDetailsSubscription(ctx, server, token, job.RepGroup, job.Key())
+		defer cleanup()
+
+		killCalled, err := runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 321,
+			CPUtime: 4 * time.Second,
+			Stdout:  compressStd([]byte("progress 1\n")),
+			Stderr:  compressStd([]byte("warning 1\n")),
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		_, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.StdOut == "progress 1\n"
+		})
+		So(ok, ShouldBeTrue)
+
+		killCalled, err = runner.touch(job, &JobEndState{
+			Cwd:     liveJTouchActualCwd,
+			PeakRAM: 654,
+			CPUtime: 7 * time.Second,
+		})
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		pushStatus, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && status.IsPushUpdate && status.PeakRAM == 654
+		})
+		So(ok, ShouldBeTrue)
+		So(pushStatus.State, ShouldEqual, JobStateRunning)
+		So(pushStatus.CPUtime, ShouldEqual, 7)
+		So(pushStatus.StdOut, ShouldEqual, "progress 1\n")
+		So(pushStatus.StdErr, ShouldEqual, "warning 1\n")
+
+		err = ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: job.RepGroup,
+			State:    JobStateRunning,
+		})
+		So(err, ShouldBeNil)
+
+		requestedStatus, ok := readJStatusMatching(ws, func(status JStatus) bool {
+			return status.Key == job.Key() && !status.IsPushUpdate && status.PeakRAM == 654
+		})
+		So(ok, ShouldBeTrue)
+		So(requestedStatus.CPUtime, ShouldEqual, 7)
+		So(requestedStatus.StdOut, ShouldEqual, "progress 1\n")
+		So(requestedStatus.StdErr, ShouldEqual, "warning 1\n")
+	})
 }
 
 func TestStatusWSDetailsSubscriptionRace(t *testing.T) {
@@ -1775,20 +2034,39 @@ func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
 }
 
 func testNoMoreMessages(ws *websocket.Conn) bool {
-	var msg any
+	// The status websocket carries unsolicited absolute per-RepGroup count
+	// broadcasts (which decode into a JStatus with an empty Key), pushed on
+	// connect and whenever counts change. Those are expected, so skip them and
+	// only fail if a real message (a job status with a Key, or any other shape)
+	// arrives within the window.
+	deadline := time.Now().Add(500 * time.Millisecond)
 
-	err := ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	if err != nil {
-		return false
+	for {
+		if err := ws.SetReadDeadline(deadline); err != nil {
+			return false
+		}
+
+		var status JStatus
+		if err := ws.ReadJSON(&status); err != nil {
+			clearReadDeadlineBestEffort(ws)
+
+			return true
+		}
+
+		if status.Key != "" {
+			clearReadDeadlineBestEffort(ws)
+
+			return false
+		}
 	}
-	defer clearReadDeadlineBestEffort(ws)
-
-	err = ws.ReadJSON(&msg)
-
-	return err != nil
 }
 
 func readUntilStatus(ws *websocket.Conn) (*JStatus, error) {
+	if err := ws.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return nil, err
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
 	for {
 		var msg map[string]any
 
@@ -1797,6 +2075,8 @@ func readUntilStatus(ws *websocket.Conn) (*JStatus, error) {
 			return nil, err
 		}
 
+		// skip the unsolicited absolute per-RepGroup count broadcasts (no Key /
+		// State), which now interleave with job-detail push updates.
 		_, hasKey := msg["Key"]
 		_, hasState := msg["State"]
 
@@ -1814,14 +2094,6 @@ func readUntilStatus(ws *websocket.Conn) (*JStatus, error) {
 		err = json.Unmarshal(statusJSON, &status)
 
 		return &status, err
-	}
-}
-
-func limitedDrain(ws *websocket.Conn, count int) {
-	for range count {
-		var msg any
-
-		ws.ReadJSON(&msg) //nolint:errcheck
 	}
 }
 
@@ -1907,8 +2179,8 @@ func TestJobSubscriptions(t *testing.T) {
 			})
 			So(err, ShouldBeNil)
 
-			limitedDrain(ws1, 1)
-			limitedDrain(ws2, 1)
+			drainSetupUntilDetails(ws1)
+			drainSetupUntilDetails(ws2)
 
 			Convey("Only subscribed clients receive detailed push updates", func() {
 				job, errr := jq.Reserve(50 * time.Millisecond)
@@ -1930,8 +2202,7 @@ func TestJobSubscriptions(t *testing.T) {
 				So(status1.RepGroup, ShouldEqual, "sub_rg1")
 				So(status1.State, ShouldEqual, JobStateComplete)
 
-				_, err = readUntilStatus(ws1)
-				So(err, ShouldNotBeNil)
+				So(testNoMoreMessages(ws1), ShouldBeTrue)
 
 				var msg any
 				err = ws3.ReadJSON(&msg)
@@ -1954,7 +2225,7 @@ func TestJobSubscriptions(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				limitedDrain(ws2, 1)
+				drainSetupUntilDetails(ws2)
 
 				job, err = jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
@@ -1975,8 +2246,7 @@ func TestJobSubscriptions(t *testing.T) {
 				So(status2.RepGroup, ShouldEqual, "sub_rg2")
 				So(status2.State, ShouldEqual, JobStateComplete)
 
-				_, err = readUntilStatus(ws2)
-				So(err, ShouldNotBeNil)
+				So(testNoMoreMessages(ws2), ShouldBeTrue)
 			})
 
 			Convey("Clients can unsubscribe to stop receiving updates", func() {
@@ -1991,7 +2261,7 @@ func TestJobSubscriptions(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				limitedDrain(ws1, 3)
+				drainSetupUntilDetails(ws1)
 
 				err = ws1.WriteJSON(jstatusReq{
 					Request: jstatusRequestUnsubscribe,

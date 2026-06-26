@@ -557,6 +557,103 @@ func TestStatusDisplaysMissingDepGroups(t *testing.T) {
 	})
 }
 
+func TestStatusDetailsPreservesHighMemoryFailureNote(t *testing.T) {
+	Convey("wr status details shows the RAM note on non-RAM failures that exceeded requested memory", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		repGroup := "status-ram-note"
+		failed := statusTestJob("perl -e 'exit 1'", repGroup, reqs)
+		addStatusJobs(jq, failed)
+
+		reserved, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(reserved.Key(), ShouldEqual, failed.Key())
+		So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+		endTime := time.Now()
+		err = jq.Release(reserved, &jobqueue.JobEndState{
+			Exitcode: 1,
+			PeakRAM:  reqs.RAM + 1,
+			EndTime:  endTime,
+			Exited:   true,
+		}, jobqueue.FailReasonExit)
+		So(err, ShouldBeNil)
+
+		details := runStatusForTest(t, "--identifier", repGroup, "--output", "details")
+		So(details, ShouldContainSubstring,
+			"Previous problem: command exited non-zero; note: command used too much RAM")
+	})
+}
+
+func TestStatusDetailsShowsRunningLiveHeartbeatFields(t *testing.T) {
+	Convey("wr status details shows live peak RAM and output for a running job", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		repGroup := "status-live-heartbeat"
+		job := statusTestJob("bash -c 'echo progress 1; sleep 60'", repGroup, reqs)
+		addStatusJobs(jq, job)
+
+		running, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(running.Key(), ShouldEqual, job.Key())
+		So(jq.Started(running, os.Getpid()), ShouldBeNil)
+
+		running.Lock()
+		running.PeakRAM = 321
+		running.PeakDisk = 12
+		running.CPUtime = 4 * time.Second
+		running.StdOutC = zlibCompress([]byte("progress 1\n"))
+		running.StdErrC = zlibCompress([]byte("warning 1\n"))
+		running.Unlock()
+
+		killCalled, err := jq.Touch(running)
+		So(err, ShouldBeNil)
+		So(killCalled, ShouldBeFalse)
+
+		details := runStatusForTest(t, "--identifier", repGroup, "--output", "details")
+		So(details, ShouldContainSubstring, "Status: running")
+		So(details, ShouldContainSubstring,
+			"Stats: { Peak memory: 321MB; Peak disk: 12MB; Wall time:")
+		So(details, ShouldContainSubstring, "CPU time: 4s")
+		So(details, ShouldContainSubstring, "StdOut:\nprogress 1\n")
+		So(details, ShouldContainSubstring, "StdErr:\nwarning 1\n")
+	})
+}
+
 func TestStatusShowsAndFiltersSuspendedJobs(t *testing.T) {
 	Convey("wr status shows and filters suspended jobs", t, func() {
 		ctx := context.Background()

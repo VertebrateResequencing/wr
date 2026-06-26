@@ -55,7 +55,6 @@ export function StatusViewModel() {
     self.repGroups = [];
     self.repGroupLookup = {};
     self.sortableRepGroups = ko.observableArray();
-    self.ignore = {};
 
     //-------------------------------------------------------------------------
     // SEARCH FUNCTIONALITY
@@ -687,6 +686,10 @@ export function StatusViewModel() {
 
     self.confirmRemoveDelay = function (job) {
         actionHandlers.confirmRemoveDelay(self, job);
+    };
+
+    self.confirmResume = function (job) {
+        actionHandlers.confirmResume(self, job);
     };
 
     self.confirmKill = function (job) {

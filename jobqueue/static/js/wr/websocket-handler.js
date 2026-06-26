@@ -7,6 +7,17 @@ import { createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 const countProperties = ['delayed', 'dependent', 'suspended', 'ready', 'running', 'lost', 'buried', 'deleted', 'complete'];
 const percentProperties = ['delayPct', 'dependentPct', 'suspendedPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
 const unixNanoThreshold = 1000000000000000;
+const managerLostWarning = "Connection to the manager has been lost!";
+const webSocketErrorPrefix = "WebSocket error:";
+
+function isConnectionStatusWarning(message) {
+    return message === managerLostWarning ||
+        (typeof message === 'string' && message.startsWith(webSocketErrorPrefix));
+}
+
+function clearConnectionStatusWarnings(viewModel) {
+    viewModel.statuserror.remove(isConnectionStatusWarning);
+}
 
 function resetTrackerCounts(tracker) {
     for (const property of countProperties.concat(percentProperties)) {
@@ -22,13 +33,48 @@ function resetTrackerCounts(tracker) {
 
 function resetLiveCounts(viewModel) {
     resetTrackerCounts(viewModel.inflight);
-    viewModel.ignore = {};
 
     for (const repgroup of viewModel.repGroups) {
         if (!repgroup.id.startsWith('search:')) {
             resetTrackerCounts(repgroup);
         }
     }
+}
+
+// setTrackerCounts applies an authoritative absolute count map to a tracker by
+// writing each count observable directly to its new value (states absent from
+// the message become 0). It deliberately does NOT zero-then-set and does NOT
+// touch the pct observables: writing the pcts to 0 between updates would
+// collapse every bound bar segment to 0 width on each storm message (the bar
+// "flickers so fast it looks like it's not there"). The count observables are
+// rate-limited and idempotent, so unchanged states do not notify and changed
+// ones transition smoothly; the rate-limited `total` computed then recomputes
+// the pcts via updateProgressBars so the bar animates its proportions instead
+// of being cleared and redrawn.
+function setTrackerCounts(tracker, counts) {
+    if (!tracker) {
+        return;
+    }
+
+    for (const property of countProperties) {
+        if (typeof tracker[property] === 'function') {
+            tracker[property](counts[property] || 0);
+        }
+    }
+}
+
+function getOrCreateRepGroupTracker(viewModel, rg) {
+    if (viewModel.repGroupLookup.hasOwnProperty(rg)) {
+        return viewModel.repGroups[viewModel.repGroupLookup[rg]];
+    }
+
+    const repgroup = createRepGroupTracker(rg, viewModel.rateLimit);
+
+    viewModel.repGroups.push(repgroup);
+    viewModel.repGroupLookup[rg] = viewModel.repGroups.length - 1;
+    viewModel.sortableRepGroups.push(repgroup);
+
+    return repgroup;
 }
 
 function normalizeStatusTimestamp(timestamp) {
@@ -62,6 +108,17 @@ export function setupWebSocket(viewModel) {
     let reconnectDelay = reconnectInitialDelay;
     let reconnectTimer = null;
     let reportedClose = false;
+    const renderedWebSocketErrors = new Set();
+
+    // The server pushes idempotent absolute per-RepGroup state, sending the full
+    // current map as soon as we connect (and again on reconnect, since that is a
+    // fresh connection). The "current" request only (re)broadcasts the bad-server
+    // and scheduler-issue sets; status counts need no resync.
+    const sendCurrentStatus = (ws) => {
+        if (viewModel.ws === ws && ws.readyState === 1) {
+            ws.send(currentRequest);
+        }
+    };
 
     const scheduleReconnect = () => {
         if (reconnectTimer !== null) {
@@ -84,11 +141,15 @@ export function setupWebSocket(viewModel) {
 
             ws.onopen = () => {
                 reconnectDelay = reconnectInitialDelay;
+                clearConnectionStatusWarnings(viewModel);
                 if (reportedClose) {
+                    // A reconnect delivers a fresh full-state push, so clear the
+                    // stale live counts before it arrives.
                     resetLiveCounts(viewModel);
                 }
                 reportedClose = false;
-                ws.send(currentRequest);
+                renderedWebSocketErrors.clear();
+                sendCurrentStatus(ws);
             };
 
             ws.onclose = () => {
@@ -97,7 +158,7 @@ export function setupWebSocket(viewModel) {
                 }
 
                 if (!reportedClose) {
-                    viewModel.statuserror.push("Connection to the manager has been lost!");
+                    viewModel.statuserror.push(managerLostWarning);
                     reportedClose = true;
                 }
 
@@ -105,15 +166,19 @@ export function setupWebSocket(viewModel) {
             };
 
             ws.onerror = (error) => {
-                viewModel.statuserror.push(`WebSocket error: ${error.message || 'Unknown error'}`);
+                const message = `WebSocket error: ${error.message || 'Unknown error'}`;
+                if (!renderedWebSocketErrors.has(message)) {
+                    viewModel.statuserror.push(message);
+                    renderedWebSocketErrors.add(message);
+                }
             };
 
             ws.onmessage = (e) => {
                 try {
                     const json = JSON.parse(e.data);
 
-                    if (json.hasOwnProperty('FromState')) {
-                        handleStateChangeMessage(viewModel, json);
+                    if (json.hasOwnProperty('Counts')) {
+                        handleAbsoluteStateMessage(viewModel, json);
                     } else if (json.hasOwnProperty('State')) {
                         handleJobDetailsMessage(viewModel, json);
                     } else if (json.hasOwnProperty('IP')) {
@@ -136,103 +201,25 @@ export function setupWebSocket(viewModel) {
 }
 
 /**
- * Handles state change messages from the WebSocket
+ * Handles an absolute per-RepGroup status message from the WebSocket by
+ * replacing that RepGroup's counts wholesale. This is idempotent: applying the
+ * same message twice is a no-op, and a dropped intermediate message is harmless
+ * because the next one overwrites it. "+all+" updates the live in-flight totals.
  * @param {StatusViewModel} viewModel - The main view model
- * @param {object} json - The JSON message data
+ * @param {object} json - The JSON message data ({ RepGroup, Counts })
  */
-function handleStateChangeMessage(viewModel, json) {
-    var rg = json['RepGroup'];
-    var repgroup;
+function handleAbsoluteStateMessage(viewModel, json) {
+    const rg = json['RepGroup'];
+    const counts = json['Counts'] || {};
 
+    let tracker;
     if (rg == "+all+") {
-        repgroup = viewModel.inflight;
-    } else if (viewModel.repGroupLookup.hasOwnProperty(rg)) {
-        repgroup = viewModel.repGroups[viewModel.repGroupLookup[rg]];
+        tracker = viewModel.inflight;
     } else {
-        // Create a new rep group tracker
-        repgroup = createRepGroupTracker(rg, viewModel.rateLimit);
-
-        viewModel.repGroups.push(repgroup);
-        viewModel.repGroupLookup[rg] = viewModel.repGroups.length - 1;
-        viewModel.sortableRepGroups.push(repgroup);
+        tracker = getOrCreateRepGroupTracker(viewModel, rg);
     }
 
-    var from, to;
-
-    // Determine the 'from' state
-    switch (json['FromState']) {
-        case 'delayed': from = repgroup['delayed']; break;
-        case 'dependent': from = repgroup['dependent']; break;
-        case 'suspended': from = repgroup['suspended']; break;
-        case 'ready': from = repgroup['ready']; break;
-        case 'running': from = repgroup['running']; break;
-        case 'lost': from = repgroup['lost']; break;
-        case 'buried': from = repgroup['buried']; break;
-    }
-
-    // Check if we should ignore this transition
-    if (viewModel.ignore.hasOwnProperty(json['RepGroup']) &&
-        viewModel.ignore[json['RepGroup']].hasOwnProperty(json['ToState']) &&
-        viewModel.ignore[json['RepGroup']][json['ToState']] >= json['Count']) {
-
-        viewModel.ignore[json['RepGroup']][json['ToState']] -= json['Count'];
-
-        if (viewModel.ignore[json['RepGroup']][json['ToState']] == 0) {
-            delete viewModel.ignore[json['RepGroup']][json['ToState']];
-
-            if (Object.keys(viewModel.ignore[json['RepGroup']]).length == 0) {
-                delete viewModel.ignore[json['RepGroup']];
-            }
-        }
-    } else {
-        // Determine the 'to' state
-        switch (json['ToState']) {
-            case 'delayed': to = repgroup['delayed']; break;
-            case 'dependent': to = repgroup['dependent']; break;
-            case 'suspended': to = repgroup['suspended']; break;
-            case 'ready': to = repgroup['ready']; break;
-            case 'running': to = repgroup['running']; break;
-            case 'lost': to = repgroup['lost']; break;
-            case 'buried': to = repgroup['buried']; break;
-            case 'complete':
-                if (rg != "+all+") {
-                    to = repgroup['complete'];
-                }
-                break;
-            case 'deleted':
-                if (rg != "+all+") {
-                    to = repgroup['deleted'];
-                }
-                break;
-        }
-    }
-
-    // Update the counts
-
-    if (from) {
-        var newfrom = from() - json['Count'];
-
-        if (newfrom >= 0) {
-            from(newfrom);
-        } else {
-            // Handle out-of-order transitions
-            if (!viewModel.ignore.hasOwnProperty(json['RepGroup'])) {
-                viewModel.ignore[json['RepGroup']] = {};
-            }
-
-            if (viewModel.ignore[json['RepGroup']].hasOwnProperty(json['FromState'])) {
-                viewModel.ignore[json['RepGroup']][json['FromState']] += json['Count'];
-            } else {
-                viewModel.ignore[json['RepGroup']][json['FromState']] = json['Count'];
-            }
-
-            from(0);
-        }
-    }
-
-    if (to) {
-        to(to() + json['Count']);
-    }
+    setTrackerCounts(tracker, counts);
 }
 
 /**
@@ -293,7 +280,7 @@ function handleJobDetailsMessage(viewModel, json) {
     }
 
     if (viewModel.detailsOA && rg == viewModel.detailsRepgroup) {
-        // Get the current rep group object 
+        // Get the current rep group object
         const repgroupId = viewModel.detailsRepgroup;
         let repgroup = null;
 

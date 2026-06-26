@@ -55,6 +55,26 @@ import (
 const (
 	subscriptionA1ReqGroup          = "subscription-a1"
 	liveSubscriptionNoUpdateTimeout = 100 * time.Millisecond
+
+	// subscriptionSafeItemTTR is a server ItemTTR with enough headroom that a
+	// runner-client's reserve -> Started (jstart) -> touch -> archive sequence
+	// cannot be reclaimed mid-flight, even under the race detector on a heavily
+	// oversubscribed CI runner. The TTR countdown starts at Reserve (the queue
+	// touches the item then), so the whole reserve-response + Started round-trip
+	// must fit inside it; a sub-second TTR can fire before Started lands under
+	// load, reclaiming the job so jstart fails with "bad job (not in queue or
+	// correct sub-queue)". A touched/short-lived job is never reclaimed, so this
+	// generous value is free on the success path and does not slow the suite.
+	subscriptionSafeItemTTR = 5 * time.Second
+
+	// subscriptionLostItemTTR is used only by tests that intentionally let the
+	// TTR expire to induce a "lost" (reclaimed) job. It is long enough that the
+	// reserve -> Started setup completes first (so jstart can't race it under
+	// load), yet short enough that the lost update still fires well within the
+	// test's lost-update receive budget (the server emits the lost update at
+	// roughly reserve_time + TTR). Tests pairing this with a sleep/deadline keep
+	// that wait safely above this value so the lost state is still induced.
+	subscriptionLostItemTTR = 1 * time.Second
 )
 
 var (
@@ -314,7 +334,14 @@ func TestClientAddAndWait(t *testing.T) {
 	Convey("AddAndWait deadline returns gathered jobs and names unfinished lost keys", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 50*time.Millisecond)
+		// This test is driven by the wait DEADLINE firing while the second job
+		// is unfinished, not by the TTR: a key is "unfinished" simply because no
+		// terminal event was seen for it, regardless of whether the server has
+		// reclaimed it. So use a TTR with headroom that won't fire within the
+		// deadline (a sub-second TTR previously raced the reserve -> jstart setup
+		// under load, failing jstart with "bad job" before the deadline logic
+		// ran at all).
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -340,7 +367,9 @@ func TestClientAddAndWait(t *testing.T) {
 		// oversubscribed CI those round-trips can stretch, so give a generous
 		// margin rather than racing a sub-second deadline (the previous 200ms
 		// intermittently fired before the first job was gathered, wrongly
-		// listing it among the unfinished keys).
+		// listing it among the unfinished keys). It also stays below the TTR so
+		// the second job is still cleanly running (not yet reclaimed) when it
+		// fires.
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
@@ -362,7 +391,15 @@ func TestClientAddAndWait(t *testing.T) {
 	Convey("AddAndWait ignores a lost update and waits for the later terminal event", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 50*time.Millisecond)
+		// This test intentionally lets the TTR expire while the runner stalls, so
+		// the server reclaims the job and emits a (non-terminal) lost update; the
+		// point is that AddAndWait ignores it and only returns on the real
+		// terminal event (the later archive). subscriptionLostItemTTR is large
+		// enough that the reserve -> jstart setup below completes first (so jstart
+		// can't race it under the race detector on a loaded CI runner, which used
+		// to fail with "bad job"), while the stall sleep is kept comfortably above
+		// it so the lost update still fires mid-stall.
+		applySubscriptionTimings(&serverConfig, subscriptionLostItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -378,7 +415,10 @@ func TestClientAddAndWait(t *testing.T) {
 
 		defer disconnect(runner)
 
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		// The wait deadline must outlast the whole induced sequence (setup + stall
+		// + archive + terminal-event propagation) so AddAndWait waits for the
+		// terminal event rather than deadlining; keep it well above lostStallSleep.
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
 		input := subscriptionTestJobs("subscription-e1-lost-then-complete", standardReqs, 1)
@@ -386,7 +426,11 @@ func TestClientAddAndWait(t *testing.T) {
 
 		job := startNextAddAndWaitJob(runner)
 
-		time.Sleep(200 * time.Millisecond)
+		// Stall longer than the TTR so the server reclaims the job and emits the
+		// lost update during the stall (TTR < this sleep), then archive to deliver
+		// the terminal event AddAndWait must wait for.
+		const lostStallSleep = 3 * subscriptionLostItemTTR / 2 // 1.5s, > 1s TTR
+		time.Sleep(lostStallSleep)
 
 		select {
 		case result := <-resultCh:
@@ -1752,7 +1796,7 @@ func TestSubscriptionCatchUp(t *testing.T) {
 	Convey("A running subscribed key emits no catch-up until it becomes terminal", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1791,7 +1835,7 @@ func TestSubscriptionCatchUp(t *testing.T) {
 	Convey("A live rerun subscribed key suppresses archived terminal catch-up", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1990,7 +2034,7 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	Convey("Subscribed keys each receive exactly one terminal update for complete or buried jobs", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2055,7 +2099,7 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	Convey("A running subscribed job emits one lost update and no terminal update while it stays lost", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 200*time.Millisecond)
+		applySubscriptionTimings(&serverConfig, subscriptionLostItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2092,7 +2136,7 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	Convey("Reserved and running states are not delivered before the final terminal update", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2133,7 +2177,7 @@ func TestSubscriptionPerKeyTerminalEvents(t *testing.T) {
 	Convey("A lost subscribed job later emits a terminal buried update when it is confirmed dead", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 200*time.Millisecond)
+		applySubscriptionTimings(&serverConfig, subscriptionLostItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2184,7 +2228,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A RepGroup subscription emits one aggregate when all known jobs are complete or buried", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2228,7 +2272,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A lost RepGroup job holds the aggregate back until it settles", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 200*time.Millisecond)
+		applySubscriptionTimings(&serverConfig, subscriptionLostItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2304,7 +2348,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A RepGroup subscription delivers only the aggregate when its jobs finish", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2337,7 +2381,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A live rerun RepGroup suppresses archived aggregate catch-up", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2389,7 +2433,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A RepGroup subscription completes when its only known live rerun job moves to another RepGroup", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2480,7 +2524,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A RepGroup subscription completes when a live rerun moves the remaining key to another RepGroup", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2615,7 +2659,7 @@ func TestSubscriptionRepGroupAggregate(t *testing.T) {
 	Convey("A post-registration catch-up snapshot holds back a missed live RepGroup job", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionTimings(&serverConfig, 5*time.Second)
+		applySubscriptionTimings(&serverConfig, subscriptionSafeItemTTR)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -2908,8 +2952,13 @@ func collectServerSubscriptionUpdatesByID(
 	return updates, true
 }
 
-// applySubscriptionTimings sets faster timings on the given server config for
-// subscription tests that need a short TTR.
+// applySubscriptionTimings sets timings on the given server config for
+// subscription tests. The ttr should be subscriptionSafeItemTTR for tests that
+// merely drive a job lifecycle, or subscriptionLostItemTTR (paired with a
+// suitably scaled sleep/deadline) for tests that intentionally induce a lost
+// job by letting the TTR expire. Avoid sub-second values: the TTR clock starts
+// at Reserve, so a tight TTR can reclaim the job before the runner's Started
+// (jstart) lands under the race detector on a loaded CI runner.
 func applySubscriptionTimings(sc *ServerConfig, ttr time.Duration) {
 	sc.Timings.ItemTTR = ttr
 	sc.Timings.LostJobCheckTimeout = 100 * time.Millisecond

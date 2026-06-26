@@ -70,6 +70,12 @@ export const actionHandlers = {
         viewModel.actionModalVisible(true);
     },
 
+    confirmResume: function (viewModel, job) {
+        jobToActionDetails(viewModel, job, 'resume', 'resume');
+        viewModel.actionModalHeader('Resume Suspended Commands');
+        viewModel.actionModalVisible(true);
+    },
+
     confirmKill: function (viewModel, job) {
         jobToActionDetails(viewModel, job, 'kill', 'kill');
         viewModel.actionModalHeader('Kill Running Commands');

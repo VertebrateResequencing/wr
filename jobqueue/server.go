@@ -325,7 +325,7 @@ type ServerStats struct {
 	Ready   int           // how many jobs are ready to begin running
 	Running int           // how many jobs are currently running
 	Buried  int           // how many jobs are no longer being processed because of seemingly permanent errors
-	ETC     time.Duration // how long until the the slowest of the currently running jobs is expected to complete
+	ETC     time.Duration // how long until the slowest of the currently running jobs is expected to complete
 }
 
 // rgToKeys is a thread-safe map of RepGroup to a PList of keys.
@@ -372,15 +372,6 @@ func (r *rgToKeys) Values(rg string) []string {
 	return plist.Values()
 }
 
-// jstateCount is the state count change we send to the status webpage; we are
-// representing the jobs moving from one state to another.
-type jstateCount struct {
-	RepGroup  string // "+all+" is the special group representing all live jobs across all RepGroups
-	FromState JobState
-	ToState   JobState
-	Count     int // num in FromState drop by this much, num in ToState rise by this much
-}
-
 // BadServer is the details of servers that have gone bad that we send to the
 // status webpage. Previously bad servers can also be sent if they become good
 // again, hence the IsBad boolean.
@@ -391,6 +382,18 @@ type BadServer struct {
 	Date    int64 // seconds since Unix epoch
 	IsBad   bool
 	Problem string
+}
+
+// jstateAbsolute is the idempotent absolute per-RepGroup status message we send
+// to the status webpage. Counts holds the current absolute number of jobs in
+// each JobState for the RepGroup (states with zero jobs are omitted). The client
+// replaces the RepGroup's displayed counts wholesale, so the message is
+// idempotent: applying it twice is a no-op and a dropped intermediate is
+// harmless because the next message overwrites it. "+all+" is the special group
+// representing all live jobs across all RepGroups.
+type jstateAbsolute struct {
+	RepGroup string
+	Counts   map[JobState]int
 }
 
 // SchedulerIssue is the details of a scheduler problem encountered that we send
@@ -413,7 +416,7 @@ type SchedulerAlerts struct {
 	BadServers []*BadServer
 }
 
-// sgroup represents a scheduler group
+// sgroup represents a scheduler group.
 type sgroup struct {
 	name     string
 	count    int
@@ -423,10 +426,11 @@ type sgroup struct {
 	sync.RWMutex
 }
 
-// clone creates a new copy of the sgroup with the given count
+// clone creates a new copy of the sgroup with the given count.
 func (s *sgroup) clone(count int) *sgroup {
 	s.RLock()
 	defer s.RUnlock()
+
 	return &sgroup{
 		name:     s.name,
 		count:    count,
@@ -436,10 +440,11 @@ func (s *sgroup) clone(count int) *sgroup {
 	}
 }
 
-// getCount is a thread-safe way of getting the current count
+// getCount is a thread-safe way of getting the current count.
 func (s *sgroup) getCount() int {
 	s.RLock()
 	defer s.RUnlock()
+
 	return s.count
 }
 
@@ -454,14 +459,17 @@ func (s *sgroup) decrement(drop int) int {
 	if drop < 1 {
 		return -1
 	}
+
 	s.Lock()
 	defer s.Unlock()
 
 	if s.skipped > 0 {
 		if drop <= s.skipped {
 			s.skipped -= drop
+
 			return -1
 		}
+
 		drop -= s.skipped
 		s.skipped = 0
 	}
@@ -492,6 +500,7 @@ type casterMember struct {
 	group *caster
 	In    chan interface{}
 	done  chan struct{}
+	send  sync.Mutex
 	once  sync.Once
 }
 
@@ -549,11 +558,7 @@ func (c *caster) Send(val interface{}) {
 	c.RUnlock()
 
 	for _, member := range members {
-		select {
-		case <-member.done:
-		case member.In <- val:
-		default:
-		}
+		member.trySend(val)
 	}
 }
 
@@ -571,6 +576,25 @@ func (c *caster) Close() {
 
 	for _, member := range members {
 		member.Close()
+	}
+}
+
+// trySend serialises sends to this member via send.Lock (so a concurrent Send
+// may block briefly), then performs a non-blocking send of val into the
+// member's 1-slot buffer, dropping val if the buffer is already full or the
+// member is done. The remaining casters (bad servers and scheduler issues) are
+// recoverable: a client re-requests "current", which re-broadcasts the latest
+// set, so a dropped update is harmless. The status counts no longer use the
+// caster at all; they use the idempotent absolute statusState, so there is no
+// overflow-to-resync conversion anywhere.
+func (cm *casterMember) trySend(val interface{}) {
+	cm.send.Lock()
+	defer cm.send.Unlock()
+
+	select {
+	case <-cm.done:
+	case cm.In <- val:
+	default:
 	}
 }
 
@@ -613,7 +637,7 @@ type Server struct {
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
-	statusCaster              *caster
+	statusState               *statusState
 	badServerCaster           *caster
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
@@ -740,6 +764,27 @@ func (s *Server) finishRAC() {
 func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.setRACPending()
 	s.q.TriggerReadyAddedCallback(ctx)
+}
+
+func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) ([]*Job, int) {
+	if !ignoreComplete {
+		return inputJobs, 0
+	}
+
+	filtered := make([]*Job, 0, len(inputJobs))
+	queuedDups := 0
+
+	for _, job := range inputJobs {
+		if _, err := s.q.Get(job.Key()); err == nil {
+			queuedDups++
+
+			continue
+		}
+
+		filtered = append(filtered, job)
+	}
+
+	return filtered, queuedDups
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -1217,6 +1262,39 @@ func updateJobRequirementsForRetry(
 
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
+}
+
+// seedStatusStateFromCompletedDB scans every RepGroup's completed jobs on disk
+// and seeds the absolute status state with their counts, so the status web UI
+// shows previously-completed work immediately on (re)start. Live job counts are
+// added afterwards by the queue-change callbacks of the recovery enqueue. It is
+// called once at startup before any client connects.
+func (s *Server) seedStatusStateFromCompletedDB() error {
+	const op = "seedStatusState"
+
+	repGroups, err := s.db.retrieveRepGroups()
+	if err != nil {
+		return Error{op, "", ErrDBError}
+	}
+
+	counts := make(map[string]map[JobState]int)
+
+	for _, repGroup := range repGroups {
+		complete, srerr, _ := s.getCompleteJobsByRepGroup(repGroup)
+		if srerr != "" {
+			return Error{op, "", srerr}
+		}
+
+		if len(complete) == 0 {
+			continue
+		}
+
+		counts[repGroup] = statusStateCounts(complete)
+	}
+
+	s.statusState.seed(counts)
+
+	return nil
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -1851,7 +1929,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		statusCaster:              newCaster(),
+		statusState:               newStatusState(),
 		badServerCaster:           newCaster(),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		clientSubscriptions:       make(map[string]*serverSubscription),
@@ -1868,6 +1946,17 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// if we're restarting from a state where there were incomplete jobs, we
 	// need to load those in to our queue now
 	s.createQueue(ctx)
+
+	// seed the absolute status state with the completed jobs already on disk
+	// from any prior run. This happens BEFORE the recovery enqueue below, whose
+	// queue-change callbacks add the live (ready/running/...) counts on top of
+	// these completed counts. Completed jobs never enter the queue, so they have
+	// no callback; the two sources are disjoint (completed jobs that are also
+	// live are excluded by the DB), so there is no double counting.
+	if err = s.seedStatusStateFromCompletedDB(); err != nil {
+		return nil, msg, token, err
+	}
+
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
 		return nil, msg, token, err
@@ -1996,12 +2085,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		}()
 		s.httpServer = srv
 
-		wgk3 := wg.Add(1)
-		go func() {
-			defer internal.LogPanic(ctx, "jobqueue web server status casting", true)
-			defer wg.Done(wgk3)
-			s.statusCaster.Broadcasting(0)
-		}()
 		wgk4 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server server casting", true)
@@ -2671,94 +2754,7 @@ func (s *Server) createQueue(ctx context.Context) {
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
-		var from, to JobState
-		if toQ == queue.SubQueueRemoved {
-			// things are removed from the queue if deleted or completed;
-			// disambiguate
-			to = JobStateDeleted
-			for _, inter := range data {
-				job := inter.(*Job)
-				job.RLock()
-				jState := job.State
-				job.RUnlock()
-				if jState == JobStateComplete {
-					to = JobStateComplete
-					break
-				}
-			}
-		} else {
-			to = subqueueToJobState[toQ]
-		}
-		from = subqueueToJobState[fromQ]
-
-		// calculate counts per RepGroup
-		groups := make(map[string]int)
-		groupsLost := make(map[string]int)
-		lost := 0
-		for _, inter := range data {
-			job := inter.(*Job)
-
-			// track lost jobs
-			if from == JobStateRunning {
-				job.RLock()
-				l := job.Lost
-				job.RUnlock()
-				if l {
-					lost++
-					groupsLost[job.RepGroup]++
-					continue
-				}
-			}
-
-			groups[job.RepGroup]++
-		}
-
-		// send out the counts
-		s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data) - lost})
-		for group, count := range groups {
-			s.statusCaster.Send(&jstateCount{group, from, to, count})
-		}
-
-		if lost > 0 {
-			s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
-			for group, count := range groupsLost {
-				s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
-			}
-		}
-
-		for _, inter := range data {
-			job := inter.(*Job) //nolint:errcheck,forcetypeassert
-			job.RLock()
-			jobKey := job.Key()
-			repGroup := job.RepGroup
-			job.RUnlock()
-
-			state, ok := subscriptionUpdateState(from, to)
-			if !ok {
-				continue
-			}
-
-			includeKeyStateChange := from == JobStateSuspended || to == JobStateSuspended
-			if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state, includeKeyStateChange) {
-				continue
-			}
-
-			if to == JobStateRunning {
-				waitForJobStartTime(job)
-			}
-
-			status, err := job.ToStatus()
-			if err != nil {
-				clog.Warn(ctx, "failed to convert job to status", "err", err)
-
-				continue
-			}
-
-			status.IsPushUpdate = true
-
-			started, ended := jobUpdateTimes(job)
-			s.enqueueSubscriptionUpdate(jobUpdateFromStatus(status, state, started, ended), includeKeyStateChange)
-		}
+		s.emitChangeCallbackTransition(ctx, fromQ, toQ, data)
 	})
 
 	// we set a callback for running items that hit their ttr because the
@@ -2786,12 +2782,26 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobKey := job.Key()
 				jobHost := job.Host
 				jobPID := job.Pid
+				repGroup := job.RepGroup
 				serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
 				job.Unlock()
 
-				if !wasLost {
-					s.enqueueSubscriptionUpdate(lostUpdate, false)
-				}
+				// since our changed callback won't be called, record this
+				// running -> lost transition through the single chokepoint: the
+				// absolute count always (the statusAllRepGroups aggregate is
+				// maintained internally), and the pre-built lost subscription
+				// update only if the job wasn't already lost. Both run after
+				// job.Unlock while queue.mutex is still held, preserving the
+				// strict leaf order queue.mutex -> statusState.mu and never
+				// nesting statusState.mu with the subscription locks.
+				s.emitJobTransition(
+					[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
+					func() {
+						if !wasLost {
+							s.enqueueSubscriptionUpdate(lostUpdate, false)
+						}
+					},
+				)
 
 				go func() {
 					confirmedDead := !killCalled && !s.recoveredRunningJobs[jobKey]
@@ -2822,11 +2832,6 @@ func (s *Server) createQueue(ctx context.Context) {
 					}
 				}()
 			}()
-
-			// since our changed callback won't be called, send out this
-			// transition from running to lost state
-			defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
-			defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
 
 			return queue.SubQueueRun
 		}
@@ -2903,6 +2908,10 @@ func (s *Server) createJobs(
 	s.racmutex.RLock()
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
+
+	var queuedDups int
+
+	inputJobs, queuedDups = s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
 
 	// create itemdefs for the jobs
 	limitGroups := make(map[string]*limiter.GroupData)
@@ -2991,6 +3000,7 @@ func (s *Server) createJobs(
 		} else {
 			// add the jobs to the in-memory job queue
 			added, dups, qerr = s.enqueueItems(ctx, itemdefs)
+			dups += queuedDups
 			added += replaced
 			if qerr != nil {
 				srerr = ErrInternalError
@@ -4380,7 +4390,6 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	}
 	s.wsmutex.Unlock()
 
-	s.statusCaster.Close()
 	s.badServerCaster.Close()
 	s.schedCaster.Close()
 

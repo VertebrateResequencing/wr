@@ -127,17 +127,21 @@ name to just the first letter, eg. -o c):
   "table" outputs aligned rows for the grouped jobs returned by the status
     query. As with details/json, --limit controls how many matching jobs can be
     shown from each status group. Columns can be customised with WR_STATUS_FORMAT
-    using FIELD:width entries.
+    using FIELD:width entries. Valid WR_STATUS_FORMAT FIELD names:
+` + statusTableFormatFieldsHelp() + `
+    Field names are case-insensitive and
+    '-'/'_' are ignored.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
     documentation for wr's REST API. If more than 1000 buried jobs get
 	returned, their STDOUT and STDERR are excluded.
 
-Note that when jobs run, wr only stores the head and tail of STDOUT and STDERR,
-and these are only kept and displayed for buried jobs. This should be all you
-need for debugging. If your command produces something you must keep on STDOUT
-or STDERR, your command should write that to a file itself with a normal shell
-redirect (eg. "mycmd > stdout.txt").
+Note that when jobs run, wr only stores the head and tail of STDOUT and STDERR.
+For running jobs, details and json output can show the latest live heartbeat
+tail. For buried jobs, details output shows the stored attempt output. This
+should be all you need for debugging. If your command produces something you
+must keep on STDOUT or STDERR, your command should write that to a file itself
+with a normal shell redirect (eg. "mycmd > stdout.txt").
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		set := countGetJobArgs()
@@ -470,7 +474,7 @@ redirect (eg. "mycmd > stdout.txt").
 				}
 
 				if job.FailReason != "" {
-					fmt.Printf("Previous problem: %s\n", job.FailReason)
+					fmt.Printf("Previous problem: %s\n", statusPreviousProblem(job))
 				}
 
 				var hostID string
@@ -503,11 +507,30 @@ redirect (eg. "mycmd > stdout.txt").
 						}
 					}
 				} else if job.State == jobqueue.JobStateRunning || job.State == jobqueue.JobStateLost {
-					fmt.Printf("Stats: { Wall time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", job.WallTime(), job.Host, job.HostIP, hostID, job.Pid)
-					//*** we should be able to peek at STDOUT & STDERR, and see
-					// Peak memory during a run... but is that possible/ too
-					// expensive? Maybe we could communicate directly with the
-					// runner?...
+					if job.PeakRAM > 0 || job.PeakDisk > 0 || job.CPUtime > 0 {
+						fmt.Printf("Stats: { Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; "+
+							"CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n",
+							job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
+					} else {
+						fmt.Printf("Stats: { Wall time: %s }\nHost: %s (IP: %s%s); Pid: %d\n",
+							job.WallTime(), job.Host, job.HostIP, hostID, job.Pid)
+					}
+
+					if showextra {
+						stdout, errs := job.StdOut()
+						if errs != nil {
+							warn("problem reading the cmd's STDOUT: %s", errs)
+						} else if stdout != "" {
+							fmt.Printf("StdOut:\n%s\n", stdout)
+						}
+
+						stderr, errs := job.StdErr()
+						if errs != nil {
+							warn("problem reading the cmd's STDERR: %s", errs)
+						} else if stderr != "" {
+							fmt.Printf("StdErr:\n%s\n", stderr)
+						}
+					}
 				} else if showextra {
 					// it's possible for jobs that got buried before they even
 					// ran to have details of the bury in their stderr
@@ -662,6 +685,37 @@ func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
 	}
 
 	return nil
+}
+
+func statusPreviousProblem(job *jobqueue.Job) string {
+	problem := job.FailReason
+	if statusShouldShowHighMemoryNote(job) {
+		problem += "; note: " + jobqueue.FailReasonRAM
+	}
+
+	return problem
+}
+
+func statusShouldShowHighMemoryNote(job *jobqueue.Job) bool {
+	if job == nil || job.FailReason == "" || job.FailReason == jobqueue.FailReasonRAM || !job.Exited {
+		return false
+	}
+
+	requiredRAM := statusRequiredRAMForProblem(job)
+
+	return requiredRAM > 0 && job.PeakRAM > requiredRAM
+}
+
+func statusRequiredRAMForProblem(job *jobqueue.Job) int {
+	if job.RequirementsOrig != nil && job.RequirementsOrig.RAM > 0 {
+		return job.RequirementsOrig.RAM
+	}
+
+	if job.Requirements == nil {
+		return 0
+	}
+
+	return job.Requirements.RAM
 }
 
 func canUseFastStatusOutput(format string) bool {

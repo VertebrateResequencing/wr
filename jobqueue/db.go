@@ -483,9 +483,10 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 // dups, we allow the same job to be looked up by multiple RepGroups. Likewise,
 // we store a lookup for the Job.DepGroups and .Dependencies.DepGroups().
 //
-// If ignoreAdded is true, jobs that have already completed will be ignored
-// along with those that have been added and the returned alreadyAdded value
-// will increase.
+// If ignoreAdded is true, jobs that have already completed will be ignored and
+// the returned alreadyAdded value will increase. Callers should filter jobs
+// known to be in the live queue before calling; live DB rows that did not reach
+// the queue are then recovered through the normal queue add path.
 //
 // While storing it also checks if any previously stored jobs depend on a dep
 // group that an input job is a member of. If not, jobsToQueue return value will
@@ -625,7 +626,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 		if ignoreAdded {
 			var added bool
-			added, err = db.checkIfAdded(keyStr)
+
+			added, err = db.checkIfComplete(keyStr)
 			if err != nil {
 				return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
 					jobsToQueue, jobsToUpdate, alreadyAdded, err
@@ -736,19 +738,18 @@ func (db *db) checkIfLive(key string) (bool, error) {
 	return isLive, err
 }
 
-// checkIfAdded tells you if a job with the given key is currently in the
-// complete bucket or the live bucket.
-func (db *db) checkIfAdded(key string) (bool, error) {
-	var isInDB bool
+// checkIfComplete tells you if a job with the given key is currently in the
+// complete bucket.
+func (db *db) checkIfComplete(key string) (bool, error) {
+	var isComplete bool
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
-		if newJobBucket.Get([]byte(key)) != nil || completeJobBucket.Get([]byte(key)) != nil {
-			isInDB = true
-		}
+		isComplete = completeJobBucket.Get([]byte(key)) != nil
+
 		return nil
 	})
-	return isInDB, err
+
+	return isComplete, err
 }
 
 // archiveJob deletes a job from the live bucket, and adds a new version of it

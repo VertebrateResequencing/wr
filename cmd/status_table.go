@@ -38,6 +38,8 @@ import (
 
 const (
 	statusFormatEnv                  = "WR_STATUS_FORMAT"
+	statusHelpIndent                 = "    "
+	statusHelpMaxColumns             = 80
 	defaultStatusTableColumns        = "command:36 id:32 status:12 attempts:8 host:16 reqgroup:18 count:5"
 	statusTableColumnSeparator       = "  "
 	statusTableDefaultTruncateMarker = "..."
@@ -61,6 +63,11 @@ type statusTableField struct {
 	header string
 	right  bool
 	value  func(statusTableRow) string
+}
+
+type statusTableFieldOption struct {
+	names []string
+	field statusTableField
 }
 
 var (
@@ -98,24 +105,21 @@ var (
 		right:  true,
 		value:  func(row statusTableRow) string { return strconv.Itoa(row.count) },
 	}
-	statusTableFieldsByName = map[string]statusTableField{
-		"command":                  statusTableCommandField,
-		"cmd":                      statusTableCommandField,
-		"id":                       statusTableIDField,
-		"jobid":                    statusTableIDField,
-		"key":                      statusTableIDField,
-		statusTableStatusFieldName: statusTableStatusField,
-		"state":                    statusTableStatusField,
-		"attempts":                 statusTableAttemptsField,
-		"tries":                    statusTableAttemptsField,
-		"host":                     statusTableHostField,
-		"reqgroup":                 statusTableReqGroupField,
-		"requirements":             statusTableReqGroupField,
-		"requirementsgroup":        statusTableReqGroupField,
-		"count":                    statusTableCountField,
-		"similar":                  statusTableCountField,
+	statusTableFieldOptions = []statusTableFieldOption{
+		{names: []string{"command", "cmd"}, field: statusTableCommandField},
+		{names: []string{"id", "jobid", "key"}, field: statusTableIDField},
+		{names: []string{statusTableStatusFieldName, "state"}, field: statusTableStatusField},
+		{names: []string{"attempts", "tries"}, field: statusTableAttemptsField},
+		{names: []string{"host"}, field: statusTableHostField},
+		{names: []string{"reqgroup", "requirements", "requirementsgroup"}, field: statusTableReqGroupField},
+		{names: []string{"count", "similar"}, field: statusTableCountField},
 	}
+	statusTableFieldsByName = newStatusTableFieldsByName(statusTableFieldOptions)
 )
+
+func statusTableFormatFieldsHelp() string {
+	return wrapStatusTableFieldHelpGroups(statusTableFieldHelpGroups())
+}
 
 func statusOutputShowsAlerts(format string) bool {
 	switch format {
@@ -217,6 +221,18 @@ func statusTableFieldForName(name string) (statusTableField, error) {
 	}
 
 	return field, nil
+}
+
+func newStatusTableFieldsByName(options []statusTableFieldOption) map[string]statusTableField {
+	fields := make(map[string]statusTableField)
+
+	for _, option := range options {
+		for _, name := range option.names {
+			fields[normaliseStatusTableFieldName(name)] = option.field
+		}
+	}
+
+	return fields
 }
 
 type statusTableGroupKey struct {
@@ -330,6 +346,52 @@ func fitStatusTableValue(value string, width int) string {
 	}
 
 	return string(runes[:width-len(truncateMarkerRunes)]) + statusTableDefaultTruncateMarker
+}
+
+func wrapStatusTableFieldHelpGroups(groups []string) string {
+	lines := make([]string, 0, len(groups))
+	line := statusHelpIndent
+
+	for n, group := range groups {
+		nextLine := appendStatusTableFieldHelpGroup(line, group, n == len(groups)-1)
+		if line != statusHelpIndent && len(nextLine) > statusHelpMaxColumns {
+			lines = append(lines, line)
+			line = appendStatusTableFieldHelpGroup(statusHelpIndent, group, n == len(groups)-1)
+
+			continue
+		}
+
+		line = nextLine
+	}
+
+	if line != statusHelpIndent {
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func appendStatusTableFieldHelpGroup(line, group string, last bool) string {
+	separator := " "
+	if line == statusHelpIndent {
+		separator = ""
+	}
+
+	suffix := ","
+	if last {
+		suffix = "."
+	}
+
+	return line + separator + group + suffix
+}
+
+func statusTableFieldHelpGroups() []string {
+	groups := make([]string, 0, len(statusTableFieldOptions))
+	for _, option := range statusTableFieldOptions {
+		groups = append(groups, strings.Join(option.names, "/"))
+	}
+
+	return groups
 }
 
 func parseStatusTableColumnWidth(widthText string) (int, error) {
