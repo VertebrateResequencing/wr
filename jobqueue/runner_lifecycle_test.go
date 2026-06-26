@@ -119,7 +119,9 @@ func TestJobqueueRunnerLostJobs(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			waitForStartedJobPID := func() int {
-				limit := time.After(30 * time.Second)
+				// generous bound for a server-spawned runner to start its job under
+				// a CPU-starved box (see runnerStartWait); free on success.
+				limit := time.After(runnerStartWait)
 
 				ticker := time.NewTicker(50 * time.Millisecond)
 				defer ticker.Stop()
@@ -192,7 +194,13 @@ func TestJobqueueRunnerLostJobs(t *testing.T) {
 			go func() {
 				var lostTime time.Time
 
-				limit := time.After(8 * time.Second)
+				// generous bound: the server must detect the killed job as lost
+				// (~TTR after its last touch) and then bury it; under a CPU-starved
+				// box that server-side detection can lag, so allow plenty of
+				// headroom. Free on success - returns the instant the job is buried.
+				// timeToBury below is measured from lostTime, not this limit, so the
+				// retry-timing assertion is unaffected.
+				limit := time.After(runnerStartWait)
 				ticker := time.NewTicker(lostStatePollInterval)
 				markLostJobSeen := func() bool {
 					jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateLost, false, false)
@@ -308,7 +316,10 @@ func TestJobqueueRunnerResourceLearning(t *testing.T) {
 				So(already, ShouldEqual, 0)
 
 				waitForCompleteRepGroups := func(repGroups ...string) bool {
-					return pollUntil(func() bool {
+					// generous bound: these jobs run via server-spawned runners,
+					// which can lag under a CPU-starved box (see runnerStartWait);
+					// free on success - returns as soon as all are complete.
+					return pollUntilFor(runnerStartWait, func() bool {
 						for _, repGroup := range repGroups {
 							complete, errj := jq.GetByRepGroup(repGroup, false, 0, JobStateComplete, false, false)
 							if errj != nil || len(complete) != 1 {
@@ -428,7 +439,12 @@ func TestJobqueueRunnerKillRequests(t *testing.T) {
 				started := make(chan bool, 1)
 
 				go func() {
-					limit := time.After(10 * time.Second)
+					// generous bound: the server spawns runners with a 1s reserve
+					// timeout, so a CPU-starved runner can give up before reserving
+					// and only retry on the next runner-availability check; wait
+					// long enough to span several such cycles. Free on success - this
+					// returns the instant the job reaches Running.
+					limit := time.After(runnerStartWait)
 					ticker := time.NewTicker(50 * time.Millisecond)
 
 					for {
@@ -468,7 +484,10 @@ func TestJobqueueRunnerKillRequests(t *testing.T) {
 				killed := make(chan bool, 1)
 
 				go func() {
-					limit := time.After(40 * time.Second)
+					// generous bound: after Kill, the job is buried on the runner's
+					// next Touch, which can lag under a CPU-starved box (see
+					// runnerStartWait). Free on success.
+					limit := time.After(runnerStartWait)
 					ticker := time.NewTicker(50 * time.Millisecond)
 
 					for {
@@ -551,7 +570,10 @@ func TestJobqueueRunnerAutomaticExecution(t *testing.T) {
 				So(inserts, ShouldEqual, count)
 				So(already, ShouldEqual, 0)
 
-				So(waitUntilNoRunners(ctx, fixture.server, 30*time.Second), ShouldBeTrue)
+				// generous bound for the batch of server-spawned runners to finish
+				// all the jobs under a CPU-starved box (see runnerStartWait); free
+				// on the success path - returns the instant no runners remain.
+				So(waitUntilNoRunners(ctx, fixture.server, runnerStartWait), ShouldBeTrue)
 
 				jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, "", false, false)
 				So(err, ShouldBeNil)
@@ -657,7 +679,9 @@ func TestJobqueueRunnerFailureRetry(t *testing.T) {
 			hadRunner := make(chan bool, 1)
 
 			go func() {
-				limit := time.After(3 * time.Second)
+				// generous bound for the server to spawn a runner under a
+				// CPU-starved box (see runnerStartWait); free on success.
+				limit := time.After(runnerStartWait)
 				ticker := time.NewTicker(100 * time.Millisecond)
 
 				for {
@@ -686,18 +710,20 @@ func TestJobqueueRunnerFailureRetry(t *testing.T) {
 
 			// The failed runner releases its job back to ready, and the manager
 			// keeps retrying; poll for these instead of assuming fixed timings,
-			// which flake when the box is under heavy load.
-			So(pollUntil(func() bool {
+			// which flake when the box is under heavy load. These all gate on
+			// server-spawned runners failing/re-spawning/exiting, so use the
+			// generous runnerStartWait bound (free on the success path).
+			So(pollUntilFor(runnerStartWait, func() bool {
 				jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateReady, false, false)
 
 				return err == nil && len(jobs) == 1
 			}), ShouldBeTrue)
 
-			So(pollUntil(func() bool { return runnerCheck() >= 2 }), ShouldBeTrue)
+			So(pollUntilFor(runnerStartWait, func() bool { return runnerCheck() >= 2 }), ShouldBeTrue)
 
 			err = fixture.server.Drain(ctx)
 			So(err, ShouldBeNil)
-			So(pollUntil(func() bool { return !fixture.server.HasRunners(ctx) }), ShouldBeTrue)
+			So(pollUntilFor(runnerStartWait, func() bool { return !fixture.server.HasRunners(ctx) }), ShouldBeTrue)
 		})
 	})
 }

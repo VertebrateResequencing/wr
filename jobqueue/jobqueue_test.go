@@ -69,8 +69,31 @@ import (
 )
 
 const (
-	localSchedulerName  = "local"
-	maxSpawnTime        = 240 * time.Second
+	localSchedulerName = "local"
+	maxSpawnTime       = 240 * time.Second
+	// runnerStartWait bounds how long tests wait for a server-spawned runner
+	// subprocess to actually start its job (produce a start marker, reach
+	// JobStateRunning, etc). The server spawns runners with a short reserve
+	// timeout (the local scheduler's ReserveTimeout is 1s), so a runner that is
+	// CPU-starved on a heavily-oversubscribed box (e.g. CI's 4-core
+	// ubuntu-latest running ~7 test lanes at once) can give up before reserving
+	// its job; the server then re-spawns it on its next runner-availability
+	// check. This bound must therefore span several of those re-check cycles. It
+	// is free on the success path: every waiter that uses it polls and returns
+	// the instant the condition is met, so a generous limit only helps the
+	// contended case and never slows a passing run. Keep it generous-but-bounded
+	// so a genuinely stuck runner still fails in a few minutes.
+	runnerStartWait = 3 * time.Minute
+	// daemonBackstopWait bounds how long a --servermode test daemon
+	// (runServer) keeps running before self-stopping as a backstop against a
+	// leaked subprocess. It only fires if a test abandoned the daemon without
+	// stopping it, so it must outlast a test that is legitimately still running
+	// under CPU starvation: TestJobqueueSignal drives a multi-step
+	// kill/restart/recover sequence whose individual waits are each bounded by
+	// runnerStartWait, so this is a multiple of runnerStartWait to span the whole
+	// sequence with headroom. It is free on the success path (the test stops the
+	// daemon itself, so Block() returns long before this fires).
+	daemonBackstopWait  = 3 * runnerStartWait
 	serverRC            = `echo %s %s %s %s %d %d`
 	testCwd             = "/tmp"
 	manuallyAdded       = "manually_added"
@@ -1179,6 +1202,13 @@ func runServer(ctx context.Context) {
 	// these signal-handling tests crash and restart the server; a short retry
 	// wait makes the runner reconnect to the new server promptly.
 	serverConfig.Timings.RetryWait = 1 * time.Second
+	// Runners are spawned with a 1s reserve timeout, so a CPU-starved runner on a
+	// heavily-oversubscribed box can give up before reserving its job; the server
+	// only re-spawns it on its next runner-availability check, which defaults to a
+	// full minute. Shorten that here (consistent with the fast cadence the other
+	// timings above already set) so a missed reserve retries within seconds rather
+	// than stalling the all-cores recover job's start past the test's wait.
+	serverConfig.Timings.CheckRunnerTime = 1 * time.Second
 
 	server, msg, _, err := serve(ctx, serverConfig)
 	if err != nil {
@@ -1190,11 +1220,23 @@ func runServer(ctx context.Context) {
 		clog.Warn(ctx, msg)
 	}
 
-	// we'll Block() later, but just in case the parent tests bomb out
-	// without killing us, we'll stop after 20s
+	// we'll Block() later, but just in case the parent tests bomb out without
+	// killing us, we self-stop as a backstop so a leaked --servermode daemon
+	// subprocess can't linger forever. The normal path always stops us via
+	// Block() returning (the test kills/crashes/stops the server itself), so this
+	// timer only fires when a test genuinely abandoned us. It must therefore be
+	// generous enough to outlast a test that is legitimately still running under
+	// CPU starvation (where server-spawned runners can take up to runnerStartWait
+	// to start, and a test like TestJobqueueSignal then drives a whole
+	// kill/restart/recover sequence each step of which waits up to
+	// runnerStartWait): a bound that's too short kills the server mid-test,
+	// killing its runners, so the markers those runners would touch never appear.
+	// daemonBackstopWait is a multiple of runnerStartWait to comfortably span the
+	// full sequence; it stays free on the success path because Block() returns
+	// first.
 	go func() {
-		<-time.After(20 * time.Second)
-		clog.Warn(ctx, "test daemon stopping after 20s")
+		<-time.After(daemonBackstopWait)
+		clog.Warn(ctx, "test daemon stopping after backstop timeout", "after", daemonBackstopWait)
 		server.Stop(ctx, true)
 	}()
 
@@ -1696,8 +1738,8 @@ func TestJobqueueSignal(t *testing.T) {
 			// wait until both jobs are actually running (their start markers
 			// appear) instead of sleeping a fixed time, then get the pids of the
 			// runners the server spawned
-			So(waitUntilFileExists(recoverStarted, 60), ShouldBeTrue)
-			So(waitUntilFileExists(lostStarted, 60), ShouldBeTrue)
+			So(waitUntilFileExists(recoverStarted), ShouldBeTrue)
+			So(waitUntilFileExists(lostStarted), ShouldBeTrue)
 
 			processes, err := process.Processes()
 			So(err, ShouldBeNil)
@@ -1811,8 +1853,10 @@ func TestJobqueueSignal(t *testing.T) {
 			}()
 
 			// the lost job's runner was killed mid-run, so once the restarted server
-			// notices it must come up lost (poll, since detection isn't instant)
-			job2 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd2}, JobStateLost, 60)
+			// notices it must come up lost (poll, since detection isn't instant;
+			// generous bound for a CPU-starved box, see runnerStartWait - free on
+			// the success path, returns as soon as the state matches)
+			job2 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd2}, JobStateLost, int(runnerStartWait/time.Second))
 			So(job2, ShouldNotBeNil)
 			So(job2.Cmd, ShouldEqual, cmd2)
 			So(job2.State, ShouldEqual, JobStateLost)
@@ -1821,14 +1865,14 @@ func TestJobqueueSignal(t *testing.T) {
 			// complete, proving a surviving runner finishes its job across a restart.
 			So(os.WriteFile(recoverRelease, nil, 0600), ShouldBeNil)
 
-			job := waitUntilJobState(jq2, &JobEssence{Cmd: cmd}, JobStateComplete, 60)
+			job := waitUntilJobState(jq2, &JobEssence{Cmd: cmd}, JobStateComplete, int(runnerStartWait/time.Second))
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateComplete)
 
 			// only now that the recover job freed the CPUs can the waiting job run; it
 			// must have started on or after the recover job ended.
-			job3 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd3}, JobStateComplete, 60)
+			job3 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd3}, JobStateComplete, int(runnerStartWait/time.Second))
 			So(job3, ShouldNotBeNil)
 			So(job3.Cmd, ShouldEqual, cmd3)
 			So(job3.State, ShouldEqual, JobStateComplete)
@@ -9178,8 +9222,19 @@ func silenceExpectedKillRequestedLogs(t *testing.T) {
 // pollUntil polls cond every 20ms for up to 30s, returning true as soon as cond
 // returns true and false on timeout. Used to wait for an async count/state to
 // reach an expected value instead of sleeping a fixed (load-sensitive) time.
+// Use pollUntilFor with runnerStartWait when the condition depends on a
+// server-spawned runner starting/finishing, which can lag badly under CPU
+// starvation.
 func pollUntil(cond func() bool) bool {
-	limit := time.After(30 * time.Second)
+	return pollUntilFor(30*time.Second, cond)
+}
+
+// pollUntilFor polls cond every 20ms for up to maxWait, returning true as soon
+// as cond returns true and false on timeout. A generous maxWait (e.g.
+// runnerStartWait) is free on the success path because it returns the instant
+// cond holds; it only helps when the awaited server-spawned runner is starved.
+func pollUntilFor(maxWait time.Duration, cond func() bool) bool {
+	limit := time.After(maxWait)
 
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -9197,12 +9252,14 @@ func pollUntil(cond func() bool) bool {
 	}
 }
 
-// waitUntilFileExists polls for up to maxWait seconds for path to exist,
+// waitUntilFileExists polls for up to runnerStartWait for path to exist,
 // returning true as soon as it does and false on timeout. Used to wait for a
-// test job to actually start (the job touches a marker file) without relying on
-// a fixed sleep, which is unreliable under heavy parallel-test load.
-func waitUntilFileExists(path string, maxWait int) bool {
-	limit := time.After(time.Duration(maxWait) * time.Second)
+// test job spawned by a server runner to actually start (the job touches a
+// marker file) without relying on a fixed sleep, which is unreliable under heavy
+// parallel-test load; see runnerStartWait for why the bound is generous and why
+// it stays free on the success path.
+func waitUntilFileExists(path string) bool {
+	limit := time.After(runnerStartWait)
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()

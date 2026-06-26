@@ -241,7 +241,11 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				var simultaneous int
 
 				go func() {
-					limit := time.After(30 * time.Second)
+					// generous bound for the batch of server-spawned runners to run
+					// all the jobs under a CPU-starved box (see runnerStartWait); the
+					// loop returns the instant no runners remain, so it is free on
+					// the success path.
+					limit := time.After(runnerStartWait)
 					ticker := time.NewTicker(500 * time.Millisecond)
 
 					for {
@@ -343,7 +347,11 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				var simultaneous int
 
 				go func() {
-					limit := time.After(30 * time.Second)
+					// generous bound for the batch of server-spawned runners to run
+					// all the jobs under a CPU-starved box (see runnerStartWait); the
+					// loop returns the instant no runners remain, so it is free on
+					// the success path.
+					limit := time.After(runnerStartWait)
 					ticker := time.NewTicker(500 * time.Millisecond)
 
 					for {
@@ -418,7 +426,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				job, err := waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 1 && sleep 2"}, 30*time.Second)
+				job, err := waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 1 && sleep 2"}, runnerStartWait)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -429,7 +437,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 2 && sleep 2"}, 30*time.Second)
+				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 2 && sleep 2"}, runnerStartWait)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
@@ -440,13 +448,13 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 3 && sleep 2"}, 30*time.Second)
+				job, err = waitForJobRunningOrDone(jq, &JobEssence{Cmd: "echo 3 && sleep 2"}, runnerStartWait)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.State, ShouldEqual, JobStateRunning)
 
 				// let them all complete
-				So(waitUntilNoRunners(ctx, server, 30*time.Second), ShouldBeTrue)
+				So(waitUntilNoRunners(ctx, server, runnerStartWait), ShouldBeTrue)
 			})
 		} else {
 			SkipConvey("Skipping a test that needs at least 3 cores", func() {})
@@ -485,7 +493,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				So(waitUntilFileExists(started1, 30), ShouldBeTrue)
+				So(waitUntilFileExists(started1), ShouldBeTrue)
 
 				jobs = []*Job{{
 					Cmd:          cmd2,
@@ -501,10 +509,10 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				So(waitUntilFileExists(started2, 30), ShouldBeTrue)
-				So(waitUntilFileExists(done1, 30), ShouldBeTrue)
-				So(waitUntilFileExists(done2, 30), ShouldBeTrue)
-				So(waitUntilNoRunners(ctx, server, 30*time.Second), ShouldBeTrue)
+				So(waitUntilFileExists(started2), ShouldBeTrue)
+				So(waitUntilFileExists(done1), ShouldBeTrue)
+				So(waitUntilFileExists(done2), ShouldBeTrue)
+				So(waitUntilNoRunners(ctx, server, runnerStartWait), ShouldBeTrue)
 			})
 		}
 
