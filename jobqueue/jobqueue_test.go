@@ -676,11 +676,17 @@ func TestSubscriptionStateChangeEvents(t *testing.T) {
 	})
 
 	Convey("SetChangedCallback emits browser and Go push updates from one per-job status loop", t, func() {
-		guard, err := changedCallbackStatusGuardForFile("server.go")
+		// The change callback now delegates to the single emitJobTransition
+		// chokepoint, so its per-job status loop lives in the change-callback
+		// subscription helpers (jobtransition.go) rather than inline in
+		// createQueue. This guard still pins the prior fix's behavioural
+		// guarantee: exactly one SetChangedCallback, exactly one per-job status
+		// loop converting each job exactly once, that single status reused for
+		// the Go subscription update (not separately written to the browser).
+		guard, err := changedCallbackStatusGuardForFiles("server.go", "jobtransition.go")
 		So(err, ShouldBeNil)
 
 		So(guard.callbackCount, ShouldEqual, 1)
-		So(guard.nonBuiltinDataArgumentCalls, ShouldEqual, 0)
 		So(guard.pushStatusLoopCount, ShouldEqual, 1)
 		So(guard.subscriptionOnlyDataLoops, ShouldEqual, 0)
 		So(guard.pushStatusLoop.statusFromToStatusAssignments, ShouldEqual, 1)
@@ -705,11 +711,10 @@ const (
 var errChangedCallbackCreateQueueNotFound = errors.New("createQueue function not found")
 
 type changedCallbackStatusGuard struct {
-	callbackCount               int
-	nonBuiltinDataArgumentCalls int
-	pushStatusLoop              changedCallbackDataLoopGuard
-	pushStatusLoopCount         int
-	subscriptionOnlyDataLoops   int
+	callbackCount             int
+	pushStatusLoop            changedCallbackDataLoopGuard
+	pushStatusLoopCount       int
+	subscriptionOnlyDataLoops int
 }
 
 type changedCallbackDataLoopGuard struct {
@@ -720,47 +725,76 @@ type changedCallbackDataLoopGuard struct {
 	writesStatus                  bool
 }
 
-func changedCallbackStatusGuardForFile(path string) (changedCallbackStatusGuard, error) {
+// changedCallbackStatusGuardForFiles parses the given source files and verifies
+// the change-callback's status-emission structure across them. Since the change
+// callback now delegates to the emitJobTransition chokepoint, the per-job status
+// loop lives in a change-callback subscription helper rather than inline in
+// createQueue, so the loop is sought across every function in every given file.
+func changedCallbackStatusGuardForFiles(paths ...string) (changedCallbackStatusGuard, error) {
 	fileSet := token.NewFileSet()
 
-	parsed, err := parser.ParseFile(fileSet, path, nil, 0)
-	if err != nil {
-		return changedCallbackStatusGuard{}, err
+	files := make([]*ast.File, 0, len(paths))
+	for _, path := range paths {
+		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+		if err != nil {
+			return changedCallbackStatusGuard{}, err
+		}
+
+		files = append(files, parsed)
 	}
 
-	createQueue := findFuncDecl(parsed, changedCallbackCreateQueue)
+	createQueue := findFuncDeclInFiles(files, changedCallbackCreateQueue)
 	if createQueue == nil {
 		return changedCallbackStatusGuard{}, errChangedCallbackCreateQueueNotFound
 	}
 
 	guard := changedCallbackStatusGuard{}
+	guard.callbackCount = countSetChangedCallbacks(createQueue)
 
-	ast.Inspect(createQueue.Body, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok || !isCallNamed(call, changedCallbackMethodName) {
-			return true
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			function, ok := decl.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+
+			inspectChangedCallbackBody(function.Body, &guard)
 		}
-
-		guard.callbackCount++
-
-		callback, ok := firstFuncLiteralArg(call)
-		if ok {
-			inspectChangedCallbackBody(callback.Body, &guard)
-		}
-
-		return false
-	})
+	}
 
 	return guard, nil
 }
 
-func inspectChangedCallbackBody(body *ast.BlockStmt, guard *changedCallbackStatusGuard) {
-	ast.Inspect(body, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if ok && callReceivesDirectIdent(call, changedCallbackDataIdent) && !isCallNamed(call, "len") {
-			guard.nonBuiltinDataArgumentCalls++
+// countSetChangedCallbacks returns how many SetChangedCallback calls appear in
+// the given function.
+func countSetChangedCallbacks(function *ast.FuncDecl) int {
+	count := 0
+
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok && isCallNamed(call, changedCallbackMethodName) {
+			count++
 		}
 
+		return true
+	})
+
+	return count
+}
+
+// findFuncDeclInFiles returns the first top-level function with the given name
+// across the provided files.
+func findFuncDeclInFiles(files []*ast.File, name string) *ast.FuncDecl {
+	for _, file := range files {
+		if function := findFuncDecl(file, name); function != nil {
+			return function
+		}
+	}
+
+	return nil
+}
+
+func inspectChangedCallbackBody(body *ast.BlockStmt, guard *changedCallbackStatusGuard) {
+	ast.Inspect(body, func(node ast.Node) bool {
 		loop, ok := node.(*ast.RangeStmt)
 		if !ok || !isIdent(loop.X, changedCallbackDataIdent) {
 			return true
@@ -827,16 +861,6 @@ func findFuncDecl(file *ast.File, name string) *ast.FuncDecl {
 	return nil
 }
 
-func firstFuncLiteralArg(call *ast.CallExpr) (*ast.FuncLit, bool) {
-	if len(call.Args) == 0 {
-		return nil, false
-	}
-
-	literal, ok := call.Args[0].(*ast.FuncLit)
-
-	return literal, ok
-}
-
 func assignsStatusFromToStatus(assign *ast.AssignStmt) bool {
 	if !assignLHSContainsIdent(assign, changedCallbackStatusIdent) {
 		return false
@@ -854,16 +878,6 @@ func assignsStatusFromToStatus(assign *ast.AssignStmt) bool {
 func assignLHSContainsIdent(assign *ast.AssignStmt, name string) bool {
 	for _, expr := range assign.Lhs {
 		if isIdent(expr, name) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func callReceivesDirectIdent(call *ast.CallExpr, name string) bool {
-	for _, arg := range call.Args {
-		if isIdent(arg, name) {
 			return true
 		}
 	}

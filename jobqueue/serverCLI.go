@@ -757,21 +757,38 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
-					} else if lost {
+					}
+
+					var counts []countContribution
+
+					if srerr == "" && lost {
 						job.Lock()
 						job.Lost = false
 						job.EndTime = time.Time{}
 						repGroup := job.RepGroup
 						job.Unlock()
 
-						// since our changed callback won't be called, record this
-						// transition from lost to running state in the absolute
-						// status state (the statusAllRepGroups aggregate is
+						// our changed callback won't be called, so this lost ->
+						// running transition's absolute count is recorded via the
+						// chokepoint below (the statusAllRepGroups aggregate is
 						// maintained internally).
-						s.statusState.applyTransition(JobStateLost, JobStateRunning, repGroup, 1)
+						counts = append(counts, countContribution{
+							from: JobStateLost, to: JobStateRunning, repGroup: repGroup, n: 1,
+						})
 					}
 
-					if srerr == "" && s.liveJTouchEnabled() && liveSnapshotPresent(cr.JobEndState) {
+					// route both projections through the single chokepoint: the
+					// lost -> running count (if recovering a lost job) and the
+					// live subscription update (if a snapshot is present). The two
+					// are independently conditioned, but pairing them here makes
+					// it impossible to record one without considering the other.
+					// No lock is held here (q.Touch released queue.mutex), and the
+					// emitter helpers manage their own job/subscription locking.
+					s.emitJobTransition(counts, func() {
+						if srerr != "" || !s.liveJTouchEnabled() || !liveSnapshotPresent(cr.JobEndState) {
+							return
+						}
+
 						applyLiveSnapshot(job, cr.JobEndState)
 
 						update, err := jobUpdateFromLiveJob(job)
@@ -780,7 +797,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						} else {
 							s.enqueueSubscriptionUpdate(update, false)
 						}
-					}
+					})
 				}
 				sr = &serverResponse{KillCalled: killCalled}
 			}

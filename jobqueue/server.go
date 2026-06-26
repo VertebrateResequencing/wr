@@ -325,7 +325,7 @@ type ServerStats struct {
 	Ready   int           // how many jobs are ready to begin running
 	Running int           // how many jobs are currently running
 	Buried  int           // how many jobs are no longer being processed because of seemingly permanent errors
-	ETC     time.Duration // how long until the the slowest of the currently running jobs is expected to complete
+	ETC     time.Duration // how long until the slowest of the currently running jobs is expected to complete
 }
 
 // rgToKeys is a thread-safe map of RepGroup to a PList of keys.
@@ -416,7 +416,7 @@ type SchedulerAlerts struct {
 	BadServers []*BadServer
 }
 
-// sgroup represents a scheduler group
+// sgroup represents a scheduler group.
 type sgroup struct {
 	name     string
 	count    int
@@ -426,10 +426,11 @@ type sgroup struct {
 	sync.RWMutex
 }
 
-// clone creates a new copy of the sgroup with the given count
+// clone creates a new copy of the sgroup with the given count.
 func (s *sgroup) clone(count int) *sgroup {
 	s.RLock()
 	defer s.RUnlock()
+
 	return &sgroup{
 		name:     s.name,
 		count:    count,
@@ -439,10 +440,11 @@ func (s *sgroup) clone(count int) *sgroup {
 	}
 }
 
-// getCount is a thread-safe way of getting the current count
+// getCount is a thread-safe way of getting the current count.
 func (s *sgroup) getCount() int {
 	s.RLock()
 	defer s.RUnlock()
+
 	return s.count
 }
 
@@ -457,14 +459,17 @@ func (s *sgroup) decrement(drop int) int {
 	if drop < 1 {
 		return -1
 	}
+
 	s.Lock()
 	defer s.Unlock()
 
 	if s.skipped > 0 {
 		if drop <= s.skipped {
 			s.skipped -= drop
+
 			return -1
 		}
+
 		drop -= s.skipped
 		s.skipped = 0
 	}
@@ -2747,90 +2752,7 @@ func (s *Server) createQueue(ctx context.Context) {
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
-		var from, to JobState
-		if toQ == queue.SubQueueRemoved {
-			// things are removed from the queue if deleted or completed;
-			// disambiguate
-			to = JobStateDeleted
-			for _, inter := range data {
-				job := inter.(*Job)
-				job.RLock()
-				jState := job.State
-				job.RUnlock()
-				if jState == JobStateComplete {
-					to = JobStateComplete
-					break
-				}
-			}
-		} else {
-			to = subqueueToJobState[toQ]
-		}
-		from = subqueueToJobState[fromQ]
-
-		// calculate counts per RepGroup
-		groups := make(map[string]int)
-		groupsLost := make(map[string]int)
-		for _, inter := range data {
-			job := inter.(*Job)
-
-			// track lost jobs
-			if from == JobStateRunning {
-				job.RLock()
-				l := job.Lost
-				job.RUnlock()
-				if l {
-					groupsLost[job.RepGroup]++
-					continue
-				}
-			}
-
-			groups[job.RepGroup]++
-		}
-
-		// update the authoritative absolute status state per RepGroup; the
-		// statusAllRepGroups aggregate is maintained inside applyTransition. Lost
-		// jobs transition from the lost state, not the running state.
-		for group, count := range groups {
-			s.statusState.applyTransition(from, to, group, count)
-		}
-
-		for group, count := range groupsLost {
-			s.statusState.applyTransition(JobStateLost, to, group, count)
-		}
-
-		for _, inter := range data {
-			job := inter.(*Job) //nolint:errcheck,forcetypeassert
-			job.RLock()
-			jobKey := job.Key()
-			repGroup := job.RepGroup
-			job.RUnlock()
-
-			state, ok := subscriptionUpdateState(from, to)
-			if !ok {
-				continue
-			}
-
-			includeKeyStateChange := from == JobStateSuspended || to == JobStateSuspended
-			if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state, includeKeyStateChange) {
-				continue
-			}
-
-			if to == JobStateRunning {
-				waitForJobStartTime(job)
-			}
-
-			status, err := job.ToStatus()
-			if err != nil {
-				clog.Warn(ctx, "failed to convert job to status", "err", err)
-
-				continue
-			}
-
-			status.IsPushUpdate = true
-
-			started, ended := jobUpdateTimes(job)
-			s.enqueueSubscriptionUpdate(jobUpdateFromStatus(status, state, started, ended), includeKeyStateChange)
-		}
+		s.emitChangeCallbackTransition(ctx, fromQ, toQ, data)
 	})
 
 	// we set a callback for running items that hit their ttr because the
@@ -2858,12 +2780,26 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobKey := job.Key()
 				jobHost := job.Host
 				jobPID := job.Pid
+				repGroup := job.RepGroup
 				serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
 				job.Unlock()
 
-				if !wasLost {
-					s.enqueueSubscriptionUpdate(lostUpdate, false)
-				}
+				// since our changed callback won't be called, record this
+				// running -> lost transition through the single chokepoint: the
+				// absolute count always (the statusAllRepGroups aggregate is
+				// maintained internally), and the pre-built lost subscription
+				// update only if the job wasn't already lost. Both run after
+				// job.Unlock while queue.mutex is still held, preserving the
+				// strict leaf order queue.mutex -> statusState.mu and never
+				// nesting statusState.mu with the subscription locks.
+				s.emitJobTransition(
+					[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
+					func() {
+						if !wasLost {
+							s.enqueueSubscriptionUpdate(lostUpdate, false)
+						}
+					},
+				)
 
 				go func() {
 					confirmedDead := !killCalled && !s.recoveredRunningJobs[jobKey]
@@ -2894,13 +2830,6 @@ func (s *Server) createQueue(ctx context.Context) {
 					}
 				}()
 			}()
-
-			// since our changed callback won't be called, record this
-			// transition from running to lost state in the absolute status state
-			// (the statusAllRepGroups aggregate is maintained internally). This
-			// runs while we still hold job.Lock, giving the strict leaf order
-			// queue.mutex -> job -> statusState.mu.
-			defer s.statusState.applyTransition(JobStateRunning, JobStateLost, job.RepGroup, 1)
 
 			return queue.SubQueueRun
 		}
