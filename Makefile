@@ -7,13 +7,20 @@ GOLANGCI_LINT_ARGS ?=
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
 WEBUI_TEST_STEP_TIMEOUT ?= timeout 8m
-WEBUI_TEST_PLAYWRIGHT_VERSION ?= 1.56.1
+WEBUI_TEST_PLAYWRIGHT_VERSION ?= 1.59.0
+# Generated artifacts (screenshots/traces/HTML) are ephemeral and live under
+# .tmp/agent, which may be wiped freely. Playwright's npm package, npm cache and
+# browser cache are deliberately persisted OUTSIDE .tmp so a .tmp wipe does not
+# force an npm reinstall or a Chromium re-download: the browser cache defaults to
+# Playwright's standard per-user location ($(HOME)/.cache/ms-playwright), so any
+# existing Chromium is reused and shared. All are overridable with ?= so CI can
+# pin a sandboxed location.
 WEBUI_TEST_SCRATCH ?= $(CURDIR)/.tmp/agent
 WEBUI_TEST_ARTIFACT_DIR ?= $(WEBUI_TEST_SCRATCH)/webui-test
-WEBUI_TEST_NPM_CACHE ?= $(WEBUI_TEST_SCRATCH)/npm-cache
-WEBUI_TEST_PLAYWRIGHT_ROOT ?= $(WEBUI_TEST_SCRATCH)/playwright
+WEBUI_TEST_PLAYWRIGHT_ROOT ?= $(HOME)/.cache/wr-webui-playwright
+WEBUI_TEST_NPM_CACHE ?= $(WEBUI_TEST_PLAYWRIGHT_ROOT)/npm-cache
 WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR ?= $(WEBUI_TEST_PLAYWRIGHT_ROOT)/node_modules/playwright
-WEBUI_TEST_BROWSER_CACHE ?= $(WEBUI_TEST_SCRATCH)/ms-playwright
+WEBUI_TEST_BROWSER_CACHE ?= $(HOME)/.cache/ms-playwright
 WEBUI_TEST_REPRO_HTML ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-stale-counts.html
 WEBUI_TEST_SCREENSHOT ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-webui-stale-running-resolved.png
 WEBUI_TEST_DEPENDENT_SCREENSHOT ?= $(WEBUI_TEST_ARTIFACT_DIR)/status-webui-dependent-job-details.png
@@ -77,13 +84,15 @@ lint:
 	@golangci-lint run ${GOLANGCI_LINT_ARGS}
 
 # Browser-only status page regression gate. It is intentionally not a
-# prerequisite of test/race because it may install Playwright/Chromium into
-# repo-local scratch space under .tmp/agent.
+# prerequisite of test/race because it may install the Playwright npm package
+# (cached persistently outside .tmp) and, only if a matching build is missing,
+# download Chromium into the shared per-user browser cache. Generated artifacts
+# go under .tmp/agent and may be wiped.
 browser-test:
 	@mkdir -p "$(WEBUI_TEST_PLAYWRIGHT_ROOT)" "$(WEBUI_TEST_ARTIFACT_DIR)" "$(WEBUI_TEST_NPM_CACHE)" "$(WEBUI_TEST_BROWSER_CACHE)"
 	@if [ ! -d "$(WEBUI_TEST_PLAYWRIGHT_PACKAGE_DIR)" ]; then \
 		cd "$(WEBUI_TEST_PLAYWRIGHT_ROOT)" && \
-		npm_config_cache="$(WEBUI_TEST_NPM_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) npm install --no-audit --no-fund "playwright@$(WEBUI_TEST_PLAYWRIGHT_VERSION)"; \
+		PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm_config_cache="$(WEBUI_TEST_NPM_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) npm install --no-audit --no-fund "playwright@$(WEBUI_TEST_PLAYWRIGHT_VERSION)"; \
 	fi
 	@PLAYWRIGHT_BROWSERS_PATH="$(WEBUI_TEST_BROWSER_CACHE)" $(WEBUI_TEST_STEP_TIMEOUT) "$(WEBUI_TEST_PLAYWRIGHT_ROOT)/node_modules/.bin/playwright" install chromium
 	@$(WEBUI_TEST_STEP_TIMEOUT) node jobqueue/testdata/status-page-stale-counts/repro.mjs --assert

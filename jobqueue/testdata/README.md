@@ -135,14 +135,26 @@ the correct completed count/bar. It is wired into `make browser-test`.
 
 ## Local dependency and artifact locations
 
-Browser-test dependencies and artifacts must stay repo-local:
+`make browser-test` separates persistent dependencies from ephemeral artifacts so
+that wiping `.tmp` never forces a Playwright reinstall or a Chromium re-download:
 
-- Playwright npm package: `.tmp/agent/playwright`
-- npm cache: `.tmp/agent/npm-cache`
-- Playwright browser cache: `.tmp/agent/ms-playwright`
-- generated repro HTML and screenshots: `.tmp/agent/webui-test`
+- Playwright browser cache: `~/.cache/ms-playwright` (Playwright's standard
+  per-user location). An existing Chromium build is reused and shared across
+  projects; a missing build is downloaded here once and persists across `.tmp`
+  wipes. The `npm install playwright` step sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`
+  so the npm postinstall does not redundantly download browsers; the explicit
+  `playwright install chromium` step (which sets `PLAYWRIGHT_BROWSERS_PATH` to
+  this cache) is the sole browser fetch.
+- Playwright npm package: `~/.cache/wr-webui-playwright/node_modules/playwright`
+  (cached outside `.tmp`, so a `.tmp` wipe does not trigger an npm reinstall).
+- npm cache: `~/.cache/wr-webui-playwright/npm-cache`.
+- generated repro HTML, screenshots and traces: `.tmp/agent/webui-test` (ephemeral;
+  safe to wipe).
 
-These paths are ignored by git through the top-level `.gitignore`. Do not
+All of these paths are overridable via the `WEBUI_TEST_*` make variables (e.g.
+`WEBUI_TEST_BROWSER_CACHE`, `WEBUI_TEST_PLAYWRIGHT_ROOT`, `WEBUI_TEST_NPM_CACHE`,
+`WEBUI_TEST_ARTIFACT_DIR`), so CI can pin a sandboxed location. The `.tmp/agent`
+artifact path is ignored by git through the top-level `.gitignore`. Do not
 install system packages for these fixtures. If a future UI regression needs a
 browser repro or screenshot, add the scripts under a descriptive
 `jobqueue/testdata/<scenario>/` directory and wire them into `make browser-test`
