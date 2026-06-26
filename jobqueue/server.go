@@ -558,7 +558,7 @@ func (c *caster) Send(val interface{}) {
 	c.RUnlock()
 
 	for _, member := range members {
-		member.sendOrReplace(val)
+		member.trySend(val)
 	}
 }
 
@@ -579,13 +579,15 @@ func (c *caster) Close() {
 	}
 }
 
-// sendOrReplace delivers val to the member's 1-slot buffer if there is room,
-// and otherwise drops it (best-effort). The remaining casters (bad servers and
-// scheduler issues) are recoverable: a client re-requests "current", which
-// re-broadcasts the latest set, so a dropped update is harmless. The status
-// counts no longer use the caster at all; they use the idempotent absolute
-// statusState, so there is no overflow-to-resync conversion anywhere.
-func (cm *casterMember) sendOrReplace(val interface{}) {
+// trySend serialises sends to this member via send.Lock (so a concurrent Send
+// may block briefly), then performs a non-blocking send of val into the
+// member's 1-slot buffer, dropping val if the buffer is already full or the
+// member is done. The remaining casters (bad servers and scheduler issues) are
+// recoverable: a client re-requests "current", which re-broadcasts the latest
+// set, so a dropped update is harmless. The status counts no longer use the
+// caster at all; they use the idempotent absolute statusState, so there is no
+// overflow-to-resync conversion anywhere.
+func (cm *casterMember) trySend(val interface{}) {
 	cm.send.Lock()
 	defer cm.send.Unlock()
 
