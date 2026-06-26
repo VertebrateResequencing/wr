@@ -93,7 +93,20 @@ const (
 	// runnerStartWait, so this is a multiple of runnerStartWait to span the whole
 	// sequence with headroom. It is free on the success path (the test stops the
 	// daemon itself, so Block() returns long before this fires).
-	daemonBackstopWait  = 3 * runnerStartWait
+	daemonBackstopWait = 3 * runnerStartWait
+	// signalTestMaxCores is the fixed core capacity the --servermode test daemon
+	// (runServer) gives its local scheduler for TestJobqueueSignal's
+	// runner-enabled blocks. The local scheduler schedules against this
+	// configured capacity using its own accounting (cores reserved by running
+	// jobs vs maxCores), NOT the host's real-time free cores, so a small fixed
+	// value plus a capacity-holding job sized to it proves "a new runner does
+	// not overcommit" deterministically regardless of how loaded the host is.
+	// The old test instead sized that job to runtime.NumCPU() (every physical
+	// core), which under any parallel-test contention could not reliably be
+	// granted/started, so its start marker never appeared. It is small (1) so the
+	// capacity-holding job fills it and a second job must wait. This only affects
+	// the test daemon; production default behaviour is unchanged.
+	signalTestMaxCores  = 1
 	serverRC            = `echo %s %s %s %s %d %d`
 	testCwd             = "/tmp"
 	manuallyAdded       = "manually_added"
@@ -1125,7 +1138,18 @@ func startServer(
 
 	preStart := time.Now()
 
-	args := []string{"--servermode"}
+	// Restrict the --servermode subprocess to the TestJobqueue* tests. The
+	// subprocess re-runs this whole test binary; only TestJobqueueSignal handles
+	// --servermode (by calling runServer), and every other TestJobqueue* test
+	// guards on servermode and returns. Without this filter the subprocess also
+	// runs unrelated tests (e.g. TestClientRequestTimeoutDecoupledFromConnect)
+	// that do NOT guard on servermode; because servermode jobqueueTestInit
+	// inherits this server's port instead of isolating its own, such a test
+	// connects to THIS server and can issue a blocking Reserve that steals a job
+	// the moment TestJobqueueSignal adds it - making its reservations
+	// nondeterministic. The -race binary already compiles with `-run
+	// TestJobqueue` (see runnerBinary), so this aligns the normal path with it.
+	args := []string{"-test.run", "TestJobqueue", "--servermode"}
 	if keepDB {
 		args = append(args, "--keepdb")
 	}
@@ -1178,6 +1202,16 @@ func runServer(ctx context.Context) {
 	// testLogger = testLogger.New("pid", pid)
 	_, serverConfig, _, _, _ := jobqueueTestInit(false) //nolint:dogsled
 
+	// constrain the local scheduler to a small fixed core capacity so
+	// TestJobqueueSignal's no-overcommit proof depends on the scheduler's own
+	// accounting (signalTestMaxCores) rather than the host's real free cores,
+	// making it deterministic under heavy parallel-test load. SchedulerConfig is
+	// the *jqs.ConfigLocal that jobqueueTestInit set up, so this just sets its
+	// MaxCores knob; it does not change any production default.
+	if sc, ok := serverConfig.SchedulerConfig.(*jqs.ConfigLocal); ok {
+		sc.MaxCores = signalTestMaxCores
+	}
+
 	if serverKeepDB {
 		serverConfig.dontWipeDevDB = true
 	}
@@ -1191,9 +1225,17 @@ func runServer(ctx context.Context) {
 
 		// we can't use the --tmpdir option, since that means the runner cmds
 		// won't match between invocations, so recovery won't be complete. We
-		// don't need it anyway
+		// don't need it anyway.
+		// -test.run TestJobqueue restricts the --runnermode subprocess to the
+		// TestJobqueue* tests, the same way startServer does for --servermode and
+		// for the same reason: only TestJobqueueRunnerModeEntrypoint handles
+		// --runnermode (by calling runner()), and other TestJobqueue* tests guard
+		// and return, whereas unrelated tests do not guard and would connect to
+		// this server. The flag is part of the (consistent) runner cmdline, so
+		// crash recovery, which matches a recovered runner by its exact cmdline,
+		// still works.
 		serverConfig.RunnerCmd = self +
-			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
+			" -test.run TestJobqueue --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 			" --rtimeout %d --maxmins %d"
 	}
 
@@ -1402,13 +1444,18 @@ func TestJobqueueSignal(t *testing.T) {
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
 
-			job, err := jq.Reserve(50 * time.Millisecond)
-			So(err, ShouldBeNil)
+			// reserve both jobs by their expected Cmd rather than assuming the
+			// first Reserve() returns cmd and the second returns cmd2: they have
+			// equal priority, so under load the two reservations can come back in
+			// either order (see reserveJobsByCmd).
+			reserved := reserveJobsByCmd(jq, []string{cmd, cmd2}, 50*time.Millisecond)
+			job := reserved[cmd]
+			job2 := reserved[cmd2]
+
+			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateReserved)
-
-			job2, err := jq.Reserve(50 * time.Millisecond)
-			So(err, ShouldBeNil)
+			So(job2, ShouldNotBeNil)
 			So(job2.Cmd, ShouldEqual, cmd2)
 			So(job2.State, ShouldEqual, JobStateReserved)
 
@@ -1513,8 +1560,10 @@ func TestJobqueueSignal(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(kicked, ShouldEqual, 1)
 
-				job2, err = jq.Reserve(50 * time.Millisecond)
-				So(err, ShouldBeNil)
+				// only cmd2 is ready now (cmd is buried), but a single tight
+				// Reserve() can time out before the kicked job becomes
+				// reservable under load; reserve by Cmd so we wait for it.
+				job2 = reserveJobsByCmd(jq, []string{cmd2}, 50*time.Millisecond)[cmd2]
 				So(job2, ShouldNotBeNil)
 				So(job2.Cmd, ShouldEqual, cmd2)
 				So(job2.State, ShouldEqual, JobStateReserved)
@@ -1539,13 +1588,17 @@ func TestJobqueueSignal(t *testing.T) {
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
 
-			job, err := jq.Reserve(50 * time.Millisecond)
-			So(err, ShouldBeNil)
+			// reserve both jobs by their expected Cmd; they have equal priority,
+			// so under load two tight Reserve() calls can return them in either
+			// order (see reserveJobsByCmd).
+			reserved := reserveJobsByCmd(jq, []string{cmd, cmd2}, 50*time.Millisecond)
+			job := reserved[cmd]
+			job2 := reserved[cmd2]
+
+			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateReserved)
-
-			job2, err := jq.Reserve(50 * time.Millisecond)
-			So(err, ShouldBeNil)
+			So(job2, ShouldNotBeNil)
 			So(job2.Cmd, ShouldEqual, cmd2)
 			So(job2.State, ShouldEqual, JobStateReserved)
 
@@ -1718,9 +1771,15 @@ func TestJobqueueSignal(t *testing.T) {
 			recoverRelease := filepath.Join(markerDir, "recover_release")
 			lostStarted := filepath.Join(markerDir, "lost_started")
 
-			// the "recover" job holds all the CPUs and runs until the test
-			// releases it (creating recover_release); the "lost" job runs until
-			// cleanup removes markerDir. Both touch a marker when they start.
+			// the "recover" job fills the scheduler's whole configured core
+			// capacity (signalTestMaxCores, which runServer set on the test
+			// daemon's local scheduler) and runs until the test releases it
+			// (creating recover_release); the "lost" job runs until cleanup
+			// removes markerDir. Both touch a marker when they start. The recover
+			// cmd is a trivial blocking shell loop needing ~no real CPU, so it
+			// starts even under heavy contention; sizing it to the *configured*
+			// capacity (not runtime.NumCPU() physical cores) is what later forces
+			// the cmd3 job to wait, proving no-overcommit independent of host load.
 			cmd := fmt.Sprintf(
 				"touch %s && while [ -d %s ] && [ ! -e %s ]; do sleep 0.1; done",
 				recoverStarted, markerDir, recoverRelease)
@@ -1728,7 +1787,7 @@ func TestJobqueueSignal(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: float64(runtime.NumCPU())}, Retries: uint8(0), RepGroup: "recover"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: float64(signalTestMaxCores)}, Retries: uint8(0), RepGroup: "recover"})
 			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "lost"})
 			inserts, already, erra := jq.Add(jobs, envVars, true)
 			So(erra, ShouldBeNil)
@@ -1826,9 +1885,10 @@ func TestJobqueueSignal(t *testing.T) {
 			So(errf, ShouldBeNil)
 			So(jq, ShouldNotBeNil)
 
-			// add a new job which should wait until the recover job completes, since the
-			// recover job uses all the CPUs - proving new runners don't overcommit
-			// because of the existing (surviving) runner.
+			// add a new job which should wait until the recover job completes,
+			// since the recover job fills the scheduler's whole configured core
+			// capacity - proving new runners don't overcommit because of the
+			// existing (surviving) runner.
 			cmd3 := "echo 1"
 			jobs = []*Job{{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
 			inserts, already, err = jq.Add(jobs, envVars, true)
@@ -1870,8 +1930,9 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateComplete)
 
-			// only now that the recover job freed the CPUs can the waiting job run; it
-			// must have started on or after the recover job ended.
+			// only now that the recover job freed the scheduler's core capacity
+			// can the waiting job run; it must have started on or after the
+			// recover job ended.
 			job3 := waitUntilJobState(jq2, &JobEssence{Cmd: cmd3}, JobStateComplete, int(runnerStartWait/time.Second))
 			So(job3, ShouldNotBeNil)
 			So(job3.Cmd, ShouldEqual, cmd3)
@@ -9301,6 +9362,48 @@ func waitUntilJobState(jq *Client, essence *JobEssence, wantState JobState, maxW
 		case <-limit:
 			return job
 		case <-ticker.C:
+		}
+	}
+}
+
+// reserveJobsByCmd reserves jobs until it has obtained one matching each of the
+// given cmds (or runnerStartWait elapses), returning them keyed by Cmd. The
+// server picks which ready job a Reserve() returns, and when several equal
+// priority jobs are ready the order is not deterministic, so callers must not
+// assume the Nth Reserve() returns the Nth-added job: under load two tight
+// Reserve() calls can come back in the opposite order. Reserving by expected
+// Cmd makes the binding deterministic without weakening what is asserted (the
+// caller still proves each specific job reached JobStateReserved). Each
+// reserved job that is not one we want is recorded under its own Cmd too, so a
+// caller asking for a subset still gets a stable mapping.
+func reserveJobsByCmd(jq *Client, cmds []string, perReserveTimeout time.Duration) map[string]*Job {
+	want := make(map[string]bool, len(cmds))
+	for _, c := range cmds {
+		want[c] = true
+	}
+
+	got := make(map[string]*Job, len(cmds))
+
+	limit := time.After(runnerStartWait)
+
+	for {
+		// each Reserve blocks server-side for up to perReserveTimeout when
+		// nothing is ready, so this loop paces itself without a busy-spin.
+		job, err := jq.Reserve(perReserveTimeout)
+		if err == nil && job != nil {
+			got[job.Cmd] = job
+
+			delete(want, job.Cmd)
+
+			if len(want) == 0 {
+				return got
+			}
+		}
+
+		select {
+		case <-limit:
+			return got
+		default:
 		}
 	}
 }
