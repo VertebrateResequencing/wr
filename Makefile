@@ -81,7 +81,7 @@ race: export WR_RUNNEREXECSHELL ?= $(WR_TEST_RUNNEREXECSHELL)
 race:
 	@go run ./cmd/wr-testsuite race
 
-# curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
+# curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
 lint:
 	@golangci-lint run ${GOLANGCI_LINT_ARGS}
 
