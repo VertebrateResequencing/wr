@@ -33,6 +33,32 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// assertPopsInOrder checks that the subQueue pops its 10 items in descending
+// priority order (key_9 down to key_0), in two batches of five, then yields nil
+// once empty. It is shared by the delay and run sub-queue tests.
+func assertPopsInOrder(queue *subQueue, items map[string]*Item) {
+	exampleItem := items["key_1"]
+
+	for i := range 5 {
+		item := queue.pop()
+		So(item, ShouldHaveSameTypeAs, exampleItem)
+		So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i))
+	}
+
+	So(queue.Len(), ShouldEqual, 5)
+
+	for i := range 5 {
+		item := queue.pop()
+		So(item, ShouldHaveSameTypeAs, exampleItem)
+		So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i-5))
+	}
+
+	So(queue.Len(), ShouldEqual, 0)
+
+	item := queue.pop()
+	So(item, ShouldBeNil)
+}
+
 func TestDelayQueue(t *testing.T) {
 	Convey("Once 10 items of differing delay have been pushed to the queue", t, func() {
 		queue := newSubQueue(0)
@@ -48,26 +74,7 @@ func TestDelayQueue(t *testing.T) {
 		So(queue.Len(), ShouldEqual, 10)
 
 		Convey("Popping them should remove them in delay order", func() {
-			exampleItem := items["key_1"]
-
-			for i := range 5 {
-				item := queue.pop()
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i))
-			}
-
-			So(queue.Len(), ShouldEqual, 5)
-
-			for i := range 5 {
-				item := queue.pop()
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i-5))
-			}
-
-			So(queue.Len(), ShouldEqual, 0)
-
-			item := queue.pop()
-			So(item, ShouldBeNil)
+			assertPopsInOrder(queue, items)
 		})
 
 		Convey("Removing an item works", func() {

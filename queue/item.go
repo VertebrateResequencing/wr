@@ -42,6 +42,10 @@ import (
 //nolint:gochecknoglobals
 var iid uint64
 
+// disabledTTRHours is how far in the future we set an item's releaseAt to
+// effectively disable its time to release.
+const disabledTTRHours = 8760
+
 // ItemState is how we describe the possible item states.
 type ItemState string
 
@@ -226,19 +230,19 @@ func (item *Item) UnresolvedDependencies() []string {
 
 // ChangedKey updates this item by changing its Key if old matches it, or by
 // updating the key in any dependencies of this item.
-func (item *Item) ChangedKey(old, new string) {
+func (item *Item) ChangedKey(old, newKey string) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 
 	if item.Key == old {
-		item.Key = new
+		item.Key = newKey
 
 		return
 	}
 
 	for i, dep := range item.dependencies {
 		if dep == old {
-			item.dependencies[i] = new
+			item.dependencies[i] = newKey
 
 			break
 		}
@@ -246,7 +250,7 @@ func (item *Item) ChangedKey(old, new string) {
 
 	if item.remainingDeps[old] {
 		delete(item.remainingDeps, old)
-		item.remainingDeps[new] = true
+		item.remainingDeps[newKey] = true
 	}
 }
 
@@ -331,7 +335,7 @@ func (item *Item) tempDisableTTR() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 
-	item.releaseAt = time.Now().Add(8760 * time.Hour)
+	item.releaseAt = time.Now().Add(disabledTTRHours * time.Hour)
 }
 
 // update after we've switched from the delay to the ready sub-queue.

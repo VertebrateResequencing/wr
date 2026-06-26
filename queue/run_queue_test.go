@@ -49,26 +49,7 @@ func TestRunQueue(t *testing.T) {
 		So(queue.Len(), ShouldEqual, 10)
 
 		Convey("Popping them should remove them in ttr order", func() {
-			exampleItem := items["key_1"]
-
-			for i := range 5 {
-				item := queue.pop()
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i))
-			}
-
-			So(queue.Len(), ShouldEqual, 5)
-
-			for i := range 5 {
-				item := queue.pop()
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i-5))
-			}
-
-			So(queue.Len(), ShouldEqual, 0)
-
-			item := queue.pop()
-			So(item, ShouldBeNil)
+			assertPopsInOrder(queue, items)
 		})
 
 		Convey("Removing an item works", func() {

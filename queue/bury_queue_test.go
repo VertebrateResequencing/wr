@@ -33,9 +33,23 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-func TestBuryQueue(t *testing.T) {
+// sliceQueue is the common behaviour of the simple slice-backed sub-queues
+// (buryQueue and depQueue), used to share their identical test logic.
+type sliceQueue interface {
+	push(item *Item)
+	pop() *Item
+	remove(item *Item)
+	len() int
+	empty()
+}
+
+// testSliceQueue runs the shared push/pop/remove/empty behaviour checks against
+// a slice-backed sub-queue created by newQueue.
+func testSliceQueue(t *testing.T, newQueue func() sliceQueue) {
+	t.Helper()
+
 	Convey("Once 10 items have been pushed to the queue", t, func() {
-		queue := newBuryQueue()
+		queue := newQueue()
 		items := make(map[string]*Item)
 
 		for i := range 10 {
@@ -77,7 +91,7 @@ func TestBuryQueue(t *testing.T) {
 	})
 
 	Convey("Once a single item has been pushed to the queue", t, func() {
-		queue := newBuryQueue()
+		queue := newQueue()
 		items := make(map[string]*Item)
 
 		for i := range 1 {
@@ -94,4 +108,8 @@ func TestBuryQueue(t *testing.T) {
 			So(queue.len(), ShouldEqual, 0)
 		})
 	})
+}
+
+func TestBuryQueue(t *testing.T) {
+	testSliceQueue(t, func() sliceQueue { return newBuryQueue() })
 }
