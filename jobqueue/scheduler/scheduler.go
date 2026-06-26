@@ -71,9 +71,17 @@ const (
 	minimumQueueTime      time.Duration = 1 * time.Minute
 )
 
+// Scheduler name constants, used both as the name passed to New() and as the
+// Scheduler in returned Errors.
+const (
+	localScheduler     = "local"
+	lsfScheduler       = "lsf"
+	openstackScheduler = "openstack"
+)
+
 // Err* constants are found in the returned Errors under err.Err, so you can
 // cast and check if it's a certain type of error.
-var (
+const (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
 	ErrBadFlavor    = "unknown server flavor"
@@ -94,13 +102,19 @@ func (e Error) Error() string {
 // run, so that when provided to a scheduler it will be able to schedule things
 // appropriately.
 type Requirements struct {
-	RAM      int               // the expected peak RAM in MB Cmd will use while running
-	Time     time.Duration     // the expected time Cmd will take to run
-	Cores    float64           // how many processor cores the Cmd will use
-	Disk     int               // the required local disk space in GB the Cmd needs to run
-	Other    map[string]string // a map that will be passed through to the job scheduler, defining further arbitrary resource requirements
-	CoresSet bool              // to distinguish between you specifying 0 Cores and not specifying Cores at all
-	DiskSet  bool              // to distinguish between you specifying 0 Disk and not specifying Disk at all
+	RAM   int           // the expected peak RAM in MB Cmd will use while running
+	Time  time.Duration // the expected time Cmd will take to run
+	Cores float64       // how many processor cores the Cmd will use
+	Disk  int           // the required local disk space in GB the Cmd needs to run
+	// Other is a map that will be passed through to the job scheduler, defining
+	// further arbitrary resource requirements.
+	Other map[string]string
+	// CoresSet distinguishes between you specifying 0 Cores and not specifying
+	// Cores at all.
+	CoresSet bool
+	// DiskSet distinguishes between you specifying 0 Disk and not specifying
+	// Disk at all.
+	DiskSet  bool
 	OtherSet bool
 }
 
@@ -119,11 +133,13 @@ func (req *Requirements) Stringify() string {
 
 		sort.Strings(otherKeys)
 
-		var otherSb122 strings.Builder
+		var otherSb strings.Builder
+
 		for _, key := range otherKeys {
-			otherSb122.WriteString(":" + key + "=" + req.Other[key])
+			otherSb.WriteString(":" + key + "=" + req.Other[key])
 		}
-		other += otherSb122.String()
+
+		other += otherSb.String()
 
 		// now convert it all in to an md5sum, to avoid any problems with some
 		// key values having line returns etc. *** we might like to use
@@ -131,12 +147,15 @@ func (req *Requirements) Stringify() string {
 		other = fmt.Sprintf(":%x", md5.Sum([]byte(other))) // #nosec
 	}
 
-	return fmt.Sprintf("%d:%.0f:%s:%d%s", req.RAM, req.Time.Minutes(), strconv.FormatFloat(req.Cores, 'f', -1, 64), req.Disk, other)
+	return fmt.Sprintf("%d:%.0f:%s:%d%s",
+		req.RAM, req.Time.Minutes(),
+		strconv.FormatFloat(req.Cores, 'f', -1, 64),
+		req.Disk, other)
 }
 
 // Clone creates a copy of the Requirements.
 func (req *Requirements) Clone() *Requirements {
-	new := &Requirements{
+	clone := &Requirements{
 		RAM:      req.RAM,
 		Time:     req.Time,
 		Cores:    req.Cores,
@@ -148,10 +167,10 @@ func (req *Requirements) Clone() *Requirements {
 	if req.OtherSet || len(req.Other) > 0 {
 		newOther := make(map[string]string, len(req.Other))
 		maps.Copy(newOther, req.Other)
-		new.Other = newOther
+		clone.Other = newOther
 	}
 
-	return new
+	return clone
 }
 
 // CmdStatus lets you describe how many of a given cmd are already in the job
@@ -196,20 +215,48 @@ type Host interface {
 }
 
 // scheduleri interface must be satisfied to add support for a particular job
-// scheduler.
+// scheduler. It is intentionally broad: each method maps to a corresponding
+// public Scheduler method that the whole package is built around.
+//
+//nolint:interfacebloat // each method backs a distinct public Scheduler method
 type scheduleri interface {
-	initialize(ctx context.Context, config any) error                                             // do any initial set up to be able to use the job scheduler
-	schedule(ctx context.Context, cmd string, req *Requirements, priority uint8, count int) error // achieve the aims of Schedule()
-	scheduled(ctx context.Context, cmd string) (int, error)                                       // achieve the aims of Scheduled()
-	recover(ctx context.Context, cmd string, req *Requirements, host *RecoveredHostDetails) error // achieve the aims of Recover()
-	busy(ctx context.Context) bool                                                                // achieve the aims of Busy()
-	reserveTimeout(ctx context.Context, req *Requirements) int                                    // achieve the aims of ReserveTimeout()
-	maxQueueTime(req *Requirements) time.Duration                                                 // achieve the aims of MaxQueueTime(), return 0 for infinite queue time
-	hostToID(host string) string                                                                  // achieve the aims of HostToID()
-	getHost(host string) (Host, bool)                                                             // get a Host that can be used to run commands over ssh on the given host, return false boolean if not such host exists
-	setMessageCallBack(ctx context.Context, cb MessageCallBack)                                   // achieve the aims of SetMessageCallBack()
-	setBadServerCallBack(ctx context.Context, cb BadServerCallBack)                               // achieve the aims of SetBadServerCallBack()
-	cleanup(ctx context.Context)                                                                  // do any clean up once you've finished using the job scheduler
+	// initialize does any initial set up to be able to use the job scheduler.
+	initialize(ctx context.Context, config any) error
+
+	// schedule achieves the aims of Schedule().
+	schedule(ctx context.Context, cmd string, req *Requirements, priority uint8, count int) error
+
+	// scheduled achieves the aims of Scheduled().
+	scheduled(ctx context.Context, cmd string) (int, error)
+
+	// recover achieves the aims of Recover().
+	recover(ctx context.Context, cmd string, req *Requirements, host *RecoveredHostDetails) error
+
+	// busy achieves the aims of Busy().
+	busy(ctx context.Context) bool
+
+	// reserveTimeout achieves the aims of ReserveTimeout().
+	reserveTimeout(ctx context.Context, req *Requirements) int
+
+	// maxQueueTime achieves the aims of MaxQueueTime(), returning 0 for infinite
+	// queue time.
+	maxQueueTime(req *Requirements) time.Duration
+
+	// hostToID achieves the aims of HostToID().
+	hostToID(host string) string
+
+	// getHost gets a Host that can be used to run commands over ssh on the given
+	// host, returning a false boolean if no such host exists.
+	getHost(host string) (Host, bool)
+
+	// setMessageCallBack achieves the aims of SetMessageCallBack().
+	setMessageCallBack(ctx context.Context, cb MessageCallBack)
+
+	// setBadServerCallBack achieves the aims of SetBadServerCallBack().
+	setBadServerCallBack(ctx context.Context, cb BadServerCallBack)
+
+	// cleanup does any clean up once you've finished using the job scheduler.
+	cleanup(ctx context.Context)
 }
 
 // CloudConfig interface could be satisfied by the config option taken by cloud
@@ -250,11 +297,11 @@ func New(ctx context.Context, name string, config any) (*Scheduler, error) {
 	var s *Scheduler
 
 	switch name {
-	case "lsf":
+	case lsfScheduler:
 		s = &Scheduler{impl: new(lsf)}
-	case "local":
+	case localScheduler:
 		s = &Scheduler{impl: new(local)}
-	case "openstack":
+	case openstackScheduler:
 		s = &Scheduler{impl: new(opst)}
 	case mockSchedulerName:
 		// a test double that runs an in-process function instead of spawning
@@ -328,24 +375,39 @@ func (s *Scheduler) Schedule(ctx context.Context, cmd string, req *Requirements,
 
 	err := s.impl.schedule(s.typeContext(ctx), cmd, req.Clone(), priority, count)
 
-	s.Lock()
-	if newcount, limited := s.limiter[cmd]; limited {
-		if newcount != count {
-			go func() {
-				defer internal.LogPanic(ctx, "schedule recall", true)
-
-				errf := s.Schedule(ctx, cmd, req, priority, newcount)
-				if errf != nil {
-					clog.Error(s.typeContext(ctx), "schedule recall", "err", errf)
-				}
-			}()
-		}
-
-		delete(s.limiter, cmd)
-	}
-	s.Unlock()
+	s.rescheduleIfCountChanged(ctx, cmd, req, priority, count)
 
 	return err
+}
+
+// rescheduleIfCountChanged clears the limiter entry for cmd that Schedule() set,
+// and if the most recently desired count differs from the one we just scheduled
+// for, kicks off another Schedule() in the background with that newer count.
+func (s *Scheduler) rescheduleIfCountChanged(
+	ctx context.Context, cmd string, req *Requirements, priority uint8, count int,
+) {
+	s.Lock()
+	defer s.Unlock()
+
+	newcount, limited := s.limiter[cmd]
+	if !limited {
+		return
+	}
+
+	delete(s.limiter, cmd)
+
+	if newcount == count {
+		return
+	}
+
+	go func() {
+		defer internal.LogPanic(ctx, "schedule recall", true)
+
+		errf := s.Schedule(ctx, cmd, req, priority, newcount)
+		if errf != nil {
+			clog.Error(s.typeContext(ctx), "schedule recall", "err", errf)
+		}
+	}()
 }
 
 // Scheduled tells you how many of the given cmd are currently scheduled in the
