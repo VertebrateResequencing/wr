@@ -103,7 +103,7 @@ import (
 // Err* constants are found in the returned Errors under err.Err, so you can
 // use errors.As and check if it's a certain type of error. ErrMissingEnv gets
 // appended to with missing environment variable names, so check based on prefix.
-var (
+const (
 	ErrBadProvider     = "unknown provider name"
 	ErrMissingEnv      = "missing environment variables: "
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
@@ -116,7 +116,7 @@ var (
 
 // sshTimeOut is how long we wait for ssh to work when an ssh request is made to
 // a server.
-var sshTimeOut = 5 * time.Minute
+const sshTimeOut = 5 * time.Minute
 
 // sentinelFilePath is the file that provideri implementers must create on each
 // spawn()ed server once it is fully ready to use.
@@ -128,15 +128,20 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 // And we try to enable user_allow_other in fuse.conf to allow user mounts to
 // work. And we try to enable system requests to do clean shutdowns (176 means
 // s, u and o can be sent to /proc/sysrq-trigger).
+//
+//nolint:gochecknoglobals,lll // a []byte cannot be a const; the script is one long literal
 var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\nsudo sysctl -w kernel.sysrq=176\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
 // we give up and return an error from WaitUntilReady().
-var sentinelTimeOut = 10 * time.Minute
+const sentinelTimeOut = 10 * time.Minute
 
 // pcsTimeOut is how long we wait for a user's post creation script to exit
 // before we give up and return an error from WaitUntilReady(). The same timeout
-// is also used for user's pre destroy script.
+// is also used for user's pre destroy script. It is a var rather than a const
+// because tests override it.
+//
+//nolint:gochecknoglobals // overridden by tests
 var pcsTimeOut = 15 * time.Minute
 
 // cleanShutDownCmd should be executed before terminating a server. It forces a
@@ -152,10 +157,13 @@ var pcsTimeOut = 15 * time.Minute
 // was used for writing job output. Using /proc/sysrq-trigger lets us at least
 // request a ro remount (should be equivalent of umount as far as letting fs
 // servers know we're done), even if we don't know if it succeeds.
-const cleanShutDownCmd = `sync && echo 's' | sudo tee -a /proc/sysrq-trigger > /dev/null && echo 'u' | sudo tee -a /proc/sysrq-trigger > /dev/null`
+const cleanShutDownCmd = `sync && echo 's' | sudo tee -a /proc/sysrq-trigger > /dev/null` +
+	` && echo 'u' | sudo tee -a /proc/sysrq-trigger > /dev/null`
 
 // defaultDNSNameServers holds some public (google) dns name server addresses
 // for use when creating cloud subnets that need internet access.
+//
+//nolint:gochecknoglobals // an array cannot be a const
 var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
 // defaultCIDR is a useful range allowing 16384 servers to be spawned, with a
@@ -168,10 +176,16 @@ const (
 // touchStampFormat is the time format we use for `touch -d`.
 const touchStampFormat = "2006-01-02T15:04:05-0700"
 
+// ownerReadWrite is the file mode for files only the owner may read and write.
+const ownerReadWrite os.FileMode = 0o600
+
 // hostNameRegex is used by nameToHostName() to make strings valid hostnames.
 var hostNameRegex = regexp.MustCompile(`[^a-z0-9\-]+`)
 
-const openstackName = "openstack"
+const (
+	openstackName = "openstack"
+	cloudName     = "cloud"
+)
 
 // Error records an error and the operation and provider caused it.
 type Error struct {
@@ -209,6 +223,8 @@ type Quota struct {
 }
 
 // provideri must be satisfied to add support for a particular cloud provider.
+//
+//nolint:interfacebloat // this is the full contract a cloud provider must implement
 type provideri interface {
 	// return the environment variables required to function
 	requiredEnv() []string
@@ -334,10 +350,11 @@ func AllEnv(providerName string) ([]string, error) {
 		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
 	}
 
-	var all []string
-
-	all = append(all, p.impl.requiredEnv()...)
-	all = append(all, p.impl.maybeEnv()...)
+	required := p.impl.requiredEnv()
+	maybe := p.impl.maybeEnv()
+	all := make([]string, 0, len(required)+len(maybe))
+	all = append(all, required...)
+	all = append(all, maybe...)
 
 	return all, nil
 }
@@ -355,22 +372,15 @@ func AllEnv(providerName string) ([]string, error) {
 // with any "harmless" or unreturnable errors. If not supplied, we use a default
 // logger that discards all log messages.
 func New(ctx context.Context, name string, resourceName string, savePath string) (*Provider, error) {
-	var p *Provider
-
-	switch name {
-	case openstackName:
-		p = &Provider{impl: new(openstackp)}
-	default:
-		return nil, Error{name, "New", ErrBadProvider}
+	p, err := newProviderForName(name)
+	if err != nil {
+		return nil, err
 	}
 
-	p.Name = name
 	p.savePath = savePath + "." + resourceName
 
 	// load any resources we previously saved, or get an empty set to work
 	// with
-	var err error
-
 	p.resources, err = p.loadResources(ctx, resourceName)
 	if err != nil {
 		return nil, err
@@ -381,16 +391,8 @@ func New(ctx context.Context, name string, resourceName string, savePath string)
 		p.servers[nameToHostName(server.Name)] = server
 	}
 
-	var missingEnv []string
-
-	for _, envKey := range p.impl.requiredEnv() {
-		if os.Getenv(envKey) == "" {
-			missingEnv = append(missingEnv, envKey)
-		}
-	}
-
-	if len(missingEnv) > 0 {
-		return nil, Error{name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
+	if err = p.checkRequiredEnv(); err != nil {
+		return nil, err
 	}
 
 	err = p.impl.initialize()
@@ -401,6 +403,35 @@ func New(ctx context.Context, name string, resourceName string, savePath string)
 	p.inCloud = p.impl.inCloud(p.cloudContext(ctx))
 
 	return p, nil
+}
+
+// newProviderForName returns a *Provider with the impl for the named provider
+// set, or an ErrBadProvider error for an unknown name.
+func newProviderForName(name string) (*Provider, error) {
+	switch name {
+	case openstackName:
+		return &Provider{impl: new(openstackp), Name: name}, nil
+	default:
+		return nil, Error{name, "New", ErrBadProvider}
+	}
+}
+
+// checkRequiredEnv returns an ErrMissingEnv error if any of the impl's required
+// environment variables are unset.
+func (p *Provider) checkRequiredEnv() error {
+	var missingEnv []string
+
+	for _, envKey := range p.impl.requiredEnv() {
+		if os.Getenv(envKey) == "" {
+			missingEnv = append(missingEnv, envKey)
+		}
+	}
+
+	if len(missingEnv) > 0 {
+		return Error{p.Name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
+	}
+
+	return nil
 }
 
 // cloudContext returns a context with a cloud type based on the provider.
@@ -429,25 +460,13 @@ func (p *Provider) cloudContext(ctx context.Context) context.Context {
 // GetServerByName() and Destroy()ed. Note, however, that they aren't fully
 // useable since we don't know the username needed to ssh to them.
 func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
-	gatewayIP := config.GatewayIP
-	if gatewayIP == "" {
-		gatewayIP = defaultGateWayIP
-	}
-
-	cidr := config.CIDR
-	if cidr == "" {
-		cidr = defaultCIDR
-	}
-
-	dnsNameServers := config.DNSNameServers
-	if dnsNameServers == nil {
-		dnsNameServers = defaultDNSNameServers[:]
-	}
+	gatewayIP, cidr, dnsNameServers := deployConfigWithDefaults(config)
 
 	// impl.deploy should overwrite any existing values in p.resources with
 	// updated values, but should leave other things - such as an existing
 	// PrivateKey when we have not just made a new one - alone
-	err := p.impl.deploy(p.cloudContext(ctx), p.resources, config.RequiredPorts, config.UseConfigDrive, gatewayIP, cidr, dnsNameServers)
+	err := p.impl.deploy(p.cloudContext(ctx), p.resources, config.RequiredPorts, config.UseConfigDrive,
+		gatewayIP, cidr, dnsNameServers)
 	if err != nil {
 		return err
 	}
@@ -462,19 +481,8 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 	p.Lock()
 	defer p.Unlock()
 
-	for _, server := range p.resources.Servers {
-		if server.IsHeadNode {
-			known, errk := p.ServerIsKnown(server.ID)
-			if errk != nil {
-				return errk
-			}
-
-			if known {
-				p.madeHeadNode = true
-
-				break
-			}
-		}
+	if errk := p.detectExistingHeadNode(); errk != nil {
+		return errk
 	}
 
 	// record any existing servers that we may have spawned previously, then we
@@ -486,6 +494,59 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 		return err
 	}
 
+	p.recordRecoveredServers(sdetails, privateKey)
+
+	return nil
+}
+
+// deployConfigWithDefaults returns the gatewayIP, cidr and dnsNameServers to
+// use for a deploy, substituting our defaults for any unset config values.
+func deployConfigWithDefaults(config *DeployConfig) (gatewayIP, cidr string, dnsNameServers []string) {
+	gatewayIP = config.GatewayIP
+	if gatewayIP == "" {
+		gatewayIP = defaultGateWayIP
+	}
+
+	cidr = config.CIDR
+	if cidr == "" {
+		cidr = defaultCIDR
+	}
+
+	dnsNameServers = config.DNSNameServers
+	if dnsNameServers == nil {
+		dnsNameServers = defaultDNSNameServers[:]
+	}
+
+	return gatewayIP, cidr, dnsNameServers
+}
+
+// detectExistingHeadNode sets p.madeHeadNode if one of our recorded servers is
+// a head node still known to the provider. You must hold p's lock.
+func (p *Provider) detectExistingHeadNode() error {
+	for _, server := range p.resources.Servers {
+		if !server.IsHeadNode {
+			continue
+		}
+
+		known, err := p.ServerIsKnown(server.ID)
+		if err != nil {
+			return err
+		}
+
+		if known {
+			p.madeHeadNode = true
+
+			break
+		}
+	}
+
+	return nil
+}
+
+// recordRecoveredServers records servers from a previous, crashed session so
+// they can be Destroy()ed. They can't be used fully (UserName is unknown). You
+// must hold p's lock.
+func (p *Provider) recordRecoveredServers(sdetails [][]string, privateKey string) {
 	for _, details := range sdetails {
 		p.servers[nameToHostName(details[2])] = &Server{
 			ID:           details[0],
@@ -498,8 +559,6 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 			created:      false,
 		}
 	}
-
-	return err
 }
 
 // InCloud tells you if your process is currently running on a cloud server
@@ -532,22 +591,24 @@ func (p *Provider) CheapestServerFlavor(ctx context.Context, cores, ramMB int, r
 
 	f := p.pickCheapestFlavorFromSubset(ctx, cores, ramMB, r, []*regexp.Regexp{})
 	if f == nil {
-		return nil, Error{"cloud", "CheapestServerFlavor", ErrNoFlavor}
+		return nil, Error{cloudName, "CheapestServerFlavor", ErrNoFlavor}
 	}
 
 	return f, nil
 }
 
 // regexStrToRegexp converts a regex string to a Regexp. If regex is a blank
-// string, returns nil and no error.
+// string, returns nil and no error; a nil *regexp.Regexp is a meaningful
+// "match any flavor" value to our callers.
 func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
 	if regex == "" {
+		//nolint:nilnil // a nil regexp deliberately means "no regex restriction"
 		return nil, nil
 	}
 
 	r, err := regexp.Compile(regex)
 	if err != nil {
-		return nil, Error{"cloud", "CheapestServerFlavor", ErrBadRegex}
+		return nil, Error{cloudName, "CheapestServerFlavor", ErrBadRegex}
 	}
 
 	return r, nil
@@ -558,8 +619,10 @@ func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
 // at least one of the regexps in the subset. regexp can be nil to match any
 // flavor, and subset can be empty or contain a nil regexp to pick from the
 // superset.
-func (p *Provider) pickCheapestFlavorFromSubset(ctx context.Context, cores, ramMB int, regexp *regexp.Regexp, subset []*regexp.Regexp) *Flavor {
-	return pickCheapestFromFlavors(p.impl.flavors(p.cloudContext(ctx)), cores, ramMB, regexp, subset)
+func (p *Provider) pickCheapestFlavorFromSubset(ctx context.Context, cores, ramMB int,
+	re *regexp.Regexp, subset []*regexp.Regexp,
+) *Flavor {
+	return pickCheapestFromFlavors(p.impl.flavors(p.cloudContext(ctx)), cores, ramMB, re, subset)
 }
 
 // pickCheapestFromFlavors picks, from the given flavors, the one with the lowest
@@ -697,7 +760,7 @@ func (p *Provider) GetServerFlavor(ctx context.Context, idOrName string) (*Flavo
 	}
 
 	if fr == nil {
-		return nil, Error{"cloud", "GetServerFlavor", ErrBadFlavor}
+		return nil, Error{cloudName, "GetServerFlavor", ErrBadFlavor}
 	}
 
 	return fr, nil
@@ -743,9 +806,57 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 ) (*Server, error) {
 	f, found := p.impl.flavors(p.cloudContext(ctx))[flavorID]
 	if !found {
-		return nil, Error{"cloud", "Spawn", ErrBadFlavor}
+		return nil, Error{cloudName, "Spawn", ErrBadFlavor}
 	}
 
+	serverID, serverIP, serverName, adminPass, err := p.spawnWithQuotaCallback(ctx, os, flavorID, diskGB,
+		externalIP, usingQuotaCB)
+	if err != nil {
+		return nil, err
+	}
+
+	server := &Server{
+		ID:           serverID,
+		Name:         serverName,
+		IP:           serverIP,
+		OS:           os,
+		AdminPass:    adminPass,
+		PrivateKey:   p.PrivateKey(),
+		UserName:     osUser,
+		Flavor:       f,
+		Disk:         max(diskGB, f.Disk),
+		TTD:          ttd,
+		provider:     p,
+		cancelRunCmd: make(map[int]chan bool),
+		created:      true,
+	}
+
+	return p.registerSpawnedServer(ctx, server, serverID, serverName, externalIP)
+}
+
+// spawnWithQuotaCallback calls the provider's spawn(), arranging for any
+// supplied SpawnUsingQuotaCallback to be invoked exactly once, as soon as the
+// new server request has used up quota (or the request has failed).
+func (p *Provider) spawnWithQuotaCallback(ctx context.Context, os, flavorID string, diskGB int,
+	externalIP bool, usingQuotaCB []SpawnUsingQuotaCallback,
+) (serverID, serverIP, serverName, adminPass string, err error) {
+	usingQuota, finishQuotaCallback := armQuotaCallback(usingQuotaCB)
+
+	serverID, serverIP, serverName, adminPass, err = p.impl.spawn(p.cloudContext(ctx), p.resources, os,
+		flavorID, diskGB, externalIP, usingQuota)
+
+	// fire the callback now (if it hasn't already fired via usingQuota) whether
+	// or not spawn succeeded, and stop the watcher goroutine
+	finishQuotaCallback()
+
+	return serverID, serverIP, serverName, adminPass, err
+}
+
+// armQuotaCallback starts a goroutine that invokes the (optional) supplied
+// SpawnUsingQuotaCallback exactly once, as soon as something is sent on the
+// returned usingQuota channel. The returned finish func stops the goroutine and
+// guarantees the callback has fired; it must be called once spawn() returns.
+func armQuotaCallback(usingQuotaCB []SpawnUsingQuotaCallback) (chan bool, func()) {
 	usingQuota := make(chan bool)
 	usingQuotaDone := make(chan struct{})
 
@@ -766,54 +877,37 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 		}
 	}()
 
-	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.cloudContext(ctx), p.resources, os,
-		flavorID, diskGB, externalIP, usingQuota)
-	if err != nil {
+	return usingQuota, func() {
 		close(usingQuotaDone)
 		usingQuotaOnce.Do(callUsingQuotaCB)
-
-		return nil, err
 	}
+}
 
-	close(usingQuotaDone)
-
-	maxDisk := max(diskGB, f.Disk)
-
-	server := &Server{
-		ID:           serverID,
-		Name:         serverName,
-		IP:           serverIP,
-		OS:           os,
-		AdminPass:    adminPass,
-		PrivateKey:   p.PrivateKey(),
-		UserName:     osUser,
-		Flavor:       f,
-		Disk:         maxDisk,
-		TTD:          ttd,
-		provider:     p,
-		cancelRunCmd: make(map[int]chan bool),
-		created:      true,
-	}
-
+// registerSpawnedServer records a freshly spawned server in p.servers, and (for
+// servers with an external ip) marks the head node and saves resources to disk.
+func (p *Provider) registerSpawnedServer(ctx context.Context, server *Server, serverID, serverName string,
+	externalIP bool,
+) (*Server, error) {
 	p.Lock()
 	p.servers[nameToHostName(serverName)] = server
 
-	if err == nil && externalIP {
-		// if this is the first server created, note it is the "head node"
-		if !p.madeHeadNode {
-			server.IsHeadNode = true
-			p.madeHeadNode = true
-		}
+	if !externalIP {
+		p.Unlock()
 
-		// update resources and save to disk
-		p.resources.Servers[serverID] = server
-		p.Unlock()
-		err = p.saveResources(ctx)
-	} else {
-		p.Unlock()
+		return server, nil
 	}
 
-	return server, err
+	// if this is the first server created, note it is the "head node"
+	if !p.madeHeadNode {
+		server.IsHeadNode = true
+		p.madeHeadNode = true
+	}
+
+	// update resources and save to disk
+	p.resources.Servers[serverID] = server
+	p.Unlock()
+
+	return server, p.saveResources(ctx)
 }
 
 // ErrIsNoHardware return true if the given error suggests failure to spawn a
@@ -828,20 +922,34 @@ func (p *Provider) ErrIsNoHardware(err error) bool {
 // will be removed from the results of Servers().)
 func (p *Provider) CheckServer(ctx context.Context, serverID string) (working bool, err error) {
 	working, err = p.impl.checkServer(serverID)
-
-	if err == nil && !working {
-		// update resources and save to disk
-		p.Lock()
-		if _, present := p.resources.Servers[serverID]; present {
-			delete(p.resources.Servers, serverID)
-			p.Unlock()
-			err = p.saveResources(ctx)
-		} else {
-			p.Unlock()
-		}
+	if err != nil || working {
+		return working, err
 	}
 
-	return working, err
+	// the server isn't working, so forget it (updating resources on disk) if it
+	// was one we were tracking
+	if err = p.forgetServer(ctx, serverID); err != nil {
+		return working, err
+	}
+
+	return working, nil
+}
+
+// forgetServer removes the given server from our recorded resources and saves
+// the updated resources to disk. Does nothing if we weren't tracking it.
+func (p *Provider) forgetServer(ctx context.Context, serverID string) error {
+	p.Lock()
+
+	if _, present := p.resources.Servers[serverID]; !present {
+		p.Unlock()
+
+		return nil
+	}
+
+	delete(p.resources.Servers, serverID)
+	p.Unlock()
+
+	return p.saveResources(ctx)
 }
 
 // ServerIsKnown asks the provider if the given server (id retrieved via Spawn()
@@ -907,26 +1015,18 @@ func (p *Provider) HeadNode() *Server {
 
 // LocalhostServer returns a Server object with details of the host we are
 // currently running on. No cloud API calls are made to construct this.
-func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configFiles string, cidr ...string) (*Server, error) {
-	maxRAM, err := internal.ProcMeminfoMBs()
+func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configFiles string,
+	cidr ...string,
+) (*Server, error) {
+	maxRAM, ip, user, err := localhostDetails(cidr[0])
 	if err != nil {
 		return nil, err
 	}
 
 	diskSize := local.NewVolume(".").Size(context.Background())
 
-	ip, err := internal.CurrentIP(cidr[0])
-	if err != nil {
-		return nil, err
-	}
-
-	user, err := internal.Username()
-	if err != nil {
-		return nil, err
-	}
-
 	return &Server{
-		Name:        "localhost",
+		Name:        localhostName,
 		IP:          ip,
 		OS:          os,
 		UserName:    user,
@@ -941,6 +1041,27 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 		provider:     p,
 		cancelRunCmd: make(map[int]chan bool),
 	}, nil
+}
+
+// localhostDetails gathers the RAM, IP and username of the host we are running
+// on, for use by LocalhostServer.
+func localhostDetails(cidr string) (maxRAM int, ip, user string, err error) {
+	maxRAM, err = internal.ProcMeminfoMBs()
+	if err != nil {
+		return maxRAM, ip, user, err
+	}
+
+	ip, err = internal.CurrentIP(cidr)
+	if err != nil {
+		return maxRAM, ip, user, err
+	}
+
+	user, err = internal.Username()
+	if err != nil {
+		return maxRAM, ip, user, err
+	}
+
+	return maxRAM, ip, user, nil
 }
 
 // PrivateKey returns a PEM format string of the private key that was created
@@ -984,7 +1105,10 @@ func (p *Provider) saveResources(ctx context.Context) error {
 	p.Lock()
 	defer p.Unlock()
 
-	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// p.savePath is a path the caller of New() deliberately chose for us to
+	// write our own resources file to, so it is not untrusted input.
+	//nolint:gosec // caller-chosen save path, not untrusted input
+	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, ownerReadWrite)
 	if err != nil {
 		return err
 	}
@@ -999,7 +1123,11 @@ func (p *Provider) saveResources(ctx context.Context) error {
 // loadResources loads our resources from our savePath, or returns an empty
 // set of resources if savePath doesn't exist.
 func (p *Provider) loadResources(ctx context.Context, resourceName string) (*Resources, error) {
-	resources := &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]*Server)}
+	resources := &Resources{
+		ResourceName: resourceName,
+		Details:      make(map[string]string),
+		Servers:      make(map[string]*Server),
+	}
 	if _, serr := os.Stat(p.savePath); os.IsNotExist(serr) {
 		return resources, nil
 	}
@@ -1029,16 +1157,27 @@ func (p *Provider) loadResources(ctx context.Context, resourceName string) (*Res
 
 // deleteResourceFile deletes our savePath.
 func (p *Provider) deleteResourceFile() error {
-	return os.Remove(p.savePath)
+	// p.savePath is the caller-chosen path for our own resources file.
+	return os.Remove(p.savePath) //nolint:gosec // caller-chosen save path
 }
 
 // uniqueResourceName takes the given prefix and appends a unique string to it
 // (a uuid).
 func uniqueResourceName(prefix string) string {
-	u, _ := uuid.NewV4() // this used to return no error, and now I don't want to change my own method signature...
+	// uuid.NewV4() used to return no error, and we don't want to change our own
+	// method signature; on the (essentially impossible) error we fall back to
+	// the zero uuid, preserving the prior behaviour of ignoring the error.
+	u, err := uuid.NewV4()
+	if err != nil {
+		u = uuid.UUID{}
+	}
 
 	return prefix + "-" + u.String()
 }
+
+// maxHostNameLength is the maximum length of a hostname; nameToHostName
+// truncates to this.
+const maxHostNameLength = 63
 
 // nameToHostName makes the given name compatible with being a hostname in the
 // same way that OpenStack horizon does: convert to lower case and convert non
@@ -1047,8 +1186,8 @@ func nameToHostName(name string) string {
 	hostname := strings.ToLower(name)
 
 	hostname = hostNameRegex.ReplaceAllString(hostname, "-")
-	if len(hostname) > 63 {
-		hostname = hostname[0:63]
+	if len(hostname) > maxHostNameLength {
+		hostname = hostname[0:maxHostNameLength]
 	}
 
 	return hostname

@@ -72,6 +72,18 @@ const maxSSHSessions = 10
 var (
 	errConnectionCouldNotBeEstablished = errors.New("connection could not be established")
 	errConnectionAttemptCancelled      = errors.New("connection attempt cancelled")
+	errNeverReady                      = errors.New("cloud server never became ready to use")
+	errWaitReadyCancelled              = errors.New("cloud server waiting for ready was cancelled")
+	errScriptTimeout                   = errors.New("cloud server script failed to complete within")
+	errMissingSSHKey                   = errors.New("missing ssh key")
+	errNoRouteToHostNow                = errors.New("ssh used to work, but now there's no route to host")
+	errSSHGaveUp                       = errors.New("giving up waiting for ssh to work")
+	errSSHCancelled                    = errors.New("cancelled waiting for ssh to work")
+	errSessionTimedOut                 = errors.New("cloud SSHSession() timed out")
+	errSessionCancelled                = errors.New("cloud SSHSession() cancelled")
+	errRunCmdDestroyed                 = errors.New("cloud RunCmd() cancelled due to destruction of server")
+	errRunCmdCancelled                 = errors.New("cloud RunCmd() on server")
+	errProviderNotSet                  = errors.New("provider not set")
 )
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
@@ -104,20 +116,26 @@ func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 		canDo = int(math.Floor(float64(f.Cores) / cores))
 	}
 
-	if canDo > 1 {
-		var n int
-		if ramMB > 0 {
-			n = f.RAM / ramMB
-			if n < canDo {
-				canDo = n
-			}
-		}
+	return capByRAMAndDisk(canDo, f.RAM, ramMB, f.Disk, diskGB)
+}
 
-		if diskGB > 0 {
-			n = f.Disk / diskGB
-			if n < canDo {
-				canDo = n
-			}
+// capByRAMAndDisk reduces canDo so that it does not exceed how many times ramMB
+// fits in availRAM, nor how many times diskGB fits in availDisk. A ramMB or
+// diskGB of 0 (or a canDo of 1 or less) imposes no limit from that resource.
+func capByRAMAndDisk(canDo, availRAM, ramMB, availDisk, diskGB int) int {
+	if canDo <= 1 {
+		return canDo
+	}
+
+	if ramMB > 0 {
+		if n := availRAM / ramMB; n < canDo {
+			canDo = n
+		}
+	}
+
+	if diskGB > 0 {
+		if n := availDisk / diskGB; n < canDo {
+			canDo = n
 		}
 	}
 
@@ -208,36 +226,8 @@ func (s *Server) WaitUntilReady(ctx context.Context, files string, postCreationS
 
 	// wait for sentinelFilePath to exist, indicating that the server is
 	// really ready to use
-	limit := time.After(sentinelTimeOut)
-	ticker := time.NewTicker(1 * time.Second)
-
-SENTINEL:
-	for {
-		select {
-		case <-ticker.C:
-			o, e, fileErr := s.RunCmd(ctx, "file "+sentinelFilePath, false)
-			if fileErr == nil && !strings.Contains(o, "No such file") && !strings.Contains(e, "No such file") {
-				ticker.Stop()
-				// *** o contains "empty"; test for that instead? Does file
-				// behave the same way on all linux variants?
-				_, _, rmErr := s.RunCmd(ctx, "sudo rm "+sentinelFilePath, false)
-				if rmErr != nil {
-					clog.Warn(ctx, "failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
-				}
-
-				break SENTINEL
-			}
-
-			continue SENTINEL
-		case <-limit:
-			ticker.Stop()
-
-			return errors.New("cloud server never became ready to use")
-		case <-ctx.Done():
-			ticker.Stop()
-
-			return errors.New("cloud server waiting for ready was cancelled")
-		}
+	if err = s.waitForSentinel(ctx); err != nil {
+		return err
 	}
 
 	// copy over any desired files
@@ -251,26 +241,78 @@ SENTINEL:
 	}
 
 	// run the postCreationScript
-	if len(postCreationScript) > 0 {
-		err = s.runScript(ctx, postCreationScript)
-		if err != nil {
-			return err
-		}
+	return s.runPostCreationScript(ctx, postCreationScript)
+}
 
-		s.Script = postCreationScript
+// waitForSentinel waits for sentinelFilePath to exist on the server (indicating
+// the server is really ready to use), then removes it. Returns an error if the
+// server never becomes ready or ctx is cancelled.
+func (s *Server) waitForSentinel(ctx context.Context) error {
+	limit := time.After(sentinelTimeOut)
+	ticker := time.NewTicker(1 * time.Second)
 
-		// because the postCreationScript may have altered PATH and other things
-		// that subsequent RunCmd may rely on, clear the clients
-		for _, client := range s.sshClients {
-			err = client.Close()
-			if err != nil {
-				clog.Warn(ctx, "failed to close client ssh connection", "err", err)
+	for {
+		select {
+		case <-ticker.C:
+			if s.sentinelExists(ctx) {
+				ticker.Stop()
+				s.removeSentinel(ctx)
+
+				return nil
 			}
-		}
+		case <-limit:
+			ticker.Stop()
 
-		s.sshClients = []*ssh.Client{}
-		s.sshClientSessions = []int{}
+			return errNeverReady
+		case <-ctx.Done():
+			ticker.Stop()
+
+			return errWaitReadyCancelled
+		}
 	}
+}
+
+// sentinelExists reports whether sentinelFilePath currently exists on the
+// server.
+func (s *Server) sentinelExists(ctx context.Context) bool {
+	o, e, fileErr := s.RunCmd(ctx, "file "+sentinelFilePath, false)
+
+	return fileErr == nil && !strings.Contains(o, "No such file") && !strings.Contains(e, "No such file")
+}
+
+// removeSentinel deletes sentinelFilePath from the server, logging (but not
+// returning) any failure.
+func (s *Server) removeSentinel(ctx context.Context) {
+	// *** o contains "empty"; test for that instead? Does file behave the same
+	// way on all linux variants?
+	_, _, rmErr := s.RunCmd(ctx, "sudo rm "+sentinelFilePath, false)
+	if rmErr != nil {
+		clog.Warn(ctx, "failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
+	}
+}
+
+// runPostCreationScript runs the user's post-creation script (if any) and, on
+// success, clears the cached ssh clients (since the script may have altered
+// PATH and other things subsequent RunCmd relies on).
+func (s *Server) runPostCreationScript(ctx context.Context, postCreationScript []byte) error {
+	if len(postCreationScript) == 0 {
+		return nil
+	}
+
+	if err := s.runScript(ctx, postCreationScript); err != nil {
+		return err
+	}
+
+	s.Script = postCreationScript
+
+	for _, client := range s.sshClients {
+		if err := client.Close(); err != nil {
+			clog.Warn(ctx, "failed to close client ssh connection", "err", err)
+		}
+	}
+
+	s.sshClients = []*ssh.Client{}
+	s.sshClientSessions = []int{}
 
 	return nil
 }
@@ -295,7 +337,22 @@ func (s *Server) runScript(ctx context.Context, script []byte) error {
 		return fmt.Errorf("cloud server script could not be made executable: %w", err)
 	}
 
-	// protect running the script with a timeout
+	if err = s.runScriptWithTimeout(ctx, path); err != nil {
+		return err
+	}
+
+	_, _, rmErr := s.RunCmd(ctx, "rm "+path, false)
+	if rmErr != nil {
+		clog.Warn(ctx, "failed to remove script", "path", path, "err", rmErr)
+	}
+
+	return nil
+}
+
+// runScriptWithTimeout runs the already-uploaded script at the given path on
+// the server, returning an error if it fails (including its STDERR) or doesn't
+// complete within pcsTimeOut.
+func (s *Server) runScriptWithTimeout(ctx context.Context, path string) error {
 	limit := time.After(pcsTimeOut)
 	exiterr := make(chan error, 1)
 
@@ -309,25 +366,20 @@ func (s *Server) runScript(ctx context.Context, script []byte) error {
 	}()
 
 	select {
-	case err = <-exiterr:
-		if err != nil {
-			err = fmt.Errorf("cloud server script failed: %w", err)
-			if len(stderr) > 0 {
-				err = fmt.Errorf("%w\nSTDERR:\n%s", err, stderr)
-			}
-
-			return err
+	case err := <-exiterr:
+		if err == nil {
+			return nil
 		}
+
+		err = fmt.Errorf("cloud server script failed: %w", err)
+		if len(stderr) > 0 {
+			err = fmt.Errorf("%w\nSTDERR:\n%s", err, stderr)
+		}
+
+		return err
 	case <-limit:
-		return fmt.Errorf("cloud server script failed to complete within %s", pcsTimeOut)
+		return fmt.Errorf("%w %s", errScriptTimeout, pcsTimeOut)
 	}
-
-	_, _, rmErr := s.RunCmd(ctx, "rm "+path, false)
-	if rmErr != nil {
-		clog.Warn(ctx, "failed to remove script", "path", path, "err", rmErr)
-	}
-
-	return nil
 }
 
 // SetDestroyScript will result in future Destroy() calls first running the
@@ -344,7 +396,11 @@ func (s *Server) SetDestroyScript(preDestroyScript []byte) {
 // HasSpaceFor, since if you don't match these things you can't use the Server
 // regardless of how empty it is. configFiles is in the CopyOver() format.
 func (s *Server) Matches(os string, script []byte, configFiles string, flavor *Flavor, sharedDisk bool) bool {
-	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID) && s.SharedDisk == sharedDisk
+	return s.OS == os &&
+		bytes.Equal(s.Script, script) &&
+		s.ConfigFiles == configFiles &&
+		(flavor == nil || flavor.ID == s.Flavor.ID) &&
+		s.SharedDisk == sharedDisk
 }
 
 // Allocate considers the current usage (according to prior calls)
@@ -375,15 +431,23 @@ func (s *Server) Allocate(ctx context.Context, cores float64, ramMB, diskGB int)
 	clog.Debug(ctx, "server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores",
 		s.usedCores, "usedZeroCores", s.usedZeroCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
-	// if the host has initiated its countdown to destruction, cancel that
-	if s.onDeathrow {
-		s.cancels++
-		go func() {
-			s.cancelDestruction <- true
-		}()
-	}
+	s.cancelDeathrow()
 
 	return true
+}
+
+// cancelDeathrow cancels any in-progress countdown to destruction. You must
+// hold the mutex.
+func (s *Server) cancelDeathrow() {
+	if !s.onDeathrow {
+		return
+	}
+
+	s.cancels++
+
+	go func() {
+		s.cancelDestruction <- true
+	}()
 }
 
 // getContextWithServerID returns the context with the server id set. For localhost
@@ -391,9 +455,9 @@ func (s *Server) Allocate(ctx context.Context, cores float64, ramMB, diskGB int)
 func (s *Server) getContextWithServerID(ctx context.Context) context.Context {
 	if s.Name == localhostName {
 		return clog.ContextWithServerID(ctx, localhostName)
-	} else {
-		return clog.ContextWithServerID(ctx, s.ID)
 	}
+
+	return clog.ContextWithServerID(ctx, s.ID)
 }
 
 // Used tells you if this server has ever had Allocate() called on it.
@@ -426,68 +490,78 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 	// destroying the host
 	if s.usedCores <= 0 && s.usedZeroCores <= 0 && s.usedRAM <= 0 && s.TTD.Seconds() > 0 {
 		clog.Debug(ctx, "server idle")
-		go func() {
-			defer internal.LogPanic(ctx, "server release", false)
-
-			s.mutex.Lock()
-			if s.onDeathrow {
-				s.mutex.Unlock()
-				clog.Debug(ctx, "server already on deathrow")
-
-				return
-			} else if s.usedCores > 0 || s.usedRAM > 0 {
-				s.mutex.Unlock()
-				clog.Debug(ctx, "allocated before entering deathrow")
-
-				return
-			}
-
-			s.cancelDestruction = make(chan bool)
-			s.onDeathrow = true
-			s.mutex.Unlock()
-
-			timeToDie := time.After(s.TTD)
-			clog.Debug(ctx, "server entering deathrow", "death", time.Now().Add(s.TTD))
-
-			for {
-				select {
-				case <-s.cancelDestruction:
-					// *** this block needed to fail the "Run lots of jobs on a
-					// deathrow server" scheduler test prior to fix, but we have
-					// no reasonable way for a scheduler test to turn this on...
-					// s.mutex.RLock()
-					// if s.cancels <= 5 {
-					// 	s.mutex.RUnlock()
-					// 	<-time.After(2 * time.Second)
-					// } else {
-					// 	s.mutex.RUnlock()
-					// }
-					s.mutex.Lock()
-					for i := 1; i < s.cancels; i++ {
-						<-s.cancelDestruction
-					}
-
-					s.cancels = 0
-					s.onDeathrow = false
-
-					s.mutex.Unlock()
-					clog.Debug(ctx, "server cancelled deathrow")
-
-					return
-				case <-timeToDie:
-					// destroy the server
-					s.mutex.Lock()
-					s.onDeathrow = false
-					s.toBeDestroyed = true
-					s.mutex.Unlock()
-					err := s.Destroy(ctx)
-					clog.Debug(ctx, "server died on deathrow", "err", err)
-
-					return
-				}
-			}
-		}()
+		go s.startDeathrowCountdown(ctx)
 	}
+}
+
+// startDeathrowCountdown puts an idle server on "deathrow": after s.TTD with no
+// new allocations it will be destroyed. A subsequent Allocate() (which sends on
+// s.cancelDestruction) cancels the countdown. Intended to be run in a goroutine.
+func (s *Server) startDeathrowCountdown(ctx context.Context) {
+	defer internal.LogPanic(ctx, "server release", false)
+
+	if !s.enterDeathrow(ctx) {
+		return
+	}
+
+	timeToDie := time.After(s.TTD)
+	clog.Debug(ctx, "server entering deathrow", "death", time.Now().Add(s.TTD))
+
+	select {
+	case <-s.cancelDestruction:
+		// *** this block needed to fail the "Run lots of jobs on a
+		// deathrow server" scheduler test prior to fix, but we have
+		// no reasonable way for a scheduler test to turn this on...
+		// s.mutex.RLock()
+		// if s.cancels <= 5 {
+		// 	s.mutex.RUnlock()
+		// 	<-time.After(2 * time.Second)
+		// } else {
+		// 	s.mutex.RUnlock()
+		// }
+		s.mutex.Lock()
+		for i := 1; i < s.cancels; i++ {
+			<-s.cancelDestruction
+		}
+
+		s.cancels = 0
+		s.onDeathrow = false
+
+		s.mutex.Unlock()
+		clog.Debug(ctx, "server cancelled deathrow")
+	case <-timeToDie:
+		// destroy the server
+		s.mutex.Lock()
+		s.onDeathrow = false
+		s.toBeDestroyed = true
+		s.mutex.Unlock()
+		err := s.Destroy(ctx)
+		clog.Debug(ctx, "server died on deathrow", "err", err)
+	}
+}
+
+// enterDeathrow marks the server as being on deathrow, returning false (without
+// doing so) if it is already on deathrow or has been allocated to again.
+func (s *Server) enterDeathrow(ctx context.Context) bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if s.onDeathrow {
+		clog.Debug(ctx, "server already on deathrow")
+
+		return false
+	}
+
+	if s.usedCores > 0 || s.usedRAM > 0 {
+		clog.Debug(ctx, "allocated before entering deathrow")
+
+		return false
+	}
+
+	s.cancelDestruction = make(chan bool)
+	s.onDeathrow = true
+
+	return true
 }
 
 // HasSpaceFor considers the current usage (according to prior Allocation calls)
@@ -506,47 +580,35 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 		return 0
 	}
 
-	if mth.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
+	notEnoughCores := mth.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores)
+	if notEnoughCores || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
 
-	var canDo int
+	canDo := s.coresCanDo(cores)
 
-	if cores == 0 {
-		// rather than allow an infinite or very large number of cmds to run on
-		// this server, because there are still real limits on the number of
-		// processes we can run at once before things start falling over, we
-		// only allow double the actual core count of zero core things to run
-		// (on top of up to actual core count of non-zero core things).
-		// On a server with "zero" cores, we also allow a reasonable number of
-		// zero core jobs to run
-		if s.Flavor.Cores == 0 {
-			canDo = internal.ZeroCoreMultiplier*internal.ZeroCoreMultiplier - s.usedZeroCores
-		} else {
-			canDo = s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
-		}
-	} else {
-		canDo = int(math.Floor(mth.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
+	return capByRAMAndDisk(canDo, s.Flavor.RAM-s.usedRAM, ramMB, s.Disk-s.usedDisk, diskGB)
+}
+
+// coresCanDo works out how many commands needing the given number of cores can
+// still fit on this server's free cores. You must hold a read lock on mutex.
+func (s *Server) coresCanDo(cores float64) int {
+	if cores != 0 {
+		return int(math.Floor(mth.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}
 
-	if canDo > 1 {
-		var n int
-		if ramMB > 0 {
-			n = (s.Flavor.RAM - s.usedRAM) / ramMB
-			if n < canDo {
-				canDo = n
-			}
-		}
-
-		if diskGB > 0 {
-			n = (s.Disk - s.usedDisk) / diskGB
-			if n < canDo {
-				canDo = n
-			}
-		}
+	// rather than allow an infinite or very large number of cmds to run on
+	// this server, because there are still real limits on the number of
+	// processes we can run at once before things start falling over, we
+	// only allow double the actual core count of zero core things to run
+	// (on top of up to actual core count of non-zero core things).
+	// On a server with "zero" cores, we also allow a reasonable number of
+	// zero core jobs to run
+	if s.Flavor.Cores == 0 {
+		return internal.ZeroCoreMultiplier*internal.ZeroCoreMultiplier - s.usedZeroCores
 	}
 
-	return canDo
+	return s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
 }
 
 // createSSHClientConfig creates an ssh client config and stores it on self.
@@ -556,7 +618,7 @@ func (s *Server) createSSHClientConfig(ctx context.Context) error {
 			clog.Error(ctx, "resource file did not contain the ssh key", "path", s.provider.savePath)
 		}
 
-		return errors.New("missing ssh key")
+		return errMissingSSHKey
 	}
 
 	// parse private key and make config
@@ -577,7 +639,9 @@ func (s *Server) createSSHClientConfig(ctx context.Context) error {
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
+		// *** we don't currently know a freshly spawned server's host key, so we
+		// can't yet use ssh.FixedHostKey(publicKey) instead.
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // host key not known for fresh cloud servers
 		Timeout:         sshShortTimeOut,
 	}
 
@@ -593,26 +657,10 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	ctx = s.getContextWithServerID(ctx)
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	// return a client that is still good (most likely to be a more recent
 	// client)
-	numClients := len(s.sshClients)
-
-	var (
-		client *ssh.Client
-		index  int
-	)
-
-	for i := numClients - 1; i >= 0; i-- {
-		if s.sshClientSessions[i] < maxSSHSessions {
-			client = s.sshClients[i]
-			s.sshClientSessions[i]++
-			index = i
-
-			break
-		}
-	}
-
-	if client != nil {
+	if client, index, ok := s.reuseGoodSSHClient(); ok {
 		return client, index, nil
 	}
 
@@ -620,84 +668,13 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	if s.sshClientConfig == nil {
 		err := s.createSSHClientConfig(ctx)
 		if err != nil {
-			return nil, index, err
+			return nil, 0, err
 		}
 	}
 
-	// dial in to the server, allowing certain errors that indicate that the
-	// network or server isn't really ready for ssh yet; wait for up to
-	// 5mins for success, if we had only just created this server
-	hostAndPort := s.IP + ":22"
-
-	client, err := sshDial(ctx, hostAndPort, s.sshClientConfig)
+	client, err := s.dialNewSSHClient(ctx)
 	if err != nil {
-		// if we're trying to destroy this server, just give up straight away
-		if s.destroyed {
-			return nil, index, err
-		}
-
-		// otherwise, keep trying
-		limit := time.After(sshTimeOut)
-		ticker := time.NewTicker(1 * time.Second)
-		ticks := 0
-
-	DIAL:
-		for {
-			select {
-			case <-ticker.C:
-				client, err = sshDial(ctx, hostAndPort, s.sshClientConfig)
-
-				// if it's a known "ssh still starting up" error, wait until the
-				// timeout, unless ssh had worked previously, in which case
-				// bail immediately if it's "no route to host"
-				if sshMayStillBeStarting(err, s.created) {
-					if s.sshStarted && strings.HasSuffix(err.Error(), "no route to host") {
-						err = errors.New("ssh used to work, but now there's no route to host")
-
-						break DIAL
-					}
-
-					continue DIAL
-				}
-
-				// if it worked, we stop trying; if it failed again with a
-				// different error, we keep trying for at least 45 seconds
-				// to allow for the vagueries of OS start ups (eg. CentOS
-				// brings up sshd and starts rejecting connections before
-				// the centos user gets added)
-				ticks++
-
-				if errors.Is(err, errConnectionAttemptCancelled) {
-					ticker.Stop()
-
-					break DIAL
-				}
-
-				if err == nil || ticks == 9 || !s.created {
-					ticker.Stop()
-
-					break DIAL
-				} else {
-					continue DIAL
-				}
-			case <-limit:
-				ticker.Stop()
-
-				err = errors.New("giving up waiting for ssh to work")
-
-				break DIAL
-			case <-ctx.Done():
-				ticker.Stop()
-
-				err = errors.New("cancelled waiting for ssh to work")
-
-				break DIAL
-			}
-		}
-
-		if err != nil {
-			return nil, index, err
-		}
+		return nil, 0, err
 	}
 
 	s.sshClients = append(s.sshClients, client)
@@ -705,6 +682,118 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	s.sshStarted = true
 
 	return client, len(s.sshClients) - 1, nil
+}
+
+// reuseGoodSSHClient returns an existing ssh client that still has session
+// capacity (incrementing its session count), preferring more recent clients.
+// The bool is false if no such client exists. You must hold the mutex.
+func (s *Server) reuseGoodSSHClient() (*ssh.Client, int, bool) {
+	for i := len(s.sshClients) - 1; i >= 0; i-- {
+		if s.sshClientSessions[i] < maxSSHSessions {
+			s.sshClientSessions[i]++
+
+			return s.sshClients[i], i, true
+		}
+	}
+
+	return nil, 0, false
+}
+
+// dialNewSSHClient dials a new ssh connection to the server, retrying on errors
+// that indicate the network or server isn't ready for ssh yet (waiting up to
+// sshTimeOut if we only just created this server). You must hold the mutex.
+func (s *Server) dialNewSSHClient(ctx context.Context) (*ssh.Client, error) {
+	hostAndPort := s.IP + ":22"
+
+	client, err := sshDial(ctx, hostAndPort, s.sshClientConfig)
+	if err == nil {
+		return client, nil
+	}
+
+	// if we're trying to destroy this server, just give up straight away
+	if s.destroyed {
+		return nil, err
+	}
+
+	// otherwise, keep trying
+	return s.retryDialSSHClient(ctx, hostAndPort)
+}
+
+// retryDialSSHClient repeatedly re-dials the server (once a second) until a
+// connection succeeds, a fatal error occurs, sshTimeOut elapses, or ctx is
+// cancelled. You must hold the mutex.
+func (s *Server) retryDialSSHClient(ctx context.Context, hostAndPort string) (*ssh.Client, error) {
+	limit := time.After(sshTimeOut)
+	ticker := time.NewTicker(1 * time.Second)
+	ticks := 0
+
+	for {
+		select {
+		case <-ticker.C:
+			client, err := sshDial(ctx, hostAndPort, s.sshClientConfig)
+
+			if done, derr := s.assessDialAttempt(err, &ticks); done {
+				ticker.Stop()
+
+				return client, derr
+			}
+		case <-limit:
+			ticker.Stop()
+
+			return nil, errSSHGaveUp
+		case <-ctx.Done():
+			ticker.Stop()
+
+			return nil, errSSHCancelled
+		}
+	}
+}
+
+// maxDialTicks is the number of one-second dial attempts dialNewSSHClient makes
+// (for an already-created server) before giving up on a non-startup error, to
+// allow for the vagueries of OS start ups (eg. CentOS brings up sshd and starts
+// rejecting connections before the centos user gets added).
+const maxDialTicks = 9
+
+// assessDialAttempt decides, given the latest dial error, whether
+// dialNewSSHClient should stop. When done is true, the returned error is the
+// result to return (nil on success). ticks counts only non-startup attempts and
+// is incremented here when appropriate, matching the original loop. You must
+// hold the mutex.
+func (s *Server) assessDialAttempt(err error, ticks *int) (done bool, result error) {
+	if handled, sdone, sresult := s.handleStartupDialError(err); handled {
+		return sdone, sresult
+	}
+
+	*ticks++
+
+	if errors.Is(err, errConnectionAttemptCancelled) {
+		return true, err
+	}
+
+	// if it worked, we stop trying; if it failed again with a different error,
+	// we keep trying for at least maxDialTicks seconds
+	if err == nil || *ticks == maxDialTicks || !s.created {
+		return true, err
+	}
+
+	return false, nil
+}
+
+// handleStartupDialError handles the "ssh still starting up" class of dial
+// errors: if not such an error, handled is false. Otherwise we keep waiting
+// (done false), unless ssh had previously worked and there's now no route to
+// host, in which case we give up.
+func (s *Server) handleStartupDialError(err error) (handled, done bool, result error) {
+	if !sshMayStillBeStarting(err, s.created) {
+		return false, false, nil
+	}
+
+	if s.sshStarted && strings.HasSuffix(err.Error(), "no route to host") {
+		return true, true, errNoRouteToHostNow
+	}
+
+	return true, false, nil
 }
 
 // sshDial calls ssh.Dial() and enforces the config's timeout, which ssh.Dial()
@@ -765,48 +854,7 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 		return nil, clientIndex, fmt.Errorf("cloud SSHSession() failed to get a client: %w", err)
 	}
 
-	// *** even though sshclient has a timeout, it still hangs forever if we
-	// try to get a NewSession to a dead server, so we implement our own 5s
-	// timeout here
-
-	done := make(chan error, 1)
-	worked := make(chan bool, 1)
-	sessionCh := make(chan *ssh.Session, 1)
-
-	go func() {
-		select {
-		case <-time.After(sshShortTimeOut):
-			clog.Debug(ctx, "server ssh timed out", "clientindex", clientIndex)
-
-			done <- errors.New("cloud SSHSession() timed out")
-		case <-ctx.Done():
-			clog.Debug(ctx, "server ssh cancelled", "clientindex", clientIndex)
-
-			done <- errors.New("cloud SSHSession() cancelled")
-		case <-worked:
-			return
-		}
-	}()
-	go func() {
-		defer internal.LogPanic(ctx, "server sshsession", false)
-
-		session, errf := sshClient.NewSession()
-		if errf != nil {
-			clog.Debug(ctx, "server ssh failed", "err", errf, "clientindex", clientIndex)
-
-			done <- fmt.Errorf("cloud SSHSession() failed to establish a session: %w", errf)
-
-			return
-		}
-
-		worked <- true
-
-		done <- nil
-
-		sessionCh <- session
-	}()
-
-	err = <-done
+	session, err := newSSHSessionWithTimeout(ctx, sshClient, clientIndex)
 	if err != nil {
 		s.mutex.Lock()
 		// pretend we're now at max sessions, so this client won't be used again
@@ -818,7 +866,67 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 		return nil, clientIndex, err
 	}
 
-	return <-sessionCh, clientIndex, nil
+	return session, clientIndex, nil
+}
+
+// newSSHSessionWithTimeout creates a new session on the given ssh client,
+// enforcing our own sshShortTimeOut (and honouring ctx cancellation) because
+// sshClient.NewSession() can otherwise hang forever against a dead server.
+func newSSHSessionWithTimeout(ctx context.Context, sshClient *ssh.Client, clientIndex int) (*ssh.Session, error) {
+	done := make(chan error, 1)
+	worked := make(chan bool, 1)
+	sessionCh := make(chan *ssh.Session, 1)
+
+	go watchSSHSessionTimeout(ctx, clientIndex, worked, done)
+	go openSSHSession(ctx, sshClient, clientIndex, worked, sessionCh, done)
+
+	if err := <-done; err != nil {
+		return nil, err
+	}
+
+	return <-sessionCh, nil
+}
+
+// watchSSHSessionTimeout sends a timeout or cancellation error on done if the
+// session isn't established (signalled on worked) within sshShortTimeOut or
+// before ctx is cancelled. Intended to be run in a goroutine.
+func watchSSHSessionTimeout(ctx context.Context, clientIndex int, worked chan bool, done chan error) {
+	select {
+	case <-time.After(sshShortTimeOut):
+		clog.Debug(ctx, "server ssh timed out", "clientindex", clientIndex)
+
+		done <- errSessionTimedOut
+	case <-ctx.Done():
+		clog.Debug(ctx, "server ssh cancelled", "clientindex", clientIndex)
+
+		done <- errSessionCancelled
+	case <-worked:
+		return
+	}
+}
+
+// openSSHSession opens a new session on sshClient, signalling success on worked
+// and delivering the session on sessionCh, or an error on done. Intended to be
+// run in a goroutine.
+func openSSHSession(ctx context.Context, sshClient *ssh.Client, clientIndex int, worked chan bool,
+	sessionCh chan *ssh.Session, done chan error,
+) {
+	defer internal.LogPanic(ctx, "server sshsession", false)
+
+	session, errf := sshClient.NewSession()
+	if errf != nil {
+		clog.Debug(ctx, "server ssh failed", "err", errf, "clientindex", clientIndex)
+
+		done <- fmt.Errorf("cloud SSHSession() failed to establish a session: %w", errf)
+
+		return
+	}
+
+	worked <- true
+
+	done <- nil
+
+	sessionCh <- session
 }
 
 // CloseSSHSession is used to close a session opened with SSHSession(). If the
@@ -905,77 +1013,15 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 	// if the sever is destroyed while running, arrange to immediately return an
 	// error
 	s.mutex.Lock()
-	cancelID := s.cancelID
-	s.cancelID = cancelID + 1
-	cancelCh := make(chan bool, 1)
-	s.cancelRunCmd[cancelID] = cancelCh
+	cancelID, cancelCh := s.registerCancelChannel()
 	done := make(chan error, 1)
 	outCh := make(chan string, 1)
 	errCh := make(chan string, 1)
 	finished := make(chan bool, 1)
 
-	go func() {
-		defer internal.LogPanic(ctx, "server runcmd cancellation", false)
+	go s.watchRunCmdCancellation(ctx, cancelID, cancelCh, finished, outCh, errCh, done)
+	go s.runCmdOnSession(ctx, session, cmd, background, finished, outCh, errCh, done)
 
-		select {
-		case <-cancelCh:
-			outCh <- ""
-
-			errCh <- ""
-
-			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
-		case <-ctx.Done():
-			outCh <- ""
-
-			errCh <- ""
-
-			done <- fmt.Errorf("cloud RunCmd() on server %s cancelled on request", s.ID)
-		case <-finished:
-			// end select
-		}
-
-		s.mutex.Lock()
-		close(cancelCh)
-		delete(s.cancelRunCmd, cancelID)
-		s.mutex.Unlock()
-	}()
-	go func() {
-		defer internal.LogPanic(ctx, "server runcmd", false)
-
-		// run the command, returning stdout
-		if background {
-			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
-		}
-
-		var (
-			o bytes.Buffer
-			e bytes.Buffer
-		)
-
-		session.Stdout = &o
-		session.Stderr = &e
-		errf := session.Run(cmd)
-
-		finished <- true
-
-		if o.Len() > 0 {
-			outCh <- o.String()
-		} else {
-			outCh <- ""
-		}
-
-		if e.Len() > 0 {
-			errCh <- e.String()
-		} else {
-			errCh <- ""
-		}
-
-		if errf != nil {
-			done <- fmt.Errorf("cloud RunCmd(%s) failed: %w", cmd, errf)
-		} else {
-			done <- nil
-		}
-	}()
 	s.mutex.Unlock()
 
 	err = <-done
@@ -985,16 +1031,102 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 	return stdout, stderr, err
 }
 
+// registerCancelChannel allocates a unique cancellation id and channel for an
+// in-flight RunCmd and records it so Destroy() can cancel the command. You must
+// hold the mutex.
+func (s *Server) registerCancelChannel() (int, chan bool) {
+	cancelID := s.cancelID
+	s.cancelID = cancelID + 1
+	cancelCh := make(chan bool, 1)
+	s.cancelRunCmd[cancelID] = cancelCh
+
+	return cancelID, cancelCh
+}
+
+// watchRunCmdCancellation waits for the command to finish, the server to be
+// destroyed, or ctx to be cancelled; in the latter two cases it sends empty
+// output and a cancellation error on the channels. It always deregisters the
+// command's cancel channel before returning. Intended to be run in a goroutine.
+func (s *Server) watchRunCmdCancellation(ctx context.Context, cancelID int, cancelCh, finished chan bool,
+	outCh, errCh chan string, done chan error,
+) {
+	defer internal.LogPanic(ctx, "server runcmd cancellation", false)
+
+	select {
+	case <-cancelCh:
+		outCh <- ""
+
+		errCh <- ""
+
+		done <- fmt.Errorf("%w %s", errRunCmdDestroyed, s.ID)
+	case <-ctx.Done():
+		outCh <- ""
+
+		errCh <- ""
+
+		done <- fmt.Errorf("%w %s cancelled on request", errRunCmdCancelled, s.ID)
+	case <-finished:
+		// end select
+	}
+
+	s.mutex.Lock()
+	close(cancelCh)
+	delete(s.cancelRunCmd, cancelID)
+	s.mutex.Unlock()
+}
+
+// runCmdOnSession runs cmd on the given session (optionally backgrounded),
+// reporting its stdout, stderr and result on the channels. Intended to be run
+// in a goroutine.
+func (s *Server) runCmdOnSession(ctx context.Context, session *ssh.Session, cmd string, background bool,
+	finished chan bool, outCh, errCh chan string, done chan error,
+) {
+	defer internal.LogPanic(ctx, "server runcmd", false)
+
+	// run the command, returning stdout
+	if background {
+		cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
+	}
+
+	var (
+		o bytes.Buffer
+		e bytes.Buffer
+	)
+
+	session.Stdout = &o
+	session.Stderr = &e
+	errf := session.Run(cmd)
+
+	finished <- true
+
+	// Buffer.String() returns "" for an empty buffer, which is what we want
+	outCh <- o.String()
+
+	errCh <- e.String()
+
+	if errf != nil {
+		done <- fmt.Errorf("cloud RunCmd(%s) failed: %w", cmd, errf)
+	} else {
+		done <- nil
+	}
+}
+
+// sftpClient establishes an ssh client to the server and returns an sftp client
+// on top of it. The caller is responsible for closing the returned client.
+func (s *Server) sftpClient(ctx context.Context) (*sftp.Client, error) {
+	sshClient, _, err := s.SSHClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return SFTPClient(sshClient)
+}
+
 // UploadFile uploads a local file to the given location on the server.
 func (s *Server) UploadFile(ctx context.Context, source string, dest string) error {
 	ctx = s.getContextWithServerID(ctx)
 
-	sshClient, _, err := s.SSHClient(ctx)
-	if err != nil {
-		return err
-	}
-
-	client, err := SFTPClient(sshClient)
+	client, err := s.sftpClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -1044,59 +1176,77 @@ func (s *Server) CopyOver(ctx context.Context, files string) error {
 	ctx = s.getContextWithServerID(ctx)
 
 	for path := range strings.SplitSeq(files, ",") {
-		split := strings.Split(path, ":")
-
-		var localPath, remotePath string
-		if len(split) == 2 {
-			localPath = split[0]
-			remotePath = split[1]
-		} else {
-			localPath = path
-			remotePath = path
-		}
-
-		// ignore if it doesn't exist locally
-		localPath = internal.TildaToHome(localPath)
-
-		info, err := os.Stat(localPath)
-		if err != nil {
-			err = nil
-
-			continue
-		}
-
-		if strings.HasPrefix(remotePath, "~/") {
-			homeDir, errh := s.HomeDir(ctx)
-			if errh != nil {
-				return errh
-			}
-
-			remotePath = strings.TrimLeft(remotePath, "~/")
-			remotePath = filepath.Join(homeDir, remotePath)
-		}
-
-		err = s.UploadFile(ctx, localPath, remotePath)
-		if err != nil {
-			return err
-		}
-
-		// if these are config files we likely need to make them user-only read,
-		// and if they're not, I can't see how it matters if group/all can't
-		// read? This is a single user server and I'm the only one using it...
-		_, _, err = s.RunCmd(ctx, "chmod 600 "+remotePath, false)
-		if err != nil {
-			return err
-		}
-
-		// sometimes the mtime of the file matters, so we try and set that on
-		// the remote copy
-		_, _, err = s.RunCmd(ctx, fmt.Sprintf("touch -d %s %s", info.ModTime().Format(touchStampFormat), remotePath), false)
-		if err != nil {
+		if err := s.copyOverPath(ctx, path); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// localRemotePathParts is the number of colon-separated parts in a CopyOver
+// path that explicitly specifies both a local and a remote path.
+const localRemotePathParts = 2
+
+// copyOverPath handles a single comma-separated entry of CopyOver's files
+// argument. A local path that doesn't exist is silently skipped.
+func (s *Server) copyOverPath(ctx context.Context, path string) error {
+	localPath, remotePath := splitCopyOverPath(path)
+
+	// ignore if it doesn't exist locally
+	localPath = internal.TildaToHome(localPath)
+
+	info, exists := localFileInfo(localPath)
+	if !exists {
+		return nil
+	}
+
+	if strings.HasPrefix(remotePath, "~/") {
+		homeDir, errh := s.HomeDir(ctx)
+		if errh != nil {
+			return errh
+		}
+
+		remotePath = strings.TrimLeft(remotePath, "~/")
+		remotePath = filepath.Join(homeDir, remotePath)
+	}
+
+	if err := s.UploadFile(ctx, localPath, remotePath); err != nil {
+		return err
+	}
+
+	// if these are config files we likely need to make them user-only read,
+	// and if they're not, I can't see how it matters if group/all can't
+	// read? This is a single user server and I'm the only one using it...
+	if _, _, err := s.RunCmd(ctx, "chmod 600 "+remotePath, false); err != nil {
+		return err
+	}
+
+	// sometimes the mtime of the file matters, so we try and set that on
+	// the remote copy
+	_, _, err := s.RunCmd(ctx, fmt.Sprintf("touch -d %s %s", info.ModTime().Format(touchStampFormat), remotePath), false)
+
+	return err
+}
+
+// localFileInfo returns os.Stat info for the given local path, and whether it
+// could be stat'd at all (a path we can't stat is treated as not present, and
+// silently skipped by CopyOver).
+func localFileInfo(localPath string) (os.FileInfo, bool) {
+	info, err := os.Stat(localPath)
+
+	return info, err == nil
+}
+
+// splitCopyOverPath splits a CopyOver path into its local and remote parts. A
+// "local:remote" form specifies them separately; otherwise both are the path.
+func splitCopyOverPath(path string) (localPath, remotePath string) {
+	split := strings.Split(path, ":")
+	if len(split) == localRemotePathParts {
+		return split[0], split[1]
+	}
+
+	return path, path
 }
 
 // HomeDir gets the absolute path to the server's home directory. Depends on
@@ -1124,12 +1274,7 @@ func (s *Server) HomeDir(ctx context.Context) (string, error) {
 func (s *Server) CreateFile(ctx context.Context, content string, dest string) error {
 	ctx = s.getContextWithServerID(ctx)
 
-	sshClient, _, err := s.SSHClient(ctx)
-	if err != nil {
-		return err
-	}
-
-	client, err := SFTPClient(sshClient)
+	client, err := s.sftpClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -1159,12 +1304,7 @@ func (s *Server) CreateFile(ctx context.Context, content string, dest string) er
 func (s *Server) DownloadFile(ctx context.Context, source string, dest string) error {
 	ctx = s.getContextWithServerID(ctx)
 
-	sshClient, _, err := s.SSHClient(ctx)
-	if err != nil {
-		return err
-	}
-
-	client, err := SFTPClient(sshClient)
+	client, err := s.sftpClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -1190,7 +1330,7 @@ func (s *Server) DownloadFile(ctx context.Context, source string, dest string) e
 		return err
 	}
 
-	return os.Chmod(dest, 0o600)
+	return os.Chmod(dest, ownerReadWrite)
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.
@@ -1240,6 +1380,10 @@ func (s *Server) MkDir(ctx context.Context, dir string) error {
 // already created. NB: this is currently hard-coded to only work on Ubuntu, and
 // the ability to sudo is required! Also assumes you don't have any other shares
 // configured, and no other process started the NFS server!
+// createSharedDiskTimeout bounds how long the whole CreateSharedDisk sequence
+// (apt-get install, etc.) may take.
+const createSharedDiskTimeout = 120 * time.Second
+
 func (s *Server) CreateSharedDisk() error {
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
@@ -1248,16 +1392,42 @@ func (s *Server) CreateSharedDisk() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), createSharedDiskTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get update && sudo apt-get install nfs-kernel-server -y") // #nosec
-
-	err := cmd.Run()
-	if err != nil {
+	if err := runBashCommand(ctx, "sudo apt-get update && sudo apt-get install nfs-kernel-server -y"); err != nil {
 		return err
 	}
 
+	if err := s.ensureExportsEntry(ctx); err != nil {
+		return err
+	}
+
+	if err := s.ensureSharePathDir(ctx); err != nil {
+		return err
+	}
+
+	// the split of "export"+"fs" is to avoid a false-positive spelling mistake
+	if err := runBashCommand(ctx, "sudo systemctl start nfs-kernel-server.service && sudo export"+"fs -a"); err != nil {
+		return err
+	}
+
+	s.createdShare = true
+	s.SharedDisk = true
+
+	return nil
+}
+
+// runBashCommand runs the given command line via "bash -c" under ctx.
+func runBashCommand(ctx context.Context, command string) error {
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+
+	return cmd.Run()
+}
+
+// ensureExportsEntry adds an NFS export entry for sharePath to /etc/exports if
+// one is not already present.
+func (s *Server) ensureExportsEntry(ctx context.Context) error {
 	f, err := os.Open("/etc/exports")
 	if err != nil {
 		return err
@@ -1266,53 +1436,28 @@ func (s *Server) CreateSharedDisk() error {
 	defer internal.LogClose(ctx, f, "/etc/exports")
 
 	scanner := bufio.NewScanner(f)
-
-	var found bool
-
 	for scanner.Scan() {
 		if strings.HasPrefix(scanner.Text(), sharePath) {
-			found = true
-
-			break
+			return nil
 		}
 	}
 
-	if !found {
-		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath)) // #nosec
+	return runBashCommand(ctx, fmt.Sprintf(
+		"echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath))
+}
 
-		err = cmd.Run()
-		if err != nil {
-			return err
-		}
+// ensureSharePathDir creates sharePath (owned by the server's user) if it does
+// not already exist.
+func (s *Server) ensureSharePathDir(ctx context.Context) error {
+	if _, errs := os.Stat(sharePath); errs == nil || !os.IsNotExist(errs) {
+		return nil
 	}
 
-	if _, errs := os.Stat(sharePath); errs != nil && os.IsNotExist(errs) {
-		cmd = exec.CommandContext(ctx, "bash", "-c", "sudo mkdir "+sharePath) // #nosec
-
-		errs = cmd.Run()
-		if errs != nil {
-			return errs
-		}
-
-		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, sharePath)) // #nosec
-
-		errs = cmd.Run()
-		if errs != nil {
-			return errs
-		}
-	}
-
-	cmd = exec.CommandContext(ctx, "bash", "-c", "sudo systemctl start nfs-kernel-server.service && sudo export"+"fs -a") // #nosec (the split is to avoid a false-positive spelling mistake)
-
-	err = cmd.Run()
-	if err != nil {
+	if err := runBashCommand(ctx, "sudo mkdir "+sharePath); err != nil {
 		return err
 	}
 
-	s.createdShare = true
-	s.SharedDisk = true
-
-	return nil
+	return runBashCommand(ctx, fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, sharePath))
 }
 
 // MountSharedDisk can be used to mount a share from another Server (identified
@@ -1342,10 +1487,7 @@ func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error 
 
 	clog.Debug(ctx, "ran MkDir")
 
-	stdo, stde, err := s.RunCmd(ctx, fmt.Sprintf("sudo mount %s:%s %s", nfsServerIP, sharePath, sharePath), false)
-	if err != nil {
-		clog.Error(ctx, "mount attempt failed", "stdout", stdo, "stderr", stde)
-
+	if err = s.mountNFS(ctx, nfsServerIP); err != nil {
 		return err
 	}
 
@@ -1353,6 +1495,19 @@ func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error 
 	s.SharedDisk = true
 
 	clog.Debug(ctx, "mounted shared disk")
+
+	return nil
+}
+
+// mountNFS mounts the NFS share exported by nfsServerIP at sharePath, logging
+// the command output on failure.
+func (s *Server) mountNFS(ctx context.Context, nfsServerIP string) error {
+	stdo, stde, err := s.RunCmd(ctx, fmt.Sprintf("sudo mount %s:%s %s", nfsServerIP, sharePath, sharePath), false)
+	if err != nil {
+		clog.Error(ctx, "mount attempt failed", "stdout", stdo, "stderr", stde)
+
+		return err
+	}
 
 	return nil
 }
@@ -1436,6 +1591,43 @@ func (s *Server) Destroy(ctx context.Context) error {
 		return nil
 	}
 
+	s.cancelInFlightWork()
+
+	s.toBeDestroyed = false
+	s.destroyed = true
+
+	s.attemptCleanShutdown(ctx)
+	s.closeSSHClients(ctx)
+
+	if s.goneBad.IsZero() {
+		s.goneBad = time.Now()
+	}
+
+	// for testing purposes, we anticipate that provider isn't set
+	if s.provider == nil {
+		return errProviderNotSet
+	}
+
+	return s.destroyViaProvider(ctx)
+}
+
+// attemptCleanShutdown, if ssh has ever worked for this server, ssh's in to run
+// any destroy script and cleanly shut down. It briefly releases the mutex while
+// doing so (which the caller must hold), reacquiring it before returning.
+func (s *Server) attemptCleanShutdown(ctx context.Context) {
+	if !s.sshStarted {
+		return
+	}
+
+	destroyScript := s.DestroyScript
+	s.mutex.Unlock()
+	s.cleanShutdownOverSSH(ctx, destroyScript)
+	s.mutex.Lock()
+}
+
+// cancelInFlightWork cancels any deathrow countdown and signals any in-progress
+// RunCmd calls to return an error. You must hold the mutex.
+func (s *Server) cancelInFlightWork() {
 	// if the server has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
 		s.cancelDestruction <- true
@@ -1445,79 +1637,96 @@ func (s *Server) Destroy(ctx context.Context) error {
 	for _, ch := range s.cancelRunCmd {
 		ch <- true
 	}
+}
 
-	s.toBeDestroyed = false
-	s.destroyed = true
-
-	if s.sshStarted {
-		destroyScript := s.DestroyScript
-		s.mutex.Unlock()
-
-		// sync the filesystem and run any user script
-		t := time.Now()
-
-		session, clientIndex, err := s.SSHSession(context.Background())
-		if err != nil {
-			clog.Warn(ctx, "failed to ssh to cleanly shutdown", "took", time.Since(t), "err", err)
-		} else {
-			if len(destroyScript) > 0 {
-				t = time.Now()
-				err = s.runScript(ctx, destroyScript)
-
-				rt := time.Since(t)
-				if err != nil {
-					clog.Warn(ctx, "user destroy script failed", "took", rt, "err", err)
-				} else if rt > 3*time.Minute {
-					clog.Warn(ctx, "user destroy script took a long time", "took", rt)
-				}
-			}
-
-			t = time.Now()
-			stdo, stde, err := s.RunCmd(context.Background(), cleanShutDownCmd, false)
-
-			rt := time.Since(t)
-			if err != nil {
-				clog.Warn(ctx, "clean shutdown failed", "took", rt, "err", err, "stdout", stdo, "stderr", stde)
-			} else if rt > 10*time.Second {
-				clog.Warn(ctx, "clean shutdown took a long time", "took", rt, "stdout", stdo)
-			}
-
-			s.CloseSSHSession(ctx, session, clientIndex)
-		}
-
-		s.mutex.Lock()
-	}
-
-	// explicitly close any client connections
+// closeSSHClients explicitly closes any open ssh client connections, warning
+// about unexpected close errors. You must hold the mutex.
+func (s *Server) closeSSHClients(ctx context.Context) {
 	for _, client := range s.sshClients {
 		err := client.Close()
 		s.closeWarning(ctx, err)
 	}
+}
 
-	if s.goneBad.IsZero() {
-		s.goneBad = time.Now()
+// maxCleanShutdownScriptTime and maxCleanShutdownCmdTime are how long the user
+// destroy script and the clean shutdown command may take before we log that
+// they took a long time.
+const (
+	maxCleanShutdownScriptTime = 3 * time.Minute
+	maxCleanShutdownCmdTime    = 10 * time.Second
+)
+
+// cleanShutdownOverSSH ssh's to the server to run any user destroy script and
+// then the clean shutdown command. Failures are logged, not returned, since we
+// are destroying the server regardless. Must be called without holding the
+// mutex.
+//
+// We deliberately ssh using context.Background() rather than the caller's ctx:
+// Destroy() is frequently called precisely because the caller's ctx was
+// cancelled, but we still want to attempt a clean shutdown.
+func (s *Server) cleanShutdownOverSSH(ctx context.Context, destroyScript []byte) {
+	t := time.Now()
+
+	// detached ctx (see doc comment)
+	session, clientIndex, err := s.SSHSession(context.Background()) //nolint:contextcheck // detached, see doc comment
+	if err != nil {
+		clog.Warn(ctx, "failed to ssh to cleanly shutdown", "took", time.Since(t), "err", err)
+
+		return
 	}
 
-	// for testing purposes, we anticipate that provider isn't set
-	if s.provider == nil {
-		return errors.New("provider not set")
+	if len(destroyScript) > 0 {
+		s.runDestroyScript(ctx, destroyScript)
 	}
 
+	t = time.Now()
+	// detached ctx (see doc comment)
+	//nolint:contextcheck // detached, see doc comment
+	stdo, stde, err := s.RunCmd(context.Background(), cleanShutDownCmd, false)
+
+	rt := time.Since(t)
+	if err != nil {
+		clog.Warn(ctx, "clean shutdown failed", "took", rt, "err", err, "stdout", stdo, "stderr", stde)
+	} else if rt > maxCleanShutdownCmdTime {
+		clog.Warn(ctx, "clean shutdown took a long time", "took", rt, "stdout", stdo)
+	}
+
+	s.CloseSSHSession(ctx, session, clientIndex)
+}
+
+// runDestroyScript runs the user's pre-destroy script over an existing ssh
+// connection, logging (but not returning) any failure or slowness.
+func (s *Server) runDestroyScript(ctx context.Context, destroyScript []byte) {
+	t := time.Now()
+	err := s.runScript(ctx, destroyScript)
+
+	rt := time.Since(t)
+	if err != nil {
+		clog.Warn(ctx, "user destroy script failed", "took", rt, "err", err)
+	} else if rt > maxCleanShutdownScriptTime {
+		clog.Warn(ctx, "user destroy script took a long time", "took", rt)
+	}
+}
+
+// destroyViaProvider asks the provider to destroy the server, treating a
+// "server no longer exists" situation as success.
+func (s *Server) destroyViaProvider(ctx context.Context) error {
 	err := s.provider.DestroyServer(ctx, s.ID)
 	clog.Debug(ctx, "server destroyed", "err", err)
 
-	if err != nil {
-		// check if the server exists
-		ok, errc := s.provider.CheckServer(ctx, s.ID)
-		if ok && errc == nil {
-			return err
-		}
-		// if not, assume there's no Server and ignore this error (which may
-		// just be along the lines of "the server doesn't exist")
+	if err == nil {
 		return nil
 	}
 
-	return err
+	// check if the server exists
+	ok, errc := s.provider.CheckServer(ctx, s.ID)
+	if ok && errc == nil {
+		return err
+	}
+
+	// if not, assume there's no Server and ignore this error (which may
+	// just be along the lines of "the server doesn't exist")
+	return nil
 }
 
 // Destroyed tells you if a server was destroyed using Destroy() or the
@@ -1544,23 +1753,33 @@ func (s *Server) Alive(ctx context.Context, checkSSH ...bool) bool {
 	}
 
 	ok, errc := s.provider.CheckServer(ctx, s.ID)
-	if !ok || errc != nil {
-		s.mutex.Unlock()
-
-		return false
-	}
 	s.mutex.Unlock()
 
-	if len(checkSSH) == 1 && checkSSH[0] {
-		// provider may claim the server is fine, but it might not really be
-		// usable; confirm we can still ssh to it
-		session, clientIndex, err := s.SSHSession(context.Background())
-		if err != nil {
-			return false
-		}
-
-		s.CloseSSHSession(ctx, session, clientIndex)
+	if !ok || errc != nil {
+		return false
 	}
+
+	if len(checkSSH) == 1 && checkSSH[0] {
+		return s.aliveOverSSH(ctx)
+	}
+
+	return true
+}
+
+// aliveOverSSH double-checks a server the provider claims is fine really is
+// usable, by confirming we can still ssh to it.
+//
+// We deliberately ssh using context.Background() rather than the caller's ctx:
+// the session has its own timeout, and callers expect this check to work even
+// when their ctx has been cancelled.
+func (s *Server) aliveOverSSH(ctx context.Context) bool {
+	// detached ctx (see doc comment)
+	session, clientIndex, err := s.SSHSession(context.Background()) //nolint:contextcheck // detached, see doc comment
+	if err != nil {
+		return false
+	}
+
+	s.CloseSSHSession(ctx, session, clientIndex)
 
 	return true
 }
