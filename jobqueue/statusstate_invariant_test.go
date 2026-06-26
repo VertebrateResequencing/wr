@@ -188,7 +188,12 @@ func TestStatusStateTransitionInvariant(t *testing.T) {
 			repGroup := "invariant-lost"
 
 			// lower the TTR so this job becomes lost shortly after it starts.
-			server.SetItemTTR(300 * time.Millisecond)
+			// subscriptionLostItemTTR has enough headroom that the reserve ->
+			// Started setup below completes before the TTR can reclaim the job
+			// (the TTR clock starts at Reserve), so jstart can't race it under the
+			// race detector on a loaded CI runner, while the job still goes lost
+			// promptly (the pollUntil below returns as soon as it does).
+			server.SetItemTTR(subscriptionLostItemTTR)
 
 			ids, erra := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 1), envVars, true)
 			So(erra, ShouldBeNil)

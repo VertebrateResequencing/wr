@@ -908,7 +908,15 @@ func TestREST(t *testing.T) {
 
 	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
 	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
-	serverConfig.Timings.ItemTTR = 200 * time.Millisecond
+	// subscriptionLostItemTTR is short enough that the never-touched job in the
+	// "DELETE lost jobs" subtest still goes lost promptly (that subtest polls for
+	// the state), yet long enough that the reserve -> Started -> touch lifecycle
+	// subtests here can't have their setup reclaimed mid-flight under the race
+	// detector on a loaded CI runner (the TTR clock starts at Reserve, so a
+	// sub-second TTR can fire before Started lands, failing jstart with "bad
+	// job"). A touched/short-lived job is never reclaimed, so this is free on the
+	// success path.
+	serverConfig.Timings.ItemTTR = subscriptionLostItemTTR
 	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
 
