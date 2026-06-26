@@ -31,12 +31,23 @@ import (
 )
 
 // statusSubscriber represents one connected status web UI client. Each client
-// has its own dirty set so that clients connecting at different times each
-// receive the full current state followed by only the RepGroups that change
-// thereafter. The wake channel is a buffered, edge-triggered signal: applying a
+// receives an initial seed (the live-only current state, see liveSeedLocked)
+// followed by only the RepGroups that change thereafter, tracked in its dirty
+// set. The wake channel is a buffered, edge-triggered signal: applying a
 // transition signals every subscriber without ever blocking the queue-mutation
 // path.
+//
+// seed holds the filtered snapshot a freshly-connected (or refreshed) client
+// receives on its first drain: only RepGroups with at least one live job, with
+// the terminal deleted state excluded, matching what the page rendered before
+// the absolute-state rework. It is captured atomically at subscribe time and
+// consumed (set to nil) by the first drain. dirty, by contrast, accumulates
+// RepGroups that transition AFTER subscribe and is drained with their full
+// current counts (including deleted and complete), so an already-connected
+// client still sees the transient red deleted bar and keeps a RepGroup that
+// completes while the page is open.
 type statusSubscriber struct {
+	seed  map[string]map[JobState]int
 	dirty map[string]struct{}
 	wake  chan struct{}
 }
@@ -87,6 +98,32 @@ func (s *statusState) seed(counts map[string]map[JobState]int) {
 	}
 }
 
+// liveSeedLocked returns the fresh-connect seed: a copy of every RepGroup that
+// has at least one live job, with the terminal deleted state excluded from each
+// (complete is kept so a partly-finished RepGroup shows its progress). The
+// statusAllRepGroups aggregate already holds only live states, so it is included
+// whenever it is non-empty. Complete-only and deleted-only RepGroups are dropped
+// entirely. Must be called with mu held; no internal map escapes the lock.
+func (s *statusState) liveSeedLocked() map[string]map[JobState]int {
+	seed := make(map[string]map[JobState]int, len(s.counts))
+
+	for repGroup, stateCounts := range s.counts {
+		if repGroup == statusAllRepGroups {
+			if live := cleanCountCopy(stateCounts); len(live) > 0 {
+				seed[repGroup] = live
+			}
+
+			continue
+		}
+
+		if live := liveCountCopy(stateCounts); len(live) > 0 {
+			seed[repGroup] = live
+		}
+	}
+
+	return seed
+}
+
 // cleanCountCopy returns a fresh copy of a state-count map with any non-positive
 // entries dropped, so callers and the wire never see negative or zero clutter. A
 // nil input yields a non-nil empty map.
@@ -98,6 +135,27 @@ func cleanCountCopy(stateCounts map[JobState]int) map[JobState]int {
 	for state, count := range out {
 		if count <= 0 {
 			delete(out, state)
+		}
+	}
+
+	return out
+}
+
+// liveCountCopy returns a fresh copy of a per-RepGroup state-count map with the
+// terminal deleted state dropped and non-positive entries removed, but ONLY if
+// the RepGroup has at least one live (non-terminal) job; otherwise it returns an
+// empty map so the caller omits the RepGroup. complete is retained (a live
+// RepGroup keeps its already-finished progress); deleted is never seeded.
+func liveCountCopy(stateCounts map[JobState]int) map[JobState]int {
+	if !hasLiveJob(stateCounts) {
+		return nil
+	}
+
+	out := make(map[JobState]int, len(stateCounts))
+
+	for state, count := range stateCounts {
+		if count > 0 && state != JobStateDeleted {
+			out[state] = count
 		}
 	}
 
@@ -180,11 +238,17 @@ func signalWake(wake chan struct{}) {
 	}
 }
 
-// subscribe registers a new subscriber, seeding its dirty set with every
-// RepGroup currently known so that the subscriber's first drain returns the full
-// current state. Registration happens under mu so no concurrent transition is
-// missed: a transition either runs before subscribe (its result is in the seeded
-// full state) or after (it marks the new subscriber dirty).
+// subscribe registers a new subscriber, capturing the live-only seed a freshly
+// connected (or refreshed) client must receive as its first drain: every
+// RepGroup with at least one live job, with the terminal deleted state excluded,
+// plus the statusAllRepGroups live aggregate. Complete-only and deleted-only
+// RepGroups are omitted, matching the pre-rework `current` snapshot, so a page
+// refreshed after the RepGroup's jobs were removed shows no row for it.
+//
+// Registration happens under mu so no concurrent transition is missed: a
+// transition either runs before subscribe (its result is in the captured seed)
+// or after (it marks the new subscriber dirty, and dirty is drained with full
+// counts, so the live deleted/complete states still reach the client).
 func (s *statusState) subscribe() *statusSubscriber {
 	sub := &statusSubscriber{
 		dirty: make(map[string]struct{}),
@@ -194,10 +258,7 @@ func (s *statusState) subscribe() *statusSubscriber {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for repGroup := range s.counts {
-		sub.dirty[repGroup] = struct{}{}
-	}
-
+	sub.seed = s.liveSeedLocked()
 	s.subs[sub] = struct{}{}
 
 	// ensure the first drain fires even if there are no RepGroups yet, so a
@@ -215,20 +276,34 @@ func (s *statusState) unsubscribe(sub *statusSubscriber) {
 	delete(s.subs, sub)
 }
 
-// drain returns the absolute counts for every RepGroup currently dirty for the
-// subscriber, clearing its dirty set. The returned counts are fresh copies, so
-// no internal map ever escapes the lock. A RepGroup that is dirty but no longer
-// present yields an empty count map (all states zero), which the client applies
-// as "this RepGroup has no jobs" without removing the row.
+// drain returns the absolute counts a subscriber needs to apply since its last
+// drain. The first drain after subscribe returns the live-only seed (see
+// liveSeedLocked) merged with any RepGroup that transitioned between subscribe
+// and now; subsequent drains return only the RepGroups currently dirty. Dirty
+// RepGroups are drained with their full current counts (including deleted and
+// complete), so an already-connected client sees the transient red deleted bar
+// and keeps a RepGroup that completes while the page is open; a dirty entry
+// overrides any seed entry for the same RepGroup, as it is the newer state.
+//
+// The returned counts are fresh copies, so no internal map ever escapes the
+// lock. A RepGroup that is dirty but no longer present yields an empty count map
+// (all states zero), which the client applies as "this RepGroup has no jobs"
+// without removing the row.
 func (s *statusState) drain(sub *statusSubscriber) map[string]map[JobState]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(sub.dirty) == 0 {
+	if sub.seed == nil && len(sub.dirty) == 0 {
 		return nil
 	}
 
-	out := make(map[string]map[JobState]int, len(sub.dirty))
+	out := sub.seed
+	if out == nil {
+		out = make(map[string]map[JobState]int, len(sub.dirty))
+	}
+
+	sub.seed = nil
+
 	for repGroup := range sub.dirty {
 		out[repGroup] = cleanCountCopy(s.counts[repGroup])
 	}
@@ -250,4 +325,17 @@ func (s *statusState) snapshot() map[string]map[JobState]int {
 	}
 
 	return out
+}
+
+// hasLiveJob reports whether the state counts include at least one job in a
+// non-terminal state (anything other than complete or deleted) with a positive
+// count.
+func hasLiveJob(stateCounts map[JobState]int) bool {
+	for state, count := range stateCounts {
+		if count > 0 && state != JobStateComplete && state != JobStateDeleted {
+			return true
+		}
+	}
+
+	return false
 }

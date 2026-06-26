@@ -201,6 +201,131 @@ func TestStatusStateLockOrder(t *testing.T) {
 	})
 }
 
+// TestStatusStateSeedSemantics covers the fresh-connect seed a refreshed or
+// newly-loaded status page receives as its first drain (issue: removed jobs
+// reappear after refresh). The seed must match the old `current` snapshot: a
+// RepGroup is included only if it has >=1 LIVE (non-terminal) job; for those it
+// sends the live states plus complete but NEVER deleted; complete-only and
+// deleted-only RepGroups are omitted entirely. Live updates AFTER subscribe must
+// still deliver complete and deleted (the transient red bar and the
+// completes-while-open retain) to already-connected clients.
+func TestStatusStateSeedSemantics(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("a fresh subscriber's seed only shows live RepGroups and never deleted", t, func() {
+		ss := newStatusState()
+
+		// liveRG ends with live + complete + deleted (a removal mid-flight that
+		// left some jobs still ready and some already complete).
+		ss.applyTransition(JobStateNew, JobStateReady, "liveRG", 5)
+		ss.applyTransition(JobStateReady, JobStateComplete, "liveRG", 2)
+		ss.applyTransition(JobStateReady, JobStateDeleted, "liveRG", 1)
+
+		// doneRG ends complete-only (all its jobs finished normally).
+		ss.applyTransition(JobStateNew, JobStateReady, "doneRG", 3)
+		ss.applyTransition(JobStateReady, JobStateComplete, "doneRG", 3)
+
+		// goneRG ends deleted-only (every job was removed before completing) -
+		// this is the echo-after-`wr remove -a` shape with no completes.
+		ss.applyTransition(JobStateNew, JobStateReady, "goneRG", 4)
+		ss.applyTransition(JobStateReady, JobStateDeleted, "goneRG", 4)
+
+		sub := ss.subscribe()
+		defer ss.unsubscribe(sub)
+
+		seed := ss.drain(sub)
+		So(seed, ShouldNotBeNil)
+
+		Convey("a live+complete+deleted RepGroup seeds as live+complete, no deleted", func() {
+			So(seed, ShouldContainKey, "liveRG")
+			So(seed["liveRG"][JobStateReady], ShouldEqual, 2)
+			So(seed["liveRG"][JobStateComplete], ShouldEqual, 2)
+			_, hasDeleted := seed["liveRG"][JobStateDeleted]
+			So(hasDeleted, ShouldBeFalse)
+		})
+
+		Convey("a complete-only RepGroup is omitted from the seed", func() {
+			So(seed, ShouldNotContainKey, "doneRG")
+		})
+
+		Convey("a deleted-only RepGroup is omitted from the seed", func() {
+			So(seed, ShouldNotContainKey, "goneRG")
+		})
+
+		Convey("the +all+ live aggregate is seeded (and excludes terminal states)", func() {
+			So(seed, ShouldContainKey, statusAllRepGroups)
+			So(seed[statusAllRepGroups][JobStateReady], ShouldEqual, 2)
+			_, hasComplete := seed[statusAllRepGroups][JobStateComplete]
+			So(hasComplete, ShouldBeFalse)
+
+			_, hasDeleted := seed[statusAllRepGroups][JobStateDeleted]
+			So(hasDeleted, ShouldBeFalse)
+		})
+	})
+
+	Convey("a transition AFTER subscribe still delivers deleted to that client", t, func() {
+		ss := newStatusState()
+		ss.applyTransition(JobStateNew, JobStateReady, "rg", 5)
+
+		sub := ss.subscribe()
+		defer ss.unsubscribe(sub)
+
+		// drain the seed first (rg is live, so present, no deleted yet).
+		seed := ss.drain(sub)
+		_, hasDeleted := seed["rg"][JobStateDeleted]
+		So(hasDeleted, ShouldBeFalse)
+
+		// now a removal happens while this client is connected: the live red
+		// deleted bar MUST be delivered to it.
+		ss.applyTransition(JobStateReady, JobStateDeleted, "rg", 2)
+
+		update := ss.drain(sub)
+		So(update, ShouldContainKey, "rg")
+		So(update["rg"][JobStateDeleted], ShouldEqual, 2)
+		So(update["rg"][JobStateReady], ShouldEqual, 3)
+	})
+
+	Convey("a RepGroup that completes WHILE connected stays delivered (260625-6 live-retain)", t, func() {
+		ss := newStatusState()
+		ss.applyTransition(JobStateNew, JobStateReady, "rg", 4)
+
+		sub := ss.subscribe()
+		defer ss.unsubscribe(sub)
+
+		// drain the seed (rg is live).
+		So(ss.drain(sub), ShouldContainKey, "rg")
+
+		// rg now completes entirely while the page is open; the connected client
+		// must still receive the complete count so the row stays visible.
+		ss.applyTransition(JobStateReady, JobStateComplete, "rg", 4)
+
+		update := ss.drain(sub)
+		So(update, ShouldContainKey, "rg")
+		So(update["rg"][JobStateComplete], ShouldEqual, 4)
+		So(update["rg"][JobStateReady], ShouldEqual, 0)
+	})
+
+	Convey("a transition between subscribe and the first drain is included in the seed", t, func() {
+		ss := newStatusState()
+		ss.applyTransition(JobStateNew, JobStateReady, "rg", 2)
+
+		sub := ss.subscribe()
+		defer ss.unsubscribe(sub)
+
+		// a removal races in before the very first drain; the seed must reflect
+		// current state (the client renders whatever the first drain holds), and
+		// a transition observed live this way may carry deleted.
+		ss.applyTransition(JobStateReady, JobStateDeleted, "rg", 2)
+
+		seed := ss.drain(sub)
+		So(seed, ShouldContainKey, "rg")
+		So(seed["rg"][JobStateDeleted], ShouldEqual, 2)
+		So(seed["rg"][JobStateReady], ShouldEqual, 0)
+	})
+}
+
 func TestStatusState(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -291,24 +416,24 @@ func TestStatusState(t *testing.T) {
 		})
 	})
 
-	Convey("statusState seeds and replays full state to subscribers", t, func() {
+	Convey("statusState seeds and replays the live current state to subscribers", t, func() {
 		ss := newStatusState()
 		ss.seed(map[string]map[JobState]int{
 			"rgA": {JobStateRunning: 2, JobStateComplete: 4},
 			"rgB": {JobStateReady: 1},
 		})
 
-		Convey("a new subscriber's first drain is the full current state", func() {
+		Convey("a new subscriber's first drain is the live current state (complete kept on live groups)", func() {
 			sub := ss.subscribe()
 			defer ss.unsubscribe(sub)
 
 			full := ss.drain(sub)
 			So(full, ShouldNotBeNil)
+			// rgA has live running jobs, so it is seeded with its live states
+			// plus its already-finished complete count.
 			So(full["rgA"][JobStateRunning], ShouldEqual, 2)
 			So(full["rgA"][JobStateComplete], ShouldEqual, 4)
 			So(full["rgB"][JobStateReady], ShouldEqual, 1)
-			// the aggregate is seeded as whatever was provided; subsequent
-			// transitions keep it consistent.
 
 			Convey("thereafter only changed RepGroups are drained", func() {
 				// nothing changed since the full drain.
@@ -325,9 +450,16 @@ func TestStatusState(t *testing.T) {
 			})
 		})
 
-		Convey("reconnect (a fresh subscription) gets the full current map again", func() {
+		// A reconnect is a brand-new subscription, so it gets the same live-only
+		// seed a fresh page load gets. A RepGroup that became complete-only while
+		// the (now closed) connection was up is terminal, so it is omitted from
+		// the reconnect seed - the user-visible fix for removed/finished jobs
+		// reappearing after a refresh. This replaces the previous assertion that a
+		// reconnect re-sent complete-only RepGroups (the regressed behaviour).
+		Convey("reconnect (a fresh subscription) gets the live-only current map, omitting now-complete groups", func() {
 			sub1 := ss.subscribe()
 			ss.drain(sub1)
+			// rgA's last 2 running jobs complete, so rgA is now complete-only.
 			ss.applyTransition(JobStateRunning, JobStateComplete, "rgA", 2)
 			ss.unsubscribe(sub1)
 
@@ -336,8 +468,7 @@ func TestStatusState(t *testing.T) {
 			defer ss.unsubscribe(sub2)
 
 			full := ss.drain(sub2)
-			So(full["rgA"][JobStateRunning], ShouldEqual, 0)
-			So(full["rgA"][JobStateComplete], ShouldEqual, 6)
+			So(full, ShouldNotContainKey, "rgA")
 			So(full["rgB"][JobStateReady], ShouldEqual, 1)
 		})
 	})
