@@ -31,6 +31,7 @@ package jobqueue
 // This file contains the functions to implement a jobqueue server.
 
 import (
+	"cmp"
 	"context"
 	crand "crypto/rand"
 	"crypto/tls"
@@ -107,11 +108,45 @@ const (
 	jobOverridePreferHigherReqs    = uint8(1)
 	jobOverrideAlwaysUseJobReqs    = uint8(2)
 	mbPerGB                        = 1024
+	defaultUploadDir               = "/tmp"
+
+	// signalChanBuffer is the buffer size for the OS signal channel, large
+	// enough to hold a SIGINT and a SIGTERM.
+	signalChanBuffer = 2
+
+	// serverListenWait is how long Serve() waits for ListenAndServe() to start
+	// listening before declaring itself ready.
+	serverListenWait = 10 * time.Millisecond
+
+	// ownerReadWrite is the file mode for files only the owning user may read
+	// or write (used for the auth token and uploaded files).
+	ownerReadWrite = 0o600
+
+	// ttrReleaseWait is how long the TTR callback waits for a lost item to
+	// return to the run queue before releasing it.
+	ttrReleaseWait = 50 * time.Millisecond
+
+	// webSocketIDLength is the number of characters in a generated websocket
+	// connection identifier.
+	webSocketIDLength = 8
+
+	// httpReadHeaderTimeout bounds how long the web server will wait for
+	// request headers, mitigating Slowloris-style attacks.
+	httpReadHeaderTimeout = 60 * time.Second
+
+	// portCheckDialTimeout is how long shutdown waits when probing whether a
+	// server port is still being listened to.
+	portCheckDialTimeout = 10 * time.Millisecond
+
+	// drainPollInterval is how often Drain() polls the queue to see whether all
+	// runners have finished.
+	drainPollInterval = 1 * time.Second
 )
 
 // ServerVersion gets set during build:
-// go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`".
-var ServerVersion string
+// go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=\
+// `git describe --tags --always --long --dirty`".
+var ServerVersion string //nolint:gochecknoglobals // set at build time via -ldflags
 
 // these global variables hold the default values for the corresponding
 // ServerTimings fields (and a few non-timing knobs). The timing ones are no
@@ -119,6 +154,8 @@ var ServerVersion string
 // ServerTimings in Serve() (see ServerConfig.Timings) -- so different servers
 // (eg. in parallel tests) can use different values without racing on shared
 // globals.
+//
+//nolint:gochecknoglobals // mutable package defaults for ServerTimings; tests override them per-server
 var (
 	ServerInterruptTime                             = 1 * time.Second
 	ServerItemTTR                                   = 60 * time.Second
@@ -301,7 +338,9 @@ type ServerInfo struct {
 	PID        int    // process id of server
 	Deployment string // deployment the server is running under
 	Scheduler  string // the name of the scheduler that jobs are being submitted to
-	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain|Paused if draining or paused
+	// Mode is ServerModeNormal if the server is running normally, or
+	// ServerModeDrain|Paused if draining or paused.
+	Mode string
 
 	// the following timing parameters are sent to clients on connection, so
 	// that client behaviour (touch frequency, reconnection backoff) defaults to
@@ -1686,6 +1725,182 @@ type ServerConfig struct {
 	forceBackups bool
 }
 
+// resolveServerLogger returns the logger to use for the server: the one
+// configured (namespaced), or a new logger that discards everything if none
+// was configured.
+func resolveServerLogger(config ServerConfig) log15.Logger {
+	if config.Logger == nil {
+		// log debug statements and "harmless" errors not worth returning (or
+		// not possible to return), along with panics, to a discarding logger
+		logger := log15.New()
+		logger.SetHandler(log15.DiscardHandler())
+
+		return logger
+	}
+
+	return config.Logger.New()
+}
+
+// persistToken writes the auth token to tokenFile, doing nothing if tokenFile
+// is empty.
+func persistToken(tokenFile string, token []byte) error {
+	if tokenFile == "" {
+		return nil
+	}
+
+	return os.WriteFile(tokenFile, token, ownerReadWrite)
+}
+
+// joinStartupMessages combines the certificate message (if any) with the
+// database startup message, separating them with a full stop when both are set.
+func joinStartupMessages(certMsg, dbMsg string) string {
+	switch {
+	case certMsg == "":
+		return dbMsg
+	case dbMsg == "":
+		return certMsg
+	default:
+		return certMsg + ". " + dbMsg
+	}
+}
+
+// closeOnError calls closeFn (typically a deferred resource close) only when
+// *errp is already non-nil, wrapping any close error into *errp under name so
+// the original error is preserved.
+func closeOnError(errp *error, name string, closeFn func() error) {
+	if *errp == nil {
+		return
+	}
+
+	if errc := closeFn(); errc != nil {
+		*errp = fmt.Errorf("%w; %s close also failed: %w", *errp, name, errc)
+	}
+}
+
+// ensureCertificates checks that the configured TLS cert/key files exist,
+// generating self-signed ones rooted at certDomain if they don't. It returns a
+// message describing any certificate that was created (empty if none was).
+func ensureCertificates(config ServerConfig, certDomain string, serverLogger log15.Logger) (string, error) {
+	if internal.CheckCerts(config.CertFile, config.KeyFile) == nil {
+		return "", nil
+	}
+
+	// if not, generate our own
+	err := internal.GenerateCerts(config.CAFile, config.CertFile, config.KeyFile, certDomain,
+		internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
+	if err != nil {
+		serverLogger.Error("GenerateCerts failed", "err", err)
+
+		return "", err
+	}
+
+	return "created a new key and certificate for TLS", nil
+}
+
+// earliestCertExpiry returns the sooner of the CA and server certificate expiry
+// times, erroring if either has already expired or cannot be read.
+func earliestCertExpiry(caFile, certFile string) (time.Time, error) {
+	expiry, err := internal.CertExpiry(caFile)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if time.Now().After(expiry) {
+		return time.Time{}, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
+	}
+
+	expiry2, err := internal.CertExpiry(certFile)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if time.Now().After(expiry2) {
+		return time.Time{}, internal.CertError{Type: internal.ErrExpiredCert, Path: certFile}
+	}
+
+	if expiry2.Before(expiry) {
+		expiry = expiry2
+	}
+
+	return expiry, nil
+}
+
+// configureAndListen sets the command socket's receive options, verifies the
+// certificates have not expired, and starts listening for TLS connections,
+// returning the earliest certificate expiry time.
+func configureAndListen(sock mangos.Socket, interruptTime time.Duration,
+	caFile, certFile, keyFile, port string) (time.Time, error) {
+	// we open ourselves up to possible denial-of-service attack if a client
+	// sends us tons of data, but at least the client doesn't silently hang
+	// forever when it legitimately wants to Add() a ton of jobs
+	// unlimited Recv() length
+	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
+		return time.Time{}, err
+	}
+
+	// we'll wait ServerInterruptTime to recv from clients before trying again,
+	// allowing us to check if signals have been passed
+	if err := sock.SetOption(mangos.OptionRecvDeadline, interruptTime); err != nil {
+		return time.Time{}, err
+	}
+
+	// check certificate expiry, because everything breaks with generic errors
+	// when it expires
+	expiry, err := earliestCertExpiry(caFile, certFile)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	// have mangos listen using TLS over TCP
+	if err := listenTLS(sock, caFile, certFile, keyFile, port); err != nil {
+		return time.Time{}, err
+	}
+
+	return expiry, nil
+}
+
+// listenTLS makes the given socket listen for TLS-over-TCP connections on port,
+// using the configured certificate and (if readable) CA pool.
+func listenTLS(sock mangos.Socket, caFile, certFile, keyFile, port string) error {
+	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+	listenOpts := make(map[string]any)
+
+	caCert, err := os.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
+
+	listenOpts[mangos.OptionTLSConfig] = tlsConfig
+
+	return sock.ListenOptions("tls+tcp://0.0.0.0:"+port, listenOpts)
+}
+
+// currentServerIP determines the non-loopback IP address other machines should
+// use to reach this server, honouring config.DomainMatchesIP.
+func currentServerIP(config ServerConfig, serverLogger log15.Logger) (string, error) {
+	if config.DomainMatchesIP {
+		return config.CertDomain, nil
+	}
+
+	ip, err := internal.CurrentIP(config.CIDR)
+	if err != nil {
+		serverLogger.Error("getting current IP failed", "err", err)
+	}
+
+	if ip == "" {
+		return "", Error{"Serve", "", ErrNoHost}
+	}
+
+	return ip, nil
+}
+
 // Serve is for use by a server executable and makes it start listening on
 // localhost at the configured port for Connect()ions from clients, and then
 // handles those clients.
@@ -1714,18 +1929,10 @@ type ServerConfig struct {
 // job scheduler, using the configured shell. It determines the command line to
 // execute for your runner client from the configured RunnerCmd string you
 // supplied.
+//
+//nolint:gocyclo,funlen // entry point: sequential fallible setup + large Server literal, already split into helpers
 func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, token []byte, err error) {
-	// if a logger was configured we will log debug statements and "harmless"
-	// errors not worth returning (or not possible to return), along with
-	// panics. Otherwise we create a default logger that discards all log
-	// attempts.
-	serverLogger := config.Logger
-	if serverLogger == nil {
-		serverLogger = log15.New()
-		serverLogger.SetHandler(log15.DiscardHandler())
-	} else {
-		serverLogger = serverLogger.New()
-	}
+	serverLogger := resolveServerLogger(config)
 
 	defer internal.LogPanic(ctx, "jobqueue serve", true)
 
@@ -1744,26 +1951,11 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	certFile := config.CertFile
 	keyFile := config.KeyFile
 
-	certDomain := config.CertDomain
-	if certDomain == "" {
-		certDomain = localhost
-	}
+	certDomain := cmp.Or(config.CertDomain, localhost)
 
-	err = internal.CheckCerts(certFile, keyFile)
-
-	var certMsg string
-
+	certMsg, err := ensureCertificates(config, certDomain, serverLogger)
 	if err != nil {
-		// if not, generate our own
-		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain,
-			internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
-		if err != nil {
-			serverLogger.Error("GenerateCerts failed", "err", err)
-
-			return s, msg, token, err
-		}
-
-		certMsg = "created a new key and certificate for TLS"
+		return s, msg, token, err
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
@@ -1771,13 +1963,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		ctx, config.DBFile, config.DBFileBackup, config.Deployment,
 		!config.dontWipeDevDB, config.forceBackups,
 	)
-	if certMsg != "" {
-		if msg == "" {
-			msg = certMsg
-		} else {
-			msg = certMsg + ". " + msg
-		}
-	}
+	msg = joinStartupMessages(certMsg, msg)
 
 	if err != nil {
 		return s, msg, token, err
@@ -1786,84 +1972,19 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	db.recSecRound = timings.RecSecRound
 	db.recMBRound = timings.RecMBRound
 
-	defer func() {
-		if err != nil {
-			errc := db.close(ctx)
-			if errc != nil {
-				err = fmt.Errorf("%w; db close also failed: %w", err, errc)
-			}
-		}
-	}()
+	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
 
 	sock, err := xrep.NewSocket()
 	if err != nil {
 		return s, msg, token, err
 	}
-	defer func() {
-		if err != nil {
-			errc := sock.Close()
-			if errc != nil {
-				err = fmt.Errorf("%w; socket close also failed: %w", err, errc)
-			}
-		}
-	}()
 
-	// we open ourselves up to possible denial-of-service attack if a client
-	// sends us tons of data, but at least the client doesn't silently hang
-	// forever when it legitimately wants to Add() a ton of jobs
-	// unlimited Recv() length
-	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return s, msg, token, err
-	}
+	defer func() { closeOnError(&err, "socket", sock.Close) }()
 
-	// we'll wait ServerInterruptTime to recv from clients before trying again,
-	// allowing us to check if signals have been passed
-	if err = sock.SetOption(mangos.OptionRecvDeadline, timings.InterruptTime); err != nil {
-		return s, msg, token, err
-	}
+	var expiry time.Time
 
-	// check certificate expiry, because everything breaks with generic errors
-	// when it expires
-	expiry, err := internal.CertExpiry(caFile)
+	expiry, err = configureAndListen(sock, timings.InterruptTime, caFile, certFile, keyFile, config.Port)
 	if err != nil {
-		return s, msg, token, err
-	}
-
-	if time.Now().After(expiry) {
-		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
-	}
-
-	expiry2, err := internal.CertExpiry(certFile)
-	if err != nil {
-		return s, msg, token, err
-	}
-
-	if time.Now().After(expiry2) {
-		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: certFile}
-	}
-
-	if expiry2.Before(expiry) {
-		expiry = expiry2
-	}
-
-	// have mangos listen using TLS over TCP
-	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return s, msg, token, err
-	}
-
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
-	listenOpts := make(map[string]any)
-
-	caCert, err := os.ReadFile(caFile)
-	if err == nil {
-		certPool := x509.NewCertPool()
-		certPool.AppendCertsFromPEM(caCert)
-		tlsConfig.RootCAs = certPool
-	}
-
-	listenOpts[mangos.OptionTLSConfig] = tlsConfig
-	if err = sock.ListenOptions("tls+tcp://0.0.0.0:"+config.Port, listenOpts); err != nil {
 		return s, msg, token, err
 	}
 
@@ -1874,7 +1995,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// the right moment during the shutdown process. To know when all the
 	// goroutines we start actually finish, the shutdown process will check a
 	// waitgroup as well.
-	sigs := make(chan os.Signal, 2)
+	sigs := make(chan os.Signal, signalChanBuffer)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 
 	stopSigHandling := make(chan bool, 1)
@@ -1885,18 +2006,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	var ip string
-	if config.DomainMatchesIP {
-		ip = config.CertDomain
-	} else {
-		ip, err = internal.CurrentIP(config.CIDR)
-		if err != nil {
-			serverLogger.Error("getting current IP failed", "err", err)
-		}
-
-		if ip == "" {
-			return s, msg, token, Error{"Serve", "", ErrNoHost}
-		}
+	ip, err := currentServerIP(config, serverLogger)
+	if err != nil {
+		return s, msg, token, err
 	}
 
 	// we will spawn runner clients via the requested job scheduler
@@ -1905,10 +2017,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		return s, msg, token, err
 	}
 
-	uploadDir := config.UploadDir
-	if uploadDir == "" {
-		uploadDir = "/tmp"
-	}
+	uploadDir := cmp.Or(config.UploadDir, defaultUploadDir)
 
 	// our limiter will use a callback that gets group limits from our database
 	l := limiter.New(db.retrieveLimitGroup)
@@ -1964,334 +2073,438 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// need to load those in to our queue now
 	s.createQueue(ctx)
 
-	// seed the absolute status state with the completed jobs already on disk
-	// from any prior run. This happens BEFORE the recovery enqueue below, whose
-	// queue-change callbacks add the live (ready/running/...) counts on top of
-	// these completed counts. Completed jobs never enter the queue, so they have
-	// no callback; the two sources are disjoint (completed jobs that are also
-	// live are excluded by the DB), so there is no double counting.
-	if err = s.seedStatusStateFromCompletedDB(); err != nil {
+	if err = s.loadPriorState(ctx, config, db); err != nil {
 		return nil, msg, token, err
-	}
-
-	priorJobs, err := db.recoverIncompleteJobs()
-	if err != nil {
-		return nil, msg, token, err
-	}
-
-	if len(priorJobs) > 0 {
-		var (
-			loginUser string
-			ttd       time.Duration
-		)
-
-		if cloudConfig, ok := config.SchedulerConfig.(scheduler.CloudConfig); ok {
-			// *** for server recovery purposes, which involves ssh'ing to
-			// existing servers and monitoring them, we need to know the login
-			// username, but we don't. The best we can do is hope the configured
-			// default username is the right one
-			loginUser = cloudConfig.GetOSUser()
-			ttd = cloudConfig.GetServerKeepTime()
-		}
-
-		var itemdefs []*queue.ItemDef
-
-		for _, job := range priorJobs {
-			var (
-				deps                []string
-				waitingForDepGroups []string
-			)
-
-			deps, waitingForDepGroups, err = job.Dependencies.incompleteJobKeys(s.db)
-			if err != nil {
-				return nil, msg, token, err
-			}
-
-			job.setWaitingForDepGroups(waitingForDepGroups)
-
-			itemdef := &queue.ItemDef{
-				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
-				Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
-				Dependencies: deps,
-			}
-
-			switch job.State {
-			case JobStateRunning:
-				itemdef.StartQueue = queue.SubQueueRun
-
-				if len(job.LimitGroups) > 0 {
-					if s.limiter.Increment(ctx, job.LimitGroups) {
-						// (our note of incrementation done in the server that died
-						//  is not stored in the db)
-						job.noteIncrementedLimitGroups(job.LimitGroups)
-					}
-				}
-
-				req := reqForScheduler(job.Requirements)
-
-				errr := s.scheduler.Recover(ctx, fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(ctx, req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
-				if errr != nil {
-					clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
-				}
-
-				s.recoveredRunningJobs[job.Key()] = true
-			case JobStateBuried:
-				itemdef.StartQueue = queue.SubQueueBury
-			case JobStateSuspended:
-				itemdef.StartQueue = queue.SubQueueSuspended
-			}
-
-			itemdefs = append(itemdefs, itemdef)
-		}
-
-		_, _, err = s.enqueueItems(ctx, itemdefs)
-		if err != nil {
-			return nil, msg, token, err
-		}
 	}
 
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
 	certExpired := time.After(time.Until(expiry))
 
-	go func() {
-		// log panics and die
-		defer internal.LogPanic(ctx, "jobqueue serving", true)
-
-		for {
-			select {
-			case sig := <-sigs:
-				var reason string
-
-				switch sig {
-				case os.Interrupt:
-					reason = ErrClosedInt
-				case syscall.SIGTERM:
-					reason = ErrClosedTerm
-				}
-
-				signal.Stop(sigs)
-				s.shutdown(ctx, reason, true, false)
-
-				return
-			case <-certExpired:
-				signal.Stop(sigs)
-				s.shutdown(ctx, ErrClosedCert, true, false)
-			case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
-				signal.Stop(sigs)
-
-				return
-			}
-		}
-	}()
+	go s.handleSignals(ctx, sigs, certExpired, stopSigHandling)
 
 	// set up the web interface
 	ready := make(chan bool)
 	wgk := wg.Add(1)
 
-	go func() {
-		// log panics and die
-		defer internal.LogPanic(ctx, "jobqueue web server", true)
-		defer wg.Done(wgk)
-
-		mux := http.NewServeMux()
-		mux.HandleFunc("/", webInterfaceStatic(ctx, s))
-		mux.HandleFunc("/status_ws", webInterfaceStatusWS(ctx, s))
-		mux.HandleFunc(restJobsEndpoint, restJobs(ctx, s))
-		mux.HandleFunc(restWarningsEndpoint, restWarnings(ctx, s))
-		mux.HandleFunc(restBadServersEndpoint, restBadServers(ctx, s))
-		mux.HandleFunc(restFileUploadEndpoint, restFileUpload(ctx, s))
-		mux.HandleFunc(restInfoEndpoint, restInfo(ctx, s))
-		mux.HandleFunc(restVersionEndpoint, restVersion(ctx, s))
-		srv := &http.Server{Addr: httpAddr, Handler: mux}
-		wgk2 := wg.Add(1)
-
-		go func() {
-			defer internal.LogPanic(ctx, "jobqueue web server listenAndServe", true)
-			defer wg.Done(wgk2)
-
-			errs := srv.ListenAndServeTLS(certFile, keyFile)
-			if errs != nil && !errors.Is(errs, http.ErrServerClosed) {
-				clog.Error(ctx, "server web interface had problems", "err", errs)
-			}
-		}()
-
-		s.httpServer = srv
-
-		wgk4 := wg.Add(1)
-
-		go func() {
-			defer internal.LogPanic(ctx, "jobqueue web server casting", true)
-			defer wg.Done(wgk4)
-
-			s.badServerCaster.Broadcasting(0)
-		}()
-
-		wgk5 := wg.Add(1)
-
-		go func() {
-			defer internal.LogPanic(ctx, "jobqueue web server scheduler casting", true)
-			defer wg.Done(wgk5)
-
-			s.schedCaster.Broadcasting(0)
-		}()
-
-		badServerCB := func(server *cloud.Server) {
-			s.bsmutex.Lock()
-			skip := false
-
-			if server.IsBad() {
-				// double check that due to timing issues this server hasn't
-				// been destroyed, which is not something to warn anyone about
-				if server.Destroyed() {
-					skip = true
-				} else {
-					s.badServers[server.ID] = server
-
-					// arrange to confirm this dead after the configured time
-					if config.AutoConfirmDead > 0 {
-						go func(id string) {
-							<-time.After(config.AutoConfirmDead)
-							s.bsmutex.Lock()
-							defer s.bsmutex.Unlock()
-
-							if badServer, exists := s.badServers[id]; exists && badServer.BadDuration() >= config.AutoConfirmDead {
-								delete(s.badServers, id)
-
-								waited := badServer.BadDuration()
-								errd := badServer.Destroy(ctx)
-								clog.Warn(ctx, "server destroyed after remaining bad for some time", "server", id, "waited", waited, "err", errd)
-
-								serverIDs := make(map[string]bool)
-								serverIDs[id] = true
-								s.killJobsOnServers(ctx, serverIDs)
-
-								if errd == nil {
-									// make the message in the web interface
-									// about this server go away
-									s.badServerCaster.Send(&BadServer{
-										ID:      id,
-										Name:    badServer.Name,
-										IP:      badServer.IP,
-										Date:    time.Now().Unix(),
-										IsBad:   false,
-										Problem: badServer.PermanentProblem(),
-									})
-								}
-							}
-						}(server.ID)
-					}
-				}
-			} else {
-				delete(s.badServers, server.ID)
-			}
-			s.bsmutex.Unlock()
-
-			if !skip {
-				s.badServerCaster.Send(&BadServer{
-					ID:      server.ID,
-					Name:    server.Name,
-					IP:      server.IP,
-					Date:    time.Now().Unix(),
-					IsBad:   server.IsBad(),
-					Problem: server.PermanentProblem(),
-				})
-			}
-		}
-		s.scheduler.SetBadServerCallBack(ctx, badServerCB)
-
-		messageCB := func(msg string) {
-			s.simutex.Lock()
-
-			var (
-				si      *schedulerIssue
-				existed bool
-			)
-			if si, existed = s.schedIssues[msg]; existed {
-				si.LastDate = time.Now().Unix()
-				si.Count++
-			} else {
-				si = &schedulerIssue{
-					Msg:       msg,
-					FirstDate: time.Now().Unix(),
-					LastDate:  time.Now().Unix(),
-					Count:     1,
-				}
-				s.schedIssues[msg] = si
-			}
-			s.simutex.Unlock()
-			s.schedCaster.Send(si)
-		}
-		s.scheduler.SetMessageCallBack(ctx, messageCB)
-
-		// wait a while for ListenAndServe() to start listening
-		<-time.After(10 * time.Millisecond)
-
-		ready <- true
-	}()
+	go s.serveWebInterface(ctx, config, httpAddr, certFile, keyFile, wg, wgk, ready)
 
 	<-ready
 
 	// store token on disk
-	if config.TokenFile != "" {
-		err = os.WriteFile(config.TokenFile, token, 0o600)
-		if err != nil {
-			return s, msg, token, err
-		}
+	if err = persistToken(config.TokenFile, token); err != nil {
+		return s, msg, token, err
 	}
 
 	// now that we're ready, set up responding to command-line clients
 	wgk = wg.Add(1)
 
-	go func() {
-		// log panics and die
-		defer internal.LogPanic(ctx, "jobqueue serving", true)
-		defer wg.Done(wgk)
-		defer close(clientHandlingDone)
-
-		for {
-			select {
-			case <-stopClientHandling: // s.shutdown() sends this
-				return
-			default:
-				// receive a clientRequest from a client
-				m, rerr := sock.RecvMsg()
-				if rerr != nil {
-					s.krmutex.RLock()
-					inShutdown := s.killRunners
-					s.krmutex.RUnlock()
-
-					if !inShutdown && !errors.Is(rerr, mangos.ErrRecvTimeout) {
-						clog.Error(ctx, "Server socket Receive error", "err", rerr)
-					}
-
-					continue
-				}
-
-				// parse the request, do the desired work and respond to the client
-				wgk2 := wg.Add(1)
-
-				go func() {
-					// log panics and continue
-					defer internal.LogPanic(ctx, "jobqueue server client handling", false)
-					defer wg.Done(wgk2)
-
-					herr := s.handleRequest(ctx, m)
-					if ServerLogClientErrors && herr != nil {
-						s.krmutex.RLock()
-						inShutdown := s.killRunners
-						s.krmutex.RUnlock()
-
-						if !inShutdown {
-							clog.Error(ctx, "Server handle client request error", "err", herr)
-						}
-					}
-				}()
-			}
-		}
-	}()
+	go s.serveClients(ctx, sock, wg, wgk, stopClientHandling, clientHandlingDone)
 
 	return s, msg, token, err
+}
+
+// serveWebInterface runs the server's HTTP web interface and REST API, starts
+// the status broadcasters, and registers the scheduler callbacks, signalling
+// ready once ListenAndServe has had time to start.
+func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, httpAddr, certFile,
+	keyFile string, wg *waitgroup.WaitGroup, wgk string, ready chan<- bool) {
+	// log panics and die
+	defer internal.LogPanic(ctx, "jobqueue web server", true)
+	defer wg.Done(wgk)
+
+	srv := &http.Server{Addr: httpAddr, Handler: s.newWebMux(ctx), ReadHeaderTimeout: httpReadHeaderTimeout}
+
+	wgk2 := wg.Add(1)
+	go s.runHTTPServer(ctx, srv, certFile, keyFile, wg, wgk2)
+
+	s.httpServer = srv
+
+	s.startBroadcasters(ctx, wg)
+
+	s.scheduler.SetBadServerCallBack(ctx, func(server *cloud.Server) {
+		s.handleBadServerUpdate(ctx, server, config.AutoConfirmDead)
+	})
+
+	s.scheduler.SetMessageCallBack(ctx, s.recordSchedulerMessage)
+
+	// wait a while for ListenAndServe() to start listening
+	<-time.After(serverListenWait)
+
+	ready <- true
+}
+
+// runHTTPServer serves the web interface over TLS until the server is shut
+// down, logging any unexpected error.
+func (s *Server) runHTTPServer(ctx context.Context, srv *http.Server, certFile, keyFile string,
+	wg *waitgroup.WaitGroup, wgk string) {
+	defer internal.LogPanic(ctx, "jobqueue web server listenAndServe", true)
+	defer wg.Done(wgk)
+
+	errs := srv.ListenAndServeTLS(certFile, keyFile)
+	if errs != nil && !errors.Is(errs, http.ErrServerClosed) {
+		clog.Error(ctx, "server web interface had problems", "err", errs)
+	}
+}
+
+// newWebMux builds the HTTP request multiplexer for the web interface and REST
+// API.
+func (s *Server) newWebMux(ctx context.Context) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", webInterfaceStatic(ctx, s))
+	mux.HandleFunc("/status_ws", webInterfaceStatusWS(ctx, s))
+	mux.HandleFunc(restJobsEndpoint, restJobs(ctx, s))
+	mux.HandleFunc(restWarningsEndpoint, restWarnings(ctx, s))
+	mux.HandleFunc(restBadServersEndpoint, restBadServers(ctx, s))
+	mux.HandleFunc(restFileUploadEndpoint, restFileUpload(ctx, s))
+	mux.HandleFunc(restInfoEndpoint, restInfo(ctx, s))
+	mux.HandleFunc(restVersionEndpoint, restVersion(ctx, s))
+
+	return mux
+}
+
+// startBroadcasters launches the goroutines that broadcast bad-server and
+// scheduler-issue updates to web interface clients.
+func (s *Server) startBroadcasters(ctx context.Context, wg *waitgroup.WaitGroup) {
+	wgk4 := wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue web server casting", true)
+		defer wg.Done(wgk4)
+
+		s.badServerCaster.Broadcasting(0)
+	}()
+
+	wgk5 := wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue web server scheduler casting", true)
+		defer wg.Done(wgk5)
+
+		s.schedCaster.Broadcasting(0)
+	}()
+}
+
+// serveClients receives client requests from the command socket and handles
+// each in its own goroutine until stopClientHandling is signalled.
+func (s *Server) serveClients(ctx context.Context, sock mangos.Socket, wg *waitgroup.WaitGroup,
+	wgk string, stopClientHandling <-chan bool, clientHandlingDone chan<- struct{}) {
+	// log panics and die
+	defer internal.LogPanic(ctx, "jobqueue serving", true)
+	defer wg.Done(wgk)
+	defer close(clientHandlingDone)
+
+	for {
+		select {
+		case <-stopClientHandling: // s.shutdown() sends this
+			return
+		default:
+			// receive a clientRequest from a client
+			m, ok := s.receiveClientMessage(ctx, sock)
+			if !ok {
+				continue
+			}
+
+			// parse the request, do the desired work and respond to the client
+			wgk2 := wg.Add(1)
+			go s.dispatchClientRequest(ctx, m, wg, wgk2)
+		}
+	}
+}
+
+// receiveClientMessage receives the next message from the command socket. It
+// returns ok=false (logging unexpected errors) when no message was received.
+func (s *Server) receiveClientMessage(ctx context.Context, sock mangos.Socket) (*mangos.Message, bool) {
+	m, rerr := sock.RecvMsg()
+	if rerr != nil {
+		if !s.inShutdown() && !errors.Is(rerr, mangos.ErrRecvTimeout) {
+			clog.Error(ctx, "Server socket Receive error", "err", rerr)
+		}
+
+		return nil, false
+	}
+
+	return m, true
+}
+
+// inShutdown reports whether the server is currently shutting down.
+func (s *Server) inShutdown() bool {
+	s.krmutex.RLock()
+	defer s.krmutex.RUnlock()
+
+	return s.killRunners
+}
+
+// dispatchClientRequest handles a single received client message, logging any
+// error unless the server is shutting down.
+func (s *Server) dispatchClientRequest(ctx context.Context, m *mangos.Message, wg *waitgroup.WaitGroup, wgk string) {
+	// log panics and continue
+	defer internal.LogPanic(ctx, "jobqueue server client handling", false)
+	defer wg.Done(wgk)
+
+	herr := s.handleRequest(ctx, m)
+	if ServerLogClientErrors && herr != nil && !s.inShutdown() {
+		clog.Error(ctx, "Server handle client request error", "err", herr)
+	}
+}
+
+// handleSignals waits for an OS signal, certificate expiry, or s.Stop(), and
+// shuts the server down with the appropriate reason. It returns once signal
+// handling has been stopped.
+func (s *Server) handleSignals(ctx context.Context, sigs chan os.Signal,
+	certExpired <-chan time.Time, stopSigHandling <-chan bool) {
+	// log panics and die
+	defer internal.LogPanic(ctx, "jobqueue serving", true)
+
+	for {
+		select {
+		case sig := <-sigs:
+			var reason string
+
+			switch sig {
+			case os.Interrupt:
+				reason = ErrClosedInt
+			case syscall.SIGTERM:
+				reason = ErrClosedTerm
+			}
+
+			signal.Stop(sigs)
+			s.shutdown(ctx, reason, true, false)
+
+			return
+		case <-certExpired:
+			signal.Stop(sigs)
+			s.shutdown(ctx, ErrClosedCert, true, false)
+		case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
+			signal.Stop(sigs)
+
+			return
+		}
+	}
+}
+
+// recordBadServerState records or forgets a server based on its current bad
+// state, scheduling dead-confirmation for newly bad servers. It returns
+// skip=true when the change should not be broadcast (an already-destroyed
+// server). Must be called with s.bsmutex held.
+func (s *Server) recordBadServerState(ctx context.Context, server *cloud.Server, autoConfirmDead time.Duration) bool {
+	if !server.IsBad() {
+		delete(s.badServers, server.ID)
+
+		return false
+	}
+
+	// double check that due to timing issues this server hasn't been destroyed,
+	// which is not something to warn anyone about
+	if server.Destroyed() {
+		return true
+	}
+
+	s.badServers[server.ID] = server
+
+	// arrange to confirm this dead after the configured time
+	if autoConfirmDead > 0 {
+		go s.confirmServerDeadAfter(ctx, server.ID, autoConfirmDead)
+	}
+
+	return false
+}
+
+// handleBadServerUpdate processes a scheduler callback about a (possibly) bad
+// cloud server: it records or forgets the server, optionally schedules its
+// confirmation as dead after autoConfirmDead, and broadcasts the change to the
+// web interface.
+func (s *Server) handleBadServerUpdate(ctx context.Context, server *cloud.Server, autoConfirmDead time.Duration) {
+	s.bsmutex.Lock()
+	skip := s.recordBadServerState(ctx, server, autoConfirmDead)
+	s.bsmutex.Unlock()
+
+	if !skip {
+		s.badServerCaster.Send(&BadServer{
+			ID:      server.ID,
+			Name:    server.Name,
+			IP:      server.IP,
+			Date:    time.Now().Unix(),
+			IsBad:   server.IsBad(),
+			Problem: server.PermanentProblem(),
+		})
+	}
+}
+
+// confirmServerDeadAfter waits autoConfirmDead and, if the identified server is
+// still bad for at least that long, destroys it, kills its jobs and clears the
+// web interface warning about it.
+func (s *Server) confirmServerDeadAfter(ctx context.Context, serverID string, autoConfirmDead time.Duration) {
+	<-time.After(autoConfirmDead)
+	s.bsmutex.Lock()
+	defer s.bsmutex.Unlock()
+
+	badServer, exists := s.badServers[serverID]
+	if !exists || badServer.BadDuration() < autoConfirmDead {
+		return
+	}
+
+	delete(s.badServers, serverID)
+
+	waited := badServer.BadDuration()
+	errd := badServer.Destroy(ctx)
+	clog.Warn(ctx, "server destroyed after remaining bad for some time",
+		"server", serverID, "waited", waited, "err", errd)
+
+	serverIDs := map[string]bool{serverID: true}
+	s.killJobsOnServers(ctx, serverIDs)
+
+	if errd == nil {
+		// make the message in the web interface about this server go away
+		s.badServerCaster.Send(&BadServer{
+			ID:      serverID,
+			Name:    badServer.Name,
+			IP:      badServer.IP,
+			Date:    time.Now().Unix(),
+			IsBad:   false,
+			Problem: badServer.PermanentProblem(),
+		})
+	}
+}
+
+// recordSchedulerMessage records a scheduler issue message (incrementing its
+// count if already seen) and broadcasts it to the web interface.
+func (s *Server) recordSchedulerMessage(msg string) {
+	s.simutex.Lock()
+
+	si, existed := s.schedIssues[msg]
+	if existed {
+		si.LastDate = time.Now().Unix()
+		si.Count++
+	} else {
+		si = &schedulerIssue{
+			Msg:       msg,
+			FirstDate: time.Now().Unix(),
+			LastDate:  time.Now().Unix(),
+			Count:     1,
+		}
+		s.schedIssues[msg] = si
+	}
+	s.simutex.Unlock()
+	s.schedCaster.Send(si)
+}
+
+// loadPriorState seeds the absolute status state from completed jobs already on
+// disk and re-enqueues any jobs that were still incomplete when a previous
+// server instance stopped.
+func (s *Server) loadPriorState(ctx context.Context, config ServerConfig, db *db) error {
+	// seed the absolute status state with the completed jobs already on disk
+	// from any prior run. This happens BEFORE the recovery enqueue below, whose
+	// queue-change callbacks add the live (ready/running/...) counts on top of
+	// these completed counts. Completed jobs never enter the queue, so they have
+	// no callback; the two sources are disjoint (completed jobs that are also
+	// live are excluded by the DB), so there is no double counting.
+	if err := s.seedStatusStateFromCompletedDB(); err != nil {
+		return err
+	}
+
+	priorJobs, err := db.recoverIncompleteJobs()
+	if err != nil {
+		return err
+	}
+
+	return s.recoverPriorJobs(ctx, config, priorJobs)
+}
+
+// recoverPriorJobs builds queue item definitions for jobs that were incomplete
+// when a previous server instance stopped, and enqueues them. It is a no-op if
+// there were no prior jobs.
+func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, priorJobs []*Job) error {
+	if len(priorJobs) == 0 {
+		return nil
+	}
+
+	var (
+		loginUser string
+		ttd       time.Duration
+	)
+
+	if cloudConfig, ok := config.SchedulerConfig.(scheduler.CloudConfig); ok {
+		// *** for server recovery purposes, which involves ssh'ing to existing
+		// servers and monitoring them, we need to know the login username, but
+		// we don't. The best we can do is hope the configured default username
+		// is the right one
+		loginUser = cloudConfig.GetOSUser()
+		ttd = cloudConfig.GetServerKeepTime()
+	}
+
+	itemdefs := make([]*queue.ItemDef, 0, len(priorJobs))
+
+	for _, job := range priorJobs {
+		itemdef, err := s.recoveredItemDef(ctx, job, loginUser, ttd)
+		if err != nil {
+			return err
+		}
+
+		itemdefs = append(itemdefs, itemdef)
+	}
+
+	_, _, err := s.enqueueItems(ctx, itemdefs)
+
+	return err
+}
+
+// recoveredItemDef builds the queue item definition for a single recovered job,
+// setting its start sub-queue based on the job's prior state and, for running
+// jobs, re-incrementing limit groups and asking the scheduler to recover them.
+func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser string,
+	ttd time.Duration) (*queue.ItemDef, error) {
+	deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	job.setWaitingForDepGroups(waitingForDepGroups)
+
+	itemdef := &queue.ItemDef{
+		Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
+		Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
+		Dependencies: deps,
+	}
+
+	switch job.State {
+	case JobStateRunning:
+		itemdef.StartQueue = queue.SubQueueRun
+
+		s.recoverRunningJob(ctx, job, loginUser, ttd)
+	case JobStateBuried:
+		itemdef.StartQueue = queue.SubQueueBury
+	case JobStateSuspended:
+		itemdef.StartQueue = queue.SubQueueSuspended
+	default:
+		// any other recovered state keeps the default start queue.
+	}
+
+	return itemdef, nil
+}
+
+// recoverRunningJob re-increments a recovered running job's limit groups and
+// asks the scheduler to recover the host it was running on.
+func (s *Server) recoverRunningJob(ctx context.Context, job *Job, loginUser string, ttd time.Duration) {
+	if len(job.LimitGroups) > 0 {
+		if s.limiter.Increment(ctx, job.LimitGroups) {
+			// (our note of incrementation done in the server that died is not
+			//  stored in the db)
+			job.noteIncrementedLimitGroups(job.LimitGroups)
+		}
+	}
+
+	req := reqForScheduler(job.Requirements)
+
+	scheduleCmd := s.groupToScheduleCmd(ctx, s.rc, req.Stringify(), req)
+	recoveredHost := &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd}
+
+	errr := s.scheduler.Recover(ctx, scheduleCmd, req, recoveredHost)
+	if errr != nil {
+		clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
+	}
+
+	s.recoveredRunningJobs[job.Key()] = true
 }
 
 // Block makes you block while the server does the job of serving clients. This
@@ -2329,40 +2542,44 @@ func (s *Server) Drain(ctx context.Context) error {
 	s.drain = true
 	s.ServerInfo.Mode = ServerModeDrain
 
-	go func() {
-		defer internal.LogPanic(ctx, "jobqueue drain", true)
-
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			// grab the queue under lock; shutdown() sets up false (and then
-			// nils q) under the same lock, so if a shutdown has already begun
-			// we stop here rather than racing its nil of s.q
-			s.ssmutex.RLock()
-			q := s.q
-			up := s.up
-			s.ssmutex.RUnlock()
-
-			if !up || q == nil {
-				return
-			}
-
-			// check our queue for things running, which is cheap
-			if q.Stats().Running > 0 {
-				continue
-			}
-
-			// now that we think nothing should be running, get
-			// Stop() to wait for the runner clients to exit so the
-			// job scheduler will be nice and clean
-			s.Stop(ctx, true)
-
-			return
-		}
-	}()
+	go s.waitForDrainComplete(ctx)
 
 	return nil
+}
+
+// waitForDrainComplete polls until nothing is running (or the server is
+// shutting down) and then Stop()s the server, waiting for runner clients to
+// exit so the job scheduler is left clean.
+func (s *Server) waitForDrainComplete(ctx context.Context) {
+	defer internal.LogPanic(ctx, "jobqueue drain", true)
+
+	ticker := time.NewTicker(drainPollInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// grab the queue under lock; shutdown() sets up false (and then nils q)
+		// under the same lock, so if a shutdown has already begun we stop here
+		// rather than racing its nil of s.q
+		s.ssmutex.RLock()
+		q := s.q
+		up := s.up
+		s.ssmutex.RUnlock()
+
+		if !up || q == nil {
+			return
+		}
+
+		// check our queue for things running, which is cheap
+		if q.Stats().Running > 0 {
+			continue
+		}
+
+		// now that we think nothing should be running, get Stop() to wait for
+		// the runner clients to exit so the job scheduler will be nice and clean
+		s.Stop(ctx, true)
+
+		return
+	}
 }
 
 // Pause is like Drain(), except that we don't Stop(). Returns true if we were
@@ -2425,21 +2642,35 @@ func (s *Server) Resume(ctx context.Context) (bool, error) {
 // GetServerStats returns some simple live stats about what's happening in the
 // server's queue.
 func (s *Server) GetServerStats() *ServerStats {
-	var delayed, ready, running, buried int
-
 	now := time.Now()
-	etc := now
 
 	stats := s.q.Stats()
-	delayed += stats.Delayed
-	ready += stats.Ready
-	buried += stats.Buried
+	running, etc := s.runningCountAndETC(now)
+
+	return &ServerStats{
+		Delayed: stats.Delayed,
+		Ready:   stats.Ready,
+		Running: running,
+		Buried:  stats.Buried,
+		ETC:     etc.Truncate(time.Second).Sub(now.Truncate(time.Second)),
+	}
+}
+
+// runningCountAndETC returns the number of running jobs and the latest time any
+// of them is expected to finish (defaulting to now if none have a known end).
+func (s *Server) runningCountAndETC(now time.Time) (int, time.Time) {
+	running := 0
+	etc := now
 
 	for _, inter := range s.q.GetRunningData() {
 		running++
 
 		// work out when this Job is going to end, and update etc if later
-		job := inter.(*Job)
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
 		job.RLock()
 
 		if !job.StartTime.IsZero() && job.Requirements.Time.Seconds() > 0 {
@@ -2452,7 +2683,7 @@ func (s *Server) GetServerStats() *ServerStats {
 		job.RUnlock()
 	}
 
-	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Second).Sub(now.Truncate(time.Second))}
+	return running, etc
 }
 
 // BackupDB lets you do a manual live backup of the server's database to a given
@@ -2484,48 +2715,9 @@ func (s *Server) HasRunners(ctx context.Context) bool {
 //
 // Returns the absolute path to the file that now contains the given file data.
 func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath string) (string, error) {
-	var (
-		file *os.File
-		err  error
-	)
-
-	usedTempFile := false
-
-	if savePath == "" {
-		if _, err = os.Stat(s.uploadDir); err != nil && os.IsNotExist(err) {
-			err = os.MkdirAll(s.uploadDir, os.ModePerm)
-			if err != nil {
-				clog.Error(ctx, "uploadFile create directory error", "err", err)
-
-				return "", err
-			}
-		}
-
-		file, err = os.CreateTemp(s.uploadDir, "file_upload")
-		if err != nil {
-			clog.Error(ctx, "uploadFile temp file create error", "err", err)
-
-			return "", err
-		}
-
-		savePath = file.Name()
-		usedTempFile = true
-	} else {
-		savePath = internal.TildaToHome(savePath)
-
-		err = os.MkdirAll(filepath.Dir(savePath), os.ModePerm)
-		if err != nil {
-			clog.Error(ctx, "uploadFile create directory error", "err", err)
-
-			return "", err
-		}
-
-		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0o600)
-		if err != nil {
-			clog.Error(ctx, "uploadFile create file error", "err", err)
-
-			return "", err
-		}
+	file, savePath, usedTempFile, err := s.openUploadDestination(ctx, savePath)
+	if err != nil {
+		return "", err
 	}
 
 	_, err = io.Copy(file, source)
@@ -2535,59 +2727,126 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 		return "", err
 	}
 
-	err = file.Close()
-	if err != nil {
-		clog.Warn(ctx, "uploadFile close file error", "err", err)
+	if errc := file.Close(); errc != nil {
+		clog.Warn(ctx, "uploadFile close file error", "err", errc)
 	}
 
 	if usedTempFile {
-		// rename the file to one based on the md5 checksum of the file
-		var md5 string
-
-		md5, err = internal.FileMD5(ctx, savePath)
-		if err != nil {
-			clog.Error(ctx, "uploadFile md5 calculation error", "err", err)
-
-			return "", err
-		}
-
-		dir, leaf := calculateHashedDir(s.uploadDir, md5)
-
-		err = os.MkdirAll(dir, os.ModePerm)
-		if err != nil {
-			clog.Error(ctx, "uploadFile create directory error", "err", err)
-
-			return "", err
-		}
-
-		finalPath := path.Join(dir, leaf)
-
-		_, err = os.Stat(finalPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				err = os.Rename(savePath, finalPath)
-				if err != nil {
-					clog.Error(ctx, "uploadFile rename file error", "err", err)
-
-					return "", err
-				}
-			} else {
-				clog.Error(ctx, "uploadFile stat file error", "err", err)
-
-				return "", err
-			}
-		} else {
-			// already exists, delete the temp file
-			err = os.Remove(savePath)
-			if err != nil {
-				clog.Warn(ctx, "uploadFile file removal error", "err", err)
-			}
-		}
-
-		savePath = finalPath
+		return s.finalizeTempUpload(ctx, savePath)
 	}
 
 	return savePath, nil
+}
+
+// openUploadDestination opens the file that uploaded data should be written to.
+// If savePath is empty a temporary file is created under the server's upload
+// directory (usedTempFile is then true and the returned path is its name);
+// otherwise the chosen savePath (with ~/ expanded) is created.
+func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*os.File, string, bool, error) {
+	if savePath == "" {
+		file, tempPath, err := s.createUploadTempFile(ctx)
+
+		return file, tempPath, true, err
+	}
+
+	savePath = internal.TildaToHome(savePath)
+
+	//nolint:gosec // savePath is the destination an authenticated client deliberately chose to upload to
+	if err := os.MkdirAll(filepath.Dir(savePath), os.ModePerm); err != nil {
+		clog.Error(ctx, "uploadFile create directory error", "err", err)
+
+		return nil, "", false, err
+	}
+
+	//nolint:gosec // savePath is the destination an authenticated client deliberately chose to upload to
+	file, err := os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, ownerReadWrite)
+	if err != nil {
+		clog.Error(ctx, "uploadFile create file error", "err", err)
+
+		return nil, "", false, err
+	}
+
+	return file, savePath, false, nil
+}
+
+// createUploadTempFile creates a temporary file in the server's upload
+// directory, creating the directory first if necessary.
+func (s *Server) createUploadTempFile(ctx context.Context) (*os.File, string, error) {
+	if _, err := os.Stat(s.uploadDir); err != nil && os.IsNotExist(err) {
+		if err = os.MkdirAll(s.uploadDir, os.ModePerm); err != nil {
+			clog.Error(ctx, "uploadFile create directory error", "err", err)
+
+			return nil, "", err
+		}
+	}
+
+	file, err := os.CreateTemp(s.uploadDir, "file_upload")
+	if err != nil {
+		clog.Error(ctx, "uploadFile temp file create error", "err", err)
+
+		return nil, "", err
+	}
+
+	return file, file.Name(), nil
+}
+
+// finalizeTempUpload renames the just-written temp file to a path based on the
+// md5 checksum of its contents, returning the final path. If a file already
+// exists at that path the temp file is removed instead.
+func (s *Server) finalizeTempUpload(ctx context.Context, tempPath string) (string, error) {
+	md5, err := internal.FileMD5(ctx, tempPath)
+	if err != nil {
+		clog.Error(ctx, "uploadFile md5 calculation error", "err", err)
+
+		return "", err
+	}
+
+	dir, leaf := calculateHashedDir(s.uploadDir, md5)
+
+	//nolint:gosec // dir is rooted in the server's configured UploadDir, named after an md5 hash
+	if err = os.MkdirAll(dir, os.ModePerm); err != nil {
+		clog.Error(ctx, "uploadFile create directory error", "err", err)
+
+		return "", err
+	}
+
+	finalPath := path.Join(dir, leaf)
+	if err = placeUploadedFile(ctx, tempPath, finalPath); err != nil {
+		return "", err
+	}
+
+	return finalPath, nil
+}
+
+// placeUploadedFile moves tempPath to finalPath, unless a file already exists
+// at finalPath, in which case tempPath is removed instead.
+func placeUploadedFile(ctx context.Context, tempPath, finalPath string) error {
+	//nolint:gosec // finalPath is rooted in the server's configured UploadDir, named after an md5 hash
+	_, err := os.Stat(finalPath)
+	if err == nil {
+		// already exists, delete the temp file
+		//nolint:gosec // tempPath is a temp file created under the server's UploadDir
+		if errr := os.Remove(tempPath); errr != nil {
+			clog.Warn(ctx, "uploadFile file removal error", "err", errr)
+		}
+
+		return nil
+	}
+
+	if !os.IsNotExist(err) {
+		clog.Error(ctx, "uploadFile stat file error", "err", err)
+
+		return err
+	}
+
+	//nolint:gosec // both paths are rooted in the server's configured UploadDir
+	if err = os.Rename(tempPath, finalPath); err != nil {
+		clog.Error(ctx, "uploadFile rename file error", "err", err)
+
+		return err
+	}
+
+	return nil
 }
 
 // createQueue creates and stores a queue.Queue on the Server and sets up its
@@ -2604,255 +2863,8 @@ func (s *Server) createQueue(ctx context.Context) {
 	// resource reservations the job scheduler will run them under. queue
 	// package will only call this once at a time, so we don't need to worry
 	// about locking across the whole function.
-	q.SetReadyAddedCallback(func(queuename string, allitemdata []any) {
-		defer internal.LogPanic(ctx, "jobqueue ready added callback", true)
-
-		clog.Debug(ctx, "rac started")
-		defer clog.Debug(ctx, "rac finished")
-
-		s.ssmutex.RLock()
-
-		if s.drain || !s.up {
-			s.ssmutex.RUnlock()
-
-			return
-		}
-
-		s.ssmutex.RUnlock()
-
-		s.rpmutex.Lock()
-		s.racRunning = true
-		s.rpmutex.Unlock()
-
-		defer s.finishRAC()
-
-		s.racmutex.RLock()
-		rc := s.rc
-		s.racmutex.RUnlock()
-
-		// calculate, set and count jobs by schedulerGroup
-		groups := make(map[string]*sgroup)
-		reqGroupToReqs := make(map[string]*scheduler.Requirements)
-		groupLimits := make(map[string]int)
-
-		for _, inter := range allitemdata {
-			job := inter.(*Job)
-
-			job.RLock()
-			jobOverride := job.Override
-			reqGroup := job.ReqGroup
-			failureUpdateNeeded := failureMayUpdateJobRequirements(job)
-			job.RUnlock()
-
-			// depending on job.Override, get memory, disk and time
-			// recommendations, which are rounded to get fewer larger
-			// groups
-			var recommendedReq *scheduler.Requirements
-			if rec, existed := reqGroupToReqs[reqGroup]; existed { //nolint:nestif
-				recommendedReq = rec
-			} else {
-				recm, errm := s.db.recommendedReqGroupMemory(reqGroup)
-				recd, errd := s.db.recommendedReqGroupDisk(reqGroup)
-
-				recs, errs := s.db.recommendedReqGroupTime(reqGroup)
-				if errm != nil || errd != nil || errs != nil {
-					reqGroupToReqs[reqGroup] = nil
-				} else {
-					recmMBs := max(recm, 0)
-
-					recdGBs := 0
-					if recd > 0 {
-						recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
-					}
-
-					recsSecs := max(recs, 0)
-
-					recommendedReq = &scheduler.Requirements{
-						RAM:     recmMBs,
-						Disk:    recdGBs,
-						DiskSet: true,
-						Time:    time.Duration(recsSecs) * time.Second,
-					}
-					reqGroupToReqs[reqGroup] = recommendedReq
-				}
-			}
-
-			shouldUpdateRequirements := recommendedReq != nil ||
-				failureUpdateNeeded
-			if shouldUpdateRequirements {
-				job.Lock()
-				updateJobRequirementsForRetry(job, jobOverride, recommendedReq)
-				job.Unlock()
-			}
-
-			snapshot := job.schedulerGroupSnapshot()
-			req := snapshot.requirements
-			schedulerGroup := snapshot.group
-
-			if rc != "" && snapshot.previousGroup != schedulerGroup {
-				job.setSchedulerGroup(schedulerGroup)
-
-				warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, schedulerGroup))
-			}
-
-			if rc != "" {
-				group, set := groups[schedulerGroup]
-				if !set {
-					group = &sgroup{
-						name: schedulerGroup,
-						req:  req.Clone(),
-					}
-					groups[schedulerGroup] = group
-				}
-
-				// ignore jobs that would put us over the limit
-				limit, set := groupLimits[schedulerGroup]
-				if !set {
-					limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
-					if len(limitGroups) > 0 {
-						groupLimits[schedulerGroup] = s.limiter.GetRemainingCapacity(ctx, limitGroups)
-					} else {
-						groupLimits[schedulerGroup] = -1
-					}
-
-					limit = groupLimits[schedulerGroup]
-				}
-
-				if limit >= 0 && group.count == limit {
-					group.skipped++
-
-					continue
-				}
-
-				group.count++
-
-				if snapshot.priority > group.priority {
-					group.priority = snapshot.priority
-				}
-			}
-		}
-
-		if rc != "" {
-			for name, group := range groups {
-				clog.Debug(ctx, "rac saw ready jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
-			}
-
-			// add in info for running jobs
-			s.psgmutex.Lock()
-			for _, inter := range q.GetRunningData() {
-				job := inter.(*Job)
-				schedulerGroup := job.getSchedulerGroup()
-
-				group, set := groups[schedulerGroup]
-				if !set {
-					group, set = s.previouslyScheduledGroups[schedulerGroup]
-					if set {
-						group = group.clone(0)
-					} else {
-						// this can happen if a newly added job is reserved the moment it
-						// is added, so it becomes running before being processed by this
-						// rac
-						job.Lock()
-						group = &sgroup{
-							name: schedulerGroup,
-							req:  job.Requirements.Clone(),
-						}
-						job.Unlock()
-					}
-
-					groups[schedulerGroup] = group
-				}
-
-				group.count++
-			}
-
-			// unschedule groups we no longer need
-			for name, group := range s.previouslyScheduledGroups {
-				if _, needed := groups[name]; needed {
-					continue
-				}
-
-				wgk := s.wg.Add(1)
-
-				go func(group *sgroup) {
-					defer internal.LogPanic(ctx, "jobqueue unschedule runners", true)
-					defer s.wg.Done(wgk)
-
-					clog.Debug(ctx, "rac unscheduling uneeded group", "group", group.name)
-					s.scheduleRunners(ctx, group.clone(0))
-				}(group.clone(0))
-
-				delete(s.previouslyScheduledGroups, name)
-				clog.Debug(ctx, "rac deleted previous unneeded group", "group", name)
-			}
-
-			// schedule runners for each group in the job scheduler
-			for name, group := range groups {
-				if group.count <= 0 {
-					clog.Debug(ctx, "rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
-				} else {
-					clog.Debug(ctx, "rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
-				}
-
-				s.previouslyScheduledGroups[name] = group
-
-				wgk := s.wg.Add(1)
-
-				group.Lock()
-				go func(group *sgroup) {
-					defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
-					defer s.wg.Done(wgk)
-
-					s.scheduleRunners(ctx, group)
-					group.Unlock()
-				}(group)
-			}
-			s.psgmutex.Unlock()
-
-			// in the event that the runners we spawn can't reach us temporarily
-			// and just die (or they manage to run and exit due to a limit), we
-			// need to make sure this callback gets triggered again even if no
-			// new jobs get added
-			s.racmutex.Lock()
-			defer s.racmutex.Unlock()
-
-			if s.racChecking {
-				if !s.racCheckTimer.Stop() {
-					<-s.racCheckTimer.C
-				}
-
-				s.racCheckTimer.Reset(s.timings.CheckRunnerTime)
-			} else {
-				s.racCheckTimer = time.NewTimer(s.timings.CheckRunnerTime)
-
-				wgk := s.wg.Add(1)
-
-				go func() {
-					defer internal.LogPanic(ctx, "jobqueue rac checking", true)
-					defer s.wg.Done(wgk)
-
-					select {
-					case <-s.racCheckTimer.C:
-						break
-					case <-s.stopClientHandling:
-						return
-					}
-
-					s.racmutex.Lock()
-					s.racChecking = false
-					stats := q.Stats()
-
-					if stats.Ready > 0 {
-						s.racmutex.Unlock()
-						s.triggerReadyAddedCallback(ctx)
-					} else {
-						s.racmutex.Unlock()
-					}
-				}()
-
-				s.racChecking = true
-			}
-		}
+	q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+		s.readyAddedCallback(ctx, q, allitemdata)
 	})
 
 	// we set a callback for things changing in the queue, which lets us
@@ -2868,83 +2880,445 @@ func (s *Server) createQueue(ctx context.Context) {
 	// them or leaving them to spring back to life if not. If they already
 	// killed it, however, we'll do normal releasing behaviour afterwards.
 	q.SetTTRCallback(func(data any) queue.SubQueue {
-		job := data.(*Job)
+		job := data.(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 
-		job.Lock()
-		if !job.StartTime.IsZero() && !job.Exited {
-			wasLost := job.Lost
-			job.Lost = true
-			job.FailReason = FailReasonLost
-			job.EndTime = time.Now()
-			lostUpdate := jobUpdateFromLockedJob(job, JobStateLost)
+		return s.ttrCallback(ctx, job)
+	})
+}
 
-			// we don't test recovered jobs are dead because they might have
-			// exited while the server wasn't running, and we want the existing
-			// client to tell us if it should be archived or buried
-			defer func() {
-				killCalled := job.killCalled
-				jobKey := job.Key()
-				jobHost := job.Host
-				jobPID := job.Pid
-				repGroup := job.RepGroup
-				serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
-				job.Unlock()
+// ttrCallback handles a running item hitting its TTR (its runner died or had
+// networking issues). A still-running job is marked lost and kept in the run
+// queue while its death is confirmed asynchronously; otherwise the job is
+// delayed. The returned sub-queue tells the queue where to place the item.
+func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
+	job.Lock()
 
-				// since our changed callback won't be called, record this
-				// running -> lost transition through the single chokepoint: the
-				// absolute count always (the statusAllRepGroups aggregate is
-				// maintained internally), and the pre-built lost subscription
-				// update only if the job wasn't already lost. Both run after
-				// job.Unlock while queue.mutex is still held, preserving the
-				// strict leaf order queue.mutex -> statusState.mu and never
-				// nesting statusState.mu with the subscription locks.
-				s.emitJobTransition(
-					[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
-					func() {
-						if !wasLost {
-							s.enqueueSubscriptionUpdate(lostUpdate, false)
-						}
-					},
-				)
-
-				go func() {
-					confirmedDead := !killCalled && !s.recoveredRunningJobs[jobKey]
-					if confirmedDead {
-						confirmedDead = s.confirmJobDeadAndKill(
-							ctx,
-							jobKey,
-							jobHost,
-							jobPID,
-							serverLostJobCheckTimeout,
-							serverLostJobCheckRetryTime,
-						)
-					}
-
-					if confirmedDead {
-						clog.Info(ctx, "killed a job after confirming it was dead", "key", jobKey)
-					} else if killCalled {
-						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
-
-						// wait for the item to go back to run queue
-						<-time.After(50 * time.Millisecond)
-
-						// now release it
-						err := s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
-						if err != nil {
-							clog.Warn(ctx, "failed to release job after TTR", "err", err)
-						}
-					}
-				}()
-			}()
-
-			return queue.SubQueueRun
-		}
-
+	if job.StartTime.IsZero() || job.Exited {
 		job.Unlock()
 		job.decrementLimitGroups(s.limiter)
 
 		return queue.SubQueueDelay
+	}
+
+	wasLost := job.Lost
+	job.Lost = true
+	job.FailReason = FailReasonLost
+	job.EndTime = time.Now()
+	lostUpdate := jobUpdateFromLockedJob(job, JobStateLost)
+
+	// we don't test recovered jobs are dead because they might have exited
+	// while the server wasn't running, and we want the existing client to tell
+	// us if it should be archived or buried
+	defer s.markJobLost(ctx, job, wasLost, lostUpdate)
+
+	return queue.SubQueueRun
+}
+
+// markJobLost records a running->lost transition for job (which must be locked;
+// it is unlocked here) and asynchronously confirms whether the job is dead,
+// killing or releasing it as appropriate. It runs as a deferred call from
+// ttrCallback while the queue mutex is still held.
+func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUpdate *JobUpdate) {
+	killCalled := job.killCalled
+	jobKey := job.Key()
+	jobHost := job.Host
+	jobPID := job.Pid
+	repGroup := job.RepGroup
+	serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
+	job.Unlock()
+
+	// since our changed callback won't be called, record this running -> lost
+	// transition through the single chokepoint: the absolute count always (the
+	// statusAllRepGroups aggregate is maintained internally), and the pre-built
+	// lost subscription update only if the job wasn't already lost. Both run
+	// after job.Unlock while queue.mutex is still held, preserving the strict
+	// leaf order queue.mutex -> statusState.mu and never nesting statusState.mu
+	// with the subscription locks.
+	s.emitJobTransition(
+		[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
+		func() {
+			if !wasLost {
+				s.enqueueSubscriptionUpdate(lostUpdate, false)
+			}
+		},
+	)
+
+	go s.confirmOrReleaseLostJob(ctx, job, lostJobDetails{
+		key: jobKey, host: jobHost, pid: jobPID, killCalled: killCalled,
+		checkTimeout: serverLostJobCheckTimeout, checkRetryTime: serverLostJobCheckRetryTime,
 	})
+}
+
+// lostJobDetails captures the fields a lost job's asynchronous confirmation
+// needs, snapshotted while the job was locked.
+type lostJobDetails struct {
+	key            string
+	host           string
+	pid            int
+	killCalled     bool
+	checkTimeout   time.Duration
+	checkRetryTime time.Duration
+}
+
+// confirmOrReleaseLostJob confirms whether a lost job is really dead and kills
+// it, or (if the user already called kill) releases it back to the run queue.
+func (s *Server) confirmOrReleaseLostJob(ctx context.Context, job *Job, d lostJobDetails) {
+	confirmedDead := !d.killCalled && !s.recoveredRunningJobs[d.key]
+	if confirmedDead {
+		confirmedDead = s.confirmJobDeadAndKill(ctx, d.key, d.host, d.pid, d.checkTimeout, d.checkRetryTime)
+	}
+
+	switch {
+	case confirmedDead:
+		clog.Info(ctx, "killed a job after confirming it was dead", "key", d.key)
+	case d.killCalled:
+		defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
+
+		// wait for the item to go back to run queue
+		<-time.After(ttrReleaseWait)
+
+		// now release it
+		err := s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
+		if err != nil {
+			clog.Warn(ctx, "failed to release job after TTR", "err", err)
+		}
+	}
+}
+
+// readyAddedCallback is the queue's ready-added callback: it groups the ready
+// jobs by scheduler group and, if a runner command is configured, schedules
+// runners for each group. The queue calls this one at a time.
+func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitemdata []any) {
+	defer internal.LogPanic(ctx, "jobqueue ready added callback", true)
+
+	clog.Debug(ctx, "rac started")
+	defer clog.Debug(ctx, "rac finished")
+
+	s.ssmutex.RLock()
+
+	if s.drain || !s.up {
+		s.ssmutex.RUnlock()
+
+		return
+	}
+
+	s.ssmutex.RUnlock()
+
+	s.rpmutex.Lock()
+	s.racRunning = true
+	s.rpmutex.Unlock()
+
+	defer s.finishRAC()
+
+	s.racmutex.RLock()
+	rc := s.rc
+	s.racmutex.RUnlock()
+
+	groups := s.buildSchedulerGroups(ctx, q, allitemdata, rc)
+
+	if rc != "" {
+		s.scheduleGroupRunners(ctx, q, groups)
+	}
+}
+
+// buildSchedulerGroups calculates, sets and counts the ready jobs by scheduler
+// group, updating each job's requirements and (when rc is set) its scheduler
+// group, while respecting limit-group capacities.
+func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
+	allitemdata []any, rc string) map[string]*sgroup {
+	groups := make(map[string]*sgroup)
+	reqGroupToReqs := make(map[string]*scheduler.Requirements)
+	groupLimits := make(map[string]int)
+
+	for _, inter := range allitemdata {
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
+		s.processReadyJob(ctx, q, job, rc, groups, reqGroupToReqs, groupLimits)
+	}
+
+	return groups
+}
+
+// processReadyJob updates one ready job's requirements and scheduler group, and
+// (when rc is set) counts it against its scheduler group.
+func (s *Server) processReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
+	groups map[string]*sgroup, reqGroupToReqs map[string]*scheduler.Requirements, groupLimits map[string]int) {
+	job.RLock()
+	jobOverride := job.Override
+	reqGroup := job.ReqGroup
+	failureUpdateNeeded := failureMayUpdateJobRequirements(job)
+	job.RUnlock()
+
+	// depending on job.Override, get memory, disk and time recommendations,
+	// which are rounded to get fewer larger groups
+	recommendedReq := s.recommendedReqForGroup(reqGroup, reqGroupToReqs)
+
+	if recommendedReq != nil || failureUpdateNeeded {
+		job.Lock()
+		updateJobRequirementsForRetry(job, jobOverride, recommendedReq)
+		job.Unlock()
+	}
+
+	snapshot := job.schedulerGroupSnapshot()
+
+	if rc == "" {
+		return
+	}
+
+	if snapshot.previousGroup != snapshot.group {
+		job.setSchedulerGroup(snapshot.group)
+
+		warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
+	}
+
+	s.countJobInGroup(ctx, groups, groupLimits, snapshot)
+}
+
+// recommendedReqForGroup returns the recommended requirements for reqGroup,
+// using and populating the cache. A nil entry (cached) means recommendations
+// could not be determined.
+func (s *Server) recommendedReqForGroup(reqGroup string,
+	cache map[string]*scheduler.Requirements) *scheduler.Requirements {
+	if rec, existed := cache[reqGroup]; existed {
+		return rec
+	}
+
+	recm, errm := s.db.recommendedReqGroupMemory(reqGroup)
+	recd, errd := s.db.recommendedReqGroupDisk(reqGroup)
+
+	recs, errs := s.db.recommendedReqGroupTime(reqGroup)
+	if errm != nil || errd != nil || errs != nil {
+		cache[reqGroup] = nil
+
+		return nil
+	}
+
+	recdGBs := 0
+	if recd > 0 {
+		recdGBs = int(math.Ceil(float64(recd) / float64(mbPerGB)))
+	}
+
+	recommendedReq := &scheduler.Requirements{
+		RAM:     max(recm, 0),
+		Disk:    recdGBs,
+		DiskSet: true,
+		Time:    time.Duration(max(recs, 0)) * time.Second,
+	}
+	cache[reqGroup] = recommendedReq
+
+	return recommendedReq
+}
+
+// countJobInGroup records a single ready job against its scheduler group,
+// creating the group if needed and skipping jobs that would exceed the group's
+// limit-group capacity.
+func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
+	groupLimits map[string]int, snapshot schedulerGroupSnapshot) {
+	schedulerGroup := snapshot.group
+
+	group, set := groups[schedulerGroup]
+	if !set {
+		group = &sgroup{
+			name: schedulerGroup,
+			req:  snapshot.requirements.Clone(),
+		}
+		groups[schedulerGroup] = group
+	}
+
+	// ignore jobs that would put us over the limit
+	limit := s.groupRemainingCapacity(ctx, schedulerGroup, groupLimits)
+	if limit >= 0 && group.count == limit {
+		group.skipped++
+
+		return
+	}
+
+	group.count++
+
+	if snapshot.priority > group.priority {
+		group.priority = snapshot.priority
+	}
+}
+
+// groupRemainingCapacity returns the remaining limit-group capacity for a
+// scheduler group (-1 if the group has no limit groups), caching the result in
+// groupLimits.
+func (s *Server) groupRemainingCapacity(ctx context.Context, schedulerGroup string, groupLimits map[string]int) int {
+	if limit, set := groupLimits[schedulerGroup]; set {
+		return limit
+	}
+
+	limit := -1
+
+	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+	if len(limitGroups) > 0 {
+		limit = s.limiter.GetRemainingCapacity(ctx, limitGroups)
+	}
+
+	groupLimits[schedulerGroup] = limit
+
+	return limit
+}
+
+// scheduleGroupRunners adds running jobs into the group counts, unschedules
+// groups no longer needed, schedules runners for the current groups, and
+// arranges for the ready-added callback to fire again later. Only called when a
+// runner command is configured.
+func (s *Server) scheduleGroupRunners(ctx context.Context, q *queue.Queue, groups map[string]*sgroup) {
+	for name, group := range groups {
+		clog.Debug(ctx, "rac saw ready jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
+	}
+
+	s.psgmutex.Lock()
+	s.accountForRunningJobs(q, groups)
+	s.unscheduleUnneededGroups(ctx, groups)
+
+	// schedule runners for each group in the job scheduler
+	for name, group := range groups {
+		s.scheduleGroup(ctx, name, group)
+	}
+	s.psgmutex.Unlock()
+
+	s.scheduleRACRecheck(ctx, q)
+}
+
+// scheduleGroup records group as previously scheduled and asynchronously
+// schedules its runners. Must be called with s.psgmutex held.
+func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) {
+	if group.count <= 0 {
+		clog.Debug(ctx, "rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
+	} else {
+		clog.Debug(ctx, "rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
+	}
+
+	s.previouslyScheduledGroups[name] = group
+
+	wgk := s.wg.Add(1)
+
+	group.Lock()
+	go func(group *sgroup) {
+		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
+		defer s.wg.Done(wgk)
+
+		s.scheduleRunners(ctx, group)
+		group.Unlock()
+	}(group)
+}
+
+// accountForRunningJobs adds currently running jobs into the group counts so
+// scheduling accounts for them. Must be called with s.psgmutex held.
+func (s *Server) accountForRunningJobs(q *queue.Queue, groups map[string]*sgroup) {
+	for _, inter := range q.GetRunningData() {
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
+		schedulerGroup := job.getSchedulerGroup()
+
+		group, set := groups[schedulerGroup]
+		if !set {
+			group = s.groupForRunningJob(schedulerGroup, job)
+			groups[schedulerGroup] = group
+		}
+
+		group.count++
+	}
+}
+
+// groupForRunningJob returns the sgroup a running job belongs to, reusing a
+// previously scheduled group's requirements if known, otherwise building a new
+// group from the job's own requirements.
+func (s *Server) groupForRunningJob(schedulerGroup string, job *Job) *sgroup {
+	if prev, set := s.previouslyScheduledGroups[schedulerGroup]; set {
+		return prev.clone(0)
+	}
+
+	// this can happen if a newly added job is reserved the moment it is added,
+	// so it becomes running before being processed by this rac
+	job.Lock()
+	defer job.Unlock()
+
+	return &sgroup{
+		name: schedulerGroup,
+		req:  job.Requirements.Clone(),
+	}
+}
+
+// unscheduleUnneededGroups asynchronously unschedules any previously scheduled
+// groups that are no longer in groups. Must be called with s.psgmutex held.
+func (s *Server) unscheduleUnneededGroups(ctx context.Context, groups map[string]*sgroup) {
+	for name, group := range s.previouslyScheduledGroups {
+		if _, needed := groups[name]; needed {
+			continue
+		}
+
+		wgk := s.wg.Add(1)
+
+		go func(group *sgroup) {
+			defer internal.LogPanic(ctx, "jobqueue unschedule runners", true)
+			defer s.wg.Done(wgk)
+
+			clog.Debug(ctx, "rac unscheduling uneeded group", "group", group.name)
+			s.scheduleRunners(ctx, group.clone(0))
+		}(group.clone(0))
+
+		delete(s.previouslyScheduledGroups, name)
+		clog.Debug(ctx, "rac deleted previous unneeded group", "group", name)
+	}
+}
+
+// scheduleRACRecheck ensures the ready-added callback fires again after
+// CheckRunnerTime, in case spawned runners die or exit without new jobs being
+// added.
+func (s *Server) scheduleRACRecheck(ctx context.Context, q *queue.Queue) {
+	s.racmutex.Lock()
+	defer s.racmutex.Unlock()
+
+	if s.racChecking {
+		if !s.racCheckTimer.Stop() {
+			<-s.racCheckTimer.C
+		}
+
+		s.racCheckTimer.Reset(s.timings.CheckRunnerTime)
+
+		return
+	}
+
+	s.racCheckTimer = time.NewTimer(s.timings.CheckRunnerTime)
+
+	wgk := s.wg.Add(1)
+
+	go s.waitThenRecheckRAC(ctx, q, wgk)
+
+	s.racChecking = true
+}
+
+// waitThenRecheckRAC waits for the RAC re-check timer (or server shutdown) and,
+// if there are still ready jobs, re-triggers the ready-added callback.
+func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk string) {
+	defer internal.LogPanic(ctx, "jobqueue rac checking", true)
+	defer s.wg.Done(wgk)
+
+	select {
+	case <-s.racCheckTimer.C:
+	case <-s.stopClientHandling:
+		return
+	}
+
+	s.racmutex.Lock()
+	s.racChecking = false
+	stats := q.Stats()
+
+	if stats.Ready > 0 {
+		s.racmutex.Unlock()
+		s.triggerReadyAddedCallback(ctx)
+	} else {
+		s.racmutex.Unlock()
+	}
 }
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
@@ -2968,53 +3342,47 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 		s.clearRACPending()
 	}
 
-	// add to our lookup of job RepGroup to key
-	repGroupKeys := make([]struct {
-		repGroup string
-		key      string
-	}, 0, len(itemdefs))
-
-	s.rpl.Lock()
-	for _, itemdef := range itemdefs {
-		rp := itemdef.Data.(*Job).RepGroup
-		s.rpl.Add(rp, itemdef.Key)
-		repGroupKeys = append(repGroupKeys, struct {
-			repGroup string
-			key      string
-		}{repGroup: rp, key: itemdef.Key})
-	}
-	s.rpl.Unlock()
-
-	for _, repGroupKey := range repGroupKeys {
-		s.rememberRepGroupSubscriptionKey(repGroupKey.repGroup, repGroupKey.key)
-	}
+	s.recordRepGroupKeys(itemdefs)
 
 	return added, dups, err
 }
 
-// createJobs creates new jobs, adding them to the database and the in-memory
-// queue. It returns 2 errors; the first is one of our Err constant strings,
-// the second is the actual error with more details.
-//
-//nolint:gocognit,gocyclo,cyclop,funlen // Legacy coordinator for persistence, dependency, and queue updates.
-func (s *Server) createJobs(
-	ctx context.Context,
-	inputJobs []*Job,
-	envkey string,
-	ignoreComplete bool,
-) (added int, dups int, alreadyComplete int, warnings AddWarnings, srerr string, qerr error) {
-	s.racmutex.RLock()
-	rcSet := s.rc != ""
-	s.racmutex.RUnlock()
+// recordRepGroupKeys adds each item's RepGroup->key mapping to the lookup and
+// then remembers each as a subscription key.
+func (s *Server) recordRepGroupKeys(itemdefs []*queue.ItemDef) {
+	type repGroupKey struct {
+		repGroup string
+		key      string
+	}
 
-	var queuedDups int
+	repGroupKeys := make([]repGroupKey, 0, len(itemdefs))
 
-	inputJobs, queuedDups = s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
+	s.rpl.Lock()
+	for _, itemdef := range itemdefs {
+		job, ok := itemdef.Data.(*Job)
+		if !ok {
+			continue
+		}
 
-	// create itemdefs for the jobs
+		rp := job.RepGroup
+		s.rpl.Add(rp, itemdef.Key)
+		repGroupKeys = append(repGroupKeys, repGroupKey{repGroup: rp, key: itemdef.Key})
+	}
+	s.rpl.Unlock()
+
+	for _, rgk := range repGroupKeys {
+		s.rememberRepGroupSubscriptionKey(rgk.repGroup, rgk.key)
+	}
+}
+
+// prepareInputJobs locks and initialises each input job (env key, retry count,
+// scheduler group, bsub id and user-specified limit groups), returning the
+// limit groups to store and the set of input job keys.
+func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
+	rcSet bool) (map[string]*limiter.GroupData, map[string]bool) {
 	limitGroups := make(map[string]*limiter.GroupData)
-
 	inputJobKeys := make(map[string]bool, len(inputJobs))
+
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -3037,6 +3405,29 @@ func (s *Server) createJobs(
 		job.Unlock()
 	}
 
+	return limitGroups, inputJobKeys
+}
+
+// createJobs creates new jobs, adding them to the database and the in-memory
+// queue. It returns 2 errors; the first is one of our Err constant strings,
+// the second is the actual error with more details.
+func (s *Server) createJobs(
+	ctx context.Context,
+	inputJobs []*Job,
+	envkey string,
+	ignoreComplete bool,
+) (added int, dups int, alreadyComplete int, warnings AddWarnings, srerr string, qerr error) {
+	s.racmutex.RLock()
+	rcSet := s.rc != ""
+	s.racmutex.RUnlock()
+
+	var queuedDups int
+
+	inputJobs, queuedDups = s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
+
+	// create itemdefs for the jobs
+	limitGroups, inputJobKeys := s.prepareInputJobs(inputJobs, envkey, rcSet)
+
 	err := s.storeLimitGroups(limitGroups)
 	if err != nil {
 		return added, dups, alreadyComplete, warnings, ErrDBError, err
@@ -3053,65 +3444,86 @@ func (s *Server) createJobs(
 	// recover, at worst the creating job will be run again - no jobs get lost.)
 	jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
 	if err != nil {
-		srerr = ErrDBError
-		qerr = err
-	} else {
-		// now that jobs are in the db we can get dependencies fully, so now we
-		// can build our itemdefs *** we really need to test for cycles, because
-		// if the user creates one, we won't let them delete the bad jobs!
-		// storeNewJobs() returns jobsToQueue, which is all of cr.Jobs plus any
-		// previously Archive()d jobs that were resurrected because of one of
-		// their DepGroup dependencies being in cr.Jobs
-		var itemdefs []*queue.ItemDef
-
-		warningDepGroups := make(map[string]bool)
-
-		for _, job := range jobsToQueue {
-			deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
-			if err != nil {
-				srerr = ErrDBError
-				qerr = err
-
-				break
-			}
-
-			job.setWaitingForDepGroups(waitingForDepGroups)
-
-			if inputJobKeys[job.Key()] {
-				collectStrings(waitingForDepGroups, warningDepGroups)
-			}
-
-			itemdefs = append(itemdefs, &queue.ItemDef{
-				Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
-				Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
-				Dependencies: deps,
-			})
-		}
-
-		warnings.NeverSeenDepGroups = sortedStringSet(warningDepGroups)
-
-		srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
-
-		var replaced int
-		if qerr == nil {
-			itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
-		}
-
-		if qerr != nil {
-			srerr = ErrInternalError
-		} else {
-			// add the jobs to the in-memory job queue
-			added, dups, qerr = s.enqueueItems(ctx, itemdefs)
-			dups += queuedDups
-			added += replaced
-
-			if qerr != nil {
-				srerr = ErrInternalError
-			}
-		}
+		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
+	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
+
+	added, dups, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
+
 	return added, dups, alreadyComplete, warnings, srerr, qerr
+}
+
+// itemDefsForNewJobs builds the queue item definitions for the jobs returned by
+// storeNewJobs, recording in warnings any never-seen dependency groups
+// referenced by the originally input jobs.
+func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
+	inputJobKeys map[string]bool, warnings *AddWarnings) []*queue.ItemDef {
+	// now that jobs are in the db we can get dependencies fully, so now we can
+	// build our itemdefs *** we really need to test for cycles, because if the
+	// user creates one, we won't let them delete the bad jobs! storeNewJobs()
+	// returns jobsToQueue, which is all of cr.Jobs plus any previously
+	// Archive()d jobs that were resurrected because of one of their DepGroup
+	// dependencies being in cr.Jobs
+	var itemdefs []*queue.ItemDef
+
+	warningDepGroups := make(map[string]bool)
+
+	for _, job := range jobsToQueue {
+		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		if err != nil {
+			// srerr/qerr are unconditionally overwritten by
+			// updateJobDependencies below, so there is nothing to record here
+			// beyond stopping the loop.
+			break
+		}
+
+		job.setWaitingForDepGroups(waitingForDepGroups)
+
+		if inputJobKeys[job.Key()] {
+			collectStrings(waitingForDepGroups, warningDepGroups)
+		}
+
+		itemdefs = append(itemdefs, &queue.ItemDef{
+			Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
+			Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
+			Dependencies: deps,
+		})
+	}
+
+	warnings.NeverSeenDepGroups = sortedStringSet(warningDepGroups)
+
+	return itemdefs
+}
+
+// queueNewJobItems updates dependencies of existing jobs, replaces any live
+// rerun items, and enqueues the new item definitions, returning the counts of
+// jobs added and duplicated plus any error.
+func (s *Server) queueNewJobItems(ctx context.Context, jobsToUpdate []*Job, itemdefs []*queue.ItemDef,
+	ignoreComplete bool, queuedDups int) (added, dups int, srerr string, qerr error) {
+	srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
+
+	var replaced int
+	if qerr == nil {
+		itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
+	}
+
+	// if anything has gone wrong up to here, the error is an internal one and
+	// nothing more gets queued
+	if qerr != nil {
+		return added, dups, ErrInternalError, qerr
+	}
+
+	// add the jobs to the in-memory job queue
+	added, dups, qerr = s.enqueueItems(ctx, itemdefs)
+	dups += queuedDups
+	added += replaced
+
+	if qerr != nil {
+		srerr = ErrInternalError
+	}
+
+	return added, dups, srerr, qerr
 }
 
 // handleUserSpecifiedJobLimitGroups takes limit groups on a job that may have
@@ -3169,25 +3581,40 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // need their dependencies updated because they just changed when we stored the
 // jobs.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
-	type jobDeps struct {
-		job                 *Job
-		deps                []string
-		waitingForDepGroups []string
+	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(jobs)
+	if qerr != nil {
+		return ErrDBError, qerr
 	}
 
-	updates := make([]jobDeps, 0, len(jobs))
+	if readyCallbackExpected {
+		s.setRACPending()
+	}
+
+	return "", s.applyDependencyUpdates(ctx, updates, readyCallbackExpected)
+}
+
+// jobDependencyUpdate holds a job's freshly computed dependencies, ready to be
+// applied to the queue.
+type jobDependencyUpdate struct {
+	job                 *Job
+	deps                []string
+	waitingForDepGroups []string
+}
+
+// gatherDependencyUpdates recomputes each job's incomplete dependencies,
+// reporting whether applying them is expected to make a job ready (so the
+// ready-added callback should be armed).
+func (s *Server) gatherDependencyUpdates(jobs []*Job) ([]jobDependencyUpdate, bool, error) {
+	updates := make([]jobDependencyUpdate, 0, len(jobs))
 	readyCallbackExpected := false
 
 	for _, job := range jobs {
 		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
 		if err != nil {
-			srerr = ErrDBError
-			qerr = err
-
-			break
+			return updates, readyCallbackExpected, err
 		}
 
-		updates = append(updates, jobDeps{job: job, deps: deps, waitingForDepGroups: waitingForDepGroups})
+		updates = append(updates, jobDependencyUpdate{job: job, deps: deps, waitingForDepGroups: waitingForDepGroups})
 
 		if len(deps) == 0 && !readyCallbackExpected {
 			item, errq := s.q.Get(job.Key())
@@ -3195,33 +3622,30 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 		}
 	}
 
-	if qerr != nil {
-		return srerr, qerr
-	}
+	return updates, readyCallbackExpected, nil
+}
 
-	if readyCallbackExpected {
-		s.setRACPending()
-	}
-
+// applyDependencyUpdates writes each gathered dependency update to the queue,
+// clearing the armed ready-added callback if an update fails.
+func (s *Server) applyDependencyUpdates(ctx context.Context, updates []jobDependencyUpdate,
+	readyCallbackExpected bool) error {
 	for _, update := range updates {
 		job := update.job
 		job.setWaitingForDepGroups(update.waitingForDepGroups)
 
-		thisErr := s.q.Update(
+		err := s.q.Update(
 			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, s.itemTTRDuration(), update.deps,
 		)
-		if thisErr != nil {
-			qerr = thisErr
-
+		if err != nil {
 			if readyCallbackExpected {
 				s.clearRACPending()
 			}
 
-			break
+			return err
 		}
 	}
 
-	return srerr, qerr
+	return nil
 }
 
 // confirmJobDeadAndKill calls and returns the value of confirmJobDead(). If
@@ -3238,35 +3662,42 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 		return false
 	}
 
-	go func() {
-		_, errk := s.killJob(ctx, jobKey)
-		if errk != nil {
-			clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
-		} else {
-			q := s.queueIfPresent()
-			if q == nil {
-				clog.Warn(ctx, "failed to get a killed lost job", "err", queueClosedError("Get", jobKey))
-
-				return
-			}
-
-			item, errg := q.Get(jobKey)
-			if errg != nil {
-				clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
-
-				return
-			}
-
-			job := item.Data().(*Job)
-
-			errt := job.TriggerBehaviours(false)
-			if errt != nil {
-				clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
-			}
-		}
-	}()
+	go s.killLostJobAndTriggerBehaviours(ctx, jobKey)
 
 	return true
+}
+
+// killLostJobAndTriggerBehaviours kills the lost job and, on success, runs its
+// behaviours, logging any problems.
+func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, jobKey string) {
+	if _, errk := s.killJob(ctx, jobKey); errk != nil {
+		clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
+
+		return
+	}
+
+	q := s.queueIfPresent()
+	if q == nil {
+		clog.Warn(ctx, "failed to get a killed lost job", "err", queueClosedError("Get", jobKey))
+
+		return
+	}
+
+	item, errg := q.Get(jobKey)
+	if errg != nil {
+		clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
+
+		return
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return
+	}
+
+	if errt := job.TriggerBehaviours(false); errt != nil {
+		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
+	}
 }
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
@@ -3303,19 +3734,11 @@ func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey
 
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
-func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState, failReason string, forceStorage bool, forceBury bool) error {
+func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState, failReason string,
+	forceStorage, forceBury bool) error {
 	// first check the job hasn't already been released/buried, only attempt
 	// queue changes if not
-	job.RLock()
-
-	bury := forceBury
-	if !bury && !job.StartTime.IsZero() {
-		bury = job.UntilBuried == 1
-	}
-
-	key := job.Key()
-	currentState := job.State
-	job.RUnlock()
+	bury, key, currentState := releaseJobSnapshot(job, forceBury)
 
 	q := s.queueIfPresent()
 	if q == nil {
@@ -3327,39 +3750,74 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 		return err
 	}
 
-	var errq error
-
-	if bury {
-		if item.Stats().State == queue.ItemStateBury {
-			if currentState == JobStateBuried {
-				return nil
-			}
-		} else {
-			errq = q.Bury(key)
-			if errq == nil {
-				s.deleteJobIfRequested(ctx, job)
-			}
-		}
-	} else if item.Stats().State == queue.ItemStateDelay {
-		if currentState == JobStateDelayed {
-			return nil
-		}
-	} else {
-		errq = q.Release(ctx, key)
-	}
-
+	alreadyDone, errq := s.applyReleaseQueueChange(ctx, q, item, key, bury, currentState, job)
 	if errq != nil {
 		return errq
 	}
 
+	if alreadyDone {
+		return nil
+	}
+
+	s.finalizeReleasedJob(ctx, job, endState, failReason, forceStorage, forceBury)
+
+	return nil
+}
+
+// releaseJobSnapshot reads, under the job's read lock, the values releaseJob
+// needs: whether the job should be buried, its key, and its current state.
+func releaseJobSnapshot(job *Job, forceBury bool) (bool, string, JobState) {
+	job.RLock()
+	defer job.RUnlock()
+
+	bury := forceBury
+	if !bury && !job.StartTime.IsZero() {
+		bury = job.UntilBuried == 1
+	}
+
+	return bury, job.Key(), job.State
+}
+
+// applyReleaseQueueChange moves the queue item for a job being released to its
+// bury or delay sub-queue as appropriate. It reports alreadyDone=true when the
+// item is already in the target state (so there is nothing more to do).
+func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, item *queue.Item,
+	key string, bury bool, currentState JobState, job *Job) (bool, error) {
+	switch {
+	case bury:
+		if item.Stats().State == queue.ItemStateBury {
+			return currentState == JobStateBuried, nil
+		}
+
+		if errq := q.Bury(key); errq != nil {
+			return false, errq
+		}
+
+		s.deleteJobIfRequested(ctx, job)
+	case item.Stats().State == queue.ItemStateDelay:
+		return currentState == JobStateDelayed, nil
+	default:
+		if errq := q.Release(ctx, key); errq != nil {
+			return false, errq
+		}
+	}
+
+	return false, nil
+}
+
+// finalizeReleasedJob updates a released job's state (to buried or delayed,
+// obeying its Retries count), persists it, and decrements its scheduler group
+// count.
+func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, endState *JobEndState,
+	failReason string, forceStorage, forceBury bool) {
 	job.updateAfterExit(endState, s.limiter)
 
 	job.Lock()
 	if forceBury {
 		job.UntilBuried = 0
 	} else if !job.StartTime.IsZero() {
-		// obey jobs's Retries count by adjusting UntilBuried if a
-		// client reserved this job and started to run the job's cmd
+		// obey jobs's Retries count by adjusting UntilBuried if a client
+		// reserved this job and started to run the job's cmd
 		job.UntilBuried--
 	}
 
@@ -3381,8 +3839,6 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	s.decrementGroupCount(ctx, sgroup)
 	s.db.updateJobAfterExit(ctx, job, endState.Stdout, endState.Stderr, forceStorage)
 	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
-
-	return nil
 }
 
 // inputToQueuedJobs shows you which of the inputJobs are now actually in the
@@ -3428,7 +3884,7 @@ func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
 		return false, err
 	}
 
-	job := item.Data().(*Job)
+	job := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 	job.Lock()
 	job.killCalled = true
 
@@ -3452,74 +3908,86 @@ func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 	var deleted []string
 
 	for {
-		var (
-			skippedDeps []*Job
-			toDelete    []string
-		)
+		pass := s.removeDeletableJobs(ctx, jobs)
+		deleted = append(deleted, pass.toDelete...)
 
-		schedGroups := make(map[string]int)
-
-		var repGroups []string
-
-		for _, job := range jobs {
-			jobkey := job.Key()
-
-			// we can't allow the removal of jobs that have
-			// dependencies, as *queue would regard that as satisfying
-			// the dependency and downstream jobs would start
-			hasDeps, err := s.q.HasDependents(jobkey)
-			if err != nil || hasDeps {
-				if hasDeps {
-					skippedDeps = append(skippedDeps, job)
-				}
-
-				continue
-			}
-
-			err = s.q.Remove(ctx, jobkey)
-			if err == nil {
-				deleted = append(deleted, jobkey)
-				toDelete = append(toDelete, jobkey)
-
-				schedGroups[job.getSchedulerGroup()]++
-				repGroups = append(repGroups, job.RepGroup)
-				clog.Debug(ctx, "removed job", "cmd", job.Cmd)
-			}
+		if len(pass.toDelete) == 0 {
+			break
 		}
 
-		if len(toDelete) > 0 {
-			// delete from db live bucket all in one go
-			errd := s.db.deleteLiveJobs(ctx, toDelete)
-			if errd != nil {
-				clog.Error(ctx, "job deletion from database failed", "err", errd)
-			}
+		s.finalizeDeletedJobs(ctx, pass)
 
-			// update scheduler now we have fewer jobs
-			for sg, count := range schedGroups {
-				s.decrementGroupCount(ctx, sg, count)
-			}
-
-			// clean up rpl lookups
-			s.rpl.Lock()
-			for i, rg := range repGroups {
-				s.rpl.Delete(rg, toDelete[i])
-			}
-			s.rpl.Unlock()
-
-			// if we skipped any due to deps, repeat and see if we
-			// can remove everything desired by going down the
-			// dependency tree
-			if len(skippedDeps) > 0 {
-				jobs = skippedDeps
-
-				continue
-			}
+		// if we skipped any due to deps, repeat and see if we can remove
+		// everything desired by going down the dependency tree
+		if len(pass.skippedDeps) == 0 {
+			break
 		}
 
-		break
+		jobs = pass.skippedDeps
 	}
 
 	return deleted
+}
+
+// deletePass records what a single pass of deleteJobs removed, plus the jobs it
+// had to skip because they still have dependents.
+type deletePass struct {
+	toDelete    []string
+	schedGroups map[string]int
+	repGroups   []string
+	skippedDeps []*Job
+}
+
+// removeDeletableJobs removes from the queue every job that has no dependents,
+// collecting what was removed (and what was skipped) for finalizeDeletedJobs.
+func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePass {
+	pass := deletePass{schedGroups: make(map[string]int)}
+
+	for _, job := range jobs {
+		jobkey := job.Key()
+
+		// we can't allow the removal of jobs that have dependencies, as *queue
+		// would regard that as satisfying the dependency and downstream jobs
+		// would start
+		hasDeps, err := s.q.HasDependents(jobkey)
+		if err != nil || hasDeps {
+			if hasDeps {
+				pass.skippedDeps = append(pass.skippedDeps, job)
+			}
+
+			continue
+		}
+
+		if err = s.q.Remove(ctx, jobkey); err == nil {
+			pass.toDelete = append(pass.toDelete, jobkey)
+			pass.schedGroups[job.getSchedulerGroup()]++
+			pass.repGroups = append(pass.repGroups, job.RepGroup)
+			clog.Debug(ctx, "removed job", "cmd", job.Cmd)
+		}
+	}
+
+	return pass
+}
+
+// finalizeDeletedJobs removes a pass's jobs from the database, decrements their
+// scheduler group counts, and cleans up the rep-group lookups.
+func (s *Server) finalizeDeletedJobs(ctx context.Context, pass deletePass) {
+	// delete from db live bucket all in one go
+	if errd := s.db.deleteLiveJobs(ctx, pass.toDelete); errd != nil {
+		clog.Error(ctx, "job deletion from database failed", "err", errd)
+	}
+
+	// update scheduler now we have fewer jobs
+	for sg, count := range pass.schedGroups {
+		s.decrementGroupCount(ctx, sg, count)
+	}
+
+	// clean up rpl lookups
+	s.rpl.Lock()
+	for i, rg := range pass.repGroups {
+		s.rpl.Delete(rg, pass.toDelete[i])
+	}
+	s.rpl.Unlock()
 }
 
 // deleteJobIfRequested checks the job's behaviours and deletes the job if
@@ -3533,44 +4001,72 @@ func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
 // killJobsOnServers kills running and confirms lost jobs that were running on
 // hosts with the given IDs. Returns the affected jobs.
 func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]bool) []*Job {
-	var jobs []*Job
-
-	if len(serverIDs) > 0 {
-		running := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
-			JobStateRunning, false, false, false)
-
-		lost := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
-			JobStateLost, false, false, false)
-		for _, job := range append(running, lost...) {
-			if serverIDs[job.HostID] {
-				k, err := s.killJob(ctx, job.Key())
-				if err != nil {
-					clog.Error(ctx, "failed to kill a job after destroying its server: %s", err)
-				} else if k {
-					// try and grab the latest job state after
-					// having killed it, but still return the client
-					// version of the job
-					if item, err := s.q.Get(job.Key()); err == nil && item != nil {
-						liveJob := item.Data().(*Job)
-						job.State = liveJob.State
-
-						job.UntilBuried = liveJob.UntilBuried
-						if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
-							// we're going to release the job as
-							// soon as it goes from running to lost
-							job.UntilBuried--
-						}
-					}
-
-					jobs = append(jobs, job)
-				}
-			}
-		}
-
-		clog.Debug(ctx, "killed jobs on bad servers", "number", len(jobs))
+	if len(serverIDs) == 0 {
+		return nil
 	}
 
+	running := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
+		JobStateRunning, false, false, false)
+
+	lost := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0,
+		JobStateLost, false, false, false)
+
+	var jobs []*Job
+
+	for _, job := range append(running, lost...) {
+		if !serverIDs[job.HostID] {
+			continue
+		}
+
+		if s.killJobOnServer(ctx, job) {
+			jobs = append(jobs, job)
+		}
+	}
+
+	clog.Debug(ctx, "killed jobs on bad servers", "number", len(jobs))
+
 	return jobs
+}
+
+// killJobOnServer kills a single job whose server is being destroyed and, on
+// success, refreshes its state from the live queue. It reports whether the job
+// was killed (and so should be returned to the client).
+func (s *Server) killJobOnServer(ctx context.Context, job *Job) bool {
+	k, err := s.killJob(ctx, job.Key())
+	if err != nil {
+		clog.Error(ctx, "failed to kill a job after destroying its server: %s", err)
+
+		return false
+	}
+
+	if !k {
+		return false
+	}
+
+	// try and grab the latest job state after having killed it, but still
+	// return the client version of the job
+	if item, errg := s.q.Get(job.Key()); errg == nil && item != nil {
+		refreshJobFromLiveItem(job, item)
+	}
+
+	return true
+}
+
+// refreshJobFromLiveItem copies the latest state from the live queue item onto
+// job (used after killing it), adjusting UntilBuried for a still-running job.
+func refreshJobFromLiveItem(job *Job, item *queue.Item) {
+	liveJob, ok := item.Data().(*Job)
+	if !ok {
+		return
+	}
+
+	job.State = liveJob.State
+	job.UntilBuried = liveJob.UntilBuried
+
+	if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
+		// we're going to release the job as soon as it goes from running to lost
+		job.UntilBuried--
+	}
 }
 
 // kickJobs unburies the given jobs and returns the number affected.
@@ -3605,24 +4101,10 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete).
-func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
-	var notfound []string
-
-	for _, jobkey := range keys {
-		// try and get the job from the in-memory queue
-		item, err := s.q.Get(jobkey)
-
-		var job *Job
-		if err == nil && item != nil {
-			job = s.itemToJob(ctx, item, getStd, false)
-		} else {
-			notfound = append(notfound, jobkey)
-		}
-
-		if job != nil {
-			jobs = append(jobs, job)
-		}
-	}
+func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd, getEnv bool) (
+	jobs []*Job, srerr string, qerr string,
+) {
+	jobs, notfound := s.queuedJobsByKeys(ctx, keys, getStd)
 
 	getStd = shouldPopulateStd(jobs, getStd)
 
@@ -3634,22 +4116,55 @@ func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, 
 
 	if len(notfound) > 0 {
 		// try and get the jobs from the permanent store
-		found, err := s.db.retrieveCompleteJobsByKeys(notfound)
-		if err != nil {
-			srerr = ErrDBError
-			qerr = err.Error()
-		} else if len(found) > 0 {
-			if getEnv { // complete jobs don't have any std
-				for _, job := range found {
-					s.jobPopulateStdEnv(ctx, job, false, getEnv)
-				}
-			}
-
-			jobs = append(jobs, found...)
-		}
+		found, fsrerr, fqerr := s.completeJobsByKeys(ctx, notfound, getEnv)
+		jobs = append(jobs, found...)
+		srerr = fsrerr
+		qerr = fqerr
 	}
 
 	return jobs, srerr, qerr
+}
+
+// queuedJobsByKeys looks up the given keys in the in-memory queue, returning the
+// jobs found and the keys that were not found.
+func (s *Server) queuedJobsByKeys(ctx context.Context, keys []string, getStd bool) ([]*Job, []string) {
+	var (
+		jobs     []*Job
+		notfound []string
+	)
+
+	for _, jobkey := range keys {
+		// try and get the job from the in-memory queue
+		item, err := s.q.Get(jobkey)
+		if err != nil || item == nil {
+			notfound = append(notfound, jobkey)
+
+			continue
+		}
+
+		if job := s.itemToJob(ctx, item, getStd, false); job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs, notfound
+}
+
+// completeJobsByKeys retrieves complete (archived) jobs for the given keys from
+// the permanent store, populating their env if requested.
+func (s *Server) completeJobsByKeys(ctx context.Context, keys []string, getEnv bool) ([]*Job, string, string) {
+	found, err := s.db.retrieveCompleteJobsByKeys(keys)
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	if getEnv { // complete jobs don't have any std
+		for _, job := range found {
+			s.jobPopulateStdEnv(ctx, job, false, getEnv)
+		}
+	}
+
+	return found, "", ""
 }
 
 // checkJobByKey checks to see if the given key corresponds to a job currently
@@ -4167,87 +4682,119 @@ func (s *Server) schedulerGroupDetails() []string {
 }
 
 func (s *Server) groupToScheduleCmd(ctx context.Context, rc, group string, req *scheduler.Requirements) string {
-	return fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(ctx, req), int(s.scheduler.MaxQueueTime(req).Minutes()))
+	return fmt.Sprintf(
+		rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host,
+		s.scheduler.ReserveTimeout(ctx, req), int(s.scheduler.MaxQueueTime(req).Minutes()),
+	)
+}
+
+// runnerCommand returns the configured runner command template under lock.
+func (s *Server) runnerCommand() string {
+	s.racmutex.RLock()
+	defer s.racmutex.RUnlock()
+
+	return s.rc
 }
 
 func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
-	s.racmutex.RLock()
-	rc := s.rc
-	s.racmutex.RUnlock()
-
+	rc := s.runnerCommand()
 	if rc == "" {
 		return
 	}
 
-	err := s.scheduler.Schedule(ctx, s.groupToScheduleCmd(ctx, rc, group.name, group.req), group.req, group.priority, group.count)
-	if err != nil {
-		problem := true
+	scheduleCmd := s.groupToScheduleCmd(ctx, rc, group.name, group.req)
 
-		var serr scheduler.Error
-		if errors.As(err, &serr) && serr.Err == scheduler.ErrImpossible {
-			// bury all jobs in this scheduler group
-			problem = false
+	err := s.scheduler.Schedule(ctx, scheduleCmd, group.req, group.priority, group.count)
+	if err == nil {
+		return
+	}
 
-			for {
-				item, errr := s.q.Reserve(group.name, 0)
-				if errr != nil {
-					var qerr queue.Error
-					if !errors.As(errr, &qerr) || !errors.Is(qerr.Err, queue.ErrNothingReady) {
-						clog.Warn(ctx, "scheduleRunners failed to reserve an item", "group", group, "err", errr)
+	problem := true
 
-						problem = true
-					}
+	var serr scheduler.Error
+	if errors.As(err, &serr) && serr.Err == scheduler.ErrImpossible {
+		// the requirements are impossible, so bury all jobs in this group
+		problem = s.buryImpossibleGroupJobs(ctx, group)
+		s.triggerReadyAddedCallback(ctx)
+	}
 
-					break
-				}
+	if problem {
+		// log the error *** and inform (by email) the user about this problem if
+		// it's persistent, once per hour (day?)
+		clog.Warn(ctx, "Server scheduling runners error", "err", err)
+		s.retryScheduleRunnersLater(ctx, group)
+	}
+}
 
-				if item == nil {
-					break
-				}
-
-				job := item.Data().(*Job)
-				job.Lock()
-				job.FailReason = FailReasonResource
-				job.Unlock()
-
-				errb := s.q.Bury(item.Key)
-				if errb != nil {
-					clog.Warn(ctx, "scheduleRunners failed to bury an item", "err", errb)
-				} else {
-					s.deleteJobIfRequested(ctx, job)
-				}
+// buryImpossibleGroupJobs buries every ready job in the given scheduler group
+// (because its requirements cannot be satisfied), returning true if a problem
+// occurred while reserving items.
+func (s *Server) buryImpossibleGroupJobs(ctx context.Context, group *sgroup) bool {
+	for {
+		item, errr := s.q.Reserve(group.name, 0)
+		if errr != nil {
+			if isNothingReadyError(errr) {
+				return false
 			}
 
-			s.triggerReadyAddedCallback(ctx)
+			clog.Warn(ctx, "scheduleRunners failed to reserve an item", "group", group, "err", errr)
+
+			return true
 		}
 
-		if problem {
-			// log the error *** and inform (by email) the user about this
-			// problem if it's persistent, once per hour (day?)
-			clog.Warn(ctx, "Server scheduling runners error", "err", err)
+		if item == nil {
+			return false
+		}
 
-			// retry the schedule in a while
-			wgk := s.wg.Add(1)
+		s.buryImpossibleItem(ctx, item)
+	}
+}
 
-			go func() {
-				defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
-				defer s.wg.Done(wgk)
+// isNothingReadyError reports whether err is the queue's "nothing ready" error.
+func isNothingReadyError(err error) bool {
+	var qerr queue.Error
 
-				select {
-				case <-time.After(s.timings.CheckRunnerTime):
-					break
-				case <-s.stopClientHandling:
-					return
-				}
+	return errors.As(err, &qerr) && errors.Is(qerr.Err, queue.ErrNothingReady)
+}
 
-				group.Lock()
-				s.scheduleRunners(ctx, group)
-				group.Unlock()
-			}()
+// buryImpossibleItem marks a reserved item's job as failed for resources, buries
+// it, and deletes it if the job requested deletion on failure.
+func (s *Server) buryImpossibleItem(ctx context.Context, item *queue.Item) {
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return
+	}
 
+	job.Lock()
+	job.FailReason = FailReasonResource
+	job.Unlock()
+
+	if errb := s.q.Bury(item.Key); errb != nil {
+		clog.Warn(ctx, "scheduleRunners failed to bury an item", "err", errb)
+	} else {
+		s.deleteJobIfRequested(ctx, job)
+	}
+}
+
+// retryScheduleRunnersLater re-attempts scheduling runners for group after
+// CheckRunnerTime, unless the server is shutting down.
+func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
+		defer s.wg.Done(wgk)
+
+		select {
+		case <-time.After(s.timings.CheckRunnerTime):
+		case <-s.stopClientHandling:
 			return
 		}
-	}
+
+		group.Lock()
+		s.scheduleRunners(ctx, group)
+		group.Unlock()
+	}()
 }
 
 // adjust our count of how many jobs with this schedulerGroup we need in the job
@@ -4258,26 +4805,13 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 		drop = optionalDrop[0]
 	}
 
-	s.racmutex.RLock()
-	rc := s.rc
-	s.racmutex.RUnlock()
-
-	if rc == "" {
+	if s.runnerCommand() == "" {
 		return
 	}
 
 	s.psgmutex.RLock()
 	group, existed := s.previouslyScheduledGroups[schedulerGroup]
-	hasSkippedGroups := false
-
-	for _, scheduledGroup := range s.previouslyScheduledGroups {
-		if scheduledGroup.hasSkips() {
-			hasSkippedGroups = true
-
-			break
-		}
-	}
-
+	hasSkippedGroups := s.hasSkippedScheduledGroups()
 	s.psgmutex.RUnlock()
 
 	if hasSkippedGroups {
@@ -4293,6 +4827,18 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 		clone := group.clone(count)
 		s.scheduleRunners(ctx, clone)
 	}
+}
+
+// hasSkippedScheduledGroups reports whether any previously scheduled group had
+// jobs skipped due to limits. Must be called with s.psgmutex held.
+func (s *Server) hasSkippedScheduledGroups() bool {
+	for _, scheduledGroup := range s.previouslyScheduledGroups {
+		if scheduledGroup.hasSkips() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // getBadServers converts the slice of cloud.Server objects we hold in to a
@@ -4328,11 +4874,32 @@ func cloudServerToBadServer(server *cloud.Server) *BadServer {
 // one, if it is amongst the bad servers.
 func (s *Server) killBadCloudServers(ctx context.Context, servers []*BadServer, onlyid string) ([]*BadServer, []*Job) {
 	// first destroy or confirm dead currently bad servers
+	confirmed, serverIDs := s.confirmBadServersDead(ctx, servers, onlyid)
+
+	clog.Debug(ctx, "confirmed bad servers as dead", "number", len(confirmed))
+
+	// now kill running or lost jobs on those servers. Note that the delay
+	// between destroying the servers and managing to eg. bury the affected jobs
+	// with the killJob() call below can result in scheduler churn, where it
+	// tries to bring up new servers for jobs we're seconds away from burying.
+	// *** I don't think there's much to be done about that though; we must be
+	// sure the servers are really dead before confirming jobs are dead.
+	jobs := s.killJobsOnServers(ctx, serverIDs)
+
+	return confirmed, jobs
+}
+
+// confirmBadServersDead destroys (or confirms already dead) the given bad
+// servers, optionally restricted to onlyid, returning the confirmed servers and
+// the set of their IDs.
+func (s *Server) confirmBadServersDead(ctx context.Context, servers []*BadServer,
+	onlyid string) ([]*BadServer, map[string]bool) {
 	var confirmed []*BadServer
 
 	serverIDs := make(map[string]bool)
 
 	s.bsmutex.Lock()
+	defer s.bsmutex.Unlock()
 
 	for _, badServer := range servers {
 		if !badServer.IsBad {
@@ -4354,21 +4921,8 @@ func (s *Server) killBadCloudServers(ctx context.Context, servers []*BadServer, 
 
 		serverIDs[badServer.ID] = true
 	}
-	s.bsmutex.Unlock()
 
-	clog.Debug(ctx, "confirmed bad servers as dead", "number", len(confirmed))
-
-	// now kill running or lost jobs on those servers. Note that
-	// the delay between destroying the servers and managing to eg.
-	// bury the affected jobs with the killJob() call below can
-	// result in scheduler churn, where it tries to bring up new
-	// servers for jobs we're seconds away from burying. *** I don't
-	// think there's much to be done about that though; we must be
-	// sure the servers are really dead before confirming jobs are
-	// dead.
-	jobs := s.killJobsOnServers(ctx, serverIDs)
-
-	return confirmed, jobs
+	return confirmed, serverIDs
 }
 
 // destroyBadCloudServer destroys the given server and removes info about this
@@ -4420,26 +4974,36 @@ func (s *Server) killCloudServer(ctx context.Context, hostName string) (*BadServ
 func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.GroupData, string, error) {
 	name, limit := s.splitSuffixedLimitGroup(group)
 
-	if limit != nil {
-		_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
-		if err != nil {
-			return limiter.NewCountGroupData(-1), ErrDBError, err
-		}
-
-		if limit.IsValid() {
-			s.limiter.SetLimit(name, *limit)
-		}
-
-		for _, g := range removed {
-			s.limiter.RemoveLimit(g)
-		}
-
-		s.triggerReadyAddedCallback(ctx)
-
-		return limit, "", nil
+	if limit == nil {
+		return s.limiter.GetLimit(ctx, name), "", nil
 	}
 
-	return s.limiter.GetLimit(ctx, name), "", nil
+	if err := s.setLimitGroup(ctx, name, limit); err != nil {
+		return limiter.NewCountGroupData(-1), ErrDBError, err
+	}
+
+	return limit, "", nil
+}
+
+// setLimitGroup persists a limit group, applies the new limit (if valid),
+// removes any limits the store reported as removed, and re-triggers scheduling.
+func (s *Server) setLimitGroup(ctx context.Context, name string, limit *limiter.GroupData) error {
+	_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
+	if err != nil {
+		return err
+	}
+
+	if limit.IsValid() {
+		s.limiter.SetLimit(name, *limit)
+	}
+
+	for _, g := range removed {
+		s.limiter.RemoveLimit(g)
+	}
+
+	s.triggerReadyAddedCallback(ctx)
+
+	return nil
 }
 
 // splitSuffixedLimitGroup parses a limit group that might be suffixed with a
@@ -4456,7 +5020,7 @@ func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
 	s.wsmutex.Lock()
 	defer s.wsmutex.Unlock()
 
-	unique := logext.RandId(8)
+	unique := logext.RandId(webSocketIDLength)
 	s.wsconns[unique] = conn
 	s.wsWriteMutexes[unique] = &sync.Mutex{}
 
@@ -4494,72 +5058,172 @@ func (s *Server) closeWebSocketConnection(ctx context.Context, unique string) {
 // For now it also kills all currently running jobs so that their runners don't
 // stay alive uselessly. *** This adds 15s to our shutdown time...
 func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSigHandling bool) {
+	if !s.beginShutdown(ctx, stopSigHandling) {
+		return
+	}
+
+	s.waitForRunnersToDie(ctx, wait)
+
+	// stop the scheduler
+	s.scheduler.Cleanup(ctx)
+
+	s.closeWebSockets(ctx)
+
+	s.badServerCaster.Close()
+	s.schedCaster.Close()
+
+	s.shutdownHTTPServer(ctx)
+
+	s.closeServerCommsAndDB(ctx)
+
+	// wait for our goroutines to finish
+	s.wg.Wait(ServerShutdownWaitTime)
+
+	s.waitForPortsClosed(ctx)
+
+	// clean up our queues and empty everything out to be garbage collected,
+	// in case the same process calls Serve() again after this
+	if err := s.q.Destroy(); err != nil {
+		clog.Warn(ctx, "server shutdown queue destruction failed", "err", err)
+	}
+
+	if wasBlocking := s.resetStateAfterShutdown(); wasBlocking {
+		s.done <- Error{"Serve", "", reason}
+	}
+}
+
+// closeServerCommsAndDB closes the command line interface, command socket and
+// database, and frees any clients waiting on a reserve.
+func (s *Server) closeServerCommsAndDB(ctx context.Context) {
+	// close our command line interface
+	s.closeClientSubscriptions()
+	close(s.stopClientHandling)
+	s.waitForClientHandling(ctx)
+	time.Sleep(s.timings.ShutdownSocketWait)
+
+	if err := s.sock.Close(); err != nil {
+		clog.Warn(ctx, "server shutdown socket close failed", "err", err)
+	}
+
+	// close the database
+	if err := s.db.close(ctx); err != nil {
+		clog.Warn(ctx, "server shutdown database close failed", "err", err)
+	}
+
+	// free any waiting reserves
+	s.rpmutex.Lock()
+	s.racPending = false
+	s.racRunning = false
+	s.clearRACWaiters()
+	s.rpmutex.Unlock()
+}
+
+// resetStateAfterShutdown clears the queue and shutdown flags so the same
+// process can Serve() again, returning whether a caller was blocking in Block().
+func (s *Server) resetStateAfterShutdown() bool {
+	// nil under ssmutex, since the Drain() goroutine reads s.q under it
+	s.ssmutex.Lock()
+	s.q = nil
+	s.ssmutex.Unlock()
+
+	s.krmutex.Lock()
+	s.killRunners = false
+	s.krmutex.Unlock()
+
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.drain = false
+	wasBlocking := s.blocking
+	s.blocking = false
+
+	return wasBlocking
+}
+
+// beginShutdown marks the server as down (so touches return a kill signal) and
+// unschedules its groups, returning false if the server was already down.
+func (s *Server) beginShutdown(ctx context.Context, stopSigHandling bool) bool {
 	s.ssmutex.Lock()
 
 	if !s.up {
 		s.ssmutex.Unlock()
 
-		return
+		return false
 	}
 
 	if stopSigHandling {
 		close(s.stopSigHandling)
 	}
 
-	s.psgmutex.Lock()
-	for name, group := range s.previouslyScheduledGroups {
-		s.scheduleRunners(ctx, group.clone(0))
-		delete(s.previouslyScheduledGroups, name)
-	}
-	s.psgmutex.Unlock()
+	s.unscheduleAllGroups(ctx)
 
 	// change touch to always return a kill signal
 	s.up = false
 	s.drain = true
 	s.ServerInfo.Mode = ServerModeDrain
 	s.ssmutex.Unlock()
+
 	s.krmutex.Lock()
 	s.killRunners = true
 	s.krmutex.Unlock()
 
+	return true
+}
+
+// unscheduleAllGroups unschedules every previously scheduled group. Must be
+// called with s.ssmutex held.
+func (s *Server) unscheduleAllGroups(ctx context.Context) {
+	s.psgmutex.Lock()
+	defer s.psgmutex.Unlock()
+
+	for name, group := range s.previouslyScheduledGroups {
+		s.scheduleRunners(ctx, group.clone(0))
+		delete(s.previouslyScheduledGroups, name)
+	}
+}
+
+// waitForRunnersToDie waits long enough for runners to have attempted a touch
+// (and so learn they should die) and, if wait is set, polls until none remain.
+func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
 		<-time.After(s.timings.TouchInterval)
 	}
 
 	// wait for the runners to actually die
-	if wait {
-		ticker := time.NewTicker(serverShutdownRunnerTickerTime)
-		for range ticker.C {
-			if !s.HasRunners(ctx) {
-				ticker.Stop()
-
-				break
-			}
-		}
+	if !wait {
+		return
 	}
 
-	// stop the scheduler
-	s.scheduler.Cleanup(ctx)
+	ticker := time.NewTicker(serverShutdownRunnerTickerTime)
+	defer ticker.Stop()
 
-	// graceful shutdown of all websocket-related goroutines and connections
+	for range ticker.C {
+		if !s.HasRunners(ctx) {
+			return
+		}
+	}
+}
+
+// closeWebSockets closes and forgets every open websocket connection.
+func (s *Server) closeWebSockets(ctx context.Context) {
 	s.wsmutex.Lock()
+	defer s.wsmutex.Unlock()
+
 	for unique, conn := range s.wsconns {
-		errc := conn.Close()
-		if errc != nil {
+		if errc := conn.Close(); errc != nil {
 			clog.Warn(ctx, "server shutdown failed to close a websocket", "err", errc)
 		}
 
 		delete(s.wsconns, unique)
 		delete(s.wsWriteMutexes, unique)
 	}
-	s.wsmutex.Unlock()
+}
 
-	s.badServerCaster.Close()
-	s.schedCaster.Close()
-
-	// not-fully graceful shutdown of http server, since it takes too long to
-	// shutdown normally due to a fixed 500ms poll
+// shutdownHTTPServer shuts the web interface down, forcing completion after
+// httpServerShutdownTime because a graceful shutdown is slow due to a fixed
+// 500ms poll.
+func (s *Server) shutdownHTTPServer(ctx context.Context) {
 	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
 
 	go func() {
@@ -4571,86 +5235,44 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	if err != nil && !errors.Is(err, context.Canceled) {
 		clog.Warn(ctx, "server shutdown of web interface failed", "err", err)
 	}
+}
 
-	// close our command line interface
-	s.closeClientSubscriptions()
-	close(s.stopClientHandling)
-	s.waitForClientHandling(ctx)
-	time.Sleep(s.timings.ShutdownSocketWait)
-
-	err = s.sock.Close()
-	if err != nil {
-		clog.Warn(ctx, "server shutdown socket close failed", "err", err)
-	}
-
-	// close the database
-	err = s.db.close(ctx)
-	if err != nil {
-		clog.Warn(ctx, "server shutdown database close failed", "err", err)
-	}
-
-	// free any waiting reserves
-	s.rpmutex.Lock()
-	s.racPending = false
-	s.racRunning = false
-	s.clearRACWaiters()
-	s.rpmutex.Unlock()
-
-	// wait for our goroutines to finish
-	s.wg.Wait(ServerShutdownWaitTime)
-
-	// wait until the ports are really no longer being listened to (which isn't
-	// the same as them being available to be reconnected to, but this is the
-	// best we can do?)
+// waitForPortsClosed blocks until both the command and web ports are no longer
+// being listened to (which is the best proxy we have for them being free).
+// portStillListening closes any open connection as a side effect.
+func (s *Server) waitForPortsClosed(ctx context.Context) {
 	for {
-		conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
-		if conn != nil {
-			errc := conn.Close()
-			if errc != nil {
-				clog.Warn(ctx, "server shutdown port close failed", "port", s.ServerInfo.WebPort, "err", errc)
-			}
-
-			continue
+		stillUp := s.portStillListening(ctx, s.ServerInfo.Port)
+		if !stillUp {
+			stillUp = s.portStillListening(ctx, s.ServerInfo.WebPort)
 		}
 
-		conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
-		if conn != nil {
-			errc := conn.Close()
-			if errc != nil {
-				clog.Warn(ctx, "server shutdown port close failed", "port", s.ServerInfo.WebPort, "err", errc)
-			}
-
-			continue
+		if !stillUp {
+			return
 		}
+	}
+}
 
-		break
+// portStillListening reports whether something is still listening on the given
+// port of this host. If a connection could be made it is immediately closed
+// (any close error is just logged). A dial failure is taken to mean the port is
+// no longer being listened to.
+func (s *Server) portStillListening(ctx context.Context, port string) bool {
+	dialCtx, cancel := context.WithTimeout(ctx, portCheckDialTimeout)
+	defer cancel()
+
+	var dialer net.Dialer
+
+	conn, err := dialer.DialContext(dialCtx, "tcp", net.JoinHostPort("", port))
+	if err != nil || conn == nil {
+		return false
 	}
 
-	// clean up our queues and empty everything out to be garbage collected,
-	// in case the same process calls Serve() again after this
-	err = s.q.Destroy()
-	if err != nil {
-		clog.Warn(ctx, "server shutdown queue destruction failed", "err", err)
+	if errc := conn.Close(); errc != nil {
+		clog.Warn(ctx, "server shutdown port close failed", "port", port, "err", errc)
 	}
 
-	// nil under ssmutex, since the Drain() goroutine reads s.q under it
-	s.ssmutex.Lock()
-	s.q = nil
-	s.ssmutex.Unlock()
-
-	s.krmutex.Lock()
-	s.killRunners = false
-	s.krmutex.Unlock()
-
-	s.ssmutex.Lock()
-	s.drain = false
-	wasBlocking := s.blocking
-	s.blocking = false
-	s.ssmutex.Unlock()
-
-	if wasBlocking {
-		s.done <- Error{"Serve", "", reason}
-	}
+	return true
 }
 
 // subscribeToJobs adds the specified jobs to a status websocket subscription.

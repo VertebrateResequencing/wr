@@ -47,6 +47,18 @@ import (
 
 const webStatusAllRepGroups = statusAllRepGroups
 
+// test data constants used across the web interface tests.
+const (
+	webiRG1         = "rg1"
+	webiRG2         = "rg2"
+	webiEcho1       = "echo 1"
+	webiEcho2       = "echo 2"
+	webiEcho3       = "echo 3"
+	webiSearchGroup = "search_group"
+	webiSubRG1      = "sub_rg1"
+	webiSubRG2      = "sub_rg2"
+)
+
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -470,16 +482,16 @@ func TestServerWebI(t *testing.T) {
 
 		defer disconnect(jq)
 
-		var jobs []*Job
+		jobs := make([]*Job, 0, 4)
 
-		jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "group1",
-			Requirements: standardReqs, RepGroup: "rg1"})
-		jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "group1",
-			Requirements: standardReqs, RepGroup: "rg1"})
-		jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: "/tmp", ReqGroup: "group2",
-			Requirements: standardReqs, RepGroup: "rg2"})
-		jobs = append(jobs, &Job{Cmd: "echo 4 && false", Cwd: "/tmp", ReqGroup: "group2",
-			Requirements: standardReqs, RepGroup: "rg2"})
+		jobs = append(jobs, &Job{Cmd: webiEcho1, Cwd: testCwd, ReqGroup: "group1",
+			Requirements: standardReqs, RepGroup: webiRG1})
+		jobs = append(jobs, &Job{Cmd: webiEcho2, Cwd: testCwd, ReqGroup: "group1",
+			Requirements: standardReqs, RepGroup: webiRG1})
+		jobs = append(jobs, &Job{Cmd: webiEcho3, Cwd: testCwd, ReqGroup: "group2",
+			Requirements: standardReqs, RepGroup: webiRG2})
+		jobs = append(jobs, &Job{Cmd: "echo 4 && false", Cwd: testCwd, ReqGroup: "group2",
+			Requirements: standardReqs, RepGroup: webiRG2})
 		inserts, already, err := jq.Add(jobs, envVars, true)
 		So(err, ShouldBeNil)
 		So(inserts, ShouldEqual, 4)
@@ -487,17 +499,17 @@ func TestServerWebI(t *testing.T) {
 
 		job, err := jq.Reserve(50 * time.Millisecond)
 		So(err, ShouldBeNil)
-		So(job.Cmd, ShouldEqual, "echo 1")
+		So(job.Cmd, ShouldEqual, webiEcho1)
 
 		job, err = jq.Reserve(50 * time.Millisecond)
 		So(err, ShouldBeNil)
-		So(job.Cmd, ShouldEqual, "echo 2")
+		So(job.Cmd, ShouldEqual, webiEcho2)
 		err = jq.Execute(ctx, job, config.RunnerExecShell)
 		So(err, ShouldBeNil)
 
 		job, err = jq.Reserve(50 * time.Millisecond)
 		So(err, ShouldBeNil)
-		So(job.Cmd, ShouldEqual, "echo 3")
+		So(job.Cmd, ShouldEqual, webiEcho3)
 		err = jq.Execute(ctx, job, config.RunnerExecShell)
 		So(err, ShouldBeNil)
 
@@ -512,7 +524,7 @@ func TestServerWebI(t *testing.T) {
 			handler := webInterfaceStatic(ctx, server)
 
 			w := httptest.NewRecorder()
-			r := httptest.NewRequest(http.MethodGet, "/status.html", nil)
+			r := httptest.NewRequestWithContext(ctx, http.MethodGet, "/status.html", nil)
 			r.Header.Set("Authorization", "Bearer "+string(token))
 			handler(w, r)
 			resp := w.Result()
@@ -529,7 +541,7 @@ func TestServerWebI(t *testing.T) {
 			So(string(body), ShouldNotContainSubstring, "html: WaitingForDepGroups")
 
 			w = httptest.NewRecorder()
-			r = httptest.NewRequest(http.MethodGet, "/nonexistent.html", nil)
+			r = httptest.NewRequestWithContext(ctx, http.MethodGet, "/nonexistent.html", nil)
 			r.Header.Set("Authorization", "Bearer "+string(token))
 			handler(w, r)
 			resp = w.Result()
@@ -596,8 +608,8 @@ func TestServerWebI(t *testing.T) {
 				// state pushed on connect must reflect exactly this.
 				ok := readAbsoluteStateUntil(ws, 5*time.Second, func(latest map[string]map[JobState]int) bool {
 					all := latest[webStatusAllRepGroups]
-					rg1 := latest["rg1"]
-					rg2 := latest["rg2"]
+					rg1 := latest[webiRG1]
+					rg2 := latest[webiRG2]
 
 					return all[JobStateRunning] == 1 && all[JobStateBuried] == 1 &&
 						rg1[JobStateRunning] == 1 && rg1[JobStateComplete] == 1 &&
@@ -609,40 +621,40 @@ func TestServerWebI(t *testing.T) {
 			Convey("The websocket handler responds to details requests", func() {
 				err = ws.WriteJSON(jstatusReq{
 					Request:  jstatusRequestDetails,
-					RepGroup: "rg1",
+					RepGroup: webiRG1,
 					State:    JobStateComplete,
 				})
 				So(err, ShouldBeNil)
 
 				status, ok := readJStatusMatching(ws, func(s JStatus) bool {
-					return s.RepGroup == "rg1" && s.State == JobStateComplete
+					return s.RepGroup == webiRG1 && s.State == JobStateComplete
 				})
 				So(ok, ShouldBeTrue)
-				So(status.RepGroup, ShouldEqual, "rg1")
+				So(status.RepGroup, ShouldEqual, webiRG1)
 				So(status.State, ShouldEqual, JobStateComplete)
-				So(status.Cmd, ShouldEqual, "echo 2")
+				So(status.Cmd, ShouldEqual, webiEcho2)
 
 				go func() {
 					<-time.After(100 * time.Millisecond)
 					ws.WriteJSON(jstatusReq{ //nolint:errcheck
 						Request:  jstatusRequestDetails,
-						RepGroup: "rg1",
+						RepGroup: webiRG1,
 						State:    JobStateReserved,
 					})
 				}()
 
 				status2, ok2 := readJStatusMatching(ws, func(s JStatus) bool {
-					return s.RepGroup == "rg1" && s.State == JobStateReserved
+					return s.RepGroup == webiRG1 && s.State == JobStateReserved
 				})
 				So(ok2, ShouldBeTrue)
-				So(status2.Cmd, ShouldEqual, "echo 1")
-				So(status2.RepGroup, ShouldEqual, "rg1")
+				So(status2.Cmd, ShouldEqual, webiEcho1)
+				So(status2.RepGroup, ShouldEqual, webiRG1)
 			})
 
 			Convey("The websocket and REST details expose editable status fields", func() {
 				statusJob := &Job{
 					Cmd:                   "echo web status fields",
-					Cwd:                   "/tmp",
+					Cwd:                   testCwd,
 					CwdMatters:            true,
 					ChangeHome:            true,
 					ReqGroup:              "web-req",
@@ -703,7 +715,7 @@ func TestServerWebI(t *testing.T) {
 			Convey("The websocket handler sends never-seen dependency group waits for details", func() {
 				waiting := &Job{
 					Cmd:          "echo web waiting dep",
-					Cwd:          "/tmp",
+					Cwd:          testCwd,
 					ReqGroup:     "web_group",
 					Requirements: standardReqs,
 					RepGroup:     "web-waiting",
@@ -746,7 +758,7 @@ func TestServerWebI(t *testing.T) {
 				for i := range numPaginationJobs {
 					paginationJobs[i] = &Job{
 						Cmd:          fmt.Sprintf("echo pagination_job_%d && false", i),
-						Cwd:          "/tmp",
+						Cwd:          testCwd,
 						ReqGroup:     "pg_group",
 						Requirements: standardReqs,
 						RepGroup:     paginationRepGroup,
@@ -871,11 +883,11 @@ func TestServerWebI(t *testing.T) {
 
 				Convey("It returns jobs from multiple repgroups with Search=true and limit=0", func() {
 					searchJobs := []*Job{
-						{Cmd: "echo search1", Cwd: "/tmp", ReqGroup: "search_group",
+						{Cmd: "echo search1", Cwd: testCwd, ReqGroup: webiSearchGroup,
 							Requirements: standardReqs, RepGroup: "search_rgA"},
-						{Cmd: "echo search2", Cwd: "/tmp", ReqGroup: "search_group",
+						{Cmd: "echo search2", Cwd: testCwd, ReqGroup: webiSearchGroup,
 							Requirements: standardReqs, RepGroup: "seach_rgB"}, //nolint:misspell
-						{Cmd: "echo search3", Cwd: "/tmp", ReqGroup: "search_group",
+						{Cmd: "echo search3", Cwd: testCwd, ReqGroup: webiSearchGroup,
 							Requirements: standardReqs, RepGroup: "search_rgC"},
 					}
 					inserts, _, erra := jq.Add(searchJobs, envVars, true)
@@ -958,11 +970,11 @@ func TestServerWebI(t *testing.T) {
 				})
 
 				Convey("It filters correctly with multiple criteria", func() {
-					var differentJob []*Job
+					differentJob := make([]*Job, 0, 1)
 
 					differentJob = append(differentJob, &Job{
 						Cmd:          "echo different_exitcode && exit 2",
-						Cwd:          "/tmp",
+						Cwd:          testCwd,
 						ReqGroup:     "pg_group",
 						Requirements: standardReqs,
 						RepGroup:     paginationRepGroup,
@@ -1011,7 +1023,7 @@ func TestServerWebI(t *testing.T) {
 			Convey("The websocket handler responds to key requests", func() {
 				var jobKey string
 
-				completeJobs, errg := jq.GetByRepGroup("rg1", false, 0, JobStateComplete, false, false)
+				completeJobs, errg := jq.GetByRepGroup(webiRG1, false, 0, JobStateComplete, false, false)
 				So(errg, ShouldBeNil)
 				So(len(completeJobs), ShouldEqual, 1)
 				jobKey = completeJobs[0].Key()
@@ -1026,36 +1038,36 @@ func TestServerWebI(t *testing.T) {
 			})
 
 			Convey("The websocket handler can retry buried jobs", func() {
-				buriedJobs, errg := jq.GetByRepGroup("rg2", false, 0, JobStateBuried, false, false)
+				buriedJobs, errg := jq.GetByRepGroup(webiRG2, false, 0, JobStateBuried, false, false)
 				So(errg, ShouldBeNil)
 				So(len(buriedJobs), ShouldEqual, 1)
 				So(buriedJobs[0].Cmd, ShouldEqual, "echo 4 && false")
 
 				err = ws.WriteJSON(jstatusReq{
 					Request:    "retry",
-					RepGroup:   "rg2",
+					RepGroup:   webiRG2,
 					Exitcode:   buriedJobs[0].Exitcode,
 					FailReason: buriedJobs[0].FailReason,
 				})
 				So(err, ShouldBeNil)
 
 				So(pollUntil(func() bool {
-					kicked, errr := jq.GetByRepGroup("rg2", false, 0, JobStateReady, false, false)
+					kicked, errr := jq.GetByRepGroup(webiRG2, false, 0, JobStateReady, false, false)
 
 					return errr == nil && len(kicked) == 1
 				}), ShouldBeTrue)
 
-				kickedJobs, errg := jq.GetByRepGroup("rg2", false, 0, JobStateReady, false, false)
+				kickedJobs, errg := jq.GetByRepGroup(webiRG2, false, 0, JobStateReady, false, false)
 				So(errg, ShouldBeNil)
 				So(len(kickedJobs), ShouldEqual, 1)
 				So(kickedJobs[0].Cmd, ShouldEqual, "echo 4 && false")
 			})
 
 			Convey("The websocket handler can rerun completed jobs", func() {
-				completeJobs, errg := jq.GetByRepGroup("rg1", false, 0, JobStateComplete, false, false)
+				completeJobs, errg := jq.GetByRepGroup(webiRG1, false, 0, JobStateComplete, false, false)
 				So(errg, ShouldBeNil)
 				So(len(completeJobs), ShouldEqual, 1)
-				So(completeJobs[0].Cmd, ShouldEqual, "echo 2")
+				So(completeJobs[0].Cmd, ShouldEqual, webiEcho2)
 				So(completeJobs[0].Exited, ShouldBeTrue)
 				So(completeJobs[0].Attempts, ShouldEqual, 1)
 
@@ -1067,15 +1079,15 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(pollUntil(func() bool {
-					rerunJobs, errr := jq.GetByRepGroup("rg1", false, 0, JobStateReady, false, false)
+					rerunJobs, errr := jq.GetByRepGroup(webiRG1, false, 0, JobStateReady, false, false)
 					if errr != nil || len(rerunJobs) != 1 {
 						return false
 					}
 
-					return rerunJobs[0].Cmd == "echo 2"
+					return rerunJobs[0].Cmd == webiEcho2
 				}), ShouldBeTrue)
 
-				rerunJobs, errg := jq.GetByRepGroup("rg1", false, 0, JobStateReady, false, false)
+				rerunJobs, errg := jq.GetByRepGroup(webiRG1, false, 0, JobStateReady, false, false)
 				So(errg, ShouldBeNil)
 				So(len(rerunJobs), ShouldEqual, 1)
 				So(rerunJobs[0].Key(), ShouldEqual, completeJobs[0].Key())
@@ -1095,7 +1107,7 @@ func TestServerWebI(t *testing.T) {
 
 				inserts, already, erra := jq.Add([]*Job{{
 					Cmd:          cmd,
-					Cwd:          "/tmp",
+					Cwd:          testCwd,
 					ReqGroup:     "rerun_key_group",
 					Requirements: standardReqs,
 					RepGroup:     firstGroup,
@@ -1108,7 +1120,7 @@ func TestServerWebI(t *testing.T) {
 
 				inserts, already, erra = jq.Add([]*Job{{
 					Cmd:          cmd,
-					Cwd:          "/tmp",
+					Cwd:          testCwd,
 					ReqGroup:     "rerun_key_group",
 					Requirements: standardReqs,
 					RepGroup:     secondGroup,
@@ -1155,11 +1167,11 @@ func TestServerWebI(t *testing.T) {
 				otherRepGroup := "rerun_all_other_rg"
 				reqGroup := "rerun_all_group"
 				jobsToRerun := []*Job{
-					{Cmd: "echo webi rerun all 1", Cwd: "/tmp", ReqGroup: reqGroup,
+					{Cmd: "echo webi rerun all 1", Cwd: testCwd, ReqGroup: reqGroup,
 						Requirements: standardReqs, RepGroup: repGroup},
-					{Cmd: "echo webi rerun all 2", Cwd: "/tmp", ReqGroup: reqGroup,
+					{Cmd: "echo webi rerun all 2", Cwd: testCwd, ReqGroup: reqGroup,
 						Requirements: standardReqs, RepGroup: repGroup},
-					{Cmd: "echo webi rerun all other", Cwd: "/tmp", ReqGroup: reqGroup,
+					{Cmd: "echo webi rerun all other", Cwd: testCwd, ReqGroup: reqGroup,
 						Requirements: standardReqs, RepGroup: otherRepGroup},
 				}
 
@@ -1222,7 +1234,7 @@ func TestServerWebI(t *testing.T) {
 			})
 
 			Convey("The websocket handler can remove jobs", func() {
-				removeJobs := []*Job{{Cmd: "echo remove", Cwd: "/tmp",
+				removeJobs := []*Job{{Cmd: "echo remove", Cwd: testCwd,
 					ReqGroup: "group3", Requirements: standardReqs, RepGroup: "rg3"}}
 				inserts, _, erra := jq.Add(removeJobs, envVars, true)
 				So(erra, ShouldBeNil)
@@ -1260,9 +1272,9 @@ func TestServerWebI(t *testing.T) {
 
 				defer ws3.Close()
 
-				var broadcastJobs []*Job
+				broadcastJobs := make([]*Job, 0, 1)
 
-				broadcastJobs = append(broadcastJobs, &Job{Cmd: "echo broadcast", Cwd: "/tmp",
+				broadcastJobs = append(broadcastJobs, &Job{Cmd: "echo broadcast", Cwd: testCwd,
 					ReqGroup: "group4", Requirements: standardReqs, RepGroup: "rg4"})
 				inserts, _, erra := jq.Add(broadcastJobs, envVars, true)
 				So(erra, ShouldBeNil)
@@ -2126,12 +2138,12 @@ func TestJobSubscriptions(t *testing.T) {
 
 		defer disconnect(jq)
 
-		var repGroupJobs []*Job
+		repGroupJobs := make([]*Job, 0, 2)
 
-		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_1", Cwd: "/tmp", ReqGroup: "sub_group1",
-			Requirements: standardReqs, RepGroup: "sub_rg1"})
-		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_2", Cwd: "/tmp", ReqGroup: "sub_group2",
-			Requirements: standardReqs, RepGroup: "sub_rg2"})
+		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_1", Cwd: testCwd, ReqGroup: "sub_group1",
+			Requirements: standardReqs, RepGroup: webiSubRG1})
+		repGroupJobs = append(repGroupJobs, &Job{Cmd: "echo sub_test_2", Cwd: testCwd, ReqGroup: "sub_group2",
+			Requirements: standardReqs, RepGroup: webiSubRG2})
 
 		inserts, already, err := jq.Add(repGroupJobs, envVars, true)
 		So(err, ShouldBeNil)
@@ -2161,24 +2173,24 @@ func TestJobSubscriptions(t *testing.T) {
 
 			defer ws3.Close()
 
-			rg1Jobs, err := jq.GetByRepGroup("sub_rg1", false, 0, "", false, false)
+			rg1Jobs, err := jq.GetByRepGroup(webiSubRG1, false, 0, "", false, false)
 			So(err, ShouldBeNil)
 			So(len(rg1Jobs), ShouldEqual, 1)
 
-			rg2Jobs, err := jq.GetByRepGroup("sub_rg2", false, 0, "", false, false)
+			rg2Jobs, err := jq.GetByRepGroup(webiSubRG2, false, 0, "", false, false)
 			So(err, ShouldBeNil)
 			So(len(rg2Jobs), ShouldEqual, 1)
 
 			err = ws1.WriteJSON(jstatusReq{
 				Request:  jstatusRequestDetails,
-				RepGroup: "sub_rg1",
+				RepGroup: webiSubRG1,
 				State:    JobStateReady,
 			})
 			So(err, ShouldBeNil)
 
 			err = ws2.WriteJSON(jstatusReq{
 				Request:  jstatusRequestDetails,
-				RepGroup: "sub_rg2",
+				RepGroup: webiSubRG2,
 				State:    JobStateReady,
 			})
 			So(err, ShouldBeNil)
@@ -2194,7 +2206,7 @@ func TestJobSubscriptions(t *testing.T) {
 			Convey("Only subscribed clients receive detailed push updates", func() {
 				job, errr := jq.Reserve(50 * time.Millisecond)
 				So(errr, ShouldBeNil)
-				So(job.RepGroup, ShouldEqual, "sub_rg1")
+				So(job.RepGroup, ShouldEqual, webiSubRG1)
 
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
@@ -2202,13 +2214,13 @@ func TestJobSubscriptions(t *testing.T) {
 				status1, errr := readUntilStatus(ws1)
 				So(errr, ShouldBeNil)
 				So(status1.IsPushUpdate, ShouldBeTrue)
-				So(status1.RepGroup, ShouldEqual, "sub_rg1")
+				So(status1.RepGroup, ShouldEqual, webiSubRG1)
 				So(status1.State, ShouldEqual, JobStateRunning)
 
 				status1, errr = readUntilStatus(ws1)
 				So(errr, ShouldBeNil)
 				So(status1.IsPushUpdate, ShouldBeTrue)
-				So(status1.RepGroup, ShouldEqual, "sub_rg1")
+				So(status1.RepGroup, ShouldEqual, webiSubRG1)
 				So(status1.State, ShouldEqual, JobStateComplete)
 
 				So(testNoMoreMessages(ws1), ShouldBeTrue)
@@ -2231,7 +2243,7 @@ func TestJobSubscriptions(t *testing.T) {
 
 				err = ws2.WriteJSON(jstatusReq{
 					Request:  jstatusRequestDetails,
-					RepGroup: "sub_rg2",
+					RepGroup: webiSubRG2,
 					State:    JobStateReady,
 				})
 				So(err, ShouldBeNil)
@@ -2240,7 +2252,7 @@ func TestJobSubscriptions(t *testing.T) {
 
 				job, err = jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
-				So(job.RepGroup, ShouldEqual, "sub_rg2")
+				So(job.RepGroup, ShouldEqual, webiSubRG2)
 
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
@@ -2248,13 +2260,13 @@ func TestJobSubscriptions(t *testing.T) {
 				status2, errr := readUntilStatus(ws2)
 				So(errr, ShouldBeNil)
 				So(status2.IsPushUpdate, ShouldBeTrue)
-				So(status2.RepGroup, ShouldEqual, "sub_rg2")
+				So(status2.RepGroup, ShouldEqual, webiSubRG2)
 				So(status2.State, ShouldEqual, JobStateRunning)
 
 				status2, errr = readUntilStatus(ws2)
 				So(errr, ShouldBeNil)
 				So(status2.IsPushUpdate, ShouldBeTrue)
-				So(status2.RepGroup, ShouldEqual, "sub_rg2")
+				So(status2.RepGroup, ShouldEqual, webiSubRG2)
 				So(status2.State, ShouldEqual, JobStateComplete)
 
 				So(testNoMoreMessages(ws2), ShouldBeTrue)
@@ -2268,7 +2280,7 @@ func TestJobSubscriptions(t *testing.T) {
 
 				err = ws1.WriteJSON(jstatusReq{
 					Request:  jstatusRequestDetails,
-					RepGroup: "sub_rg1",
+					RepGroup: webiSubRG1,
 					State:    JobStateReady,
 				})
 				So(err, ShouldBeNil)
@@ -2282,7 +2294,7 @@ func TestJobSubscriptions(t *testing.T) {
 
 				job, errr := jq.Reserve(50 * time.Millisecond)
 				So(errr, ShouldBeNil)
-				So(job.RepGroup, ShouldEqual, "sub_rg1")
+				So(job.RepGroup, ShouldEqual, webiSubRG1)
 
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
@@ -2296,7 +2308,7 @@ func TestJobSubscriptions(t *testing.T) {
 
 				cleanupIDs, err := jq.AddAndReturnIDs([]*Job{{
 					Cmd:          "echo sub_cleanup",
-					Cwd:          "/tmp",
+					Cwd:          testCwd,
 					ReqGroup:     "sub_cleanup",
 					Requirements: standardReqs,
 					RepGroup:     "sub_cleanup",
