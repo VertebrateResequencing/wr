@@ -573,7 +573,7 @@ func TestJobqueueRunnerAutomaticExecution(t *testing.T) {
 				// generous bound for the batch of server-spawned runners to finish
 				// all the jobs under a CPU-starved box (see runnerStartWait); free
 				// on the success path - returns the instant no runners remain.
-				So(waitUntilNoRunners(ctx, fixture.server, runnerStartWait), ShouldBeTrue)
+				So(waitUntilNoRunners(ctx, fixture.server), ShouldBeTrue)
 
 				jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, "", false, false)
 				So(err, ShouldBeNil)
