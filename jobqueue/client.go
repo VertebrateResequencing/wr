@@ -157,9 +157,9 @@ const (
 	// that failed with "fusermount exited with code 256".
 	fusermountRetryDelaySeconds = 5
 
-	// bytesPerKB and kbPerMB convert between bytes, kilobytes and megabytes.
-	bytesPerKB = 1024
-	kbPerMB    = 1024
+	// kbPerMB converts between kilobytes and megabytes (bytesPerKB is shared
+	// from utils.go).
+	kbPerMB = 1024
 
 	// percentDivisor turns a percentage into a fraction of a whole.
 	percentDivisor = 100
