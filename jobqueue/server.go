@@ -42,10 +42,12 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"sync"
@@ -134,6 +136,16 @@ const (
 	// request headers, mitigating Slowloris-style attacks.
 	httpReadHeaderTimeout = 60 * time.Second
 
+	// pprofMutexProfileFraction is the rate passed to
+	// runtime.SetMutexProfileFraction when the WR_PPROF_ADDR endpoint is
+	// enabled: on average 1 in this many mutex contention events is reported.
+	pprofMutexProfileFraction = 5
+
+	// pprofBlockProfileRate is the rate (in nanoseconds) passed to
+	// runtime.SetBlockProfileRate when the WR_PPROF_ADDR endpoint is enabled:
+	// on average one blocking event is sampled per this many nanoseconds blocked.
+	pprofBlockProfileRate = 10000
+
 	// portCheckDialTimeout is how long shutdown waits when probing whether a
 	// server port is still being listened to.
 	portCheckDialTimeout = 10 * time.Millisecond
@@ -199,6 +211,12 @@ var (
 // BsubID is used to give added jobs a unique (atomically incremented) id when
 // pretending to be bsub.
 var BsubID uint64 //nolint:gochecknoglobals
+
+// envPprofAddr is the environment variable that, when set to a host:port (eg.
+// "localhost:6060"), makes Serve() start an opt-in net/http/pprof endpoint for
+// profiling the manager. It is unset by default, in which case no endpoint is
+// started and there is no profiling overhead.
+const envPprofAddr = "WR_PPROF_ADDR"
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -1388,6 +1406,39 @@ func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 	return len(job.WaitingForDepGroups) > 0
 }
 
+// maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
+// WR_PPROF_ADDR environment variable is set (eg. "localhost:6060"), and does
+// nothing otherwise. The pprof handlers are registered on a private ServeMux
+// (never http.DefaultServeMux, and never the manager's web server) served on
+// the given address only, so operators should bind to localhost. When enabled
+// it also turns on mutex and block profiling so contention can be diagnosed.
+func maybeStartPprofServer(ctx context.Context) {
+	addr := os.Getenv(envPprofAddr)
+	if addr == "" {
+		return
+	}
+
+	runtime.SetMutexProfileFraction(pprofMutexProfileFraction)
+	runtime.SetBlockProfileRate(pprofBlockProfileRate)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: httpReadHeaderTimeout}
+
+	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", addr, "env", envPprofAddr)
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			clog.Warn(ctx, "pprof endpoint stopped", "err", err)
+		}
+	}()
+}
+
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 	if job == nil || job.Requirements == nil || job.FailReason == "" {
 		return false
@@ -1975,6 +2026,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	serverLogger := resolveServerLogger(config)
 
 	defer internal.LogPanic(ctx, "jobqueue serve", true)
+
+	// optionally enable a profiling endpoint (off unless WR_PPROF_ADDR is set)
+	maybeStartPprofServer(ctx)
 
 	// resolve our timing parameters (config overrides, otherwise defaults)
 	timings := config.Timings.withDefaults()
