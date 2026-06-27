@@ -127,21 +127,26 @@ func BenchmarkAddJobs(b *testing.B) {
 	ctx := context.Background()
 	testDB := newBenchDB(b)
 
-	// Pre-build every batch outside the timer so we measure storage, not job
-	// construction, and so each batch has unique keys (storeNewJobs would treat
-	// duplicate keys as already-added no-ops).
-	batches := make([][]*Job, b.N)
-	for i := range b.N {
-		batches[i] = makeBenchJobs(fmt.Sprintf("add-%d", i), benchJobCount)
-	}
-
 	writesBefore := boltWrites(testDB)
 	pagesBefore := boltPages(testDB)
 
 	b.ResetTimer()
 
 	for i := range b.N {
-		if _, _, _, err := testDB.storeNewJobs(ctx, batches[i], false); err != nil {
+		// Build this iteration's batch with the timer stopped, so we measure
+		// storage and not job construction, and keep memory bounded regardless of
+		// b.N (a time-based benchtime grows b.N large). Each batch needs unique
+		// keys, as storeNewJobs treats duplicate keys as already-added no-ops, so
+		// every iteration builds a distinct set rather than reusing one. Building
+		// jobs does no bolt writes, so the cumulative counters captured above stay
+		// correct for the per-job metric.
+		b.StopTimer()
+
+		batch := makeBenchJobs(fmt.Sprintf("add-%d", i), benchJobCount)
+
+		b.StartTimer()
+
+		if _, _, _, err := testDB.storeNewJobs(ctx, batch, false); err != nil {
 			b.Fatal(err)
 		}
 	}

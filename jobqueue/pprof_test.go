@@ -101,6 +101,60 @@ func TestPprofServerLifecycle(t *testing.T) {
 	})
 }
 
+// TestPprofServerBindFailureDoesNotEnableProfiling proves the bind-first
+// behaviour: when WR_PPROF_ADDR points at an address that cannot be bound (here,
+// one already in use), the manager still starts normally and, crucially, global
+// mutex/block profiling is NOT enabled -- so a failed endpoint never leaves the
+// manager paying profiling overhead with nothing to reach.
+func TestPprofServerBindFailureDoesNotEnableProfiling(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("With WR_PPROF_ADDR set to an address that is already in use", t, func() {
+		ctx := context.Background()
+		_, serverConfig, _, _, _ := jobqueueTestInit(false)
+
+		// capture and restore the global profiling state so an unexpected enable
+		// (the regression this guards) does not pollute other tests in this run.
+		prevMutexFraction := runtime.SetMutexProfileFraction(-1)
+		defer runtime.SetMutexProfileFraction(prevMutexFraction)
+
+		// occupy a free loopback port ourselves, so the manager's bind of the same
+		// address is guaranteed to fail.
+		port, err := freeport.GetFreePort()
+		So(err, ShouldBeNil)
+
+		pprofAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+
+		var lc net.ListenConfig
+
+		occupier, err := lc.Listen(ctx, "tcp", pprofAddr)
+		So(err, ShouldBeNil)
+
+		defer func() { _ = occupier.Close() }()
+
+		t.Setenv(envPprofAddr, pprofAddr)
+
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		Convey("the manager still starts but profiling was not enabled", func() {
+			// the bind failed, so the global mutex profiling fraction must remain 0
+			// (SetMutexProfileFraction(-1) only queries, it does not change).
+			So(runtime.SetMutexProfileFraction(-1), ShouldEqual, 0)
+
+			// and the endpoint is not reachable (our occupier answers nothing on
+			// the pprof path; what matters is the manager did not start one).
+			So(pprofEndpointReachable(fmt.Sprintf("http://%s/debug/pprof/", pprofAddr)), ShouldBeFalse)
+		})
+
+		Reset(func() {
+			server.Stop(ctx, true)
+		})
+	})
+}
+
 // pprofEndpointReachable reports whether an HTTP GET to the given pprof URL
 // succeeds (any response status counts as reachable; we only care that the
 // listener answered).

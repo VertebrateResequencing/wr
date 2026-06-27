@@ -1408,11 +1408,11 @@ func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
-// maybeStartPprofServer (which makes its ListenAndServe goroutine return
+// maybeStartPprofServer (which makes its srv.Serve goroutine return
 // http.ErrServerClosed), closing the listener. It is a no-op when srv is nil
 // (pprof disabled). Shutdown is forced to complete after httpServerShutdownTime
 // so a stuck profiling client can't hold up the manager's shutdown. Once the
-// server is down it also resets the global mutex and block profiling that
+// server is down it also disables the global mutex and block profiling that
 // maybeStartPprofServer enabled, so the profiling overhead does not persist for
 // the rest of the process (and does not pollute other tests in the same run).
 func shutdownPprofServer(ctx context.Context, srv *http.Server) {
@@ -1427,8 +1427,7 @@ func shutdownPprofServer(ctx context.Context, srv *http.Server) {
 		clog.Warn(ctx, "pprof endpoint shutdown failed", "err", err)
 	}
 
-	runtime.SetMutexProfileFraction(0)
-	runtime.SetBlockProfileRate(0)
+	disablePprofProfiling()
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
@@ -1436,21 +1435,55 @@ func shutdownPprofServer(ctx context.Context, srv *http.Server) {
 // nothing (returning nil) otherwise. The pprof handlers are registered on a
 // private ServeMux (never http.DefaultServeMux, and never the manager's web
 // server) served on the given address only, so operators should bind to
-// localhost. When enabled it also turns on mutex and block profiling so
-// contention can be diagnosed.
+// localhost.
 //
-// The returned server (nil when disabled) must be passed to shutdownPprofServer
-// when the manager stops, so the listener is closed rather than left running
-// for the lifetime of the process.
+// The listener is bound synchronously first: if binding fails (eg. the address
+// is already in use or invalid) it logs a warning and returns nil WITHOUT
+// enabling profiling, so a failed endpoint never leaves the manager paying
+// profiling overhead with nothing to reach. Only once the bind succeeds does it
+// enable mutex and block profiling (so contention can be diagnosed) and serve;
+// profiling is therefore on if and only if the endpoint is actually serving,
+// and disablePprofProfiling() turns it back off on every exit path.
+//
+// The returned server (nil when disabled or on bind failure) must be passed to
+// shutdownPprofServer when the manager stops, so the listener is closed rather
+// than left running for the lifetime of the process.
 func maybeStartPprofServer(ctx context.Context) *http.Server {
 	addr := os.Getenv(envPprofAddr)
 	if addr == "" {
 		return nil
 	}
 
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		clog.Warn(ctx, "pprof endpoint not started; could not bind", "addr", addr, "env", envPprofAddr, "err", err)
+
+		return nil
+	}
+
 	runtime.SetMutexProfileFraction(pprofMutexProfileFraction)
 	runtime.SetBlockProfileRate(pprofBlockProfileRate)
 
+	srv := &http.Server{Handler: newPprofMux(), ReadHeaderTimeout: httpReadHeaderTimeout}
+
+	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", addr, "env", envPprofAddr)
+
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			clog.Warn(ctx, "pprof endpoint stopped", "err", err)
+			disablePprofProfiling()
+		}
+	}()
+
+	return srv
+}
+
+// newPprofMux returns a private ServeMux with the net/http/pprof handlers
+// registered on it (never http.DefaultServeMux), for maybeStartPprofServer to
+// serve on its dedicated listener.
+func newPprofMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -1458,17 +1491,17 @@ func maybeStartPprofServer(ctx context.Context) *http.Server {
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: httpReadHeaderTimeout}
+	return mux
+}
 
-	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", addr, "env", envPprofAddr)
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			clog.Warn(ctx, "pprof endpoint stopped", "err", err)
-		}
-	}()
-
-	return srv
+// disablePprofProfiling turns off the global mutex and block profiling that
+// maybeStartPprofServer enables. It is the disable half of that enable, and is
+// called from every path that ends the endpoint (clean shutdown and an
+// unexpected Serve exit) so profiling never lingers once the endpoint is gone.
+// Calling it when profiling is already off is harmless.
+func disablePprofProfiling() {
+	runtime.SetMutexProfileFraction(0)
+	runtime.SetBlockProfileRate(0)
 }
 
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {

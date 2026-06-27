@@ -45,15 +45,18 @@ func TestOwnMemoryMB(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(mb, ShouldBeGreaterThanOrEqualTo, 0)
 
-		Convey("and it never exceeds currentMemory, which also includes children", func() {
+		Convey("and it never meaningfully exceeds currentMemory, which also includes children", func() {
 			// currentMemory(self) reads the same smaps Pss and then adds the
-			// memory of any child processes, so the own-only figure can never be
-			// larger. (Pss is sampled at slightly different instants, but our own
-			// resident pages are stable enough between two adjacent reads for
-			// this ordering to hold without flaking.)
+			// memory of any child processes, so the own-only figure should never
+			// be larger. The two figures sample /proc at slightly different
+			// instants and both truncate to whole MB, though, so if Pss drops by a
+			// sub-MB amount between the reads (eg. GC returning pages) ownMemoryMB()
+			// can come out 1MB higher purely from truncation. We therefore allow a
+			// 1MB tolerance: the ordering invariant is still validated, without
+			// flaking on that boundary effect.
 			withChildren, errc := currentMemory(os.Getpid())
 			So(errc, ShouldBeNil)
-			So(mb, ShouldBeLessThanOrEqualTo, withChildren)
+			So(mb, ShouldBeLessThanOrEqualTo, withChildren+1)
 		})
 	})
 }
