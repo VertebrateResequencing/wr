@@ -171,17 +171,16 @@ var (
 
 	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
 	// manager's live BoltDB: how long a write transaction may wait for
-	// concurrent writes to coalesce into a single fsync'd commit. It is raised
-	// above bbolt's 10ms default to 25ms because the manager's two per-job
-	// writes (job-start state and job-completion) are spaced apart in time by
-	// runner round-trips and per-job processing; a wider window catches more of
-	// them in one commit. Measured on the real workload (3000 jobs, 4 runners),
-	// 25ms roughly halves fdatasyncs versus 10ms (~2.0 vs ~3.0 per job).
-	// Durability is unaffected (every commit still fsyncs); the only cost is
-	// extra latency when very few writes are in flight. Overridable per-server
-	// via ServerTimings.DBBatchDelay (and operationally via
-	// WR_MANAGERDBBATCHDELAY, e.g. back down to 10ms).
-	ServerDBBatchDelay = 25 * time.Millisecond
+	// concurrent writes to coalesce into a single fsync'd commit. It is left at
+	// bbolt's 10ms default: on normal/fast disks the manager's per-job
+	// bottleneck is CPU/lock contention rather than fsync, so a wider window
+	// only adds latency to the synchronous archive commit with no fsync benefit
+	// (measured on an 8-core VM, raising it to 25-50ms made 10000 jobs
+	// dramatically slower). Operators whose manager DB is on high-fsync-latency
+	// storage (NFS/Lustre) AND whose workload is genuinely fsync-bound can raise
+	// it per-server via ServerTimings.DBBatchDelay (and operationally via
+	// WR_MANAGERDBBATCHDELAY); we just don't impose that latency by default.
+	ServerDBBatchDelay = 10 * time.Millisecond
 
 	// ServerDBBatchSize is the default DB.MaxBatchSize applied to the manager's
 	// live BoltDB: the number of concurrent write transactions that may

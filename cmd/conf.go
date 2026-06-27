@@ -166,16 +166,18 @@ managerdbbkfile: "db_bk"
 # committed, so raising it too far hurts latency when few writes are in flight.
 # Durability is unchanged either way: every commit is still fsync'd to disk.
 #
-# A value of 0 (the default) uses wr's built-in default of 25ms, which suits
-# typical local and SSD-backed storage.
+# A value of 0 (the default) uses wr's built-in default of 10ms (bbolt's own
+# default), which suits normal and fast (local, SSD-backed) storage. On such
+# storage the manager's per-job bottleneck is CPU and lock contention rather
+# than fsync, so a larger value only adds commit latency without a fsync
+# benefit; leave it at 10ms.
 #
-# If the manager directory (managerdir) is on storage with high fsync latency,
-# such as a networked filesystem (NFS, Lustre, etc.), each commit is far more
-# expensive, so coalescing more writes per commit matters a lot more. On such
-# storage, raising this to around 25-50ms can substantially cut the number of
-# fsyncs per job and improve throughput. Conversely, if you run with very low
-# concurrency and want the lowest possible per-write latency, you can lower it
-# (for example back to 10ms).
+# Only raise this (for example to 25-50ms) if BOTH of the following hold: the
+# manager directory (managerdir) is on storage with high fsync latency, such as
+# a networked filesystem (NFS, Lustre, etc.), where each commit is far more
+# expensive; AND your workload is genuinely fsync-bound, so that coalescing
+# more writes per commit actually reduces wall-clock time. In that case a wider
+# window can cut the number of fsyncs per job and improve throughput.
 managerdbbatchdelay: 0
 
 # managerdbbatchsize: How many concurrent write transactions may the manager's
