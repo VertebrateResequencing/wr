@@ -1599,6 +1599,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	// update the server that we've started the job
+	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
 	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
 		// if we can't access the server, may as well bail out now - kill the

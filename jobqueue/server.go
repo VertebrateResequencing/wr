@@ -2006,6 +2006,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
+	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
 	ip, err := currentServerIP(config, serverLogger)
 	if err != nil {
 		return s, msg, token, err

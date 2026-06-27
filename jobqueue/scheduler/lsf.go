@@ -185,6 +185,7 @@ func (s *lsf) initialize(_ context.Context, config any) error {
 		return err
 	}
 
+	//nolint:contextcheck // internal.Username manages its own context by design
 	highest, err := s.parseBqueues()
 	if err != nil {
 		return err
