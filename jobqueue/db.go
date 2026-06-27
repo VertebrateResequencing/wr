@@ -67,6 +67,9 @@ const (
 	envCacheSize                  = 12
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
+
+	// s3ProfilePathParts is the number of parts in a "profile@path" S3 spec.
+	s3ProfilePathParts = 2
 )
 
 //nolint:gochecknoglobals // bucket names are shared BoltDB keys.
@@ -91,10 +94,15 @@ var (
 
 // Rec* variables are only exported for testing purposes (*** though they should
 // probably be user configurable somewhere...).
+//
+//nolint:gochecknoglobals // exported tunables, overridable by tests
 var (
 	RecMBRound  = 100 // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
 	RecSecRound = 1   // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
+
+// errDBClosed is returned when an operation is attempted on a closed database.
+var errDBClosed = errors.New("database closed")
 
 // sobsd ('slice of byte slice doublets') implements sort interface so we can
 // sort a slice of []byte doublets, sorting on the first byte slice, needed for
@@ -156,7 +164,9 @@ type db struct {
 // In development we delete any existing db and force a fresh start (unless
 // wipeDevDB is false). Backups are also not carried out in development (unless
 // forceBackups is true), so dbBkFile is ignored.
-func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) { //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx
+//
+//nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx,nestif // entry point: sequential fallible db open/recovery
+func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) {
 	var backupsEnabled bool
 
 	var accessor *muxfys.S3Accessor
@@ -177,7 +187,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			pp := strings.Split(path, "@")
 
 			profile := "default"
-			if len(pp) == 2 {
+			if len(pp) == s3ProfilePathParts {
 				profile = pp[0]
 				path = pp[1]
 			}
@@ -212,7 +222,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 	}
 
-	if wipeDevDB && deployment == internal.Development { //nolint:nestif
+	if wipeDevDB && deployment == internal.Development {
 		errr := os.Remove(dbFile)
 		if errr != nil && !os.IsNotExist(errr) {
 			clog.Warn(ctx, "Failed to remove database file", "path", dbFile, "err", errr)
@@ -274,7 +284,8 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			if _, errbk := os.Stat(bkPath); errbk == nil {
 				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, nil)
 				if errbk == nil {
-					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
+					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
+						"(error with original db file was: %s)", dbFile, dbBkFile, err)
 					if errbk = backupDB.Close(); errbk != nil {
 						return nil, msg, errbk
 					}
@@ -292,7 +303,8 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 					}
 
 					boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
-					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, origerr)
+					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
+						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
 			}
 		}
@@ -438,49 +450,22 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 // the group is given with a value less than 0, it is not stored in the
 // database; any existing entry is removed and the name is returned in the
 // removed slice.
-func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (changed []string, removed []string, err error) {
+func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (changed, removed []string, err error) {
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLGs)
 
 		for group, limitG := range limitGroups {
-			if !limitG.IsCount() {
+			outcome, errs := storeLimitGroup(b, group, limitG)
+			if errs != nil {
+				return errs
+			}
+
+			switch outcome {
+			case limitGroupRemoved:
 				removed = append(removed, group)
-
-				continue
-			}
-
-			limit := limitG.Limit()
-
-			key := []byte(group)
-
-			v := b.Get(key)
-			if v != nil {
-				if limit < 0 {
-					errd := b.Delete(key)
-					if errd != nil {
-						return errd
-					}
-
-					removed = append(removed, group)
-
-					continue
-				}
-
-				if binary.BigEndian.Uint64(v) == uint64(limit) {
-					continue
-				}
-
+			case limitGroupChanged:
 				changed = append(changed, group)
-			} else if limit < 0 {
-				continue
-			}
-
-			v = make([]byte, 8)
-			binary.BigEndian.PutUint64(v, uint64(limit))
-
-			errp := b.Put(key, v)
-			if errp != nil {
-				return errp
+			case limitGroupUnchanged:
 			}
 		}
 
@@ -488,6 +473,70 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 	})
 
 	return changed, removed, err
+}
+
+// limitGroupOutcome describes what storeLimitGroup did with a single group.
+type limitGroupOutcome int
+
+const (
+	limitGroupUnchanged limitGroupOutcome = iota
+	limitGroupChanged
+	limitGroupRemoved
+
+	// limitGroupBytes is the number of bytes used to store a limit group's
+	// count (a uint64).
+	limitGroupBytes = 8
+)
+
+// storeLimitGroup stores (or deletes) a single limit group in the given bucket,
+// reporting what it did.
+func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, error) {
+	if !limitG.IsCount() {
+		return limitGroupRemoved, nil
+	}
+
+	limit := limitG.Limit()
+	key := []byte(group)
+	existing := b.Get(key)
+
+	if limit < 0 {
+		return deleteLimitGroup(b, key, existing)
+	}
+
+	if existing != nil && binary.BigEndian.Uint64(existing) == uint64(limit) {
+		return limitGroupUnchanged, nil
+	}
+
+	if err := putLimitGroup(b, key, limit); err != nil {
+		return limitGroupUnchanged, err
+	}
+
+	if existing != nil {
+		return limitGroupChanged, nil
+	}
+
+	return limitGroupUnchanged, nil
+}
+
+// deleteLimitGroup deletes a limit group's stored value if it had one.
+func deleteLimitGroup(b *bolt.Bucket, key, existing []byte) (limitGroupOutcome, error) {
+	if existing == nil {
+		return limitGroupUnchanged, nil
+	}
+
+	if err := b.Delete(key); err != nil {
+		return limitGroupUnchanged, err
+	}
+
+	return limitGroupRemoved, nil
+}
+
+// putLimitGroup stores a non-negative limit for a group.
+func putLimitGroup(b *bolt.Bucket, key []byte, limit int64) error {
+	v := make([]byte, limitGroupBytes)
+	binary.BigEndian.PutUint64(v, uint64(limit)) //nolint:gosec // limit is >= 0 here, so fits in a uint64
+
+	return b.Put(key, v)
 }
 
 // retrieveLimitGroup gets a value for a particular group from the db that was
@@ -527,7 +576,9 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 // use queue methods to update the job in the queue.
 //
 // Finally, it triggers a background database backup.
-func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
+func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
+	jobsToQueue, jobsToUpdate []*Job, alreadyAdded int, err error,
+) {
 	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
 		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
 	if err != nil {
@@ -535,116 +586,7 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	}
 
 	if len(encodedJobs) > 0 {
-		// now go ahead and store the lookups and jobs
-		numStores := 2
-		if len(rgs) > 0 {
-			numStores++
-		}
-
-		if len(dgLookups) > 0 {
-			numStores++
-		}
-
-		if len(depGroupsSeen) > 0 {
-			numStores++
-		}
-
-		if len(rdgLookups) > 0 {
-			numStores++
-		}
-
-		errors := make(chan error, numStores)
-
-		db.wgMutex.Lock()
-		wgk := db.wg.Add(1)
-
-		go func() {
-			defer internal.LogPanic(ctx, "jobqueue database storeNewJobs rglookups", true)
-			defer db.wg.Done(wgk)
-
-			sort.Sort(rgLookups)
-
-			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
-		}()
-
-		if len(rgs) > 0 {
-			wgk2 := db.wg.Add(1)
-
-			go func() {
-				defer internal.LogPanic(ctx, "jobqueue database storeNewJobs repGroups", true)
-				defer db.wg.Done(wgk2)
-
-				sort.Sort(rgs)
-
-				errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
-			}()
-		}
-
-		if len(dgLookups) > 0 {
-			wgk3 := db.wg.Add(1)
-
-			go func() {
-				defer internal.LogPanic(ctx, "jobqueue database dgLookups", true)
-				defer db.wg.Done(wgk3)
-
-				sort.Sort(dgLookups)
-
-				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
-			}()
-		}
-
-		if len(depGroupsSeen) > 0 {
-			wgk3b := db.wg.Add(1)
-
-			go func() {
-				defer internal.LogPanic(ctx, "jobqueue database depGroupsSeen", true)
-				defer db.wg.Done(wgk3b)
-
-				sort.Sort(depGroupsSeen)
-
-				errors <- db.storeBatched(bucketDepGroups, depGroupsSeen, db.storeLookups)
-			}()
-		}
-
-		if len(rdgLookups) > 0 {
-			wgk4 := db.wg.Add(1)
-
-			go func() {
-				defer internal.LogPanic(ctx, "jobqueue database storeNewJobs rdgLookups", true)
-				defer db.wg.Done(wgk4)
-
-				sort.Sort(rdgLookups)
-
-				errors <- db.storeBatched(bucketRDTK, rdgLookups, db.storeLookups)
-			}()
-		}
-
-		wgk5 := db.wg.Add(1)
-
-		go func() {
-			defer internal.LogPanic(ctx, "jobqueue database storeNewJobs encodedJobs", true)
-			defer db.wg.Done(wgk5)
-
-			sort.Sort(encodedJobs)
-
-			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
-		}()
-		db.wgMutex.Unlock()
-
-		seen := 0
-
-		for thisErr := range errors {
-			if thisErr != nil {
-				err = thisErr
-			}
-
-			seen++
-			if seen == numStores {
-				close(errors)
-
-				break
-			}
-		}
+		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs)
 	}
 
 	// *** on error, because we were batching, and doing lookups separately to
@@ -662,7 +604,85 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	return jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
-//nolint:gocognit,gocyclo,cyclop,funlen,lll // Legacy persistence path coordinates several lookup buckets.
+// batchStore describes one bucket-store to carry out concurrently in
+// storeNewJobData.
+type batchStore struct {
+	label   string
+	bucket  []byte
+	encodes sobsd
+	storer  sobsdStorer
+}
+
+// storeNewJobData concurrently stores the job and lookup data prepared by
+// prepareNewJobs, returning the first error encountered. rgLookups and
+// encodedJobs are always stored; the other lookups only if non-empty.
+func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups, dgLookups,
+	depGroupsSeen, rdgLookups, rgs sobsd) error {
+	stores := []batchStore{{"rglookups", bucketRTK, rgLookups, db.storeLookups}}
+
+	for _, s := range []batchStore{
+		{"repGroups", bucketRGs, rgs, db.storeLookups},
+		{"dgLookups", bucketDTK, dgLookups, db.storeLookups},
+		{"depGroupsSeen", bucketDepGroups, depGroupsSeen, db.storeLookups},
+		{"rdgLookups", bucketRDTK, rdgLookups, db.storeLookups},
+	} {
+		if len(s.encodes) > 0 {
+			stores = append(stores, s)
+		}
+	}
+
+	stores = append(stores, batchStore{"encodedJobs", bucketJobsLive, encodedJobs, db.storeEncodedJobs})
+
+	errs := make(chan error, len(stores))
+
+	db.wgMutex.Lock()
+	for _, s := range stores {
+		db.launchBatchStore(ctx, s, errs)
+	}
+	db.wgMutex.Unlock()
+
+	return collectFirstError(errs, len(stores))
+}
+
+// launchBatchStore launches a goroutine that sorts and stores one batchStore,
+// sending the result to errs. Must be called with db.wgMutex held.
+func (db *db) launchBatchStore(ctx context.Context, s batchStore, errs chan<- error) {
+	wgk := db.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue database storeNewJobs "+s.label, true)
+		defer db.wg.Done(wgk)
+
+		sort.Sort(s.encodes)
+
+		errs <- db.storeBatched(s.bucket, s.encodes, s.storer)
+	}()
+}
+
+// collectFirstError reads n results from errs, returning the last non-nil error
+// seen (matching the original storeNewJobs behaviour) and closing errs.
+func collectFirstError(errs chan error, n int) error {
+	var err error
+
+	seen := 0
+
+	for thisErr := range errs {
+		if thisErr != nil {
+			err = thisErr
+		}
+
+		seen++
+		if seen == n {
+			close(errs)
+
+			break
+		}
+	}
+
+	return err
+}
+
+//nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.
 func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
@@ -843,79 +863,73 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	}
 
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
-		bo := tx.Bucket(bucketStdO)
-		be := tx.Bucket(bucketStdE)
-		key := []byte(key)
-
-		errf := bo.Delete(key)
-		if errf != nil {
-			return errf
-		}
-
-		errf = be.Delete(key)
-		if errf != nil {
-			return errf
-		}
-
-		b := tx.Bucket(bucketJobsLive)
-
-		errf = b.Delete(key)
-		if errf != nil {
-			return errf
-		}
-
-		b = tx.Bucket(bucketJobsComplete)
-
-		errf = b.Put(key, encoded)
-		if errf != nil {
-			return errf
-		}
-
-		b = tx.Bucket(bucketJobRAM)
-
-		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM), []byte(strconv.Itoa(job.PeakRAM)))
-		if errf != nil {
-			return errf
-		}
-
-		b = tx.Bucket(bucketJobDisk)
-
-		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakDisk), []byte(strconv.Itoa(int(job.PeakDisk))))
-		if errf != nil {
-			return errf
-		}
-
-		b = tx.Bucket(bucketJobSecs)
-		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
-
-		errf = b.Put(fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, secs), []byte(strconv.Itoa(secs)))
-		if errf != nil {
-			return errf
-		}
-
-		b = tx.Bucket(bucketRGEndTime)
-		rgKey := []byte(job.RepGroup)
-		newUnix := job.EndTime.Unix()
-		existing := b.Get(rgKey)
-
-		if len(existing) == rgEndTimeBytes && int64(binary.BigEndian.Uint64(existing)) >= newUnix { //nolint:gosec
-			return nil
-		}
-
-		val := make([]byte, rgEndTimeBytes)
-		binary.BigEndian.PutUint64(val, uint64(newUnix)) //nolint:gosec
-
-		errf = b.Put(rgKey, val)
-		if errf != nil {
-			return errf
-		}
-
-		return nil
+		return archiveJobTx(tx, []byte(key), encoded, job)
 	})
 
 	db.backgroundBackup(ctx)
 
 	return err
+}
+
+// archiveJobTx is the transactional part of archiveJob: it moves the job from
+// the live bucket to the complete bucket, removes its std buckets, records its
+// resource-usage stats and updates its repgroup end time.
+func archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
+	for _, bucket := range [][]byte{bucketStdO, bucketStdE, bucketJobsLive} {
+		if err := tx.Bucket(bucket).Delete(key); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
+		return err
+	}
+
+	if err := putJobStats(tx, job); err != nil {
+		return err
+	}
+
+	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
+}
+
+// putJobStats records a completed job's peak RAM, peak disk and runtime in
+// their per-ReqGroup stat buckets.
+func putJobStats(tx *bolt.Tx, job *Job) error {
+	if err := putJobStat(tx.Bucket(bucketJobRAM), job.ReqGroup, job.PeakRAM); err != nil {
+		return err
+	}
+
+	if err := putJobStat(tx.Bucket(bucketJobDisk), job.ReqGroup, int(job.PeakDisk)); err != nil {
+		return err
+	}
+
+	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
+
+	return putJobStat(tx.Bucket(bucketJobSecs), job.ReqGroup, secs)
+}
+
+// putJobStat stores a single per-ReqGroup stat value, keyed so it sorts within
+// the ReqGroup.
+func putJobStat(b *bolt.Bucket, reqGroup string, val int) error {
+	return b.Put(fmt.Appendf(nil, "%s%s%20d", reqGroup, dbDelimiter, val), []byte(strconv.Itoa(val)))
+}
+
+// updateRGEndTime records job.EndTime as its RepGroup's end time, unless a later
+// end time is already stored.
+func updateRGEndTime(b *bolt.Bucket, job *Job) error {
+	rgKey := []byte(job.RepGroup)
+	newUnix := job.EndTime.Unix()
+	existing := b.Get(rgKey)
+
+	//nolint:gosec // stored value is a non-negative unix time written by us
+	if len(existing) == rgEndTimeBytes && int64(binary.BigEndian.Uint64(existing)) >= newUnix {
+		return nil
+	}
+
+	val := make([]byte, rgEndTimeBytes)
+	binary.BigEndian.PutUint64(val, uint64(newUnix)) //nolint:gosec // unix time is non-negative
+
+	return b.Put(rgKey, val)
 }
 
 // deleteLiveJobs remove multiple jobs from the live bucket.
@@ -955,7 +969,7 @@ func (db *db) recoverIncompleteJobs() ([]*Job, error) {
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsLive)
 
-		return b.ForEach(func(key, encoded []byte) error {
+		return b.ForEach(func(_, encoded []byte) error {
 			if encoded != nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
@@ -1008,7 +1022,7 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketRGs)
 
-		return b.ForEach(func(k, v []byte) error {
+		return b.ForEach(func(k, _ []byte) error {
 			rgs = append(rgs, string(k))
 
 			return nil
@@ -1057,16 +1071,12 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 			key := bytes.TrimPrefix(k, prefix)
 
-			encoded := completeJobBucket.Get(key)
-			if len(encoded) > 0 && newJobBucket.Get(key) == nil {
-				dec := codec.NewDecoderBytes(encoded, db.ch)
-				job := &Job{}
+			job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, key)
+			if err != nil {
+				return err
+			}
 
-				err := dec.Decode(job)
-				if err != nil {
-					return err
-				}
-
+			if job != nil {
 				jobs = append(jobs, job)
 			}
 		}
@@ -1075,6 +1085,25 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 	})
 
 	return jobs, err
+}
+
+// decodeArchivedJob decodes the job with the given key from the complete bucket,
+// returning nil (and no error) if it is not present there or is currently live
+// (being re-run).
+func (db *db) decodeArchivedJob(completeJobBucket, newJobBucket *bolt.Bucket, key []byte) (*Job, error) {
+	encoded := completeJobBucket.Get(key)
+	if len(encoded) == 0 || newJobBucket.Get(key) != nil {
+		return nil, nil //nolint:nilnil // absent/live job is a valid non-error nil result
+	}
+
+	dec := codec.NewDecoderBytes(encoded, db.ch)
+	job := &Job{}
+
+	if err := dec.Decode(job); err != nil {
+		return nil, err
+	}
+
+	return job, nil
 }
 
 // retrieveCompleteJobStatusByRepGroup gets a compact status summary for
@@ -1138,8 +1167,25 @@ func (db *db) addCompleteJobStatus(summary *RepGroupStatus, repgroup string, enc
 // is returned in the jobsToUpdate return value. If it is found in the complete
 // bucket, and is not true in the supplied newJobKeys map, then it is returned
 // in the jobsToQueue return value.
-func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[string]bool) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
-	// first convert the depGroups in to sorted prefixes, for linear searching
+func (db *db) retrieveDependentJobs(depGroups, newJobKeys map[string]bool) (
+	jobsToQueue, jobsToUpdate []*Job, err error,
+) {
+	scan := &dependentJobsScan{
+		db:         db,
+		depGroups:  depGroups,
+		newJobKeys: newJobKeys,
+		doneKeys:   make(map[string]bool),
+		prefixes:   depGroupPrefixes(depGroups),
+	}
+
+	err = db.bolt.View(scan.run)
+
+	return scan.jobsToQueue, scan.jobsToUpdate, err
+}
+
+// depGroupPrefixes converts a set of dep groups into sorted lookup-key prefixes,
+// for linear searching.
+func depGroupPrefixes(depGroups map[string]bool) sobsd {
 	prefixes := make(sobsd, 0, len(depGroups))
 	for depGroup := range depGroups {
 		prefixes = append(prefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
@@ -1147,80 +1193,126 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 
 	sort.Sort(prefixes)
 
-	err = db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		completeJobBucket := tx.Bucket(bucketJobsComplete)
-		lookupBucket := tx.Bucket(bucketRDTK).Cursor()
+	return prefixes
+}
 
-		doneKeys := make(map[string]bool)
-		for {
-			newDepGroups := make(map[string]bool)
+// dependentJobsScan holds the state of a retrieveDependentJobs traversal.
+type dependentJobsScan struct {
+	db           *db
+	depGroups    map[string]bool
+	newJobKeys   map[string]bool
+	doneKeys     map[string]bool
+	prefixes     sobsd
+	newDepGroups map[string]bool
+	jobsToQueue  []*Job
+	jobsToUpdate []*Job
+}
 
-			for _, bsd := range prefixes {
-				for k, _ := lookupBucket.Seek(bsd[0]); bytes.HasPrefix(k, bsd[0]); k, _ = lookupBucket.Next() {
-					key := bytes.TrimPrefix(k, bsd[0])
+// run performs the iterative dependency traversal within a read transaction,
+// following newly discovered dep groups until none remain.
+func (s *dependentJobsScan) run(tx *bolt.Tx) error {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	cursor := tx.Bucket(bucketRDTK).Cursor()
 
-					keyStr := string(key)
-					if doneKeys[keyStr] {
-						continue
-					}
+	for {
+		s.newDepGroups = make(map[string]bool)
 
-					encoded := newJobBucket.Get(key)
-
-					live := false
-					if len(encoded) > 0 {
-						live = true
-					} else if !newJobKeys[keyStr] {
-						encoded = completeJobBucket.Get(key)
-					}
-
-					if len(encoded) > 0 {
-						dec := codec.NewDecoderBytes(encoded, db.ch)
-						job := &Job{}
-
-						errf := dec.Decode(job)
-						if errf != nil {
-							return errf
-						}
-
-						// since we're going to add this job, we also need to
-						// check its DepGroups and repeat this loop on any new
-						// ones
-						for _, depGroup := range job.DepGroups {
-							if depGroup != "" && !depGroups[depGroup] {
-								newDepGroups[depGroup] = true
-							}
-						}
-
-						if live {
-							jobsToUpdate = append(jobsToUpdate, job)
-						} else {
-							jobsToQueue = append(jobsToQueue, job)
-						}
-					}
-
-					doneKeys[keyStr] = true
-				}
-			}
-
-			if len(newDepGroups) > 0 {
-				var newPrefixes sobsd
-				for depGroup := range newDepGroups {
-					newPrefixes = append(newPrefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
-					depGroups[depGroup] = true
-				}
-
-				sort.Sort(newPrefixes)
-				prefixes = newPrefixes
-			} else {
-				break
+		for _, bsd := range s.prefixes {
+			if err := s.scanPrefix(cursor, bsd[0], newJobBucket, completeJobBucket); err != nil {
+				return err
 			}
 		}
 
-		return nil
-	})
+		if len(s.newDepGroups) == 0 {
+			return nil
+		}
 
-	return jobsToQueue, jobsToUpdate, err
+		s.prefixes = s.promoteNewDepGroups()
+	}
+}
+
+// scanPrefix walks all reverse-dependency lookup entries with the given prefix,
+// processing each referenced job key once.
+func (s *dependentJobsScan) scanPrefix(cursor *bolt.Cursor, prefix []byte,
+	newJobBucket, completeJobBucket *bolt.Bucket,
+) error {
+	for k, _ := cursor.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = cursor.Next() {
+		key := bytes.TrimPrefix(k, prefix)
+
+		keyStr := string(key)
+		if s.doneKeys[keyStr] {
+			continue
+		}
+
+		if err := s.processKey(key, keyStr, newJobBucket, completeJobBucket); err != nil {
+			return err
+		}
+
+		s.doneKeys[keyStr] = true
+	}
+
+	return nil
+}
+
+// processKey decodes the job referenced by key (from the live bucket if present,
+// else the complete bucket if not a brand-new job), classifies it as one to
+// update or queue, and records any new dep groups it belongs to.
+func (s *dependentJobsScan) processKey(key []byte, keyStr string, newJobBucket, completeJobBucket *bolt.Bucket) error {
+	encoded := newJobBucket.Get(key)
+
+	live := len(encoded) > 0
+	if !live && !s.newJobKeys[keyStr] {
+		encoded = completeJobBucket.Get(key)
+	}
+
+	if len(encoded) == 0 {
+		return nil
+	}
+
+	dec := codec.NewDecoderBytes(encoded, s.db.ch)
+	job := &Job{}
+
+	if err := dec.Decode(job); err != nil {
+		return err
+	}
+
+	// since we're going to add this job, we also need to check its DepGroups
+	// and repeat this loop on any new ones
+	s.recordNewDepGroups(job.DepGroups)
+
+	if live {
+		s.jobsToUpdate = append(s.jobsToUpdate, job)
+	} else {
+		s.jobsToQueue = append(s.jobsToQueue, job)
+	}
+
+	return nil
+}
+
+// recordNewDepGroups notes any of the given dep groups that we haven't already
+// seen, so they get scanned in the next iteration.
+func (s *dependentJobsScan) recordNewDepGroups(depGroups []string) {
+	for _, depGroup := range depGroups {
+		if depGroup != "" && !s.depGroups[depGroup] {
+			s.newDepGroups[depGroup] = true
+		}
+	}
+}
+
+// promoteNewDepGroups records the newly discovered dep groups as seen and
+// returns the sorted prefixes to scan for them next.
+func (s *dependentJobsScan) promoteNewDepGroups() sobsd {
+	newPrefixes := make(sobsd, 0, len(s.newDepGroups))
+
+	for depGroup := range s.newDepGroups {
+		newPrefixes = append(newPrefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
+		s.depGroups[depGroup] = true
+	}
+
+	sort.Sort(newPrefixes)
+
+	return newPrefixes
 }
 
 // retrieveIncompleteJobKeysByDepGroup gets jobs with the given DepGroup from
@@ -1323,10 +1415,7 @@ func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 // may be nil even on cmd failure. Since it is not critical to the running of
 // jobs and workflows that this works 100% of the time, we ignore errors and
 // write to bolt in a goroutine, giving us a significant speed boost.
-func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, stde []byte, forceStorage bool) {
-	var encoded []byte
-
-	enc := codec.NewEncoderBytes(&encoded, db.ch)
+func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byte, forceStorage bool) {
 	db.Lock()
 	defer db.Unlock()
 
@@ -1334,20 +1423,8 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 		return
 	}
 
-	jobkey := job.Key()
-	job.RLock()
-	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
-	jrg := job.ReqGroup
-	jpr := job.PeakRAM
-	jpd := job.PeakDisk
-	jec := job.Exitcode
-	jfr := job.FailReason
-	err := enc.Encode(job)
-	job.RUnlock()
-
-	if err != nil {
-		clog.Error(ctx, "Database operation updateJobAfterExit failed due to Encode failure", "err", err)
-
+	exit, ok := db.snapshotJobExit(ctx, job, stdo, stde, forceStorage)
+	if !ok {
 		return
 	}
 
@@ -1356,63 +1433,53 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
+	db.launchJobExitUpdate(ctx, exit)
+}
+
+// snapshotJobExit encodes the job and snapshots the fields needed to persist it
+// after exit. The bool is false (and nothing should be done) if encoding fails.
+func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, forceStorage bool) (jobExitData, bool) {
+	var encoded []byte
+
+	enc := codec.NewEncoderBytes(&encoded, db.ch)
+
+	job.RLock()
+	exit := jobExitData{
+		key:          job.Key(),
+		stdo:         stdo,
+		stde:         stde,
+		exitcode:     job.Exitcode,
+		forceStorage: forceStorage,
+		failReason:   job.FailReason,
+		reqGroup:     job.ReqGroup,
+		peakRAM:      job.PeakRAM,
+		peakDisk:     job.PeakDisk,
+		secs:         int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds())),
+	}
+	err := enc.Encode(job)
+	job.RUnlock()
+
+	if err != nil {
+		clog.Error(ctx, "Database operation updateJobAfterExit failed due to Encode failure", "err", err)
+
+		return jobExitData{}, false
+	}
+
+	exit.encoded = encoded
+
+	return exit, true
+}
+
+// launchJobExitUpdate runs exit.update in a background batch, decrementing the
+// in-progress counter when done. Must be called with db.Lock and db.wgMutex
+// held.
+func (db *db) launchJobExitUpdate(ctx context.Context, exit jobExitData) {
 	wgk := db.wg.Add(1)
 
 	go func() {
 		defer internal.LogPanic(ctx, "updateJobAfterExit", true)
 
-		err := db.bolt.Batch(func(tx *bolt.Tx) error {
-			key := []byte(jobkey)
-
-			bjl := tx.Bucket(bucketJobsLive)
-			if bjl.Get(key) != nil {
-				errf := bjl.Put(key, encoded)
-				if errf != nil {
-					return errf
-				}
-			}
-
-			bo := tx.Bucket(bucketStdO)
-			be := tx.Bucket(bucketStdE)
-
-			errf := bo.Delete(key)
-			if errf != nil {
-				return errf
-			}
-
-			errf = be.Delete(key)
-			if errf != nil {
-				return errf
-			}
-
-			if jec != 0 || forceStorage {
-				if len(stdo) > 0 {
-					errf = bo.Put(key, stdo)
-				}
-
-				if len(stde) > 0 {
-					errf = be.Put(key, stde)
-				}
-			}
-
-			if errf != nil {
-				return errf
-			}
-
-			switch jfr {
-			case FailReasonRAM:
-				b := tx.Bucket(bucketJobRAM)
-				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, jpr), []byte(strconv.Itoa(jpr)))
-			case FailReasonDisk:
-				b := tx.Bucket(bucketJobDisk)
-				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, jpd), []byte(strconv.Itoa(int(jpd))))
-			case FailReasonTime:
-				b := tx.Bucket(bucketJobSecs)
-				errf = b.Put(fmt.Appendf(nil, "%s%s%20d", jrg, dbDelimiter, secs), []byte(strconv.Itoa(secs)))
-			}
-
-			return errf
-		})
+		err := db.bolt.Batch(exit.update)
 		db.wg.Done(wgk)
 
 		if err != nil {
@@ -1423,6 +1490,87 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo []byte, std
 		db.updatingAfterJobExit--
 		db.Unlock()
 	}()
+}
+
+// jobExitData is the snapshot of a job's state needed to persist it after it
+// exits, used by updateJobAfterExit.
+type jobExitData struct {
+	key          string
+	encoded      []byte
+	stdo         []byte
+	stde         []byte
+	exitcode     int
+	forceStorage bool
+	failReason   string
+	reqGroup     string
+	peakRAM      int
+	peakDisk     int64
+	secs         int
+}
+
+// update is the transactional part of updateJobAfterExit: it rewrites the live
+// job, refreshes its stored std, and records any resource-based failure stat.
+func (e jobExitData) update(tx *bolt.Tx) error {
+	key := []byte(e.key)
+
+	bjl := tx.Bucket(bucketJobsLive)
+	if bjl.Get(key) != nil {
+		if errf := bjl.Put(key, e.encoded); errf != nil {
+			return errf
+		}
+	}
+
+	if err := e.updateStd(tx, key); err != nil {
+		return err
+	}
+
+	return e.updateFailStat(tx)
+}
+
+// updateStd deletes any existing stored std for the job and, if the job failed
+// (or storage is forced), stores the new std.
+func (e jobExitData) updateStd(tx *bolt.Tx, key []byte) error {
+	bo := tx.Bucket(bucketStdO)
+	be := tx.Bucket(bucketStdE)
+
+	if errf := bo.Delete(key); errf != nil {
+		return errf
+	}
+
+	if errf := be.Delete(key); errf != nil {
+		return errf
+	}
+
+	if e.exitcode == 0 && !e.forceStorage {
+		return nil
+	}
+
+	var errf error
+
+	if len(e.stdo) > 0 {
+		errf = bo.Put(key, e.stdo)
+	}
+
+	if len(e.stde) > 0 {
+		errf = be.Put(key, e.stde)
+	}
+
+	return errf
+}
+
+// updateFailStat records the job's resource usage in the appropriate stat
+// bucket when it failed for a resource-based reason.
+func (e jobExitData) updateFailStat(tx *bolt.Tx) error {
+	switch e.failReason {
+	case FailReasonRAM:
+		return putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM)
+	case FailReasonDisk:
+		return putJobStat(tx.Bucket(bucketJobDisk), e.reqGroup, int(e.peakDisk))
+	case FailReasonTime:
+		return putJobStat(tx.Bucket(bucketJobSecs), e.reqGroup, e.secs)
+	default:
+		return nil
+	}
 }
 
 // updateJobAfterChange rewrites the job's entry in the live bucket, to enable
@@ -1454,6 +1602,12 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
+	db.launchJobChangeUpdate(ctx, key, encoded)
+}
+
+// launchJobChangeUpdate rewrites the live job in a background batch and triggers
+// a backup. Must be called with db.RLock and db.wgMutex held.
+func (db *db) launchJobChangeUpdate(ctx context.Context, key, encoded []byte) {
 	wgk := db.wg.Add(1)
 
 	go func() {
@@ -1501,118 +1655,12 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 		return err
 	}
 
-	sort.Sort(rgLookups)
-	sort.Sort(rgs)
-	sort.Sort(dgLookups)
-	sort.Sort(depGroupsSeen)
-	sort.Sort(rdgLookups)
+	lookups := newJobLookups(rgLookups, rgs, dgLookups, depGroupsSeen, rdgLookups)
+
 	sort.Sort(encodedJobs)
 
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
-		// delete old jobs and their lookups
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		bo := tx.Bucket(bucketStdO)
-		be := tx.Bucket(bucketStdE)
-		os := make([][]byte, len(oldKeys))
-		es := make([][]byte, len(oldKeys))
-
-		var hadStd bool
-
-		for i, oldKey := range oldKeys {
-			key := []byte(oldKey)
-
-			errd := deleteLookupEntriesForJobKey(tx, key)
-			if errd != nil {
-				return errd
-			}
-
-			errd = newJobBucket.Delete(key)
-			if errd != nil {
-				return errd
-			}
-
-			o := bo.Get(key)
-			if o != nil {
-				os[i] = o
-
-				errd = bo.Delete(key)
-				if errd != nil {
-					return errd
-				}
-
-				hadStd = true
-			}
-
-			e := be.Get(key)
-			if e != nil {
-				es[i] = e
-
-				errd = be.Delete(key)
-				if errd != nil {
-					return errd
-				}
-
-				hadStd = true
-			}
-		}
-
-		if len(encodedJobs) > 0 {
-			// now go ahead and store the new lookups and jobs
-			errs := db.putLookups(tx, bucketRTK, rgLookups)
-			if errs != nil {
-				return errs
-			}
-
-			if len(rgs) > 0 {
-				errs = db.putLookups(tx, bucketRGs, rgs)
-				if errs != nil {
-					return errs
-				}
-			}
-
-			if len(dgLookups) > 0 {
-				errs = db.putLookups(tx, bucketDTK, dgLookups)
-				if errs != nil {
-					return errs
-				}
-			}
-
-			if len(depGroupsSeen) > 0 {
-				errs = db.putLookups(tx, bucketDepGroups, depGroupsSeen)
-				if errs != nil {
-					return errs
-				}
-			}
-
-			if len(rdgLookups) > 0 {
-				errs = db.putLookups(tx, bucketRDTK, rdgLookups)
-				if errs != nil {
-					return errs
-				}
-			}
-
-			if hadStd {
-				for i, job := range jobs {
-					if os[i] != nil {
-						errs = bo.Put([]byte(job.Key()), os[i])
-						if errs != nil {
-							return errs
-						}
-					}
-
-					if es[i] != nil {
-						errs = be.Put([]byte(job.Key()), es[i])
-						if errs != nil {
-							return errs
-						}
-					}
-				}
-			}
-
-			return db.putEncodedJobs(tx, bucketJobsLive, encodedJobs)
-		}
-
-		return nil
+		return db.modifyLiveJobsTx(tx, oldKeys, jobs, encodedJobs, lookups)
 	})
 	if err != nil {
 		clog.Error(ctx, "Database error during modify", "err", err)
@@ -1621,6 +1669,173 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 	go db.backgroundBackup(ctx)
 
 	return err
+}
+
+// jobLookups groups the various lookup index sobsds that accompany a set of
+// jobs in the database.
+type jobLookups struct {
+	rg         sobsd
+	repGroups  sobsd
+	dg         sobsd
+	depGroups  sobsd
+	reverseDep sobsd
+}
+
+// newJobLookups sorts and groups the lookup sobsds prepared by prepareNewJobs.
+func newJobLookups(rgLookups, rgs, dgLookups, depGroupsSeen, rdgLookups sobsd) jobLookups {
+	sort.Sort(rgLookups)
+	sort.Sort(rgs)
+	sort.Sort(dgLookups)
+	sort.Sort(depGroupsSeen)
+	sort.Sort(rdgLookups)
+
+	return jobLookups{
+		rg:         rgLookups,
+		repGroups:  rgs,
+		dg:         dgLookups,
+		depGroups:  depGroupsSeen,
+		reverseDep: rdgLookups,
+	}
+}
+
+// modifyLiveJobsTx is the transactional part of modifyLiveJobs: it removes the
+// old jobs (preserving their std), then stores the new lookups, std and jobs.
+func (db *db) modifyLiveJobsTx(tx *bolt.Tx, oldKeys []string, jobs []*Job, encodedJobs sobsd,
+	lookups jobLookups,
+) error {
+	oldStd, err := deleteOldLiveJobs(tx, oldKeys)
+	if err != nil {
+		return err
+	}
+
+	if len(encodedJobs) == 0 {
+		return nil
+	}
+
+	if err = db.putAllLookups(tx, lookups); err != nil {
+		return err
+	}
+
+	if err = oldStd.restore(tx, jobs); err != nil {
+		return err
+	}
+
+	return db.putEncodedJobs(tx, bucketJobsLive, encodedJobs)
+}
+
+// jobStd holds the stdout/stderr captured from the old jobs during
+// modifyLiveJobs, indexed parallel to the old/new job slices.
+type jobStd struct {
+	stdo   [][]byte
+	stde   [][]byte
+	hadStd bool
+}
+
+// deleteOldLiveJobs removes the given jobs and their lookup entries from the
+// live bucket, returning their captured stdout/stderr for re-association with
+// the new jobs.
+func deleteOldLiveJobs(tx *bolt.Tx, oldKeys []string) (jobStd, error) {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	bo := tx.Bucket(bucketStdO)
+	be := tx.Bucket(bucketStdE)
+
+	std := jobStd{stdo: make([][]byte, len(oldKeys)), stde: make([][]byte, len(oldKeys))}
+
+	for i, oldKey := range oldKeys {
+		key := []byte(oldKey)
+
+		if err := deleteLookupEntriesForJobKey(tx, key); err != nil {
+			return std, err
+		}
+
+		if err := newJobBucket.Delete(key); err != nil {
+			return std, err
+		}
+
+		var err error
+
+		if std.stdo[i], err = takeStd(bo, key, &std.hadStd); err != nil {
+			return std, err
+		}
+
+		if std.stde[i], err = takeStd(be, key, &std.hadStd); err != nil {
+			return std, err
+		}
+	}
+
+	return std, nil
+}
+
+// takeStd reads and deletes any stored std for key from b, setting *hadStd if
+// there was any.
+func takeStd(b *bolt.Bucket, key []byte, hadStd *bool) ([]byte, error) {
+	v := b.Get(key)
+	if v == nil {
+		return nil, nil
+	}
+
+	*hadStd = true
+
+	return v, b.Delete(key)
+}
+
+// restore re-stores the captured std against the new jobs' keys.
+func (s jobStd) restore(tx *bolt.Tx, jobs []*Job) error {
+	if !s.hadStd {
+		return nil
+	}
+
+	bo := tx.Bucket(bucketStdO)
+	be := tx.Bucket(bucketStdE)
+
+	for i, job := range jobs {
+		key := []byte(job.Key())
+
+		if err := putIfNotNil(bo, key, s.stdo[i]); err != nil {
+			return err
+		}
+
+		if err := putIfNotNil(be, key, s.stde[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// putIfNotNil puts val under key in b only if val is non-nil.
+func putIfNotNil(b *bolt.Bucket, key, val []byte) error {
+	if val == nil {
+		return nil
+	}
+
+	return b.Put(key, val)
+}
+
+// putAllLookups stores all of a job set's lookup indexes, skipping empty ones.
+func (db *db) putAllLookups(tx *bolt.Tx, lookups jobLookups) error {
+	puts := []struct {
+		bucket  []byte
+		entries sobsd
+	}{
+		{bucketRTK, lookups.rg},
+		{bucketRGs, lookups.repGroups},
+		{bucketDTK, lookups.dg},
+		{bucketDepGroups, lookups.depGroups},
+		{bucketRDTK, lookups.reverseDep},
+	}
+
+	for _, p := range puts {
+		if len(p.entries) == 0 {
+			continue
+		}
+
+		if err := db.putLookups(tx, p.bucket, p.entries); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
@@ -1653,41 +1868,19 @@ func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
 	return nil
 }
 
+// jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
+// updateJobAfterExit() calls to complete.
+const jobExitUpdatePollInterval = 10 * time.Millisecond
+
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
 // given job.
 func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, stde []byte) {
-	// first wait for any existing updateJobAfterExit() calls to complete
-	// *** this method of waiting seems really bad and should be improved, but in
-	//    practice we probably never wait
-	for {
-		db.RLock()
-
-		if db.updatingAfterJobExit == 0 {
-			db.RUnlock()
-
-			break
-		}
-
-		db.RUnlock()
-		<-time.After(10 * time.Millisecond)
-	}
+	db.waitForJobExitUpdates()
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		bo := tx.Bucket(bucketStdO)
-		be := tx.Bucket(bucketStdE)
 		key := []byte(jobkey)
-
-		o := bo.Get(key)
-		if o != nil {
-			stdo = make([]byte, len(o))
-			copy(stdo, o)
-		}
-
-		e := be.Get(key)
-		if e != nil {
-			stde = make([]byte, len(e))
-			copy(stde, e)
-		}
+		stdo = copyBucketValue(tx.Bucket(bucketStdO), key)
+		stde = copyBucketValue(tx.Bucket(bucketStdE), key)
 
 		return nil
 	})
@@ -1698,6 +1891,40 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 	}
 
 	return stdo, stde
+}
+
+// waitForJobExitUpdates blocks until there are no in-progress
+// updateJobAfterExit() calls.
+//
+// *** this method of waiting seems really bad and should be improved, but in
+// practice we probably never wait.
+func (db *db) waitForJobExitUpdates() {
+	for {
+		db.RLock()
+
+		if db.updatingAfterJobExit == 0 {
+			db.RUnlock()
+
+			return
+		}
+
+		db.RUnlock()
+		<-time.After(jobExitUpdatePollInterval)
+	}
+}
+
+// copyBucketValue returns a copy of the value stored under key in b, or nil if
+// there is none.
+func copyBucketValue(b *bolt.Bucket, key []byte) []byte {
+	v := b.Get(key)
+	if v == nil {
+		return nil
+	}
+
+	out := make([]byte, len(v))
+	copy(out, v)
+
+	return out
 }
 
 // recommendedReqGroupMemory returns the 95th percentile peak memory usage of
@@ -1745,61 +1972,73 @@ func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
 	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
 }
 
+// jobStatWindowScaleThreshold is the prior-value count above which the 95th
+// percentile window is scaled up proportionally.
+const jobStatWindowScaleThreshold = 100
+
 // recommendedReqGroupStat is the implementation for the other recommend*()
 // methods.
 func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundAmount int) (int, error) {
-	prefix := []byte(reqGroup)
-	max := 0
-
-	var recommendation int
+	var maxVal, recommendation int
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		c := tx.Bucket(statBucket).Cursor()
+		var errs error
 
-		// we seek over the bucket, and to avoid having to do it twice (first to
-		// get the overall count, then to get the 95th percentile), we keep the
-		// previous 5%-sized window of values, updating recommendation as the
-		// window fills
-		count := 0
-		window := jobStatWindowPercent
+		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup))
 
-		var (
-			prev []int
-			erra error
-		)
-		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
-			max, erra = strconv.Atoi(string(v))
-			if erra != nil {
-				return erra
-			}
-
-			count++
-			if count > 100 {
-				window = (float32(count) / 100) * jobStatWindowPercent
-			}
-
-			prev = append(prev, max)
-			if float32(len(prev)) > window {
-				recommendation, prev = prev[0], prev[1:]
-			}
-		}
-
-		return nil
+		return errs
 	})
 	if err != nil {
 		return 0, err
 	}
 
-	if recommendation == 0 {
-		if max == 0 {
-			return recommendation, err
+	return roundRecommendation(recommendation, maxVal, roundAmount), nil
+}
+
+// scanReqGroupStat seeks over a stat bucket for the given reqGroup prefix and
+// returns the maximum stored value and the 95th-percentile recommendation. To
+// avoid scanning twice it keeps a trailing 5%-sized window of values, updating
+// the recommendation as the window fills.
+func scanReqGroupStat(c *bolt.Cursor, prefix []byte) (maxVal, recommendation int, err error) {
+	count := 0
+	window := jobStatWindowPercent
+
+	var prev []int
+
+	for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
+		maxVal, err = strconv.Atoi(string(v))
+		if err != nil {
+			return maxVal, recommendation, err
 		}
 
-		recommendation = max
+		count++
+		if count > jobStatWindowScaleThreshold {
+			window = (float32(count) / jobStatWindowScaleThreshold) * jobStatWindowPercent
+		}
+
+		prev = append(prev, maxVal)
+		if float32(len(prev)) > window {
+			recommendation, prev = prev[0], prev[1:]
+		}
 	}
 
-	if max-recommendation < roundAmount {
-		recommendation = max
+	return maxVal, recommendation, nil
+}
+
+// roundRecommendation applies the recommend*() fallback and rounding rules: it
+// falls back to maxVal when the recommendation is unset or very close to the
+// max, then rounds up to the nearest roundAmount.
+func roundRecommendation(recommendation, maxVal, roundAmount int) int {
+	if recommendation == 0 {
+		if maxVal == 0 {
+			return 0
+		}
+
+		recommendation = maxVal
+	}
+
+	if maxVal-recommendation < roundAmount {
+		recommendation = maxVal
 	}
 
 	if recommendation < roundAmount {
@@ -1810,7 +2049,7 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		recommendation = int(math.Ceil(float64(recommendation)/float64(roundAmount))) * roundAmount
 	}
 
-	return recommendation, err
+	return recommendation
 }
 
 // store does a basic set of a key/val in a given bucket.
@@ -1850,24 +2089,21 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 	return val
 }
 
+const (
+	// storeBatchDivisor, storeBatchGranularity and storeBatchRoundThreshold
+	// control storeBatched's batch sizing: it aims for batches of len(data) /
+	// storeBatchDivisor, at least storeBatchGranularity, rounded to the nearest
+	// storeBatchGranularity.
+	storeBatchDivisor        = 10
+	storeBatchGranularity    = 1000
+	storeBatchRoundThreshold = 500
+)
+
 // storeBatched stores items in the db in batches for efficiency. bucket is the
 // name of the bucket to store in.
 func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error {
-	// we want to add in batches of size data/10, minimum 1000, rounded to
-	// the nearest 1000
 	num := len(data)
-	batchSize := num / 10
-
-	rem := batchSize % 1000
-	if rem > 500 {
-		batchSize = batchSize - rem + 1000
-	} else {
-		batchSize -= rem
-	}
-
-	if batchSize < 1000 {
-		batchSize = 1000
-	}
+	batchSize := batchSizeFor(num)
 
 	// based on https://github.com/boltdb/bolt/issues/337#issue-64861745
 	if num < batchSize {
@@ -1875,23 +2111,40 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 	}
 
 	batches := num / batchSize
-	offset := num - (num % batchSize)
 
 	for i := range batches {
-		err := storer(bucket, data[i*batchSize:(i+1)*batchSize])
-		if err != nil {
+		if err := storer(bucket, data[i*batchSize:(i+1)*batchSize]); err != nil {
 			return err
 		}
 	}
 
-	if offset != 0 {
-		err := storer(bucket, data[offset:])
-		if err != nil {
+	if offset := num - (num % batchSize); offset != 0 {
+		if err := storer(bucket, data[offset:]); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// batchSizeFor returns the storeBatched batch size for num items: num /
+// storeBatchDivisor, at least storeBatchGranularity, rounded to the nearest
+// storeBatchGranularity.
+func batchSizeFor(num int) int {
+	batchSize := num / storeBatchDivisor
+
+	rem := batchSize % storeBatchGranularity
+	if rem > storeBatchRoundThreshold {
+		batchSize = batchSize - rem + storeBatchGranularity
+	} else {
+		batchSize -= rem
+	}
+
+	if batchSize < storeBatchGranularity {
+		batchSize = storeBatchGranularity
+	}
+
+	return batchSize
 }
 
 // storeLookups is a sobsdStorer for storing Job.[somevalue]->Job.Key() lookups
@@ -1975,50 +2228,63 @@ func (db *db) close(ctx context.Context) error {
 	db.Lock()
 	defer db.Unlock()
 
-	if !db.closed {
-		db.closed = true
+	if db.closed {
+		return nil
+	}
 
-		// before actually closing, wait for any go routines doing database
-		// transactions to complete
-		if db.backingUp {
-			db.backupFinal = true
-			close(db.backupStopWait)
-			db.Unlock()
-			<-db.backupNotification
-			db.wgMutex.Lock()
-			db.wg.Wait(dbRunningTransactionsWaitTime)
-			db.wgMutex.Unlock()
-			db.Lock()
-		} else {
-			db.Unlock()
-			db.wgMutex.Lock()
-			db.wg.Wait(dbRunningTransactionsWaitTime)
-			db.wgMutex.Unlock()
-			db.Lock()
-		}
+	db.closed = true
 
-		// do a final backup
-		if db.backupsEnabled && db.backupQueued {
-			clog.Debug(ctx, "Jobqueue database not backed up, will do final backup")
-			db.backupToBackupFile(ctx, false)
-		}
+	// before actually closing, wait for any go routines doing database
+	// transactions to complete
+	db.waitForOngoingTransactions()
 
-		err := db.bolt.Close()
-		if db.backupMount != nil {
-			erru := db.backupMount.Unmount()
-			if erru != nil {
-				if err == nil {
-					err = erru
-				} else {
-					err = fmt.Errorf("%w (and unmounting backup failed: %w)", err, erru)
-				}
-			}
-		}
+	// do a final backup
+	if db.backupsEnabled && db.backupQueued {
+		clog.Debug(ctx, "Jobqueue database not backed up, will do final backup")
+		db.backupToBackupFile(ctx, false)
+	}
 
+	return db.closeBolt()
+}
+
+// waitForOngoingTransactions waits, with db.Lock held, for any in-progress
+// background backup and database transaction goroutines to finish. It
+// temporarily releases db.Lock while waiting, and re-acquires it before
+// returning.
+func (db *db) waitForOngoingTransactions() {
+	if db.backingUp {
+		db.backupFinal = true
+		close(db.backupStopWait)
+		db.Unlock()
+		<-db.backupNotification
+	} else {
+		db.Unlock()
+	}
+
+	db.wgMutex.Lock()
+	db.wg.Wait(dbRunningTransactionsWaitTime)
+	db.wgMutex.Unlock()
+	db.Lock()
+}
+
+// closeBolt closes the underlying bolt db and unmounts any backup mount,
+// combining any errors.
+func (db *db) closeBolt() error {
+	err := db.bolt.Close()
+	if db.backupMount == nil {
 		return err
 	}
 
-	return nil
+	erru := db.backupMount.Unmount()
+	if erru == nil {
+		return err
+	}
+
+	if err == nil {
+		return erru
+	}
+
+	return fmt.Errorf("%w (and unmounting backup failed: %w)", err, erru)
 }
 
 // backgroundBackup backs up the database to a file (the location given during
@@ -2043,62 +2309,85 @@ func (db *db) backgroundBackup(ctx context.Context) {
 
 	db.backingUp = true
 
-	slowBackups := db.slowBackups
-	go func(last time.Time, wait time.Duration, doNotWait bool) {
-		defer internal.LogPanic(ctx, "backgroundBackup", true)
+	go db.runBackgroundBackup(ctx, db.backupLast, db.backupWait, db.backupFinal, db.slowBackups)
+}
 
-		if !doNotWait {
-			now := time.Now()
-			if !last.IsZero() && last.Add(wait).After(now) {
-				// wait before doing another backup, so we don't slow down new
-				// db accessses all the time
-				select {
-				case <-time.After(last.Add(wait).Sub(now)):
-					break
-				case <-db.backupStopWait:
-					break
-				}
-			}
-		}
+// slowBackupTestDelay is an artificial delay used only in tests (when
+// db.slowBackups is set) to make backups take a noticeable amount of time.
+const slowBackupTestDelay = 100 * time.Millisecond
 
-		if slowBackups {
-			// just for testing purposes
-			<-time.After(100 * time.Millisecond)
-		}
+// runBackgroundBackup is the goroutine body of backgroundBackup: it optionally
+// waits to space out backups, performs the backup, then either finalises (for
+// close()) or runs a queued backup.
+func (db *db) runBackgroundBackup(ctx context.Context, last time.Time, wait time.Duration,
+	doNotWait, slowBackups bool,
+) {
+	defer internal.LogPanic(ctx, "backgroundBackup", true)
 
-		start := time.Now()
+	db.waitBeforeBackup(last, wait, doNotWait)
 
-		db.backupToBackupFile(ctx, slowBackups)
+	if slowBackups {
+		// just for testing purposes
+		<-time.After(slowBackupTestDelay)
+	}
 
-		db.Lock()
-		db.backingUp = false
-		db.backupLast = time.Now()
+	start := time.Now()
 
-		duration := time.Since(start)
-		if duration > minimumTimeBetweenBackups {
-			db.backupWait = duration
-		}
+	db.backupToBackupFile(ctx, slowBackups)
 
-		if db.backupFinal {
-			// close() has been called, don't do any more backups and tell
-			// close() we finished our backup
-			db.backupFinal = false
-			db.backupStopWait = make(chan bool)
-			db.Unlock()
+	db.finishBackgroundBackup(ctx, start)
+}
 
-			db.backupNotification <- true
+// waitBeforeBackup waits, if appropriate, to space sequential backups out, so
+// we don't slow down new db accesses all the time. The wait can be cut short by
+// a close() via backupStopWait.
+func (db *db) waitBeforeBackup(last time.Time, wait time.Duration, doNotWait bool) {
+	if doNotWait {
+		return
+	}
 
-			return
-		}
+	now := time.Now()
+	if last.IsZero() || !last.Add(wait).After(now) {
+		return
+	}
 
-		if db.backupQueued {
-			db.backupQueued = false
-			db.Unlock()
-			db.backgroundBackup(ctx)
-		} else {
-			db.Unlock()
-		}
-	}(db.backupLast, db.backupWait, db.backupFinal)
+	select {
+	case <-time.After(last.Add(wait).Sub(now)):
+	case <-db.backupStopWait:
+	}
+}
+
+// finishBackgroundBackup updates backup bookkeeping after a backup completes
+// and either notifies a waiting close() or kicks off a queued backup.
+func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
+	db.Lock()
+	db.backingUp = false
+	db.backupLast = time.Now()
+
+	duration := time.Since(start)
+	if duration > minimumTimeBetweenBackups {
+		db.backupWait = duration
+	}
+
+	if db.backupFinal {
+		// close() has been called, don't do any more backups and tell close()
+		// we finished our backup
+		db.backupFinal = false
+		db.backupStopWait = make(chan bool)
+		db.Unlock()
+
+		db.backupNotification <- true
+
+		return
+	}
+
+	if db.backupQueued {
+		db.backupQueued = false
+		db.Unlock()
+		db.backgroundBackup(ctx)
+	} else {
+		db.Unlock()
+	}
 }
 
 // backupToBackupFile is used by backgroundBackup() and close() to do the actual
@@ -2123,38 +2412,52 @@ func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
 	})
 
 	if slowBackups {
-		<-time.After(100 * time.Millisecond)
+		<-time.After(slowBackupTestDelay)
 	}
 
 	if err != nil {
-		clog.Error(ctx, "Database backup failed", "err", err)
+		db.handleFailedBackup(ctx, tmpBackupPath, err)
 
-		// if it failed, delete any partial file that got made
-		errr := os.Remove(tmpBackupPath)
-		if errr != nil && !os.IsNotExist(errr) {
-			clog.Warn(ctx, "Removing bad database backup file failed", "path", tmpBackupPath, "err", errr)
-		}
-	} else {
-		// backup succeeded
-		if db.s3accessor != nil {
-			// upload to s3 then delete it
-			errr := db.s3accessor.UploadFile(tmpBackupPath, db.backupPath, "application/octet-stream")
-			if errr != nil {
-				clog.Warn(ctx, "Uploading new database backup file to S3 failed",
-					"source", tmpBackupPath, "dest", db.backupPath, "err", errr)
-			}
+		return
+	}
 
-			errr = os.Remove(tmpBackupPath)
-			if errr != nil {
-				clog.Warn(ctx, "failed to delete temporary backup file after uploading to s3", "path", tmpBackupPath, "err", errr)
-			}
-		} else {
-			// move it over any old backup
-			errr := os.Rename(tmpBackupPath, db.backupPath)
-			if errr != nil {
-				clog.Warn(ctx, "Renaming new database backup file failed", "source", tmpBackupPath, "dest", db.backupPath, "err", errr)
-			}
+	db.handleSucceededBackup(ctx, tmpBackupPath)
+}
+
+// handleFailedBackup logs a failed backup and removes any partial backup file.
+func (db *db) handleFailedBackup(ctx context.Context, tmpBackupPath string, err error) {
+	clog.Error(ctx, "Database backup failed", "err", err)
+
+	// if it failed, delete any partial file that got made
+	errr := os.Remove(tmpBackupPath)
+	if errr != nil && !os.IsNotExist(errr) {
+		clog.Warn(ctx, "Removing bad database backup file failed", "path", tmpBackupPath, "err", errr)
+	}
+}
+
+// handleSucceededBackup finalises a successful backup, either uploading it to
+// S3 (then removing the temp file) or moving it over any old local backup.
+func (db *db) handleSucceededBackup(ctx context.Context, tmpBackupPath string) {
+	if db.s3accessor == nil {
+		// move it over any old backup
+		if errr := os.Rename(tmpBackupPath, db.backupPath); errr != nil {
+			clog.Warn(ctx, "Renaming new database backup file failed",
+				"source", tmpBackupPath, "dest", db.backupPath, "err", errr)
 		}
+
+		return
+	}
+
+	// upload to s3 then delete it
+	errr := db.s3accessor.UploadFile(tmpBackupPath, db.backupPath, "application/octet-stream")
+	if errr != nil {
+		clog.Warn(ctx, "Uploading new database backup file to S3 failed",
+			"source", tmpBackupPath, "dest", db.backupPath, "err", errr)
+	}
+
+	if errr = os.Remove(tmpBackupPath); errr != nil {
+		clog.Warn(ctx, "failed to delete temporary backup file after uploading to s3",
+			"path", tmpBackupPath, "err", errr)
 	}
 }
 
@@ -2168,7 +2471,7 @@ func (db *db) backup(w io.Writer) error {
 	if db.closed {
 		db.RUnlock()
 
-		return errors.New("database closed")
+		return errDBClosed
 	}
 
 	db.RUnlock()

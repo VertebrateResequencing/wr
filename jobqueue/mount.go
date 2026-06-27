@@ -187,18 +187,24 @@ func (mcs MountConfigs) Key() string {
 		key.WriteString(mount)
 		key.WriteString(":")
 
-		for _, t := range mc.Targets {
-			profile := t.Profile
-			if profile == "" {
-				profile = "default"
-			}
-
-			key.WriteString(profile)
-			key.WriteString("-")
-			key.WriteString(t.Path)
-			key.WriteString(";")
-		}
+		mc.writeTargetsKey(&key)
 	}
 
 	return key.String()
+}
+
+// writeTargetsKey writes the Key contribution of this MountConfig's Targets to
+// the given buffer.
+func (mc MountConfig) writeTargetsKey(key *bytes.Buffer) {
+	for _, t := range mc.Targets {
+		profile := t.Profile
+		if profile == "" {
+			profile = "default"
+		}
+
+		key.WriteString(profile)
+		key.WriteString("-")
+		key.WriteString(t.Path)
+		key.WriteString(";")
+	}
 }

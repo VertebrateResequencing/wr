@@ -37,6 +37,12 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// testCwdPath is a fake absolute Cwd used by Job tests that don't actually run.
+const testCwdPath = "/cwd"
+
+// testTrueCmd is the no-op shell command used as a Job Cmd in tests.
+const testTrueCmd = "true"
+
 func TestJobEnv(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -163,10 +169,10 @@ func TestJob(t *testing.T) {
 
 	Convey("CmdLine() returns Cmd", t, func() {
 		ctx := context.Background()
-		job := &Job{Cmd: "true", Cwd: "/cwd"}
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
 		cmd, cleanup, err := job.CmdLine(ctx)
 		So(err, ShouldBeNil)
-		So(cmd, ShouldEqual, "true")
+		So(cmd, ShouldEqual, testTrueCmd)
 		So(cleanup, ShouldNotBeNil)
 		So(job.MonitorDocker, ShouldBeBlank)
 
@@ -188,7 +194,7 @@ func TestJob(t *testing.T) {
 
 			Convey("That can include additional mounts and env vars", func() {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
-				job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"})
+				So(job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"}), ShouldBeNil)
 
 				cmd, cleanup, err = job.CmdLine(ctx)
 				So(err, ShouldBeNil)
@@ -227,7 +233,7 @@ func TestJob(t *testing.T) {
 
 			Convey("That can include additional mounts", func() {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
-				job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"})
+				So(job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"}), ShouldBeNil)
 
 				cmd, cleanup, err = job.CmdLine(ctx)
 				So(err, ShouldBeNil)
@@ -244,8 +250,8 @@ func TestJob(t *testing.T) {
 		started := time.Unix(100, 123456789)
 		ended := started.Add(25 * time.Millisecond)
 		job := &Job{
-			Cmd:                 "true",
-			Cwd:                 "/cwd",
+			Cmd:                 testTrueCmd,
+			Cwd:                 testCwdPath,
 			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 			WaitingForDepGroups: []string{futureDepGroup},
 			StartTime:           started,
@@ -269,8 +275,8 @@ func TestJob(t *testing.T) {
 
 	Convey("ToStatus() reports never-seen dependency group waits", t, func() {
 		job := &Job{
-			Cmd:                 "true",
-			Cwd:                 "/cwd",
+			Cmd:                 testTrueCmd,
+			Cwd:                 testCwdPath,
 			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 			DepGroups:           []string{testCarrierDepGroup},
 			WaitingForDepGroups: []string{futureDepGroup},
@@ -286,8 +292,8 @@ func TestJob(t *testing.T) {
 
 	Convey("ToStatus() safely reports env overrides while they change", t, func() {
 		job := &Job{
-			Cmd:          "true",
-			Cwd:          "/cwd",
+			Cmd:          testTrueCmd,
+			Cwd:          testCwdPath,
 			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 			State:        JobStateReady,
 		}
@@ -407,8 +413,8 @@ func TestJob(t *testing.T) {
 
 	Convey("ToStatus() reports a never-run suspended job without start or end times", t, func() {
 		job := &Job{
-			Cmd:          "true",
-			Cwd:          "/cwd",
+			Cmd:          testTrueCmd,
+			Cwd:          testCwdPath,
 			State:        JobStateSuspended,
 			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 		}

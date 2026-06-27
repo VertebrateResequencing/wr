@@ -27,6 +27,7 @@
 package jobqueue
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -153,7 +154,8 @@ func TestBehaviours(t *testing.T) {
 		Convey("CleanupAll works when actual cwd contains root-owned files", func() {
 			rootFile := filepath.Join(actualCwd, "root")
 
-			err = exec.Command("sh", "-c", "sudo -n touch "+rootFile).Run()
+			//nolint:gosec // test-controlled path under a temp dir
+			err = exec.CommandContext(context.Background(), "sh", "-c", "sudo -n touch "+rootFile).Run()
 			if err != nil {
 				SkipConvey("Can't do this test without ability to sudo", func() {})
 			} else {
@@ -223,6 +225,7 @@ func TestBehaviours(t *testing.T) {
 	})
 
 	Convey("You can go from JSON to Behaviours", t, func() {
+		//nolint:lll // exact JSON fixture asserted verbatim
 		jsonStr := `[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}]`
 
 		var bjs BehavioursViaJSON
@@ -275,6 +278,7 @@ func TestBehaviours(t *testing.T) {
 		So(bs[5].Arg, ShouldEqual, "true")
 
 		Convey("You can convert back to JSON", func() {
+			//nolint:lll // exact JSON fixture asserted verbatim
 			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
 		})
 	})
