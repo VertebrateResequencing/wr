@@ -2026,7 +2026,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		ServerInfo: &ServerInfo{
 			Addr:          ip + ":" + config.Port,
 			Host:          certDomain,
-			FQDN:          fqdn(),
+			FQDN:          fqdn(ctx),
 			Port:          config.Port,
 			WebPort:       config.WebPort,
 			PID:           os.Getpid(),
@@ -3695,6 +3695,7 @@ func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, jobKey str
 		return
 	}
 
+	//nolint:contextcheck // behaviours run detached from the cancellable job context
 	if errt := job.TriggerBehaviours(false); errt != nil {
 		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
 	}

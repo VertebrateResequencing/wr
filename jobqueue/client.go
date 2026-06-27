@@ -1252,7 +1252,7 @@ func mountedDirsToSkip(uniqueMountedDirs []string, actualCwd, cmdDir string) (ma
 // dirIsEmpty reports whether dir could be opened and is empty, accumulating any
 // error from closing it into closeErr.
 func dirIsEmpty(dir string, closeErr *error) bool {
-	d, erro := os.Open(dir)
+	d, erro := os.Open(filepath.Clean(dir))
 	if erro != nil {
 		return false
 	}
@@ -1266,13 +1266,13 @@ func dirIsEmpty(dir string, closeErr *error) bool {
 // ensureCwdExists makes sure the job's working directory exists, creating it if
 // necessary, burying the job and returning an error if it cannot be created.
 func (c *Client) ensureCwdExists(job *Job) error {
-	if fi, errf := os.Stat(job.Cwd); errf == nil && fi.Mode().IsDir() {
+	if fi, errf := os.Stat(filepath.Clean(job.Cwd)); errf == nil && fi.Mode().IsDir() {
 		return nil
 	}
 
-	errm := os.MkdirAll(job.Cwd, os.ModePerm)
+	errm := os.MkdirAll(filepath.Clean(job.Cwd), os.ModePerm)
 
-	if _, errs := os.Stat(job.Cwd); errs != nil {
+	if _, errs := os.Stat(filepath.Clean(job.Cwd)); errs != nil {
 		errb := c.Bury(job, nil, FailReasonCwd)
 
 		extra := ""
@@ -1541,7 +1541,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		// (this works fine even if tmpDir has a space in one of the dir names)
 		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
 		defer func() {
-			myerr = joinExecErr(myerr, os.RemoveAll(tmpDir), "removing the tmpdir failed")
+			myerr = joinExecErr(myerr, os.RemoveAll(filepath.Clean(tmpDir)), "removing the tmpdir failed")
 		}()
 
 		if job.ChangeHome {
@@ -1604,6 +1604,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
 		extra := recoveryExtra("killing the cmd", cmd.Process.Kill())
+		//nolint:contextcheck // behaviours run detached from the cancellable job context
 		extra += recoveryExtra("triggering behaviours", job.TriggerBehaviours(false))
 		extra += unmountExtra(job)
 
@@ -1912,6 +1913,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	// run behaviours
+	//nolint:contextcheck // behaviours run detached from the cancellable job context
 	berr := job.TriggerBehaviours(err == nil && myerr == nil)
 	myerr = appendExecErr(myerr, berr, "behaviour(s) also had problem(s)")
 
@@ -2002,6 +2004,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		bury: dobury, release: dorelease, archive: doarchive, failreason: failreason,
 	})
 	if !worked {
+		//nolint:contextcheck // behaviours run detached from the cancellable job context
 		errt := job.TriggerBehaviours(false)
 
 		extra := ""

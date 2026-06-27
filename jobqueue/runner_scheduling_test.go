@@ -689,7 +689,6 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			}
 
 			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
-			//nolint:goconst // "true" is an env-var value here, not the REST-form constant
 			if err == nil && privateKeyPath != "" && os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") != "true" {
 				count = 10000
 				count2 = 1000

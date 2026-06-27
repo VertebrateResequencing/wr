@@ -952,13 +952,13 @@ func calculateItemDelay(numPreviousDelays int, delayMin time.Duration) time.Dura
 
 // fqdn returns the fully qualified domain name of the current host, or
 // "localhost" or just the hostname on error.
-func fqdn() string {
+func fqdn(ctx context.Context) string {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return localhost
 	}
 
-	fqdn, err := net.DefaultResolver.LookupCNAME(context.Background(), hostname)
+	fqdn, err := net.DefaultResolver.LookupCNAME(ctx, hostname)
 	if err != nil {
 		fqdn = hostname
 	}
