@@ -1411,22 +1411,24 @@ func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 // maybeStartPprofServer (which makes its ListenAndServe goroutine return
 // http.ErrServerClosed), closing the listener. It is a no-op when srv is nil
 // (pprof disabled). Shutdown is forced to complete after httpServerShutdownTime
-// so a stuck profiling client can't hold up the manager's shutdown.
+// so a stuck profiling client can't hold up the manager's shutdown. Once the
+// server is down it also resets the global mutex and block profiling that
+// maybeStartPprofServer enabled, so the profiling overhead does not persist for
+// the rest of the process (and does not pollute other tests in the same run).
 func shutdownPprofServer(ctx context.Context, srv *http.Server) {
 	if srv == nil {
 		return
 	}
 
-	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
-
-	go func() {
-		<-time.After(httpServerShutdownTime)
-		cancel()
-	}()
+	httpCtx, cancel := context.WithTimeout(ctx, httpServerShutdownTime)
+	defer cancel()
 
 	if err := srv.Shutdown(httpCtx); err != nil && !errors.Is(err, context.Canceled) {
 		clog.Warn(ctx, "pprof endpoint shutdown failed", "err", err)
 	}
+
+	runtime.SetMutexProfileFraction(0)
+	runtime.SetBlockProfileRate(0)
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -50,6 +51,12 @@ func TestPprofServerLifecycle(t *testing.T) {
 		ctx := context.Background()
 		_, serverConfig, _, _, _ := jobqueueTestInit(false)
 
+		// capture the global profiling state so we can restore it afterwards
+		// and not pollute other tests in this run, regardless of how this test
+		// exits (SetMutexProfileFraction(-1) only queries, it does not change).
+		prevMutexFraction := runtime.SetMutexProfileFraction(-1)
+		defer runtime.SetMutexProfileFraction(prevMutexFraction)
+
 		port, err := freeport.GetFreePort()
 		So(err, ShouldBeNil)
 
@@ -64,6 +71,10 @@ func TestPprofServerLifecycle(t *testing.T) {
 		Convey("the pprof endpoint is reachable while the server runs", func() {
 			So(pprofEndpointReachable(pprofURL), ShouldBeTrue)
 
+			// while running, mutex profiling is enabled (proving there is
+			// something for shutdown to reset).
+			So(runtime.SetMutexProfileFraction(-1), ShouldEqual, pprofMutexProfileFraction)
+
 			Convey("and after the server stops the listener is closed", func() {
 				server.Stop(ctx, true)
 
@@ -72,6 +83,13 @@ func TestPprofServerLifecycle(t *testing.T) {
 				// only be once the pprof listener has actually closed).
 				So(eventuallyRebindable(ctx, pprofAddr), ShouldBeTrue)
 				So(pprofEndpointReachable(pprofURL), ShouldBeFalse)
+
+				// stopping the server must also reset the global mutex (and
+				// block) profiling that enabling pprof turned on, so it does not
+				// linger for the rest of the process. Block profiling has no
+				// clean query API, so we assert the mutex fraction was reset to 0
+				// (SetMutexProfileFraction(-1) only queries, it does not change).
+				So(runtime.SetMutexProfileFraction(-1), ShouldEqual, 0)
 			})
 		})
 

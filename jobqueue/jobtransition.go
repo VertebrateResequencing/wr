@@ -178,17 +178,19 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 // converted to a status exactly once, and that single status feeds the
 // subscription update (it is never separately written to the browser here).
 //
-// Idle fast-path: when there are no client subscriptions at all (the common
-// case - no web UI and no `wr add --sync` client attached to these jobs), it
-// returns before the per-job loop after a single csmutex.RLock, skipping the
-// per-job allocations and contended RLocks that would otherwise deliver nothing.
-// This is purely the per-job subscription delivery; the absolute per-RepGroup
-// status counts have already been applied by emitJobTransition before this
-// closure runs, so a web UI client that connects LATER still gets correct seed
-// counts. The early csmutex.RLock is in the same async change-callback context
-// as the existing per-job hasClientSubscriptionsForJobUpdate RLock, so it adds
-// no new lock and no new nesting (the order queue.mutex -> subscription locks is
-// preserved).
+// Idle fast-path: when there are no JobUpdate client subscriptions at all (the
+// common case - no `wr add --sync` key subscription and no repGroup subscription
+// for these jobs), it returns before the per-job loop after a single
+// csmutex.RLock, skipping the per-job allocations and contended RLocks that would
+// otherwise deliver nothing. This activates regardless of whether a status web
+// UI is connected, because the web UI does not rely on this per-job JobUpdate
+// delivery. This is purely the per-job subscription delivery; the absolute
+// per-RepGroup status counts have already been applied by emitJobTransition
+// before this closure runs, so a web UI client that connects LATER still gets
+// correct seed counts. The early csmutex.RLock is in the same async
+// change-callback context as the existing per-job
+// hasClientSubscriptionsForJobUpdate RLock, so it adds no new lock and no new
+// nesting (the order queue.mutex -> subscription locks is preserved).
 func (s *Server) enqueueChangeCallbackSubscriptions(
 	ctx context.Context, data []any, to, state JobState, includeKeyStateChange bool,
 ) {
