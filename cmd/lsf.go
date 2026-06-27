@@ -47,20 +47,52 @@ import (
 
 const lsfTimeFormat = "Jan 02 15:04"
 
+// lsfStatePending is the LSF status string for a job that has not started
+// running yet.
+const lsfStatePending = "PEND"
+
+// LSF emulation constants.
+const (
+	// lsfDefaultRAM is the RAM (MB) requirement of a job added via bsub
+	// emulation when the user does not specify one.
+	lsfDefaultRAM = 1000
+
+	// lsfRAMOverride is the Override value used when a bsub -M memory limit is
+	// supplied.
+	lsfRAMOverride = 2
+
+	// lsfNoCommandExitCode is the exit code bsub emulation uses when no command
+	// or a duplicate command was supplied.
+	lsfNoCommandExitCode = 255
+
+	// lsfConnectTimeoutSeconds is how long the bsub emulation commands wait for
+	// a reply from the manager.
+	lsfConnectTimeoutSeconds = 10
+
+	// lsfKillPollInterval is how often bkill emulation polls for a killed job to
+	// become buried.
+	lsfKillPollInterval = 500 * time.Millisecond
+
+	// tabwriter settings for the standard bjobs output.
+	lsfTabMinWidth = 2
+	lsfTabWidth    = 2
+	lsfTabPadding  = 3
+)
+
 var jobStateToLSFState = map[jobqueue.JobState]string{
-	jobqueue.JobStateNew:       "PEND",
-	jobqueue.JobStateDelayed:   "PEND",
-	jobqueue.JobStateDependent: "PEND",
-	jobqueue.JobStateSuspended: "PEND",
-	jobqueue.JobStateReady:     "PEND",
-	jobqueue.JobStateReserved:  "PEND",
+	jobqueue.JobStateNew:       lsfStatePending,
+	jobqueue.JobStateDelayed:   lsfStatePending,
+	jobqueue.JobStateDependent: lsfStatePending,
+	jobqueue.JobStateSuspended: lsfStatePending,
+	jobqueue.JobStateReady:     lsfStatePending,
+	jobqueue.JobStateReserved:  lsfStatePending,
 	jobqueue.JobStateRunning:   "RUN",
 	jobqueue.JobStateLost:      "UNKWN",
 	jobqueue.JobStateBuried:    "EXIT",
 	jobqueue.JobStateComplete:  "DONE",
 }
 
-// options for this cmd
+// options for this cmd.
 var (
 	lsfNoHeader bool
 	lsfFormat   string
@@ -69,7 +101,7 @@ var (
 
 // lsfCmd represents the lsf command.
 var lsfCmd = &cobra.Command{
-	Use:   "lsf",
+	Use:   lsfCommandName,
 	Short: "LSF emulation",
 	Long: `LSF emulation.
 
@@ -102,7 +134,7 @@ var lsfBsubCmd = &cobra.Command{
 	Use:   "bsub",
 	Short: "Add a job using bsub syntax",
 	Long:  `Add a job to the queue using bsub syntax.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		wd, errg := os.Getwd()
 		if errg != nil {
 			die("%s", errg.Error())
@@ -113,7 +145,7 @@ var lsfBsubCmd = &cobra.Command{
 			RepGroup:     "bsub",
 			Cwd:          wd,
 			CwdMatters:   true,
-			Requirements: &jqs.Requirements{Cores: 1, RAM: 1000, Time: 1 * time.Hour},
+			Requirements: &jqs.Requirements{Cores: 1, RAM: lsfDefaultRAM, Time: 1 * time.Hour},
 			Retries:      uint8(0),
 		}
 
@@ -129,6 +161,7 @@ var lsfBsubCmd = &cobra.Command{
 				job.Requirements.Other = configJob.Requirements.Other
 				job.BsubMode = configJob.BsubMode
 				deployment = configJob.BsubMode
+
 				initConfig()
 			}
 		}
@@ -137,8 +170,11 @@ var lsfBsubCmd = &cobra.Command{
 		// rMem := regexp.MustCompile(`mem[>=](\d+)`)
 
 		fmt.Printf("bsub> ")
+
 		scanner := bufio.NewScanner(os.Stdin)
+
 		var possibleExe string
+
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 
@@ -157,7 +193,7 @@ var lsfBsubCmd = &cobra.Command{
 					case "M":
 						if n, err := strconv.Atoi(matches[2]); err == nil {
 							job.Requirements.RAM = n
-							job.Override = 2
+							job.Override = lsfRAMOverride
 						}
 					}
 				} else {
@@ -168,6 +204,7 @@ var lsfBsubCmd = &cobra.Command{
 					parts := strings.Split(line, " ")
 					possibleExe = parts[0]
 				}
+
 				job.Cmd += line + "\n"
 			}
 
@@ -180,7 +217,7 @@ var lsfBsubCmd = &cobra.Command{
 
 		if job.Cmd == "" {
 			fmt.Println("No command is specified. Job not submitted.")
-			os.Exit(255)
+			os.Exit(lsfNoCommandExitCode)
 		}
 
 		if job.ReqGroup == "" {
@@ -188,7 +225,8 @@ var lsfBsubCmd = &cobra.Command{
 		}
 
 		// connect to the server
-		jq := connect(10 * time.Second)
+		jq := connect(lsfConnectTimeoutSeconds * time.Second)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -205,10 +243,11 @@ var lsfBsubCmd = &cobra.Command{
 
 		if inserts != 1 {
 			fmt.Println("Duplicate command specified. Job not submitted.")
-			os.Exit(255)
+			os.Exit(lsfNoCommandExitCode)
 		}
 
-		j, err := jq.GetByEssence(&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd, MountConfigs: job.MountConfigs}, false, false)
+		j, err := jq.GetByEssence(
+			&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd, MountConfigs: job.MountConfigs}, false, false)
 		if err != nil {
 			die("%s", err.Error())
 		}
@@ -241,14 +280,14 @@ eg. -o 'JOBID STAT SUBMIT_TIME delimiter=","'
 While -q can be provided, and that provided queue will be displayed in the
 output, in reality there is only 1 queue called 'wr', so -q has no real function
 other than providing compatibility with real bjobs command line args.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		user, err := internal.Username()
 		if err != nil {
 			die("%s", err.Error())
 		}
 
 		// connect to the server
-		jq := connect(10 * time.Second)
+		jq := connect(lsfConnectTimeoutSeconds * time.Second)
 		defer func() {
 			err = jq.Disconnect()
 			if err != nil {
@@ -261,16 +300,16 @@ other than providing compatibility with real bjobs command line args.`,
 		fieldLookup["JOBID"] = func(job *jobqueue.Job) string {
 			return strconv.Itoa(int(job.BsubID))
 		}
-		fieldLookup["USER"] = func(job *jobqueue.Job) string {
+		fieldLookup["USER"] = func(_ *jobqueue.Job) string {
 			return user
 		}
 		fieldLookup["STAT"] = func(job *jobqueue.Job) string {
 			return jobStateToLSFState[job.State]
 		}
-		fieldLookup["QUEUE"] = func(job *jobqueue.Job) string {
+		fieldLookup["QUEUE"] = func(_ *jobqueue.Job) string {
 			return lsfQueue
 		}
-		fieldLookup["FROM_HOST"] = func(job *jobqueue.Job) string {
+		fieldLookup["FROM_HOST"] = func(_ *jobqueue.Job) string {
 			return jq.ServerInfo.Host
 		}
 		fieldLookup["EXEC_HOST"] = func(job *jobqueue.Job) string {
@@ -284,12 +323,16 @@ other than providing compatibility with real bjobs command line args.`,
 		}
 
 		// parse -o
-		var delimiter string
-		var fields []string
-		var w io.Writer
+		var (
+			delimiter string
+			fields    []string
+			w         io.Writer
+		)
+
 		if lsfFormat != "" {
 			// parse -o format
 			re := regexp.MustCompile(`(?i)\s*delimiter=["'](.*)["']\s*`)
+
 			matches := re.FindStringSubmatch(lsfFormat)
 			if matches != nil {
 				delimiter = matches[1]
@@ -297,11 +340,13 @@ other than providing compatibility with real bjobs command line args.`,
 			} else {
 				delimiter = " "
 			}
-			for _, field := range strings.Split(lsfFormat, " ") {
+
+			for field := range strings.SplitSeq(lsfFormat, " ") {
 				field = strings.ToUpper(field)
 				if _, exists := fieldLookup[field]; !exists {
 					die("unsupported field '%s'", field)
 				}
+
 				fields = append(fields, field)
 			}
 
@@ -311,7 +356,7 @@ other than providing compatibility with real bjobs command line args.`,
 			// standard format uses aligned columns of the fields
 			delimiter = "\t"
 			fields = []string{"JOBID", "USER", "STAT", "QUEUE", "FROM_HOST", "EXEC_HOST", "JOB_NAME", "SUBMIT_TIME"}
-			w = tabwriter.NewWriter(os.Stdout, 2, 2, 3, ' ', 0)
+			w = tabwriter.NewWriter(os.Stdout, lsfTabMinWidth, lsfTabWidth, lsfTabPadding, ' ', 0)
 		}
 
 		// get all incomplete jobs
@@ -322,6 +367,7 @@ other than providing compatibility with real bjobs command line args.`,
 
 		// print out details about the ones that have BsubIDs
 		found := false
+
 		for _, job := range jobs {
 			jid := job.BsubID
 			if jid == 0 {
@@ -336,13 +382,15 @@ other than providing compatibility with real bjobs command line args.`,
 						warn("failed to print header: %s", errp)
 					}
 				}
+
 				found = true
 			}
 
-			var vals []string
+			vals := make([]string, 0, len(fields))
 			for _, field := range fields {
 				vals = append(vals, fieldLookup[field](job))
 			}
+
 			_, errp := fmt.Fprintln(w, strings.Join(vals, delimiter))
 			if errp != nil {
 				warn("failed to print line: %s", errp)
@@ -350,10 +398,11 @@ other than providing compatibility with real bjobs command line args.`,
 		}
 
 		if lsfFormat == "" {
-			tw := w.(*tabwriter.Writer)
-			errf := tw.Flush()
-			if errf != nil {
-				warn("failed to flush output: %s", errf)
+			if tw, ok := w.(*tabwriter.Writer); ok {
+				errf := tw.Flush()
+				if errf != nil {
+					warn("failed to flush output: %s", errf)
+				}
 			}
 		}
 
@@ -374,22 +423,26 @@ understand any of the options that real bkill does.
 
 Note that if a given jobId is not currently in the queue, always just claims
 that the job has already finished, even if an invalid jobId was supplied.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		// convert args to uint64s
 		desired := make(map[uint64]bool)
+
 		for _, arg := range args {
 			i, err := strconv.Atoi(arg)
 			if err != nil {
 				die("could not convert jobID [%s] to an int: %s", arg, err)
 			}
+
 			desired[uint64(i)] = true
 		}
+
 		if len(desired) == 0 {
 			die("job ID must be specified")
 		}
 
 		// connect to the server
-		jq := connect(10 * time.Second)
+		jq := connect(lsfConnectTimeoutSeconds * time.Second)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -416,15 +469,18 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 				_, errk := jq.Kill([]*jobqueue.JobEssence{job.ToEssense()})
 				if errk != nil {
 					warn("error trying to kill job %d: %s", jid, errk)
+
 					continue
 				}
 
 				// wait until it gets buried
 				for {
-					<-time.After(500 * time.Millisecond)
+					<-time.After(lsfKillPollInterval)
+
 					got, errg := jq.GetByEssence(job.ToEssense(), false, false)
 					if errg != nil {
 						warn("error trying confirm job %d was killed: %s", jid, errg)
+
 						continue JOBS
 					}
 
@@ -437,6 +493,7 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 			_, errd := jq.Delete([]*jobqueue.JobEssence{job.ToEssense()})
 			if errd != nil {
 				warn("error trying to delete job %d: %s", jid, errd)
+
 				continue
 			}
 
@@ -461,6 +518,7 @@ func init() {
 	oldState := *goflag.CommandLine
 
 	goflag.BoolVar(&lsfNoHeader, "noheader", false, "disable header output")
+
 	if err := goflag.CommandLine.Parse(lsfArgs); err != nil {
 		die("error parsing LSF args: %s", err)
 	}
@@ -483,22 +541,46 @@ func init() {
 func filterGoFlags(args []string, prefixes map[string]bool) ([]string, []string) {
 	// from https://gist.github.com/doublerebel/8b95c5c118e958e495d2
 	var goFlags []string
+
 	for i := 0; 0 < len(args) && i < len(args); i++ {
-		for prefix, hasValue := range prefixes {
-			if strings.HasPrefix(args[i], "-"+prefix) {
-				goFlags = append(goFlags, args[i])
-				skip := 1
-				if hasValue && i+1 < len(args) {
-					goFlags = append(goFlags, args[i+1])
-					skip = 2
-				}
-				if i+skip <= len(args) {
-					args = append(args[:i], args[i+skip:]...)
-				}
-				i--
-				break
-			}
+		hasValue, matched := matchGoFlagPrefix(args[i], prefixes)
+		if !matched {
+			continue
+		}
+
+		args, goFlags = extractGoFlag(args, goFlags, i, hasValue)
+		i--
+	}
+
+	return args, goFlags
+}
+
+// matchGoFlagPrefix reports whether arg has one of the given "-"+prefix
+// prefixes, returning whether that prefix takes a following value.
+func matchGoFlagPrefix(arg string, prefixes map[string]bool) (hasValue, matched bool) {
+	for prefix, takesValue := range prefixes {
+		if strings.HasPrefix(arg, "-"+prefix) {
+			return takesValue, true
 		}
 	}
+
+	return false, false
+}
+
+// extractGoFlag moves the flag at args[i] (and its value, if hasValue) out of
+// args and into goFlags, returning the updated slices.
+func extractGoFlag(args, goFlags []string, i int, hasValue bool) ([]string, []string) {
+	goFlags = append(goFlags, args[i])
+	skip := 1
+
+	if hasValue && i+1 < len(args) {
+		goFlags = append(goFlags, args[i+1])
+		skip = 2
+	}
+
+	if i+skip <= len(args) {
+		args = append(args[:i], args[i+skip:]...)
+	}
+
 	return args, goFlags
 }

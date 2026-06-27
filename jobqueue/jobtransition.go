@@ -84,7 +84,7 @@ func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions
 // callback transition, one per RepGroup. Lost jobs transition from the lost
 // state, not the running state, so they get their own contribution; the
 // statusAllRepGroups aggregate is maintained inside applyTransition.
-func changeCallbackCounts(from, to JobState, data []interface{}) []countContribution {
+func changeCallbackCounts(from, to JobState, data []any) []countContribution {
 	groups := make(map[string]int)
 	groupsLost := make(map[string]int)
 
@@ -122,7 +122,7 @@ func changeCallbackCounts(from, to JobState, data []interface{}) []countContribu
 // changeCallbackToState resolves the destination JobState for a change-callback
 // event. Items removed from the queue are either deleted or completed, so that
 // case is disambiguated by inspecting the jobs' own state.
-func changeCallbackToState(toQ queue.SubQueue, data []interface{}) JobState {
+func changeCallbackToState(toQ queue.SubQueue, data []any) JobState {
 	if toQ != queue.SubQueueRemoved {
 		return subqueueToJobState[toQ]
 	}
@@ -147,7 +147,7 @@ func changeCallbackToState(toQ queue.SubQueue, data []interface{}) JobState {
 // (with lost jobs tallied from the lost state, not running) and the per-job
 // subscription updates (gated by subscriptionUpdateState and per-subscriber
 // filtering, exactly as before).
-func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ queue.SubQueue, data []interface{}) {
+func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ queue.SubQueue, data []any) {
 	from := subqueueToJobState[fromQ]
 	to := changeCallbackToState(toQ, data)
 	state, emit := subscriptionUpdateState(from, to)
@@ -170,7 +170,7 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 // converted to a status exactly once, and that single status feeds the
 // subscription update (it is never separately written to the browser here).
 func (s *Server) enqueueChangeCallbackSubscriptions(
-	ctx context.Context, data []interface{}, to, state JobState, includeKeyStateChange bool,
+	ctx context.Context, data []any, to, state JobState, includeKeyStateChange bool,
 ) {
 	for _, inter := range data {
 		job := inter.(*Job) //nolint:errcheck,forcetypeassert

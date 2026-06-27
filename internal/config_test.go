@@ -93,11 +93,11 @@ func writeStringToFile(filep *os.File, data string) {
 
 func fileTestTeardown(path, path2 string) {
 	if err := os.Remove(path); err != nil {
-		fmt.Printf("\nfailed to delete %s: %s\n", path, err)
+		fmt.Printf("\nfailed to delete %s: %s\n", path, err) //nolint:forbidigo // test cleanup diagnostic
 	}
 
 	if err := os.Remove(path2); err != nil {
-		fmt.Printf("\nfailed to delete %s: %s\n", path2, err)
+		fmt.Printf("\nfailed to delete %s: %s\n", path2, err) //nolint:forbidigo // test cleanup diagnostic
 	}
 }
 
@@ -176,8 +176,10 @@ func TestConfig(t *testing.T) {
 		path := ft.FilePathInTempDir(t, "testWrite")
 		file, err := os.Create(path)
 		So(err, ShouldBeNil)
+
 		wrtString := fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\n", 1000, 1002)
 		writePorts(ctx, file, wrtString)
+
 		expected := expectedManagerPort
 		content, err := fl.ToString(path)
 		So(err, ShouldBeNil)
@@ -189,6 +191,7 @@ func TestConfig(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			buff := setBufferLevel()
+
 			writePorts(ctx, f, wrtString)
 			checkErrorFromBuffer(buff, "could not write to config file")
 		})
@@ -196,6 +199,7 @@ func TestConfig(t *testing.T) {
 
 	Convey("Given a user id", t, func() {
 		uid := 1000
+
 		Convey("We can get the minimum port number for it", func() {
 			pn, found := getMinPort(ctx, localhost, uid)
 			So(pn, ShouldEqual, 5021)
@@ -204,7 +208,9 @@ func TestConfig(t *testing.T) {
 
 		Convey("We will exit if no available ports found", func() {
 			buff := setBufferLevel()
+
 			exitDueToNoPorts(ctx, nil, "no ports found")
+
 			subString := "no ports found"
 			checkErrorFromBuffer(buff, subString)
 		})
@@ -228,13 +234,16 @@ func TestConfig(t *testing.T) {
 				path := filepath.Join(tempHome, ".wr_config."+deployment+".yml")
 				content, err := fl.ToString(path)
 				expected := expectedManagerPort
+
 				So(err, ShouldBeNil)
 				So(content, ShouldContainSubstring, expected)
 
 				Convey("and it still works with an existing config file", func() {
 					writePortsToConfigFile(ctx, pn, tempHome, deployment)
+
 					content, err := fl.ToString(path)
 					expected := expectedManagerPort
+
 					So(err, ShouldBeNil)
 					So(content, ShouldContainSubstring, expected)
 				})
@@ -243,16 +252,19 @@ func TestConfig(t *testing.T) {
 
 		Convey("we can't write a port to a config file when given an invalid directory", func() {
 			buff := setBufferLevel()
+
 			writePortsToConfigFile(ctx, pn, "/root", deployment)
 			checkErrorFromBuffer(buff, "could not open config file")
 		})
 
 		Convey("we can write dev and prod ports to config files in our home directory", func() {
 			origHome := fsd.GetHome(ctx)
+
 			tempHome, err := os.MkdirTemp("", "temp_home")
 			if err != nil {
 				clog.Fatal(ctx, "err", err)
 			}
+
 			os.Setenv("HOME", tempHome)
 			defer os.Setenv("HOME", origHome)
 
@@ -261,12 +273,14 @@ func TestConfig(t *testing.T) {
 			pathProd := filepath.Join(tempHome, ".wr_config."+Production+".yml")
 			content, err := fl.ToString(pathProd)
 			expected := expectedManagerPort
+
 			So(err, ShouldBeNil)
 			So(content, ShouldContainSubstring, expected)
 
 			pathDev := filepath.Join(tempHome, ".wr_config."+deployment+".yml")
 			content, err = fl.ToString(pathDev)
 			expected = `managerport: "1002"`
+
 			So(err, ShouldBeNil)
 			So(content, ShouldContainSubstring, expected)
 		})
@@ -280,6 +294,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("Given a checker", func() {
 			checker := getPortChecker(ctx, localhost)
+
 			Convey("it can find a port range", func() {
 				tempHome, d1 := getTempHome(ctx)
 				defer d1()
@@ -287,14 +302,14 @@ func TestConfig(t *testing.T) {
 				fsi, err := ft.NewMockStdIn()
 				So(err, ShouldBeNil)
 
-				_ = fsi.WriteString("y")
+				So(fsi.WriteString("y"), ShouldBeNil)
 
-				min := findPorts(ctx, checker)
-				So(min, ShouldNotBeEmpty)
+				minPort := findPorts(ctx, checker)
+				So(minPort, ShouldNotBeEmpty)
 
 				fsi.RestoreStdIn()
 
-				checkPortRange(tempHome, Development, fmt.Sprintf(`managerport: "%d"`, min+2))
+				checkPortRange(tempHome, Development, fmt.Sprintf(`managerport: "%d"`, minPort+2))
 			})
 
 			Convey("it cannot update config file when user chooses to not use suggested ports", func() {
@@ -304,12 +319,14 @@ func TestConfig(t *testing.T) {
 				fsi, err := ft.NewMockStdIn()
 				So(err, ShouldBeNil)
 
-				_ = fsi.WriteString("n")
+				So(fsi.WriteString("n"), ShouldBeNil)
 
 				os.Setenv("WR_FATAL_EXIT_TEST", "1")
+
 				defer os.Unsetenv("WR_FATAL_EXIT_TEST")
-				min := findPorts(ctx, checker)
-				So(min, ShouldEqual, 0)
+
+				minPort := findPorts(ctx, checker)
+				So(minPort, ShouldEqual, 0)
 
 				fsi.RestoreStdIn()
 
@@ -322,13 +339,14 @@ func TestConfig(t *testing.T) {
 			checker := getPortChecker(ctx, localhost)
 			addr, err := net.ResolveTCPAddr("tcp", "localhost:1")
 			So(err, ShouldBeNil)
+
 			checker.Addr = addr
 
 			Convey("it cannot get available port range", func() {
 				buff := setBufferLevel()
-				min, max := getAvailableRange(ctx, checker)
-				So(min, ShouldBeZeroValue)
-				So(max, ShouldBeZeroValue)
+				minPort, maxPort := getAvailableRange(ctx, checker)
+				So(minPort, ShouldBeZeroValue)
+				So(maxPort, ShouldBeZeroValue)
 				checkErrorFromBuffer(buff, "localhost ports couldn't be checked")
 
 				Convey("it cannot get port if available port range is not found", func() {
@@ -350,6 +368,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("When env variable is set but umask doesn't have 0 prefix", func() {
 			os.Setenv("WR_MANAGERUMASK", "666")
+
 			defer os.Unsetenv("WR_MANAGERUMASK")
 
 			fixEnvManagerUmask()
@@ -358,6 +377,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("When env variable is set but umask has 0 prefix", func() {
 			os.Setenv("WR_MANAGERUMASK", "0666")
+
 			defer os.Unsetenv("WR_MANAGERUMASK")
 
 			fixEnvManagerUmask()
@@ -392,11 +412,14 @@ func TestConfig(t *testing.T) {
 
 			Convey("if the user id is a big number", func() {
 				uid := 65534
+
 				os.Setenv("WR_FATAL_EXIT_TEST", "1")
+
 				defer os.Unsetenv("WR_FATAL_EXIT_TEST")
 
 				Convey("and user chooses not to save ports to config file", func() {
 					buff := clog.ToBufferAtLevel("crit")
+
 					defer clog.ToDefault()
 
 					_ = calculatePort(ctx, defConfig, uid, localhost, "webi")
@@ -414,7 +437,7 @@ func TestConfig(t *testing.T) {
 					fsi, err := ft.NewMockStdIn()
 					So(err, ShouldBeNil)
 
-					_ = fsi.WriteString("y")
+					So(fsi.WriteString("y"), ShouldBeNil)
 
 					portCli := calculatePort(ctx, defConfig, uid, localhost, "cli")
 
@@ -432,7 +455,9 @@ func TestConfig(t *testing.T) {
 
 				Convey("but not with a checker that isn't listening on hostname", func() {
 					buff := clog.ToBufferAtLevel("crit")
+
 					defer clog.ToDefault()
+
 					_ = calculatePort(ctx, defConfig, uid, "wr_wrong_hostname", "webi")
 					bufferStr := buff.String()
 					So(bufferStr, ShouldContainSubstring, "fatal=true")
@@ -452,6 +477,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("and a user id, it can set the manager port", func() {
 			uid := 1000
+
 			So(defConfig.ManagerPort, ShouldBeEmpty)
 			So(defConfig.ManagerWeb, ShouldBeEmpty)
 
@@ -533,13 +559,16 @@ func TestConfig(t *testing.T) {
 		Convey("it can be overridden with a config file given its path", func() {
 			dir, err := os.MkdirTemp("", "wr_conf_test")
 			So(err, ShouldBeNil)
+
 			defer os.RemoveAll(dir)
 
 			mport := "1234"
 			mweb1 := "1235"
 			mweb2 := "1236"
+
 			path, path2, err := fileTestSetup(dir, mport, mweb1, mweb2)
 			defer fileTestTeardown(path, path2)
+
 			So(err, ShouldBeNil)
 
 			defConfig.configLoadFromFile(ctx, path)
@@ -572,16 +601,20 @@ func TestConfig(t *testing.T) {
 			uid := 1000
 			dir, err := os.MkdirTemp("", "wr_conf_test")
 			So(err, ShouldBeNil)
+
 			defer os.RemoveAll(dir)
 
 			mport := "1234"
 			mweb1 := "1235"
 			mweb2 := "1236"
+
 			path, path2, err := fileTestSetup(dir, mport, mweb1, mweb2)
 			defer fileTestTeardown(path, path2)
+
 			So(err, ShouldBeNil)
 
 			os.Setenv("WR_CONFIG_DIR", dir)
+
 			defer func() {
 				os.Unsetenv("WR_CONFIG_DIR")
 			}()
@@ -600,8 +633,10 @@ func TestConfig(t *testing.T) {
 				mport := "1334"
 				mweb1 := "1335"
 				mweb2 := "1336"
+
 				path3, path4, err := fileTestSetup(tempHome, mport, mweb1, mweb2)
 				defer fileTestTeardown(path3, path4)
+
 				So(err, ShouldBeNil)
 
 				defConfig.mergeAllConfigFiles(ctx, uid, Development, "")
@@ -614,9 +649,11 @@ func TestConfig(t *testing.T) {
 					defer func() {
 						os.Setenv("HOME", os.Getenv("HOME"))
 					}()
+
 					os.Unsetenv("HOME")
 
 					buff := setBufferLevel()
+
 					defConfig.mergeAllConfigFiles(ctx, uid, Development, "")
 					checkErrorFromBuffer(buff, "")
 				})
@@ -624,11 +661,14 @@ func TestConfig(t *testing.T) {
 				Convey("these can be overridden with config files in current dir", func() {
 					pwd, err := os.MkdirTemp("", "temp_pwd")
 					So(err, ShouldBeNil)
+
 					mport = "1434"
 					mweb1 = "1435"
 					mweb2 = "1436"
+
 					path5, path6, err := fileTestSetup(pwd, mport, mweb1, mweb2)
 					defer fileTestTeardown(path5, path6)
+
 					So(err, ShouldBeNil)
 
 					defConfig.mergeAllConfigFiles(ctx, uid, Development, pwd)
@@ -679,6 +719,7 @@ func TestConfig(t *testing.T) {
 
 			Convey("it can get overridden if WR_DEPLOYMENT env variable is set", func() {
 				os.Setenv("WR_DEPLOYMENT", Development)
+
 				defer os.Unsetenv("WR_DEPLOYMENT")
 
 				defDeployment := DefaultDeployment(ctx)
@@ -686,6 +727,7 @@ func TestConfig(t *testing.T) {
 
 				Convey("not when env var is set to a wrong value", func() {
 					os.Setenv("WR_DEPLOYMENT", "wrongDevelopment")
+
 					defer os.Unsetenv("WR_DEPLOYMENT")
 
 					defDeployment := DefaultDeployment(ctx)
@@ -700,14 +742,17 @@ func TestConfig(t *testing.T) {
 
 			dir, err := os.MkdirTemp("", "wr_conf_test")
 			So(err, ShouldBeNil)
+
 			path := dir + "/jobqueue/server.go"
 			err = os.MkdirAll(path, 0o777)
 			So(err, ShouldBeNil)
+
 			defer func() {
 				defer os.RemoveAll(dir)
 			}()
 
 			err = os.Chdir(dir)
+
 			So(err, ShouldBeNil)
 			defer func() {
 				err = os.Chdir(orgPWD)
@@ -718,6 +763,7 @@ func TestConfig(t *testing.T) {
 
 			Convey("it can get overridden if WR_DEPLOYMENT env variable is set", func() {
 				os.Setenv("WR_DEPLOYMENT", Production)
+
 				defer func() {
 					os.Unsetenv("WR_DEPLOYMENT")
 				}()
@@ -737,6 +783,7 @@ func TestConfig(t *testing.T) {
 		os.Setenv("WR_LOGSMAXBACKUPS", "4")
 		os.Setenv("WR_LOGSMAXAGEDAYS", "21")
 		os.Setenv("WR_LOGSCOMPRESS", "false")
+
 		defer func() {
 			os.Unsetenv("WR_MANAGERPORT")
 			os.Unsetenv("WR_MANAGERUMASK")
@@ -767,6 +814,7 @@ func TestConfig(t *testing.T) {
 		os.Setenv("WR_MANAGERSETDOMAINIP", "true")
 		os.Setenv("WR_MANAGERREMOTESAMEASLOCAL", "true")
 		os.Setenv("WR_LOGSMAXSIZEMB", "5")
+
 		defer func() {
 			os.Unsetenv("WR_MANAGERPORT")
 			os.Unsetenv("WR_MANAGERUMASK")
@@ -792,16 +840,20 @@ func TestConfig(t *testing.T) {
 
 	Convey("It can merge all the configs and return a final config", t, func() {
 		os.Setenv("WR_MANAGERUMASK", "077")
+
 		defer os.Unsetenv("WR_MANAGERUMASK")
 
 		uid := 1000
 		pwd, err := os.MkdirTemp("", "temp_wd")
 		So(err, ShouldBeNil)
+
 		mport := "5434"
 		mweb1 := "5435"
 		mweb2 := "5436"
+
 		path7, path8, err := fileTestSetup(pwd, mport, mweb1, mweb2)
 		defer fileTestTeardown(path7, path8)
+
 		So(err, ShouldBeNil)
 
 		finalConfig := mergeAllConfigs(ctx, uid, Development, pwd)

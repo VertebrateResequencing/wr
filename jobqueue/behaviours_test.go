@@ -27,6 +27,7 @@
 package jobqueue
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -59,6 +60,7 @@ func TestBehaviours(t *testing.T) {
 		So(err, ShouldBeNil)
 		_, err = os.OpenFile(filepath.Join(actualCwd, "b.file"), os.O_RDONLY|os.O_CREATE, 0o666)
 		So(err, ShouldBeNil)
+
 		foo := filepath.Join(cwd, "a", "b", "c", "foo")
 		adir := filepath.Join(cwd, "a")
 		job1 := &Job{Cwd: cwd, ActualCwd: actualCwd}
@@ -92,7 +94,7 @@ func TestBehaviours(t *testing.T) {
 			So(err, ShouldBeNil)
 			err = b8.Trigger(OnSuccess, job1)
 			So(err, ShouldNotBeNil)
-			//*** CopyToManager not yet implemented, so no proper tests for it yet
+			// *** CopyToManager not yet implemented, so no proper tests for it yet
 
 			err = b6.Trigger(OnSuccess, job1)
 			So(err, ShouldNotBeNil)
@@ -114,6 +116,7 @@ func TestBehaviours(t *testing.T) {
 
 			err = b5.Trigger(OnSuccess, job2)
 			So(err, ShouldBeNil)
+
 			foo2 := filepath.Join(cwd, "foo")
 			_, err = os.Stat(foo2)
 			So(err, ShouldBeNil)
@@ -150,7 +153,9 @@ func TestBehaviours(t *testing.T) {
 
 		Convey("CleanupAll works when actual cwd contains root-owned files", func() {
 			rootFile := filepath.Join(actualCwd, "root")
-			err = exec.Command("sh", "-c", "sudo -n touch "+rootFile).Run()
+
+			//nolint:gosec // test-controlled path under a temp dir
+			err = exec.CommandContext(context.Background(), "sh", "-c", "sudo -n touch "+rootFile).Run()
 			if err != nil {
 				SkipConvey("Can't do this test without ability to sudo", func() {})
 			} else {
@@ -220,8 +225,11 @@ func TestBehaviours(t *testing.T) {
 	})
 
 	Convey("You can go from JSON to Behaviours", t, func() {
+		//nolint:lll // exact JSON fixture asserted verbatim
 		jsonStr := `[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}]`
+
 		var bjs BehavioursViaJSON
+
 		err := json.Unmarshal([]byte(jsonStr), &bjs)
 		So(err, ShouldBeNil)
 		So(len(bjs), ShouldEqual, 4)
@@ -243,7 +251,9 @@ func TestBehaviours(t *testing.T) {
 		So(bs[3].Do, ShouldEqual, Remove)
 
 		jsonStr = `[{"cleanup":true}]`
+
 		var bjs2 BehavioursViaJSON
+
 		err = json.Unmarshal([]byte(jsonStr), &bjs2)
 		So(err, ShouldBeNil)
 		So(len(bjs2), ShouldEqual, 1)
@@ -254,7 +264,9 @@ func TestBehaviours(t *testing.T) {
 		So(bs[4].Do, ShouldEqual, Cleanup)
 
 		jsonStr = `[{"run":"true"}]`
+
 		var bjs3 BehavioursViaJSON
+
 		err = json.Unmarshal([]byte(jsonStr), &bjs3)
 		So(err, ShouldBeNil)
 		So(len(bjs3), ShouldEqual, 1)
@@ -266,6 +278,7 @@ func TestBehaviours(t *testing.T) {
 		So(bs[5].Arg, ShouldEqual, "true")
 
 		Convey("You can convert back to JSON", func() {
+			//nolint:lll // exact JSON fixture asserted verbatim
 			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
 		})
 	})

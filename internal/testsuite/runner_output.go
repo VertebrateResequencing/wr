@@ -92,13 +92,13 @@ func extractConveyJSON(raw string) (string, []string, bool) {
 		clean.WriteString(remaining[:start])
 		afterOpen := remaining[start+len(conveyJSONOpen):]
 
-		end := strings.Index(afterOpen, conveyJSONClose)
-		if end == -1 {
+		before, after, ok := strings.Cut(afterOpen, conveyJSONClose)
+		if !ok {
 			return "", nil, false
 		}
 
-		blocks = append(blocks, afterOpen[:end])
-		remaining = afterOpen[end+len(conveyJSONClose):]
+		blocks = append(blocks, before)
+		remaining = after
 	}
 }
 

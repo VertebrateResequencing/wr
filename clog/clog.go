@@ -322,31 +322,31 @@ func addHandlerToLogger(ctx context.Context, logger log.Logger) log.Logger {
 
 // Debug logs the given message with context and args to the global logger at
 // the debug level. Caller info is included.
-func Debug(ctx context.Context, msg string, args ...interface{}) {
+func Debug(ctx context.Context, msg string, args ...any) {
 	logger(ctx).Debug(msg, args...)
 }
 
 // Info logs the given message with context and args to the global logger at
 // the info level.
-func Info(ctx context.Context, msg string, args ...interface{}) {
+func Info(ctx context.Context, msg string, args ...any) {
 	logger(ctx).Info(msg, args...)
 }
 
 // Warn logs the given message with context and args to the global logger at
 // the warn level. Caller info is included.
-func Warn(ctx context.Context, msg string, args ...interface{}) {
+func Warn(ctx context.Context, msg string, args ...any) {
 	logger(ctx).Warn(msg, args...)
 }
 
 // Error logs the given message with context and args to the global logger at
 // the error level. Caller info is included.
-func Error(ctx context.Context, msg string, args ...interface{}) {
+func Error(ctx context.Context, msg string, args ...any) {
 	logger(ctx).Error(msg, args...)
 }
 
 // Crit logs the given message with context and args to the global logger at
 // the error level. A stack trace is included.
-func Crit(ctx context.Context, msg string, args ...interface{}) {
+func Crit(ctx context.Context, msg string, args ...any) {
 	logger(ctx).Crit(msg, args...)
 }
 
@@ -355,7 +355,7 @@ func Crit(ctx context.Context, msg string, args ...interface{}) {
 //
 // If the WR_FATAL_EXIT_TEST environment variable is set to 1, we don't
 // actually exit.
-func Fatal(ctx context.Context, msg string, args ...interface{}) {
+func Fatal(ctx context.Context, msg string, args ...any) {
 	args = append(args, "fatal", true)
 	logger(ctx).Crit(msg, args...)
 

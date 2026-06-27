@@ -682,8 +682,8 @@ func configureSubscriptionSocket(sock mangos.Socket, timeout time.Duration) erro
 	return nil
 }
 
-func subscriptionDialOptions(caFile, certDomain string) map[string]interface{} {
-	return map[string]interface{}{
+func subscriptionDialOptions(caFile, certDomain string) map[string]any {
+	return map[string]any{
 		mangos.OptionTLSConfig: subscriptionTLSConfig(caFile, certDomain),
 	}
 }

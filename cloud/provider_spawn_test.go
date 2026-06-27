@@ -48,7 +48,6 @@ func (p *spawnBeforeQuotaErrorProvider) maybeEnv() []string {
 	return nil
 }
 
-//nolint:misspell // Implements provideri.initialize().
 func (p *spawnBeforeQuotaErrorProvider) initialize() error {
 	return nil
 }

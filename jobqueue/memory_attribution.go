@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,13 +71,11 @@ func cgroupOOMCounterFromLine(line, root string) (cgroupOOMCounter, bool) {
 	}
 
 	controllers := strings.Split(parts[1], ",")
-	for _, controller := range controllers {
-		if controller == "memory" {
-			return cgroupOOMCounter{
-				path: filepath.Join(root, "memory", cgroupPath, "memory.oom_control"),
-				key:  cgroupV1OOMKillKey,
-			}, true
-		}
+	if slices.Contains(controllers, "memory") {
+		return cgroupOOMCounter{
+			path: filepath.Join(root, "memory", cgroupPath, "memory.oom_control"),
+			key:  cgroupV1OOMKillKey,
+		}, true
 	}
 
 	return cgroupOOMCounter{}, false
@@ -103,7 +102,7 @@ func newCgroupOOMMonitor(pid int, proc, cgroup string) (*cgroupOOMMonitor, error
 
 	var counters []cgroupOOMCounter
 
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		counter, ok := cgroupOOMCounterFromLine(line, cgroup)
 		if !ok {
 			continue
@@ -150,7 +149,7 @@ func readCgroupOOMKillCount(path, key string) (uint64, error) {
 		return 0, err
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 || fields[0] != key {
 			continue

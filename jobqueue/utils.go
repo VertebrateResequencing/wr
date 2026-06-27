@@ -32,12 +32,14 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
+	"context"
 	crand "crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net"
 	"os"
@@ -57,13 +59,17 @@ import (
 
 // AppName gets used in certain places like naming the base directory of created
 // working directories during Client.Execute().
-var AppName = "jobqueue"
+var AppName = "jobqueue" //nolint:gochecknoglobals // configurable package-wide default
 
-// mkHashedLevels is the number of directory levels we create in mkHashedDirs
+// mkHashedLevels is the number of directory levels we create in mkHashedDirs.
 const mkHashedLevels = 4
 
-// tokenLength is the fixed size of our authentication token
-const tokenLength = 43
+// tokenLength is the fixed size of our authentication token, and
+// tokenRandBytes is the number of random bytes that base64-encode to it.
+const (
+	tokenLength    = 43
+	tokenRandBytes = 32
+)
 
 const (
 	reqSchedSpecialRAM = 924
@@ -71,9 +77,23 @@ const (
 	reqSchedTimeRound  = 30 * time.Minute
 )
 
-var pss = []byte("Pss:")
+const (
+	// bytesPerKB and bytesPerMB are used to convert reported byte/kB sizes to
+	// MB.
+	bytesPerKB = 1024
+	bytesPerMB = 1024 * 1024
 
-// cr, lf and ellipses get used by stdFilter()
+	// mkHashedDirMaxTries is how many times we retry creating a hashed dir when
+	// it conflicts with a concurrent rmEmptyDirs.
+	mkHashedDirMaxTries = 3
+)
+
+// pss is the smaps line prefix scanned by scanSmapsPss.
+var pss = []byte("Pss:") //nolint:gochecknoglobals // immutable byte-slice constant
+
+// cr, lf and ellipses get used by stdFilter().
+//
+//nolint:gochecknoglobals // immutable byte-slice constants
 var (
 	cr       = []byte("\r")
 	lf       = []byte("\n")
@@ -90,20 +110,23 @@ var liveTailCompressor = compressedLiveTail //nolint:gochecknoglobals // Test ho
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
 // encoded string 43 bytes long. Used by the server to create a token passed to
-// to the caller for subsequent client authentication. If the given file exists
+// the caller for subsequent client authentication. If the given file exists
 // and contains a single 43 byte string, then that is used as the token instead.
 func generateToken(tokenFile string) ([]byte, error) {
 	if token, err := os.ReadFile(tokenFile); err == nil && len(token) == tokenLength {
 		return token, nil
 	}
 
-	b := make([]byte, 32)
+	b := make([]byte, tokenRandBytes)
+
 	_, err := crand.Read(b)
 	if err != nil {
 		return nil, err
 	}
+
 	token := make([]byte, tokenLength)
 	base64.URLEncoding.WithPadding(base64.NoPadding).Encode(token, b)
+
 	return token, err
 }
 
@@ -112,47 +135,53 @@ func generateToken(tokenFile string) ([]byte, error) {
 // cryptographically secure way (avoiding timing attacks).
 func tokenMatches(input, expected []byte) bool {
 	result := subtle.ConstantTimeCompare(input, expected)
+
 	return result == 1
 }
 
 // byteKey calculates a unique key that describes a byte slice.
 func byteKey(b []byte) string {
 	l, h := farm.Hash128(b)
+
 	return fmt.Sprintf("%016x%016x", l, h)
+}
+
+// foldCloseErr combines an error returned by closing a resource (named in what,
+// eg. "source") into a prior error, returning the result. It is intended for
+// use in deferred closers via err = foldCloseErr(err, c.Close(), "name").
+func foldCloseErr(prior, closeErr error, what string) error {
+	if closeErr == nil {
+		return prior
+	}
+
+	if prior == nil {
+		return closeErr
+	}
+
+	return fmt.Errorf("%w (and closing %s failed: %w)", prior, what, closeErr)
 }
 
 // copy a file *** should be updated to handle source being on a different
 // machine or in an S3-style object store.
-func copyFile(source string, dest string) error {
+func copyFile(source string, dest string) (err error) {
 	in, err := os.Open(source)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		errc := in.Close()
-		if errc != nil {
-			if err == nil {
-				err = errc
-			} else {
-				err = fmt.Errorf("%w (and closing source failed: %w)", err, errc)
-			}
-		}
+		err = foldCloseErr(err, in.Close(), "source")
 	}()
+
 	out, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		errc := out.Close()
-		if errc != nil {
-			if err == nil {
-				err = errc
-			} else {
-				err = fmt.Errorf("%w (and closing dest failed: %w)", err, errc)
-			}
-		}
+		err = foldCloseErr(err, out.Close(), "dest")
 	}()
+
 	_, err = io.Copy(out, in)
+
 	return err
 }
 
@@ -161,88 +190,114 @@ func copyFile(source string, dest string) error {
 // of same on disk.
 func compress(data []byte) ([]byte, error) {
 	var compressed bytes.Buffer
+
 	w, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
 	if err != nil {
 		return nil, err
 	}
+
 	_, err = w.Write(data)
 	if err != nil {
 		return nil, err
 	}
+
 	err = w.Close()
 	if err != nil {
 		return nil, err
 	}
+
 	return compressed.Bytes(), nil
 }
 
 // decompress uses zlib to decompress stuff compressed by compress().
 func decompress(compressed []byte) ([]byte, error) {
 	b := bytes.NewReader(compressed)
+
 	r, err := zlib.NewReader(b)
 	if err != nil {
 		return nil, err
 	}
+
 	buf := new(bytes.Buffer)
+
 	_, err = buf.ReadFrom(r)
 	if err != nil {
 		return nil, err
 	}
+
 	return buf.Bytes(), err
 }
 
 // get the current memory usage of a pid and all its children, relying on modern
 // linux /proc/*/smaps (based on http://stackoverflow.com/a/31881979/675083).
 func currentMemory(pid int) (int, error) {
-	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
+	kb, err := scanSmapsPss(pid)
 	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		errc := f.Close()
-		if errc != nil {
-			if err == nil {
-				err = errc
-			} else {
-				err = fmt.Errorf("%w (and closing smaps failed: %w)", err, errc)
-			}
-		}
-	}()
-
-	kb := uint64(0)
-	r := bufio.NewScanner(f)
-	for r.Scan() {
-		line := r.Bytes()
-		if bytes.HasPrefix(line, pss) {
-			var size uint64
-			_, err = fmt.Sscanf(string(line[4:]), "%d", &size)
-			if err != nil {
-				return 0, err
-			}
-			kb += size
-		}
-	}
-	if err = r.Err(); err != nil {
 		return 0, err
 	}
 
 	// convert kB to MB
-	mem := int(kb / 1024)
+	mem := int(kb / bytesPerKB) //nolint:gosec // a process's memory in MB comfortably fits in an int
 
 	// recurse for children
-	p, err := process.NewProcess(int32(pid))
+	childMem, err := sumChildrenMemory(pid)
 	if err != nil {
 		return mem, err
 	}
+
+	return mem + childMem, nil
+}
+
+// scanSmapsPss reads /proc/<pid>/smaps and sums the Pss (proportional set size)
+// values, in kB.
+func scanSmapsPss(pid int) (kb uint64, err error) {
+	f, err := os.Open(filepath.Clean(fmt.Sprintf("/proc/%d/smaps", pid)))
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		err = foldCloseErr(err, f.Close(), "smaps")
+	}()
+
+	r := bufio.NewScanner(f)
+	for r.Scan() {
+		line := r.Bytes()
+		if !bytes.HasPrefix(line, pss) {
+			continue
+		}
+
+		var size uint64
+		if _, err = fmt.Sscanf(string(line[len(pss):]), "%d", &size); err != nil {
+			return 0, err
+		}
+
+		kb += size
+	}
+
+	return kb, r.Err()
+}
+
+// sumChildrenMemory returns the total currentMemory of all the child processes
+// of pid (child memory-read failures are ignored).
+func sumChildrenMemory(pid int) (int, error) {
+	p, err := process.NewProcess(int32(pid)) //nolint:gosec // a pid always fits in an int32
+	if err != nil {
+		return 0, err
+	}
+
 	children, err := p.Children()
 	if err != nil && !errors.Is(err, process.ErrorNoChildren) {
-		return mem, err
+		return 0, err
 	}
+
+	var mem int
+
 	for _, child := range children {
 		childMem, errr := currentMemory(int(child.Pid))
 		if errr != nil {
 			continue
 		}
+
 		mem += childMem
 	}
 
@@ -259,7 +314,7 @@ func currentDisk(path string, ignore ...map[string]bool) (int64, error) {
 		skip = ignore[0]
 	}
 
-	dir, err := os.Open(path)
+	dir, err := openManaged(path)
 	if err != nil {
 		return disk, err
 	}
@@ -273,31 +328,42 @@ func currentDisk(path string, ignore ...map[string]bool) (int64, error) {
 	}
 
 	for _, file := range files {
-		if file.IsDir() {
-			abs := filepath.Join(path, file.Name())
-			if skip[abs] {
-				continue
-			}
-			recurse, errr := currentDisk(abs, ignore...)
-			if errr != nil {
-				return disk, errr
-			}
-			disk += recurse
-		} else {
-			disk += file.Size() / (1024 * 1024)
+		used, errd := diskForFile(path, file, skip, ignore)
+		if errd != nil {
+			return disk, errd
 		}
+
+		disk += used
 	}
 
 	return disk, err
 }
 
+// diskForFile returns the disk usage in MB contributed by file (which lives in
+// dirPath). Directories are recursed into via currentDisk unless they are in
+// skip.
+func diskForFile(dirPath string, file os.FileInfo, skip map[string]bool, ignore []map[string]bool) (int64, error) {
+	if !file.IsDir() {
+		return file.Size() / bytesPerMB, nil
+	}
+
+	abs := filepath.Join(dirPath, file.Name())
+	if skip[abs] {
+		return 0, nil
+	}
+
+	return currentDisk(abs, ignore...)
+}
+
 // getChildProcesses gets the child processes of the given pid, recursively.
 func getChildProcesses(pid int32) ([]*process.Process, error) {
 	var children []*process.Process
+
 	p, err := process.NewProcess(pid)
 	if err != nil {
 		// we ignore errors, since we allow for working on processes that we're in
 		// the process of killing
+		//nolint:nilerr // deliberately ignore the error for processes being killed
 		return children, nil
 	}
 
@@ -311,6 +377,7 @@ func getChildProcesses(pid int32) ([]*process.Process, error) {
 		if errk != nil {
 			continue
 		}
+
 		if len(theseKids) > 0 {
 			children = append(children, theseKids...)
 		}
@@ -333,21 +400,25 @@ type prefixSuffixSaver struct {
 
 func (w *prefixSuffixSaver) Write(p []byte) (int, error) {
 	lenp := len(p)
+
 	p = w.fill(&w.prefix, p)
 	if overage := len(p) - w.N; overage > 0 {
 		p = p[overage:]
 		w.skipped += int64(overage)
 	}
+
 	p = w.fill(&w.suffix, p)
 	for len(p) > 0 { // 0, 1, or 2 iterations.
 		n := copy(w.suffix[w.suffixOff:], p)
 		p = p[n:]
 		w.skipped += int64(n)
+
 		w.suffixOff += n
 		if w.suffixOff == w.N {
 			w.suffixOff = 0
 		}
 	}
+
 	return lenp, nil
 }
 
@@ -357,6 +428,7 @@ func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) []byte {
 		*dst = append(*dst, p[:add]...)
 		p = p[add:]
 	}
+
 	return p
 }
 
@@ -364,17 +436,22 @@ func (w *prefixSuffixSaver) Bytes() []byte {
 	if w.suffix == nil {
 		return w.prefix
 	}
+
 	if w.skipped == 0 {
 		return append(w.prefix, w.suffix...)
 	}
+
+	const omittingMsgLen = 50 // approx length of the "... omitting N bytes ..." message
+
 	var buf bytes.Buffer
-	buf.Grow(len(w.prefix) + len(w.suffix) + 50)
+	buf.Grow(len(w.prefix) + len(w.suffix) + omittingMsgLen)
 	buf.Write(w.prefix)
 	buf.WriteString("\n... omitting ")
 	buf.WriteString(strconv.FormatInt(w.skipped, 10))
 	buf.WriteString(" bytes ...\n")
 	buf.Write(w.suffix[w.suffixOff:])
 	buf.Write(w.suffix[:w.suffixOff])
+
 	return buf.Bytes()
 }
 
@@ -382,6 +459,7 @@ func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
+
 	return b
 }
 
@@ -455,50 +533,66 @@ func compressedLiveTail(tail []byte) []byte {
 func stdFilter(std io.Reader, out io.Writer) chan error {
 	reader := bufio.NewReader(std)
 	done := make(chan error)
+
 	go func() {
 		var merr *multierror.Error
+
 		for {
 			p, err := reader.ReadBytes('\n')
 
-			lines := bytes.Split(p, cr)
-			_, errw := out.Write(lines[0])
-			if errw != nil {
-				merr = multierror.Append(merr, errw)
-			}
-			if len(lines) > 2 {
-				_, errw = out.Write(lf)
-				if errw != nil {
-					merr = multierror.Append(merr, errw)
-				}
-				if len(lines) > 3 {
-					_, errw = out.Write(ellipses)
-					if errw != nil {
-						merr = multierror.Append(merr, errw)
-					}
-				}
-				_, errw = out.Write(lines[len(lines)-2])
-				if errw != nil {
-					merr = multierror.Append(merr, errw)
-				}
-				_, errw = out.Write(lf)
-				if errw != nil {
-					merr = multierror.Append(merr, errw)
-				}
-			}
+			writeFilteredBlock(out, bytes.Split(p, cr), &merr)
 
 			if err != nil {
 				break
 			}
 		}
+
 		done <- merr.ErrorOrNil()
 	}()
+
 	return done
+}
+
+// stdFilter constants for interpreting a \r-split block of input: blocks of
+// more than 1 \r-terminated line have their first and last lines kept, and
+// blocks of more than 2 also get an ellipses to show lines were dropped.
+const (
+	stdFilterKeepLastMin = 2
+	stdFilterEllipsesMin = 3
+)
+
+// writeFilteredBlock writes the kept lines of a single \r-split block to out,
+// appending any write errors to merr. It keeps only the first and last line of
+// the block (see stdFilter).
+func writeFilteredBlock(out io.Writer, lines [][]byte, merr **multierror.Error) {
+	writeStd(out, lines[0], merr)
+
+	if len(lines) <= stdFilterKeepLastMin {
+		return
+	}
+
+	writeStd(out, lf, merr)
+
+	if len(lines) > stdFilterEllipsesMin {
+		writeStd(out, ellipses, merr)
+	}
+
+	writeStd(out, lines[len(lines)-2], merr)
+	writeStd(out, lf, merr)
+}
+
+// writeStd writes b to out, appending any error to merr.
+func writeStd(out io.Writer, b []byte, merr **multierror.Error) {
+	if _, err := out.Write(b); err != nil {
+		*merr = multierror.Append(*merr, err)
+	}
 }
 
 // envOverride deals with values you get from os.Environ, overriding one set
 // with values from another. Returns the new slice of environment variables.
 func envOverride(orig []string, over []string) []string {
 	override := make(map[string]string)
+
 	for _, envvar := range over {
 		pair := strings.Split(envvar, "=")
 		override[pair[0]] = envvar
@@ -509,6 +603,7 @@ func envOverride(orig []string, over []string) []string {
 		pair := strings.Split(envvar, "=")
 		if replace, do := override[pair[0]]; do {
 			env[i] = replace
+
 			delete(override, pair[0])
 		}
 	}
@@ -516,6 +611,7 @@ func envOverride(orig []string, over []string) []string {
 	for _, envvar := range override {
 		env = append(env, envvar)
 	}
+
 	return env
 }
 
@@ -552,6 +648,7 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 	dirs := strings.SplitN(tohash, "", mkHashedLevels)
 	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
 	dirs = append([]string{baseDir}, dirs...)
+
 	return filepath.Join(dirs...), leaf
 }
 
@@ -561,48 +658,14 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 // there were problems making the directories.
 func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+"_cwd"), tohash)
+
 	holdFile := filepath.Join(dir, ".hold")
 	defer func() {
-		errr := os.Remove(holdFile)
-		if errr != nil && !os.IsNotExist(errr) {
-			if err == nil {
-				err = errr
-			} else {
-				err = fmt.Errorf("%w (and removing the hold file failed: %w)", err, errr)
-			}
-		}
+		err = removeHoldFile(holdFile, err)
 	}()
-	tries := 0
-	for {
-		err = os.MkdirAll(dir, os.ModePerm)
-		if err != nil {
-			tries++
-			if tries <= 3 {
-				// we retry a few times in case another process is calling
-				// rmEmptyDirs on the same baseDir and so conflicting with us
-				continue
-			}
-			return cwd, tmpDir, err
-		}
 
-		// and drop a temp file in here so rmEmptyDirs will not immediately
-		// remove these dirs
-		tries = 0
-		var f *os.File
-		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0o600)
-		if err != nil {
-			tries++
-			if tries <= 3 {
-				continue
-			}
-			return cwd, tmpDir, err
-		}
-		err = f.Close()
-		if err != nil {
-			return cwd, tmpDir, err
-		}
-
-		break
+	if err = mkHeldDir(dir, holdFile); err != nil {
+		return cwd, tmpDir, err
 	}
 
 	// if tohash is a job key then we expect that only 1 of that job is
@@ -616,40 +679,155 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 		return cwd, tmpDir, err
 	}
 
-	cwd = filepath.Join(dir, "cwd")
-	err = os.Mkdir(cwd, os.ModePerm)
+	return mkCwdAndTmp(dir)
+}
+
+// holdFilePerm is the permission used for the hold file dropped by mkHeldDir.
+const holdFilePerm = 0o600
+
+// removeHoldFile removes the hold file created by mkHeldDir, folding any removal
+// error into the given prior error.
+func removeHoldFile(holdFile string, prior error) error {
+	errr := removeManaged(holdFile)
+	if errr == nil || os.IsNotExist(errr) {
+		return prior
+	}
+
+	if prior == nil {
+		return errr
+	}
+
+	return fmt.Errorf("%w (and removing the hold file failed: %w)", prior, errr)
+}
+
+// mkHeldDir creates dir (retrying a few times in case a concurrent rmEmptyDirs
+// conflicts with us) and drops a hold file in it so rmEmptyDirs will not
+// immediately remove it.
+func mkHeldDir(dir, holdFile string) error {
+	tries := 0
+
+	for {
+		retry, err := tryMkHeldDir(dir, holdFile, &tries)
+		if err != nil {
+			return err
+		}
+
+		if !retry {
+			return nil
+		}
+	}
+}
+
+// The *Managed helpers wrap os file operations on paths that the jobqueue
+// itself created and manages (a Job's working/cache dirs, our own /proc
+// entries). The paths are trusted by design and cleaned before use, which also
+// satisfies gosec's path-traversal analysis without per-call suppressions.
+
+// removeAllManaged is os.RemoveAll for a jobqueue-managed path.
+func removeAllManaged(path string) error {
+	return os.RemoveAll(filepath.Clean(path))
+}
+
+// removeManaged is os.Remove for a jobqueue-managed path.
+func removeManaged(path string) error {
+	return os.Remove(filepath.Clean(path))
+}
+
+// openManaged is os.Open for a jobqueue-managed path.
+func openManaged(path string) (*os.File, error) {
+	return os.Open(filepath.Clean(path))
+}
+
+// mkdirManaged is os.Mkdir for a jobqueue-managed path.
+func mkdirManaged(path string, perm os.FileMode) error {
+	return os.Mkdir(filepath.Clean(path), perm)
+}
+
+// mkdirAllManaged is os.MkdirAll for a jobqueue-managed path.
+func mkdirAllManaged(path string, perm os.FileMode) error {
+	return os.MkdirAll(filepath.Clean(path), perm)
+}
+
+// openFileManaged is os.OpenFile for a jobqueue-managed path.
+func openFileManaged(path string, flag int, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(filepath.Clean(path), flag, perm)
+}
+
+// tryMkHeldDir makes one attempt to create dir and its hold file. It returns
+// retry=true if mkHeldDir should loop again, or an error if we've run out of
+// retries. retry=false with a nil error means success.
+func tryMkHeldDir(dir, holdFile string, tries *int) (retry bool, err error) {
+	if err = mkdirAllManaged(dir, os.ModePerm); err != nil {
+		return retryOrFail(tries, err)
+	}
+
+	*tries = 0
+
+	f, err := openFileManaged(holdFile, os.O_RDONLY|os.O_CREATE, holdFilePerm)
 	if err != nil {
+		return retryOrFail(tries, err)
+	}
+
+	return false, f.Close()
+}
+
+// retryOrFail increments *tries and reports whether the caller should retry
+// (still within mkHashedDirMaxTries). When not retrying it returns err so the
+// caller can return it.
+func retryOrFail(tries *int, err error) (bool, error) {
+	*tries++
+	if *tries <= mkHashedDirMaxTries {
+		return true, nil
+	}
+
+	return false, err
+}
+
+// mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, returning their paths.
+func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
+	cwd = filepath.Join(dir, "cwd")
+	if err = mkdirManaged(cwd, os.ModePerm); err != nil {
 		return cwd, tmpDir, err
 	}
 
 	tmpDir = filepath.Join(dir, "tmp")
-	return cwd, tmpDir, os.Mkdir(tmpDir, os.ModePerm)
+
+	return cwd, tmpDir, mkdirManaged(tmpDir, os.ModePerm)
 }
 
 // rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
 // stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
 // doesn't exist.
 func rmEmptyDirs(leafDir, baseDir string) error {
-	err := os.Remove(leafDir)
+	err := removeManaged(leafDir)
 	if err != nil && !os.IsNotExist(err) {
-		if strings.Contains(err.Error(), "directory not empty") { //*** not sure where this string comes; probably not cross platform!
+		// *** not sure where the "directory not empty" string comes from;
+		// probably not cross platform!
+		if strings.Contains(err.Error(), "directory not empty") {
 			return nil
 		}
+
 		return err
 	}
+
+	rmEmptyParentDirs(leafDir, baseDir)
+
+	return nil
+}
+
+// rmEmptyParentDirs removes the empty parent directories of leafDir, stopping
+// when it reaches baseDir or hits a dir it cannot remove (which is expected
+// when another Job is running from the same Cwd, so the error is ignored).
+func rmEmptyParentDirs(leafDir, baseDir string) {
 	current := leafDir
-	parent := filepath.Dir(current)
-	for ; parent != baseDir; parent = filepath.Dir(current) {
-		thisErr := os.Remove(parent)
-		if thisErr != nil {
-			// it's expected that we might not be able to delete parents, since
-			// some other Job may be running from the same Cwd, meaning this
-			// parent dir is not empty
+
+	for parent := filepath.Dir(current); parent != baseDir; parent = filepath.Dir(current) {
+		if removeManaged(parent) != nil {
 			break
 		}
+
 		current = parent
 	}
-	return nil
 }
 
 // removeAllExcept deletes the contents of a given directory (absolute path),
@@ -657,15 +835,14 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 func removeAllExcept(path string, exceptions []string) error {
 	keepDirs := make(map[string]bool)
 	checkDirs := make(map[string]bool)
+
 	path = filepath.Clean(path)
 	for _, dir := range exceptions {
 		abs := filepath.Join(path, dir)
 		keepDirs[abs] = true
+
 		parent := filepath.Dir(abs)
-		for {
-			if parent == path {
-				break
-			}
+		for parent != path {
 			checkDirs[parent] = true
 			parent = filepath.Dir(parent)
 		}
@@ -681,43 +858,43 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 	if errr != nil {
 		return errr
 	}
+
 	for _, entry := range entries {
-		abs := filepath.Join(path, entry.Name())
-		if !entry.IsDir() {
-			err := os.Remove(abs)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-
-		if keepDirs[abs] {
-			continue
-		}
-
-		if checkDirs[abs] {
-			err := removeWithExceptions(abs, keepDirs, checkDirs)
-			if err != nil {
-				return err
-			}
-		} else {
-			err := os.RemoveAll(abs)
-			if err != nil {
-				return err
-			}
+		if err := removeEntryWithExceptions(filepath.Join(path, entry.Name()), entry.IsDir(),
+			keepDirs, checkDirs); err != nil {
+			return err
 		}
 	}
+
 	return nil
+}
+
+// removeEntryWithExceptions handles a single entry for removeWithExceptions:
+// files are removed, kept dirs are left, dirs containing exceptions are
+// recursed into, and other dirs are removed entirely.
+func removeEntryWithExceptions(abs string, isDir bool, keepDirs, checkDirs map[string]bool) error {
+	switch {
+	case !isDir:
+		return removeManaged(abs)
+	case keepDirs[abs]:
+		return nil
+	case checkDirs[abs]:
+		return removeWithExceptions(abs, keepDirs, checkDirs)
+	default:
+		return removeAllManaged(abs)
+	}
 }
 
 // compressFile reads the content of the given file then compresses that. Since
 // this happens in memory, only suitable for small files!
 func compressFile(path string) ([]byte, error) {
 	path = internal.TildaToHome(path)
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+
 	return compress(content)
 }
 
@@ -746,9 +923,7 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 
 	if len(req.Other) > 0 {
 		out.Other = make(map[string]string, len(req.Other))
-		for key, val := range req.Other {
-			out.Other[key] = val
-		}
+		maps.Copy(out.Other, req.Other)
 	}
 
 	return out
@@ -777,13 +952,13 @@ func calculateItemDelay(numPreviousDelays int, delayMin time.Duration) time.Dura
 
 // fqdn returns the fully qualified domain name of the current host, or
 // "localhost" or just the hostname on error.
-func fqdn() string {
+func fqdn(ctx context.Context) string {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return localhost
 	}
 
-	fqdn, err := net.LookupCNAME(hostname)
+	fqdn, err := net.DefaultResolver.LookupCNAME(ctx, hostname)
 	if err != nil {
 		fqdn = hostname
 	}

@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,12 +60,30 @@ const (
 	overrideAlways = 2
 )
 
+const (
+	// defaultAddRetries is the default value for the add command's --retries
+	// flag.
+	defaultAddRetries = 3
+
+	// defaultAddTimeout is the default value (in seconds) for the add command's
+	// --timeout flag.
+	defaultAddTimeout = 120
+
+	// maxCmdFileColumns is the maximum number of tab-separated columns a line in
+	// a commands file may have (the command, then an optional JSON object).
+	maxCmdFileColumns = 2
+
+	// configFilePathParts is the number of colon-separated parts in a config
+	// file spec that specifies both a source and a destination path.
+	configFilePathParts = 2
+)
+
 var (
 	errSynchronousJobMissing         = errors.New("synchronous job missing after terminal update")
 	errSynchronousSubscriptionClosed = errors.New("subscription closed before synchronous job completed")
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	reqGroup                string
 	cmdTime                 string
@@ -113,10 +132,11 @@ var (
 	syncMode                bool
 )
 
-// addCmd represents the add command
+// addCmd represents the add command.
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add commands to the queue",
+	//nolint:dupword // help text intentionally repeats date/time format tokens
 	Long: `Manually add commands you want run to the queue.
 
 In normal usage, after you add commands to the queue, this will tell you how
@@ -476,7 +496,7 @@ new job will have this job's mount and cloud_* options.
 NB: When running with sudo that is configured to not pass through environmental
 variables, you must have a wr config file, accessible from the working
 directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
-	Run: func(combraCmd *cobra.Command, args []string) {
+	Run: func(combraCmd *cobra.Command, _ []string) {
 		// check the command line options
 		if cmdFile == "" {
 			die("--file is required")
@@ -492,6 +512,7 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -554,66 +575,131 @@ func init() {
 	RootCmd.AddCommand(addCmd)
 
 	// flags specific to this sub-command
-	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
-	addCmd.Flags().IntVar(&cmdHead, "head", 0, "only add the first N parsed commands from the command file; 0 means all")
-	addCmd.Flags().StringVarP(&cmdRepGroup, "rep_grp", "i", "manually_added", "reporting group for your commands")
-	addCmd.Flags().StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
-	addCmd.Flags().StringVar(&cmdModules, "modules", "", "comma-separated list of environment modules to load")
-	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
-	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
-	addCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
-	addCmd.Flags().BoolVar(&cmdChangeHome, "change_home", false, "when not --cwd_matters, set $HOME to the actual working directory")
-	addCmd.Flags().StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
-	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
-	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
-	addCmd.Flags().Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
-	addCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required (default 0)")
-	addCmd.Flags().StringVarP(&cmdOvr, "override", "o", "no",
-		"[0|no|1|higher|2|always] should your mem/time estimates override? (default no)")
-	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
-	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
-	addCmd.Flags().StringVarP(&cmdNoRetry, "no_retry_over_walltime", "n", "", "do not retry if cmd runs longer than this [specify units such as m for minutes or h for hours]")
-	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "",
-		"static command dependencies, in the form \"command1,cwd1,command2,cwd2...\"")
-	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "",
-		"live dep-group dependencies, in the form \"dep_grp1,dep_grp2...\"; unseen groups wait")
-	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
-	addCmd.Flags().StringVar(&cmdWithDocker, "with_docker", "", "run the cmd inside a docker container running this image")
-	addCmd.Flags().StringVar(&cmdWithSingularity, "with_singularity", "", "run the cmd inside a singularity container running this image")
-	addCmd.Flags().StringVar(&cmdContainerMounts, "container_mounts", "", "mount additional locations inside your container")
-	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
-	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
-	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
-	addCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format; see 'wr mount -h'")
-	addCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]; see 'wr mount -h'")
-	addCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
-	addCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
-	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
-	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
-	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
-	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
-	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
-	addCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
-	addCmd.Flags().StringVar(&cmdQueuesAvoidAdd, "queues_avoid", "interactive",
-		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
-	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
-	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
-	addCmd.Flags().BoolVar(&cmdRemoteSameAsLocal, "remote_same_as_local", false,
-		"make remote-manager adds use the same cwd and environment behaviour as local-manager adds")
-	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
-	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
-	addCmd.Flags().BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
-		"disable the relative path checking when cwd_matters is false")
-	addCmd.Flags().StringVar(&cmdGroup, "group", "", "unix group to start the command as")
-	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
-	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
-	addCmd.Flags().BoolVarP(&simpleOutput, "simple", "s", false, "simplify output to only queued job ids")
-	addCmd.Flags().BoolVar(&syncMode, "sync", false, "add a single job and wait for it to finish being executed by the manager")
+	addCmdCoreFlags()
+	addCmdResourceFlags()
+	addCmdContainerFlags()
+	addCmdCloudFlags()
+	addCmdMiscFlags()
 
 	err := addCmd.Flags().MarkHidden("reserve_timeout")
 	if err != nil {
 		die("cloud not hide reserver_timeout option: %s", err)
 	}
+}
+
+// addCmdCoreFlags registers the core input/identification flags for the add
+// command.
+func addCmdCoreFlags() {
+	flags := addCmd.Flags()
+
+	flags.StringVarP(&cmdFile, "file", "f", "-",
+		"file containing your commands; - means read from STDIN")
+	flags.IntVar(&cmdHead, "head", 0,
+		"only add the first N parsed commands from the command file; 0 means all")
+	flags.StringVarP(&cmdRepGroup, "rep_grp", "i", "manually_added", "reporting group for your commands")
+	flags.StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
+	flags.StringVar(&cmdModules, "modules", "", "comma-separated list of environment modules to load")
+	flags.StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
+	flags.StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
+	flags.BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
+	flags.BoolVar(&cmdChangeHome, "change_home", false,
+		"when not --cwd_matters, set $HOME to the actual working directory")
+	flags.StringVar(&cmdGroup, "group", "", "unix group to start the command as")
+}
+
+// addCmdResourceFlags registers the resource-requirement and scheduling flags
+// for the add command.
+func addCmdResourceFlags() {
+	flags := addCmd.Flags()
+
+	flags.StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
+	flags.StringVarP(&cmdMem, "memory", "m", "1G",
+		"peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
+	flags.StringVarP(&cmdTime, "time", "t", "1h",
+		"max time est. [specify units such as m for minutes or h for hours]")
+	flags.Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
+	flags.IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required (default 0)")
+	flags.StringVarP(&cmdOvr, "override", "o", "no",
+		"[0|no|1|higher|2|always] should your mem/time estimates override? (default no)")
+	flags.IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
+	flags.IntVarP(&cmdRet, "retries", "r", defaultAddRetries,
+		"[0-255] number of automatic retries for failed commands")
+	flags.StringVarP(&cmdNoRetry, "no_retry_over_walltime", "n", "",
+		"do not retry if cmd runs longer than this [specify units such as m for minutes or h for hours]")
+	flags.StringVar(&cmdCmdDeps, "cmd_deps", "",
+		"static command dependencies, in the form \"command1,cwd1,command2,cwd2...\"")
+	flags.StringVarP(&cmdGroupDeps, "deps", "d", "",
+		"live dep-group dependencies, in the form \"dep_grp1,dep_grp2...\"; unseen groups wait")
+	flags.StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
+	flags.StringVar(&cmdQueuesAvoidAdd, "queues_avoid", "interactive",
+		"comma-separated list of substrings found in queues that should not be submitted to, "+
+			"for schedulers with queues")
+	flags.StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
+}
+
+// addCmdContainerFlags registers the docker/singularity/mount related flags for
+// the add command.
+func addCmdContainerFlags() {
+	flags := addCmd.Flags()
+
+	flags.StringVar(&cmdMonitorDocker, "monitor_docker", "",
+		"monitor resource usage of docker container with given --name or --cidfile path")
+	flags.StringVar(&cmdWithDocker, "with_docker", "",
+		"run the cmd inside a docker container running this image")
+	flags.StringVar(&cmdWithSingularity, "with_singularity", "",
+		"run the cmd inside a singularity container running this image")
+	flags.StringVar(&cmdContainerMounts, "container_mounts", "",
+		"mount additional locations inside your container")
+	flags.StringVarP(&mountJSON, "mount_json", "j", "",
+		"remote file systems to mount, in JSON format; see 'wr mount -h'")
+	flags.StringVar(&mountSimple, "mounts", "",
+		"remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]; see 'wr mount -h'")
+}
+
+// addCmdCloudFlags registers the cloud_* override flags for the add command.
+func addCmdCloudFlags() {
+	flags := addCmd.Flags()
+
+	flags.StringVar(&cmdOsPrefix, "cloud_os", "",
+		"in the cloud, prefix name of the OS image servers that run the commands must use")
+	flags.StringVar(&cmdOsUsername, "cloud_username", "",
+		"in the cloud, username needed to log in to the OS image specified by --cloud_os")
+	flags.IntVar(&cmdOsRAM, "cloud_ram", 0,
+		"in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	flags.StringVar(&cmdFlavor, "cloud_flavor", "",
+		"in the cloud, exact name of the server flavor that the commands must run on")
+	flags.StringVar(&cmdPostCreationScript, "cloud_script", "",
+		"in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	flags.StringVar(&cmdCloudConfigs, "cloud_config_files", "",
+		"in the cloud, comma separated paths of config files to copy to servers created to run these commands")
+	flags.BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
+}
+
+// addCmdMiscFlags registers the remaining behavioural flags for the add
+// command.
+func addCmdMiscFlags() {
+	flags := addCmd.Flags()
+
+	flags.StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
+	flags.StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
+	flags.StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`,
+		"behaviours to carry out when cmds finish running, in JSON format")
+	flags.StringVar(&cmdEnv, "env", "",
+		"comma-separated list of key=value environment variables to set before running the commands")
+	flags.BoolVar(&cmdRemoteSameAsLocal, "remote_same_as_local", false,
+		"make remote-manager adds use the same cwd and environment behaviour as local-manager adds")
+	flags.BoolVar(&cmdReRun, "rerun", false,
+		"re-run any commands that you add that had been previously added and have since completed")
+	flags.BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
+	flags.BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
+		"disable the relative path checking when cwd_matters is false")
+	flags.IntVar(&timeoutint, "timeout", defaultAddTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
+	flags.IntVar(&rtimeoutint, "reserve_timeout", 1,
+		"how long (seconds) to wait before a runner exits when there is no more work'")
+	flags.BoolVarP(&simpleOutput, "simple", "s", false, "simplify output to only queued job ids")
+	flags.BoolVar(&syncMode, "sync", false,
+		"add a single job and wait for it to finish being executed by the manager")
 }
 
 func remoteSameAsLocal(flagChanged bool) bool {
@@ -761,15 +847,115 @@ func colsToDeps(cols []string) (deps jobqueue.Dependencies) {
 	for i := 0; i < len(cols); i += 2 {
 		deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
 	}
+
 	return
 }
 
 // convert group1,group2,... in to a Dependency.
 func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
-	for _, depgroup := range strings.Split(groups, ",") {
+	for depgroup := range strings.SplitSeq(groups, ",") {
 		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
+
 	return
+}
+
+// parseMemoryMBOrDie converts a --memory style value (eg. "1G") to megabytes,
+// returning 0 for an empty value and calling die() if the value is invalid or
+// too large to represent.
+func parseMemoryMBOrDie(value string) int {
+	if value == "" {
+		return 0
+	}
+
+	mb, err := bytefmt.ToMegabytes(value)
+	if err != nil {
+		die("--memory was not specified correctly: %s", err)
+	}
+
+	ram, err := strconv.Atoi(strconv.FormatUint(mb, 10))
+	if err != nil {
+		die("--memory was not specified correctly: %s", err)
+	}
+
+	return ram
+}
+
+// parseDurationOrDie converts a --time style value (eg. "1h") to a Duration,
+// returning 0 for an empty value and calling die() (referencing flagName) if
+// the value is invalid.
+func parseDurationOrDie(value, flagName string) time.Duration {
+	if value == "" {
+		return 0 * time.Second
+	}
+
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		die("%s was not specified correctly: %s", flagName, err)
+	}
+
+	return d
+}
+
+// defaultCwd determines the default command working directory to use when
+// --cwd was not supplied. It returns the empty string (and no warning) when
+// --cwd was supplied. Otherwise it returns the current directory when the
+// manager is local, --cwd_matters is set, or remote adds should behave like
+// local adds, and /tmp (with remoteWarning true) when the manager is remote.
+func defaultCwd(isLocal, remoteSameAsLocal bool) (pwd string, remoteWarning bool) {
+	if cmdCwd != "" {
+		return "", false
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		die("%s", err)
+	}
+
+	if isLocal || cmdCwdMatters || remoteSameAsLocal {
+		return wd, false
+	}
+
+	return "/tmp", true
+}
+
+// parseJobViaJSON converts the columns of a single commands-file line into a
+// JobViaJSON. With two columns the second is a JSON object and the first is the
+// command; with one column the value is either a JSON object (if it starts with
+// '{') or a bare command.
+func parseJobViaJSON(cols []string, colsn int) (*jobqueue.JobViaJSON, error) {
+	var jvj *jobqueue.JobViaJSON
+
+	if colsn == maxCmdFileColumns {
+		if err := json.Unmarshal([]byte(cols[1]), &jvj); err != nil {
+			return nil, err
+		}
+
+		jvj.Cmd = cols[0]
+
+		return jvj, nil
+	}
+
+	if !strings.HasPrefix(cols[0], "{") {
+		return &jobqueue.JobViaJSON{Cmd: cols[0]}, nil
+	}
+
+	if err := json.Unmarshal([]byte(cols[0]), &jvj); err != nil {
+		return nil, err
+	}
+
+	return jvj, nil
+}
+
+// lsfResourceInvalid reports whether the job specifies a scheduler_misc
+// resource string that is invalid for the LSF scheduler.
+func lsfResourceInvalid(scheduler string, job *jobqueue.Job, validator jscheduler.BsubValidator) bool {
+	sm := job.Requirements.Other["scheduler_misc"]
+	if sm == "" || scheduler != schedulerLSF {
+		return false
+	}
+
+	return !validator.Validate(sm, job.Requirements.Other["scheduler_queue"])
 }
 
 // parseCmdFile reads the given cmd file to get desired jobs, modified by
@@ -780,10 +966,12 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 //nolint:gocognit,gocyclo,cyclop,funlen,maintidx // Legacy parser is broad; this change only threads remote defaults.
 func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
+
 	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
 		warn("Could not get current IP: %s", errc)
 	}
+
 	if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
 		isLocal = true
 	}
@@ -840,33 +1028,9 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		jd.RepGrp = "manually_added"
 	}
 
-	var err error
-	if cmdMem == "" {
-		jd.Memory = 0
-	} else {
-		mb, errf := bytefmt.ToMegabytes(cmdMem)
-		if errf != nil {
-			die("--memory was not specified correctly: %s", errf)
-		}
-		jd.Memory = int(mb)
-	}
-	if cmdTime == "" {
-		jd.Time = 0 * time.Second
-	} else {
-		jd.Time, err = time.ParseDuration(cmdTime)
-		if err != nil {
-			die("--time was not specified correctly: %s", err)
-		}
-	}
-
-	if cmdNoRetry == "" {
-		jd.NoRetriesOverWalltime = 0 * time.Second
-	} else {
-		jd.NoRetriesOverWalltime, err = time.ParseDuration(cmdNoRetry)
-		if err != nil {
-			die("--no_retry_over_walltime was not specified correctly: %s", err)
-		}
-	}
+	jd.Memory = parseMemoryMBOrDie(cmdMem)
+	jd.Time = parseDurationOrDie(cmdTime, "--time")
+	jd.NoRetriesOverWalltime = parseDurationOrDie(cmdNoRetry, "--no_retry_over_walltime")
 
 	if cmdLimitGroups != "" {
 		jd.LimitGroups = strings.Split(cmdLimitGroups, ",")
@@ -885,34 +1049,44 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		if len(cols)%2 != 0 {
 			die("--cmd_deps must have an even number of comma-separated entries")
 		}
+
 		jd.Deps = colsToDeps(cols)
 	}
+
 	if cmdGroupDeps != "" {
 		jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
 	}
 
 	if cmdOnFailure != "" {
 		var bjs jobqueue.BehavioursViaJSON
-		err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
+
+		err := json.Unmarshal([]byte(cmdOnFailure), &bjs)
 		if err != nil {
 			die("bad --on_failure: %s", err)
 		}
+
 		jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
 	}
+
 	if cmdOnSuccess != "" {
 		var bjs jobqueue.BehavioursViaJSON
-		err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
+
+		err := json.Unmarshal([]byte(cmdOnSuccess), &bjs)
 		if err != nil {
 			die("bad --on_success: %s", err)
 		}
+
 		jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
 	}
+
 	if cmdOnExit != "" {
 		var bjs jobqueue.BehavioursViaJSON
-		err = json.Unmarshal([]byte(cmdOnExit), &bjs)
+
+		err := json.Unmarshal([]byte(cmdOnExit), &bjs)
 		if err != nil {
 			die("bad --on_exit: %s", err)
 		}
+
 		jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
 	}
 
@@ -921,42 +1095,32 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	}
 
 	// open file or set up to read from STDIN
-	var reader io.Reader
-	if cmdFile == "-" {
-		reader = os.Stdin
-	} else {
-		reader, err = os.Open(cmdFile)
-		if err != nil {
-			die("could not open file '%s': %s", cmdFile, err)
+	var reader io.Reader = os.Stdin
+
+	if cmdFile != "-" {
+		file, erro := os.Open(cmdFile)
+		if erro != nil {
+			die("could not open file '%s': %s", cmdFile, erro)
 		}
-		defer internal.LogClose(context.Background(), reader.(*os.File), "cmds file", "path", cmdFile)
+
+		defer internal.LogClose(context.Background(), file, "cmds file", "path", cmdFile)
+
+		reader = file
 	}
 
 	// we'll default to pwd if the manager is on the same host as us, or if
 	// cwd matters, or if remote adds should behave like local adds; /tmp
 	// otherwise (and cmdCwd has not been supplied).
-	var pwd string
-	var remoteWarning bool
-	if cmdCwd == "" {
-		wd, errg := os.Getwd()
-		if errg != nil {
-			die("%s", errg)
-		}
-
-		if isLocal || cmdCwdMatters || remoteSameAsLocal {
-			pwd = wd
-		} else {
-			pwd = "/tmp"
-			remoteWarning = true
-		}
-	}
+	pwd, remoteWarning := defaultCwd(isLocal, remoteSameAsLocal)
 
 	// for network efficiency, read in all commands and create a big slice
 	// of Jobs and Add() them in one go afterwards
 	var jobs []*jobqueue.Job
+
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, maxScanTokenSize)
 	scanner.Buffer(buf, maxScanTokenSize)
+
 	defaultedRepG := false
 	lineNum := 0
 	validator := make(jscheduler.BsubValidator)
@@ -966,30 +1130,18 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	for scanner.Scan() {
 		lineNum++
 		cols := strings.Split(scanner.Text(), "\t")
+
 		colsn := len(cols)
 		if colsn < 1 || cols[0] == "" {
 			continue
 		}
-		if colsn > 2 {
+
+		if colsn > maxCmdFileColumns {
 			die("line %d has too many columns; check `wr add -h`", lineNum)
 		}
 
 		// determine all the options for this command
-		var jvj *jobqueue.JobViaJSON
-		var jsonErr error
-		if colsn == 2 {
-			jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
-			if jsonErr == nil {
-				jvj.Cmd = cols[0]
-			}
-		} else {
-			if strings.HasPrefix(cols[0], "{") {
-				jsonErr = json.Unmarshal([]byte(cols[0]), &jvj)
-			} else {
-				jvj = &jobqueue.JobViaJSON{Cmd: cols[0]}
-			}
-		}
-
+		jvj, jsonErr := parseJobViaJSON(cols, colsn)
 		if jsonErr != nil {
 			die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
 		}
@@ -1002,6 +1154,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 			if remoteWarning {
 				warn("command working directories defaulting to %s since the manager is running remotely", pwd)
 			}
+
 			jd.Cwd = pwd
 		}
 
@@ -1018,9 +1171,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 			die("line %d had a problem: %s", lineNum, errf)
 		}
 
-		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" &&
-			jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm, job.Requirements.Other["scheduler_queue"]) {
-			die("invalid lsf resource string") //nolint:whitespace
+		if lsfResourceInvalid(jq.ServerInfo.Scheduler, job, validator) {
+			die("invalid lsf resource string")
 		}
 
 		checkForRelativePathsInNonCwdMatters(&warnedAboutRelative, cwdContents, job)
@@ -1045,33 +1197,40 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 // alter path specs for config files that don't exist locally.
 func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 	cfs := strings.Split(configFiles, ",")
+
 	remoteConfigFiles := make([]string, 0, len(cfs))
 	for _, cf := range cfs {
-		parts := strings.Split(cf, ":")
-		local := internal.TildaToHome(parts[0])
-		_, err := os.Stat(local)
-		if err != nil {
-			remoteConfigFiles = append(remoteConfigFiles, cf)
-			continue
-		}
-
-		var desired string
-		if len(parts) == 2 {
-			desired = parts[1]
-		} else {
-			desired = parts[0]
-		}
-
-		remote, err := jq.UploadFile(local, "")
-		if err != nil {
-			warn("failed to upload [%s] to a unique location: %s", local, err)
-			remoteConfigFiles = append(remoteConfigFiles, cf)
-			continue
-		}
-
-		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
+		remoteConfigFiles = append(remoteConfigFiles, copyCloudConfigFile(jq, cf))
 	}
+
 	return strings.Join(remoteConfigFiles, ",")
+}
+
+// copyCloudConfigFile copies a single local config file to the manager's
+// machine to an MD5-based path, returning a spec using that path as the source
+// while keeping the desired destination. The original spec is returned
+// unchanged if the local file doesn't exist or the upload fails.
+func copyCloudConfigFile(jq *jobqueue.Client, cf string) string {
+	parts := strings.Split(cf, ":")
+	local := internal.TildaToHome(parts[0])
+
+	if _, err := os.Stat(local); err != nil {
+		return cf
+	}
+
+	desired := parts[0]
+	if len(parts) == configFilePathParts {
+		desired = parts[1]
+	}
+
+	remote, err := jq.UploadFile(local, "")
+	if err != nil {
+		warn("failed to upload [%s] to a unique location: %s", local, err)
+
+		return cf
+	}
+
+	return remote + ":" + desired
 }
 
 // checkForRelativePathsInNonCwdMatters checks the cmd of jobs where cwd doesn't

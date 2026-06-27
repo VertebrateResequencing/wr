@@ -37,6 +37,19 @@ import (
 	logext "github.com/inconshreveable/log15/v3/ext"
 )
 
+// notificationIDLength is the length of the random id used to track each
+// pending push notification registration.
+const notificationIDLength = 8
+
+// The sqIndex values identify which characteristic a subQueue orders its items
+// by. The ready sub-queue (readyQueueIndex) groups its items by ReserveGroup
+// rather than using a single flat slice.
+const (
+	delayQueueIndex = 0
+	readyQueueIndex = 1
+	runQueueIndex   = 2
+)
+
 type subQueue struct {
 	mutex                    sync.RWMutex
 	items                    []*Item
@@ -64,10 +77,12 @@ func newSubQueue(sqIndex int) *subQueue {
 		sqIndex:                  sqIndex,
 		pushNotificationChannels: make(map[string]map[string]*pushNotification),
 	}
-	if sqIndex == 1 {
+	if sqIndex == readyQueueIndex {
 		queue.groupedItems = make(map[string][]*Item)
 	}
+
 	heap.Init(queue)
+
 	return queue
 }
 
@@ -86,30 +101,45 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
-	var chans map[string]*pushNotification
-	if val, ok := q.pushNotificationChannels[reserveGroup]; ok {
-		chans = val
-	} else {
+	chans, ok := q.pushNotificationChannels[reserveGroup]
+	if !ok {
 		chans = make(map[string]*pushNotification)
 	}
-	id := logext.RandId(8)
+
+	id := logext.RandId(notificationIDLength)
 
 	timer := time.AfterFunc(timeout, func() {
-		q.mutex.Lock()
-		defer q.mutex.Unlock()
-		if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
-			if pn, ok := chans[id]; ok {
-				pn.ch <- false
-				delete(chans, id)
-				if len(q.pushNotificationChannels[reserveGroup]) == 0 {
-					delete(q.pushNotificationChannels, reserveGroup)
-				}
-			}
-		}
+		q.notifyPushTimeout(reserveGroup, id)
 	})
 
 	chans[id] = &pushNotification{ch: ch, timer: timer}
 	q.pushNotificationChannels[reserveGroup] = chans
+}
+
+// notifyPushTimeout is the timeout callback registered by notifyPush: it sends
+// false on the waiting channel and cleans up the registration for the given
+// reserveGroup and id, if it still exists.
+func (q *subQueue) notifyPushTimeout(reserveGroup, id string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	chans, ok := q.pushNotificationChannels[reserveGroup]
+	if !ok {
+		return
+	}
+
+	pn, ok := chans[id]
+	if !ok {
+		return
+	}
+
+	pn.ch <- false
+
+	delete(chans, id)
+
+	if len(q.pushNotificationChannels[reserveGroup]) == 0 {
+		delete(q.pushNotificationChannels, reserveGroup)
+	}
 }
 
 // triggerNotify is used to check if we should notify about the given
@@ -133,74 +163,95 @@ func (q *subQueue) triggerNotify(reserveGroup string) {
 	}
 }
 
-// push adds an item to the queue
+// push adds an item to the queue.
 func (q *subQueue) push(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	if q.sqIndex == 1 {
+
+	if q.sqIndex == readyQueueIndex {
 		q.reserveGroup = item.ReserveGroup
 	}
 	defer q.triggerNotify(q.reserveGroup)
+
 	heap.Push(q, item)
 }
 
-// pop removes the next item from the queue according to its "priority"
+// pop removes the next item from the queue according to its "priority".
 func (q *subQueue) pop(reserveGroup ...string) *Item {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	var itemList []*Item
-	if q.sqIndex == 1 {
-		var group string
-		if len(reserveGroup) == 1 {
-			group = reserveGroup[0]
-		}
-		var existed bool
-		if itemList, existed = q.groupedItems[group]; !existed {
-			return nil
-		}
-		q.reserveGroup = group
-	} else {
-		itemList = q.items
-	}
-	if len(itemList) == 0 {
+
+	itemList, ok := q.popItemList(reserveGroup...)
+	if !ok || len(itemList) == 0 {
 		return nil
 	}
-	return heap.Pop(q).(*Item)
+
+	item, ok := heap.Pop(q).(*Item)
+	if !ok {
+		return nil
+	}
+
+	return item
 }
 
-// remove removes a given item from the queue
+// popItemList resolves the slice that pop should operate on, also setting
+// q.reserveGroup for the ready sub-queue. It returns false if the requested
+// ready group does not exist.
+func (q *subQueue) popItemList(reserveGroup ...string) ([]*Item, bool) {
+	if q.sqIndex != readyQueueIndex {
+		return q.items, true
+	}
+
+	group := firstOrEmpty(reserveGroup)
+
+	itemList, existed := q.groupedItems[group]
+	if !existed {
+		return nil, false
+	}
+
+	q.reserveGroup = group
+
+	return itemList, true
+}
+
+// remove removes a given item from the queue.
 func (q *subQueue) remove(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	if q.sqIndex == 1 {
+
+	if q.sqIndex == readyQueueIndex {
 		q.reserveGroup = item.ReserveGroup
 	}
+
 	heap.Remove(q, item.queueIndexes[q.sqIndex])
 }
 
-// len tells you how many items are in the queue
+// len tells you how many items are in the queue.
 func (q *subQueue) len(reserveGroup ...string) int {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
-	var itemList []*Item
-	if q.sqIndex == 1 {
-		if len(reserveGroup) == 1 {
-			group := reserveGroup[0]
-			var existed bool
-			if itemList, existed = q.groupedItems[group]; !existed {
-				return 0
-			}
-		} else {
-			num := 0
-			for _, il := range q.groupedItems {
-				num += len(il)
-			}
-			return num
-		}
-	} else {
-		itemList = q.items
+
+	if q.sqIndex == readyQueueIndex {
+		return q.groupedLen(reserveGroup...)
 	}
-	return len(itemList)
+
+	return len(q.items)
+}
+
+// groupedLen returns the number of items in the ready sub-queue. If a single
+// reserveGroup is supplied it counts only that group (0 if it does not exist);
+// otherwise it sums the counts of all groups. You must hold the read lock.
+func (q *subQueue) groupedLen(reserveGroup ...string) int {
+	if len(reserveGroup) == 1 {
+		return len(q.groupedItems[reserveGroup[0]])
+	}
+
+	num := 0
+	for _, il := range q.groupedItems {
+		num += len(il)
+	}
+
+	return num
 }
 
 // firstItem is useful in testing to get the first item in the queue in a
@@ -208,6 +259,7 @@ func (q *subQueue) len(reserveGroup ...string) int {
 func (q *subQueue) firstItem() *Item {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
+
 	return q.items[0]
 }
 
@@ -217,25 +269,65 @@ func (q *subQueue) firstItem() *Item {
 func (q *subQueue) update(item *Item, oldGroup ...string) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	if q.sqIndex == 1 && len(oldGroup) == 1 && oldGroup[0] != item.ReserveGroup {
+
+	if q.sqIndex == readyQueueIndex && len(oldGroup) == 1 && oldGroup[0] != item.ReserveGroup {
 		q.reserveGroup = oldGroup[0]
 		heap.Remove(q, item.queueIndexes[q.sqIndex])
+
 		q.reserveGroup = item.ReserveGroup
 		defer q.triggerNotify(q.reserveGroup)
+
 		heap.Push(q, item)
+
 		return
 	}
+
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
 }
 
-// empty clears out a queue, setting it back to its new state
+// empty clears out a queue, setting it back to its new state.
 func (q *subQueue) empty() {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	if q.sqIndex == 1 {
+
+	if q.sqIndex == readyQueueIndex {
 		q.groupedItems = make(map[string][]*Item)
 	} else {
 		q.items = nil
+	}
+}
+
+// firstOrEmpty returns the first element of the given variadic strings, or the
+// empty string if none were supplied.
+func firstOrEmpty(strs []string) string {
+	if len(strs) == 1 {
+		return strs[0]
+	}
+
+	return ""
+}
+
+// currentItemList returns the slice of items that the heap interface methods
+// should operate on. For the ready sub-queue this is the slice for the current
+// reserveGroup, with false if no such group exists; for the other sub-queues it
+// is the flat items slice, and true is always returned.
+func (q *subQueue) currentItemList() ([]*Item, bool) {
+	if q.sqIndex == readyQueueIndex {
+		itemList, existed := q.groupedItems[q.reserveGroup]
+
+		return itemList, existed
+	}
+
+	return q.items, true
+}
+
+// setItemList stores the given slice back as the items the heap interface
+// methods operate on, in the same place currentItemList reads them from.
+func (q *subQueue) setItemList(itemList []*Item) {
+	if q.sqIndex == readyQueueIndex {
+		q.groupedItems[q.reserveGroup] = itemList
+	} else {
+		q.items = itemList
 	}
 }
 
@@ -244,67 +336,83 @@ func (q *subQueue) empty() {
 // methods instead
 
 func (q *subQueue) Len() int {
-	var itemList []*Item
-	if q.sqIndex == 1 {
-		var existed bool
-		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
-			return 0
-		}
-	} else {
-		itemList = q.items
-	}
+	itemList, _ := q.currentItemList()
+
 	return len(itemList)
 }
 
 func (q *subQueue) Less(i, j int) bool {
 	switch q.sqIndex {
-	case 0:
-		if q.items[i].readyAt.Equal(q.items[j].readyAt) {
-			return q.items[i].iid < q.items[j].iid
+	case delayQueueIndex:
+		return lessByReadyAt(q.items[i], q.items[j])
+	case readyQueueIndex:
+		itemList, existed := q.groupedItems[q.reserveGroup]
+		if !existed {
+			return false
 		}
-		return q.items[i].readyAt.Before(q.items[j].readyAt)
-	case 1:
-		if itemList, existed := q.groupedItems[q.reserveGroup]; existed {
-			if itemList[i].priority == itemList[j].priority {
-				if itemList[i].size == itemList[j].size {
-					if itemList[i].creation.Equal(itemList[j].creation) {
-						return itemList[i].iid < itemList[j].iid
-					}
-					return itemList[i].creation.Before(itemList[j].creation)
-				}
-				return itemList[i].size > itemList[j].size
-			}
-			return itemList[i].priority > itemList[j].priority
-		}
-		return false
+
+		return lessByPriority(itemList[i], itemList[j])
 	}
-	// case 2, outside the switch, because we need to return
-	if q.items[i].releaseAt.Equal(q.items[j].releaseAt) {
-		return q.items[i].iid < q.items[j].iid
+	// run sub-queue, outside the switch because we need to return
+	return lessByReleaseAt(q.items[i], q.items[j])
+}
+
+// lessByReadyAt orders delay sub-queue items by their readyAt time, falling
+// back to insertion order (iid) when they are equal.
+func lessByReadyAt(a, b *Item) bool {
+	if a.readyAt.Equal(b.readyAt) {
+		return a.iid < b.iid
 	}
-	return q.items[i].releaseAt.Before(q.items[j].releaseAt)
+
+	return a.readyAt.Before(b.readyAt)
+}
+
+// lessByReleaseAt orders run sub-queue items by their releaseAt time, falling
+// back to insertion order (iid) when they are equal.
+func lessByReleaseAt(a, b *Item) bool {
+	if a.releaseAt.Equal(b.releaseAt) {
+		return a.iid < b.iid
+	}
+
+	return a.releaseAt.Before(b.releaseAt)
+}
+
+// lessByPriority orders ready sub-queue items by priority (highest first), then
+// size (highest first), then creation time, then insertion order (iid).
+func lessByPriority(a, b *Item) bool {
+	if a.priority != b.priority {
+		return a.priority > b.priority
+	}
+
+	if a.size != b.size {
+		return a.size > b.size
+	}
+
+	if a.creation.Equal(b.creation) {
+		return a.iid < b.iid
+	}
+
+	return a.creation.Before(b.creation)
 }
 
 func (q *subQueue) Swap(i, j int) {
-	var itemList []*Item
-	if q.sqIndex == 1 {
-		var existed bool
-		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
-			return
-		}
-	} else {
-		itemList = q.items
+	itemList, existed := q.currentItemList()
+	if !existed {
+		return
 	}
 
 	itemList[i], itemList[j] = itemList[j], itemList[i]
 	lockFirst := i
+
 	lockSecond := j
 	if itemList[i].iid > itemList[j].iid {
 		lockFirst = j
 		lockSecond = i
 	}
+
 	itemList[lockFirst].mutex.Lock()
 	defer itemList[lockFirst].mutex.Unlock()
+
 	if i != j {
 		itemList[lockSecond].mutex.Lock()
 		defer itemList[lockSecond].mutex.Unlock()
@@ -314,48 +422,35 @@ func (q *subQueue) Swap(i, j int) {
 	itemList[j].queueIndexes[q.sqIndex] = j
 }
 
-func (q *subQueue) Push(x interface{}) {
-	item := x.(*Item)
-	var itemList []*Item
-	if q.sqIndex == 1 {
-		var existed bool
-		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
-			q.groupedItems[q.reserveGroup] = itemList
-		}
-	} else {
-		itemList = q.items
+func (q *subQueue) Push(x any) {
+	item, ok := x.(*Item)
+	if !ok {
+		return
 	}
+
+	itemList, _ := q.currentItemList()
+
 	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = len(itemList)
 	item.mutex.Unlock()
+
 	itemList = append(itemList, item)
-	if q.sqIndex == 1 {
-		q.groupedItems[q.reserveGroup] = itemList
-	} else {
-		q.items = itemList
-	}
+	q.setItemList(itemList)
 }
 
-func (q *subQueue) Pop() interface{} {
-	var itemList []*Item
-	if q.sqIndex == 1 {
-		var existed bool
-		if itemList, existed = q.groupedItems[q.reserveGroup]; !existed {
-			return nil
-		}
-	} else {
-		itemList = q.items
+func (q *subQueue) Pop() any {
+	itemList, existed := q.currentItemList()
+	if !existed {
+		return nil
 	}
+
 	lasti := len(itemList) - 1
 	item := itemList[lasti]
 	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = -1
 	item.mutex.Unlock()
-	itemList = itemList[:lasti]
-	if q.sqIndex == 1 {
-		q.groupedItems[q.reserveGroup] = itemList
-	} else {
-		q.items = itemList
-	}
+
+	q.setItemList(itemList[:lasti])
+
 	return item
 }

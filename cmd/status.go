@@ -59,7 +59,7 @@ var (
 // process.
 var statusExit = os.Exit
 
-// options for this cmd
+// options for this cmd.
 var (
 	cmdFileStatus   string
 	cmdIDStatus     string
@@ -78,7 +78,7 @@ var (
 	fromHost        string
 )
 
-// statusCmd represents the status command
+// statusCmd represents the status command.
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of commands",
@@ -143,7 +143,7 @@ should be all you need for debugging. If your command produces something you
 must keep on STDOUT or STDERR, your command should write that to a file itself
 with a normal shell redirect (eg. "mycmd > stdout.txt").
 `,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
@@ -157,6 +157,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 		timeout := time.Duration(timeoutint) * time.Second
 
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -179,6 +180,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 		}
 
 		var jobs []*jobqueue.Job
+
 		showextra := cmdFileStatus == ""
 
 		if !useFastStatus {
@@ -206,6 +208,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			}
 
 			var d, re, b, ru, l, c, dep, sus int
+
 			for _, job := range jobs {
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -224,6 +227,9 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					dep += 1 + job.Similar
 				case jobqueue.JobStateSuspended:
 					sus += 1 + job.Similar
+				default:
+					// other states (new, deleted, deletable, unknown) are not
+					// counted
 				}
 			}
 
@@ -239,12 +245,15 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			})
 		case statusOutputFormatPlain, statusOutputFormatPlainAlias:
 			buried := false
+
 			for _, job := range jobs {
 				fmt.Printf("%s\t%s\n", job.Key(), statusDisplayState(job))
+
 				if job.State == jobqueue.JobStateBuried {
 					buried = true
 				}
 			}
+
 			if buried {
 				statusExit(1)
 
@@ -268,15 +277,18 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			walltime := make(map[string]*runningvariance.RunningStat)
 			cputime := make(map[string]*runningvariance.RunningStat)
 			startends := make(map[string][]time.Time)
+
 			counts[allRepGrps] = make(map[jobqueue.JobState]int)
 			for _, job := range jobs {
 				if _, exists := counts[job.RepGroup]; !exists {
 					counts[job.RepGroup] = make(map[jobqueue.JobState]int)
 				}
+
 				state := job.State
 				if state == jobqueue.JobStateReserved {
 					state = jobqueue.JobStateRunning
 				}
+
 				counts[job.RepGroup][job.State]++
 				counts[allRepGrps][job.State]++
 
@@ -285,6 +297,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					if _, exists := buried[job.RepGroup]; !exists {
 						buried[job.RepGroup] = make(map[string][]string)
 					}
+
 					group := fmt.Sprintf("exitcode.%d,\"%s\"", job.Exitcode, job.FailReason)
 					buried[job.RepGroup][group] = append(buried[job.RepGroup][group], job.Key())
 				case jobqueue.JobStateComplete:
@@ -295,13 +308,16 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						cputime[job.RepGroup] = runningvariance.NewRunningStat()
 						startends[job.RepGroup] = []time.Time{job.StartTime, job.EndTime}
 					}
+
 					memory[job.RepGroup].Push(float64(job.PeakRAM))
 					disk[job.RepGroup].Push(float64(job.PeakDisk))
 					walltime[job.RepGroup].Push(float64(job.WallTime()))
 					cputime[job.RepGroup].Push(float64(job.CPUtime))
+
 					if job.StartTime.Before(startends[job.RepGroup][0]) {
 						startends[job.RepGroup][0] = job.StartTime
 					}
+
 					if job.EndTime.After(startends[job.RepGroup][1]) {
 						startends[job.RepGroup][1] = job.EndTime
 					}
@@ -313,13 +329,16 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						cputime[allRepGrps] = runningvariance.NewRunningStat()
 						startends[allRepGrps] = []time.Time{job.StartTime, job.EndTime}
 					}
+
 					memory[allRepGrps].Push(float64(job.PeakRAM))
 					disk[allRepGrps].Push(float64(job.PeakDisk))
 					walltime[allRepGrps].Push(float64(job.WallTime()))
 					cputime[allRepGrps].Push(float64(job.CPUtime))
+
 					if job.StartTime.Before(startends[allRepGrps][0]) {
 						startends[allRepGrps][0] = job.StartTime
 					}
+
 					if job.EndTime.After(startends[allRepGrps][1]) {
 						startends[allRepGrps][1] = job.EndTime
 					}
@@ -329,10 +348,12 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			// sort RepGroups for a nicer display
 			all := counts[allRepGrps]
 			delete(counts, allRepGrps)
+
 			var rgs []string
 			for rg := range counts {
 				rgs = append(rgs, rg)
 			}
+
 			sort.Strings(rgs)
 
 			if len(rgs) > 1 {
@@ -344,24 +365,33 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			for _, rg := range rgs {
 				var usage string
 				if counts[rg][jobqueue.JobStateComplete] > 0 {
-					usage = fmt.Sprintf(" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)", int(memory[rg].Mean()), int(memory[rg].StandardDeviation()), int(disk[rg].Mean()), int(disk[rg].StandardDeviation()), time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()), time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
+					usage = fmt.Sprintf(
+						" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)",
+						int(memory[rg].Mean()), int(memory[rg].StandardDeviation()),
+						int(disk[rg].Mean()), int(disk[rg].StandardDeviation()),
+						time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()),
+						time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
 
 					if counts[rg][jobqueue.JobStateComplete] > 1 {
-						usage = usage + fmt.Sprintf(" started=%s ended=%s elapsed=%s", startends[rg][0].Format(shortTimeFormat), startends[rg][1].Format(shortTimeFormat), startends[rg][1].Sub(startends[rg][0]))
+						usage += fmt.Sprintf(" started=%s ended=%s elapsed=%s",
+							startends[rg][0].Format(shortTimeFormat), startends[rg][1].Format(shortTimeFormat),
+							startends[rg][1].Sub(startends[rg][0]))
 					}
 				}
 
-				var dead string
+				var dead strings.Builder
+
 				if counts[rg][jobqueue.JobStateBuried] > 0 {
 					// sort the bury groups
 					var bgs []string
 					for bg := range buried[rg] {
 						bgs = append(bgs, bg)
 					}
+
 					sort.Strings(bgs)
 
 					for _, bg := range bgs {
-						dead += fmt.Sprintf(" %s=%s", bg, strings.Join(buried[rg][bg], ","))
+						fmt.Fprintf(&dead, " %s=%s", bg, strings.Join(buried[rg][bg], ","))
 					}
 				}
 
@@ -377,64 +407,80 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					counts[rg][jobqueue.JobStateDelayed],
 					counts[rg][jobqueue.JobStateBuried],
 					usage,
-					dead)
+					dead.String())
 			}
 		case statusOutputFormatDetails, statusOutputFormatDetailsAlias:
 			// print out status information for each job
 			for _, job := range jobs {
 				cwd := job.Cwd
+
 				var mounts string
 				if len(job.MountConfigs) > 0 {
 					mounts = fmt.Sprintf("Mounts: %s\n", job.MountConfigs)
 				}
+
 				var homeChanged string
+
 				if job.ActualCwd != "" {
 					cwd = job.ActualCwd
 					if job.ChangeHome {
 						homeChanged = "Changed home: true\n"
 					}
 				}
+
 				var modules string
 				if len(job.Modules) > 0 {
 					modules += fmt.Sprintf("Modules: %s; ", strings.Join(job.Modules, ", "))
 				}
+
 				var groups string
 				if len(job.DepGroups) > 0 {
 					groups = fmt.Sprintf("Dependency groups: %s; ", strings.Join(job.DepGroups, ", "))
 				}
+
 				if len(job.Dependencies) > 0 {
 					groups += fmt.Sprintf("Dependencies: %s; ", strings.Join(job.Dependencies.Stringify(), ", "))
 				}
+
 				if len(job.LimitGroups) > 0 {
 					groups += fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
 				}
+
 				var containerInfo string
 				if job.WithDocker != "" {
 					containerInfo = fmt.Sprintf("Cmd running inside docker container running image: %s\n", job.WithDocker)
 				}
+
 				if job.WithSingularity != "" {
 					containerInfo = fmt.Sprintf("Cmd running inside singularity container running image: %s\n", job.WithSingularity)
 				}
+
 				if job.ContainerMounts != "" {
 					containerInfo += fmt.Sprintf("Container has these mounts: %s\n", job.ContainerMounts)
 				}
+
 				if job.MonitorDocker != "" {
 					dockerID := job.MonitorDocker
 					if dockerID == "?" {
 						dockerID += " (first container started after cmd)"
 					}
+
 					containerInfo += fmt.Sprintf("Docker container monitoring turned on for: %s\n", dockerID)
 				}
+
 				var behaviours string
 				if len(job.Behaviours) > 0 {
 					behaviours = fmt.Sprintf("Behaviours: %s\n", job.Behaviours)
 				}
+
 				var other string
+
 				if len(job.Requirements.Other) > 0 {
 					var others []string
 					for key, val := range job.Requirements.Other {
 						others = append(others, key+":"+val)
 					}
+
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
 
@@ -464,13 +510,19 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 				case jobqueue.JobStateSuspended:
 					fmt.Println("Status: suspended - use `wr resume` to make it schedulable again")
 				case jobqueue.JobStateBuried:
-					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
+					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n",
+						job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateLost:
-					fmt.Printf("Status: lost contact (started %s; lost %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
+					fmt.Printf("Status: lost contact (started %s; lost %s)\n",
+						job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				case jobqueue.JobStateComplete:
-					fmt.Printf("Status: complete (started %s; ended %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
+					fmt.Printf("Status: complete (started %s; ended %s)\n",
+						job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
+				default:
+					// other states (new, deleted, deletable, unknown) have no
+					// status line
 				}
 
 				if job.FailReason != "" {
@@ -487,7 +539,12 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
+
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; "+
+						"CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n",
+						prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime,
+						job.Host, job.HostIP, hostID, job.Pid)
+
 					if showextra && job.Exitcode != 0 {
 						stdout, errs := job.StdOut()
 						if errs != nil {
@@ -497,6 +554,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						} else {
 							fmt.Printf("StdOut: [none]\n")
 						}
+
 						stderr, errs := job.StdErr()
 						if errs != nil {
 							warn("problem reading the cmd's STDERR: %s", errs)
@@ -554,7 +612,9 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					if job.FailReason != "" {
 						fr = " and problem"
 					}
+
 					er := ""
+
 					if job.Exited && job.Exitcode != 0 {
 						if fr != "" {
 							er = ", exit code"
@@ -562,6 +622,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 							er = " and exit code"
 						}
 					}
+
 					fmt.Printf("+ %d other commands with the same status%s%s\n", job.Similar, er, fr)
 				}
 			}
@@ -576,6 +637,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 
 			encoder := json.NewEncoder(os.Stdout)
 			encoder.SetEscapeHTML(false)
+
 			err = encoder.Encode(jstati)
 			if err != nil {
 				die("failed to encode jobs: %s", err)
@@ -598,18 +660,45 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 func init() {
 	RootCmd.AddCommand(statusCmd)
 
-	// flags specific to this sub-command
-	statusCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want the status of; - means read from STDIN")
+	registerStatusFlags()
+
+	statusCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
+}
+
+// registerStatusFlags registers the flags specific to the status sub-command.
+func registerStatusFlags() {
+	statusCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "",
+		"file containing commands you want the status of; - means read from STDIN")
 	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
-	statusCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	statusCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false,
+		"treat -i as a substring to match against all report groups")
 	statusCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
-	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
-	statusCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
-	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
-	statusCmd.Flags().StringVar(&fromHost, "host", "", "filter output to only show the status of commands that ran on the given host (ID, name or IP)")
-	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
+	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
+		"working dir that the command(s) specified by -l or -f were set to run in")
+	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
+		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	statusCmd.Flags().StringVar(&mountSimple, "mounts", "",
+		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	statusCmd.Flags().StringVar(&fromHost, "host", "",
+		"filter output to only show the status of commands that ran on the given host (ID, name or IP)")
+	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
+		"['counts','summary','details','plain','table','json'] output format")
+	statusCmd.Flags().IntVar(&statusLimit, "limit", 1,
+		"for grouped outputs (details, table and json), number of commands that share "+
+			"the same properties to display per group; 0 displays all")
+
+	registerStatusStateFlags()
+}
+
+// registerStatusStateFlags registers the status sub-command's state-filter
+// flags that, in default or -i mode, restrict output to a single job state.
+func registerStatusStateFlags() {
+	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false,
+		"in default or -i mode only, only show the status of buried commands")
+	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false,
+		"in default or -i mode only, only show the status of running commands")
 	statusCmd.Flags().BoolVar(&showPending, "pending", false,
 		"in default or -i mode only, only show the status of pending commands")
 	statusCmd.Flags().BoolVar(&showDependent, "dependent", false,
@@ -618,14 +707,8 @@ func init() {
 		"in default or -i mode only, only show jobs waiting on dep-groups not yet seen")
 	statusCmd.Flags().BoolVar(&showSuspended, "suspended", false,
 		"in default or -i mode only, only show the status of suspended commands")
-	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
-	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
-		"['counts','summary','details','plain','table','json'] output format")
-	statusCmd.Flags().IntVar(&statusLimit, "limit", 1,
-		"for grouped outputs (details, table and json), number of commands that share "+
-			"the same properties to display per group; 0 displays all")
-
-	statusCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false,
+		"in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 }
 
 func countGetJobArgs() int {
@@ -633,15 +716,19 @@ func countGetJobArgs() int {
 	if cmdFileStatus != "" {
 		set++
 	}
+
 	if cmdIDStatus != "" {
 		set++
 	}
+
 	if cmdLine != "" {
 		set++
 	}
+
 	if cmdAll {
 		set++
 	}
+
 	return set
 }
 
@@ -946,50 +1033,23 @@ func jobMatchesStatusState(job *jobqueue.Job, state jobqueue.JobState) bool {
 	}
 }
 
-func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
-	var jobs []*jobqueue.Job
-	var err error
+func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool,
+	statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
+	var (
+		jobs []*jobqueue.Job
+		err  error
+	)
 
 	switch {
 	case all:
 		// get all jobs
 		jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
 	case cmdIDStatus != "":
-		if cmdIDIsInternal {
-			// get the job with this internal id
-			var job *jobqueue.Job
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{
-				JobKey: cmdIDStatus,
-			}, showStd, showEnv)
-			if job != nil {
-				jobs = append(jobs, job)
-			}
-		} else {
-			// get all jobs with this identifier (repgroup)
-			jobs, err = jq.GetByRepGroup(cmdIDStatus, cmdIDIsSubStr, statusLimit, cmdState, showStd, showEnv)
-		}
+		jobs, err = getJobsByID(jq, cmdState, statusLimit, showStd, showEnv)
 	case cmdFileStatus != "":
-		// parse the supplied commands
-		parsedJobs := parseCmdFileStatusSelection(jq)
-
-		// round-trip via the server to get those that actually exist in
-		// the queue
-		jes := jobsToJobEssenses(parsedJobs)
-		jobs, err = jq.GetByEssences(jes)
-		if len(jobs) < len(parsedJobs) {
-			warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
-		}
+		jobs, err = getJobsByFile(jq)
 	case cmdLine != "":
-		// get job that has the supplied command
-		var defaultMounts jobqueue.MountConfigs
-		if mountJSON != "" || mountSimple != "" {
-			defaultMounts = mountParse(mountJSON, mountSimple)
-		}
-		var job *jobqueue.Job
-		job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
-		if job != nil {
-			jobs = append(jobs, job)
-		}
+		jobs, err = getJobsByCmdLine(jq, showStd, showEnv)
 	}
 
 	if err != nil {
@@ -997,6 +1057,60 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 	}
 
 	return jobs
+}
+
+// getJobsByID gets the job(s) selected by cmdIDStatus, either by internal job
+// id or by report group.
+func getJobsByID(jq *jobqueue.Client, cmdState jobqueue.JobState,
+	statusLimit int, showStd, showEnv bool) ([]*jobqueue.Job, error) {
+	if !cmdIDIsInternal {
+		// get all jobs with this identifier (repgroup)
+		return jq.GetByRepGroup(cmdIDStatus, cmdIDIsSubStr, statusLimit, cmdState, showStd, showEnv)
+	}
+
+	// get the job with this internal id
+	job, err := jq.GetByEssence(&jobqueue.JobEssence{
+		JobKey: cmdIDStatus,
+	}, showStd, showEnv)
+	if job == nil {
+		return nil, err
+	}
+
+	return []*jobqueue.Job{job}, err
+}
+
+// getJobsByFile gets the jobs that match the commands parsed from
+// cmdFileStatus and actually exist in the queue.
+func getJobsByFile(jq *jobqueue.Client) ([]*jobqueue.Job, error) {
+	// parse the supplied commands
+	parsedJobs := parseCmdFileStatusSelection(jq)
+
+	// round-trip via the server to get those that actually exist in
+	// the queue
+	jes := jobsToJobEssenses(parsedJobs)
+
+	jobs, err := jq.GetByEssences(jes)
+	if len(jobs) < len(parsedJobs) {
+		warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
+	}
+
+	return jobs, err
+}
+
+// getJobsByCmdLine gets the job that has the command line supplied via cmdLine.
+func getJobsByCmdLine(jq *jobqueue.Client, showStd, showEnv bool) ([]*jobqueue.Job, error) {
+	var defaultMounts jobqueue.MountConfigs
+	if mountJSON != "" || mountSimple != "" {
+		defaultMounts = mountParse(mountJSON, mountSimple)
+	}
+
+	job, err := jq.GetByEssence(
+		&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
+	if job == nil {
+		return nil, err
+	}
+
+	return []*jobqueue.Job{job}, err
 }
 
 func parseCmdFileStatusSelection(jq *jobqueue.Client) []*jobqueue.Job {
@@ -1017,5 +1131,6 @@ func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
 	}
+
 	return jes
 }

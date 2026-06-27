@@ -1378,7 +1378,9 @@ func TestFakeScheduler(t *testing.T) {
 			So(submittedJobs, ShouldResemble, []*jobqueue.Job{job1, job2})
 
 			Convey("You can FindJobsByRepGroupSuffix", func() {
-				jobs, err := s.FindJobsByRepGroupSuffix("none")
+				var jobs []*jobqueue.Job
+
+				jobs, err = s.FindJobsByRepGroupSuffix("none")
 				So(err, ShouldBeNil)
 				So(jobs, ShouldBeNil)
 
@@ -1392,7 +1394,9 @@ func TestFakeScheduler(t *testing.T) {
 			})
 
 			Convey("You can FindJobsByRepGroupPrefixAndState", func() {
-				jobs, err := s.FindJobsByRepGroupPrefixAndState("none", "")
+				var jobs []*jobqueue.Job
+
+				jobs, err = s.FindJobsByRepGroupPrefixAndState("none", "")
 				So(err, ShouldBeNil)
 				So(jobs, ShouldBeNil)
 
@@ -1582,13 +1586,13 @@ func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
 			jobs, err := p.GetByRepGroupMatch("", jobqueue.RepGroupMatchExact,
 				0, "", false, false)
 			So(jobs, ShouldBeNil)
-			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
+			So(err, ShouldResemble, jobqueue.Error{Op: getByRepGroupMatchOp, Err: jobqueue.ErrBadRequest})
 		})
 
 		Convey("GetByRepGroup with empty repgroup returns ErrBadRequest", func() {
 			jobs, err := p.GetByRepGroup("", false, 0, "", false, false)
 			So(jobs, ShouldBeNil)
-			So(err, ShouldResemble, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest})
+			So(err, ShouldResemble, jobqueue.Error{Op: getByRepGroupMatchOp, Err: jobqueue.ErrBadRequest})
 		})
 	})
 }

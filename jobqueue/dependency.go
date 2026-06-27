@@ -152,7 +152,7 @@ func appendDependencyViaJSON(deps Dependencies, dep dependencyViaJSON) Dependenc
 // incompleteJobKeys converts the constituent Dependency structs in to internal
 // job keys that uniquely identify the jobs we are dependent upon. Note that if
 // you have dependencies that are specified with DepGroups, then you should re-
-// call this and update every time a new Job is added with with one of our
+// call this and update every time a new Job is added with one of our
 // DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
 // are incomplete (they could have been Archive()d in the past if they are now
 // being re-run).
@@ -212,11 +212,13 @@ func (d Dependencies) incompleteJobKeysByDependency(
 // DepGroups returns all the DepGroups of our constituent Dependency structs.
 func (d Dependencies) DepGroups() []string {
 	var depGroups []string
+
 	for _, dep := range d {
 		if dep.DepGroup != "" {
 			depGroups = append(depGroups, dep.DepGroup)
 		}
 	}
+
 	return depGroups
 }
 
@@ -224,6 +226,7 @@ func (d Dependencies) DepGroups() []string {
 // strings, each of which could be JobEssence or DepGroup based.
 func (d Dependencies) Stringify() []string {
 	var strings []string
+
 	for _, dep := range d {
 		if dep.DepGroup != "" {
 			strings = append(strings, dep.DepGroup)
@@ -231,6 +234,7 @@ func (d Dependencies) Stringify() []string {
 			strings = append(strings, dep.Essence.Stringify())
 		}
 	}
+
 	return strings
 }
 

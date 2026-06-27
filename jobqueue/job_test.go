@@ -37,6 +37,12 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// testCwdPath is a fake absolute Cwd used by Job tests that don't actually run.
+const testCwdPath = "/cwd"
+
+// testTrueCmd is the no-op shell command used as a Job Cmd in tests.
+const testTrueCmd = "true"
+
 func TestJobEnv(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -83,6 +89,7 @@ func TestJob(t *testing.T) {
 		job1 := &Job{Cmd: "a", Cwd: "cwd/1"}
 		job2 := &Job{Cmd: "b", Cwd: "cwd/1"}
 		job3 := &Job{Cmd: "a", Cwd: "cwd/2"}
+
 		So(job1.Key(), ShouldNotEqual, job2.Key())
 		So(job1.Key(), ShouldEqual, job3.Key())
 		So(job1.Key(), ShouldEqual, "4d846ed67258e4c39a4840eea4d851dd")
@@ -162,10 +169,10 @@ func TestJob(t *testing.T) {
 
 	Convey("CmdLine() returns Cmd", t, func() {
 		ctx := context.Background()
-		job := &Job{Cmd: "true", Cwd: "/cwd"}
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
 		cmd, cleanup, err := job.CmdLine(ctx)
 		So(err, ShouldBeNil)
-		So(cmd, ShouldEqual, "true")
+		So(cmd, ShouldEqual, testTrueCmd)
 		So(cleanup, ShouldNotBeNil)
 		So(job.MonitorDocker, ShouldBeBlank)
 
@@ -179,6 +186,7 @@ func TestJob(t *testing.T) {
 			defer cleanup()
 
 			So(cmd, ShouldStartWith, "cat ")
+
 			dockerPrefix := " | docker run --rm --name %s -w $PWD --mount type=bind,source=$PWD,target=$PWD"
 			dockerSuffix := " -i %s /bin/sh"
 			So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+dockerSuffix, job.Key(), image))
@@ -186,7 +194,7 @@ func TestJob(t *testing.T) {
 
 			Convey("That can include additional mounts and env vars", func() {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
-				job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"})
+				So(job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"}), ShouldBeNil)
 
 				cmd, cleanup, err = job.CmdLine(ctx)
 				So(err, ShouldBeNil)
@@ -220,12 +228,12 @@ func TestJob(t *testing.T) {
 			defer cleanup()
 
 			So(cmd, ShouldStartWith, "cat ")
-			So(cmd, ShouldEndWith, fmt.Sprintf(" | singularity shell %s", image))
+			So(cmd, ShouldEndWith, " | singularity shell "+image)
 			So(job.MonitorDocker, ShouldBeBlank)
 
 			Convey("That can include additional mounts", func() {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
-				job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"})
+				So(job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"}), ShouldBeNil)
 
 				cmd, cleanup, err = job.CmdLine(ctx)
 				So(err, ShouldBeNil)
@@ -233,7 +241,7 @@ func TestJob(t *testing.T) {
 
 				defer cleanup()
 
-				So(cmd, ShouldEndWith, fmt.Sprintf(" | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz %s", image))
+				So(cmd, ShouldEndWith, " | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz "+image)
 			})
 		})
 	})
@@ -242,8 +250,8 @@ func TestJob(t *testing.T) {
 		started := time.Unix(100, 123456789)
 		ended := started.Add(25 * time.Millisecond)
 		job := &Job{
-			Cmd:                 "true",
-			Cwd:                 "/cwd",
+			Cmd:                 testTrueCmd,
+			Cwd:                 testCwdPath,
 			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 			WaitingForDepGroups: []string{futureDepGroup},
 			StartTime:           started,
@@ -267,8 +275,8 @@ func TestJob(t *testing.T) {
 
 	Convey("ToStatus() reports never-seen dependency group waits", t, func() {
 		job := &Job{
-			Cmd:                 "true",
-			Cwd:                 "/cwd",
+			Cmd:                 testTrueCmd,
+			Cwd:                 testCwdPath,
 			Requirements:        &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 			DepGroups:           []string{testCarrierDepGroup},
 			WaitingForDepGroups: []string{futureDepGroup},
@@ -284,8 +292,8 @@ func TestJob(t *testing.T) {
 
 	Convey("ToStatus() safely reports env overrides while they change", t, func() {
 		job := &Job{
-			Cmd:          "true",
-			Cwd:          "/cwd",
+			Cmd:          testTrueCmd,
+			Cwd:          testCwdPath,
 			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 			State:        JobStateReady,
 		}
@@ -298,11 +306,8 @@ func TestJob(t *testing.T) {
 		start := make(chan struct{})
 
 		var wg sync.WaitGroup
-		wg.Add(1)
 
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			<-start
 
 			for i := range 5000 {
@@ -314,7 +319,7 @@ func TestJob(t *testing.T) {
 				}
 				job.Unlock()
 			}
-		}()
+		})
 
 		close(start)
 
@@ -408,8 +413,8 @@ func TestJob(t *testing.T) {
 
 	Convey("ToStatus() reports a never-run suspended job without start or end times", t, func() {
 		job := &Job{
-			Cmd:          "true",
-			Cwd:          "/cwd",
+			Cmd:          testTrueCmd,
+			Cwd:          testCwdPath,
 			State:        JobStateSuspended,
 			Requirements: &scheduler.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 		}

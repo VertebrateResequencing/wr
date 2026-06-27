@@ -154,7 +154,7 @@ func logRecordStringValue(r log15.Record, key string) (string, bool) {
 	return str, ok
 }
 
-func logRecordValue(r log15.Record, key string) (interface{}, bool) {
+func logRecordValue(r log15.Record, key string) (any, bool) {
 	for i := 0; i+1 < len(r.Ctx); i += 2 {
 		if r.Ctx[i] == key {
 			return r.Ctx[i+1], true
@@ -241,7 +241,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			count := maxCPU * 2
 			jobs := make([]*Job, 0, count)
 
-			for i := 0; i < count; i++ {
+			for i := range count {
 				cmd := blockUntilReleasedCmd(
 					filepath.Join(markerDir, fmt.Sprintf("started.%d", i)),
 					releaseFile,
@@ -331,7 +331,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			count := maxCPU * 3
 			jobs := make([]*Job, 0, count)
 
-			for i := 0; i < count; i++ {
+			for i := range count {
 				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 1 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: reqGroupPerl, Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: 2, RepGroup: manuallyAdded}) //nolint:lll
 			}
 
@@ -689,7 +689,6 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			}
 
 			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
-			//nolint:goconst // "true" is an env-var value here, not the REST-form constant
 			if err == nil && privateKeyPath != "" && os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") != "true" {
 				count = 10000
 				count2 = 1000

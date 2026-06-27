@@ -30,7 +30,9 @@ package jobqueue
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,6 +40,13 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
+)
+
+// sentinel errors for behaviour handling.
+var (
+	errBehaviourInvalidStatus = errors.New("invalid status")
+	errBehaviourArgNotStr     = errors.New("arg is not a string")
+	errBehaviourArgNotStrSl   = errors.New("arg is not a []string")
 )
 
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
@@ -112,7 +121,7 @@ const (
 type Behaviour struct {
 	When BehaviourTrigger
 	Do   BehaviourAction
-	Arg  interface{} // the arg needed by your chosen action
+	Arg  any // the arg needed by your chosen action
 }
 
 // Trigger will carry out our BehaviourAction if the supplied status matches our
@@ -134,39 +143,15 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	case Remove, Nothing:
 		return nil
 	}
-	return fmt.Errorf("invalid status %d", status)
+
+	return fmt.Errorf("%w %d", errBehaviourInvalidStatus, status)
 }
 
 // fillBVJM converts to a bvjMapping. Supply an empty or existing one and this
 // will add to it.
 func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
-	var bvj BehaviourViaJSON
-	switch b.Do {
-	case Run:
-		var arg string
-		if cmd, wasStr := b.Arg.(string); wasStr {
-			arg = cmd
-		} else {
-			arg = "!invalid!"
-		}
-		bvj = BehaviourViaJSON{Run: arg}
-	case CopyToManager:
-		var arg []string
-		if files, wasStrSlice := b.Arg.([]string); wasStrSlice {
-			arg = files
-		} else {
-			arg = []string{"!invalid!"}
-		}
-		bvj = BehaviourViaJSON{CopyToManager: arg}
-	case Cleanup:
-		bvj = BehaviourViaJSON{Cleanup: true}
-	case CleanupAll:
-		bvj = BehaviourViaJSON{CleanupAll: true}
-	case Remove:
-		bvj = BehaviourViaJSON{Remove: true}
-	case Nothing:
-		bvj = BehaviourViaJSON{Nothing: true}
-	default:
+	bvj, ok := b.toBehaviourViaJSON()
+	if !ok {
 		return
 	}
 
@@ -184,6 +169,47 @@ func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 	}
 }
 
+// toBehaviourViaJSON builds the BehaviourViaJSON for our Do action. The bool is
+// false if our action does not map to one (in which case nothing should be
+// added to a bvjMapping).
+func (b *Behaviour) toBehaviourViaJSON() (BehaviourViaJSON, bool) {
+	switch b.Do {
+	case Run:
+		return BehaviourViaJSON{Run: b.argString()}, true
+	case CopyToManager:
+		return BehaviourViaJSON{CopyToManager: b.argStringSlice()}, true
+	case Cleanup:
+		return BehaviourViaJSON{Cleanup: true}, true
+	case CleanupAll:
+		return BehaviourViaJSON{CleanupAll: true}, true
+	case Remove:
+		return BehaviourViaJSON{Remove: true}, true
+	case Nothing:
+		return BehaviourViaJSON{Nothing: true}, true
+	default:
+		return BehaviourViaJSON{}, false
+	}
+}
+
+// argString returns our Arg as a string, or "!invalid!" if it isn't one.
+func (b *Behaviour) argString() string {
+	if cmd, wasStr := b.Arg.(string); wasStr {
+		return cmd
+	}
+
+	return "!invalid!"
+}
+
+// argStringSlice returns our Arg as a []string, or []string{"!invalid!"} if it
+// isn't one.
+func (b *Behaviour) argStringSlice() []string {
+	if files, wasStrSlice := b.Arg.([]string); wasStrSlice {
+		return files
+	}
+
+	return []string{"!invalid!"}
+}
+
 // String provides a nice string representation of a Behaviour for user
 // interface display purposes. It is in the form of a JSON string that can be
 // converted back to a Behaviour via a BehaviourViaJSON.
@@ -196,6 +222,7 @@ func (b *Behaviour) String() string {
 	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	encoder.SetEscapeHTML(false)
+
 	err := encoder.Encode(bvjm)
 	if err != nil {
 		panic(fmt.Sprintf("Encoding a bvjm failed: %s", err))
@@ -204,14 +231,11 @@ func (b *Behaviour) String() string {
 	return strings.TrimSpace(buffer.String())
 }
 
-// cleanup with all == true wipes out the Job's unique dir as aggressively as
-// possible, along with all empty parent dirs up to Cwd. Without all, will keep
-// files designated as outputs (*** designation not yet implemented).
-func (b *Behaviour) cleanup(j *Job, all bool) error {
-	if !all {
-		// *** not yet implemented, we just wipe everything!
-	}
-
+// cleanup wipes out the Job's unique dir as aggressively as possible, along
+// with all empty parent dirs up to Cwd. (The all arg would, when false, keep
+// files designated as outputs, but that designation is *** not yet implemented,
+// so for now we always wipe everything.)
+func (b *Behaviour) cleanup(j *Job, _ bool) error {
 	if j.ActualCwd == "" {
 		// must be a CwdMatters job, or somehow ActualCwd didn't get set; we do
 		// nothing in this case
@@ -223,60 +247,78 @@ func (b *Behaviour) cleanup(j *Job, all bool) error {
 	// dirs (that we don't want to delete).
 	workSpace := filepath.Dir(j.ActualCwd)
 
-	if len(j.MountConfigs) > 0 {
-		// if we have mounts, we don't want to delete the cache dirs or any
-		// mounted directories, so we'll have to go through and delete
-		// everything else manually
-		var keepDirs []string
-		var keepActualCwd bool
-		for _, mc := range j.MountConfigs {
-			if mc.Mount == "" {
-				keepActualCwd = true
-				break
-			}
-			if !filepath.IsAbs(mc.Mount) {
-				keepDirs = append(keepDirs, mc.Mount)
-			}
-		}
-
-		if !keepActualCwd {
-			if len(keepDirs) > 0 {
-				err := removeAllExcept(j.ActualCwd, keepDirs)
-				if err != nil {
-					return err
-				}
-			} else {
-				err := os.RemoveAll(j.ActualCwd)
-				if err != nil {
-					return err
-				}
-			}
-		}
-
-		// finally delete everything inside workSpace except for cwd and the
-		// cache dirs, incase a job.Cmd did something like `touch ../foo`
-		entries, err := os.ReadDir(workSpace)
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			if entry.Name() != "cwd" && !strings.HasPrefix(entry.Name(), ".muxfys") {
-				err = os.RemoveAll(filepath.Join(workSpace, entry.Name()))
-				if err != nil {
-					return err
-				}
-			}
-		}
-	} else {
-		// just try and delete everything in one go
-		err := os.RemoveAll(workSpace)
-		if err != nil {
-			return err
-		}
+	if err := cleanupWorkSpace(j, workSpace); err != nil {
+		return err
 	}
 
 	// delete any empty parent directories up to Cwd
 	return rmEmptyDirs(workSpace, j.Cwd)
+}
+
+// cleanupWorkSpace deletes the contents of the Job's workspace dir. If the Job
+// used mounts it takes care not to delete the cache dirs or mounted dirs;
+// otherwise it just deletes everything in one go.
+func cleanupWorkSpace(j *Job, workSpace string) error {
+	if len(j.MountConfigs) == 0 {
+		return removeAllManaged(workSpace)
+	}
+
+	keepDirs, keepActualCwd := mountDirsToKeep(j.MountConfigs)
+
+	if !keepActualCwd {
+		if err := removeActualCwd(j.ActualCwd, keepDirs); err != nil {
+			return err
+		}
+	}
+
+	return removeWorkSpaceExtras(workSpace)
+}
+
+// mountDirsToKeep works out, from a Job's MountConfigs, which relative dirs to
+// keep, and whether the ActualCwd itself must be kept.
+func mountDirsToKeep(mcs MountConfigs) (keepDirs []string, keepActualCwd bool) {
+	for _, mc := range mcs {
+		if mc.Mount == "" {
+			return nil, true
+		}
+
+		if !filepath.IsAbs(mc.Mount) {
+			keepDirs = append(keepDirs, mc.Mount)
+		}
+	}
+
+	return keepDirs, false
+}
+
+// removeWorkSpaceExtras deletes everything inside workSpace except for cwd and
+// the cache dirs, incase a job.Cmd did something like `touch ../foo`.
+func removeWorkSpaceExtras(workSpace string) error {
+	entries, err := os.ReadDir(workSpace)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.Name() == "cwd" || strings.HasPrefix(entry.Name(), ".muxfys") {
+			continue
+		}
+
+		if err = removeAllManaged(filepath.Join(workSpace, entry.Name())); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// removeActualCwd deletes the Job's ActualCwd, keeping the given relative dirs
+// if any were specified.
+func removeActualCwd(actualCwd string, keepDirs []string) error {
+	if len(keepDirs) > 0 {
+		return removeAllExcept(actualCwd, keepDirs)
+	}
+
+	return removeAllManaged(actualCwd)
 }
 
 // run simply runs the given command from Job's actual cwd.
@@ -288,8 +330,9 @@ func (b *Behaviour) run(j *Job) error {
 
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
-		return fmt.Errorf("arg %s is type %T, not string", b.Arg, b.Arg)
+		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStr, b.Arg, b.Arg)
 	}
+
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
 	}
@@ -297,12 +340,14 @@ func (b *Behaviour) run(j *Job) error {
 	// pass shell in? And yes, we're allowing user to run absolutely any command
 	// they like, but that is the very nature of this app. This runs as them,
 	// so can do whatever they can do...
-	cmd := exec.Command("/bin/bash", "-c", bc) // #nosec
+	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", bc)
 	cmd.Dir = actualCwd
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("run behaviour failed: %w\n%s", err, string(out))
 	}
+
 	return err
 }
 
@@ -311,7 +356,7 @@ func (b *Behaviour) run(j *Job) error {
 func (b *Behaviour) copyToManager(*Job) error {
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
-		return fmt.Errorf("arg %s is type %T, not []string", b.Arg, b.Arg)
+		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStrSl, b.Arg, b.Arg)
 	}
 
 	// *** not yet implemented
@@ -337,6 +382,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	}
 
 	var merr *multierror.Error
+
 	for _, b := range bs {
 		err := b.Trigger(status, j)
 		if err != nil {
@@ -374,6 +420,7 @@ func (bs Behaviours) String() string {
 	if len(bs) == 0 {
 		return ""
 	}
+
 	bvjm := &bvjMapping{}
 	for _, b := range bs {
 		b.fillBVJM(bvjm)
@@ -382,6 +429,7 @@ func (bs Behaviours) String() string {
 	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	encoder.SetEscapeHTML(false)
+
 	err := encoder.Encode(bvjm)
 	if err != nil {
 		panic(fmt.Sprintf("Encoding a bvjm failed: %s", err))
@@ -403,8 +451,10 @@ type BehaviourViaJSON struct {
 
 // Behaviour converts the friendly BehaviourViaJSON struct to real Behaviour.
 func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
-	var do BehaviourAction
-	var arg interface{}
+	var (
+		do  BehaviourAction
+		arg any
+	)
 
 	switch {
 	case bj.Run != "":
@@ -441,6 +491,7 @@ func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) Behaviours {
 	for _, bj := range bjs {
 		bs = append(bs, bj.Behaviour(when))
 	}
+
 	return bs
 }
 

@@ -58,7 +58,83 @@ const scanBufferSize = 1000 * bufio.MaxScanTokenSize
 
 const ErrInvalidBsubOpts = "invalid lsf bsub options"
 
-// lsf is our implementer of scheduleri
+// errBadLSFConfig is the Error message used when initialize() is not given a
+// *ConfigLSF.
+const errBadLSFConfig = "SchedulerConfig must be *ConfigLSF"
+
+// queue criteria keys, used both as map keys when ranking queues and when
+// applying default values.
+const (
+	criterionHosts     = "hosts"
+	criterionChunkSize = "chunk_size"
+	criterionNumUsers  = "num_users"
+	criterionMax       = "max"
+	criterionMaxUser   = "max_user"
+	criterionMemlimit  = "memlimit"
+	criterionRunlimit  = "runlimit"
+	criterionUsers     = "users"
+)
+
+// memLimitMultiplier values for the different units that LSF_UNIT_FOR_LIMITS can
+// report memlimit (bsub -M) values in. 'K' (KB) is our default.
+const (
+	kbMemLimitMultiplier float32 = 1000
+	gbMemLimitMultiplier float32 = 0.001
+)
+
+// op* are the Op names used in scheduler Errors raised by the named methods.
+const (
+	opParseBjobs     = "parseBjobs"
+	opDetermineQueue = "determineQueue"
+	opParseUserArgs  = "parseUserArgs"
+)
+
+const (
+	// reMatchOneGroup is the length of a FindStringSubmatch result for a regex
+	// with a single capturing group (the full match plus the group).
+	reMatchOneGroup = 2
+
+	// reMatchTwoGroups is the length of a FindStringSubmatch result for a regex
+	// with two capturing groups.
+	reMatchTwoGroups = 3
+
+	// secsPerMinute is the number of seconds in a minute.
+	secsPerMinute = 60
+
+	// manyUsers is the count used for a queue usable by everyone.
+	manyUsers = 10000
+
+	// oneYearInSeconds is the default runlimit used for queues that don't
+	// specify one.
+	oneYearInSeconds = 31536000
+
+	// hugeQueueLimit is a "very large" default for queue criteria that have no
+	// real limit, so they don't unduly affect queue ranking.
+	hugeQueueLimit = 10000000
+
+	// bjobsMinJobLineLen is the minimum length of a bjobs -w line for a
+	// submitted job to be considered as having appeared in bjobs output.
+	bjobsMinJobLineLen = 46
+
+	// bjobsMinFields is the minimum number of whitespace-separated fields a
+	// bjobs -w output line must have for us to parse the job id, status and
+	// name from it.
+	bjobsMinFields = 7
+
+	// bmgroupMinFields is the minimum number of whitespace-separated fields a
+	// bmgroup -w output line must have (a group name plus at least one host).
+	bmgroupMinFields = 2
+
+	// bjobsAppearTimeout is how long, after a successful bsub, we wait for the
+	// submitted job to appear in bjobs output before giving up.
+	bjobsAppearTimeout = 10 * time.Second
+
+	// bjobsAppearPollFreq is how often we poll bjobs while waiting for a
+	// submitted job to appear.
+	bjobsAppearPollFreq = 100 * time.Millisecond
+)
+
+// lsf is our implementer of scheduleri.
 type lsf struct {
 	config             *ConfigLSF
 	months             map[string]int
@@ -67,7 +143,6 @@ type lsf struct {
 	memLimitMultiplier float32
 	queues             map[string]map[string]int
 	sortedqs           []string
-	sortedqKeys        []int
 	bsubExe            string
 	bjobsExe           string
 	bkillExe           string
@@ -89,9 +164,14 @@ type ConfigLSF struct {
 	PrivateKeyPath string
 }
 
-// initialize finds out about lsf's hosts and queues
-func (s *lsf) initialize(ctx context.Context, config interface{}) error {
-	s.config = config.(*ConfigLSF)
+// initialize finds out about lsf's hosts and queues.
+func (s *lsf) initialize(_ context.Context, config any) error {
+	conf, ok := config.(*ConfigLSF)
+	if !ok {
+		return Error{lsfScheduler, opInitialize, errBadLSFConfig}
+	}
+
+	s.config = conf
 
 	// find the real paths to the main LSF exes, since thanks to wr's LSF
 	// compatibility mode, might not be the first in $PATH
@@ -99,299 +179,476 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 	s.bjobsExe = internal.Which("bjobs")
 	s.bkillExe = internal.Which("bkill")
 
-	// set up what should be global vars, but we don't really want these taking
-	// up space if the user never uses LSF
-	s.months = map[string]int{
-		"Jan": 1,
-		"Feb": 2,
-		"Mar": 3,
-		"Apr": 4,
-		"May": 5,
-		"Jun": 6,
-		"Jul": 7,
-		"Aug": 8,
-		"Sep": 9,
-		"Oct": 10,
-		"Nov": 11,
-		"Dec": 12,
+	s.setupMonthsAndRegexes()
+
+	if err := s.detectMemLimitMultiplier(); err != nil {
+		return err
 	}
+
+	//nolint:contextcheck // internal.Username manages its own context by design
+	highest, err := s.parseBqueues()
+	if err != nil {
+		return err
+	}
+
+	s.rankQueues(highest)
+
+	// if a job becomes lost, scheduler needs to ssh to the host to check on the
+	// process, so we store our private key
+	if content, errr := os.ReadFile(internal.TildaToHome(s.config.PrivateKeyPath)); errr == nil {
+		s.privateKey = string(content)
+	}
+
+	return nil
+}
+
+// setupMonthsAndRegexes sets up what should be global vars, but we don't really
+// want these taking up space if the user never uses LSF.
+func (s *lsf) setupMonthsAndRegexes() {
+	months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+
+	s.months = make(map[string]int, len(months))
+	for i, month := range months {
+		s.months[month] = i + 1
+	}
+
 	s.dateRegex = regexp.MustCompile(`(\w+)\s+(\d+) (\d+):(\d+):(\d+)`)
 	s.bsubRegex = regexp.MustCompile(`^Job <(\d+)>`)
+}
 
-	// use lsadmin to see what units memlimit (bsub -M) is in
-	s.memLimitMultiplier = float32(1000)                                                                          // by default assume it's KB
-	cmdout, err := exec.Command(s.config.Shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output() // #nosec
+// detectMemLimitMultiplier uses lsadmin to see what units memlimit (bsub -M) is
+// in, and sets s.memLimitMultiplier accordingly.
+func (s *lsf) detectMemLimitMultiplier() error {
+	s.memLimitMultiplier = kbMemLimitMultiplier // by default assume it's KB
+
+	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+	cmdout, err := exec.Command(s.config.Shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output()
 	if err != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to run [lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS]: %s", err)}
-	}
-	if len(cmdout) > 0 {
-		uflRegex := regexp.MustCompile(`=\s*(\w)`)
-		unit := uflRegex.FindStringSubmatch(string(cmdout))
-		if len(unit) == 2 && unit[1] != "" {
-			switch unit[1] {
-			case "M":
-				s.memLimitMultiplier = float32(1)
-			case "G":
-				s.memLimitMultiplier = float32(0.001)
-				// 'K' is our default
-			}
+		return Error{
+			lsfScheduler, opInitialize,
+			fmt.Sprintf("failed to run [lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS]: %s", err),
 		}
 	}
 
-	bmgroups := make(map[string]map[string]bool)
-	parsedBmgroups := false
+	if len(cmdout) == 0 {
+		return nil
+	}
 
+	uflRegex := regexp.MustCompile(`=\s*(\w)`)
+
+	unit := uflRegex.FindStringSubmatch(string(cmdout))
+	if len(unit) == reMatchOneGroup && unit[1] != "" {
+		switch unit[1] {
+		case "M":
+			s.memLimitMultiplier = 1
+		case "G":
+			s.memLimitMultiplier = gbMemLimitMultiplier
+			// 'K' is our default
+		}
+	}
+
+	return nil
+}
+
+// bqueuesParser holds the mutable state used while parsing the output of
+// `bqueues -l` line by line.
+type bqueuesParser struct {
+	s                 *lsf
+	highest           map[string]int
+	bmgroups          map[string]map[string]bool
+	queue             string
+	nextIsMemlimit    int
+	parsedBmgroups    bool
+	nextIsPrio        bool
+	lookingAtDefaults bool
+	nextIsRunlimit    bool
+
+	reQueue            *regexp.Regexp
+	rePrio             *regexp.Regexp
+	reDefaultLimits    *regexp.Regexp
+	reDefaultsFinished *regexp.Regexp
+	reMemlimit         *regexp.Regexp
+	reNumUnit          *regexp.Regexp
+	reRunLimit         *regexp.Regexp
+	reParseRunlimit    *regexp.Regexp
+	reUserHosts        *regexp.Regexp
+	reChunkJobSize     *regexp.Regexp
+}
+
+// updateHighest records val as the highest value seen so far for htype.
+func (p *bqueuesParser) updateHighest(htype string, val int) {
+	if val > p.highest[htype] {
+		p.highest[htype] = val
+	}
+}
+
+// newBqueuesParser creates a bqueuesParser with its regexes compiled and its
+// state ready to parse `bqueues -l` output for the given lsf scheduler.
+func newBqueuesParser(s *lsf) *bqueuesParser {
+	return &bqueuesParser{
+		s: s,
+		highest: map[string]int{
+			criterionRunlimit: 0, criterionMemlimit: 0, criterionMax: 0,
+			criterionMaxUser: 0, criterionUsers: 0, criterionHosts: 0,
+		},
+		bmgroups: make(map[string]map[string]bool),
+
+		reQueue:            regexp.MustCompile(`^QUEUE: (\S+)`),
+		rePrio:             regexp.MustCompile(`^PRIO\s+NICE\s+STATUS\s+MAX\s+JL\/U`),
+		reDefaultLimits:    regexp.MustCompile(`^DEFAULT LIMITS:`),
+		reDefaultsFinished: regexp.MustCompile(`^MAXIMUM LIMITS:|^SCHEDULING PARAMETERS`),
+		reMemlimit:         regexp.MustCompile(`MEMLIMIT`),
+		reNumUnit:          regexp.MustCompile(`(\d+(?:\.\d+)?) (\w)`),
+		reRunLimit:         regexp.MustCompile(`RUNLIMIT`),
+		reParseRunlimit:    regexp.MustCompile(`^\s*(\d+)(?:\.\d+)? min`),
+		reUserHosts:        regexp.MustCompile(`^(USERS|HOSTS):\s+(.+?)\s*$`),
+		reChunkJobSize:     regexp.MustCompile(`^CHUNK_JOB_SIZE:\s+(\d+)`),
+	}
+}
+
+// parseBqueues parses bqueues -l to figure out what usable queues we have,
+// populating s.queues and returning the highest value seen per criterion.
+func (s *lsf) parseBqueues() (map[string]int, error) {
 	// parse bqueues -l to figure out what usable queues we have
-	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l") // #nosec
+	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l")
+
 	bqout, err := bqcmd.StdoutPipe()
 	if err != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bqueues -l]: %s", err)}
+		return nil, Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to create pipe for [bqueues -l]: %s", err)}
 	}
+
 	if err = bqcmd.Start(); err != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bqueues -l]: %s", err)}
+		return nil, Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to start [bqueues -l]: %s", err)}
 	}
-	bqScanner := bufio.NewScanner(bqout)
+
 	s.queues = make(map[string]map[string]int)
-	queue := ""
-	nextIsPrio := false
-	lookingAtDefaults := false
-	nextIsMemlimit := 0
-	nextIsRunlimit := false
-	highest := map[string]int{"runlimit": 0, "memlimit": 0, "max": 0, "max_user": 0, "users": 0, "hosts": 0}
-	updateHighest := func(htype string, val int) {
-		if val > highest[htype] {
-			highest[htype] = val
-		}
-	}
-	reQueue := regexp.MustCompile(`^QUEUE: (\S+)`)
-	rePrio := regexp.MustCompile(`^PRIO\s+NICE\s+STATUS\s+MAX\s+JL\/U`)
-	reDefaultLimits := regexp.MustCompile(`^DEFAULT LIMITS:`)
-	reDefaultsFinished := regexp.MustCompile(`^MAXIMUM LIMITS:|^SCHEDULING PARAMETERS`)
-	reMemlimit := regexp.MustCompile(`MEMLIMIT`)
-	reNumUnit := regexp.MustCompile(`(\d+(?:\.\d+)?) (\w)`)
-	reRunLimit := regexp.MustCompile(`RUNLIMIT`)
-	reParseRunlimit := regexp.MustCompile(`^\s*(\d+)(?:\.\d+)? min`)
-	reUserHosts := regexp.MustCompile(`^(USERS|HOSTS):\s+(.+?)\s*$`)
-	reChunkJobSize := regexp.MustCompile(`^CHUNK_JOB_SIZE:\s+(\d+)`)
+	p := newBqueuesParser(s)
+
+	bqScanner := bufio.NewScanner(bqout)
 	for bqScanner.Scan() {
-		line := bqScanner.Text()
-
-		if matches := reQueue.FindStringSubmatch(line); len(matches) == 2 {
-			queue = matches[1]
-			s.queues[queue] = make(map[string]int)
-			continue
-		}
-
-		switch {
-		case queue == "":
-			continue
-		case rePrio.MatchString(line):
-			nextIsPrio = true
-			continue
-		case nextIsPrio:
-			fields := strings.Fields(line)
-			s.queues[queue]["prio"], err = strconv.Atoi(fields[0])
-			if err != nil {
-				return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
-			}
-			if fields[3] != "-" {
-				i, err := strconv.Atoi(fields[3])
-				if err != nil {
-					return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
-				}
-				s.queues[queue]["max"] = i
-				updateHighest("max", i)
-			}
-			if fields[4] != "-" {
-				i, err := strconv.Atoi(fields[4])
-				if err != nil {
-					return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
-				}
-				s.queues[queue]["max_user"] = i
-				updateHighest("max_user", i)
-			}
-			nextIsPrio = false
-		case reDefaultLimits.MatchString(line):
-			lookingAtDefaults = true
-			continue
-		case reDefaultsFinished.MatchString(line) || !lookingAtDefaults:
-			lookingAtDefaults = false
-
-			switch {
-			case reMemlimit.MatchString(line):
-				nextIsMemlimit = 0
-				for _, word := range strings.Fields(line) {
-					nextIsMemlimit++
-					if word == "MEMLIMIT" {
-						break
-					}
-				}
-				continue
-			case nextIsMemlimit > 0:
-				if matches := reNumUnit.FindAllStringSubmatch(line, -1); matches != nil && len(matches) >= nextIsMemlimit-1 {
-					val, err := strconv.ParseFloat(matches[nextIsMemlimit-1][1], 32)
-					if err != nil {
-						return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
-					}
-					unit := matches[nextIsMemlimit-1][2]
-					switch unit {
-					case "T":
-						val *= 1000000
-					case "G":
-						val *= 1000
-					case "K":
-						val /= 1000
-					}
-					s.queues[queue]["memlimit"] = int(val)
-					updateHighest("memlimit", int(val))
-				}
-				nextIsMemlimit = 0
-			case reRunLimit.MatchString(line):
-				nextIsRunlimit = true
-				continue
-			case nextIsRunlimit:
-				if matches := reParseRunlimit.FindStringSubmatch(line); len(matches) == 2 {
-					mins, err := strconv.Atoi(matches[1])
-					if err != nil {
-						return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
-					}
-					s.queues[queue]["runlimit"] = mins * 60
-					// updateHighest("runlimit", ...) for queues that do not
-					// specify a run limit, we won't base the default on the
-					// highest value seen on other queues, but on a hard-coded 1
-					// year
-				}
-				nextIsRunlimit = false
-			}
-		}
-
-		if matches := reUserHosts.FindStringSubmatch(line); len(matches) == 3 {
-			kind := strings.ToLower(matches[1])
-			vals := strings.Fields(matches[2])
-			if kind == "users" {
-				users := make(map[string]bool)
-				for _, val := range vals {
-					users[val] = true
-				}
-
-				s.queues[queue]["num_users"] = len(users)
-				if users["all"] {
-					s.queues[queue]["num_users"] = 10000
-				}
-
-				me, err := internal.Username()
-				if err != nil {
-					return Error{"lsf", "initialize", fmt.Sprintf("could not get current user: %s", err)}
-				}
-
-				if !users["all"] && !users[me] {
-					delete(s.queues, queue)
-					queue = ""
-				}
-			} else if matches[2] != "all" {
-				hosts := make(map[string]bool)
-				for _, val := range vals {
-					if strings.HasSuffix(val, "/") {
-						// this is a group name, look it up in bmgroup
-						if !parsedBmgroups {
-							perr := s.parseBmgroups(bmgroups)
-							if perr != nil {
-								return perr
-							}
-							parsedBmgroups = true
-						}
-						val = strings.TrimSuffix(val, "/")
-						if servers, exists := bmgroups[val]; exists {
-							for server := range servers {
-								hosts[server] = true
-							}
-						} else {
-							hosts[val] = true
-						}
-					} else {
-						hosts[val] = true
-					}
-				}
-				s.queues[queue][kind] = len(hosts)
-				updateHighest(kind, len(hosts))
-			}
-		}
-
-		if matches := reChunkJobSize.FindStringSubmatch(line); len(matches) == 2 {
-			chunks, err := strconv.Atoi(matches[1])
-			if err != nil {
-				return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
-			}
-			s.queues[queue]["chunk_size"] = chunks
+		if err = p.parseLine(bqScanner.Text()); err != nil {
+			return nil, err
 		}
 	}
 
 	if serr := bqScanner.Err(); serr != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to read everything from [bqueues -l]: %s", serr)}
-	}
-	if err := bqcmd.Wait(); err != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to finish running [bqueues -l]: %s", err)}
+		return nil, Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to read everything from [bqueues -l]: %s", serr)}
 	}
 
+	if err = bqcmd.Wait(); err != nil {
+		return nil, Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to finish running [bqueues -l]: %s", err)}
+	}
+
+	return p.highest, nil
+}
+
+// parseLine processes a single line of `bqueues -l` output.
+func (p *bqueuesParser) parseLine(line string) error {
+	if matches := p.reQueue.FindStringSubmatch(line); len(matches) == reMatchOneGroup {
+		p.queue = matches[1]
+		p.s.queues[p.queue] = make(map[string]int)
+
+		return nil
+	}
+
+	skip, err := p.parseQueueDetail(line)
+	if err != nil || skip {
+		return err
+	}
+
+	if err := p.parseUserHosts(line); err != nil {
+		return err
+	}
+
+	return p.parseChunkSize(line)
+}
+
+// parseQueueDetail handles the prio/limits section of a queue's bqueues -l
+// output. It returns skip=true when the rest of the line should not be examined
+// (matching the original loop's `continue` behaviour).
+func (p *bqueuesParser) parseQueueDetail(line string) (skip bool, err error) {
+	switch {
+	case p.queue == "":
+		return true, nil
+	case p.rePrio.MatchString(line):
+		p.nextIsPrio = true
+
+		return true, nil
+	case p.nextIsPrio:
+		return false, p.parsePrio(line)
+	case p.reDefaultLimits.MatchString(line):
+		p.lookingAtDefaults = true
+
+		return true, nil
+	case p.reDefaultsFinished.MatchString(line) || !p.lookingAtDefaults:
+		p.lookingAtDefaults = false
+
+		return p.parseLimits(line)
+	}
+
+	return false, nil
+}
+
+// parsePrio parses the PRIO/MAX/JL/U line for the current queue.
+func (p *bqueuesParser) parsePrio(line string) error {
+	fields := strings.Fields(line)
+
+	var err error
+
+	p.s.queues[p.queue]["prio"], err = strconv.Atoi(fields[0])
+	if err != nil {
+		return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
+	}
+
+	if err := p.parseOptionalLimit(fields[3], criterionMax); err != nil {
+		return err
+	}
+
+	if err := p.parseOptionalLimit(fields[4], criterionMaxUser); err != nil {
+		return err
+	}
+
+	p.nextIsPrio = false
+
+	return nil
+}
+
+// parseOptionalLimit records field as the value of criterion for the current
+// queue, unless field is "-" (meaning unset). field must be an integer.
+func (p *bqueuesParser) parseOptionalLimit(field, criterion string) error {
+	if field == "-" {
+		return nil
+	}
+
+	i, err := strconv.Atoi(field)
+	if err != nil {
+		return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
+	}
+
+	p.s.queues[p.queue][criterion] = i
+	p.updateHighest(criterion, i)
+
+	return nil
+}
+
+// parseLimits handles the MEMLIMIT/RUNLIMIT section of a queue's output. It
+// returns skip=true when the rest of the line should not be examined.
+func (p *bqueuesParser) parseLimits(line string) (skip bool, err error) {
+	switch {
+	case p.reMemlimit.MatchString(line):
+		p.nextIsMemlimit = 0
+		for word := range strings.FieldsSeq(line) {
+			p.nextIsMemlimit++
+
+			if word == "MEMLIMIT" {
+				break
+			}
+		}
+
+		return true, nil
+	case p.nextIsMemlimit > 0:
+		return false, p.parseMemlimit(line)
+	case p.reRunLimit.MatchString(line):
+		p.nextIsRunlimit = true
+
+		return true, nil
+	case p.nextIsRunlimit:
+		return false, p.parseRunlimit(line)
+	}
+
+	return false, nil
+}
+
+// parseMemlimit parses the memory limit value for the current queue.
+func (p *bqueuesParser) parseMemlimit(line string) error {
+	if matches := p.reNumUnit.FindAllStringSubmatch(line, -1); matches != nil && len(matches) >= p.nextIsMemlimit-1 {
+		val, err := strconv.ParseFloat(matches[p.nextIsMemlimit-1][1], 32)
+		if err != nil {
+			return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
+		}
+
+		unit := matches[p.nextIsMemlimit-1][2]
+		switch unit {
+		case "T":
+			val *= 1000000
+		case "G":
+			val *= 1000
+		case "K":
+			val /= 1000
+		}
+
+		p.s.queues[p.queue][criterionMemlimit] = int(val)
+		p.updateHighest(criterionMemlimit, int(val))
+	}
+
+	p.nextIsMemlimit = 0
+
+	return nil
+}
+
+// parseRunlimit parses the run limit value for the current queue.
+func (p *bqueuesParser) parseRunlimit(line string) error {
+	if matches := p.reParseRunlimit.FindStringSubmatch(line); len(matches) == reMatchOneGroup {
+		mins, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
+		}
+
+		p.s.queues[p.queue][criterionRunlimit] = mins * secsPerMinute
+		// updateHighest(criterionRunlimit, ...) for queues that do not
+		// specify a run limit, we won't base the default on the
+		// highest value seen on other queues, but on a hard-coded 1
+		// year
+	}
+
+	p.nextIsRunlimit = false
+
+	return nil
+}
+
+// parseUserHosts handles USERS:/HOSTS: lines, recording how many users/hosts a
+// queue has, and dropping queues the current user can't submit to.
+func (p *bqueuesParser) parseUserHosts(line string) error {
+	matches := p.reUserHosts.FindStringSubmatch(line)
+	if len(matches) != reMatchTwoGroups {
+		return nil
+	}
+
+	kind := strings.ToLower(matches[1])
+	vals := strings.Fields(matches[2])
+
+	if kind == criterionUsers {
+		return p.parseUsers(vals)
+	}
+
+	if matches[2] != "all" {
+		return p.parseHosts(kind, vals)
+	}
+
+	return nil
+}
+
+// parseUsers records the number of users that can use the current queue, and
+// drops the queue if the current user can't use it.
+func (p *bqueuesParser) parseUsers(vals []string) error {
+	users := make(map[string]bool)
+	for _, val := range vals {
+		users[val] = true
+	}
+
+	p.s.queues[p.queue][criterionNumUsers] = len(users)
+	if users["all"] {
+		p.s.queues[p.queue][criterionNumUsers] = manyUsers
+	}
+
+	me, err := internal.Username()
+	if err != nil {
+		return Error{lsfScheduler, opInitialize, fmt.Sprintf("could not get current user: %s", err)}
+	}
+
+	if !users["all"] && !users[me] {
+		delete(p.s.queues, p.queue)
+		p.queue = ""
+	}
+
+	return nil
+}
+
+// parseHosts records the number of distinct hosts that back the current queue,
+// expanding any host group names via bmgroup.
+func (p *bqueuesParser) parseHosts(kind string, vals []string) error {
+	hosts := make(map[string]bool)
+
+	for _, val := range vals {
+		if err := p.addHost(hosts, val); err != nil {
+			return err
+		}
+	}
+
+	p.s.queues[p.queue][kind] = len(hosts)
+	p.updateHighest(kind, len(hosts))
+
+	return nil
+}
+
+// addHost adds val to hosts. If val is a host group name (ends in "/"), it is
+// looked up in bmgroup and expanded to its member hosts.
+func (p *bqueuesParser) addHost(hosts map[string]bool, val string) error {
+	if !strings.HasSuffix(val, "/") {
+		hosts[val] = true
+
+		return nil
+	}
+
+	// this is a group name, look it up in bmgroup
+	if !p.parsedBmgroups {
+		if perr := p.s.parseBmgroups(p.bmgroups); perr != nil {
+			return perr
+		}
+
+		p.parsedBmgroups = true
+	}
+
+	val = strings.TrimSuffix(val, "/")
+	if servers, exists := p.bmgroups[val]; exists {
+		for server := range servers {
+			hosts[server] = true
+		}
+	} else {
+		hosts[val] = true
+	}
+
+	return nil
+}
+
+// parseChunkSize records the chunk job size of the current queue, if present.
+func (p *bqueuesParser) parseChunkSize(line string) error {
+	matches := p.reChunkJobSize.FindStringSubmatch(line)
+	if len(matches) != reMatchOneGroup {
+		return nil
+	}
+
+	chunks, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
+	}
+
+	p.s.queues[p.queue][criterionChunkSize] = chunks
+
+	return nil
+}
+
+// rankQueues fills in default criteria values for all queues, then sorts them
+// so that those most likely to run jobs sooner come first in s.sortedqs.
+func (s *lsf) rankQueues(highest map[string]int) {
 	// for each criteria we're going to sort the queues on later, hard-code
 	// [weight, sort-order]. We want to avoid chunked queues because that means
 	// jobs will run sequentially instead of in parallel. For time and memory,
 	// prefer the queue that is more limited, since we suppose they might be
 	// less busy or will at least become free sooner
 	criteriaHandling := map[string][]int{
-		"hosts":      {18, 1}, // weight, sort order
-		"max_user":   {10, 1},
-		"max":        {5, 1},
-		"prio":       {1, 0},
-		"chunk_size": {10000, 0},
-		"runlimit":   {1, 1},
-		"memlimit":   {1, 0},
-		"num_users":  {15, 0},
+		criterionHosts:     {18, 1}, // weight, sort order
+		criterionMaxUser:   {10, 1},
+		criterionMax:       {5, 1},
+		"prio":             {1, 0},
+		criterionChunkSize: {10000, 0},
+		criterionRunlimit:  {1, 1},
+		criterionMemlimit:  {1, 0},
+		criterionNumUsers:  {15, 0},
 	}
 
-	// fill in some default values for the criteria on all the queues
-	defaults := map[string]int{"num_users": 10000, "runlimit": 31536000, "memlimit": 10000000, //nolint:mnd
-		"max": 10000000, "max_user": 10000000, "users": 10000000, "hosts": 10000000, "chunk_size": 0} //nolint:mnd
-	for criterion, highest := range highest {
-		if highest > 0 {
-			defaults[criterion] = highest + 1
-		}
-	}
-	for _, qmap := range s.queues {
-		for criterion, cdefault := range defaults {
-			if _, wasSet := qmap[criterion]; !wasSet {
-				qmap[criterion] = cdefault
-			}
-		}
-	}
+	s.applyQueueDefaults(highest)
 
 	// sort the queues, those most likely to run jobs sooner coming first
 	ranking := make(map[string]int)
 
 	// instead of range over criteriaHandling, because max_user must come first
 	for _, criterion := range []string{
-		"max_user", "max", "hosts",
-		"prio", "chunk_size", "num_users", "runlimit", "memlimit",
+		criterionMaxUser, criterionMax, criterionHosts,
+		"prio", criterionChunkSize, criterionNumUsers, criterionRunlimit, criterionMemlimit,
 	} {
-		// sort queues by this criterion
-		sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, criteriaHandling[criterion][1] == 1)
-
-		weight := criteriaHandling[criterion][0]
-		prevVal := -1
-		rank := 0
-		for _, queue := range sorted {
-			val := s.queues[queue][criterion]
-			if prevVal != -1 {
-				diff := int(math.Abs(float64(val) - float64(prevVal)))
-				if diff >= 1 {
-					rank++
-				}
-			}
-
-			ranking[queue] += rank * weight
-
-			prevVal = val
-		}
+		s.rankByCriterion(ranking, criterion, criteriaHandling[criterion])
 	}
 
 	s.sortedqs = internal.SortMapKeysByIntValue(ranking, false)
@@ -400,54 +657,112 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 	// and other numbers which can be tested against any global maximum number
 	// of jobs that we should submit to LSF, and if lower than any of those
 	// we prefer the order described there
-	//*** we probably don't need this if we won't be having a global max
+	// *** we probably don't need this if we won't be having a global max
 	// specified by the user
+}
 
-	// if a job becomes lost, scheduler needs to ssh to the host to check on the
-	// process, so we store our private key
-	if content, err := os.ReadFile(internal.TildaToHome(s.config.PrivateKeyPath)); err == nil {
-		s.privateKey = string(content)
+// applyQueueDefaults fills in default values for the criteria on all the
+// queues, basing defaults on the highest value seen per criterion where one
+// was seen.
+func (s *lsf) applyQueueDefaults(highest map[string]int) {
+	defaults := map[string]int{
+		criterionNumUsers:  manyUsers,
+		criterionRunlimit:  oneYearInSeconds,
+		criterionMemlimit:  hugeQueueLimit,
+		criterionMax:       hugeQueueLimit,
+		criterionMaxUser:   hugeQueueLimit,
+		criterionUsers:     hugeQueueLimit,
+		criterionHosts:     hugeQueueLimit,
+		criterionChunkSize: 0,
 	}
 
-	return nil
+	for criterion, highestVal := range highest {
+		if highestVal > 0 {
+			defaults[criterion] = highestVal + 1
+		}
+	}
+
+	for _, qmap := range s.queues {
+		for criterion, cdefault := range defaults {
+			if _, wasSet := qmap[criterion]; !wasSet {
+				qmap[criterion] = cdefault
+			}
+		}
+	}
+}
+
+// rankByCriterion adds to each queue's entry in ranking based on its position
+// when the queues are sorted by the given criterion. handling is the
+// [weight, sort-order] pair for that criterion.
+func (s *lsf) rankByCriterion(ranking map[string]int, criterion string, handling []int) {
+	// sort queues by this criterion
+	sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, handling[1] == 1)
+
+	weight := handling[0]
+	prevVal := -1
+	rank := 0
+
+	for _, queue := range sorted {
+		val := s.queues[queue][criterion]
+		if prevVal != -1 {
+			diff := int(math.Abs(float64(val) - float64(prevVal)))
+			if diff >= 1 {
+				rank++
+			}
+		}
+
+		ranking[queue] += rank * weight
+
+		prevVal = val
+	}
 }
 
 // parseBmgroups parses the output of `bmgroup`, storing group name as a key in
 // the supplied map, with a map of hosts in that group as the value.
 func (s *lsf) parseBmgroups(groups map[string]map[string]bool) error {
-	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup -w") // #nosec
+	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup -w")
+
 	bmgout, err := bmgcmd.StdoutPipe()
 	if err != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bmgroup]: %s", err)}
+		return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to create pipe for [bmgroup]: %s", err)}
 	}
+
 	if err = bmgcmd.Start(); err != nil {
-		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bmgroup]: %s", err)}
+		return Error{lsfScheduler, opInitialize, fmt.Sprintf("failed to start [bmgroup]: %s", err)}
 	}
+
 	bmgScanner := bufio.NewScanner(bmgout)
 	for bmgScanner.Scan() {
-		line := bmgScanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		fields := strings.Fields(bmgScanner.Text())
+		if len(fields) < bmgroupMinFields {
 			continue
 		}
-		for i, field := range fields {
-			if i == 0 {
-				continue
+
+		addBmgroup(groups, fields)
+	}
+
+	return nil
+}
+
+// addBmgroup records the hosts (fields after the first) belonging to the group
+// named by fields[0], expanding any nested group references.
+func addBmgroup(groups map[string]map[string]bool, fields []string) {
+	group := fields[0]
+
+	for _, field := range fields[1:] {
+		if groups[group] == nil {
+			groups[group] = make(map[string]bool)
+		}
+
+		if before, ok := strings.CutSuffix(field, "/"); ok {
+			for server := range groups[before] {
+				groups[group][server] = true
 			}
-			if groups[fields[0]] == nil {
-				groups[fields[0]] = make(map[string]bool)
-			}
-			if strings.HasSuffix(field, "/") {
-				lookup := strings.TrimSuffix(field, "/")
-				for server := range groups[lookup] {
-					groups[fields[0]][server] = true
-				}
-			} else {
-				groups[fields[0]][field] = true
-			}
+		} else {
+			groups[group][field] = true
 		}
 	}
-	return nil
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
@@ -456,10 +771,13 @@ func (s *lsf) reserveTimeout(ctx context.Context, req *Requirements) int {
 		timeout, err := strconv.Atoi(val)
 		if err != nil {
 			clog.Error(ctx, fmt.Sprintf("Failed to convert timeout to integer: %s", err))
+
 			return defaultReserveTimeout
 		}
+
 		return timeout
 	}
+
 	return defaultReserveTimeout
 }
 
@@ -467,15 +785,16 @@ func (s *lsf) reserveTimeout(ctx context.Context, req *Requirements) int {
 func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
 	queue, err := s.determineQueue(req)
 	if err == nil {
-		return time.Duration(s.queues[queue]["runlimit"]) * time.Second
+		return time.Duration(s.queues[queue][criterionRunlimit]) * time.Second
 	}
+
 	return infiniteQueueTime
 }
 
 // schedule achieves the aims of Schedule(). Note that if rescheduling a cmd
 // at a lower count, we cannot guarantee that only that number get run; it may
 // end up being a few more.
-func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, priority uint8, count int) error {
+func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, _ uint8, count int) error {
 	// use the given queue or find the best queue for these resource
 	// requirements
 	queue, err := s.determineQueue(req)
@@ -490,6 +809,7 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, prior
 	if err != nil {
 		return err
 	}
+
 	stillNeeded := count - scheduledCount
 	if stillNeeded < 1 {
 		return nil
@@ -497,58 +817,88 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, prior
 
 	bsubArgs := s.generateBsubArgs(ctx, queue, req, cmd, stillNeeded)
 
+	return s.submitToQueue(ctx, bsubArgs)
+}
+
+// submitToQueue runs bsub with the given args and waits until the submitted job
+// appears in bjobs (see waitForBjob for why).
+func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
 	// submit to the queue
-	bsubcmd := exec.Command(s.bsubExe, bsubArgs...) // #nosec
+	//nolint:gosec,noctx // LSF job submission; must complete regardless of scheduling ctx cancellation
+	bsubcmd := exec.Command(s.bsubExe, bsubArgs...)
+
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
-		return Error{"lsf", "schedule", fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)}
+		return Error{lsfScheduler, opSchedule, fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)}
 	}
 
-	// unfortunately, a job can be successfully submitted to the queue but not
-	// immediately appear in bjobs, and if it completes in less than a few
-	// seconds, it will never appear there (unless you supply bjobs the job id).
-	// This means that our busy() method, if called immediately after the
-	// schedule(), would return false, even though the job may actually be
-	// running. To solve this issue we will wait until bjobs -w <jobid> is found
-	// and only then return. If a subsequent busy() call returns false, that
-	// means the job completed and we're really not busy.
-	if matches := s.bsubRegex.FindStringSubmatch(string(bsubout)); len(matches) == 2 {
-		ready := make(chan bool, 1)
-		go func() {
-			defer internal.LogPanic(ctx, "lsf scheduling", true)
+	matches := s.bsubRegex.FindStringSubmatch(string(bsubout))
+	if len(matches) != reMatchOneGroup {
+		return Error{lsfScheduler, opSchedule, fmt.Sprintf("bsub %s returned unexpected output: %s", bsubArgs, bsubout)}
+	}
 
-			limit := time.After(10 * time.Second)
-			ticker := time.NewTicker(100 * time.Millisecond)
-			for {
-				select {
-				case <-ticker.C:
-					bjcmd := exec.Command(s.bjobsExe, "-w", matches[1]) // #nosec
-					bjout, errf := bjcmd.CombinedOutput()
-					if errf != nil {
-						continue
-					}
-					if len(bjout) > 46 {
-						ticker.Stop()
-						ready <- true
-						return
-					}
-					continue
-				case <-limit:
-					ticker.Stop()
-					ready <- false
-					return
-				}
-			}
-		}()
-		ok := <-ready
-		if !ok {
-			return Error{"lsf", "schedule", "after running bsub, failed to find the submitted jobs in bjobs"}
-		}
-	} else {
-		return Error{"lsf", "schedule", fmt.Sprintf("bsub %s returned unexpected output: %s", bsubArgs, bsubout)}
+	if !s.waitForBjob(ctx, matches[1]) {
+		return Error{lsfScheduler, opSchedule, "after running bsub, failed to find the submitted jobs in bjobs"}
 	}
 
 	return err
+}
+
+// waitForBjob waits until the submitted job with the given id appears in bjobs
+// -w output, returning true once it does, or false if it never appears within
+// bjobsAppearTimeout.
+//
+// unfortunately, a job can be successfully submitted to the queue but not
+// immediately appear in bjobs, and if it completes in less than a few seconds,
+// it will never appear there (unless you supply bjobs the job id). This means
+// that our busy() method, if called immediately after the schedule(), would
+// return false, even though the job may actually be running. To solve this
+// issue we wait until bjobs -w <jobid> is found and only then return. If a
+// subsequent busy() call returns false, that means the job completed and we're
+// really not busy.
+func (s *lsf) waitForBjob(ctx context.Context, jobID string) bool {
+	ready := make(chan bool, 1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "lsf scheduling", true)
+
+		limit := time.After(bjobsAppearTimeout)
+		ticker := time.NewTicker(bjobsAppearPollFreq)
+
+		for {
+			select {
+			case <-ticker.C:
+				if s.bjobAppeared(jobID) {
+					ticker.Stop()
+
+					ready <- true
+
+					return
+				}
+			case <-limit:
+				ticker.Stop()
+
+				ready <- false
+
+				return
+			}
+		}
+	}()
+
+	return <-ready
+}
+
+// bjobAppeared returns true if bjobs -w now reports the job with the given id.
+func (s *lsf) bjobAppeared(jobID string) bool {
+	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+	bjcmd := exec.Command(s.bjobsExe, "-w", jobID)
+
+	bjout, errf := bjcmd.CombinedOutput()
+	if errf != nil {
+		return false
+	}
+
+	return len(bjout) > bjobsMinJobLineLen
 }
 
 // scheduled achieves the aims of Scheduled().
@@ -557,7 +907,7 @@ func (s *lsf) scheduled(ctx context.Context, cmd string) (int, error) {
 }
 
 // generateBsubArgs generates the appropriate bsub args for the given req and
-// cmd and queue
+// cmd and queue.
 func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requirements, cmd string, needed int) []string {
 	args, err := generateBsubArgs(queue, req, cmd, s.config.Deployment, needed, s.memLimitMultiplier)
 	if err != nil {
@@ -570,6 +920,7 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 func generateBsubArgs(queue string, req *Requirements, cmd, deployment string,
 	needed int, memLimitMultiplier float32) ([]string, error) {
 	var bsubArgs []string
+
 	megabytes := req.RAM
 	m := float32(megabytes) * memLimitMultiplier
 
@@ -586,7 +937,7 @@ func generateBsubArgs(queue string, req *Requirements, cmd, deployment string,
 	}
 
 	if req.Cores > 1 {
-		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
+		bsubArgs = append(bsubArgs, "-n", strconv.Itoa(int(math.Ceil(req.Cores))))
 	}
 
 	name := generateBsubName(cmd, deployment, needed)
@@ -603,7 +954,7 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 
 	for n := 0; n < len(words); n += 2 {
 		if !strings.HasPrefix(words[n], "-") {
-			return nil, Error{"lsf", "parseUserArgs", ErrInvalidBsubOpts}
+			return nil, Error{lsfScheduler, opParseUserArgs, ErrInvalidBsubOpts}
 		}
 
 		if words[n] != "-R" {
@@ -660,7 +1011,9 @@ func (s BsubValidator) Validate(opts, queue string) (valid bool) {
 		return false
 	}
 
+	//nolint:noctx // LSF validation command; must complete regardless of scheduling ctx cancellation
 	cmd := exec.Command("bsub", args...)
+
 	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
 	err = cmd.Run()
 	valid = err == nil
@@ -670,19 +1023,20 @@ func (s BsubValidator) Validate(opts, queue string) (valid bool) {
 
 // recover achieves the aims of Recover(). We don't have to do anything, since
 // when the cmd finishes running, LSF itself will clean up.
-func (s *lsf) recover(ctx context.Context, cmd string, req *Requirements, host *RecoveredHostDetails) error {
+func (s *lsf) recover(_ context.Context, _ string, _ *Requirements, _ *RecoveredHostDetails) error {
 	return nil
 }
 
 // busy returns true if there are any jobs with our jobName() prefix in any
 // queue. It also returns true if the most recently submitted job is pending or
-// running
+// running.
 func (s *lsf) busy(ctx context.Context) bool {
 	count, err := s.checkCmd(ctx, "", -1)
 	if err != nil {
 		// busy() doesn't return an error, so just assume we're busy
 		return true
 	}
+
 	return count > 0
 }
 
@@ -705,6 +1059,16 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 		queuesToAvoid = strings.Split(req.Other["scheduler_queues_avoid"], ",")
 	}
 
+	if queue, ok := s.firstSuitableQueue(queues, queuesToAvoid, req, seconds); ok {
+		return queue, nil
+	}
+
+	return "", Error{lsfScheduler, opDetermineQueue, ErrImpossible}
+}
+
+// firstSuitableQueue returns the first queue (from the given preference-ordered
+// list) that isn't to be avoided and has enough memory and time for req.
+func (s *lsf) firstSuitableQueue(queues, queuesToAvoid []string, req *Requirements, seconds float64) (string, bool) {
 	for _, queue := range queues {
 		if queueShouldBeAvoided(queue, queuesToAvoid) {
 			continue
@@ -718,10 +1082,10 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 			continue
 		}
 
-		return queue, nil
+		return queue, true
 	}
 
-	return "", Error{"lsf", "determineQueue", ErrImpossible}
+	return "", false
 }
 
 func queueShouldBeAvoided(queue string, queuesToAvoid []string) bool {
@@ -735,18 +1099,18 @@ func queueShouldBeAvoided(queue string, queuesToAvoid []string) bool {
 }
 
 func (s *lsf) queueHasTooLittleMemory(queue string, req *Requirements) bool {
-	return s.queues[queue]["memlimit"] > 0 && s.queues[queue]["memlimit"] < req.RAM
+	return s.queues[queue][criterionMemlimit] > 0 && s.queues[queue][criterionMemlimit] < req.RAM
 }
 
 func (s *lsf) queueHasTooLittleTime(queue string, seconds float64) bool {
-	return s.queues[queue]["runlimit"] > 0 && float64(s.queues[queue]["runlimit"]) < seconds
+	return s.queues[queue][criterionRunlimit] > 0 && float64(s.queues[queue][criterionRunlimit]) < seconds
 }
 
-// checkCmd asks LSF how many of the supplied cmd are running, and if max >= 0
-// is supplied, kills any extraneous non-running jobs for the cmd. If the
-// supplied cmd is the empty string, it will report/act on all cmds submitted
-// by schedule() for this deployment.
-func (s *lsf) checkCmd(ctx context.Context, cmd string, max int) (count int, err error) {
+// checkCmd asks LSF how many of the supplied cmd are running, and if
+// maxAllowed >= 0 is supplied, kills any extraneous non-running jobs for the
+// cmd. If the supplied cmd is the empty string, it will report/act on all cmds
+// submitted by schedule() for this deployment.
+func (s *lsf) checkCmd(ctx context.Context, cmd string, maxAllowed int) (count int, err error) {
 	// bjobs -w does not output a column for both array index and the command.
 	// The LSF related modules on CPAN either just parse the command line output
 	// or don't work. Ideally we'd use the C-API's lsb_readjobinfo call, but we
@@ -767,49 +1131,90 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, max int) (count int, err
 		jobPrefix = jobName(cmd, s.config.Deployment, false)
 	}
 
-	if max >= 0 {
-		// to avoid a race condition where we collect id[index]s to kill here,
-		// then later kill them all, though some may have started running by
-		// then, we used to collect the jod ids now, then later bmod to allow
-		// 0 running, then repeat the bjobs to find the ones to kill, kill them,
-		// then bmod back to allowing lots to run. However, use of bmod resulted
-		// in big rescheduling delays, and overall it seemed better (in terms of
-		// getting jobs run quicker) to allow the race condition and allow some
-		// cmds to start running and then get killed.
-		reAid := regexp.MustCompile(`\[(\d+)\]$`)
-		toKill := []string{"-b"}
-		cb := func(jobID, stat, jobName string) {
-			count++
-			if count > max && stat != "RUN" {
-				var sidaid string
-				if strings.HasSuffix(jobID, "]") {
-					sidaid = jobID
-				} else if aidmatch := reAid.FindStringSubmatch(jobName); len(aidmatch) == 2 {
-					sidaid = jobID + "[" + aidmatch[1] + "]"
-				}
-				if sidaid != "" {
-					toKill = append(toKill, sidaid)
-				}
-				count--
-			}
-		}
-		err = s.parseBjobs(jobPrefix, cb)
-
-		if len(toKill) > 1 {
-			killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
-			out, errk := killcmd.CombinedOutput()
-			if errk != nil && !strings.HasPrefix(string(out), "Job has already finished") {
-				clog.Warn(ctx, "checkCmd bkill failed", "cmd", s.bkillExe, "toKill", toKill, "err", errk, "out", string(out))
-			}
-		}
-	} else {
-		cb := func(jobID, stat, jobName string) {
-			count++
-		}
-		err = s.parseBjobs(jobPrefix, cb)
+	if maxAllowed < 0 {
+		return s.countCmds(jobPrefix)
 	}
 
+	return s.killExcessCmds(ctx, jobPrefix, maxAllowed)
+}
+
+// countCmds counts how many jobs with the given prefix are known to LSF.
+func (s *lsf) countCmds(jobPrefix string) (count int, err error) {
+	cb := func(_, _, _ string) {
+		count++
+	}
+	err = s.parseBjobs(jobPrefix, cb)
+
 	return count, err
+}
+
+// killCollector counts running cmds and collects the ids of non-running cmds
+// beyond a maximum, so they can be killed.
+type killCollector struct {
+	reAid      *regexp.Regexp
+	toKill     []string
+	count      int
+	maxAllowed int
+}
+
+// consider counts the given job, and if we're now over maxAllowed and the job
+// isn't running, records it for killing (and doesn't count it).
+func (k *killCollector) consider(jobID, stat, jobName string) {
+	k.count++
+	if k.count > k.maxAllowed && stat != "RUN" {
+		if sidaid := killableID(jobID, jobName, k.reAid); sidaid != "" {
+			k.toKill = append(k.toKill, sidaid)
+		}
+
+		k.count--
+	}
+}
+
+// killExcessCmds counts how many jobs with the given prefix are known to LSF
+// and kills any non-running ones beyond maxAllowed, returning the resulting
+// count.
+func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed int) (count int, err error) {
+	// to avoid a race condition where we collect id[index]s to kill here,
+	// then later kill them all, though some may have started running by
+	// then, we used to collect the jod ids now, then later bmod to allow
+	// 0 running, then repeat the bjobs to find the ones to kill, kill them,
+	// then bmod back to allowing lots to run. However, use of bmod resulted
+	// in big rescheduling delays, and overall it seemed better (in terms of
+	// getting jobs run quicker) to allow the race condition and allow some
+	// cmds to start running and then get killed.
+	kc := &killCollector{
+		reAid:      regexp.MustCompile(`\[(\d+)\]$`),
+		toKill:     []string{"-b"},
+		maxAllowed: maxAllowed,
+	}
+
+	err = s.parseBjobs(jobPrefix, kc.consider)
+
+	if len(kc.toKill) > 1 {
+		//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+		killcmd := exec.Command(s.bkillExe, kc.toKill...)
+
+		out, errk := killcmd.CombinedOutput()
+		if errk != nil && !strings.HasPrefix(string(out), "Job has already finished") {
+			clog.Warn(ctx, "checkCmd bkill failed", "cmd", s.bkillExe, "toKill", kc.toKill, "err", errk, "out", string(out))
+		}
+	}
+
+	return kc.count, err
+}
+
+// killableID returns the submission-id[array-index] string to pass to bkill for
+// the given bjobs job id and job name, or "" if one can't be determined.
+func killableID(jobID, jobName string, reAid *regexp.Regexp) string {
+	if strings.HasSuffix(jobID, "]") {
+		return jobID
+	}
+
+	if aidmatch := reAid.FindStringSubmatch(jobName); len(aidmatch) == reMatchOneGroup {
+		return jobID + "[" + aidmatch[1] + "]"
+	}
+
+	return ""
 }
 
 type bjobsCB func(jobID, stat, jobName string)
@@ -818,42 +1223,56 @@ type bjobsCB func(jobID, stat, jobName string)
 // gives columns 1 (JOBID), 3 (STAT) and 7 (JOB_NAME) to your callback for each
 // bjobs output line.
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
-	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w") // #nosec
+	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w")
+
 	bjout, err := bjcmd.StdoutPipe()
 	if err != nil {
-		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
+		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
 	}
+
 	err = bjcmd.Start()
 	if err != nil {
-		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
+		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
 	}
+
 	bjScanner := bufio.NewScanner(bjout)
 	bjScanner.Buffer([]byte{}, scanBufferSize)
 
 	for bjScanner.Scan() {
-		line := bjScanner.Text()
-		fields := strings.Fields(line)
-
-		if len(fields) > 7 {
-			if fields[2] == "EXIT" || fields[2] == "DONE" || !strings.HasPrefix(fields[6], jobPrefix) {
-				continue
-			}
-			callback(fields[0], fields[2], fields[6])
-		}
+		parseBjobsLine(bjScanner.Text(), jobPrefix, callback)
 	}
 
 	if err = bjScanner.Err(); err != nil {
-		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", err)}
+		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to read everything from [bjobs -w]: %s", err)}
 	}
+
 	err = bjcmd.Wait()
 	if err != nil {
-		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
+		err = Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
 	}
+
 	return err
 }
 
+// parseBjobsLine passes the job id, status and name from a single bjobs -w line
+// to callback, unless the line is too short, the job has exited, or its name
+// doesn't have the given prefix.
+func parseBjobsLine(line, jobPrefix string, callback bjobsCB) {
+	fields := strings.Fields(line)
+	if len(fields) <= bjobsMinFields {
+		return
+	}
+
+	if fields[2] == "EXIT" || fields[2] == "DONE" || !strings.HasPrefix(fields[6], jobPrefix) {
+		return
+	}
+
+	callback(fields[0], fields[2], fields[6])
+}
+
 // hostToID always returns an empty string, since we're not in the cloud.
-func (s *lsf) hostToID(host string) string {
+func (s *lsf) hostToID(_ string) string {
 	return ""
 }
 
@@ -874,23 +1293,27 @@ func (s *lsf) getHost(host string) (Host, bool) {
 
 // setMessageCallBack does nothing at the moment, since we don't generate any
 // messages for the user.
-func (s *lsf) setMessageCallBack(ctx context.Context, cb MessageCallBack) {}
+func (s *lsf) setMessageCallBack(_ context.Context, _ MessageCallBack) {}
 
 // setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
-func (s *lsf) setBadServerCallBack(ctx context.Context, cb BadServerCallBack) {}
+func (s *lsf) setBadServerCallBack(_ context.Context, _ BadServerCallBack) {}
 
-// cleanup bkills any remaining jobs we created
+// cleanup bkills any remaining jobs we created.
 func (s *lsf) cleanup(ctx context.Context) {
 	toKill := []string{"-b"}
-	cb := func(jobID, stat, jobName string) {
+	cb := func(jobID, _, _ string) {
 		toKill = append(toKill, jobID)
 	}
+
 	err := s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
 	if err != nil {
 		clog.Error(ctx, "cleaup parse bjobs failed", "err", err)
 	}
+
 	if len(toKill) > 1 {
-		killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
+		//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
+		killcmd := exec.Command(s.bkillExe, toKill...)
+
 		err = killcmd.Run()
 		if err != nil {
 			clog.Warn(ctx, "cleanup bkill failed", "err", err)

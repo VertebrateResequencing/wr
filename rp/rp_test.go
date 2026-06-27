@@ -38,25 +38,26 @@ import (
 func BenchmarkRP(b *testing.B) {
 	delayBetween := 0 * time.Millisecond
 	releaseTimeout := 200 * time.Millisecond
+
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
 		rp1 := New("l1", delayBetween, 5, releaseTimeout)
 		rp2 := New("l2", delayBetween, 6, releaseTimeout)
 
-		r11 := getRequest(rp1, 1)
-		r12 := getRequest(rp1, 1)
-		r13 := getRequest(rp1, 1)
-		r14 := getRequest(rp1, 1)
-		r15 := getRequest(rp1, 1)
-		r16 := getRequest(rp1, 1)
-		r21 := getRequest(rp2, 1)
-		r22 := getRequest(rp2, 1)
-		r23 := getRequest(rp2, 1)
-		r24 := getRequest(rp2, 1)
-		r25 := getRequest(rp2, 1)
-		r26 := getRequest(rp2, 1)
-		r27 := getRequest(rp2, 1)
+		r11 := getRequest(rp1)
+		r12 := getRequest(rp1)
+		r13 := getRequest(rp1)
+		r14 := getRequest(rp1)
+		r15 := getRequest(rp1)
+		r16 := getRequest(rp1)
+		r21 := getRequest(rp2)
+		r22 := getRequest(rp2)
+		r23 := getRequest(rp2)
+		r24 := getRequest(rp2)
+		r25 := getRequest(rp2)
+		r26 := getRequest(rp2)
+		r27 := getRequest(rp2)
 
 		rp1.WaitUntilGranted(r11)
 		rp1.WaitUntilGranted(r12)
@@ -84,16 +85,16 @@ func BenchmarkRP(b *testing.B) {
 		rp2.Release(r25)
 		rp2.Release(r26)
 
-		r11 = getRequest(rp1, 1)
-		r12 = getRequest(rp1, 1)
-		r13 = getRequest(rp1, 1)
-		r14 = getRequest(rp1, 1)
-		r15 = getRequest(rp1, 1)
-		r16 = getRequest(rp1, 1)
-		r17 := getRequest(rp1, 1)
-		r18 := getRequest(rp1, 1)
-		r19 := getRequest(rp1, 1)
-		r110 := getRequest(rp1, 1)
+		r11 = getRequest(rp1)
+		r12 = getRequest(rp1)
+		r13 = getRequest(rp1)
+		r14 = getRequest(rp1)
+		r15 = getRequest(rp1)
+		r16 = getRequest(rp1)
+		r17 := getRequest(rp1)
+		r18 := getRequest(rp1)
+		r19 := getRequest(rp1)
+		r110 := getRequest(rp1)
 
 		rp1.Granted(r11)
 		rp1.Granted(r12)
@@ -118,11 +119,12 @@ func BenchmarkRP(b *testing.B) {
 	}
 }
 
-func getRequest(rp *Protector, numTokens int) Receipt {
-	r, err := rp.Request(numTokens)
+func getRequest(rp *Protector) Receipt {
+	r, err := rp.Request(1)
 	if err != nil {
-		fmt.Printf("Request had an error: %s\n", err)
+		fmt.Printf("Request had an error: %s\n", err) //nolint:forbidigo // test diagnostic
 	}
+
 	return r
 }
 
@@ -149,7 +151,8 @@ func testRPBody(t *testing.T) {
 
 		begin := time.Now()
 
-		Convey("Request() returns immediately, but there is a delay between each granting and once all tokens have been granted", func() {
+		Convey("Request() returns immediately, but there is a delay between each granting and once all "+
+			"tokens have been granted", func() {
 			grantedCh := make(chan time.Time, maxSimultaneous)
 			for i := 1; i <= maxSimultaneous; i++ {
 				r, err := rp.Request(1)
@@ -157,6 +160,7 @@ func testRPBody(t *testing.T) {
 
 				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
+
 					grantedCh <- time.Now()
 				}(r)
 			}
@@ -171,8 +175,9 @@ func testRPBody(t *testing.T) {
 			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(releaseTimeout), begin.Add(releaseTimeout).Add(halfDelay))
 			rp.Release(r)
 
-			for i := 0; i < maxSimultaneous; i++ {
-				So(<-grantedCh, ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*i)*time.Millisecond), begin.Add(time.Duration(delayInt*i)*time.Millisecond).Add(halfDelay))
+			for i := range maxSimultaneous {
+				expected := begin.Add(time.Duration(delayInt*i) * time.Millisecond)
+				So(<-grantedCh, ShouldHappenOnOrBetween, expected, expected.Add(halfDelay))
 			}
 		})
 
@@ -267,7 +272,9 @@ func testRPBody(t *testing.T) {
 				}()
 
 				So(rp.WaitUntilGranted(r2), ShouldBeTrue)
-				So(time.Now(), ShouldHappenOnOrBetween, begin.Add(releaseTimeout).Add(oneFiftyPercentDelay), begin.Add(releaseTimeout).Add(doubleDelay))
+
+				released := begin.Add(releaseTimeout)
+				So(time.Now(), ShouldHappenOnOrBetween, released.Add(oneFiftyPercentDelay), released.Add(doubleDelay))
 				rp.Release(r2)
 			})
 		})
@@ -327,14 +334,16 @@ func testRPBody(t *testing.T) {
 			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
 
 			So(rp.WaitUntilGranted(r2), ShouldBeTrue)
-			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(oneFiftyPercentDelay), begin.Add(oneFiftyPercentDelay).Add(halfDelay))
+
+			oneFiftyAfterBegin := begin.Add(oneFiftyPercentDelay)
+			So(time.Now(), ShouldHappenOnOrBetween, oneFiftyAfterBegin, oneFiftyAfterBegin.Add(halfDelay))
 			rp.Release(r2)
 
 			Convey("Once released, the Request methods do nothing", func() {
 				rp.Release(r2)
 				rp.Touch(r2)
 				So(rp.WaitUntilGranted(r2), ShouldBeFalse)
-				So(time.Now(), ShouldHappenOnOrBetween, begin.Add(oneFiftyPercentDelay), begin.Add(oneFiftyPercentDelay).Add(halfDelay))
+				So(time.Now(), ShouldHappenOnOrBetween, oneFiftyAfterBegin, oneFiftyAfterBegin.Add(halfDelay))
 			})
 		})
 
@@ -356,11 +365,13 @@ func testRPBody(t *testing.T) {
 			So(keepChecking, ShouldBeTrue)
 
 			<-time.After(halfDelay)
+
 			granted, keepChecking = rp.Granted(r2)
 			So(granted, ShouldBeFalse)
 			So(keepChecking, ShouldBeTrue)
 
 			<-time.After(oneFiftyPercentDelay)
+
 			granted, keepChecking = rp.Granted(r2)
 			So(granted, ShouldBeTrue)
 			So(keepChecking, ShouldBeFalse)
@@ -379,7 +390,9 @@ func testRPBody(t *testing.T) {
 
 				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
+
 					grantedCh <- time.Now()
+
 					<-time.After(halfDelay)
 					rp.Release(r)
 				}(r)
@@ -388,7 +401,8 @@ func testRPBody(t *testing.T) {
 			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
 
 			for i := 0; i < maxSimultaneous*3; i++ {
-				So(<-grantedCh, ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*i)*time.Millisecond), begin.Add(time.Duration(delayInt*i)*time.Millisecond).Add(halfDelay))
+				expected := begin.Add(time.Duration(delayInt*i) * time.Millisecond)
+				So(<-grantedCh, ShouldHappenOnOrBetween, expected, expected.Add(halfDelay))
 			}
 		})
 
@@ -403,7 +417,9 @@ func testRPBody(t *testing.T) {
 
 				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
+
 					grantedCh <- time.Now()
+
 					rp.Release(r)
 				}(r)
 			}
@@ -423,6 +439,7 @@ func testRPBody(t *testing.T) {
 				if cbCalls <= tooBusyFor {
 					return maxSimultaneous - 1
 				}
+
 				return maxSimultaneous
 			}
 			rp.SetAvailabilityCallback(cb)
@@ -431,7 +448,9 @@ func testRPBody(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			So(rp.WaitUntilGranted(r), ShouldBeTrue)
-			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*tooBusyFor)*time.Millisecond), begin.Add(time.Duration(delayInt*tooBusyFor)*time.Millisecond).Add(halfDelay))
+
+			expected := begin.Add(time.Duration(delayInt*tooBusyFor) * time.Millisecond)
+			So(time.Now(), ShouldHappenOnOrBetween, expected, expected.Add(halfDelay))
 		})
 	})
 }

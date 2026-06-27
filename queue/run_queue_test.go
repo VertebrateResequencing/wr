@@ -37,7 +37,8 @@ func TestRunQueue(t *testing.T) {
 	Convey("Once 10 items of differing ttr have been pushed to the queue", t, func() {
 		queue := newSubQueue(2)
 		items := make(map[string]*Item)
-		for i := 0; i < 10; i++ {
+
+		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			ttr := time.Duration((9 - i + 1)) * time.Second
 			items[key] = newItem(key, "", "data", 0, 0*time.Second, ttr)
@@ -48,23 +49,7 @@ func TestRunQueue(t *testing.T) {
 		So(queue.Len(), ShouldEqual, 10)
 
 		Convey("Popping them should remove them in ttr order", func() {
-			exampleItem := items["key_1"]
-
-			for i := 0; i < 5; i++ {
-				item := queue.pop()
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i))
-			}
-			So(queue.Len(), ShouldEqual, 5)
-			for i := 0; i < 5; i++ {
-				item := queue.pop()
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", 9-i-5))
-			}
-			So(queue.Len(), ShouldEqual, 0)
-
-			item := queue.pop()
-			So(item, ShouldBeNil)
+			assertPopsInOrder(queue, items)
 		})
 
 		Convey("Removing an item works", func() {
@@ -77,8 +62,10 @@ func TestRunQueue(t *testing.T) {
 				if item == nil {
 					break
 				}
+
 				So(item.Key, ShouldNotEqual, "key_2")
 			}
+
 			So(queue.Len(), ShouldEqual, 0)
 		})
 
@@ -101,7 +88,8 @@ func TestRunQueue(t *testing.T) {
 			So(queue.Len(), ShouldEqual, 10)
 
 			queue := newSubQueue(2)
-			for i := 0; i < 10; i++ {
+
+			for i := range 10 {
 				key := fmt.Sprintf("key_%d", i)
 				ttr := time.Duration((9 - i + 1)) * time.Second
 				item := newItem(key, "", "data", 0, 0*time.Second, ttr)
@@ -114,7 +102,8 @@ func TestRunQueue(t *testing.T) {
 			}
 
 			queue = newSubQueue(2)
-			for i := 0; i < 10; i++ {
+
+			for i := range 10 {
 				key := fmt.Sprintf("key_%d", i)
 				ttr := time.Duration(i+1) * time.Second
 				item := newItem(key, "", "data", 0, 0*time.Second, ttr)

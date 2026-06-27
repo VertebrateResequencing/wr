@@ -1087,7 +1087,7 @@ func startStatusTestServer(ctx context.Context, t *testing.T) (
 func nonEmptyStatusLines(output string) []string {
 	var lines []string
 
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if strings.TrimSpace(line) != "" {
 			lines = append(lines, line)
 		}

@@ -37,14 +37,14 @@ import (
 func TestContext(t *testing.T) {
 	background := context.Background()
 
-	checkValIsString := func(val interface{}) string {
+	checkValIsString := func(val any) string {
 		strVal, isString := val.(string)
 		So(isString, ShouldBeTrue)
 
 		return strVal
 	}
 
-	checkValIsUniqueID := func(val interface{}) {
+	checkValIsUniqueID := func(val any) {
 		id := checkValIsString(val)
 		So(len(id), ShouldEqual, uniqueIDLength)
 	}

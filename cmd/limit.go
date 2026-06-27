@@ -34,10 +34,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var limitGroup string
 
-// limitCmd represents the remove command
+// limitCmd represents the remove command.
 var limitCmd = &cobra.Command{
 	Use:   "limit",
 	Short: "Limit how many jobs in a group run at once",
@@ -63,13 +63,14 @@ Setting a limit of 0 stops any more jobs in that group from running. Setting a
 limit of -1 makes that group unlimited.
 
 Supplying no options lists all limits that are currently in place.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		if len(args) > 0 {
 			die("Did you mean to specify --group?")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -80,6 +81,7 @@ Supplying no options lists all limits that are currently in place.`,
 
 		if limitGroup == "" {
 			var limits map[string]int
+
 			limits, err = jq.GetLimitGroups()
 			if err != nil {
 				die("%s", err.Error())
@@ -89,6 +91,7 @@ Supplying no options lists all limits that are currently in place.`,
 			for key := range limits {
 				keys = append(keys, key)
 			}
+
 			sort.Strings(keys)
 
 			for _, key := range keys {
@@ -102,6 +105,7 @@ Supplying no options lists all limits that are currently in place.`,
 		if err != nil {
 			die("%s", err.Error())
 		}
+
 		fmt.Printf("%d\n", limit)
 	},
 }
@@ -110,5 +114,6 @@ func init() {
 	RootCmd.AddCommand(limitCmd)
 
 	// flags specific to this sub-command
-	limitCmd.Flags().StringVarP(&limitGroup, "group", "g", "", "name of the limit group to view, suffixed with :n to set limit")
+	limitCmd.Flags().StringVarP(&limitGroup, "group", "g", "",
+		"name of the limit group to view, suffixed with :n to set limit")
 }

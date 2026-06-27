@@ -42,7 +42,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// options for this cmd
+// options for this cmd.
 var (
 	cmdCwdMattersUnset      bool
 	cmdChangeHomeUnset      bool
@@ -52,7 +52,7 @@ var (
 
 const nothingBehaviour = `[{"Nothing":true}]`
 
-// modCmd represents the mod command
+// modCmd represents the mod command.
 var modCmd *cobra.Command = &cobra.Command{
 	Use:   "mod",
 	Short: "Modify commands previously added to the queue",
@@ -102,17 +102,20 @@ be silently ignored.
 
 Because modifying a command may change its internal id, a mapping of old to
 new internal ids is printed.`,
-	Run: func(cobraCmd *cobra.Command, args []string) {
+	Run: func(cobraCmd *cobra.Command, _ []string) {
 		// check the command line options
 		if cmdAll && cmdIDStatus != "" {
 			die("-a and -i are mutually exclusive")
 		}
+
 		if cmdAll && cmdLine != "" {
 			die("-a is not compatible with --cmdline")
 		}
+
 		if cmdIDStatus == "" && (cmdIDIsSubStr || cmdIDIsInternal) {
 			die("-z and -y require -i")
 		}
+
 		if !cmdAll && cmdIDStatus == "" {
 			die("one of -i or -a is required")
 		}
@@ -120,6 +123,7 @@ new internal ids is printed.`,
 		// we call getJobs() later, which finds jobs based on -f and -l, but
 		// we don't want that
 		cmdFile = ""
+
 		var newCmdLine string
 		if cmdLine != "" {
 			newCmdLine = cmdLine
@@ -128,6 +132,7 @@ new internal ids is printed.`,
 
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+
 		var err error
 		defer func() {
 			err = jq.Disconnect()
@@ -153,6 +158,7 @@ new internal ids is printed.`,
 		if newCmdLine != "" {
 			jm.SetCmd(newCmdLine)
 		}
+
 		if cobraCmd.Flags().Changed("limit_grps") {
 			jm.SetLimitGroups(strings.Split(cmdLimitGroups, ","))
 		}
@@ -169,16 +175,19 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("cwd") {
 			jm.SetCwd(cmdCwd)
 		}
+
 		if cmdCwdMatters {
 			jm.SetCwdMatters(true)
 		} else if cmdCwdMattersUnset {
 			jm.SetCwdMatters(false)
 		}
+
 		if cmdChangeHome {
 			jm.SetChangeHome(true)
 		} else if cmdChangeHomeUnset {
 			jm.SetChangeHome(false)
 		}
+
 		if cobraCmd.Flags().Changed("req_grp") {
 			jm.SetReqGroup(reqGroup)
 		}
@@ -188,28 +197,35 @@ new internal ids is printed.`,
 		}
 
 		req := &jqs.Requirements{}
+
 		var setReq bool
+
 		if cobraCmd.Flags().Changed("memory") {
 			mb, errt := bytefmt.ToMegabytes(cmdMem)
 			if errt != nil {
 				die("--memory was not specified correctly: %s", errt)
 			}
+
 			req.RAM = int(mb)
 			setReq = true
 		}
+
 		if cobraCmd.Flags().Changed("time") {
 			t, errp := time.ParseDuration(cmdTime)
 			if errp != nil {
 				die("--time was not specified correctly: %s", errp)
 			}
+
 			req.Time = t
 			setReq = true
 		}
+
 		if cobraCmd.Flags().Changed("cpus") {
 			req.Cores = cmdCPUs
 			req.CoresSet = true
 			setReq = true
 		}
+
 		if cobraCmd.Flags().Changed("disk") {
 			req.Disk = cmdDisk
 			req.DiskSet = true
@@ -217,16 +233,21 @@ new internal ids is printed.`,
 		}
 
 		other := make(map[string]string)
+
 		var otherSet bool
+
 		if cobraCmd.Flags().Changed("cloud_os") {
 			other["cloud_os"] = cmdOsPrefix
 		}
+
 		if cobraCmd.Flags().Changed("cloud_username") {
 			other["cloud_user"] = cmdOsUsername
 		}
+
 		if cobraCmd.Flags().Changed("cloud_ram") {
 			other["cloud_os_ram"] = strconv.Itoa(cmdOsRAM)
 		}
+
 		if cobraCmd.Flags().Changed("cloud_flavor") {
 			if cmdFlavor == "" {
 				otherSet = true
@@ -234,17 +255,20 @@ new internal ids is printed.`,
 				other["cloud_flavor"] = cmdFlavor
 			}
 		}
+
 		if cobraCmd.Flags().Changed("cloud_script") {
 			if cmdPostCreationScript != "" {
 				scriptContent, errp := internal.PathToContent(cmdPostCreationScript)
 				if errp != nil {
 					die("%s", errp.Error())
 				}
+
 				other["cloud_script"] = scriptContent
 			} else {
 				other["cloud_script"] = ""
 			}
 		}
+
 		if cobraCmd.Flags().Changed("cloud_config_files") {
 			if cmdCloudConfigs == "" {
 				otherSet = true
@@ -252,17 +276,21 @@ new internal ids is printed.`,
 				other["cloud_config_files"] = copyCloudConfigFiles(jq, cmdCloudConfigs)
 			}
 		}
+
 		if cmdCloudSharedDisk {
 			other["cloud_shared"] = "true"
 		} else if cmdCloudSharedDiskUnset {
 			other["cloud_shared"] = "false"
 		}
+
 		if cmdQueue != "" {
 			other["scheduler_queue"] = cmdQueue
 		}
+
 		if cmdQueuesAvoidMod != "" {
 			other["scheduler_queues_avoid"] = cmdQueuesAvoidMod
 		}
+
 		if len(other) > 0 || otherSet {
 			req.Other = other
 			req.OtherSet = true
@@ -276,27 +304,35 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("override") {
 			jm.SetOverride(uint8(overrideStringToInt(cmdOvr)))
 		}
+
 		if cobraCmd.Flags().Changed("priority") {
 			jm.SetPriority(uint8(cmdPri))
 		}
+
 		if cobraCmd.Flags().Changed("retries") {
 			jm.SetRetries(uint8(cmdRet))
 		}
 
-		var deps jobqueue.Dependencies
-		var depsSet bool
+		var (
+			deps    jobqueue.Dependencies
+			depsSet bool
+		)
+
 		if cobraCmd.Flags().Changed("cmd_deps") {
 			cols := strings.Split(cmdCmdDeps, ",")
 			if len(cols)%2 != 0 {
 				die("--cmd_deps must have an even number of comma-separated entries")
 			}
+
 			deps = colsToDeps(cols)
 			depsSet = true
 		}
+
 		if cobraCmd.Flags().Changed("deps") {
 			deps = append(deps, groupsToDeps(cmdGroupDeps)...)
 			depsSet = true
 		}
+
 		if depsSet {
 			jm.SetDependencies(deps)
 		}
@@ -304,54 +340,72 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("monitor_docker") {
 			jm.SetMonitorDocker(cmdMonitorDocker)
 		}
+
 		if cobraCmd.Flags().Changed("with_docker") {
 			jm.SetWithDocker(cmdWithDocker)
 		}
+
 		if cobraCmd.Flags().Changed("with_singularity") {
 			jm.SetWithSingularity(cmdWithSingularity)
 		}
+
 		if cobraCmd.Flags().Changed("container_mounts") {
 			jm.SetContainerMounts(cmdContainerMounts)
 		}
 
-		var behaviours jobqueue.Behaviours
-		var behavioursSet bool
+		var (
+			behaviours    jobqueue.Behaviours
+			behavioursSet bool
+		)
+
 		if cobraCmd.Flags().Changed("on_failure") {
 			if cmdOnFailure == "" {
 				cmdOnFailure = nothingBehaviour
 			}
+
 			var bjs jobqueue.BehavioursViaJSON
+
 			err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
 			if err != nil {
 				die("bad --on_failure: %s", err)
 			}
+
 			behaviours = bjs.Behaviours(jobqueue.OnFailure)
 			behavioursSet = true
 		}
+
 		if cobraCmd.Flags().Changed("on_success") {
 			if cmdOnSuccess == "" {
 				cmdOnSuccess = nothingBehaviour
 			}
+
 			var bjs jobqueue.BehavioursViaJSON
+
 			err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
 			if err != nil {
 				die("bad --on_success: %s", err)
 			}
+
 			behaviours = append(behaviours, bjs.Behaviours(jobqueue.OnSuccess)...)
 			behavioursSet = true
 		}
+
 		if cobraCmd.Flags().Changed("on_exit") {
 			if cmdOnExit == "" {
 				cmdOnExit = nothingBehaviour
 			}
+
 			var bjs jobqueue.BehavioursViaJSON
+
 			err = json.Unmarshal([]byte(cmdOnExit), &bjs)
 			if err != nil {
 				die("bad --on_exit: %s", err)
 			}
+
 			behaviours = append(behaviours, bjs.Behaviours(jobqueue.OnExit)...)
 			behavioursSet = true
 		}
+
 		if behavioursSet {
 			jm.SetBehaviours(behaviours)
 		}
@@ -365,6 +419,7 @@ new internal ids is printed.`,
 				jm.SetMountConfigs(mountParse(mountJSON, mountSimple))
 			}
 		}
+
 		if cobraCmd.Flags().Changed("env") {
 			errs := jm.SetEnvOverride(cmdEnv)
 			if errs != nil {
@@ -380,11 +435,14 @@ new internal ids is printed.`,
 
 		// make the modifications
 		jes := jobsToJobEssenses(jobs)
+
 		modified, err := jq.Modify(jes, jm)
 		if err != nil {
 			die("failed to modify desired jobs: %s", err)
 		}
+
 		info("Modified %d incomplete, non-running commands (out of %d eligible)", len(modified), len(jobs))
+
 		for to, from := range modified {
 			fmt.Printf(" %s => %s\n", from, to)
 		}
@@ -394,56 +452,106 @@ new internal ids is printed.`,
 func init() {
 	RootCmd.AddCommand(modCmd)
 
-	// flags specific to this sub-command
+	registerModFlags()
+
+	// *** user can't turn the bool options off, only on...
+
+	modCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
+}
+
+// registerModFlags registers the flags specific to the mod sub-command.
+func registerModFlags() {
+	registerModSelectionFlags()
+	registerModRequirementFlags()
+	registerModBehaviourFlags()
+	registerModCloudFlags()
+}
+
+// registerModSelectionFlags registers the flags that select which command(s)
+// the mod sub-command operates on.
+func registerModSelectionFlags() {
 	modCmd.Flags().BoolVarP(&cmdAll, "all", "a", false, "modify all incomplete, non-running jobs")
 	modCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to modify")
-	modCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	modCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false,
+		"treat -i as a substring to match against all report groups")
 	modCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
+}
 
+// registerModRequirementFlags registers the flags that change a command's
+// working directory, resource requirements and dependencies.
+func registerModRequirementFlags() {
 	modCmd.Flags().StringVar(&cmdLine, "cmdline", "", "new command line")
 	modCmd.Flags().StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
 	// modCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	modCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
 	modCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
 	modCmd.Flags().BoolVar(&cmdCwdMattersUnset, "unset_cwd_matters", false, "unset --cwd_matters")
-	modCmd.Flags().BoolVar(&cmdChangeHome, "change_home", false, "when not --cwd_matters, set $HOME to the actual working directory")
+	modCmd.Flags().BoolVar(&cmdChangeHome, "change_home", false,
+		"when not --cwd_matters, set $HOME to the actual working directory")
 	modCmd.Flags().BoolVar(&cmdChangeHomeUnset, "unset_change_home", false, "unset --change_home")
 	modCmd.Flags().StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
-	modCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
-	modCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
+	modCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G",
+		"peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
+	modCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h",
+		"max time est. [specify units such as m for minutes or h for hours]")
 	modCmd.Flags().Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
 	modCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required (default 0)")
 	modCmd.Flags().StringVarP(&cmdOvr, "override", "o", "no",
 		"[0|no|1|higher|2|always] should your mem/time estimates override? (default no)")
 	modCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
-	modCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
-	modCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
-	modCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
-	modCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
-	modCmd.Flags().StringVar(&cmdWithDocker, "with_docker", "", "run the cmd inside a docker container running this image")
-	modCmd.Flags().StringVar(&cmdWithSingularity, "with_singularity", "", "run the cmd inside a singularity container running this image")
-	modCmd.Flags().StringVar(&cmdContainerMounts, "container_mounts", "", "mount additional locations inside your container")
+	modCmd.Flags().IntVarP(&cmdRet, "retries", "r", defaultJobRetries,
+		"[0-255] number of automatic retries for failed commands")
+	modCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "",
+		"dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
+	modCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "",
+		"dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
+}
+
+// registerModBehaviourFlags registers the flags that change a command's
+// container, behaviour and mount settings.
+func registerModBehaviourFlags() {
+	modCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "",
+		"monitor resource usage of docker container with given --name or --cidfile path")
+	modCmd.Flags().StringVar(&cmdWithDocker, "with_docker", "",
+		"run the cmd inside a docker container running this image")
+	modCmd.Flags().StringVar(&cmdWithSingularity, "with_singularity", "",
+		"run the cmd inside a singularity container running this image")
+	modCmd.Flags().StringVar(&cmdContainerMounts, "container_mounts", "",
+		"mount additional locations inside your container")
 	modCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
-	modCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
-	modCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
-	modCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format; see 'wr mount -h'")
-	modCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]; see 'wr mount -h'")
-	modCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
-	modCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
-	modCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
-	modCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
-	modCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
-	modCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
+	modCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "",
+		"behaviours to carry out when cmds succeed, in JSON format")
+	modCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`,
+		"behaviours to carry out when cmds finish running, in JSON format")
+	modCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
+		"remote file systems to mount, in JSON format; see 'wr mount -h'")
+	modCmd.Flags().StringVar(&mountSimple, "mounts", "",
+		"remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]; see 'wr mount -h'")
+}
+
+// registerModCloudFlags registers the cloud-specific flags and other
+// scheduler-related flags of the mod sub-command.
+func registerModCloudFlags() {
+	modCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "",
+		"in the cloud, prefix name of the OS image servers that run the commands must use")
+	modCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "",
+		"in the cloud, username needed to log in to the OS image specified by --cloud_os")
+	modCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0,
+		"in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	modCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "",
+		"in the cloud, exact name of the server flavor that the commands must run on")
+	modCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "",
+		"in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	modCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "",
+		"in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	modCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	modCmd.Flags().BoolVar(&cmdCloudSharedDiskUnset, "unset_cloud_shared", false, "unset --cloud_shared")
 	modCmd.Flags().StringVar(&cmdGroup, "group", "", "unix group to start the command as")
-	modCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
+	modCmd.Flags().StringVar(&cmdEnv, "env", "",
+		"comma-separated list of key=value environment variables to set before running the commands")
 	modCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
 	modCmd.Flags().StringVar(&cmdQueuesAvoidMod, "queues_avoid", "",
 		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
 	// modCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
-
-	// *** user can't turn the bool options off, only on...
-
-	modCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

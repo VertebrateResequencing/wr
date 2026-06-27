@@ -67,7 +67,7 @@ import (
 	"go.nanomsg.org/mangos/v3/protocol/req"
 )
 
-// FailReason* are the reasons for cmd line failure stored on Jobs
+// FailReason* are the reasons for cmd line failure stored on Jobs.
 const (
 	FailReasonEnv      = "failed to get environment variables"
 	FailReasonCwd      = "working directory does not exist"
@@ -90,19 +90,21 @@ const (
 )
 
 // lsfEmulationDir is the name of the directory we store our LSF emulation
-// symlinks in
+// symlinks in.
 const lsfEmulationDir = ".wr_lsf_emulation"
 
-// localhost is the name of host we're running on
+// localhost is the name of host we're running on.
 const localhost = "localhost"
 
 // terminateGrace is how long we wait after terminating a child process before
-// we follow up with a kill signal
+// we follow up with a kill signal.
 const terminateGrace = 500 * time.Millisecond
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
+//
+//nolint:gochecknoglobals // exported tunables, primarily for tests; see comment above.
 var (
 	ClientTouchInterval                  = 15 * time.Second
 	ClientReleaseDelayMin                = 30 * time.Second
@@ -114,7 +116,7 @@ var (
 	ClientShutdownTimeout                = 120 * time.Second
 	ClientShutdownTestInterval           = 100 * time.Millisecond
 	ClientSuggestedPingTimeout           = 10 * time.Millisecond
-	ClientMinRequestTimeout              = 60 * time.Second //nolint:gochecknoglobals // exported for tests, as siblings.
+	ClientMinRequestTimeout              = 60 * time.Second
 	RAMIncreaseMin               float64 = 1000
 	RAMIncreaseMultLow                   = 2.0
 	RAMIncreaseMultHigh                  = 1.3
@@ -133,6 +135,34 @@ const (
 	exitCodeCommandPermission = 126
 	exitCodeCommandNotFound   = 127
 	exitCodeCommandInvalid    = 128
+	exitCodeAbnormal          = 255
+)
+
+const (
+	// clientOpExecute is the operation name used in Errors returned by Execute.
+	clientOpExecute = "Execute"
+
+	// stdSaverBytes is how many bytes of the head and tail of a command's
+	// STDOUT/STDERR we keep.
+	stdSaverBytes = 4096
+
+	// executeStopChannelBuffer is the buffer size of the stopTouching and
+	// stopChecking channels, which may receive from more than one place.
+	executeStopChannelBuffer = 2
+
+	// executeSignalChannelBuffer is the buffer size of the OS signal channel.
+	executeSignalChannelBuffer = 5
+
+	// fusermountRetryDelaySeconds is how long we wait before retrying a mount
+	// that failed with "fusermount exited with code 256".
+	fusermountRetryDelaySeconds = 5
+
+	// kbPerMB converts between kilobytes and megabytes (bytesPerKB is shared
+	// from utils.go).
+	kbPerMB = 1024
+
+	// percentDivisor turns a percentage into a fraction of a whole.
+	percentDivisor = 100
 )
 
 const (
@@ -398,95 +428,24 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	if err != nil {
 		return nil, err
 	}
+
 	if time.Now().After(expiry) {
 		return nil, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
 	}
 
-	sock, err := req.NewSocket()
+	sock, err := dialClientSocket(addr, caFile, certDomain, timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return nil, err
-	}
-
-	// while connecting, bound send/recv by the supplied timeout so that
-	// connect-readiness (the initial Ping below) fails fast if the server can be
-	// dialled but does not respond. Once connected, the receive deadline is
-	// widened to a generous floor (see requestTimeout / ClientMinRequestTimeout)
-	// so individual requests are not subject to spurious 'receive time out's
-	// under load; the send deadline stays short so requests still fail fast when
-	// the server has gone away.
-	if err = sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
-		return nil, err
-	}
-
-	if err = sock.SetOption(mangos.OptionSendDeadline, timeout); err != nil {
-		return nil, err
-	}
-
-	tlsConfig := &tls.Config{ServerName: certDomain}
-	caCert, err := os.ReadFile(caFile)
-	if err == nil {
-		certPool := x509.NewCertPool()
-		certPool.AppendCertsFromPEM(caCert)
-		tlsConfig.RootCAs = certPool
-	}
-
-	dialOpts := make(map[string]interface{})
-	dialOpts[mangos.OptionTLSConfig] = tlsConfig
-	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
-		errc := sock.Close()
-		if errc != nil && !isClosedSocketError(errc) {
-			return nil, errc
-		}
-
-		return nil, Error{"Connect", "", ErrNoServer}
-	}
-
-	// clients identify themselves (only for the purpose of calling methods that
-	// require the client has previously used Reserve()) with a UUID; v4 is used
-	// since speed doesn't matter: a typical client executable will only
-	// Connect() once; on the other hand, we avoid any possible problem with
-	// running on machines with low time resolution
-	u, err := uuid.NewV4()
+	c, err := newClientForSocket(sock, addr, caFile, certDomain, token, timeout)
 	if err != nil {
 		return nil, err
 	}
-	addrParts := strings.Split(addr, ":")
-	c := &Client{
-		sock:     sock,
-		ch:       new(codec.BincHandle),
-		token:    token,
-		timeout:  timeout,
-		clientid: u,
-		host:     addrParts[0],
-		port:     addrParts[1],
-		args:     []string{addr, caFile, certDomain},
-	}
 
-	// Check the application-level connection, populate ServerInfo, and report
-	// authentication failures consistently.
-	si, err := c.Ping(timeout)
-	if err != nil {
-		errc := sock.Close()
-		if errc != nil {
-			return c, errc
-		}
-		msg := ErrNoServer
-
-		var jqerr Error
-		if errors.As(err, &jqerr) && jqerr.Err == ErrPermissionDenied {
-			msg = ErrPermissionDenied
-		}
-		return nil, Error{"Connect", "", msg}
+	if clientOnErr, errp := c.establishServerInfo(timeout); errp != nil {
+		return clientOnErr, errp
 	}
-	c.ServerInfo = si
-	c.touchInterval = dfltDuration(si.TouchInterval, ClientTouchInterval)
-	c.retryWait = dfltDuration(si.RetryWait, ClientRetryWait)
-	c.retryTime = dfltDuration(si.RetryTime, ClientRetryTime)
-	c.percentMemoryKill = ClientPercentMemoryKill
 
 	// now that connect-readiness has been confirmed, decouple the per-request
 	// RECEIVE deadline from the (possibly short) connect timeout, giving it a
@@ -500,7 +459,133 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return nil, err
 	}
 
-	return c, err
+	return c, nil
+}
+
+// newClientForSocket builds a Client around an already-dialled socket, giving it
+// a fresh client UUID.
+func newClientForSocket(sock mangos.Socket, addr, caFile, certDomain string,
+	token []byte, timeout time.Duration,
+) (*Client, error) {
+	// clients identify themselves (only for the purpose of calling methods that
+	// require the client has previously used Reserve()) with a UUID; v4 is used
+	// since speed doesn't matter: a typical client executable will only
+	// Connect() once; on the other hand, we avoid any possible problem with
+	// running on machines with low time resolution
+	u, err := uuid.NewV4()
+	if err != nil {
+		return nil, err
+	}
+
+	addrParts := strings.Split(addr, ":")
+
+	return &Client{
+		sock:     sock,
+		ch:       new(codec.BincHandle),
+		token:    token,
+		timeout:  timeout,
+		clientid: u,
+		host:     addrParts[0],
+		port:     addrParts[1],
+		args:     []string{addr, caFile, certDomain},
+	}, nil
+}
+
+// dialClientSocket creates a req socket configured with TLS for the given
+// server and dials it, returning ErrNoServer if the dial fails.
+func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (mangos.Socket, error) {
+	sock, err := req.NewSocket()
+	if err != nil {
+		return nil, err
+	}
+
+	if err = setConnectSocketOptions(sock, timeout); err != nil {
+		return nil, err
+	}
+
+	dialOpts := map[string]any{mangos.OptionTLSConfig: clientTLSConfig(caFile, certDomain)}
+	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
+		if errc := sock.Close(); errc != nil && !isClosedSocketError(errc) {
+			return nil, errc
+		}
+
+		return nil, Error{"Connect", "", ErrNoServer}
+	}
+
+	return sock, nil
+}
+
+// setConnectSocketOptions applies the message size and connect-time send/recv
+// deadlines used while establishing a connection.
+func setConnectSocketOptions(sock mangos.Socket, timeout time.Duration) error {
+	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
+		return err
+	}
+
+	// while connecting, bound send/recv by the supplied timeout so that
+	// connect-readiness (the initial Ping below) fails fast if the server can be
+	// dialled but does not respond. Once connected, the receive deadline is
+	// widened to a generous floor (see requestTimeout / ClientMinRequestTimeout)
+	// so individual requests are not subject to spurious 'receive time out's
+	// under load; the send deadline stays short so requests still fail fast when
+	// the server has gone away.
+	if err := sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
+		return err
+	}
+
+	return sock.SetOption(mangos.OptionSendDeadline, timeout)
+}
+
+// clientTLSConfig builds the TLS config for dialling the server, trusting the
+// CA in caFile if it can be read.
+func clientTLSConfig(caFile, certDomain string) *tls.Config {
+	tlsConfig := &tls.Config{ServerName: certDomain}
+
+	if caCert, err := os.ReadFile(caFile); err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
+
+	return tlsConfig
+}
+
+// establishServerInfo pings the server to confirm the application-level
+// connection, populating ServerInfo and the client's derived timing fields, and
+// reporting authentication failures consistently. On error it returns the
+// client to hand back to the caller (non-nil only if closing the socket also
+// failed, matching the original Connect behaviour).
+func (c *Client) establishServerInfo(timeout time.Duration) (*Client, error) {
+	si, err := c.Ping(timeout)
+	if err != nil {
+		return c.handlePingFailure(err)
+	}
+
+	c.ServerInfo = si
+	c.touchInterval = dfltDuration(si.TouchInterval, ClientTouchInterval)
+	c.retryWait = dfltDuration(si.RetryWait, ClientRetryWait)
+	c.retryTime = dfltDuration(si.RetryTime, ClientRetryTime)
+	c.percentMemoryKill = ClientPercentMemoryKill
+
+	return nil, nil //nolint:nilnil // success: no client-to-return-on-error and no error.
+}
+
+// handlePingFailure closes the socket after a failed connect-time Ping and
+// returns the error to report. It returns a non-nil client only if closing the
+// socket also failed, matching the original Connect behaviour.
+func (c *Client) handlePingFailure(pingErr error) (*Client, error) {
+	if errc := c.sock.Close(); errc != nil {
+		return c, errc
+	}
+
+	msg := ErrNoServer
+
+	var jqerr Error
+	if errors.As(pingErr, &jqerr) && jqerr.Err == ErrPermissionDenied {
+		msg = ErrPermissionDenied
+	}
+
+	return nil, Error{"Connect", "", msg}
 }
 
 // ConnectUsingConfig calls Connect(), supplying values from user configuration
@@ -515,7 +600,8 @@ func ConnectUsingConfig(ctx context.Context, deployment string, timeout time.Dur
 		return nil, fmt.Errorf("could not read token file; has the manager been started? [%w]", err)
 	}
 
-	return Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile, config.ManagerCertDomain, token, timeout)
+	return Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile,
+		config.ManagerCertDomain, token, timeout)
 }
 
 // Disconnect closes the connection to the jobqueue server. It is CRITICAL that
@@ -540,12 +626,13 @@ func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.SInfo, err
 }
 
 // DrainServer tells the server to stop spawning new runners, stop letting
 // existing runners reserve new jobs, and exit once existing runners stop
-// running. You get back a count of existing runners and and an estimated time
+// running. You get back a count of existing runners and an estimated time
 // until completion for the last of those runners.
 func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	return c.drainOrPauseServer("drain")
@@ -557,15 +644,17 @@ func (c *Client) drainOrPauseServer(method string) (running int, etc time.Durati
 	if err != nil {
 		return running, etc, err
 	}
+
 	s := resp.SStats
 	running = s.Running
 	etc = s.ETC
+
 	return running, etc, err
 }
 
 // PauseServer tells the server to stop spawning new runners and stop letting
 // existing runners reserve new jobs. (It is like DrainServer(), without
-// stopping the server). You get back a count of existing runners and and an
+// stopping the server). You get back a count of existing runners and an
 // estimated time until completion for the last of those runners.
 func (c *Client) PauseServer() (running int, etc time.Duration, err error) {
 	return c.drainOrPauseServer("pause")
@@ -576,6 +665,7 @@ func (c *Client) PauseServer() (running int, etc time.Duration, err error) {
 // resume normal operation.
 func (c *Client) ResumeServer() error {
 	_, err := c.request(&clientRequest{Method: "resume"})
+
 	return err
 }
 
@@ -592,12 +682,14 @@ func (c *Client) ShutdownServer() bool {
 	// wait a while for the server to stop responding to Pings
 	limit := time.After(ClientShutdownTimeout)
 	ticker := time.NewTicker(ClientShutdownTestInterval)
+
 	for {
 		select {
 		case <-ticker.C:
 			_, err = c.Ping(ClientSuggestedPingTimeout)
 			if err != nil {
 				ticker.Stop()
+
 				return true
 			}
 		case <-limit:
@@ -613,13 +705,16 @@ func (c *Client) BackupDB(path string) error {
 	if err != nil {
 		return err
 	}
+
 	tmpPath := path + ".tmp"
+
 	err = os.WriteFile(tmpPath, resp.DB, dbFilePermission)
 	if err != nil {
 		rerr := os.Remove(tmpPath)
 		if rerr != nil {
 			err = fmt.Errorf("%w\n%w", err, rerr)
 		}
+
 		return err
 	}
 
@@ -689,7 +784,9 @@ func (c *Client) AddAndReturnIDsWithWarnings(
 		return nil, AddWarnings{}, err
 	}
 
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true})
+	resp, err := c.request(&clientRequest{
+		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
+	})
 	if err != nil {
 		return nil, AddWarnings{}, err
 	}
@@ -711,10 +808,12 @@ func (c *Client) AddAndReturnIDsWithWarnings(
 // like the command line was changed).
 func (c *Client) Modify(jes []*JobEssence, modifier *JobModifier) (modified map[string]string, err error) {
 	keys := c.jesToKeys(jes)
+
 	resp, err := c.request(&clientRequest{Method: "jmod", Keys: keys, Modifier: modifier})
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.Modified, err
 }
 
@@ -737,10 +836,12 @@ func (c *Client) Reserve(timeout time.Duration) (*Job, error) {
 		fr = true
 		c.hasReserved = true
 	}
+
 	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, FirstReserve: fr})
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.Job, err
 }
 
@@ -761,11 +862,428 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 		fr = true
 		c.hasReserved = true
 	}
-	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr})
+
+	resp, err := c.request(&clientRequest{
+		Method: "reserve", Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr,
+	})
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.Job, err
+}
+
+// executeCmd bundles the command to run with the plumbing used to capture and
+// live-tail its STDOUT and STDERR.
+type executeCmd struct {
+	cmd                  *exec.Cmd
+	errReader, outReader io.ReadCloser
+	stderr, stdout       *prefixSuffixSaver
+	liveStderr           *liveTailSaver
+	liveStdout           *liveTailSaver
+	stderrWait           <-chan error
+	stdoutWait           <-chan error
+}
+
+// buildExecCmd builds the exec.Cmd that will run the job's command line jc,
+// prefixing module loading and pipefail handling as needed and running under
+// newgrp if the job has a Group.
+func buildExecCmd(ctx context.Context, job *Job, shell, jc string) *exec.Cmd {
+	if len(job.Modules) > 0 {
+		jc = "module load --force " + shellquote.Join(job.Modules...) + "; " + jc
+	}
+
+	// we support arbitrary shell commands that may include semi-colons,
+	// quoted stuff and pipes, so it's best if we just pass it to bash
+	if strings.Contains(jc, " | ") {
+		jc = "set -o pipefail; " + jc
+	}
+
+	if job.Group != "" {
+		//nolint:gosec // our whole purpose is to run user-supplied commands.
+		cmd := exec.CommandContext(ctx, "newgrp", job.Group)
+		cmd.Stdin = strings.NewReader(jc)
+
+		return cmd
+	}
+
+	return exec.CommandContext(ctx, shell, "-c", jc)
+}
+
+// prepareCommand builds the exec.Cmd for the job's (possibly module/pipefail
+// adjusted) command line jc, wiring up STDOUT/STDERR capture and live-tailing.
+func prepareCommand(ctx context.Context, job *Job, shell, jc string) (*executeCmd, error) {
+	cmd := buildExecCmd(ctx, job, shell, jc)
+
+	// we'll filter STDERR/OUT of the cmd to keep only the first and last line
+	// of any contiguous block of \r terminated lines (to mostly eliminate
+	// progress bars), and we'll store only up to stdSaverBytes of head and tail
+	ec := &executeCmd{
+		cmd:        cmd,
+		stderr:     &prefixSuffixSaver{N: stdSaverBytes},
+		stdout:     &prefixSuffixSaver{N: stdSaverBytes},
+		liveStderr: &liveTailSaver{},
+		liveStdout: &liveTailSaver{},
+	}
+
+	var err error
+
+	ec.errReader, err = cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create a pipe for STDERR from cmd [%s]: %w", jc, err)
+	}
+
+	ec.outReader, err = cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create a pipe for STDOUT from cmd [%s]: %w", jc, err)
+	}
+
+	ec.stderrWait = stdFilter(ec.errReader, io.MultiWriter(ec.stderr, ec.liveStderr))
+	ec.stdoutWait = stdFilter(ec.outReader, io.MultiWriter(ec.stdout, ec.liveStdout))
+
+	return ec, nil
+}
+
+// dockerMonitor holds the docker client plumbing used to monitor a job's
+// container, and the id of the container once it has been identified.
+type dockerMonitor struct {
+	operator        *container.Operator
+	interactor      *docker.Interactor
+	monitorDocker   string
+	getFirstAppears bool
+	containerID     string
+}
+
+// setupDockerMonitor creates the docker client used to monitor the job's
+// container if the job requests docker monitoring, returning nil if it does not.
+// On failure the job is buried and an error returned.
+func (c *Client) setupDockerMonitor(ctx context.Context, job *Job) (*dockerMonitor, error) {
+	if job.MonitorDocker == "" {
+		return nil, nil //nolint:nilnil // no docker monitoring requested is a valid, non-error result.
+	}
+
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		return nil, c.buryWithCause(job, FailReasonDocker, err, "failed to create docker client")
+	}
+
+	interactor := docker.NewInteractor(cli)
+	dm := &dockerMonitor{
+		operator:      container.NewOperator(interactor),
+		interactor:    interactor,
+		monitorDocker: job.MonitorDocker,
+	}
+
+	// if we've been asked to monitor the first container that appears, remember
+	// existing containers
+	if job.MonitorDocker == "?" {
+		dm.getFirstAppears = true
+
+		if errc := dm.operator.RememberCurrentContainers(ctx); errc != nil {
+			return nil, c.buryWithCause(job, FailReasonDocker, errc, "failed to get docker containers")
+		}
+	}
+
+	return dm, nil
+}
+
+// resolveContainerMem looks up (and caches) the monitored container's id and, if
+// found, returns the larger of mem and the container's memory plus its CPU
+// seconds. Any error finding the container is returned for accumulation.
+func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string, mem int) (int, int, error) {
+	if dm == nil {
+		return mem, 0, nil
+	}
+
+	var findErr error
+
+	if dm.containerID == "" {
+		findErr = dm.findContainerID(ctx, cmdDir)
+	}
+
+	if dm.containerID == "" {
+		return mem, 0, findErr
+	}
+
+	dockerStats, errs := dm.interactor.ContainerStats(ctx, dm.containerID)
+	if errs != nil {
+		return mem, 0, findErr
+	}
+
+	if dockerStats.MemoryMB > mem {
+		mem = dockerStats.MemoryMB
+	}
+
+	return mem, dockerStats.CPUSec, findErr
+}
+
+// findContainerID tries to identify the container to monitor, caching its id on
+// success.
+func (dm *dockerMonitor) findContainerID(ctx context.Context, cmdDir string) error {
+	if dm.getFirstAppears {
+		containers, err := dm.operator.GetNewContainers(ctx)
+		if len(containers) > 0 {
+			dm.containerID = containers[0].ID
+		}
+
+		return err
+	}
+
+	// monitorDocker might be the name of a new container
+	dockerContainer, err := dm.operator.GetNewContainerByName(ctx, dm.monitorDocker)
+	if dockerContainer != nil {
+		dm.containerID = dockerContainer.ID
+
+		return err
+	}
+
+	// monitorDocker might be a file path containing the id of a container
+	dockerContainer, err = dm.operator.GetContainerByPath(ctx, dm.monitorDocker, cmdDir)
+	if dockerContainer != nil {
+		dm.containerID = dockerContainer.ID
+	}
+
+	return err
+}
+
+// addBsubEnv augments env with the PATH override and LSF emulation variables a
+// bsub-mode job needs, so child jobs created via the bsub symlink can find the
+// manager and inherit cloud/mount options.
+func (c *Client) addBsubEnv(env []string, job *Job, prependPath, host, shell string) ([]string, error) {
+	env = envOverride(env, []string{prependedPath(env, prependPath)})
+
+	jobJSON, err := c.bsubConfigJSON(job, host)
+	if err != nil {
+		return nil, err
+	}
+
+	return envOverride(env, []string{
+		"WR_BSUB_CONFIG=" + string(jobJSON),
+		"WR_MANAGER_HOST=" + c.host,
+		"WR_MANAGER_PORT=" + c.port,
+		"LSF_SERVERDIR=/dev/null",
+		"LSF_LIBDIR=/dev/null",
+		"LSF_ENVDIR=/dev/null",
+		"LSF_BINDIR=" + prependPath,
+		"SHELL=" + shell,
+	}), nil
+}
+
+// prependedPath returns a "PATH=" override that puts prependPath before the
+// existing PATH value found in env (if any).
+func prependedPath(env []string, prependPath string) string {
+	for _, envvar := range env {
+		pair := strings.Split(envvar, "=")
+		if pair[0] == "PATH" {
+			return "PATH=" + prependPath + ":" + pair[1]
+		}
+	}
+
+	return "PATH=" + prependPath
+}
+
+// bsubConfigJSON marshals a simplified copy of job (carrying the details child
+// jobs need) to JSON, burying the job and returning an error on failure.
+func (c *Client) bsubConfigJSON(job *Job, host string) ([]byte, error) {
+	// child jobs created via our bsub symlink need our requirements, deployment
+	// (BsubMode) and host (so they know any mounts are expected to fail if they
+	// run on the same host as us)
+	simplified := &Job{
+		Requirements: job.Requirements,
+		BsubMode:     job.BsubMode,
+		Host:         host,
+	}
+	if _, exists := job.Requirements.Other["cloud_shared"]; !exists {
+		simplified.MountConfigs = job.MountConfigs
+	}
+
+	jobJSON, errm := json.Marshal(simplified)
+	if errm != nil {
+		errb := c.Bury(job, nil, fmt.Sprintf("could not convert job to JSON: %s", errm))
+
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+
+		return nil, fmt.Errorf("could not convert job to JSON: %w%s", errm, extra)
+	}
+
+	return jobJSON, nil
+}
+
+// resolveWorkingDir sets cmd.Dir to the directory the command should run in. If
+// the job's Cwd matters it is used directly and ("", "", nil) is returned;
+// otherwise a unique hashed working directory is created and its cwd and tmp dir
+// are returned (the job is buried and an error returned on failure).
+func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir string, err error) {
+	if job.CwdMatters {
+		cmd.Dir = job.Cwd
+
+		return "", "", nil
+	}
+
+	// we'll create a unique location to work in
+	actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.Key())
+	if err != nil {
+		buryErr := fmt.Errorf("could not create working directory: %w", err)
+
+		errb := c.Bury(job, nil, FailReasonCwd, buryErr)
+		if errb != nil {
+			buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+		}
+
+		return "", "", buryErr
+	}
+
+	cmd.Dir = actualCwd
+
+	job.Lock()
+	job.ActualCwd = actualCwd
+	job.Unlock()
+
+	return actualCwd, tmpDir, nil
+}
+
+// ensureMachineRAM returns machineRAM if it is already known (non-zero),
+// otherwise it tries to read the machine's total RAM in MB, falling back to the
+// supplied (zero) value if that fails.
+func ensureMachineRAM(machineRAM int) int {
+	if machineRAM != 0 {
+		return machineRAM
+	}
+
+	if ram, err := internal.ProcMeminfoMBs(); err == nil {
+		return ram
+	}
+
+	return machineRAM
+}
+
+// peakMemNeedsKill reports whether peakmem has reached the configured kill
+// fraction of the machine's RAM, meaning the command should be killed to protect
+// the machine.
+func (c *Client) peakMemNeedsKill(peakmem, machineRAM int) bool {
+	return machineRAM > 0 && peakmem >= ((machineRAM/percentDivisor)*c.percentMemoryKill)
+}
+
+// recoveryExtra returns a " (and <action> failed: <err>)" suffix when err is
+// non-nil, used to annotate a primary error with a failed recovery step.
+func recoveryExtra(action string, err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return fmt.Sprintf(" (and %s failed: %s)", action, err)
+}
+
+// unmountExtra attempts to unmount the job and returns a suffix describing any
+// failure to do so.
+func unmountExtra(job *Job) string {
+	_, err := job.Unmount(true)
+
+	return recoveryExtra("unmounting the job", err)
+}
+
+// joinExecErr accumulates errors encountered during Execute's cleanup: if newErr
+// is nil it returns existing unchanged; if existing is nil it returns newErr;
+// otherwise it wraps newErr onto existing using context.
+func joinExecErr(existing, newErr error, context string) error {
+	if newErr == nil {
+		return existing
+	}
+
+	if existing == nil {
+		return newErr
+	}
+
+	return fmt.Errorf("%w (and %s: %w)", existing, context, newErr)
+}
+
+// appendExecErr is like joinExecErr but joins with a semicolon, matching the
+// post-execution error messages ("<existing>; <phrase>: <newErr>").
+func appendExecErr(existing, newErr error, phrase string) error {
+	if newErr == nil {
+		return existing
+	}
+
+	if existing == nil {
+		return newErr
+	}
+
+	return fmt.Errorf("%w; %s: %w", existing, phrase, newErr)
+}
+
+// mountedDirsToSkip decides, for a job with a unique working directory
+// (actualCwd) and a set of mounted directories, which directories should be
+// skipped when measuring disk usage and whether actualCwd itself should be
+// checked. It returns any error from closing the directories it inspected.
+func mountedDirsToSkip(uniqueMountedDirs []string, actualCwd, cmdDir string) (map[string]bool, bool, error) {
+	dontCheckDirs := make(map[string]bool)
+
+	if actualCwd == "" {
+		return dontCheckDirs, false, nil
+	}
+
+	if len(uniqueMountedDirs) == 0 {
+		return dontCheckDirs, true, nil
+	}
+
+	var closeErr error
+
+	for _, dir := range uniqueMountedDirs {
+		if dirIsEmpty(dir, &closeErr) {
+			continue
+		}
+
+		if dir == cmdDir {
+			// a mounted dir is the working dir itself, so don't check it.
+			return dontCheckDirs, false, closeErr
+		}
+
+		if strings.HasPrefix(dir, actualCwd) {
+			dontCheckDirs[dir] = true
+		}
+	}
+
+	return dontCheckDirs, true, closeErr
+}
+
+// dirIsEmpty reports whether dir could be opened and is empty, accumulating any
+// error from closing it into closeErr.
+func dirIsEmpty(dir string, closeErr *error) bool {
+	d, erro := os.Open(filepath.Clean(dir))
+	if erro != nil {
+		return false
+	}
+
+	files, errr := d.Readdir(1)
+	*closeErr = joinExecErr(*closeErr, d.Close(), "closing dir failed")
+
+	return (errr == nil || errors.Is(errr, io.EOF)) && len(files) == 0
+}
+
+// ensureCwdExists makes sure the job's working directory exists, creating it if
+// necessary, burying the job and returning an error if it cannot be created.
+func (c *Client) ensureCwdExists(job *Job) error {
+	if fi, errf := os.Stat(filepath.Clean(job.Cwd)); errf == nil && fi.Mode().IsDir() {
+		return nil
+	}
+
+	errm := os.MkdirAll(filepath.Clean(job.Cwd), os.ModePerm)
+
+	if _, errs := os.Stat(filepath.Clean(job.Cwd)); errs != nil {
+		errb := c.Bury(job, nil, FailReasonCwd)
+
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+
+		return fmt.Errorf("working directory [%s] does not exist%s: %w", job.Cwd, extra, errm)
+	}
+
+	return nil
 }
 
 // Execute runs the given Job's Cmd and blocks until it exits. Then any Job
@@ -815,6 +1333,17 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // You have to have been the one to Reserve() the supplied Job, or this will
 // immediately return an error. NB: the peak RAM tracking assumes we are running
 // on a modern linux system with /proc/*/smaps.
+//
+// The bulk of the per-phase work (command setup, working dir, mounts, env,
+// docker monitoring, outcome classification and the final state reporting) has
+// been extracted into helpers. What remains here is the orchestration of two
+// long-lived goroutines (the touch loop and the resource-monitor loop) that
+// share mutable state under wkbsMutex/stateMutex and a set of channels, plus the
+// deferred cleanups that must run in this scope. Splitting that choreography
+// across methods would obscure it and risk a concurrency regression in this
+// timing-sensitive path, so its residual gocognit/nestif are tolerated here.
+//
+//nolint:gocognit,nestif,gocyclo,cyclop,funlen,maintidx // see note above: irreducible goroutine/cleanup orchestration.
 func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	ctx = clog.ContextWithJobKey(ctx, job.Key())
 	// quickly check upfront that we Reserve()d the job; this isn't required
@@ -822,7 +1351,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
 	if c.clientid != job.ReservedBy {
-		return Error{"Execute", job.Key(), ErrMustReserve}
+		return Error{clientOpExecute, job.Key(), ErrMustReserve}
 	}
 
 	// we have a convienience feature that can run Cmd in a container, so get
@@ -833,75 +1362,29 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 	defer cmdLineCleanup()
 
-	if len(job.Modules) > 0 {
-		jc = "module load --force " + shellquote.Join(job.Modules...) + "; " + jc
-	}
-
-	// we support arbitrary shell commands that may include semi-colons,
-	// quoted stuff and pipes, so it's best if we just pass it to bash
-	if strings.Contains(jc, " | ") {
-		jc = "set -o pipefail; " + jc
-	}
-
-	var cmd *exec.Cmd
-
-	if job.Group != "" {
-		cmd = exec.Command("newgrp", job.Group) //nolint:gosec
-		cmd.Stdin = strings.NewReader(jc)
-	} else {
-		cmd = exec.Command(shell, "-c", jc) // #nosec Our whole purpose is to allow users to run arbitrary commands via us...
-	}
-
-	// we'll filter STDERR/OUT of the cmd to keep only the first and last line
-	// of any contiguous block of \r terminated lines (to mostly eliminate
-	// progress bars), and  we'll store only up to 4kb of their head and tail
-	errReader, err := cmd.StderrPipe()
+	ec, err := prepareCommand(ctx, job, shell, jc)
 	if err != nil {
-		return fmt.Errorf("failed to create a pipe for STDERR from cmd [%s]: %w", jc, err)
+		return err
 	}
-	stderr := &prefixSuffixSaver{N: 4096}
-	liveStderr := &liveTailSaver{}
-	stderrWait := stdFilter(errReader, io.MultiWriter(stderr, liveStderr))
-	outReader, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create a pipe for STDOUT from cmd [%s]: %w", jc, err)
-	}
-	stdout := &prefixSuffixSaver{N: 4096}
-	liveStdout := &liveTailSaver{}
-	stdoutWait := stdFilter(outReader, io.MultiWriter(stdout, liveStdout))
 
-	// we'll run the command from the desired directory, which must exist or
-	// it will fail
-	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
-		errm := os.MkdirAll(job.Cwd, os.ModePerm)
-		if _, errs := os.Stat(job.Cwd); errs != nil {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("working directory [%s] does not exist%s: %w", job.Cwd, extra, errm)
-		}
+	cmd := ec.cmd
+	errReader, outReader := ec.errReader, ec.outReader
+	stderr, stdout := ec.stderr, ec.stdout
+	liveStderr, liveStdout := ec.liveStderr, ec.liveStdout
+	stderrWait, stdoutWait := ec.stderrWait, ec.stdoutWait
+
+	if err = c.ensureCwdExists(job); err != nil {
+		return err
 	}
-	var actualCwd, tmpDir string
+
 	var dirsToCheckDiskSpace []string
-	if job.CwdMatters {
-		cmd.Dir = job.Cwd
-	} else {
-		// we'll create a unique location to work in
-		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.Key())
-		if err != nil {
-			buryErr := fmt.Errorf("could not create working directory: %w", err)
-			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
-			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
-			}
-			return buryErr
-		}
-		cmd.Dir = actualCwd
-		job.Lock()
-		job.ActualCwd = actualCwd
-		job.Unlock()
+
+	actualCwd, tmpDir, err := c.resolveWorkingDir(job, cmd)
+	if err != nil {
+		return err
+	}
+
+	if tmpDir != "" {
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
 
@@ -918,8 +1401,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	whenKilledByServer := func() {
 		killDoneCh <- true
 	}
-	stopTouching := make(chan bool, 2)
-	stopChecking := make(chan bool, 2)
+	stopTouching := make(chan bool, executeStopChannelBuffer)
+	stopChecking := make(chan bool, executeStopChannelBuffer)
+
 	go func() {
 		for {
 			select {
@@ -928,56 +1412,54 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if kc {
 					wkbsMutex.RLock()
 					defer wkbsMutex.RUnlock()
+
 					whenKilledByServer()
 					touchTicker.Stop()
 					clog.Warn(ctx, "kill requested externally")
+
 					stopChecking <- true
+
 					return
 				}
+
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
 					serverContact.recordTouchResult(errf)
 					clog.Warn(ctx, "could not touch", "err", errf)
+
 					continue
 				}
 
 				serverContact.recordTouchResult(nil)
 			case <-stopTouching:
 				touchTicker.Stop()
+
 				return
 			}
 		}
 	}()
+
 	defer func() {
 		stopTouching <- true
 	}()
 
 	var myerr error
 
-	var onCwd bool
-	var prependPath string
+	var (
+		onCwd       bool
+		prependPath string
+	)
 	if job.BsubMode != "" {
 		// create our bsub symlinks in a tmp dir
 		prependPath, err = os.MkdirTemp("", lsfEmulationDir)
 		if err != nil {
 			stopTouching <- true
-			buryErr := fmt.Errorf("could not create lsf emulation directory: %w", err)
-			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
-			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
-			}
-			return buryErr
+
+			return c.buryWithCause(job, FailReasonCwd, err, "could not create lsf emulation directory")
 		}
 		defer func() {
-			errr := os.RemoveAll(prependPath)
-			if errr != nil {
-				if myerr == nil {
-					myerr = errr
-				} else {
-					myerr = fmt.Errorf("%w (and removing the lsf emulation dir failed: %w)", myerr, errr)
-				}
-			}
+			myerr = joinExecErr(myerr, os.RemoveAll(prependPath), "removing the lsf emulation dir failed")
 		}()
 
 		err = c.createLSFSymlinks(prependPath, job)
@@ -992,10 +1474,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// mounting to fail since we're running in the same directory as our
 	// parent
 	var mountCouldFail bool
+
 	host, err := os.Hostname()
 	if err != nil {
 		host = localhost
 	}
+
 	if jsonStr := job.Getenv("WR_BSUB_CONFIG"); jsonStr != "" {
 		configJob := &Job{}
 		if erru := json.Unmarshal([]byte(jsonStr), configJob); erru == nil && configJob.Host == host {
@@ -1011,17 +1495,17 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		if strings.Contains(err.Error(), "fusermount exited with code 256") {
 			// *** not sure what causes this, but perhaps trying again after a
 			// few seconds will help?
-			<-time.After(5 * time.Second)
+			<-time.After(fusermountRetryDelaySeconds * time.Second)
+
 			uniqueCacheDirs, uniqueMountedDirs, err = job.Mount()
 		}
+
 		if err != nil {
 			stopTouching <- true
+
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %w (%s)", err, os.Environ())
-			errb := c.Bury(job, nil, FailReasonMount, buryErr)
-			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
-			}
-			return buryErr
+
+			return c.buryWrapErr(job, FailReasonMount, buryErr)
 		}
 	}
 
@@ -1032,41 +1516,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	// later, check unmounted parts of unique cwd for disk usage, or mounted
 	// parts that start off empty
-	dontCheckDirs := make(map[string]bool)
-	if actualCwd != "" {
-		if len(uniqueMountedDirs) > 0 {
-			noCheck := false
-			for _, dir := range uniqueMountedDirs {
-				d, erro := os.Open(dir)
-				if erro == nil {
-					files, errr := d.Readdir(1)
-					if errc := d.Close(); errc != nil {
-						if myerr == nil {
-							myerr = errc
-						} else {
-							myerr = fmt.Errorf("%w (and closing dir failed: %w)", myerr, errc)
-						}
-					}
-					if (errr == nil || errr == io.EOF) && len(files) == 0 {
-						continue
-					}
-				}
+	dontCheckDirs, addCwd, dirCloseErr := mountedDirsToSkip(uniqueMountedDirs, actualCwd, cmd.Dir)
+	myerr = joinExecErr(myerr, dirCloseErr, "closing dir failed")
 
-				if dir == cmd.Dir {
-					noCheck = true
-					break
-				}
-				if strings.HasPrefix(dir, actualCwd) {
-					dontCheckDirs[dir] = true
-				}
-			}
-
-			if !noCheck {
-				dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, actualCwd)
-			}
-		} else {
-			dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, actualCwd)
-		}
+	if addCwd {
+		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, actualCwd)
 	}
 
 	// and we'll run it with the environment variables that were present when
@@ -1076,145 +1530,62 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	env, err := job.Env()
 	if err != nil {
 		stopTouching <- true
-		errb := c.Bury(job, nil, FailReasonEnv)
-		extra := ""
-		if errb != nil {
-			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-		}
-		_, erru := job.Unmount(true)
-		if erru != nil {
-			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
-		}
+
+		extra := recoveryExtra("burying the job", c.Bury(job, nil, FailReasonEnv))
+		extra += unmountExtra(job)
+
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %w%s", job.Key(), err, extra)
 	}
+
 	if tmpDir != "" {
 		// (this works fine even if tmpDir has a space in one of the dir names)
 		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
 		defer func() {
-			errr := os.RemoveAll(tmpDir)
-			if errr != nil {
-				if myerr == nil {
-					myerr = errr
-				} else {
-					myerr = fmt.Errorf("%w (and removing the tmpdir failed: %w)", myerr, errr)
-				}
-			}
+			myerr = joinExecErr(myerr, os.RemoveAll(filepath.Clean(tmpDir)), "removing the tmpdir failed")
 		}()
 
 		if job.ChangeHome {
 			env = envOverride(env, []string{"HOME=" + actualCwd})
 		}
 	}
-	if prependPath != "" {
-		// alter env PATH to have prependPath come first
-		override := []string{"PATH=" + prependPath}
-		for _, envvar := range env {
-			pair := strings.Split(envvar, "=")
-			if pair[0] == "PATH" {
-				override[0] += ":" + pair[1]
-				break
-			}
-		}
-		env = envOverride(env, override)
 
-		// add an environment variable of this job as JSON, so that any cloud_*
-		// or mount options can be copied to child jobs created via our bsub
-		// symlink. (It will also need to know our deployment, stored in
-		// BsubMode, and to know the host we're running on in case our children
-		// run on the same host as us and therefore any mounts are expected to
-		// fail)
-		simplified := &Job{
-			Requirements: job.Requirements,
-			BsubMode:     job.BsubMode,
-			Host:         host,
+	if prependPath != "" {
+		env, err = c.addBsubEnv(env, job, prependPath, host, shell)
+		if err != nil {
+			return err
 		}
-		if _, exists := job.Requirements.Other["cloud_shared"]; !exists {
-			simplified.MountConfigs = job.MountConfigs
-		}
-		jobJSON, errm := json.Marshal(simplified)
-		if errm != nil {
-			errb := c.Bury(job, nil, fmt.Sprintf("could not convert job to JSON: %s", errm))
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("could not convert job to JSON: %w%s", errm, extra)
-		}
-		env = envOverride(env, []string{
-			"WR_BSUB_CONFIG=" + string(jobJSON),
-			"WR_MANAGER_HOST=" + c.host,
-			"WR_MANAGER_PORT=" + c.port,
-			"LSF_SERVERDIR=/dev/null",
-			"LSF_LIBDIR=/dev/null",
-			"LSF_ENVDIR=/dev/null",
-			"LSF_BINDIR=" + prependPath,
-			"SHELL=" + shell,
-		})
 	}
+
 	cmd.Env = env
 
 	// if docker monitoring has been requested, try and get the docker client
 	// now and fail early if we can't
-	var dockerClient *container.Operator
-	var dockerInterator *docker.Interactor
-	var cli *client.Client
+	dm, err := c.setupDockerMonitor(ctx, job)
+	if err != nil {
+		stopTouching <- true
 
-	var monitorDocker, getFirstDockerContainer bool
-	if job.MonitorDocker != "" {
-		monitorDocker = true
-		cli, err = client.NewEnvClient()
-		if err != nil {
-			stopTouching <- true
-			buryErr := fmt.Errorf("failed to create docker client: %w", err)
-			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
-			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
-			}
-			return buryErr
-		}
-
-		dockerInterator = docker.NewInteractor(cli)
-		dockerClient = container.NewOperator(dockerInterator)
-
-		// if we've been asked to monitor the first container that appears,
-		// remember existing containers
-		if job.MonitorDocker == "?" {
-			getFirstDockerContainer = true
-			errc := dockerClient.RememberCurrentContainers(ctx)
-			if errc != nil {
-				stopTouching <- true
-				buryErr := fmt.Errorf("failed to get docker containers: %w", errc)
-				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
-				if errb != nil {
-					buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
-				}
-				return buryErr
-			}
-		}
+		return err
 	}
 
 	// intercept certain signals (under LSF and SGE, SIGUSR2 may mean out-of-
 	// time, but there's no reliable way of knowing out-of-memory, so we will
 	// just treat them all the same)
-	sigs := make(chan os.Signal, 5)
+	sigs := make(chan os.Signal, executeSignalChannelBuffer)
+
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
 	defer signal.Stop(sigs)
 
 	// start running the command
 	endT := time.Now().Add(job.Requirements.Time)
+
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
 		stopTouching <- true
-		errr := c.Release(job, nil, FailReasonStart)
-		extra := ""
-		if errr != nil {
-			extra = fmt.Sprintf(" (and releasing the job failed: %s)", errr)
-		}
-		_, erru := job.Unmount(true)
-		if erru != nil {
-			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
-		}
+
+		extra := recoveryExtra("releasing the job", c.Release(job, nil, FailReasonStart))
+		extra += unmountExtra(job)
+
 		return fmt.Errorf("could not start command [%s]: %w%s", jc, err, extra)
 	}
 
@@ -1228,30 +1599,26 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	// update the server that we've started the job
+	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
 	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
-		errk := cmd.Process.Kill()
-		extra := ""
-		if errk != nil {
-			extra = fmt.Sprintf(" (and killing the cmd failed: %s)", errk)
-		}
-		errt := job.TriggerBehaviours(false)
-		if errt != nil {
-			extra += fmt.Sprintf(" (and triggering behaviours failed: %s)", errt)
-		}
-		_, erru := job.Unmount(true)
-		if erru != nil {
-			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
-		}
-		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %w%s", job.Cmd, err, extra)
+		extra := recoveryExtra("killing the cmd", cmd.Process.Kill())
+		//nolint:contextcheck // behaviours run detached from the cancellable job context
+		extra += recoveryExtra("triggering behaviours", job.TriggerBehaviours(false))
+		extra += unmountExtra(job)
+
+		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %w%s",
+			job.Cmd, err, extra)
 	}
 
 	// update peak mem and disk used by command, and check if we use too much
 	// resources, every second. Also check for signals
 	peakmem := 0
+
 	var peakdisk int64
+
 	dockerCPU := 0
 	resourceTicker := time.NewTicker(1 * time.Second)
 	machineRAM := 0
@@ -1261,33 +1628,42 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	ranoutDisk := false
 	signalled := false
 	killCalled := false
-	var killErr error
-	var closeErr error
-	var stateMutex sync.Mutex
+
+	var (
+		killErr    error
+		closeErr   error
+		stateMutex sync.Mutex
+	)
+
 	diskUsageCheck := func() (int64, error) {
 		var used int64
+
 		for _, dir := range dirsToCheckDiskSpace {
-			var thisUsed int64
-			var thisErr error
+			var (
+				thisUsed int64
+				thisErr  error
+			)
 			if dir == actualCwd {
 				thisUsed, thisErr = currentDisk(dir, dontCheckDirs)
 			} else {
 				thisUsed, thisErr = currentDisk(dir)
 			}
+
 			if thisErr != nil {
 				return 0, thisErr
 			}
+
 			used += thisUsed
 		}
+
 		return used, nil
 	}
 	finishedChecking := make(chan bool)
-	go func() {
-		var dockerContainerID string
 
+	go func() {
 		killCmd := func() error {
 			// get children first
-			children, errc := getChildProcesses(int32(cmd.Process.Pid))
+			children, errc := getChildProcesses(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
 
 			// then kill *** race condition if cmd spawns more children...
 			errk := cmd.Process.Kill()
@@ -1295,6 +1671,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			if errc != nil {
 				if errk == nil {
 					clog.Info(ctx, "killed cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid)
+
 					errk = errc
 				} else {
 					clog.Warn(ctx, "failed to kill cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid, "err", errk)
@@ -1302,9 +1679,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				}
 			}
 
-			if dockerContainerID != "" {
+			if dm != nil && dm.containerID != "" {
 				// kill the docker container as well
-				errd := dockerClient.KillContainer(ctx, dockerContainerID)
+				errd := dm.operator.KillContainer(ctx, dm.containerID)
 				if errk == nil {
 					errk = errd
 				} else {
@@ -1322,6 +1699,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				errc = child.Terminate()
 				if errk == nil {
 					clog.Info(ctx, "killed child of cmd", "cmd", job.Cmd, "pid", child.Pid)
+
 					errk = errc
 				} else {
 					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.Cmd, "pid", child.Pid)
@@ -1346,6 +1724,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			if errc != nil {
 				closeErr = errc
 			}
+
 			errc = outReader.Close()
 			if errc != nil {
 				closeErr = errc
@@ -1357,40 +1736,48 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			stateMutex.Lock()
 			killCalled = true
 			stateMutex.Unlock()
+
 			killErr = killCmd()
+
 			killDoneCh <- true
 		}
 		wkbsMutex.Unlock()
 
 		volume := local.NewVolume(job.Cwd)
-		volumeCtx := context.Background()
 
 	CHECKING:
 		for {
 			select {
 			case signal := <-sigs:
 				clog.Warn(ctx, "aborting due to signal", "sig", signal.String())
+
 				killErr = killCmd()
+
 				stateMutex.Lock()
 				if time.Now().After(endT) {
 					// we allow things to go over time, but if signalled, we now
 					// know it may be because we used too much time
 					ranoutTime = true
 				}
+
 				signalled = true
 				stateMutex.Unlock()
 				closeReaders()
+
 				break CHECKING
 			case <-resourceTicker.C:
 				// always see if we've run out of disk space on the machine, in
 				// which case abort
-				if volume.NoSpaceLeft(volumeCtx) {
+				if volume.NoSpaceLeft(ctx) {
 					clog.Warn(ctx, "aborting due to lack of disk space")
+
 					killErr = killCmd()
+
 					stateMutex.Lock()
 					ranoutDisk = true
 					stateMutex.Unlock()
 					closeReaders()
+
 					break CHECKING
 				}
 
@@ -1398,53 +1785,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				mem, errf := currentMemory(job.Pid)
 
 				// deal with docker monitoring
-				var cpuS int
-				if monitorDocker {
-					if dockerContainerID == "" {
-						var dockerContainers []*container.Container
-						var dockerContainer *container.Container
-						var errg error
-						if getFirstDockerContainer {
-							// look for a new container
-							dockerContainers, errg = dockerClient.GetNewContainers(ctx)
-							if len(dockerContainers) > 0 {
-								dockerContainerID = dockerContainers[0].ID
-							}
-						} else {
-							// job.MonitorDocker might be a name of
-							// a new container
-							dockerContainer, errg = dockerClient.GetNewContainerByName(ctx, job.MonitorDocker)
-							if dockerContainer != nil {
-								dockerContainerID = dockerContainer.ID
-							} else {
-								// job.MonitorDocker might be a file path containing the id of
-								// a container
-								dockerContainer, errg = dockerClient.GetContainerByPath(ctx, job.MonitorDocker, cmd.Dir)
-								if dockerContainer != nil {
-									dockerContainerID = dockerContainer.ID
-								}
-							}
-						}
-						if errg != nil {
-							if myerr == nil {
-								myerr = errg
-							} else {
-								myerr = fmt.Errorf("%w (and finding the docker container had issues: %w)", myerr, errg)
-							}
-						}
-					}
-
-					if dockerContainerID != "" {
-						dockerStats, errs := dockerInterator.ContainerStats(ctx, dockerContainerID)
-						if errs == nil {
-							dockerMem, thisDockerCPU := dockerStats.MemoryMB, dockerStats.CPUSec
-							if dockerMem > mem {
-								mem = dockerMem
-							}
-							cpuS = thisDockerCPU
-						}
-					}
-				}
+				mem, cpuS, findErr := dm.resolveContainerMem(ctx, cmd.Dir, mem)
+				myerr = joinExecErr(myerr, findErr, "finding the docker container had issues")
 
 				// get current disk usage
 				disk, errd := diskUsageCheck()
@@ -1457,27 +1799,22 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					if commandExceededMemoryEstimate(peakmem, job.Requirements.RAM) {
 						exceededMemEstimate = true
 
-						// ... it both uses more than expected and more than
-						// 90% of physical memory, since we could screw up the
-						// machine we're running on
-						if machineRAM == 0 {
-							ram, errp := internal.ProcMeminfoMBs()
-							if errp == nil {
-								machineRAM = ram
-							}
-						}
+						machineRAM = ensureMachineRAM(machineRAM)
 
-						if machineRAM > 0 && peakmem >= ((machineRAM/100)*c.percentMemoryKill) { //nolint:mnd
+						if c.peakMemNeedsKill(peakmem, machineRAM) {
 							killErr = killCmd()
 							killedForMem = true
 							stateMutex.Unlock()
+
 							break CHECKING
 						}
 					}
 				}
+
 				if cpuS > dockerCPU {
 					dockerCPU = cpuS
 				}
+
 				if errd == nil && disk > peakdisk {
 					peakdisk = disk
 				}
@@ -1487,9 +1824,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				stateMutex.Unlock()
 			case <-stopChecking:
 				closeReaders()
+
 				break CHECKING
 			}
 		}
+
 		finishedChecking <- true
 	}()
 
@@ -1497,11 +1836,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	errsew := <-stderrWait
 	errsow := <-stdoutWait
 	err = cmd.Wait()
+
 	resourceTicker.Stop()
+
 	stopChecking <- true
+
 	<-finishedChecking
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
+
 	endTime := time.Now()
 
 	if killCalled {
@@ -1512,17 +1855,21 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// know if we use too much memory and kill during a run), our method might
 	// miss a peak that cmd.ProcessState can tell us about, so use that if
 	// higher
-	peakRSS := cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss
-	var peakRSSMB int
-	if runtime.GOOS == "darwin" {
-		// Maxrss values are bytes
-		peakRSSMB = int((peakRSS / 1024) / 1024)
-	} else {
-		// Maxrss values are kb
-		peakRSSMB = int(peakRSS / 1024)
-	}
-	if peakRSSMB > peakmem {
-		peakmem = peakRSSMB
+	if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+		peakRSS := rusage.Maxrss
+
+		var peakRSSMB int
+		if runtime.GOOS == "darwin" {
+			// Maxrss values are bytes
+			peakRSSMB = int((peakRSS / bytesPerKB) / kbPerMB)
+		} else {
+			// Maxrss values are kb
+			peakRSSMB = int(peakRSS / kbPerMB)
+		}
+
+		if peakRSSMB > peakmem {
+			peakmem = peakRSSMB
+		}
 	}
 
 	// include our own memory usage in the peakmem of the command, since the
@@ -1533,6 +1880,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	if cmerr != nil {
 		ourmem = 10
 	}
+
 	peakmem += ourmem
 
 	// get a final read on disk usage, for jobs that produce output after the
@@ -1544,12 +1892,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	exceededMemEstimate = commandExceededMemoryEstimate(peakmem, job.Requirements.RAM)
 
-	// get the exit code and figure out what to do with the Job
-	var exitcode int
-	dobury := false
-	dorelease := false
-	doarchive := false
-	failreason := ""
+	// get the exit code and figure out what to do with the Job; dobury,
+	// dorelease and failreason are consulted by the unmount/behaviour reporting
+	// below before being finalised by the outcome classification.
+	var (
+		dobury, dorelease bool
+		failreason        string
+	)
+
 	var mayBeTemp string
 	if job.UntilBuried > 1 {
 		mayBeTemp = ", which may be a temporary issue, so it will be tried again"
@@ -1557,54 +1907,30 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	finalStdErr := bytes.TrimSpace(stderr.Bytes())
 
-	if killErr != nil {
-		if myerr != nil {
-			myerr = fmt.Errorf("%w; killing the cmd also failed: %w", myerr, killErr)
-		} else {
-			myerr = killErr
-		}
-	}
+	myerr = appendExecErr(myerr, killErr, "killing the cmd also failed")
 
 	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
-		if myerr != nil {
-			myerr = fmt.Errorf("%w; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
-		} else {
-			myerr = closeErr
-		}
+		myerr = appendExecErr(myerr, closeErr, "closing stderr/out of the cmd also failed")
 	}
 
 	// run behaviours
+	//nolint:contextcheck // behaviours run detached from the cancellable job context
 	berr := job.TriggerBehaviours(err == nil && myerr == nil)
-	if berr != nil {
-		if myerr != nil {
-			myerr = fmt.Errorf("%w; behaviour(s) also had problem(s): %w", myerr, berr)
-		} else {
-			myerr = berr
-		}
-	}
+	myerr = appendExecErr(myerr, berr, "behaviour(s) also had problem(s)")
 
 	// try and unmount now, because if we fail to upload files, we'll have to
 	// start over
 	addMountLogs := dobury || dorelease
+
 	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
-		if strings.Contains(unmountErr.Error(), "failed to upload") {
-			if !dobury {
-				dorelease = true
-			}
-			if failreason == "" {
-				failreason = FailReasonUpload
-			}
-			if exitcode == 0 {
-				exitcode = -2
-			}
+		if strings.Contains(unmountErr.Error(), "failed to upload") && !dobury {
+			// dorelease feeds the behaviour-problem reporting below; the fail
+			// reason and exit code are then set by the outcome classification.
+			dorelease = true
 		}
 
-		if myerr != nil {
-			myerr = fmt.Errorf("%w; unmounting also caused problem(s): %w", myerr, unmountErr)
-		} else {
-			myerr = unmountErr
-		}
+		myerr = appendExecErr(myerr, unmountErr, "unmounting also caused problem(s)")
 	}
 
 	if addMountLogs && logs != "" {
@@ -1635,145 +1961,34 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		finalStdOut = append(finalStdOut, errsow.Error()...)
 	}
 
-	if err != nil {
-		cmdOut := ""
-		if len(finalStdOut) > 0 {
-			cmdOut = fmt.Sprintf(" [stdout: %s]", string(finalStdOut))
-		}
+	outcome := c.classifyExecOutcome(execOutcomeInput{
+		err:                 err,
+		cmd:                 cmd,
+		job:                 job,
+		finalStdOut:         finalStdOut,
+		finalStdErr:         finalStdErr,
+		mayBeTemp:           mayBeTemp,
+		oomMonitor:          oomMonitor,
+		serverContact:       serverContact,
+		peakmem:             peakmem,
+		exceededMemEstimate: exceededMemEstimate,
+		flags: execRunFlags{
+			ranoutDisk: ranoutDisk, signalled: signalled, ranoutTime: ranoutTime,
+			killCalled: killCalled, killedForMem: killedForMem,
+		},
+	})
 
-		if len(finalStdErr) > 0 {
-			cmdOut = fmt.Sprintf(" [sterr: %s]", string(finalStdErr))
-		}
+	dobury = outcome.dobury
+	dorelease = outcome.dorelease
+	failreason = outcome.failreason
+	myerr = outcome.myerr
 
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			waitStatus, ok := exitError.Sys().(syscall.WaitStatus)
-			if !ok {
-				exitcode = 255
-				dorelease = true
-				failreason = FailReasonAbnormal
-				myerr = fmt.Errorf("command [%s] failed to complete normally (%w)%s%s", job.Cmd, err, mayBeTemp, cmdOut)
-			} else {
-				exitcode = waitStatus.ExitStatus()
-				cgroupOOM := oomMonitor.oomKillIncreased()
-
-				schedulerName := ""
-				if c.ServerInfo != nil {
-					schedulerName = c.ServerInfo.Scheduler
-				}
-
-				allowSchedulerMemoryFallback := serverContact.schedulerMemoryFallbackAllowed()
-
-				switch exitcode {
-				case exitCodeCommandPermission:
-					dobury = true
-					failreason = FailReasonCPerm
-					//nolint:err113
-					myerr = fmt.Errorf(
-						"command [%s] exited with code %d (permission problem, or command is not executable), "+
-							"which seems permanent, so it has been buried%s",
-						job.Cmd, exitcode, cmdOut,
-					)
-				case exitCodeCommandNotFound:
-					dobury = true
-					failreason = FailReasonCFound
-					//nolint:err113
-					myerr = fmt.Errorf(
-						"command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s",
-						job.Cmd, exitcode, cmdOut,
-					)
-				case exitCodeCommandInvalid:
-					dobury = true
-					failreason = FailReasonCExit
-					//nolint:err113
-					myerr = fmt.Errorf(
-						"command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s",
-						job.Cmd, exitcode, cmdOut,
-					)
-				default:
-					dorelease = true
-
-					switch {
-					case ranoutDisk:
-						failreason = FailReasonDisk
-						myerr = Error{"Execute", job.Key(), FailReasonDisk}
-					case signalled:
-						if ranoutTime {
-							failreason = FailReasonTime
-							myerr = Error{"Execute", job.Key(), FailReasonTime}
-						} else {
-							failreason = FailReasonSignal
-							myerr = Error{"Execute", job.Key(), FailReasonSignal}
-						}
-					case killCalled:
-						dobury = true
-						failreason = FailReasonKilled
-						myerr = Error{"Execute", job.Key(), FailReasonKilled}
-					case attributedMemoryDeath(
-						killedForMem,
-						cgroupOOM,
-						waitStatus,
-						peakmem,
-						job.Requirements.RAM,
-						schedulerName,
-						allowSchedulerMemoryFallback,
-					):
-						failreason = FailReasonRAM
-						myerr = Error{"Execute", job.Key(), FailReasonRAM}
-					case waitStatus.Signaled(): //nolint:misspell // Signaled is syscall's method name.
-						failreason = FailReasonSignal
-						shellExitCode := shellSignalExitCodeOffset + int(waitStatus.Signal())
-
-						//nolint:err113
-						myerr = fmt.Errorf(
-							"command [%s] terminated by signal %s (shell exit code %d)%s%s",
-							job.Cmd, waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
-						)
-					case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
-						dobury = true
-						failreason = FailReasonExit
-						//nolint:err113
-						myerr = fmt.Errorf(
-							"command [%s] exited with code %d%s%s",
-							job.Cmd, exitcode, ", after the noretries time, so will not be tried again", cmdOut,
-						)
-					default:
-						failreason = FailReasonExit
-						//nolint:err113
-						myerr = fmt.Errorf("command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
-					}
-
-					if failreason != FailReasonRAM && exceededMemEstimate {
-						myerr = appendHighMemoryNote(myerr, peakmem, job.Requirements.RAM)
-					}
-				}
-			}
-		} else {
-			// some obscure internal error unrelated to the exit code
-			exitcode = 255
-			dorelease = true
-			failreason = FailReasonAbnormal
-			myerr = fmt.Errorf("command [%s] failed to complete normally (%w)%s%s", job.Cmd, err, mayBeTemp, cmdOut)
-		}
-	} else {
-		// the command worked fine
-		exitcode = cmd.ProcessState.Sys().(syscall.WaitStatus).ExitStatus()
-		doarchive = true
-		myerr = nil
-	}
+	exitcode := outcome.exitcode
+	doarchive := outcome.doarchive
 
 	// now we've done everything time-consuming so can stop touching the job
 	stopTouching <- true
 
-	// though we may have had some problem, we always try and update our job end
-	// state, and we try many times to avoid having to repeat jobs unnecessarily
-	// (we keep retrying for 24hrs, giving plenty of time for issues to be
-	// fixed and potentially a new server to be brought online for us to
-	// connect to and succeed)
-	retryEnd := time.Now().Add(c.retryTime)
-	worked := false
-	disconnected := false
-	hadProblems := false
 	jes := &JobEndState{
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
@@ -1786,86 +2001,384 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		Exited:   true,
 	}
 
-	for {
-		if time.Now().After(retryEnd) {
-			clog.Warn(ctx, "giving up trying to connect to server")
-			break
-		}
-
-		if disconnected {
-			// we've previously failed to contact the server; try a quick
-			// connect attempt
-			newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
-			if errc != nil {
-				clog.Warn(ctx, "tried to reconnect to server but failed", "err", errc)
-
-				// keep retrying after a jittered sleep (weak random is fine here)
-				wait := c.retryWait + time.Duration(rand.Float64()*0.5*float64(c.retryWait)) //nolint:gosec
-				<-time.After(wait)
-				continue
-			}
-
-			// server is back, update ourselves and continue (we keep the quick
-			// timeout, but that should be good enough just to get through this)
-			clog.Info(ctx, "reconnected to server")
-			disconnected = false
-			c.Lock()
-			c.sock = newC.sock
-			c.Unlock()
-		}
-
-		// update the database with our final state
-		switch {
-		case dobury:
-			err = c.Bury(job, jes, failreason)
-		case dorelease:
-			err = c.Release(job, jes, failreason) // which buries after job.Retries fails in a row
-		case doarchive:
-			err = c.Archive(job, jes)
-		}
-		if err != nil {
-			clog.Error(ctx, "failed to update server with cmd's final state", "err", err)
-			hadProblems = true
-
-			if !disconnected {
-				errd := c.Disconnect()
-				if errd == nil || isClosedSocketError(errd) {
-					disconnected = true
-				} else {
-					clog.Warn(ctx, "failed to disconnect", "err", errd)
-				}
-			}
-
-			if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) {
-				// this is a permanent error, give up
-				break
-			}
-
-			<-time.After(c.retryWait)
-			continue
-		}
-		worked = true
-		break
-	}
-
+	worked, hadProblems := c.reportFinalState(ctx, job, jes, execAction{
+		bury: dobury, release: dorelease, archive: doarchive, failreason: failreason,
+	})
 	if !worked {
+		//nolint:contextcheck // behaviours run detached from the cancellable job context
 		errt := job.TriggerBehaviours(false)
+
 		extra := ""
 		if errt != nil {
 			extra = fmt.Sprintf(" (and triggering behaviours failed: %s)", errt)
 		}
-		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %w%s", job.Cmd, err, extra)
+
+		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %w%s",
+			job.Cmd, err, extra)
 	}
 
 	if hadProblems {
 		if myerr != nil {
 			myerr = fmt.Errorf("%w; %s", myerr, ErrStopReserving)
 		} else {
-			myerr = Error{"Execute", job.Key(), ErrStopReserving}
+			myerr = Error{clientOpExecute, job.Key(), ErrStopReserving}
 		}
 	}
 
 	return myerr
+}
+
+// execAction describes the final action to take on a job and the fail reason to
+// record with it.
+type execAction struct {
+	failreason string
+	bury       bool
+	release    bool
+	archive    bool
+}
+
+// reportFinalState repeatedly tries to update the server with the job's final
+// state, reconnecting if the connection was lost, until it succeeds or
+// c.retryTime elapses. It returns whether it succeeded and whether it hit any
+// problems along the way (which the caller turns into ErrStopReserving).
+func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndState, action execAction) (bool, bool) {
+	retryEnd := time.Now().Add(c.retryTime)
+	disconnected := false
+	hadProblems := false
+
+	for !time.Now().After(retryEnd) {
+		if disconnected && !c.quickReconnect(ctx) {
+			continue
+		}
+
+		err := c.applyFinalState(job, jes, action)
+		if err == nil {
+			return true, hadProblems
+		}
+
+		hadProblems = true
+
+		var giveUp bool
+
+		disconnected, giveUp = c.handleFinalStateError(ctx, err)
+		if giveUp {
+			return false, hadProblems
+		}
+	}
+
+	clog.Warn(ctx, "giving up trying to connect to server")
+
+	return false, hadProblems
+}
+
+// handleFinalStateError reacts to a failed state update: it logs the error,
+// disconnects, and reports whether the client is now disconnected and whether
+// the failure is permanent (giveUp). For transient failures it sleeps the retry
+// delay before returning.
+func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconnected, giveUp bool) {
+	clog.Error(ctx, "failed to update server with cmd's final state", "err", err)
+
+	disconnected = c.disconnectAfterFailure(ctx)
+
+	if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) {
+		// this is a permanent error, give up
+		return disconnected, true
+	}
+
+	<-time.After(c.retryWait)
+
+	return disconnected, false
+}
+
+// quickReconnect performs a quick reconnect attempt, updating the client's
+// socket on success. On failure it logs, sleeps a jittered retry delay and
+// returns false.
+func (c *Client) quickReconnect(ctx context.Context) bool {
+	newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
+	if errc != nil {
+		clog.Warn(ctx, "tried to reconnect to server but failed", "err", errc)
+
+		// keep retrying after a jittered sleep (weak random is fine here)
+		wait := c.retryWait + time.Duration(rand.Float64()*0.5*float64(c.retryWait)) //nolint:gosec
+		<-time.After(wait)
+
+		return false
+	}
+
+	// server is back, update ourselves and continue (we keep the quick timeout,
+	// but that should be good enough just to get through this)
+	clog.Info(ctx, "reconnected to server")
+
+	c.Lock()
+	c.sock = newC.sock
+	c.Unlock()
+
+	return true
+}
+
+// applyFinalState updates the server with the job's end state according to the
+// chosen action.
+func (c *Client) applyFinalState(job *Job, jes *JobEndState, action execAction) error {
+	switch {
+	case action.bury:
+		return c.Bury(job, jes, action.failreason)
+	case action.release:
+		return c.Release(job, jes, action.failreason) // which buries after job.Retries fails in a row
+	case action.archive:
+		return c.Archive(job, jes)
+	default:
+		return nil
+	}
+}
+
+// disconnectAfterFailure disconnects from the server after a failed state
+// update, returning whether the client is now considered disconnected.
+func (c *Client) disconnectAfterFailure(ctx context.Context) bool {
+	errd := c.Disconnect()
+	if errd == nil || isClosedSocketError(errd) {
+		return true
+	}
+
+	clog.Warn(ctx, "failed to disconnect", "err", errd)
+
+	return false
+}
+
+// execRunFlags captures the boolean conditions observed while a command ran that
+// influence how its non-zero exit is classified.
+type execRunFlags struct {
+	ranoutDisk   bool
+	signalled    bool
+	ranoutTime   bool
+	killCalled   bool
+	killedForMem bool
+}
+
+// execOutcomeInput bundles everything classifyExecOutcome needs to decide a
+// finished command's fate.
+type execOutcomeInput struct {
+	err                 error
+	cmd                 *exec.Cmd
+	job                 *Job
+	finalStdOut         []byte
+	finalStdErr         []byte
+	mayBeTemp           string
+	oomMonitor          *cgroupOOMMonitor
+	serverContact       *serverContactState
+	peakmem             int
+	exceededMemEstimate bool
+	flags               execRunFlags
+}
+
+// execOutcome is the decision about what to do with a finished command.
+type execOutcome struct {
+	myerr      error
+	failreason string
+	exitcode   int
+	dobury     bool
+	dorelease  bool
+	doarchive  bool
+}
+
+// classifyExecOutcome decides, from how a command finished, whether to bury,
+// release or archive its job, the exit code to record and the error (if any) to
+// return.
+func (c *Client) classifyExecOutcome(in execOutcomeInput) execOutcome {
+	if in.err == nil {
+		// the command worked fine
+		out := execOutcome{doarchive: true}
+		if waitStatus, ok := in.cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+			out.exitcode = waitStatus.ExitStatus()
+		}
+
+		return out
+	}
+
+	cmdOut := execCmdOutput(in.finalStdOut, in.finalStdErr)
+
+	var exitError *exec.ExitError
+	if !errors.As(in.err, &exitError) {
+		// some obscure internal error unrelated to the exit code
+		return abnormalOutcome(in, cmdOut)
+	}
+
+	waitStatus, ok := exitError.Sys().(syscall.WaitStatus)
+	if !ok {
+		return abnormalOutcome(in, cmdOut)
+	}
+
+	return c.classifyExitStatus(in, waitStatus, cmdOut)
+}
+
+// abnormalOutcome is the outcome for a command that failed to complete normally
+// (no usable wait status), releasing the job for a retry.
+func abnormalOutcome(in execOutcomeInput, cmdOut string) execOutcome {
+	return execOutcome{
+		exitcode:   exitCodeAbnormal,
+		dorelease:  true,
+		failreason: FailReasonAbnormal,
+		myerr: fmt.Errorf("command [%s] failed to complete normally (%w)%s%s",
+			in.job.Cmd, in.err, in.mayBeTemp, cmdOut),
+	}
+}
+
+// execCmdOutput renders the captured stdout/stderr for inclusion in an error,
+// preferring stderr when both are present (matching the original behaviour).
+func execCmdOutput(finalStdOut, finalStdErr []byte) string {
+	cmdOut := ""
+	if len(finalStdOut) > 0 {
+		cmdOut = fmt.Sprintf(" [stdout: %s]", string(finalStdOut))
+	}
+
+	if len(finalStdErr) > 0 {
+		cmdOut = fmt.Sprintf(" [sterr: %s]", string(finalStdErr))
+	}
+
+	return cmdOut
+}
+
+// classifyExitStatus classifies a command that exited with a wait status,
+// handling the permanent (bury) exit codes directly and delegating other codes
+// to classifyReleasedExit.
+func (c *Client) classifyExitStatus(in execOutcomeInput, waitStatus syscall.WaitStatus, cmdOut string) execOutcome {
+	exitcode := waitStatus.ExitStatus()
+
+	out := execOutcome{exitcode: exitcode, dobury: true}
+
+	switch exitcode {
+	case exitCodeCommandPermission:
+		out.failreason = FailReasonCPerm
+		//nolint:err113
+		out.myerr = fmt.Errorf(
+			"command [%s] exited with code %d (permission problem, or command is not executable), "+
+				"which seems permanent, so it has been buried%s",
+			in.job.Cmd, exitcode, cmdOut,
+		)
+	case exitCodeCommandNotFound:
+		out.failreason = FailReasonCFound
+		//nolint:err113
+		out.myerr = fmt.Errorf(
+			"command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s",
+			in.job.Cmd, exitcode, cmdOut,
+		)
+	case exitCodeCommandInvalid:
+		out.failreason = FailReasonCExit
+		//nolint:err113
+		out.myerr = fmt.Errorf(
+			"command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s",
+			in.job.Cmd, exitcode, cmdOut,
+		)
+	default:
+		out = c.classifyReleasedExit(in, waitStatus, exitcode, cmdOut)
+	}
+
+	return out
+}
+
+// classifyReleasedExit classifies a command whose exit code is not one of the
+// permanent-failure codes, deciding the fail reason and whether to (still) bury.
+func (c *Client) classifyReleasedExit(in execOutcomeInput, waitStatus syscall.WaitStatus,
+	exitcode int, cmdOut string,
+) execOutcome {
+	out := execOutcome{exitcode: exitcode, dorelease: true}
+	job := in.job
+
+	switch {
+	case in.flags.ranoutDisk:
+		out.failreason, out.myerr = job.simpleFail(FailReasonDisk)
+	case in.flags.signalled:
+		out.failreason, out.myerr = c.signalledOutcome(job, in.flags.ranoutTime)
+	case in.flags.killCalled:
+		out.dobury = true
+		out.failreason, out.myerr = job.simpleFail(FailReasonKilled)
+	case c.memoryDeath(in, waitStatus):
+		out.failreason, out.myerr = job.simpleFail(FailReasonRAM)
+	case waitStatus.Signaled(): //nolint:misspell // Signaled is syscall's method name.
+		out.failreason = FailReasonSignal
+		out.myerr = signalExitError(job, waitStatus, in.mayBeTemp, cmdOut)
+	default:
+		out.failreason = FailReasonExit
+		out.dobury, out.myerr = plainExitOutcome(job, exitcode, in.mayBeTemp, cmdOut)
+	}
+
+	out.myerr = maybeAppendHighMemoryNote(out.myerr, out.failreason, in)
+
+	return out
+}
+
+// simpleFail returns reason and an Execute Error carrying reason for job.
+func (job *Job) simpleFail(reason string) (string, error) {
+	return reason, Error{clientOpExecute, job.Key(), reason}
+}
+
+// signalExitError builds the error for a command terminated by a signal.
+func signalExitError(job *Job, waitStatus syscall.WaitStatus, mayBeTemp, cmdOut string) error {
+	shellExitCode := shellSignalExitCodeOffset + int(waitStatus.Signal())
+
+	//nolint:err113
+	return fmt.Errorf(
+		"command [%s] terminated by signal %s (shell exit code %d)%s%s",
+		job.Cmd, waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
+	)
+}
+
+// maybeAppendHighMemoryNote annotates err with a high-memory note when the
+// failure was not already a RAM failure but the command exceeded its estimate.
+func maybeAppendHighMemoryNote(err error, failreason string, in execOutcomeInput) error {
+	if failreason != FailReasonRAM && in.exceededMemEstimate {
+		return appendHighMemoryNote(err, in.peakmem, in.job.Requirements.RAM)
+	}
+
+	return err
+}
+
+// plainExitOutcome classifies a non-zero exit that isn't otherwise special: if
+// the job has run past its no-retries-over-walltime it is buried, otherwise it
+// is released for a retry. The fail reason is always FailReasonExit.
+func plainExitOutcome(job *Job, exitcode int, mayBeTemp, cmdOut string) (bury bool, err error) {
+	if noRetriesTimeExceeded(job) {
+		//nolint:err113
+		return true, fmt.Errorf(
+			"command [%s] exited with code %d%s%s",
+			job.Cmd, exitcode, ", after the noretries time, so will not be tried again", cmdOut,
+		)
+	}
+
+	//nolint:err113
+	return false, fmt.Errorf(
+		"command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
+}
+
+// signalledOutcome returns the fail reason and error for a job killed by a
+// signal, distinguishing an out-of-time kill.
+func (c *Client) signalledOutcome(job *Job, ranoutTime bool) (string, error) {
+	if ranoutTime {
+		return job.simpleFail(FailReasonTime)
+	}
+
+	return job.simpleFail(FailReasonSignal)
+}
+
+// memoryDeath reports whether the command's death is attributable to running out
+// of memory.
+func (c *Client) memoryDeath(in execOutcomeInput, waitStatus syscall.WaitStatus) bool {
+	return attributedMemoryDeath(in.flags.killedForMem, in.oomMonitor.oomKillIncreased(), waitStatus,
+		in.peakmem, in.job.Requirements.RAM, c.schedulerName(), in.serverContact.schedulerMemoryFallbackAllowed())
+}
+
+// noRetriesTimeExceeded reports whether the job has run for longer than its
+// no-retries-over-walltime threshold (and so should not be retried).
+func noRetriesTimeExceeded(job *Job) bool {
+	return job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime
+}
+
+// schedulerName returns the configured scheduler name, or "" if unknown.
+func (c *Client) schedulerName() string {
+	if c.ServerInfo != nil {
+		return c.ServerInfo.Scheduler
+	}
+
+	return ""
 }
 
 func isClosedSocketError(err error) bool {
@@ -1881,46 +2394,42 @@ func isClosedSocketError(err error) bool {
 func (c *Client) createLSFSymlinks(prependPath string, job *Job) error {
 	wr, erre := os.Executable()
 	if erre != nil {
-		errb := c.Bury(job, nil, FailReasonCwd)
-		if errb != nil {
-			return fmt.Errorf("could not get path to wr: %w (and burying the job failed: %w)", erre, errb)
-		}
-
-		return fmt.Errorf("could not get path to wr: %w", erre)
+		return c.buryAndWrap(job, FailReasonCwd, erre, "could not get path to wr")
 	}
 
-	bsub := filepath.Join(prependPath, "bsub")
-	bjobs := filepath.Join(prependPath, "bjobs")
-	bkill := filepath.Join(prependPath, "bkill")
-	err := os.Symlink(wr, bsub)
-	if err != nil {
-		errb := c.Bury(job, nil, FailReasonCwd)
-		if errb != nil {
-			return fmt.Errorf("could not create bsub symlink: %w (and burying the job failed: %w)", err, errb)
+	for _, name := range []string{"bsub", "bjobs", "bkill"} {
+		if err := os.Symlink(wr, filepath.Join(prependPath, name)); err != nil {
+			return c.buryAndWrap(job, FailReasonCwd, err, "could not create "+name+" symlink")
 		}
-
-		return fmt.Errorf("could not create bsub symlink: %w", err)
-	}
-	err = os.Symlink(wr, bjobs)
-	if err != nil {
-		errb := c.Bury(job, nil, FailReasonCwd)
-		if errb != nil {
-			return fmt.Errorf("could not create bjobs symlink: %w (and burying the job failed: %w)", err, errb)
-		}
-
-		return fmt.Errorf("could not create bjobs symlink: %w", err)
-	}
-	err = os.Symlink(wr, bkill)
-	if err != nil {
-		errb := c.Bury(job, nil, FailReasonCwd)
-		if errb != nil {
-			return fmt.Errorf("could not create bkill symlink: %w (and burying the job failed: %w)", err, errb)
-		}
-
-		return fmt.Errorf("could not create bkill symlink: %w", err)
 	}
 
 	return nil
+}
+
+// buryAndWrap buries job with the given failReason and returns an error wrapping
+// cause with message, additionally noting any failure to bury the job.
+func (c *Client) buryAndWrap(job *Job, failReason string, cause error, message string) error {
+	if errb := c.Bury(job, nil, failReason); errb != nil {
+		return fmt.Errorf("%s: %w (and burying the job failed: %w)", message, cause, errb)
+	}
+
+	return fmt.Errorf("%s: %w", message, cause)
+}
+
+// buryWithCause buries job (recording the "message: cause" error as the job's
+// stderr) and returns that error, noting any failure to bury.
+func (c *Client) buryWithCause(job *Job, failReason string, cause error, message string) error {
+	return c.buryWrapErr(job, failReason, fmt.Errorf("%s: %w", message, cause))
+}
+
+// buryWrapErr buries job recording buryErr as its stderr, and returns buryErr,
+// noting any failure to bury.
+func (c *Client) buryWrapErr(job *Job, failReason string, buryErr error) error {
+	if errb := c.Bury(job, nil, failReason, buryErr); errb != nil {
+		return fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+	}
+
+	return buryErr
 }
 
 func compressStd(data []byte) []byte {
@@ -1968,6 +2477,7 @@ func (c *Client) Started(job *Job, pid int) error {
 	job.Unlock()
 
 	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
+
 	return err
 }
 
@@ -2105,10 +2615,7 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 
-	job.Lock()
-	job.FailReason = failreason
-	key := job.Key()
-	job.Unlock()
+	key := setJobFailReason(job, failreason)
 
 	_, err := c.request(&clientRequest{
 		Method:      "jrelease",
@@ -2120,6 +2627,14 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 		return err
 	}
 
+	c.finishRelease(job, jes)
+
+	return nil
+}
+
+// finishRelease updates our local copy of job with the state the server would
+// have applied after a release.
+func (c *Client) finishRelease(job *Job, jes *JobEndState) {
 	job.Lock()
 	defer job.Unlock()
 
@@ -2135,14 +2650,22 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	} else {
 		job.State = JobStateDelayed
 	}
+}
 
-	return nil
+// setJobFailReason records failreason on job under its lock and returns its key.
+func setJobFailReason(job *Job, failreason string) string {
+	job.Lock()
+	defer job.Unlock()
+
+	job.FailReason = failreason
+
+	return job.Key()
 }
 
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
 // something to perhaps make it runnable and kicks the job). Note that you must
 // reserve a job before you can bury it. Optionally supply an error that will
-// be be displayed as the Job's stderr.
+// be displayed as the Job's stderr.
 func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...error) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
@@ -2155,10 +2678,7 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 		jes.Stderr = compressStd([]byte(stderr[0].Error()))
 	}
 
-	job.Lock()
-	job.FailReason = failreason
-	key := job.Key()
-	job.Unlock()
+	key := setJobFailReason(job, failreason)
 
 	_, err := c.request(&clientRequest{
 		Method:      "jbury",
@@ -2184,10 +2704,12 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 // only be related to not being able to contact the server.
 func (c *Client) Kick(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
+
 	resp, err := c.request(&clientRequest{Method: "jkick", Keys: keys})
 	if err != nil {
 		return 0, err
 	}
+
 	return resp.Existed, err
 }
 
@@ -2225,10 +2747,12 @@ func (c *Client) Resume(jes []*JobEssence) (int, error) {
 // Errors will only be related to not being able to contact the server.
 func (c *Client) Delete(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
+
 	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
 	if err != nil {
 		return 0, err
 	}
+
 	return resp.Existed, err
 }
 
@@ -2244,10 +2768,12 @@ func (c *Client) Delete(jes []*JobEssence) (int, error) {
 // server.
 func (c *Client) Kill(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
+
 	resp, err := c.request(&clientRequest{Method: "jkill", Keys: keys})
 	if err != nil {
 		return 0, err
 	}
+
 	return resp.Existed, err
 }
 
@@ -2260,10 +2786,12 @@ func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, e
 	if err != nil {
 		return nil, err
 	}
+
 	jobs := resp.Jobs
 	if len(jobs) == 0 {
 		return nil, err
 	}
+
 	return jobs[0], err
 }
 
@@ -2271,10 +2799,12 @@ func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, e
 // them.
 func (c *Client) GetByEssences(jes []*JobEssence) ([]*Job, error) {
 	keys := c.jesToKeys(jes)
+
 	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys})
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.Jobs, err
 }
 
@@ -2285,6 +2815,7 @@ func (c *Client) jesToKeys(jes []*JobEssence) []string {
 	for _, je := range jes {
 		keys = append(keys, je.Key())
 	}
+
 	return keys
 }
 
@@ -2296,13 +2827,15 @@ func (c *Client) jesToKeys(jes []*JobEssence) []string {
 // a substring of.
 //
 // 'limit', if greater than 0, limits the number of jobs returned that have the
-// same State, FailReason and Exitcode, and on the the last job of each
+// same State, FailReason and Exitcode, and on the last job of each
 // State+FailReason group it populates 'Similar' with the number of other
 // excluded jobs there were in that group.
 //
 // Providing 'state' only returns jobs in that State. 'getStd' and 'getEnv', if
 // true, retrieve the stdout, stderr and environement variables for the Jobs.
-func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state JobState,
+	getStd bool, getEnv bool,
+) ([]*Job, error) {
 	match := RepGroupMatchExact
 	if subStr {
 		match = RepGroupMatchSubStr
@@ -2321,6 +2854,7 @@ func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit 
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.Jobs, err
 }
 
@@ -2348,10 +2882,13 @@ func (c *Client) GetStatusByRepGroupMatch(repgroup string, match RepGroupMatch,
 // those that are complete and have been Archive()d. The args are as in
 // GetByRepGroup().
 func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getin", Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+	resp, err := c.request(&clientRequest{
+		Method: requestMethodGetIncomplete, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv,
+	})
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.Jobs, err
 }
 
@@ -2360,7 +2897,7 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 // remaining args are as in GetByRepGroup().
 func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
+	resp, err := c.request(&clientRequest{Method: requestMethodGetIncomplete, Job: &Job{RepGroup: repgroup},
 		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
 		State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
@@ -2375,7 +2912,7 @@ func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMat
 // only jobs whose RepGroup matches according to match are returned.
 func (c *Client) GetIncompleteWaitingForDepGroups(repgroup string, match RepGroupMatch,
 	limit int, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getin", Job: &Job{RepGroup: repgroup},
+	resp, err := c.request(&clientRequest{Method: requestMethodGetIncomplete, Job: &Job{RepGroup: repgroup},
 		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
 		GetStd: getStd, GetEnv: getEnv, WaitingForDepGroups: true})
 	if err != nil {
@@ -2409,6 +2946,7 @@ func (c *Client) GetOrSetLimitGroup(group string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
+
 	return resp.Limit, err
 }
 
@@ -2442,10 +2980,12 @@ func (c *Client) UploadFile(local, remote string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	resp, err := c.request(&clientRequest{Method: "upload", File: compressed, Path: remote})
 	if err != nil {
 		return "", err
 	}
+
 	return resp.Path, err
 }
 
@@ -2456,6 +2996,7 @@ func (c *Client) GetBadCloudServers() ([]*BadServer, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.BadServers, err
 }
 
@@ -2478,6 +3019,7 @@ func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, []*Job, error
 	if err != nil {
 		return nil, nil, err
 	}
+
 	return resp.BadServers, resp.Jobs, err
 }
 
@@ -2504,28 +3046,11 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	c.Lock()
 	defer c.Unlock()
 
-	// encode and send the request
-	var encoded []byte
-	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	cr.Token = c.token
-	cr.ClientID = c.clientid
-	err := enc.Encode(cr)
-	if err != nil {
-		return nil, err
-	}
-	err = c.sock.Send(encoded)
-	if err != nil {
+	if err := c.encodeAndSend(cr); err != nil {
 		return nil, err
 	}
 
-	// get the response and decode it
-	resp, err := c.sock.Recv()
-	if err != nil {
-		return nil, err
-	}
-	sr := &serverResponse{}
-	dec := codec.NewDecoderBytes(resp, c.ch)
-	err = dec.Decode(sr)
+	sr, err := c.recvAndDecode()
 	if err != nil {
 		return nil, err
 	}
@@ -2534,7 +3059,42 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	if sr.Err != "" {
 		return sr, Error{cr.Method, cr.key(), sr.Err}
 	}
-	return sr, err
+
+	return sr, nil
+}
+
+// encodeAndSend encodes cr (stamping it with this client's token and id) and
+// sends it to the server.
+func (c *Client) encodeAndSend(cr *clientRequest) error {
+	var encoded []byte
+
+	enc := codec.NewEncoderBytes(&encoded, c.ch)
+	cr.Token = c.token
+	cr.ClientID = c.clientid
+
+	if err := enc.Encode(cr); err != nil {
+		return err
+	}
+
+	return c.sock.Send(encoded)
+}
+
+// recvAndDecode receives the server's reply and decodes it into a
+// serverResponse.
+func (c *Client) recvAndDecode() (*serverResponse, error) {
+	resp, err := c.sock.Recv()
+	if err != nil {
+		return nil, err
+	}
+
+	sr := &serverResponse{}
+	dec := codec.NewDecoderBytes(resp, c.ch)
+
+	if err := dec.Decode(sr); err != nil {
+		return nil, err
+	}
+
+	return sr, nil
 }
 
 // CompressEnv encodes the given environment variables (slice of "key=value"
@@ -2543,11 +3103,14 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 // us when we need to know the Env (during Execute()).
 func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
+
 	err := enc.Encode(&envStr{envars})
 	if err != nil {
 		return nil, err
 	}
+
 	return compress(encoded)
 }
 

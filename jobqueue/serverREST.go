@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -69,6 +70,9 @@ const (
 	restJobKeyLength       = 32
 	restModifyOverrideMax  = 2
 	restModifyUint8Max     = 255
+	restDefaultMemoryMB    = 1000
+	restDefaultCloudOSRam  = 1000
+	restDefaultRepGroup    = "manually_added"
 )
 
 var (
@@ -79,6 +83,8 @@ var (
 	errRESTModifyCmdMultiJob     = errors.New("cmd can only be modified for one job")
 	errRESTModifyNoneModified    = errors.New("no jobs were modified")
 	errRESTModifyNotFound        = errors.New("job not found")
+	errRESTCmdNotSpecified       = errors.New("cmd was not specified")
+	errRESTCancelStateRequired   = errors.New("state must be supplied as one of running|lost|deletable")
 )
 
 type restRangeError struct {
@@ -178,7 +184,7 @@ func restEditableKeysForModification(ctx context.Context, s *Server, ids string,
 func restJobsModificationTargets(ctx context.Context, s *Server, ids string) ([]*Job, int, error) {
 	var targets []*Job
 
-	for _, id := range strings.Split(ids, ",") {
+	for id := range strings.SplitSeq(ids, ",") {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
@@ -370,8 +376,9 @@ type JobDefaults struct {
 // DefaultCwd returns the Cwd value, defaulting to /tmp.
 func (jd *JobDefaults) DefaultCwd() string {
 	if jd.Cwd == "" {
-		return "/tmp"
+		return defaultUploadDir
 	}
+
 	return jd.Cwd
 }
 
@@ -380,14 +387,16 @@ func (jd *JobDefaults) DefaultCPUs() float64 {
 	if jd.CPUs < 0 {
 		return 0
 	}
+
 	return jd.CPUs
 }
 
 // DefaultMemory returns the Memory value, but if <1 returns 1000 instead.
 func (jd *JobDefaults) DefaultMemory() int {
 	if jd.Memory < 1 {
-		return 1000
+		return restDefaultMemoryMB
 	}
+
 	return jd.Memory
 }
 
@@ -396,6 +405,7 @@ func (jd *JobDefaults) DefaultTime() time.Duration {
 	if jd.Time == 0 {
 		return 1 * time.Hour
 	}
+
 	return jd.Time
 }
 
@@ -405,6 +415,7 @@ func (jd *JobDefaults) DefaultEnv() ([]byte, error) {
 	if len(jd.compressedEnv) == 0 {
 		jd.compressedEnv, err = compressEnv(strings.Split(jd.Env, ","))
 	}
+
 	return jd.compressedEnv, err
 }
 
@@ -414,10 +425,12 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 	if jd.osRAM == "" {
 		ram := jd.CloudOSRam
 		if ram == 0 {
-			ram = 1000
+			ram = restDefaultCloudOSRam
 		}
+
 		jd.osRAM = strconv.Itoa(ram)
 	}
+
 	return jd.osRAM
 }
 
@@ -425,330 +438,377 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // properties of this JobViaJSON. The Job will not be in the queue until passed
 // to a method that adds jobs to the queue.
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
-	var (
-		cmd, cwd, rg, repg, monitorDocker, bsubMode  string
-		withDocker, withSingularity, containerMounts string
-		mb, disk, override, priority, retries        int
-		diskSet                                      bool
-		cpus                                         float64
-		dur, noRetry                                 time.Duration
-		envOverride                                  []byte
-		limitGroups, modules, depGroups              []string
-		deps                                         Dependencies
-		behaviours                                   Behaviours
-		mounts                                       MountConfigs
-	)
-
-	if jvj.RepGrp == "" {
-		repg = jd.RepGrp
-	} else {
-		repg = jvj.RepGrp
-	}
-
-	cmd = jvj.Cmd
+	cmd := jvj.Cmd
 	if cmd == "" {
-		return nil, fmt.Errorf("cmd was not specified")
+		return nil, errRESTCmdNotSpecified
 	}
 
-	if jvj.Cwd == "" {
-		cwd = jd.DefaultCwd()
-	} else {
-		cwd = jvj.Cwd
+	fields, err := jvj.resolveErrorProneFields(jd)
+	if err != nil {
+		return nil, err
 	}
 
-	cwdMatters := jd.CwdMatters
-	if jvj.CwdMatters {
-		cwdMatters = true
+	return jvj.buildJob(jd, cmd, fields), nil
+}
+
+// buildJob assembles the final Job from the JobViaJSON, its defaults and the
+// already-resolved error-prone fields.
+func (jvj *JobViaJSON) buildJob(jd *JobDefaults, cmd string, fields convertedFields) *Job {
+	return &Job{
+		RepGroup:              firstNonEmpty(jvj.RepGrp, jd.RepGrp),
+		Cmd:                   cmd,
+		Cwd:                   firstNonEmpty(jvj.Cwd, jd.DefaultCwd()),
+		CwdMatters:            jvj.CwdMatters || jd.CwdMatters,
+		ChangeHome:            jvj.ChangeHome || jd.ChangeHome,
+		ReqGroup:              jvj.resolveReqGroup(jd, cmd),
+		Group:                 firstNonEmpty(jvj.Group, jd.Group),
+		Requirements:          fields.requirements,
+		Override:              fields.override,
+		Priority:              fields.priority,
+		Retries:               fields.retries,
+		NoRetriesOverWalltime: fields.noRetry,
+		LimitGroups:           firstNonEmptySlice(jvj.LimitGrps, jd.LimitGroups),
+		Modules:               firstNonEmptySlice(jvj.Modules, jd.Modules),
+		DepGroups:             firstNonEmptySlice(jvj.DepGrps, jd.DepGroups),
+		Dependencies:          jvj.resolveDependencies(jd),
+		EnvOverride:           fields.envOverride,
+		Behaviours:            jvj.resolveBehaviours(jd),
+		MountConfigs:          jvj.resolveMountConfigs(jd),
+		MonitorDocker:         firstNonEmpty(jvj.MonitorDocker, jd.MonitorDocker),
+		WithDocker:            firstNonEmpty(jvj.WithDocker, jd.WithDocker),
+		WithSingularity:       firstNonEmpty(jvj.WithSingularity, jd.WithSingularity),
+		ContainerMounts:       firstNonEmpty(jvj.ContainerMounts, jd.ContainerMounts),
+		BsubMode:              firstNonEmpty(jvj.BsubMode, jd.BsubMode),
+	}
+}
+
+// convertedFields holds the JobViaJSON-derived values whose resolution can fail.
+type convertedFields struct {
+	requirements                *jqs.Requirements
+	noRetry                     time.Duration
+	envOverride                 []byte
+	override, priority, retries uint8
+}
+
+// resolveErrorProneFields resolves the fields of a Job whose values are parsed
+// or validated and may therefore return an error.
+func (jvj *JobViaJSON) resolveErrorProneFields(jd *JobDefaults) (convertedFields, error) {
+	var fields convertedFields
+
+	var err error
+
+	fields.requirements, err = jvj.resolveRequirements(jd)
+	if err != nil {
+		return fields, err
 	}
 
-	changeHome := jd.ChangeHome
-	if jvj.ChangeHome {
-		changeHome = true
+	fields.override, fields.priority, fields.retries, err = jvj.resolveUint8Limits(jd)
+	if err != nil {
+		return fields, err
 	}
 
-	if jvj.ReqGrp == "" {
-		if jd.ReqGrp != "" {
-			rg = jd.ReqGrp
-		} else {
-			parts := strings.Split(cmd, " ")
-			rg = filepath.Base(parts[0])
+	fields.noRetry, err = jvj.resolveNoRetriesOverWalltime(jd)
+	if err != nil {
+		return fields, err
+	}
+
+	fields.envOverride, err = jvj.resolveEnvOverride(jd)
+	if err != nil {
+		return fields, err
+	}
+
+	return fields, nil
+}
+
+// firstNonEmpty returns the first non-empty string from values, or "" if all
+// are empty.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
 		}
-	} else {
-		rg = jvj.ReqGrp
 	}
 
-	group := jd.Group
-	if jvj.Group != "" {
-		group = jvj.Group
+	return ""
+}
+
+// firstNonEmptySlice returns primary if it is non-empty, otherwise fallback.
+func firstNonEmptySlice(primary, fallback []string) []string {
+	if len(primary) > 0 {
+		return primary
 	}
 
-	if jvj.CPUs == nil {
-		cpus = jd.DefaultCPUs()
-	} else {
+	return fallback
+}
+
+// resolveReqGroup returns the ReqGroup to use, defaulting to the base name of
+// the command's first word when neither jvj nor jd supply one.
+func (jvj *JobViaJSON) resolveReqGroup(jd *JobDefaults, cmd string) string {
+	if rg := firstNonEmpty(jvj.ReqGrp, jd.ReqGrp); rg != "" {
+		return rg
+	}
+
+	parts := strings.Split(cmd, " ")
+
+	return filepath.Base(parts[0])
+}
+
+// resolveRequirements builds the scheduler Requirements from jvj and its
+// defaults.
+func (jvj *JobViaJSON) resolveRequirements(jd *JobDefaults) (*jqs.Requirements, error) {
+	cpus := jd.DefaultCPUs()
+	if jvj.CPUs != nil {
 		cpus = *jvj.CPUs
 	}
 
-	if jvj.Memory == "" {
-		mb = jd.DefaultMemory()
-	} else {
-		thismb, err := bytefmt.ToMegabytes(jvj.Memory)
-		if err != nil {
-			return nil, fmt.Errorf("memory value (%s) was not specified correctly: %w", jvj.Memory, err)
-		}
-		mb = int(thismb)
+	mb, err := jvj.resolveMemoryMB(jd)
+	if err != nil {
+		return nil, err
 	}
 
-	if jvj.Time == "" {
-		dur = jd.DefaultTime()
-	} else {
-		var err error
-		dur, err = time.ParseDuration(jvj.Time)
-		if err != nil {
-			return nil, fmt.Errorf("time value (%s) was not specified correctly: %w", jvj.Time, err)
-		}
+	dur, err := jvj.resolveTime(jd)
+	if err != nil {
+		return nil, err
 	}
 
-	if jvj.Override == nil {
-		override = jd.Override
-	} else {
-		override = *jvj.Override
-	}
-	if override < 0 || override > 2 {
-		return nil, fmt.Errorf("override value (%d) is not in the range 0..2", override)
-	}
+	disk := jd.Disk
+	diskSet := jd.DiskSet
 
-	if jvj.Disk == nil {
-		disk = jd.Disk
-		diskSet = jd.DiskSet
-	} else {
+	if jvj.Disk != nil {
 		disk = *jvj.Disk
 		diskSet = true
 	}
 
-	if jvj.Priority == nil {
-		priority = jd.Priority
-	} else {
-		priority = *jvj.Priority
-	}
-	if priority < 0 || priority > 255 {
-		return nil, fmt.Errorf("priority value (%d) is not in the range 0..255", priority)
+	other, err := jvj.resolveSchedulerOther(jd)
+	if err != nil {
+		return nil, err
 	}
 
-	if jvj.Retries == nil {
-		retries = jd.Retries
-	} else {
-		retries = *jvj.Retries
-	}
-	if retries < 0 || retries > 255 {
-		return nil, fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
+	return &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, DiskSet: diskSet, Other: other}, nil
+}
+
+// resolveMemoryMB resolves the requested memory in megabytes.
+func (jvj *JobViaJSON) resolveMemoryMB(jd *JobDefaults) (int, error) {
+	if jvj.Memory == "" {
+		return jd.DefaultMemory(), nil
 	}
 
+	thismb, err := bytefmt.ToMegabytes(jvj.Memory)
+	if err != nil {
+		return 0, fmt.Errorf("memory value (%s) was not specified correctly: %w", jvj.Memory, err)
+	}
+
+	return int(thismb), nil //nolint:gosec // bytefmt megabytes for a job's RAM request always fits an int.
+}
+
+// resolveTime resolves the requested walltime.
+func (jvj *JobViaJSON) resolveTime(jd *JobDefaults) (time.Duration, error) {
+	if jvj.Time == "" {
+		return jd.DefaultTime(), nil
+	}
+
+	dur, err := time.ParseDuration(jvj.Time)
+	if err != nil {
+		return 0, fmt.Errorf("time value (%s) was not specified correctly: %w", jvj.Time, err)
+	}
+
+	return dur, nil
+}
+
+// resolveUint8Limits resolves and range-validates the override, priority and
+// retries values, all of which must fit in a uint8 within their documented
+// ranges.
+func (jvj *JobViaJSON) resolveUint8Limits(jd *JobDefaults) (override, priority, retries uint8, err error) {
+	override, err = resolveUint8("override", jvj.Override, jd.Override, restModifyOverrideMax)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	priority, err = resolveUint8("priority", jvj.Priority, jd.Priority, restModifyUint8Max)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	retries, err = resolveUint8("retries", jvj.Retries, jd.Retries, restModifyUint8Max)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return override, priority, retries, nil
+}
+
+// resolveUint8 returns value (if non-nil) or dflt, range-validated to 0..limit
+// and converted to uint8.
+func resolveUint8(name string, value *int, dflt, limit int) (uint8, error) {
+	resolved := dflt
+	if value != nil {
+		resolved = *value
+	}
+
+	if resolved < 0 || resolved > limit {
+		return 0, restRangeError{name: name, value: resolved, limit: limit}
+	}
+
+	return uint8(resolved), nil //nolint:gosec // resolved is range-checked to 0..limit (<= 255) just above.
+}
+
+// resolveNoRetriesOverWalltime resolves the no_retry_over_walltime duration.
+func (jvj *JobViaJSON) resolveNoRetriesOverWalltime(jd *JobDefaults) (time.Duration, error) {
 	if jvj.NoRetriesOverWalltime == "" {
-		noRetry = jd.NoRetriesOverWalltime
-	} else {
-		var err error
-		noRetry, err = time.ParseDuration(jvj.NoRetriesOverWalltime)
-		if err != nil {
-			return nil, fmt.Errorf("no_retry_over_walltime value (%s) was not specified correctly: %w",
-				jvj.NoRetriesOverWalltime, err)
-		}
+		return jd.NoRetriesOverWalltime, nil
 	}
 
-	if len(jvj.LimitGrps) == 0 {
-		limitGroups = jd.LimitGroups
-	} else {
-		limitGroups = jvj.LimitGrps
+	noRetry, err := time.ParseDuration(jvj.NoRetriesOverWalltime)
+	if err != nil {
+		return 0, fmt.Errorf("no_retry_over_walltime value (%s) was not specified correctly: %w",
+			jvj.NoRetriesOverWalltime, err)
 	}
 
-	if len(jvj.Modules) == 0 {
-		modules = jd.Modules
-	} else {
-		modules = jvj.Modules
-	}
+	return noRetry, nil
+}
 
-	if len(jvj.DepGrps) == 0 {
-		depGroups = jd.DepGroups
-	} else {
-		depGroups = jvj.DepGrps
-	}
-
+// resolveDependencies resolves the job's Dependencies from jvj and its
+// defaults.
+func (jvj *JobViaJSON) resolveDependencies(jd *JobDefaults) Dependencies {
 	if len(jvj.Deps) == 0 && len(jvj.CmdDeps) == 0 {
-		deps = jd.Deps
-	} else {
-		if len(jvj.CmdDeps) > 0 {
-			deps = jvj.CmdDeps
-		}
-		if len(jvj.Deps) > 0 {
-			for _, depgroup := range jvj.Deps {
-				deps = append(deps, NewDepGroupDependency(depgroup))
-			}
-		}
+		return jd.Deps
 	}
 
+	var deps Dependencies
+	if len(jvj.CmdDeps) > 0 {
+		deps = jvj.CmdDeps
+	}
+
+	for _, depgroup := range jvj.Deps {
+		deps = append(deps, NewDepGroupDependency(depgroup))
+	}
+
+	return deps
+}
+
+// resolveEnvOverride resolves the compressed environment variable override.
+func (jvj *JobViaJSON) resolveEnvOverride(jd *JobDefaults) ([]byte, error) {
 	if len(jvj.Env) > 0 {
-		var err error
-		envOverride, err = compressEnv(jvj.Env)
-		if err != nil {
-			return nil, err
-		}
-	} else if len(jd.Env) > 0 {
-		var err error
-		envOverride, err = jd.DefaultEnv()
-		if err != nil {
-			return nil, err
-		}
+		return compressEnv(jvj.Env)
 	}
 
-	if len(jvj.OnFailure) > 0 {
-		behaviours = append(behaviours, jvj.OnFailure.Behaviours(OnFailure)...)
-	} else if len(jd.OnFailure) > 0 {
-		behaviours = append(behaviours, jd.OnFailure...)
-	}
-	if len(jvj.OnSuccess) > 0 {
-		behaviours = append(behaviours, jvj.OnSuccess.Behaviours(OnSuccess)...)
-	} else if len(jd.OnSuccess) > 0 {
-		behaviours = append(behaviours, jd.OnSuccess...)
-	}
-	if len(jvj.OnExit) > 0 {
-		behaviours = append(behaviours, jvj.OnExit.Behaviours(OnExit)...)
-	} else if len(jd.OnExit) > 0 {
-		behaviours = append(behaviours, jd.OnExit...)
+	if len(jd.Env) > 0 {
+		return jd.DefaultEnv()
 	}
 
+	return nil, nil
+}
+
+// resolveBehaviours resolves the job's Behaviours, preferring jvj's values over
+// the defaults for each behaviour type.
+func (jvj *JobViaJSON) resolveBehaviours(jd *JobDefaults) Behaviours {
+	var behaviours Behaviours
+
+	behaviours = appendBehaviours(behaviours, jvj.OnFailure, OnFailure, jd.OnFailure)
+	behaviours = appendBehaviours(behaviours, jvj.OnSuccess, OnSuccess, jd.OnSuccess)
+	behaviours = appendBehaviours(behaviours, jvj.OnExit, OnExit, jd.OnExit)
+
+	return behaviours
+}
+
+// appendBehaviours appends the jvj behaviours (converted using when) if present,
+// otherwise the default behaviours.
+func appendBehaviours(behaviours Behaviours, viaJSON BehavioursViaJSON, when BehaviourTrigger,
+	defaults Behaviours,
+) Behaviours {
+	if len(viaJSON) > 0 {
+		return append(behaviours, viaJSON.Behaviours(when)...)
+	}
+
+	return append(behaviours, defaults...)
+}
+
+// resolveMountConfigs resolves the job's MountConfigs from jvj and its defaults.
+func (jvj *JobViaJSON) resolveMountConfigs(jd *JobDefaults) MountConfigs {
 	if len(jvj.MountConfigs) > 0 {
-		mounts = jvj.MountConfigs
-	} else if len(jd.MountConfigs) > 0 {
-		mounts = jd.MountConfigs
+		return jvj.MountConfigs
 	}
 
-	bsubMode = jvj.BsubMode
-	if bsubMode == "" && jd.BsubMode != "" {
-		bsubMode = jd.BsubMode
-	}
+	return jd.MountConfigs
+}
 
-	if jvj.MonitorDocker == "" {
-		monitorDocker = jd.MonitorDocker
-	} else {
-		monitorDocker = jvj.MonitorDocker
-	}
-	if jvj.WithDocker == "" {
-		withDocker = jd.WithDocker
-	} else {
-		withDocker = jvj.WithDocker
-	}
-	if jvj.WithSingularity == "" {
-		withSingularity = jd.WithSingularity
-	} else {
-		withSingularity = jvj.WithSingularity
-	}
-	if jvj.ContainerMounts == "" {
-		containerMounts = jd.ContainerMounts
-	} else {
-		containerMounts = jvj.ContainerMounts
-	}
-
-	// scheduler-specific options
+// resolveSchedulerOther builds the scheduler-specific "other" options map.
+func (jvj *JobViaJSON) resolveSchedulerOther(jd *JobDefaults) (map[string]string, error) {
 	other := make(map[string]string)
-	if jvj.CloudOS != "" {
-		other["cloud_os"] = jvj.CloudOS
-	} else if jd.CloudOS != "" {
-		other["cloud_os"] = jd.CloudOS
+
+	putIfNonEmpty(other, "cloud_os", firstNonEmpty(jvj.CloudOS, jd.CloudOS))
+	putIfNonEmpty(other, "cloud_user", firstNonEmpty(jvj.CloudUser, jd.CloudUser))
+	putIfNonEmpty(other, "cloud_flavor", firstNonEmpty(jvj.CloudFlavor, jd.CloudFlavor))
+	putIfNonEmpty(other, "cloud_config_files", firstNonEmpty(jvj.CloudConfigFiles, jd.CloudConfigFiles))
+	putIfNonEmpty(other, "scheduler_queue", firstNonEmpty(jvj.SchedulerQueue, jd.SchedulerQueue))
+	putIfNonEmpty(other, "scheduler_queues_avoid", firstNonEmpty(jvj.SchedulerQueuesAvoid, jd.SchedulerQueuesAvoid))
+	putIfNonEmpty(other, "scheduler_misc", firstNonEmpty(jvj.SchedulerMisc, jd.SchedulerMisc))
+
+	if err := jvj.putCloudScript(other, jd); err != nil {
+		return nil, err
 	}
 
-	if jvj.CloudUser != "" {
-		other["cloud_user"] = jvj.CloudUser
-	} else if jd.CloudUser != "" {
-		other["cloud_user"] = jd.CloudUser
-	}
-
-	if jvj.CloudFlavor != "" {
-		other["cloud_flavor"] = jvj.CloudFlavor
-	} else if jd.CloudFlavor != "" {
-		other["cloud_flavor"] = jd.CloudFlavor
-	}
-
-	var cloudScriptPath string
-	if jvj.CloudScript != "" {
-		cloudScriptPath = jvj.CloudScript
-	} else if jd.CloudScript != "" {
-		cloudScriptPath = jd.CloudScript
-	}
-	if cloudScriptPath != "" {
-		scriptContent, err := internal.PathToContent(cloudScriptPath)
-		if err != nil {
-			return nil, err
-		}
-		other["cloud_script"] = scriptContent
-	}
-
-	if jvj.CloudConfigFiles != "" {
-		other["cloud_config_files"] = jvj.CloudConfigFiles
-	} else if jd.CloudConfigFiles != "" {
-		other["cloud_config_files"] = jd.CloudConfigFiles
-	}
-
-	if jvj.CloudOSRam != nil {
-		ram := *jvj.CloudOSRam
-		other["cloud_os_ram"] = strconv.Itoa(ram)
-	} else if jd.CloudOSRam != 0 {
-		other["cloud_os_ram"] = jd.DefaultCloudOSRam()
-	}
+	putIfNonEmpty(other, "cloud_os_ram", jvj.cloudOSRam(jd))
 
 	if jvj.CloudShared || jd.CloudShared {
-		other["cloud_shared"] = "true"
+		other["cloud_shared"] = restFormTrue
 	}
 
-	if jvj.SchedulerQueue != "" {
-		other["scheduler_queue"] = jvj.SchedulerQueue
-	} else if jd.SchedulerQueue != "" {
-		other["scheduler_queue"] = jd.SchedulerQueue
+	putIfNonEmpty(other, "rtimeout", intPointerOrDefault(jvj.RTimeout, jd.RTimeout))
+
+	return other, nil
+}
+
+// putCloudScript reads the cloud_script file (if any) and stores its content.
+func (jvj *JobViaJSON) putCloudScript(other map[string]string, jd *JobDefaults) error {
+	cloudScriptPath := firstNonEmpty(jvj.CloudScript, jd.CloudScript)
+	if cloudScriptPath == "" {
+		return nil
 	}
 
-	if jvj.SchedulerQueuesAvoid != "" {
-		other["scheduler_queues_avoid"] = jvj.SchedulerQueuesAvoid
-	} else if jd.SchedulerQueuesAvoid != "" {
-		other["scheduler_queues_avoid"] = jd.SchedulerQueuesAvoid
+	scriptContent, err := internal.PathToContent(cloudScriptPath)
+	if err != nil {
+		return err
 	}
 
-	if jvj.SchedulerMisc != "" {
-		other["scheduler_misc"] = jvj.SchedulerMisc
-	} else if jd.SchedulerMisc != "" {
-		other["scheduler_misc"] = jd.SchedulerMisc
+	other["cloud_script"] = scriptContent
+
+	return nil
+}
+
+// cloudOSRam returns the cloud_os_ram value as a string, or "" if neither jvj
+// nor jd supply one.
+func (jvj *JobViaJSON) cloudOSRam(jd *JobDefaults) string {
+	if jvj.CloudOSRam != nil {
+		return strconv.Itoa(*jvj.CloudOSRam)
 	}
 
-	if jvj.RTimeout != nil {
-		rtimeout := *jvj.RTimeout
-		other["rtimeout"] = strconv.Itoa(rtimeout)
-	} else if jd.RTimeout != 0 {
-		other["rtimeout"] = strconv.Itoa(jd.RTimeout)
+	if jd.CloudOSRam != 0 {
+		return jd.DefaultCloudOSRam()
 	}
 
-	return &Job{
-		RepGroup:              repg,
-		Cmd:                   cmd,
-		Cwd:                   cwd,
-		CwdMatters:            cwdMatters,
-		ChangeHome:            changeHome,
-		ReqGroup:              rg,
-		Group:                 group,
-		Requirements:          &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, DiskSet: diskSet, Other: other},
-		Override:              uint8(override),
-		Priority:              uint8(priority),
-		Retries:               uint8(retries),
-		NoRetriesOverWalltime: noRetry,
-		LimitGroups:           limitGroups,
-		Modules:               modules,
-		DepGroups:             depGroups,
-		Dependencies:          deps,
-		EnvOverride:           envOverride,
-		Behaviours:            behaviours,
-		MountConfigs:          mounts,
-		MonitorDocker:         monitorDocker,
-		WithDocker:            withDocker,
-		WithSingularity:       withSingularity,
-		ContainerMounts:       containerMounts,
-		BsubMode:              bsubMode,
-	}, nil
+	return ""
+}
+
+// intPointerOrDefault returns the string form of *value if value is non-nil, or
+// of dflt if dflt is non-zero, otherwise "".
+func intPointerOrDefault(value *int, dflt int) string {
+	if value != nil {
+		return strconv.Itoa(*value)
+	}
+
+	if dflt != 0 {
+		return strconv.Itoa(dflt)
+	}
+
+	return ""
+}
+
+// putIfNonEmpty sets m[key] = value only when value is non-empty.
+func putIfNonEmpty(m map[string]string, key, value string) {
+	if value != "" {
+		m[key] = value
+	}
 }
 
 // JobModifyViaJSON describes the properties of queued jobs that a REST client
@@ -992,9 +1052,7 @@ func (jvj *JobModifyViaJSON) otherRequirements() (map[string]string, bool, error
 	var set bool
 
 	if jvj.Other != nil {
-		for key, val := range *jvj.Other {
-			other[key] = val
-		}
+		maps.Copy(other, *jvj.Other)
 
 		set = true
 	}
@@ -1232,35 +1290,63 @@ func (s *Server) restModifyEmptyResultError(editableKeys []string) error {
 // Bearer token; if not supplied, or the token is wrong, writes out an error to
 // w, otherwise returns true.
 func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	err := r.ParseForm()
-	if err != nil {
+	if err := r.ParseForm(); err != nil {
 		http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+
 		return false
 	}
 
-	// try token parameter
-	token := r.Form.Get("token")
-	if token == "" {
-		// try auth header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, "Authorization header required", http.StatusUnauthorized)
-			return false
-		}
-
-		if !strings.HasPrefix(authHeader, bearerSchema) {
-			http.Error(w, "Authorization requires Bearer scheme", http.StatusUnauthorized)
-			return false
-		}
-
-		token = authHeader[len(bearerSchema):]
+	token, ok := requestToken(w, r)
+	if !ok {
+		return false
 	}
 
 	if !tokenMatches([]byte(token), s.token) {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
+
 		return false
 	}
+
 	return true
+}
+
+// requestToken extracts the auth token from the 'token' form parameter, or
+// failing that the Authorization Bearer header. If neither is usable it writes
+// the appropriate error to w and returns ok=false.
+func requestToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if token := r.Form.Get("token"); token != "" {
+		return token, true
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+
+		return "", false
+	}
+
+	if !strings.HasPrefix(authHeader, bearerSchema) {
+		http.Error(w, "Authorization requires Bearer scheme", http.StatusUnauthorized)
+
+		return "", false
+	}
+
+	return authHeader[len(bearerSchema):], true
+}
+
+// writeJSON writes payload to w as JSON with the standard content type and the
+// given status, logging (but not otherwise surfacing) any encoding error using
+// errContext.
+func writeJSON(ctx context.Context, w http.ResponseWriter, status int, payload any, errContext string) {
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(status)
+
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+
+	if err := encoder.Encode(payload); err != nil {
+		clog.Warn(ctx, errContext, "err", err)
+	}
 }
 
 // restJobs lets you do CRUD on jobs in the queue.
@@ -1268,77 +1354,99 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer internal.LogPanic(ctx, "jobqueue web server restJobs", false)
 
-		ok := s.httpAuthorized(w, r)
-		if !ok {
+		if !s.httpAuthorized(w, r) {
 			return
 		}
 
-		// carry out a different action based on the HTTP Verb
-		var jobs []*Job
-		var status int
+		if r.Method == http.MethodPatch {
+			restJobsModifyResponse(ctx, w, r, s)
+
+			return
+		}
+
+		jobs, status, err := restJobsAction(ctx, w, r, s)
+		if status == 0 {
+			// unsupported method; restJobsAction already wrote the error.
+			return
+		}
+
+		writeJobsResponse(ctx, w, r, jobs, status, err)
+	}
+}
+
+// writeJobsResponse writes the result of a job action as a JSON []JStatus, or an
+// error if the action failed or a job's status could not be determined.
+func writeJobsResponse(ctx context.Context, w http.ResponseWriter, r *http.Request,
+	jobs []*Job, status int, err error,
+) {
+	if status >= 400 || err != nil {
+		http.Error(w, err.Error(), status)
+
+		return
+	}
+
+	jstati, ok := jobsToStatuses(w, r, jobs, status)
+	if !ok {
+		return
+	}
+
+	writeJSON(ctx, w, status, jstati, "restJobs failed to encode job statuses")
+}
+
+// restJobsAction dispatches a non-PATCH job request to the relevant handler. A
+// status of 0 means the request was unsupported and an error has already been
+// written to w.
+func restJobsAction(ctx context.Context, w http.ResponseWriter, r *http.Request, s *Server) ([]*Job, int, error) {
+	switch r.Method {
+	case http.MethodGet:
+		return restJobsStatus(ctx, r, s)
+	case http.MethodPost:
+		return restJobsAdd(ctx, r, s)
+	case http.MethodDelete:
+		return restJobsCancel(ctx, r, s)
+	default:
+		http.Error(w, "So far only GET, POST, PATCH and DELETE are supported", http.StatusBadRequest)
+
+		return nil, 0, nil
+	}
+}
+
+// restJobsModifyResponse handles a PATCH request and writes the modify response.
+func restJobsModifyResponse(ctx context.Context, w http.ResponseWriter, r *http.Request, s *Server) {
+	response, status, err := restJobsModify(ctx, r, s)
+	if status >= 400 || err != nil {
+		http.Error(w, err.Error(), status)
+
+		return
+	}
+
+	writeJSON(ctx, w, status, response, "restJobs failed to encode modified jobs")
+}
+
+// jobsToStatuses converts jobs to their JStatus form, stripping std streams
+// unless std=true was requested. It returns ok=false (after writing an error to
+// w) if a job's status could not be determined.
+func jobsToStatuses(w http.ResponseWriter, r *http.Request, jobs []*Job, status int) ([]JStatus, bool) {
+	jstati := make([]JStatus, len(jobs))
+	includeStd := r.URL.Query().Get("std") == restFormTrue
+
+	for i, job := range jobs {
 		var err error
-		switch r.Method {
-		case http.MethodGet:
-			jobs, status, err = restJobsStatus(ctx, r, s)
-		case http.MethodPost:
-			jobs, status, err = restJobsAdd(ctx, r, s)
-		case http.MethodPatch:
-			response, modifyStatus, modifyErr := restJobsModify(ctx, r, s)
-			if modifyStatus >= 400 || modifyErr != nil {
-				http.Error(w, modifyErr.Error(), modifyStatus)
 
-				return
-			}
-
-			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-			w.WriteHeader(modifyStatus)
-			encoder := json.NewEncoder(w)
-			encoder.SetEscapeHTML(false)
-
-			erre := encoder.Encode(response)
-			if erre != nil {
-				clog.Warn(ctx, "restJobs failed to encode modified jobs", "err", erre)
-			}
-
-			return
-		case http.MethodDelete:
-			jobs, status, err = restJobsCancel(ctx, r, s)
-		default:
-			http.Error(w, "So far only GET, POST, PATCH and DELETE are supported", http.StatusBadRequest)
-			return
-		}
-
-		if status >= 400 || err != nil {
+		jstati[i], err = job.ToStatus()
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 			http.Error(w, err.Error(), status)
-			return
+
+			return nil, false
 		}
 
-		// convert jobs to jstatus
-		jstati := make([]JStatus, len(jobs))
-		includeStd := r.URL.Query().Get("std") == restFormTrue
-		for i, job := range jobs {
-			jstati[i], err = job.ToStatus()
-			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-				http.Error(w, err.Error(), status)
-				return
-			}
-
-			if !includeStd {
-				jstati[i].StdErr = ""
-				jstati[i].StdOut = ""
-			}
-		}
-
-		// return job details as JSON
-		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(status)
-		encoder := json.NewEncoder(w)
-		encoder.SetEscapeHTML(false)
-		erre := encoder.Encode(jstati)
-		if erre != nil {
-			clog.Warn(ctx, "restJobs failed to encode job statuses", "err", erre)
+		if !includeStd {
+			jstati[i].StdErr = ""
+			jstati[i].StdOut = ""
 		}
 	}
+
+	return jstati, true
 }
 
 // restJobsStatus gets the status of the requested jobs in the queue. The
@@ -1349,102 +1457,110 @@ func restJobs(ctx context.Context, s *Server) http.HandlerFunc {
 // where deletable excludes reserved, running and complete jobs. Returns the
 // Jobs, a http.Status* value and error.
 func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
-	// handle possible ?query parameters
-	var search, getStd, getEnv, waitingForDepGroups bool
-	var limit int
-	var state JobState
-	var err error
-
-	query := r.URL.Query()
-
-	if query.Get("search") == restFormTrue {
-		search = true
-	}
-
-	if query.Get("std") == restFormTrue {
-		getStd = true
-	}
-
-	if query.Get("env") == restFormTrue {
-		getEnv = true
-	}
-
-	if query.Get("waiting_deps") == restFormTrue {
-		waitingForDepGroups = true
-	}
-
-	if query.Get("limit") != "" {
-		limit, err = strconv.Atoi(query.Get("limit"))
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-	}
-
-	if query.Get("state") != "" {
-		switch query.Get("state") {
-		case "delayed":
-			state = JobStateDelayed
-		case "ready":
-			state = JobStateReady
-		case "reserved":
-			state = JobStateReserved
-		case "running":
-			state = JobStateRunning
-		case "lost":
-			state = JobStateLost
-		case "buried":
-			state = JobStateBuried
-		case "dependent":
-			state = JobStateDependent
-		case "suspended":
-			state = JobStateSuspended
-		case "complete":
-			state = JobStateComplete
-		case "deletable":
-			state = JobStateDeletable
-		}
+	q, err := parseRESTStatusQuery(r.URL.Query())
+	if err != nil {
+		return nil, http.StatusBadRequest, err
 	}
 
 	if len(r.URL.Path) > len(restJobsEndpoint) {
-		// get the requested jobs
 		ids := r.URL.Path[len(restJobsEndpoint):]
-		var jobs []*Job
-		for _, id := range strings.Split(ids, ",") {
-			if len(id) == 32 {
-				// id might be a Job.key()
-				theseJobs, _, qerr := s.getJobsByKeys(ctx, []string{id}, getStd, getEnv)
-				if qerr == "" && len(theseJobs) > 0 {
-					jobs = append(jobs, theseJobs...)
-					continue
-				}
-			}
 
-			// id might be a Job.RepGroup
-			opts := repGroupOptions{
-				RepGroup: id,
-				Match:    normalizeRepGroupMatch("", search),
-				limitJobsOptions: limitJobsOptions{
-					Limit:               limit,
-					State:               state,
-					GetStd:              getStd,
-					GetEnv:              getEnv,
-					WaitingForDepGroups: waitingForDepGroups,
-				},
-			}
-			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
-			if qerr != "" {
-				return nil, http.StatusInternalServerError, Error{Err: qerr}
-			}
-			if len(theseJobs) > 0 {
-				jobs = append(jobs, theseJobs...)
-			}
-		}
-		return jobs, http.StatusOK, err
+		return s.restJobsStatusByIDs(ctx, ids, q)
 	}
 
 	// get all current jobs
-	return s.getJobsCurrent(ctx, "", RepGroupMatchExact, limit, state, getStd,
-		getEnv, waitingForDepGroups), http.StatusOK, err
+	return s.getJobsCurrent(ctx, "", RepGroupMatchExact, q.limit, q.state, q.getStd,
+		q.getEnv, q.waitingForDepGroups), http.StatusOK, nil
+}
+
+// restStatusQuery holds the parsed query parameters of a job status request.
+type restStatusQuery struct {
+	state                                       JobState
+	limit                                       int
+	search, getStd, getEnv, waitingForDepGroups bool
+}
+
+// parseRESTStatusQuery parses the supported job status query parameters.
+func parseRESTStatusQuery(query url.Values) (restStatusQuery, error) {
+	q := restStatusQuery{
+		search:              query.Get("search") == restFormTrue,
+		getStd:              query.Get("std") == restFormTrue,
+		getEnv:              query.Get("env") == restFormTrue,
+		waitingForDepGroups: query.Get("waiting_deps") == restFormTrue,
+		state:               parseRESTJobState(query.Get("state")),
+	}
+
+	if limit := query.Get("limit"); limit != "" {
+		parsed, err := strconv.Atoi(limit)
+		if err != nil {
+			return q, err
+		}
+
+		q.limit = parsed
+	}
+
+	return q, nil
+}
+
+// parseRESTJobState returns the JobState for value, or "" if value is empty or
+// not a recognised state.
+func parseRESTJobState(value string) JobState {
+	switch requested := JobState(value); requested {
+	case JobStateDelayed, JobStateReady, JobStateReserved, JobStateRunning, JobStateLost,
+		JobStateBuried, JobStateDependent, JobStateSuspended, JobStateComplete, JobStateDeletable:
+		return requested
+	default:
+		return ""
+	}
+}
+
+// restJobsStatusByIDs returns the jobs matching the comma-separated ids, each of
+// which may be a job key or a RepGroup.
+func (s *Server) restJobsStatusByIDs(ctx context.Context, ids string, q restStatusQuery) ([]*Job, int, error) {
+	var jobs []*Job
+
+	for id := range strings.SplitSeq(ids, ",") {
+		theseJobs, status, err := s.restJobsStatusByID(ctx, id, q)
+		if err != nil {
+			return nil, status, err
+		}
+
+		jobs = append(jobs, theseJobs...)
+	}
+
+	return jobs, http.StatusOK, nil
+}
+
+// restJobsStatusByID returns the jobs matching a single id, treating it first as
+// a job key (if it is key-length) and otherwise as a RepGroup.
+func (s *Server) restJobsStatusByID(ctx context.Context, id string, q restStatusQuery) ([]*Job, int, error) {
+	if len(id) == restJobKeyLength {
+		// id might be a Job.key()
+		theseJobs, _, qerr := s.getJobsByKeys(ctx, []string{id}, q.getStd, q.getEnv)
+		if qerr == "" && len(theseJobs) > 0 {
+			return theseJobs, http.StatusOK, nil
+		}
+	}
+
+	// id might be a Job.RepGroup
+	opts := repGroupOptions{
+		RepGroup: id,
+		Match:    normalizeRepGroupMatch("", q.search),
+		limitJobsOptions: limitJobsOptions{
+			Limit:               q.limit,
+			State:               q.state,
+			GetStd:              q.getStd,
+			GetEnv:              q.getEnv,
+			WaitingForDepGroups: q.waitingForDepGroups,
+		},
+	}
+
+	theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
+	if qerr != "" {
+		return nil, http.StatusInternalServerError, Error{Err: qerr}
+	}
+
+	return theseJobs, http.StatusOK, nil
 }
 
 // restJobsAdd creates and adds jobs to the queue and returns them on success.
@@ -1458,8 +1574,87 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 //
 // The returned int is a http.Status* variable.
 func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
-	// handle possible ?query parameters
+	jd, err := jobDefaultsFromForm(r)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+
+	inputJobs, status, err := decodeAndConvertJobs(r, jd)
+	if err != nil {
+		return nil, status, err
+	}
+
+	envkey, err := s.db.storeEnv([]byte{})
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	rerun := r.Form.Get("rerun") == restFormTrue
+
+	//nolint:dogsled // REST add only needs to know whether the shared add path failed.
+	_, _, _, _, _, err = s.createJobs(ctx, inputJobs, envkey, !rerun)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	// see which of the inputJobs are now actually in the queue
+	return s.inputToQueuedJobs(ctx, inputJobs), http.StatusCreated, nil
+}
+
+// decodeAndConvertJobs decodes the POSTed []*JobViaJSON and converts each to a
+// *Job using the supplied defaults. The returned int is a http.Status* value.
+func decodeAndConvertJobs(r *http.Request, jd *JobDefaults) ([]*Job, int, error) {
+	var jvjs []*JobViaJSON
+
+	if err := json.NewDecoder(r.Body).Decode(&jvjs); err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+
+	inputJobs := make([]*Job, 0, len(jvjs))
+
+	for _, jvj := range jvjs {
+		job, err := jvj.Convert(jd)
+		if err != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %w", err)
+		}
+
+		inputJobs = append(inputJobs, job)
+	}
+
+	return inputJobs, http.StatusOK, nil
+}
+
+// jobDefaultsFromForm builds the JobDefaults for an add request from the request
+// form parameters, parsing those that need it.
+func jobDefaultsFromForm(r *http.Request) (*JobDefaults, error) {
+	jd := newJobDefaultsFromForm(r)
+
+	jd.CwdMatters = r.Form.Get("cwd_matters") == restFormTrue
+	jd.ChangeHome = r.Form.Get("change_home") == restFormTrue
+	jd.CloudShared = r.Form.Get("cloud_shared") == restFormTrue
+
+	for _, depgroup := range urlStringToSlice(r.Form.Get("deps")) {
+		jd.Deps = append(jd.Deps, NewDepGroupDependency(depgroup))
+	}
+
+	if err := jd.applyFormResources(r); err != nil {
+		return nil, err
+	}
+
+	if err := jd.applyFormBehavioursAndMounts(r); err != nil {
+		return nil, err
+	}
+
+	return jd, nil
+}
+
+// newJobDefaultsFromForm builds a JobDefaults from the plain (non-parsed) form
+// parameters, defaulting the rep group when none was supplied.
+//
+//nolint:funlen // a flat field-by-field mapping of form parameters; splitting it would only obscure it.
+func newJobDefaultsFromForm(r *http.Request) *JobDefaults {
 	_, diskSet := r.Form["disk"]
+
 	jd := &JobDefaults{
 		Cwd:             r.Form.Get("cwd"),
 		RepGrp:          r.Form.Get("rep_grp"),
@@ -1485,121 +1680,111 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 		BsubMode:        r.Form.Get("bsub_mode"),
 	}
 	if jd.RepGrp == "" {
-		jd.RepGrp = "manually_added"
-	}
-	if r.Form.Get("cwd_matters") == restFormTrue {
-		jd.CwdMatters = true
-	}
-	if r.Form.Get("change_home") == restFormTrue {
-		jd.ChangeHome = true
-	}
-	if r.Form.Get("cloud_shared") == restFormTrue {
-		jd.CloudShared = true
-	}
-	if r.Form.Get("memory") != "" {
-		mb, err := bytefmt.ToMegabytes(r.Form.Get("memory"))
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		jd.Memory = int(mb)
-	}
-	if r.Form.Get("time") != "" {
-		var err error
-		jd.Time, err = time.ParseDuration(r.Form.Get("time"))
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-	}
-	if r.Form.Get("no_retry_over_walltime") != "" {
-		var err error
-		jd.NoRetriesOverWalltime, err = time.ParseDuration(r.Form.Get("no_retry_over_walltime"))
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-	}
-	var rerun bool
-	if r.Form.Get("rerun") == restFormTrue {
-		rerun = true
-	}
-	defaultDeps := urlStringToSlice(r.Form.Get("deps"))
-	if len(defaultDeps) > 0 {
-		for _, depgroup := range defaultDeps {
-			jd.Deps = append(jd.Deps, NewDepGroupDependency(depgroup))
-		}
-	}
-	if r.Form.Get("on_failure") != "" {
-		var bvj BehavioursViaJSON
-		err := urlStringToStruct(r.Form.Get("on_failure"), &bvj)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if bvj != nil {
-			jd.OnFailure = bvj.Behaviours(OnFailure)
-		}
-	}
-	if r.Form.Get("on_success") != "" {
-		var bvj BehavioursViaJSON
-		err := urlStringToStruct(r.Form.Get("on_success"), &bvj)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if bvj != nil {
-			jd.OnSuccess = bvj.Behaviours(OnSuccess)
-		}
-	}
-	if r.Form.Get("on_exit") != "" {
-		var bvj BehavioursViaJSON
-		err := urlStringToStruct(r.Form.Get("on_exit"), &bvj)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if bvj != nil {
-			jd.OnExit = bvj.Behaviours(OnExit)
-		}
-	}
-	if r.Form.Get("mounts") != "" {
-		var mcs MountConfigs
-		err := urlStringToStruct(r.Form.Get("mounts"), &mcs)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if mcs != nil {
-			jd.MountConfigs = mcs
-		}
+		jd.RepGrp = restDefaultRepGroup
 	}
 
-	// decode the posted JSON
-	var jvjs []*JobViaJSON
-	err := json.NewDecoder(r.Body).Decode(&jvjs)
+	return jd
+}
+
+// applyFormResources parses and applies the memory, time and
+// no_retry_over_walltime form parameters.
+func (jd *JobDefaults) applyFormResources(r *http.Request) error {
+	if memory := r.Form.Get("memory"); memory != "" {
+		mb, err := bytefmt.ToMegabytes(memory)
+		if err != nil {
+			return err
+		}
+
+		jd.Memory = int(mb) //nolint:gosec // bytefmt megabytes for a job's RAM default always fits an int.
+	}
+
+	if t := r.Form.Get("time"); t != "" {
+		dur, err := time.ParseDuration(t)
+		if err != nil {
+			return err
+		}
+
+		jd.Time = dur
+	}
+
+	if t := r.Form.Get("no_retry_over_walltime"); t != "" {
+		dur, err := time.ParseDuration(t)
+		if err != nil {
+			return err
+		}
+
+		jd.NoRetriesOverWalltime = dur
+	}
+
+	return nil
+}
+
+// applyFormBehavioursAndMounts parses and applies the on_failure, on_success,
+// on_exit and mounts form parameters.
+func (jd *JobDefaults) applyFormBehavioursAndMounts(r *http.Request) error {
+	onFailure, err := behavioursFromForm(r, "on_failure", OnFailure)
 	if err != nil {
-		return nil, http.StatusBadRequest, err
+		return err
 	}
 
-	// convert to real Job structs with default values filled in
-	inputJobs := make([]*Job, 0, len(jvjs))
-	for _, jvj := range jvjs {
-		job, errf := jvj.Convert(jd)
-		if errf != nil {
-			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %w", errf)
-		}
-		inputJobs = append(inputJobs, job)
-	}
+	jd.OnFailure = onFailure
 
-	envkey, err := s.db.storeEnv([]byte{})
+	onSuccess, err := behavioursFromForm(r, "on_success", OnSuccess)
 	if err != nil {
-		return nil, http.StatusInternalServerError, err
+		return err
 	}
 
-	//nolint:dogsled // REST add only needs to know whether the shared add path failed.
-	_, _, _, _, _, err = s.createJobs(ctx, inputJobs, envkey, !rerun)
+	jd.OnSuccess = onSuccess
+
+	onExit, err := behavioursFromForm(r, "on_exit", OnExit)
 	if err != nil {
-		return nil, http.StatusInternalServerError, err
+		return err
 	}
 
-	// see which of the inputJobs are now actually in the queue
-	jobs := s.inputToQueuedJobs(ctx, inputJobs)
+	jd.OnExit = onExit
 
-	return jobs, http.StatusCreated, err
+	return jd.applyFormMounts(r)
+}
+
+// applyFormMounts parses and applies the mounts form parameter.
+func (jd *JobDefaults) applyFormMounts(r *http.Request) error {
+	mounts := r.Form.Get("mounts")
+	if mounts == "" {
+		return nil
+	}
+
+	var mcs MountConfigs
+
+	if err := urlStringToStruct(mounts, &mcs); err != nil {
+		return err
+	}
+
+	if mcs != nil {
+		jd.MountConfigs = mcs
+	}
+
+	return nil
+}
+
+// behavioursFromForm parses the named behaviour form parameter (if present) and
+// returns the corresponding Behaviours for the given trigger.
+func behavioursFromForm(r *http.Request, param string, when BehaviourTrigger) (Behaviours, error) {
+	value := r.Form.Get(param)
+	if value == "" {
+		return nil, nil
+	}
+
+	var bvj BehavioursViaJSON
+
+	if err := urlStringToStruct(value, &bvj); err != nil {
+		return nil, err
+	}
+
+	if bvj == nil {
+		return nil, nil
+	}
+
+	return bvj.Behaviours(when), nil
 }
 
 // restJobsCancel kills running jobs, confirms lost jobs as dead, or deletes
@@ -1608,19 +1793,9 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 // (running|lost|deletable) are allowed. Returns the affected Jobs, a
 // http.Status* value and error.
 func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, error) {
-	var state JobState
-	if r.Form.Get("state") != "" {
-		switch r.Form.Get("state") {
-		case "running":
-			state = JobStateRunning
-		case "lost":
-			state = JobStateLost
-		case "deletable":
-			state = JobStateDeletable
-		}
-	}
+	state := restCancelState(r.Form.Get("state"))
 	if state == "" {
-		return nil, http.StatusBadRequest, fmt.Errorf("state must be supplied as one of running|lost|deletable")
+		return nil, http.StatusBadRequest, errRESTCancelStateRequired
 	}
 
 	jobs, status, err := restJobsStatus(ctx, r, s)
@@ -1628,34 +1803,67 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 		return nil, status, err
 	}
 
-	var handled []*Job
-	returnStatus := http.StatusAccepted
 	if state == JobStateDeletable {
-		returnStatus = http.StatusOK
+		return s.restDeleteJobs(ctx, jobs), http.StatusOK, nil
+	}
 
-		deleted := s.deleteJobs(ctx, jobs)
-		d := make(map[string]bool, len(deleted))
-		for _, key := range deleted {
-			d[key] = true
-		}
-		for _, job := range jobs {
-			if d[job.Key()] {
-				job.State = JobStateDeleted
-				handled = append(handled, job)
-			}
-		}
-	} else {
-		for _, job := range jobs {
-			k, err := s.killJob(ctx, job.Key())
-			if err != nil {
-				return handled, http.StatusInternalServerError, err
-			}
-			if k {
-				handled = append(handled, job)
-			}
+	handled, err := s.restKillJobs(ctx, jobs)
+	if err != nil {
+		return handled, http.StatusInternalServerError, err
+	}
+
+	return handled, http.StatusAccepted, nil
+}
+
+// restCancelState maps a cancel 'state' parameter to a JobState, returning ""
+// for any value other than the supported running|lost|deletable.
+func restCancelState(value string) JobState {
+	switch JobState(value) {
+	case JobStateRunning, JobStateLost, JobStateDeletable:
+		return JobState(value)
+	default:
+		return ""
+	}
+}
+
+// restDeleteJobs deletes the deletable jobs and returns those actually deleted,
+// with their State updated to reflect the deletion.
+func (s *Server) restDeleteJobs(ctx context.Context, jobs []*Job) []*Job {
+	deleted := s.deleteJobs(ctx, jobs)
+
+	d := make(map[string]bool, len(deleted))
+	for _, key := range deleted {
+		d[key] = true
+	}
+
+	var handled []*Job
+
+	for _, job := range jobs {
+		if d[job.Key()] {
+			job.State = JobStateDeleted
+			handled = append(handled, job)
 		}
 	}
-	return handled, returnStatus, nil
+
+	return handled
+}
+
+// restKillJobs kills the supplied jobs and returns those actually killed.
+func (s *Server) restKillJobs(ctx context.Context, jobs []*Job) ([]*Job, error) {
+	var handled []*Job
+
+	for _, job := range jobs {
+		killed, err := s.killJob(ctx, job.Key())
+		if err != nil {
+			return handled, err
+		}
+
+		if killed {
+			handled = append(handled, job)
+		}
+	}
+
+	return handled, nil
 }
 
 // restWarnings lets you read warnings from the scheduler, and auto-"dismisses"
@@ -1664,35 +1872,28 @@ func restWarnings(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer internal.LogPanic(ctx, "jobqueue web server restWarnings", false)
 
-		ok := s.httpAuthorized(w, r)
-		if !ok {
+		if !s.httpAuthorized(w, r) {
+			return
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+
 			return
 		}
 
 		// carry out a different action based on the HTTP Verb
 		sis := []*schedulerIssue{}
-		switch r.Method {
-		case http.MethodGet:
-			s.simutex.Lock()
-			for key, si := range s.schedIssues {
-				sis = append(sis, si)
-				delete(s.schedIssues, key)
-			}
-			s.simutex.Unlock()
-		default:
-			http.Error(w, "Only GET is supported", http.StatusBadRequest)
-			return
-		}
 
-		// return schedulerIssues as JSON
-		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(http.StatusOK)
-		encoder := json.NewEncoder(w)
-		encoder.SetEscapeHTML(false)
-		erre := encoder.Encode(sis)
-		if erre != nil {
-			clog.Warn(ctx, "restWarnings failed to encode scheduler issues", "err", erre)
+		s.simutex.Lock()
+		for key, si := range s.schedIssues {
+			sis = append(sis, si)
+
+			delete(s.schedIssues, key)
 		}
+		s.simutex.Unlock()
+
+		writeJSON(ctx, w, http.StatusOK, sis, "restWarnings failed to encode scheduler issues")
 	}
 }
 
@@ -1703,55 +1904,62 @@ func restBadServers(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer internal.LogPanic(ctx, "jobqueue web server restBadServers", false)
 
-		ok := s.httpAuthorized(w, r)
-		if !ok {
+		if !s.httpAuthorized(w, r) {
 			return
 		}
 
 		// carry out a different action based on the HTTP Verb
 		switch r.Method {
 		case http.MethodGet:
-			servers := s.getBadServers()
-			if len(servers) == 0 {
-				servers = []*BadServer{}
-			}
-			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-			w.WriteHeader(http.StatusOK)
-			encoder := json.NewEncoder(w)
-			encoder.SetEscapeHTML(false)
-			erre := encoder.Encode(servers)
-			if erre != nil {
-				clog.Warn(ctx, "restBadServers failed to encode servers", "err", erre)
-			}
-			return
+			s.restBadServersGet(ctx, w)
 		case http.MethodDelete:
-			serverID := r.Form.Get("id")
-			if serverID == "" {
-				http.Error(w, "id parameter is required", http.StatusBadRequest)
-				return
-			}
-			s.bsmutex.Lock()
-			server := s.badServers[serverID]
-			delete(s.badServers, serverID)
-			s.bsmutex.Unlock()
-			if server == nil {
-				http.Error(w, "Server was not known to be bad", http.StatusNotFound)
-				return
-			}
-			if server.IsBad() {
-				err := server.Destroy(ctx)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Server was bad but could not be destroyed: %s", err), http.StatusNotModified)
-					return
-				}
-			}
-			w.WriteHeader(http.StatusOK)
-			return
+			s.restBadServersDelete(ctx, w, r)
 		default:
 			http.Error(w, "Only GET and DELETE are supported", http.StatusBadRequest)
+		}
+	}
+}
+
+// restBadServersGet writes the current bad servers as JSON.
+func (s *Server) restBadServersGet(ctx context.Context, w http.ResponseWriter) {
+	servers := s.getBadServers()
+	if len(servers) == 0 {
+		servers = []*BadServer{}
+	}
+
+	writeJSON(ctx, w, http.StatusOK, servers, "restBadServers failed to encode servers")
+}
+
+// restBadServersDelete confirms the server identified by the 'id' parameter as
+// bad and destroys it if it still exists.
+func (s *Server) restBadServersDelete(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	serverID := r.Form.Get("id")
+	if serverID == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+
+		return
+	}
+
+	s.bsmutex.Lock()
+	server := s.badServers[serverID]
+	delete(s.badServers, serverID)
+	s.bsmutex.Unlock()
+
+	if server == nil {
+		http.Error(w, "Server was not known to be bad", http.StatusNotFound)
+
+		return
+	}
+
+	if server.IsBad() {
+		if err := server.Destroy(ctx); err != nil {
+			http.Error(w, fmt.Sprintf("Server was bad but could not be destroyed: %s", err), http.StatusNotModified)
+
 			return
 		}
 	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // restFileUpload lets you upload files from a client to the server. The only
@@ -1767,25 +1975,20 @@ func restFileUpload(ctx context.Context, s *Server) http.HandlerFunc {
 
 		if r.Method != http.MethodPut {
 			http.Error(w, "Only PUT is supported", http.StatusBadRequest)
+
 			return
 		}
 
 		savePath, err := s.uploadFile(ctx, r.Body, r.Form.Get("path"))
 		if err != nil {
 			http.Error(w, "file upload failed", http.StatusInternalServerError)
+
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(http.StatusOK)
-		encoder := json.NewEncoder(w)
-		encoder.SetEscapeHTML(false)
-		msg := make(map[string]string)
-		msg["path"] = savePath
-		err = encoder.Encode(msg)
-		if err != nil {
-			clog.Warn(ctx, "restFileUpload failed to encode success msg", "err", err)
-		}
+		msg := map[string]string{"path": savePath}
+
+		writeJSON(ctx, w, http.StatusOK, msg, "restFileUpload failed to encode success msg")
 	}
 }
 
@@ -1801,17 +2004,11 @@ func restInfo(ctx context.Context, s *Server) http.HandlerFunc {
 
 		if r.Method != http.MethodGet {
 			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(http.StatusOK)
-		encoder := json.NewEncoder(w)
-		encoder.SetEscapeHTML(false)
-		err := encoder.Encode(s.ServerInfo)
-		if err != nil {
-			clog.Warn(ctx, "restInfo failed to encode ServerInfo", "err", err)
-		}
+		writeJSON(ctx, w, http.StatusOK, s.ServerInfo, "restInfo failed to encode ServerInfo")
 	}
 }
 
@@ -1824,17 +2021,11 @@ func restVersion(ctx context.Context, s *Server) http.HandlerFunc {
 
 		if r.Method != http.MethodGet {
 			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(http.StatusOK)
-		encoder := json.NewEncoder(w)
-		encoder.SetEscapeHTML(false)
-		err := encoder.Encode(s.ServerVersions)
-		if err != nil {
-			clog.Warn(ctx, "restVersion failed to encode ServerVersions", "err", err)
-		}
+		writeJSON(ctx, w, http.StatusOK, s.ServerVersions, "restVersion failed to encode ServerVersions")
 	}
 }
 
@@ -1845,10 +2036,12 @@ func urlStringToInt(value string) int {
 	if value == "" {
 		return 0
 	}
+
 	num, err := strconv.Atoi(value)
 	if err != nil {
 		return 0
 	}
+
 	return num
 }
 
@@ -1859,10 +2052,12 @@ func urlStringToFloat(value string) float64 {
 	if value == "" {
 		return 0
 	}
+
 	num, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return 0
 	}
+
 	return num
 }
 
@@ -1873,32 +2068,38 @@ func urlStringToSlice(value string) []string {
 	if value == "" {
 		return nil
 	}
+
 	return strings.Split(value, ",")
 }
 
 // urlStringToStruct takes a possible query escaped JSON string from a url
 // parameter value and unmarshals it in to the pointed to struct. If the value
 // is "", does nothing.
-func urlStringToStruct(value string, v interface{}) error {
+func urlStringToStruct(value string, v any) error {
 	if value == "" {
 		return nil
 	}
+
 	jsonString, err := url.QueryUnescape(value)
 	if err != nil {
 		return err
 	}
+
 	return json.Unmarshal([]byte(jsonString), v)
 }
 
 // compressEnv is a slower (?) version of Client.CompressEnv since we have to
-// make a new codec each time
+// make a new codec each time.
 func compressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
+
 	enc := codec.NewEncoderBytes(&encoded, new(codec.BincHandle))
+
 	err := enc.Encode(&envStr{envars})
 	if err != nil {
 		return nil, err
 	}
+
 	return compress(encoded)
 }
 

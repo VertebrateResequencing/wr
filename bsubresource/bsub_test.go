@@ -34,6 +34,16 @@ import (
 	"vimagination.zapto.org/parser"
 )
 
+// repeated bsub resource strings used across the table-driven tests below.
+const (
+	rusageMemDecay     = "rusage[mem=(50 10):duration=(10):decay=(0)]"
+	resAVX             = "avx"
+	resRHEL6OrRHEL7    = "rhel6 || rhel7"
+	resSwpHPUX         = "swp > 15 && hpux order[ut]"
+	resTypeAnyOrderUT  = "type==any order[ut] same[model] rusage[mem=1]"
+	selectHnameNotHost = "select[hname!='host06-x12']"
+)
+
 func TestBsubTokeniser(t *testing.T) {
 	Convey("Given a bsub resource string, you can tokenise it", t, func() {
 		for _, test := range [...]struct {
@@ -126,7 +136,7 @@ func TestBsubTokeniser(t *testing.T) {
 				},
 			},
 			{
-				"rusage[mem=(50 10):duration=(10):decay=(0)]",
+				rusageMemDecay,
 				[]parser.Token{
 					{Type: tokenWord, Data: "rusage"},
 					{Type: tokenOperator, Data: "["},
@@ -182,44 +192,44 @@ func TestBsubParser(t *testing.T) {
 		}{
 			{},
 			{
-				Input:  "avx",
-				Output: "avx",
+				Input:  resAVX,
+				Output: resAVX,
 			},
 			{
 				Input:  " avx ",
-				Output: "avx",
+				Output: resAVX,
 			},
 			{
-				Input:  "rhel6 || rhel7",
-				Output: "rhel6 || rhel7",
+				Input:  resRHEL6OrRHEL7,
+				Output: resRHEL6OrRHEL7,
 			},
 			{
 				Input:  "rhel6||rhel7",
-				Output: "rhel6 || rhel7",
+				Output: resRHEL6OrRHEL7,
 			},
 			{
-				Input:  "swp > 15 && hpux order[ut]",
-				Output: "swp > 15 && hpux order[ut]",
+				Input:  resSwpHPUX,
+				Output: resSwpHPUX,
 			},
 			{
 				Input:  "swp>15&&hpux order[ut]",
-				Output: "swp > 15 && hpux order[ut]",
+				Output: resSwpHPUX,
 			},
 			{
-				Input:  "type==any order[ut] same[model] rusage[mem=1]",
-				Output: "type==any order[ut] same[model] rusage[mem=1]",
+				Input:  resTypeAnyOrderUT,
+				Output: resTypeAnyOrderUT,
 			},
 			{
 				Input:  "type == any order[ut] same[model] rusage[mem = 1]",
-				Output: "type==any order[ut] same[model] rusage[mem=1]",
+				Output: resTypeAnyOrderUT,
 			},
 			{
 				Input:  "select[type==any] order[ut] same[model] rusage[mem=1]",
 				Output: "select[type==any] order[ut] same[model] rusage[mem=1]",
 			},
 			{
-				Input:  "select[hname!='host06-x12']",
-				Output: "select[hname!='host06-x12']",
+				Input:  selectHnameNotHost,
+				Output: selectHnameNotHost,
 			},
 			{
 				Input:  "rusage[mem=512MB:swp=1GB:tmp=1TB]",
@@ -246,8 +256,8 @@ func TestBsubParser(t *testing.T) {
 				Output: "rusage[mem=20:swp=50:duration=1h, license=1:duration=2]",
 			},
 			{
-				Input:  "rusage[mem=(50 10):duration=(10):decay=(0)]",
-				Output: "rusage[mem=(50 10):duration=(10):decay=(0)]",
+				Input:  rusageMemDecay,
+				Output: rusageMemDecay,
 			},
 			{
 				Input:  "rusage[mem=10/host:duration=10:decay=0]",
@@ -283,8 +293,8 @@ func TestReplaceMemoryAndHosts(t *testing.T) {
 			Input, Mem, Hosts, Output string
 		}{
 			{
-				Input:  "select[hname!='host06-x12']",
-				Output: "select[hname!='host06-x12']",
+				Input:  selectHnameNotHost,
+				Output: selectHnameNotHost,
 			},
 			{
 				Input:  "select[mem=1]",

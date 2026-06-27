@@ -31,7 +31,7 @@ import (
 	"fmt"
 )
 
-// limiter has some typical errors
+// limiter has some typical errors.
 const (
 	ErrNotIncremented = "decrement attempted on a limit group that had not been incremented"
 	ErrAtLimit        = "increment attempted on a limit group already at its limit"

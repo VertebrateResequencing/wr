@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net"
 	"os"
@@ -336,15 +337,12 @@ func compileBinaries(
 	sem := make(chan struct{}, compileParallelism(len(compiles)))
 
 	for index, compile := range compiles {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			results[index] = compileBinary(ctx, stdout, stderr, base, compile)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -432,15 +430,12 @@ func runParallelLanes(
 	sem := make(chan struct{}, maxParallel(len(lanes)))
 
 	for index, lane := range lanes {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			results[index] = runLane(ctx, root, base, binaries, lane)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -587,9 +582,7 @@ func laneEnvWithBinaries(lane Lane, binaries map[string]string) map[string]strin
 	}
 
 	env := make(map[string]string, len(lane.Env)+1)
-	for key, value := range lane.Env {
-		env[key] = value
-	}
+	maps.Copy(env, lane.Env)
 
 	env[envTestRunnerBinary] = runnerBinary
 
@@ -677,9 +670,7 @@ func commandEnv(extra map[string]string) []string {
 		env[envRunnerExecShell] = defaultExecShell
 	}
 
-	for key, value := range extra {
-		env[key] = value
-	}
+	maps.Copy(env, extra)
 
 	keys := make([]string, 0, len(env))
 	for key := range env {

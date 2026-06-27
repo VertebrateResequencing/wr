@@ -561,7 +561,7 @@ func TestJobqueueRunnerAutomaticExecution(t *testing.T) {
 				count := fixture.maxCPU * 2
 				jobs := make([]*Job, 0, count)
 
-				for i := 0; i < count; i++ {
+				for i := range count {
 					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: reqGroupPerl, Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), Override: 2, RepGroup: manuallyAdded}) //nolint:lll
 				}
 

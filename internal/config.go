@@ -30,6 +30,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -405,7 +406,9 @@ func (c *Config) mergeAllConfigFiles(ctx context.Context, uid int, deployment st
 // configLoadFromFile loads a config from a file and merges into the current
 // config.
 func (c *Config) configLoadFromFile(ctx context.Context, path string) {
-	if _, err := os.Stat(path); err != nil {
+	// path is a wr config file location derived from WR_CONFIG_DIR, the user's
+	// home or the working directory, all controlled by the user running wr.
+	if _, err := os.Stat(path); err != nil { //nolint:gosec // user-controlled config path
 		return
 	}
 
@@ -436,9 +439,7 @@ func (c *Config) clone() *Config {
 	}
 
 	newC.sources = make(map[string]string)
-	for key, val := range c.sources {
-		newC.sources[key] = val
-	}
+	maps.Copy(newC.sources, c.sources)
 
 	return newC
 }
@@ -567,40 +568,44 @@ func getPortChecker(ctx context.Context, hostname string) *port.Checker {
 // findPorts asks the OS for an available port range, then asks the user if
 // they'd like to use it and writes it to their config file.
 func findPorts(ctx context.Context, checker *port.Checker) int {
-	min, max := getAvailableRange(ctx, checker)
-	if min == 0 || max == 0 {
+	minPort, maxPort := getAvailableRange(ctx, checker)
+	if minPort == 0 || maxPort == 0 {
 		return 0
 	}
 
-	fmt.Printf(promptStatement, min, max)
+	//nolint:forbidigo // interactive prompt to the user on stdout
+	fmt.Printf(promptStatement, minPort, maxPort)
 
 	var response string
 
-	fmt.Println(promptQuestion)
-	fmt.Scanf("%s\n", &response)
+	fmt.Println(promptQuestion) //nolint:forbidigo // interactive prompt to the user on stdout
 
-	if response == "y" {
-		writePortsToConfigFiles(ctx, min)
-	} else {
+	// errors are ignored: an unreadable stdin leaves response empty, which is
+	// treated the same as the user declining the suggested ports below.
+	fmt.Scanf("%s\n", &response) //nolint:errcheck // empty response on read error is handled below
+
+	if response != "y" {
 		exitDueToNoPorts(ctx, nil, "you chose not to use suggested ports")
 
 		return 0
 	}
 
-	return min
+	writePortsToConfigFiles(ctx, minPort)
+
+	return minPort
 }
 
 // getAvailableRange returns the min and max port numbers available, else
 // returns 0, 0 and exits on error.
 func getAvailableRange(ctx context.Context, checker *port.Checker) (int, int) {
-	min, max, err := checker.AvailableRange(portsNeeded)
+	minPort, maxPort, err := checker.AvailableRange(portsNeeded)
 	if err != nil {
 		exitDueToNoPorts(ctx, err, "available localhost ports couldn't be checked")
 
 		return 0, 0
 	}
 
-	return min, max
+	return minPort, maxPort
 }
 
 // exitDueToNoPorts exits non-zero with an error because we can't continue

@@ -51,6 +51,15 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// constants used by the REST tests for repeated literal values.
+const (
+	restJobKey1      = "de6d167c58701e55f5b9f9e1e91d7807"
+	restJobKey3      = "db1e7d99becace3306c1c2470331c78e"
+	restCmdEcho1True = "echo 1 && true"
+	restRepGrp1      = "rp1"
+	restRepGrp2      = "rp2"
+)
+
 func TestRESTJobModificationEndpoint(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -861,6 +870,27 @@ func waitForRESTJobState(ctx context.Context, httpClient *http.Client, url, bear
 	return jstati, ok
 }
 
+// restGetJStatus performs an authenticated GET against url and decodes the
+// response body into a []JStatus, asserting there were no errors along the way.
+func restGetJStatus(ctx context.Context, httpClient *http.Client, url, bearer string) []JStatus {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	So(err, ShouldBeNil)
+	req.Header.Add("Authorization", bearer)
+
+	response, err := httpClient.Do(req)
+	So(err, ShouldBeNil)
+
+	responseData, err := io.ReadAll(response.Body)
+	So(err, ShouldBeNil)
+
+	var jstati []JStatus
+
+	err = json.Unmarshal(responseData, &jstati)
+	So(err, ShouldBeNil)
+
+	return jstati
+}
+
 func TestREST(t *testing.T) {
 	ctx := context.Background()
 
@@ -876,6 +906,7 @@ func TestREST(t *testing.T) {
 		log.Fatalf("could not create tempdir: %s\n", errt)
 	}
 	defer os.RemoveAll(dir)
+
 	uploadsDir := filepath.Join(dir, "uploads")
 
 	// load our config to know where our development manager port is supposed to
@@ -920,25 +951,31 @@ func TestREST(t *testing.T) {
 	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
 
-	var server *Server
-	var token []byte
+	var (
+		server *Server
+		token  []byte
+	)
+
 	Convey("Once the jobqueue server is up", t, func() {
 		server, _, token, errt = Serve(ctx, serverConfig)
 		So(errt, ShouldBeNil)
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
+
 		defer disconnect(jq)
 
 		bearer := "Bearer " + string(token)
 
 		tlsConfig := &tls.Config{ServerName: config.ManagerCertDomain}
+
 		caCert, errr := os.ReadFile(config.ManagerCAFile)
 		if errr == nil {
 			certPool := x509.NewCertPool()
 			certPool.AppendCertsFromPEM(caCert)
 			tlsConfig.RootCAs = certPool
 		}
+
 		var noProxyTransport http.RoundTripper = &http.Transport{
 			Proxy:           nil,
 			TLSClientConfig: tlsConfig,
@@ -947,19 +984,19 @@ func TestREST(t *testing.T) {
 		client := &http.Client{Transport: noProxyTransport}
 
 		Convey("You must be authorised to access all the endpoints", func() {
-			req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint, nil)
 			So(err, ShouldBeNil)
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
 			So(response.StatusCode, ShouldEqual, http.StatusUnauthorized)
 
-			req, err = http.NewRequest(http.MethodGet, warningsEndPoint, nil)
+			req, err = http.NewRequestWithContext(ctx, http.MethodGet, warningsEndPoint, nil)
 			So(err, ShouldBeNil)
 			response, err = client.Do(req)
 			So(err, ShouldBeNil)
 			So(response.StatusCode, ShouldEqual, http.StatusUnauthorized)
 
-			req, err = http.NewRequest(http.MethodGet, serversEndPoint, nil)
+			req, err = http.NewRequestWithContext(ctx, http.MethodGet, serversEndPoint, nil)
 			So(err, ShouldBeNil)
 			response, err = client.Do(req)
 			So(err, ShouldBeNil)
@@ -1053,7 +1090,7 @@ func TestREST(t *testing.T) {
 		})
 
 		Convey("Initial GET queries return nothing", func() {
-			req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint, nil)
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			response, err := client.Do(req)
@@ -1062,6 +1099,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 0)
@@ -1133,16 +1171,20 @@ func TestREST(t *testing.T) {
 		})
 
 		Convey("You can POST to add jobs to the queue", func() {
-			var inputJobs []*JobViaJSON
 			pri := 2
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", Retries: &pri, NoRetriesOverWalltime: "5m"})
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
 			cpus := float64(2)
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 3 && false", CwdMatters: true, RepGrp: "rp1", Memory: "50M", CPUs: &cpus, Time: "2m", Priority: &pri, Env: []string{"foo=bar", "test=case"}})
+			inputJobs := []*JobViaJSON{
+				{Cmd: restCmdEcho1True, RepGrp: restRepGrp1, Retries: &pri, NoRetriesOverWalltime: "5m"},
+				{Cmd: "echo 2 && true", RepGrp: restRepGrp2, Cwd: "/tmp/foo"},
+				{
+					Cmd: "echo 3 && false", CwdMatters: true, RepGrp: restRepGrp1, Memory: "50M",
+					CPUs: &cpus, Time: "2m", Priority: &pri, Env: []string{"foo=bar", "test=case"},
+				},
+			}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
 
-			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			req.Header.Add("Content-Type", "application/json")
@@ -1150,129 +1192,127 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
+
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 3)
 
-			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+			So(jstati[0].Key, ShouldEqual, restJobKey1)
 			So(jstati[0].State, ShouldEqual, JobStateReady)
-			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
-			So(jstati[0].RepGroup, ShouldEqual, "rp1")
+			So(jstati[0].CwdBase, ShouldEqual, defaultUploadDir)
+			So(jstati[0].RepGroup, ShouldEqual, restRepGrp1)
 			So(jstati[0].ExpectedRAM, ShouldEqual, 1000)
 			So(jstati[0].ExpectedTime, ShouldEqual, 3600)
 			So(jstati[0].Cores, ShouldEqual, 0)
 			So(jstati[1].Key, ShouldEqual, "f5c0d6240167a6e0b803e23f74e3a085")
-			So(jstati[1].RepGroup, ShouldEqual, "rp2")
+			So(jstati[1].RepGroup, ShouldEqual, restRepGrp2)
 			So(jstati[1].CwdBase, ShouldEqual, "/tmp/foo")
-			So(jstati[2].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+			So(jstati[2].Key, ShouldEqual, restJobKey3)
 			So(jstati[2].State, ShouldEqual, JobStateReady)
-			So(jstati[2].CwdBase, ShouldEqual, "/tmp")
-			So(jstati[2].RepGroup, ShouldEqual, "rp1")
+			So(jstati[2].CwdBase, ShouldEqual, defaultUploadDir)
+			So(jstati[2].RepGroup, ShouldEqual, restRepGrp1)
 			So(jstati[2].ExpectedRAM, ShouldEqual, 50)
 			So(jstati[2].ExpectedTime, ShouldEqual, 120)
 			So(jstati[2].Cores, ShouldEqual, 2)
 			So(jstati[2].Started, ShouldBeNil)
 			So(jstati[2].Ended, ShouldBeNil)
 
-			job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && true"}, false, false)
+			job, err := jq.GetByEssence(&JobEssence{Cmd: restCmdEcho1True}, false, false)
 			So(err, ShouldBeNil)
 			So(job, ShouldNotBeNil)
 			So(job.Retries, ShouldEqual, 2)
 			So(job.NoRetriesOverWalltime, ShouldEqual, 5*time.Minute)
-			job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && false", Cwd: "/tmp"}, false, false)
+			job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && false", Cwd: defaultUploadDir}, false, false)
 			So(err, ShouldBeNil)
 			So(job, ShouldNotBeNil)
 			So(job.Retries, ShouldEqual, 0)
 			So(job.NoRetriesOverWalltime, ShouldEqual, 0)
 
 			Convey("You can GET the current status of all jobs", func() {
-				req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
+				reqAll, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint, nil)
 				So(err, ShouldBeNil)
-				req.Header.Add("Authorization", bearer)
-				response, err = client.Do(req)
+				reqAll.Header.Add("Authorization", bearer)
+				response, err = client.Do(reqAll)
 				So(err, ShouldBeNil)
 				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []JStatus
-				err = json.Unmarshal(responseData, &jstati)
+				var jstatiAll []JStatus
+
+				err = json.Unmarshal(responseData, &jstatiAll)
 				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 3)
+				So(len(jstatiAll), ShouldEqual, 3)
 			})
 
 			Convey("You can GET the status of particular jobs using their ids", func() {
-				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/de6d167c58701e55f5b9f9e1e91d7807", nil)
+				reqIDs, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/"+restJobKey1, nil)
 				So(err, ShouldBeNil)
-				req.Header.Add("Authorization", bearer)
-				response, err = client.Do(req)
+				reqIDs.Header.Add("Authorization", bearer)
+				response, err = client.Do(reqIDs)
 				So(err, ShouldBeNil)
 				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []JStatus
-				err = json.Unmarshal(responseData, &jstati)
-				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 1)
-				So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+				var jstatiIDs []JStatus
 
-				req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/de6d167c58701e55f5b9f9e1e91d7807,db1e7d99becace3306c1c2470331c78e", nil)
+				err = json.Unmarshal(responseData, &jstatiIDs)
 				So(err, ShouldBeNil)
-				req.Header.Add("Authorization", bearer)
-				response, err = client.Do(req)
+				So(len(jstatiIDs), ShouldEqual, 1)
+				So(jstatiIDs[0].Key, ShouldEqual, restJobKey1)
+
+				reqIDs, err = http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/"+restJobKey1+","+restJobKey3, nil)
+				So(err, ShouldBeNil)
+				reqIDs.Header.Add("Authorization", bearer)
+				response, err = client.Do(reqIDs)
 				So(err, ShouldBeNil)
 				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati2 []JStatus
+
 				err = json.Unmarshal(responseData, &jstati2)
 				So(err, ShouldBeNil)
 				So(len(jstati2), ShouldEqual, 2)
-				So(jstati2[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-				So(jstati2[1].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+				So(jstati2[0].Key, ShouldEqual, restJobKey1)
+				So(jstati2[1].Key, ShouldEqual, restJobKey3)
 			})
 
 			Convey("You can GET the status of jobs by RepGroup", func() {
-				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1", nil)
+				reqRG, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/rp1", nil)
 				So(err, ShouldBeNil)
-				req.Header.Add("Authorization", bearer)
-				response, err = client.Do(req)
+				reqRG.Header.Add("Authorization", bearer)
+				response, err = client.Do(reqRG)
 				So(err, ShouldBeNil)
 				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []JStatus
-				err = json.Unmarshal(responseData, &jstati)
+				var jstatiRG []JStatus
+
+				err = json.Unmarshal(responseData, &jstatiRG)
 				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 2)
+				So(len(jstatiRG), ShouldEqual, 2)
+
 				keys := make(map[string]bool)
-				for _, j := range jstati {
+				for _, j := range jstatiRG {
 					keys[j.Key] = true
 				}
-				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
+
+				So(keys, ShouldResemble, map[string]bool{restJobKey1: true, restJobKey3: true})
 
 				Convey("And you can modify the results by changing limit", func() {
-					req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?limit=1", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err = client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err = io.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati []JStatus
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 1)
-					So(jstati[0].Similar, ShouldEqual, 1)
+					jstatiLimit := restGetJStatus(ctx, client, jobsEndPoint+"/rp1?limit=1", bearer)
+					So(len(jstatiLimit), ShouldEqual, 1)
+					So(jstatiLimit[0].Similar, ShouldEqual, 1)
 				})
 			})
 
 			Convey("You can DELETE jobs by RepGroup", func() {
-				req, err := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1", nil)
+				reqDel, err := http.NewRequestWithContext(ctx, http.MethodDelete, jobsEndPoint+"/rp1", nil)
 				So(err, ShouldBeNil)
-				req.Header.Add("Authorization", bearer)
-				response, err = client.Do(req)
+				reqDel.Header.Add("Authorization", bearer)
+				response, err = client.Do(reqDel)
 				So(err, ShouldBeNil)
 				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
@@ -1280,24 +1320,27 @@ func TestREST(t *testing.T) {
 				So(response.Status, ShouldEqual, "400 Bad Request")
 				So(string(responseData), ShouldEqual, "state must be supplied as one of running|lost|deletable\n")
 
-				req, err = http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=deletable", nil)
+				reqDel, err = http.NewRequestWithContext(ctx, http.MethodDelete, jobsEndPoint+"/rp1?state=deletable", nil)
 				So(err, ShouldBeNil)
-				req.Header.Add("Authorization", bearer)
-				response, err = client.Do(req)
+				reqDel.Header.Add("Authorization", bearer)
+				response, err = client.Do(reqDel)
 				So(err, ShouldBeNil)
 				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []JStatus
-				err = json.Unmarshal(responseData, &jstati)
+				var jstatiDel []JStatus
+
+				err = json.Unmarshal(responseData, &jstatiDel)
 				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 2)
+				So(len(jstatiDel), ShouldEqual, 2)
+
 				keys := make(map[string]bool)
-				for _, j := range jstati {
+				for _, j := range jstatiDel {
 					keys[j.Key] = true
 					So(j.State, ShouldEqual, JobStateDeleted)
 				}
-				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
+
+				So(keys, ShouldResemble, map[string]bool{restJobKey1: true, restJobKey3: true})
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
@@ -1316,7 +1359,7 @@ func TestREST(t *testing.T) {
 					err = jq.Started(job, 1)
 					So(err, ShouldBeNil)
 
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+					req, err = http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
 					So(err, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
@@ -1331,7 +1374,7 @@ func TestREST(t *testing.T) {
 					So(jstati[0].Started, ShouldNotBeNil)
 					So(jstati[0].Ended, ShouldBeNil)
 
-					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=running", nil)
+					req, errr := http.NewRequestWithContext(ctx, http.MethodDelete, jobsEndPoint+"/rp1?state=running", nil)
 					So(errr, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
@@ -1340,6 +1383,7 @@ func TestREST(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
+
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -1367,7 +1411,7 @@ func TestREST(t *testing.T) {
 						jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", bearer, JobStateLost)
 					So(lostOK, ShouldBeTrue)
 
-					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
+					req, errr := http.NewRequestWithContext(ctx, http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
 					So(errr, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
@@ -1376,6 +1420,7 @@ func TestREST(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
+
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -1397,7 +1442,7 @@ func TestREST(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, 1)
 
 					Convey("You can GET all jobs by state, and get their stdout/err", func() {
-						req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=ready", nil)
+						req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/?state=ready", nil)
 						So(err, ShouldBeNil)
 						req.Header.Add("Authorization", bearer)
 						response, err := client.Do(req)
@@ -1406,16 +1451,19 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati []JStatus
+
 						err = json.Unmarshal(responseData, &jstati)
 						So(err, ShouldBeNil)
 						So(len(jstati), ShouldEqual, 2)
+
 						keys := make(map[string]bool)
 						for _, j := range jstati {
 							keys[j.Key] = true
 						}
-						So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "f5c0d6240167a6e0b803e23f74e3a085": true})
 
-						req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=true", nil)
+						So(keys, ShouldResemble, map[string]bool{restJobKey1: true, "f5c0d6240167a6e0b803e23f74e3a085": true})
+
+						req, err = http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/?state=buried&std=true", nil)
 						So(err, ShouldBeNil)
 						req.Header.Add("Authorization", bearer)
 						response, err = client.Do(req)
@@ -1424,12 +1472,13 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati2 []JStatus
+
 						err = json.Unmarshal(responseData, &jstati2)
 						So(err, ShouldBeNil)
 						So(len(jstati2), ShouldEqual, 1)
 
-						So(jstati2[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-						So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
+						So(jstati2[0].Key, ShouldEqual, restJobKey3)
+						So(jstati2[0].CwdBase, ShouldEqual, defaultUploadDir)
 						So(jstati2[0].State, ShouldEqual, JobStateBuried)
 						So(jstati2[0].StdOut, ShouldEqual, "3")
 						So(jstati2[0].Started, ShouldNotBeNil)
@@ -1437,7 +1486,7 @@ func TestREST(t *testing.T) {
 						So(jstati2[0].Ended, ShouldNotBeNil)
 						So(*jstati2[0].Ended, ShouldBeGreaterThanOrEqualTo, t.Unix())
 
-						req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=false", nil)
+						req, err = http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/?state=buried&std=false", nil)
 						So(err, ShouldBeNil)
 						req.Header.Add("Authorization", bearer)
 						response, err = client.Do(req)
@@ -1446,42 +1495,34 @@ func TestREST(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						var jstati3 []JStatus
+
 						err = json.Unmarshal(responseData, &jstati3)
 						So(err, ShouldBeNil)
 						So(len(jstati3), ShouldEqual, 1)
 
-						So(jstati3[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-						So(jstati3[0].CwdBase, ShouldEqual, "/tmp")
+						So(jstati3[0].Key, ShouldEqual, restJobKey3)
+						So(jstati3[0].CwdBase, ShouldEqual, defaultUploadDir)
 						So(jstati3[0].State, ShouldEqual, JobStateBuried)
 						So(jstati3[0].StdOut, ShouldEqual, "")
 					})
 
 					Convey("You can GET all jobs by state and RepGroup", func() {
-						req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?state=ready", nil)
-						So(err, ShouldBeNil)
-						req.Header.Add("Authorization", bearer)
-						response, err := client.Do(req)
-						So(err, ShouldBeNil)
-						responseData, err := io.ReadAll(response.Body)
-						So(err, ShouldBeNil)
-
-						var jstati []JStatus
-						err = json.Unmarshal(responseData, &jstati)
-						So(err, ShouldBeNil)
-						So(len(jstati), ShouldEqual, 1)
-						So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+						jstatiState := restGetJStatus(ctx, client, jobsEndPoint+"/rp1?state=ready", bearer)
+						So(len(jstatiState), ShouldEqual, 1)
+						So(jstatiState[0].Key, ShouldEqual, restJobKey1)
 					})
 				})
 			})
 		})
 
 		Convey("You can POST to add a job with a cloud_flavor to the queue", func() {
-			var inputJobs []*JobViaJSON
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", CloudFlavor: "o1.tiny"})
+			inputJobs := []*JobViaJSON{
+				{Cmd: restCmdEcho1True, RepGrp: restRepGrp1, CloudFlavor: "o1.tiny"},
+			}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
 
-			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			req.Header.Add("Content-Type", "application/json")
@@ -1489,20 +1530,23 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
+
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 1)
 
-			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+			So(jstati[0].Key, ShouldEqual, restJobKey1)
 			So(jstati[0].State, ShouldEqual, JobStateReady)
-			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
-			So(jstati[0].RepGroup, ShouldEqual, "rp1")
+			So(jstati[0].CwdBase, ShouldEqual, defaultUploadDir)
+			So(jstati[0].RepGroup, ShouldEqual, restRepGrp1)
+
 			other := []string{"cloud_flavor:o1.tiny"}
 			So(jstati[0].OtherRequests, ShouldResemble, other)
 
 			Convey("You can GET the job and the cloud_flavor is still there", func() {
-				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?state=ready", nil)
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobsEndPoint+"/rp1?state=ready", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
@@ -1511,10 +1555,11 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
+
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 1)
-				So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+				So(jstati[0].Key, ShouldEqual, restJobKey1)
 				So(jstati[0].OtherRequests, ShouldResemble, other)
 			})
 		})
@@ -1523,7 +1568,7 @@ func TestREST(t *testing.T) {
 			inputJobs := []*JobViaJSON{{RepGrp: "foo"}}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
-			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			req.Header.Add("Content-Type", "application/json")
@@ -1539,10 +1584,15 @@ func TestREST(t *testing.T) {
 			inputJobs := []*JobViaJSON{{Cmd: "echo defaults"}}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
-			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
+
+			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s",
+				url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`),
+				url.QueryEscape(`[{"cleanup_all":true}]`))
 			mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
-			mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
-			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m&no_retry_over_walltime=5m"+bs+mounts, bytes.NewBuffer(jsonValue))
+			mounts := "&mounts=" + url.QueryEscape(mountJSON)
+			postURL := jobsEndPoint + "/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c" +
+				"&deps=x,y&change_home=true&memory=3G&time=4m&no_retry_over_walltime=5m" + bs + mounts
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, postURL, bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			req.Header.Add("Content-Type", "application/json")
@@ -1550,7 +1600,9 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
+
 			var jstati []JStatus
+
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 1)
@@ -1566,7 +1618,9 @@ func TestREST(t *testing.T) {
 			So(jstati[0].HomeChanged, ShouldBeTrue)
 			So(jstati[0].ExpectedRAM, ShouldEqual, 3072)
 			So(jstati[0].ExpectedTime, ShouldEqual, 240)
-			So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
+			So(jstati[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],`+
+					`"on_exit":[{"cleanup_all":true}]}`)
 			So(jstati[0].Mounts, ShouldEqual, mountJSON)
 
 			job, err := jq.GetByEssence(&JobEssence{JobKey: "b17c665295e0a3fcf2e07c6d7ad6ddd4"}, false, false)
@@ -1587,12 +1641,13 @@ func TestREST(t *testing.T) {
 			_, err = os.Stat(uploadedScript)
 			So(err, ShouldNotBeNil)
 
-			var inputJobs []*JobViaJSON
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", CloudScript: uploadedScript})
+			inputJobs := []*JobViaJSON{
+				{Cmd: restCmdEcho1True, RepGrp: restRepGrp1, CloudScript: uploadedScript},
+			}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
 
-			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			req.Header.Add("Content-Type", "application/json")
@@ -1603,7 +1658,7 @@ func TestREST(t *testing.T) {
 			Convey("But it works after uploading the script", func() {
 				file, err := os.Open(cloudScript)
 				So(err, ShouldBeNil)
-				req, err := http.NewRequest(http.MethodPut, uploadEndPoint+"/?path="+uploadedScript, file)
+				req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadEndPoint+"/?path="+uploadedScript, file)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
@@ -1623,7 +1678,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(answer["path"], ShouldEqual, uploadedScript)
 
-				req, err = http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+				req, err = http.NewRequestWithContext(ctx, http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				req.Header.Add("Content-Type", "application/json")
@@ -1636,7 +1691,7 @@ func TestREST(t *testing.T) {
 
 					file, err := os.Open(cloudScript)
 					So(err, ShouldBeNil)
-					req, err := http.NewRequest(http.MethodPut, uploadEndPoint+"/", file)
+					req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadEndPoint+"/", file)
 					So(err, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err := client.Do(req)
@@ -1660,7 +1715,7 @@ func TestREST(t *testing.T) {
 					// original upload
 					file, err = os.Open(cloudScript)
 					So(err, ShouldBeNil)
-					req, err = http.NewRequest(http.MethodPut, uploadEndPoint+"/", file)
+					req, err = http.NewRequestWithContext(ctx, http.MethodPut, uploadEndPoint+"/", file)
 					So(err, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
@@ -1682,7 +1737,7 @@ func TestREST(t *testing.T) {
 		})
 
 		Convey("Initial GET queries on the warnings endpoint return nothing", func() {
-			req, err := http.NewRequest(http.MethodGet, warningsEndPoint, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, warningsEndPoint, nil)
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			response, err := client.Do(req)
@@ -1691,6 +1746,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var sis []*schedulerIssue
+
 			err = json.Unmarshal(responseData, &sis)
 			So(err, ShouldBeNil)
 			So(len(sis), ShouldEqual, 0)
@@ -1712,7 +1768,7 @@ func TestREST(t *testing.T) {
 				So(len(server.schedIssues), ShouldEqual, 2)
 				server.simutex.Unlock()
 
-				req, err := http.NewRequest(http.MethodGet, warningsEndPoint, nil)
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, warningsEndPoint, nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
@@ -1721,6 +1777,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var sis []*schedulerIssue
+
 				err = json.Unmarshal(responseData, &sis)
 				So(err, ShouldBeNil)
 				So(len(sis), ShouldEqual, 2)
@@ -1732,7 +1789,7 @@ func TestREST(t *testing.T) {
 		})
 
 		Convey("Initial GET queries on the warnings and servers endpoints return nothing", func() {
-			req, err := http.NewRequest(http.MethodGet, serversEndPoint, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, serversEndPoint, nil)
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			response, err := client.Do(req)
@@ -1741,6 +1798,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var servers []*BadServer
+
 			err = json.Unmarshal(responseData, &servers)
 			So(err, ShouldBeNil)
 			So(len(servers), ShouldEqual, 0)
@@ -1757,7 +1815,7 @@ func TestREST(t *testing.T) {
 				So(len(server.badServers), ShouldEqual, 1)
 				server.bsmutex.Unlock()
 
-				req, err := http.NewRequest(http.MethodGet, serversEndPoint, nil)
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, serversEndPoint, nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
@@ -1766,19 +1824,20 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				var servers []*BadServer
+
 				err = json.Unmarshal(responseData, &servers)
 				So(err, ShouldBeNil)
 				So(len(servers), ShouldEqual, 1)
 				So(servers[0].Name, ShouldEqual, "name")
 
-				req, err = http.NewRequest(http.MethodDelete, serversEndPoint, nil)
+				req, err = http.NewRequestWithContext(ctx, http.MethodDelete, serversEndPoint, nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
 				So(response.StatusCode, ShouldEqual, http.StatusBadRequest)
 
-				req, err = http.NewRequest(http.MethodDelete, serversEndPoint+"?id=serverid1", nil)
+				req, err = http.NewRequestWithContext(ctx, http.MethodDelete, serversEndPoint+"?id=serverid1", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)

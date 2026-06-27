@@ -33,7 +33,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,7 +81,8 @@ func TestCert(t *testing.T) {
 					So(certByte, ShouldNotBeNil)
 
 					Convey("and given a pemblock, it can encode and save pem file", func() {
-						pemBlock := &pem.Block{Type: "CERTIFICATE", Bytes: certByte}
+						pemBlock := &pem.Block{Type: pemTypeCertificate, Bytes: certByte}
+
 						Convey("when file can be written", func() {
 							err = encodeAndSavePEM(pemBlock, caFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, fileMode)
 							So(err, ShouldBeNil)
@@ -174,24 +174,26 @@ func TestCert(t *testing.T) {
 
 		Convey("it can generate the root and server certificate", func() {
 			Convey("not when zero bits for root rsa key is used", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, 0, DefaultBitsForRootRSAKey, crand.Reader, certFileFlags)
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain,
+					0, DefaultBitsForRootRSAKey, crand.Reader, certFileFlags)
 				So(err, ShouldNotBeNil)
 			})
 
 			Convey("not when zero bits for server rsa key is used", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, 0, crand.Reader, certFileFlags)
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain,
+					DefaultBitsForRootRSAKey, 0, crand.Reader, certFileFlags)
 				So(err, ShouldNotBeNil)
 			})
 
 			Convey("not when files cannot be written", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader,
-					blockFileWrite)
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain,
+					DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader, blockFileWrite)
 				So(err, ShouldNotBeNil)
 			})
 
 			Convey("when bits and file flags are correct", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader,
-					certFileFlags)
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain,
+					DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader, certFileFlags)
 				So(err, ShouldBeNil)
 
 				Convey("check if cert files exists", func() {
@@ -200,8 +202,8 @@ func TestCert(t *testing.T) {
 				})
 
 				Convey("trying to generate certificates again will fail", func() {
-					err = GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader,
-						certFileFlags)
+					err = GenerateCerts(caFile, certFile, keyFile, certDomain,
+						DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader, certFileFlags)
 					So(err, ShouldNotBeNil)
 				})
 
@@ -215,7 +217,7 @@ func TestCert(t *testing.T) {
 				})
 
 				Convey("Find PEM Block in a file and Return Certifcate", func() {
-					certPEMBlock, err := ioutil.ReadFile(certFile)
+					certPEMBlock, err := os.ReadFile(certFile)
 					So(err, ShouldBeNil)
 
 					ccert := findPEMBlockAndReturnCert(certPEMBlock)
@@ -234,7 +236,7 @@ func TestCert(t *testing.T) {
 					So(err, ShouldNotBeNil)
 
 					empCertFile := filepath.Join(certtmpdir, "emp.pem")
-					err = ioutil.WriteFile(empCertFile, []byte{0}, fileMode)
+					err = os.WriteFile(empCertFile, []byte{0}, fileMode)
 					So(err, ShouldBeNil)
 
 					expiry, err = CertExpiry(empCertFile)

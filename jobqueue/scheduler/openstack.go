@@ -56,6 +56,36 @@ const (
 	flavorFailedCacheCleanup     = 30 * time.Minute
 	flavorDeterminedCacheExpiry  = 5 * time.Minute
 	flavorDeterminedCacheCleanup = 10 * time.Minute
+
+	// defaultOSRAM is the default OSRAM (MB) when none is configured.
+	defaultOSRAM = 2048
+
+	// defaultStateUpdateFreq is the state update frequency used when none is
+	// configured.
+	defaultStateUpdateFreq = 1 * time.Minute
+
+	// cleanupStatePollFreq is how often cleanup() polls for an in-progress
+	// state update to finish.
+	cleanupStatePollFreq = 10 * time.Millisecond
+
+	// debugSlowSecondSpawnCount is the spawn number that the "slowSecondSpawn"
+	// debugEffect delays.
+	debugSlowSecondSpawnCount = 3
+
+	// slowSecondSpawnDelay is how long the "slowSecondSpawn" debugEffect delays
+	// a spawn for.
+	slowSecondSpawnDelay = 10 * time.Second
+
+	// errBadOpenStackConfig is the Error message used when initialize() is not
+	// given a *ConfigOpenStack.
+	errBadOpenStackConfig = "SchedulerConfig must be *ConfigOpenStack"
+)
+
+// op* are the Op names used in scheduler Errors raised by the named openstack
+// methods.
+const (
+	opDetermineFlavor = "determineFlavor"
+	opGetFlavorByName = "getFlavorByName"
 )
 
 // debugCounter and debugEffect are used by tests to prove some bugs
@@ -65,6 +95,13 @@ var (
 	debugCounter                 int
 	debugEffect                  string
 	errDebugFailBeforeUsingQuota = errors.New("forced fail before using quota")
+	errDebugForcedFail           = errors.New("forced fail")
+)
+
+// sentinel errors returned by the openstack scheduler.
+var (
+	errServerNotNeeded   = errors.New(serverNotNeededErrStr)
+	errNoAvailableServer = errors.New("no available server")
 )
 
 // opst is our implementer of scheduleri. It takes much of its implementation
@@ -276,21 +313,47 @@ func (c *ConfigOpenStack) GetServerKeepTime() time.Duration {
 }
 
 // initialize sets up an openstack scheduler.
-func (s *opst) initialize(ctx context.Context, config interface{}) error {
-	s.config = config.(*ConfigOpenStack)
-	if s.config.OSRAM == 0 {
-		s.config.OSRAM = 2048
+func (s *opst) initialize(ctx context.Context, config any) error {
+	conf, ok := config.(*ConfigOpenStack)
+	if !ok {
+		return Error{openstackScheduler, opInitialize, errBadOpenStackConfig}
 	}
+
+	s.config = conf
+	if s.config.OSRAM == 0 {
+		s.config.OSRAM = defaultOSRAM
+	}
+
 	if s.config.OSDisk == 0 {
 		s.config.OSDisk = 1
 	}
 
+	if err := s.setupProvider(ctx); err != nil {
+		return err
+	}
+
+	// setupLocalhostServer calls the cloud API's LocalhostServer, which takes no
+	// context.
+	//nolint:contextcheck // LocalhostServer is a cloud API call with no context
+	if err := s.setupLocalhostServer(); err != nil {
+		return err
+	}
+
+	s.setupTrackersAndFuncs(ctx)
+
+	return nil
+}
+
+// setupProvider creates and deploys the openstack cloud provider, and records
+// our quota maximums.
+func (s *opst) setupProvider(ctx context.Context) error {
 	// create a cloud provider for openstack, that we'll use to interact with
 	// openstack
-	provider, err := cloud.New(ctx, "openstack", s.config.ResourceName, s.config.SavePath)
+	provider, err := cloud.New(ctx, openstackScheduler, s.config.ResourceName, s.config.SavePath)
 	if err != nil {
 		return err
 	}
+
 	s.provider = provider
 
 	err = provider.Deploy(ctx, &cloud.DeployConfig{
@@ -314,84 +377,94 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 	if err != nil {
 		return err
 	}
-	if quota.MaxCores == 0 {
-		s.quotaMaxCores = unquotadVal
-	} else {
-		s.quotaMaxCores = quota.MaxCores
-	}
-	if quota.MaxRAM == 0 {
-		s.quotaMaxRAM = unquotadVal
-	} else {
-		s.quotaMaxRAM = quota.MaxRAM
-	}
-	if quota.MaxVolume == 0 {
-		s.quotaMaxVolume = unquotadVal
-	} else {
-		s.quotaMaxVolume = quota.MaxVolume
-	}
-	if quota.MaxInstances == 0 {
-		s.quotaMaxInstances = unquotadVal
-	} else {
-		s.quotaMaxInstances = quota.MaxInstances
-	}
+
+	s.setQuotaMaxes(quota)
+
+	return nil
+}
+
+// setQuotaMaxes records our quota maximums from the given quota, treating 0
+// (unlimited) as a "large" number, and applying any configured MaxInstances.
+func (s *opst) setQuotaMaxes(quota *cloud.Quota) {
+	s.quotaMaxCores = quotaOrUnlimited(quota.MaxCores)
+	s.quotaMaxRAM = quotaOrUnlimited(quota.MaxRAM)
+	s.quotaMaxVolume = quotaOrUnlimited(quota.MaxVolume)
+	s.quotaMaxInstances = quotaOrUnlimited(quota.MaxInstances)
+
 	if s.config.MaxInstances > -1 && s.config.MaxInstances < s.quotaMaxInstances {
 		s.quotaMaxInstances = s.config.MaxInstances
-		if provider.InCloud() {
+		if s.provider.InCloud() {
 			s.quotaMaxInstances++
 		}
 	}
+}
 
+// quotaOrUnlimited returns unquotadVal if max is 0 (meaning unlimited), else
+// max.
+func quotaOrUnlimited(maxVal int) int {
+	if maxVal == 0 {
+		return unquotadVal
+	}
+
+	return maxVal
+}
+
+// setupLocalhostServer initialises our servers map with details of ourself,
+// applying any configured local core/RAM limits.
+func (s *opst) setupLocalhostServer() error {
+	s.servers = make(map[string]*cloud.Server)
+
+	localhost, err := s.provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript,
+		s.config.ConfigFiles, s.config.CIDR)
+	if err != nil {
+		return err
+	}
+
+	localhost.Flavor.Cores = clampLocalLimit(s.config.MaxLocalCores, localhost.Flavor.Cores)
+	localhost.Flavor.RAM = clampLocalLimit(s.config.MaxLocalRAM, localhost.Flavor.RAM)
+
+	s.servers[localhostName] = localhost
+
+	return nil
+}
+
+// clampLocalLimit returns limit (the configured max) if it is non-nil, >= 0 and
+// less than current; otherwise it returns current unchanged.
+func clampLocalLimit(limit *int, current int) int {
+	if limit != nil && *limit >= 0 && *limit < current {
+		return *limit
+	}
+
+	return current
+}
+
+// setupTrackersAndFuncs initialises our job queue and other trackers, and sets
+// our functions for use in schedule() and processQueue().
+func (s *opst) setupTrackersAndFuncs(ctx context.Context) {
 	// initialize our job queue and other trackers
 	s.queue = queue.New(ctx, localPlace)
 	s.running = make(map[string]int)
 	s.spawningNow = make(map[string]int)
-
-	// initialise our servers with details of ourself
-	s.servers = make(map[string]*cloud.Server)
-	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript, s.config.ConfigFiles, s.config.CIDR)
-	if err != nil {
-		return err
-	}
-	if s.config.MaxLocalCores != nil {
-		if *s.config.MaxLocalCores >= 0 && *s.config.MaxLocalCores < localhost.Flavor.Cores {
-			localhost.Flavor.Cores = *s.config.MaxLocalCores
-		}
-	}
-	if s.config.MaxLocalRAM != nil {
-		if *s.config.MaxLocalRAM >= 0 && *s.config.MaxLocalRAM < localhost.Flavor.RAM {
-			localhost.Flavor.RAM = *s.config.MaxLocalRAM
-		}
-	}
-	s.servers[localhostName] = localhost
-
-	// set our functions for use in schedule() and processQueue()
-	s.reqCheckFunc = s.reqCheck
-	s.maxMemFunc = s.maxMem
-	s.maxCPUFunc = s.maxCPU
-	s.canCountFunc = s.canCount
-	s.cantFunc = s.spawnMultiple
-	s.runCmdFunc = s.runCmd
-	s.stateUpdateFunc = s.stateUpdate
-	s.stateUpdateFreq = s.config.StateUpdateFrequency
-	if s.stateUpdateFreq == 0 {
-		s.stateUpdateFreq = 1 * time.Minute
-	}
-	s.postProcessFunc = s.postProcess
-	s.cmdNotNeededFunc = s.cmdNotNeeded
 	s.spawnedServers = make(map[string]*cloud.Server)
-
-	// pass through our shell config and logger to our local embed, as well as
-	// creating its stopAuto channel
-	s.local.config = &ConfigLocal{Shell: s.config.Shell}
-	s.local.stopAuto = make(chan bool)
-
 	s.recoveredServers = make(map[string]bool)
 	s.stopRSMonitoring = make(chan struct{})
 	s.spawnCanceller = make(map[string]map[string]chan struct{})
 
+	s.setSchedulerFuncs()
+
+	s.stateUpdateFreq = s.config.StateUpdateFrequency
+	if s.stateUpdateFreq == 0 {
+		s.stateUpdateFreq = defaultStateUpdateFreq
+	}
+
+	// pass through our shell config and logger to our local embed, as well as
+	// creating its stopAuto channel
+	s.local.config = &ConfigLocal{Shell: s.config.Shell}
+	s.stopAuto = make(chan bool)
+
 	if s.config.FlavorSets != "" {
-		sets := strings.Split(s.config.FlavorSets, ";")
-		for _, set := range sets {
+		sets := strings.SplitSeq(s.config.FlavorSets, ";")
+		for set := range sets {
 			flavors := strings.Split(set, ",")
 			s.flavorSets = append(s.flavorSets, flavors)
 		}
@@ -399,8 +472,20 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 
 	s.ffCache = cache.New(flavorFailedCacheExpiry, flavorFailedCacheCleanup)
 	s.dfCache = cache.New(flavorDeterminedCacheExpiry, flavorDeterminedCacheCleanup)
+}
 
-	return err
+// setSchedulerFuncs sets our functions for use in schedule() and
+// processQueue().
+func (s *opst) setSchedulerFuncs() {
+	s.reqCheckFunc = s.reqCheck
+	s.maxMemFunc = s.maxMem
+	s.maxCPUFunc = s.maxCPU
+	s.canCountFunc = s.canCount
+	s.cantFunc = s.spawnMultiple
+	s.runCmdFunc = s.runCmd
+	s.stateUpdateFunc = s.stateUpdate
+	s.postProcessFunc = s.postProcess
+	s.cmdNotNeededFunc = s.cmdNotNeeded
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met,
@@ -409,36 +494,60 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 func (s *opst) reqCheck(ctx context.Context, req *Requirements) error {
 	reqForSpawn := s.reqForSpawn(req)
 
-	// check if possible vs quota
-	if reqForSpawn.RAM > s.quotaMaxRAM || int(math.Ceil(reqForSpawn.Cores)) > s.quotaMaxCores || reqForSpawn.Disk > s.quotaMaxVolume {
-		clog.Warn(ctx, "Requested resources are greater than max quota", "quotaCores", s.quotaMaxCores, "requiredCores",
-			reqForSpawn.Cores, "quotaRAM", s.quotaMaxRAM, "requiredRAM", reqForSpawn.RAM, "quotaDisk", s.quotaMaxVolume,
-			"requiredDisk", reqForSpawn.Disk)
-		s.notifyMessage(fmt.Sprintf("OpenStack: not enough quota for the job needing %f cores, %d RAM and %d Disk", reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk))
-		return Error{"openstack", "schedule", ErrImpossible}
-	}
-
-	if name, defined := req.Other["cloud_flavor"]; defined {
-		requestedFlavor, err := s.getFlavor(ctx, name)
-		if err != nil {
-			return err
-		}
-
-		// check that the user hasn't requested a flavor that isn't actually big
-		// enough to run their job
-		if requestedFlavor.Cores < int(math.Ceil(reqForSpawn.Cores)) || requestedFlavor.RAM < reqForSpawn.RAM {
-			clog.Warn(ctx, "Requested flavor is too small for the job", "flavor", requestedFlavor.Name, "flavorCores",
-				requestedFlavor.Cores, "requiredCores", reqForSpawn.Cores, "flavorRAM", requestedFlavor.RAM, "requiredRAM",
-				reqForSpawn.RAM)
-			s.notifyMessage(fmt.Sprintf("OpenStack: requested flavor %s is too small for the job needing %f cores and %d RAM", requestedFlavor.Name, reqForSpawn.Cores, reqForSpawn.RAM))
-			return Error{"openstack", "schedule", ErrImpossible}
-		}
-	} else {
-		// check if possible vs flavors
-		_, err := s.determineFlavor(ctx, req, "")
+	if err := s.reqCheckQuota(ctx, reqForSpawn); err != nil {
 		return err
 	}
-	return nil
+
+	name, defined := req.Other["cloud_flavor"]
+	if !defined {
+		// check if possible vs flavors
+		_, err := s.determineFlavor(ctx, req, "")
+
+		return err
+	}
+
+	return s.reqCheckFlavor(ctx, name, reqForSpawn)
+}
+
+// reqCheckQuota returns ErrImpossible if reqForSpawn exceeds our quota maximums.
+func (s *opst) reqCheckQuota(ctx context.Context, reqForSpawn *Requirements) error {
+	withinQuota := reqForSpawn.RAM <= s.quotaMaxRAM &&
+		int(math.Ceil(reqForSpawn.Cores)) <= s.quotaMaxCores &&
+		reqForSpawn.Disk <= s.quotaMaxVolume
+	if withinQuota {
+		return nil
+	}
+
+	clog.Warn(ctx, "Requested resources are greater than max quota", "quotaCores", s.quotaMaxCores, "requiredCores",
+		reqForSpawn.Cores, "quotaRAM", s.quotaMaxRAM, "requiredRAM", reqForSpawn.RAM, "quotaDisk", s.quotaMaxVolume,
+		"requiredDisk", reqForSpawn.Disk)
+	s.notifyMessage(fmt.Sprintf("OpenStack: not enough quota for the job needing %f cores, %d RAM and %d Disk",
+		reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk))
+
+	return Error{openstackScheduler, opSchedule, ErrImpossible}
+}
+
+// reqCheckFlavor returns ErrImpossible if the user-requested flavor isn't big
+// enough to run a job needing reqForSpawn.
+func (s *opst) reqCheckFlavor(ctx context.Context, name string, reqForSpawn *Requirements) error {
+	requestedFlavor, err := s.getFlavor(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	// check that the user hasn't requested a flavor that isn't actually big
+	// enough to run their job
+	if requestedFlavor.Cores >= int(math.Ceil(reqForSpawn.Cores)) && requestedFlavor.RAM >= reqForSpawn.RAM {
+		return nil
+	}
+
+	clog.Warn(ctx, "Requested flavor is too small for the job", "flavor", requestedFlavor.Name, "flavorCores",
+		requestedFlavor.Cores, "requiredCores", reqForSpawn.Cores, "flavorRAM", requestedFlavor.RAM, "requiredRAM",
+		reqForSpawn.RAM)
+	s.notifyMessage(fmt.Sprintf("OpenStack: requested flavor %s is too small for the job needing %f cores and %d RAM",
+		requestedFlavor.Name, reqForSpawn.Cores, reqForSpawn.RAM))
+
+	return Error{openstackScheduler, opSchedule, ErrImpossible}
 }
 
 // maxMem returns the maximum memory available in quota.
@@ -465,12 +574,28 @@ func (s *opst) maxCPU() int {
 // "can", we want the return value to be the same for that set of calls, so we
 // cache based on the "call" argument that processQueue sent in to canCount and
 // runCmd, which in turn pass through to here.
+// cachedFlavor returns the previously determined flavor for the given non-empty
+// call, if one is cached.
+func (s *opst) cachedFlavor(call string) (*cloud.Flavor, bool) {
+	if call == "" {
+		return nil, false
+	}
+
+	cached, ok := s.dfCache.Get(call)
+	if !ok {
+		return nil, false
+	}
+
+	flavor, isFlavor := cached.(*cloud.Flavor)
+
+	return flavor, isFlavor
+}
+
 func (s *opst) determineFlavor(ctx context.Context, req *Requirements, call string) (*cloud.Flavor, error) {
 	ctx = clog.ContextWithCallValue(ctx, call)
-	if call != "" {
-		if flavor, cached := s.dfCache.Get(call); cached {
-			return flavor.(*cloud.Flavor), nil
-		}
+
+	if flavor, cached := s.cachedFlavor(call); cached {
+		return flavor, nil
 	}
 
 	flavors, err := s.provider.CheapestServerFlavors(ctx, int(math.Ceil(req.Cores)), req.RAM,
@@ -478,31 +603,50 @@ func (s *opst) determineFlavor(ctx context.Context, req *Requirements, call stri
 	if err != nil {
 		return nil, err
 	}
-	var hasFlavors bool
-	for _, f := range flavors {
-		if f != nil {
-			hasFlavors = true
-			break
-		}
-	}
-	if !hasFlavors {
-		err = Error{"openstack", "determineFlavor", ErrImpossible}
-	} else if err != nil {
-		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
-			err = Error{"openstack", "determineFlavor", ErrImpossible}
-		}
-	}
-	if err != nil {
-		return nil, err
+
+	if !hasUsableFlavor(flavors) {
+		return nil, Error{openstackScheduler, opDetermineFlavor, ErrImpossible}
 	}
 
-	var flavor *cloud.Flavor
-	var pickedI int
-	var pickedFirst bool
+	flavor := s.pickFlavor(ctx, flavors)
+
+	if call != "" {
+		s.dfCache.Set(call, flavor, cache.DefaultExpiration)
+	}
+
+	return flavor, nil
+}
+
+// hasUsableFlavor reports whether flavors contains at least one non-nil flavor.
+func hasUsableFlavor(flavors []*cloud.Flavor) bool {
+	for _, f := range flavors {
+		if f != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// pickFlavor picks the cheapest non-nil flavor that hasn't recently failed to
+// spawn; if all have failed, it picks the one from the earliest flavor set.
+func (s *opst) pickFlavor(ctx context.Context, flavors []*cloud.Flavor) *cloud.Flavor {
+	flavor, pickedI, pickedFirst := s.selectFlavor(flavors)
+
+	logFlavorPick(ctx, flavor, pickedI, pickedFirst)
+
+	return flavor
+}
+
+// selectFlavor returns the first unfailed non-nil flavor (and its set index),
+// falling back to the first non-nil flavor if all are failed. pickedFirst
+// reports that fallback.
+func (s *opst) selectFlavor(flavors []*cloud.Flavor) (flavor *cloud.Flavor, pickedI int, pickedFirst bool) {
 	for i, f := range flavors {
 		if f == nil {
 			continue
 		}
+
 		if flavor == nil {
 			flavor = f
 			pickedI = i
@@ -516,9 +660,15 @@ func (s *opst) determineFlavor(ctx context.Context, req *Requirements, call stri
 		flavor = f
 		pickedI = i
 		pickedFirst = false
+
 		break
 	}
 
+	return flavor, pickedI, pickedFirst
+}
+
+// logFlavorPick debug-logs when pickFlavor had to fall back to a failed flavor.
+func logFlavorPick(ctx context.Context, flavor *cloud.Flavor, pickedI int, pickedFirst bool) {
 	if pickedFirst {
 		clog.Debug(ctx, "determineFlavor's picks were all failed, picking the one from the earliest flavor set",
 			"set", pickedI, "flavor", flavor.Name)
@@ -526,12 +676,6 @@ func (s *opst) determineFlavor(ctx context.Context, req *Requirements, call stri
 		clog.Debug(ctx, "determineFlavor's first pick was failed, picking one that is unfailed",
 			"set", pickedI, "flavor", flavor.Name)
 	}
-
-	if call != "" {
-		s.dfCache.Set(call, flavor, cache.DefaultExpiration)
-	}
-
-	return flavor, err
 }
 
 // getFlavor returns a flavor with the given name or id. Returns an error
@@ -539,10 +683,12 @@ func (s *opst) determineFlavor(ctx context.Context, req *Requirements, call stri
 func (s *opst) getFlavor(ctx context.Context, name string) (*cloud.Flavor, error) {
 	flavor, err := s.provider.GetServerFlavor(ctx, name)
 	if err != nil {
-		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
-			err = Error{"openstack", "getFlavorByName", ErrBadFlavor}
+		var perr cloud.Error
+		if errors.As(err, &perr) {
+			err = Error{openstackScheduler, opGetFlavorByName, ErrBadFlavor}
 		}
 	}
+
 	return flavor, err
 }
 
@@ -553,27 +699,17 @@ func (s *opst) getFlavor(ctx context.Context, name string) (*cloud.Flavor, error
 func (s *opst) serverReqs(ctx context.Context, req *Requirements) (osPrefix string, osScript []byte,
 	osConfigFiles string, flavor *cloud.Flavor, sharedDisk bool, err error,
 ) {
+	osPrefix = s.config.OSPrefix
 	if val, defined := req.Other["cloud_os"]; defined {
 		osPrefix = val
-	} else {
-		osPrefix = s.config.OSPrefix
 	}
 
+	osScript = s.config.PostCreationScript
 	if val, defined := req.Other["cloud_script"]; defined {
 		osScript = []byte(val)
-	} else {
-		osScript = s.config.PostCreationScript
 	}
 
-	if val, defined := req.Other["cloud_config_files"]; defined {
-		if s.config.ConfigFiles != "" {
-			osConfigFiles = s.config.ConfigFiles + "," + val
-		} else {
-			osConfigFiles = val
-		}
-	} else {
-		osConfigFiles = s.config.ConfigFiles
-	}
+	osConfigFiles = s.osConfigFilesForReq(req)
 
 	if name, defined := req.Other["cloud_flavor"]; defined {
 		flavor, err = s.getFlavor(ctx, name)
@@ -585,19 +721,44 @@ func (s *opst) serverReqs(ctx context.Context, req *Requirements) (osPrefix stri
 	if val, defined := req.Other["cloud_shared"]; defined && val == "true" {
 		sharedDisk = true
 
-		// create a shared disk on our "head" node (if not already done)
-		s.serversMutex.RLock()
-		err = s.servers[localhostName].CreateSharedDisk()
-		s.serversMutex.RUnlock()
+		// createSharedDisk calls the cloud API's CreateSharedDisk, which takes
+		// no context.
+		//nolint:contextcheck // CreateSharedDisk is a cloud API call with no context
+		err = s.createSharedDisk()
 	}
 
 	return osPrefix, osScript, osConfigFiles, flavor, sharedDisk, err
 }
 
+// osConfigFilesForReq returns the config files to copy to a spawned server for
+// req: the configured ConfigFiles, with any req-specific files appended.
+func (s *opst) osConfigFilesForReq(req *Requirements) string {
+	val, defined := req.Other["cloud_config_files"]
+	if !defined {
+		return s.config.ConfigFiles
+	}
+
+	if s.config.ConfigFiles != "" {
+		return s.config.ConfigFiles + "," + val
+	}
+
+	return val
+}
+
+// createSharedDisk creates a shared disk on our "head" node (if not already
+// done).
+func (s *opst) createSharedDisk() error {
+	s.serversMutex.RLock()
+	defer s.serversMutex.RUnlock()
+
+	return s.servers[localhostName].CreateSharedDisk()
+}
+
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources in existing servers.
-func (s *opst) canCount(ctx context.Context, cmd string, req *Requirements, call string) int {
+func (s *opst) canCount(ctx context.Context, _ string, req *Requirements, call string) int {
 	ctx = clog.ContextWithCallValue(ctx, call)
+
 	if s.cleanedUp() {
 		return 0
 	}
@@ -605,6 +766,7 @@ func (s *opst) canCount(ctx context.Context, cmd string, req *Requirements, call
 	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(ctx, req)
 	if err != nil {
 		clog.Warn(ctx, "Failed to determine server requirements", "err", err)
+
 		return 0
 	}
 
@@ -615,15 +777,29 @@ func (s *opst) canCount(ctx context.Context, cmd string, req *Requirements, call
 	// so it shouldn't be too much of an issue.
 
 	// see how many of these commands will run on existing servers
-	var canCount int
+	return s.countSpaceOnServers(req, requestedOS, requestedScript, requestedConfigFiles, requestedFlavor,
+		needsSharedDisk)
+}
+
+// countSpaceOnServers sums the space for jobs matching req across all existing
+// non-bad servers that match the given server requirements.
+func (s *opst) countSpaceOnServers(req *Requirements, requestedOS string, requestedScript []byte,
+	requestedConfigFiles string, requestedFlavor *cloud.Flavor, needsSharedDisk bool,
+) int {
 	s.serversMutex.RLock()
+	defer s.serversMutex.RUnlock()
+
+	var canCount int
+
 	for _, server := range s.servers {
-		if !server.IsBad() && server.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) {
-			space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
-			canCount += space
+		if server.IsBad() {
+			continue
+		}
+
+		if server.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) {
+			canCount += server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
 		}
 	}
-	s.serversMutex.RUnlock()
 
 	return canCount
 }
@@ -635,50 +811,127 @@ func (s *opst) canCount(ctx context.Context, cmd string, req *Requirements, call
 // middle of spawning too many servers, we spawn instances in the background.
 func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *Requirements, call string) {
 	ctx = clog.ContextWithCallValue(ctx, call)
+
 	s.spawnMutex.Lock()
 	defer s.spawnMutex.Unlock()
-	var spawningTotal int
-	var spawningCmd int
+
+	spawningTotal, spawningCmd := s.countSpawning(cmd)
+
+	if s.config.SimultaneousSpawns > 0 && spawningTotal >= s.config.SimultaneousSpawns {
+		clog.Debug(ctx, "spawnMultiple is spawning max servers already")
+
+		return
+	}
+
+	sr, perServer, flavor, ok := s.serverReqsForSpawn(ctx, req, call)
+	if !ok {
+		return
+	}
+
+	todo, allowed := s.spawnTodo(ctx, desired, perServer, sr.spawnable, spawningTotal, spawningCmd, cmd)
+	if todo <= 0 {
+		return
+	}
+
+	// spawn servers in the background
+	clog.Debug(ctx, "spawnMultiple will spawn new servers", "cmd", cmd, "desired", desired, "perserver",
+		perServer, "spawnable", sr.spawnable, "allowed", allowed, "already", spawningCmd, "actual", todo)
+
+	s.startSpawns(ctx, todo, sr, flavor, cmd)
+}
+
+// startSpawns launches todo background spawns for cmd, recording each in
+// spawningNow.
+func (s *opst) startSpawns(ctx context.Context, todo int, sr spawnReqs, flavor *cloud.Flavor, cmd string) {
+	for range todo {
+		s.spawningNow[cmd]++
+
+		go s.spawnOneInBackground(ctx, sr.reqForSpawn, flavor, sr.requestedOS, sr.requestedScript,
+			sr.requestedConfigFiles, sr.needsSharedDisk, cmd)
+	}
+}
+
+// spawnReqs gathers the inputs spawnMultiple needs to start spawning servers.
+type spawnReqs struct {
+	reqForSpawn          *Requirements
+	requestedScript      []byte
+	requestedOS          string
+	requestedConfigFiles string
+	spawnable            int
+	needsSharedDisk      bool
+}
+
+// serverReqsForSpawn determines the server requirements and how many servers of
+// what flavor we can spawn for req. ok is false (with a reason logged) if we
+// can't spawn anything.
+func (s *opst) serverReqsForSpawn(ctx context.Context, req *Requirements, call string,
+) (sr spawnReqs, perServer int, flavor *cloud.Flavor, ok bool) {
+	var requestedFlavor *cloud.Flavor
+
+	var err error
+
+	sr.requestedOS, sr.requestedScript, sr.requestedConfigFiles, requestedFlavor, sr.needsSharedDisk, err =
+		s.serverReqs(ctx, req)
+	if err != nil {
+		clog.Warn(ctx, "Failed to determine server requirements", "err", err)
+
+		return sr, 0, nil, false
+	}
+
+	sr.reqForSpawn = s.reqForSpawn(req)
+
+	// work out how many we should spawn at once
+	sr.spawnable, flavor = s.checkQuota(ctx, sr.reqForSpawn, requestedFlavor, call)
+	if sr.spawnable == 0 {
+		clog.Debug(ctx, "spawnMultiple can't spawn due to lack of quota")
+
+		return sr, 0, nil, false
+	}
+
+	// servers we spawn can have more disk than in the flavor, so we don't
+	// consider reqForSpawn.Disk here
+	perServer = flavor.HasSpaceFor(sr.reqForSpawn.Cores, sr.reqForSpawn.RAM, 0)
+	if perServer == 0 {
+		clog.Error(ctx, "determined flavor doesn't have space for req", "flavor", flavor, "req", sr.reqForSpawn)
+
+		return sr, 0, nil, false
+	}
+
+	return sr, perServer, flavor, true
+}
+
+// countSpawning returns the total number of servers currently spawning, and the
+// number spawning for the given cmd.
+func (s *opst) countSpawning(cmd string) (spawningTotal, spawningCmd int) {
 	for thisCmd, spawning := range s.spawningNow {
 		spawningTotal += spawning
 		if thisCmd == cmd {
 			spawningCmd = spawning
 		}
 	}
-	if s.config.SimultaneousSpawns > 0 && spawningTotal >= s.config.SimultaneousSpawns {
-		clog.Debug(ctx, "spawnMultiple is spawning max servers already")
-		return
-	}
 
-	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(ctx, req)
-	if err != nil {
-		clog.Warn(ctx, "Failed to determine server requirements", "err", err)
-		return
-	}
-	reqForSpawn := s.reqForSpawn(req)
+	return spawningTotal, spawningCmd
+}
 
-	// work out how many we should spawn at once
-	spawnable, flavor := s.checkQuota(ctx, reqForSpawn, requestedFlavor, call)
-	if spawnable == 0 {
-		clog.Debug(ctx, "spawnMultiple can't spawn due to lack of quota")
-		return
-	}
-	perServer := flavor.HasSpaceFor(reqForSpawn.Cores, reqForSpawn.RAM, 0) // servers we spawn can have more disk than in the flavor, so we don't consider reqForSpawn.Disk here
-	if perServer == 0 {
-		clog.Error(ctx, "determined flavor doesn't have space for req", "flavor", flavor, "req", reqForSpawn)
-		return
-	}
-	todo := int(math.Ceil(float64(desired) / float64(perServer)))
+// spawnTodo works out how many servers we should actually spawn now (capped by
+// what's spawnable and any SimultaneousSpawns limit), along with the
+// SimultaneousSpawns allowance used for logging. It returns todo <= 0 if we
+// shouldn't spawn any.
+func (s *opst) spawnTodo(ctx context.Context, desired, perServer, spawnable, spawningTotal, spawningCmd int,
+	cmd string,
+) (todo, allowed int) {
+	todo = int(math.Ceil(float64(desired) / float64(perServer)))
+
 	needed := todo - spawningCmd
 	if needed <= 0 {
-		clog.Debug(ctx, "spawnMultiple is spawning enough for cmd already", "cmd", cmd, "todo", todo, "already", spawningCmd)
-		return
+		clog.Debug(ctx, "spawnMultiple is spawning enough for cmd already", "cmd", cmd, "todo", todo,
+			"already", spawningCmd)
+
+		return 0, 0
 	}
-	todo = needed
-	if spawnable < todo {
-		todo = spawnable
-	}
-	var allowed int
+
+	todo = min(spawnable, needed)
+
 	if s.config.SimultaneousSpawns > 0 {
 		allowed = s.config.SimultaneousSpawns - spawningTotal
 		if allowed < todo {
@@ -686,28 +939,29 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 		}
 	}
 
-	// spawn servers in the background
-	clog.Debug(ctx, "spawnMultiple will spawn new servers", "cmd", cmd, "desired", desired, "perserver",
-		perServer, "spawnable", spawnable, "allowed", allowed, "already", spawningCmd, "actual", todo)
-	for i := 0; i < todo; i++ {
-		s.spawningNow[cmd]++
-		go func() {
-			defer internal.LogPanic(ctx, "spawnMultiple", false)
+	return todo, allowed
+}
 
-			s.spawn(ctx, reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd)
+// spawnOneInBackground spawns a single server and, once done, decrements the
+// spawning count and recalls processQueue. Intended to be run in a goroutine.
+func (s *opst) spawnOneInBackground(ctx context.Context, reqForSpawn *Requirements, flavor *cloud.Flavor,
+	requestedOS string, requestedScript []byte, requestedConfigFiles string, needsSharedDisk bool, cmd string,
+) {
+	defer internal.LogPanic(ctx, "spawnMultiple", false)
 
-			s.spawnMutex.Lock()
-			s.spawningNow[cmd]--
-			if s.spawningNow[cmd] <= 0 {
-				delete(s.spawningNow, cmd)
-			}
-			s.spawnMutex.Unlock()
+	s.spawn(ctx, reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd)
 
-			errp := s.processQueue(ctx, "post spawn")
-			if errp != nil {
-				clog.Error(ctx, "processQueue recall failed", "err", errp)
-			}
-		}()
+	s.spawnMutex.Lock()
+
+	s.spawningNow[cmd]--
+	if s.spawningNow[cmd] <= 0 {
+		delete(s.spawningNow, cmd)
+	}
+	s.spawnMutex.Unlock()
+
+	errp := s.processQueue(ctx, "post spawn")
+	if errp != nil {
+		clog.Error(ctx, "processQueue recall failed", "err", errp)
 	}
 }
 
@@ -719,26 +973,64 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 //
 // Returns the number of servers that can be spawned, and the flavor that should
 // be spawned (if number greater than 0). Errors are simply Warn()ed.
-func (s *opst) checkQuota(ctx context.Context, req *Requirements, requestedFlavor *cloud.Flavor, call string) (int, *cloud.Flavor) {
+func (s *opst) checkQuota(ctx context.Context, req *Requirements, requestedFlavor *cloud.Flavor, call string,
+) (int, *cloud.Flavor) {
 	ctx = clog.ContextWithCallValue(ctx, call)
+
 	s.resourceMutex.RLock()
 	defer s.resourceMutex.RUnlock()
 
+	flavor, quota, ok := s.flavorAndQuota(ctx, req, requestedFlavor, call)
+	if !ok {
+		return 0, nil
+	}
+
+	remainingInstances := s.remainingInstanceQuota(ctx, quota)
+	remainingRAM := s.remainingRAMQuota(ctx, quota, flavor)
+	remainingCores := s.remainingCoresQuota(ctx, quota, flavor)
+
+	checkVolume := req.Disk > flavor.Disk // we'll only use up volume if we need more than the flavor offers
+	remainingVolume := s.remainingVolumeQuota(ctx, quota, req, flavor, checkVolume)
+
+	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores || remainingVolume < req.Disk {
+		return 0, nil
+	}
+
+	spawnable := calcSpawnable(remainingInstances, remainingRAM, remainingCores, remainingVolume, req, flavor, checkVolume)
+
+	return spawnable, flavor
+}
+
+// flavorAndQuota determines the flavor to spawn (unless requestedFlavor is
+// given) and fetches the current quota. ok is false (with a reason logged) on
+// any error.
+func (s *opst) flavorAndQuota(ctx context.Context, req *Requirements, requestedFlavor *cloud.Flavor, call string,
+) (*cloud.Flavor, *cloud.Quota, bool) {
 	flavor := requestedFlavor
+
 	var err error
 	if flavor == nil {
 		flavor, err = s.determineFlavor(ctx, req, call)
 		if err != nil {
 			clog.Warn(ctx, "Failed to determine a server flavor", "err", err)
-			return 0, nil
+
+			return nil, nil, false
 		}
 	}
 
 	quota, err := s.provider.GetQuota(ctx) // this includes resources used by currently spawning servers
 	if err != nil {
 		clog.Warn(ctx, "Failed to GetQuota", "err", err)
-		return 0, nil
+
+		return nil, nil, false
 	}
+
+	return flavor, quota, true
+}
+
+// remainingInstanceQuota returns how many more instances we can spawn given the
+// provider quota and the user's configured max instances.
+func (s *opst) remainingInstanceQuota(ctx context.Context, quota *cloud.Quota) int {
 	remainingInstances := unquotadVal
 	if quota.MaxInstances > 0 {
 		remainingInstances = quota.MaxInstances - quota.UsedInstances - s.reservedInstances
@@ -748,73 +1040,119 @@ func (s *opst) checkQuota(ctx context.Context, req *Requirements, requestedFlavo
 			s.notifyMessage("OpenStack: Not enough instance quota to create another server")
 		}
 	}
+
 	if remainingInstances > 0 && s.quotaMaxInstances > -1 && s.quotaMaxInstances < quota.MaxInstances {
-		// also check that the users configured max instances hasn't been breached
-		s.serversMutex.RLock()
-		numServers := len(s.servers)
-		s.serversMutex.RUnlock()
-		used := numServers + s.reservedInstances
-		remaining := s.quotaMaxInstances - used
-		if remaining < remainingInstances {
-			remainingInstances = remaining
-		}
-		if remainingInstances < 1 {
-			clog.Debug(ctx, "instances over configured max", "remaining", remainingInstances, "configuredMax",
-				s.quotaMaxInstances, "usedPersonally", numServers, "reserved", s.reservedInstances)
-		}
+		remainingInstances = s.applyConfiguredMaxInstances(ctx, remainingInstances)
 	}
+
+	return remainingInstances
+}
+
+// applyConfiguredMaxInstances reduces remainingInstances if the user's
+// configured max instances would be breached.
+func (s *opst) applyConfiguredMaxInstances(ctx context.Context, remainingInstances int) int {
+	// also check that the users configured max instances hasn't been breached
+	s.serversMutex.RLock()
+	numServers := len(s.servers)
+	s.serversMutex.RUnlock()
+	used := numServers + s.reservedInstances
+
+	remaining := s.quotaMaxInstances - used
+	if remaining < remainingInstances {
+		remainingInstances = remaining
+	}
+
+	if remainingInstances < 1 {
+		clog.Debug(ctx, "instances over configured max", "remaining", remainingInstances, "configuredMax",
+			s.quotaMaxInstances, "usedPersonally", numServers, "reserved", s.reservedInstances)
+	}
+
+	return remainingInstances
+}
+
+// remainingRAMQuota returns how much more RAM quota we have for spawning a
+// server of the given flavor.
+func (s *opst) remainingRAMQuota(ctx context.Context, quota *cloud.Quota, flavor *cloud.Flavor) int {
 	remainingRAM := unquotadVal
 	if quota.MaxRAM > 0 {
 		remainingRAM = quota.MaxRAM - quota.UsedRAM - s.reservedRAM
 		if remainingRAM < flavor.RAM {
 			clog.Debug(ctx, "lack of ram quota", "remaining", remainingRAM, "max", quota.MaxRAM, "used", quota.UsedRAM,
 				"reserved", s.reservedRAM)
-			s.notifyMessage(fmt.Sprintf("OpenStack: Not enough RAM quota to create another server (need %d, have %d)", flavor.RAM, remainingRAM))
+			s.notifyMessage(fmt.Sprintf(
+				"OpenStack: Not enough RAM quota to create another server (need %d, have %d)", flavor.RAM, remainingRAM))
 		}
 	}
+
+	return remainingRAM
+}
+
+// remainingCoresQuota returns how many more cores of quota we have for spawning
+// a server of the given flavor.
+func (s *opst) remainingCoresQuota(ctx context.Context, quota *cloud.Quota, flavor *cloud.Flavor) int {
 	remainingCores := unquotadVal
 	if quota.MaxCores > 0 {
 		remainingCores = quota.MaxCores - quota.UsedCores - s.reservedCores
 		if remainingCores < flavor.Cores {
-			clog.Debug(ctx, "lack of cores quota", "remaining", remainingCores, "max", quota.MaxCores, "used", quota.UsedCores,
-				"reserved", s.reservedCores)
-			s.notifyMessage(fmt.Sprintf("OpenStack: Not enough cores quota to create another server (need %d, have %d)", flavor.Cores, remainingCores))
+			clog.Debug(ctx, "lack of cores quota", "remaining", remainingCores, "max", quota.MaxCores,
+				"used", quota.UsedCores, "reserved", s.reservedCores)
+			s.notifyMessage(fmt.Sprintf(
+				"OpenStack: Not enough cores quota to create another server (need %d, have %d)",
+				flavor.Cores, remainingCores))
 		}
 	}
+
+	return remainingCores
+}
+
+// remainingVolumeQuota returns how much more volume quota we have for the given
+// req/flavor, or unquotadVal if we won't be using volume.
+func (s *opst) remainingVolumeQuota(ctx context.Context, quota *cloud.Quota, req *Requirements,
+	flavor *cloud.Flavor, checkVolume bool,
+) int {
 	remainingVolume := unquotadVal
-	checkVolume := req.Disk > flavor.Disk // we'll only use up volume if we need more than the flavor offers
 	if quota.MaxVolume > 0 && checkVolume {
 		remainingVolume = quota.MaxVolume - quota.UsedVolume - s.reservedVolume
 		if remainingVolume < req.Disk {
 			clog.Debug(ctx, "lack of volume quota", "remaining", remainingVolume, "max", quota.MaxVolume, "used",
 				quota.UsedVolume, "reserved", s.reservedVolume)
-			s.notifyMessage(fmt.Sprintf("OpenStack: Not enough volume quota to create another server (need %d, have %d)", flavor.Disk, remainingVolume))
+			s.notifyMessage(fmt.Sprintf(
+				"OpenStack: Not enough volume quota to create another server (need %d, have %d)",
+				flavor.Disk, remainingVolume))
 		}
-	}
-	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores || remainingVolume < req.Disk {
-		return 0, nil
 	}
 
-	// (we only care that we can spawn at least 1, but calculate the actual
-	// spawnable number in case we want to spawn multiple at once in the future)
+	return remainingVolume
+}
+
+// calcSpawnable works out how many servers of the given flavor we can spawn
+// given the remaining quota for each resource.
+//
+// (we only care that we can spawn at least 1, but calculate the actual
+// spawnable number in case we want to spawn multiple at once in the future).
+func calcSpawnable(remainingInstances, remainingRAM, remainingCores, remainingVolume int, req *Requirements,
+	flavor *cloud.Flavor, checkVolume bool,
+) int {
 	spawnable := remainingInstances
-	if spawnable > 1 {
-		n := remainingRAM / flavor.RAM // dividing ints == floor
-		if n < spawnable {
+	if spawnable <= 1 {
+		return spawnable
+	}
+
+	if n := remainingRAM / flavor.RAM; n < spawnable { // dividing ints == floor
+		spawnable = n
+	}
+
+	if n := remainingCores / flavor.Cores; n < spawnable {
+		spawnable = n
+	}
+
+	if checkVolume {
+		if n := remainingVolume / req.Disk; n < spawnable {
 			spawnable = n
-		}
-		n = remainingCores / flavor.Cores
-		if n < spawnable {
-			spawnable = n
-		}
-		if checkVolume {
-			n = remainingVolume / req.Disk
-			if n < spawnable {
-				spawnable = n
-			}
 		}
 	}
-	return spawnable, flavor
+
+	return spawnable
 }
 
 // reqForSpawn checks the input Requirements and if the configured OSRAM (or
@@ -825,18 +1163,7 @@ func (s *opst) checkQuota(ctx context.Context, req *Requirements, requestedFlavo
 func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 	reqForSpawn := req
 
-	var osRAM int
-	if val, defined := req.Other["cloud_os_ram"]; defined {
-		i, err := strconv.Atoi(val)
-		if err == nil {
-			osRAM = i
-		} else {
-			osRAM = s.config.OSRAM
-		}
-	} else {
-		osRAM = s.config.OSRAM
-	}
-
+	osRAM := s.osRAMForReq(req)
 	if req.RAM < osRAM {
 		reqForSpawn = &Requirements{
 			RAM:   osRAM,
@@ -851,6 +1178,7 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 	if disk == 0 {
 		disk = s.config.OSDisk
 	}
+
 	if req.Disk < disk {
 		reqForSpawn = &Requirements{
 			RAM:   reqForSpawn.RAM,
@@ -864,208 +1192,73 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 	return reqForSpawn
 }
 
+// osRAMForReq returns the minimum RAM (MB) needed to bring up a server for req:
+// the Requirements.Other["cloud_os_ram"] value if set and valid, else the
+// configured OSRAM.
+func (s *opst) osRAMForReq(req *Requirements) int {
+	val, defined := req.Other["cloud_os_ram"]
+	if !defined {
+		return s.config.OSRAM
+	}
+
+	if i, err := strconv.Atoi(val); err == nil {
+		return i
+	}
+
+	return s.config.OSRAM
+}
+
 // spawn creates a new instance in OpenStack. Errors are not returned but are
 // logged, and problematic servers are terminated.
-func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavor, requestedOS string, requestedScript []byte,
-	requestedConfigFiles string, needsSharedDisk bool, cmd string,
+func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavor, requestedOS string,
+	requestedScript []byte, requestedConfigFiles string, needsSharedDisk bool, cmd string,
 ) {
 	ctx = clog.ContextWithServerFlavor(ctx, flavor.Name)
 	volumeAffected := req.Disk > flavor.Disk
 
-	// because spawning can take a while, we record that we're going to use
-	// up some of our quota and unlock so other things can proceed
-	s.resourceMutex.Lock()
-	s.reservedInstances++
-	s.reservedCores += flavor.Cores
-	s.reservedRAM += flavor.RAM
-	if volumeAffected {
-		s.reservedVolume += req.Disk
-	}
-	s.resourceMutex.Unlock()
+	usingQuotaCB := s.reserveSpawnResources(flavor, req.Disk, volumeAffected)
 
-	// later on, immediately after the spawn request goes through (and so
-	// presumably is using up quota), but before the new server powers up,
-	// drop our reserved values down or we'll end up double-counting
-	// resource usage in checkQuota(), since that takes in to account
-	// resources used by an in-progress spawn.
-	var releaseReservedOnce sync.Once
-	usingQuotaCB := func() {
-		releaseReservedOnce.Do(func() {
-			s.resourceMutex.Lock()
-			s.reservedInstances--
-			s.reservedCores -= flavor.Cores
-
-			s.reservedRAM -= flavor.RAM
-			if volumeAffected {
-				s.reservedVolume -= req.Disk
-			}
-			s.resourceMutex.Unlock()
-		})
+	thisDebugCount := nextDebugCount()
+	if debugEffect == "slowSecondSpawn" && thisDebugCount == debugSlowSecondSpawnCount {
+		<-time.After(slowSecondSpawnDelay)
 	}
 
-	var osUser string
-	if val, defined := req.Other["cloud_user"]; defined {
-		osUser = val
-	} else {
-		osUser = s.config.OSUser
-	}
-
-	// *** we need a better way for our test script to prove the bugs that rely
-	// on debugEffect, that doesn't affect non-testing code. Probably have to
-	// mock OpenStack instead at some point...
-	var thisDebugCount int
-	if debugEffect != "" {
-		debugCounter++
-		thisDebugCount = debugCounter
-	}
-	if debugEffect == "slowSecondSpawn" && thisDebugCount == 3 {
-		<-time.After(10 * time.Second)
-	}
-
-	// spawn
-	failMsg := "server failed spawn"
-
-	clog.Debug(ctx, "will spawn new server", "cmd", cmd)
-
-	tSpawn := time.Now()
-
-	var (
-		server *cloud.Server
-		err    error
-	)
-	if debugEffect == "failBeforeUsingQuota" && thisDebugCount == 1 {
-		err = errDebugFailBeforeUsingQuota
-	} else {
-		server, err = s.provider.Spawn(ctx, requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime,
-			false, usingQuotaCB)
-	}
-
-	serverID := "failed"
+	server, failMsg, err := s.doSpawn(ctx, req, flavor, requestedOS, cmd, usingQuotaCB, thisDebugCount)
 	if server != nil {
-		serverID = server.ID
+		ctx = clog.ContextWithServerID(ctx, server.ID)
 	}
-
-	ctx = clog.ContextWithServerID(ctx, serverID)
-	clog.Debug(ctx, "spawned server", "took", time.Since(tSpawn))
 
 	if err == nil && server != nil {
-		if s.config.PreDestroyScript != nil {
-			server.SetDestroyScript(s.config.PreDestroyScript)
-		}
-
-		// wait until boot is finished, ssh is ready and osScript has
-		// completed
-		clog.Debug(ctx, "waiting for server to become ready")
-		failMsg = "server failed ready"
-		tReady := time.Now()
-		err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-			return server.WaitUntilReady(ctx, requestedConfigFiles, requestedScript)
-		})
-		clog.Debug(ctx, "waited for server to become ready", "took", time.Since(tReady), "err", err)
-
-		if err == nil && needsSharedDisk {
-			s.serversMutex.RLock()
-			localhostIP := s.servers[localhostName].IP
-			s.serversMutex.RUnlock()
-			err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.MountSharedDisk(ctx, localhostIP) })
-		}
-
-		if err == nil {
-			failMsg = "server failed uploads"
-
-			// check that the exe of the cmd we're supposed to run exists on the
-			// new server, and if not, copy it over *** this is just a hack to
-			// get wr working, need to think of a better way of doing this...
-			exe := strings.Split(cmd, " ")[0]
-			var exePath string
-			if exePath, err = exec.LookPath(exe); err == nil {
-				stdCh := make(chan string)
-				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-					std, _, errRun := server.RunCmd(ctx, "file "+exePath, false)
-					go func() {
-						stdCh <- std
-					}()
-					return errRun
-				})
-				stdout := <-stdCh
-				if stdout != "" {
-					if strings.Contains(stdout, "No such file") {
-						// *** NB this will fail if exePath is in a dir we can't
-						// create on the remote server, eg. if it is in our home
-						// dir, but the remote server has a different user, or
-						// presumably if it is somewhere requiring root
-						// permission
-						err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.UploadFile(ctx, exePath, exePath) })
-						if err == nil {
-							err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-								_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
-								return errRun
-							})
-						} else if err.Error() != serverNotNeededErrStr {
-							err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
-						}
-					} else if err != nil && err.Error() != serverNotNeededErrStr {
-						err = fmt.Errorf("could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
-					}
-				} else {
-					// checking for exePath with the file command failed for
-					// some reason, and without any stdout... but let's just
-					// try the upload anyway, assuming the exe isn't there
-					err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.UploadFile(ctx, exePath, exePath) })
-					if err == nil {
-						err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-							_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
-							return errRun
-						})
-					} else if err.Error() != serverNotNeededErrStr {
-						err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
-					}
-				}
-			} else {
-				err = fmt.Errorf("could not look for exe [%s]: %s", exePath, err)
-			}
-
-			if err == nil && s.config.PostCreationForcedCommand != "" {
-				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-					_, _, errRun := server.RunCmd(ctx, s.config.PostCreationForcedCommand, false)
-					return errRun
-				})
-			}
-		}
+		failMsg, err = s.prepareServer(ctx, server, cmd, requestedConfigFiles, requestedScript, needsSharedDisk)
 	}
 
-	if debugEffect == "failFirstSpawn" && thisDebugCount == 1 {
-		err = errors.New("forced fail")
-	}
-
-	if s.cleanedUp() {
-		err = errors.New(serverNotNeededErrStr)
-	}
-
-	// handle Spawn() or upload-of-exe errors now, by destroying the server
-	// and noting we failed
+	err = s.overrideSpawnErr(err, thisDebugCount)
 	if err != nil {
-		usingQuotaCB()
-		if err.Error() == serverNotNeededErrStr {
-			clog.Debug(ctx, failMsg, "err", err)
-		} else {
-			clog.Warn(ctx, failMsg, "err", err)
-		}
-		if server != nil {
-			errd := server.Destroy(ctx)
-			if errd != nil {
-				clog.Debug(ctx, "server also failed to destroy", "err", errd)
-			}
-		} else if s.provider != nil && s.provider.ErrIsNoHardware(err) {
-			s.ffCache.Set(flavor.ID, true, cache.DefaultExpiration)
-			clog.Warn(ctx, "server failed to spawn due to lack of hardware")
-		}
-		if err.Error() != serverNotNeededErrStr {
-			s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
-		}
+		s.handleFailedSpawn(ctx, server, flavor, failMsg, err, usingQuotaCB)
+
 		return
 	}
 
+	s.recordSpawnedServer(ctx, server, flavor)
+}
+
+// overrideSpawnErr applies the failFirstSpawn debugEffect and the cleanedUp
+// check, which can force a spawn to be treated as failed.
+func (s *opst) overrideSpawnErr(err error, thisDebugCount int) error {
+	if debugEffect == "failFirstSpawn" && thisDebugCount == 1 {
+		err = errDebugForcedFail
+	}
+
+	if s.cleanedUp() {
+		err = errServerNotNeeded
+	}
+
+	return err
+}
+
+// recordSpawnedServer marks the successfully spawned server as usable, clearing
+// any prior failed-flavor marker.
+func (s *opst) recordSpawnedServer(ctx context.Context, server *cloud.Server, flavor *cloud.Flavor) {
 	if _, failed := s.ffCache.Get(flavor.ID); failed {
 		clog.Debug(ctx, "server successfully spawned on previously failed flavor")
 		s.ffCache.Delete(flavor.ID)
@@ -1077,58 +1270,353 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 	clog.Debug(ctx, "server became usable")
 }
 
+// reserveSpawnResources records that we're going to use up some of our quota
+// spawning a server of the given flavor, and returns a callback that releases
+// that reservation (only once, however many times it is called).
+//
+// Because spawning can take a while, we reserve up front and release as soon as
+// the spawn request goes through (and so presumably is using up quota), but
+// before the new server powers up, or we'll end up double-counting resource
+// usage in checkQuota(), since that takes into account resources used by an
+// in-progress spawn.
+func (s *opst) reserveSpawnResources(flavor *cloud.Flavor, disk int, volumeAffected bool) func() {
+	s.resourceMutex.Lock()
+	s.reservedInstances++
+	s.reservedCores += flavor.Cores
+
+	s.reservedRAM += flavor.RAM
+	if volumeAffected {
+		s.reservedVolume += disk
+	}
+	s.resourceMutex.Unlock()
+
+	var releaseReservedOnce sync.Once
+
+	return func() {
+		releaseReservedOnce.Do(func() {
+			s.resourceMutex.Lock()
+			s.reservedInstances--
+			s.reservedCores -= flavor.Cores
+
+			s.reservedRAM -= flavor.RAM
+			if volumeAffected {
+				s.reservedVolume -= disk
+			}
+			s.resourceMutex.Unlock()
+		})
+	}
+}
+
+// doSpawn asks the provider to spawn a server, returning it (or nil), the
+// failure message to use if a later step fails, and any spawn error.
+func (s *opst) doSpawn(ctx context.Context, req *Requirements, flavor *cloud.Flavor, requestedOS, cmd string,
+	usingQuotaCB func(), thisDebugCount int,
+) (*cloud.Server, string, error) {
+	clog.Debug(ctx, "will spawn new server", "cmd", cmd)
+
+	tSpawn := time.Now()
+
+	var (
+		server *cloud.Server
+		err    error
+	)
+
+	if debugEffect == "failBeforeUsingQuota" && thisDebugCount == 1 {
+		err = errDebugFailBeforeUsingQuota
+	} else {
+		server, err = s.provider.Spawn(ctx, requestedOS, s.osUserForReq(req), flavor.ID, req.Disk,
+			s.config.ServerKeepTime, false, usingQuotaCB)
+	}
+
+	serverID := "failed"
+	if server != nil {
+		serverID = server.ID
+	}
+
+	clog.Debug(clog.ContextWithServerID(ctx, serverID), "spawned server", "took", time.Since(tSpawn))
+
+	return server, "server failed spawn", err
+}
+
+// osUserForReq returns the login username to use for a server spawned for req:
+// the Requirements.Other["cloud_user"] value if set, else the configured
+// OSUser.
+func (s *opst) osUserForReq(req *Requirements) string {
+	if val, defined := req.Other["cloud_user"]; defined {
+		return val
+	}
+
+	return s.config.OSUser
+}
+
+// prepareServer waits for a freshly spawned server to become ready, mounts a
+// shared disk if needed, ensures the cmd's exe is present, and runs any
+// post-creation forced command. It returns the failure message to log and any
+// error encountered.
+func (s *opst) prepareServer(ctx context.Context, server *cloud.Server, cmd, requestedConfigFiles string,
+	requestedScript []byte, needsSharedDisk bool,
+) (string, error) {
+	if s.config.PreDestroyScript != nil {
+		server.SetDestroyScript(s.config.PreDestroyScript)
+	}
+
+	if err := s.waitServerReady(ctx, server, cmd, requestedConfigFiles, requestedScript, needsSharedDisk); err != nil {
+		return "server failed ready", err
+	}
+
+	failMsg := "server failed uploads"
+	err := s.ensureExeOnServer(ctx, server, cmd)
+
+	if err == nil && s.config.PostCreationForcedCommand != "" {
+		err = s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+			_, _, errRun := server.RunCmd(ctx, s.config.PostCreationForcedCommand, false)
+
+			return errRun
+		})
+	}
+
+	return failMsg, err
+}
+
+// waitServerReady waits until the server has booted, ssh is ready and its
+// osScript has completed, then mounts a shared disk if needed.
+func (s *opst) waitServerReady(ctx context.Context, server *cloud.Server, cmd, requestedConfigFiles string,
+	requestedScript []byte, needsSharedDisk bool,
+) error {
+	// wait until boot is finished, ssh is ready and osScript has completed
+	clog.Debug(ctx, "waiting for server to become ready")
+
+	tReady := time.Now()
+	err := s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+		return server.WaitUntilReady(ctx, requestedConfigFiles, requestedScript)
+	})
+	clog.Debug(ctx, "waited for server to become ready", "took", time.Since(tReady), "err", err)
+
+	if err == nil && needsSharedDisk {
+		s.serversMutex.RLock()
+		localhostIP := s.servers[localhostName].IP
+		s.serversMutex.RUnlock()
+		err = s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+			return server.MountSharedDisk(ctx, localhostIP)
+		})
+	}
+
+	return err
+}
+
+// ensureExeOnServer checks that the exe of the cmd we're supposed to run exists
+// on the new server, and if not, copies it over.
+//
+// *** this is just a hack to get wr working, need to think of a better way of
+// doing this...
+func (s *opst) ensureExeOnServer(ctx context.Context, server *cloud.Server, cmd string) error {
+	exe := strings.Split(cmd, " ")[0]
+
+	exePath, err := exec.LookPath(exe)
+	if err != nil {
+		return fmt.Errorf("could not look for exe [%s]: %w", exePath, err)
+	}
+
+	stdout, err := s.fileCheckExe(ctx, server, cmd, exePath)
+
+	if stdout == "" {
+		// checking for exePath with the file command failed for some reason,
+		// and without any stdout... but let's just try the upload anyway,
+		// assuming the exe isn't there
+		return s.uploadExe(ctx, server, cmd, exePath)
+	}
+
+	if strings.Contains(stdout, "No such file") {
+		return s.uploadExe(ctx, server, cmd, exePath)
+	}
+
+	if err != nil && !errors.Is(err, errServerNotNeeded) {
+		return fmt.Errorf("could not check exe with [file %s]: %s [%w]", exePath, stdout, err)
+	}
+
+	return err
+}
+
+// fileCheckExe runs `file <exePath>` on the server and returns its stdout.
+func (s *opst) fileCheckExe(ctx context.Context, server *cloud.Server, cmd, exePath string) (string, error) {
+	stdCh := make(chan string)
+	err := s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+		std, _, errRun := server.RunCmd(ctx, "file "+exePath, false)
+		go func() {
+			stdCh <- std
+		}()
+
+		return errRun
+	})
+
+	return <-stdCh, err
+}
+
+// uploadExe uploads exePath to the same path on server and makes it executable.
+//
+// *** NB the upload will fail if exePath is in a dir we can't create on the
+// remote server, eg. if it is in our home dir, but the remote server has a
+// different user, or presumably if it is somewhere requiring root permission.
+func (s *opst) uploadExe(ctx context.Context, server *cloud.Server, cmd, exePath string) error {
+	err := s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+		return server.UploadFile(ctx, exePath, exePath)
+	})
+	if err != nil {
+		if !errors.Is(err, errServerNotNeeded) {
+			return fmt.Errorf("could not upload exe [%s]: %w (try putting the exe in /tmp?)", exePath, err)
+		}
+
+		return err
+	}
+
+	return s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+		_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
+
+		return errRun
+	})
+}
+
+// handleFailedSpawn deals with a Spawn() or upload-of-exe error by destroying
+// the server and noting we failed.
+func (s *opst) handleFailedSpawn(ctx context.Context, server *cloud.Server, flavor *cloud.Flavor,
+	failMsg string, err error, usingQuotaCB func(),
+) {
+	usingQuotaCB()
+
+	if errors.Is(err, errServerNotNeeded) {
+		clog.Debug(ctx, failMsg, "err", err)
+	} else {
+		clog.Warn(ctx, failMsg, "err", err)
+	}
+
+	s.destroyOrMarkFailedFlavor(ctx, server, flavor, err)
+
+	if !errors.Is(err, errServerNotNeeded) {
+		s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
+	}
+}
+
+// destroyOrMarkFailedFlavor destroys the server if it exists, or otherwise
+// marks its flavor as failed if the spawn failed due to lack of hardware.
+func (s *opst) destroyOrMarkFailedFlavor(ctx context.Context, server *cloud.Server, flavor *cloud.Flavor, err error) {
+	if server != nil {
+		if errd := server.Destroy(ctx); errd != nil {
+			clog.Debug(ctx, "server also failed to destroy", "err", errd)
+		}
+
+		return
+	}
+
+	if s.provider != nil && s.provider.ErrIsNoHardware(err) {
+		s.ffCache.Set(flavor.ID, true, cache.DefaultExpiration)
+		clog.Warn(ctx, "server failed to spawn due to lack of hardware")
+	}
+}
+
+// nextDebugCount increments and returns the global debug counter when a
+// debugEffect is active, else returns 0.
+func nextDebugCount() int {
+	if debugEffect == "" {
+		return 0
+	}
+
+	debugCounter++
+
+	return debugCounter
+}
+
 // actOnServerIfNeeded runs the given code unless cleanup() has been called, or
 // cmd no longer needs to be run, in which case an error is returned instead.
 // It will also periodiclly check if the cmd still needs to be run, and return
 // early with an error if not, even while the given code is still running.
-func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(ctx context.Context) error) error {
+//
+// The given ctx is used for logging only; the code is deliberately run with a
+// fresh context that is NOT derived from ctx, so that an in-progress spawn
+// action is not aborted just because the scheduling context that triggered it
+// is cancelled (spawns are meant to run to completion).
+func (s *opst) actOnServerIfNeeded(ctx context.Context, server *cloud.Server, cmd string,
+	code func(ctx context.Context) error,
+) error {
 	if s.cleanedUp() {
-		return errors.New(serverNotNeededErrStr)
+		return errServerNotNeeded
 	}
 
-	s.scMutex.Lock()
-	ctx, cancel := context.WithCancel(context.Background())
+	// actionCtx is intentionally detached from ctx so spawns run to completion
+	// (see method doc).
+	actionCtx, cancel := context.WithCancel(context.Background())
+
+	canceller := s.registerSpawnCanceller(server, cmd)
+
 	defer func() {
 		cancel()
-		s.scMutex.Lock()
-		delete(s.spawnCanceller[cmd], server.ID)
-		s.scMutex.Unlock()
+		s.deregisterSpawnCanceller(server, cmd)
 	}()
+
+	if s.cmdCountRemaining(cmd) <= 0 {
+		clog.Debug(ctx, "bailing on a spawn early since no longer needed", "server", server.ID)
+
+		return errServerNotNeeded
+	}
+
+	return runSpawnAction(ctx, actionCtx, cancel, canceller, code, server)
+}
+
+// runSpawnAction runs code(actionCtx) in a goroutine, returning its error, or
+// returning errServerNotNeeded (and cancelling actionCtx) if canceller fires
+// first.
+func runSpawnAction(ctx, actionCtx context.Context, cancel context.CancelFunc, canceller <-chan struct{},
+	code func(ctx context.Context) error, server *cloud.Server,
+) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- code(actionCtx)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-canceller:
+		cancel()
+		clog.Debug(ctx, "bailing on a spawn mid-action since no longer needed", "server", server.ID)
+
+		return errServerNotNeeded
+	}
+}
+
+// registerSpawnCanceller records a canceller channel for the given cmd/server
+// so that cmdNotNeeded can cancel an in-progress actOnServerIfNeeded, and
+// returns that channel.
+func (s *opst) registerSpawnCanceller(server *cloud.Server, cmd string) chan struct{} {
+	s.scMutex.Lock()
+	defer s.scMutex.Unlock()
+
 	canceller := make(chan struct{}, 1)
 	if _, exists := s.spawnCanceller[cmd]; !exists {
 		s.spawnCanceller[cmd] = make(map[string]chan struct{})
 	}
+
 	s.spawnCanceller[cmd][server.ID] = canceller
-	s.scMutex.Unlock()
 
-	if s.cmdCountRemaining(cmd) <= 0 {
-		clog.Debug(ctx, "bailing on a spawn early since no longer needed", "server", server.ID)
-		return errors.New(serverNotNeededErrStr)
-	}
+	return canceller
+}
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- code(ctx)
-	}()
+// deregisterSpawnCanceller removes the canceller channel registered for the
+// given cmd/server.
+func (s *opst) deregisterSpawnCanceller(server *cloud.Server, cmd string) {
+	s.scMutex.Lock()
+	defer s.scMutex.Unlock()
 
-	for {
-		select {
-		case err := <-errCh:
-			return err
-		case <-canceller:
-			cancel()
-			clog.Debug(ctx, "bailing on a spawn mid-action since no longer needed", "server", server.ID)
-			return errors.New(serverNotNeededErrStr)
-		}
-	}
+	delete(s.spawnCanceller[cmd], server.ID)
 }
 
 // cmdNotNeeded cancels the context set by actOnServerIfNeeded(), if any.
 func (s *opst) cmdNotNeeded(cmd string) {
 	s.scMutex.Lock()
 	defer s.scMutex.Unlock()
+
 	if serverMap, exists := s.spawnCanceller[cmd]; exists {
 		delete(s.spawnCanceller, cmd)
+
 		for _, canceller := range serverMap {
 			close(canceller)
 		}
@@ -1147,52 +1635,25 @@ func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reserv
 
 	if s.cleanedUp() {
 		reservedCh <- false
+
 		return nil
 	}
 
-	// look through space on existing servers to see if we can run cmd on one
-	// of them
-	s.serversMutex.RLock()
-	var server *cloud.Server
-	for sid, thisServer := range s.servers {
-		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor,
-			needsSharedDisk) && thisServer.Allocate(ctx, req.Cores, req.RAM, req.Disk) {
-			server = thisServer
-
-			// *** reservedCh is buffered and sending on it should never
-			// block, but somehow we have gotten stuck here before; make
-			// sure we don't get stuck on this send
-			ch := make(chan bool, 1)
-			done := make(chan bool, 1)
-			go func() {
-				reservedCh <- true
-				done <- true
-				ch <- true
-			}()
-			go func() {
-				select {
-				case <-time.After(reserveChTimeout):
-					ch <- false
-				case <-done:
-					return
-				}
-			}()
-			sentReserved := <-ch
-			if !sentReserved {
-				clog.Warn(ctx, "failed to send on reservedCh", "server", sid)
-			}
-
-			clog.Debug(ctx, "picked server")
-			break
-		}
-	}
-	s.serversMutex.RUnlock()
-
+	server := s.pickServer(ctx, req, reservedCh, requestedOS, requestedScript, requestedConfigFiles,
+		requestedFlavor, needsSharedDisk)
 	if server == nil {
 		reservedCh <- false
-		return errors.New("no available server")
+
+		return errNoAvailableServer
 	}
 
+	return s.runOnServerAndRelease(ctx, server, cmd, req)
+}
+
+// runOnServerAndRelease runs cmd on the given (already allocated) server, then
+// releases its resources so the local scheduler will trigger a new
+// processQueue() call.
+func (s *opst) runOnServerAndRelease(ctx context.Context, server *cloud.Server, cmd string, req *Requirements) error {
 	// later, after we've run the command, this server will be available for
 	// another; release resources, and local scheduler will trigger a new
 	// processQueue() call
@@ -1202,39 +1663,105 @@ func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reserv
 		}
 	}()
 
-	// now we have a server, ssh over and run the cmd on it
-	if server.Name == localhostName {
-		clog.Debug(ctx, "running command locally", "cmd", cmd)
-		reserved := make(chan bool)
-		go func() {
-			<-reserved
-		}()
-
-		err = s.local.runCmd(ctx, cmd, req, reserved)
-	} else {
-		if s.config.Umask > 0 {
-			cmd = fmt.Sprintf("(umask %d && %s)", s.config.Umask, cmd)
-		}
-		clog.Debug(ctx, "running command remotely", "cmd", cmd)
-		_, _, err = server.RunCmd(ctx, cmd, false)
-		// if we got an error running the command, we won't use this server
-		// again
-		if err != nil {
-			if !server.Destroyed() {
-				// tell the user about why we're not using this server, but
-				// don't just Destroy it: let them investigate the server
-				// manually if they wish, and let them Destroy when they wish.
-				server.GoneBad(err.Error())
-				s.notifyBadServer(server)
-				clog.Warn(ctx, "server went bad, won't be used again")
-			}
-		}
-	}
+	err := s.runCmdOnServer(ctx, server, cmd, req)
 	if err == nil {
 		clog.Debug(ctx, "ran command", "cmd", cmd)
 	} else {
 		clog.Warn(ctx, "failed to run command", "cmd", cmd, "err", err)
 	}
+
+	return err
+}
+
+// pickServer looks through space on existing servers to find one we can run cmd
+// on, allocating resources on it and signalling reservedCh if found. Returns
+// nil if no suitable server has space.
+func (s *opst) pickServer(ctx context.Context, req *Requirements, reservedCh chan bool, requestedOS string,
+	requestedScript []byte, requestedConfigFiles string, requestedFlavor *cloud.Flavor, needsSharedDisk bool,
+) *cloud.Server {
+	s.serversMutex.RLock()
+	defer s.serversMutex.RUnlock()
+
+	for sid, thisServer := range s.servers {
+		if thisServer.IsBad() {
+			continue
+		}
+
+		matches := thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor,
+			needsSharedDisk)
+		if !matches || !thisServer.Allocate(ctx, req.Cores, req.RAM, req.Disk) {
+			continue
+		}
+
+		s.signalReserved(ctx, reservedCh, sid)
+		clog.Debug(ctx, "picked server")
+
+		return thisServer
+	}
+
+	return nil
+}
+
+// signalReserved sends true on reservedCh, guarding against getting stuck.
+//
+// *** reservedCh is buffered and sending on it should never block, but somehow
+// we have gotten stuck here before; make sure we don't get stuck on this send.
+func (s *opst) signalReserved(ctx context.Context, reservedCh chan bool, sid string) {
+	ch := make(chan bool, 1)
+	done := make(chan bool, 1)
+
+	go func() {
+		reservedCh <- true
+
+		done <- true
+
+		ch <- true
+	}()
+	go func() {
+		select {
+		case <-time.After(reserveChTimeout):
+			ch <- false
+		case <-done:
+			return
+		}
+	}()
+
+	if sentReserved := <-ch; !sentReserved {
+		clog.Warn(ctx, "failed to send on reservedCh", "server", sid)
+	}
+}
+
+// runCmdOnServer ssh's over to the given server (or runs locally if it's the
+// localhost) and runs cmd on it, marking the server bad if a remote run errors.
+func (s *opst) runCmdOnServer(ctx context.Context, server *cloud.Server, cmd string, req *Requirements) error {
+	if server.Name == localhostName {
+		clog.Debug(ctx, "running command locally", "cmd", cmd)
+
+		reserved := make(chan bool)
+		go func() {
+			<-reserved
+		}()
+
+		return s.local.runCmd(ctx, cmd, req, reserved)
+	}
+
+	if s.config.Umask > 0 {
+		cmd = fmt.Sprintf("(umask %d && %s)", s.config.Umask, cmd)
+	}
+
+	clog.Debug(ctx, "running command remotely", "cmd", cmd)
+
+	_, _, err := server.RunCmd(ctx, cmd, false)
+	// if we got an error running the command, we won't use this server again
+	if err != nil && !server.Destroyed() {
+		// tell the user about why we're not using this server, but don't just
+		// Destroy it: let them investigate the server manually if they wish,
+		// and let them Destroy when they wish.
+		server.GoneBad(err.Error())
+		s.notifyBadServer(server)
+		clog.Warn(ctx, "server went bad, won't be used again")
+	}
+
 	return err
 }
 
@@ -1244,36 +1771,14 @@ func (s *opst) stateUpdate(ctx context.Context) {
 	s.stateMutex.Lock()
 	defer s.stateMutex.Unlock()
 
-	// when spawn() has finished creating a server and it is usable, it doesn't
-	// immediately add it to s.servers map, since if this happens during a
-	// processQueue() call then we could break bin-packing, with low priority
-	// jobs getting allocated to the new server. Instead spawn() adds the new
-	// server to spawnedServers, and now we move them to servers, since this
-	// method is called once at the start of processQueue()
-	s.serversMutex.Lock()
-	for id, server := range s.spawnedServers {
-		s.servers[id] = server
-		delete(s.spawnedServers, id)
-		clog.Debug(ctx, "made server eligible for use", "id", id)
-	}
-	s.serversMutex.Unlock()
+	s.promoteSpawnedServers(ctx)
 
-	var servers []*cloud.Server
-	s.serversMutex.Lock()
-	for _, server := range s.servers {
-		if server.ID != "" {
-			if server.Destroyed() {
-				delete(s.servers, server.ID)
-				continue
-			}
-			servers = append(servers, server)
-		}
-	}
-	s.serversMutex.Unlock()
+	servers := s.aliveServers()
 
 	if s.updatingState {
 		return
 	}
+
 	s.updatingState = true
 
 	// stateUpdate must return quickly, but checking on the servers with the
@@ -1282,35 +1787,91 @@ func (s *opst) stateUpdate(ctx context.Context) {
 		defer internal.LogPanic(ctx, "stateUpdate", true)
 
 		for _, server := range servers {
-			if server.Destroyed() {
-				continue
-			}
-
-			alive := server.Alive(ctx, true)
-			if server.IsBad() {
-				// check if the server is fine now
-				if alive && server.PermanentProblem() == "" {
-					worked := server.NotBad()
-					if worked {
-						s.notifyBadServer(server)
-						clog.Debug(ctx, "server became good", "server", server.ID)
-					}
-				}
-			} else if !alive {
-				server.GoneBad()
-				s.notifyBadServer(server)
-				clog.Debug(ctx, "server went bad", "server", server.ID)
-			}
+			s.refreshServerState(ctx, server)
 		}
 
 		s.stateMutex.Lock()
 		defer s.stateMutex.Unlock()
+
 		s.updatingState = false
 	}()
 }
 
+// promoteSpawnedServers moves servers that spawn() has finished creating into
+// the servers map that runCmd will check.
+//
+// When spawn() has finished creating a server and it is usable, it doesn't
+// immediately add it to s.servers, since if this happens during a
+// processQueue() call then we could break bin-packing, with low priority jobs
+// getting allocated to the new server. Instead spawn() adds the new server to
+// spawnedServers, and we move them to servers here, since stateUpdate is called
+// once at the start of processQueue().
+func (s *opst) promoteSpawnedServers(ctx context.Context) {
+	s.serversMutex.Lock()
+	defer s.serversMutex.Unlock()
+
+	for id, server := range s.spawnedServers {
+		s.servers[id] = server
+		delete(s.spawnedServers, id)
+		clog.Debug(ctx, "made server eligible for use", "id", id)
+	}
+}
+
+// aliveServers returns the servers that have an ID and aren't destroyed,
+// removing any destroyed servers from the servers map as it goes.
+func (s *opst) aliveServers() []*cloud.Server {
+	s.serversMutex.Lock()
+	defer s.serversMutex.Unlock()
+
+	var servers []*cloud.Server
+
+	for _, server := range s.servers {
+		if server.ID == "" {
+			continue
+		}
+
+		if server.Destroyed() {
+			delete(s.servers, server.ID)
+
+			continue
+		}
+
+		servers = append(servers, server)
+	}
+
+	return servers
+}
+
+// refreshServerState checks whether the given server is alive, transitioning it
+// between good and bad as appropriate.
+func (s *opst) refreshServerState(ctx context.Context, server *cloud.Server) {
+	if server.Destroyed() {
+		return
+	}
+
+	alive := server.Alive(ctx, true)
+
+	if !server.IsBad() {
+		if !alive {
+			server.GoneBad()
+			s.notifyBadServer(server)
+			clog.Debug(ctx, "server went bad", "server", server.ID)
+		}
+
+		return
+	}
+
+	// check if the server is fine now
+	if alive && server.PermanentProblem() == "" {
+		if worked := server.NotBad(); worked {
+			s.notifyBadServer(server)
+			clog.Debug(ctx, "server became good", "server", server.ID)
+		}
+	}
+}
+
 // postProcess checks that all our newly spawned servers have been used, and if
-// not, initiates the countdown to their destruction
+// not, initiates the countdown to their destruction.
 func (s *opst) postProcess(ctx context.Context) {
 	s.serversMutex.Lock()
 	for _, server := range s.servers {
@@ -1329,25 +1890,9 @@ func (s *opst) postProcess(ctx context.Context) {
 // is wrong, or we otherwise can't ssh to it, the host will be destroyed
 // immediately. NB: the host checking only works on machines with the 'pgrep'
 // command, such as linux etc.
-func (s *opst) recover(ctx context.Context, cmd string, req *Requirements, host *RecoveredHostDetails) error {
-	server := s.provider.GetServerByName(host.Host)
-	if server == nil {
-		clog.Warn(ctx, "recover called for non-existent server", "host", host)
-		return nil
-	}
-
-	if host.TTD == 0 {
-		// we keep servers for ever, so no need to monitor it
-		return nil
-	}
-
-	server.UserName = host.UserName
-	if !server.Alive(ctx, true) {
-		clog.Warn(ctx, "recover called for server that is not alive (or username was wrong?)", "host", host.Host)
-		errd := server.Destroy(ctx)
-		if errd != nil {
-			clog.Warn(ctx, "recovered server destruction failed", "server", server.ID, "err", errd)
-		}
+func (s *opst) recover(ctx context.Context, cmd string, _ *Requirements, host *RecoveredHostDetails) error {
+	server, monitor := s.serverToMonitor(ctx, host)
+	if !monitor {
 		return nil
 	}
 
@@ -1358,64 +1903,123 @@ func (s *opst) recover(ctx context.Context, cmd string, req *Requirements, host 
 		return nil
 	}
 
-	// *** we will only check against the first 2 words of cmd, which for our
-	// purposes of wr will be 'wr runner'. This lets us do a single check per
-	// server, and reduces possible issues with trying to get a process name
-	// match on a long, complex command line. However it might not work properly
-	// with the arbitrary commands that people could in theory schedule
-	cmdSplit := strings.Split(cmd, " ")
-	cmd = cmdSplit[0]
-	if len(cmdSplit) > 1 {
-		cmd += " " + cmdSplit[1]
-	}
-
-	go func() {
-		defer internal.LogPanic(ctx, "recover", true)
-		clog.Debug(ctx, "recovered server will be checked for running jobs periodically", "server", server.ID)
-
-		// periodically check on this server; when it is no longer running
-		// anything, destroy it
-		ticker := time.NewTicker(host.TTD)
-		for {
-			select {
-			case <-ticker.C:
-				active := true
-				so, se, errr := server.RunCmd(ctx, "pgrep -f '"+cmd+"'", false)
-				if errr != nil {
-					// *** assume the error is because a process with cmd
-					// doesn't exist, not because prgrep failed for some other
-					// reason
-					clog.Debug(ctx, "recovered server is no longer running anything", "server", server.ID, "checkCmd",
-						"pgrep -f '"+cmd+"'", "stdout", so, "stderr", se, "err", errr)
-					active = false
-				}
-
-				if !active {
-					ticker.Stop()
-
-					errd := server.Destroy(ctx)
-					if errd != nil {
-						clog.Warn(ctx, "recovered server destruction failed", "server", server.ID, "err", errd)
-					} else {
-						clog.Debug(ctx, "recovered server was destroyed after going idle", "server", server.ID)
-					}
-
-					errp := s.processQueue(ctx, "openstack recover")
-					if errp != nil {
-						clog.Error(ctx, "processQueue call after recovery failed", "err", errp)
-					}
-
-					return
-				}
-			case <-s.stopRSMonitoring:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
+	go s.monitorRecoveredServer(ctx, server, recoverCheckCmd(cmd), host.TTD)
 
 	s.recoveredServers[host.Host] = true
+
 	return nil
+}
+
+// serverToMonitor finds the server for the given recovered host and reports
+// whether it needs periodic monitoring. A server that doesn't exist, is kept
+// forever (TTD 0), or isn't reachable (and so gets destroyed) doesn't need
+// monitoring.
+func (s *opst) serverToMonitor(ctx context.Context, host *RecoveredHostDetails) (*cloud.Server, bool) {
+	server := s.provider.GetServerByName(host.Host)
+	if server == nil {
+		clog.Warn(ctx, "recover called for non-existent server", "host", host)
+
+		return nil, false
+	}
+
+	if host.TTD == 0 {
+		// we keep servers for ever, so no need to monitor it
+		return nil, false
+	}
+
+	server.UserName = host.UserName
+	if !server.Alive(ctx, true) {
+		clog.Warn(ctx, "recover called for server that is not alive (or username was wrong?)", "host", host.Host)
+
+		errd := server.Destroy(ctx)
+		if errd != nil {
+			clog.Warn(ctx, "recovered server destruction failed", "server", server.ID, "err", errd)
+		}
+
+		return nil, false
+	}
+
+	return server, true
+}
+
+// recoverCheckCmd returns the command string to pgrep for when checking whether
+// a recovered server is still running jobs.
+//
+// *** we will only check against the first 2 words of cmd, which for our
+// purposes of wr will be 'wr runner'. This lets us do a single check per
+// server, and reduces possible issues with trying to get a process name match
+// on a long, complex command line. However it might not work properly with the
+// arbitrary commands that people could in theory schedule.
+func recoverCheckCmd(cmd string) string {
+	cmdSplit := strings.Split(cmd, " ")
+
+	checkCmd := cmdSplit[0]
+	if len(cmdSplit) > 1 {
+		checkCmd += " " + cmdSplit[1]
+	}
+
+	return checkCmd
+}
+
+// monitorRecoveredServer periodically checks on a recovered server; when it is
+// no longer running cmd, it destroys it and recalls processQueue. It stops when
+// stopRSMonitoring is closed.
+func (s *opst) monitorRecoveredServer(ctx context.Context, server *cloud.Server, cmd string, ttd time.Duration) {
+	defer internal.LogPanic(ctx, "recover", true)
+
+	clog.Debug(ctx, "recovered server will be checked for running jobs periodically", "server", server.ID)
+
+	ticker := time.NewTicker(ttd)
+
+	for {
+		select {
+		case <-ticker.C:
+			if s.recoveredServerActive(ctx, server, cmd) {
+				continue
+			}
+
+			ticker.Stop()
+			s.destroyRecoveredServer(ctx, server)
+
+			return
+		case <-s.stopRSMonitoring:
+			ticker.Stop()
+
+			return
+		}
+	}
+}
+
+// recoveredServerActive reports whether the recovered server is still running
+// cmd.
+func (s *opst) recoveredServerActive(ctx context.Context, server *cloud.Server, cmd string) bool {
+	so, se, errr := server.RunCmd(ctx, "pgrep -f '"+cmd+"'", false)
+	if errr != nil {
+		// *** assume the error is because a process with cmd doesn't exist, not
+		// because prgrep failed for some other reason
+		clog.Debug(ctx, "recovered server is no longer running anything", "server", server.ID, "checkCmd",
+			"pgrep -f '"+cmd+"'", "stdout", so, "stderr", se, "err", errr)
+
+		return false
+	}
+
+	return true
+}
+
+// destroyRecoveredServer destroys a recovered server that has gone idle and
+// recalls processQueue.
+func (s *opst) destroyRecoveredServer(ctx context.Context, server *cloud.Server) {
+	errd := server.Destroy(ctx)
+	if errd != nil {
+		clog.Warn(ctx, "recovered server destruction failed", "server", server.ID, "err", errd)
+	} else {
+		clog.Debug(ctx, "recovered server was destroyed after going idle", "server", server.ID)
+	}
+
+	errp := s.processQueue(ctx, "openstack recover")
+	if errp != nil {
+		clog.Error(ctx, "processQueue call after recovery failed", "err", errp)
+	}
 }
 
 // hostToID does the necessary lookup to convert hostname to instance id.
@@ -1424,6 +2028,7 @@ func (s *opst) hostToID(host string) string {
 	if server == nil {
 		return ""
 	}
+
 	return server.ID
 }
 
@@ -1438,9 +2043,10 @@ func (s *opst) getHost(host string) (Host, bool) {
 }
 
 // setMessageCallBack sets the given callback.
-func (s *opst) setMessageCallBack(ctx context.Context, cb MessageCallBack) {
+func (s *opst) setMessageCallBack(_ context.Context, cb MessageCallBack) {
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
+
 	s.msgCB = cb
 }
 
@@ -1449,15 +2055,17 @@ func (s *opst) setMessageCallBack(ctx context.Context, cb MessageCallBack) {
 func (s *opst) notifyMessage(msg string) {
 	s.cbmutex.RLock()
 	defer s.cbmutex.RUnlock()
+
 	if s.msgCB != nil {
 		go s.msgCB(msg)
 	}
 }
 
 // setBadServerCallBack sets the given callback.
-func (s *opst) setBadServerCallBack(ctx context.Context, cb BadServerCallBack) {
+func (s *opst) setBadServerCallBack(_ context.Context, cb BadServerCallBack) {
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
+
 	s.badServerCB = cb
 }
 
@@ -1466,6 +2074,7 @@ func (s *opst) setBadServerCallBack(ctx context.Context, cb BadServerCallBack) {
 func (s *opst) notifyBadServer(server *cloud.Server) {
 	s.cbmutex.RLock()
 	defer s.cbmutex.RUnlock()
+
 	if s.badServerCB != nil {
 		go s.badServerCB(server)
 	}
@@ -1475,40 +2084,62 @@ func (s *opst) notifyBadServer(server *cloud.Server) {
 func (s *opst) cleanup(ctx context.Context) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
 	s.runMutex.Lock()
 	defer s.runMutex.Unlock()
+
 	s.cleanMutex.Lock()
 	defer s.cleanMutex.Unlock()
+
 	s.spawnMutex.Lock()
 	defer s.spawnMutex.Unlock()
 
 	// prevent any further scheduling and queue processing, and destroy the
 	// queue
 	s.cleaned = true
-	err := s.queue.Destroy()
-	if err != nil {
+
+	if err := s.queue.Destroy(); err != nil {
 		clog.Warn(ctx, "cleanup queue destruction failed", "err", err)
 	}
 
-	// wait for any ongoing state update to complete
+	// wait for any ongoing state update to complete, then keep stateMutex held
+	// so none can start while we destroy our servers
 	s.stateMutex.Lock()
-	for {
-		if !s.updatingState {
-			break
-		}
+	for s.updatingState {
 		s.stateMutex.Unlock()
-		<-time.After(10 * time.Millisecond)
+		<-time.After(cleanupStatePollFreq)
 		s.stateMutex.Lock()
 	}
+
 	defer s.stateMutex.Unlock()
 
-	// bring down all our servers
+	s.destroyServersAndTeardown(ctx)
+}
+
+// destroyServersAndTeardown brings down all our servers and tears down any
+// created cloud resources.
+func (s *opst) destroyServersAndTeardown(ctx context.Context) {
 	s.serversMutex.Lock()
+	defer s.serversMutex.Unlock()
+
 	close(s.stopRSMonitoring)
+	s.destroyAllSpawnedServers(ctx)
+
+	// teardown any cloud resources created
+	err := s.provider.TearDown(ctx)
+	if err != nil && !strings.Contains(err.Error(), "nothing to tear down") {
+		clog.Warn(ctx, "cleanup teardown failed", "err", err)
+	}
+}
+
+// destroyAllSpawnedServers promotes any pending spawned servers and destroys
+// all servers except the localhost. The caller must hold serversMutex.
+func (s *opst) destroyAllSpawnedServers(ctx context.Context) {
 	for id, server := range s.spawnedServers {
 		s.servers[id] = server
 		delete(s.spawnedServers, id)
 	}
+
 	for sid, server := range s.servers {
 		if sid == localhostName {
 			continue
@@ -1518,13 +2149,7 @@ func (s *opst) cleanup(ctx context.Context) {
 		if errd != nil {
 			clog.Warn(ctx, "cleanup server destruction failed", "server", server.ID, "err", errd)
 		}
-		delete(s.servers, sid)
-	}
-	defer s.serversMutex.Unlock()
 
-	// teardown any cloud resources created
-	err = s.provider.TearDown(ctx)
-	if err != nil && !strings.Contains(err.Error(), "nothing to tear down") {
-		clog.Warn(ctx, "cleanup teardown failed", "err", err)
+		delete(s.servers, sid)
 	}
 }

@@ -101,6 +101,9 @@ linters:
       ignore-rules:
         - flavor
         - flavors
+        - color
+        - organization
+        - initialize
     nakedret:
       max-func-lines: 20
     nestif:
