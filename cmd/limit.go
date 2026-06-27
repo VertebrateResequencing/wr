@@ -63,7 +63,7 @@ Setting a limit of 0 stops any more jobs in that group from running. Setting a
 limit of -1 makes that group unlimited.
 
 Supplying no options lists all limits that are currently in place.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		if len(args) > 0 {
 			die("Did you mean to specify --group?")
 		}
@@ -114,5 +114,6 @@ func init() {
 	RootCmd.AddCommand(limitCmd)
 
 	// flags specific to this sub-command
-	limitCmd.Flags().StringVarP(&limitGroup, "group", "g", "", "name of the limit group to view, suffixed with :n to set limit")
+	limitCmd.Flags().StringVarP(&limitGroup, "group", "g", "",
+		"name of the limit group to view, suffixed with :n to set limit")
 }

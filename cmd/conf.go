@@ -641,7 +641,7 @@ files, so either define them in environment variables or put the config files
 on a disc that is mounted and shared across all your compute nodes. In cloud
 deployments where wr itself creates compute nodes, a config file will be created
 on new nodes automatically.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		if confDefault {
 			fmt.Print(defaultYML)
 			os.Exit(0)
