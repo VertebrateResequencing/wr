@@ -30,6 +30,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,6 +237,291 @@ func TestDBDepGroups(t *testing.T) {
 	})
 }
 
+func TestDBStartWriteRecovery(t *testing.T) {
+	Convey("Given a db with a stored, not-yet-started job and a started job", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		notStarted := testDBJob("echo not-started", "recover")
+		started := testDBJob("echo started", "recover")
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{notStarted, started}, false)
+		So(err, ShouldBeNil)
+
+		startedKey := started.Key()
+		notStartedKey := notStarted.Key()
+
+		Convey("After a started job is persisted and the db is closed and reopened (clean restart)", func() {
+			markJobStarted(started, 4321, "host-a")
+			testDB.updateJobAfterStart(ctx, started)
+
+			// close() must flush the still-pending start-write so a job that is
+			// still running when the manager stops is recoverable.
+			So(testDB.close(ctx), ShouldBeNil)
+
+			testDB, err = reopenDB(ctx, dbFile, dbBackup)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			recovered, errr := testDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+
+			byKey := jobsByKey(recovered)
+			So(byKey, ShouldContainKey, startedKey)
+			So(byKey, ShouldContainKey, notStartedKey)
+
+			// recovered RUNNING => put on the run queue (not re-run); its pid/host
+			// are what recoverRunningJob re-monitors.
+			Convey("the started job is recovered as RUNNING with its pid/host", func() {
+				So(byKey[startedKey].State, ShouldEqual, JobStateRunning)
+				So(byKey[startedKey].Pid, ShouldEqual, 4321)
+				So(byKey[startedKey].Host, ShouldEqual, "host-a")
+			})
+
+			// recovered non-running => runnable, so it still runs at least once.
+			Convey("the never-started job is recovered in a runnable (non-running) state", func() {
+				So(byKey[notStartedKey].State, ShouldNotEqual, JobStateRunning)
+			})
+		})
+
+		Convey("The running-state becomes durable even without closing, within the flush window", func() {
+			markJobStarted(started, 9876, "host-b")
+			testDB.updateJobAfterStart(ctx, started)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			// poll the live bucket via the recovery path until the background
+			// flusher has made the running-state durable (deterministic on the
+			// success path: a generous bound only matters under load).
+			recoveredRunning := pollForRecoveredState(testDB, startedKey, JobStateRunning, 30*time.Second)
+			So(recoveredRunning, ShouldBeTrue)
+		})
+	})
+}
+
+func TestDBShortJobNotResurrected(t *testing.T) {
+	Convey("Given a stored job whose start-write is deferred and then archived before flushing", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		// widen ONLY the start-write flusher's debounce (not bbolt's MaxBatchDelay,
+		// which would also slow archiveJob's own batch) so the start-write is still
+		// pending (not yet flushed) when we archive, exercising the cancel path.
+		setFlusherDelay(testDB, 30*time.Second)
+
+		short := testDBJob("echo short", "short")
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{short}, false)
+		So(err, ShouldBeNil)
+
+		key := short.Key()
+
+		present, err := bucketHasKey(testDB, bucketJobsLive, key)
+		So(err, ShouldBeNil)
+		So(present, ShouldBeTrue)
+
+		Convey("When the job starts and is then immediately archived (completes)", func() {
+			markJobStarted(short, 111, "host-c")
+			testDB.updateJobAfterStart(ctx, short)
+
+			completeJob(short)
+			So(testDB.archiveJob(ctx, key, short), ShouldBeNil)
+
+			Convey("the job ends up archived and absent from the live bucket, even after a clean close", func() {
+				// the pending start-write must have been cancelled, so nothing
+				// can re-add the job to the live bucket.
+				So(pendingStartWriteCount(testDB), ShouldEqual, 0)
+
+				// close forces a final flush; the bjl.Get guard means even a raced
+				// flush would not resurrect the archived job.
+				So(testDB.close(ctx), ShouldBeNil)
+
+				testDB, err = reopenDB(ctx, dbFile, dbBackup)
+				So(err, ShouldBeNil)
+
+				defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+				inLive, errl := bucketHasKey(testDB, bucketJobsLive, key)
+				So(errl, ShouldBeNil)
+				So(inLive, ShouldBeFalse)
+
+				inComplete, errc := bucketHasKey(testDB, bucketJobsComplete, key)
+				So(errc, ShouldBeNil)
+				So(inComplete, ShouldBeTrue)
+
+				recovered, errr := testDB.recoverIncompleteJobs()
+				So(errr, ShouldBeNil)
+				So(jobsByKey(recovered), ShouldNotContainKey, key)
+			})
+		})
+	})
+}
+
+func TestDBStartWriteCommitCoalescing(t *testing.T) {
+	Convey("Short jobs that complete before their start-write flushes incur no redundant start-write commit", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		// a long flusher debounce guarantees no start-write flush happens during
+		// the test, so any start commit we observe would be a redundant one. We
+		// widen only the flusher (not bbolt's MaxBatchDelay) so archiveJob's own
+		// batch is unaffected.
+		setFlusherDelay(testDB, 60*time.Second)
+
+		const n = 200
+
+		jobs := make([]*Job, n)
+		for i := range n {
+			jobs[i] = testDBJob(fmt.Sprintf("echo coalesce %d", i), "coalesce")
+		}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, jobs, false)
+		So(err, ShouldBeNil)
+
+		// let the add-time storage and its background backup settle.
+		testDB.wg.Wait(30 * time.Second)
+
+		writesBeforeStarts := boltWrites(testDB)
+
+		// start every job (defers the start-writes into the pending map).
+		for i, job := range jobs {
+			markJobStarted(job, 1000+i, "host")
+			testDB.updateJobAfterStart(ctx, job)
+		}
+
+		So(pendingStartWriteCount(testDB), ShouldEqual, n)
+
+		// no start commit should have happened yet (writes deferred, window long).
+		So(boltWrites(testDB), ShouldEqual, writesBeforeStarts)
+
+		// now complete (archive) every job before the window elapses; this should
+		// cancel all the pending start-writes.
+		for i, job := range jobs {
+			completeJob(job)
+			So(testDB.archiveJob(ctx, jobs[i].Key(), job), ShouldBeNil)
+		}
+
+		So(pendingStartWriteCount(testDB), ShouldEqual, 0)
+
+		// force the flusher to run; with all start-writes cancelled it writes
+		// nothing, so there is no start-write commit on top of the archives.
+		writesBeforeFlush := boltWrites(testDB)
+		testDB.flushPendingStartWrites(ctx)
+		So(boltWrites(testDB), ShouldEqual, writesBeforeFlush)
+
+		// and the live bucket is empty: every job is archived, none resurrected.
+		liveN, errc := liveBucketCount(testDB)
+		So(errc, ShouldBeNil)
+		So(liveN, ShouldEqual, 0)
+	})
+}
+
+// setFlusherDelay overrides the start-write flusher's debounce window without
+// touching bbolt's MaxBatchDelay (so other bolt.Batch callers stay fast). Used
+// by tests to keep start-writes pending long enough to exercise the cancel
+// path deterministically.
+func setFlusherDelay(testDB *db, delay time.Duration) {
+	testDB.Lock()
+	testDB.batchDelay = delay
+	testDB.Unlock()
+}
+
+// TestDBStartWriteConcurrency hammers the start-write path concurrently with
+// archiving and a clean close, the way the live server reaches these methods
+// from many simultaneous client-request handlers. It is primarily a -race
+// target for the shared pendingStartWrites map and the single flusher, but it
+// also asserts the persisted-state invariants that must survive the churn:
+// archived jobs are never in the live bucket, and still-running jobs are
+// durable for recovery (so they are recovered as RUNNING, not re-run).
+func TestDBStartWriteConcurrency(t *testing.T) {
+	Convey("Concurrent starts, archives and a close keep persisted state correct", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		const (
+			workers      = 16
+			archivedJobs = 400 // started then archived (short jobs)
+			runningJobs  = 100 // started but left running at shutdown
+		)
+
+		archived := make([]*Job, archivedJobs)
+		for i := range archivedJobs {
+			archived[i] = testDBJob(fmt.Sprintf("echo short %d", i), "concurrent")
+		}
+
+		running := make([]*Job, runningJobs)
+		for i := range runningJobs {
+			running[i] = testDBJob(fmt.Sprintf("echo long %d", i), "concurrent")
+		}
+
+		all := append(append([]*Job{}, archived...), running...)
+		_, _, _, err = testDB.storeNewJobs(ctx, all, false)
+		So(err, ShouldBeNil)
+
+		// drive start (+archive for the short ones) concurrently across workers.
+		archiveErrs := runStartWriteWorkers(ctx, testDB, workers, archived, running)
+		So(archiveErrs, ShouldEqual, 0)
+
+		// close flushes the still-pending start-writes of the running jobs.
+		So(testDB.close(ctx), ShouldBeNil)
+
+		testDB, err = reopenDB(ctx, dbFile, dbBackup)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		recovered, errr := testDB.recoverIncompleteJobs()
+		So(errr, ShouldBeNil)
+
+		byKey := jobsByKey(recovered)
+
+		Convey("every archived (short) job is absent from the live bucket", func() {
+			missing := 0
+
+			for _, job := range archived {
+				if _, ok := byKey[job.Key()]; !ok {
+					missing++
+				}
+			}
+
+			So(missing, ShouldEqual, archivedJobs)
+		})
+
+		Convey("every still-running job is recovered as RUNNING (durable, so not re-run)", func() {
+			recoveredRunning := 0
+
+			for _, job := range running {
+				if rj, ok := byKey[job.Key()]; ok && rj.State == JobStateRunning {
+					recoveredRunning++
+				}
+			}
+
+			So(recoveredRunning, ShouldEqual, runningJobs)
+		})
+	})
+}
+
 func BenchmarkModifyLiveJobsReverseLookup(b *testing.B) {
 	ctx := context.Background()
 	tmpdir := b.TempDir()
@@ -311,6 +598,90 @@ func testDBJob(cmd, repGroup string) *Job {
 	}
 }
 
+// runStartWriteWorkers reports each short job started then archived, and each
+// running job started (and left running), spread across the given number of
+// worker goroutines so the start-write/archive paths and the flusher run
+// concurrently. It returns the number of archive errors encountered.
+func runStartWriteWorkers(ctx context.Context, testDB *db, workers int, archived, running []*Job) int {
+	type unit struct {
+		job     *Job
+		archive bool
+	}
+
+	work := make(chan unit)
+
+	var (
+		wg        sync.WaitGroup
+		archiveEr atomic.Int64
+	)
+
+	for range workers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for u := range work {
+				markJobStarted(u.job, 1, "host")
+				testDB.updateJobAfterStart(ctx, u.job)
+
+				if !u.archive {
+					continue
+				}
+
+				completeJob(u.job)
+
+				if err := testDB.archiveJob(ctx, u.job.Key(), u.job); err != nil {
+					archiveEr.Add(1)
+				}
+			}
+		}()
+	}
+
+	units := make([]unit, 0, len(archived)+len(running))
+	for _, job := range archived {
+		units = append(units, unit{job: job, archive: true})
+	}
+
+	for _, job := range running {
+		units = append(units, unit{job: job, archive: false})
+	}
+
+	for _, u := range units {
+		work <- u
+	}
+
+	close(work)
+	wg.Wait()
+
+	return int(archiveEr.Load())
+}
+
+// bucketHasKey reports whether the given key is present in the named bucket.
+func bucketHasKey(testDB *db, bucket []byte, key string) (bool, error) {
+	present := false
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		present = tx.Bucket(bucket).Get([]byte(key)) != nil
+
+		return nil
+	})
+
+	return present, err
+}
+
+// markJobStarted sets the fields handleStart sets when a runner reports its
+// command has started running.
+func markJobStarted(job *Job, pid int, host string) {
+	job.Lock()
+	defer job.Unlock()
+
+	job.State = JobStateRunning
+	job.Pid = pid
+	job.Host = host
+	job.StartTime = time.Now()
+}
+
 func countLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
 	suffix := []byte(dbDelimiter + jobKey)
 	count := 0
@@ -351,4 +722,79 @@ func countReverseLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
 	}
 
 	return count
+}
+
+// pendingStartWriteCount returns how many start-writes are currently pending a
+// flush.
+func pendingStartWriteCount(testDB *db) int {
+	testDB.startWriteMu.Lock()
+	defer testDB.startWriteMu.Unlock()
+
+	return len(testDB.pendingStartWrites)
+}
+
+// completeJob sets the fields a successfully exited job has before archiveJob.
+func completeJob(job *Job) {
+	job.Lock()
+	defer job.Unlock()
+
+	job.State = JobStateComplete
+	job.Exited = true
+	job.Exitcode = 0
+
+	if job.StartTime.IsZero() {
+		job.StartTime = time.Now()
+	}
+
+	job.EndTime = job.StartTime.Add(time.Second)
+}
+
+// reopenDB closes nothing; it opens an existing db file the same way the server
+// does on restart, so recovery paths can be exercised.
+func reopenDB(ctx context.Context, dbFile, dbBackup string) (*db, error) {
+	reopened, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+
+	return reopened, err
+}
+
+// liveBucketCount returns the number of entries in the live bucket.
+func liveBucketCount(testDB *db) (int, error) {
+	count := 0
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		count = tx.Bucket(bucketJobsLive).Stats().KeyN
+
+		return nil
+	})
+
+	return count, err
+}
+
+// pollForRecoveredState polls the recovery path until the job with the given
+// key is recovered in the wanted state, or the timeout elapses. It is
+// deterministic on the success path: the bound only matters under heavy load.
+func pollForRecoveredState(testDB *db, key string, want JobState, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		jobs, err := testDB.recoverIncompleteJobs()
+		if err == nil {
+			if job, ok := jobsByKey(jobs)[key]; ok && job.State == want {
+				return true
+			}
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	return false
+}
+
+// jobsByKey indexes recovered jobs by their Key() for assertion.
+func jobsByKey(jobs []*Job) map[string]*Job {
+	byKey := make(map[string]*Job, len(jobs))
+	for _, job := range jobs {
+		byKey[job.Key()] = job
+	}
+
+	return byKey
 }

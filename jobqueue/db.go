@@ -104,6 +104,38 @@ var (
 // errDBClosed is returned when an operation is attempted on a closed database.
 var errDBClosed = errors.New("database closed")
 
+// jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
+// updateJobAfterExit() calls to complete.
+const jobExitUpdatePollInterval = 10 * time.Millisecond
+
+// jobStatWindowScaleThreshold is the prior-value count above which the 95th
+// percentile window is scaled up proportionally.
+const jobStatWindowScaleThreshold = 100
+
+const (
+	// storeBatchDivisor, storeBatchGranularity and storeBatchRoundThreshold
+	// control storeBatched's batch sizing: it aims for batches of len(data) /
+	// storeBatchDivisor, at least storeBatchGranularity, rounded to the nearest
+	// storeBatchGranularity.
+	storeBatchDivisor        = 10
+	storeBatchGranularity    = 1000
+	storeBatchRoundThreshold = 500
+)
+
+// slowBackupTestDelay is an artificial delay used only in tests (when
+// db.slowBackups is set) to make backups take a noticeable amount of time.
+const slowBackupTestDelay = 100 * time.Millisecond
+
+const (
+	limitGroupUnchanged limitGroupOutcome = iota
+	limitGroupChanged
+	limitGroupRemoved
+
+	// limitGroupBytes is the number of bytes used to store a limit group's
+	// count (a uint64).
+	limitGroupBytes = 8
+)
+
 // sobsd ('slice of byte slice doublets') implements sort interface so we can
 // sort a slice of []byte doublets, sorting on the first byte slice, needed for
 // efficient Puts in to the database.
@@ -141,6 +173,19 @@ type db struct {
 	updatingAfterJobExit int
 	wg                   *waitgroup.WaitGroup
 	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
+
+	// startWrites coalesces the per-job "command started" live-bucket writes
+	// (see updateJobAfterStart). pendingStartWrites maps a job key to its
+	// latest encoded running-state awaiting a single batched flush;
+	// startWriteNotify wakes the flusher when a new entry is added;
+	// startWriteStop is closed to make the flusher do a final flush and exit;
+	// startWriteDone is closed once the flusher has exited.
+	pendingStartWrites map[string][]byte
+	startWriteMu       sync.Mutex
+	startWriteNotify   chan struct{}
+	startWriteStop     chan struct{}
+	startWriteDone     chan struct{}
+
 	sync.RWMutex
 	backingUp      bool
 	backupFinal    bool
@@ -148,9 +193,11 @@ type db struct {
 	backupsEnabled bool
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
-	slowBackups    bool // just for testing purposes
-	recSecRound    int  // rounding (secs) for recommended reserve times; from the server's timings
-	recMBRound     int  // rounding (MBs) for recommended memory/disk; from the server's timings
+	slowBackups    bool          // just for testing purposes
+	batchDelay     time.Duration // MaxBatchDelay snapshot for the start-write flusher; guarded by RWMutex
+	batchSize      int           // MaxBatchSize snapshot for the start-write flusher; guarded by RWMutex
+	recSecRound    int           // rounding (secs) for recommended reserve times; from the server's timings
+	recMBRound     int           // rounding (MBs) for recommended memory/disk; from the server's timings
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -439,7 +486,15 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupStopWait:     make(chan bool),
 		s3accessor:         accessor,
 		wg:                 waitgroup.New(),
+		pendingStartWrites: make(map[string][]byte),
+		startWriteNotify:   make(chan struct{}, 1),
+		startWriteStop:     make(chan struct{}),
+		startWriteDone:     make(chan struct{}),
+		batchDelay:         boltdb.MaxBatchDelay,
+		batchSize:          boltdb.MaxBatchSize,
 	}
+
+	go dbstruct.flushStartWrites(ctx)
 
 	return dbstruct, msg, err
 }
@@ -458,6 +513,14 @@ func (db *db) setBatchTuning(delay time.Duration, size int) {
 	if size > 0 {
 		db.bolt.MaxBatchSize = size
 	}
+
+	// snapshot the effective values for the start-write flusher so it coalesces
+	// over the same window bbolt's own Batch would; guarded by db.Lock since the
+	// flusher reads them under db.RLock.
+	db.Lock()
+	db.batchDelay = db.bolt.MaxBatchDelay
+	db.batchSize = db.bolt.MaxBatchSize
+	db.Unlock()
 }
 
 // storeLimitGroups stores a mapping of group names to unsigned ints in a
@@ -494,16 +557,6 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 // limitGroupOutcome describes what storeLimitGroup did with a single group.
 type limitGroupOutcome int
 
-const (
-	limitGroupUnchanged limitGroupOutcome = iota
-	limitGroupChanged
-	limitGroupRemoved
-
-	// limitGroupBytes is the number of bytes used to store a limit group's
-	// count (a uint64).
-	limitGroupBytes = 8
-)
-
 // storeLimitGroup stores (or deletes) a single limit group in the given bucket,
 // reporting what it did.
 func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, error) {
@@ -532,6 +585,251 @@ func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (l
 	}
 
 	return limitGroupUnchanged, nil
+}
+
+// updateJobAfterStart records that a job's command has started running, so the
+// running-state (including Pid and Host) can be recovered after a crash. Like
+// updateJobAfterChange it rewrites the job's live-bucket entry, but instead of
+// each call immediately committing its own BoltDB transaction it records the
+// encoded running-state in a pending map that a single background flusher
+// (flushStartWrites) coalesces into batched writes.
+//
+// This means a short-lived job that completes (archiveJob) before its
+// start-write has been flushed never incurs a separate start-write commit: the
+// archive cancels the pending entry. For jobs that are still running, the
+// flusher makes the running-state durable within the same MaxBatchDelay-scale
+// window as the previous immediate-async behaviour (see flushStartWrites),
+// preserving crash recovery.
+func (db *db) updateJobAfterStart(ctx context.Context, job *Job) {
+	var encoded []byte
+
+	enc := codec.NewEncoderBytes(&encoded, db.ch)
+
+	db.RLock()
+	defer db.RUnlock()
+
+	if db.closed {
+		return
+	}
+
+	key := job.Key()
+	job.RLock()
+	err := enc.Encode(job)
+	job.RUnlock()
+
+	if err != nil {
+		clog.Error(ctx, "Database operation updateJobAfterStart failed due to Encode failure", "err", err)
+
+		return
+	}
+
+	db.startWriteMu.Lock()
+	db.pendingStartWrites[key] = encoded
+	db.startWriteMu.Unlock()
+
+	db.notifyStartWriteFlusher()
+}
+
+// notifyStartWriteFlusher wakes the start-write flusher. The notify channel is
+// buffered with capacity 1 and the send is non-blocking, so multiple
+// notifications arriving between flushes coalesce into a single wakeup (a flush
+// always drains the whole pending map, so one wakeup suffices).
+func (db *db) notifyStartWriteFlusher() {
+	select {
+	case db.startWriteNotify <- struct{}{}:
+	default:
+	}
+}
+
+// startWritesFull reports whether the number of pending start-writes has reached
+// batchSize, in which case the flusher should commit immediately rather than
+// waiting out its debounce, mirroring bbolt's MaxBatchSize early-commit.
+func (db *db) startWritesFull() bool {
+	db.RLock()
+	size := db.batchSize
+	db.RUnlock()
+
+	if size <= 0 {
+		return false
+	}
+
+	db.startWriteMu.Lock()
+	full := len(db.pendingStartWrites) >= size
+	db.startWriteMu.Unlock()
+
+	return full
+}
+
+// cancelPendingStartWrite removes any not-yet-flushed start-write for the given
+// job key, so a job that has reached a newer authoritative state (completed via
+// archiveJob, or released/buried/suspended/resumed/kicked) does not later get a
+// stale running-state written back into the live bucket. Returns nothing; it is
+// safe to call for keys with no pending entry.
+//
+// This is only a best-effort optimisation/safety-net for entries the flusher
+// has not yet picked up: the live-bucket Put in flushStartWrites additionally
+// guards with a bjl.Get(key) check, so even if a flush has already snapshotted
+// an entry that is then archived, the archived job is never resurrected.
+func (db *db) cancelPendingStartWrite(key string) {
+	db.startWriteMu.Lock()
+	delete(db.pendingStartWrites, key)
+	db.startWriteMu.Unlock()
+}
+
+// flushStartWrites is the single background goroutine that coalesces pending
+// start-writes (recorded by updateJobAfterStart) into batched BoltDB
+// transactions. It is started by initDB and runs until startWriteStop is
+// closed (by close()), after which it does one final flush so that any job
+// still running at shutdown has its running-state durable for recovery.
+//
+// Timing: when the pending map is non-empty the flusher waits at most
+// batchDelay (a snapshot of bbolt's MaxBatchDelay) before committing,
+// anchored to the moment the map became non-empty (just like bbolt's Batch
+// timer is anchored to the first call). It commits early if woken because the
+// map reached batchSize. The whole pending set is then written in one
+// db.bolt.Update (a single fsync), rather than bbolt's Batch, because the
+// flusher has already done the coalescing itself, so the crash-to-durability
+// window is batchDelay + one commit - the same scale as the previous
+// per-call db.bolt.Batch behaviour, never wider.
+func (db *db) flushStartWrites(ctx context.Context) {
+	defer internal.LogPanic(ctx, "flushStartWrites", true)
+	defer close(db.startWriteDone)
+
+	for {
+		// wait for something to flush, or for shutdown.
+		select {
+		case <-db.startWriteStop:
+			db.flushPendingStartWrites(ctx)
+
+			return
+		case <-db.startWriteNotify:
+		}
+
+		// if the pending map is already full, commit immediately (matching
+		// bbolt's MaxBatchSize early-commit); otherwise debounce, giving
+		// concurrent starts up to batchDelay to join this flush, anchored (like
+		// bbolt's Batch timer) to the first pending entry, i.e. now.
+		if !db.startWritesFull() {
+			if stop := db.debounceStartWrites(); stop {
+				db.flushPendingStartWrites(ctx)
+
+				return
+			}
+		}
+
+		db.flushPendingStartWrites(ctx)
+	}
+}
+
+// debounceStartWrites waits up to batchDelay (a single timer, so the window is
+// anchored to the first pending entry of this flush cycle and can never exceed
+// batchDelay) for more start-writes to join the current flush. It returns early
+// if the pending map fills (committing promptly, like bbolt's MaxBatchSize). It
+// returns true if shutdown was requested while waiting, so the caller does a
+// final flush and exits.
+func (db *db) debounceStartWrites() (stop bool) {
+	timer := time.NewTimer(db.startWriteDelay())
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-db.startWriteStop:
+			return true
+		case <-db.startWriteNotify:
+			if db.startWritesFull() {
+				return false
+			}
+			// not full yet: keep waiting out the original window (timer is not
+			// reset, so the total wait stays bounded by batchDelay).
+		case <-timer.C:
+			return false
+		}
+	}
+}
+
+// startWriteDelay returns the debounce window for the start-write flusher,
+// reading the batchDelay snapshot under db.RLock so it stays race-free with
+// setBatchTuning.
+func (db *db) startWriteDelay() time.Duration {
+	db.RLock()
+	defer db.RUnlock()
+
+	return db.batchDelay
+}
+
+// flushPendingStartWrites drains the pending start-writes map and writes all of
+// them to the live bucket in a single BoltDB transaction. Each Put is guarded
+// by a bjl.Get(key) check so an already-archived job is never re-added to the
+// live bucket (the correctness safety net for a flush that races an archive).
+func (db *db) flushPendingStartWrites(ctx context.Context) {
+	db.startWriteMu.Lock()
+	if len(db.pendingStartWrites) == 0 {
+		db.startWriteMu.Unlock()
+
+		return
+	}
+
+	batch := db.pendingStartWrites
+	db.pendingStartWrites = make(map[string][]byte)
+	db.startWriteMu.Unlock()
+
+	db.wgMutex.Lock()
+	wgk := db.wg.Add(1)
+	db.wgMutex.Unlock()
+
+	defer db.wg.Done(wgk)
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return writeStartWritesTx(tx, batch)
+	})
+	if err != nil {
+		clog.Error(ctx, "Database operation updateJobAfterStart failed", "err", err)
+
+		return
+	}
+
+	db.backgroundBackup(ctx)
+}
+
+// writeStartWritesTx writes each coalesced start-write into the live bucket,
+// skipping any job that is no longer present (already archived/removed), so an
+// already-completed job is never resurrected.
+func writeStartWritesTx(tx *bolt.Tx, batch map[string][]byte) error {
+	bjl := tx.Bucket(bucketJobsLive)
+
+	for key, encoded := range batch {
+		bkey := []byte(key)
+		if bjl.Get(bkey) == nil {
+			// the job was archived (or otherwise removed from the live bucket)
+			// after we snapshotted this start-write; don't resurrect it. This
+			// mirrors the guard launchJobChangeUpdate uses.
+			continue
+		}
+
+		if err := bjl.Put(bkey, encoded); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// stopStartWriteFlusher signals the start-write flusher to do a final flush and
+// exit, then waits for it to finish. Safe to call more than once. Must be
+// called with db.Lock held (as close() does), but releases it while waiting so
+// the flusher's final flush (which itself takes db locks via backgroundBackup)
+// cannot deadlock.
+func (db *db) stopStartWriteFlusher() {
+	select {
+	case <-db.startWriteStop:
+		// already stopped.
+	default:
+		close(db.startWriteStop)
+	}
+
+	db.Unlock()
+	<-db.startWriteDone
+	db.Lock()
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -866,6 +1164,12 @@ func (db *db) checkIfComplete(key string) (bool, error) {
 // The key you supply must be the key of the job you supply, or bad things will
 // happen - no checking is done! A backgroundBackup() is triggered afterwards.
 func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
+	// cancel any not-yet-flushed start-write for this job: it has completed, so
+	// the live-bucket entry this transaction deletes must not be re-added by a
+	// later start-write flush. (The flush also guards with bjl.Get as a safety
+	// net for the case where it already snapshotted the entry.)
+	db.cancelPendingStartWrite(key)
+
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -1439,6 +1743,10 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byt
 		return
 	}
 
+	// the exit state is a newer authoritative state than any not-yet-flushed
+	// start-write, so cancel the latter to stop it clobbering us.
+	db.cancelPendingStartWrite(job.Key())
+
 	exit, ok := db.snapshotJobExit(ctx, job, stdo, stde, forceStorage)
 	if !ok {
 		return
@@ -1591,7 +1899,8 @@ func (e jobExitData) updateFailStat(tx *bolt.Tx) error {
 
 // updateJobAfterChange rewrites the job's entry in the live bucket, to enable
 // complete recovery after a crash. This happens in a goroutine, since it isn't
-// essential this happens, and we benefit from the speed.
+// essential this happens, and we benefit from the speed. Used for the
+// suspend/resume/kick transitions.
 func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	var encoded []byte
 
@@ -1604,7 +1913,13 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 		return
 	}
 
-	key := []byte(job.Key())
+	keyStr := job.Key()
+
+	// this change is a newer authoritative state than any not-yet-flushed
+	// start-write, so cancel the latter to stop it clobbering us.
+	db.cancelPendingStartWrite(keyStr)
+
+	key := []byte(keyStr)
 	job.RLock()
 	err := enc.Encode(job)
 	job.RUnlock()
@@ -1884,10 +2199,6 @@ func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
 	return nil
 }
 
-// jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
-// updateJobAfterExit() calls to complete.
-const jobExitUpdatePollInterval = 10 * time.Millisecond
-
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
 // given job.
 func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, stde []byte) {
@@ -1987,10 +2298,6 @@ func recommendationRound(round, defaultRound int) int {
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
 	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
 }
-
-// jobStatWindowScaleThreshold is the prior-value count above which the 95th
-// percentile window is scaled up proportionally.
-const jobStatWindowScaleThreshold = 100
 
 // recommendedReqGroupStat is the implementation for the other recommend*()
 // methods.
@@ -2104,16 +2411,6 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 
 	return val
 }
-
-const (
-	// storeBatchDivisor, storeBatchGranularity and storeBatchRoundThreshold
-	// control storeBatched's batch sizing: it aims for batches of len(data) /
-	// storeBatchDivisor, at least storeBatchGranularity, rounded to the nearest
-	// storeBatchGranularity.
-	storeBatchDivisor        = 10
-	storeBatchGranularity    = 1000
-	storeBatchRoundThreshold = 500
-)
 
 // storeBatched stores items in the db in batches for efficiency. bucket is the
 // name of the bucket to store in.
@@ -2250,6 +2547,10 @@ func (db *db) close(ctx context.Context) error {
 
 	db.closed = true
 
+	// flush any pending start-writes so a job that is still running when we stop
+	// has its running-state durable for crash recovery, and stop the flusher.
+	db.stopStartWriteFlusher()
+
 	// before actually closing, wait for any go routines doing database
 	// transactions to complete
 	db.waitForOngoingTransactions()
@@ -2327,10 +2628,6 @@ func (db *db) backgroundBackup(ctx context.Context) {
 
 	go db.runBackgroundBackup(ctx, db.backupLast, db.backupWait, db.backupFinal, db.slowBackups)
 }
-
-// slowBackupTestDelay is an artificial delay used only in tests (when
-// db.slowBackups is set) to make backups take a noticeable amount of time.
-const slowBackupTestDelay = 100 * time.Millisecond
 
 // runBackgroundBackup is the goroutine body of backgroundBackup: it optionally
 // waits to space out backups, performs the backup, then either finalises (for

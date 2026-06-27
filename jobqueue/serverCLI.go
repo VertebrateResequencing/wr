@@ -841,8 +841,10 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 	}
 
 	// we'll save-to-disk that we started running this job, so recovery is
-	// possible after a crash
-	s.db.updateJobAfterChange(ctx, job)
+	// possible after a crash. This persistence is coalesced by a background
+	// flusher (and cancelled if the job is archived first), so a short-lived job
+	// doesn't incur a redundant start-write commit; see updateJobAfterStart.
+	s.db.updateJobAfterStart(ctx, job)
 
 	return nil, "", ""
 }
