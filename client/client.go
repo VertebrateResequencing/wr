@@ -67,16 +67,17 @@ var PretendSubmissions string //nolint:gochecknoglobals
 
 // some consts used by Scheduler.
 const (
-	getByEssenceOp         = "GetByEssence"
-	getJobByKeyOp          = "GetJobByKey"
-	newJobFromJSONOp       = "NewJobFromJSON"
-	waitForRunningOp       = "WaitForRunning"
-	waitForJobsOp          = "WaitForJobs"
-	jobRetries       uint8 = 30
-	reqRAM                 = 100
-	reqTime                = 10 * time.Second
-	reqCores               = 1
-	reqDisk                = 1
+	getByEssenceOp             = "GetByEssence"
+	getByRepGroupMatchOp       = "GetByRepGroupMatch"
+	getJobByKeyOp              = "GetJobByKey"
+	newJobFromJSONOp           = "NewJobFromJSON"
+	waitForRunningOp           = "WaitForRunning"
+	waitForJobsOp              = "WaitForJobs"
+	jobRetries           uint8 = 30
+	reqRAM                     = 100
+	reqTime                    = 10 * time.Second
+	reqCores                   = 1
+	reqDisk                    = 1
 
 	waitForRunningDefaultPollInterval = 5 * time.Second
 )
@@ -118,6 +119,7 @@ func (opts SubmitJobsOptions) ignoreComplete() bool {
 	return !opts.RerunCompleted
 }
 
+//nolint:interfacebloat // mirrors the subset of the jobqueue client API this package uses
 type jobqueueClient interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
 	AddAndReturnIDs(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) ([]string, error)
@@ -274,7 +276,7 @@ func (p *pretendJobqueue) GetByRepGroupMatch(repgroup string,
 	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool,
 	_ bool) ([]*jobqueue.Job, error) {
 	if repgroup == "" {
-		return nil, jobqueue.Error{Op: "GetByRepGroupMatch", Err: jobqueue.ErrBadRequest}
+		return nil, jobqueue.Error{Op: getByRepGroupMatchOp, Err: jobqueue.ErrBadRequest}
 	}
 
 	var jobs []*jobqueue.Job

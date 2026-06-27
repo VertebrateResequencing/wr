@@ -125,8 +125,8 @@ func BenchmarkLimiterCapacity(b *testing.B) {
 		for {
 			l.Increment(ctx, both)
 
-			cap := l.GetRemainingCapacity(ctx, both)
-			if cap == 0 {
+			remaining := l.GetRemainingCapacity(ctx, both)
+			if remaining == 0 {
 				break
 			}
 		}
@@ -134,8 +134,8 @@ func BenchmarkLimiterCapacity(b *testing.B) {
 		for {
 			l.Decrement(both)
 
-			cap := l.GetRemainingCapacity(ctx, both)
-			if cap == 5 {
+			remaining := l.GetRemainingCapacity(ctx, both)
+			if remaining == 5 {
 				break
 			}
 		}
@@ -293,12 +293,14 @@ func TestLimiter(t *testing.T) {
 						atomic.AddUint64(&incs, 1)
 						time.Sleep(500 * time.Millisecond)
 						l.Decrement(groups)
-					} else {
-						atomic.AddUint64(&fails, 1)
 
-						if atomic.LoadUint64(&fails) == 50 {
-							l.SetLimit("l4", *NewCountGroupData(125))
-						}
+						return
+					}
+
+					atomic.AddUint64(&fails, 1)
+
+					if atomic.LoadUint64(&fails) == 50 {
+						l.SetLimit("l4", *NewCountGroupData(125))
 					}
 				}(i)
 			}

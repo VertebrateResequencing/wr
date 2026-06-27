@@ -66,6 +66,9 @@ const (
 
 	// certFileFlags are the certificate file flags.
 	DefaultCertFileFlags int = os.O_RDWR | os.O_CREATE | os.O_TRUNC
+
+	// pemTypeCertificate is the PEM block type for certificates.
+	pemTypeCertificate = "CERTIFICATE"
 )
 
 // CertificateErr is supplied to CertError to define the certain type of
@@ -263,7 +266,7 @@ func parseCertAndSavePEM(certByte []byte, certPath string, flags int) (*x509.Cer
 		return nil, &CertError{Type: ErrCertParse, Path: certPath, Err: err}
 	}
 
-	block := &pem.Block{Type: "CERTIFICATE", Bytes: certByte}
+	block := &pem.Block{Type: pemTypeCertificate, Bytes: certByte}
 
 	err = encodeAndSavePEM(block, certPath, flags, certMode)
 	if err != nil {
@@ -356,7 +359,7 @@ func findPEMBlockAndReturnCert(certPEMBlock []byte) tls.Certificate {
 			break
 		}
 
-		if certDERBlock.Type == "CERTIFICATE" {
+		if certDERBlock.Type == pemTypeCertificate {
 			cert.Certificate = append(cert.Certificate, certDERBlock.Bytes)
 		}
 	}

@@ -93,11 +93,11 @@ func writeStringToFile(filep *os.File, data string) {
 
 func fileTestTeardown(path, path2 string) {
 	if err := os.Remove(path); err != nil {
-		fmt.Printf("\nfailed to delete %s: %s\n", path, err)
+		fmt.Printf("\nfailed to delete %s: %s\n", path, err) //nolint:forbidigo // test cleanup diagnostic
 	}
 
 	if err := os.Remove(path2); err != nil {
-		fmt.Printf("\nfailed to delete %s: %s\n", path2, err)
+		fmt.Printf("\nfailed to delete %s: %s\n", path2, err) //nolint:forbidigo // test cleanup diagnostic
 	}
 }
 
@@ -302,14 +302,14 @@ func TestConfig(t *testing.T) {
 				fsi, err := ft.NewMockStdIn()
 				So(err, ShouldBeNil)
 
-				_ = fsi.WriteString("y")
+				So(fsi.WriteString("y"), ShouldBeNil)
 
-				min := findPorts(ctx, checker)
-				So(min, ShouldNotBeEmpty)
+				minPort := findPorts(ctx, checker)
+				So(minPort, ShouldNotBeEmpty)
 
 				fsi.RestoreStdIn()
 
-				checkPortRange(tempHome, Development, fmt.Sprintf(`managerport: "%d"`, min+2))
+				checkPortRange(tempHome, Development, fmt.Sprintf(`managerport: "%d"`, minPort+2))
 			})
 
 			Convey("it cannot update config file when user chooses to not use suggested ports", func() {
@@ -319,14 +319,14 @@ func TestConfig(t *testing.T) {
 				fsi, err := ft.NewMockStdIn()
 				So(err, ShouldBeNil)
 
-				_ = fsi.WriteString("n")
+				So(fsi.WriteString("n"), ShouldBeNil)
 
 				os.Setenv("WR_FATAL_EXIT_TEST", "1")
 
 				defer os.Unsetenv("WR_FATAL_EXIT_TEST")
 
-				min := findPorts(ctx, checker)
-				So(min, ShouldEqual, 0)
+				minPort := findPorts(ctx, checker)
+				So(minPort, ShouldEqual, 0)
 
 				fsi.RestoreStdIn()
 
@@ -344,9 +344,9 @@ func TestConfig(t *testing.T) {
 
 			Convey("it cannot get available port range", func() {
 				buff := setBufferLevel()
-				min, max := getAvailableRange(ctx, checker)
-				So(min, ShouldBeZeroValue)
-				So(max, ShouldBeZeroValue)
+				minPort, maxPort := getAvailableRange(ctx, checker)
+				So(minPort, ShouldBeZeroValue)
+				So(maxPort, ShouldBeZeroValue)
 				checkErrorFromBuffer(buff, "localhost ports couldn't be checked")
 
 				Convey("it cannot get port if available port range is not found", func() {
@@ -437,7 +437,7 @@ func TestConfig(t *testing.T) {
 					fsi, err := ft.NewMockStdIn()
 					So(err, ShouldBeNil)
 
-					_ = fsi.WriteString("y")
+					So(fsi.WriteString("y"), ShouldBeNil)
 
 					portCli := calculatePort(ctx, defConfig, uid, localhost, "cli")
 
