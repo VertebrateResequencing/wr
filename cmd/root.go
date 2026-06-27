@@ -52,6 +52,25 @@ import (
 // length 36 and a prefix length 1, leaving 18 characters for the username.
 const maxCloudResourceUsernameLength = 18
 
+// defaultManagerConnectTimeout is the default number of seconds the client
+// waits for a reply from 'wr manager'.
+const defaultManagerConnectTimeout = 120
+
+// defaultJobRetries is the default number of automatic retries for a failed
+// command.
+const defaultJobRetries = 3
+
+// lsfCommandName is the name of the lsf sub-command, also prepended to args when
+// emulating LSF.
+const lsfCommandName = "lsf"
+
+// daemon-related constants.
+const (
+	daemonPidFilePerm  = 0o644
+	daemonStopGiveupS  = 120
+	daemonStopPollFreq = 50 * time.Millisecond
+)
+
 // these variables are accessible by all subcommands.
 var (
 	deployment string
@@ -60,7 +79,6 @@ var (
 
 // these are shared by some of the subcommands.
 var (
-	addr       string
 	caFile     string
 	timeoutint int
 	cmdCwd     string
@@ -99,7 +117,7 @@ func Execute() {
 // ExecuteLSF is for treating a call to wr as if `wr lsf xxx` was called, for
 // the LSF emulation to work.
 func ExecuteLSF(cmd string) {
-	args := append([]string{"lsf", cmd}, os.Args[1:]...)
+	args := append([]string{lsfCommandName, cmd}, os.Args[1:]...)
 
 	command, _, err := RootCmd.Find(args)
 	if err != nil {
@@ -133,7 +151,6 @@ func initConfig() {
 		MaxAgeDays: config.LogsMaxAgeDays,
 		Compress:   config.LogsCompress,
 	})
-	addr = config.ManagerHost + ":" + config.ManagerPort
 	caFile = config.ManagerCAFile
 }
 
@@ -211,16 +228,17 @@ func die(msg string, a ...any) {
 // createWorkingDir ensures the main working directory is available.
 func createWorkingDir() {
 	_, err := os.Stat(config.ManagerDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// try and create the directory
-			err = os.MkdirAll(config.ManagerDir, os.ModePerm)
-			if err != nil {
-				die("could not create the working directory '%s': %v", config.ManagerDir, err)
-			}
-		} else {
-			die("could not access or create the working directory '%s': %v", config.ManagerDir, err)
-		}
+	if err == nil {
+		return
+	}
+
+	if !os.IsNotExist(err) {
+		die("could not access or create the working directory '%s': %v", config.ManagerDir, err)
+	}
+
+	// try and create the directory
+	if err = os.MkdirAll(config.ManagerDir, os.ModePerm); err != nil {
+		die("could not create the working directory '%s': %v", config.ManagerDir, err)
 	}
 }
 
@@ -242,27 +260,34 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	dContext := &daemon.Context{
 		PidFileName: pidFile,
-		PidFilePerm: 0o644,
+		PidFilePerm: daemonPidFilePerm,
 		WorkDir:     "/",
 		Args:        args,
 		Umask:       umask,
 	}
 
-	child, err := dContext.Reborn()
-	if err != nil {
-		// try again, deleting the pidFile first
-		errr := os.Remove(pidFile)
-		if errr != nil && !os.IsNotExist(errr) {
-			warn("failed to delete existing pid file: %s", errr)
-		}
+	return reborn(dContext, pidFile), dContext
+}
 
-		child, err = dContext.Reborn()
-		if err != nil {
-			die("failed to daemonize: %s", err)
-		}
+// reborn calls Reborn() on the given context, retrying once after deleting the
+// pid file if the first attempt fails. Dies if the retry also fails.
+func reborn(dContext *daemon.Context, pidFile string) *os.Process {
+	child, err := dContext.Reborn()
+	if err == nil {
+		return child
 	}
 
-	return child, dContext
+	// try again, deleting the pidFile first
+	if errr := os.Remove(pidFile); errr != nil && !os.IsNotExist(errr) {
+		warn("failed to delete existing pid file: %s", errr)
+	}
+
+	child, err = dContext.Reborn()
+	if err != nil {
+		die("failed to daemonize: %s", err)
+	}
+
+	return child
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
@@ -275,18 +300,31 @@ func stopdaemon(pid int, source string) bool {
 		return false
 	}
 
-	// wait a while for the daemon to gracefully close down
-	giveupseconds := 120
-	giveup := time.After(time.Duration(giveupseconds) * time.Second)
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ok := waitForDaemonStop(pid)
+
+	// if it didn't stop, offer to force kill it? That's a bit dangerous...
+	// just warn for now
+	if !ok {
+		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM",
+			pid, source, daemonStopGiveupS)
+	}
+
+	return ok
+}
+
+// waitForDaemonStop polls the given pid until it is no longer running, or until
+// we give up after daemonStopGiveupS seconds. It returns true if the pid
+// stopped.
+func waitForDaemonStop(pid int) bool {
+	giveup := time.After(time.Duration(daemonStopGiveupS) * time.Second)
+	ticker := time.NewTicker(daemonStopPollFreq)
 	stopped := make(chan bool, 1)
 
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				err = syscall.Kill(pid, syscall.Signal(0))
-				if err == nil {
+				if syscall.Kill(pid, syscall.Signal(0)) == nil {
 					// pid is still running
 					continue
 				}
@@ -306,15 +344,7 @@ func stopdaemon(pid int, source string) bool {
 		}
 	}()
 
-	ok := <-stopped
-
-	// if it didn't stop, offer to force kill it? That's a bit dangerous...
-	// just warn for now
-	if !ok {
-		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", pid, source, giveupseconds)
-	}
-
-	return ok
+	return <-stopped
 }
 
 // sAddr gets a nice manager address to report in logs, preferring hostname,
@@ -342,26 +372,37 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 	}
 
 	// try to get the actual address from the manager.addr file first
-	serverAddr, addrErr := managerAddr()
-
-	var jq *jobqueue.Client
-
-	if addrErr == nil { //nolint:nestif
-		jq, err = jobqueue.Connect(serverAddr, caFile, config.ManagerCertDomain, token, wait)
-		if err == nil {
-			return jq
-		}
-
-		if shouldWarn {
-			warn("failed to connect to manager at address from file (%s): %s, falling back to config address", serverAddr, err)
-		}
+	if jq := connectViaAddrFile(token, wait, shouldWarn); jq != nil {
+		return jq
 	}
 
 	// fall back to using the config-defined address
-	jq, err = jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
+	jq, err := jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
 	if err != nil && shouldWarn {
 		die("%s", err)
 	}
 
 	return jq
+}
+
+// connectViaAddrFile attempts to connect using the address stored in the
+// manager.addr file. It returns nil if there is no such file or the connection
+// fails (warning in the latter case if shouldWarn is true).
+func connectViaAddrFile(token []byte, wait time.Duration, shouldWarn bool) *jobqueue.Client {
+	serverAddr, addrErr := managerAddr()
+	if addrErr != nil {
+		return nil
+	}
+
+	jq, err := jobqueue.Connect(serverAddr, caFile, config.ManagerCertDomain, token, wait)
+	if err == nil {
+		return jq
+	}
+
+	if shouldWarn {
+		warn("failed to connect to manager at address from file (%s): %s, falling back to config address",
+			serverAddr, err)
+	}
+
+	return nil
 }

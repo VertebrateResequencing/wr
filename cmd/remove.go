@@ -72,7 +72,7 @@ command line of a job with dependants, you can either:
 -or-
 2) use the "wr mod" command to modify the command line of the bad job while
    leaving those jobs that are dependant upon it intact.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
@@ -123,15 +123,21 @@ func init() {
 
 	// flags specific to this sub-command
 	removeCmd.Flags().BoolVarP(&cmdAll, "all", "a", false, "remove all incomplete, non-running jobs")
-	removeCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want to remove; - means read from STDIN")
+	removeCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "",
+		"file containing commands you want to remove; - means read from STDIN")
 	removeCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to remove")
-	removeCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	removeCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false,
+		"treat -i as a substring to match against all report groups")
 	removeCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	removeCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to remove")
-	removeCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	removeCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
-	removeCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	removeCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
+		"working dir that the command(s) specified by -l or -f were set to run in")
+	removeCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
+		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	removeCmd.Flags().StringVar(&mountSimple, "mounts", "",
+		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
 	removeCmd.Flags().BoolVarP(&onlyBuried, "buried", "b", false, "only delete jobs that are currently buried")
 
-	removeCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	removeCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
 }

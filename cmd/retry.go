@@ -58,7 +58,7 @@ CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
 options that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
@@ -101,14 +101,20 @@ func init() {
 
 	// flags specific to this sub-command
 	retryCmd.Flags().BoolVarP(&cmdAll, "all", "a", false, "retry all buried jobs")
-	retryCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want to retry; - means read from STDIN")
+	retryCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "",
+		"file containing commands you want to retry; - means read from STDIN")
 	retryCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to retry")
-	retryCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	retryCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false,
+		"treat -i as a substring to match against all report groups")
 	retryCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	retryCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to retry")
-	retryCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	retryCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
-	retryCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	retryCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
+		"working dir that the command(s) specified by -l or -f were set to run in")
+	retryCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
+		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	retryCmd.Flags().StringVar(&mountSimple, "mounts", "",
+		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
 
-	retryCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	retryCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
 }

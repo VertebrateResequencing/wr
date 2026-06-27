@@ -143,7 +143,7 @@ should be all you need for debugging. If your command produces something you
 must keep on STDOUT or STDERR, your command should write that to a file itself
 with a normal shell redirect (eg. "mycmd > stdout.txt").
 `,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
@@ -227,6 +227,9 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					dep += 1 + job.Similar
 				case jobqueue.JobStateSuspended:
 					sus += 1 + job.Similar
+				default:
+					// other states (new, deleted, deletable, unknown) are not
+					// counted
 				}
 			}
 
@@ -362,10 +365,17 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 			for _, rg := range rgs {
 				var usage string
 				if counts[rg][jobqueue.JobStateComplete] > 0 {
-					usage = fmt.Sprintf(" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)", int(memory[rg].Mean()), int(memory[rg].StandardDeviation()), int(disk[rg].Mean()), int(disk[rg].StandardDeviation()), time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()), time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
+					usage = fmt.Sprintf(
+						" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)",
+						int(memory[rg].Mean()), int(memory[rg].StandardDeviation()),
+						int(disk[rg].Mean()), int(disk[rg].StandardDeviation()),
+						time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()),
+						time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
 
 					if counts[rg][jobqueue.JobStateComplete] > 1 {
-						usage = usage + fmt.Sprintf(" started=%s ended=%s elapsed=%s", startends[rg][0].Format(shortTimeFormat), startends[rg][1].Format(shortTimeFormat), startends[rg][1].Sub(startends[rg][0]))
+						usage += fmt.Sprintf(" started=%s ended=%s elapsed=%s",
+							startends[rg][0].Format(shortTimeFormat), startends[rg][1].Format(shortTimeFormat),
+							startends[rg][1].Sub(startends[rg][0]))
 					}
 				}
 
@@ -500,13 +510,19 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 				case jobqueue.JobStateSuspended:
 					fmt.Println("Status: suspended - use `wr resume` to make it schedulable again")
 				case jobqueue.JobStateBuried:
-					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
+					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n",
+						job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateLost:
-					fmt.Printf("Status: lost contact (started %s; lost %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
+					fmt.Printf("Status: lost contact (started %s; lost %s)\n",
+						job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				case jobqueue.JobStateComplete:
-					fmt.Printf("Status: complete (started %s; ended %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
+					fmt.Printf("Status: complete (started %s; ended %s)\n",
+						job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
+				default:
+					// other states (new, deleted, deletable, unknown) have no
+					// status line
 				}
 
 				if job.FailReason != "" {
@@ -524,7 +540,10 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 						prefix = "Stats of previous attempt"
 					}
 
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; "+
+						"CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n",
+						prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime,
+						job.Host, job.HostIP, hostID, job.Pid)
 
 					if showextra && job.Exitcode != 0 {
 						stdout, errs := job.StdOut()
@@ -641,18 +660,45 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 func init() {
 	RootCmd.AddCommand(statusCmd)
 
-	// flags specific to this sub-command
-	statusCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want the status of; - means read from STDIN")
+	registerStatusFlags()
+
+	statusCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
+}
+
+// registerStatusFlags registers the flags specific to the status sub-command.
+func registerStatusFlags() {
+	statusCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "",
+		"file containing commands you want the status of; - means read from STDIN")
 	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
-	statusCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	statusCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false,
+		"treat -i as a substring to match against all report groups")
 	statusCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
-	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
-	statusCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
-	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
-	statusCmd.Flags().StringVar(&fromHost, "host", "", "filter output to only show the status of commands that ran on the given host (ID, name or IP)")
-	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
+	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
+		"working dir that the command(s) specified by -l or -f were set to run in")
+	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
+		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	statusCmd.Flags().StringVar(&mountSimple, "mounts", "",
+		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	statusCmd.Flags().StringVar(&fromHost, "host", "",
+		"filter output to only show the status of commands that ran on the given host (ID, name or IP)")
+	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
+		"['counts','summary','details','plain','table','json'] output format")
+	statusCmd.Flags().IntVar(&statusLimit, "limit", 1,
+		"for grouped outputs (details, table and json), number of commands that share "+
+			"the same properties to display per group; 0 displays all")
+
+	registerStatusStateFlags()
+}
+
+// registerStatusStateFlags registers the status sub-command's state-filter
+// flags that, in default or -i mode, restrict output to a single job state.
+func registerStatusStateFlags() {
+	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false,
+		"in default or -i mode only, only show the status of buried commands")
+	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false,
+		"in default or -i mode only, only show the status of running commands")
 	statusCmd.Flags().BoolVar(&showPending, "pending", false,
 		"in default or -i mode only, only show the status of pending commands")
 	statusCmd.Flags().BoolVar(&showDependent, "dependent", false,
@@ -661,14 +707,8 @@ func init() {
 		"in default or -i mode only, only show jobs waiting on dep-groups not yet seen")
 	statusCmd.Flags().BoolVar(&showSuspended, "suspended", false,
 		"in default or -i mode only, only show the status of suspended commands")
-	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
-	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
-		"['counts','summary','details','plain','table','json'] output format")
-	statusCmd.Flags().IntVar(&statusLimit, "limit", 1,
-		"for grouped outputs (details, table and json), number of commands that share "+
-			"the same properties to display per group; 0 displays all")
-
-	statusCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false,
+		"in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 }
 
 func countGetJobArgs() int {
@@ -993,7 +1033,8 @@ func jobMatchesStatusState(job *jobqueue.Job, state jobqueue.JobState) bool {
 	}
 }
 
-func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
+func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool,
+	statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
 	var (
 		jobs []*jobqueue.Job
 		err  error
@@ -1004,45 +1045,11 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		// get all jobs
 		jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
 	case cmdIDStatus != "":
-		if cmdIDIsInternal {
-			// get the job with this internal id
-			var job *jobqueue.Job
-
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{
-				JobKey: cmdIDStatus,
-			}, showStd, showEnv)
-			if job != nil {
-				jobs = append(jobs, job)
-			}
-		} else {
-			// get all jobs with this identifier (repgroup)
-			jobs, err = jq.GetByRepGroup(cmdIDStatus, cmdIDIsSubStr, statusLimit, cmdState, showStd, showEnv)
-		}
+		jobs, err = getJobsByID(jq, cmdState, statusLimit, showStd, showEnv)
 	case cmdFileStatus != "":
-		// parse the supplied commands
-		parsedJobs := parseCmdFileStatusSelection(jq)
-
-		// round-trip via the server to get those that actually exist in
-		// the queue
-		jes := jobsToJobEssenses(parsedJobs)
-
-		jobs, err = jq.GetByEssences(jes)
-		if len(jobs) < len(parsedJobs) {
-			warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
-		}
+		jobs, err = getJobsByFile(jq)
 	case cmdLine != "":
-		// get job that has the supplied command
-		var defaultMounts jobqueue.MountConfigs
-		if mountJSON != "" || mountSimple != "" {
-			defaultMounts = mountParse(mountJSON, mountSimple)
-		}
-
-		var job *jobqueue.Job
-
-		job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
-		if job != nil {
-			jobs = append(jobs, job)
-		}
+		jobs, err = getJobsByCmdLine(jq, showStd, showEnv)
 	}
 
 	if err != nil {
@@ -1050,6 +1057,60 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 	}
 
 	return jobs
+}
+
+// getJobsByID gets the job(s) selected by cmdIDStatus, either by internal job
+// id or by report group.
+func getJobsByID(jq *jobqueue.Client, cmdState jobqueue.JobState,
+	statusLimit int, showStd, showEnv bool) ([]*jobqueue.Job, error) {
+	if !cmdIDIsInternal {
+		// get all jobs with this identifier (repgroup)
+		return jq.GetByRepGroup(cmdIDStatus, cmdIDIsSubStr, statusLimit, cmdState, showStd, showEnv)
+	}
+
+	// get the job with this internal id
+	job, err := jq.GetByEssence(&jobqueue.JobEssence{
+		JobKey: cmdIDStatus,
+	}, showStd, showEnv)
+	if job == nil {
+		return nil, err
+	}
+
+	return []*jobqueue.Job{job}, err
+}
+
+// getJobsByFile gets the jobs that match the commands parsed from
+// cmdFileStatus and actually exist in the queue.
+func getJobsByFile(jq *jobqueue.Client) ([]*jobqueue.Job, error) {
+	// parse the supplied commands
+	parsedJobs := parseCmdFileStatusSelection(jq)
+
+	// round-trip via the server to get those that actually exist in
+	// the queue
+	jes := jobsToJobEssenses(parsedJobs)
+
+	jobs, err := jq.GetByEssences(jes)
+	if len(jobs) < len(parsedJobs) {
+		warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
+	}
+
+	return jobs, err
+}
+
+// getJobsByCmdLine gets the job that has the command line supplied via cmdLine.
+func getJobsByCmdLine(jq *jobqueue.Client, showStd, showEnv bool) ([]*jobqueue.Job, error) {
+	var defaultMounts jobqueue.MountConfigs
+	if mountJSON != "" || mountSimple != "" {
+		defaultMounts = mountParse(mountJSON, mountSimple)
+	}
+
+	job, err := jq.GetByEssence(
+		&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
+	if job == nil {
+		return nil, err
+	}
+
+	return []*jobqueue.Job{job}, err
 }
 
 func parseCmdFileStatusSelection(jq *jobqueue.Client) []*jobqueue.Job {

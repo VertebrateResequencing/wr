@@ -37,7 +37,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print wr version",
 	Long:  `Print wr version.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		fmt.Println(jobqueue.ServerVersion)
 	},
 }

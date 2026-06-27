@@ -41,6 +41,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// defaultMountRetries is the number of retries used for a mount Target that
+// does not specify its own Retries.
+const defaultMountRetries = 10
+
+// deathSignalBuffer is the buffer size of the channel that receives the signals
+// that tell a mount to unmount and exit.
+const deathSignalBuffer = 2
+
 // options for this cmd.
 var (
 	mountSimple  string
@@ -184,7 +192,7 @@ directory in CacheBase, which will get deleted on unmount.
 Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Note that when
 not cached, only serial writes are possible.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		// set up logging
 		logLevel := log15.LvlWarn
 		if mountVerbose {
@@ -226,7 +234,8 @@ func init() {
 
 	// flags specific to this sub-command
 	mountCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mount parameters JSON (see --help)")
-	mountCmd.Flags().StringVarP(&mountSimple, "mounts", "m", "", "comma-separated list of [c|u][r|w]:bucket[/path] (see --help)")
+	mountCmd.Flags().StringVarP(&mountSimple, "mounts", "m", "",
+		"comma-separated list of [c|u][r|w]:bucket[/path] (see --help)")
 	mountCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
@@ -234,74 +243,84 @@ func init() {
 // mountAndWait does the main work of this cmd.
 func mountAndWait() {
 	// mount everything
-	var mounted []*muxfys.MuxFys
+	configs := mountParse(mountJSON, mountSimple)
+	mounted := make([]*muxfys.MuxFys, 0, len(configs))
 
-	for _, mc := range mountParse(mountJSON, mountSimple) {
-		var rcs []*muxfys.RemoteConfig
-
-		for _, mt := range mc.Targets {
-			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
-			if err != nil {
-				die("had a problem reading S3 config values from the environment: %s", err)
-			}
-
-			accessor, err := muxfys.NewS3Accessor(accessorConfig)
-			if err != nil {
-				die("had a problem creating an S3 accessor: %s", err)
-			}
-
-			rc := &muxfys.RemoteConfig{
-				Accessor:  accessor,
-				CacheData: mt.Cache,
-				CacheDir:  mt.CacheDir,
-				Write:     mt.Write,
-			}
-
-			rcs = append(rcs, rc)
-		}
-
-		retries := 10
-		if mc.Retries > 0 {
-			retries = mc.Retries
-		}
-
-		cfg := &muxfys.Config{
-			Mount:     mc.Mount,
-			CacheBase: mc.CacheBase,
-			Retries:   retries,
-			Verbose:   mc.Verbose,
-		}
-
-		fs, err := muxfys.New(cfg)
-		if err != nil {
-			die("bad configuration: %s\n", err)
-		}
-
-		err = fs.Mount(rcs...)
-		if err != nil {
-			die("could not mount: %s\n", err)
-		}
-
-		mounted = append(mounted, fs)
+	for _, mc := range configs {
 		// (we can't use each fs's UnmountOnDeath() function because they
 		// won't wait for each other)
+		mounted = append(mounted, mountConfig(mc))
+	}
+
+	if len(mounted) == 0 {
+		return
 	}
 
 	// wait for death
-	if len(mounted) > 0 {
-		deathSignals := make(chan os.Signal, 2)
-		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
-		<-deathSignals
+	deathSignals := make(chan os.Signal, deathSignalBuffer)
+	signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+	<-deathSignals
 
-		for _, fs := range mounted {
-			err := fs.Unmount()
-			if err != nil {
-				fs.Error("Failed to unmount", "err", err)
-			}
+	for _, fs := range mounted {
+		err := fs.Unmount()
+		if err != nil {
+			fs.Error("Failed to unmount", "err", err)
+		}
+	}
+}
+
+// mountConfig creates and mounts a MuxFys for the given MountConfig, dying on
+// any error.
+func mountConfig(mc jobqueue.MountConfig) *muxfys.MuxFys {
+	rcs := mountRemoteConfigs(mc)
+
+	retries := defaultMountRetries
+	if mc.Retries > 0 {
+		retries = mc.Retries
+	}
+
+	fs, err := muxfys.New(&muxfys.Config{
+		Mount:     mc.Mount,
+		CacheBase: mc.CacheBase,
+		Retries:   retries,
+		Verbose:   mc.Verbose,
+	})
+	if err != nil {
+		die("bad configuration: %s\n", err)
+	}
+
+	if err = fs.Mount(rcs...); err != nil {
+		die("could not mount: %s\n", err)
+	}
+
+	return fs
+}
+
+// mountRemoteConfigs builds the muxfys RemoteConfigs for the given
+// MountConfig's Targets, dying on any error.
+func mountRemoteConfigs(mc jobqueue.MountConfig) []*muxfys.RemoteConfig {
+	rcs := make([]*muxfys.RemoteConfig, 0, len(mc.Targets))
+
+	for _, mt := range mc.Targets {
+		accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
+		if err != nil {
+			die("had a problem reading S3 config values from the environment: %s", err)
 		}
 
-		return
+		accessor, err := muxfys.NewS3Accessor(accessorConfig)
+		if err != nil {
+			die("had a problem creating an S3 accessor: %s", err)
+		}
+
+		rcs = append(rcs, &muxfys.RemoteConfig{
+			Accessor:  accessor,
+			CacheData: mt.Cache,
+			CacheDir:  mt.CacheDir,
+			Write:     mt.Write,
+		})
 	}
+
+	return rcs
 }
 
 // mountParse takes possible json string or simple string (as per `wr mount -h`)
@@ -343,54 +362,70 @@ func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 
 	targets := make([]jobqueue.MountTarget, 0, len(ss))
 	for _, simple := range ss {
-		parts := strings.Split(simple, ":")
-		if len(parts) != 2 || len(parts[0]) != 2 {
-			die("'%s' was not in the right format", simple)
-		}
-
-		var cache, write bool
-
-		switch parts[0][0] {
-		case 'c':
-			cache = true
-		case 'u':
-			cache = false
-		default:
-			die("'%s' did not start with c or u", simple)
-		}
-
-		switch parts[0][1] {
-		case 'w':
-			write = true
-		case 'r':
-			write = false
-		default:
-			die("'%s' did not specify w or r", simple)
-		}
-
-		path := parts[1]
-
-		var profile string
-
-		if strings.Contains(path, "@") {
-			parts := strings.Split(path, "@")
-			profile = parts[0]
-			path = parts[1]
-		}
-
-		mt := jobqueue.MountTarget{
-			Path:  path,
-			Cache: cache,
-			Write: write,
-		}
-		if profile != "" {
-			mt.Profile = profile
-		}
-
-		targets = append(targets, mt)
+		targets = append(targets, mountParseSimpleTarget(simple))
 	}
 
-	var mcs jobqueue.MountConfigs
+	return jobqueue.MountConfigs{jobqueue.MountConfig{Targets: targets}}
+}
 
-	return append(mcs, jobqueue.MountConfig{Targets: targets})
+// mountParseSimpleTarget parses a single [c|u][r|w]:[profile@]bucket[/path]
+// string into a MountTarget, dying if it is not in the right format.
+func mountParseSimpleTarget(simple string) jobqueue.MountTarget {
+	parts := strings.Split(simple, ":")
+	if len(parts) != 2 || len(parts[0]) != 2 {
+		die("'%s' was not in the right format", simple)
+	}
+
+	cache, write := mountParseSimpleFlags(simple, parts[0])
+
+	profile, path := mountParseSimpleProfilePath(parts[1])
+
+	mt := jobqueue.MountTarget{
+		Path:  path,
+		Cache: cache,
+		Write: write,
+	}
+	if profile != "" {
+		mt.Profile = profile
+	}
+
+	return mt
+}
+
+// mountParseSimpleFlags parses the [c|u][r|w] flags of a simple mount string,
+// dying if they are invalid.
+func mountParseSimpleFlags(simple, flags string) (cache, write bool) {
+	switch flags[0] {
+	case 'c':
+		cache = true
+	case 'u':
+		cache = false
+	default:
+		die("'%s' did not start with c or u", simple)
+	}
+
+	switch flags[1] {
+	case 'w':
+		write = true
+	case 'r':
+		write = false
+	default:
+		die("'%s' did not specify w or r", simple)
+	}
+
+	return cache, write
+}
+
+// mountParseSimpleProfilePath splits an optional [profile@]bucket[/path] into
+// its profile and path components.
+func mountParseSimpleProfilePath(profilePath string) (profile, path string) {
+	path = profilePath
+
+	if strings.Contains(path, "@") {
+		profileAndPath := strings.Split(path, "@")
+		profile = profileAndPath[0]
+		path = profileAndPath[1]
+	}
+
+	return profile, path
 }

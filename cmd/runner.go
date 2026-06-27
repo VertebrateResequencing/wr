@@ -47,6 +47,24 @@ import (
 
 const logDirPerm = 0o770
 
+// runnerMinProcs is the number of OS threads the runner forces when there is
+// only a single CPU, so that we don't lock up if we mount.
+const runnerMinProcs = 2
+
+// runnerTimeoutBufferSeconds is the minimum number of seconds by which the
+// server receive timeout must exceed the Reserve() timeout.
+const runnerTimeoutBufferSeconds = 5
+
+// hostPortParts is the number of colon-separated parts in a valid host:port
+// string.
+const hostPortParts = 2
+
+// runner flag defaults.
+const (
+	runnerConnectTimeout = 30
+	runnerReserveTimeout = 2
+)
+
 // options for this cmd.
 var (
 	schedgrp         string
@@ -74,10 +92,10 @@ used based on the expected time to complete of the next queued command), the
 runner stops picking up new commands and exits instead; max_time does not cause
 the runner to kill itself if the cmd it is running takes longer than max_time to
 complete.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		if runtime.NumCPU() == 1 {
 			// we might lock up with only 1 proc if we mount
-			runtime.GOMAXPROCS(2)
+			runtime.GOMAXPROCS(runnerMinProcs)
 		}
 
 		if logToSyslog {
@@ -129,8 +147,8 @@ complete.`,
 
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
-		if timeoutintRunner < (reserveint + 5) {
-			timeoutintRunner = reserveint + 5
+		if timeoutintRunner < (reserveint + runnerTimeoutBufferSeconds) {
+			timeoutintRunner = reserveint + runnerTimeoutBufferSeconds
 		}
 
 		timeout := time.Duration(timeoutintRunner) * time.Second
@@ -139,7 +157,6 @@ complete.`,
 		jobqueue.AppName = "wr"
 
 		token, err := token()
-
 		if err != nil {
 			die("%s", err)
 		}
@@ -164,7 +181,7 @@ complete.`,
 
 		if rserver != "" {
 			hostPort := strings.Split(rserver, ":")
-			if len(hostPort) == 2 {
+			if len(hostPort) == hostPortParts {
 				envOverrides = append(envOverrides, "WR_MANAGERHOST="+hostPort[0])
 				envOverrides = append(envOverrides, "WR_MANAGERPORT="+hostPort[1])
 			}
@@ -314,10 +331,14 @@ func init() {
 	RootCmd.AddCommand(runnerCmd)
 
 	// flags specific to this sub-command
-	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
-	runnerCmd.Flags().IntVar(&timeoutintRunner, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
-	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 2, "how long (seconds) to wait for there to be a command in the queue, before exiting")
-	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
+	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "",
+		"specify the scheduler group to limit which commands can be acted on")
+	runnerCmd.Flags().IntVar(&timeoutintRunner, "timeout", runnerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
+	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", runnerReserveTimeout,
+		"how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0,
+		"maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(ctx), "ip:port of wr manager")
 	runnerCmd.Flags().StringVar(&rdomain, "domain", internal.DefaultConfig(ctx).ManagerCertDomain,
 		"domain the manager's cert is valid for")

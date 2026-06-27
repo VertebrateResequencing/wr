@@ -66,7 +66,7 @@ CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
 options that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
@@ -145,16 +145,24 @@ func init() {
 
 	// flags specific to this sub-command
 	killCmd.Flags().BoolVarP(&cmdAll, "all", "a", false, "kill all running jobs")
-	killCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want to kill; - means read from STDIN")
+	killCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "",
+		"file containing commands you want to kill; - means read from STDIN")
 	killCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to kill")
-	killCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	killCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false,
+		"treat -i as a substring to match against all report groups")
 	killCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	killCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to kill")
-	killCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
-	killCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	killCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
+		"working dir that the command(s) specified by -l or -f were set to run in")
+	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
+		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	killCmd.Flags().StringVar(&mountSimple, "mounts", "",
+		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
 	killCmd.Flags().BoolVar(&confirmDead, "confirmdead", false, "only confirm that lost contact jobs are dead")
-	killCmd.Flags().StringVar(&cmdAge, "age", "", "only kill jobs that have been running longer than this (or in --confirmdead mode, that have been lost longer than this). [specify units such as m for minutes or h for hours]")
+	killCmd.Flags().StringVar(&cmdAge, "age", "",
+		"only kill jobs that have been running longer than this (or in --confirmdead mode, that have been "+
+			"lost longer than this). [specify units such as m for minutes or h for hours]")
 
-	killCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	killCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,
+		"how long (seconds) to wait to get a reply from 'wr manager'")
 }
