@@ -33,6 +33,7 @@ import (
 	"embed"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -53,6 +54,10 @@ const (
 	jstatusRequestRerun       = "rerun"
 	jstatusRequestUnsubscribe = requestMethodUnsubscribe
 	statusAllRepGroups        = "+all+"
+
+	// webSocketBufferSize is the read and write buffer size (bytes) for status
+	// page websocket connections.
+	webSocketBufferSize = 1024
 )
 
 // statusStateSendThrottle bounds how often a status client is sent absolute
@@ -300,37 +305,38 @@ func (s *Server) writeStatusSubscriptionUpdate(ctx context.Context, conn *websoc
 // folder of the source code repository, which are embedded at compile time.
 func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// our home page is /status.html
-		path := r.URL.Path
+		s.serveStaticDoc(ctx, w, r)
+	}
+}
 
-		path = strings.TrimPrefix(path, "/")
-		if path == "" || path == "status" {
-			path = "status.html"
-		}
+// serveStaticDoc serves an embedded static document, requiring authorization for
+// the status page.
+func (s *Server) serveStaticDoc(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	// our home page is /status.html
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" || path == "status" {
+		path = "status.html"
+	}
 
-		if path == "status.html" {
-			ok := s.httpAuthorized(w, r)
-			if !ok {
-				return
-			}
-		}
+	if path == "status.html" && !s.httpAuthorized(w, r) {
+		return
+	}
 
-		path = "static/" + path
+	path = "static/" + path
 
-		doc, err := staticFS.ReadFile(path)
-		if err != nil {
-			clog.Warn(ctx, "not found", "err", err)
-			http.NotFound(w, r)
+	doc, err := staticFS.ReadFile(path)
+	if err != nil {
+		clog.Warn(ctx, "not found", "err", err)
+		http.NotFound(w, r)
 
-			return
-		}
+		return
+	}
 
-		w.Header().Set("Content-Type", getContentTypeForPath(path))
+	w.Header().Set("Content-Type", getContentTypeForPath(path))
 
-		_, err = w.Write(doc)
-		if err != nil {
-			clog.Error(ctx, "web interface static document write failed", "err", err)
-		}
+	//nolint:gosec // doc is a compile-time-embedded static asset (embed.FS), not user content
+	if _, err = w.Write(doc); err != nil {
+		clog.Error(ctx, "web interface static document write failed", "err", err)
 	}
 }
 
@@ -365,8 +371,8 @@ func getContentTypeForPath(path string) string { //nolint:gocyclo
 // webSocket upgrades a http connection to a websocket.
 func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 	upgrader := websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:  webSocketBufferSize,
+		WriteBufferSize: webSocketBufferSize,
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -383,8 +389,7 @@ func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 // webpage.
 func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ok := s.httpAuthorized(w, r)
-		if !ok {
+		if !s.httpAuthorized(w, r) {
 			return
 		}
 
@@ -404,215 +409,299 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 		stopper := make(chan bool)
 
 		// go routine to read client requests and respond to them
-		go func(conn *websocket.Conn, connStorageName string, subscriptionID string, stop chan bool) {
-			// log panics and die
-			defer internal.LogPanic(ctx, "jobqueue websocket client handling", true)
-
-			defer func() {
-				s.unregisterClientSubscription(subscriptionID)
-				s.closeWebSocketConnection(ctx, connStorageName)
-
-				// stop the other goroutines
-				close(stop)
-			}()
-
-			for {
-				req := jstatusReq{}
-
-				errr := conn.ReadJSON(&req)
-				if errr != nil {
-					// browser was refreshed or server shutdown
-					break
-				}
-
-				// Get the write mutex for this connection
-				s.wsmutex.RLock()
-				writeMutex := s.wsWriteMutexes[connStorageName]
-				s.wsmutex.RUnlock()
-
-				if writeMutex == nil {
-					// Connection is being shut down
-					break
-				}
-
-				switch {
-				case req.Request != "":
-					switch req.Request {
-					case jstatusRequestCurrent:
-						// The status counts are pushed as idempotent absolute
-						// per-RepGroup state by the per-client sender, which sends
-						// the full current map as soon as the client connects (and
-						// again on reconnect, since that is a fresh connection and
-						// thus a fresh subscription). So "current" only needs to
-						// (re)broadcast the recoverable bad-server and
-						// scheduler-issue sets that ride the lossy casters.
-						for _, bs := range s.getBadServers() {
-							s.badServerCaster.Send(bs)
-						}
-
-						s.simutex.RLock()
-
-						for _, si := range s.schedIssues {
-							s.schedCaster.Send(si)
-						}
-
-						s.simutex.RUnlock()
-					case jstatusRequestDetails:
-						opts := repGroupOptions{
-							RepGroup: req.RepGroup,
-							Match:    normalizeRepGroupMatch("", req.Search),
-							limitJobsOptions: limitJobsOptions{
-								Limit:      req.Limit,
-								Offset:     req.Offset,
-								State:      req.State,
-								ExitCode:   req.Exitcode,
-								FailReason: req.FailReason,
-								GetStd:     true,
-								GetEnv:     true,
-							},
-						}
-
-						jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
-						if errstr == "" && len(jobs) > 0 {
-							failed := false
-							jobKeys := make([]string, 0, len(jobs))
-							statuses := make([]JStatus, 0, len(jobs))
-
-							for _, job := range jobs {
-								status, err := job.ToStatus()
-								if err != nil {
-									failed = true
-
-									break
-								}
-
-								if !req.Search {
-									// since we want to return the group the
-									// user asked for, not the most recent group
-									// the job was made for
-									status.RepGroup = req.RepGroup
-								}
-
-								statuses = append(statuses, status)
-								jobKeys = append(jobKeys, job.Key())
-							}
-
-							if len(jobKeys) > 0 {
-								s.subscribeToJobs(subscriptionID, jobKeys)
-							}
-
-							writeMutex.Lock()
-							if s.statusWSDetailsHook != nil {
-								s.statusWSDetailsHook()
-							}
-
-							for _, status := range statuses {
-								err := conn.WriteJSON(status)
-								if err != nil {
-									failed = true
-
-									break
-								}
-							}
-
-							writeMutex.Unlock()
-
-							if failed {
-								break
-							}
-						}
-					case jstatusRequestUnsubscribe:
-						s.unsubscribeFromJob(subscriptionID, req.Key)
-					case "retry":
-						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
-						s.kickJobs(ctx, jobs)
-					case jstatusRequestRerun:
-						jobs, srerr, qerr := s.reqToCompletedJobs(req)
-						if srerr != "" {
-							clog.Warn(ctx, "web interface rerun lookup failed", "err", qerr)
-
-							break
-						}
-
-						s.rerunCompletedJobs(ctx, jobs)
-					case jstatusRequestRemove:
-						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
-						deleted := s.deleteJobs(ctx, jobs)
-						clog.Debug(ctx, "removed jobs", "count", len(deleted))
-					case jstatusRequestResume:
-						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateSuspended})
-
-						keys := make([]string, 0, len(jobs))
-						for _, job := range jobs {
-							keys = append(keys, job.Key())
-						}
-
-						resumed := s.resumeJobs(ctx, keys)
-						clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
-					case "kill":
-						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
-						for _, job := range jobs {
-							_, err := s.killJob(ctx, job.Key())
-							if err != nil {
-								clog.Warn(ctx, "web interface kill job failed", "err", err)
-							}
-						}
-					case "confirmBadServer":
-						if req.ServerID != "" {
-							s.bsmutex.Lock()
-							server := s.badServers[req.ServerID]
-							delete(s.badServers, req.ServerID)
-							s.bsmutex.Unlock()
-
-							if server != nil && server.IsBad() {
-								err := server.Destroy(ctx)
-								if err != nil {
-									clog.Warn(ctx, "web interface confirm bad server destruction failed", "err", err)
-								}
-							}
-						}
-					case "dismissMsg":
-						if req.Msg != "" {
-							s.simutex.Lock()
-							delete(s.schedIssues, req.Msg)
-							s.simutex.Unlock()
-						}
-					case "dismissMsgs":
-						s.simutex.Lock()
-						s.schedIssues = make(map[string]*schedulerIssue)
-						s.simutex.Unlock()
-					default:
-						continue
-					}
-				case req.Key != "":
-					jobs, _, errstr := s.getJobsByKeys(ctx, []string{req.Key}, true, true)
-					if errstr == "" && len(jobs) == 1 {
-						status, err := jobs[0].ToStatus()
-						if err != nil {
-							break
-						}
-
-						s.subscribeToJobs(subscriptionID, []string{req.Key})
-
-						writeMutex.Lock()
-
-						err = conn.WriteJSON(status)
-
-						writeMutex.Unlock()
-
-						if err != nil {
-							break
-						}
-					}
-				}
-			}
-		}(conn, storedName, statusSubscriptionID, stopper)
+		go s.readStatusWSRequests(ctx, conn, storedName, statusSubscriptionID, stopper)
 
 		// Set up goroutines to push changes to the client
 		go s.setupStatusStateUpdateListener(ctx, conn, stopper, storedName)
 		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
 		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
 		go s.setupStatusSubscriptionUpdateListener(ctx, conn, stopper, storedName, statusSubscriptionID)
+	}
+}
+
+// readStatusWSRequests reads requests from a status page websocket and handles
+// each until the connection closes, then stops the other per-connection
+// goroutines.
+func (s *Server) readStatusWSRequests(ctx context.Context, conn *websocket.Conn,
+	connStorageName, subscriptionID string, stop chan bool) {
+	// log panics and die
+	defer internal.LogPanic(ctx, "jobqueue websocket client handling", true)
+
+	defer func() {
+		s.unregisterClientSubscription(subscriptionID)
+		s.closeWebSocketConnection(ctx, connStorageName)
+
+		// stop the other goroutines
+		close(stop)
+	}()
+
+	for {
+		req := jstatusReq{}
+
+		if errr := conn.ReadJSON(&req); errr != nil {
+			// browser was refreshed or server shutdown
+			return
+		}
+
+		// Get the write mutex for this connection
+		s.wsmutex.RLock()
+		writeMutex := s.wsWriteMutexes[connStorageName]
+		s.wsmutex.RUnlock()
+
+		if writeMutex == nil {
+			// Connection is being shut down
+			return
+		}
+
+		s.handleStatusWSRequest(ctx, statusWSRequest{
+			conn: conn, req: req, writeMutex: writeMutex, subscriptionID: subscriptionID,
+		})
+	}
+}
+
+// statusWSRequest bundles the context a single status-page websocket request
+// handler needs.
+type statusWSRequest struct {
+	conn           *websocket.Conn
+	req            jstatusReq
+	writeMutex     *sync.Mutex
+	subscriptionID string
+}
+
+// handleStatusWSRequest dispatches a single decoded status-page websocket
+// request to the appropriate action.
+func (s *Server) handleStatusWSRequest(ctx context.Context, r statusWSRequest) {
+	switch {
+	case r.req.Request != "":
+		s.handleStatusWSCommand(ctx, r)
+	case r.req.Key != "":
+		s.handleStatusWSKeyRequest(ctx, r)
+	}
+}
+
+// handleStatusWSCommand handles a status-page websocket request that carries a
+// named Request command.
+//
+//nolint:cyclop,gocyclo,funlen // a flat command dispatch switch; each case delegates to a handler
+func (s *Server) handleStatusWSCommand(ctx context.Context, r statusWSRequest) {
+	switch r.req.Request {
+	case jstatusRequestCurrent:
+		s.broadcastCurrentStatus()
+	case jstatusRequestDetails:
+		s.sendJobDetails(ctx, r)
+	case jstatusRequestUnsubscribe:
+		s.unsubscribeFromJob(r.subscriptionID, r.req.Key)
+	case "retry":
+		s.kickJobs(ctx, s.reqToJobs(r.req, []queue.ItemState{queue.ItemStateBury}))
+	case jstatusRequestRerun:
+		s.rerunStatusJobs(ctx, r.req)
+	case jstatusRequestRemove:
+		jobs := s.reqToJobs(r.req, []queue.ItemState{
+			queue.ItemStateBury, queue.ItemStateDelay,
+			queue.ItemStateDependent, queue.ItemStateReady,
+		})
+		deleted := s.deleteJobs(ctx, jobs)
+		clog.Debug(ctx, "removed jobs", "count", len(deleted))
+	case jstatusRequestResume:
+		s.resumeStatusJobs(ctx, r.req)
+	case "kill":
+		s.killStatusJobs(ctx, r.req)
+	case "confirmBadServer":
+		s.confirmBadServerFromStatus(ctx, r.req)
+	case "dismissMsg":
+		s.dismissSchedulerMessage(r.req)
+	case "dismissMsgs":
+		s.dismissAllSchedulerMessages()
+	default:
+	}
+}
+
+// broadcastCurrentStatus re-broadcasts the recoverable bad-server and
+// scheduler-issue sets in response to a "current" request. The status counts
+// themselves are pushed as idempotent absolute per-RepGroup state by the
+// per-client sender (which sends the full current map on connect/reconnect), so
+// only the lossy-caster sets need re-broadcasting here.
+func (s *Server) broadcastCurrentStatus() {
+	for _, bs := range s.getBadServers() {
+		s.badServerCaster.Send(bs)
+	}
+
+	s.simutex.RLock()
+	defer s.simutex.RUnlock()
+
+	for _, si := range s.schedIssues {
+		s.schedCaster.Send(si)
+	}
+}
+
+// sendJobDetails sends the full status of every matching job in a rep group to
+// the requesting client and subscribes the client to their future updates.
+func (s *Server) sendJobDetails(ctx context.Context, r statusWSRequest) {
+	req := r.req
+
+	opts := repGroupOptions{
+		RepGroup: req.RepGroup,
+		Match:    normalizeRepGroupMatch("", req.Search),
+		limitJobsOptions: limitJobsOptions{
+			Limit:      req.Limit,
+			Offset:     req.Offset,
+			State:      req.State,
+			ExitCode:   req.Exitcode,
+			FailReason: req.FailReason,
+			GetStd:     true,
+			GetEnv:     true,
+		},
+	}
+
+	jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
+	if errstr != "" || len(jobs) == 0 {
+		return
+	}
+
+	jobKeys, statuses := jobStatuses(jobs, req)
+
+	if len(jobKeys) > 0 {
+		s.subscribeToJobs(r.subscriptionID, jobKeys)
+	}
+
+	s.writeJobStatuses(r, statuses)
+}
+
+// jobStatuses converts jobs to their JStatus and keys, overriding each status's
+// rep group with the requested one unless this was a search. Conversion stops at
+// the first job whose status cannot be built.
+func jobStatuses(jobs []*Job, req jstatusReq) ([]string, []JStatus) {
+	keys := make([]string, 0, len(jobs))
+	statuses := make([]JStatus, 0, len(jobs))
+
+	for _, job := range jobs {
+		status, err := job.ToStatus()
+		if err != nil {
+			break
+		}
+
+		if !req.Search {
+			// since we want to return the group the user asked for, not the most
+			// recent group the job was made for
+			status.RepGroup = req.RepGroup
+		}
+
+		statuses = append(statuses, status)
+		keys = append(keys, job.Key())
+	}
+
+	return keys, statuses
+}
+
+// writeJobStatuses writes each job status to the client connection under its
+// write mutex, invoking the optional details hook first. Writing stops at the
+// first failure.
+func (s *Server) writeJobStatuses(r statusWSRequest, statuses []JStatus) {
+	r.writeMutex.Lock()
+	defer r.writeMutex.Unlock()
+
+	if s.statusWSDetailsHook != nil {
+		s.statusWSDetailsHook()
+	}
+
+	for _, status := range statuses {
+		if err := r.conn.WriteJSON(status); err != nil {
+			return
+		}
+	}
+}
+
+// rerunStatusJobs reruns the completed jobs identified by a rerun request.
+func (s *Server) rerunStatusJobs(ctx context.Context, req jstatusReq) {
+	jobs, srerr, qerr := s.reqToCompletedJobs(req)
+	if srerr != "" {
+		clog.Warn(ctx, "web interface rerun lookup failed", "err", qerr)
+
+		return
+	}
+
+	s.rerunCompletedJobs(ctx, jobs)
+}
+
+// resumeStatusJobs resumes the suspended jobs identified by a resume request.
+func (s *Server) resumeStatusJobs(ctx context.Context, req jstatusReq) {
+	jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateSuspended})
+
+	keys := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		keys = append(keys, job.Key())
+	}
+
+	resumed := s.resumeJobs(ctx, keys)
+	clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
+}
+
+// killStatusJobs kills the running jobs identified by a kill request.
+func (s *Server) killStatusJobs(ctx context.Context, req jstatusReq) {
+	for _, job := range s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun}) {
+		if _, err := s.killJob(ctx, job.Key()); err != nil {
+			clog.Warn(ctx, "web interface kill job failed", "err", err)
+		}
+	}
+}
+
+// confirmBadServerFromStatus destroys a bad server confirmed dead from the
+// status page.
+func (s *Server) confirmBadServerFromStatus(ctx context.Context, req jstatusReq) {
+	if req.ServerID == "" {
+		return
+	}
+
+	s.bsmutex.Lock()
+	server := s.badServers[req.ServerID]
+	delete(s.badServers, req.ServerID)
+	s.bsmutex.Unlock()
+
+	if server != nil && server.IsBad() {
+		if err := server.Destroy(ctx); err != nil {
+			clog.Warn(ctx, "web interface confirm bad server destruction failed", "err", err)
+		}
+	}
+}
+
+// dismissSchedulerMessage forgets a single scheduler issue message.
+func (s *Server) dismissSchedulerMessage(req jstatusReq) {
+	if req.Msg == "" {
+		return
+	}
+
+	s.simutex.Lock()
+	delete(s.schedIssues, req.Msg)
+	s.simutex.Unlock()
+}
+
+// dismissAllSchedulerMessages forgets all scheduler issue messages.
+func (s *Server) dismissAllSchedulerMessages() {
+	s.simutex.Lock()
+	s.schedIssues = make(map[string]*schedulerIssue)
+	s.simutex.Unlock()
+}
+
+// handleStatusWSKeyRequest sends the status of a single keyed job to the client
+// and subscribes the client to its future updates.
+func (s *Server) handleStatusWSKeyRequest(ctx context.Context, r statusWSRequest) {
+	jobs, _, errstr := s.getJobsByKeys(ctx, []string{r.req.Key}, true, true)
+	if errstr != "" || len(jobs) != 1 {
+		return
+	}
+
+	status, err := jobs[0].ToStatus()
+	if err != nil {
+		return
+	}
+
+	s.subscribeToJobs(r.subscriptionID, []string{r.req.Key})
+
+	r.writeMutex.Lock()
+	defer r.writeMutex.Unlock()
+
+	if err = r.conn.WriteJSON(status); err != nil {
+		return
 	}
 }
 
@@ -738,44 +827,76 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 		allowed[is] = true
 	}
 
+	if req.RepGroup != "" {
+		return s.reqToRepGroupJobs(req, allowed)
+	}
+
+	if req.Key != "" {
+		return s.reqToKeyJobs(req, allowed)
+	}
+
+	return nil
+}
+
+// reqToRepGroupJobs returns the allowed-state jobs in a rep group that match the
+// request's exit code and fail reason.
+func (s *Server) reqToRepGroupJobs(req jstatusReq, allowed map[queue.ItemState]bool) []*Job {
 	var jobs []*Job
 
-	if req.RepGroup != "" {
-		for _, key := range s.rpl.Values(req.RepGroup) {
-			item, err := s.q.Get(key)
-			if item == nil || err != nil {
-				continue
-			}
-
-			stats := item.Stats()
-			if allowed[stats.State] {
-				job := item.Data().(*Job)
-				job.Lock()
-
-				job.State = s.itemStateToJobState(stats.State, job.Lost)
-				if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-					jobs = append(jobs, job)
-				}
-				job.Unlock()
-			}
-		}
-	} else if req.Key != "" {
-		item, err := s.q.Get(req.Key)
+	for _, key := range s.rpl.Values(req.RepGroup) {
+		item, err := s.q.Get(key)
 		if item == nil || err != nil {
-			return nil
+			continue
 		}
 
-		stats := item.Stats()
-		if allowed[stats.State] {
-			job := item.Data().(*Job)
-			job.Lock()
-			job.State = s.itemStateToJobState(stats.State, job.Lost)
-			job.Unlock()
+		job, stats, ok := allowedItemJob(item, allowed)
+		if !ok {
+			continue
+		}
+
+		job.Lock()
+		job.State = s.itemStateToJobState(stats.State, job.Lost)
+
+		if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
 			jobs = append(jobs, job)
 		}
+		job.Unlock()
 	}
 
 	return jobs
+}
+
+// reqToKeyJobs returns the single allowed-state job for the request's key, if
+// any.
+func (s *Server) reqToKeyJobs(req jstatusReq, allowed map[queue.ItemState]bool) []*Job {
+	item, err := s.q.Get(req.Key)
+	if item == nil || err != nil {
+		return nil
+	}
+
+	job, stats, ok := allowedItemJob(item, allowed)
+	if !ok {
+		return nil
+	}
+
+	job.Lock()
+	job.State = s.itemStateToJobState(stats.State, job.Lost)
+	job.Unlock()
+
+	return []*Job{job}
+}
+
+// allowedItemJob returns the item's job and stats if the item is currently in an
+// allowed state.
+func allowedItemJob(item *queue.Item, allowed map[queue.ItemState]bool) (*Job, *queue.ItemStats, bool) {
+	stats := item.Stats()
+	if !allowed[stats.State] {
+		return nil, stats, false
+	}
+
+	job, ok := item.Data().(*Job)
+
+	return job, stats, ok
 }
 
 // setupStatusStateUpdateListener creates a goroutine that pushes idempotent

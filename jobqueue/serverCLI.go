@@ -43,8 +43,26 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	"github.com/ugorji/go/codec"
 	"go.nanomsg.org/mangos/v3"
+)
+
+// request method names handled by the server's dispatchMethod. The companion
+// constants for the j* and subscription methods live alongside the client in
+// client.go (requestMethodStart etc.).
+const (
+	requestMethodPing          = "ping"
+	requestMethodAdd           = "add"
+	requestMethodReserve       = "reserve"
+	requestMethodGetByCmd      = "getbc"
+	requestMethodGetIncomplete = "getin"
+	requestMethodGetBadServers = "getbcs"
+
+	// schedGroupWithLimitParts is the number of parts a scheduler group splits
+	// into when it carries a limit-groups suffix (the group name and the limit
+	// groups).
+	schedGroupWithLimitParts = 2
 )
 
 type subscriptionCatchUpRecord struct {
@@ -405,910 +423,47 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		return errd
 	}
 
-	var (
-		sr    *serverResponse
-		srerr string
-		qerr  string
-	)
-
 	s.ssmutex.RLock()
 	up := s.up
 	drain := s.drain
 	s.ssmutex.RUnlock()
 
-	switch {
-	// check that the client making the request has the expected token
-	case (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping":
-		srerr = ErrPermissionDenied
-		qerr = "Client presented the wrong token"
-	case s.q == nil || (!up && !drain):
-		// the server just got shutdown
-		srerr = ErrClosedStop
-		qerr = "The server has been stopped"
-	default:
-		switch cr.Method {
-		case "ping":
-			// avoid a later race condition when we try to encode ServerInfo by
-			// doing the read here, copying it under read lock
-			s.ssmutex.RLock()
-
-			si := &ServerInfo{}
-			*si = *s.ServerInfo
-			s.ssmutex.RUnlock()
-
-			sr = &serverResponse{SInfo: si}
-		case "backup":
-			clog.Debug(ctx, "backup requested")
-			// make an io.Writer that writes to a byte slice, so we can return
-			// the db as that
-			var b bytes.Buffer
-
-			err := s.BackupDB(&b)
-			if err != nil {
-				srerr = ErrInternalError
-				qerr = err.Error()
-			} else {
-				sr = &serverResponse{DB: b.Bytes()}
-			}
-		case "pause":
-			clog.Debug(ctx, "pause requested")
-
-			paused, err := s.Pause()
-			if err != nil {
-				var jqerr Error
-				if errors.As(err, &jqerr) {
-					srerr = jqerr.Err
-				} else {
-					srerr = ErrInternalError
-				}
-
-				qerr = err.Error()
-			} else {
-				if paused {
-					clog.Info(ctx, "paused by request")
-				} else {
-					// clients are allowed to call pause as many times as they
-					// like, but a single resume call later should work, so we
-					// resume now to keep the internal pause counter at 1
-					resumed, err := s.Resume(ctx)
-					if err != nil {
-						clog.Error(ctx, "resume following an extraneous pause failed", "error", err)
-					} else if resumed {
-						clog.Error(ctx, "resumed incorrectly succeeded following a pause that did not")
-					}
-				}
-
-				sr = &serverResponse{SStats: s.GetServerStats()}
-			}
-		case "resume":
-			clog.Debug(ctx, "resume requested")
-
-			resumed, err := s.Resume(ctx)
-			if err != nil {
-				var jqerr Error
-				if errors.As(err, &jqerr) {
-					srerr = jqerr.Err
-				} else {
-					srerr = ErrInternalError
-				}
-
-				qerr = err.Error()
-			} else if resumed {
-				clog.Info(ctx, "resumed on request")
-			}
-		case "drain":
-			clog.Info(ctx, "drain requested")
-
-			err := s.Drain(ctx)
-			if err != nil {
-				srerr = ErrInternalError
-				qerr = err.Error()
-			} else {
-				sr = &serverResponse{SStats: s.GetServerStats()}
-			}
-		case "shutdown":
-			clog.Debug(ctx, "shutdown requested")
-			go s.Stop(ctx, true) // server stop can't complete while this client request is pending
-		case "upload":
-			// upload file to us
-			if cr.File == nil {
-				srerr = ErrBadRequest
-			} else {
-				data, err := decompress(cr.File)
-				if err != nil {
-					srerr = ErrInternalError
-					qerr = err.Error()
-				} else {
-					r := bytes.NewReader(data)
-
-					path, err := s.uploadFile(ctx, r, cr.Path)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					} else {
-						sr = &serverResponse{Path: path}
-					}
-				}
-			}
-		case "add":
-			// add jobs to the queue, and along side keep the environment variables
-			// they're supposed to execute under.
-			if cr.Env == nil || cr.Jobs == nil {
-				srerr = ErrBadRequest
-			} else {
-				// Store Env
-				envkey, err := s.db.storeEnv(cr.Env)
-				if err != nil {
-					srerr = ErrDBError
-					qerr = err.Error()
-				} else if srerr == "" {
-					// create the jobs server-side
-					added, dups, alreadyComplete, warnings, thisSrerr, err := s.createJobs(
-						ctx,
-						cr.Jobs,
-						envkey,
-						cr.IgnoreComplete,
-					)
-					if err != nil {
-						srerr = thisSrerr
-						qerr = err.Error()
-					} else {
-						clog.Debug(ctx, "added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
-
-						if cr.ReturnIDs {
-							jobs := s.inputToQueuedJobs(ctx, cr.Jobs)
-
-							var ids []string
-							for _, job := range jobs {
-								ids = append(ids, job.Key())
-							}
-
-							sr = &serverResponse{
-								Added:       added,
-								Existed:     dups + alreadyComplete,
-								AddedIDs:    ids,
-								AddWarnings: warnings,
-							}
-						} else {
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddWarnings: warnings}
-						}
-					}
-				}
-			}
-		case requestMethodSubscribe:
-			repGroup := ""
-			if cr.Job != nil {
-				repGroup = cr.Job.RepGroup
-			}
-
-			id, err := s.registerClientSubscription(cr.Keys, repGroup)
-			if err != nil {
-				srerr = ErrBadRequest
-				qerr = err.Error()
-
-				break
-			}
-
-			catchUp, catchUpErr := s.subscriptionCatchUpForRegistered(ctx, id, cr.Keys, repGroup)
-			if catchUpErr != nil {
-				s.unregisterClientSubscription(id)
-
-				srerr = ErrDBError
-				qerr = catchUpErr.Error()
-
-				break
-			}
-
-			sr = &serverResponse{SubscriptionID: id, JobUpdates: catchUp}
-		case requestMethodUnsubscribe:
-			if cr.SubscriptionID == "" {
-				srerr = ErrBadRequest
-
-				break
-			}
-
-			s.unregisterClientSubscription(cr.SubscriptionID)
-
-			sr = &serverResponse{}
-		case requestMethodWaitForUpdates:
-			if cr.SubscriptionID == "" {
-				srerr = ErrBadRequest
-
-				break
-			}
-
-			updates, err := s.waitForSubscriptionUpdates(cr.SubscriptionID, cr.Timeout)
-			if err != nil {
-				srerr = ErrBadRequest
-				qerr = err.Error()
-
-				break
-			}
-
-			sr = &serverResponse{JobUpdates: updates}
-		case "reserve":
-			// return the next ready job
-			if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
-				srerr = ErrBadRequest
-			} else if !drain {
-				// first just try to Reserve normally
-				var (
-					item *queue.Item
-					err  error
-				)
-
-				// don't proceed when we're expecting new/changed items
-				s.rpmutex.Lock()
-
-				var wch chan struct{}
-				if s.racPending || s.racRunning {
-					wch = make(chan struct{})
-					s.waitingReserves = append(s.waitingReserves, wch)
-				}
-				s.rpmutex.Unlock()
-
-				if wch != nil {
-					<-wch
-				}
-
-				skip := false
-
-				if cr.SchedulerGroup != "" {
-					// if this is the first job that the client is trying to
-					// reserve, and if we don't actually want any more clients
-					// working on this schedulerGroup, we'll just act as if
-					// nothing was ready. Likewise if in drain mode.
-					if cr.FirstReserve && s.rc != "" {
-						s.psgmutex.RLock()
-
-						if group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]; !existed || group.getCount() == 0 {
-							skip = true
-						}
-
-						s.psgmutex.RUnlock()
-					}
-				}
-
-				if !skip {
-					item, err = s.reserveWithLimits(ctx, cr.SchedulerGroup, cr.Timeout)
-					if err != nil {
-						var qerr queue.Error
-						if errors.As(err, &qerr) {
-							switch {
-							case errors.Is(qerr.Err, queue.ErrNothingReady):
-								srerr = ""
-							case errors.Is(qerr.Err, queue.ErrQueueClosed):
-								srerr = ErrQueueClosed
-							default:
-								srerr = ErrInternalError
-							}
-						}
-					}
-				}
-
-				if srerr == "" && item != nil {
-					// clean up any past state to have a fresh job ready to run
-					sjob := item.Data().(*Job)
-					sjob.Lock()
-					sjob.ReservedBy = cr.ClientID // *** we should unset this on moving out of run state, to save space
-					sjob.Exited = false
-					sjob.Pid = 0
-					sjob.Host = ""
-
-					var tnil time.Time
-
-					sjob.StartTime = tnil
-					sjob.EndTime = tnil
-					sjob.PeakRAM = 0
-					sjob.PeakDisk = 0
-					sjob.Exitcode = -1
-					sjob.killCalled = false
-					sgroup := sjob.schedulerGroup
-					retries := sjob.Retries
-					ub := sjob.UntilBuried
-					sjob.Unlock()
-
-					delay := s.setItemDelay(ctx, item.Key, retries, ub)
-
-					sjob.Lock()
-					sjob.DelayTime = delay
-					sjob.Unlock()
-
-					// make a copy of the job with some extra stuff filled in (that
-					// we don't want taking up memory here) for the client
-					job := s.itemToJob(ctx, item, false, true)
-					sr = &serverResponse{Job: job}
-					clog.Debug(ctx, "reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
-				}
-			} // else we'll return nothing, as if there were no jobs in the queue
-		case requestMethodStart:
-			// update the job's cmd-started-related properties
-			if cr.Job == nil {
-				srerr = ErrBadRequest
-
-				break
-			}
-
-			var job *Job
-
-			_, job, srerr = s.getij(cr, true)
-			if srerr == "" {
-				job.Lock()
-				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
-					srerr = ErrBadRequest
-					job.Unlock()
-				} else {
-					job.Host = cr.Job.Host
-					if job.Host != "" {
-						job.HostID = s.scheduler.HostToID(job.Host)
-					}
-
-					job.HostIP = cr.Job.HostIP
-					job.Pid = cr.Job.Pid
-					job.StartTime = time.Now()
-
-					var tend time.Time
-
-					job.EndTime = tend
-					job.Attempts++
-					job.Lost = false
-					job.State = JobStateRunning
-
-					job.Unlock()
-
-					// we'll save-to-disk that we started running this job, so
-					// recovery is possible after a crash
-					s.db.updateJobAfterChange(ctx, job)
-				}
-			}
-		case requestMethodTouch:
-			var (
-				job  *Job
-				item *queue.Item
-			)
-
-			item, job, srerr = s.getij(cr, true)
-			if srerr == "" {
-				// if kill has been called for this job, just return KillCalled
-				job.RLock()
-				killCalled := job.killCalled
-				lost := job.Lost
-				job.RUnlock()
-
-				if !killCalled {
-					// also just return killCalled if server has been set to
-					// kill all jobs
-					s.krmutex.RLock()
-					killCalled = s.killRunners
-					s.krmutex.RUnlock()
-				}
-
-				if !killCalled {
-					// else, update the job's ttr
-					err := s.q.Touch(item.Key)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					}
-
-					var counts []countContribution
-
-					if srerr == "" && lost {
-						job.Lock()
-						job.Lost = false
-						job.EndTime = time.Time{}
-						repGroup := job.RepGroup
-						job.Unlock()
-
-						// our changed callback won't be called, so this lost ->
-						// running transition's absolute count is recorded via the
-						// chokepoint below (the statusAllRepGroups aggregate is
-						// maintained internally).
-						counts = append(counts, countContribution{
-							from: JobStateLost, to: JobStateRunning, repGroup: repGroup, n: 1,
-						})
-					}
-
-					// route both projections through the single chokepoint: the
-					// lost -> running count (if recovering a lost job) and the
-					// live subscription update (if a snapshot is present). The two
-					// are independently conditioned, but pairing them here makes
-					// it impossible to record one without considering the other.
-					// No lock is held here (q.Touch released queue.mutex), and the
-					// emitter helpers manage their own job/subscription locking.
-					s.emitJobTransition(counts, func() {
-						if srerr != "" || !s.liveJTouchEnabled() || !liveSnapshotPresent(cr.JobEndState) {
-							return
-						}
-
-						applyLiveSnapshot(job, cr.JobEndState)
-
-						update, err := jobUpdateFromLiveJob(job)
-						if err != nil {
-							clog.Warn(ctx, "failed to build live subscription update", "err", err)
-						} else {
-							s.enqueueSubscriptionUpdate(update, false)
-						}
-					})
-				}
-
-				sr = &serverResponse{KillCalled: killCalled}
-			}
-		case "jarchive":
-			// remove the job from the queue, rpl and live bucket and add to
-			// complete bucket
-			var (
-				item *queue.Item
-				job  *Job
-			)
-
-			item, job, srerr = s.getij(cr, true)
-			if srerr == "" {
-				// first check the item is still in the run queue (eg. the job
-				// wasn't released by another process; unlike the other methods,
-				// queue package does not check we're in the run queue when
-				// Remove()ing, since you can remove from any queue)
-				job.updateAfterExit(cr.JobEndState, s.limiter)
-				job.Lock()
-
-				running := item.Stats().State == queue.ItemStateRun
-				switch {
-				case !running:
-					srerr = ErrBadJob
-					job.Unlock()
-				case !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero():
-					srerr = ErrBadRequest
-					job.Unlock()
-				default:
-					key := job.Key()
-					job.State = JobStateComplete
-					job.FailReason = ""
-
-					if cr.JobEndState != nil {
-						job.StdOutC = cr.JobEndState.Stdout
-						job.StdErrC = cr.JobEndState.Stderr
-					}
-
-					sgroup := job.schedulerGroup
-					rgroup := job.RepGroup
-					job.Unlock()
-
-					err := s.db.archiveJob(ctx, key, job)
-					if err != nil {
-						srerr = ErrDBError
-						qerr = err.Error()
-					} else {
-						err = s.q.Remove(ctx, key)
-						if err != nil {
-							srerr = ErrInternalError
-							qerr = err.Error()
-						} else {
-							s.rpl.Lock()
-							s.rpl.Delete(rgroup, key)
-							s.rpl.Unlock()
-							clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
-							s.decrementGroupCount(ctx, sgroup, 1)
-						}
-					}
-				}
-			}
-		case "jrelease":
-			// move the job from the run queue to the delay queue, unless it has
-			// failed too many times, in which case bury
-			var job *Job
-
-			_, job, srerr = s.getij(cr, false)
-			if srerr == "" {
-				if cr.JobEndState == nil {
-					cr.JobEndState = &JobEndState{}
-				}
-
-				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, false)
-				if errq != nil {
-					srerr = ErrInternalError
-
-					clog.Warn(ctx, "releaseJob failed", "err", errq)
-					qerr = errq.Error()
-				}
-			}
-		case "jbury":
-			// move the job from the run queue to the bury queue
-			var job *Job
-
-			_, job, srerr = s.getij(cr, false)
-			if srerr == "" {
-				if cr.JobEndState == nil {
-					cr.JobEndState = &JobEndState{}
-				}
-
-				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, true)
-				if errq != nil {
-					srerr = ErrInternalError
-
-					clog.Warn(ctx, "releaseJob to bury failed", "err", errq)
-					qerr = errq.Error()
-				}
-			}
-		case "jkick":
-			// move the jobs from the bury queue to the ready queue; unlike the
-			// other j* methods, client doesn't have to be the Reserve() owner
-			// of these jobs, and we don't want the "in run queue" test
-			if cr.Keys == nil {
-				srerr = ErrBadRequest
-			} else {
-				var jobs []*Job
-
-				for _, key := range cr.Keys {
-					item, err := s.q.Get(key)
-					if err != nil || item.Stats().State != queue.ItemStateBury {
-						continue
-					}
-
-					jobs = append(jobs, item.Data().(*Job))
-				}
-
-				kicked := s.kickJobs(ctx, jobs)
-				sr = &serverResponse{Existed: kicked}
-			}
-		case "jsuspend":
-			// suspend eligible jobs; client doesn't have to be the Reserve()
-			// owner and ineligible or missing keys are ignored.
-			if cr.Keys == nil {
-				srerr = ErrBadRequest
-			} else {
-				suspended := s.suspendJobs(ctx, cr.Keys)
-				clog.Debug(ctx, "suspended jobs", "count", suspended)
-				sr = &serverResponse{Existed: suspended}
-			}
-		case "jresume":
-			// resume suspended jobs; client doesn't have to be the Reserve()
-			// owner and ineligible or missing keys are ignored.
-			if cr.Keys == nil {
-				srerr = ErrBadRequest
-			} else {
-				resumed := s.resumeJobs(ctx, cr.Keys)
-				clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
-				sr = &serverResponse{Existed: resumed}
-			}
-		case "jdel":
-			// remove the jobs from the bury/delay/dependent/ready queue and the
-			// live bucket
-			if cr.Keys == nil {
-				srerr = ErrBadRequest
-			} else {
-				var jobs []*Job
-
-				for _, key := range cr.Keys {
-					item, err := s.q.Get(key)
-					if err != nil || item == nil {
-						continue
-					}
-
-					iState := item.Stats().State
-					if iState == queue.ItemStateRun {
-						continue
-					}
-
-					jobs = append(jobs, item.Data().(*Job))
-				}
-
-				deleted := s.deleteJobs(ctx, jobs)
-				clog.Debug(ctx, "deleted jobs", "count", len(deleted))
-				sr = &serverResponse{Existed: len(deleted)}
-			}
-		case "jmod":
-			// modify jobs in the bury/delay/dependent/ready queue and the
-			// live bucket
-			if cr.Keys == nil || cr.Modifier == nil {
-				srerr = ErrBadRequest
-			} else {
-				// to avoid race conditions with jobs that are currently
-				// pending, but become running in the middle of us trying to
-				// modify them, we first pause the server, and resume it
-				// afterwards
-				paused, err := s.Pause()
-				if err != nil {
-					var jqerr Error
-					if errors.As(err, &jqerr) {
-						srerr = jqerr.Err
-					} else {
-						srerr = ErrInternalError
-					}
-
-					qerr = err.Error()
-				} else if paused {
-					clog.Debug(ctx, "modify requested, paused server")
-				} else {
-					clog.Debug(ctx, "modify requested")
-				}
-
-				if err == nil {
-					var toModifyJobs []*Job
-
-					toModifyKeys := make(map[string]*Job)
-
-					for _, jobkey := range cr.Keys {
-						item, err := s.q.Get(jobkey)
-						if err != nil || item == nil {
-							continue
-						}
-
-						iState := item.Stats().State
-						if iState == queue.ItemStateRun {
-							continue
-						}
-
-						toModifyJobs = append(toModifyJobs, item.Data().(*Job))
-						toModifyKeys[jobkey] = item.Data().(*Job)
-					}
-
-					modified, err := cr.Modifier.Modify(toModifyJobs, s)
-					if err != nil {
-						var jqerr Error
-						if errors.As(err, &jqerr) {
-							srerr = jqerr.Err
-						} else {
-							srerr = ErrInternalError
-						}
-
-						qerr = err.Error()
-					}
-
-					if err == nil && len(modified) > 0 {
-						var toModify []*Job
-
-						for _, old := range modified {
-							job := toModifyKeys[old]
-							if job != nil {
-								toModify = append(toModify, job)
-							}
-						}
-
-						// additional handling of changed limit groups
-						if cr.Modifier.LimitGroupsSet {
-							limitGroups := make(map[string]*limiter.GroupData)
-							for _, job := range toModify {
-								s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
-							}
-
-							err := s.storeLimitGroups(limitGroups)
-							if err != nil {
-								clog.Error(ctx, "failed to store limit groups", "err", err)
-							}
-						}
-
-						// update changed keys in the queue and in our rpl lookup
-						keyToRP := make(map[string]string)
-						for _, job := range toModify {
-							keyToRP[job.Key()] = job.RepGroup
-						}
-
-						s.rpl.Lock()
-						for new, old := range modified {
-							if old == new {
-								continue
-							}
-
-							errc := s.q.ChangeKey(old, new)
-							if errc != nil {
-								clog.Error(ctx, "failed to change a job key in the queue", "err", errc)
-							}
-
-							rp := keyToRP[new]
-							s.rpl.Delete(rp, old)
-							s.rpl.Add(rp, new)
-						}
-						s.rpl.Unlock()
-
-						// update db live bucket and dep lookups
-						if len(toModify) > 0 {
-							oldKeys := make([]string, len(toModify))
-							for i, job := range toModify {
-								oldKeys[i] = modified[job.Key()]
-							}
-
-							errm := s.db.modifyLiveJobs(ctx, oldKeys, toModify)
-							if errm != nil {
-								clog.Error(ctx, "job modification in database failed", "err", errm)
-							} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
-								// if we're changing the jobs these jobs are
-								// dependant upon or their priority, that must be
-								// reflected in the queue as well
-								for _, job := range toModify {
-									deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
-									if depErr != nil {
-										clog.Error(ctx, "failed to get job dependencies", "err", depErr)
-
-										continue
-									}
-
-									job.setWaitingForDepGroups(waitingForDepGroups)
-
-									err = s.q.Update(
-										ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
-										0*time.Second, s.itemTTRDuration(), deps,
-									)
-									if err != nil {
-										clog.Error(ctx, "failed to modify a job in the queue", "err", err)
-									}
-								}
-							}
-						}
-					}
-
-					sr = &serverResponse{Modified: modified}
-
-					// now resume the server again
-					resumed, err := s.Resume(ctx)
-					if err != nil {
-						clog.Error(ctx, err.Error())
-					} else if resumed {
-						clog.Debug(ctx, "modify completed, resumed server", "count", len(modified))
-					} else {
-						clog.Debug(ctx, "modify completed", "count", len(modified))
-					}
-				}
-			}
-		case "jkill":
-			// set the killCalled property on the jobs, to change the subsequent
-			// behaviour of jtouch; as per jkick, client doesn't have to be the
-			// Reserve() owner of these jobs, though we do want the "in run
-			// queue" test
-			if cr.Keys == nil {
-				srerr = ErrBadRequest
-			} else {
-				killable := 0
-
-				for _, jobkey := range cr.Keys {
-					k, err := s.killJob(ctx, jobkey)
-					if err != nil {
-						continue
-					}
-
-					if k {
-						killable++
-					}
-				}
-
-				clog.Debug(ctx, "killed jobs", "count", killable)
-				sr = &serverResponse{Existed: killable}
-			}
-		case "getbc":
-			// get jobs by their keys (which come from their Cmds & Cwds)
-			if cr.Keys == nil {
-				srerr = ErrBadRequest
-			} else {
-				var jobs []*Job
-
-				jobs, srerr, qerr = s.getJobsByKeys(ctx, cr.Keys, cr.GetStd, cr.GetEnv)
-				if len(jobs) > 0 {
-					sr = &serverResponse{Jobs: jobs}
-				}
-			}
-		case "getbr":
-			// get jobs by their RepGroup
-			if cr.Job == nil || cr.Job.RepGroup == "" {
-				srerr = ErrBadRequest
-			} else {
-				var jobs []*Job
-
-				opts := repGroupOptions{
-					RepGroup: cr.Job.RepGroup,
-					Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
-					limitJobsOptions: limitJobsOptions{
-						Limit:               cr.Limit,
-						State:               cr.State,
-						GetStd:              cr.GetStd,
-						GetEnv:              cr.GetEnv,
-						WaitingForDepGroups: cr.WaitingForDepGroups,
-					},
-				}
-
-				jobs, srerr, qerr = s.getJobsByRepGroup(ctx, opts)
-				if len(jobs) > 0 {
-					sr = &serverResponse{Jobs: jobs}
-				}
-			}
-		case "getrs":
-			var repGroup string
-			if cr.Job != nil {
-				repGroup = cr.Job.RepGroup
-			}
-
-			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
-			summaries, serr, qe := s.getStatusByRepGroup(repGroupStatusOptions{
-				RepGroup:             repGroup,
-				Match:                match,
-				States:               cr.States,
-				IncludeComplete:      cr.IncludeComplete,
-				IncludeStatusDetails: cr.IncludeStatusDetails,
-			})
-			srerr = serr
-			qerr = qe
-
-			if srerr == "" {
-				sr = &serverResponse{StatusSummaries: summaries}
-			}
-		case "getin":
-			// get incomplete jobs in the jobqueue, optionally filtered by rep group
-			var repGroup string
-			if cr.Job != nil {
-				repGroup = cr.Job.RepGroup
-			}
-
-			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
-
-			jobs := s.getJobsCurrent(ctx, repGroup, match, cr.Limit, cr.State,
-				cr.GetStd, cr.GetEnv, cr.WaitingForDepGroups)
-			if len(jobs) > 0 {
-				sr = &serverResponse{Jobs: jobs}
-			}
-		case "getlct":
-			if cr.Job == nil || cr.Job.RepGroup == "" {
-				srerr = ErrBadRequest
-
-				break
-			}
-
-			match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
-			m, serr, qe := s.getLastCompletionTimeByRepGroup(cr.Job.RepGroup,
-				match)
-			srerr = serr
-			qerr = qe
-
-			if srerr == "" {
-				sr = &serverResponse{CompletionTimes: m}
-			}
-		case "getbcs":
-			servers := s.getBadServers()
-
-			if cr.ConfirmDeadCloudServers {
-				confirmed, jobs := s.killBadCloudServers(ctx, servers, cr.CloudServerID)
-				sr = &serverResponse{BadServers: confirmed, Jobs: jobs}
-			} else {
-				sr = &serverResponse{BadServers: servers}
-			}
-		case "dch":
-			if cr.DestroyCloudHost != "" {
-				server, jobs := s.killCloudServer(ctx, cr.DestroyCloudHost)
-				if server != nil {
-					sr = &serverResponse{BadServers: []*BadServer{server}, Jobs: jobs}
-				}
-			} else {
-				srerr = ErrBadRequest
-			}
-		case "getsetlg":
-			if cr.LimitGroup == "" {
-				srerr = ErrBadRequest
-			} else {
-				limit, serr, err := s.getSetLimitGroup(ctx, cr.LimitGroup)
-				if err != nil {
-					srerr = serr
-					qerr = err.Error()
-				} else {
-					sr = &serverResponse{Limit: int(limit.Limit())}
-				}
-			}
-		case "getlgs":
-			sr = &serverResponse{LimitGroups: s.limiter.GetLimits()}
-		default:
-			srerr = ErrUnknownCommand
-		}
+	var (
+		sr          *serverResponse
+		srerr, qerr string
+	)
+
+	if srerr, qerr = s.validateRequest(cr, up, drain); srerr == "" {
+		sr, srerr, qerr = s.dispatchMethod(ctx, cr, drain)
 	}
 
+	return s.replyToClient(ctx, m, cr, sr, srerr, qerr)
+}
+
+// validateRequest checks a request's token and that the server can serve it,
+// returning non-empty error strings if it should be rejected.
+func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, string) {
+	// check that the client making the request has the expected token
+	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != requestMethodPing {
+		return ErrPermissionDenied, "Client presented the wrong token"
+	}
+
+	if s.q == nil || (!up && !drain) {
+		// the server just got shutdown
+		return ErrClosedStop, "The server has been stopped"
+	}
+
+	return "", ""
+}
+
+// replyToClient sends sr (or an error response) back to the client, returning a
+// detailed error for logging when srerr is set.
+func (s *Server) replyToClient(ctx context.Context, m *mangos.Message, cr *clientRequest,
+	sr *serverResponse, srerr, qerr string) error {
 	// on error, just send the error back to client and return a more detailed
 	// error for logging
 	if srerr != "" {
-		errr := s.reply(m, &serverResponse{Err: srerr})
-		if errr != nil {
-			clog.Warn(ctx, "reply to client failed", "err", errr)
-		}
-
-		if qerr == "" {
-			qerr = srerr
-		}
-
-		return Error{cr.Method, cr.key(), qerr}
+		return s.replyError(ctx, m, cr, srerr, qerr)
 	}
 
 	// some commands don't return anything to the client
@@ -1318,6 +473,1109 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 	// send reply to client
 	return s.reply(m, sr) // *** log failure to reply?
+}
+
+// replyError sends an error response to the client and returns a detailed
+// jobqueue Error for logging (defaulting qerr to srerr).
+func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRequest, srerr, qerr string) error {
+	if errr := s.reply(m, &serverResponse{Err: srerr}); errr != nil {
+		clog.Warn(ctx, "reply to client failed", "err", errr)
+	}
+
+	if qerr == "" {
+		qerr = srerr
+	}
+
+	return Error{cr.Method, cr.key(), qerr}
+}
+
+// handlePing returns server info for a ping request.
+func (s *Server) handlePing() *serverResponse {
+	// avoid a later race condition when we try to encode ServerInfo by doing
+	// the read here, copying it under read lock
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	si := &ServerInfo{}
+	*si = *s.ServerInfo
+
+	return &serverResponse{SInfo: si}
+}
+
+// handleBackup backs the database up into the response.
+func (s *Server) handleBackup(ctx context.Context) (*serverResponse, string, string) {
+	clog.Debug(ctx, "backup requested")
+	// make an io.Writer that writes to a byte slice, so we can return the db as
+	// that
+	var b bytes.Buffer
+
+	if err := s.BackupDB(&b); err != nil {
+		return nil, ErrInternalError, err.Error()
+	}
+
+	return &serverResponse{DB: b.Bytes()}, "", ""
+}
+
+// handlePause pauses the server, resuming immediately if it was already paused
+// so a later single resume works.
+func (s *Server) handlePause(ctx context.Context) (*serverResponse, string, string) {
+	clog.Debug(ctx, "pause requested")
+
+	paused, err := s.Pause()
+	if err != nil {
+		return nil, serverErrString(err), err.Error()
+	}
+
+	if paused {
+		clog.Info(ctx, "paused by request")
+	} else {
+		s.resumeAfterExtraneousPause(ctx)
+	}
+
+	return &serverResponse{SStats: s.GetServerStats()}, "", ""
+}
+
+// resumeAfterExtraneousPause resumes immediately after a pause that found the
+// server already paused, keeping the internal pause counter at 1 so a later
+// single resume works.
+func (s *Server) resumeAfterExtraneousPause(ctx context.Context) {
+	// clients are allowed to call pause as many times as they like, but a single
+	// resume call later should work, so we resume now to keep the internal pause
+	// counter at 1
+	resumed, err := s.Resume(ctx)
+	if err != nil {
+		clog.Error(ctx, "resume following an extraneous pause failed", "error", err)
+	} else if resumed {
+		clog.Error(ctx, "resumed incorrectly succeeded following a pause that did not")
+	}
+}
+
+// handleResume resumes the server.
+func (s *Server) handleResume(ctx context.Context) (*serverResponse, string, string) {
+	clog.Debug(ctx, "resume requested")
+
+	resumed, err := s.Resume(ctx)
+	if err != nil {
+		return nil, serverErrString(err), err.Error()
+	}
+
+	if resumed {
+		clog.Info(ctx, "resumed on request")
+	}
+
+	return nil, "", ""
+}
+
+// handleDrain puts the server into drain mode.
+func (s *Server) handleDrain(ctx context.Context) (*serverResponse, string, string) {
+	clog.Info(ctx, "drain requested")
+
+	if err := s.Drain(ctx); err != nil {
+		return nil, ErrInternalError, err.Error()
+	}
+
+	return &serverResponse{SStats: s.GetServerStats()}, "", ""
+}
+
+// handleUpload stores an uploaded (compressed) file and returns its path.
+func (s *Server) handleUpload(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// upload file to us
+	if cr.File == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	data, err := decompress(cr.File)
+	if err != nil {
+		return nil, ErrInternalError, err.Error()
+	}
+
+	path, err := s.uploadFile(ctx, bytes.NewReader(data), cr.Path)
+	if err != nil {
+		return nil, ErrInternalError, err.Error()
+	}
+
+	return &serverResponse{Path: path}, "", ""
+}
+
+// serverErrString maps an error to its jobqueue Err* string: the Err field of a
+// jobqueue Error, otherwise ErrInternalError.
+func serverErrString(err error) string {
+	var jqerr Error
+	if errors.As(err, &jqerr) {
+		return jqerr.Err
+	}
+
+	return ErrInternalError
+}
+
+// handleAdd stores the request's env and creates its jobs in the queue.
+func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// add jobs to the queue, and along side keep the environment variables
+	// they're supposed to execute under.
+	if cr.Env == nil || cr.Jobs == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	// Store Env
+	envkey, err := s.db.storeEnv(cr.Env)
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	// create the jobs server-side
+	added, dups, alreadyComplete, warnings, thisSrerr, err := s.createJobs(ctx, cr.Jobs, envkey, cr.IgnoreComplete)
+	if err != nil {
+		return nil, thisSrerr, err.Error()
+	}
+
+	clog.Debug(ctx, "added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
+
+	existed := dups + alreadyComplete
+
+	if !cr.ReturnIDs {
+		return &serverResponse{Added: added, Existed: existed, AddWarnings: warnings}, "", ""
+	}
+
+	jobs := s.inputToQueuedJobs(ctx, cr.Jobs)
+
+	var ids []string
+	for _, job := range jobs {
+		ids = append(ids, job.Key())
+	}
+
+	return &serverResponse{Added: added, Existed: existed, AddedIDs: ids, AddWarnings: warnings}, "", ""
+}
+
+// handleSubscribe registers a client subscription and returns its id plus the
+// catch-up updates for the already-known state of the subscribed jobs.
+func (s *Server) handleSubscribe(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	repGroup := ""
+	if cr.Job != nil {
+		repGroup = cr.Job.RepGroup
+	}
+
+	id, err := s.registerClientSubscription(cr.Keys, repGroup)
+	if err != nil {
+		return nil, ErrBadRequest, err.Error()
+	}
+
+	catchUp, catchUpErr := s.subscriptionCatchUpForRegistered(ctx, id, cr.Keys, repGroup)
+	if catchUpErr != nil {
+		s.unregisterClientSubscription(id)
+
+		return nil, ErrDBError, catchUpErr.Error()
+	}
+
+	return &serverResponse{SubscriptionID: id, JobUpdates: catchUp}, "", ""
+}
+
+// handleUnsubscribe unregisters the request's client subscription.
+func (s *Server) handleUnsubscribe(cr *clientRequest) (*serverResponse, string, string) {
+	if cr.SubscriptionID == "" {
+		return nil, ErrBadRequest, ""
+	}
+
+	s.unregisterClientSubscription(cr.SubscriptionID)
+
+	return &serverResponse{}, "", ""
+}
+
+// handleWaitForUpdates blocks until the subscription has updates (or times out)
+// and returns them.
+func (s *Server) handleWaitForUpdates(cr *clientRequest) (*serverResponse, string, string) {
+	if cr.SubscriptionID == "" {
+		return nil, ErrBadRequest, ""
+	}
+
+	updates, err := s.waitForSubscriptionUpdates(cr.SubscriptionID, cr.Timeout)
+	if err != nil {
+		return nil, ErrBadRequest, err.Error()
+	}
+
+	return &serverResponse{JobUpdates: updates}, "", ""
+}
+
+// handleReserve returns the next ready job for a client to run, or nothing (as
+// if the queue were empty) when draining or no suitable job is available.
+func (s *Server) handleReserve(ctx context.Context, cr *clientRequest, drain bool) (*serverResponse, string, string) {
+	if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
+		return nil, ErrBadRequest, ""
+	}
+
+	if drain {
+		// return nothing, as if there were no jobs in the queue
+		return nil, "", ""
+	}
+
+	s.waitForPendingReserves()
+
+	if s.skipReserve(cr) {
+		return nil, "", ""
+	}
+
+	item, srerr := s.reserveItem(ctx, cr)
+	if srerr != "" || item == nil {
+		return nil, srerr, ""
+	}
+
+	return s.respondWithReservedJob(ctx, cr, item), "", ""
+}
+
+// waitForPendingReserves blocks the caller until any in-progress ready-added
+// callback has finished, so reserves don't race new/changed items.
+func (s *Server) waitForPendingReserves() {
+	// don't proceed when we're expecting new/changed items
+	s.rpmutex.Lock()
+
+	var wch chan struct{}
+	if s.racPending || s.racRunning {
+		wch = make(chan struct{})
+		s.waitingReserves = append(s.waitingReserves, wch)
+	}
+	s.rpmutex.Unlock()
+
+	if wch != nil {
+		<-wch
+	}
+}
+
+// skipReserve reports whether a reserve should be treated as if nothing were
+// ready because the client's first reserve targets a scheduler group we no
+// longer want more clients working on.
+func (s *Server) skipReserve(cr *clientRequest) bool {
+	if cr.SchedulerGroup == "" || !cr.FirstReserve || s.rc == "" {
+		return false
+	}
+
+	// if this is the first job that the client is trying to reserve, and if we
+	// don't actually want any more clients working on this schedulerGroup, we'll
+	// just act as if nothing was ready. Likewise if in drain mode.
+	s.psgmutex.RLock()
+	defer s.psgmutex.RUnlock()
+
+	group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]
+
+	return !existed || group.getCount() == 0
+}
+
+// reserveItem reserves the next item for the client's scheduler group, mapping
+// queue errors to our Err* strings (an empty queue is not an error).
+func (s *Server) reserveItem(ctx context.Context, cr *clientRequest) (*queue.Item, string) {
+	item, err := s.reserveWithLimits(ctx, cr.SchedulerGroup, cr.Timeout)
+	if err == nil {
+		return item, ""
+	}
+
+	var qerr queue.Error
+	if !errors.As(err, &qerr) {
+		return nil, ""
+	}
+
+	switch {
+	case errors.Is(qerr.Err, queue.ErrNothingReady):
+		return nil, ""
+	case errors.Is(qerr.Err, queue.ErrQueueClosed):
+		return nil, ErrQueueClosed
+	default:
+		return nil, ErrInternalError
+	}
+}
+
+// respondWithReservedJob resets the reserved item's job to a fresh run state and
+// returns a client copy of it in a response.
+func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, item *queue.Item) *serverResponse {
+	// clean up any past state to have a fresh job ready to run
+	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
+
+	sgroup, retries, ub := resetJobForReservation(sjob, cr.ClientID)
+
+	delay := s.setItemDelay(ctx, item.Key, retries, ub)
+
+	sjob.Lock()
+	sjob.DelayTime = delay
+	sjob.Unlock()
+
+	// make a copy of the job with some extra stuff filled in (that we don't want
+	// taking up memory here) for the client
+	job := s.itemToJob(ctx, item, false, true)
+	clog.Debug(ctx, "reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
+
+	return &serverResponse{Job: job}
+}
+
+// resetJobForReservation clears a job's past run state ready for a fresh run by
+// the reserving client, returning its scheduler group, retries and
+// until-buried count (read under the same lock).
+func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
+	sjob.Lock()
+	defer sjob.Unlock()
+
+	sjob.ReservedBy = clientID // *** we should unset this on moving out of run state, to save space
+	sjob.Exited = false
+	sjob.Pid = 0
+	sjob.Host = ""
+	sjob.StartTime = time.Time{}
+	sjob.EndTime = time.Time{}
+	sjob.PeakRAM = 0
+	sjob.PeakDisk = 0
+	sjob.Exitcode = -1
+	sjob.killCalled = false
+
+	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
+}
+
+// handleStart records that a reserved job's command has started running.
+func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// update the job's cmd-started-related properties
+	if cr.Job == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	_, job, srerr := s.getij(cr, true)
+	if srerr != "" {
+		return nil, srerr, ""
+	}
+
+	if !s.applyJobStart(job, cr.Job) {
+		return nil, ErrBadRequest, ""
+	}
+
+	// we'll save-to-disk that we started running this job, so recovery is
+	// possible after a crash
+	s.db.updateJobAfterChange(ctx, job)
+
+	return nil, "", ""
+}
+
+// applyJobStart records the host/pid/start-time of a started job under lock,
+// returning false (changing nothing) if the request lacked a pid or host.
+func (s *Server) applyJobStart(job, crJob *Job) bool {
+	job.Lock()
+	defer job.Unlock()
+
+	if crJob.Pid <= 0 || crJob.Host == "" {
+		return false
+	}
+
+	job.Host = crJob.Host
+	if job.Host != "" {
+		job.HostID = s.scheduler.HostToID(job.Host)
+	}
+
+	job.HostIP = crJob.HostIP
+	job.Pid = crJob.Pid
+	job.StartTime = time.Now()
+	job.EndTime = time.Time{}
+	job.Attempts++
+	job.Lost = false
+	job.State = JobStateRunning
+
+	return true
+}
+
+// handleTouch refreshes a running job's TTR, recovering it from lost state and
+// applying any live status snapshot, or reports that kill has been called.
+func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	item, job, srerr := s.getij(cr, true)
+	if srerr != "" {
+		return nil, srerr, ""
+	}
+
+	// if kill has been called for this job, just return KillCalled
+	job.RLock()
+	killCalled := job.killCalled
+	lost := job.Lost
+	job.RUnlock()
+
+	if !killCalled {
+		// also just return killCalled if server has been set to kill all jobs
+		killCalled = s.inShutdown()
+	}
+
+	if killCalled {
+		return &serverResponse{KillCalled: true}, "", ""
+	}
+
+	srerr, qerr := s.touchJob(ctx, cr, item, job, lost)
+
+	return &serverResponse{KillCalled: false}, srerr, qerr
+}
+
+// touchJob updates the job's TTR and routes its lost->running count and any live
+// subscription snapshot through the single transition chokepoint.
+func (s *Server) touchJob(ctx context.Context, cr *clientRequest, item *queue.Item, job *Job,
+	lost bool) (string, string) {
+	var srerr, qerr string
+
+	// else, update the job's ttr
+	if err := s.q.Touch(item.Key); err != nil {
+		srerr = ErrInternalError
+		qerr = err.Error()
+	}
+
+	var counts []countContribution
+
+	if srerr == "" && lost {
+		counts = append(counts, s.recoverLostTouchedJob(job))
+	}
+
+	// route both projections through the single chokepoint: the lost -> running
+	// count (if recovering a lost job) and the live subscription update (if a
+	// snapshot is present). The two are independently conditioned, but pairing
+	// them here makes it impossible to record one without considering the other.
+	// No lock is held here (q.Touch released queue.mutex), and the emitter
+	// helpers manage their own job/subscription locking.
+	s.emitJobTransition(counts, func() {
+		s.emitLiveTouchSnapshot(ctx, cr, job, srerr)
+	})
+
+	return srerr, qerr
+}
+
+// emitLiveTouchSnapshot applies any live status snapshot from a touch request to
+// job and enqueues a subscription update, unless the touch failed or live touch
+// updates are disabled/absent.
+func (s *Server) emitLiveTouchSnapshot(ctx context.Context, cr *clientRequest, job *Job, srerr string) {
+	if srerr != "" || !s.liveJTouchEnabled() || !liveSnapshotPresent(cr.JobEndState) {
+		return
+	}
+
+	applyLiveSnapshot(job, cr.JobEndState)
+
+	update, err := jobUpdateFromLiveJob(job)
+	if err != nil {
+		clog.Warn(ctx, "failed to build live subscription update", "err", err)
+	} else {
+		s.enqueueSubscriptionUpdate(update, false)
+	}
+}
+
+// recoverLostTouchedJob clears a lost job's lost state on touch and returns the
+// lost->running count contribution to record.
+func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
+	job.Lock()
+	job.Lost = false
+	job.EndTime = time.Time{}
+	repGroup := job.RepGroup
+	job.Unlock()
+
+	// our changed callback won't be called, so this lost -> running transition's
+	// absolute count is recorded via the chokepoint (the statusAllRepGroups
+	// aggregate is maintained internally).
+	return countContribution{from: JobStateLost, to: JobStateRunning, repGroup: repGroup, n: 1}
+}
+
+// handleArchive removes a successfully completed job from the queue, rpl and
+// live bucket, and adds it to the complete bucket.
+func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// remove the job from the queue, rpl and live bucket and add to complete
+	// bucket
+	item, job, srerr := s.getij(cr, true)
+	if srerr != "" {
+		return nil, srerr, ""
+	}
+
+	// first check the item is still in the run queue (eg. the job wasn't
+	// released by another process; unlike the other methods, queue package does
+	// not check we're in the run queue when Remove()ing, since you can remove
+	// from any queue)
+	job.updateAfterExit(cr.JobEndState, s.limiter)
+
+	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState)
+	if srerr != "" {
+		return nil, srerr, ""
+	}
+
+	return s.archiveCompletedJob(ctx, job, key, rgroup, sgroup)
+}
+
+// markJobComplete validates that a job is a successfully exited running job and,
+// if so, marks it complete under lock, returning its key, rep group and
+// scheduler group (or an Err* string if it cannot be archived).
+func markJobComplete(item *queue.Item, job *Job, endState *JobEndState) (key, rgroup, sgroup, srerr string) {
+	job.Lock()
+	defer job.Unlock()
+
+	switch {
+	case item.Stats().State != queue.ItemStateRun:
+		return "", "", "", ErrBadJob
+	case !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero():
+		return "", "", "", ErrBadRequest
+	}
+
+	job.State = JobStateComplete
+	job.FailReason = ""
+
+	if endState != nil {
+		job.StdOutC = endState.Stdout
+		job.StdErrC = endState.Stderr
+	}
+
+	return job.Key(), job.RepGroup, job.schedulerGroup, ""
+}
+
+// archiveCompletedJob persists a completed job to the complete bucket and
+// removes it from the live queue and lookups.
+func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup, sgroup string) (
+	*serverResponse, string, string,
+) {
+	if err := s.db.archiveJob(ctx, key, job); err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	if err := s.q.Remove(ctx, key); err != nil {
+		return nil, ErrInternalError, err.Error()
+	}
+
+	s.rpl.Lock()
+	s.rpl.Delete(rgroup, key)
+	s.rpl.Unlock()
+	clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
+	s.decrementGroupCount(ctx, sgroup, 1)
+
+	return nil, "", ""
+}
+
+// handleRelease moves a job from the run queue to the delay queue, or buries it
+// (if forceBury, or it has failed too many times).
+func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
+	failMsg string) (*serverResponse, string, string) {
+	_, job, srerr := s.getij(cr, false)
+	if srerr != "" {
+		return nil, srerr, ""
+	}
+
+	if cr.JobEndState == nil {
+		cr.JobEndState = &JobEndState{}
+	}
+
+	if errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, forceBury); errq != nil {
+		clog.Warn(ctx, failMsg, "err", errq)
+
+		return nil, ErrInternalError, errq.Error()
+	}
+
+	return nil, "", ""
+}
+
+// handleKick moves the keyed jobs from the bury queue to the ready queue. Unlike
+// the other j* methods the client need not be the reserver and there is no
+// "in run queue" test.
+func (s *Server) handleKick(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.Keys == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	var jobs []*Job
+
+	for _, key := range cr.Keys {
+		item, err := s.q.Get(key)
+		if err != nil || item.Stats().State != queue.ItemStateBury {
+			continue
+		}
+
+		if job, ok := item.Data().(*Job); ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return &serverResponse{Existed: s.kickJobs(ctx, jobs)}, "", ""
+}
+
+// handleDelete removes the keyed non-running jobs from the queue and live
+// bucket.
+func (s *Server) handleDelete(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// remove the jobs from the bury/delay/dependent/ready queue and the live
+	// bucket
+	if cr.Keys == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	jobs := s.nonRunningJobsByKeys(cr.Keys)
+
+	deleted := s.deleteJobs(ctx, jobs)
+	clog.Debug(ctx, "deleted jobs", "count", len(deleted))
+
+	return &serverResponse{Existed: len(deleted)}, "", ""
+}
+
+// nonRunningJobsByKeys returns the jobs for the given keys that are present in
+// the queue and not currently running.
+func (s *Server) nonRunningJobsByKeys(keys []string) []*Job {
+	var jobs []*Job
+
+	for _, key := range keys {
+		item, err := s.q.Get(key)
+		if err != nil || item == nil || item.Stats().State == queue.ItemStateRun {
+			continue
+		}
+
+		if job, ok := item.Data().(*Job); ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+// handleKill sets killCalled on the keyed jobs (changing the behaviour of a
+// subsequent touch). As per jkick the client need not be the reserver, but the
+// "in run queue" test still applies.
+func (s *Server) handleKill(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.Keys == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	killable := 0
+
+	for _, jobkey := range cr.Keys {
+		k, err := s.killJob(ctx, jobkey)
+		if err != nil {
+			continue
+		}
+
+		if k {
+			killable++
+		}
+	}
+
+	clog.Debug(ctx, "killed jobs", "count", killable)
+
+	return &serverResponse{Existed: killable}, "", ""
+}
+
+// handleModify modifies the keyed non-running jobs. The server is paused while
+// modifying to avoid racing jobs that become running mid-modification, and
+// resumed afterwards.
+func (s *Server) handleModify(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// modify jobs in the bury/delay/dependent/ready queue and the live bucket
+	if cr.Keys == nil || cr.Modifier == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	// to avoid race conditions with jobs that are currently pending, but become
+	// running in the middle of us trying to modify them, we first pause the
+	// server, and resume it afterwards
+	if srerr, qerr, ok := s.pauseForModify(ctx); !ok {
+		return nil, srerr, qerr
+	}
+
+	modified, srerr, qerr := s.modifyJobs(ctx, cr)
+
+	// now resume the server again
+	resumed, err := s.Resume(ctx)
+	switch {
+	case err != nil:
+		clog.Error(ctx, err.Error())
+	case resumed:
+		clog.Debug(ctx, "modify completed, resumed server", "count", len(modified))
+	default:
+		clog.Debug(ctx, "modify completed", "count", len(modified))
+	}
+
+	return &serverResponse{Modified: modified}, srerr, qerr
+}
+
+// pauseForModify pauses the server before a modify. ok is false (with error
+// strings set) only if pausing failed.
+func (s *Server) pauseForModify(ctx context.Context) (string, string, bool) {
+	paused, err := s.Pause()
+	if err != nil {
+		return serverErrString(err), err.Error(), false
+	}
+
+	if paused {
+		clog.Debug(ctx, "modify requested, paused server")
+	} else {
+		clog.Debug(ctx, "modify requested")
+	}
+
+	return "", "", true
+}
+
+// modifyJobs applies cr.Modifier to the keyed non-running jobs, persisting the
+// changes, and returns the old->new key mapping plus any error strings.
+func (s *Server) modifyJobs(ctx context.Context, cr *clientRequest) (map[string]string, string, string) {
+	toModifyJobs, toModifyKeys := s.collectModifiableJobs(cr.Keys)
+
+	modified, err := cr.Modifier.Modify(toModifyJobs, s)
+	if err != nil {
+		return modified, serverErrString(err), err.Error()
+	}
+
+	if len(modified) == 0 {
+		return modified, "", ""
+	}
+
+	var toModify []*Job
+
+	for _, old := range modified {
+		if job := toModifyKeys[old]; job != nil {
+			toModify = append(toModify, job)
+		}
+	}
+
+	s.persistModifiedJobs(ctx, cr, modified, toModify)
+
+	return modified, "", ""
+}
+
+// collectModifiableJobs returns the non-running jobs for the given keys, along
+// with a key->job map for the originally requested keys.
+func (s *Server) collectModifiableJobs(keys []string) ([]*Job, map[string]*Job) {
+	var toModifyJobs []*Job
+
+	toModifyKeys := make(map[string]*Job)
+
+	for _, jobkey := range keys {
+		item, err := s.q.Get(jobkey)
+		if err != nil || item == nil || item.Stats().State == queue.ItemStateRun {
+			continue
+		}
+
+		job, ok := item.Data().(*Job)
+		if !ok {
+			continue
+		}
+
+		toModifyJobs = append(toModifyJobs, job)
+		toModifyKeys[jobkey] = job
+	}
+
+	return toModifyJobs, toModifyKeys
+}
+
+// persistModifiedJobs stores changed limit groups, updates changed keys in the
+// queue and rpl lookup, and persists the modifications to the database.
+func (s *Server) persistModifiedJobs(ctx context.Context, cr *clientRequest,
+	modified map[string]string, toModify []*Job) {
+	// additional handling of changed limit groups
+	if cr.Modifier.LimitGroupsSet {
+		limitGroups := make(map[string]*limiter.GroupData)
+		for _, job := range toModify {
+			s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+		}
+
+		if err := s.storeLimitGroups(limitGroups); err != nil {
+			clog.Error(ctx, "failed to store limit groups", "err", err)
+		}
+	}
+
+	s.changeModifiedJobKeys(ctx, modified, toModify)
+
+	if len(toModify) > 0 {
+		s.persistModifiedJobsToDB(ctx, cr, modified, toModify)
+	}
+}
+
+// changeModifiedJobKeys applies the modified jobs' key changes to the queue and
+// the rpl lookup.
+func (s *Server) changeModifiedJobKeys(ctx context.Context, modified map[string]string, toModify []*Job) {
+	// update changed keys in the queue and in our rpl lookup
+	keyToRP := make(map[string]string)
+	for _, job := range toModify {
+		keyToRP[job.Key()] = job.RepGroup
+	}
+
+	s.rpl.Lock()
+	defer s.rpl.Unlock()
+
+	for newKey, oldKey := range modified {
+		if oldKey == newKey {
+			continue
+		}
+
+		if errc := s.q.ChangeKey(oldKey, newKey); errc != nil {
+			clog.Error(ctx, "failed to change a job key in the queue", "err", errc)
+		}
+
+		rp := keyToRP[newKey]
+		s.rpl.Delete(rp, oldKey)
+		s.rpl.Add(rp, newKey)
+	}
+}
+
+// persistModifiedJobsToDB writes the modified jobs to the database live bucket
+// and, if dependencies or priority changed, reflects that in the queue too.
+func (s *Server) persistModifiedJobsToDB(ctx context.Context, cr *clientRequest,
+	modified map[string]string, toModify []*Job) {
+	oldKeys := make([]string, len(toModify))
+	for i, job := range toModify {
+		oldKeys[i] = modified[job.Key()]
+	}
+
+	if errm := s.db.modifyLiveJobs(ctx, oldKeys, toModify); errm != nil {
+		clog.Error(ctx, "job modification in database failed", "err", errm)
+
+		return
+	}
+
+	if !cr.Modifier.DependenciesSet && !cr.Modifier.PrioritySet {
+		return
+	}
+
+	// if we're changing the jobs these jobs are dependant upon or their
+	// priority, that must be reflected in the queue as well
+	for _, job := range toModify {
+		s.reflectModifiedJobInQueue(ctx, job)
+	}
+}
+
+// reflectModifiedJobInQueue updates a modified job's dependencies in the queue.
+func (s *Server) reflectModifiedJobInQueue(ctx context.Context, job *Job) {
+	deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
+	if depErr != nil {
+		clog.Error(ctx, "failed to get job dependencies", "err", depErr)
+
+		return
+	}
+
+	job.setWaitingForDepGroups(waitingForDepGroups)
+
+	err := s.q.Update(
+		ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
+		0*time.Second, s.itemTTRDuration(), deps,
+	)
+	if err != nil {
+		clog.Error(ctx, "failed to modify a job in the queue", "err", err)
+	}
+}
+
+// handleGetByKeys gets jobs by their keys (which come from their Cmds & Cwds).
+func (s *Server) handleGetByKeys(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.Keys == nil {
+		return nil, ErrBadRequest, ""
+	}
+
+	jobs, srerr, qerr := s.getJobsByKeys(ctx, cr.Keys, cr.GetStd, cr.GetEnv)
+
+	return jobsResponse(jobs), srerr, qerr
+}
+
+// handleGetByRepGroup gets jobs by their RepGroup.
+func (s *Server) handleGetByRepGroup(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.Job == nil || cr.Job.RepGroup == "" {
+		return nil, ErrBadRequest, ""
+	}
+
+	opts := repGroupOptions{
+		RepGroup: cr.Job.RepGroup,
+		Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
+		limitJobsOptions: limitJobsOptions{
+			Limit:               cr.Limit,
+			State:               cr.State,
+			GetStd:              cr.GetStd,
+			GetEnv:              cr.GetEnv,
+			WaitingForDepGroups: cr.WaitingForDepGroups,
+		},
+	}
+
+	jobs, srerr, qerr := s.getJobsByRepGroup(ctx, opts)
+
+	return jobsResponse(jobs), srerr, qerr
+}
+
+// handleGetRepGroupStatus returns status summaries for a rep group.
+func (s *Server) handleGetRepGroupStatus(cr *clientRequest) (*serverResponse, string, string) {
+	repGroup := ""
+	if cr.Job != nil {
+		repGroup = cr.Job.RepGroup
+	}
+
+	summaries, srerr, qerr := s.getStatusByRepGroup(repGroupStatusOptions{
+		RepGroup:             repGroup,
+		Match:                normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
+		States:               cr.States,
+		IncludeComplete:      cr.IncludeComplete,
+		IncludeStatusDetails: cr.IncludeStatusDetails,
+	})
+	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	return &serverResponse{StatusSummaries: summaries}, "", qerr
+}
+
+// handleGetIncomplete gets incomplete jobs, optionally filtered by rep group.
+func (s *Server) handleGetIncomplete(ctx context.Context, cr *clientRequest) *serverResponse {
+	repGroup := ""
+	if cr.Job != nil {
+		repGroup = cr.Job.RepGroup
+	}
+
+	match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
+
+	jobs := s.getJobsCurrent(ctx, repGroup, match, cr.Limit, cr.State,
+		cr.GetStd, cr.GetEnv, cr.WaitingForDepGroups)
+
+	return jobsResponse(jobs)
+}
+
+// handleGetLastCompletionTime returns the last completion times for a rep group.
+func (s *Server) handleGetLastCompletionTime(cr *clientRequest) (*serverResponse, string, string) {
+	if cr.Job == nil || cr.Job.RepGroup == "" {
+		return nil, ErrBadRequest, ""
+	}
+
+	match := normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search)
+
+	m, srerr, qerr := s.getLastCompletionTimeByRepGroup(cr.Job.RepGroup, match)
+	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	return &serverResponse{CompletionTimes: m}, "", qerr
+}
+
+// handleGetBadServers returns the current bad servers, optionally confirming
+// them dead (and killing their jobs) first.
+func (s *Server) handleGetBadServers(ctx context.Context, cr *clientRequest) *serverResponse {
+	servers := s.getBadServers()
+
+	if cr.ConfirmDeadCloudServers {
+		confirmed, jobs := s.killBadCloudServers(ctx, servers, cr.CloudServerID)
+
+		return &serverResponse{BadServers: confirmed, Jobs: jobs}
+	}
+
+	return &serverResponse{BadServers: servers}
+}
+
+// handleDestroyCloudHost destroys a named cloud host and returns it plus its
+// affected jobs.
+func (s *Server) handleDestroyCloudHost(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.DestroyCloudHost == "" {
+		return nil, ErrBadRequest, ""
+	}
+
+	server, jobs := s.killCloudServer(ctx, cr.DestroyCloudHost)
+	if server == nil {
+		return nil, "", ""
+	}
+
+	return &serverResponse{BadServers: []*BadServer{server}, Jobs: jobs}, "", ""
+}
+
+// handleGetSetLimitGroup gets or sets a limit group and returns its limit.
+func (s *Server) handleGetSetLimitGroup(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.LimitGroup == "" {
+		return nil, ErrBadRequest, ""
+	}
+
+	limit, serr, err := s.getSetLimitGroup(ctx, cr.LimitGroup)
+	if err != nil {
+		return nil, serr, err.Error()
+	}
+
+	return &serverResponse{Limit: int(limit.Limit())}, "", ""
+}
+
+// jobsResponse returns a response containing jobs, or nil if there are none.
+func jobsResponse(jobs []*Job) *serverResponse {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	return &serverResponse{Jobs: jobs}
+}
+
+// dispatchMethod runs the handler for the client request's method, returning the
+// response (if any) and any server/detailed error strings.
+//
+//nolint:cyclop,gocyclo,funlen // a flat command dispatch switch; each case delegates to a handler
+func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bool) (
+	sr *serverResponse, srerr, qerr string,
+) {
+	switch cr.Method {
+	case requestMethodPing:
+		return s.handlePing(), "", ""
+	case "backup":
+		return s.handleBackup(ctx)
+	case "pause":
+		return s.handlePause(ctx)
+	case "resume":
+		return s.handleResume(ctx)
+	case "drain":
+		return s.handleDrain(ctx)
+	case "shutdown":
+		clog.Debug(ctx, "shutdown requested")
+		go s.Stop(ctx, true) // server stop can't complete while this client request is pending
+
+		return nil, "", ""
+	case "upload":
+		return s.handleUpload(ctx, cr)
+	case requestMethodAdd:
+		return s.handleAdd(ctx, cr)
+	case requestMethodSubscribe:
+		return s.handleSubscribe(ctx, cr)
+	case requestMethodUnsubscribe:
+		return s.handleUnsubscribe(cr)
+	case requestMethodWaitForUpdates:
+		return s.handleWaitForUpdates(cr)
+	case requestMethodReserve:
+		// return the next ready job
+		return s.handleReserve(ctx, cr, drain)
+	case requestMethodStart:
+		return s.handleStart(ctx, cr)
+	case requestMethodTouch:
+		return s.handleTouch(ctx, cr)
+	case "jarchive":
+		return s.handleArchive(ctx, cr)
+	case "jrelease":
+		return s.handleRelease(ctx, cr, false, "releaseJob failed")
+	case "jbury":
+		return s.handleRelease(ctx, cr, true, "releaseJob to bury failed")
+	case "jkick":
+		return s.handleKick(ctx, cr)
+	case "jsuspend":
+		// suspend eligible jobs; client doesn't have to be the Reserve() owner
+		// and ineligible or missing keys are ignored.
+		if cr.Keys == nil {
+			return nil, ErrBadRequest, ""
+		}
+
+		suspended := s.suspendJobs(ctx, cr.Keys)
+		clog.Debug(ctx, "suspended jobs", "count", suspended)
+
+		return &serverResponse{Existed: suspended}, "", ""
+	case "jresume":
+		// resume suspended jobs; client doesn't have to be the Reserve() owner
+		// and ineligible or missing keys are ignored.
+		if cr.Keys == nil {
+			return nil, ErrBadRequest, ""
+		}
+
+		resumed := s.resumeJobs(ctx, cr.Keys)
+		clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
+
+		return &serverResponse{Existed: resumed}, "", ""
+	case "jdel":
+		return s.handleDelete(ctx, cr)
+	case "jmod":
+		return s.handleModify(ctx, cr)
+	case "jkill":
+		return s.handleKill(ctx, cr)
+	case requestMethodGetByCmd:
+		return s.handleGetByKeys(ctx, cr)
+	case "getbr":
+		return s.handleGetByRepGroup(ctx, cr)
+	case "getrs":
+		return s.handleGetRepGroupStatus(cr)
+	case requestMethodGetIncomplete:
+		return s.handleGetIncomplete(ctx, cr), "", ""
+	case "getlct":
+		return s.handleGetLastCompletionTime(cr)
+	case requestMethodGetBadServers:
+		return s.handleGetBadServers(ctx, cr), "", ""
+	case "dch":
+		return s.handleDestroyCloudHost(ctx, cr)
+	case "getsetlg":
+		return s.handleGetSetLimitGroup(ctx, cr)
+	case "getlgs":
+		return &serverResponse{LimitGroups: s.limiter.GetLimits()}, "", ""
+	default:
+		return nil, ErrUnknownCommand, ""
+	}
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
@@ -1333,7 +1591,10 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 		return item, nil, ErrBadJob
 	}
 
-	job := item.Data().(*Job)
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return item, nil, ErrBadJob
+	}
 
 	if cr.ClientID != job.ReservedBy {
 		return item, job, ErrMustReserve
@@ -1376,19 +1637,40 @@ func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, until
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, getEnv bool) *Job {
-	sjob := item.Data().(*Job)
+	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 	sjob.RLock()
 
-	stats := item.Stats()
+	state := s.itemStateToJobState(item.Stats().State, sjob.Lost)
+	if state == JobStateReserved && !sjob.StartTime.IsZero() {
+		state = JobStateRunning
+	}
 
-	state := s.itemStateToJobState(stats.State, sjob.Lost)
+	// we're going to fill in some properties of the Job and return it to client,
+	// but don't want those properties set here for us, so we make a new Job and
+	// fill stuff in that
+	job := copyJobForClient(sjob, state)
 
-	// we're going to fill in some properties of the Job and return
-	// it to client, but don't want those properties set here for
-	// us, so we make a new Job and fill stuff in that
+	if getStd && (state == JobStateReserved || state == JobStateRunning || state == JobStateLost) {
+		job.StdErrC = sjob.StdErrC
+		job.StdOutC = sjob.StdOutC
+	}
+
+	sjob.RUnlock()
+	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+
+	return job
+}
+
+// copyJobForClient returns a copy of sjob (which must be read-locked) with the
+// given state, suitable for sending to a client. The requirements are deep
+// copied because the server mutates the original's.
+//
+//nolint:funlen // a flat field-by-field copy of the many-fielded Job struct
+func copyJobForClient(sjob *Job, state JobState) *Job {
 	req := &scheduler.Requirements{}
 	*req = *sjob.Requirements // copy reqs since server changes these, avoiding a race condition
-	job := &Job{
+
+	return &Job{
 		RepGroup:              sjob.RepGroup,
 		ReqGroup:              sjob.ReqGroup,
 		Group:                 sjob.Group,
@@ -1436,20 +1718,6 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		BsubMode:              sjob.BsubMode,
 		BsubID:                sjob.BsubID,
 	}
-
-	if state == JobStateReserved && !sjob.StartTime.IsZero() {
-		job.State = JobStateRunning
-	}
-
-	if getStd && (job.State == JobStateReserved || job.State == JobStateRunning || job.State == JobStateLost) {
-		job.StdErrC = sjob.StdErrC
-		job.StdOutC = sjob.StdOutC
-	}
-
-	sjob.RUnlock()
-	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
-
-	return job
 }
 
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
@@ -1514,39 +1782,63 @@ func (s *Server) subscriptionCatchUp(ctx context.Context, keys []string, repGrou
 // On success we reserve and return as normal. On failure, we act as if the
 // queue was empty.
 func (s *Server) reserveWithLimits(ctx context.Context, group string, wait time.Duration) (*queue.Item, error) {
-	var (
-		item        *queue.Item
-		err         error
-		limitGroups []string
-	)
-	if group != "" {
-		limitGroups = s.schedGroupToLimitGroups(group)
-		if len(limitGroups) > 0 {
-			// it is better to call Increment before Reserve and possibly use up
-			// the limit for up to wait period if there's no item in the queue,
-			// than it is to Reserve first and then Release if at the limit,
-			// because Releasing causes scheduler churn
-			t := time.Now()
-
-			if !s.limiter.Increment(ctx, limitGroups, wait) {
-				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
-			}
-
-			wait -= time.Since(t)
-		}
+	limitGroups, wait, ok := s.incrementReserveLimit(ctx, group, wait)
+	if !ok {
+		return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 	}
 
-	item, err = s.q.Reserve(group, wait)
+	item, err := s.q.Reserve(group, wait)
 
-	if len(limitGroups) > 0 {
-		if item == nil {
-			s.limiter.Decrement(limitGroups)
-		} else {
-			item.Data().(*Job).noteIncrementedLimitGroups(limitGroups)
-		}
-	}
+	s.noteReserveLimitGroups(item, limitGroups)
 
 	return item, err
+}
+
+// incrementReserveLimit determines a scheduler group's limit groups and, if any,
+// increments their usage before reserving (reducing wait by the time spent).
+// ok is false if the limit was reached, in which case the caller should act as
+// if the queue were empty.
+func (s *Server) incrementReserveLimit(ctx context.Context, group string,
+	wait time.Duration) ([]string, time.Duration, bool) {
+	if group == "" {
+		return nil, wait, true
+	}
+
+	limitGroups := s.schedGroupToLimitGroups(group)
+	if len(limitGroups) == 0 {
+		return limitGroups, wait, true
+	}
+
+	// it is better to call Increment before Reserve and possibly use up the
+	// limit for up to wait period if there's no item in the queue, than it is to
+	// Reserve first and then Release if at the limit, because Releasing causes
+	// scheduler churn
+	t := time.Now()
+
+	if !s.limiter.Increment(ctx, limitGroups, wait) {
+		return limitGroups, wait, false
+	}
+
+	return limitGroups, wait - time.Since(t), true
+}
+
+// noteReserveLimitGroups updates limit-group accounting after a reserve: it
+// decrements the groups if nothing was reserved, otherwise records the
+// increment on the reserved job.
+func (s *Server) noteReserveLimitGroups(item *queue.Item, limitGroups []string) {
+	if len(limitGroups) == 0 {
+		return
+	}
+
+	if item == nil {
+		s.limiter.Decrement(limitGroups)
+
+		return
+	}
+
+	if job, ok := item.Data().(*Job); ok {
+		job.noteIncrementedLimitGroups(limitGroups)
+	}
 }
 
 // schedGroupToLimitGroups takes a scheduler group that may be suffixed with
@@ -1554,7 +1846,7 @@ func (s *Server) reserveWithLimits(ctx context.Context, group string, wait time.
 // limit groups.
 func (s *Server) schedGroupToLimitGroups(group string) []string {
 	parts := strings.Split(group, jobSchedLimitGroupSeparator)
-	if len(parts) == 2 {
+	if len(parts) == schedGroupWithLimitParts {
 		return strings.Split(parts[1], jobLimitGroupSeparator)
 	}
 
