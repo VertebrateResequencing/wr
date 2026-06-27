@@ -586,8 +586,18 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 								return
 							}
 
-							if fourHundredCount == 0 {
-								fourHundredCount = scheduledGroupCount(server, "400:30:1:0")
+							// Track the PEAK simultaneously-scheduled count for this
+							// group rather than a single early snapshot. The count is
+							// the number of this group's jobs that still need a runner;
+							// it is highest right after the jobs are added (before any
+							// complete) and only falls as they finish. A single
+							// snapshot's value therefore depends on exactly when the
+							// first tick lands relative to that decay, so under a slow
+							// machine it can settle on the assertion boundary; the peak
+							// is the stable maximum the group actually reached and
+							// cannot land on a transient value.
+							if c := scheduledGroupCount(server, "400:30:1:0"); c > fourHundredCount {
+								fourHundredCount = c
 							}
 
 							continue
@@ -628,8 +638,22 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 					for {
 						select {
 						case <-ticker.C:
-							switch {
-							case twoHundredCount > 0 && !server.HasRunners(ctx):
+							// Track the PEAK simultaneously-scheduled count for the
+							// learned "200" group on every tick (see the first batch
+							// for why a peak is stable where a single snapshot is not).
+							// This group ends up holding the not-yet-run "400"-group
+							// jobs that get re-learned to the smaller memory size plus
+							// this second batch, so its peak comfortably exceeds half
+							// the first group's peak; the count then decays to 0 as
+							// they all complete.
+							if c := scheduledGroupCount(server, "200:30:1:0"); c > twoHundredCount {
+								twoHundredCount = c
+							}
+
+							// only check for completion once we've actually observed
+							// the group being scheduled, so the peak above is always
+							// captured before we can return
+							if twoHundredCount > 0 && !server.HasRunners(ctx) {
 								// check they're really all complete, since the
 								// switch to a new job array could leave us with no
 								// runners temporarily
@@ -641,8 +665,6 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 									return
 								}
-							case twoHundredCount == 0:
-								twoHundredCount = scheduledGroupCount(server, "200:30:1:0")
 							}
 
 							continue
