@@ -39,6 +39,36 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+func TestDBBatchTuning(t *testing.T) {
+	Convey("A freshly opened db uses bbolt's default batch tuning", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		So(testDB.bolt.MaxBatchDelay, ShouldEqual, 10*time.Millisecond)
+		So(testDB.bolt.MaxBatchSize, ShouldEqual, 1000)
+
+		Convey("setBatchTuning applies positive values to the live database", func() {
+			testDB.setBatchTuning(40*time.Millisecond, 5000)
+
+			So(testDB.bolt.MaxBatchDelay, ShouldEqual, 40*time.Millisecond)
+			So(testDB.bolt.MaxBatchSize, ShouldEqual, 5000)
+		})
+
+		Convey("setBatchTuning leaves the database untouched for non-positive values", func() {
+			testDB.setBatchTuning(0, 0)
+
+			So(testDB.bolt.MaxBatchDelay, ShouldEqual, 10*time.Millisecond)
+			So(testDB.bolt.MaxBatchSize, ShouldEqual, 1000)
+		})
+	})
+}
+
 func TestDBReverseLookupIndex(t *testing.T) {
 	Convey("Opening an old DB rebuilds reverse lookup entries used by modify", t, func() {
 		ctx := context.Background()

@@ -1013,6 +1013,10 @@ func serveManager(ctxf context.Context, schedulerConfig any, runnerCmd, serverCI
 		AutoConfirmDead: time.Duration(cloudServersAutoConfirmDead) * time.Minute,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
+		Timings: jobqueue.ServerTimings{
+			DBBatchDelay: time.Duration(config.ManagerDBBatchDelay) * time.Millisecond,
+			DBBatchSize:  config.ManagerDBBatchSize,
+		},
 	})
 }
 

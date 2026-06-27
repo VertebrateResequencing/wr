@@ -114,6 +114,8 @@ type Config struct {
 	LogsCompress             bool   `default:"true"`
 	ManagerDBFile            string `default:"db"`
 	ManagerDBBkFile          string `default:"db_bk"`
+	ManagerDBBatchDelay      int    `default:"0"`
+	ManagerDBBatchSize       int    `default:"0"`
 	ManagerTokenFile         string `default:"client.token"`
 	ManagerUploadDir         string `default:"uploads"`
 	ManagerUmask             int    `default:"007"`
