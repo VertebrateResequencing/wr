@@ -141,6 +141,14 @@ func changeCallbackToState(toQ queue.SubQueue, data []any) JobState {
 	return JobStateDeleted
 }
 
+// jobKeyAndRepGroup reads a job's key and RepGroup under its read lock.
+func jobKeyAndRepGroup(job *Job) (string, string) {
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.Key(), job.RepGroup
+}
+
 // emitChangeCallbackTransition is the queue change-callback's transition
 // emission. It disambiguates the from/to JobStates, then routes both
 // projections through emitJobTransition: the absolute per-RepGroup counts
@@ -169,16 +177,29 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 // jobs wait briefly for their start time before the status snapshot. Each job is
 // converted to a status exactly once, and that single status feeds the
 // subscription update (it is never separately written to the browser here).
+//
+// Idle fast-path: when there are no client subscriptions at all (the common
+// case - no web UI and no `wr add --sync` client attached to these jobs), it
+// returns before the per-job loop after a single csmutex.RLock, skipping the
+// per-job allocations and contended RLocks that would otherwise deliver nothing.
+// This is purely the per-job subscription delivery; the absolute per-RepGroup
+// status counts have already been applied by emitJobTransition before this
+// closure runs, so a web UI client that connects LATER still gets correct seed
+// counts. The early csmutex.RLock is in the same async change-callback context
+// as the existing per-job hasClientSubscriptionsForJobUpdate RLock, so it adds
+// no new lock and no new nesting (the order queue.mutex -> subscription locks is
+// preserved).
 func (s *Server) enqueueChangeCallbackSubscriptions(
 	ctx context.Context, data []any, to, state JobState, includeKeyStateChange bool,
 ) {
+	if !s.hasAnyClientSubscriptions() {
+		return
+	}
+
 	for _, inter := range data {
 		job := inter.(*Job) //nolint:errcheck,forcetypeassert
-		job.RLock()
-		jobKey := job.Key()
-		repGroup := job.RepGroup
-		job.RUnlock()
 
+		jobKey, repGroup := jobKeyAndRepGroup(job)
 		if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state, includeKeyStateChange) {
 			continue
 		}
