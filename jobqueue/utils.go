@@ -264,6 +264,21 @@ func currentMemory(pid int) (int, error) {
 	return mem + childMem, nil
 }
 
+// ownMemoryMB returns this process's own Pss in MB, excluding any child
+// processes. Unlike currentMemory it does NOT walk the process tree (no
+// gopsutil Children()/whole-/proc scan), so it is cheap to call on a busy host;
+// it is used on the per-job hot path after a job command has already exited,
+// where the child sum would be both useless and expensive.
+func ownMemoryMB() (int, error) {
+	kb, err := scanSmapsPss(os.Getpid())
+	if err != nil {
+		return 0, err
+	}
+
+	// convert kB to MB
+	return int(kb / bytesPerKB), nil //nolint:gosec // a process's memory in MB comfortably fits in an int
+}
+
 // scanSmapsPss reads /proc/<pid>/smaps and sums the Pss (proportional set size)
 // values, in kB.
 func scanSmapsPss(pid int) (kb uint64, err error) {

@@ -1872,11 +1872,19 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		}
 	}
 
-	// include our own memory usage in the peakmem of the command, since the
+	// include our OWN memory usage in the peakmem of the command, since the
 	// peak memory is used to schedule us in the job scheduler, which may
 	// kill us for using more memory than expected: we need to allow for our
-	// own memory usage
-	ourmem, cmerr := currentMemory(os.Getpid())
+	// own memory usage.
+	//
+	// We deliberately measure only our own Pss here, NOT our children: by this
+	// point the job command has already exited (cmd.Wait() above) and its peak
+	// RSS has already been folded into peakmem via cmd.ProcessState's rusage
+	// Maxrss just above. Summing children would therefore add nothing useful
+	// (the only child, the job command, is gone) while paying for a full
+	// /proc walk (gopsutil Children()), which is expensive per job on a busy
+	// host. ownMemoryMB avoids that scan.
+	ourmem, cmerr := ownMemoryMB()
 	if cmerr != nil {
 		ourmem = 10
 	}

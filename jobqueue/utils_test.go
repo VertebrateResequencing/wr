@@ -28,11 +28,35 @@ package jobqueue
 import (
 	"bytes"
 	"math/rand"
+	"os"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+func TestOwnMemoryMB(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("ownMemoryMB reports this process's own memory without error", t, func() {
+		mb, err := ownMemoryMB()
+		So(err, ShouldBeNil)
+		So(mb, ShouldBeGreaterThanOrEqualTo, 0)
+
+		Convey("and it never exceeds currentMemory, which also includes children", func() {
+			// currentMemory(self) reads the same smaps Pss and then adds the
+			// memory of any child processes, so the own-only figure can never be
+			// larger. (Pss is sampled at slightly different instants, but our own
+			// resident pages are stable enough between two adjacent reads for
+			// this ordering to hold without flaking.)
+			withChildren, errc := currentMemory(os.Getpid())
+			So(errc, ShouldBeNil)
+			So(mb, ShouldBeLessThanOrEqualTo, withChildren)
+		})
+	})
+}
 
 func TestLiveTailSaver(t *testing.T) {
 	if runnermode || servermode {

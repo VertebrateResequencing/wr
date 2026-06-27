@@ -50,6 +50,7 @@ package jobqueue
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -75,6 +76,47 @@ const benchDBWaitTimeout = 5 * time.Minute
 // instead measure the degenerate one-commit-per-job worst case and could not
 // show coalescing at all.
 const benchArchiveConcurrency = 64
+
+// BenchmarkOwnMemoryAccounting guards the per-job own-memory accounting cost on
+// the runner's hot path. After a job command exits, Client.Execute adds the
+// runner's own memory footprint to the job's peak RAM. It does this once per
+// job, so the cost of that single measurement directly scales `wr add`
+// throughput for large batches of trivial jobs.
+//
+// The two sub-benchmarks contrast the two ways to obtain that footprint:
+//
+//	own_pss - ownMemoryMB(): reads only this process's /proc/<pid>/smaps Pss.
+//	          This is what Execute now uses.
+//	tree    - currentMemory(os.Getpid()): the previous approach, which also
+//	          walks the whole process tree via gopsutil Children(), enumerating
+//	          every entry under /proc. On a busy host this whole-/proc scan is
+//	          the bulk of the cost and was the source of the #503 v3->v4 gopsutil
+//	          regression.
+//
+// Reporting ns/op for both makes the win visible: own_pss should be far cheaper
+// than tree (the gap widens with the number of processes on the host). There is
+// no behaviour change for normal jobs because the exited job command's peak RSS
+// is captured separately via rusage Maxrss, so the child sum that `tree` pays
+// for adds nothing useful at this call site.
+func BenchmarkOwnMemoryAccounting(b *testing.B) {
+	pid := os.Getpid()
+
+	b.Run("own_pss", func(b *testing.B) {
+		for range b.N {
+			if _, err := ownMemoryMB(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("tree", func(b *testing.B) {
+		for range b.N {
+			if _, err := currentMemory(pid); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
 
 // BenchmarkAddJobs measures the add/store path: encoding a batch of new jobs
 // and persisting them (and their lookup indexes) into the live bucket via
