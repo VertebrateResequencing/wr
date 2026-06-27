@@ -88,7 +88,7 @@ func BenchmarkAddJobs(b *testing.B) {
 	// duplicate keys as already-added no-ops).
 	batches := make([][]*Job, b.N)
 	for i := range b.N {
-		batches[i] = makeBenchJobs(fmt.Sprintf("add-%d", i))
+		batches[i] = makeBenchJobs(fmt.Sprintf("add-%d", i), benchJobCount)
 	}
 
 	writesBefore := boltWrites(testDB)
@@ -119,7 +119,7 @@ func BenchmarkUpdateJobState(b *testing.B) {
 	ctx := context.Background()
 	testDB := newBenchDB(b)
 
-	jobs := makeBenchJobs("update")
+	jobs := makeBenchJobs("update", benchJobCount)
 	if _, _, _, err := testDB.storeNewJobs(ctx, jobs, false); err != nil {
 		b.Fatal(err)
 	}
@@ -170,54 +170,31 @@ func BenchmarkUpdateJobState(b *testing.B) {
 // stopped batching archive commits would push it up sharply (towards one fsync
 // per job).
 func BenchmarkArchiveJobs(b *testing.B) {
-	benchPerIterationWrites(b, "archive", seedCompletableJobs, archiveJobsConcurrently)
-}
-
-// BenchmarkShortJobStartArchive measures the throughput workload's hot path for
-// short-lived jobs: a job reports it started running (updateJobAfterStart) and
-// then, almost immediately, completes and is archived (archiveJob). This is the
-// case Fix B targets - the deferred, coalesced start-write is cancelled by the
-// archive, so the headline bolt_writes/job should reflect essentially just the
-// archive commit, with no separate per-job start-write commit on top. A
-// regression that committed each start-write separately would push this number
-// up by roughly the per-job start-commit cost. Work is driven concurrently
-// (like BenchmarkArchiveJobs) to represent the real server's request handlers.
-func BenchmarkShortJobStartArchive(b *testing.B) {
-	benchPerIterationWrites(b, "short", seedStartableJobs, startThenArchiveConcurrently)
-}
-
-// benchPerIterationWrites runs the standard per-iteration measurement loop used
-// by the completion-path benchmarks: each iteration seeds a fresh batch of
-// benchJobCount jobs (outside the timer, via seed) and then runs work on them
-// (inside the timer), accumulating the BoltDB writes/pages performed during the
-// work so the reported bolt_writes/job isolates the measured operation.
-func benchPerIterationWrites(b *testing.B, prefix string,
-	seed func(*testing.B, *db, string) []*Job, work func(*testing.B, *db, []*Job),
-) {
-	b.Helper()
-
 	testDB := newBenchDB(b)
 
-	var writesDuring, pagesDuring int64
+	var (
+		writesDuringArchive int64
+		pagesDuringArchive  int64
+	)
 
 	b.ResetTimer()
 
 	for i := range b.N {
 		b.StopTimer()
 
-		jobs := seed(b, testDB, fmt.Sprintf("%s-%d", prefix, i))
+		jobs := seedCompletableJobs(b, testDB, fmt.Sprintf("archive-%d", i))
 
 		writesBefore := boltWrites(testDB)
 		pagesBefore := boltPages(testDB)
 
 		b.StartTimer()
 
-		work(b, testDB, jobs)
+		archiveJobsConcurrently(b, testDB, jobs)
 
 		b.StopTimer()
 
-		writesDuring += boltWrites(testDB) - writesBefore
-		pagesDuring += boltPages(testDB) - pagesBefore
+		writesDuringArchive += boltWrites(testDB) - writesBefore
+		pagesDuringArchive += boltPages(testDB) - pagesBefore
 
 		b.StartTimer()
 	}
@@ -225,8 +202,8 @@ func benchPerIterationWrites(b *testing.B, prefix string,
 	b.StopTimer()
 
 	if jobsTotal := benchJobCount * b.N; jobsTotal > 0 {
-		b.ReportMetric(float64(writesDuring)/float64(jobsTotal), "bolt_writes/job")
-		b.ReportMetric(float64(pagesDuring)/float64(jobsTotal), "bolt_pages/job")
+		b.ReportMetric(float64(writesDuringArchive)/float64(jobsTotal), "bolt_writes/job")
+		b.ReportMetric(float64(pagesDuringArchive)/float64(jobsTotal), "bolt_pages/job")
 	}
 }
 
@@ -261,22 +238,6 @@ func newBenchDB(b *testing.B) *db {
 	return testDB
 }
 
-// seedStartableJobs stores benchJobCount fresh live jobs left in the reserved
-// state, ready to be reported started and then archived by the benchmark. It
-// waits for the seeding background writes to drain before returning.
-func seedStartableJobs(b *testing.B, testDB *db, prefix string) []*Job {
-	b.Helper()
-
-	jobs := makeBenchJobs(prefix)
-	if _, _, _, err := testDB.storeNewJobs(context.Background(), jobs, false); err != nil {
-		b.Fatal(err)
-	}
-
-	testDB.wg.Wait(benchDBWaitTimeout)
-
-	return jobs
-}
-
 // seedCompletableJobs stores benchJobCount fresh live jobs and marks each as a
 // successfully exited job with realistic completion data, so that archiving them
 // does the full putJobStats/end-time work. It waits for the seeding background
@@ -284,7 +245,7 @@ func seedStartableJobs(b *testing.B, testDB *db, prefix string) []*Job {
 func seedCompletableJobs(b *testing.B, testDB *db, prefix string) []*Job {
 	b.Helper()
 
-	jobs := makeBenchJobs(prefix)
+	jobs := makeBenchJobs(prefix, benchJobCount)
 	if _, _, _, err := testDB.storeNewJobs(context.Background(), jobs, false); err != nil {
 		b.Fatal(err)
 	}
@@ -306,12 +267,11 @@ func seedCompletableJobs(b *testing.B, testDB *db, prefix string) []*Job {
 	return jobs
 }
 
-// makeBenchJobs builds benchJobCount valid, distinct jobs (distinct Cmd =>
-// distinct Key). prefix keeps keys unique across separate batches within one
-// benchmark run.
-func makeBenchJobs(prefix string) []*Job {
-	jobs := make([]*Job, benchJobCount)
-	for i := range benchJobCount {
+// makeBenchJobs builds n valid, distinct jobs (distinct Cmd => distinct Key).
+// prefix keeps keys unique across separate batches within one benchmark run.
+func makeBenchJobs(prefix string, n int) []*Job {
+	jobs := make([]*Job, n)
+	for i := range n {
 		jobs[i] = testDBJob(fmt.Sprintf("echo %s %d", prefix, i), "bench")
 	}
 
@@ -351,60 +311,6 @@ func boltPages(testDB *db) int64 {
 	stats := testDB.bolt.Stats()
 
 	return stats.TxStats.GetPageCount()
-}
-
-// startThenArchiveConcurrently has each job report it started running and then,
-// immediately, complete and archive, using benchArchiveConcurrency workers so
-// the start-write coalescing/cancellation and archive commits interleave the
-// way they do under concurrent server load.
-func startThenArchiveConcurrently(b *testing.B, testDB *db, jobs []*Job) {
-	b.Helper()
-
-	ctx := context.Background()
-	work := make(chan *Job)
-
-	var wg sync.WaitGroup
-
-	start := time.Now()
-
-	for range benchArchiveConcurrency {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			for job := range work {
-				job.Lock()
-				job.State = JobStateRunning
-				job.Pid = 1
-				job.Host = "host"
-				job.StartTime = start
-				job.Unlock()
-
-				testDB.updateJobAfterStart(ctx, job)
-
-				job.Lock()
-				job.State = JobStateComplete
-				job.Exited = true
-				job.EndTime = start.Add(time.Second)
-				job.PeakRAM = 100
-				job.Unlock()
-
-				if err := testDB.archiveJob(ctx, job.Key(), job); err != nil {
-					b.Error(err)
-
-					return
-				}
-			}
-		}()
-	}
-
-	for _, job := range jobs {
-		work <- job
-	}
-
-	close(work)
-	wg.Wait()
 }
 
 // archiveJobsConcurrently archives every job using benchArchiveConcurrency
