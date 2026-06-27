@@ -28,12 +28,14 @@ package jobqueue
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/dgryski/go-farm"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -42,6 +44,10 @@ const testCwdPath = "/cwd"
 
 // testTrueCmd is the no-op shell command used as a Job Cmd in tests.
 const testTrueCmd = "true"
+
+// testMountPath is a fake S3 target Path used when building MountConfigs in Job
+// key tests.
+const testMountPath = "path"
 
 func TestJobEnv(t *testing.T) {
 	if runnermode || servermode {
@@ -104,7 +110,7 @@ func TestJob(t *testing.T) {
 		})
 
 		Convey("and MountConfigs", func() {
-			mcs := MountConfigs{{Targets: []MountTarget{{Path: "path"}}}}
+			mcs := MountConfigs{{Targets: []MountTarget{{Path: testMountPath}}}}
 			job1.MountConfigs = mcs
 			So(job1.Key(), ShouldNotEqual, job3.Key())
 			So(job1.Key(), ShouldEqual, "a95a914ccb411f268502f5bff81bdfca")
@@ -447,4 +453,179 @@ func liveStatusJob(state JobState) *Job {
 		StdOutC: compressStd([]byte("out\n")),
 		StdErrC: compressStd([]byte("err\n")),
 	}
+}
+
+func TestKeyByteIdentity(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("The optimised byteKey hex formatting is byte-identical to fmt.Sprintf", t, func() {
+		// Exercise leading-zero padding in each half, the all-zero and all-ones
+		// extremes, and a mix of representative values, for both halves.
+		vals := []uint64{
+			0, 1, 0xf, 0xff, 0x100, 0xffff, 0xdeadbeef,
+			0x0000000100000000, 0x00ff00ff00ff00ff, 0x8000000000000000,
+			0xfedcba9876543210, math.MaxUint64 - 1, math.MaxUint64,
+		}
+
+		mismatches := 0
+		checked := 0
+
+		for _, l := range vals {
+			for _, h := range vals {
+				checked++
+
+				if newHexKey(l, h) != oldHexFormat(l, h) {
+					mismatches++
+				}
+			}
+		}
+
+		So(checked, ShouldEqual, len(vals)*len(vals))
+		So(mismatches, ShouldEqual, 0)
+
+		// Spot-check the exact expected output, including 32-char width and
+		// zero padding of both halves.
+		So(newHexKey(0, 0xff), ShouldEqual, "000000000000000000000000000000ff")
+		So(newHexKey(math.MaxUint64, 0), ShouldEqual, "ffffffffffffffff0000000000000000")
+		So(len(newHexKey(1, 1)), ShouldEqual, 32)
+	})
+
+	Convey("The optimised byteKey is byte-identical to the previous implementation", t, func() {
+		inputs := [][]byte{
+			nil,
+			{},
+			[]byte("a"),
+			[]byte("true."),
+			[]byte("/cwd.true."),
+			[]byte("/cwd.true..docker:img."),
+			[]byte("some longer concatenated key.with.dots.and:colons"),
+			[]byte{0, 1, 2, 255, 254, 0},
+		}
+
+		mismatches := 0
+
+		for _, in := range inputs {
+			if byteKey(in) != oldByteKey(in) {
+				mismatches++
+			}
+		}
+
+		So(mismatches, ShouldEqual, 0)
+	})
+
+	Convey("The optimised Job.Key() is byte-identical to the previous fmt-based concatenation", t, func() {
+		mcs := MountConfigs{{Targets: []MountTarget{{Path: testMountPath}}}}
+		img := "alpine"
+		cms := "/out:/in"
+
+		jobs := []*Job{
+			{Cmd: testTrueCmd},
+			{Cmd: testTrueCmd, Cwd: testCwdPath},
+			{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true},
+			{Cmd: testTrueCmd, MountConfigs: mcs},
+			{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, MountConfigs: mcs},
+			// ContainerMounts is ignored unless a container image is set.
+			{Cmd: testTrueCmd, ContainerMounts: cms},
+			{Cmd: testTrueCmd, WithDocker: img},
+			{Cmd: testTrueCmd, WithDocker: img, ContainerMounts: cms},
+			{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, WithDocker: img, ContainerMounts: cms},
+			{Cmd: testTrueCmd, WithSingularity: img},
+			{Cmd: testTrueCmd, WithSingularity: img, ContainerMounts: cms, MountConfigs: mcs},
+			// Both set: WithDocker wins, matching the original logic.
+			{Cmd: testTrueCmd, WithDocker: "d", WithSingularity: "s", ContainerMounts: "/m"},
+		}
+
+		mismatches := 0
+
+		for _, j := range jobs {
+			if j.Key() != oldJobKey(j) {
+				mismatches++
+			}
+		}
+
+		So(mismatches, ShouldEqual, 0)
+	})
+
+	Convey("The optimised JobEssence.Key() is byte-identical to the previous fmt-based concatenation", t, func() {
+		mcs := MountConfigs{{Targets: []MountTarget{{Path: testMountPath}}}}
+
+		essences := []*JobEssence{
+			{Cmd: testTrueCmd},
+			{Cmd: testTrueCmd, Cwd: testCwdPath},
+			{Cmd: testTrueCmd, MountConfigs: mcs},
+			{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs},
+			{JobKey: "preset-key-value"},
+		}
+
+		mismatches := 0
+
+		for _, je := range essences {
+			if je.Key() != oldJobEssenceKey(je) {
+				mismatches++
+			}
+		}
+
+		So(mismatches, ShouldEqual, 0)
+
+		// JobEssence.Key() must still match Job.Key() for an equivalent
+		// container-free job (the cross-type identity the lookups rely on).
+		So((&JobEssence{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, MountConfigs: mcs}).Key())
+	})
+}
+
+// oldJobKey reproduces the previous fmt.Sprintf-based Job.Key() concatenation
+// (then byteKey) exactly, as the oracle for the optimised Job.Key().
+func oldJobKey(j *Job) string {
+	concat := fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())
+
+	if j.CwdMatters {
+		concat = fmt.Sprintf("%s.%s", j.Cwd, concat)
+	}
+
+	var image string
+
+	if j.WithDocker != "" {
+		image = "docker:" + j.WithDocker
+	} else if j.WithSingularity != "" {
+		image = "singularity:" + j.WithSingularity
+	}
+
+	if image != "" {
+		concat = fmt.Sprintf("%s.%s.%s", concat, image, j.ContainerMounts)
+	}
+
+	return oldByteKey([]byte(concat))
+}
+
+// oldJobEssenceKey reproduces the previous fmt.Appendf-based JobEssence.Key()
+// concatenation (then byteKey) exactly, as the oracle for the optimised one.
+func oldJobEssenceKey(j *JobEssence) string {
+	if j.JobKey != "" {
+		return j.JobKey
+	}
+
+	if j.Cwd != "" {
+		return oldByteKey(fmt.Appendf(nil, "%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key()))
+	}
+
+	return oldByteKey(fmt.Appendf(nil, "%s.%s", j.Cmd, j.MountConfigs.Key()))
+}
+
+// oldByteKey reproduces the previous byteKey implementation exactly, as the
+// oracle for the optimised version.
+func oldByteKey(b []byte) string {
+	l, h := farm.Hash128(b)
+
+	return oldHexFormat(l, h)
+}
+
+// oldHexFormat is the previous fmt-based formulation of byteKey's hex encoding
+// step. It is kept here purely as the oracle the optimised byteKey must match
+// byte-for-byte; these strings are used as BoltDB keys, lookup-index keys and
+// Go map keys, so any divergence would corrupt job identity and DB lookups.
+func oldHexFormat(l, h uint64) string {
+	return fmt.Sprintf("%016x%016x", l, h)
 }

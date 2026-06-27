@@ -1118,7 +1118,9 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 // generateLookupKey creates a lookup key understood by the retrieval methods,
 // concatenating prefix with a delimiter and the job key.
 func (db *db) generateLookupKey(prefix string, jobKey []byte) []byte {
-	key := append([]byte(prefix), []byte(dbDelimiter)...)
+	key := make([]byte, 0, len(prefix)+len(dbDelimiter)+len(jobKey))
+	key = append(key, prefix...)
+	key = append(key, dbDelimiter...)
 
 	return append(key, jobKey...)
 }

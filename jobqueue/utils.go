@@ -36,6 +36,8 @@ import (
 	crand "crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -143,7 +145,21 @@ func tokenMatches(input, expected []byte) bool {
 func byteKey(b []byte) string {
 	l, h := farm.Hash128(b)
 
-	return fmt.Sprintf("%016x%016x", l, h)
+	return newHexKey(l, h)
+}
+
+// newHexKey returns the 32-character lowercase zero-padded hex form of the two
+// uint64 halves, written big-endian with l first then h. This is byte-for-byte
+// identical to fmt.Sprintf("%016x%016x", l, h) for all uint64 values, but
+// avoids the reflection-based formatting on this hot path. The output is used
+// as BoltDB keys, lookup-index keys and Go map keys, so it must never diverge.
+func newHexKey(l, h uint64) string {
+	var hash [16]byte
+
+	binary.BigEndian.PutUint64(hash[0:8], l)
+	binary.BigEndian.PutUint64(hash[8:16], h)
+
+	return hex.EncodeToString(hash[:])
 }
 
 // foldCloseErr combines an error returned by closing a resource (named in what,
