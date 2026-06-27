@@ -268,24 +268,45 @@ func (g *group) canIncrement() bool {
 	case groupModeAfterTime:
 		return secondsInDay() > g.current
 	case groupModeBetweenTimes:
-		t := secondsInDay()
+		return g.canIncrementBetweenTimes()
+	default:
+		return g.canIncrementByDateTime()
+	}
+}
 
-		if g.current > g.limit {
-			return g.limit < t && t < g.current
-		}
-
-		return g.current < t && t < g.limit
+// canIncrementByDateTime handles the absolute date-time modes of
+// canIncrement().
+func (g *group) canIncrementByDateTime() bool {
+	switch g.mode {
 	case groupModeBeforeDateTime:
 		return time.Now().Unix() < g.limit
 	case groupModeAfterDateTime:
 		return time.Now().Unix() > g.current
 	case groupModeBetweenDateTimes:
-		t := time.Now().Unix()
-
-		return g.current < t && t < g.limit
+		return g.canIncrementBetweenDateTimes()
 	default:
 		return false
 	}
+}
+
+// canIncrementBetweenTimes reports whether the current time of day falls within
+// this group's allowed window (which may wrap past midnight).
+func (g *group) canIncrementBetweenTimes() bool {
+	t := secondsInDay()
+
+	if g.current > g.limit {
+		return g.limit < t && t < g.current
+	}
+
+	return g.current < t && t < g.limit
+}
+
+// canIncrementBetweenDateTimes reports whether the current time falls within
+// this group's allowed window of unix timestamps.
+func (g *group) canIncrementBetweenDateTimes() bool {
+	t := time.Now().Unix()
+
+	return g.current < t && t < g.limit
 }
 
 func secondsInDay() int64 {

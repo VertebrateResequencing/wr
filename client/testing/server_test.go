@@ -67,7 +67,9 @@ func TestTestingServer(t *testing.T) {
 			s := Serve(t, config)
 			So(s.ServerInfo.Port, ShouldEqual, config.Port)
 
-			conn, err := net.Dial("tcp", s.ServerInfo.Addr)
+			var dialer net.Dialer
+
+			conn, err := dialer.DialContext(context.Background(), "tcp", s.ServerInfo.Addr)
 			So(err, ShouldBeNil)
 			So(conn, ShouldNotBeNil)
 

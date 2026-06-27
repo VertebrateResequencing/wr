@@ -115,18 +115,9 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	}
 
 	// create a request object
-	u, err := uuid.NewV4()
+	r, err := newRequest(numTokens)
 	if err != nil {
 		return Receipt(""), err
-	}
-
-	r := &request{
-		id:        Receipt(u.String()),
-		grantedCh: make(chan bool, 1),
-		cancelCh:  make(chan bool, 1),
-		releaseCh: make(chan bool, 1),
-		touchCh:   make(chan bool, 1),
-		numTokens: numTokens,
 	}
 
 	// queue the request and return its id as a receipt for future use by the
@@ -150,6 +141,24 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	return r.id, nil
 }
 
+// newRequest creates a request for the given number of tokens, with a freshly
+// generated Receipt id.
+func newRequest(numTokens int) (*request, error) {
+	u, err := uuid.NewV4()
+	if err != nil {
+		return nil, err
+	}
+
+	return &request{
+		id:        Receipt(u.String()),
+		grantedCh: make(chan bool, 1),
+		cancelCh:  make(chan bool, 1),
+		releaseCh: make(chan bool, 1),
+		touchCh:   make(chan bool, 1),
+		numTokens: numTokens,
+	}, nil
+}
+
 // WaitUntilGranted will block until the request corresponding to the given
 // Receipt has been granted its tokens, whereupon you can start using the
 // protected resource.
@@ -167,34 +176,43 @@ func (p *Protector) WaitUntilGranted(receipt Receipt, timeout ...time.Duration) 
 	r, found := p.requests[receipt]
 	p.mu.RUnlock()
 
-	if found {
-		if len(timeout) == 1 && timeout[0] > 0 {
-			go func() {
-				<-time.After(timeout[0])
-				p.mu.Lock()
-				if !r.granted() {
-					// remote the request from the pending slice, from the map,
-					// and cancel the request
-					for i, req := range p.pending {
-						if req.id == receipt {
-							p.pending = append(p.pending[:i], p.pending[i+1:]...)
-
-							break
-						}
-					}
-
-					delete(p.requests, receipt)
-
-					r.cancelCh <- true
-				}
-				p.mu.Unlock()
-			}()
-		}
-
-		return r.waitUntilGranted()
+	if !found {
+		return false
 	}
 
-	return false
+	if len(timeout) == 1 && timeout[0] > 0 {
+		go p.cancelAfterTimeout(receipt, r, timeout[0])
+	}
+
+	return r.waitUntilGranted()
+}
+
+// cancelAfterTimeout waits for the given timeout and, if the request has not
+// been granted by then, removes it from the pending queue and the requests map
+// and cancels it.
+func (p *Protector) cancelAfterTimeout(receipt Receipt, r *request, timeout time.Duration) {
+	<-time.After(timeout)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if r.granted() {
+		return
+	}
+
+	// remove the request from the pending slice, from the map, and cancel the
+	// request
+	for i, req := range p.pending {
+		if req.id == receipt {
+			p.pending = append(p.pending[:i], p.pending[i+1:]...)
+
+			break
+		}
+	}
+
+	delete(p.requests, receipt)
+
+	r.cancelCh <- true
 }
 
 // Granted is an alternative to WaitUntilGranted(). Instead of blocking until
@@ -306,15 +324,8 @@ func (p *Protector) process() {
 		return
 	}
 
-	availableTokens, checked := p.availableTokens()
-
 	r := p.pending[0]
-	if checked && availableTokens < r.numTokens {
-		// more resources could turn up later, outside of our control and
-		// knowledge, so call this again after the standard delay
-		p.lastProcess = time.Now() // act as if we processed successfully so that reprocess() will wait
-		go p.reprocess()
-
+	if p.deferIfInsufficientResources(r) {
 		return
 	}
 
@@ -335,42 +346,66 @@ func (p *Protector) process() {
 	// manage the deliberate or automatic release of these resource "tokens" in
 	// a goroutine. (not sure if having 1 goroutine per active request will be
 	// an issue...)
-	go func() {
-		for {
-			limit := time.After(p.releaseTimeout)
-			select {
-			case <-r.releaseCh:
-				// released on request
-			case <-limit:
-				// released after releaseTimeout
-				r.finish()
-			case <-r.touchCh:
-				// Touch() was called, loop to reset the timeout
-				continue
-			}
-
-			// return the used tokens to the pool for future use
-			p.mu.Lock()
-			p.usedTokens -= r.numTokens
-			delete(p.requests, r.id)
-
-			if len(p.pending) > 0 {
-				// now that we've released tokens, call process() again, making
-				// sure we obey delayBetween
-				p.mu.Unlock()
-				p.reprocess()
-			} else {
-				p.mu.Unlock()
-			}
-
-			break
-		}
-	}()
+	go p.manageRelease(r)
 
 	if pendingLen > 1 {
 		// arrange for the next request to be taken care of after the desired
 		// delay
 		go p.reprocess()
+	}
+}
+
+// deferIfInsufficientResources checks any availability callback and, if there
+// are currently fewer available tokens than r wants, schedules another
+// processing attempt after the standard delay and returns true. You must hold
+// p.mu before calling it.
+func (p *Protector) deferIfInsufficientResources(r *request) bool {
+	availableTokens, checked := p.availableTokens()
+	if !checked || availableTokens >= r.numTokens {
+		return false
+	}
+
+	// more resources could turn up later, outside of our control and knowledge,
+	// so call this again after the standard delay
+	p.lastProcess = time.Now() // act as if we processed successfully so that reprocess() will wait
+	go p.reprocess()
+
+	return true
+}
+
+// manageRelease waits for the granted request r to be released, either
+// deliberately, after the releaseTimeout, while resetting the timeout each time
+// it is touched. Once released it returns r's tokens to the pool and triggers
+// reprocessing of any pending requests.
+func (p *Protector) manageRelease(r *request) {
+	for {
+		limit := time.After(p.releaseTimeout)
+		select {
+		case <-r.releaseCh:
+			// released on request
+		case <-limit:
+			// released after releaseTimeout
+			r.finish()
+		case <-r.touchCh:
+			// Touch() was called, loop to reset the timeout
+			continue
+		}
+
+		// return the used tokens to the pool for future use
+		p.mu.Lock()
+		p.usedTokens -= r.numTokens
+		delete(p.requests, r.id)
+
+		if len(p.pending) > 0 {
+			// now that we've released tokens, call process() again, making
+			// sure we obey delayBetween
+			p.mu.Unlock()
+			p.reprocess()
+		} else {
+			p.mu.Unlock()
+		}
+
+		break
 	}
 }
 
@@ -386,23 +421,32 @@ func (p *Protector) reprocess() {
 
 	p.reprocessing = true
 
-	if p.lastProcess.IsZero() {
+	if wait := p.reprocessWait(); wait > 0 {
 		p.mu.Unlock()
-		<-time.After(p.delayBetween)
+		<-time.After(wait)
 		p.mu.Lock()
-	} else {
-		since := time.Since(p.lastProcess)
-		if since < p.delayBetween {
-			remaining := p.delayBetween - since
-			p.mu.Unlock()
-			<-time.After(remaining)
-			p.mu.Lock()
-		}
 	}
 
 	p.reprocessing = false
 	p.mu.Unlock()
 	p.process()
+}
+
+// reprocessWait returns how long reprocess() should wait before calling
+// process() again, so as to obey delayBetween. It returns delayBetween if we've
+// not processed yet, the remaining portion of delayBetween if we processed
+// recently, or zero if no wait is needed. You must hold p.mu before calling it.
+func (p *Protector) reprocessWait() time.Duration {
+	if p.lastProcess.IsZero() {
+		return p.delayBetween
+	}
+
+	since := time.Since(p.lastProcess)
+	if since < p.delayBetween {
+		return p.delayBetween - since
+	}
+
+	return 0
 }
 
 // availableTokens runs any set callback to find the available tokens we can

@@ -178,8 +178,3 @@ func checkExampleErr(err error) {
 		panic(err)
 	}
 }
-
-//go:fix inline
-func ptr[T any](value T) *T {
-	return new(value)
-}

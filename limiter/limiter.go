@@ -125,46 +125,57 @@ func (l *Limiter) RemoveLimit(name string) {
 // If an optional wait duration is supplied, will wait for up to the given wait
 // period for an increment of every group to be possible.
 func (l *Limiter) Increment(ctx context.Context, groups []string, wait ...time.Duration) bool {
-	l.mu.Lock()
-	if l.checkGroups(ctx, groups) {
-		l.incrementGroups(ctx, groups)
-		l.mu.Unlock()
+	wantWait := len(wait) == 1
 
+	incremented, ch := l.attemptIncrement(ctx, groups, wantWait)
+	if incremented {
 		return true
 	}
 
-	if len(wait) != 1 {
-		l.mu.Unlock()
-
+	if !wantWait {
 		return false
 	}
-
-	ch := make(chan bool, len(groups))
-	l.registerGroupNotifications(ctx, groups, ch)
-	l.mu.Unlock()
 
 	limit := time.After(wait[0])
 
 	for {
 		select {
 		case <-ch:
-			l.mu.Lock()
-			if l.checkGroups(ctx, groups) {
-				l.incrementGroups(ctx, groups)
-				l.mu.Unlock()
-
+			incremented, ch = l.attemptIncrement(ctx, groups, true)
+			if incremented {
 				return true
 			}
-
-			ch = make(chan bool, len(groups))
-			l.registerGroupNotifications(ctx, groups, ch)
-			l.mu.Unlock()
 
 			continue
 		case <-limit:
 			return false
 		}
 	}
+}
+
+// attemptIncrement increments all the groups if possible, returning true. If
+// not possible and registerOnFail is true, it registers a fresh decrement
+// notification channel for the groups (under the same lock as the failed
+// check) and returns it so the caller can wait on it; otherwise it returns a
+// nil channel.
+func (l *Limiter) attemptIncrement(ctx context.Context, groups []string, registerOnFail bool) (bool, chan bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.checkGroups(ctx, groups) {
+		l.incrementGroups(ctx, groups)
+
+		return true, nil
+	}
+
+	if !registerOnFail {
+		return false, nil
+	}
+
+	ch := make(chan bool, len(groups))
+	l.registerGroupNotifications(ctx, groups, ch)
+
+	return false, ch
 }
 
 // checkGroups checks all the groups to see if they can be incremented. You must
