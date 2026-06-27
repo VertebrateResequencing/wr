@@ -42,10 +42,12 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"sync"
@@ -134,6 +136,16 @@ const (
 	// request headers, mitigating Slowloris-style attacks.
 	httpReadHeaderTimeout = 60 * time.Second
 
+	// pprofMutexProfileFraction is the rate passed to
+	// runtime.SetMutexProfileFraction when the WR_PPROF_ADDR endpoint is
+	// enabled: on average 1 in this many mutex contention events is reported.
+	pprofMutexProfileFraction = 5
+
+	// pprofBlockProfileRate is the rate (in nanoseconds) passed to
+	// runtime.SetBlockProfileRate when the WR_PPROF_ADDR endpoint is enabled:
+	// on average one blocking event is sampled per this many nanoseconds blocked.
+	pprofBlockProfileRate = 10000
+
 	// portCheckDialTimeout is how long shutdown waits when probing whether a
 	// server port is still being listened to.
 	portCheckDialTimeout = 10 * time.Millisecond
@@ -169,6 +181,27 @@ var (
 	ServerLogClientErrors                           = true
 	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
 
+	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
+	// manager's live BoltDB: how long a write transaction may wait for
+	// concurrent writes to coalesce into a single fsync'd commit. It is left at
+	// bbolt's 10ms default: on normal/fast disks the manager's per-job
+	// bottleneck is CPU/lock contention rather than fsync, so a wider window
+	// only adds latency to the synchronous archive commit with no fsync benefit
+	// (measured on an 8-core VM, raising it to 25-50ms made 10000 jobs
+	// dramatically slower). Operators whose manager DB is on high-fsync-latency
+	// storage (NFS/Lustre) AND whose workload is genuinely fsync-bound can raise
+	// it per-server via ServerTimings.DBBatchDelay (and operationally via
+	// WR_MANAGERDBBATCHDELAY); we just don't impose that latency by default.
+	ServerDBBatchDelay = 10 * time.Millisecond
+
+	// ServerDBBatchSize is the default DB.MaxBatchSize applied to the manager's
+	// live BoltDB: the number of concurrent write transactions that may
+	// coalesce into one commit before it commits early. It is set well above
+	// the number of writes expected in flight at once so the delay, not this
+	// cap, governs coalescing. Overridable via ServerTimings.DBBatchSize (and
+	// operationally via WR_MANAGERDBBATCHSIZE).
+	ServerDBBatchSize = 10000
+
 	// httpServerShutdownTime is the time we'll wait before forcing
 	// http.Server{}.Shutdown() to complete, otherwise it takes 500ms if there
 	// were listeners.
@@ -178,6 +211,12 @@ var (
 // BsubID is used to give added jobs a unique (atomically incremented) id when
 // pretending to be bsub.
 var BsubID uint64 //nolint:gochecknoglobals
+
+// envPprofAddr is the environment variable that, when set to a host:port (eg.
+// "localhost:6060"), makes Serve() start an opt-in net/http/pprof endpoint for
+// profiling the manager. It is unset by default, in which case no endpoint is
+// started and there is no profiling overhead.
+const envPprofAddr = "WR_PPROF_ADDR"
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -244,6 +283,19 @@ type ServerTimings struct {
 	// reservations are rounded up to (default RecMBRound).
 	RecMBRound int
 
+	// DBBatchDelay is the BoltDB DB.MaxBatchDelay applied to the manager's live
+	// database: how long a write transaction may wait for concurrent writes to
+	// coalesce into a single fsync'd commit (default ServerDBBatchDelay).
+	// Durability is unaffected (every commit still fsyncs); a larger value only
+	// widens the coalescing window, trading per-write latency for fewer fsyncs
+	// when many writes are in flight.
+	DBBatchDelay time.Duration
+
+	// DBBatchSize is the BoltDB DB.MaxBatchSize applied to the manager's live
+	// database: the number of concurrent write transactions that may coalesce
+	// into one commit before it commits early (default ServerDBBatchSize).
+	DBBatchSize int
+
 	// ShutdownSocketWait is how long shutdown waits, after client handling has
 	// stopped, before closing the command socket, to let in-flight messages
 	// drain (default serverSocketWait). Tests set this low to shut servers down
@@ -279,6 +331,12 @@ func (t ServerTimings) withDefaults() ServerTimings {
 
 	if t.RecMBRound <= 0 {
 		t.RecMBRound = RecMBRound
+	}
+
+	t.DBBatchDelay = dfltDuration(t.DBBatchDelay, ServerDBBatchDelay)
+
+	if t.DBBatchSize <= 0 {
+		t.DBBatchSize = ServerDBBatchSize
 	}
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
@@ -677,6 +735,7 @@ type Server struct {
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
+	pprofServer               *http.Server
 	statusState               *statusState
 	badServerCaster           *caster
 	schedCaster               *caster
@@ -1348,6 +1407,103 @@ func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 	return len(job.WaitingForDepGroups) > 0
 }
 
+// shutdownPprofServer gracefully shuts down the pprof endpoint started by
+// maybeStartPprofServer (which makes its srv.Serve goroutine return
+// http.ErrServerClosed), closing the listener. It is a no-op when srv is nil
+// (pprof disabled). Shutdown is forced to complete after httpServerShutdownTime
+// so a stuck profiling client can't hold up the manager's shutdown. Once the
+// server is down it also disables the global mutex and block profiling that
+// maybeStartPprofServer enabled, so the profiling overhead does not persist for
+// the rest of the process (and does not pollute other tests in the same run).
+func shutdownPprofServer(ctx context.Context, srv *http.Server) {
+	if srv == nil {
+		return
+	}
+
+	httpCtx, cancel := context.WithTimeout(ctx, httpServerShutdownTime)
+	defer cancel()
+
+	if err := srv.Shutdown(httpCtx); err != nil && !errors.Is(err, context.Canceled) {
+		clog.Warn(ctx, "pprof endpoint shutdown failed", "err", err)
+	}
+
+	disablePprofProfiling()
+}
+
+// maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
+// WR_PPROF_ADDR environment variable is set (eg. "localhost:6060"), and does
+// nothing (returning nil) otherwise. The pprof handlers are registered on a
+// private ServeMux (never http.DefaultServeMux, and never the manager's web
+// server) served on the given address only, so operators should bind to
+// localhost.
+//
+// The listener is bound synchronously first: if binding fails (eg. the address
+// is already in use or invalid) it logs a warning and returns nil WITHOUT
+// enabling profiling, so a failed endpoint never leaves the manager paying
+// profiling overhead with nothing to reach. Only once the bind succeeds does it
+// enable mutex and block profiling (so contention can be diagnosed) and serve;
+// profiling is therefore on if and only if the endpoint is actually serving,
+// and disablePprofProfiling() turns it back off on every exit path.
+//
+// The returned server (nil when disabled or on bind failure) must be passed to
+// shutdownPprofServer when the manager stops, so the listener is closed rather
+// than left running for the lifetime of the process.
+func maybeStartPprofServer(ctx context.Context) *http.Server {
+	addr := os.Getenv(envPprofAddr)
+	if addr == "" {
+		return nil
+	}
+
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		clog.Warn(ctx, "pprof endpoint not started; could not bind", "addr", addr, "env", envPprofAddr, "err", err)
+
+		return nil
+	}
+
+	runtime.SetMutexProfileFraction(pprofMutexProfileFraction)
+	runtime.SetBlockProfileRate(pprofBlockProfileRate)
+
+	srv := &http.Server{Handler: newPprofMux(), ReadHeaderTimeout: httpReadHeaderTimeout}
+
+	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", addr, "env", envPprofAddr)
+
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			clog.Warn(ctx, "pprof endpoint stopped", "err", err)
+			disablePprofProfiling()
+		}
+	}()
+
+	return srv
+}
+
+// newPprofMux returns a private ServeMux with the net/http/pprof handlers
+// registered on it (never http.DefaultServeMux), for maybeStartPprofServer to
+// serve on its dedicated listener.
+func newPprofMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	return mux
+}
+
+// disablePprofProfiling turns off the global mutex and block profiling that
+// maybeStartPprofServer enables. It is the disable half of that enable, and is
+// called from every path that ends the endpoint (clean shutdown and an
+// unexpected Serve exit) so profiling never lingers once the endpoint is gone.
+// Calling it when profiling is already off is harmless.
+func disablePprofProfiling() {
+	runtime.SetMutexProfileFraction(0)
+	runtime.SetBlockProfileRate(0)
+}
+
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 	if job == nil || job.Requirements == nil || job.FailReason == "" {
 		return false
@@ -1936,6 +2092,21 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	defer internal.LogPanic(ctx, "jobqueue serve", true)
 
+	// optionally enable a profiling endpoint (off unless WR_PPROF_ADDR is set).
+	// It is stored on the Server below and shut down in s.shutdown(); this defer
+	// (via closeOnError, which no-ops unless err is set) only covers the
+	// error-return paths before the Server is constructed, after which shutdown()
+	// owns it, so the listener is never leaked.
+	pprofServer := maybeStartPprofServer(ctx)
+
+	defer func() {
+		closeOnError(&err, "pprof", func() error {
+			shutdownPprofServer(ctx, pprofServer)
+
+			return nil
+		})
+	}()
+
 	// resolve our timing parameters (config overrides, otherwise defaults)
 	timings := config.Timings.withDefaults()
 
@@ -1971,6 +2142,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	db.recSecRound = timings.RecSecRound
 	db.recMBRound = timings.RecMBRound
+	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
 
@@ -2046,6 +2218,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		rpl:                       newRGToKeys(),
 		limiter:                   l,
 		db:                        db,
+		pprofServer:               pprofServer,
 		stopSigHandling:           stopSigHandling,
 		stopClientHandling:        stopClientHandling,
 		clientHandlingDone:        clientHandlingDone,
@@ -5075,6 +5248,8 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.schedCaster.Close()
 
 	s.shutdownHTTPServer(ctx)
+
+	shutdownPprofServer(ctx, s.pprofServer)
 
 	s.closeServerCommsAndDB(ctx)
 

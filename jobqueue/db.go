@@ -444,6 +444,22 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	return dbstruct, msg, err
 }
 
+// setBatchTuning configures BoltDB's write-transaction coalescing on the live
+// database. delay sets DB.MaxBatchDelay (how long Batch waits for concurrent
+// writes to join before committing) and size sets DB.MaxBatchSize (how many
+// coalesced writes force an early commit). Non-positive values are ignored,
+// leaving bbolt's own defaults in place. This only widens or narrows the
+// coalescing window: every commit is still fsync'd, so durability is unchanged.
+func (db *db) setBatchTuning(delay time.Duration, size int) {
+	if delay > 0 {
+		db.bolt.MaxBatchDelay = delay
+	}
+
+	if size > 0 {
+		db.bolt.MaxBatchSize = size
+	}
+}
+
 // storeLimitGroups stores a mapping of group names to unsigned ints in a
 // dedicated bucket. If a group was already in the database, and it had a
 // different value, that group name will be returned in the changed slice. If
@@ -804,7 +820,9 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 // generateLookupKey creates a lookup key understood by the retrieval methods,
 // concatenating prefix with a delimiter and the job key.
 func (db *db) generateLookupKey(prefix string, jobKey []byte) []byte {
-	key := append([]byte(prefix), []byte(dbDelimiter)...)
+	key := make([]byte, 0, len(prefix)+len(dbDelimiter)+len(jobKey))
+	key = append(key, prefix...)
+	key = append(key, dbDelimiter...)
 
 	return append(key, jobKey...)
 }

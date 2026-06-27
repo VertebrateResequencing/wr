@@ -1057,11 +1057,7 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 
 // Key calculates a unique key to describe the job.
 func (j *Job) Key() string {
-	concat := fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())
-
-	if j.CwdMatters {
-		concat = fmt.Sprintf("%s.%s", j.Cwd, concat)
-	}
+	mountKey := j.MountConfigs.Key()
 
 	var image string
 
@@ -1071,11 +1067,43 @@ func (j *Job) Key() string {
 		image = "singularity:" + j.WithSingularity
 	}
 
-	if image != "" {
-		concat = fmt.Sprintf("%s.%s.%s", concat, image, j.ContainerMounts)
+	// Build the same concatenation that the previous fmt.Sprintf calls
+	// produced, byte-for-byte, but with a single preallocated buffer to avoid
+	// the per-component reflection-based formatting and intermediate strings on
+	// this hot path. The layout is, in order:
+	//   [Cwd "."]  Cmd "." mountKey  ["." image "." ContainerMounts]
+	// where the Cwd prefix is only present when CwdMatters and the image suffix
+	// only when a container image is in use.
+	size := len(j.Cmd) + 1 + len(mountKey)
+	if j.CwdMatters {
+		size += len(j.Cwd) + 1
 	}
 
-	return byteKey([]byte(concat))
+	if image != "" {
+		size += 1 + len(image) + 1 + len(j.ContainerMounts)
+	}
+
+	var concat strings.Builder
+
+	concat.Grow(size)
+
+	if j.CwdMatters {
+		concat.WriteString(j.Cwd)
+		concat.WriteByte('.')
+	}
+
+	concat.WriteString(j.Cmd)
+	concat.WriteByte('.')
+	concat.WriteString(mountKey)
+
+	if image != "" {
+		concat.WriteByte('.')
+		concat.WriteString(image)
+		concat.WriteByte('.')
+		concat.WriteString(j.ContainerMounts)
+	}
+
+	return byteKey([]byte(concat.String()))
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,
@@ -1339,11 +1367,29 @@ func (j *JobEssence) Key() string {
 		return j.JobKey
 	}
 
+	mountKey := j.MountConfigs.Key()
+
+	// Build the same byte slice the previous fmt.Appendf calls produced,
+	// byte-for-byte, but via a single preallocated buffer rather than
+	// reflection-based formatting: "Cmd.mountKey", optionally prefixed with
+	// "Cwd." when a Cwd is set.
+	size := len(j.Cmd) + 1 + len(mountKey)
 	if j.Cwd != "" {
-		return byteKey(fmt.Appendf(nil, "%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key()))
+		size += len(j.Cwd) + 1
 	}
 
-	return byteKey(fmt.Appendf(nil, "%s.%s", j.Cmd, j.MountConfigs.Key()))
+	concat := make([]byte, 0, size)
+
+	if j.Cwd != "" {
+		concat = append(concat, j.Cwd...)
+		concat = append(concat, '.')
+	}
+
+	concat = append(concat, j.Cmd...)
+	concat = append(concat, '.')
+	concat = append(concat, mountKey...)
+
+	return byteKey(concat)
 }
 
 // Stringify returns a nice printable form of a JobEssence.

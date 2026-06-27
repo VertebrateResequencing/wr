@@ -220,6 +220,8 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 			RetryTime:             -1 * time.Nanosecond,
 			RecSecRound:           -1,
 			RecMBRound:            -1,
+			DBBatchDelay:          -1 * time.Nanosecond,
+			DBBatchSize:           -1,
 			ShutdownSocketWait:    -1 * time.Nanosecond,
 		}.withDefaults()
 
@@ -234,7 +236,19 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 		So(timings.RetryTime, ShouldEqual, ClientRetryTime)
 		So(timings.RecSecRound, ShouldEqual, RecSecRound)
 		So(timings.RecMBRound, ShouldEqual, RecMBRound)
+		So(timings.DBBatchDelay, ShouldEqual, ServerDBBatchDelay)
+		So(timings.DBBatchSize, ShouldEqual, ServerDBBatchSize)
 		So(timings.ShutdownSocketWait, ShouldEqual, serverSocketWait)
+	})
+
+	Convey("Positive server timing values are preserved", t, func() {
+		timings := ServerTimings{
+			DBBatchDelay: 25 * time.Millisecond,
+			DBBatchSize:  4096,
+		}.withDefaults()
+
+		So(timings.DBBatchDelay, ShouldEqual, 25*time.Millisecond)
+		So(timings.DBBatchSize, ShouldEqual, 4096)
 	})
 }
 
@@ -4804,28 +4818,56 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					lostCh := make(chan bool)
+					// While jq.Execute runs the long job concurrently, the job's
+					// state oscillates: the ttr (200ms) expires before the first
+					// client touch (touchInterval 500ms) so it goes lost, the touch
+					// then recovers it to running, and so on until it completes.
+					// Rather than sample the state at fixed instants (which drift out
+					// of alignment with those windows under a slow/contended -race
+					// run), poll frequently and record that we observed it lost (not
+					// exited) and then observed it recovered to running (not exited).
+					// The poll interval is far shorter than either window so the
+					// transitions can't be missed, and the timeout is generous enough
+					// for -race; we only need both observations before the job ends.
+					lostThenRunningCh := make(chan bool, 1)
 
 					go func() {
-						<-time.After(300 * time.Millisecond)
-						// after ttr but before first touch, it becomes lost
-						job2f, errf := jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
-						if errf != nil || job2f == nil || job2f.State != JobStateLost || job2f.FailReason != FailReasonLost || job2f.Exited {
-							lostCh <- false
-						}
+						lostObserved := false
 
-						<-time.After(250 * time.Millisecond)
-						// after the first touch, it becomes running again
-						job2f, errf = jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
-						if errf != nil || job2f == nil || job2f.State != JobStateRunning || job2f.FailReason != FailReasonLost || job2f.Exited {
-							lostCh <- false
-						}
+						deadline := time.After(30 * time.Second)
 
-						lostCh <- true
+						ticker := time.NewTicker(20 * time.Millisecond)
+						defer ticker.Stop()
+
+						for {
+							job2f, errf := jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
+							if errf == nil && job2f != nil && !job2f.Exited && job2f.FailReason == FailReasonLost {
+								switch {
+								case !lostObserved && job2f.State == JobStateLost:
+									// after a ttr expiry but before the next touch
+									lostObserved = true
+								case lostObserved && job2f.State == JobStateRunning:
+									// after a touch recovered the previously-lost job
+									lostThenRunningCh <- true
+
+									return
+								}
+							}
+
+							select {
+							case <-deadline:
+								lostThenRunningCh <- false
+
+								return
+							case <-ticker.C:
+							}
+						}
 					}()
 
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
+
+					So(<-lostThenRunningCh, ShouldBeTrue)
 
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
 					So(err, ShouldBeNil)
@@ -4833,7 +4875,6 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					So(job2.State, ShouldEqual, JobStateComplete)
 					So(job2.Exited, ShouldBeTrue)
-					So(<-lostCh, ShouldBeTrue)
 				})
 			})
 		})

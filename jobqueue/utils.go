@@ -36,6 +36,8 @@ import (
 	crand "crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -143,7 +145,21 @@ func tokenMatches(input, expected []byte) bool {
 func byteKey(b []byte) string {
 	l, h := farm.Hash128(b)
 
-	return fmt.Sprintf("%016x%016x", l, h)
+	return newHexKey(l, h)
+}
+
+// newHexKey returns the 32-character lowercase zero-padded hex form of the two
+// uint64 halves, written big-endian with l first then h. This is byte-for-byte
+// identical to fmt.Sprintf("%016x%016x", l, h) for all uint64 values, but
+// avoids the reflection-based formatting on this hot path. The output is used
+// as BoltDB keys, lookup-index keys and Go map keys, so it must never diverge.
+func newHexKey(l, h uint64) string {
+	var hash [16]byte
+
+	binary.BigEndian.PutUint64(hash[0:8], l)
+	binary.BigEndian.PutUint64(hash[8:16], h)
+
+	return hex.EncodeToString(hash[:])
 }
 
 // foldCloseErr combines an error returned by closing a resource (named in what,
@@ -246,6 +262,21 @@ func currentMemory(pid int) (int, error) {
 	}
 
 	return mem + childMem, nil
+}
+
+// ownMemoryMB returns this process's own Pss in MB, excluding any child
+// processes. Unlike currentMemory it does NOT walk the process tree (no
+// gopsutil Children()/whole-/proc scan), so it is cheap to call on a busy host;
+// it is used on the per-job hot path after a job command has already exited,
+// where the child sum would be both useless and expensive.
+func ownMemoryMB() (int, error) {
+	kb, err := scanSmapsPss(os.Getpid())
+	if err != nil {
+		return 0, err
+	}
+
+	// convert kB to MB
+	return int(kb / bytesPerKB), nil //nolint:gosec // a process's memory in MB comfortably fits in an int
 }
 
 // scanSmapsPss reads /proc/<pid>/smaps and sums the Pss (proportional set size)

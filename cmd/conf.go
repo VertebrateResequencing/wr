@@ -155,6 +155,42 @@ managerdbfile: "db"
 # usage.
 managerdbbkfile: "db_bk"
 
+# managerdbbatchdelay: How many milliseconds may the manager's database wait to
+# coalesce concurrent write transactions into a single disk commit?
+#
+# The manager persists job state changes to its BoltDB database. BoltDB groups
+# (batches) write transactions that arrive from different goroutines within this
+# window into one commit, with one fsync, which greatly reduces disk I/O when
+# many jobs change state at once. A larger value lets more writes coalesce
+# (fewer fsyncs) but makes an individual write wait longer before it is
+# committed, so raising it too far hurts latency when few writes are in flight.
+# Durability is unchanged either way: every commit is still fsync'd to disk.
+#
+# A value of 0 (the default) uses wr's built-in default of 10ms (bbolt's own
+# default), which suits normal and fast (local, SSD-backed) storage. On such
+# storage the manager's per-job bottleneck is CPU and lock contention rather
+# than fsync, so a larger value only adds commit latency without a fsync
+# benefit; leave it at 10ms.
+#
+# Only raise this (for example to 25-50ms) if BOTH of the following hold: the
+# manager directory (managerdir) is on storage with high fsync latency, such as
+# a networked filesystem (NFS, Lustre, etc.), where each commit is far more
+# expensive; AND your workload is genuinely fsync-bound, so that coalescing
+# more writes per commit actually reduces wall-clock time. In that case a wider
+# window can cut the number of fsyncs per job and improve throughput.
+managerdbbatchdelay: 0
+
+# managerdbbatchsize: How many concurrent write transactions may the manager's
+# database coalesce into a single disk commit before committing early?
+#
+# This is the companion cap to managerdbbatchdelay: once this many writes have
+# accumulated, the batch commits immediately rather than waiting out the delay.
+# It should comfortably exceed the number of writes you expect to be in flight
+# at once so that the delay, not this cap, governs coalescing.
+#
+# A value of 0 (the default) uses wr's built-in default.
+managerdbbatchsize: 0
+
 # managertokenfile: Where should the manager store the authentication token?
 # This defaults to a file named "client.token" in managerdir.
 #

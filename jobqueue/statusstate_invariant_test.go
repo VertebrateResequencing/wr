@@ -261,6 +261,90 @@ func TestStatusStateTransitionInvariant(t *testing.T) {
 	})
 }
 
+// TestStatusStateIdleSeed proves the idle fast-path in
+// enqueueChangeCallbackSubscriptions (skipping the per-job subscription-delivery
+// loop when there are zero client subscriptions) does NOT skip the authoritative
+// absolute per-RepGroup count maintenance. It drives a whole batch of jobs
+// through every relevant transition (ready->running->complete and
+// ready->running->buried) with NO client subscription attached - so every change
+// callback takes the early return - then verifies that the absolute counts still
+// match ground truth, and that a status web UI client connecting AFTER the idle
+// run receives a correct seed. If applyTransition were wrongly skipped while
+// idle, the counts and the late seed would be wrong.
+func TestStatusStateIdleSeed(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Idle transitions (no subscribers) still maintain absolute counts", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+
+		// long TTR so the jobs never go lost on their own during the idle run.
+		serverConfig.Timings.ItemTTR = time.Hour
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "invariant-idle-seed"
+		ids, erra := jq.AddAndReturnIDs(subscriptionTestJobs(repGroup, standardReqs, 4), envVars, true)
+		So(erra, ShouldBeNil)
+		So(ids, ShouldHaveLength, 4)
+
+		// precondition: nothing is subscribed, so every change callback below
+		// exercises the idle fast-path (not the per-job delivery loop). The
+		// `wr add` connection above does not register a subscription.
+		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
+
+		// drive all four jobs to terminal states with no subscriber attached.
+		// Two complete (running -> complete), two are buried (running -> buried);
+		// every one of these transitions runs the change callback while idle.
+		for i := range 4 {
+			job, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			if i < 2 {
+				So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+			} else {
+				So(jq.Bury(job, &JobEndState{Exited: true, Exitcode: -1, EndTime: time.Now()}, "idle bury"), ShouldBeNil)
+			}
+		}
+
+		// the absolute counts must still match ground truth even though the
+		// per-job subscription delivery was skipped on every transition: this is
+		// the count projection (applyTransition) running independently of the
+		// idle-skipped subscription closure.
+		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
+		assertCountsMatchGroundTruth(ctx, server)
+		assertAggregateMatchesLive(server)
+
+		// a status web UI client that connects only NOW must get a correct seed
+		// (the two buried jobs are live, so the RepGroup is seeded; the two
+		// complete jobs show as already-finished progress). This is the late-seed
+		// path the idle fast-path must not break.
+		statusSub := server.statusState.subscribe()
+		defer server.statusState.unsubscribe(statusSub)
+
+		seed := server.statusState.drain(statusSub)
+		So(seed[repGroup], ShouldResemble, map[JobState]int{
+			JobStateComplete: 2,
+			JobStateBuried:   2,
+		})
+		So(seed[statusAllRepGroups], ShouldResemble, map[JobState]int{
+			JobStateBuried: 2,
+		})
+	})
+}
+
 // assertCountsMatchGroundTruth polls until statusState's per-RepGroup counts
 // (excluding the derived aggregate) equal a fresh recompute from ground truth,
 // then asserts equality. Polling absorbs the brief asynchrony between a queue

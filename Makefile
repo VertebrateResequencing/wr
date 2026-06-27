@@ -81,6 +81,20 @@ race: export WR_RUNNEREXECSHELL ?= $(WR_TEST_RUNNEREXECSHELL)
 race:
 	@go run ./cmd/wr-testsuite race
 
+# Throughput benchmarks for the jobqueue manager's critical persistence paths
+# (add, per-job state-change, archive), guarding against performance regressions
+# such as a loss of BoltDB write-coalescing. They are plain Go benchmarks, so
+# test/race never run them; this target runs them directly (not via
+# wr-testsuite). CGO is off to match test; the race detector is deliberately not
+# enabled, as benchmarks add no production logic. Each reports ns/op, -benchmem
+# allocations and BoltDB writes/pages per job. Use BENCH=Name to pick one,
+# BENCHTIME=Nx to control iterations.
+BENCH ?= .
+BENCHTIME ?= 1x
+bench: export CGO_ENABLED = 0
+bench:
+	@go test -tags netgo -run='^$$' -bench='$(BENCH)' -benchmem -benchtime=$(BENCHTIME) ./jobqueue/
+
 # curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
 lint:
 	@golangci-lint run ${GOLANGCI_LINT_ARGS}
@@ -142,4 +156,4 @@ dist: export WR_LDFLAGS = $(LDFLAGS)
 dist:
 	goreleaser release --clean
 
-.PHONY: browser-test build test race lint lintextra install clean dist webui-test
+.PHONY: browser-test build test race bench lint lintextra install clean dist webui-test
