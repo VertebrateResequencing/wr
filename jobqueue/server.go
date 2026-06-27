@@ -735,6 +735,7 @@ type Server struct {
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
+	pprofServer               *http.Server
 	statusState               *statusState
 	badServerCaster           *caster
 	schedCaster               *caster
@@ -1406,16 +1407,43 @@ func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 	return len(job.WaitingForDepGroups) > 0
 }
 
+// shutdownPprofServer gracefully shuts down the pprof endpoint started by
+// maybeStartPprofServer (which makes its ListenAndServe goroutine return
+// http.ErrServerClosed), closing the listener. It is a no-op when srv is nil
+// (pprof disabled). Shutdown is forced to complete after httpServerShutdownTime
+// so a stuck profiling client can't hold up the manager's shutdown.
+func shutdownPprofServer(ctx context.Context, srv *http.Server) {
+	if srv == nil {
+		return
+	}
+
+	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
+
+	go func() {
+		<-time.After(httpServerShutdownTime)
+		cancel()
+	}()
+
+	if err := srv.Shutdown(httpCtx); err != nil && !errors.Is(err, context.Canceled) {
+		clog.Warn(ctx, "pprof endpoint shutdown failed", "err", err)
+	}
+}
+
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
 // WR_PPROF_ADDR environment variable is set (eg. "localhost:6060"), and does
-// nothing otherwise. The pprof handlers are registered on a private ServeMux
-// (never http.DefaultServeMux, and never the manager's web server) served on
-// the given address only, so operators should bind to localhost. When enabled
-// it also turns on mutex and block profiling so contention can be diagnosed.
-func maybeStartPprofServer(ctx context.Context) {
+// nothing (returning nil) otherwise. The pprof handlers are registered on a
+// private ServeMux (never http.DefaultServeMux, and never the manager's web
+// server) served on the given address only, so operators should bind to
+// localhost. When enabled it also turns on mutex and block profiling so
+// contention can be diagnosed.
+//
+// The returned server (nil when disabled) must be passed to shutdownPprofServer
+// when the manager stops, so the listener is closed rather than left running
+// for the lifetime of the process.
+func maybeStartPprofServer(ctx context.Context) *http.Server {
 	addr := os.Getenv(envPprofAddr)
 	if addr == "" {
-		return
+		return nil
 	}
 
 	runtime.SetMutexProfileFraction(pprofMutexProfileFraction)
@@ -1437,6 +1465,8 @@ func maybeStartPprofServer(ctx context.Context) {
 			clog.Warn(ctx, "pprof endpoint stopped", "err", err)
 		}
 	}()
+
+	return srv
 }
 
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
@@ -2027,8 +2057,20 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	defer internal.LogPanic(ctx, "jobqueue serve", true)
 
-	// optionally enable a profiling endpoint (off unless WR_PPROF_ADDR is set)
-	maybeStartPprofServer(ctx)
+	// optionally enable a profiling endpoint (off unless WR_PPROF_ADDR is set).
+	// It is stored on the Server below and shut down in s.shutdown(); this defer
+	// (via closeOnError, which no-ops unless err is set) only covers the
+	// error-return paths before the Server is constructed, after which shutdown()
+	// owns it, so the listener is never leaked.
+	pprofServer := maybeStartPprofServer(ctx)
+
+	defer func() {
+		closeOnError(&err, "pprof", func() error {
+			shutdownPprofServer(ctx, pprofServer)
+
+			return nil
+		})
+	}()
 
 	// resolve our timing parameters (config overrides, otherwise defaults)
 	timings := config.Timings.withDefaults()
@@ -2141,6 +2183,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		rpl:                       newRGToKeys(),
 		limiter:                   l,
 		db:                        db,
+		pprofServer:               pprofServer,
 		stopSigHandling:           stopSigHandling,
 		stopClientHandling:        stopClientHandling,
 		clientHandlingDone:        clientHandlingDone,
@@ -5170,6 +5213,8 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.schedCaster.Close()
 
 	s.shutdownHTTPServer(ctx)
+
+	shutdownPprofServer(ctx, s.pprofServer)
 
 	s.closeServerCommsAndDB(ctx)
 

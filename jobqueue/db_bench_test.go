@@ -53,10 +53,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 // benchJobCount is the number of jobs each benchmark iteration operates on.
@@ -320,6 +322,67 @@ func makeBenchJobs(prefix string, n int) []*Job {
 	return jobs
 }
 
+// TestArchiveJobsConcurrentlyDoesNotDeadlockOnError guards the drain behaviour
+// of archiveJobsConcurrently: a worker that hits an archiveJob error must keep
+// draining the unbuffered work channel rather than returning, otherwise the
+// sender deadlocks once enough workers have exited. We force every archiveJob to
+// fail by closing the database first (bolt then returns ErrDatabaseNotOpen), and
+// run the real helper via testing.Benchmark inside a watchdog: a regression to
+// early-return would hang here, which the timeout turns into a clear failure
+// instead of a stuck test run.
+func TestArchiveJobsConcurrentlyDoesNotDeadlockOnError(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("archiveJobsConcurrently drains its work channel even when every archive errors", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		// closing the DB makes every subsequent archiveJob fail, so all
+		// benchArchiveConcurrency workers take the error path.
+		So(testDB.close(ctx), ShouldBeNil)
+
+		// more jobs than workers, so an early-returning worker would leave the
+		// sender blocked on the unbuffered channel.
+		jobs := make([]*Job, benchArchiveConcurrency*4)
+		for i := range jobs {
+			jobs[i] = testDBJob(fmt.Sprintf("echo deadlock %d", i), "bench")
+		}
+
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+
+			// testing.Benchmark gives us a real *testing.B to pass to the helper.
+			// The forced archive errors mark this inner benchmark as failed (its
+			// result is discarded); they do not fail the parent test.
+			_ = testing.Benchmark(func(b *testing.B) {
+				b.Helper()
+				archiveJobsConcurrently(b, testDB, jobs)
+			})
+		}()
+
+		select {
+		case <-done:
+			So(true, ShouldBeTrue)
+		case <-time.After(30 * time.Second):
+			t.Fatal("archiveJobsConcurrently deadlocked on archiveJob error")
+		}
+	})
+}
+
 // reportBoltWriteMetrics reports BoltDB write/page counts normalised per job
 // operated on, so the numbers are comparable regardless of benchJobCount or
 // b.N. writesBefore/pagesBefore are the cumulative counters captured at the
@@ -358,13 +421,22 @@ func boltPages(testDB *db) int64 {
 // archiveJobsConcurrently archives every job using benchArchiveConcurrency
 // worker goroutines, so the per-job archiveJob/bolt.Batch commits can coalesce
 // the way they do under the concurrent server request load.
+//
+// On an archiveJob error a worker records it (b.Error is goroutine-safe) and
+// sets a shared failed flag, but keeps draining work to completion rather than
+// returning early. Returning early would let the unbuffered-channel sender block
+// forever once enough workers had exited (a deadlock); draining guarantees the
+// sender always makes progress.
 func archiveJobsConcurrently(b *testing.B, testDB *db, jobs []*Job) {
 	b.Helper()
 
 	ctx := context.Background()
 	work := make(chan *Job)
 
-	var wg sync.WaitGroup
+	var (
+		wg     sync.WaitGroup
+		failed atomic.Bool
+	)
 
 	for range benchArchiveConcurrency {
 		wg.Add(1)
@@ -373,10 +445,13 @@ func archiveJobsConcurrently(b *testing.B, testDB *db, jobs []*Job) {
 			defer wg.Done()
 
 			for job := range work {
+				if failed.Load() {
+					continue
+				}
+
 				if err := testDB.archiveJob(ctx, job.Key(), job); err != nil {
 					b.Error(err)
-
-					return
+					failed.Store(true)
 				}
 			}
 		}()
