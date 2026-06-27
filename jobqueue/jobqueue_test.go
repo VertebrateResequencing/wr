@@ -122,6 +122,9 @@ const (
 	reqGroupSleep       = "sleep"
 )
 
+// test command-line flag variables, populated by init() via the flag package.
+//
+//nolint:gochecknoglobals // test flag variables set up in init()
 var (
 	runnermode          bool
 	runnerfail          bool
@@ -129,7 +132,7 @@ var (
 	schedgrp            string
 	runnermodetmpdir    string
 	rdeployment         string
-	rmanagerdir         string //nolint:gochecknoglobals
+	rmanagerdir         string
 	rserver             string
 	rdomain             string
 	rtimeout            int
@@ -147,6 +150,7 @@ var (
 	errNoFreeLanePort        = errors.New("no free test port in lane range")
 )
 
+//nolint:gochecknoinits // registers test command-line flags
 func init() {
 	clog.ToDefault()
 
@@ -3709,13 +3713,13 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				return
 			}
 
-			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-			So(err, ShouldBeNil)
+			jq, connErr := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(connErr, ShouldBeNil)
 
 			defer disconnect(jq)
 
-			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-			So(err, ShouldBeNil)
+			jq2, connErr := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(connErr, ShouldBeNil)
 
 			defer disconnect(jq2)
 
@@ -3742,8 +3746,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				Retries:      uint8(2),
 				RepGroup:     "manually_added",
 			})
-			inserts, already, err := jq.Add(jobs, envVars, true)
-			So(err, ShouldBeNil)
+			inserts, already, connErr := jq.Add(jobs, envVars, true)
+			So(connErr, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
 
@@ -4112,9 +4116,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					// *** add tests to show this doesn't work if running...
 				}
 
-				job, err := jq.Reserve(5 * time.Millisecond)
-				So(err, ShouldBeNil)
-				So(job, ShouldBeNil)
+				reservedJob, reserveErr := jq.Reserve(5 * time.Millisecond)
+				So(reserveErr, ShouldBeNil)
+				So(reservedJob, ShouldBeNil)
 
 				Convey("Cmds with pipes in them are handled correctly", func() {
 					jobs = nil
@@ -4374,11 +4378,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					jobs = nil
 					baseDir := t.TempDir()
 
-					So(err, ShouldBeNil)
+					So(reserveErr, ShouldBeNil)
 
 					tmpDir := filepath.Join(baseDir, "jobqueue tmpdir") // testing that it works with spaces in the name
-					err = os.Mkdir(tmpDir, os.ModePerm)
-					So(err, ShouldBeNil)
+					reserveErr = os.Mkdir(tmpDir, os.ModePerm)
+					So(reserveErr, ShouldBeNil)
 
 					jobs = append(jobs, &Job{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'", Cwd: tmpDir, CwdMatters: true, ChangeHome: true, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_pass"})
 					jobs = append(jobs, &Job{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'", Cwd: tmpDir, CwdMatters: false, ChangeHome: true, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
@@ -4673,7 +4677,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					jobs = nil
 					cwd := t.TempDir()
 
-					So(err, ShouldBeNil)
+					So(reserveErr, ShouldBeNil)
 
 					b1 := &Behaviour{When: OnSuccess, Do: CleanupAll}
 					b2 := &Behaviour{When: OnFailure, Do: Run, Arg: "touch foo"}
@@ -4960,7 +4964,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			Convey("You can search for the jobs using a common substring of their repgroups", func() {
-				gottenJobs, err := jq.GetByRepGroup("dep", true, 0, "", false, false)
+				var gottenJobs []*Job
+
+				gottenJobs, err = jq.GetByRepGroup("dep", true, 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(gottenJobs), ShouldEqual, 3)
 				gottenJobs, err = jq.GetByRepGroup("2", true, 0, "", false, false)
@@ -4969,7 +4975,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			})
 
 			Convey("You can retrieve jobs by RepGroup using prefix and suffix server-side", func() {
-				gottenJobs, err := jq.GetByRepGroupMatch("dep", RepGroupMatchPrefix, 0,
+				var gottenJobs []*Job
+
+				gottenJobs, err = jq.GetByRepGroupMatch("dep", RepGroupMatchPrefix, 0,
 					"", false, false)
 				So(err, ShouldBeNil)
 				So(len(gottenJobs), ShouldEqual, 3)
@@ -4982,7 +4990,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			})
 
 			Convey("You can retrieve incomplete jobs by RepGroup exact match or substring", func() {
-				gottenJobs, err := jq.GetIncompleteByRepGroupMatch("dep2",
+				var gottenJobs []*Job
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("dep2",
 					RepGroupMatchExact, 0,
 					"", false, false)
 				So(err, ShouldBeNil)
@@ -5009,7 +5019,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			})
 
 			Convey("You can retrieve incomplete jobs by RepGroup prefix and suffix", func() {
-				gottenJobs, err := jq.GetIncompleteByRepGroupMatch("dep",
+				var gottenJobs []*Job
+
+				gottenJobs, err = jq.GetIncompleteByRepGroupMatch("dep",
 					RepGroupMatchPrefix, 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(gottenJobs), ShouldEqual, 3)
@@ -7501,7 +7513,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	// we'll compile ourselves to the tmpdir
 	runnerCmd, err := copyCompiledSelf(filepath.Join(runnertmpdir, "runner"))
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 
 	resourceName := "wr-testing-" + localUser
@@ -9050,7 +9062,7 @@ func TestJobqueueSpeed(t *testing.T) {
 
 	inserts, already, err := jq.Add(jobs, envVars, true)
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 
 	e := time.Since(before)
@@ -9059,7 +9071,7 @@ func TestJobqueueSpeed(t *testing.T) {
 
 	err = jq.Disconnect()
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 
 	reserves := make(chan int, n)
@@ -9342,6 +9354,7 @@ func runner(ctx context.Context) {
 	}
 
 	if schedgrp == "" {
+		//nolint:gocritic // runner is a subprocess entry point; the OS reclaims the log file on exit
 		log.Fatal("schedgrp missing")
 	}
 

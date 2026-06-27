@@ -87,6 +87,8 @@ const (
 )
 
 // subqueueToJobState converts queue.SubQueue entries to JobStates.
+//
+//nolint:gochecknoglobals // immutable lookup table
 var subqueueToJobState = map[queue.SubQueue]JobState{
 	queue.SubQueueNew:       JobStateNew,
 	queue.SubQueueDelay:     JobStateDelayed,
@@ -99,6 +101,8 @@ var subqueueToJobState = map[queue.SubQueue]JobState{
 }
 
 // itemsStateToJobState converts queue.ItemState entries to JobStates.
+//
+//nolint:gochecknoglobals // immutable lookup table
 var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateDelay:     JobStateDelayed,
 	queue.ItemStateReady:     JobStateReady,
@@ -413,31 +417,39 @@ type Job struct {
 func (j *Job) CmdLine(ctx context.Context) (string, func(), error) {
 	noop := func() {}
 
-	if j.WithDocker != "" || j.WithSingularity != "" {
-		path, cleanup, err := container.PrepareCmdFile(ctx, j.Cmd)
-		if err != nil {
-			return j.Cmd, noop, err
-		}
-
-		var cmd string
-
-		if j.WithDocker != "" {
-			envs, err := j.containerEnv()
-			if err != nil {
-				return j.Cmd, cleanup, err
-			}
-
-			cmd = container.DockerRunCmd(j.WithDocker, path, j.Key(), j.containerMounts(), envs)
-
-			j.MonitorDocker = j.Key()
-		} else {
-			cmd = container.SingularityRunCmd(j.WithSingularity, path, j.containerMounts())
-		}
-
-		return cmd, cleanup, nil
+	if j.WithDocker == "" && j.WithSingularity == "" {
+		return j.Cmd, noop, nil
 	}
 
-	return j.Cmd, noop, nil
+	path, cleanup, err := container.PrepareCmdFile(ctx, j.Cmd)
+	if err != nil {
+		return j.Cmd, noop, err
+	}
+
+	cmd, err := j.containerRunCmd(path)
+	if err != nil {
+		return j.Cmd, cleanup, err
+	}
+
+	return cmd, cleanup, nil
+}
+
+// containerRunCmd builds the command line that runs j.Cmd (already written to
+// path) inside the configured docker or singularity container.
+func (j *Job) containerRunCmd(path string) (string, error) {
+	if j.WithDocker == "" {
+		return container.SingularityRunCmd(j.WithSingularity, path, j.containerMounts()), nil
+	}
+
+	envs, err := j.containerEnv()
+	if err != nil {
+		return "", err
+	}
+
+	cmd := container.DockerRunCmd(j.WithDocker, path, j.Key(), j.containerMounts(), envs)
+	j.MonitorDocker = j.Key()
+
+	return cmd, nil
 }
 
 // containerMounts converts ContainerMounts to a slice of the mount values.
@@ -470,17 +482,15 @@ func (j *Job) containerEnv() ([]string, error) {
 // WallTime returns the time the job took to run if it ran to completion, or the
 // time taken so far if it is currently running.
 func (j *Job) WallTime() time.Duration {
-	var d time.Duration
-
-	if !j.StartTime.IsZero() {
-		if j.EndTime.IsZero() || j.State == JobStateReserved {
-			d = time.Since(j.StartTime)
-		} else {
-			d = j.EndTime.Sub(j.StartTime)
-		}
+	if j.StartTime.IsZero() {
+		return 0
 	}
 
-	return d
+	if j.EndTime.IsZero() || j.State == JobStateReserved {
+		return time.Since(j.StartTime)
+	}
+
+	return j.EndTime.Sub(j.StartTime)
 }
 
 // Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are
@@ -498,18 +508,31 @@ func (j *Job) Env() ([]string, error) {
 	}
 
 	if len(j.EnvC) == 0 {
-		if j.EnvCRetrieved {
-			env := os.Environ()
-			if len(overrideEs) > 0 {
-				env = envOverride(env, overrideEs)
-			}
+		return j.envWithoutStored(overrideEs)
+	}
 
-			return env, err
-		}
+	env, err := j.decodeStoredEnv()
+	if err != nil {
+		return nil, err
+	}
 
+	return applyEnvOverrides(env, overrideEs), nil
+}
+
+// envWithoutStored returns the environment to use for a Job that has no stored
+// EnvC: the current environment (with overrides applied) if its environment was
+// retrieved, else nil.
+func (j *Job) envWithoutStored(overrideEs []string) ([]string, error) {
+	if !j.EnvCRetrieved {
 		return nil, nil
 	}
 
+	return applyEnvOverrides(os.Environ(), overrideEs), nil
+}
+
+// decodeStoredEnv decompresses and decodes j.EnvC, falling back to the current
+// environment if a nil environment was stored.
+func (j *Job) decodeStoredEnv() ([]string, error) {
 	decompressed, err := decompress(j.EnvC)
 	if err != nil {
 		return nil, err
@@ -519,21 +542,25 @@ func (j *Job) Env() ([]string, error) {
 	dec := codec.NewDecoderBytes(decompressed, ch)
 	es := &envStr{}
 
-	err = dec.Decode(es)
-	if err != nil {
+	if err = dec.Decode(es); err != nil {
 		return nil, err
 	}
 
-	env := es.Environ
-	if env == nil {
-		env = os.Environ()
+	if es.Environ == nil {
+		return os.Environ(), nil
 	}
 
+	return es.Environ, nil
+}
+
+// applyEnvOverrides applies overrideEs to env if there are any, returning the
+// result.
+func applyEnvOverrides(env, overrideEs []string) []string {
 	if len(overrideEs) > 0 {
-		env = envOverride(env, overrideEs)
+		return envOverride(env, overrideEs)
 	}
 
-	return env, err
+	return env
 }
 
 // envCurrentOverrides decompresses and decodes any existing EnvOverride.
@@ -657,6 +684,24 @@ func (j *Job) RemovalRequested() bool {
 	return j.Behaviours.RemovalRequested()
 }
 
+// defaultMountRetries is the number of times muxfys retries a mount when the
+// MountConfig doesn't specify its own Retries.
+const defaultMountRetries = 10
+
+// errNoTargets is returned by Mount when a MountConfig has no usable Targets.
+var errNoTargets = errors.New("no Targets specified")
+
+// unmountOnError unmounts this Job's filesystems (discarding logs) following an
+// error, folding any unmount failure into the given error.
+func (j *Job) unmountOnError(err error) error {
+	_, erru := j.Unmount()
+	if erru != nil {
+		return fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
+	}
+
+	return err
+}
+
 // Mount uses the Job's MountConfigs to mount the remote file systems at the
 // desired mount points. If a mount point is unspecified, mounts in the sub
 // folder Cwd/mnt if CwdMatters (and unspecified CacheBase becomes Cwd),
@@ -673,10 +718,30 @@ func (j *Job) RemovalRequested() bool {
 // job's actual cwd if anything was mounted there, for the purpose of knowing
 // what directories to check and not check for disk usage.
 func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
-	cwd := j.Cwd
-	defaultMount := filepath.Join(j.Cwd, "mnt")
+	ms := &mountState{job: j}
+	cwd, defaultMount, defaultCacheBase := j.mountBaseDirs(onCwd)
 
-	defaultCacheBase := cwd
+	for _, mc := range j.MountConfigs {
+		if err := ms.mountConfig(mc, cwd, defaultMount, defaultCacheBase); err != nil {
+			return ms.cacheDirs, ms.mountedDirs, err
+		}
+	}
+
+	// unmount all on death without trying to upload
+	if len(j.mountedFS) > 0 {
+		j.unmountOnDeath()
+	}
+
+	return ms.cacheDirs, ms.mountedDirs, nil
+}
+
+// mountBaseDirs determines the cwd, default mount point and default cache base
+// to use for Mount, based on the Job's Cwd/ActualCwd and the onCwd argument.
+func (j *Job) mountBaseDirs(onCwd []bool) (cwd, defaultMount, defaultCacheBase string) {
+	cwd = j.Cwd
+	defaultMount = filepath.Join(j.Cwd, "mnt")
+	defaultCacheBase = cwd
+
 	if j.ActualCwd != "" {
 		cwd = j.ActualCwd
 		defaultMount = cwd
@@ -686,147 +751,165 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		defaultCacheBase = filepath.Dir(j.Cwd)
 	}
 
-	var (
-		uniqueCacheDirs   []string
-		uniqueMountedDirs []string
-	)
+	return cwd, defaultMount, defaultCacheBase
+}
 
-	for _, mc := range j.MountConfigs {
-		var rcs []*muxfys.RemoteConfig
+// unmountOnDeath arranges for all of the Job's mounted filesystems to be
+// unmounted (without uploading) if the process is interrupted or terminated.
+func (j *Job) unmountOnDeath() {
+	const deathSignalBuffer = 2 // we listen for os.Interrupt and syscall.SIGTERM
 
-		for _, mt := range mc.Targets {
-			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
-			if err != nil {
-				_, erru := j.Unmount()
-				if erru != nil {
-					err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
-				}
+	deathSignals := make(chan os.Signal, deathSignalBuffer)
 
-				return uniqueCacheDirs, uniqueMountedDirs, err
-			}
+	signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+	// (we can't use each fs.UnmountOnDeath() function because that tries to
+	// upload, but if we get killed we don't want that)
+	go func() {
+		<-deathSignals
 
-			accessor, err := muxfys.NewS3Accessor(accessorConfig)
-			if err != nil {
-				_, erru := j.Unmount()
-				if erru != nil {
-					err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
-				}
+		var merr *multierror.Error
 
-				return uniqueCacheDirs, uniqueMountedDirs, err
-			}
-
-			cacheDir := mt.CacheDir
-			if cacheDir != "" && !filepath.IsAbs(cacheDir) {
-				cacheDir = filepath.Join(defaultCacheBase, cacheDir)
-
-				// *** we should only set this if not writing, or if writing to
-				// a non-empty dir, which we don't know about at this point...
-				uniqueCacheDirs = append(uniqueCacheDirs, cacheDir)
-			} // *** else, the cache is in a unique dir that I don't know about?
-
-			rc := &muxfys.RemoteConfig{
-				Accessor:  accessor,
-				CacheData: mt.Cache,
-				CacheDir:  cacheDir,
-				Write:     mt.Write,
-			}
-
-			rcs = append(rcs, rc)
-		}
-
-		if len(rcs) == 0 {
-			err := errors.New("no Targets specified")
-
-			_, erru := j.Unmount()
+		for _, fs := range j.mountedFS {
+			erru := fs.Unmount(true)
 			if erru != nil {
-				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
+				merr = multierror.Append(merr, erru)
 			}
-
-			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
-		retries := 10
-		if mc.Retries > 0 {
-			retries = mc.Retries
+		if len(merr.Errors) > 0 {
+			panic(merr)
 		}
+	}()
+}
 
-		mount := mc.Mount
-		if mount != "" {
-			if !filepath.IsAbs(mount) {
-				mount = filepath.Join(cwd, mount)
-				uniqueMountedDirs = append(uniqueMountedDirs, mount)
-			}
-		} else {
-			mount = defaultMount
-			uniqueMountedDirs = append(uniqueMountedDirs, mount)
-		}
+// mountState accumulates the cache and mount directories created while a Job
+// mounts its MountConfigs.
+type mountState struct {
+	job         *Job
+	cacheDirs   []string
+	mountedDirs []string
+}
 
-		cacheBase := mc.CacheBase
-		if cacheBase != "" {
-			if !filepath.IsAbs(cacheBase) {
-				cacheBase = filepath.Join(cwd, cacheBase)
-			}
-		} else {
-			cacheBase = defaultCacheBase
-		}
-
-		cfg := &muxfys.Config{
-			Mount:     mount,
-			CacheBase: cacheBase,
-			Retries:   retries,
-			Verbose:   mc.Verbose,
-		}
-
-		fs, err := muxfys.New(cfg)
-		if err != nil {
-			_, erru := j.Unmount()
-			if erru != nil {
-				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
-			}
-
-			return uniqueCacheDirs, uniqueMountedDirs, err
-		}
-
-		err = fs.Mount(rcs...)
-		if err != nil {
-			_, erru := j.Unmount()
-			if erru != nil {
-				err = fmt.Errorf("%w (and the unmount failed: %w)", err, erru)
-			}
-
-			return uniqueCacheDirs, uniqueMountedDirs, err
-		}
-
-		// (we can't use each fs.UnmountOnDeath() function because that tries
-		// to upload, but if we get killed we don't want that)
-
-		j.mountedFS = append(j.mountedFS, fs)
+// mountConfig mounts a single MountConfig, appending any unique cache/mount
+// dirs it creates to the mountState. On error it unmounts everything mounted so
+// far (folding any unmount failure into the returned error).
+func (ms *mountState) mountConfig(mc MountConfig, cwd, defaultMount, defaultCacheBase string) error {
+	rcs, err := ms.buildRemoteConfigs(mc, defaultCacheBase)
+	if err != nil {
+		return ms.job.unmountOnError(err)
 	}
 
-	// unmount all on death without trying to upload
-	if len(j.mountedFS) > 0 {
-		deathSignals := make(chan os.Signal, 2)
-
-		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			<-deathSignals
-
-			var merr *multierror.Error
-
-			for _, fs := range j.mountedFS {
-				erru := fs.Unmount(true)
-				if erru != nil {
-					merr = multierror.Append(merr, erru)
-				}
-			}
-
-			if len(merr.Errors) > 0 {
-				panic(merr)
-			}
-		}()
+	if len(rcs) == 0 {
+		return ms.job.unmountOnError(errNoTargets)
 	}
 
-	return uniqueCacheDirs, uniqueMountedDirs, nil
+	mount := ms.resolveMount(mc.Mount, cwd, defaultMount)
+
+	cfg := &muxfys.Config{
+		Mount:     mount,
+		CacheBase: resolveCacheBase(mc.CacheBase, cwd, defaultCacheBase),
+		Retries:   mountRetries(mc),
+		Verbose:   mc.Verbose,
+	}
+
+	fs, err := muxfys.New(cfg)
+	if err != nil {
+		return ms.job.unmountOnError(err)
+	}
+
+	if err = fs.Mount(rcs...); err != nil {
+		return ms.job.unmountOnError(err)
+	}
+
+	ms.job.mountedFS = append(ms.job.mountedFS, fs)
+
+	return nil
+}
+
+// buildRemoteConfigs builds the muxfys RemoteConfigs for a MountConfig's
+// Targets, appending any unique cache dirs to the mountState.
+func (ms *mountState) buildRemoteConfigs(mc MountConfig, defaultCacheBase string) ([]*muxfys.RemoteConfig, error) {
+	var rcs []*muxfys.RemoteConfig
+
+	for _, mt := range mc.Targets {
+		accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
+		if err != nil {
+			return nil, err
+		}
+
+		accessor, err := muxfys.NewS3Accessor(accessorConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		rcs = append(rcs, &muxfys.RemoteConfig{
+			Accessor:  accessor,
+			CacheData: mt.Cache,
+			CacheDir:  ms.resolveCacheDir(mt.CacheDir, defaultCacheBase),
+			Write:     mt.Write,
+		})
+	}
+
+	return rcs, nil
+}
+
+// resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase,
+// recording it as a unique cache dir when it is relative.
+func (ms *mountState) resolveCacheDir(cacheDir, defaultCacheBase string) string {
+	if cacheDir == "" || filepath.IsAbs(cacheDir) {
+		// *** else, the cache is in a unique dir that I don't know about?
+		return cacheDir
+	}
+
+	cacheDir = filepath.Join(defaultCacheBase, cacheDir)
+
+	// *** we should only set this if not writing, or if writing to a non-empty
+	// dir, which we don't know about at this point...
+	ms.cacheDirs = append(ms.cacheDirs, cacheDir)
+
+	return cacheDir
+}
+
+// resolveMount resolves a MountConfig's mount point relative to cwd (or the
+// default), recording it as a unique mounted dir when appropriate.
+func (ms *mountState) resolveMount(mcMount, cwd, defaultMount string) string {
+	if mcMount == "" {
+		ms.mountedDirs = append(ms.mountedDirs, defaultMount)
+
+		return defaultMount
+	}
+
+	if filepath.IsAbs(mcMount) {
+		return mcMount
+	}
+
+	mount := filepath.Join(cwd, mcMount)
+	ms.mountedDirs = append(ms.mountedDirs, mount)
+
+	return mount
+}
+
+// resolveCacheBase resolves a MountConfig's CacheBase relative to cwd, or
+// returns the default.
+func resolveCacheBase(mcCacheBase, cwd, defaultCacheBase string) string {
+	if mcCacheBase == "" {
+		return defaultCacheBase
+	}
+
+	if filepath.IsAbs(mcCacheBase) {
+		return mcCacheBase
+	}
+
+	return filepath.Join(cwd, mcCacheBase)
+}
+
+// mountRetries returns the number of mount retries to use for a MountConfig.
+func mountRetries(mc MountConfig) int {
+	if mc.Retries > 0 {
+		return mc.Retries
+	}
+
+	return defaultMountRetries
 }
 
 // Unmount unmounts any remote filesystems that were previously mounted with
@@ -844,51 +927,66 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	// j.Lock()
 	// defer j.Unlock()
-	var doNotUpload bool
-	if len(stopUploads) == 1 {
-		doNotUpload = stopUploads[0]
+	doNotUpload := len(stopUploads) == 1 && stopUploads[0]
+
+	logs, merr := j.unmountAll(doNotUpload)
+
+	if err = merr.ErrorOrNil(); err != nil {
+		return logs, fmt.Errorf("Unmount failure(s): %w", err)
 	}
 
+	// delete any empty dirs
+	if j.ActualCwd != "" {
+		err = j.rmEmptyMountDirs()
+	}
+
+	return logs, err
+}
+
+// unmountAll unmounts all of the Job's mounted filesystems, returning their
+// joined logs and any unmount errors.
+func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 	var (
 		merr    *multierror.Error
 		allLogs []string
 	)
 
 	for _, fs := range j.mountedFS {
-		uerr := fs.Unmount(doNotUpload)
-		if uerr != nil {
+		if uerr := fs.Unmount(doNotUpload); uerr != nil {
 			merr = multierror.Append(merr, uerr)
 		}
 
-		theseLogs := fs.Logs()
-		if len(theseLogs) > 0 {
+		if theseLogs := fs.Logs(); len(theseLogs) > 0 {
 			allLogs = append(allLogs, theseLogs...)
 		}
 	}
 
 	j.mountedFS = nil
 
+	var logs string
 	if len(allLogs) > 0 {
 		logs = strings.TrimSpace(strings.Join(allLogs, ""))
 	}
 
-	err = merr.ErrorOrNil()
-	if err != nil {
-		return logs, fmt.Errorf("Unmount failure(s): %w", err)
-	}
+	return logs, merr
+}
 
-	// delete any empty dirs
-	if j.ActualCwd != "" {
-		for _, mc := range j.MountConfigs {
-			if mc.Mount == "" {
-				err = rmEmptyDirs(j.ActualCwd, j.Cwd)
-			} else if !filepath.IsAbs(mc.Mount) {
-				err = rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
-			}
+// rmEmptyMountDirs deletes any empty directories between the Job's mount
+// point(s) and its Cwd. It returns the error from the last cleanup attempted
+// (matching the original Unmount behaviour).
+func (j *Job) rmEmptyMountDirs() error {
+	var err error
+
+	for _, mc := range j.MountConfigs {
+		switch {
+		case mc.Mount == "":
+			err = rmEmptyDirs(j.ActualCwd, j.Cwd)
+		case !filepath.IsAbs(mc.Mount):
+			err = rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
 		}
 	}
 
-	return logs, err
+	return err
 }
 
 // ToEssense converts a Job to its matching JobEssense, taking less space and
@@ -1051,62 +1149,48 @@ func (j *Job) setWaitingForDepGroups(depGroups []string) {
 	j.WaitingForDepGroups = append([]string(nil), depGroups...)
 }
 
+// jobStatusStreams holds the stderr, stdout, environment and environment
+// overrides gathered for a JStatus.
+type jobStatusStreams struct {
+	stderr       string
+	stdout       string
+	env          []string
+	envOverrides []string
+}
+
 // ToStatus converts a job to a simplified JStatus, useful for output as JSON.
 func (j *Job) ToStatus() (JStatus, error) {
-	stderr, err := j.StdErr()
+	streams, err := j.statusStreams()
 	if err != nil {
 		return JStatus{}, err
 	}
-
-	stdout, err := j.StdOut()
-	if err != nil {
-		return JStatus{}, err
-	}
-
-	env, err := j.Env()
-	if err != nil {
-		return JStatus{}, err
-	}
-
-	envOverrides, err := j.envCurrentOverrides()
-	if err != nil {
-		return JStatus{}, err
-	}
-
-	var cwdLeaf string
 
 	j.RLock()
 	defer j.RUnlock()
 
-	if j.ActualCwd != "" {
-		cwdLeaf, err = filepath.Rel(j.Cwd, j.ActualCwd)
-		if err != nil {
-			return JStatus{}, err
-		}
-
-		cwdLeaf = "/" + cwdLeaf
+	cwdLeaf, err := j.cwdLeaf()
+	if err != nil {
+		return JStatus{}, err
 	}
 
+	return j.buildJStatus(streams, cwdLeaf), nil
+}
+
+// buildJStatus assembles a JStatus from the job and the already-gathered
+// streams and cwdLeaf. Must be called with at least an RLock held.
+//
+//nolint:funlen // a flat field-by-field mapping of the many-fielded Job struct
+func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
 	state := j.State
 	if state == JobStateRunning && j.Lost {
 		state = JobStateLost
-	}
-
-	ot := make([]string, 0, len(j.Requirements.Other))
-	for key, val := range j.Requirements.Other {
-		ot = append(ot, key+":"+val)
-	}
-
-	limitGroups := j.LimitGroups
-	if len(j.LimitGroupsForDisplay) > 0 {
-		limitGroups = j.LimitGroupsForDisplay
 	}
 
 	js := JStatus{
 		Key:                 j.Key(),
 		RepGroup:            j.RepGroup,
 		ReqGroup:            j.ReqGroup,
-		LimitGroups:         limitGroups,
+		LimitGroups:         j.limitGroupsForStatus(),
 		DepGroups:           j.DepGroups,
 		Dependencies:        j.Dependencies.Stringify(),
 		WaitingForDepGroups: j.WaitingForDepGroups,
@@ -1125,8 +1209,8 @@ func (j *Job) ToStatus() (JStatus, error) {
 		ExpectedRAM:         j.Requirements.RAM,
 		ExpectedTime:        j.Requirements.Time.Seconds(),
 		RequestedDisk:       j.Requirements.Disk,
-		EnvOverrides:        envOverrides,
-		OtherRequests:       ot,
+		EnvOverrides:        streams.envOverrides,
+		OtherRequests:       j.otherRequests(),
 		Cores:               j.Requirements.Cores,
 		NoRetryOverWalltime: j.NoRetriesOverWalltime.Seconds(),
 		PeakRAM:             j.PeakRAM,
@@ -1147,22 +1231,87 @@ func (j *Job) ToStatus() (JStatus, error) {
 		Priority:            j.Priority,
 		Retries:             j.Retries,
 		CwdMatters:          j.CwdMatters,
-		StdErr:              stderr,
-		StdOut:              stdout,
-		Env:                 env,
+		StdErr:              streams.stderr,
+		StdOut:              streams.stdout,
+		Env:                 streams.env,
+		Started:             unixNanoPtr(j.StartTime),
+		Ended:               unixNanoPtr(j.EndTime),
 	}
 
-	if !j.StartTime.IsZero() {
-		i := j.StartTime.UnixNano()
-		js.Started = &i
+	return js
+}
+
+// limitGroupsForStatus returns the limit groups to show in a JStatus,
+// preferring the display variant if set.
+func (j *Job) limitGroupsForStatus() []string {
+	if len(j.LimitGroupsForDisplay) > 0 {
+		return j.LimitGroupsForDisplay
 	}
 
-	if !j.EndTime.IsZero() {
-		i := j.EndTime.UnixNano()
-		js.Ended = &i
+	return j.LimitGroups
+}
+
+// otherRequests returns the Requirements.Other map as a slice of "key:val"
+// strings.
+func (j *Job) otherRequests() []string {
+	ot := make([]string, 0, len(j.Requirements.Other))
+	for key, val := range j.Requirements.Other {
+		ot = append(ot, key+":"+val)
 	}
 
-	return js, nil
+	return ot
+}
+
+// statusStreams gathers the stderr, stdout, environment and environment
+// overrides needed to build a JStatus.
+func (j *Job) statusStreams() (jobStatusStreams, error) {
+	var (
+		streams jobStatusStreams
+		err     error
+	)
+
+	if streams.stderr, err = j.StdErr(); err != nil {
+		return streams, err
+	}
+
+	if streams.stdout, err = j.StdOut(); err != nil {
+		return streams, err
+	}
+
+	if streams.env, err = j.Env(); err != nil {
+		return streams, err
+	}
+
+	streams.envOverrides, err = j.envCurrentOverrides()
+
+	return streams, err
+}
+
+// cwdLeaf returns the part of ActualCwd below Cwd (prefixed with "/"), or "" if
+// there is no ActualCwd. Must be called with at least an RLock held.
+func (j *Job) cwdLeaf() (string, error) {
+	if j.ActualCwd == "" {
+		return "", nil
+	}
+
+	leaf, err := filepath.Rel(j.Cwd, j.ActualCwd)
+	if err != nil {
+		return "", err
+	}
+
+	return "/" + leaf, nil
+}
+
+// unixNanoPtr returns a pointer to t's UnixNano value, or nil if t is the zero
+// time.
+func unixNanoPtr(t time.Time) *int64 {
+	if t.IsZero() {
+		return nil
+	}
+
+	i := t.UnixNano()
+
+	return &i
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it
@@ -1459,210 +1608,279 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 	keys := make(map[string]string)
 
 	for _, job := range jobs {
-		job.Lock()
-		before := job.Key()
-
-		// first work out if the key would change and make sure it doesn't
-		// change in to an existing key
-		new := &Job{
-			Cmd:             job.Cmd,
-			Cwd:             job.Cwd,
-			CwdMatters:      job.CwdMatters,
-			MountConfigs:    job.MountConfigs,
-			WithDocker:      job.WithDocker,
-			WithSingularity: job.WithSingularity,
-			ContainerMounts: job.ContainerMounts,
+		if err := j.modifyJob(job, server, keys); err != nil {
+			return keys, err
 		}
-		if j.Cmd != "" {
-			new.Cmd = j.Cmd
-		}
-
-		if j.Cwd != "" {
-			new.Cwd = j.Cwd
-		}
-
-		if j.CwdMattersSet {
-			new.CwdMatters = j.CwdMatters
-		}
-
-		if j.MountConfigsSet {
-			new.MountConfigs = j.MountConfigs
-		}
-
-		if j.WithDockerSet {
-			new.WithDocker = j.WithDocker
-		}
-
-		if j.WithSingularitySet {
-			new.WithSingularity = j.WithSingularity
-		}
-
-		if j.ContainerMountsSet {
-			new.ContainerMounts = j.ContainerMounts
-		}
-
-		newKey := new.Key()
-		if _, done := keys[newKey]; done {
-			// duplicate of prior job in this loop, ignore
-			job.Unlock()
-
-			continue
-		}
-
-		if newKey != before {
-			// check queue and db
-			exists, err := server.checkJobByKey(newKey)
-			if err != nil {
-				job.Unlock()
-
-				return keys, err
-			}
-
-			if exists {
-				// duplicate of queued or complete job, ignore
-				job.Unlock()
-
-				continue
-			}
-		}
-
-		if j.Cmd != "" {
-			job.Cmd = j.Cmd
-		}
-
-		if j.Cwd != "" {
-			job.Cwd = j.Cwd
-		}
-
-		if j.CwdMattersSet {
-			job.CwdMatters = j.CwdMatters
-			if j.CwdMatters {
-				job.ActualCwd = job.Cwd
-			}
-		}
-
-		if j.ChangeHomeSet {
-			job.ChangeHome = j.ChangeHome
-		}
-
-		if j.ReqGroupSet {
-			job.ReqGroup = j.ReqGroup
-		}
-
-		if j.GroupSet {
-			job.Group = j.Group
-		}
-
-		if j.Requirements != nil {
-			if j.Requirements.RAM != 0 {
-				job.Requirements.RAM = j.Requirements.RAM
-			}
-
-			if j.Requirements.Time != 0 {
-				job.Requirements.Time = j.Requirements.Time
-			}
-
-			if j.Requirements.CoresSet {
-				job.Requirements.Cores = j.Requirements.Cores
-			}
-
-			if j.Requirements.DiskSet {
-				job.Requirements.Disk = j.Requirements.Disk
-			}
-
-			if j.Requirements.OtherSet {
-				job.Requirements.Other = j.Requirements.Other
-			}
-		}
-
-		if j.OverrideSet {
-			job.Override = j.Override
-		}
-
-		if j.PrioritySet {
-			job.Priority = j.Priority
-		}
-
-		if j.RetriesSet {
-			job.Retries = j.Retries
-		}
-
-		if j.NoRetriesOverWalltimeSet {
-			job.NoRetriesOverWalltime = j.NoRetriesOverWalltime
-		}
-
-		if j.EnvOverrideSet {
-			job.EnvOverride = j.EnvOverride
-		}
-
-		if j.LimitGroupsSet {
-			job.LimitGroups = slices.Clone(j.LimitGroups)
-			job.LimitGroupsForDisplay = nil
-		}
-
-		if j.ModulesSet {
-			job.Modules = j.Modules
-		}
-
-		if j.DepGroupsSet {
-			job.DepGroups = j.DepGroups
-		}
-
-		if j.DependenciesSet {
-			job.Dependencies = j.Dependencies
-		}
-
-		if j.BehavioursSet {
-			for _, new := range j.Behaviours {
-				var found bool
-
-				for i, old := range job.Behaviours {
-					if old.When == new.When {
-						job.Behaviours[i] = new
-						found = true
-
-						break
-					}
-				}
-
-				if !found {
-					job.Behaviours = append(job.Behaviours, new)
-				}
-			}
-		}
-
-		if j.MountConfigsSet {
-			job.MountConfigs = j.MountConfigs
-		}
-
-		if j.BsubModeSet {
-			job.BsubMode = j.BsubMode
-
-			atomic.AddUint64(&BsubID, 1)
-			job.BsubID = atomic.LoadUint64(&BsubID)
-		}
-
-		if j.MonitorDockerSet {
-			job.MonitorDocker = j.MonitorDocker
-		}
-
-		if j.WithDockerSet {
-			job.WithDocker = j.WithDocker
-		}
-
-		if j.WithSingularitySet {
-			job.WithSingularity = j.WithSingularity
-		}
-
-		if j.ContainerMountsSet {
-			job.ContainerMounts = j.ContainerMounts
-		}
-
-		keys[job.Key()] = before
-		job.Unlock()
 	}
 
 	return keys, nil
+}
+
+// modifyJob applies the modifications to a single job (locking it for the
+// duration), recording the new->old key mapping in keys. Jobs whose modified
+// key would duplicate another job are left unchanged and not recorded.
+func (j *JobModifier) modifyJob(job *Job, server *Server, keys map[string]string) error {
+	job.Lock()
+	defer job.Unlock()
+
+	before := job.Key()
+
+	skip, err := j.skipForDuplicateKey(job, server, keys, before)
+	if err != nil || skip {
+		return err
+	}
+
+	j.applyTo(job)
+
+	keys[job.Key()] = before
+
+	return nil
+}
+
+// skipForDuplicateKey works out whether modifying job would change its key into
+// one already used by another job in this batch or in the queue/db, in which
+// case the job should be skipped (skip=true) and left unchanged.
+func (j *JobModifier) skipForDuplicateKey(job *Job, server *Server, keys map[string]string,
+	before string) (skip bool, err error) {
+	newKey := j.modifiedKey(job)
+	if _, done := keys[newKey]; done {
+		// duplicate of prior job in this loop, ignore
+		return true, nil
+	}
+
+	if newKey == before {
+		return false, nil
+	}
+
+	// check queue and db
+	exists, err := server.checkJobByKey(newKey)
+	if err != nil {
+		return false, err
+	}
+
+	// duplicate of queued or complete job, ignore
+	return exists, nil
+}
+
+// modifiedKey works out what job's Key() would become after modification,
+// without actually modifying it.
+func (j *JobModifier) modifiedKey(job *Job) string {
+	newJob := &Job{
+		Cmd:             job.Cmd,
+		Cwd:             job.Cwd,
+		CwdMatters:      job.CwdMatters,
+		MountConfigs:    job.MountConfigs,
+		WithDocker:      job.WithDocker,
+		WithSingularity: job.WithSingularity,
+		ContainerMounts: job.ContainerMounts,
+	}
+
+	j.overrideKeyCwd(newJob)
+	j.overrideKeyContainer(newJob)
+
+	return newJob.Key()
+}
+
+// overrideKeyCwd applies any set Cmd/Cwd/CwdMatters/MountConfigs modifications
+// to newJob (the key-relevant cwd fields).
+func (j *JobModifier) overrideKeyCwd(newJob *Job) {
+	if j.Cmd != "" {
+		newJob.Cmd = j.Cmd
+	}
+
+	if j.Cwd != "" {
+		newJob.Cwd = j.Cwd
+	}
+
+	if j.CwdMattersSet {
+		newJob.CwdMatters = j.CwdMatters
+	}
+
+	if j.MountConfigsSet {
+		newJob.MountConfigs = j.MountConfigs
+	}
+}
+
+// overrideKeyContainer applies any set container modifications to newJob (the
+// key-relevant container fields).
+func (j *JobModifier) overrideKeyContainer(newJob *Job) {
+	if j.WithDockerSet {
+		newJob.WithDocker = j.WithDocker
+	}
+
+	if j.WithSingularitySet {
+		newJob.WithSingularity = j.WithSingularity
+	}
+
+	if j.ContainerMountsSet {
+		newJob.ContainerMounts = j.ContainerMounts
+	}
+}
+
+// applyTo applies all the set modifications to job in place.
+func (j *JobModifier) applyTo(job *Job) {
+	j.applyCmdCwd(job)
+	j.applyGrouping(job)
+	j.applyRequirements(job)
+	j.applyScheduling(job)
+	j.applyBehaviours(job)
+	j.applyContainer(job)
+}
+
+// applyCmdCwd applies the Cmd/Cwd/CwdMatters/ChangeHome modifications to job.
+func (j *JobModifier) applyCmdCwd(job *Job) {
+	if j.Cmd != "" {
+		job.Cmd = j.Cmd
+	}
+
+	if j.Cwd != "" {
+		job.Cwd = j.Cwd
+	}
+
+	if j.CwdMattersSet {
+		job.CwdMatters = j.CwdMatters
+		if j.CwdMatters {
+			job.ActualCwd = job.Cwd
+		}
+	}
+
+	if j.ChangeHomeSet {
+		job.ChangeHome = j.ChangeHome
+	}
+}
+
+// applyGrouping applies the group/module/dependency modifications to job.
+func (j *JobModifier) applyGrouping(job *Job) {
+	if j.ReqGroupSet {
+		job.ReqGroup = j.ReqGroup
+	}
+
+	if j.GroupSet {
+		job.Group = j.Group
+	}
+
+	if j.ModulesSet {
+		job.Modules = j.Modules
+	}
+
+	if j.DepGroupsSet {
+		job.DepGroups = j.DepGroups
+	}
+
+	if j.DependenciesSet {
+		job.Dependencies = j.Dependencies
+	}
+}
+
+// applyRequirements applies any set scheduler Requirements modifications to job.
+func (j *JobModifier) applyRequirements(job *Job) {
+	if j.Requirements == nil {
+		return
+	}
+
+	if j.Requirements.RAM != 0 {
+		job.Requirements.RAM = j.Requirements.RAM
+	}
+
+	if j.Requirements.Time != 0 {
+		job.Requirements.Time = j.Requirements.Time
+	}
+
+	if j.Requirements.CoresSet {
+		job.Requirements.Cores = j.Requirements.Cores
+	}
+
+	if j.Requirements.DiskSet {
+		job.Requirements.Disk = j.Requirements.Disk
+	}
+
+	if j.Requirements.OtherSet {
+		job.Requirements.Other = j.Requirements.Other
+	}
+}
+
+// applyScheduling applies the override/priority/retry/limit modifications to
+// job.
+func (j *JobModifier) applyScheduling(job *Job) {
+	if j.OverrideSet {
+		job.Override = j.Override
+	}
+
+	if j.PrioritySet {
+		job.Priority = j.Priority
+	}
+
+	if j.RetriesSet {
+		job.Retries = j.Retries
+	}
+
+	if j.NoRetriesOverWalltimeSet {
+		job.NoRetriesOverWalltime = j.NoRetriesOverWalltime
+	}
+
+	if j.EnvOverrideSet {
+		job.EnvOverride = j.EnvOverride
+	}
+
+	if j.LimitGroupsSet {
+		job.LimitGroups = slices.Clone(j.LimitGroups)
+		job.LimitGroupsForDisplay = nil
+	}
+}
+
+// applyBehaviours merges any set Behaviours into job, replacing existing
+// behaviours that share a trigger and appending the rest.
+func (j *JobModifier) applyBehaviours(job *Job) {
+	if !j.BehavioursSet {
+		return
+	}
+
+	for _, newBehaviour := range j.Behaviours {
+		var found bool
+
+		for i, old := range job.Behaviours {
+			if old.When == newBehaviour.When {
+				job.Behaviours[i] = newBehaviour
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			job.Behaviours = append(job.Behaviours, newBehaviour)
+		}
+	}
+}
+
+// applyContainer applies the mount, bsub and container modifications to job.
+func (j *JobModifier) applyContainer(job *Job) {
+	if j.MountConfigsSet {
+		job.MountConfigs = j.MountConfigs
+	}
+
+	if j.BsubModeSet {
+		job.BsubMode = j.BsubMode
+
+		atomic.AddUint64(&BsubID, 1)
+		job.BsubID = atomic.LoadUint64(&BsubID)
+	}
+
+	if j.MonitorDockerSet {
+		job.MonitorDocker = j.MonitorDocker
+	}
+
+	if j.WithDockerSet {
+		job.WithDocker = j.WithDocker
+	}
+
+	if j.WithSingularitySet {
+		job.WithSingularity = j.WithSingularity
+	}
+
+	if j.ContainerMountsSet {
+		job.ContainerMounts = j.ContainerMounts
+	}
 }
 
 func quoteRemoteCwd(cwd string) string {
