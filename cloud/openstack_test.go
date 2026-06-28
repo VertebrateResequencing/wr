@@ -26,6 +26,7 @@
 package cloud
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/gophercloud/gophercloud/v2"
@@ -134,6 +135,40 @@ func TestOpenStackAuthOptionsFromEnv(t *testing.T) {
 		So(opts.Scope.DomainID, ShouldEqual, testOpenStackDefaultDomain)
 		assertAuthOptionsBuildTokenV3Maps(opts)
 	})
+
+	Convey("OpenStack auth options list all accepted user ID variables when user is missing", t, func() {
+		setOpenStackAuthTestEnv(t, map[string]string{
+			envOSAuthURL:  testOpenStackAuthURL,
+			envOSPassword: testOpenStackPassword,
+		})
+
+		_, err := openstackAuthOptionsFromEnv()
+
+		assertMissingOpenStackUserEnv(err)
+	})
+
+	Convey("OpenStack credential-name auth lists all accepted user variables when user is missing", t, func() {
+		setOpenStackAuthTestEnv(t, map[string]string{
+			envOSAuthURL:                     testOpenStackAuthURL,
+			envOSApplicationCredentialName:   testOpenStackUsername,
+			envOSApplicationCredentialSecret: testOpenStackPassword,
+		})
+
+		_, err := openstackAuthOptionsFromEnv()
+
+		assertMissingOpenStackUserEnv(err)
+	})
+
+	Convey("OpenStack application credential secret alone still requires a user identifier", t, func() {
+		setOpenStackAuthTestEnv(t, map[string]string{
+			envOSAuthURL:                     testOpenStackAuthURL,
+			envOSApplicationCredentialSecret: testOpenStackPassword,
+		})
+
+		_, err := openstackAuthOptionsFromEnv()
+
+		assertMissingOpenStackUserEnv(err)
+	})
 }
 
 func setOpenStackAuthTestEnv(t *testing.T, values map[string]string) {
@@ -176,4 +211,15 @@ func assertAuthOptionsBuildTokenV3Maps(opts gophercloud.AuthOptions) {
 
 	_, err = opts.ToTokenV3CreateMap(scope)
 	So(err, ShouldBeNil)
+}
+
+func assertMissingOpenStackUserEnv(err error) {
+	var missingErr gophercloud.ErrMissingAnyoneOfEnvironmentVariables
+
+	So(errors.As(err, &missingErr), ShouldBeTrue)
+	So(missingErr.EnvironmentVariables, ShouldResemble, []string{
+		envOSUserID,
+		envOSUserIDAlt,
+		envOSUsername,
+	})
 }

@@ -2228,7 +2228,7 @@ func (authEnv openstackAuthEnv) validate() error {
 
 	if authEnv.missingUser() {
 		return gophercloud.ErrMissingAnyoneOfEnvironmentVariables{
-			EnvironmentVariables: []string{envOSUserID, envOSUsername},
+			EnvironmentVariables: acceptedOpenStackUserEnvNames(),
 		}
 	}
 
@@ -2247,11 +2247,15 @@ func (authEnv openstackAuthEnv) validate() error {
 	return nil
 }
 
+func acceptedOpenStackUserEnvNames() []string {
+	return []string{envOSUserID, envOSUserIDAlt, envOSUsername}
+}
+
 func (authEnv openstackAuthEnv) missingUser() bool {
 	return authEnv.userID == "" &&
 		authEnv.username == "" &&
 		authEnv.applicationCredentialID == "" &&
-		authEnv.applicationCredentialSecret == ""
+		authEnv.applicationCredentialName == ""
 }
 
 func (authEnv openstackAuthEnv) missingPasswordAuth() bool {
@@ -2275,7 +2279,7 @@ func (authEnv openstackAuthEnv) usesApplicationCredentialName() bool {
 func (authEnv openstackAuthEnv) validateApplicationCredentialName() error {
 	if authEnv.userID == "" && authEnv.username == "" {
 		return gophercloud.ErrMissingAnyoneOfEnvironmentVariables{
-			EnvironmentVariables: []string{envOSUserID, envOSUsername},
+			EnvironmentVariables: acceptedOpenStackUserEnvNames(),
 		}
 	}
 
