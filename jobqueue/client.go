@@ -541,7 +541,7 @@ func setConnectSocketOptions(sock mangos.Socket, timeout time.Duration) error {
 func clientTLSConfig(caFile, certDomain string) *tls.Config {
 	tlsConfig := &tls.Config{ServerName: certDomain}
 
-	if caCert, err := os.ReadFile(caFile); err == nil {
+	if caCert, err := os.ReadFile(filepath.Clean(caFile)); err == nil {
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(caCert)
 		tlsConfig.RootCAs = certPool
@@ -595,7 +595,7 @@ func (c *Client) handlePingFailure(pingErr error) (*Client, error) {
 func ConnectUsingConfig(ctx context.Context, deployment string, timeout time.Duration) (*Client, error) {
 	config := internal.ConfigLoadFromCurrentDir(ctx, deployment)
 
-	token, err := os.ReadFile(config.ManagerTokenFile)
+	token, err := os.ReadFile(filepath.Clean(config.ManagerTokenFile))
 	if err != nil {
 		return nil, fmt.Errorf("could not read token file; has the manager been started? [%w]", err)
 	}
