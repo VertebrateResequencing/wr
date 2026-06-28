@@ -123,3 +123,66 @@ Names are for the spec to settle, but the capability needed is:
 Spec questions should be surfaced to the human only if they require a product or
 maintainer choice. Implementation details should be decided from existing wr
 patterns or sensible defaults and recorded in the spec.
+
+### Resolved decisions (from clarification with the maintainer)
+
+- **Display is unchanged; `--recent` only affects retrieval.** `--recent` is
+  purely a job-selection/retrieval mode that changes only *which* jobs the
+  manager returns, never *how* the CLI displays them. It uses exactly the same
+  default output format, grouping, and `--limit` behaviour as the other
+  selection modes (e.g. `-o details` with the standard `--limit 1` grouping by
+  state/exit-code/fail-reason). Operators use the existing `--limit 0` to see
+  every job individually, identical to the other modes. Do not give `--recent`
+  a special default output format or limit.
+
+- **State filters are rejected with `--recent`, not applied.** Only
+  successfully-completed (exit-0) jobs are ever archived to the complete store,
+  so the other state filters (`--buried`, `--running`, `--pending`,
+  `--dependent`, `--missing_deps`, `--suspended`) can never match under
+  `--recent`. Therefore, supplying a state filter together with `--recent` must
+  fail with a clear error, the same way `-f`/`-l` already reject state filters
+  they cannot support; extend the existing "state filters are only supported
+  in…" error to mention `--recent`. This clarifies the earlier "respects state
+  filter" wording: for the state-filter dimension specifically, the behaviour is
+  to reject incompatible filters. The result `--limit` and the `--std`/`--env`
+  extra-detail toggles are still honoured as the prompt requires.
+
+- **Latest completion only (no historical completion events).** A job's key is
+  derived from its command/cwd/mounts/image and is not unique per execution;
+  re-running the same command reuses the key, and the complete store keeps only
+  the latest archived job for that key. `--recent` therefore shows only the most
+  recent completion of each distinct job key: the end-time index reflects the
+  latest archive for a key, and an earlier completion drops out of the window
+  once superseded. Do not store or return historical completion events and do
+  not introduce an execution-unique index; latest-per-key satisfies the "no
+  duplicate jobs in results" requirement.
+
+- **Forward-only index; no backfill of pre-existing archived jobs.** The new
+  end-time index is populated only for jobs archived from the upgrade onward.
+  Do not scan the existing complete store at startup to backfill entries for
+  jobs archived before this feature shipped. (`--recent` may therefore not
+  return pre-upgrade completions until those commands are re-run and
+  re-archived.) The index must still be durable across restarts for entries it
+  has written, and the manager must not error if the index bucket is empty or
+  newly created.
+
+- **Benchmark acceptance bar: no extra bolt writes on archive.** The required
+  `make bench` comparison passes only if the per-job bolt write metrics
+  (`bolt_writes/job` and `bolt_pages/job`) do not increase for the archive path
+  — i.e. the end-time index write must be folded into the existing archive
+  transaction, not added as a separate write. A small `ns/op` tolerance
+  (≈5–10%) is acceptable, but add/modify/remove throughput must be unaffected
+  beyond that tolerance and the bolt write/page counts for add and modify must
+  not increase. Run `make bench` before and after and record the comparison.
+
+- **No special guard for large windows.** `--recent` does not cap the window or
+  result count and does not reject large durations. A very large window simply
+  behaves like the other modes producing many results, sharing the existing
+  large-result timeout/warning behaviour. Keep behaviour symmetric with the
+  other selection modes.
+
+- **`--host` is honoured under `--recent`.** In addition to `--limit` and
+  `--std`/`--env`, the existing `--host` client-side post-filter applies to
+  `--recent` results exactly as it does to the other modes. Document it in the
+  help where appropriate. (State filters remain rejected, per the decision
+  above.)
