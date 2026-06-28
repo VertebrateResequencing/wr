@@ -452,6 +452,18 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 			So(jobs, ShouldBeEmpty)
 		})
 
+		Convey("With the end-time index bucket absent, retrieveCompleteJobsRecent returns empty, no error, no panic", func() {
+			So(testDB.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.DeleteBucket(bucketEndTimeToKey)
+			}), ShouldBeNil)
+
+			So(func() {
+				jobs, errr := testDB.retrieveCompleteJobsRecent(time.Now().Add(-time.Hour))
+				So(errr, ShouldBeNil)
+				So(jobs, ShouldBeEmpty)
+			}, ShouldNotPanic)
+		})
+
 		Convey("With a job archived at now, a cutoff before 1970 returns it (huge window)", func() {
 			endTime := time.Now().Add(-time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo ancient", "rg-ancient", endTime)

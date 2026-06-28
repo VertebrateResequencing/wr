@@ -572,25 +572,44 @@ func (db *db) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) {
 	var jobs []*Job
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		completeJobBucket := tx.Bucket(bucketJobsComplete)
-		cursor := tx.Bucket(bucketEndTimeToKey).Cursor()
-
-		for k, _ := cursor.Seek(endTimeSeekKey(cutoff)); k != nil; k, _ = cursor.Next() {
-			job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, lookupEntryJobKey(k))
-			if err != nil {
-				return err
-			}
-
-			if job != nil {
-				jobs = append(jobs, job)
-			}
+		bucket := tx.Bucket(bucketEndTimeToKey)
+		if bucket == nil {
+			return nil // absent index -> empty result, matching the doc contract
 		}
 
-		return nil
+		var errs error
+
+		jobs, errs = db.scanCompleteJobsRecent(tx, bucket, cutoff)
+
+		return errs
 	})
 
 	return jobs, err
+}
+
+// scanCompleteJobsRecent seeks bucket (bucketEndTimeToKey) at cutoff and scans
+// forward, decoding each indexed archived job from bucketJobsComplete and
+// skipping any whose key is live again. Returns the in-window jobs in ascending
+// end-time order.
+func (db *db) scanCompleteJobsRecent(tx *bolt.Tx, bucket *bolt.Bucket, cutoff time.Time) ([]*Job, error) {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	cursor := bucket.Cursor()
+
+	var jobs []*Job
+
+	for k, _ := cursor.Seek(endTimeSeekKey(cutoff)); k != nil; k, _ = cursor.Next() {
+		job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, lookupEntryJobKey(k))
+		if err != nil {
+			return nil, err
+		}
+
+		if job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs, nil
 }
 
 // endTimeSeekKey returns the bucketEndTimeToKey seek key for a cutoff time: its
