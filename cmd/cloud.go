@@ -407,32 +407,7 @@ within OpenStack.`,
 
 					alreadyUp = true
 				} else {
-					// clean up any existing or partially failed forwarding
-					pid, running := checkProcess(fmPidPath)
-					if running {
-						errk := killProcess(pid)
-						if errk != nil {
-							warn("failed to kill ssh forwarder pid %d", pid)
-						}
-					}
-
-					errr := os.Remove(fmPidPath)
-					if errr != nil && !os.IsNotExist(errr) {
-						warn("failed to remove forwarder pid file %s: %s", fmPidPath, errr)
-					}
-
-					pid, running = checkProcess(fwPidPath)
-					if running {
-						errk := killProcess(pid)
-						if errk != nil {
-							warn("failed to kill ssh forwarder pid %d", pid)
-						}
-					}
-
-					errr = os.Remove(fwPidPath)
-					if errr != nil && !os.IsNotExist(errr) {
-						warn("failed to remove forwarder pid file %s: %s", fwPidPath, errr)
-					}
+					cleanupDeployForwardingProcesses(fmPidPath, fwPidPath)
 				}
 
 				break
@@ -489,12 +464,14 @@ within OpenStack.`,
 			// teardown
 			err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
 			if err != nil {
+				cleanupDeployForwardingProcesses(fmPidPath)
 				teardown(ctx, provider)
 				die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 			}
 
 			err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 			if err != nil {
+				cleanupDeployForwardingProcesses(fmPidPath, fwPidPath)
 				teardown(ctx, provider)
 				die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
 			}
@@ -502,6 +479,7 @@ within OpenStack.`,
 			// check that we can now connect to the remote manager
 			jq = connect(cloudManagerStartTimeout, true)
 			if jq == nil {
+				cleanupDeployForwardingProcesses(fmPidPath, fwPidPath)
 				teardown(ctx, provider)
 				die("could not talk to wr manager on server at %s after 40s", server.IP)
 			}
@@ -1493,11 +1471,31 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 
 	// store ssh's pid to file
 	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), ownerReadWrite)
+	if err != nil {
+		return cleanupStartedForwarderAfterPidWriteError(cmd, pidPath, err)
+	}
 
 	// don't cmd.Wait(); ssh will continue running in the background after we
 	// exit
 
-	return err
+	return nil
+}
+
+func cleanupDeployForwardingProcesses(pidPaths ...string) {
+	for _, pidPath := range pidPaths {
+		pid, running := checkProcess(pidPath)
+		if running {
+			errk := killProcess(pid)
+			if errk != nil {
+				warn("failed to kill ssh forwarder pid %d", pid)
+			}
+		}
+
+		err := os.Remove(pidPath)
+		if err != nil && !os.IsNotExist(err) {
+			warn("failed to remove forwarder pid file %s: %s", pidPath, err)
+		}
+	}
 }
 
 func checkProcess(pidPath string) (pid int, running bool) {
@@ -1539,4 +1537,21 @@ func teardown(ctx context.Context, p *cloud.Provider) {
 		//nolint:contextcheck // warn is an intentionally detached CLI logger
 		warn("teardown failed: %s", err)
 	}
+}
+
+func cleanupStartedForwarderAfterPidWriteError(cmd *exec.Cmd, pidPath string, writeErr error) error {
+	killErr := cmd.Process.Kill()
+	waitErr := cmd.Wait()
+
+	if killErr == nil {
+		return fmt.Errorf("write forwarder pid file %s: %w", pidPath, writeErr)
+	}
+
+	if waitErr != nil {
+		return fmt.Errorf("write pid file %s: %w; kill ssh forwarder pid %d: %w; wait: %w",
+			pidPath, writeErr, cmd.Process.Pid, killErr, waitErr)
+	}
+
+	return fmt.Errorf("write pid file %s: %w; kill ssh forwarder pid %d: %w",
+		pidPath, writeErr, cmd.Process.Pid, killErr)
 }

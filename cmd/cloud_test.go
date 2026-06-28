@@ -26,7 +26,12 @@
 package cmd
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -128,4 +133,94 @@ func TestBuildManagerStartCmdDebugFlags(t *testing.T) {
 		So(cmd, ShouldContainSubstring, " --runner_syslog")
 		So(cmd, ShouldNotContainSubstring, "--runner_debug")
 	})
+}
+
+func TestCleanupDeployForwardingProcesses(t *testing.T) {
+	Convey("deploy forwarder cleanup kills process and removes pid files when manager connection fails", t, func() {
+		dir := t.TempDir()
+		managerForwarder, managerDone := startTestForwarder(t)
+		webForwarder, webDone := startTestForwarder(t)
+		unrelatedForwarder, unrelatedDone := startTestForwarder(t)
+		managerPidPath := filepath.Join(dir, "manager-forwarder.pid")
+		webPidPath := filepath.Join(dir, "web-forwarder.pid")
+		unrelatedPidPath := filepath.Join(dir, "unrelated-forwarder.pid")
+
+		So(os.WriteFile(managerPidPath, []byte(strconv.Itoa(managerForwarder.Process.Pid)), ownerReadWrite), ShouldBeNil)
+		So(os.WriteFile(webPidPath, []byte(strconv.Itoa(webForwarder.Process.Pid)), ownerReadWrite), ShouldBeNil)
+		So(os.WriteFile(unrelatedPidPath, []byte(strconv.Itoa(unrelatedForwarder.Process.Pid)), ownerReadWrite), ShouldBeNil)
+
+		cleanupDeployForwardingProcesses(managerPidPath, webPidPath)
+
+		So(fileIsMissing(managerPidPath), ShouldBeTrue)
+		So(fileIsMissing(webPidPath), ShouldBeTrue)
+		So(fileIsMissing(unrelatedPidPath), ShouldBeFalse)
+		So(processExited(managerDone), ShouldBeTrue)
+		So(processExited(webDone), ShouldBeTrue)
+		So(processIsRunning(unrelatedDone), ShouldBeTrue)
+	})
+}
+
+func startTestForwarder(t *testing.T) (*exec.Cmd, <-chan error) {
+	t.Helper()
+
+	cmd := exec.Command("sleep", "30") //nolint:noctx // test process killed by cleanup under test
+	err := cmd.Start()
+	So(err, ShouldBeNil)
+
+	if err != nil {
+		return cmd, nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	t.Cleanup(func() {
+		if cmd.ProcessState != nil {
+			return
+		}
+
+		if err := cmd.Process.Kill(); err != nil {
+			t.Logf("failed to kill test forwarder pid %d: %s", cmd.Process.Pid, err)
+
+			return
+		}
+
+		<-done
+	})
+
+	return cmd, done
+}
+
+func fileIsMissing(path string) bool {
+	_, err := os.Stat(path)
+
+	return os.IsNotExist(err)
+}
+
+func processExited(done <-chan error) bool {
+	if done == nil {
+		return false
+	}
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(2 * time.Second):
+		return false
+	}
+}
+
+func processIsRunning(done <-chan error) bool {
+	if done == nil {
+		return false
+	}
+
+	select {
+	case <-done:
+		return false
+	default:
+		return true
+	}
 }
