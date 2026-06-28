@@ -124,5 +124,15 @@ func parseRecentFloatUnit(prefix string, mult time.Duration) (time.Duration, boo
 		return 0, false
 	}
 
-	return time.Duration(f * float64(mult)), true
+	// f is finite and non-negative here, so ns is too. A non-negative float64
+	// converts safely to an int64 nanosecond Duration only while it stays below
+	// 2^63; float64(math.MaxInt64) rounds to exactly 2^63, so reject ns at or
+	// above it and let the caller fall back to time.ParseDuration (which errors
+	// cleanly) rather than rely on the implementation-defined float->int cast.
+	ns := f * float64(mult)
+	if ns >= float64(math.MaxInt64) {
+		return 0, false
+	}
+
+	return time.Duration(ns), true
 }

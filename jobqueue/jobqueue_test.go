@@ -9971,6 +9971,15 @@ func TestGetRecent(t *testing.T) {
 			So(errg.Error(), ShouldContainSubstring, ErrBadRequest)
 			So(jobs, ShouldHaveLength, 0)
 		})
+
+		Convey("GetRecent with a non-empty state returns an error and no jobs", func() {
+			addJob("echo recent state", "rg-state")
+			reserveStartArchive(jq, time.Now())
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, JobStateRunning, false, false)
+			So(errg, ShouldNotBeNil)
+			So(jobs, ShouldHaveLength, 0)
+		})
 	})
 }
 

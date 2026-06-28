@@ -602,12 +602,7 @@ func (db *db) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) {
 // or before the first entry, so the forward scan returns every archived job (the
 // cutoff precedes them all).
 func endTimeSeekKey(cutoff time.Time) []byte {
-	seek := make([]byte, endTimeBytes)
-	if nanos := cutoff.UnixNano(); nanos > 0 {
-		binary.BigEndian.PutUint64(seek, uint64(nanos))
-	}
-
-	return seek
+	return endTimeToBytes(cutoff.UnixNano())
 }
 
 // archiveJobTx is the transactional part of archiveJob: it moves the job from
@@ -652,10 +647,21 @@ func (db *db) updateEndTimeIndex(tx *bolt.Tx, jobKey []byte, job *Job) error {
 		return err
 	}
 
-	newTimeBytes := make([]byte, endTimeBytes)
-	binary.BigEndian.PutUint64(newTimeBytes, uint64(newNanos))
+	newTimeBytes := endTimeToBytes(newNanos)
 
 	return tx.Bucket(bucketEndTimeToKey).Put(endTimeIndexKey(newTimeBytes, jobKey), nil)
+}
+
+// endTimeToBytes encodes a UnixNano end time as endTimeBytes big-endian bytes,
+// clamping a non-positive value to all-zero bytes so a zero/pre-1970 time cannot
+// wrap through uint64 into a high-sorting key.
+func endTimeToBytes(nanos int64) []byte {
+	b := make([]byte, endTimeBytes)
+	if nanos > 0 {
+		binary.BigEndian.PutUint64(b, uint64(nanos))
+	}
+
+	return b
 }
 
 // endTimeIndexKey returns the bucketEndTimeToKey key for an archived job:
@@ -693,8 +699,7 @@ func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) 
 		return false, nil
 	}
 
-	oldTimeBytes := make([]byte, endTimeBytes)
-	binary.BigEndian.PutUint64(oldTimeBytes, uint64(oldNanos))
+	oldTimeBytes := endTimeToBytes(oldNanos)
 
 	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
 }

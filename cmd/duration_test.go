@@ -52,6 +52,17 @@ func TestParseRecentDuration(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(d, ShouldEqual, 12*time.Hour)
 		})
+
+		Convey("a large but representable window still parses", func() {
+			d, err := parseRecentDuration("10000d")
+			So(err, ShouldBeNil)
+			So(d, ShouldEqual, 10000*24*time.Hour)
+		})
+
+		Convey("a window too large to represent as a Duration errors", func() {
+			_, err := parseRecentDuration("1e30d")
+			So(err, ShouldNotBeNil)
+		})
 	})
 
 	Convey("parseRecentDuration accepts standard Go duration units", t, func() {
