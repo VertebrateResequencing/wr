@@ -180,8 +180,10 @@ func TestOpenStack(t *testing.T) {
 		vars, err := MaybeEnv("openstack")
 		So(err, ShouldBeNil)
 		So(vars, ShouldResemble, []string{
-			envOSUserID, envOSTenantID, envOSTenantName, envOSDomainID, envOSProjectDomainID,
-			envOSDomainName, envOSUserDomainName, envOSProjectID, envOSProjectName, envOSPoolName,
+			envOSUserID, envOSUserIDAlt, envOSTenantID, envOSTenantName, envOSDomainID,
+			envOSDomainName, envOSDefaultDomain, envOSUserDomainID, envOSUserDomainName,
+			envOSProjectDomainID, envOSProjectDomainName, envOSProjectID, envOSProjectName,
+			envOSPoolName,
 		})
 	})
 
@@ -190,8 +192,10 @@ func TestOpenStack(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(vars, ShouldResemble, []string{
 			envOSAuthURL, envOSUsername, envOSPassword, envOSRegionName,
-			envOSUserID, envOSTenantID, envOSTenantName, envOSDomainID, envOSProjectDomainID,
-			envOSDomainName, envOSUserDomainName, envOSProjectID, envOSProjectName, envOSPoolName,
+			envOSUserID, envOSUserIDAlt, envOSTenantID, envOSTenantName, envOSDomainID,
+			envOSDomainName, envOSDefaultDomain, envOSUserDomainID, envOSUserDomainName,
+			envOSProjectDomainID, envOSProjectDomainName, envOSProjectID, envOSProjectName,
+			envOSPoolName,
 		})
 	})
 

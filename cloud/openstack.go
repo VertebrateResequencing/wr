@@ -127,36 +127,49 @@ var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 // environment variable names used to connect to OpenStack. They are named
 // constants because they are referenced both here and in tests.
 const (
-	envOSAuthURL         = "OS_AUTH_URL"
-	envOSUsername        = "OS_USERNAME"
-	envOSPassword        = "OS_PASSWORD"
-	envOSRegionName      = "OS_REGION_NAME"
-	envOSUserID          = "OS_USERID"
-	envOSTenantID        = "OS_TENANT_ID"
-	envOSTenantName      = "OS_TENANT_NAME"
-	envOSDomainID        = "OS_DOMAIN_ID"
-	envOSProjectDomainID = "OS_PROJECT_DOMAIN_ID"
-	envOSDomainName      = "OS_DOMAIN_NAME"
-	envOSUserDomainName  = "OS_USER_DOMAIN_NAME"
-	envOSProjectID       = "OS_PROJECT_ID"
-	envOSProjectName     = "OS_PROJECT_NAME"
-	envOSPoolName        = "OS_POOL_NAME"
+	envOSAuthURL                     = "OS_AUTH_URL"
+	envOSUsername                    = "OS_USERNAME"
+	envOSPassword                    = "OS_PASSWORD"
+	envOSRegionName                  = "OS_REGION_NAME"
+	envOSUserID                      = "OS_USERID"
+	envOSUserIDAlt                   = "OS_USER_ID"
+	envOSTenantID                    = "OS_TENANT_ID"
+	envOSTenantName                  = "OS_TENANT_NAME"
+	envOSDomainID                    = "OS_DOMAIN_ID"
+	envOSDomainName                  = "OS_DOMAIN_NAME"
+	envOSDefaultDomain               = "OS_DEFAULT_DOMAIN"
+	envOSUserDomainID                = "OS_USER_DOMAIN_ID"
+	envOSUserDomainName              = "OS_USER_DOMAIN_NAME"
+	envOSProjectDomainID             = "OS_PROJECT_DOMAIN_ID"
+	envOSProjectDomainName           = "OS_PROJECT_DOMAIN_NAME"
+	envOSProjectID                   = "OS_PROJECT_ID"
+	envOSProjectName                 = "OS_PROJECT_NAME"
+	envOSPasscode                    = "OS_PASSCODE"
+	envOSApplicationCredentialID     = "OS_APPLICATION_CREDENTIAL_ID"
+	envOSApplicationCredentialName   = "OS_APPLICATION_CREDENTIAL_NAME"
+	envOSApplicationCredentialSecret = "OS_APPLICATION_CREDENTIAL_SECRET"
+	envOSSystemScope                 = "OS_SYSTEM_SCOPE"
+	envOSPoolName                    = "OS_POOL_NAME"
 )
 
 // openstackEnvs contains the environment variable names we need to connect to
 // OpenStack. These are only the required ones for all intalls; other env vars
 // are required but it varies which ones. Gophercloud also considers:
-// OS_USERID, OS_TENANT_ID, OS_TENANT_NAME, OS_DOMAIN_ID, OS_DOMAIN_NAME,
-// OS_PROJECT_ID, OS_PROJECT_NAME (with *PROJECT* overriding *TENANT*, and only
-// one of the *DOMAIN* variables being allowed to be set). We also use
-// OS_POOL_NAME to determine the name of the network to get floating IPs from.
+// OS_USERID, OS_USER_ID, OS_TENANT_ID, OS_TENANT_NAME, OS_DOMAIN_ID,
+// OS_DOMAIN_NAME, OS_DEFAULT_DOMAIN, OS_USER_DOMAIN_ID, OS_USER_DOMAIN_NAME,
+// OS_PROJECT_DOMAIN_ID, OS_PROJECT_DOMAIN_NAME, OS_PROJECT_ID and
+// OS_PROJECT_NAME (with *PROJECT* overriding *TENANT*, and only one of each
+// *DOMAIN* ID/name pair being allowed to be set). We also use OS_POOL_NAME to
+// determine the name of the network to get floating IPs from.
 //
 //nolint:gochecknoglobals // required lookup tables; an array cannot be a const
 var (
 	openstackReqEnvs   = [...]string{envOSAuthURL, envOSUsername, envOSPassword, envOSRegionName}
 	openstackMaybeEnvs = [...]string{
-		envOSUserID, envOSTenantID, envOSTenantName, envOSDomainID, envOSProjectDomainID,
-		envOSDomainName, envOSUserDomainName, envOSProjectID, envOSProjectName, envOSPoolName,
+		envOSUserID, envOSUserIDAlt, envOSTenantID, envOSTenantName, envOSDomainID,
+		envOSDomainName, envOSDefaultDomain, envOSUserDomainID, envOSUserDomainName,
+		envOSProjectDomainID, envOSProjectDomainName, envOSProjectID, envOSProjectName,
+		envOSPoolName,
 	}
 )
 
@@ -226,7 +239,7 @@ func (p *openstackp) initialize() error {
 	// authenticate
 	ctx := context.Background()
 
-	opts, err := openstack.AuthOptionsFromEnv()
+	opts, err := openstackAuthOptionsFromEnv()
 	if err != nil {
 		return err
 	}
@@ -263,6 +276,29 @@ func defaultPoolName() string {
 	}
 
 	return "public"
+}
+
+func openstackAuthOptionsFromEnv() (gophercloud.AuthOptions, error) {
+	authEnv := openstackAuthEnvFromEnv()
+	if err := authEnv.validate(); err != nil {
+		return gophercloud.AuthOptions{}, err
+	}
+
+	return gophercloud.AuthOptions{
+		IdentityEndpoint:            authEnv.authURL,
+		UserID:                      authEnv.userID,
+		Username:                    authEnv.username,
+		Password:                    authEnv.password,
+		Passcode:                    authEnv.passcode,
+		TenantID:                    authEnv.tenantID,
+		TenantName:                  authEnv.tenantName,
+		DomainID:                    authEnv.userDomainID,
+		DomainName:                  authEnv.userDomainName,
+		ApplicationCredentialID:     authEnv.applicationCredentialID,
+		ApplicationCredentialName:   authEnv.applicationCredentialName,
+		ApplicationCredentialSecret: authEnv.applicationCredentialSecret,
+		Scope:                       authEnv.scope(),
+	}, nil
 }
 
 // initClients creates the compute, network and image service clients (and
@@ -2091,4 +2127,193 @@ func (p *openstackp) createFloatingIP(ctx context.Context) (*networkfloatingips.
 	}
 	// *** should we delete these during TearDown? fIP.Delete(p.computeClient, fIP.ID) ...
 	return networkfloatingips.Create(ctx, p.networkClient, createOpts).Extract()
+}
+
+type openstackAuthEnv struct {
+	authURL                     string
+	username                    string
+	userID                      string
+	password                    string
+	passcode                    string
+	tenantID                    string
+	tenantName                  string
+	domainID                    string
+	domainName                  string
+	defaultDomain               string
+	userDomainID                string
+	userDomainName              string
+	projectDomainID             string
+	projectDomainName           string
+	applicationCredentialID     string
+	applicationCredentialName   string
+	applicationCredentialSecret string
+	systemScope                 string
+}
+
+func openstackAuthEnvFromEnv() openstackAuthEnv {
+	authEnv := baseOpenStackAuthEnvFromEnv()
+	authEnv.applyProjectOverrides()
+	authEnv.applyDomainFallbacks()
+
+	return authEnv
+}
+
+func baseOpenStackAuthEnvFromEnv() openstackAuthEnv {
+	return openstackAuthEnv{
+		authURL:                     os.Getenv(envOSAuthURL),
+		username:                    os.Getenv(envOSUsername),
+		userID:                      firstOpenStackEnv(envOSUserID, envOSUserIDAlt),
+		password:                    os.Getenv(envOSPassword),
+		passcode:                    os.Getenv(envOSPasscode),
+		tenantID:                    os.Getenv(envOSTenantID),
+		tenantName:                  os.Getenv(envOSTenantName),
+		domainID:                    os.Getenv(envOSDomainID),
+		domainName:                  os.Getenv(envOSDomainName),
+		defaultDomain:               os.Getenv(envOSDefaultDomain),
+		userDomainID:                os.Getenv(envOSUserDomainID),
+		userDomainName:              os.Getenv(envOSUserDomainName),
+		projectDomainID:             os.Getenv(envOSProjectDomainID),
+		projectDomainName:           os.Getenv(envOSProjectDomainName),
+		applicationCredentialID:     os.Getenv(envOSApplicationCredentialID),
+		applicationCredentialName:   os.Getenv(envOSApplicationCredentialName),
+		applicationCredentialSecret: os.Getenv(envOSApplicationCredentialSecret),
+		systemScope:                 os.Getenv(envOSSystemScope),
+	}
+}
+
+func (authEnv *openstackAuthEnv) applyProjectOverrides() {
+	if projectID := os.Getenv(envOSProjectID); projectID != "" {
+		authEnv.tenantID = projectID
+	}
+
+	if projectName := os.Getenv(envOSProjectName); projectName != "" {
+		authEnv.tenantName = projectName
+	}
+}
+
+func (authEnv *openstackAuthEnv) applyDomainFallbacks() {
+	authEnv.userDomainID = fallbackOpenStackEnv(authEnv.userDomainID, authEnv.domainID)
+	authEnv.projectDomainID = fallbackOpenStackEnv(authEnv.projectDomainID, authEnv.domainID)
+	authEnv.userDomainName = fallbackOpenStackEnv(authEnv.userDomainName, authEnv.domainName)
+	authEnv.projectDomainName = fallbackOpenStackEnv(authEnv.projectDomainName, authEnv.domainName)
+	authEnv.applyDefaultDomainFallbacks()
+}
+
+func fallbackOpenStackEnv(currentValue, fallbackValue string) string {
+	if currentValue != "" {
+		return currentValue
+	}
+
+	return fallbackValue
+}
+
+func (authEnv *openstackAuthEnv) applyDefaultDomainFallbacks() {
+	if authEnv.defaultDomain == "" {
+		return
+	}
+
+	if authEnv.userDomainID == "" && authEnv.userDomainName == "" {
+		authEnv.userDomainID = authEnv.defaultDomain
+	}
+
+	if authEnv.projectDomainID == "" && authEnv.projectDomainName == "" {
+		authEnv.projectDomainID = authEnv.defaultDomain
+	}
+}
+
+func (authEnv openstackAuthEnv) validate() error {
+	if authEnv.authURL == "" {
+		return gophercloud.ErrMissingEnvironmentVariable{EnvironmentVariable: envOSAuthURL}
+	}
+
+	if authEnv.missingUser() {
+		return gophercloud.ErrMissingAnyoneOfEnvironmentVariables{
+			EnvironmentVariables: []string{envOSUserID, envOSUsername},
+		}
+	}
+
+	if authEnv.missingPasswordAuth() {
+		return gophercloud.ErrMissingEnvironmentVariable{EnvironmentVariable: envOSPassword}
+	}
+
+	if authEnv.missingApplicationCredentialSecret() {
+		return gophercloud.ErrMissingEnvironmentVariable{EnvironmentVariable: envOSApplicationCredentialSecret}
+	}
+
+	if authEnv.usesApplicationCredentialName() {
+		return authEnv.validateApplicationCredentialName()
+	}
+
+	return nil
+}
+
+func (authEnv openstackAuthEnv) missingUser() bool {
+	return authEnv.userID == "" &&
+		authEnv.username == "" &&
+		authEnv.applicationCredentialID == "" &&
+		authEnv.applicationCredentialSecret == ""
+}
+
+func (authEnv openstackAuthEnv) missingPasswordAuth() bool {
+	return authEnv.password == "" &&
+		authEnv.passcode == "" &&
+		authEnv.applicationCredentialID == "" &&
+		authEnv.applicationCredentialName == ""
+}
+
+func (authEnv openstackAuthEnv) missingApplicationCredentialSecret() bool {
+	return (authEnv.applicationCredentialID != "" || authEnv.applicationCredentialName != "") &&
+		authEnv.applicationCredentialSecret == ""
+}
+
+func (authEnv openstackAuthEnv) usesApplicationCredentialName() bool {
+	return authEnv.applicationCredentialID == "" &&
+		authEnv.applicationCredentialName != "" &&
+		authEnv.applicationCredentialSecret != ""
+}
+
+func (authEnv openstackAuthEnv) validateApplicationCredentialName() error {
+	if authEnv.userID == "" && authEnv.username == "" {
+		return gophercloud.ErrMissingAnyoneOfEnvironmentVariables{
+			EnvironmentVariables: []string{envOSUserID, envOSUsername},
+		}
+	}
+
+	if authEnv.username != "" && authEnv.userDomainID == "" && authEnv.userDomainName == "" {
+		return gophercloud.ErrMissingAnyoneOfEnvironmentVariables{
+			EnvironmentVariables: []string{envOSUserDomainID, envOSUserDomainName},
+		}
+	}
+
+	return nil
+}
+
+func (authEnv openstackAuthEnv) scope() *gophercloud.AuthScope {
+	if authEnv.systemScope == "all" {
+		return &gophercloud.AuthScope{System: true}
+	}
+
+	if authEnv.tenantID != "" {
+		return &gophercloud.AuthScope{ProjectID: authEnv.tenantID}
+	}
+
+	if authEnv.tenantName != "" {
+		return &gophercloud.AuthScope{
+			ProjectName: authEnv.tenantName,
+			DomainID:    authEnv.projectDomainID,
+			DomainName:  authEnv.projectDomainName,
+		}
+	}
+
+	return nil
+}
+
+func firstOpenStackEnv(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+
+	return ""
 }
