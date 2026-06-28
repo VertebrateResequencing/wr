@@ -223,6 +223,7 @@ type clientRequest struct {
 	Modifier                *JobModifier
 	Limit                   int
 	Timeout                 time.Duration
+	Period                  time.Duration
 	ClientID                uuid.UUID
 	FirstReserve            bool
 	GetEnv                  bool
@@ -338,6 +339,24 @@ func (state *executeLiveState) snapshot() *JobEndState {
 		Stdout:   stdout,
 		Stderr:   stderr,
 	}
+}
+
+// GetRecent gets archived Jobs across all rep groups that finished running
+// (were Archive()d) within the last period. Only exit-0 jobs are ever archived,
+// so all returned jobs are complete; state must be "" (a non-"" state is a
+// programming error - the CLI rejects state filters before calling). 'limit',
+// 'getStd' and 'getEnv' behave as in GetByRepGroup.
+//
+//nolint:revive // state is accepted for symmetry with the other getters; the CLI guarantees "" and it is not sent.
+func (c *Client) GetRecent(period time.Duration, limit int, state JobState, getStd, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{
+		Method: requestMethodGetRecent, Period: period, Limit: limit, GetStd: getStd, GetEnv: getEnv,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
 }
 
 func currentProcessTreeCPUtime(pid int) time.Duration {

@@ -39,8 +39,8 @@ State), and `Client.GetRecent(period, limit, state, getStd, getEnv)`
 `jobqueue/jobqueue_test.go`. Covering all 7 acceptance tests from B1.
 Depends on Phase 1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: B2 - GetRecent reflects window movement after time passes
 
@@ -52,5 +52,5 @@ Add a test confirming a job archived with `EndTime` now-90s is returned by
 `jobqueue/jobqueue_test.go`. Covering the 1 acceptance test from B2.
 Depends on Item 2.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

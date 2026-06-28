@@ -57,6 +57,7 @@ const (
 	requestMethodReserve       = "reserve"
 	requestMethodGetByCmd      = "getbc"
 	requestMethodGetIncomplete = "getin"
+	requestMethodGetRecent     = "getrec"
 	requestMethodGetBadServers = "getbcs"
 
 	// schedGroupWithLimitParts is the number of parts a scheduler group splits
@@ -1411,6 +1412,17 @@ func (s *Server) handleGetIncomplete(ctx context.Context, cr *clientRequest) *se
 	return jobsResponse(jobs)
 }
 
+// handleGetRecent gets archived jobs finished within cr.Period.
+func (s *Server) handleGetRecent(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	if cr.Period <= 0 {
+		return nil, ErrBadRequest, ""
+	}
+
+	jobs, srerr, qerr := s.getJobsRecent(ctx, cr.Period, cr.Limit, cr.GetStd, cr.GetEnv)
+
+	return jobsResponse(jobs), srerr, qerr
+}
+
 // handleGetLastCompletionTime returns the last completion times for a rep group.
 func (s *Server) handleGetLastCompletionTime(cr *clientRequest) (*serverResponse, string, string) {
 	if cr.Job == nil || cr.Job.RepGroup == "" {
@@ -1563,6 +1575,8 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		return s.handleGetRepGroupStatus(cr)
 	case requestMethodGetIncomplete:
 		return s.handleGetIncomplete(ctx, cr), "", ""
+	case requestMethodGetRecent:
+		return s.handleGetRecent(ctx, cr)
 	case "getlct":
 		return s.handleGetLastCompletionTime(cr)
 	case requestMethodGetBadServers:
