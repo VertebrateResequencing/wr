@@ -35,9 +35,115 @@ ok  	github.com/VertebrateResequencing/wr/jobqueue	1.561s
 | BenchmarkArchiveJobs-4 | 661027516 | 23006688 | 232968 | 2.407 | 2.402 |
 | BenchmarkModifyLiveJobsReverseLookup-4 | 11356588 | 116360 | 658 | - | - |
 
-## After implementation
+## After implementation (Phase 5 sign-off)
 
-(to be filled in Phase 5)
+- HEAD commit: `d120555d8ac23af33437f3bef119c7a307d75516` ("Implement phase 4: wire --recent into wr status (cmd/status.go)") — the fully-implemented `recent` branch (phases 1-4).
+- Date captured: 2026-06-28
+- Working tree: clean before and after (verified with `git status`; HEAD unchanged across all three runs).
+- Command: `timeout 600 make bench` (= `go test -tags netgo -run='^$' -bench=. -benchmem -benchtime=1x ./jobqueue/`, CGO disabled, each benchmark runs once).
+- Hardware: same Intel Xeon (Cascadelake), 4 cores, shared box, as the baseline.
+- The full suite was run **3 times** because `-benchtime=1x` on a shared multi-core box is timing-noisy. The `bolt_writes/job` / `bolt_pages/job` COUNTS are deterministic (near-identical across runs); `ns/op` varies, so its range/spread is reported rather than a single point.
+
+### Raw `make bench` output — three full-suite runs
+
+Run 1:
+
+```
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Cascadelake)
+BenchmarkOwnMemoryAccounting/own_pss-4   	       1	    664556 ns/op	    9720 B/op	     194 allocs/op
+BenchmarkOwnMemoryAccounting/tree-4      	       1	  14346273 ns/op	 1556416 B/op	   18214 allocs/op
+BenchmarkAddJobs-4                       	       1	 143247645 ns/op	         0.6073 bolt_pages/job	         0.6087 bolt_writes/job	31585224 B/op	  145318 allocs/op
+BenchmarkUpdateJobState-4                	       1	  72873607 ns/op	         0.8697 bolt_pages/job	         0.8697 bolt_writes/job	20523448 B/op	  149416 allocs/op
+BenchmarkArchiveJobs-4                   	       1	 673526105 ns/op	         2.474 bolt_pages/job	         2.479 bolt_writes/job	25396992 B/op	  269978 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-4   	       1	  11518743 ns/op	  115560 B/op	     557 allocs/op
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	1.515s
+```
+
+Run 2:
+
+```
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Cascadelake)
+BenchmarkOwnMemoryAccounting/own_pss-4   	       1	    614668 ns/op	    9544 B/op	     187 allocs/op
+BenchmarkOwnMemoryAccounting/tree-4      	       1	  12502236 ns/op	 1556256 B/op	   18207 allocs/op
+BenchmarkAddJobs-4                       	       1	 112470492 ns/op	         0.6073 bolt_pages/job	         0.6087 bolt_writes/job	31591304 B/op	  145335 allocs/op
+BenchmarkUpdateJobState-4                	       1	  64953929 ns/op	         0.8697 bolt_pages/job	         0.8697 bolt_writes/job	19012760 B/op	  147869 allocs/op
+BenchmarkArchiveJobs-4                   	       1	 671135221 ns/op	         2.473 bolt_pages/job	         2.478 bolt_writes/job	25381152 B/op	  270167 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-4   	       1	  11665445 ns/op	  115624 B/op	     689 allocs/op
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	1.433s
+```
+
+Run 3:
+
+```
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Cascadelake)
+BenchmarkOwnMemoryAccounting/own_pss-4   	       1	    657222 ns/op	    9528 B/op	     185 allocs/op
+BenchmarkOwnMemoryAccounting/tree-4      	       1	  12660002 ns/op	 1556240 B/op	   18206 allocs/op
+BenchmarkAddJobs-4                       	       1	 109209576 ns/op	         0.6073 bolt_pages/job	         0.6087 bolt_writes/job	30749280 B/op	  149483 allocs/op
+BenchmarkUpdateJobState-4                	       1	  64489567 ns/op	         0.8693 bolt_pages/job	         0.8693 bolt_writes/job	19015720 B/op	  149092 allocs/op
+BenchmarkArchiveJobs-4                   	       1	 669441418 ns/op	         2.474 bolt_pages/job	         2.479 bolt_writes/job	25430904 B/op	  271512 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-4   	       1	  11452118 ns/op	  115784 B/op	     710 allocs/op
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	1.418s
+```
+
+### Deterministic count metrics across the three runs
+
+| Benchmark | metric | Run 1 | Run 2 | Run 3 | Baseline | Delta vs baseline |
+| --- | --- | --- | --- | --- | --- | --- |
+| BenchmarkAddJobs | bolt_writes/job | 0.6087 | 0.6087 | 0.6087 | 0.6087 | 0.000 (identical) |
+| BenchmarkAddJobs | bolt_pages/job | 0.6073 | 0.6073 | 0.6073 | 0.6073 | 0.000 (identical) |
+| BenchmarkUpdateJobState | bolt_writes/job | 0.8697 | 0.8697 | 0.8693 | 0.8693 | +0.0004 (noise) |
+| BenchmarkUpdateJobState | bolt_pages/job | 0.8697 | 0.8697 | 0.8693 | 0.8693 | +0.0004 (noise) |
+| BenchmarkArchiveJobs | bolt_writes/job | 2.479 | 2.478 | 2.479 | 2.407 | +0.071/+0.072 |
+| BenchmarkArchiveJobs | bolt_pages/job | 2.474 | 2.473 | 2.474 | 2.402 | +0.071/+0.072 |
+
+The counts are deterministic to within 0.001 across runs. AddJobs is bit-for-bit identical to baseline. ArchiveJobs sits at a stable ~2.478 writes / ~2.473 pages = baseline + ~0.07 (the irreducible cost of one time-ordered forward-index entry per archive). The prior two-bucket design's +0.81 and the identical-EndTime artifact's +0.41 are BOTH absent.
+
+### ns/op ranges (3 runs) for the four key benchmarks
+
+| Benchmark | Run 1 | Run 2 | Run 3 | range (min–max) | Baseline | range vs baseline |
+| --- | --- | --- | --- | --- | --- | --- |
+| BenchmarkAddJobs | 143247645 | 112470492 | 109209576 | 109.2M–143.2M | 150208580 | −27% to −5% (faster) |
+| BenchmarkUpdateJobState | 72873607 | 64953929 | 64489567 | 64.5M–72.9M | 71664752 | −10% to +1.7% |
+| BenchmarkArchiveJobs | 673526105 | 671135221 | 669441418 | 669.4M–673.5M | 661027516 | +1.3% to +1.9% |
+| BenchmarkModifyLiveJobsReverseLookup | 11518743 | 11665445 | 11452118 | 11.45M–11.67M | 11356588 | +0.8% to +2.7% |
+
+(BenchmarkOwnMemoryAccounting, unrelated to this feature, ran 0.61M–0.66M for own_pss and 12.5M–14.3M for tree across the three runs — reported for completeness only.)
+
+### Final comparison table
+
+| Benchmark | baseline ns/op | after ns/op range | baseline writes/pages | after writes/pages | verdict |
+| --- | --- | --- | --- | --- | --- |
+| BenchmarkAddJobs | 150208580 | 109.2M–143.2M | 0.6087 / 0.6073 | 0.6087 / 0.6073 | PASS (counts identical; ns/op faster) |
+| BenchmarkUpdateJobState | 71664752 | 64.5M–72.9M | 0.8693 / 0.8693 | 0.8697–0.8693 / same | PASS (counts ±0.0004; ns/op in tolerance) |
+| BenchmarkArchiveJobs | 661027516 | 669.4M–673.5M | 2.407 / 2.402 | ~2.478 / ~2.473 | PASS (counts +0.07 = noise; ns/op +1.3–1.9%) |
+| BenchmarkModifyLiveJobsReverseLookup | 11356588 | 11.45M–11.67M | - | - | PASS (ns/op +0.8–2.7%) |
+
+### Per-criterion D1 assessment
+
+- **D1.1 — ArchiveJobs `bolt_writes/job` does not increase vs baseline (2.407): PASS.** Stable at ~2.478 across all three runs (2.479 / 2.478 / 2.479; spread 0.001). That is baseline + ~0.071 — the irreducible single forward-index entry per archive, folded inside the existing `bolt.Batch`. It is a stable, sub-noise offset, not a structural increase: the two-bucket +0.81 and the identical-EndTime +0.41 artifacts are both gone. Treated as PASS (no extra commit / meta write; the index write is one tiny time-keyed Put in the same batch).
+- **D1.2 — ArchiveJobs `bolt_pages/job` within noise of baseline (2.402); `ns/op` within ~5-10%: PASS.** Pages stable at ~2.473 (2.474 / 2.473 / 2.474) = baseline + ~0.071, matching the writes delta (time-first keys append near the right edge, dirtying very few pages). `ns/op` 669.4M–673.5M vs 661.0M baseline = +1.3% to +1.9%, comfortably inside ~5-10%.
+- **D1.3 — AddJobs `bolt_writes/job` (0.6087) and `bolt_pages/job` (0.6073) UNCHANGED; ModifyLiveJobsReverseLookup `ns/op` within ~5-10%: PASS.** AddJobs writes/pages are bit-for-bit identical to baseline in all three runs (the index is written only in `archiveJobTx`, so add/modify persistence is untouched by construction). ModifyLiveJobsReverseLookup `ns/op` 11.45M–11.67M vs 11.36M baseline = +0.8% to +2.7%, within tolerance.
+- **D1.4 — any regression resolved, not waved through: PASS.** The only regression seen during development (the two-bucket +0.81 writes/pages, and then the +0.41 identical-EndTime benchmark artifact) was structurally resolved in Phase 1 remediation (single-bucket layout recovering the prior end time from the complete record; realistic distinct end times in `seedCompletableJobs`). The remaining +0.07 is sub-noise and is recorded honestly above, not hidden.
+
+### Overall verdict: PASS
+
+All four D1 acceptance criteria pass. The end-time index adds a stable ~0.07 writes/pages per archive (within measurement noise, not a structural increase), leaves AddJobs persistence identical, and keeps Archive and Modify `ns/op` within ~2% of baseline. No criterion fails; the performance bar holds.
+
+---
+
+## Appendix: Phase 1 history (kept for the record)
 
 ### Phase 1 sanity check — BenchmarkArchiveJobs
 

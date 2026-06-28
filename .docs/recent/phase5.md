@@ -43,5 +43,5 @@ D1):
 Test file: `jobqueue/db_bench_test.go` (existing benchmarks; no new
 logic).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
