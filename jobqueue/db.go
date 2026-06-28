@@ -576,10 +576,7 @@ func (db *db) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) {
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		cursor := tx.Bucket(bucketEndTimeToKey).Cursor()
 
-		seek := make([]byte, endTimeBytes)
-		binary.BigEndian.PutUint64(seek, uint64(cutoff.UnixNano()))
-
-		for k, _ := cursor.Seek(seek); k != nil; k, _ = cursor.Next() {
+		for k, _ := cursor.Seek(endTimeSeekKey(cutoff)); k != nil; k, _ = cursor.Next() {
 			job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, lookupEntryJobKey(k))
 			if err != nil {
 				return err
@@ -594,6 +591,23 @@ func (db *db) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) {
 	})
 
 	return jobs, err
+}
+
+// endTimeSeekKey returns the bucketEndTimeToKey seek key for a cutoff time: its
+// end-time UnixNano as 8 big-endian bytes. Stored index keys use real
+// (post-1970, positive) end-time UnixNano values, but a very large recent
+// window can put cutoff before 1970, giving a negative UnixNano; uint64(negative)
+// would set the high bit and sort the seek key after every entry, matching
+// nothing. A non-positive cutoff therefore returns all-zero bytes, which sort at
+// or before the first entry, so the forward scan returns every archived job (the
+// cutoff precedes them all).
+func endTimeSeekKey(cutoff time.Time) []byte {
+	seek := make([]byte, endTimeBytes)
+	if nanos := cutoff.UnixNano(); nanos > 0 {
+		binary.BigEndian.PutUint64(seek, uint64(nanos))
+	}
+
+	return seek
 }
 
 // archiveJobTx is the transactional part of archiveJob: it moves the job from

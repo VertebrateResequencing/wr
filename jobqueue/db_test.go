@@ -451,6 +451,24 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 			So(errr, ShouldBeNil)
 			So(jobs, ShouldBeEmpty)
 		})
+
+		Convey("With a job archived at now, a cutoff before 1970 returns it (huge window)", func() {
+			endTime := time.Now().Add(-time.Minute).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo ancient", "rg-ancient", endTime)
+
+			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+
+			Convey("retrieveCompleteJobsRecent(pre-1970) returns the job, not an empty slice", func() {
+				preEpoch := time.Date(1960, 1, 1, 0, 0, 0, 0, time.UTC)
+				So(preEpoch.UnixNano() < 0, ShouldBeTrue)
+
+				jobs, errr := testDB.retrieveCompleteJobsRecent(preEpoch)
+				So(errr, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 1)
+				So(jobs[0].Key(), ShouldEqual, job.Key())
+				So(jobs[0].EndTime.UnixNano(), ShouldEqual, endTime.UnixNano())
+			})
+		})
 	})
 }
 
