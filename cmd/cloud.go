@@ -34,6 +34,7 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +123,16 @@ var (
 	cloudServersConfirmDead     bool
 	cloudServersAutoConfirmDead int
 	cloudServersDestroy         string
+)
+
+var (
+	connectToManager                   = connect
+	cloudDeployFQDN                    = currentFQDN
+	cloudManagerConnectRetryWait       = 500 * time.Millisecond
+	displayRemoteManagerLogsForFailure = displayRemoteManagerLogs
+	waitForManagerFailureDebugInput    = waitForManagerFailureDebugInputFromStdin
+	teardownAfterManagerFailure        = teardown
+	dieAfterManagerFailure             = die
 )
 
 // cloudCmd represents the cloud command.
@@ -407,32 +418,7 @@ within OpenStack.`,
 
 					alreadyUp = true
 				} else {
-					// clean up any existing or partially failed forwarding
-					pid, running := checkProcess(fmPidPath)
-					if running {
-						errk := killProcess(pid)
-						if errk != nil {
-							warn("failed to kill ssh forwarder pid %d", pid)
-						}
-					}
-
-					errr := os.Remove(fmPidPath)
-					if errr != nil && !os.IsNotExist(errr) {
-						warn("failed to remove forwarder pid file %s: %s", fmPidPath, errr)
-					}
-
-					pid, running = checkProcess(fwPidPath)
-					if running {
-						errk := killProcess(pid)
-						if errk != nil {
-							warn("failed to kill ssh forwarder pid %d", pid)
-						}
-					}
-
-					errr = os.Remove(fwPidPath)
-					if errr != nil && !os.IsNotExist(errr) {
-						warn("failed to remove forwarder pid file %s: %s", fwPidPath, errr)
-					}
+					cleanupDeployForwardingProcesses(fmPidPath, fwPidPath)
 				}
 
 				break
@@ -480,7 +466,7 @@ within OpenStack.`,
 		// there
 		if !alreadyUp {
 			info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
-			bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer, setDomainIP)
+			managerStartCmd := bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer, setDomainIP)
 
 			// rather than daemonize and use a go ssh forwarding library or
 			// implement myself using the net package, since I couldn't get them
@@ -489,21 +475,22 @@ within OpenStack.`,
 			// teardown
 			err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
 			if err != nil {
+				cleanupDeployForwardingProcesses(fmPidPath)
 				teardown(ctx, provider)
 				die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 			}
 
 			err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 			if err != nil {
+				cleanupDeployForwardingProcesses(fmPidPath, fwPidPath)
 				teardown(ctx, provider)
 				die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
 			}
 
 			// check that we can now connect to the remote manager
-			jq = connect(cloudManagerStartTimeout, true)
+			jq = connectToStartedCloudManager(cloudManagerStartTimeout)
 			if jq == nil {
-				teardown(ctx, provider)
-				die("could not talk to wr manager on server at %s after 40s", server.IP)
+				handleManagerConnectFailure(provider, server, keyPath, managerStartCmd, fmPidPath, fwPidPath)
 			}
 
 			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
@@ -516,8 +503,7 @@ within OpenStack.`,
 			warn("token could not be read! [%s]", err)
 		}
 
-		info("wr's web interface can be reached locally at https://%s:%s/?token=%s",
-			jq.ServerInfo.Host, jq.ServerInfo.WebPort, string(token))
+		info("wr's web interface can be reached locally at %s", cloudDeployWebsiteURL(ctx, jq.ServerInfo, token))
 
 		if postDeploymentScript != "" {
 			cmd := exec.Command(postDeploymentScript) // #nosec
@@ -870,6 +856,74 @@ list of dead servers.`,
 	},
 }
 
+func waitForManagerFailureDebugInputFromStdin() {
+	var response string
+
+	_, errs := fmt.Scanln(&response)
+	if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
+		warn("failed to read your response: %s", errs)
+	}
+}
+
+func cloudDeployWebsiteURL(ctx context.Context, s *jobqueue.ServerInfo, token []byte) string {
+	localServer := *s
+	localServer.FQDN = cloudDeployFQDN(ctx)
+
+	return websiteURL(&localServer, token)
+}
+
+// currentFQDN returns the fully qualified domain name of the current host, or
+// "localhost" or just the hostname on error.
+func currentFQDN(ctx context.Context) string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "localhost"
+	}
+
+	fqdn, err := net.DefaultResolver.LookupCNAME(ctx, hostname)
+	if err != nil {
+		fqdn = hostname
+	}
+
+	return strings.TrimSuffix(fqdn, ".")
+}
+
+func connectToStartedCloudManager(wait time.Duration) *jobqueue.Client {
+	deadline := time.Now().Add(wait)
+
+	for remaining := time.Until(deadline); remaining > 0; remaining = time.Until(deadline) {
+		if jq := connectToManager(remaining, true); jq != nil {
+			return jq
+		}
+
+		if !sleepBeforeNextManagerConnectAttempt(deadline) {
+			return nil
+		}
+	}
+
+	return nil
+}
+
+func sleepBeforeNextManagerConnectAttempt(deadline time.Time) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+
+	sleep := cloudManagerConnectRetryWait
+	if sleep <= 0 {
+		sleep = time.Millisecond
+	}
+
+	if sleep > remaining {
+		sleep = remaining
+	}
+
+	time.Sleep(sleep)
+
+	return true
+}
+
 func init() {
 	RootCmd.AddCommand(cloudCmd)
 	cloudCmd.AddCommand(cloudDeployCmd)
@@ -999,7 +1053,7 @@ func addCloudServersFlags() {
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int,
-	keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) {
+	keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) string {
 	ctx := context.Background()
 
 	// upload ourselves to /tmp
@@ -1014,8 +1068,9 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	bootstrapUploadCredentials(provider, server, remoteExe, wrMayHaveStarted)
 	bootstrapMountRemote(server, remoteExe)
 
+	managerStartCmd := ""
 	if !bootstrapManagerAlreadyStarted(server, remoteExe, wrMayHaveStarted) {
-		startRemoteManager(provider, server, remoteExe, keyPath, wrMayHaveStarted, domainMatchesIP)
+		managerStartCmd = startRemoteManager(provider, server, remoteExe, keyPath, wrMayHaveStarted, domainMatchesIP)
 	}
 
 	remoteTokenFile := filepath.Join("./.wr_"+config.Deployment, "client.token")
@@ -1024,6 +1079,18 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		teardown(ctx, provider)
 		die("could not make a local copy of the authentication token: %s", err)
 	}
+
+	return managerStartCmd
+}
+
+func handleManagerConnectFailure(provider *cloud.Provider, server *cloud.Server,
+	keyPath, mCmd string, forwarderPidPaths ...string) {
+	const failureMsg = "could not talk to wr manager on server at %s after 40s"
+
+	handleManagerFailureDebug(fmt.Sprintf(failureMsg, server.IP), server, keyPath, mCmd, "")
+	cleanupDeployForwardingProcesses(forwarderPidPaths...)
+	teardownAfterManagerFailure(context.Background(), provider)
+	dieAfterManagerFailure(failureMsg, server.IP)
 }
 
 // bootstrapWriteRemoteConfig creates the remote wr config file, optionally
@@ -1218,17 +1285,21 @@ func bootstrapManagerAlreadyStarted(server *cloud.Server, remoteExe string, wrMa
 // startRemoteManager writes the env vars file and starts wr manager on the
 // remote server, handling and reporting any startup failure.
 func startRemoteManager(provider *cloud.Provider, server *cloud.Server,
-	remoteExe, keyPath string, wrMayHaveStarted, domainMatchesIP bool) {
+	remoteExe, keyPath string, wrMayHaveStarted, domainMatchesIP bool) string {
 	bootstrapWriteEnvVars(provider, server)
 
 	mCmd := buildManagerStartCmd(provider, server, remoteExe, wrMayHaveStarted, domainMatchesIP)
 
 	if _, e, err := server.RunCmd(context.Background(), mCmd, false); err != nil {
 		handleManagerStartFailure(provider, server, keyPath, mCmd, e)
+
+		return mCmd
 	}
 
 	// wait a few seconds for the manager to start listening on its ports
 	<-time.After(cloudManagerListenWait)
+
+	return mCmd
 }
 
 // bootstrapWriteEnvVars creates a file on the server containing the cloud
@@ -1311,7 +1382,7 @@ func buildCloudMountArg() string {
 // buildDebugArg builds the optional debug manager arguments.
 func buildDebugArg() string {
 	if cloudDebug {
-		return " --debug --runner_debug"
+		return " --debug --runner_syslog"
 	}
 
 	return ""
@@ -1388,31 +1459,31 @@ func buildFlavorArg() string {
 // remote logs, waits for the user, then tears down and dies.
 func handleManagerStartFailure(provider *cloud.Provider, server *cloud.Server,
 	keyPath, mCmd, stderr string) {
-	warn("failed to start wr manager on the remote server")
+	handleManagerFailureDebug("failed to start wr manager on the remote server", server, keyPath, mCmd, stderr)
+	teardownAfterManagerFailure(context.Background(), provider)
+	dieAfterManagerFailure("tore down following failure to start the manager remotely")
+}
+
+func handleManagerFailureDebug(reason string, server *cloud.Server, keyPath, mCmd, stderr string) {
+	warn("%s", reason)
 
 	if len(stderr) > 0 {
 		color.Red(stderr)
 	}
 
-	displayRemoteManagerLogs(server)
+	displayRemoteManagerLogsForFailure(server)
 
 	warn("To debug further you can try to ssh to this server using:")
 	color.Magenta("ssh -i %s %s@%s", keyPath, osUsername, server.IP)
-	fmt.Printf("and see if you can run (checking %s afterwards):\n", "~/.wr_"+config.Deployment+"/log")
-	color.Magenta(mCmd)
+
+	if mCmd != "" {
+		fmt.Printf("and see if you can run (checking %s afterwards):\n", "~/.wr_"+config.Deployment+"/log")
+		color.Magenta(mCmd)
+	}
 
 	// now teardown and die, once the user confirms
 	warn("Once you're done debugging, hit return to teardown")
-
-	var response string
-
-	_, errs := fmt.Scanln(&response)
-	if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
-		warn("failed to read your response: %s", errs)
-	}
-
-	teardown(context.Background(), provider)
-	die("toredown following failure to start the manager remotely")
+	waitForManagerFailureDebugInput()
 }
 
 // displayRemoteManagerLogs downloads the remote manager log and prints any
@@ -1493,11 +1564,31 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 
 	// store ssh's pid to file
 	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), ownerReadWrite)
+	if err != nil {
+		return cleanupStartedForwarderAfterPidWriteError(cmd, pidPath, err)
+	}
 
 	// don't cmd.Wait(); ssh will continue running in the background after we
 	// exit
 
-	return err
+	return nil
+}
+
+func cleanupDeployForwardingProcesses(pidPaths ...string) {
+	for _, pidPath := range pidPaths {
+		pid, running := checkProcess(pidPath)
+		if running {
+			errk := killProcess(pid)
+			if errk != nil {
+				warn("failed to kill ssh forwarder pid %d", pid)
+			}
+		}
+
+		err := os.Remove(pidPath)
+		if err != nil && !os.IsNotExist(err) {
+			warn("failed to remove forwarder pid file %s: %s", pidPath, err)
+		}
+	}
 }
 
 func checkProcess(pidPath string) (pid int, running bool) {
@@ -1539,4 +1630,21 @@ func teardown(ctx context.Context, p *cloud.Provider) {
 		//nolint:contextcheck // warn is an intentionally detached CLI logger
 		warn("teardown failed: %s", err)
 	}
+}
+
+func cleanupStartedForwarderAfterPidWriteError(cmd *exec.Cmd, pidPath string, writeErr error) error {
+	killErr := cmd.Process.Kill()
+	waitErr := cmd.Wait()
+
+	if killErr == nil {
+		return fmt.Errorf("write forwarder pid file %s: %w", pidPath, writeErr)
+	}
+
+	if waitErr != nil {
+		return fmt.Errorf("write pid file %s: %w; kill ssh forwarder pid %d: %w; wait: %w",
+			pidPath, writeErr, cmd.Process.Pid, killErr, waitErr)
+	}
+
+	return fmt.Errorf("write pid file %s: %w; kill ssh forwarder pid %d: %w",
+		pidPath, writeErr, cmd.Process.Pid, killErr)
 }
