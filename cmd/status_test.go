@@ -1001,6 +1001,25 @@ func TestStatusRecentSelectsArchivedJobs(t *testing.T) {
 			So(json.Unmarshal(statuses[0]["State"], &state), ShouldBeNil)
 			So(state, ShouldEqual, string(jobqueue.JobStateComplete))
 		})
+
+		Convey("table and counts output each render the recent job without error", func() {
+			job := statusTestJob("echo status recent formats", "rg-recent-formats", reqs)
+			addStatusJobs(jq, job)
+			archiveNextStatusJob(jq, time.Now())
+
+			// table flows through the -o switch without calling statusExit, so
+			// the plain harness suffices; it always writes a header row plus a
+			// row per job, so the in-window job's command appears.
+			table := runStatusForTest(t, "--recent", "1h", "--output", "table")
+			So(table, ShouldNotBeEmpty)
+			So(table, ShouldContainSubstring, "echo status recent formats")
+
+			// counts likewise does not call statusExit; the single archived job
+			// is complete, so the counts line reports it.
+			counts := runStatusForTest(t, "--recent", "1h", "--output", "counts")
+			So(counts, ShouldNotBeEmpty)
+			So(counts, ShouldContainSubstring, "complete: 1\n")
+		})
 	})
 }
 
