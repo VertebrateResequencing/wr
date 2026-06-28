@@ -45,6 +45,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -76,21 +78,16 @@ var (
 // FAILED marker themselves, so this sentinel is silent on stderr.
 var ErrSuiteFailed = errors.New("test suite failed")
 
-// isTerminal reports whether the writer is a real character device, so colour
-// is only emitted to an interactive terminal and never to pipes, files, CI, or
-// the buffers used by unit tests.
+// isTerminal reports whether the writer is a real terminal (TTY), so colour is
+// only emitted to an interactive terminal and never to pipes, files, /dev/null,
+// CI, or the buffers used by unit tests.
 func isTerminal(writer io.Writer) bool {
 	file, ok := writer.(*os.File)
 	if !ok {
 		return false
 	}
 
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(file.Fd()))
 }
 
 func reportFailure(stdout io.Writer, failed []laneResult, colourize bool) error {
