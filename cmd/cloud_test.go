@@ -38,6 +38,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/fatih/color"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -136,6 +137,40 @@ func TestBuildManagerStartCmdDebugFlags(t *testing.T) {
 		So(cmd, ShouldContainSubstring, " --debug")
 		So(cmd, ShouldContainSubstring, " --runner_syslog")
 		So(cmd, ShouldNotContainSubstring, "--runner_debug")
+	})
+}
+
+func TestConnectToStartedCloudManager(t *testing.T) {
+	oldConnect := connectToManager
+	oldRetryWait := cloudManagerConnectRetryWait
+
+	t.Cleanup(func() {
+		connectToManager = oldConnect
+		cloudManagerConnectRetryWait = oldRetryWait
+	})
+
+	Convey("cloud deploy retries transient manager connection failures until the start deadline", t, func() {
+		cloudManagerConnectRetryWait = time.Nanosecond
+
+		attempts := 0
+		connectToManager = func(time.Duration, ...bool) *jobqueue.Client {
+			attempts++
+
+			if attempts == 1 {
+				return nil
+			}
+
+			return &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{
+				Addr: "127.0.0.1:46407",
+				Host: "localhost",
+				Port: "46407",
+			}}
+		}
+
+		jq := connectToStartedCloudManager(50 * time.Millisecond)
+
+		So(jq, ShouldNotBeNil)
+		So(attempts, ShouldEqual, 2)
 	})
 }
 

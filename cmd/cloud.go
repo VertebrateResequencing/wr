@@ -125,6 +125,8 @@ var (
 )
 
 var (
+	connectToManager                   = connect
+	cloudManagerConnectRetryWait       = 500 * time.Millisecond
 	displayRemoteManagerLogsForFailure = displayRemoteManagerLogs
 	waitForManagerFailureDebugInput    = waitForManagerFailureDebugInputFromStdin
 	teardownAfterManagerFailure        = teardown
@@ -484,7 +486,7 @@ within OpenStack.`,
 			}
 
 			// check that we can now connect to the remote manager
-			jq = connect(cloudManagerStartTimeout, true)
+			jq = connectToStartedCloudManager(cloudManagerStartTimeout)
 			if jq == nil {
 				handleManagerConnectFailure(provider, server, keyPath, managerStartCmd, fmPidPath, fwPidPath)
 			}
@@ -860,6 +862,42 @@ func waitForManagerFailureDebugInputFromStdin() {
 	if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
 		warn("failed to read your response: %s", errs)
 	}
+}
+
+func connectToStartedCloudManager(wait time.Duration) *jobqueue.Client {
+	deadline := time.Now().Add(wait)
+
+	for remaining := time.Until(deadline); remaining > 0; remaining = time.Until(deadline) {
+		if jq := connectToManager(remaining, true); jq != nil {
+			return jq
+		}
+
+		if !sleepBeforeNextManagerConnectAttempt(deadline) {
+			return nil
+		}
+	}
+
+	return nil
+}
+
+func sleepBeforeNextManagerConnectAttempt(deadline time.Time) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+
+	sleep := cloudManagerConnectRetryWait
+	if sleep <= 0 {
+		sleep = time.Millisecond
+	}
+
+	if sleep > remaining {
+		sleep = remaining
+	}
+
+	time.Sleep(sleep)
+
+	return true
 }
 
 func init() {
