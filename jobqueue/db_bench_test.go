@@ -301,12 +301,20 @@ func seedCompletableJobs(b *testing.B, testDB *db, prefix string) []*Job {
 
 	start := time.Now()
 
-	for _, job := range jobs {
+	// Give each job a DISTINCT end time spread over a small window. Real jobs
+	// finish at distinct nanosecond instants; identical end times are an
+	// unrealistic worst case for the time-ordered end-time index, where a
+	// constant time prefix forces every forward-index key to sort by its random
+	// job-key suffix, scattering BoltDB pages. This benchmark measures the
+	// archive write-coalescing path, which is unaffected by giving jobs distinct
+	// end times, so distinct instants keep the index's per-archive page cost
+	// representative of real workloads.
+	for i, job := range jobs {
 		job.Lock()
 		job.State = JobStateComplete
 		job.Exited = true
 		job.StartTime = start
-		job.EndTime = start.Add(time.Second)
+		job.EndTime = start.Add(time.Second).Add(time.Duration(i) * time.Microsecond)
 		job.PeakRAM = 100
 		job.Unlock()
 	}

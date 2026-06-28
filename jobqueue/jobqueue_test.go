@@ -9816,3 +9816,212 @@ func readManagerToken(file string, preStart time.Time, timeout time.Duration) ([
 		<-time.After(50 * time.Millisecond)
 	}
 }
+
+// reserveStartArchive reserves the next ready job, marks it Started and then
+// Archives it with the given exit-0 end time, returning the job's key. It is
+// used by the GetRecent tests to complete jobs the real way.
+func reserveStartArchive(jq *Client, endTime time.Time) string {
+	job, err := jq.Reserve(2 * time.Second)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+
+	if job == nil {
+		return ""
+	}
+
+	So(jq.Started(job, os.Getpid()), ShouldBeNil)
+	So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: endTime}), ShouldBeNil)
+
+	return job.Key()
+}
+
+func TestGetRecent(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a connected client and server", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		addJob := func(cmd, repGroup string) {
+			added, _, erra := jq.Add([]*Job{{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				ReqGroup:     repGroup,
+				Requirements: standardReqs,
+				RepGroup:     repGroup,
+			}}, envVars, false)
+			So(erra, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+		}
+
+		Convey("GetRecent returns jobs from different rep groups archived just now", func() {
+			addJob("echo recent a", "rg-recent-a")
+			addJob("echo recent b", "rg-recent-b")
+			reserveStartArchive(jq, time.Now())
+			reserveStartArchive(jq, time.Now())
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 2)
+
+			repGroups := []string{jobs[0].RepGroup, jobs[1].RepGroup}
+			So(repGroups, ShouldContain, "rg-recent-a")
+			So(repGroups, ShouldContain, "rg-recent-b")
+		})
+
+		Convey("GetRecent respects the window boundary", func() {
+			addJob("echo recent old", "rg-old")
+			reserveStartArchive(jq, time.Now().Add(-2*time.Hour))
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 0)
+
+			jobs, errg = jq.GetRecent(3*time.Hour, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].RepGroup, ShouldEqual, "rg-old")
+		})
+
+		Convey("GetRecent excludes added+reserved-but-not-archived jobs", func() {
+			addJob("echo recent incomplete", "rg-incomplete")
+
+			job, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 0)
+		})
+
+		Convey("GetRecent returns a re-run command once with its latest end time", func() {
+			addJob("echo recent rerun", "rg-rerun")
+
+			t1 := time.Now().Add(-30 * time.Minute)
+			key1 := reserveStartArchive(jq, t1)
+
+			// re-run the same command (same key) and re-archive it just now.
+			addJob("echo recent rerun", "rg-rerun")
+
+			t2 := time.Now()
+			key2 := reserveStartArchive(jq, t2)
+			So(key2, ShouldEqual, key1)
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Key(), ShouldEqual, key1)
+			So(jobs[0].EndTime.Unix(), ShouldEqual, t2.Unix())
+			So(jobs[0].EndTime.Unix(), ShouldNotEqual, t1.Unix())
+		})
+
+		Convey("GetRecent applies the shared limit/grouping path", func() {
+			for i := range 5 {
+				addJob(fmt.Sprintf("echo recent similar %d", i), "rg-similar")
+			}
+
+			now := time.Now()
+			for range 5 {
+				reserveStartArchive(jq, now)
+			}
+
+			jobs, errg := jq.GetRecent(time.Hour, 2, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 2)
+			So(jobs[len(jobs)-1].Similar, ShouldEqual, 3)
+		})
+
+		Convey("GetRecent populates Env when getEnv is true", func() {
+			addJob("echo recent env", "rg-env")
+			reserveStartArchive(jq, time.Now())
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, "", true, true)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+
+			env, erre := jobs[0].Env()
+			So(erre, ShouldBeNil)
+			So(env, ShouldNotBeEmpty)
+		})
+
+		Convey("GetRecent with a non-positive period returns ErrBadRequest and no jobs", func() {
+			addJob("echo recent badperiod", "rg-badperiod")
+			reserveStartArchive(jq, time.Now())
+
+			jobs, errg := jq.GetRecent(0, 0, "", false, false)
+			So(errg, ShouldNotBeNil)
+			So(errg.Error(), ShouldContainSubstring, ErrBadRequest)
+			So(jobs, ShouldHaveLength, 0)
+
+			jobs, errg = jq.GetRecent(-time.Hour, 0, "", false, false)
+			So(errg, ShouldNotBeNil)
+			So(errg.Error(), ShouldContainSubstring, ErrBadRequest)
+			So(jobs, ShouldHaveLength, 0)
+		})
+
+		Convey("GetRecent with a non-empty state returns an error and no jobs", func() {
+			addJob("echo recent state", "rg-state")
+			reserveStartArchive(jq, time.Now())
+
+			jobs, errg := jq.GetRecent(time.Hour, 0, JobStateRunning, false, false)
+			So(errg, ShouldNotBeNil)
+			So(jobs, ShouldHaveLength, 0)
+		})
+	})
+}
+
+func TestGetRecentWindowMovement(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a connected client and server", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		Convey("A job archived 90s ago is in a 2m window but drops out of a 1m window", func() {
+			added, _, erra := jq.Add([]*Job{{
+				Cmd:          "echo recent window movement",
+				Cwd:          testCwd,
+				ReqGroup:     "rg-window",
+				Requirements: standardReqs,
+				RepGroup:     "rg-window",
+			}}, envVars, false)
+			So(erra, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+
+			key := reserveStartArchive(jq, time.Now().Add(-90*time.Second))
+
+			jobs, errg := jq.GetRecent(2*time.Minute, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Key(), ShouldEqual, key)
+
+			jobs, errg = jq.GetRecent(time.Minute, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 0)
+		})
+	})
+}

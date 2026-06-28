@@ -44,6 +44,10 @@ const (
 	shortTimeFormat        = "06/1/2-15:04:05"
 	allRepGrps             = "all above"
 	statusStateFilterFlags = "--buried/--running/--pending/--dependent/--missing_deps/--suspended"
+
+	// statusSelectorsMutuallyExclusive is the die message shown when more than
+	// one job-selection flag (-f, -i, -l, --recent) is supplied at once.
+	statusSelectorsMutuallyExclusive = "-f, -i, -l and --recent are mutually exclusive; only specify one of them"
 )
 
 var (
@@ -53,6 +57,8 @@ var (
 		"supported in default or report group (-i) mode; remove them when using -l")
 	errStatusStateFiltersInternal = errors.New("state filters (" + statusStateFilterFlags + ") cannot " +
 		"be used with --internal because internal job lookups cannot be state-filtered")
+	errStatusStateFiltersRecent = errors.New("state filters (" + statusStateFilterFlags + ") are only " +
+		"supported in default or report group (-i) mode; remove them when using --recent")
 )
 
 // statusExit exists so tests can exercise output modes that otherwise exit the
@@ -66,6 +72,8 @@ var (
 	cmdIDIsSubStr   bool
 	cmdIDIsInternal bool
 	cmdLine         string
+	cmdRecent       string
+	cmdRecentPeriod time.Duration
 	showBuried      bool
 	showRunning     bool
 	showPending     bool
@@ -85,9 +93,9 @@ var statusCmd = &cobra.Command{
 	Long: `You can find the status of commands you've previously added using
 "wr add" by running this command.
 
-Specify one of the flags -f, -l  or -i to choose which commands you want the
-status of. If none are supplied, you will get the status of all your currently
-incomplete commands.
+Specify one of the flags -f, -l, -i or --recent to choose which commands you
+want the status of. If none are supplied, you will get the status of all your
+currently incomplete commands.
 
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want the status of now. Combining with -z lets you get the status of jobs
@@ -102,6 +110,14 @@ CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
 option that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.
+
+--recent <duration> returns jobs that finished (were archived) within the last
+duration across all report groups. It is mutually exclusive with -f, -l and -i.
+It accepts Go duration units (eg. 36h, 90m) plus the convenience units d (days)
+and w (weeks), eg. "--recent 1w" reports jobs that finished in the last week.
+State filters are not supported with --recent (only successful jobs are
+archived), but --limit, --env and --host are honoured as in the other modes
+(STDOUT/STDERR are shown according to the chosen -o output format, as usual).
 
 Use --missing_deps in default or report-group mode to show jobs waiting on
 dep-groups not yet seen.
@@ -146,12 +162,21 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 	Run: func(_ *cobra.Command, _ []string) {
 		set := countGetJobArgs()
 		if set > 1 {
-			die("-f, -i and -l are mutually exclusive; only specify one of them")
+			die(statusSelectorsMutuallyExclusive)
 		}
 
 		cmdStates := statusStateFilters()
 		if err := validateStatusStateFilters(cmdStates); err != nil {
 			die("%s", err)
+		}
+
+		if cmdRecent != "" {
+			var err error
+
+			cmdRecentPeriod, err = parseRecentDuration(cmdRecent)
+			if err != nil {
+				die("%s", err)
+			}
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
@@ -675,6 +700,9 @@ func registerStatusFlags() {
 		"treat -i as a substring to match against all report groups")
 	statusCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
+	statusCmd.Flags().StringVar(&cmdRecent, "recent", "",
+		"show jobs that finished within the last <duration> across all report groups; "+
+			"accepts Go duration units plus d (days) and w (weeks), eg. 1d, 2w, 36h, 90m")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
 		"working dir that the command(s) specified by -l or -f were set to run in")
 	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
@@ -725,6 +753,10 @@ func countGetJobArgs() int {
 		set++
 	}
 
+	if cmdRecent != "" {
+		set++
+	}
+
 	if cmdAll {
 		set++
 	}
@@ -762,7 +794,16 @@ func validateStatusStateFilters(cmdStates []jobqueue.JobState) error {
 		return nil
 	}
 
+	return statusStateFilterModeError()
+}
+
+// statusStateFilterModeError returns the sentinel error for the current
+// job-selection mode that does not support state filters, or nil if state
+// filters are allowed (default or report-group mode).
+func statusStateFilterModeError() error {
 	switch {
+	case cmdRecent != "":
+		return errStatusStateFiltersRecent
 	case cmdFileStatus != "":
 		return errStatusStateFiltersFile
 	case cmdLine != "":
@@ -819,7 +860,7 @@ func canUseFastStatusOutput(format string) bool {
 }
 
 func statusRequiresFullJobFetch() bool {
-	return showMissingDeps || fromHost != "" || cmdFileStatus != "" || cmdLine != "" ||
+	return showMissingDeps || fromHost != "" || cmdFileStatus != "" || cmdLine != "" || cmdRecent != "" ||
 		(cmdIDStatus != "" && cmdIDIsInternal)
 }
 
@@ -1041,6 +1082,10 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool,
 	)
 
 	switch {
+	case cmdRecent != "":
+		// the period was parsed and validated in Run before connecting, so we
+		// only use the pre-parsed cmdRecentPeriod here.
+		jobs, err = jq.GetRecent(cmdRecentPeriod, statusLimit, "", showStd, showEnv)
 	case all:
 		// get all jobs
 		jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)

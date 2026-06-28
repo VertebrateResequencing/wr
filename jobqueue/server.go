@@ -886,6 +886,22 @@ func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) ([]
 	return filtered, queuedDups
 }
 
+// getJobsRecent returns archived jobs that finished within period of now,
+// across all rep groups, after applying the shared limit/std/env filtering.
+func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
+	limit int, getStd, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+	cutoff := time.Now().Add(-period)
+
+	jobs, err := s.db.retrieveCompleteJobsRecent(cutoff)
+	if err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
+	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{Limit: limit, GetStd: getStd, GetEnv: getEnv})
+
+	return jobs, "", ""
+}
+
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
 	if err == nil {
 		return

@@ -64,6 +64,7 @@ const (
 	jobStatWindowPercent          = float32(5)
 	dbFilePermission              = 0o600
 	rgEndTimeBytes                = 8
+	endTimeBytes                  = 8
 	envCacheSize                  = 12
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
@@ -90,6 +91,7 @@ var (
 	bucketJobDisk          = []byte("jobDisk")
 	bucketJobSecs          = []byte("jobSecs")
 	bucketRGEndTime        = []byte("repgroupEndTime") //nolint:gochecknoglobals
+	bucketEndTimeToKey     = []byte("endTimeToKey")    //nolint:gochecknoglobals
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -103,6 +105,38 @@ var (
 
 // errDBClosed is returned when an operation is attempted on a closed database.
 var errDBClosed = errors.New("database closed")
+
+// jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
+// updateJobAfterExit() calls to complete.
+const jobExitUpdatePollInterval = 10 * time.Millisecond
+
+// jobStatWindowScaleThreshold is the prior-value count above which the 95th
+// percentile window is scaled up proportionally.
+const jobStatWindowScaleThreshold = 100
+
+const (
+	// storeBatchDivisor, storeBatchGranularity and storeBatchRoundThreshold
+	// control storeBatched's batch sizing: it aims for batches of len(data) /
+	// storeBatchDivisor, at least storeBatchGranularity, rounded to the nearest
+	// storeBatchGranularity.
+	storeBatchDivisor        = 10
+	storeBatchGranularity    = 1000
+	storeBatchRoundThreshold = 500
+)
+
+// slowBackupTestDelay is an artificial delay used only in tests (when
+// db.slowBackups is set) to make backups take a noticeable amount of time.
+const slowBackupTestDelay = 100 * time.Millisecond
+
+const (
+	limitGroupUnchanged limitGroupOutcome = iota
+	limitGroupChanged
+	limitGroupRemoved
+
+	// limitGroupBytes is the number of bytes used to store a limit group's
+	// count (a uint64).
+	limitGroupBytes = 8
+)
 
 // sobsd ('slice of byte slice doublets') implements sort interface so we can
 // sort a slice of []byte doublets, sorting on the first byte slice, needed for
@@ -414,6 +448,11 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			return fmt.Errorf("create bucket %s: %w", bucketRGEndTime, errf)
 		}
 
+		_, errf = tx.CreateBucketIfNotExists(bucketEndTimeToKey)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketEndTimeToKey, errf)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -494,16 +533,6 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 // limitGroupOutcome describes what storeLimitGroup did with a single group.
 type limitGroupOutcome int
 
-const (
-	limitGroupUnchanged limitGroupOutcome = iota
-	limitGroupChanged
-	limitGroupRemoved
-
-	// limitGroupBytes is the number of bytes used to store a limit group's
-	// count (a uint64).
-	limitGroupBytes = 8
-)
-
 // storeLimitGroup stores (or deletes) a single limit group in the given bucket,
 // reporting what it did.
 func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, error) {
@@ -532,6 +561,166 @@ func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (l
 	}
 
 	return limitGroupUnchanged, nil
+}
+
+// retrieveCompleteJobsRecent returns archived jobs whose end time is at or past
+// cutoff, decoded from bucketJobsComplete, by seeking bucketEndTimeToKey at
+// cutoff's UnixNano and scanning forward. A job currently live again (being
+// re-run) is skipped. Returns jobs in ascending end-time order. An absent/empty
+// index yields an empty slice, no error.
+func (db *db) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) {
+	var jobs []*Job
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketEndTimeToKey)
+		if bucket == nil {
+			return nil // absent index -> empty result, matching the doc contract
+		}
+
+		var errs error
+
+		jobs, errs = db.scanCompleteJobsRecent(tx, bucket, cutoff)
+
+		return errs
+	})
+
+	return jobs, err
+}
+
+// scanCompleteJobsRecent seeks bucket (bucketEndTimeToKey) at cutoff and scans
+// forward, decoding each indexed archived job from bucketJobsComplete and
+// skipping any whose key is live again. Returns the in-window jobs in ascending
+// end-time order.
+func (db *db) scanCompleteJobsRecent(tx *bolt.Tx, bucket *bolt.Bucket, cutoff time.Time) ([]*Job, error) {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	cursor := bucket.Cursor()
+
+	var jobs []*Job
+
+	for k, _ := cursor.Seek(endTimeSeekKey(cutoff)); k != nil; k, _ = cursor.Next() {
+		job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, lookupEntryJobKey(k))
+		if err != nil {
+			return nil, err
+		}
+
+		if job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs, nil
+}
+
+// endTimeSeekKey returns the bucketEndTimeToKey seek key for a cutoff time: its
+// end-time UnixNano as 8 big-endian bytes. Stored index keys use real
+// (post-1970, positive) end-time UnixNano values, but a very large recent
+// window can put cutoff before 1970, giving a negative UnixNano; uint64(negative)
+// would set the high bit and sort the seek key after every entry, matching
+// nothing. A non-positive cutoff therefore returns all-zero bytes, which sort at
+// or before the first entry, so the forward scan returns every archived job (the
+// cutoff precedes them all).
+func endTimeSeekKey(cutoff time.Time) []byte {
+	return endTimeToBytes(cutoff.UnixNano())
+}
+
+// archiveJobTx is the transactional part of archiveJob: it moves the job from
+// the live bucket to the complete bucket, removes its std buckets, records its
+// resource-usage stats, updates its repgroup end time and records the job's end
+// time in the time-ordered per-job end-time index. updateEndTimeIndex runs
+// before the complete-record Put because it recovers the job's prior end time
+// from that record to drop any stale forward index entry.
+func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
+	for _, bucket := range [][]byte{bucketStdO, bucketStdE, bucketJobsLive} {
+		if err := tx.Bucket(bucket).Delete(key); err != nil {
+			return err
+		}
+	}
+
+	if err := db.updateEndTimeIndex(tx, key, job); err != nil {
+		return err
+	}
+
+	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
+		return err
+	}
+
+	if err := putJobStats(tx, job); err != nil {
+		return err
+	}
+
+	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
+}
+
+// updateEndTimeIndex records job's end time in the time-ordered per-job index,
+// replacing any previous entry for the same key so only the latest completion
+// per key is indexed. Uses job.EndTime.UnixNano as 8 big-endian bytes. The prior
+// end time is recovered from the job's existing bucketJobsComplete record, so
+// this must run before that record is overwritten. No-op if the stored end time
+// is unchanged.
+func (db *db) updateEndTimeIndex(tx *bolt.Tx, jobKey []byte, job *Job) error {
+	newNanos := job.EndTime.UnixNano()
+
+	changed, err := db.dropStaleEndTimeIndex(tx, jobKey, newNanos)
+	if err != nil || !changed {
+		return err
+	}
+
+	newTimeBytes := endTimeToBytes(newNanos)
+
+	return tx.Bucket(bucketEndTimeToKey).Put(endTimeIndexKey(newTimeBytes, jobKey), nil)
+}
+
+// endTimeToBytes encodes a UnixNano end time as endTimeBytes big-endian bytes,
+// clamping a non-positive value to all-zero bytes so a zero/pre-1970 time cannot
+// wrap through uint64 into a high-sorting key.
+func endTimeToBytes(nanos int64) []byte {
+	b := make([]byte, endTimeBytes)
+	if nanos > 0 {
+		binary.BigEndian.PutUint64(b, uint64(nanos))
+	}
+
+	return b
+}
+
+// endTimeIndexKey returns the bucketEndTimeToKey key for an archived job:
+// 8-byte big-endian end-time UnixNano, then dbDelimiter, then its job key.
+// Sorts chronologically as raw bytes.
+func endTimeIndexKey(endNanos, jobKey []byte) []byte {
+	key := make([]byte, 0, len(endNanos)+len(dbDelimiter)+len(jobKey))
+	key = append(key, endNanos...)
+	key = append(key, dbDelimiter...)
+
+	return append(key, jobKey...)
+}
+
+// dropStaleEndTimeIndex recovers the key's prior end time from its existing
+// bucketJobsComplete record (so it must run before that record is overwritten)
+// and, if different from newNanos, deletes the prior forward index entry. It
+// reports whether the index still needs the new entry written: false only when
+// the prior end time equals newNanos (idempotent re-archive). A Get result is
+// only valid until the next mutation, so oldEncoded is decoded immediately and
+// only the extracted nanos kept; this is safe because we read bucketJobsComplete
+// and mutate only bucketEndTimeToKey.
+func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) (bool, error) {
+	oldEncoded := tx.Bucket(bucketJobsComplete).Get(jobKey)
+	if len(oldEncoded) == 0 {
+		return true, nil
+	}
+
+	oldJob := &Job{}
+	if err := codec.NewDecoderBytes(oldEncoded, db.ch).Decode(oldJob); err != nil {
+		return false, err
+	}
+
+	oldNanos := oldJob.EndTime.UnixNano()
+	if oldNanos == newNanos {
+		return false, nil
+	}
+
+	oldTimeBytes := endTimeToBytes(oldNanos)
+
+	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -881,33 +1070,12 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	}
 
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
-		return archiveJobTx(tx, []byte(key), encoded, job)
+		return db.archiveJobTx(tx, []byte(key), encoded, job)
 	})
 
 	db.backgroundBackup(ctx)
 
 	return err
-}
-
-// archiveJobTx is the transactional part of archiveJob: it moves the job from
-// the live bucket to the complete bucket, removes its std buckets, records its
-// resource-usage stats and updates its repgroup end time.
-func archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
-	for _, bucket := range [][]byte{bucketStdO, bucketStdE, bucketJobsLive} {
-		if err := tx.Bucket(bucket).Delete(key); err != nil {
-			return err
-		}
-	}
-
-	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
-		return err
-	}
-
-	if err := putJobStats(tx, job); err != nil {
-		return err
-	}
-
-	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
 }
 
 // putJobStats records a completed job's peak RAM, peak disk and runtime in
@@ -1886,10 +2054,6 @@ func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
 	return nil
 }
 
-// jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
-// updateJobAfterExit() calls to complete.
-const jobExitUpdatePollInterval = 10 * time.Millisecond
-
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
 // given job.
 func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, stde []byte) {
@@ -1989,10 +2153,6 @@ func recommendationRound(round, defaultRound int) int {
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
 	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
 }
-
-// jobStatWindowScaleThreshold is the prior-value count above which the 95th
-// percentile window is scaled up proportionally.
-const jobStatWindowScaleThreshold = 100
 
 // recommendedReqGroupStat is the implementation for the other recommend*()
 // methods.
@@ -2106,16 +2266,6 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 
 	return val
 }
-
-const (
-	// storeBatchDivisor, storeBatchGranularity and storeBatchRoundThreshold
-	// control storeBatched's batch sizing: it aims for batches of len(data) /
-	// storeBatchDivisor, at least storeBatchGranularity, rounded to the nearest
-	// storeBatchGranularity.
-	storeBatchDivisor        = 10
-	storeBatchGranularity    = 1000
-	storeBatchRoundThreshold = 500
-)
 
 // storeBatched stores items in the db in batches for efficiency. bucket is the
 // name of the bucket to store in.
@@ -2329,10 +2479,6 @@ func (db *db) backgroundBackup(ctx context.Context) {
 
 	go db.runBackgroundBackup(ctx, db.backupLast, db.backupWait, db.backupFinal, db.slowBackups)
 }
-
-// slowBackupTestDelay is an artificial delay used only in tests (when
-// db.slowBackups is set) to make backups take a noticeable amount of time.
-const slowBackupTestDelay = 100 * time.Millisecond
 
 // runBackgroundBackup is the goroutine body of backgroundBackup: it optionally
 // waits to space out backups, performs the backup, then either finalises (for
