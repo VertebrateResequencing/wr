@@ -26,15 +26,19 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/fatih/color"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -157,6 +161,140 @@ func TestCleanupDeployForwardingProcesses(t *testing.T) {
 		So(processExited(managerDone), ShouldBeTrue)
 		So(processExited(webDone), ShouldBeTrue)
 		So(processIsRunning(unrelatedDone), ShouldBeTrue)
+	})
+}
+
+func TestHandleManagerConnectFailure(t *testing.T) {
+	const (
+		managerConnectFailureEventLogs     = "logs"
+		managerConnectFailureEventPause    = "pause"
+		managerConnectFailureEventResume   = "resume"
+		managerConnectFailureEventTeardown = "teardown"
+	)
+
+	oldConfig := config
+	oldOSUsername := osUsername
+	oldDisplayLogs := displayRemoteManagerLogsForFailure
+	oldWaitForInput := waitForManagerFailureDebugInput
+	oldTeardown := teardownAfterManagerFailure
+	oldDie := dieAfterManagerFailure
+	oldColorOutput := color.Output
+	oldNoColor := color.NoColor
+
+	t.Cleanup(func() {
+		config = oldConfig
+		osUsername = oldOSUsername
+		displayRemoteManagerLogsForFailure = oldDisplayLogs
+		waitForManagerFailureDebugInput = oldWaitForInput
+		teardownAfterManagerFailure = oldTeardown
+		dieAfterManagerFailure = oldDie
+		color.Output = oldColorOutput
+		color.NoColor = oldNoColor
+	})
+
+	Convey("manager connect failure pauses for SSH debug before cleanup and teardown", t, func() {
+		dir := t.TempDir()
+		managerForwarder, managerDone := startTestForwarder(t)
+		webForwarder, webDone := startTestForwarder(t)
+		managerPidPath := filepath.Join(dir, "manager-forwarder.pid")
+		webPidPath := filepath.Join(dir, "web-forwarder.pid")
+		server := cloud.NewServer("ubuntu", "192.0.2.10", "")
+		managerStartCmd := "source .wr_envvars && /tmp/wr manager start"
+
+		So(os.WriteFile(managerPidPath, []byte(strconv.Itoa(managerForwarder.Process.Pid)), ownerReadWrite),
+			ShouldBeNil)
+		So(os.WriteFile(webPidPath, []byte(strconv.Itoa(webForwarder.Process.Pid)), ownerReadWrite), ShouldBeNil)
+
+		config = &internal.Config{Deployment: "connect-failure"}
+		osUsername = "ubuntu"
+		color.NoColor = true
+
+		var debugOutput bytes.Buffer
+
+		color.Output = &debugOutput
+
+		promptStarted := make(chan struct{})
+		releasePrompt := make(chan struct{})
+		handlerDone := make(chan struct{})
+		teardownState := make(chan bool, 1)
+
+		var (
+			mu     sync.Mutex
+			events []string
+		)
+
+		record := func(event string) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			events = append(events, event)
+		}
+		eventsSnapshot := func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+
+			return append([]string(nil), events...)
+		}
+
+		displayRemoteManagerLogsForFailure = func(_ *cloud.Server) {
+			record(managerConnectFailureEventLogs)
+		}
+		waitForManagerFailureDebugInput = func() {
+			record(managerConnectFailureEventPause)
+			close(promptStarted)
+			<-releasePrompt
+			record(managerConnectFailureEventResume)
+		}
+		teardownAfterManagerFailure = func(_ context.Context, _ *cloud.Provider) {
+			record(managerConnectFailureEventTeardown)
+
+			teardownState <- processExited(managerDone) &&
+				processExited(webDone) &&
+				fileIsMissing(managerPidPath) &&
+				fileIsMissing(webPidPath)
+		}
+		dieAfterManagerFailure = func(msg string, _ ...any) {
+			record("die:" + msg)
+		}
+
+		go func() {
+			defer close(handlerDone)
+
+			handleManagerConnectFailure(&cloud.Provider{}, server, "/tmp/test-key", managerStartCmd,
+				managerPidPath, webPidPath)
+		}()
+
+		select {
+		case <-promptStarted:
+		case <-handlerDone:
+			t.Fatal("manager connect failure handler returned before debug prompt")
+		case <-time.After(2 * time.Second):
+			t.Fatal("manager connect failure handler did not reach debug prompt")
+		}
+
+		So(processIsRunning(managerDone), ShouldBeTrue)
+		So(processIsRunning(webDone), ShouldBeTrue)
+		So(fileIsMissing(managerPidPath), ShouldBeFalse)
+		So(fileIsMissing(webPidPath), ShouldBeFalse)
+		So(debugOutput.String(), ShouldContainSubstring, "ssh -i /tmp/test-key ubuntu@192.0.2.10")
+		So(debugOutput.String(), ShouldContainSubstring, managerStartCmd)
+
+		close(releasePrompt)
+
+		select {
+		case <-handlerDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("manager connect failure handler did not finish after debug prompt was released")
+		}
+
+		So(<-teardownState, ShouldBeTrue)
+		So(eventsSnapshot(), ShouldResemble, []string{
+			managerConnectFailureEventLogs,
+			managerConnectFailureEventPause,
+			managerConnectFailureEventResume,
+			managerConnectFailureEventTeardown,
+			"die:could not talk to wr manager on server at %s after 40s",
+		})
 	})
 }
 

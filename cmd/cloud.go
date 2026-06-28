@@ -124,6 +124,13 @@ var (
 	cloudServersDestroy         string
 )
 
+var (
+	displayRemoteManagerLogsForFailure = displayRemoteManagerLogs
+	waitForManagerFailureDebugInput    = waitForManagerFailureDebugInputFromStdin
+	teardownAfterManagerFailure        = teardown
+	dieAfterManagerFailure             = die
+)
+
 // cloudCmd represents the cloud command.
 var cloudCmd = &cobra.Command{
 	Use:   "cloud",
@@ -455,7 +462,7 @@ within OpenStack.`,
 		// there
 		if !alreadyUp {
 			info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
-			bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer, setDomainIP)
+			managerStartCmd := bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer, setDomainIP)
 
 			// rather than daemonize and use a go ssh forwarding library or
 			// implement myself using the net package, since I couldn't get them
@@ -479,9 +486,7 @@ within OpenStack.`,
 			// check that we can now connect to the remote manager
 			jq = connect(cloudManagerStartTimeout, true)
 			if jq == nil {
-				cleanupDeployForwardingProcesses(fmPidPath, fwPidPath)
-				teardown(ctx, provider)
-				die("could not talk to wr manager on server at %s after 40s", server.IP)
+				handleManagerConnectFailure(provider, server, keyPath, managerStartCmd, fmPidPath, fwPidPath)
 			}
 
 			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
@@ -848,6 +853,15 @@ list of dead servers.`,
 	},
 }
 
+func waitForManagerFailureDebugInputFromStdin() {
+	var response string
+
+	_, errs := fmt.Scanln(&response)
+	if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
+		warn("failed to read your response: %s", errs)
+	}
+}
+
 func init() {
 	RootCmd.AddCommand(cloudCmd)
 	cloudCmd.AddCommand(cloudDeployCmd)
@@ -977,7 +991,7 @@ func addCloudServersFlags() {
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int,
-	keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) {
+	keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) string {
 	ctx := context.Background()
 
 	// upload ourselves to /tmp
@@ -992,8 +1006,9 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	bootstrapUploadCredentials(provider, server, remoteExe, wrMayHaveStarted)
 	bootstrapMountRemote(server, remoteExe)
 
+	managerStartCmd := ""
 	if !bootstrapManagerAlreadyStarted(server, remoteExe, wrMayHaveStarted) {
-		startRemoteManager(provider, server, remoteExe, keyPath, wrMayHaveStarted, domainMatchesIP)
+		managerStartCmd = startRemoteManager(provider, server, remoteExe, keyPath, wrMayHaveStarted, domainMatchesIP)
 	}
 
 	remoteTokenFile := filepath.Join("./.wr_"+config.Deployment, "client.token")
@@ -1002,6 +1017,18 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		teardown(ctx, provider)
 		die("could not make a local copy of the authentication token: %s", err)
 	}
+
+	return managerStartCmd
+}
+
+func handleManagerConnectFailure(provider *cloud.Provider, server *cloud.Server,
+	keyPath, mCmd string, forwarderPidPaths ...string) {
+	const failureMsg = "could not talk to wr manager on server at %s after 40s"
+
+	handleManagerFailureDebug(fmt.Sprintf(failureMsg, server.IP), server, keyPath, mCmd, "")
+	cleanupDeployForwardingProcesses(forwarderPidPaths...)
+	teardownAfterManagerFailure(context.Background(), provider)
+	dieAfterManagerFailure(failureMsg, server.IP)
 }
 
 // bootstrapWriteRemoteConfig creates the remote wr config file, optionally
@@ -1196,17 +1223,21 @@ func bootstrapManagerAlreadyStarted(server *cloud.Server, remoteExe string, wrMa
 // startRemoteManager writes the env vars file and starts wr manager on the
 // remote server, handling and reporting any startup failure.
 func startRemoteManager(provider *cloud.Provider, server *cloud.Server,
-	remoteExe, keyPath string, wrMayHaveStarted, domainMatchesIP bool) {
+	remoteExe, keyPath string, wrMayHaveStarted, domainMatchesIP bool) string {
 	bootstrapWriteEnvVars(provider, server)
 
 	mCmd := buildManagerStartCmd(provider, server, remoteExe, wrMayHaveStarted, domainMatchesIP)
 
 	if _, e, err := server.RunCmd(context.Background(), mCmd, false); err != nil {
 		handleManagerStartFailure(provider, server, keyPath, mCmd, e)
+
+		return mCmd
 	}
 
 	// wait a few seconds for the manager to start listening on its ports
 	<-time.After(cloudManagerListenWait)
+
+	return mCmd
 }
 
 // bootstrapWriteEnvVars creates a file on the server containing the cloud
@@ -1366,31 +1397,31 @@ func buildFlavorArg() string {
 // remote logs, waits for the user, then tears down and dies.
 func handleManagerStartFailure(provider *cloud.Provider, server *cloud.Server,
 	keyPath, mCmd, stderr string) {
-	warn("failed to start wr manager on the remote server")
+	handleManagerFailureDebug("failed to start wr manager on the remote server", server, keyPath, mCmd, stderr)
+	teardownAfterManagerFailure(context.Background(), provider)
+	dieAfterManagerFailure("toredown following failure to start the manager remotely")
+}
+
+func handleManagerFailureDebug(reason string, server *cloud.Server, keyPath, mCmd, stderr string) {
+	warn("%s", reason)
 
 	if len(stderr) > 0 {
 		color.Red(stderr)
 	}
 
-	displayRemoteManagerLogs(server)
+	displayRemoteManagerLogsForFailure(server)
 
 	warn("To debug further you can try to ssh to this server using:")
 	color.Magenta("ssh -i %s %s@%s", keyPath, osUsername, server.IP)
-	fmt.Printf("and see if you can run (checking %s afterwards):\n", "~/.wr_"+config.Deployment+"/log")
-	color.Magenta(mCmd)
+
+	if mCmd != "" {
+		fmt.Printf("and see if you can run (checking %s afterwards):\n", "~/.wr_"+config.Deployment+"/log")
+		color.Magenta(mCmd)
+	}
 
 	// now teardown and die, once the user confirms
 	warn("Once you're done debugging, hit return to teardown")
-
-	var response string
-
-	_, errs := fmt.Scanln(&response)
-	if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
-		warn("failed to read your response: %s", errs)
-	}
-
-	teardown(context.Background(), provider)
-	die("toredown following failure to start the manager remotely")
+	waitForManagerFailureDebugInput()
 }
 
 // displayRemoteManagerLogs downloads the remote manager log and prints any
