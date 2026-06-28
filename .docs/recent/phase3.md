@@ -29,5 +29,5 @@ units like "1d12h" are not supported and error. Empty string returns
 mention `--recent` and the accepted units. Test file:
 `cmd/duration_test.go`, covering all 9 acceptance tests from C5.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
