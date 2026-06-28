@@ -28,13 +28,16 @@ package testsuite
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	colourGreen = "\x1b[32m"
-	colourRed   = "\x1b[31m"
-	colourReset = "\x1b[0m"
+	summaryIndent = "  "
+	skipIndent    = "      "
+	minColumnGap  = 2
+	ruleWidth     = 44
 )
 
 // laneSummaryInput is the pure-function view of one lane needed to build the
@@ -48,9 +51,10 @@ type laneSummaryInput struct {
 }
 
 // summarizeLanes builds the success summary printed once at the end of a green
-// run: a sorted per-package "pkg: N passed[, M skipped]" line with skip
-// descriptions listed underneath, a grand-total line, then PASSED.
-func summarizeLanes(module string, lanes []laneSummaryInput, colourize bool) string {
+// run: a header, a sorted, aligned per-package "<name> N passed[ M skipped]"
+// line with skip descriptions listed underneath, a rule, a grand-total line
+// (including the total elapsed wall-clock time), then the PASSED marker.
+func summarizeLanes(module string, lanes []laneSummaryInput, colourize bool, elapsed time.Duration) string {
 	outcomes := make(map[string]*packageOutcome)
 
 	for _, lane := range lanes {
@@ -59,7 +63,7 @@ func summarizeLanes(module string, lanes []laneSummaryInput, colourize bool) str
 		}
 	}
 
-	return renderSummary(module, outcomes, colourize)
+	return renderSummary(module, outcomes, colourize, elapsed)
 }
 
 func accumulateSegment(outcomes map[string]*packageOutcome, pkgPath string, text string) {
@@ -195,24 +199,57 @@ func scopeIsSkipped(scope conveyScope) bool {
 	return false
 }
 
-func renderSummary(module string, outcomes map[string]*packageOutcome, colourize bool) string {
+// summaryLayout holds the column widths needed to align every package line: the
+// widest package name and the widest passed/skipped counts across all packages.
+type summaryLayout struct {
+	nameWidth    int
+	passedWidth  int
+	skippedWidth int
+}
+
+func renderSummary(module string, outcomes map[string]*packageOutcome, colourize bool, elapsed time.Duration) string {
+	sty := newStyle(colourize)
+	packages := sortedPackages(outcomes)
+	layout := computeLayout(module, outcomes, packages)
+
 	var out strings.Builder
+
+	writeHeader(&out, sty, len(outcomes))
 
 	totalPassed := 0
 	totalSkipped := 0
 
-	for _, pkgPath := range sortedPackages(outcomes) {
+	for _, pkgPath := range packages {
 		outcome := outcomes[pkgPath]
 		totalPassed += outcome.passed
 		totalSkipped += outcome.skipped()
 
-		writePackageLine(&out, relativePackage(module, pkgPath), outcome)
+		writePackageLine(&out, sty, relativePackage(module, pkgPath), outcome, layout)
 	}
 
-	writeGrandTotal(&out, totalPassed, totalSkipped, len(outcomes))
+	writeRule(&out, sty)
+	writeGrandTotal(&out, sty, totalPassed, totalSkipped, len(outcomes), elapsed)
+	out.WriteString("\n")
+	out.WriteString(summaryIndent)
 	out.WriteString(finalMarker(true, colourize))
 
 	return out.String()
+}
+
+func computeLayout(module string, outcomes map[string]*packageOutcome, packages []string) summaryLayout {
+	var layout summaryLayout
+
+	for _, pkgPath := range packages {
+		outcome := outcomes[pkgPath]
+		layout.nameWidth = max(layout.nameWidth, len(relativePackage(module, pkgPath)))
+		layout.passedWidth = max(layout.passedWidth, len(strconv.Itoa(outcome.passed)))
+
+		if skipped := outcome.skipped(); skipped > 0 {
+			layout.skippedWidth = max(layout.skippedWidth, len(strconv.Itoa(skipped)))
+		}
+	}
+
+	return layout
 }
 
 func sortedPackages(outcomes map[string]*packageOutcome) []string {
@@ -226,30 +263,70 @@ func sortedPackages(outcomes map[string]*packageOutcome) []string {
 	return packages
 }
 
-func writePackageLine(out *strings.Builder, relPkg string, outcome *packageOutcome) {
-	fmt.Fprintf(out, "%s: %d passed", relPkg, outcome.passed)
+func writeHeader(out *strings.Builder, sty style, packages int) {
+	out.WriteString(summaryIndent)
+	out.WriteString(sty.bold("wr test suite"))
+	out.WriteString(" ")
+	out.WriteString(sty.dim(sty.bullet() + " " + pluralPackages(packages)))
+	out.WriteString("\n\n")
+}
 
-	skipped := outcome.skipped()
-	if skipped > 0 {
-		fmt.Fprintf(out, ", %d skipped", skipped)
+func writePackageLine(out *strings.Builder, sty style, relPkg string, outcome *packageOutcome, layout summaryLayout) {
+	marker := sty.green(sty.pass())
+	if outcome.skipped() > 0 {
+		marker = sty.yellow(sty.skip())
 	}
 
+	out.WriteString(summaryIndent)
+	out.WriteString(markerField(sty, marker))
+	out.WriteString(relPkg)
+	out.WriteString(strings.Repeat(" ", layout.nameWidth-len(relPkg)+minColumnGap))
+	out.WriteString(passedField(sty, outcome.passed, layout.passedWidth))
+	writeSkippedField(out, sty, outcome.skipped(), layout.skippedWidth)
 	out.WriteByte('\n')
 
 	for _, description := range outcome.skipOrder {
-		writeSkipDescription(out, description, outcome.skipCounts[description])
+		writeSkipDescription(out, sty, description, outcome.skipCounts[description])
 	}
 }
 
-func writeSkipDescription(out *strings.Builder, description string, count int) {
-	out.WriteString("    - ")
-	out.WriteString(description)
-
-	if count > 1 {
-		fmt.Fprintf(out, " (x%d)", count)
+// markerField renders the per-package marker glyph followed by a single space,
+// keeping a constant two-column field so names stay aligned even in plain mode,
+// where the glyph is empty.
+func markerField(sty style, marker string) string {
+	if !sty.rich {
+		return "  "
 	}
 
-	out.WriteByte('\n')
+	return marker + " "
+}
+
+func passedField(sty style, passed int, width int) string {
+	padded := strings.Repeat(" ", width-len(strconv.Itoa(passed))) + strconv.Itoa(passed)
+
+	return sty.green(padded + " passed")
+}
+
+func writeSkippedField(out *strings.Builder, sty style, skipped int, width int) {
+	if skipped == 0 {
+		return
+	}
+
+	padded := strings.Repeat(" ", width-len(strconv.Itoa(skipped))) + strconv.Itoa(skipped)
+
+	out.WriteString(strings.Repeat(" ", minColumnGap+1))
+	out.WriteString(sty.yellow(padded + " skipped"))
+}
+
+func writeSkipDescription(out *strings.Builder, sty style, description string, count int) {
+	line := sty.skipArrow() + " " + description
+	if count > 1 {
+		line += " " + sty.times() + strconv.Itoa(count)
+	}
+
+	out.WriteString(skipIndent)
+	out.WriteString(sty.dim(line))
+	out.WriteString("\n")
 }
 
 func relativePackage(module string, pkgPath string) string {
@@ -264,14 +341,36 @@ func relativePackage(module string, pkgPath string) string {
 	return pkgPath
 }
 
-func writeGrandTotal(out *strings.Builder, passed int, skipped int, packages int) {
-	fmt.Fprintf(out, "\ntotal: %d passed", passed)
+func writeRule(out *strings.Builder, sty style) {
+	out.WriteString(summaryIndent)
+	out.WriteString(sty.dim(strings.Repeat(sty.rule(), ruleWidth)))
+	out.WriteByte('\n')
+}
+
+func writeGrandTotal(out *strings.Builder, sty style, passed int, skipped int, packages int, elapsed time.Duration) {
+	sep := " " + sty.dim(sty.bullet()) + " "
+
+	parts := []string{sty.bold(strconv.Itoa(passed)) + " passed"}
 
 	if skipped > 0 {
-		fmt.Fprintf(out, ", %d skipped", skipped)
+		parts = append(parts, sty.bold(strconv.Itoa(skipped))+" skipped")
 	}
 
-	fmt.Fprintf(out, " across %s\n", pluralPackages(packages))
+	parts = append(parts, sty.bold(pluralPackages(packages)), sty.dim(formatElapsed(elapsed)))
+
+	out.WriteString(summaryIndent)
+	out.WriteString(strings.Join(parts, sep))
+	out.WriteString("\n")
+}
+
+// formatElapsed renders a wall-clock duration compactly: whole seconds as "52s"
+// and sub-second runs as one decimal place, e.g. "0.3s".
+func formatElapsed(elapsed time.Duration) string {
+	if elapsed < time.Second {
+		return strconv.FormatFloat(elapsed.Round(100*time.Millisecond).Seconds(), 'f', 1, 64) + "s"
+	}
+
+	return elapsed.Round(time.Second).String()
 }
 
 func pluralPackages(count int) string {
@@ -282,22 +381,16 @@ func pluralPackages(count int) string {
 	return fmt.Sprintf("%d packages", count)
 }
 
-// finalMarker returns the trailing PASSED/FAILED line, coloured green or red
-// only when colourize is set (a real terminal).
+// finalMarker returns the trailing PASSED/FAILED marker with its glyph, coloured
+// (bold green or bold red) only when colourize is set, plain otherwise.
 func finalMarker(passed bool, colourize bool) string {
-	label := "FAILED"
-	colour := colourRed
+	sty := newStyle(colourize)
 
 	if passed {
-		label = "PASSED"
-		colour = colourGreen
+		return strings.TrimLeft(sty.boldGreen(sty.pass()+" PASSED"), " ") + "\n"
 	}
 
-	if !colourize {
-		return label + "\n"
-	}
-
-	return colour + label + colourReset + "\n"
+	return strings.TrimLeft(sty.boldRed(sty.fail()+" FAILED"), " ") + "\n"
 }
 
 func laneSegments(lane laneSummaryInput) []segment {

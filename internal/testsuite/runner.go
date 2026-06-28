@@ -98,20 +98,20 @@ func reportFailure(stdout io.Writer, failed []laneResult, colourize bool) error 
 		return err
 	}
 
-	if _, err := io.WriteString(stdout, finalMarker(false, colourize)); err != nil {
+	if _, err := io.WriteString(stdout, "\n"+summaryIndent+finalMarker(false, colourize)); err != nil {
 		return fmt.Errorf("write failure marker: %w", err)
 	}
 
 	return ErrSuiteFailed
 }
 
-func reportSuccess(stdout io.Writer, module string, results []laneResult, colourize bool) error {
+func reportSuccess(stdout io.Writer, module string, results []laneResult, colourize bool, elapsed time.Duration) error {
 	lanes, err := laneSummaryInputs(results)
 	if err != nil {
 		return err
 	}
 
-	if _, err := io.WriteString(stdout, summarizeLanes(module, lanes, colourize)); err != nil {
+	if _, err := io.WriteString(stdout, summarizeLanes(module, lanes, colourize, elapsed)); err != nil {
 		return fmt.Errorf("write success summary: %w", err)
 	}
 
@@ -151,6 +151,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, mode Mode) err
 
 // RunPlan executes an already-created test-suite plan.
 func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root string, plan Plan) error {
+	started := time.Now()
+
 	base, err := os.MkdirTemp("", tempPrefix(plan.Mode))
 	if err != nil {
 		return fmt.Errorf("create test-suite temp dir: %w", err)
@@ -167,15 +169,26 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
 
 	defer restorePortBase()
 
-	binaries, err := compileBinaries(ctx, stdout, stderr, base, plan.Compiles)
+	prog := newProgress(stderr, len(plan.Serial)+len(plan.Parallel))
+	prog.start()
+
+	defer prog.stop()
+
+	prog.setPhase("compiling test binaries")
+
+	binaries, err := compileBinaries(ctx, prog.bypass(stdout), prog.bypass(stderr), base, plan.Compiles)
 	if err != nil {
 		return err
 	}
 
-	results := runSerialLanes(ctx, root, base, binaries, plan.Serial)
-	results = append(results, runParallelLanes(ctx, root, base, binaries, plan.Parallel)...)
+	prog.beginTesting()
 
-	return reportResults(stdout, plan.Module, results)
+	results := runSerialLanes(ctx, root, base, binaries, plan.Serial, prog)
+	results = append(results, runParallelLanes(ctx, root, base, binaries, plan.Parallel, prog)...)
+
+	prog.stop()
+
+	return reportResults(stdout, plan.Module, results, time.Since(started))
 }
 
 func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
@@ -474,11 +487,12 @@ func runSerialLanes(
 	base string,
 	binaries map[string]string,
 	lanes []Lane,
+	prog *progress,
 ) []laneResult {
 	results := make([]laneResult, 0, len(lanes))
 
 	for _, lane := range lanes {
-		results = append(results, runLane(ctx, root, base, binaries, lane))
+		results = append(results, runLane(ctx, root, base, binaries, lane, prog))
 	}
 
 	return results
@@ -490,6 +504,7 @@ func runParallelLanes(
 	base string,
 	binaries map[string]string,
 	lanes []Lane,
+	prog *progress,
 ) []laneResult {
 	lanes = prioritizedLanes(lanes)
 	results := make([]laneResult, len(lanes))
@@ -501,7 +516,7 @@ func runParallelLanes(
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			results[index] = runLane(ctx, root, base, binaries, lane)
+			results[index] = runLane(ctx, root, base, binaries, lane, prog)
 		})
 	}
 
@@ -604,7 +619,11 @@ func runLane(
 	base string,
 	binaries map[string]string,
 	lane Lane,
+	prog *progress,
 ) laneResult {
+	prog.laneStarted()
+	defer prog.laneFinished()
+
 	start := time.Now()
 	logPath := filepath.Join(base, lane.Name+".log")
 	logFile, err := os.Create(logPath)
@@ -633,7 +652,8 @@ func runLane(
 		name = "nice"
 	}
 
-	err = runCommand(ctx, laneWorkDir(root, lane), logFile, logFile, name, args, laneEnvWithBinaries(lane, binaries))
+	sink := prog.tee(logFile)
+	err = runCommand(ctx, laneWorkDir(root, lane), sink, sink, name, args, laneEnvWithBinaries(lane, binaries))
 
 	return laneResult{lane: lane, log: logPath, duration: time.Since(start), err: err}
 }
@@ -767,7 +787,7 @@ func envMap(values []string) map[string]string {
 	return env
 }
 
-func reportResults(stdout io.Writer, module string, results []laneResult) error {
+func reportResults(stdout io.Writer, module string, results []laneResult, elapsed time.Duration) error {
 	if os.Getenv("WR_TESTSUITE_TIMINGS") != "" {
 		if err := printTimings(stdout, results); err != nil {
 			return err
@@ -781,7 +801,7 @@ func reportResults(stdout io.Writer, module string, results []laneResult) error 
 		return reportFailure(stdout, failed, colourize)
 	}
 
-	return reportSuccess(stdout, module, results, colourize)
+	return reportSuccess(stdout, module, results, colourize, elapsed)
 }
 
 func failedResults(results []laneResult) []laneResult {

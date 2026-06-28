@@ -29,6 +29,7 @@ package testsuite
 import (
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -104,11 +105,21 @@ FAIL
 		So(out, ShouldNotContainSubstring, "\n\n\n")
 	})
 
-	Convey("The final marker is red FAILED only when colourized", t, func() {
+	Convey("The final marker is FAILED, bold red only when colourized", t, func() {
 		So(finalMarker(false, false), ShouldEqual, "FAILED\n")
-		So(finalMarker(false, true), ShouldEqual, "\x1b[31mFAILED\x1b[0m\n")
 		So(finalMarker(true, false), ShouldEqual, "PASSED\n")
-		So(finalMarker(true, true), ShouldEqual, "\x1b[32mPASSED\x1b[0m\n")
+
+		colouredFail := finalMarker(false, true)
+		So(colouredFail, ShouldContainSubstring, "FAILED")
+		So(colouredFail, ShouldContainSubstring, "✗")
+		So(colouredFail, ShouldContainSubstring, ansiBold)
+		So(colouredFail, ShouldContainSubstring, ansiRed)
+		So(colouredFail, ShouldEndWith, ansiReset+"\n")
+
+		colouredPass := finalMarker(true, true)
+		So(colouredPass, ShouldContainSubstring, "PASSED")
+		So(colouredPass, ShouldContainSubstring, "✓")
+		So(colouredPass, ShouldContainSubstring, ansiBold+ansiGreen)
 	})
 }
 
@@ -121,11 +132,28 @@ func TestSummarizeLanes(t *testing.T) {
 			{name: "foo", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "container"), log: log},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "container: 2 passed")
+		So(out, ShouldContainSubstring, "container")
+		So(out, ShouldContainSubstring, "2 passed")
 		So(out, ShouldContainSubstring, "PASSED")
 		So(out, ShouldNotContainSubstring, "FAILED")
+	})
+
+	Convey("A header names the suite and counts the packages", t, func() {
+		lanes := []laneSummaryInput{
+			{name: "a", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "alpha"),
+				log: "--- PASS: TestA (0.00s)\nPASS\n"},
+			{name: "b", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "beta"),
+				log: "--- PASS: TestB (0.00s)\nPASS\n"},
+		}
+
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
+
+		So(out, ShouldContainSubstring, "wr test suite")
+		So(out, ShouldContainSubstring, "2 packages")
+		// The header comes before the package lines.
+		So(strings.Index(out, "wr test suite"), ShouldBeLessThan, strings.Index(out, "alpha"))
 	})
 
 	Convey("A SkipConvey scope counts as one skip and lists its description", t, func() {
@@ -138,10 +166,11 @@ func TestSummarizeLanes(t *testing.T) {
 			{name: "container", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "container"), log: log},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "container: 1 passed, 1 skipped")
-		So(out, ShouldContainSubstring, "Can't really test the docker command line: docker not found")
+		So(out, ShouldContainSubstring, "1 passed")
+		So(out, ShouldContainSubstring, "1 skipped")
+		So(out, ShouldContainSubstring, "- Can't really test the docker command line: docker not found")
 		// The skip stack-trace noise must never leak into the summary.
 		So(out, ShouldNotContainSubstring, "goroutine 13")
 	})
@@ -156,9 +185,11 @@ func TestSummarizeLanes(t *testing.T) {
 			{name: "b", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "jobqueue"), log: logB},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "jobqueue: 2 passed, 1 skipped")
+		So(out, ShouldContainSubstring, "jobqueue")
+		So(out, ShouldContainSubstring, "2 passed")
+		So(out, ShouldContainSubstring, "1 skipped")
 		So(out, ShouldContainSubstring, "shared package skip")
 	})
 
@@ -176,15 +207,15 @@ func TestSummarizeLanes(t *testing.T) {
 				pkgs: []string{pkg(summaryTestModule, "alpha"), pkg(summaryTestModule, "beta")}, log: log},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "alpha: 1 passed")
-		So(out, ShouldContainSubstring, "beta: 2 passed, 1 skipped")
+		So(packageLine(out, "alpha"), ShouldContainSubstring, "1 passed")
+		So(packageLine(out, "alpha"), ShouldNotContainSubstring, "skipped")
+		So(packageLine(out, "beta"), ShouldContainSubstring, "2 passed")
+		So(packageLine(out, "beta"), ShouldContainSubstring, "1 skipped")
 		So(out, ShouldContainSubstring, "beta only skip")
 		// A package with no tests is not reported.
 		So(out, ShouldNotContainSubstring, "gamma")
-		// alpha's single behaviour must not bleed into beta's segment.
-		So(out, ShouldNotContainSubstring, "alpha: 1 passed, 1 skipped")
 	})
 
 	Convey("A t.Skip function counts as a skip and lists its reason", t, func() {
@@ -196,9 +227,10 @@ func TestSummarizeLanes(t *testing.T) {
 			{name: "pkg", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "delta"), log: log},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "delta: 1 passed, 1 skipped")
+		So(packageLine(out, "delta"), ShouldContainSubstring, "1 passed")
+		So(packageLine(out, "delta"), ShouldContainSubstring, "1 skipped")
 		So(out, ShouldContainSubstring, "not on this platform")
 	})
 
@@ -210,10 +242,21 @@ func TestSummarizeLanes(t *testing.T) {
 			{name: "pkg", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "epsilon"), log: log},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		Convey("plain mode uses an ASCII x multiplier", func() {
+			out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "epsilon: 0 passed, 2 skipped")
-		So(out, ShouldContainSubstring, "same reason (x2)")
+			So(packageLine(out, "epsilon"), ShouldContainSubstring, "0 passed")
+			So(packageLine(out, "epsilon"), ShouldContainSubstring, "2 skipped")
+			So(out, ShouldContainSubstring, "same reason x2")
+		})
+
+		Convey("rich mode uses a unicode multiplier", func() {
+			out := summarizeLanes(summaryTestModule, lanes, true, time.Second)
+
+			So(out, ShouldContainSubstring, "same reason")
+			So(out, ShouldContainSubstring, "×2")
+			So(out, ShouldNotContainSubstring, "x2")
+		})
 	})
 
 	Convey("Subtest PASS/SKIP lines are not counted at the top level", t, func() {
@@ -225,13 +268,13 @@ func TestSummarizeLanes(t *testing.T) {
 			{name: "pkg", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "zeta"), log: log},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(out, ShouldContainSubstring, "zeta: 1 passed")
-		So(out, ShouldNotContainSubstring, "zeta: 1 passed, 1 skipped")
+		So(packageLine(out, "zeta"), ShouldContainSubstring, "1 passed")
+		So(packageLine(out, "zeta"), ShouldNotContainSubstring, "skipped")
 	})
 
-	Convey("A grand total line summarises all packages", t, func() {
+	Convey("A grand total line summarises all packages and the elapsed time", t, func() {
 		lanes := []laneSummaryInput{
 			{name: "a", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "alpha"),
 				log: "--- PASS: TestA (0.00s)\nPASS\n"},
@@ -239,25 +282,43 @@ func TestSummarizeLanes(t *testing.T) {
 				log: "--- PASS: TestB (0.00s)\n" + skipConveyJSON("s", "a skip") + "PASS\n"},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, 52*time.Second)
+		total := lastLineBefore(out, "PASSED")
 
-		So(out, ShouldContainSubstring, "2 passed")
-		So(out, ShouldContainSubstring, "1 skipped")
-		So(out, ShouldContainSubstring, "2 packages")
+		So(total, ShouldContainSubstring, "2 passed")
+		So(total, ShouldContainSubstring, "1 skipped")
+		So(total, ShouldContainSubstring, "2 packages")
+		So(total, ShouldContainSubstring, "52s")
 	})
 
-	Convey("Colourize wraps PASSED in green only when requested", t, func() {
+	Convey("The grand total renders sub-second elapsed time with one decimal", t, func() {
 		lanes := []laneSummaryInput{
 			{name: "a", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "alpha"),
 				log: "--- PASS: TestA (0.00s)\nPASS\n"},
 		}
 
-		plain := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, 300*time.Millisecond)
+
+		So(out, ShouldContainSubstring, "0.3s")
+	})
+
+	Convey("Colourize wraps the summary in ANSI only when requested", t, func() {
+		lanes := []laneSummaryInput{
+			{name: "a", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "alpha"),
+				log: "--- PASS: TestA (0.00s)\nPASS\n"},
+		}
+
+		plain := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 		So(plain, ShouldNotContainSubstring, "\x1b[")
 		So(plain, ShouldContainSubstring, "PASSED")
+		// Plain mode stays greppable with ASCII glyphs only.
+		So(plain, ShouldNotContainSubstring, "✓")
+		So(plain, ShouldNotContainSubstring, "─")
 
-		coloured := summarizeLanes(summaryTestModule, lanes, true)
-		So(coloured, ShouldContainSubstring, "\x1b[32mPASSED\x1b[0m")
+		coloured := summarizeLanes(summaryTestModule, lanes, true, time.Second)
+		So(coloured, ShouldContainSubstring, "\x1b[")
+		So(coloured, ShouldContainSubstring, "✓")
+		So(coloured, ShouldContainSubstring, ansiBold+ansiGreen+"✓ PASSED"+ansiReset)
 	})
 
 	Convey("Packages are listed in sorted order", t, func() {
@@ -268,10 +329,71 @@ func TestSummarizeLanes(t *testing.T) {
 				log: "--- PASS: TestA (0.00s)\nPASS\n"},
 		}
 
-		out := summarizeLanes(summaryTestModule, lanes, false)
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
 
-		So(strings.Index(out, "alpha:"), ShouldBeLessThan, strings.Index(out, "zeta:"))
+		So(strings.Index(out, "alpha"), ShouldBeLessThan, strings.Index(out, "zeta"))
 	})
+
+	Convey("Package counts are right-aligned in a shared column", t, func() {
+		lanes := []laneSummaryInput{
+			{name: "a", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "alpha"),
+				log: passLog(2)},
+			{name: "b", kind: LaneKindBinary, pkg: pkg(summaryTestModule, "beta"),
+				log: passLog(41)},
+		}
+
+		out := summarizeLanes(summaryTestModule, lanes, false, time.Second)
+
+		// The single-digit "2 passed" is padded so its digit lines up under the
+		// units digit of "41 passed".
+		So(out, ShouldContainSubstring, " 2 passed")
+		So(out, ShouldContainSubstring, "41 passed")
+	})
+}
+
+// packageLine returns the summary line that names the given package, so an
+// assertion can be scoped to that one package without bleeding into others.
+func packageLine(out string, name string) string {
+	for line := range strings.Lines(out) {
+		fields := strings.Fields(line)
+		for _, field := range fields {
+			if field == name {
+				return line
+			}
+		}
+	}
+
+	return ""
+}
+
+// lastLineBefore returns the last non-empty line appearing before marker.
+func lastLineBefore(out string, marker string) string {
+	index := strings.Index(out, marker)
+	if index < 0 {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimRight(out[:index], "\n"), "\n")
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+
+	return ""
+}
+
+func passLog(n int) string {
+	var out strings.Builder
+
+	for range n {
+		out.WriteString("--- PASS: TestX (0.00s)\n")
+	}
+
+	out.WriteString("PASS\n")
+
+	return out.String()
 }
 
 func skipConveyJSON(parentTitle string, skipTitle string) string {
