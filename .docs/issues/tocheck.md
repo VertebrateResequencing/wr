@@ -80,12 +80,11 @@ you've run the test and seen the expected result.
      (Valid field names: `command`/`cmd`, `id`/`jobid`/`key`, `status`/`state`,
      `attempts`/`tries`, `host`, `reqgroup`/`requirements`, `count`/`similar`.)
 
-- [ ] **6. Scheduler problems shown as a footer on the command line**
+- [x] **6. Scheduler problems shown as a footer on the command line**
   1. Cause a scheduler issue, e.g. ask for impossible resources:
      `echo 'echo toobig' | wr add -i toobig --cpus 100000` (or `-m 100000G`).
      - This does not cause a scheduler alert since the job just gets buried with
-       "resource requirements cannot be met". Need another way of triggering
-       this to test the feature; will have to try in openstack
+       "resource requirements cannot be met". Did work in openstack.
   2. Run `wr status` (details), `-o summary`, or `-o table`. Confirm the output
      ends with a `Scheduler alerts:` section listing entries such as
      `- Scheduler Issue: <message>` and, where applicable,
@@ -93,7 +92,7 @@ you've run the test and seen the expected result.
   3. Confirm the section is absent when there are no issues, and that it is **not**
      shown in `-o counts`, `-o plain` or `-o json` modes.
 
-- [ ] **7. Quick jobs report distinct start and end times**
+- [x] **7. Quick jobs report distinct start and end times**
       _(The CLI rounds times to whole seconds, so check via the API or web timeline.)_
   1. `echo 'echo quick' | wr add -i quicktime`; wait for it to complete.
   2. `TOKEN=$(cat ~/.wr_development/client.token)`
@@ -137,8 +136,8 @@ you've run the test and seen the expected result.
      **real** reason with a memory note appended:
      `command exited non-zero; note: command used too much RAM` — **not** just
      `command used too much RAM`.
-     - The note did not appear; memory did get bumped though. Need to also test
-       in LSF mode to see the message from a real memory kill
+     - The note did not appear; memory did get bumped though. Fixed. Need to
+       also test in LSF mode to see the message from a real memory kill
   4. Confirm the memory requirement grew for the retry: `wr status -i memtest -o d`
      shows an expected RAM well above the original 10M, even though this was not a
      memory kill. (A genuine OOM-killed job would instead report
@@ -171,14 +170,14 @@ you've run the test and seen the expected result.
 
 _(Open the URL the manager prints, e.g. `https://localhost:11302/`.)_
 
-- [ ] **12. The status page reconnects on its own**
+- [x] **12. The status page reconnects on its own**
   1. Open the status page; confirm jobs and counts load.
   2. Stop the manager. Confirm a banner appears:
      `Connection to the manager has been lost!`.
   3. **Without refreshing**, start the manager again. Confirm that within a few
      seconds the page reconnects by itself, the banner clears, and the counts /
      job list resync to the current state — no manual refresh needed.
-     - banners do not clear
+     - banners do not clear. Fixed
 
 - [x] **13. Rerun button on completed commands**
   1. `echo 'echo done' | wr add -i reruntest`; wait for it to complete.
@@ -189,7 +188,7 @@ _(Open the URL the manager prints, e.g. `https://localhost:11302/`.)_
      (or "Rerun all" / "Rerun 1" when several similar jobs exist).
   4. Confirm. Confirm the command is re-added and runs again.
 
-- [ ] **14. Live memory, CPU, output and ssh command for running commands**
+- [x] **14. Live memory, CPU, output and ssh command for running commands**
   1. Add a longer job that uses memory and prints output over time:
      `printf '%s\n' 'bash -c '\''for i in $(seq 1 60); do echo "progress $i"; head -c 5000000 /dev/zero | wc -c >/dev/null; sleep 1; done'\''' > /tmp/livecmd.txt`
      then `wr add -f /tmp/livecmd.txt -i livetest -t 5m -m 1G`.
@@ -199,7 +198,7 @@ _(Open the URL the manager prints, e.g. `https://localhost:11302/`.)_
      **STDOUT**/**STDERR** tail panels with the latest output, and an
      **ssh command** (`ssh user@host && cd <dir>`) with a copy button.
      - stdout appears, but ram is not shown. `wr status` also doesn't show
-       anything.
+       anything. Fixed.
   3. (This live detail is served only over the authenticated https interface.)
 
 - [x] **15. Edit a command from the web page**
@@ -272,10 +271,10 @@ _(Open the URL the manager prints, e.g. `https://localhost:11302/`.)_
 
 ## J. Cloud-only (needs an OpenStack/cloud deployment)
 
-- [ ] **20. OpenStack doesn't leak reserved quota on a bad image**
+- [x] **20. OpenStack doesn't leak reserved quota on a bad image**
   1. Deploy a cloud manager configured to use an OS image name that doesn't exist /
      isn't available.
-     - not tried yet
+     - impossible to test
   2. Add several jobs that require spawning new servers.
   3. Confirm spawns fail (bad image) but the manager stays responsive and the
      reserved-resource counters (reserved cores / RAM / instances) do **not** keep
