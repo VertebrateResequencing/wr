@@ -1311,7 +1311,7 @@ func buildCloudMountArg() string {
 // buildDebugArg builds the optional debug manager arguments.
 func buildDebugArg() string {
 	if cloudDebug {
-		return " --debug --runner_debug"
+		return " --debug --runner_syslog"
 	}
 
 	return ""
