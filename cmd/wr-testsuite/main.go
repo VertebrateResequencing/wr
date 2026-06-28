@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -61,7 +62,11 @@ func run() int {
 	defer stop()
 
 	if err := testsuite.Run(ctx, os.Stdout, os.Stderr, mode); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		// A failed suite already prints its own red FAILED marker to stdout, so
+		// the sentinel stays silent; other errors still report to stderr.
+		if !errors.Is(err, testsuite.ErrSuiteFailed) {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
 
 		return exitFailure
 	}

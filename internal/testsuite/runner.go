@@ -72,6 +72,73 @@ var (
 	errUnknownLaneKind       = errors.New("unknown lane kind")
 )
 
+// ErrSuiteFailed reports that one or more lanes failed. Callers print the red
+// FAILED marker themselves, so this sentinel is silent on stderr.
+var ErrSuiteFailed = errors.New("test suite failed")
+
+// isTerminal reports whether the writer is a real character device, so colour
+// is only emitted to an interactive terminal and never to pipes, files, CI, or
+// the buffers used by unit tests.
+func isTerminal(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	if !ok {
+		return false
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func reportFailure(stdout io.Writer, failed []laneResult, colourize bool) error {
+	if err := printLaneLogs(stdout, failed); err != nil {
+		return err
+	}
+
+	if _, err := io.WriteString(stdout, finalMarker(false, colourize)); err != nil {
+		return fmt.Errorf("write failure marker: %w", err)
+	}
+
+	return ErrSuiteFailed
+}
+
+func reportSuccess(stdout io.Writer, module string, results []laneResult, colourize bool) error {
+	lanes, err := laneSummaryInputs(results)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.WriteString(stdout, summarizeLanes(module, lanes, colourize)); err != nil {
+		return fmt.Errorf("write success summary: %w", err)
+	}
+
+	return nil
+}
+
+func laneSummaryInputs(results []laneResult) ([]laneSummaryInput, error) {
+	lanes := make([]laneSummaryInput, 0, len(results))
+
+	for _, result := range results {
+		content, err := os.ReadFile(result.log)
+		if err != nil {
+			return nil, fmt.Errorf("open lane log %s: %w", result.lane.Name, err)
+		}
+
+		lanes = append(lanes, laneSummaryInput{
+			name: result.lane.Name,
+			kind: result.lane.Kind,
+			pkg:  result.lane.Package,
+			pkgs: result.lane.Packages,
+			log:  string(content),
+		})
+	}
+
+	return lanes, nil
+}
+
 // Run discovers packages, plans the requested suite mode, and executes it.
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, mode Mode) error {
 	root, module, packages, err := discover(ctx)
@@ -108,7 +175,7 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
 	results := runSerialLanes(ctx, root, base, binaries, plan.Serial)
 	results = append(results, runParallelLanes(ctx, root, base, binaries, plan.Parallel)...)
 
-	return reportResults(stdout, results)
+	return reportResults(stdout, plan.Module, results)
 }
 
 func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
@@ -606,7 +673,7 @@ func laneCommand(lane Lane, binaries map[string]string) (string, []string, error
 }
 
 func binaryArgs(lane Lane) []string {
-	args := []string{"-test.timeout=" + defaultTimeout, "-test.failfast"}
+	args := []string{"-test.timeout=" + defaultTimeout, "-test.failfast", "-test.v"}
 
 	if lane.RunPattern != "" {
 		args = append(args, "-test.run", lane.RunPattern)
@@ -620,7 +687,7 @@ func binaryArgs(lane Lane) []string {
 }
 
 func goTestArgs(lane Lane) []string {
-	args := []string{"test", "-tags", "netgo", "-timeout", defaultTimeout, "--count", "1", "-failfast"}
+	args := []string{"test", "-tags", "netgo", "-timeout", defaultTimeout, "--count", "1", "-failfast", "-v"}
 
 	if lane.Race {
 		args = append(args, "-race")
@@ -700,29 +767,21 @@ func envMap(values []string) map[string]string {
 	return env
 }
 
-func reportResults(stdout io.Writer, results []laneResult) error {
+func reportResults(stdout io.Writer, module string, results []laneResult) error {
 	if os.Getenv("WR_TESTSUITE_TIMINGS") != "" {
 		if err := printTimings(stdout, results); err != nil {
 			return err
 		}
 	}
 
+	colourize := isTerminal(stdout)
+
 	failed := failedResults(results)
-	if len(failed) == 0 {
-		return nil
+	if len(failed) > 0 {
+		return reportFailure(stdout, failed, colourize)
 	}
 
-	if err := printLaneLogs(stdout, failed); err != nil {
-		return err
-	}
-
-	return suiteFailedError{}
-}
-
-type suiteFailedError struct{}
-
-func (suiteFailedError) Error() string {
-	return "test suite failed"
+	return reportSuccess(stdout, module, results, colourize)
 }
 
 func failedResults(results []laneResult) []laneResult {
@@ -780,7 +839,7 @@ func copyLaneLog(stdout io.Writer, result laneResult) error {
 		return fmt.Errorf("open lane log %s: %w", result.lane.Name, err)
 	}
 
-	if _, err := io.WriteString(stdout, formatLaneLog(string(content))); err != nil {
+	if _, err := io.WriteString(stdout, summarizeFailureLog(string(content))); err != nil {
 		return fmt.Errorf("copy lane log %s: %w", result.lane.Name, err)
 	}
 
