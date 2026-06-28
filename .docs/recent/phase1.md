@@ -27,17 +27,19 @@ benchmark sign-off is Phase 5.
 
 spec.md section: A1
 
-Add buckets `bucketEndTimeToKey` and `bucketKeyEndTime` (plus the
-`endTimeBytes = 8` const) and create them in `initDB` with
-`CreateBucketIfNotExists`. Implement `endTimeIndexKey(endNanos, jobKey)`
-(8-byte big-endian UnixNano + `dbDelimiter` + jobKey) and
-`updateEndTimeIndex(tx, jobKey, job)` (latest-per-key, idempotent on
-unchanged end time), and wire `updateEndTimeIndex` into `archiveJobTx`
-inside the existing `bolt.Batch` transaction (no extra commit). File:
-`jobqueue/db.go`. Covering all 4 acceptance tests from A1.
+Add bucket `bucketEndTimeToKey` (plus the `endTimeBytes = 8` const) and
+create it in `initDB` with `CreateBucketIfNotExists`. Implement
+`endTimeIndexKey(endNanos, jobKey)` (8-byte big-endian UnixNano +
+`dbDelimiter` + jobKey) and `(db *db) updateEndTimeIndex(tx, jobKey, job)`
+(latest-per-key, idempotent on unchanged end time; recovers the prior end
+time from the job's existing `bucketJobsComplete` record to drop the stale
+forward entry - no second index bucket), and wire `updateEndTimeIndex` into
+`archiveJobTx` inside the existing `bolt.Batch` transaction, before the
+complete-record Put (no extra commit). File: `jobqueue/db.go`. Covering all 4
+acceptance tests from A1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Windowed retrieval from the index
 
@@ -52,8 +54,8 @@ ascending end-time order. An absent/empty index yields an empty slice and
 no error. File: `jobqueue/db.go`. Covering all 3 acceptance tests from
 A2. Depends on Item 1.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: A3 - Durability and consistency
 
@@ -67,5 +69,5 @@ its T2 end time after reopen (no duplicate, no stale T1 entry). Test
 file: `jobqueue/db_test.go`. Covering all 2 acceptance tests from A3.
 Depends on Items 1.1 and 1.2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

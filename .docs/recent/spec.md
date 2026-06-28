@@ -25,7 +25,7 @@ jobs archived before the feature shipped.
 
 ### Packages / files touched
 
-- `jobqueue/db.go` - new end-time index buckets, written in `archiveJobTx`;
+- `jobqueue/db.go` - new end-time index bucket, written in `archiveJobTx`;
   helper `retrieveCompleteJobsRecent`.
 - `jobqueue/server.go` - server helper `getJobsRecent`; reuse `limitJobs`.
 - `jobqueue/serverCLI.go` - request-method constant + handler `handleGetRecent`;
@@ -41,11 +41,10 @@ Job keys are 32-char lowercase hex (FarmHash128, see `byteKey`); they never
 contain the `dbDelimiter` (`_::_`) or any byte that breaks prefix/range scans,
 so they compose cleanly into index keys.
 
-Add two sibling buckets (do NOT extend `bucketRGEndTime`; see Key Decisions):
+Add one sibling bucket (do NOT extend `bucketRGEndTime`; see Key Decisions):
 
 ```go
 bucketEndTimeToKey = []byte("endTimeToKey") // forward: time-ordered index
-bucketKeyEndTime   = []byte("keyEndTime")   // per-key latest end time (cleanup)
 
 const endTimeBytes = 8 // big-endian uint64 nanoseconds, like rgEndTimeBytes
 ```
@@ -57,9 +56,13 @@ const endTimeBytes = 8 // big-endian uint64 nanoseconds, like rgEndTimeBytes
   realistic times), so a byte range scan `[cutoffNanos, +inf)` yields exactly
   the in-window keys in ascending end-time order, and nanosecond resolution
   keeps near-simultaneous completions distinct.
-- `bucketKeyEndTime` entry: key = `<jobKey>`, value = the same 8 end-time bytes.
-  Lets `archiveJobTx` find and delete a key's prior forward entry on re-archive
-  (latest-per-key, no stale/duplicate entries).
+- Latest-per-key cleanup needs the key's *prior* end time, to delete its prior
+  forward entry on re-archive. That prior end time is recovered from the job's
+  existing `bucketJobsComplete` record (read before `archiveJobTx` overwrites
+  it), so NO second per-job bucket is needed. A dedicated per-key time bucket
+  would instead add a random-jobKey-ordered write that scatters BoltDB pages on
+  every archive and measurably regresses the archive write/page benchmark (see
+  Key Decisions).
 
 Use big-endian nanoseconds (not `time.RFC3339Nano`) for the time prefix: it is
 fixed-width and orders correctly as raw bytes. `time.RFC3339Nano` is NOT safe
@@ -68,9 +71,9 @@ here because it trims trailing fractional zeros, so e.g. `:05Z` would sort after
 `bucketRGEndTime` encoding (`rgEndTimeBytes`, big-endian Unix seconds), extended
 to nanosecond precision.
 
-Both buckets are created with `CreateBucketIfNotExists` in `initDB` (alongside
-the existing bucket creation block). No rebuild/back-fill step. The manager must
-not error if either bucket is empty or newly created.
+`bucketEndTimeToKey` is created with `CreateBucketIfNotExists` in `initDB`
+(alongside the existing bucket creation block). No rebuild/back-fill step. The
+manager must not error if the bucket is empty or newly created.
 
 `endTimeIndexKey`:
 
@@ -85,31 +88,37 @@ func endTimeIndexKey(endNanos []byte, jobKey []byte) []byte
 `binary.BigEndian.PutUint64(endNanos, uint64(job.EndTime.UnixNano()))`.
 
 Write the index inside `archiveJobTx` (which already runs in the single archive
-`bolt.Batch` transaction, so no extra commit and no extra fsync):
+`bolt.Batch` transaction, so no extra commit and no extra fsync). Call it BEFORE
+the `bucketJobsComplete` Put, so it can still read the job's prior complete
+record to recover the previous end time:
 
 ```go
-func archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
-    // ... existing std/live deletes, complete Put, putJobStats,
-    //     updateRGEndTime ...
-    return updateEndTimeIndex(tx, key, job)
+func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
+    // ... existing std/live deletes ...
+    // updateEndTimeIndex BEFORE the complete Put (it reads the prior record):
+    //     if err := db.updateEndTimeIndex(tx, key, job); err != nil { return err }
+    // ... existing complete Put, putJobStats, updateRGEndTime ...
 }
 
 // updateEndTimeIndex records job's end time in the time-ordered per-job index,
 // replacing any previous entry for the same key so only the latest completion
-// per key is indexed. Uses job.EndTime.UnixNano as 8 big-endian bytes. No-op if
-// the stored end time is unchanged.
-func updateEndTimeIndex(tx *bolt.Tx, jobKey []byte, job *Job) error
+// per key is indexed. Uses job.EndTime.UnixNano as 8 big-endian bytes. The prior
+// end time is recovered from the job's existing bucketJobsComplete record, so
+// this must run before that record is overwritten. No-op if the stored end time
+// is unchanged.
+func (db *db) updateEndTimeIndex(tx *bolt.Tx, jobKey []byte, job *Job) error
 ```
 
 `updateEndTimeIndex` behaviour:
 1. Compute `newTimeBytes` = 8 big-endian bytes of `job.EndTime.UnixNano()`.
-2. `old := tx.Bucket(bucketKeyEndTime).Get(jobKey)`. If
-   `len(old) == endTimeBytes && bytes.Equal(old, newTimeBytes)`, return nil
-   (idempotent).
-3. If `len(old) == endTimeBytes`, delete the stale forward entry
-   `tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(old, jobKey))`.
-4. Put forward entry `endTimeIndexKey(newTimeBytes, jobKey) -> nil` and pointer
-   `jobKey -> newTimeBytes`.
+2. `oldEncoded := tx.Bucket(bucketJobsComplete).Get(jobKey)`. If
+   `len(oldEncoded) == 0` (first archive of this key), skip to step 4.
+3. Decode `oldEncoded` (via the db codec handle) to a `*Job` and take its
+   `EndTime.UnixNano()` as `oldNanos`. If `oldNanos == job.EndTime.UnixNano()`,
+   return nil (idempotent, unchanged). Otherwise delete the stale forward entry
+   `tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))`,
+   where `oldTimeBytes` is the 8 big-endian bytes of `oldNanos`.
+4. Put forward entry `endTimeIndexKey(newTimeBytes, jobKey) -> nil`.
 
 ### Retrieval
 
@@ -253,8 +262,9 @@ As a maintainer, I want each archived job's end time recorded in a time-ordered
 per-job index inside the existing archive transaction, so recent-window queries
 are a bounded range scan and archive throughput is unaffected.
 
-`bucketEndTimeToKey` and `bucketKeyEndTime` created in `initDB`. `archiveJobTx`
-calls `updateEndTimeIndex` within the same `bolt.Batch` transaction.
+`bucketEndTimeToKey` created in `initDB`. `archiveJobTx` calls
+`updateEndTimeIndex` within the same `bolt.Batch` transaction, before
+overwriting the job's complete record.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`
@@ -265,11 +275,12 @@ calls `updateEndTimeIndex` within the same `bolt.Batch` transaction.
 1. Given a fresh db, when a job with `EndTime` T is archived via `archiveJob`,
    then `bucketEndTimeToKey` contains exactly one entry whose key ends with
    `dbDelimiter` + the job's key and whose 8-byte prefix decodes (big-endian) to
-   `T.UnixNano()`, and `bucketKeyEndTime` maps the job key to the same 8 bytes.
+   `T.UnixNano()`.
 2. Given an archived job with key K at end time T1, when the same key K is
    archived again at a later end time T2, then `bucketEndTimeToKey` contains
-   exactly one entry for K (the T2 entry) and no entry at T1, and
-   `bucketKeyEndTime[K]` equals the T2 bytes (latest-per-key, no stale entry).
+   exactly one entry for K (the T2 entry) and no entry at T1 (latest-per-key, no
+   stale entry; the prior T1 entry is recovered from K's complete record and
+   deleted).
 3. Given an archived job, when it is archived again with an unchanged `EndTime`,
    then `updateEndTimeIndex` makes no change (idempotent) and the index still
    has exactly one entry for the key.
@@ -575,10 +586,9 @@ Each phase builds on tested foundations from the prior phase.
   stores one 8-byte latest end time per *rep group*, overwriting earlier values;
   it is keyed by rep group, so it cannot answer "which jobs finished in window"
   and cannot be range-scanned by time. The feature needs a per-job, time-ordered
-  index, a fundamentally different shape, so a sibling forward index
-  (`bucketEndTimeToKey`) plus a per-key cleanup pointer (`bucketKeyEndTime`) is
-  added. `bucketRGEndTime` is left untouched (still used by
-  `GetLastCompletionTimeByRepGroup`).
+  index, a fundamentally different shape, so a single sibling forward index
+  (`bucketEndTimeToKey`) is added. `bucketRGEndTime` is left untouched (still
+  used by `GetLastCompletionTimeByRepGroup`).
 
 - **Key layout: big-endian UnixNano, not RFC3339.** `endTimeIndexKey` is
   `8-byte big-endian UnixNano + dbDelimiter + jobKey`. Fixed-width big-endian
@@ -594,29 +604,40 @@ Each phase builds on tested foundations from the prior phase.
   trailing jobKey via `lookupEntryJobKey` (existing helper, LastIndex of
   delimiter) is unambiguous.
 
-- **Latest-per-key via cleanup pointer.** Because the forward key embeds the end
-  time, re-archiving a key at a new time would leave a stale entry. The
-  `bucketKeyEndTime` pointer lets `updateEndTimeIndex` delete the previous
-  forward entry in the same transaction, guaranteeing one entry per key (the
-  latest) - satisfying "no duplicate jobs in results" and "earlier completion
-  drops out once superseded" without storing historical completion events or an
-  execution-unique index (per resolved decisions).
+- **Latest-per-key via the complete record, not a cleanup-pointer bucket.**
+  Because the forward key embeds the end time, re-archiving a key at a new time
+  would leave a stale entry. `updateEndTimeIndex` deletes the previous forward
+  entry in the same transaction by recovering the key's prior end time from its
+  existing `bucketJobsComplete` record (read before that record is overwritten),
+  guaranteeing one entry per key (the latest) - satisfying "no duplicate jobs in
+  results" and "earlier completion drops out once superseded" without storing
+  historical completion events or an execution-unique index (per resolved
+  decisions). An earlier design used a second `bucketKeyEndTime` pointer bucket,
+  but its per-archive write was keyed by the random jobKey hash, scattering
+  BoltDB pages and increasing `bolt_writes/job` / `bolt_pages/job` on the archive
+  benchmark by ~34%; recovering the prior time from the already-written complete
+  record adds zero extra per-archive writes (the decode runs only on the rare
+  re-archive of an identical key, off the measured first-archive path), which is
+  what keeps the D1 archive bar.
 
 - **No back-fill.** Per resolved decision, only jobs archived from the upgrade
-  onward are indexed; `initDB` creates the buckets but runs no rebuild scan. The
+  onward are indexed; `initDB` creates the bucket but runs no rebuild scan. The
   index is durable for entries it has written. `--recent` may omit pre-upgrade
   completions until those commands are re-run.
 
 - **Folded into the archive transaction for the benchmark bar.** `archiveJobTx`
-  already runs in the one archive `bolt.Batch`; the index Puts there add zero
-  extra commits/fsyncs, so `bolt_writes/job` (the write-coalescing signal)
-  cannot rise. The extra entries are tiny (a ~44-byte key + nil value in
-  `bucketEndTimeToKey`, and a 32-byte key + 8-byte value in `bucketKeyEndTime`),
-  so the per-job page delta over thousands of batched jobs is within noise; D1
-  makes this a measured gate, not an assumption. Add and modify persistence is
-  not touched (the index is written only in `archiveJobTx`), so
-  `BenchmarkAddJobs` write/page counts are unchanged and
-  `BenchmarkModifyLiveJobsReverseLookup` ns/op is unaffected.
+  already runs in the one archive `bolt.Batch`; the single index Put there adds
+  zero extra commits/fsyncs, so `bolt_writes/job` (the write-coalescing signal)
+  cannot rise from extra commits. The one extra entry is tiny (a ~44-byte key +
+  nil value in `bucketEndTimeToKey`) and is keyed time-first, so concurrent
+  archives append near the right edge of the tree and dirty very few pages,
+  keeping the per-job write/page delta within measurement noise. (An earlier
+  two-bucket design added a second write keyed by the random jobKey, which
+  scattered pages and broke this bar by ~34%; it was removed - see the
+  latest-per-key decision above.) D1 makes this a measured gate, not an
+  assumption. Add and modify persistence is not touched (the index is written
+  only in `archiveJobTx`), so `BenchmarkAddJobs` write/page counts are unchanged
+  and `BenchmarkModifyLiveJobsReverseLookup` ns/op is unaffected.
 
 - **State filters rejected, not applied (resolved decision).** Only exit-0 jobs
   are archived, so `--buried/--running/--pending/--dependent/--missing_deps/`

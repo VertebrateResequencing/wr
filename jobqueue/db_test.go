@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -297,6 +298,242 @@ func BenchmarkModifyLiveJobsReverseLookup(b *testing.B) {
 	}
 }
 
+func TestDBEndTimeIndex(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a fresh db", t, func() {
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		Convey("Archiving a job records it in the end-time index with the correct bytes", func() {
+			endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo recent", "rg-recent", endTime)
+
+			err = testDB.archiveJob(ctx, job.Key(), job)
+			So(err, ShouldBeNil)
+
+			entries := endTimeIndexEntries(t, testDB)
+			So(len(entries), ShouldEqual, 1)
+
+			wantNanos := make([]byte, endTimeBytes)
+			binary.BigEndian.PutUint64(wantNanos, uint64(endTime.UnixNano()))
+
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantNanos, []byte(job.Key()))), ShouldBeTrue)
+			So(string(lookupEntryJobKey(entries[0])), ShouldEqual, job.Key())
+			So(bytes.Equal(entries[0][:endTimeBytes], wantNanos), ShouldBeTrue)
+		})
+
+		Convey("Re-archiving the same key at a later end time replaces the entry (no stale T1)", func() {
+			t1 := time.Now().Add(-2 * time.Hour).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo rerun", "rg-rerun", t1)
+
+			err = testDB.archiveJob(ctx, job.Key(), job)
+			So(err, ShouldBeNil)
+
+			t2 := time.Now().Add(-1 * time.Minute).Truncate(time.Nanosecond)
+			job.EndTime = t2
+
+			err = testDB.archiveJob(ctx, job.Key(), job)
+			So(err, ShouldBeNil)
+
+			entries := endTimeIndexEntries(t, testDB)
+			So(len(entries), ShouldEqual, 1)
+
+			wantT2 := make([]byte, endTimeBytes)
+			binary.BigEndian.PutUint64(wantT2, uint64(t2.UnixNano()))
+
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantT2, []byte(job.Key()))), ShouldBeTrue)
+			So(string(lookupEntryJobKey(entries[0])), ShouldEqual, job.Key())
+
+			oldNanos := make([]byte, endTimeBytes)
+			binary.BigEndian.PutUint64(oldNanos, uint64(t1.UnixNano()))
+			So(bytes.Equal(entries[0], endTimeIndexKey(oldNanos, []byte(job.Key()))), ShouldBeFalse)
+		})
+
+		Convey("Re-archiving the same key with an unchanged end time is idempotent", func() {
+			endTime := time.Now().Add(-15 * time.Minute).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo same", "rg-same", endTime)
+
+			err = testDB.archiveJob(ctx, job.Key(), job)
+			So(err, ShouldBeNil)
+
+			err = testDB.archiveJob(ctx, job.Key(), job)
+			So(err, ShouldBeNil)
+
+			entries := endTimeIndexEntries(t, testDB)
+			So(len(entries), ShouldEqual, 1)
+
+			wantNanos := make([]byte, endTimeBytes)
+			binary.BigEndian.PutUint64(wantNanos, uint64(endTime.UnixNano()))
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantNanos, []byte(job.Key()))), ShouldBeTrue)
+		})
+
+		Convey("Retrieving from a never-written index returns an empty slice and no error", func() {
+			jobs, errr := testDB.retrieveCompleteJobsRecent(time.Now().Add(-time.Hour))
+			So(errr, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+	})
+}
+
+func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a fresh db", t, func() {
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		Convey("With three archived jobs ending at now-3h, now-30m and now-1m", func() {
+			now := time.Now()
+			oldEnd := now.Add(-3 * time.Hour).Truncate(time.Nanosecond)
+			midEnd := now.Add(-30 * time.Minute).Truncate(time.Nanosecond)
+			newEnd := now.Add(-1 * time.Minute).Truncate(time.Nanosecond)
+
+			oldJob := testDBArchivedJob("echo old", "rg-old", oldEnd)
+			midJob := testDBArchivedJob("echo mid", "rg-mid", midEnd)
+			newJob := testDBArchivedJob("echo new", "rg-new", newEnd)
+
+			So(oldJob.Key(), ShouldNotEqual, midJob.Key())
+			So(midJob.Key(), ShouldNotEqual, newJob.Key())
+
+			for _, job := range []*Job{oldJob, midJob, newJob} {
+				So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			}
+
+			Convey("retrieveCompleteJobsRecent(now-1h) returns the in-window jobs in ascending end-time order", func() {
+				jobs, errr := testDB.retrieveCompleteJobsRecent(now.Add(-time.Hour))
+				So(errr, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 2)
+				So(jobs[0].Key(), ShouldEqual, midJob.Key())
+				So(jobs[0].EndTime.UnixNano(), ShouldEqual, midEnd.UnixNano())
+				So(jobs[1].Key(), ShouldEqual, newJob.Key())
+				So(jobs[1].EndTime.UnixNano(), ShouldEqual, newEnd.UnixNano())
+
+				keys := []string{jobs[0].Key(), jobs[1].Key()}
+				So(keys, ShouldNotContain, oldJob.Key())
+			})
+		})
+
+		Convey("With a job archived at T whose key is also live again (re-running)", func() {
+			endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo rerunning", "rg-rerun", endTime)
+
+			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+
+			Convey("It is returned before being made live again", func() {
+				jobs, errr := testDB.retrieveCompleteJobsRecent(endTime.Add(-time.Minute))
+				So(errr, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 1)
+				So(jobs[0].Key(), ShouldEqual, job.Key())
+			})
+
+			Convey("retrieveCompleteJobsRecent(T-1m) skips it once the key is live again", func() {
+				liveAgain := testDBJob("echo rerunning", "rg-rerun")
+				So(liveAgain.Key(), ShouldEqual, job.Key())
+
+				_, _, _, errs := testDB.storeNewJobs(ctx, []*Job{liveAgain}, false)
+				So(errs, ShouldBeNil)
+
+				jobs, errr := testDB.retrieveCompleteJobsRecent(endTime.Add(-time.Minute))
+				So(errr, ShouldBeNil)
+				So(jobs, ShouldBeEmpty)
+			})
+		})
+
+		Convey("With an empty complete store, retrieveCompleteJobsRecent(now-1h) returns empty and no error", func() {
+			jobs, errr := testDB.retrieveCompleteJobsRecent(time.Now().Add(-time.Hour))
+			So(errr, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+	})
+}
+
+func TestDBEndTimeIndexDurability(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a db backed by an on-disk file", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		Convey("An archived job's index entry survives a close/reopen from the same file", func() {
+			now := time.Now()
+			endTime := now.Add(-30 * time.Minute).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo durable", "rg-durable", endTime)
+
+			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.close(ctx), ShouldBeNil)
+
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			jobs, errr := testDB.retrieveCompleteJobsRecent(now.Add(-time.Hour))
+			So(errr, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].Key(), ShouldEqual, job.Key())
+			So(jobs[0].EndTime.UnixNano(), ShouldEqual, endTime.UnixNano())
+		})
+
+		Convey("A key re-archived at T2 is returned once with its T2 end time after reopen", func() {
+			t1 := time.Now().Add(-2 * time.Hour).Truncate(time.Nanosecond)
+			job := testDBArchivedJob("echo rerun", "rg-rerun", t1)
+
+			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+
+			t2 := time.Now().Add(-1 * time.Minute).Truncate(time.Nanosecond)
+			job.EndTime = t2
+
+			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.close(ctx), ShouldBeNil)
+
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			jobs, errr := testDB.retrieveCompleteJobsRecent(t1.Add(-time.Minute))
+			So(errr, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].Key(), ShouldEqual, job.Key())
+			So(jobs[0].EndTime.UnixNano(), ShouldEqual, t2.UnixNano())
+
+			entries := endTimeIndexEntries(t, testDB)
+			So(len(entries), ShouldEqual, 1)
+
+			wantT2 := make([]byte, endTimeBytes)
+			binary.BigEndian.PutUint64(wantT2, uint64(t2.UnixNano()))
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantT2, []byte(job.Key()))), ShouldBeTrue)
+		})
+	})
+}
+
+// testDBArchivedJob builds a job ready to be archived: it has its end state
+// (StartTime, EndTime, exit status and peak usage) populated so archiveJob can
+// record stats and the end-time index.
+func testDBArchivedJob(cmd, repGroup string, endTime time.Time) *Job {
+	job := testDBJob(cmd, repGroup)
+	job.State = JobStateComplete
+	job.Exited = true
+	job.StartTime = endTime.Add(-time.Second)
+	job.EndTime = endTime
+	job.PeakRAM = 10
+	job.PeakDisk = 1
+	job.CPUtime = time.Second
+
+	return job
+}
+
 func testDBJob(cmd, repGroup string) *Job {
 	return &Job{
 		Cmd:      cmd,
@@ -309,6 +546,24 @@ func testDBJob(cmd, repGroup string) *Job {
 		},
 		RepGroup: repGroup,
 	}
+}
+
+// endTimeIndexEntries returns every key currently in bucketEndTimeToKey.
+func endTimeIndexEntries(t *testing.T, testDB *db) [][]byte {
+	t.Helper()
+
+	var entries [][]byte
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketEndTimeToKey).ForEach(func(k, _ []byte) error {
+			entries = append(entries, bytes.Clone(k))
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+
+	return entries
 }
 
 func countLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
