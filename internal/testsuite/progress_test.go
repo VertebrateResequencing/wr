@@ -213,6 +213,30 @@ func lifecycleProgress() *progress {
 	}
 }
 
+// countingWriter is a race-safe io.Writer that records how many bytes were
+// written, so a test can assert whether the render loop ever drew a frame even
+// when the loop runs on another goroutine.
+type countingWriter struct {
+	mu    sync.Mutex
+	bytes int
+}
+
+func (c *countingWriter) Write(data []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.bytes += len(data)
+
+	return len(data), nil
+}
+
+func (c *countingWriter) written() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.bytes
+}
+
 // stopWithinTimeout runs prog.stop() in a goroutine and asserts it returns
 // before the deadline rather than blocking, guarding the stop-before-start and
 // repeat-stop deadlock regressions.
@@ -266,6 +290,26 @@ func TestProgressLifecycle(t *testing.T) {
 		prog := lifecycleProgress()
 
 		prog.start()
+		stopWithinTimeout(prog)
+	})
+
+	Convey("start after stop never spawns the render loop", t, func() {
+		out := &countingWriter{}
+		prog := &progress{
+			out:  out,
+			quit: make(chan struct{}),
+			done: make(chan struct{}),
+			sty:  newStyle(false),
+		}
+
+		prog.stop()
+		prog.start()
+
+		// loop() renders immediately on entry, so any spawned loop would have
+		// written within this settle window.
+		time.Sleep(200 * time.Millisecond)
+
+		So(out.written(), ShouldEqual, 0)
 		stopWithinTimeout(prog)
 	})
 }

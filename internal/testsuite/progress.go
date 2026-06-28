@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -99,7 +100,8 @@ func (p *progress) active() bool {
 }
 
 // start launches the background render loop. It is idempotent (a second call is
-// a no-op, so only one loop ever runs) and safe to call on a no-op progress,
+// a no-op, so only one loop ever runs), treats a prior stop as final (start
+// after stop never spawns a loop), and is safe to call on a no-op progress,
 // where it returns immediately.
 func (p *progress) start() {
 	if !p.active() {
@@ -107,7 +109,7 @@ func (p *progress) start() {
 	}
 
 	p.mu.Lock()
-	if p.started {
+	if p.started || p.stopped {
 		p.mu.Unlock()
 
 		return
@@ -386,9 +388,23 @@ func renderTestingBody(state progressState, sty style) string {
 }
 
 func spinnerFrame(index int) string {
-	frames := []rune(spinnerFrames)
+	count := utf8.RuneCountInString(spinnerFrames)
+	if count == 0 {
+		return ""
+	}
 
-	return string(frames[index%len(frames)])
+	target := index % count
+
+	i := 0
+	for _, r := range spinnerFrames {
+		if i == target {
+			return string(r)
+		}
+
+		i++
+	}
+
+	return ""
 }
 
 // truncateToWidth limits text to width visible columns, ignoring ANSI escape
