@@ -9797,6 +9797,26 @@ func connectWithRetry(addr string, config internal.Config, token []byte, timeout
 // retrying until the token is non-empty or timeout elapses. The server writes
 // the token with a non-atomic os.WriteFile, so a reader racing startup can
 // briefly see the freshly-created file empty; retrying avoids returning an
+// empty token (and so a nil client) under load.
+func readManagerToken(file string, preStart time.Time, timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if internal.WaitForFile(file, preStart, time.Until(deadline)) {
+			token, err := os.ReadFile(file)
+			if err == nil && len(token) > 0 {
+				return token, nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return os.ReadFile(file)
+		}
+
+		<-time.After(50 * time.Millisecond)
+	}
+}
+
 // reserveStartArchive reserves the next ready job, marks it Started and then
 // Archives it with the given exit-0 end time, returning the job's key. It is
 // used by the GetRecent tests to complete jobs the real way.
@@ -9995,24 +10015,4 @@ func TestGetRecentWindowMovement(t *testing.T) {
 			So(jobs, ShouldHaveLength, 0)
 		})
 	})
-}
-
-// empty token (and so a nil client) under load.
-func readManagerToken(file string, preStart time.Time, timeout time.Duration) ([]byte, error) {
-	deadline := time.Now().Add(timeout)
-
-	for {
-		if internal.WaitForFile(file, preStart, time.Until(deadline)) {
-			token, err := os.ReadFile(file)
-			if err == nil && len(token) > 0 {
-				return token, nil
-			}
-		}
-
-		if time.Now().After(deadline) {
-			return os.ReadFile(file)
-		}
-
-		<-time.After(50 * time.Millisecond)
-	}
 }
