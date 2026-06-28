@@ -162,7 +162,7 @@ func TestConnectToStartedCloudManager(t *testing.T) {
 
 			return &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{
 				Addr: "127.0.0.1:46407",
-				Host: "localhost",
+				Host: statusTestHost,
 				Port: "46407",
 			}}
 		}
@@ -171,6 +171,36 @@ func TestConnectToStartedCloudManager(t *testing.T) {
 
 		So(jq, ShouldNotBeNil)
 		So(attempts, ShouldEqual, 2)
+	})
+}
+
+func TestCloudDeployWebsiteURL(t *testing.T) {
+	oldDeployFQDN := cloudDeployFQDN
+
+	t.Cleanup(func() {
+		cloudDeployFQDN = oldDeployFQDN
+	})
+
+	Convey("cloud deploy web URL uses the deploy host with manager-start formatting", t, func() {
+		cloudDeployFQDN = func(context.Context) string {
+			return "deploy-host.example.org"
+		}
+		remoteManager := &jobqueue.ServerInfo{
+			Host:    statusTestHost,
+			FQDN:    "remote-openstack-manager.example.org",
+			WebPort: "46408",
+		}
+		token := []byte("test-token")
+
+		expected := websiteURL(&jobqueue.ServerInfo{
+			FQDN:    "deploy-host.example.org",
+			WebPort: "46408",
+		}, token)
+
+		So(cloudDeployWebsiteURL(context.Background(), remoteManager, token), ShouldEqual, expected)
+		So(cloudDeployWebsiteURL(context.Background(), remoteManager, token), ShouldNotContainSubstring, statusTestHost)
+		So(cloudDeployWebsiteURL(context.Background(), remoteManager, token), ShouldNotContainSubstring,
+			"remote-openstack-manager")
 	})
 }
 

@@ -34,6 +34,7 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,6 +127,7 @@ var (
 
 var (
 	connectToManager                   = connect
+	cloudDeployFQDN                    = currentFQDN
 	cloudManagerConnectRetryWait       = 500 * time.Millisecond
 	displayRemoteManagerLogsForFailure = displayRemoteManagerLogs
 	waitForManagerFailureDebugInput    = waitForManagerFailureDebugInputFromStdin
@@ -501,8 +503,7 @@ within OpenStack.`,
 			warn("token could not be read! [%s]", err)
 		}
 
-		info("wr's web interface can be reached locally at https://%s:%s/?token=%s",
-			jq.ServerInfo.Host, jq.ServerInfo.WebPort, string(token))
+		info("wr's web interface can be reached locally at %s", cloudDeployWebsiteURL(ctx, jq.ServerInfo, token))
 
 		if postDeploymentScript != "" {
 			cmd := exec.Command(postDeploymentScript) // #nosec
@@ -862,6 +863,29 @@ func waitForManagerFailureDebugInputFromStdin() {
 	if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
 		warn("failed to read your response: %s", errs)
 	}
+}
+
+func cloudDeployWebsiteURL(ctx context.Context, s *jobqueue.ServerInfo, token []byte) string {
+	localServer := *s
+	localServer.FQDN = cloudDeployFQDN(ctx)
+
+	return websiteURL(&localServer, token)
+}
+
+// currentFQDN returns the fully qualified domain name of the current host, or
+// "localhost" or just the hostname on error.
+func currentFQDN(ctx context.Context) string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "localhost"
+	}
+
+	fqdn, err := net.DefaultResolver.LookupCNAME(ctx, hostname)
+	if err != nil {
+		fqdn = hostname
+	}
+
+	return strings.TrimSuffix(fqdn, ".")
 }
 
 func connectToStartedCloudManager(wait time.Duration) *jobqueue.Client {
