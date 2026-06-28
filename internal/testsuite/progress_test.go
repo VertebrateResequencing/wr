@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -197,6 +198,75 @@ func TestProgressNoOp(t *testing.T) {
 
 		So(stderr.String(), ShouldEndWith, clearLine)
 		So(strings.Count(stderr.String(), "\n"), ShouldEqual, 0)
+	})
+}
+
+// lifecycleProgress builds a fully wired active progress (real quit/done
+// channels, started=false) so the start/stop lifecycle can be exercised
+// directly, independent of newProgress and without a real terminal.
+func lifecycleProgress() *progress {
+	return &progress{
+		out:  &bytes.Buffer{},
+		quit: make(chan struct{}),
+		done: make(chan struct{}),
+		sty:  newStyle(false),
+	}
+}
+
+// stopWithinTimeout runs prog.stop() in a goroutine and asserts it returns
+// before the deadline rather than blocking, guarding the stop-before-start and
+// repeat-stop deadlock regressions.
+func stopWithinTimeout(prog *progress) {
+	done := make(chan struct{})
+
+	go func() {
+		prog.stop()
+		close(done)
+	}()
+
+	returned := false
+
+	select {
+	case <-done:
+		returned = true
+	case <-time.After(5 * time.Second):
+	}
+
+	So(returned, ShouldBeTrue)
+}
+
+func TestProgressLifecycle(t *testing.T) {
+	Convey("stop before start returns promptly without blocking", t, func() {
+		prog := lifecycleProgress()
+
+		stopWithinTimeout(prog)
+	})
+
+	Convey("start called twice does not panic and a later stop returns", t, func() {
+		prog := lifecycleProgress()
+
+		So(func() {
+			prog.start()
+			prog.start()
+		}, ShouldNotPanic)
+
+		stopWithinTimeout(prog)
+	})
+
+	Convey("stop called twice is safe with no panic or block", t, func() {
+		prog := lifecycleProgress()
+
+		prog.start()
+
+		So(func() { prog.stop() }, ShouldNotPanic)
+		stopWithinTimeout(prog)
+	})
+
+	Convey("a normal start then stop cycle completes", t, func() {
+		prog := lifecycleProgress()
+
+		prog.start()
+		stopWithinTimeout(prog)
 	})
 }
 

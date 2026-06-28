@@ -69,6 +69,7 @@ type progress struct {
 	quit    chan struct{}
 	done    chan struct{}
 	sty     style
+	started bool
 	stopped bool
 }
 
@@ -97,12 +98,23 @@ func (p *progress) active() bool {
 	return p != nil && p.out != nil
 }
 
-// start launches the background render loop. It is safe to call on a no-op
-// progress, where it returns immediately.
+// start launches the background render loop. It is idempotent (a second call is
+// a no-op, so only one loop ever runs) and safe to call on a no-op progress,
+// where it returns immediately.
 func (p *progress) start() {
 	if !p.active() {
 		return
 	}
+
+	p.mu.Lock()
+	if p.started {
+		p.mu.Unlock()
+
+		return
+	}
+
+	p.started = true
+	p.mu.Unlock()
 
 	go p.loop()
 }
@@ -208,18 +220,19 @@ func (p *progress) testStarted(name string) {
 
 // stop halts the render loop and clears the line, leaving the cursor at column 0
 // so the stdout summary printed next is not corrupted. It is idempotent and safe
-// on a no-op progress.
+// to call in any order: before start (nothing to wait on), repeatedly, or on a
+// no-op progress.
 func (p *progress) stop() {
 	if !p.active() {
 		return
 	}
 
 	p.mu.Lock()
-	already := p.stopped
+	wait := p.started && !p.stopped
 	p.stopped = true
 	p.mu.Unlock()
 
-	if already {
+	if !wait {
 		return
 	}
 
