@@ -266,7 +266,7 @@ func (w *bypassWriter) Write(data []byte) (int, error) {
 
 	_, _ = io.WriteString(w.progress.out, clearLine) //nolint:errcheck // best-effort terminal rendering.
 
-	return w.inner.Write(data) //nolint:wrapcheck // pass through the lane writer's error verbatim.
+	return w.inner.Write(data)
 }
 
 // runScanWriter writes every byte through to the underlying log unchanged and,
@@ -285,7 +285,7 @@ func (w *runScanWriter) Write(data []byte) (int, error) {
 	w.scan(data[:n])
 
 	if err != nil {
-		return n, err //nolint:wrapcheck // pass through the lane writer's error verbatim.
+		return n, err
 	}
 
 	return n, nil

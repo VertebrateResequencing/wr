@@ -37,15 +37,16 @@ const (
 
 // style colours and decorates summary and progress text. When rich is set (the
 // target stream is a real terminal) its methods wrap text in ANSI escapes and
-// its glyph accessors return Unicode; otherwise text is returned unchanged and
-// glyphs fall back to ASCII, so piped or logged output stays plain and
-// greppable.
+// its glyph accessors return Unicode; otherwise text is returned without ANSI
+// escapes and glyphs use plain fallbacks (mostly ASCII, though the separator
+// stays a middle dot), so piped or logged output carries no escape codes.
 type style struct {
 	rich bool
 }
 
 // newStyle returns a style that emits ANSI colour and Unicode glyphs when rich
-// is true (its target stream is a terminal) and plain ASCII otherwise.
+// is true (its target stream is a terminal) and uncoloured text with plain
+// glyph fallbacks (no ANSI escapes) otherwise.
 func newStyle(rich bool) style {
 	return style{rich: rich}
 }

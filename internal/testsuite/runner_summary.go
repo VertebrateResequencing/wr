@@ -428,22 +428,40 @@ func goTestSegments(log string) []segment {
 
 // goTestStatusPackage reports the package named on a "go test" status line, one
 // of "ok  <pkg> <time>", "FAIL <pkg> ...", or "?   <pkg> [no test files]". The
-// tested result is false for the "?" form, which has no tests to attribute.
+// prefixes are checked in order; the tested result is false for the "?" form,
+// which has no tests to attribute.
 func goTestStatusPackage(line string) (pkgPath string, tested bool, ok bool) {
 	trimmed := strings.TrimRight(line, "\n")
 
-	prefixes := map[string]bool{"ok  \t": true, "FAIL\t": true, "?   \t": false}
+	if pkg, found := statusPackage(trimmed, "ok  \t"); found {
+		return pkg, true, true
+	}
 
-	for prefix, tested := range prefixes {
-		if rest, found := strings.CutPrefix(trimmed, prefix); found {
-			fields := strings.Fields(rest)
-			if len(fields) > 0 {
-				return fields[0], tested, true
-			}
-		}
+	if pkg, found := statusPackage(trimmed, "FAIL\t"); found {
+		return pkg, true, true
+	}
+
+	if pkg, found := statusPackage(trimmed, "?   \t"); found {
+		return pkg, false, true
 	}
 
 	return "", false, false
+}
+
+// statusPackage strips prefix from line and returns its first whitespace field,
+// reporting found only when the prefix matched and a field exists.
+func statusPackage(line string, prefix string) (string, bool) {
+	rest, ok := strings.CutPrefix(line, prefix)
+	if !ok {
+		return "", false
+	}
+
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", false
+	}
+
+	return fields[0], true
 }
 
 // packageOutcome accumulates the passing and skipped behaviours seen for one
