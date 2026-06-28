@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -83,6 +84,19 @@ func TestStatusHelpDocumentsMissingDepsFilter(t *testing.T) {
 		So(help, ShouldContainSubstring, "--missing_deps")
 		So(help, ShouldContainSubstring,
 			"Use --missing_deps in default or report-group mode to show jobs waiting on dep-groups not yet seen.")
+	})
+}
+
+func TestStatusRecentHelp(t *testing.T) {
+	Convey("wr status -h documents --recent", t, func() {
+		help := compactWhitespace(commandHelpForTest(t, statusCmd))
+
+		So(help, ShouldContainSubstring, "--recent")
+		So(help, ShouldContainSubstring, "--recent 1w")
+		So(help, ShouldContainSubstring, "finished in the last week")
+		So(help, ShouldContainSubstring, "d (days)")
+		So(help, ShouldContainSubstring, "w (weeks)")
+		So(help, ShouldContainSubstring, "mutually exclusive")
 	})
 }
 
@@ -847,6 +861,207 @@ func TestStatusTableOutput(t *testing.T) {
 	})
 }
 
+func TestStatusRecentMutualExclusion(t *testing.T) {
+	Convey("--recent counts towards the mutually-exclusive selection flags", t, func() {
+		Convey("--recent with -i counts as two selectors", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+			cmdIDStatus = "x"
+
+			So(countGetJobArgs(), ShouldEqual, 2)
+		})
+
+		Convey("--recent with -l counts as two selectors", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+			cmdLine = "echo"
+
+			So(countGetJobArgs(), ShouldEqual, 2)
+		})
+
+		Convey("--recent with -f counts as two selectors", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+			cmdFileStatus = "f"
+
+			So(countGetJobArgs(), ShouldEqual, 2)
+		})
+
+		Convey("--recent on its own counts as one selector", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+
+			So(countGetJobArgs(), ShouldEqual, 1)
+		})
+
+		Convey("the mutual-exclusion message mentions --recent and mutual exclusivity", func() {
+			So(statusSelectorsMutuallyExclusive, ShouldContainSubstring, "--recent")
+			So(statusSelectorsMutuallyExclusive, ShouldContainSubstring, "mutually exclusive")
+		})
+	})
+}
+
+func TestStatusRecentRejectsStateFilters(t *testing.T) {
+	Convey("--recent rejects state filters", t, func() {
+		Convey("a state filter combined with --recent is rejected", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+			showBuried = true
+
+			err := validateStatusStateFilters(statusStateFilters())
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "state filters")
+			So(err.Error(), ShouldContainSubstring, "--recent")
+		})
+
+		Convey("--recent with no state filter is allowed", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+
+			So(validateStatusStateFilters(statusStateFilters()), ShouldBeNil)
+		})
+
+		Convey("--missing_deps combined with --recent is rejected", func() {
+			resetStatusForTest(t)
+
+			cmdRecent = "1h"
+			showMissingDeps = true
+
+			err := validateStatusStateFilters(statusStateFilters())
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "--recent")
+		})
+	})
+}
+
+func TestStatusRecentSelectsArchivedJobs(t *testing.T) {
+	Convey("wr status --recent lists recently archived jobs across rep groups", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		Convey("details output shows a job archived just now", func() {
+			job := statusTestJob("echo status recent details", "rg-recent", reqs)
+			addStatusJobs(jq, job)
+			archiveNextStatusJob(jq, time.Now())
+
+			details := runStatusForTest(t, "--recent", "1h", "--output", "details")
+			So(details, ShouldContainSubstring, "echo status recent details")
+			So(details, ShouldContainSubstring, "Status: complete")
+		})
+
+		Convey("plain output shows the recent job's key but not an older one", func() {
+			recent := statusTestJob("echo status recent plain new", "rg-recent-new", reqs)
+			addStatusJobs(jq, recent)
+			archiveNextStatusJob(jq, time.Now())
+
+			old := statusTestJob("echo status recent plain old", "rg-recent-old", reqs)
+			addStatusJobs(jq, old)
+			archiveNextStatusJob(jq, time.Now().Add(-2*time.Hour))
+
+			plain, exitCode := runStatusForTestWithExit(t, "--recent", "1h", "--output", "plain")
+			So(exitCode, ShouldEqual, 0)
+			So(plain, ShouldContainSubstring, recent.Key())
+			So(plain, ShouldNotContainSubstring, old.Key())
+		})
+
+		Convey("json output is an array of the in-window jobs", func() {
+			job := statusTestJob("echo status recent json", "rg-recent-json", reqs)
+			addStatusJobs(jq, job)
+			archiveNextStatusJob(jq, time.Now())
+
+			jsonOutput := runStatusForTest(t, "--recent", "1h", "--output", "json")
+
+			var statuses []map[string]json.RawMessage
+			So(json.Unmarshal([]byte(jsonOutput), &statuses), ShouldBeNil)
+			So(statuses, ShouldHaveLength, 1)
+
+			var state string
+			So(json.Unmarshal(statuses[0]["State"], &state), ShouldBeNil)
+			So(state, ShouldEqual, string(jobqueue.JobStateComplete))
+		})
+	})
+}
+
+func TestStatusRecentHonoursLimitAndHost(t *testing.T) {
+	Convey("wr status --recent honours --limit and the --host post-filter", t, func() {
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		Convey("--limit groups jobs sharing status with a '+ N other commands' summary", func() {
+			now := time.Now()
+
+			for i := range 4 {
+				job := statusTestJob(fmt.Sprintf("echo status recent limit %d", i), "rg-recent-limit", reqs)
+				addStatusJobs(jq, job)
+				archiveNextStatusJob(jq, now)
+			}
+
+			details := runStatusForTest(t, "--recent", "1h", "-o", "details", "--limit", "1")
+			So(details, ShouldContainSubstring, "other commands with the same status")
+		})
+
+		Convey("--host shows only jobs whose host matches and hides them otherwise", func() {
+			now := time.Now()
+
+			for i := range 2 {
+				job := statusTestJob(fmt.Sprintf("echo status recent host %d", i), "rg-recent-host", reqs)
+				addStatusJobs(jq, job)
+				archiveNextStatusJob(jq, now)
+			}
+
+			host, errh := os.Hostname()
+			So(errh, ShouldBeNil)
+
+			matching, matchExit := runStatusForTestWithExit(t, "--recent", "1h", "--host", host, "-o", "plain")
+			So(matchExit, ShouldEqual, 0)
+			So(nonEmptyStatusLines(matching), ShouldHaveLength, 2)
+
+			nonMatching, nonMatchExit := runStatusForTestWithExit(
+				t, "--recent", "1h", "--host", "no-such-recent-host", "-o", "plain")
+			So(nonMatchExit, ShouldEqual, 0)
+			So(nonEmptyStatusLines(nonMatching), ShouldHaveLength, 0)
+		})
+	})
+}
+
 func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConfig, string, *jqs.Requirements) {
 	t.Helper()
 
@@ -919,6 +1134,22 @@ func freeStatusTestPorts(t *testing.T) (string, string) {
 	So(ok, ShouldBeTrue)
 
 	return strconv.Itoa(a1.Port), strconv.Itoa(a2.Port)
+}
+
+// archiveNextStatusJob reserves the next ready job, marks it Started and then
+// Archives it with the given exit-0 end time, completing it the real way so it
+// enters the recent end-time index.
+func archiveNextStatusJob(jq *jobqueue.Client, endTime time.Time) {
+	job, err := jq.Reserve(2 * time.Second)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+
+	if job == nil {
+		return
+	}
+
+	So(jq.Started(job, os.Getpid()), ShouldBeNil)
+	So(jq.Archive(job, &jobqueue.JobEndState{Exited: true, Exitcode: 0, EndTime: endTime}), ShouldBeNil)
 }
 
 func addStatusWaitingDepJob(t *testing.T, jq *jobqueue.Client, reqs *jqs.Requirements) *jobqueue.Job {
@@ -1013,6 +1244,7 @@ func resetStatusForTest(t *testing.T) {
 	cmdIDIsSubStr = false
 	cmdIDIsInternal = false
 	cmdLine = ""
+	cmdRecent = ""
 	cmdCwd = ""
 	cmdAll = false
 	mountJSON = ""
@@ -1043,6 +1275,7 @@ func resetStatusForTest(t *testing.T) {
 		{"output", statusTestDetails},
 		{"limit", "1"},
 		{"timeout", "120"},
+		{"recent", ""},
 	} {
 		So(statusCmd.Flags().Set(flag.name, flag.value), ShouldBeNil)
 	}

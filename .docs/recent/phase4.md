@@ -38,8 +38,8 @@ message constant to mention `--recent` and "mutually exclusive" (e.g.
 them"). File: `cmd/status.go`. Test file: `cmd/status_test.go`. Covering
 all 5 acceptance tests from C2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.2: C3 - --recent rejects state filters
 
@@ -53,8 +53,8 @@ cases, so any state filter (including missing-deps) combined with
 `cmd/status.go`. Test file: `cmd/status_test.go`. Covering all 3
 acceptance tests from C3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.3: C1 - --recent flag selects recent archived jobs end-to-end
 
@@ -71,8 +71,8 @@ modes (details/plain/json). File: `cmd/status.go`. Test file:
 `cmd/status_test.go`. Covering all 3 acceptance tests from C1. Depends on
 Items 4.1 and 4.2 (and Phases 2 and 3).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.4: C4 - --limit, --std/--env and --host honoured
 
@@ -85,8 +85,8 @@ modes (no new wiring beyond C1; the existing post-filter and limit blocks
 apply). File: `cmd/status.go`. Test file: `cmd/status_test.go`. Covering
 all 2 acceptance tests from C4. Depends on Item 4.3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.5: C6 - long help documents --recent
 
@@ -104,5 +104,5 @@ unsupported; `--limit`, `--std`/`--env` and `--host` honoured; example
 statusCmd))`). Covering all 4 acceptance tests from C6. Depends on Item
 4.1 (flag must exist).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
