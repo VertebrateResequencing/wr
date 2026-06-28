@@ -153,23 +153,20 @@ const (
 )
 
 // openstackEnvs contains the environment variable names we need to connect to
-// OpenStack. These are only the required ones for all intalls; other env vars
-// are required but it varies which ones. Gophercloud also considers:
-// OS_USERID, OS_USER_ID, OS_TENANT_ID, OS_TENANT_NAME, OS_DOMAIN_ID,
-// OS_DOMAIN_NAME, OS_DEFAULT_DOMAIN, OS_USER_DOMAIN_ID, OS_USER_DOMAIN_NAME,
-// OS_PROJECT_DOMAIN_ID, OS_PROJECT_DOMAIN_NAME, OS_PROJECT_ID and
-// OS_PROJECT_NAME (with *PROJECT* overriding *TENANT*, and only one of each
-// *DOMAIN* ID/name pair being allowed to be set). We also use OS_POOL_NAME to
-// determine the name of the network to get floating IPs from.
+// OpenStack. The required set is limited to values needed by every supported
+// auth mode and provider endpoint setup. Maybe envs include conditional auth
+// inputs accepted by openstackAuthOptionsFromEnv(), compatibility names used by
+// Gophercloud, and OS_POOL_NAME for choosing the floating IP network.
 //
 //nolint:gochecknoglobals // required lookup tables; an array cannot be a const
 var (
-	openstackReqEnvs   = [...]string{envOSAuthURL, envOSUsername, envOSPassword, envOSRegionName}
+	openstackReqEnvs   = [...]string{envOSAuthURL, envOSRegionName}
 	openstackMaybeEnvs = [...]string{
-		envOSUserID, envOSUserIDAlt, envOSTenantID, envOSTenantName, envOSDomainID,
-		envOSDomainName, envOSDefaultDomain, envOSUserDomainID, envOSUserDomainName,
-		envOSProjectDomainID, envOSProjectDomainName, envOSProjectID, envOSProjectName,
-		envOSPoolName,
+		envOSUserID, envOSUserIDAlt, envOSUsername, envOSPassword, envOSPasscode,
+		envOSTenantID, envOSTenantName, envOSDomainID, envOSDomainName, envOSDefaultDomain,
+		envOSUserDomainID, envOSUserDomainName, envOSProjectDomainID, envOSProjectDomainName,
+		envOSProjectID, envOSProjectName, envOSApplicationCredentialID, envOSApplicationCredentialName,
+		envOSApplicationCredentialSecret, envOSSystemScope, envOSPoolName,
 	}
 )
 

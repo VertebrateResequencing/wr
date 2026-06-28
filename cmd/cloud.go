@@ -1461,7 +1461,7 @@ func handleManagerStartFailure(provider *cloud.Provider, server *cloud.Server,
 	keyPath, mCmd, stderr string) {
 	handleManagerFailureDebug("failed to start wr manager on the remote server", server, keyPath, mCmd, stderr)
 	teardownAfterManagerFailure(context.Background(), provider)
-	dieAfterManagerFailure("toredown following failure to start the manager remotely")
+	dieAfterManagerFailure("tore down following failure to start the manager remotely")
 }
 
 func handleManagerFailureDebug(reason string, server *cloud.Server, keyPath, mCmd, stderr string) {

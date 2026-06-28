@@ -173,30 +173,19 @@ func TestOpenStack(t *testing.T) {
 		"with New()", t, func() {
 		vars, err := RequiredEnv("openstack")
 		So(err, ShouldBeNil)
-		So(vars, ShouldResemble, []string{envOSAuthURL, envOSUsername, envOSPassword, envOSRegionName})
+		So(vars, ShouldResemble, expectedOpenStackRequiredEnv())
 	})
 
 	Convey("You can find out the possibly required environment variables for providers as well", t, func() {
 		vars, err := MaybeEnv("openstack")
 		So(err, ShouldBeNil)
-		So(vars, ShouldResemble, []string{
-			envOSUserID, envOSUserIDAlt, envOSTenantID, envOSTenantName, envOSDomainID,
-			envOSDomainName, envOSDefaultDomain, envOSUserDomainID, envOSUserDomainName,
-			envOSProjectDomainID, envOSProjectDomainName, envOSProjectID, envOSProjectName,
-			envOSPoolName,
-		})
+		So(vars, ShouldResemble, expectedOpenStackMaybeEnv())
 	})
 
 	Convey("And you can get all the env vars in one go", t, func() {
 		vars, err := AllEnv("openstack")
 		So(err, ShouldBeNil)
-		So(vars, ShouldResemble, []string{
-			envOSAuthURL, envOSUsername, envOSPassword, envOSRegionName,
-			envOSUserID, envOSUserIDAlt, envOSTenantID, envOSTenantName, envOSDomainID,
-			envOSDomainName, envOSDefaultDomain, envOSUserDomainID, envOSUserDomainName,
-			envOSProjectDomainID, envOSProjectDomainName, envOSProjectID, envOSProjectName,
-			envOSPoolName,
-		})
+		So(vars, ShouldResemble, expectedOpenStackAllEnv())
 	})
 
 	if os.Getenv("OS_PROJECT_NAME") != "" && os.Getenv("OS_PROJECT_ID") != "" {

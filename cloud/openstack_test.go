@@ -40,21 +40,36 @@ const (
 	testOpenStackDefaultDomain = "default"
 )
 
-func TestOpenStackMaybeEnvListsDomainCompatibilityNames(t *testing.T) {
-	Convey("OpenStack MaybeEnv lists user and project domain compatibility variables", t, func() {
+func TestOpenStackProviderEnvLists(t *testing.T) {
+	Convey("OpenStack RequiredEnv only lists variables required for every accepted auth mode", t, func() {
+		vars, err := RequiredEnv("openstack")
+		So(err, ShouldBeNil)
+		So(vars, ShouldResemble, expectedOpenStackRequiredEnv())
+	})
+
+	Convey("OpenStack MaybeEnv lists all accepted conditional auth and provider variables", t, func() {
 		vars, err := MaybeEnv("openstack")
 		So(err, ShouldBeNil)
+		So(vars, ShouldResemble, expectedOpenStackMaybeEnv())
+	})
 
-		envSet := make(map[string]bool, len(vars))
-		for _, name := range vars {
-			envSet[name] = true
-		}
+	Convey("OpenStack AllEnv combines required and conditional variables", t, func() {
+		vars, err := AllEnv("openstack")
+		So(err, ShouldBeNil)
+		So(vars, ShouldResemble, expectedOpenStackAllEnv())
+	})
 
-		So(envSet[envOSUserDomainID], ShouldBeTrue)
-		So(envSet[envOSUserDomainName], ShouldBeTrue)
-		So(envSet[envOSProjectDomainID], ShouldBeTrue)
-		So(envSet[envOSProjectDomainName], ShouldBeTrue)
-		So(envSet[envOSDefaultDomain], ShouldBeTrue)
+	Convey("OpenStack required env check accepts application credential auth without username or password", t, func() {
+		setOpenStackAuthTestEnv(t, map[string]string{
+			envOSAuthURL:                     testOpenStackAuthURL,
+			envOSApplicationCredentialID:     "app-id",
+			envOSApplicationCredentialSecret: testOpenStackPassword,
+		})
+		t.Setenv(envOSRegionName, "RegionOne")
+
+		provider := &Provider{impl: &openstackp{}}
+
+		So(provider.checkRequiredEnv(), ShouldBeNil)
 	})
 }
 
@@ -169,6 +184,26 @@ func TestOpenStackAuthOptionsFromEnv(t *testing.T) {
 
 		assertMissingOpenStackUserEnv(err)
 	})
+}
+
+func expectedOpenStackAllEnv() []string {
+	envs := append([]string{}, expectedOpenStackRequiredEnv()...)
+
+	return append(envs, expectedOpenStackMaybeEnv()...)
+}
+
+func expectedOpenStackRequiredEnv() []string {
+	return []string{envOSAuthURL, envOSRegionName}
+}
+
+func expectedOpenStackMaybeEnv() []string {
+	return []string{
+		envOSUserID, envOSUserIDAlt, envOSUsername, envOSPassword, envOSPasscode,
+		envOSTenantID, envOSTenantName, envOSDomainID, envOSDomainName, envOSDefaultDomain,
+		envOSUserDomainID, envOSUserDomainName, envOSProjectDomainID, envOSProjectDomainName,
+		envOSProjectID, envOSProjectName, envOSApplicationCredentialID, envOSApplicationCredentialName,
+		envOSApplicationCredentialSecret, envOSSystemScope, envOSPoolName,
+	}
 }
 
 func setOpenStackAuthTestEnv(t *testing.T, values map[string]string) {
