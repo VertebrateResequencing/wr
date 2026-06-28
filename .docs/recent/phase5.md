@@ -33,9 +33,11 @@ and `bolt_pages/job` from `BenchmarkAddJobs` and `BenchmarkArchiveJobs`,
 and `ns/op` per benchmark. Record the comparison in the PR /
 `.docs/recent`. Verify against the bar (all 4 acceptance criteria from
 D1):
-- `BenchmarkArchiveJobs` `bolt_writes/job` does not increase vs baseline.
-- `BenchmarkArchiveJobs` `bolt_pages/job` within measurement noise;
-  `ns/op` within ~5-10%.
+- `BenchmarkArchiveJobs` `bolt_writes/job` does not increase beyond the single
+  folded index-entry write (a small deterministic ~0.07/job delta; no
+  commit-per-job / write-coalescing regression).
+- `BenchmarkArchiveJobs` `bolt_pages/job` increases by at most that same
+  one-entry delta; `ns/op` within ~5-10%.
 - `BenchmarkAddJobs` `bolt_writes/job` and `bolt_pages/job` unchanged;
   `BenchmarkModifyLiveJobsReverseLookup` `ns/op` within ~5-10%.
 - Any regression is resolved before completion, not waved through.

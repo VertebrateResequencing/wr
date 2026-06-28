@@ -318,8 +318,7 @@ func TestDBEndTimeIndex(t *testing.T) {
 			entries := endTimeIndexEntries(t, testDB)
 			So(len(entries), ShouldEqual, 1)
 
-			wantNanos := make([]byte, endTimeBytes)
-			binary.BigEndian.PutUint64(wantNanos, uint64(endTime.UnixNano()))
+			wantNanos := wantEndTimeBytes(endTime)
 
 			So(bytes.Equal(entries[0], endTimeIndexKey(wantNanos, []byte(job.Key()))), ShouldBeTrue)
 			So(string(lookupEntryJobKey(entries[0])), ShouldEqual, job.Key())
@@ -342,15 +341,10 @@ func TestDBEndTimeIndex(t *testing.T) {
 			entries := endTimeIndexEntries(t, testDB)
 			So(len(entries), ShouldEqual, 1)
 
-			wantT2 := make([]byte, endTimeBytes)
-			binary.BigEndian.PutUint64(wantT2, uint64(t2.UnixNano()))
-
-			So(bytes.Equal(entries[0], endTimeIndexKey(wantT2, []byte(job.Key()))), ShouldBeTrue)
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantEndTimeBytes(t2), []byte(job.Key()))), ShouldBeTrue)
 			So(string(lookupEntryJobKey(entries[0])), ShouldEqual, job.Key())
 
-			oldNanos := make([]byte, endTimeBytes)
-			binary.BigEndian.PutUint64(oldNanos, uint64(t1.UnixNano()))
-			So(bytes.Equal(entries[0], endTimeIndexKey(oldNanos, []byte(job.Key()))), ShouldBeFalse)
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantEndTimeBytes(t1), []byte(job.Key()))), ShouldBeFalse)
 		})
 
 		Convey("Re-archiving the same key with an unchanged end time is idempotent", func() {
@@ -366,9 +360,7 @@ func TestDBEndTimeIndex(t *testing.T) {
 			entries := endTimeIndexEntries(t, testDB)
 			So(len(entries), ShouldEqual, 1)
 
-			wantNanos := make([]byte, endTimeBytes)
-			binary.BigEndian.PutUint64(wantNanos, uint64(endTime.UnixNano()))
-			So(bytes.Equal(entries[0], endTimeIndexKey(wantNanos, []byte(job.Key()))), ShouldBeTrue)
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantEndTimeBytes(endTime), []byte(job.Key()))), ShouldBeTrue)
 		})
 
 		Convey("Retrieving from a never-written index returns an empty slice and no error", func() {
@@ -541,9 +533,7 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 			entries := endTimeIndexEntries(t, testDB)
 			So(len(entries), ShouldEqual, 1)
 
-			wantT2 := make([]byte, endTimeBytes)
-			binary.BigEndian.PutUint64(wantT2, uint64(t2.UnixNano()))
-			So(bytes.Equal(entries[0], endTimeIndexKey(wantT2, []byte(job.Key()))), ShouldBeTrue)
+			So(bytes.Equal(entries[0], endTimeIndexKey(wantEndTimeBytes(t2), []byte(job.Key()))), ShouldBeTrue)
 		})
 	})
 }
@@ -594,6 +584,19 @@ func endTimeIndexEntries(t *testing.T, testDB *db) [][]byte {
 	So(err, ShouldBeNil)
 
 	return entries
+}
+
+// wantEndTimeBytes builds the 8-byte big-endian end-time prefix the index uses
+// for tm, clamping a non-positive time to all-zero bytes (mirroring the
+// production endTimeToBytes guard). Computed independently of the production
+// helper so the tests still verify the production encoding rather than tautology.
+func wantEndTimeBytes(tm time.Time) []byte {
+	b := make([]byte, endTimeBytes)
+	if nanos := tm.UnixNano(); nanos > 0 {
+		binary.BigEndian.PutUint64(b, uint64(nanos))
+	}
+
+	return b
 }
 
 func countLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
