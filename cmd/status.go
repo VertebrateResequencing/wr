@@ -73,6 +73,7 @@ var (
 	cmdIDIsInternal bool
 	cmdLine         string
 	cmdRecent       string
+	cmdRecentPeriod time.Duration
 	showBuried      bool
 	showRunning     bool
 	showPending     bool
@@ -167,6 +168,15 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 		cmdStates := statusStateFilters()
 		if err := validateStatusStateFilters(cmdStates); err != nil {
 			die("%s", err)
+		}
+
+		if cmdRecent != "" {
+			var err error
+
+			cmdRecentPeriod, err = parseRecentDuration(cmdRecent)
+			if err != nil {
+				die("%s", err)
+			}
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
@@ -1073,7 +1083,9 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool,
 
 	switch {
 	case cmdRecent != "":
-		jobs, err = getJobsRecent(jq, statusLimit, showStd, showEnv)
+		// the period was parsed and validated in Run before connecting, so we
+		// only use the pre-parsed cmdRecentPeriod here.
+		jobs, err = jq.GetRecent(cmdRecentPeriod, statusLimit, "", showStd, showEnv)
 	case all:
 		// get all jobs
 		jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
@@ -1090,18 +1102,6 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool,
 	}
 
 	return jobs
-}
-
-// getJobsRecent gets the jobs that finished (were archived) within the
-// cmdRecent duration window, across all report groups. It dies if cmdRecent
-// does not parse as a positive duration.
-func getJobsRecent(jq *jobqueue.Client, statusLimit int, showStd, showEnv bool) ([]*jobqueue.Job, error) {
-	period, err := parseRecentDuration(cmdRecent)
-	if err != nil {
-		die("%s", err)
-	}
-
-	return jq.GetRecent(period, statusLimit, "", showStd, showEnv)
 }
 
 // getJobsByID gets the job(s) selected by cmdIDStatus, either by internal job

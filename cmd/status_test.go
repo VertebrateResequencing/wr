@@ -1245,6 +1245,7 @@ func resetStatusForTest(t *testing.T) {
 	cmdIDIsInternal = false
 	cmdLine = ""
 	cmdRecent = ""
+	cmdRecentPeriod = 0
 	cmdCwd = ""
 	cmdAll = false
 	mountJSON = ""
