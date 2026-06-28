@@ -23,53 +23,29 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  ******************************************************************************/
 
-package main
+package testsuite
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	"bytes"
 	"os"
-	"os/signal"
+	"testing"
 
-	"github.com/VertebrateResequencing/wr/internal/testsuite"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
-const (
-	expectedArgs = 2
-	exitFailure  = 1
-)
+func TestIsTerminal(t *testing.T) {
+	Convey("isTerminal is false for /dev/null, a character device that is not a TTY", t, func() {
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		So(err, ShouldBeNil)
 
-func main() {
-	os.Exit(run())
-}
+		defer func() {
+			So(devNull.Close(), ShouldBeNil)
+		}()
 
-func run() int {
-	if len(os.Args) != expectedArgs {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: wr-testsuite test|race")
+		So(isTerminal(devNull), ShouldBeFalse)
+	})
 
-		return exitFailure
-	}
-
-	mode, err := testsuite.ParseMode(os.Args[1])
-	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-
-		return exitFailure
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	if err := testsuite.Run(ctx, os.Stdout, os.Stderr, mode); err != nil {
-		// A failed suite already prints its own red FAILED marker to stdout, so
-		// the sentinel stays silent; other errors still report to stderr.
-		if !errors.Is(err, testsuite.ErrSuiteFailed) {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-		}
-
-		return exitFailure
-	}
-
-	return 0
+	Convey("isTerminal is false for a non-*os.File writer", t, func() {
+		So(isTerminal(&bytes.Buffer{}), ShouldBeFalse)
+	})
 }

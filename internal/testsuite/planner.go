@@ -78,6 +78,7 @@ func ParseMode(raw string) (Mode, error) {
 // Plan is the complete set of work needed for one test-suite mode.
 type Plan struct {
 	Mode     Mode
+	Module   string
 	Compiles []Compile
 	Serial   []Lane
 	Parallel []Lane
@@ -111,7 +112,7 @@ type Lane struct {
 
 // NewPlan creates a test-suite execution plan from discovered module packages.
 func NewPlan(mode Mode, module string, packages []string) Plan {
-	plan := Plan{Mode: mode}
+	plan := Plan{Mode: mode, Module: module}
 	excluded := specialPackages(module, mode)
 
 	plan.Compiles = compilePlan(module, packages, mode)

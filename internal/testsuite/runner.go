@@ -45,6 +45,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -72,6 +74,68 @@ var (
 	errUnknownLaneKind       = errors.New("unknown lane kind")
 )
 
+// ErrSuiteFailed reports that one or more lanes failed. Callers print the red
+// FAILED marker themselves, so this sentinel is silent on stderr.
+var ErrSuiteFailed = errors.New("test suite failed")
+
+// isTerminal reports whether the writer is a real terminal (TTY), so colour is
+// only emitted to an interactive terminal and never to pipes, files, /dev/null,
+// CI, or the buffers used by unit tests.
+func isTerminal(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	if !ok {
+		return false
+	}
+
+	return term.IsTerminal(int(file.Fd()))
+}
+
+func reportFailure(stdout io.Writer, failed []laneResult, colourize bool) error {
+	if err := printLaneLogs(stdout, failed); err != nil {
+		return err
+	}
+
+	if _, err := io.WriteString(stdout, "\n"+summaryIndent+finalMarker(false, colourize)); err != nil {
+		return fmt.Errorf("write failure marker: %w", err)
+	}
+
+	return ErrSuiteFailed
+}
+
+func reportSuccess(stdout io.Writer, module string, results []laneResult, colourize bool, elapsed time.Duration) error {
+	lanes, err := laneSummaryInputs(results)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.WriteString(stdout, summarizeLanes(module, lanes, colourize, elapsed)); err != nil {
+		return fmt.Errorf("write success summary: %w", err)
+	}
+
+	return nil
+}
+
+func laneSummaryInputs(results []laneResult) ([]laneSummaryInput, error) {
+	lanes := make([]laneSummaryInput, 0, len(results))
+
+	for _, result := range results {
+		content, err := os.ReadFile(result.log)
+		if err != nil {
+			return nil, fmt.Errorf("open lane log %s: %w", result.lane.Name, err)
+		}
+
+		lanes = append(lanes, laneSummaryInput{
+			name: result.lane.Name,
+			kind: result.lane.Kind,
+			pkg:  result.lane.Package,
+			pkgs: result.lane.Packages,
+			log:  string(content),
+		})
+	}
+
+	return lanes, nil
+}
+
 // Run discovers packages, plans the requested suite mode, and executes it.
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, mode Mode) error {
 	root, module, packages, err := discover(ctx)
@@ -84,6 +148,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, mode Mode) err
 
 // RunPlan executes an already-created test-suite plan.
 func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root string, plan Plan) error {
+	started := time.Now()
+
 	base, err := os.MkdirTemp("", tempPrefix(plan.Mode))
 	if err != nil {
 		return fmt.Errorf("create test-suite temp dir: %w", err)
@@ -100,15 +166,26 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
 
 	defer restorePortBase()
 
-	binaries, err := compileBinaries(ctx, stdout, stderr, base, plan.Compiles)
+	prog := newProgress(stderr, len(plan.Serial)+len(plan.Parallel))
+	prog.start()
+
+	defer prog.stop()
+
+	prog.setPhase("compiling test binaries")
+
+	binaries, err := compileBinaries(ctx, prog.bypass(stdout), prog.bypass(stderr), base, plan.Compiles)
 	if err != nil {
 		return err
 	}
 
-	results := runSerialLanes(ctx, root, base, binaries, plan.Serial)
-	results = append(results, runParallelLanes(ctx, root, base, binaries, plan.Parallel)...)
+	prog.beginTesting()
 
-	return reportResults(stdout, results)
+	results := runSerialLanes(ctx, root, base, binaries, plan.Serial, prog)
+	results = append(results, runParallelLanes(ctx, root, base, binaries, plan.Parallel, prog)...)
+
+	prog.stop()
+
+	return reportResults(stdout, plan.Module, results, time.Since(started))
 }
 
 func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
@@ -407,11 +484,12 @@ func runSerialLanes(
 	base string,
 	binaries map[string]string,
 	lanes []Lane,
+	prog *progress,
 ) []laneResult {
 	results := make([]laneResult, 0, len(lanes))
 
 	for _, lane := range lanes {
-		results = append(results, runLane(ctx, root, base, binaries, lane))
+		results = append(results, runLane(ctx, root, base, binaries, lane, prog))
 	}
 
 	return results
@@ -423,6 +501,7 @@ func runParallelLanes(
 	base string,
 	binaries map[string]string,
 	lanes []Lane,
+	prog *progress,
 ) []laneResult {
 	lanes = prioritizedLanes(lanes)
 	results := make([]laneResult, len(lanes))
@@ -434,7 +513,7 @@ func runParallelLanes(
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			results[index] = runLane(ctx, root, base, binaries, lane)
+			results[index] = runLane(ctx, root, base, binaries, lane, prog)
 		})
 	}
 
@@ -537,7 +616,11 @@ func runLane(
 	base string,
 	binaries map[string]string,
 	lane Lane,
+	prog *progress,
 ) laneResult {
+	prog.laneStarted()
+	defer prog.laneFinished()
+
 	start := time.Now()
 	logPath := filepath.Join(base, lane.Name+".log")
 	logFile, err := os.Create(logPath)
@@ -566,7 +649,8 @@ func runLane(
 		name = "nice"
 	}
 
-	err = runCommand(ctx, laneWorkDir(root, lane), logFile, logFile, name, args, laneEnvWithBinaries(lane, binaries))
+	sink := prog.tee(logFile)
+	err = runCommand(ctx, laneWorkDir(root, lane), sink, sink, name, args, laneEnvWithBinaries(lane, binaries))
 
 	return laneResult{lane: lane, log: logPath, duration: time.Since(start), err: err}
 }
@@ -606,7 +690,7 @@ func laneCommand(lane Lane, binaries map[string]string) (string, []string, error
 }
 
 func binaryArgs(lane Lane) []string {
-	args := []string{"-test.timeout=" + defaultTimeout, "-test.failfast"}
+	args := []string{"-test.timeout=" + defaultTimeout, "-test.failfast", "-test.v"}
 
 	if lane.RunPattern != "" {
 		args = append(args, "-test.run", lane.RunPattern)
@@ -620,7 +704,7 @@ func binaryArgs(lane Lane) []string {
 }
 
 func goTestArgs(lane Lane) []string {
-	args := []string{"test", "-tags", "netgo", "-timeout", defaultTimeout, "--count", "1", "-failfast"}
+	args := []string{"test", "-tags", "netgo", "-timeout", defaultTimeout, "--count", "1", "-failfast", "-v"}
 
 	if lane.Race {
 		args = append(args, "-race")
@@ -700,29 +784,21 @@ func envMap(values []string) map[string]string {
 	return env
 }
 
-func reportResults(stdout io.Writer, results []laneResult) error {
+func reportResults(stdout io.Writer, module string, results []laneResult, elapsed time.Duration) error {
 	if os.Getenv("WR_TESTSUITE_TIMINGS") != "" {
 		if err := printTimings(stdout, results); err != nil {
 			return err
 		}
 	}
 
+	colourize := isTerminal(stdout)
+
 	failed := failedResults(results)
-	if len(failed) == 0 {
-		return nil
+	if len(failed) > 0 {
+		return reportFailure(stdout, failed, colourize)
 	}
 
-	if err := printLaneLogs(stdout, failed); err != nil {
-		return err
-	}
-
-	return suiteFailedError{}
-}
-
-type suiteFailedError struct{}
-
-func (suiteFailedError) Error() string {
-	return "test suite failed"
+	return reportSuccess(stdout, module, results, colourize, elapsed)
 }
 
 func failedResults(results []laneResult) []laneResult {
@@ -780,7 +856,7 @@ func copyLaneLog(stdout io.Writer, result laneResult) error {
 		return fmt.Errorf("open lane log %s: %w", result.lane.Name, err)
 	}
 
-	if _, err := io.WriteString(stdout, formatLaneLog(string(content))); err != nil {
+	if _, err := io.WriteString(stdout, summarizeFailureLog(string(content))); err != nil {
 		return fmt.Errorf("copy lane log %s: %w", result.lane.Name, err)
 	}
 
