@@ -116,8 +116,8 @@ duration across all report groups. It is mutually exclusive with -f, -l and -i.
 It accepts Go duration units (eg. 36h, 90m) plus the convenience units d (days)
 and w (weeks), eg. "--recent 1w" reports jobs that finished in the last week.
 State filters are not supported with --recent (only successful jobs are
-archived), but --limit, --std/--env and --host are honoured as in the other
-modes.
+archived), but --limit, --env and --host are honoured as in the other modes
+(STDOUT/STDERR are shown according to the chosen -o output format, as usual).
 
 Use --missing_deps in default or report-group mode to show jobs waiting on
 dep-groups not yet seen.

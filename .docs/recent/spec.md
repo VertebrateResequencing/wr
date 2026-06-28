@@ -12,8 +12,9 @@ enumerating report groups.
 mode only: it changes which jobs the manager returns, never how the CLI displays
 them (same default `-o details`, same `--limit` grouping, same `-o` formats).
 State filters are rejected under `--recent` (only exit-0 jobs are ever archived,
-so the other states can never match). `--limit`, `--std`/`--env` and the
-client-side `--host` post-filter are honoured.
+so the other states can never match). `--limit`, `--env` and the client-side
+`--host` post-filter are honoured (STDOUT/STDERR follow the chosen `-o` output
+format, as in the other modes; there is no `--std` flag).
 
 Retrieval is backed by a new forward-only, time-ordered per-job end-time index
 in BoltDB. It is written inside the existing archive transaction (no extra
@@ -242,9 +243,10 @@ Extend `statusCmd.Long`:
 - A paragraph documenting `--recent <duration>`: returns jobs that finished
   (were archived) within the last duration across all report groups; mutually
   exclusive with -f/-i/-l; accepts Go duration units plus `d` (days) and `w`
-  (weeks); state filters are not supported with it; `--limit`, `--std`/`--env`
-  and `--host` are honoured. Include the example: "`--recent 1w` reports jobs
-  that finished in the last week".
+  (weeks); state filters are not supported with it; `--limit`, `--env` and
+  `--host` are honoured (STDOUT/STDERR follow the chosen `-o` output format, as
+  in the other modes; there is no `--std` flag). Include the example: "`--recent
+  1w` reports jobs that finished in the last week".
 - The flag usage string for `--recent` mentions the `d`/`w` units.
 
 ### Error handling
@@ -453,10 +455,11 @@ because only exit-0 jobs are archived so those states can never match.
    `validateStatusStateFilters` returns a non-nil error mentioning "--recent"
    (missing-deps is a state-style filter unsupported in recent mode).
 
-### C4: --limit, --std/--env and --host honoured
+### C4: --limit, --env and --host honoured
 
-As an operator, I want the recent results to obey `--limit`, `--std`/`--env` and
-the `--host` post-filter exactly as the other modes.
+As an operator, I want the recent results to obey `--limit`, `--env` and the
+`--host` post-filter exactly as the other modes (STDOUT/STDERR follow the chosen
+`-o` output format; there is no `--std` flag).
 
 **Package:** `cmd/`
 **File:** `cmd/status.go`
@@ -643,8 +646,9 @@ Each phase builds on tested foundations from the prior phase.
   are archived, so `--buried/--running/--pending/--dependent/--missing_deps/`
   `--suspended` can never match under `--recent`; supplying one errors via the
   extended "state filters are only supported in..." message, mirroring how
-  `-f`/`-l` reject state filters. `--limit`, `--std`/`--env` and `--host` are
-  still honoured.
+  `-f`/`-l` reject state filters. `--limit`, `--env` and `--host` are still
+  honoured (STDOUT/STDERR follow the chosen `-o` output format; there is no
+  `--std` flag).
 
 - **Display unchanged (resolved decision).** `--recent` is retrieval-only: same
   default `-o details`, same `--limit 1` grouping, same `--limit 0` per-job
