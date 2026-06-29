@@ -152,7 +152,7 @@ func TestOpenStack(t *testing.T) {
 		t.Fatal(errh)
 	}
 
-	resourceName := "wr-testing-" + localUser
+	resourceName := uniqueResourceName("wr-testing-" + localUser)
 
 	if osPrefix == "" || osUser == "" || localUser == "" || flavorRegex == "" {
 		SkipConvey("Without our special OS_OS_PREFIX, OS_OS_USERNAME, OS_LOCAL_USERNAME and OS_FLAVOR_REGEX "+
