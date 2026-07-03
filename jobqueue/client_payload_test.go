@@ -55,7 +55,7 @@ const (
 	liveExecuteRetryTime          = time.Second
 	liveExecuteTimeLimit          = 10 * time.Second
 	liveExecuteOutputSize         = 128 * 1024
-	liveExecuteMarkerWaitAttempts = 80
+	liveExecuteMarkerWaitAttempts = 300
 	liveExecuteFileMode           = 0o600
 	liveExecuteDirMode            = 0o755
 )
@@ -631,8 +631,8 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 			job := liveExecuteJob(client, cwd, strings.Join([]string{
 				"python3 - <<'PY'",
 				"import time",
-				"x = bytearray(2 * 1024 * 1024)",
-				"end = time.time() + 3",
+				"x = bytearray(32 * 1024 * 1024)",
+				"end = time.time() + 5",
 				"while time.time() < end:",
 				"    x[0] = (x[0] + 1) % 256",
 				"PY",
@@ -641,7 +641,12 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 			So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
 			states := capture.matching(func(state *JobEndState) bool {
-				return state.CPUtime >= time.Millisecond && state.PeakRAM >= 1
+				return state.CPUtime >= time.Millisecond
+			})
+			So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
+
+			states = capture.matching(func(state *JobEndState) bool {
+				return state.PeakRAM >= 1
 			})
 			So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
 		})

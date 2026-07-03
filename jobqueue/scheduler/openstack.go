@@ -1563,7 +1563,7 @@ func (s *opst) uploadExe(ctx context.Context, serverID string, server exeServer,
 	}
 
 	return s.actOnServerIDIfNeeded(ctx, serverID, cmd, func(ctx context.Context) error {
-		_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
+		_, _, errRun := server.RunCmd(ctx, shellquote.Join("chmod", "u+x", exePath), false)
 
 		return errRun
 	})

@@ -34,6 +34,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/kballard/go-shellquote"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -42,6 +43,8 @@ var (
 	errUnexpectedUpload             = errors.New("upload should not happen when the executable is already present")
 	errUnexpectedBackgroundExeCheck = errors.New("background executable check was not expected")
 )
+
+const openstackExeTestCmd = "echo hello"
 
 func TestOpenstackSpawnReleasesReservedQuotaOnEarlySpawnError(t *testing.T) {
 	Convey("OpenStack spawn releases reserved quota when spawn fails before using quota", t, func() {
@@ -138,7 +141,7 @@ func TestOpenstackEnsureExeOnServer(t *testing.T) {
 
 	Convey("OpenStack executable checks use remote PATH before the local absolute path", t, func() {
 		ctx := context.Background()
-		cmd := "echo hello"
+		cmd := openstackExeTestCmd
 		s := newOpenstackExeTestScheduler(ctx, cmd)
 		server := &fakeOpenstackExeServer{
 			uploadErr: errUnexpectedUpload,
@@ -165,7 +168,7 @@ func TestOpenstackEnsureExeOnServer(t *testing.T) {
 
 	Convey("OpenStack executable checks preserve upload behaviour when the executable is missing remotely", t, func() {
 		ctx := context.Background()
-		cmd := "echo hello"
+		cmd := openstackExeTestCmd
 		s := newOpenstackExeTestScheduler(ctx, cmd)
 		server := new(fakeOpenstackExeServer)
 		server.runCmd = func(cmd string, background bool) (string, string, error) {
@@ -188,6 +191,27 @@ func TestOpenstackEnsureExeOnServer(t *testing.T) {
 		So(server.runCmds[0], ShouldContainSubstring, "command -v")
 		So(server.runCmds[1], ShouldContainSubstring, "test -x")
 		So(server.runCmds[2], ShouldStartWith, "chmod u+x ")
+	})
+
+	Convey("OpenStack executable uploads quote chmod paths", t, func() {
+		ctx := context.Background()
+		cmd := openstackExeTestCmd
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := new(fakeOpenstackExeServer)
+		server.runCmd = func(_ string, background bool) (string, string, error) {
+			if background {
+				return "", "", errUnexpectedBackgroundExeCheck
+			}
+
+			return "", "", nil
+		}
+
+		exePath := "/tmp/wr exe; echo injected"
+		err := s.uploadExe(ctx, "server-1", server, cmd, exePath)
+
+		So(err, ShouldBeNil)
+		So(server.uploads, ShouldEqual, 1)
+		So(server.runCmds, ShouldResemble, []string{shellquote.Join("chmod", "u+x", exePath)})
 	})
 
 	Convey("OpenStack executable checks parse quoted command executables", t, func() {
