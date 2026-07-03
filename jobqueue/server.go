@@ -1482,7 +1482,7 @@ func maybeStartPprofServer(ctx context.Context) *http.Server {
 	runtime.SetMutexProfileFraction(pprofMutexProfileFraction)
 	runtime.SetBlockProfileRate(pprofBlockProfileRate)
 
-	srv := &http.Server{Handler: newPprofMux(), ReadHeaderTimeout: httpReadHeaderTimeout}
+	srv := &http.Server{Addr: ln.Addr().String(), Handler: newPprofMux(), ReadHeaderTimeout: httpReadHeaderTimeout}
 
 	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", addr, "env", envPprofAddr)
 
