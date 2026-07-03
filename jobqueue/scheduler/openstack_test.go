@@ -27,11 +27,20 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
+)
+
+var (
+	errUnexpectedRunCmd             = errors.New("unexpected RunCmd")
+	errUnexpectedUpload             = errors.New("upload should not happen when the executable is already present")
+	errUnexpectedBackgroundExeCheck = errors.New("background executable check was not expected")
 )
 
 func TestOpenstackSpawnReleasesReservedQuotaOnEarlySpawnError(t *testing.T) {
@@ -74,4 +83,125 @@ func TestOpenstackSpawnReleasesReservedQuotaOnEarlySpawnError(t *testing.T) {
 		So(s.reservedRAM, ShouldEqual, 0)
 		So(s.reservedVolume, ShouldEqual, 0)
 	})
+}
+
+type fakeOpenstackExeServer struct {
+	runCmds   []string
+	uploads   int
+	runCmd    func(cmd string, background bool) (string, string, error)
+	uploadErr error
+}
+
+func (s *fakeOpenstackExeServer) RunCmd(
+	_ context.Context, cmd string, background bool,
+) (stdout, stderr string, err error) {
+	s.runCmds = append(s.runCmds, cmd)
+
+	if s.runCmd == nil {
+		return "", "", errUnexpectedRunCmd
+	}
+
+	return s.runCmd(cmd, background)
+}
+
+func (s *fakeOpenstackExeServer) UploadFile(_ context.Context, _, _ string) error {
+	s.uploads++
+
+	return s.uploadErr
+}
+
+func TestOpenstackEnsureExeOnServer(t *testing.T) {
+	Convey("OpenStack executable checks do not upload an executable that is already present remotely", t, func() {
+		ctx := context.Background()
+		cmd := "/bin/echo hello"
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := &fakeOpenstackExeServer{
+			uploadErr: errUnexpectedUpload,
+		}
+		server.runCmd = func(_ string, background bool) (string, string, error) {
+			if background {
+				return "", "", errUnexpectedBackgroundExeCheck
+			}
+
+			return remoteExePresent, "", nil
+		}
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldBeNil)
+		So(server.runCmds, ShouldHaveLength, 1)
+		So(server.runCmds[0], ShouldNotContainSubstring, "file ")
+		So(server.runCmds[0], ShouldNotContainSubstring, "command -v")
+		So(server.runCmds[0], ShouldContainSubstring, "test -x")
+		So(server.uploads, ShouldEqual, 0)
+	})
+
+	Convey("OpenStack executable checks use remote PATH before the local absolute path", t, func() {
+		ctx := context.Background()
+		cmd := "echo hello"
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := &fakeOpenstackExeServer{
+			uploadErr: errUnexpectedUpload,
+		}
+		server.runCmd = func(cmd string, background bool) (string, string, error) {
+			if background {
+				return "", "", errUnexpectedBackgroundExeCheck
+			}
+
+			if strings.Contains(cmd, "command -v") {
+				return remoteExePresent, "", nil
+			}
+
+			return remoteExeMissing, "", nil
+		}
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldBeNil)
+		So(server.runCmds, ShouldHaveLength, 1)
+		So(server.runCmds[0], ShouldContainSubstring, "command -v")
+		So(server.uploads, ShouldEqual, 0)
+	})
+
+	Convey("OpenStack executable checks preserve upload behaviour when the executable is missing remotely", t, func() {
+		ctx := context.Background()
+		cmd := "echo hello"
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := new(fakeOpenstackExeServer)
+		server.runCmd = func(cmd string, background bool) (string, string, error) {
+			if background {
+				return "", "", errUnexpectedBackgroundExeCheck
+			}
+
+			if len(server.runCmds) <= 2 {
+				return remoteExeMissing, "", nil
+			}
+
+			return "", "", nil
+		}
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldBeNil)
+		So(server.uploads, ShouldEqual, 1)
+		So(server.runCmds, ShouldHaveLength, 3)
+		So(server.runCmds[0], ShouldContainSubstring, "command -v")
+		So(server.runCmds[1], ShouldContainSubstring, "test -x")
+		So(server.runCmds[2], ShouldStartWith, "chmod u+x ")
+	})
+}
+
+func newOpenstackExeTestScheduler(ctx context.Context, cmd string) *opst {
+	s := &opst{
+		local: local{
+			queue:   queue.New(ctx, localPlace),
+			running: make(map[string]int),
+		},
+		spawnCanceller: make(map[string]map[string]chan struct{}),
+	}
+
+	_, err := s.queue.AddWithSize(ctx, jobName(cmd, "n/a", false), "", &job{cmd: cmd, count: 1}, 0, 0, 0, queueItemTTR, "")
+	So(err, ShouldBeNil)
+
+	return s
 }
