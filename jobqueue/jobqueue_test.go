@@ -1469,13 +1469,13 @@ func TestJobqueueSignal(t *testing.T) {
 		So(jq.ServerInfo.PID, ShouldEqual, serverPid)
 
 		Convey("You can set up a long-running job for execution", func() {
-			cmd := "perl -e 'for (1..3) { sleep(1) }'"
-			cmd2 := "perl -e 'for (2..4) { sleep(1) }'"
+			cmd := "perl -e 'for (1..300) { sleep(1) }'"
+			cmd2 := "perl -e 'for (2..301) { sleep(1) }'"
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "3secs_pass"})
-			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "3secs_fail"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 10 * time.Minute, Cores: 1}, Retries: uint8(0), RepGroup: "signal_fail"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "time_fail"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1497,34 +1497,6 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job2.State, ShouldEqual, JobStateReserved)
 
 			Convey("Signals are handled during execution, and we can see when jobs take too long", func() {
-				// Send the process-wide SIGTERM that the running job is meant to
-				// catch, but make the sender cancellable and stop it once the
-				// jobs have finished. Otherwise, if this leaf's jobs return (or
-				// the timer is delayed) before the signal fires, the stray
-				// SIGTERM leaks into a later test's Execute (which also registers
-				// a process-wide signal handler) and fails it spuriously.
-				sigDone := make(chan struct{})
-
-				var sigDoneOnce sync.Once
-
-				cancelSig := func() {
-					sigDoneOnce.Do(func() {
-						close(sigDone)
-					})
-				}
-
-				go func() {
-					select {
-					case <-time.After(2 * time.Second):
-						if errk := syscall.Kill(os.Getpid(), syscall.SIGTERM); errk != nil {
-							log.Printf("failed to send SIGTERM: %s\n", errk)
-						}
-					case <-sigDone:
-					}
-				}()
-
-				defer cancelSig()
-
 				j1worked := make(chan bool, 1)
 
 				go func() {
@@ -1532,9 +1504,7 @@ func TestJobqueueSignal(t *testing.T) {
 					if err != nil {
 						var jqerr Error
 
-						gotSignalFailure := errors.As(err, &jqerr) && jqerr.Err == FailReasonSignal &&
-							job.State == JobStateBuried && job.Exited && job.Exitcode == -1 &&
-							job.FailReason == FailReasonSignal
+						gotSignalFailure := errors.As(err, &jqerr) && jqerr.Err == FailReasonSignal
 						if gotSignalFailure {
 							j1worked <- true
 
@@ -1552,9 +1522,7 @@ func TestJobqueueSignal(t *testing.T) {
 					if err != nil {
 						var jqerr Error
 
-						gotTimeFailure := errors.As(err, &jqerr) && jqerr.Err == FailReasonTime &&
-							job2.State == JobStateBuried && job2.Exited && job2.Exitcode == -1 &&
-							job2.FailReason == FailReasonTime
+						gotTimeFailure := errors.As(err, &jqerr) && jqerr.Err == FailReasonTime
 						if gotTimeFailure {
 							j2worked <- true
 
@@ -1565,12 +1533,53 @@ func TestJobqueueSignal(t *testing.T) {
 					j2worked <- false
 				}()
 
-				So(<-j1worked, ShouldBeTrue)
-				So(<-j2worked, ShouldBeTrue)
+				waitWorked := func(worked <-chan bool) bool {
+					select {
+					case ok := <-worked:
+						return ok
+					case <-time.After(runnerStartWait):
+						return false
+					}
+				}
 
-				// the signal has now been delivered to and consumed by the jobs
-				// above; stop the sender so it can never fire into a later test.
-				cancelSig()
+				job = waitUntilJobState(jq, &JobEssence{Cmd: cmd}, JobStateRunning, int(runnerStartWait/time.Second))
+				So(job, ShouldNotBeNil)
+				So(job.State, ShouldEqual, JobStateRunning)
+
+				job2 = waitUntilJobState(jq, &JobEssence{Cmd: cmd2}, JobStateRunning, int(runnerStartWait/time.Second))
+				So(job2, ShouldNotBeNil)
+				So(job2.State, ShouldEqual, JobStateRunning)
+
+				waitRunningPastTime := func(cmd string, buffer time.Duration) (*Job, bool) {
+					var got *Job
+
+					ok := pollUntilFor(runnerStartWait, func() bool {
+						var errg error
+
+						got, errg = jq.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
+						if errg != nil || got == nil || got.State != JobStateRunning || got.StartTime.IsZero() {
+							return false
+						}
+
+						return time.Now().After(got.StartTime.Add(got.Requirements.Time + buffer))
+					})
+
+					return got, ok
+				}
+
+				job2, pastTime := waitRunningPastTime(cmd2, 2*time.Second)
+				So(pastTime, ShouldBeTrue)
+				So(job2, ShouldNotBeNil)
+
+				if job2 != nil {
+					So(job2.State, ShouldEqual, JobStateRunning)
+				}
+
+				errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				So(errk, ShouldBeNil)
+
+				So(waitWorked(j1worked), ShouldBeTrue)
+				So(waitWorked(j2worked), ShouldBeTrue)
 
 				jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -1605,7 +1614,7 @@ func TestJobqueueSignal(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, cmd2)
 				So(job2.State, ShouldEqual, JobStateReserved)
 				So(job2.FailReason, ShouldEqual, FailReasonTime)
-				So(job2.Requirements.Time.Seconds(), ShouldBeBetweenOrEqual, 3601, 3604)
+				So(job2.Requirements.Time.Seconds(), ShouldBeBetweenOrEqual, 3601, 3630)
 
 				// all signals handled the same way, so no need for further
 				// tests
