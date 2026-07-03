@@ -1484,7 +1484,7 @@ func maybeStartPprofServer(ctx context.Context) *http.Server {
 
 	srv := &http.Server{Addr: ln.Addr().String(), Handler: newPprofMux(), ReadHeaderTimeout: httpReadHeaderTimeout}
 
-	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", addr, "env", envPprofAddr)
+	clog.Warn(ctx, "pprof profiling endpoint enabled", "addr", srv.Addr, "env", envPprofAddr)
 
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
