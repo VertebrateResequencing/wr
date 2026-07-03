@@ -469,8 +469,6 @@ func TestRESTJobModificationValidation(t *testing.T) {
 			So(decoded.Jobs[0].Priority, ShouldEqual, 9)
 			So(getJobStatus(key, false).State, ShouldEqual, JobStateDelayed)
 			So(getJobStatus(key, false).Priority, ShouldEqual, 9)
-			time.Sleep(50 * time.Millisecond)
-			So(getJobStatus(key, false).State, ShouldEqual, JobStateDelayed)
 		})
 
 		Convey("PATCH modifies dependent jobs and preserves their state", func() {

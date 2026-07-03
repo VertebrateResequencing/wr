@@ -328,13 +328,29 @@ func TestLocal(t *testing.T) {
 
 			defer waitToFinish(ctx, s, 120, 100)
 
-			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) //nolint:dupword // perl select() needs three undef args; sleeps 0.75s then makes another file
+			controlDir, err := os.MkdirTemp("", "wr_schedulers_local_test_control_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(controlDir)
 
-			// different machines take different amounts of times to actually
-			// run the above command, so we first need to run the command (in
-			// parallel still, since it is slower to run when many are running
-			// at once) to find how long it takes, as subsequent tests are very
-			// timing dependent
+			releaseFile := filepath.Join(controlDir, "release")
+
+			releaseJobs := func() {
+				errw := os.WriteFile(releaseFile, []byte{}, 0600)
+				So(errw, ShouldBeNil)
+			}
+			defer releaseJobs()
+
+			cmd := fmt.Sprintf("mktemp --tmpdir=%q start.XXXXXX >/dev/null; "+
+				"while [ ! -e %q ]; do sleep 0.02; done; "+
+				"mktemp --tmpdir=%q finish.XXXXXX >/dev/null",
+				tmpdir, releaseFile, tmpdir2)
+
+			// each cmd creates a file in tmpdir when it starts, waits until this
+			// test releases it, then creates another in tmpdir2 when it finishes.
+			// That lets the test assert cumulative starts and final finishes
+			// without sampling a short-lived active-running count.
 			count := maxCPU * 2
 			sched := func() {
 				serr := s.Schedule(ctx, cmd, possibleReq, 0, count)
@@ -345,40 +361,51 @@ func TestLocal(t *testing.T) {
 				So(scheduled, ShouldEqual, count)
 			}
 
-			// each cmd creates a file in tmpdir when it starts and another in tmpdir2
-			// when it finishes, so started-minus-finished is how many are running right
-			// now. We poll these instead of sleeping for fixed (load-sensitive)
-			// durations and checking exact counts at a fixed moment.
+			// The start and finish directories are cumulative records of command
+			// effects; assertions below avoid deriving correctness from a
+			// short-lived active-running sample.
 			started := func() int { return testDirForFiles(tmpdir, 0) }
 			finished := func() int { return testDirForFiles(tmpdir2, 0) }
+			scheduled := func(command string) int {
+				scheduledCount, serr := s.Scheduled(ctx, command)
+				So(serr, ShouldBeNil)
+
+				return scheduledCount
+			}
+			waitForStartedAtLeast := func(minStarted int) int {
+				startedAtThreshold := 0
+
+				So(pollUntil(func() bool {
+					startedAtThreshold = started()
+
+					return startedAtThreshold >= minStarted
+				}), ShouldBeTrue)
+
+				return startedAtThreshold
+			}
 
 			Convey("It eventually runs them all, at most maxCPU at a time", func() {
 				sched()
+				So(waitForStartedAtLeast(maxCPU), ShouldEqual, maxCPU)
+				So(finished(), ShouldEqual, 0)
 
-				maxConcurrent := 0
+				releaseJobs()
 
-				So(pollUntil(func() bool {
-					if r := started() - finished(); r > maxConcurrent {
-						maxConcurrent = r
-					}
-
-					return finished() == count
-				}), ShouldBeTrue)
-
-				So(maxConcurrent, ShouldEqual, maxCPU)
-				So(started(), ShouldEqual, count)
-				// Busy lags the last finish-marker (the scheduler still has to
-				// reap the exited job), so poll for idle rather than asserting it.
 				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
+				So(started(), ShouldEqual, count)
+				So(finished(), ShouldEqual, count)
 			})
 
 			Convey("Dropping the count below the number currently running doesn't kill those that are running", func() {
 				sched()
-				So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
-				So(started(), ShouldEqual, maxCPU)
+
+				So(waitForStartedAtLeast(maxCPU), ShouldEqual, maxCPU)
 
 				newcount := maxCPU - 1
 				So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
+				So(scheduled(cmd), ShouldEqual, newcount)
+
+				releaseJobs()
 
 				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(started(), ShouldEqual, maxCPU)
@@ -387,11 +414,13 @@ func TestLocal(t *testing.T) {
 
 			Convey("You can Schedule() again to increase the count", func() {
 				sched()
-				So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
-				So(started(), ShouldEqual, maxCPU)
+				So(waitForStartedAtLeast(maxCPU), ShouldEqual, maxCPU)
 
 				newcount := count + 1
 				So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
+				So(scheduled(cmd), ShouldEqual, newcount)
+
+				releaseJobs()
 
 				So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 				So(started(), ShouldEqual, newcount)
@@ -401,31 +430,47 @@ func TestLocal(t *testing.T) {
 			if maxCPU > 1 {
 				Convey("You can Schedule() again to drop the count", func() {
 					sched()
-					So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
-					So(started(), ShouldEqual, maxCPU)
+
+					So(waitForStartedAtLeast(maxCPU), ShouldEqual, maxCPU)
 
 					newcount := maxCPU + 1
 					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
+					So(scheduled(cmd), ShouldEqual, newcount)
+
+					releaseJobs()
 
 					So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
 					So(started(), ShouldEqual, newcount)
 					So(finished(), ShouldEqual, newcount)
 				})
 
-				Convey("You can Schedule() a new job and have it run while the first is still running", func() {
+				Convey("You can Schedule() a new job while the first command is still running", func() {
+					tmpdir3, err := os.MkdirTemp("", "wr_schedulers_local_test_new_output_dir_")
+					if err != nil {
+						log.Fatal(err)
+					}
+					defer os.RemoveAll(tmpdir3)
+
+					newStarted := func() int { return testDirForFiles(tmpdir3, 0) }
+
 					sched()
-					So(pollUntil(func() bool { return started() >= maxCPU }), ShouldBeTrue)
-					So(started(), ShouldEqual, maxCPU)
+
+					So(waitForStartedAtLeast(1), ShouldBeGreaterThanOrEqualTo, 1)
 
 					newcount := maxCPU + 1
 					So(s.Schedule(ctx, cmd, possibleReq, 0, newcount), ShouldBeNil)
+					So(scheduled(cmd), ShouldEqual, newcount)
 
-					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir) //nolint:dupword // perl select() needs three undef args to sleep 0.75s
+					newcmd := fmt.Sprintf("mktemp --tmpdir=%q new.XXXXXX >/dev/null", tmpdir3)
 					So(s.Schedule(ctx, newcmd, possibleReq, 0, 1), ShouldBeNil)
+					So(scheduled(newcmd), ShouldEqual, 1)
+
+					releaseJobs()
 
 					So(waitToFinish(ctx, s, 120, 100), ShouldBeTrue)
-					So(started(), ShouldEqual, newcount+1)
+					So(started(), ShouldEqual, newcount)
 					So(finished(), ShouldEqual, newcount)
+					So(newStarted(), ShouldEqual, 1)
 				})
 			} else {
 				SkipConvey("Skipping Schedule() tests that need more than 1 cpu", func() {})
