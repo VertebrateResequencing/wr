@@ -86,6 +86,34 @@ var (
 	errProviderNotSet                  = errors.New("provider not set")
 )
 
+// maxDialTicks is the number of one-second dial attempts dialNewSSHClient makes
+// (for an already-created server) before giving up on a non-startup error, to
+// allow for the vagaries of OS start ups (eg. CentOS brings up sshd and starts
+// rejecting connections before the centos user gets added).
+const maxDialTicks = 9
+
+// localRemotePathParts is the number of colon-separated parts in a CopyOver
+// path that explicitly specifies both a local and a remote path.
+const localRemotePathParts = 2
+
+// CreateSharedDisk creates an NFS share at /shared, which must be empty or not
+// exist. This does not work for remote Servers, so only call this on the return
+// value of LocalhostServer(). Does nothing and returns nil if the share was
+// already created. NB: this is currently hard-coded to only work on Ubuntu, and
+// the ability to sudo is required! Also assumes you don't have any other shares
+// configured, and no other process started the NFS server!
+// createSharedDiskTimeout bounds how long the whole CreateSharedDisk sequence
+// (apt-get install, etc.) may take.
+const createSharedDiskTimeout = 120 * time.Second
+
+// maxCleanShutdownScriptTime and maxCleanShutdownCmdTime are how long the user
+// destroy script and the clean shutdown command may take before we log that
+// they took a long time.
+const (
+	maxCleanShutdownScriptTime = 3 * time.Minute
+	maxCleanShutdownCmdTime    = 10 * time.Second
+)
+
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration.
 type Flavor struct {
@@ -749,12 +777,6 @@ func (s *Server) retryDialSSHClient(ctx context.Context, hostAndPort string) (*s
 	}
 }
 
-// maxDialTicks is the number of one-second dial attempts dialNewSSHClient makes
-// (for an already-created server) before giving up on a non-startup error, to
-// allow for the vagueries of OS start ups (eg. CentOS brings up sshd and starts
-// rejecting connections before the centos user gets added).
-const maxDialTicks = 9
-
 // assessDialAttempt decides, given the latest dial error, whether
 // dialNewSSHClient should stop. When done is true, the returned error is the
 // result to return (nil on success). ticks counts only non-startup attempts and
@@ -885,6 +907,19 @@ func newSSHSessionWithTimeout(ctx context.Context, sshClient *ssh.Client, client
 	}
 
 	return <-sessionCh, nil
+}
+
+// providerDestroyContext detaches caller cancellation from provider deletion
+// while preserving values and any deadline on the original context.
+func providerDestroyContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detachedCtx := context.WithoutCancel(ctx)
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return detachedCtx, func() {}
+	}
+
+	return context.WithDeadline(detachedCtx, deadline)
 }
 
 // watchSSHSessionTimeout sends a timeout or cancellation error on done if the
@@ -1184,10 +1219,6 @@ func (s *Server) CopyOver(ctx context.Context, files string) error {
 	return nil
 }
 
-// localRemotePathParts is the number of colon-separated parts in a CopyOver
-// path that explicitly specifies both a local and a remote path.
-const localRemotePathParts = 2
-
 // copyOverPath handles a single comma-separated entry of CopyOver's files
 // argument. A local path that doesn't exist is silently skipped.
 func (s *Server) copyOverPath(ctx context.Context, path string) error {
@@ -1373,16 +1404,6 @@ func (s *Server) MkDir(ctx context.Context, dir string) error {
 
 	return nil
 }
-
-// CreateSharedDisk creates an NFS share at /shared, which must be empty or not
-// exist. This does not work for remote Servers, so only call this on the return
-// value of LocalhostServer(). Does nothing and returns nil if the share was
-// already created. NB: this is currently hard-coded to only work on Ubuntu, and
-// the ability to sudo is required! Also assumes you don't have any other shares
-// configured, and no other process started the NFS server!
-// createSharedDiskTimeout bounds how long the whole CreateSharedDisk sequence
-// (apt-get install, etc.) may take.
-const createSharedDiskTimeout = 120 * time.Second
 
 func (s *Server) CreateSharedDisk() error {
 	s.csmutex.Lock()
@@ -1608,7 +1629,12 @@ func (s *Server) Destroy(ctx context.Context) error {
 		return errProviderNotSet
 	}
 
-	return s.destroyViaProvider(ctx)
+	// Provider deletion should survive caller cancellation while retaining ctx
+	// values and any deadline.
+	providerCtx, cancelProviderCtx := providerDestroyContext(ctx)
+	defer cancelProviderCtx()
+
+	return s.destroyViaProvider(providerCtx)
 }
 
 // attemptCleanShutdown, if ssh has ever worked for this server, ssh's in to run
@@ -1647,14 +1673,6 @@ func (s *Server) closeSSHClients(ctx context.Context) {
 		s.closeWarning(ctx, err)
 	}
 }
-
-// maxCleanShutdownScriptTime and maxCleanShutdownCmdTime are how long the user
-// destroy script and the clean shutdown command may take before we log that
-// they took a long time.
-const (
-	maxCleanShutdownScriptTime = 3 * time.Minute
-	maxCleanShutdownCmdTime    = 10 * time.Second
-)
 
 // cleanShutdownOverSSH ssh's to the server to run any user destroy script and
 // then the clean shutdown command. Failures are logged, not returned, since we

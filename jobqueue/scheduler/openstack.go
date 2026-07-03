@@ -45,6 +45,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/kballard/go-shellquote"
 	"github.com/patrickmn/go-cache"
 )
 
@@ -79,6 +80,9 @@ const (
 	// errBadOpenStackConfig is the Error message used when initialize() is not
 	// given a *ConfigOpenStack.
 	errBadOpenStackConfig = "SchedulerConfig must be *ConfigOpenStack"
+
+	remoteExePresent = "present"
+	remoteExeMissing = "missing"
 )
 
 // op* are the Op names used in scheduler Errors raised by the named openstack
@@ -100,9 +104,16 @@ var (
 
 // sentinel errors returned by the openstack scheduler.
 var (
-	errServerNotNeeded   = errors.New(serverNotNeededErrStr)
-	errNoAvailableServer = errors.New("no available server")
+	errServerNotNeeded    = errors.New(serverNotNeededErrStr)
+	errNoAvailableServer  = errors.New("no available server")
+	errCommandHasNoExe    = errors.New("command has no executable")
+	errUnexpectedExeCheck = errors.New("remote executable check returned unexpected output")
 )
+
+type exeServer interface {
+	RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+	UploadFile(ctx context.Context, source string, dest string) error
+}
 
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
@@ -1410,46 +1421,128 @@ func (s *opst) waitServerReady(ctx context.Context, server *cloud.Server, cmd, r
 // *** this is just a hack to get wr working, need to think of a better way of
 // doing this...
 func (s *opst) ensureExeOnServer(ctx context.Context, server *cloud.Server, cmd string) error {
-	exe := strings.Split(cmd, " ")[0]
-
-	exePath, err := exec.LookPath(exe)
-	if err != nil {
-		return fmt.Errorf("could not look for exe [%s]: %w", exePath, err)
-	}
-
-	stdout, err := s.fileCheckExe(ctx, server, cmd, exePath)
-
-	if stdout == "" {
-		// checking for exePath with the file command failed for some reason,
-		// and without any stdout... but let's just try the upload anyway,
-		// assuming the exe isn't there
-		return s.uploadExe(ctx, server, cmd, exePath)
-	}
-
-	if strings.Contains(stdout, "No such file") {
-		return s.uploadExe(ctx, server, cmd, exePath)
-	}
-
-	if err != nil && !errors.Is(err, errServerNotNeeded) {
-		return fmt.Errorf("could not check exe with [file %s]: %s [%w]", exePath, stdout, err)
-	}
-
-	return err
+	return s.ensureExeOnRemoteServer(ctx, server.ID, server, cmd)
 }
 
-// fileCheckExe runs `file <exePath>` on the server and returns its stdout.
-func (s *opst) fileCheckExe(ctx context.Context, server *cloud.Server, cmd, exePath string) (string, error) {
-	stdCh := make(chan string)
-	err := s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
-		std, _, errRun := server.RunCmd(ctx, "file "+exePath, false)
-		go func() {
-			stdCh <- std
-		}()
+func (s *opst) ensureExeOnRemoteServer(ctx context.Context, serverID string, server exeServer, cmd string) error {
+	exe, err := commandExecutable(cmd)
+	if err != nil {
+		return err
+	}
+
+	present, err := s.remoteExeTokenResolves(ctx, serverID, server, cmd, exe)
+	if err != nil || present {
+		return err
+	}
+
+	return s.ensureExePathOnRemoteServer(ctx, serverID, server, cmd, exe)
+}
+
+func commandExecutable(cmd string) (string, error) {
+	tokens, err := shellquote.Split(cmd)
+	if err != nil {
+		return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, err)
+	}
+
+	if len(tokens) == 0 || tokens[0] == "" {
+		return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, errCommandHasNoExe)
+	}
+
+	return tokens[0], nil
+}
+
+func (s *opst) remoteExeTokenResolves(
+	ctx context.Context, serverID string, server exeServer, cmd, exe string,
+) (bool, error) {
+	if strings.Contains(exe, "/") {
+		return false, nil
+	}
+
+	present, err := s.exeTokenPresentOnServer(ctx, serverID, server, cmd, exe)
+	if err == nil || errors.Is(err, errServerNotNeeded) {
+		return present, err
+	}
+
+	return false, fmt.Errorf("could not resolve exe with [command -v -- %s]: %w", exe, err)
+}
+
+func (s *opst) ensureExePathOnRemoteServer(
+	ctx context.Context, serverID string, server exeServer, cmd, exe string,
+) error {
+	exePath, err := exec.LookPath(exe)
+	if err != nil {
+		return fmt.Errorf("could not look for exe [%s]: %w", exe, err)
+	}
+
+	present, err := s.exePathPresentOnServer(ctx, serverID, server, cmd, exePath)
+	if err != nil {
+		if errors.Is(err, errServerNotNeeded) {
+			return err
+		}
+
+		return fmt.Errorf("could not check exe with [test -x %s]: %w", exePath, err)
+	}
+
+	if !present {
+		return s.uploadExe(ctx, serverID, server, cmd, exePath)
+	}
+
+	return nil
+}
+
+func (s *opst) exeTokenPresentOnServer(ctx context.Context, serverID string, server exeServer, cmd, exe string) (
+	bool, error,
+) {
+	return s.exeCheckOnServer(ctx, serverID, server, cmd, remoteExeTokenCheckCmd(exe))
+}
+
+func remoteExeTokenCheckCmd(exe string) string {
+	return fmt.Sprintf("if %s >/dev/null 2>&1; then %s; else %s; fi",
+		shellquote.Join("command", "-v", "--", exe),
+		shellquote.Join("printf", "%s", remoteExePresent),
+		shellquote.Join("printf", "%s", remoteExeMissing),
+	)
+}
+
+// exePathPresentOnServer checks whether exePath exists and is executable on the
+// server using POSIX shell builtins.
+func (s *opst) exePathPresentOnServer(ctx context.Context, serverID string, server exeServer, cmd, exePath string) (
+	bool, error,
+) {
+	return s.exeCheckOnServer(ctx, serverID, server, cmd, remoteExePathCheckCmd(exePath))
+}
+
+func remoteExePathCheckCmd(exePath string) string {
+	return fmt.Sprintf("if %s; then %s; else %s; fi",
+		shellquote.Join("test", "-x", exePath),
+		shellquote.Join("printf", "%s", remoteExePresent),
+		shellquote.Join("printf", "%s", remoteExeMissing),
+	)
+}
+
+func (s *opst) exeCheckOnServer(ctx context.Context, serverID string, server exeServer, cmd, checkCmd string) (
+	bool, error,
+) {
+	stdout := ""
+
+	err := s.actOnServerIDIfNeeded(ctx, serverID, cmd, func(ctx context.Context) error {
+		std, _, errRun := server.RunCmd(ctx, checkCmd, false)
+		stdout = strings.TrimSpace(std)
 
 		return errRun
 	})
+	if err != nil {
+		return false, err
+	}
 
-	return <-stdCh, err
+	switch stdout {
+	case remoteExePresent:
+		return true, nil
+	case remoteExeMissing:
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: %q", errUnexpectedExeCheck, stdout)
+	}
 }
 
 // uploadExe uploads exePath to the same path on server and makes it executable.
@@ -1457,8 +1550,8 @@ func (s *opst) fileCheckExe(ctx context.Context, server *cloud.Server, cmd, exeP
 // *** NB the upload will fail if exePath is in a dir we can't create on the
 // remote server, eg. if it is in our home dir, but the remote server has a
 // different user, or presumably if it is somewhere requiring root permission.
-func (s *opst) uploadExe(ctx context.Context, server *cloud.Server, cmd, exePath string) error {
-	err := s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
+func (s *opst) uploadExe(ctx context.Context, serverID string, server exeServer, cmd, exePath string) error {
+	err := s.actOnServerIDIfNeeded(ctx, serverID, cmd, func(ctx context.Context) error {
 		return server.UploadFile(ctx, exePath, exePath)
 	})
 	if err != nil {
@@ -1469,8 +1562,8 @@ func (s *opst) uploadExe(ctx context.Context, server *cloud.Server, cmd, exePath
 		return err
 	}
 
-	return s.actOnServerIfNeeded(ctx, server, cmd, func(ctx context.Context) error {
-		_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
+	return s.actOnServerIDIfNeeded(ctx, serverID, cmd, func(ctx context.Context) error {
+		_, _, errRun := server.RunCmd(ctx, shellquote.Join("chmod", "u+x", exePath), false)
 
 		return errRun
 	})
@@ -1537,6 +1630,12 @@ func nextDebugCount() int {
 func (s *opst) actOnServerIfNeeded(ctx context.Context, server *cloud.Server, cmd string,
 	code func(ctx context.Context) error,
 ) error {
+	return s.actOnServerIDIfNeeded(ctx, server.ID, cmd, code)
+}
+
+func (s *opst) actOnServerIDIfNeeded(
+	ctx context.Context, serverID, cmd string, code func(ctx context.Context) error,
+) error {
 	if s.cleanedUp() {
 		return errServerNotNeeded
 	}
@@ -1545,27 +1644,27 @@ func (s *opst) actOnServerIfNeeded(ctx context.Context, server *cloud.Server, cm
 	// (see method doc).
 	actionCtx, cancel := context.WithCancel(context.Background())
 
-	canceller := s.registerSpawnCanceller(server, cmd)
+	canceller := s.registerSpawnCanceller(serverID, cmd)
 
 	defer func() {
 		cancel()
-		s.deregisterSpawnCanceller(server, cmd)
+		s.deregisterSpawnCanceller(serverID, cmd)
 	}()
 
 	if s.cmdCountRemaining(cmd) <= 0 {
-		clog.Debug(ctx, "bailing on a spawn early since no longer needed", "server", server.ID)
+		clog.Debug(ctx, "bailing on a spawn early since no longer needed", "server", serverID)
 
 		return errServerNotNeeded
 	}
 
-	return runSpawnAction(ctx, actionCtx, cancel, canceller, code, server)
+	return runSpawnAction(ctx, actionCtx, cancel, canceller, code, serverID)
 }
 
 // runSpawnAction runs code(actionCtx) in a goroutine, returning its error, or
 // returning errServerNotNeeded (and cancelling actionCtx) if canceller fires
 // first.
 func runSpawnAction(ctx, actionCtx context.Context, cancel context.CancelFunc, canceller <-chan struct{},
-	code func(ctx context.Context) error, server *cloud.Server,
+	code func(ctx context.Context) error, serverID string,
 ) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -1577,7 +1676,7 @@ func runSpawnAction(ctx, actionCtx context.Context, cancel context.CancelFunc, c
 		return err
 	case <-canceller:
 		cancel()
-		clog.Debug(ctx, "bailing on a spawn mid-action since no longer needed", "server", server.ID)
+		clog.Debug(ctx, "bailing on a spawn mid-action since no longer needed", "server", serverID)
 
 		return errServerNotNeeded
 	}
@@ -1586,7 +1685,7 @@ func runSpawnAction(ctx, actionCtx context.Context, cancel context.CancelFunc, c
 // registerSpawnCanceller records a canceller channel for the given cmd/server
 // so that cmdNotNeeded can cancel an in-progress actOnServerIfNeeded, and
 // returns that channel.
-func (s *opst) registerSpawnCanceller(server *cloud.Server, cmd string) chan struct{} {
+func (s *opst) registerSpawnCanceller(serverID string, cmd string) chan struct{} {
 	s.scMutex.Lock()
 	defer s.scMutex.Unlock()
 
@@ -1595,18 +1694,18 @@ func (s *opst) registerSpawnCanceller(server *cloud.Server, cmd string) chan str
 		s.spawnCanceller[cmd] = make(map[string]chan struct{})
 	}
 
-	s.spawnCanceller[cmd][server.ID] = canceller
+	s.spawnCanceller[cmd][serverID] = canceller
 
 	return canceller
 }
 
 // deregisterSpawnCanceller removes the canceller channel registered for the
 // given cmd/server.
-func (s *opst) deregisterSpawnCanceller(server *cloud.Server, cmd string) {
+func (s *opst) deregisterSpawnCanceller(serverID string, cmd string) {
 	s.scMutex.Lock()
 	defer s.scMutex.Unlock()
 
-	delete(s.spawnCanceller[cmd], server.ID)
+	delete(s.spawnCanceller[cmd], serverID)
 }
 
 // cmdNotNeeded cancels the context set by actOnServerIfNeeded(), if any.

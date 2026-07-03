@@ -31,11 +31,9 @@ import (
 	"net"
 	"net/http"
 	"runtime"
-	"strconv"
 	"testing"
 	"time"
 
-	"github.com/phayes/freeport"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -57,16 +55,31 @@ func TestPprofServerLifecycle(t *testing.T) {
 		prevMutexFraction := runtime.SetMutexProfileFraction(-1)
 		defer runtime.SetMutexProfileFraction(prevMutexFraction)
 
-		port, err := freeport.GetFreePort()
-		So(err, ShouldBeNil)
-
-		pprofAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-		pprofURL := fmt.Sprintf("http://%s/debug/pprof/", pprofAddr)
-
-		t.Setenv(envPprofAddr, pprofAddr)
+		t.Setenv(envPprofAddr, "127.0.0.1:0")
 
 		server, _, _, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
+		So(server != nil, ShouldBeTrue)
+
+		if server == nil {
+			return
+		}
+
+		Reset(func() {
+			// belt-and-braces: make sure the server is stopped even if an inner
+			// assertion failed before the explicit Stop below.
+			server.Stop(ctx, true)
+		})
+
+		pprofServer := server.pprofServer
+		So(pprofServer != nil, ShouldBeTrue)
+
+		if pprofServer == nil {
+			return
+		}
+
+		pprofAddr := pprofServer.Addr
+		pprofURL := fmt.Sprintf("http://%s/debug/pprof/", pprofAddr)
 
 		Convey("the pprof endpoint is reachable while the server runs", func() {
 			So(pprofEndpointReachable(pprofURL), ShouldBeTrue)
@@ -92,12 +105,6 @@ func TestPprofServerLifecycle(t *testing.T) {
 				So(runtime.SetMutexProfileFraction(-1), ShouldEqual, 0)
 			})
 		})
-
-		Reset(func() {
-			// belt-and-braces: make sure the server is stopped even if an inner
-			// assertion failed before the explicit Stop above.
-			server.Stop(ctx, true)
-		})
 	})
 }
 
@@ -120,19 +127,16 @@ func TestPprofServerBindFailureDoesNotEnableProfiling(t *testing.T) {
 		prevMutexFraction := runtime.SetMutexProfileFraction(-1)
 		defer runtime.SetMutexProfileFraction(prevMutexFraction)
 
-		// occupy a free loopback port ourselves, so the manager's bind of the same
+		// occupy a loopback port ourselves, so the manager's bind of the same
 		// address is guaranteed to fail.
-		port, err := freeport.GetFreePort()
-		So(err, ShouldBeNil)
-
-		pprofAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-
 		var lc net.ListenConfig
 
-		occupier, err := lc.Listen(ctx, "tcp", pprofAddr)
+		occupier, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 		So(err, ShouldBeNil)
 
 		defer func() { _ = occupier.Close() }()
+
+		pprofAddr := occupier.Addr().String()
 
 		t.Setenv(envPprofAddr, pprofAddr)
 

@@ -68,6 +68,7 @@ func TestJobqueueRunnerModeEntrypoint(t *testing.T) {
 
 	if runnermode {
 		runner(context.Background())
+		os.Exit(0)
 	}
 }
 
