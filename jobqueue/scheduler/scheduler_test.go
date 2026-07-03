@@ -329,8 +329,9 @@ func TestLocal(t *testing.T) {
 			defer waitToFinish(ctx, s, 120, 100)
 
 			controlDir, err := os.MkdirTemp("", "wr_schedulers_local_test_control_dir_")
+			So(err, ShouldBeNil)
 			if err != nil {
-				log.Fatal(err)
+				return
 			}
 			defer os.RemoveAll(controlDir)
 
@@ -446,8 +447,9 @@ func TestLocal(t *testing.T) {
 
 				Convey("You can Schedule() a new job while the first command is still running", func() {
 					tmpdir3, err := os.MkdirTemp("", "wr_schedulers_local_test_new_output_dir_")
+					So(err, ShouldBeNil)
 					if err != nil {
-						log.Fatal(err)
+						return
 					}
 					defer os.RemoveAll(tmpdir3)
 
