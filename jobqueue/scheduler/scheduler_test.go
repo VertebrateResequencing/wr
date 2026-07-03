@@ -330,9 +330,11 @@ func TestLocal(t *testing.T) {
 
 			controlDir, err := os.MkdirTemp("", "wr_schedulers_local_test_control_dir_")
 			So(err, ShouldBeNil)
+
 			if err != nil {
 				return
 			}
+
 			defer os.RemoveAll(controlDir)
 
 			releaseFile := filepath.Join(controlDir, "release")
@@ -448,9 +450,11 @@ func TestLocal(t *testing.T) {
 				Convey("You can Schedule() a new job while the first command is still running", func() {
 					tmpdir3, err := os.MkdirTemp("", "wr_schedulers_local_test_new_output_dir_")
 					So(err, ShouldBeNil)
+
 					if err != nil {
 						return
 					}
+
 					defer os.RemoveAll(tmpdir3)
 
 					newStarted := func() int { return testDirForFiles(tmpdir3, 0) }
