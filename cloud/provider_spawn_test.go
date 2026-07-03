@@ -28,6 +28,7 @@ package cloud
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -127,4 +128,55 @@ func TestProviderSpawnCallsUsingQuotaCallbackOnEarlyError(t *testing.T) {
 		So(err, ShouldNotBeNil)
 		So(called, ShouldEqual, 1)
 	})
+}
+
+type destroyContextKey struct{}
+
+func TestServerDestroyUsesDetachedProviderContext(t *testing.T) {
+	Convey("Server Destroy still asks the provider to destroy when caller context is cancelled", t, func() {
+		serverID := "server-to-destroy"
+		fakeProvider := &destroyAfterCancelProvider{}
+		provider := &Provider{
+			impl:      fakeProvider,
+			Name:      "fake",
+			resources: &Resources{Servers: map[string]*Server{serverID: nil}},
+			savePath:  filepath.Join(t.TempDir(), "resources"),
+		}
+		server := &Server{
+			ID:           serverID,
+			provider:     provider,
+			cancelRunCmd: make(map[int]chan bool),
+		}
+
+		ctx := context.WithValue(context.Background(), destroyContextKey{}, "preserved")
+		ctx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		err := server.Destroy(ctx)
+
+		So(err, ShouldBeNil)
+		So(fakeProvider.destroyedServerID, ShouldEqual, serverID)
+		So(fakeProvider.destroyCtxErr, ShouldBeNil)
+		So(fakeProvider.destroyCtxValue, ShouldEqual, "preserved")
+	})
+}
+
+type destroyAfterCancelProvider struct {
+	spawnBeforeQuotaErrorProvider
+
+	destroyCtxErr     error
+	destroyCtxValue   any
+	destroyedServerID string
+}
+
+func (p *destroyAfterCancelProvider) destroyServer(ctx context.Context, serverID string) error {
+	p.destroyCtxErr = ctx.Err()
+	p.destroyCtxValue = ctx.Value(destroyContextKey{})
+	p.destroyedServerID = serverID
+
+	return p.destroyCtxErr
+}
+
+func (p *destroyAfterCancelProvider) checkServer(serverID string) (bool, error) {
+	return true, nil
 }
