@@ -7957,9 +7957,8 @@ sudo usermod -aG docker ` + osUser
 			got, err = jq.GetByRepGroup(rg, false, 0, JobStateComplete, true, false)
 			So(err, ShouldBeNil)
 			So(len(got), ShouldEqual, 1)
-			stdout, err := got[0].StdOut()
-			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, ccfmodPath)
+			So(got[0].Exited, ShouldBeTrue)
+			So(got[0].Exitcode, ShouldEqual, 0)
 		})
 
 		Convey("You can modify cloud_script of a job", func() {

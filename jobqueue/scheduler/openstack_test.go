@@ -189,6 +189,71 @@ func TestOpenstackEnsureExeOnServer(t *testing.T) {
 		So(server.runCmds[1], ShouldContainSubstring, "test -x")
 		So(server.runCmds[2], ShouldStartWith, "chmod u+x ")
 	})
+
+	Convey("OpenStack executable checks parse quoted command executables", t, func() {
+		ctx := context.Background()
+		cmd := `   "/bin/echo" hello`
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := &fakeOpenstackExeServer{
+			uploadErr: errUnexpectedUpload,
+		}
+		server.runCmd = func(_ string, background bool) (string, string, error) {
+			if background {
+				return "", "", errUnexpectedBackgroundExeCheck
+			}
+
+			return remoteExePresent, "", nil
+		}
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldBeNil)
+		So(server.runCmds, ShouldHaveLength, 1)
+		So(server.runCmds[0], ShouldContainSubstring, "test -x /bin/echo")
+		So(server.uploads, ShouldEqual, 0)
+	})
+
+	Convey("OpenStack executable checks reject commands without an executable", t, func() {
+		ctx := context.Background()
+		cmd := "   "
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := new(fakeOpenstackExeServer)
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "could not parse command executable")
+		So(server.runCmds, ShouldHaveLength, 0)
+		So(server.uploads, ShouldEqual, 0)
+	})
+
+	Convey("OpenStack executable checks reject malformed commands", t, func() {
+		ctx := context.Background()
+		cmd := `"unterminated`
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := new(fakeOpenstackExeServer)
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "could not parse command executable")
+		So(server.runCmds, ShouldHaveLength, 0)
+		So(server.uploads, ShouldEqual, 0)
+	})
+
+	Convey("OpenStack executable lookup errors name the requested executable", t, func() {
+		ctx := context.Background()
+		cmd := "/tmp/wr-test-missing-exe"
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := new(fakeOpenstackExeServer)
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "could not look for exe [/tmp/wr-test-missing-exe]")
+		So(server.runCmds, ShouldHaveLength, 0)
+		So(server.uploads, ShouldEqual, 0)
+	})
 }
 
 func newOpenstackExeTestScheduler(ctx context.Context, cmd string) *opst {

@@ -88,7 +88,7 @@ var (
 
 // maxDialTicks is the number of one-second dial attempts dialNewSSHClient makes
 // (for an already-created server) before giving up on a non-startup error, to
-// allow for the vagueries of OS start ups (eg. CentOS brings up sshd and starts
+// allow for the vagaries of OS start ups (eg. CentOS brings up sshd and starts
 // rejecting connections before the centos user gets added).
 const maxDialTicks = 9
 

@@ -106,6 +106,7 @@ var (
 var (
 	errServerNotNeeded    = errors.New(serverNotNeededErrStr)
 	errNoAvailableServer  = errors.New("no available server")
+	errCommandHasNoExe    = errors.New("command has no executable")
 	errUnexpectedExeCheck = errors.New("remote executable check returned unexpected output")
 )
 
@@ -1424,7 +1425,10 @@ func (s *opst) ensureExeOnServer(ctx context.Context, server *cloud.Server, cmd 
 }
 
 func (s *opst) ensureExeOnRemoteServer(ctx context.Context, serverID string, server exeServer, cmd string) error {
-	exe := strings.Split(cmd, " ")[0]
+	exe, err := commandExecutable(cmd)
+	if err != nil {
+		return err
+	}
 
 	present, err := s.remoteExeTokenResolves(ctx, serverID, server, cmd, exe)
 	if err != nil || present {
@@ -1432,6 +1436,19 @@ func (s *opst) ensureExeOnRemoteServer(ctx context.Context, serverID string, ser
 	}
 
 	return s.ensureExePathOnRemoteServer(ctx, serverID, server, cmd, exe)
+}
+
+func commandExecutable(cmd string) (string, error) {
+	tokens, err := shellquote.Split(cmd)
+	if err != nil {
+		return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, err)
+	}
+
+	if len(tokens) == 0 || tokens[0] == "" {
+		return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, errCommandHasNoExe)
+	}
+
+	return tokens[0], nil
 }
 
 func (s *opst) remoteExeTokenResolves(
@@ -1454,7 +1471,7 @@ func (s *opst) ensureExePathOnRemoteServer(
 ) error {
 	exePath, err := exec.LookPath(exe)
 	if err != nil {
-		return fmt.Errorf("could not look for exe [%s]: %w", exePath, err)
+		return fmt.Errorf("could not look for exe [%s]: %w", exe, err)
 	}
 
 	present, err := s.exePathPresentOnServer(ctx, serverID, server, cmd, exePath)
