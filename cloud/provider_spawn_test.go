@@ -149,6 +149,11 @@ func TestServerDestroyUsesDetachedProviderContext(t *testing.T) {
 		}
 
 		ctx := context.WithValue(context.Background(), destroyContextKey{}, "preserved")
+		deadline := time.Now().Add(time.Hour)
+
+		ctx, cancelDeadline := context.WithDeadline(ctx, deadline)
+		defer cancelDeadline()
+
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
@@ -158,20 +163,23 @@ func TestServerDestroyUsesDetachedProviderContext(t *testing.T) {
 		So(fakeProvider.destroyedServerID, ShouldEqual, serverID)
 		So(fakeProvider.destroyCtxErr, ShouldBeNil)
 		So(fakeProvider.destroyCtxValue, ShouldEqual, "preserved")
+		So(fakeProvider.destroyCtxDeadline, ShouldResemble, deadline)
 	})
 }
 
 type destroyAfterCancelProvider struct {
 	spawnBeforeQuotaErrorProvider
 
-	destroyCtxErr     error
-	destroyCtxValue   any
-	destroyedServerID string
+	destroyCtxErr      error
+	destroyCtxValue    any
+	destroyCtxDeadline time.Time
+	destroyedServerID  string
 }
 
 func (p *destroyAfterCancelProvider) destroyServer(ctx context.Context, serverID string) error {
 	p.destroyCtxErr = ctx.Err()
 	p.destroyCtxValue = ctx.Value(destroyContextKey{})
+	p.destroyCtxDeadline, _ = ctx.Deadline()
 	p.destroyedServerID = serverID
 
 	return p.destroyCtxErr

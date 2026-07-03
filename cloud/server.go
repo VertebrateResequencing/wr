@@ -909,6 +909,19 @@ func newSSHSessionWithTimeout(ctx context.Context, sshClient *ssh.Client, client
 	return <-sessionCh, nil
 }
 
+// providerDestroyContext detaches caller cancellation from provider deletion
+// while preserving values and any deadline on the original context.
+func providerDestroyContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detachedCtx := context.WithoutCancel(ctx)
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return detachedCtx, func() {}
+	}
+
+	return context.WithDeadline(detachedCtx, deadline)
+}
+
 // watchSSHSessionTimeout sends a timeout or cancellation error on done if the
 // session isn't established (signalled on worked) within sshShortTimeOut or
 // before ctx is cancelled. Intended to be run in a goroutine.
@@ -1616,9 +1629,12 @@ func (s *Server) Destroy(ctx context.Context) error {
 		return errProviderNotSet
 	}
 
-	// Provider deletion should survive caller cancellation while retaining ctx values
-	// such as server id and cloud type for logs.
-	return s.destroyViaProvider(context.WithoutCancel(ctx))
+	// Provider deletion should survive caller cancellation while retaining ctx
+	// values and any deadline.
+	providerCtx, cancelProviderCtx := providerDestroyContext(ctx)
+	defer cancelProviderCtx()
+
+	return s.destroyViaProvider(providerCtx)
 }
 
 // attemptCleanShutdown, if ssh has ever worked for this server, ssh's in to run

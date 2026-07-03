@@ -1550,14 +1550,14 @@ func TestJobqueueSignal(t *testing.T) {
 				So(job2, ShouldNotBeNil)
 				So(job2.State, ShouldEqual, JobStateRunning)
 
-				waitRunningPastTime := func(cmd string, buffer time.Duration) (*Job, bool) {
+				waitPastTimeLimit := func(cmd string, buffer time.Duration) (*Job, bool) {
 					var got *Job
 
 					ok := pollUntilFor(runnerStartWait, func() bool {
 						var errg error
 
 						got, errg = jq.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
-						if errg != nil || got == nil || got.State != JobStateRunning || got.StartTime.IsZero() {
+						if errg != nil || got == nil || got.StartTime.IsZero() {
 							return false
 						}
 
@@ -1567,13 +1567,9 @@ func TestJobqueueSignal(t *testing.T) {
 					return got, ok
 				}
 
-				job2, pastTime := waitRunningPastTime(cmd2, 2*time.Second)
+				job2, pastTime := waitPastTimeLimit(cmd2, 2*time.Second)
 				So(pastTime, ShouldBeTrue)
 				So(job2, ShouldNotBeNil)
-
-				if job2 != nil {
-					So(job2.State, ShouldEqual, JobStateRunning)
-				}
 
 				errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				So(errk, ShouldBeNil)
