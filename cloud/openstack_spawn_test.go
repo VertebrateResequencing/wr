@@ -632,6 +632,8 @@ func TestOpenStackGetServerPortIDStopsRetryingWhenContextCancelled(t *testing.T)
 			if _, err := io.WriteString(w, `{"ports":[]}`); err != nil {
 				t.Errorf("write empty ports response: %s", err)
 			}
+
+			cancel()
 		}))
 		defer api.Close()
 
@@ -644,12 +646,9 @@ func TestOpenStackGetServerPortIDStopsRetryingWhenContextCancelled(t *testing.T)
 			ipNet:         ipNet,
 		}
 
-		cancelTimer := time.AfterFunc(10*time.Millisecond, cancel)
-		defer cancelTimer.Stop()
-
 		portID, err := provider.getServerPortID(ctx, testOpenStackServerID)
 
-		So(err, ShouldEqual, context.Canceled)
+		So(errors.Is(err, context.Canceled), ShouldBeTrue)
 		So(portID, ShouldBeBlank)
 		So(lists.Load(), ShouldEqual, int32(1))
 	})
