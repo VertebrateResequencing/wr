@@ -37,8 +37,29 @@ import (
 
 const testModule = "example.com/wr"
 
+func TestGoTestLaneHonoursRunAndSkipPatterns(t *testing.T) {
+	Convey("go-test lanes pass run and skip filters to go test", t, func() {
+		lane := Lane{
+			Kind:        LaneKindGoTest,
+			Packages:    []string{pkg(testModule, "cloud")},
+			RunPattern:  exactTests("TestOpenStack"),
+			SkipPattern: exactTests("TestOther"),
+			Race:        true,
+			Parallelism: 2,
+		}
+
+		So(goTestArgs(lane), ShouldResemble, []string{
+			"test", "-tags", "netgo", "-timeout", defaultTimeout, "--count", "1", "-failfast", "-v",
+			"-race", "-run", "^(TestOpenStack)$", "-skip", "^(TestOther)$", "-p", "2",
+			pkg(testModule, "cloud"),
+		})
+	})
+}
+
 func TestPlannerCoversDiscoveredPackages(t *testing.T) {
 	Convey("special packages are split and all other packages stay automatic", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		packages := []string{
 			testModule,
 			pkg(testModule, "client"),
@@ -64,6 +85,8 @@ func TestPlannerCoversDiscoveredPackages(t *testing.T) {
 
 func TestPlannerCoversRacePackagesAutomatically(t *testing.T) {
 	Convey("race mode covers every discovered package with the same split package planner", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		packages := []string{
 			testModule,
 			pkg(testModule, "client"),
@@ -86,12 +109,16 @@ func TestPlannerCoversRacePackagesAutomatically(t *testing.T) {
 
 func TestPlannerCompilesSharedRaceRunnerBinary(t *testing.T) {
 	Convey("race mode compiles one non-race jobqueue helper for runner subprocesses", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		plan := NewPlan(ModeRace, testModule, []string{pkg(testModule, "jobqueue")})
 
 		So(compileNames(plan.Compiles), ShouldResemble, []string{"jobqueue", "jobqueue_runner"})
 	})
 
 	Convey("normal test mode reuses the running jobqueue test binary", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
 		So(compileNames(plan.Compiles), ShouldResemble, []string{"jobqueue"})
@@ -100,6 +127,8 @@ func TestPlannerCompilesSharedRaceRunnerBinary(t *testing.T) {
 
 func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 	Convey("known prefix-collision tests are explicit and future tests fall into the default lane", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
 		So(jobqueueLanesForTest(plan, "TestREST"), ShouldResemble, []string{"jqA1"})
@@ -111,6 +140,8 @@ func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 
 func TestPlannerPreservesShardLanes(t *testing.T) {
 	Convey("tests split by WR_TEST_SHARD still get both shard lanes", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
 		So(jobqueueLanesForTest(plan, "TestJobqueueSignal"), ShouldResemble, []string{"signal_a", "signal_b"})
@@ -139,8 +170,74 @@ func TestRunnerPassesSharedRunnerBinaryToJobqueueLanes(t *testing.T) {
 	})
 }
 
+func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
+	packages := []string{
+		pkg(testModule, "cloud"),
+		pkg(testModule, "jobqueue"),
+		pkg(testModule, "jobqueue/scheduler"),
+	}
+
+	Convey("live OpenStack test functions move to serial lanes and stay covered", t, func() {
+		enableLiveOpenStackEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+
+		So(lanesForTestIn(plan.Serial, pkg(testModule, "cloud"), "TestOpenStack"),
+			ShouldResemble, []string{"cloud_openstack"})
+		So(lanesForTestIn(plan.Serial, pkg(testModule, "jobqueue/scheduler"), "TestOpenstack"),
+			ShouldResemble, []string{"scheduler_openstack"})
+		So(lanesForTestIn(plan.Serial, pkg(testModule, "jobqueue"), "TestJobqueueWithOpenStack"),
+			ShouldResemble, []string{"jobqueue_openstack"})
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "cloud"), "TestOpenStack"), ShouldBeEmpty)
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue/scheduler"), "TestOpenstack"), ShouldBeEmpty)
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithOpenStack"), ShouldBeEmpty)
+		So(coveredPackages(plan), ShouldResemble, packages)
+	})
+
+	Convey("without the live OpenStack environment the normal parallel plan is unchanged", t, func() {
+		disableLiveOpenStackEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+
+		So(plan.Serial, ShouldBeEmpty)
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "cloud"), "TestOpenStack"), ShouldResemble, []string{"other"})
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue/scheduler"), "TestOpenstack"),
+			ShouldResemble, []string{"scheduler"})
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithOpenStack"),
+			ShouldResemble, []string{"jq_default"})
+		So(coveredPackages(plan), ShouldResemble, packages)
+	})
+}
+
+func enableLiveOpenStackEnv(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(envOpenStackPrefix, "prefix")
+	t.Setenv(envOpenStackUsername, "openstack-user")
+	t.Setenv(envOpenStackLocalUsername, "local-user")
+	t.Setenv(envOpenStackFlavorRegex, "tiny")
+}
+
+func lanesForTestIn(lanes []Lane, packageName string, testName string) []string {
+	names := make([]string, 0)
+
+	for _, lane := range lanes {
+		if laneCoversPackage(lane, packageName) && laneWouldRunTest(lane, testName) {
+			names = append(names, lane.Name)
+		}
+	}
+
+	return names
+}
+
+func laneCoversPackage(lane Lane, packageName string) bool {
+	return lane.Package == packageName || slices.Contains(lane.Packages, packageName)
+}
+
 func TestPlannerOmitsEmptyOtherLane(t *testing.T) {
 	Convey("a plan made only of split packages does not run an accidental root-package lane", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
 		So(laneNamed(plan, "other").Name, ShouldBeBlank)
@@ -203,6 +300,8 @@ func TestCompileParallelismScalesWithCPUs(t *testing.T) {
 
 func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
 	Convey("the highest selectable lane range fits below the default Linux ephemeral range", t, func() {
+		disableLiveOpenStackEnv(t)
+
 		plan := NewPlan(ModeTest, testModule, []string{
 			pkg(testModule, "client"),
 			pkg(testModule, "cmd"),
@@ -225,6 +324,19 @@ func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
 
 		So(err, ShouldNotBeNil)
 	})
+}
+
+func disableLiveOpenStackEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range []string{
+		envOpenStackPrefix,
+		envOpenStackUsername,
+		envOpenStackLocalUsername,
+		envOpenStackFlavorRegex,
+	} {
+		t.Setenv(key, "")
+	}
 }
 
 func TestRunnerPrioritizesLongLanes(t *testing.T) {

@@ -28,6 +28,7 @@ package testsuite
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -35,8 +36,12 @@ import (
 )
 
 const (
-	defaultTimeout = "40m"
-	laneOther      = 13
+	defaultTimeout            = "40m"
+	laneOther                 = 13
+	envOpenStackPrefix        = "OS_OS_PREFIX"
+	envOpenStackUsername      = "OS_OS_USERNAME"
+	envOpenStackLocalUsername = "OS_LOCAL_USERNAME"
+	envOpenStackFlavorRegex   = "OS_FLAVOR_REGEX"
 )
 
 // Mode is the test-suite mode to run.
@@ -55,6 +60,85 @@ const (
 	// LaneKindGoTest runs go test over one or more packages.
 	LaneKindGoTest LaneKind = "go-test"
 )
+
+func liveOpenStackSerialLanes(module string, known map[string]bool, mode Mode) []Lane {
+	lanes := make([]Lane, 0, 3)
+
+	if known[pkg(module, "cloud")] {
+		lanes = append(lanes, cloudOpenStackLane(module, mode))
+	}
+
+	if known[pkg(module, "jobqueue/scheduler")] {
+		lanes = append(lanes, schedulerOpenStackLane(module))
+	}
+
+	if known[pkg(module, "jobqueue")] {
+		lanes = append(lanes, jobqueueOpenStackLane(module))
+	}
+
+	return lanes
+}
+
+func cloudOpenStackLane(module string, mode Mode) Lane {
+	return Lane{
+		Name:       "cloud_openstack",
+		Kind:       LaneKindGoTest,
+		Packages:   []string{pkg(module, "cloud")},
+		RunPattern: exactTests("TestOpenStack"),
+		Env:        conveyEnv(),
+		Race:       mode == ModeRace,
+	}
+}
+
+func schedulerOpenStackLane(module string) Lane {
+	lane := schedulerLane(module)
+	lane.Name = "scheduler_openstack"
+	lane.RunPattern = exactTests("TestOpenstack")
+
+	return lane
+}
+
+func jobqueueOpenStackLane(module string) Lane {
+	return jobqueueRunLane(module, jqConfig("jobqueue_openstack", 43, "TestJobqueueWithOpenStack"))
+}
+
+func schedulerLanes(module string, liveOpenStack bool) []Lane {
+	lane := schedulerLane(module)
+	if !liveOpenStack {
+		return []Lane{lane}
+	}
+
+	lane.SkipPattern = exactTests("TestOpenstack")
+
+	return []Lane{lane}
+}
+
+func cloudLanes(module string, mode Mode, liveOpenStack bool, known map[string]bool) []Lane {
+	if !known[pkg(module, "cloud")] {
+		return nil
+	}
+
+	if liveOpenStack {
+		return []Lane{cloudDefaultLane(module, mode)}
+	}
+
+	if mode == ModeRace {
+		return []Lane{cloudLane(module)}
+	}
+
+	return nil
+}
+
+func cloudDefaultLane(module string, mode Mode) Lane {
+	return Lane{
+		Name:        "cloud_default",
+		Kind:        LaneKindGoTest,
+		Packages:    []string{pkg(module, "cloud")},
+		SkipPattern: exactTests("TestOpenStack"),
+		Env:         conveyEnv(),
+		Race:        mode == ModeRace,
+	}
+}
 
 // UnknownModeError reports an unsupported test-suite mode.
 type UnknownModeError string
@@ -113,11 +197,12 @@ type Lane struct {
 // NewPlan creates a test-suite execution plan from discovered module packages.
 func NewPlan(mode Mode, module string, packages []string) Plan {
 	plan := Plan{Mode: mode, Module: module}
-	excluded := specialPackages(module, mode)
+	liveOpenStack := liveOpenStackTestsEnabled()
+	excluded := specialPackages(module, mode, liveOpenStack)
 
 	plan.Compiles = compilePlan(module, packages, mode)
-	plan.Serial = serialLanes(module, packages, mode)
-	plan.Parallel = append(plan.Parallel, splitPackageLanes(module, packages, mode)...)
+	plan.Serial = serialLanes(module, packages, mode, liveOpenStack)
+	plan.Parallel = append(plan.Parallel, splitPackageLanes(module, packages, mode, liveOpenStack)...)
 
 	if other := otherLane(mode, packages, excluded); len(other.Packages) > 0 {
 		plan.Parallel = append(plan.Parallel, other)
@@ -126,7 +211,7 @@ func NewPlan(mode Mode, module string, packages []string) Plan {
 	return plan
 }
 
-func specialPackages(module string, mode Mode) map[string]bool {
+func specialPackages(module string, mode Mode, liveOpenStack bool) map[string]bool {
 	excluded := map[string]bool{
 		pkg(module, "client"):             true,
 		pkg(module, "cmd"):                true,
@@ -137,6 +222,10 @@ func specialPackages(module string, mode Mode) map[string]bool {
 	if mode == ModeRace {
 		excluded[pkg(module, "cloud")] = true
 		excluded[pkg(module, "queue")] = true
+	}
+
+	if liveOpenStack {
+		excluded[pkg(module, "cloud")] = true
 	}
 
 	return excluded
@@ -171,25 +260,32 @@ func keepExistingCompiles(specs []Compile, packages []string) []Compile {
 	return kept
 }
 
-func serialLanes(module string, packages []string, mode Mode) []Lane {
-	if mode != ModeRace || !packageSet(packages)[pkg(module, "queue")] {
-		return nil
+func serialLanes(module string, packages []string, mode Mode, liveOpenStack bool) []Lane {
+	known := packageSet(packages)
+	lanes := make([]Lane, 0, 4)
+
+	if mode == ModeRace && known[pkg(module, "queue")] {
+		lanes = append(lanes, Lane{
+			Name:     "queue",
+			Kind:     LaneKindGoTest,
+			Packages: []string{pkg(module, "queue")},
+			Race:     true,
+		})
 	}
 
-	return []Lane{{
-		Name:     "queue",
-		Kind:     LaneKindGoTest,
-		Packages: []string{pkg(module, "queue")},
-		Race:     true,
-	}}
+	if liveOpenStack {
+		lanes = append(lanes, liveOpenStackSerialLanes(module, known, mode)...)
+	}
+
+	return lanes
 }
 
-func splitPackageLanes(module string, packages []string, mode Mode) []Lane {
+func splitPackageLanes(module string, packages []string, mode Mode, liveOpenStack bool) []Lane {
 	known := packageSet(packages)
 	lanes := make([]Lane, 0, 32)
 
 	if known[pkg(module, "jobqueue")] {
-		lanes = append(lanes, jobqueueLanes(module)...)
+		lanes = append(lanes, jobqueueLanes(module, liveOpenStack)...)
 	}
 
 	if known[pkg(module, "client")] {
@@ -201,12 +297,10 @@ func splitPackageLanes(module string, packages []string, mode Mode) []Lane {
 	}
 
 	if known[pkg(module, "jobqueue/scheduler")] {
-		lanes = append(lanes, schedulerLane(module))
+		lanes = append(lanes, schedulerLanes(module, liveOpenStack)...)
 	}
 
-	if mode == ModeRace && known[pkg(module, "cloud")] {
-		lanes = append(lanes, cloudLane(module))
-	}
+	lanes = append(lanes, cloudLanes(module, mode, liveOpenStack, known)...)
 
 	return lanes
 }
@@ -222,13 +316,17 @@ func otherLane(mode Mode, packages []string, excluded map[string]bool) Lane {
 	}
 }
 
-func jobqueueLanes(module string) []Lane {
+func jobqueueLanes(module string, liveOpenStack bool) []Lane {
 	lanes := make([]Lane, 0, 32)
 	explicit := make([]string, 0, 80)
 
 	for _, config := range jobqueueRunLaneConfigs() {
 		lanes = append(lanes, jobqueueRunLane(module, config))
 		explicit = append(explicit, config.tests...)
+	}
+
+	if liveOpenStack {
+		explicit = append(explicit, "TestJobqueueWithOpenStack")
 	}
 
 	lanes = append(lanes, Lane{
@@ -575,6 +673,21 @@ func cloudLane(module string) Lane {
 		Binary:  "cloud",
 		Env:     conveyEnv(),
 	}
+}
+
+func liveOpenStackTestsEnabled() bool {
+	for _, key := range []string{
+		envOpenStackPrefix,
+		envOpenStackUsername,
+		envOpenStackLocalUsername,
+		envOpenStackFlavorRegex,
+	} {
+		if os.Getenv(key) == "" {
+			return false
+		}
+	}
+
+	return true
 }
 
 func otherPackages(packages []string, excluded map[string]bool) []string {
