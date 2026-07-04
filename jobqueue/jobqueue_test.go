@@ -7882,6 +7882,29 @@ sudo usermod -aG docker ` + osUser
 			return waitRepGroupStateCountFor(repGroup, state, count, maxSpawnTime)
 		}
 
+		waitRepGroupRunningWithCloudHost := func(repGroup string, timeout time.Duration) (*Job, bool) {
+			limit := time.After(timeout)
+			ticker := time.NewTicker(500 * time.Millisecond)
+
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					got, errg := jq.GetByRepGroup(repGroup, false, 0, JobStateRunning, false, false)
+					if errg != nil {
+						fmt.Printf("GetByRepGroup failed: %s\n", errg)
+					}
+
+					if len(got) == 1 && got[0].HostID != "" && got[0].HostIP != "" {
+						return got[0], true
+					}
+				case <-limit:
+					return nil, false
+				}
+			}
+		}
+
 		Convey("You can add a job that runs on localhost", func() {
 			buff := captureLogsAtLevel("debug")
 			tmpdir := t.TempDir()
@@ -8617,21 +8640,17 @@ sudo usermod -aG docker ` + osUser
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			So(waitRepGroupStateCountFor("sleep", JobStateRunning, 1, maxSpawnTime), ShouldBeTrue)
-
 			// Pretend the worker server went down and verify the manager notices,
 			// releases the lost job, and starts it again on a replacement server.
-			got, err := jq.GetByRepGroup("sleep", false, 0, JobStateRunning, false, false)
-			So(err, ShouldBeNil)
-			So(len(got), ShouldEqual, 1)
-			So(got[0].Host, ShouldNotEqual, host)
-			So(got[0].HostID, ShouldNotBeBlank)
-			So(got[0].HostIP, ShouldNotBeBlank)
+			got, ok := waitRepGroupRunningWithCloudHost("sleep", maxSpawnTime)
+			So(ok, ShouldBeTrue)
+			So(got, ShouldNotBeNil)
+			So(got.Host, ShouldNotEqual, host)
 
-			err = p.DestroyServer(ctx, got[0].HostID)
+			err = p.DestroyServer(ctx, got.HostID)
 			So(err, ShouldBeNil)
 
-			killedJobEssence := &JobEssence{JobKey: got[0].Key()}
+			killedJobEssence := &JobEssence{JobKey: got.Key()}
 
 			// wait for the killed job to be marked as lost and then release
 			// it
