@@ -1111,11 +1111,11 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 	}
 
 	cmdStr += rName
-	cmd := exec.CommandContext(ctx, testShell, "-c", cmdStr) //nolint:gosec // test helper running a trusted nova cmd
+	cmd := exec.CommandContext(ctx, testShell, "-c", cmdStr)
 	out, err := cmd.Output()
 
 	if ctx.Err() != nil {
-		log.Printf("exec of [%s] timed out\n", cmdStr) //nolint:gosec // test diagnostic logging of a trusted cmd
+		log.Printf("exec of [%s] timed out\n", cmdStr)
 
 		return 0
 	}
@@ -1135,7 +1135,7 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 		return count
 	}
 
-	log.Printf("Atoi following [%s] failed: %s\n", cmdStr, err) //nolint:gosec // test diagnostic logging
+	log.Printf("Atoi following [%s] failed: %s\n", cmdStr, err)
 
 	return 0
 }
@@ -1148,11 +1148,11 @@ func novaCountMatchingPrefix(ctx context.Context, out []byte, novaCmd, rName, os
 
 	for _, name := range r.FindAll(out, -1) {
 		showCmdStr := novaCmd + " show " + string(name) + " | grep image"
-		showCmd := exec.CommandContext(ctx, testShell, "-c", showCmdStr) //nolint:gosec // test helper running a trusted nova cmd
+		showCmd := exec.CommandContext(ctx, testShell, "-c", showCmdStr)
 
 		showOut, err := showCmd.Output()
 		if err != nil {
-			log.Printf("cmd [%s] failed: %s\n", showCmdStr, err) //nolint:gosec // test diagnostic logging
+			log.Printf("cmd [%s] failed: %s\n", showCmdStr, err)
 
 			continue
 		}

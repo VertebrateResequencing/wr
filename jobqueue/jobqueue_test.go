@@ -123,7 +123,7 @@ const (
 	reqGroupPerl          = "perl"
 	reqGroupSleep         = "sleep"
 	awsAccessKeyIDEnv     = "AWS_ACCESS_KEY_ID"
-	awsSecretAccessKeyEnv = "AWS_SECRET_ACCESS_KEY"
+	awsSecretAccessKeyEnv = "AWS_SECRET_ACCESS_KEY" // #nosec G101 -- test env-var name only.
 )
 
 // test command-line flag variables, populated by init() via the flag package.
@@ -212,7 +212,6 @@ func unsetAWSCredentialEnv(t *testing.T) {
 
 	for _, name := range []string{awsAccessKeyIDEnv, awsSecretAccessKeyEnv} {
 		previousValue, wasSet := os.LookupEnv(name)
-		name, previousValue, wasSet := name, previousValue, wasSet
 
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatalf("failed to unset %s: %s", name, err)
@@ -8746,6 +8745,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 	}
 
 	unsetAWSCredentialEnv(t)
+
 	mountEnvVars := envWithoutAWSCredentials(envVars)
 
 	restoreTimingGlobals := captureTimingGlobals()

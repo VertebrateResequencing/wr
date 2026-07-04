@@ -656,6 +656,8 @@ func TestOpenStackGetServerPortIDStopsRetryingWhenContextCancelled(t *testing.T)
 }
 
 func TestOpenStackTearDownSecurityGroupInsideOpenStack(t *testing.T) {
+	const securityGroupsPath = "/os-security-groups"
+
 	Convey("OpenStack teardown deletes a security group created by this provider session", t, func() {
 		var (
 			groupDeletes atomic.Int32
@@ -666,25 +668,30 @@ func TestOpenStackTearDownSecurityGroupInsideOpenStack(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 
 			switch {
-			case r.Method == http.MethodGet && r.URL.Path == "/os-security-groups":
-				if _, err := io.WriteString(w, `{"security_groups":[{"id":"default-security-group-id","name":"default"}]}`); err != nil {
+			case r.Method == http.MethodGet && r.URL.Path == securityGroupsPath:
+				response := `{"security_groups":[{"id":"default-security-group-id","name":"default"}]}`
+				if _, err := io.WriteString(w, response); err != nil {
 					t.Errorf("write security group list response: %s", err)
 				}
-			case r.Method == http.MethodPost && r.URL.Path == "/os-security-groups":
-				if _, err := io.WriteString(w, `{"security_group":{"id":"`+testOpenStackSecGroupID+`","name":"`+testOpenStackNetworkName+`"}}`); err != nil {
+			case r.Method == http.MethodPost && r.URL.Path == securityGroupsPath:
+				response := `{"security_group":{"id":"` + testOpenStackSecGroupID +
+					`","name":"` + testOpenStackNetworkName + `"}}`
+				if _, err := io.WriteString(w, response); err != nil {
 					t.Errorf("write security group create response: %s", err)
 				}
 			case r.Method == http.MethodPost && r.URL.Path == "/os-security-group-rules":
 				ruleCreates.Add(1)
 
-				if _, err := io.WriteString(w, `{"security_group_rule":{"id":"rule-id","parent_group_id":"`+testOpenStackSecGroupID+`"}}`); err != nil {
+				response := `{"security_group_rule":{"id":"rule-id","parent_group_id":"` +
+					testOpenStackSecGroupID + `"}}`
+				if _, err := io.WriteString(w, response); err != nil {
 					t.Errorf("write security group rule response: %s", err)
 				}
 			case r.Method == http.MethodGet && r.URL.Path == "/servers/detail":
 				if _, err := io.WriteString(w, `{"servers":[]}`); err != nil {
 					t.Errorf("write server list response: %s", err)
 				}
-			case r.Method == http.MethodDelete && r.URL.Path == "/os-security-groups/"+testOpenStackSecGroupID:
+			case r.Method == http.MethodDelete && r.URL.Path == securityGroupsPath+"/"+testOpenStackSecGroupID:
 				groupDeletes.Add(1)
 				w.WriteHeader(http.StatusAccepted)
 			default:
@@ -718,15 +725,17 @@ func TestOpenStackTearDownSecurityGroupInsideOpenStack(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 
 			switch {
-			case r.Method == http.MethodGet && r.URL.Path == "/os-security-groups":
-				if _, err := io.WriteString(w, `{"security_groups":[{"id":"`+testOpenStackSecGroupID+`","name":"`+testOpenStackNetworkName+`"}]}`); err != nil {
+			case r.Method == http.MethodGet && r.URL.Path == securityGroupsPath:
+				response := `{"security_groups":[{"id":"` + testOpenStackSecGroupID +
+					`","name":"` + testOpenStackNetworkName + `"}]}`
+				if _, err := io.WriteString(w, response); err != nil {
 					t.Errorf("write security group list response: %s", err)
 				}
 			case r.Method == http.MethodGet && r.URL.Path == "/servers/detail":
 				if _, err := io.WriteString(w, `{"servers":[]}`); err != nil {
 					t.Errorf("write server list response: %s", err)
 				}
-			case r.Method == http.MethodDelete && r.URL.Path == "/os-security-groups/"+testOpenStackSecGroupID:
+			case r.Method == http.MethodDelete && r.URL.Path == securityGroupsPath+"/"+testOpenStackSecGroupID:
 				groupDeletes.Add(1)
 				w.WriteHeader(http.StatusAccepted)
 			default:
