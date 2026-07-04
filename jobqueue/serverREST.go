@@ -2225,7 +2225,9 @@ func (s *Server) storeModifiedLimitGroupsIfNeeded(ctx context.Context, jobs []*J
 func (s *Server) storeModifiedLimitGroups(ctx context.Context, jobs []*Job) {
 	limitGroups := make(map[string]*limiter.GroupData)
 	for _, job := range jobs {
+		job.Lock()
 		s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+		job.Unlock()
 	}
 
 	if err := s.storeLimitGroups(limitGroups); err != nil {
