@@ -107,19 +107,21 @@ const (
 	// granted/started, so its start marker never appeared. It is small (1) so the
 	// capacity-holding job fills it and a second job must wait. This only affects
 	// the test daemon; production default behaviour is unchanged.
-	signalTestMaxCores  = 1
-	serverRC            = `echo %s %s %s %s %d %d`
-	testCwd             = "/tmp"
-	manuallyAdded       = "manually_added"
-	reqGroupFake        = "fake_group"
-	reqGroupFallocate   = "fallocate"
-	futureDepGroup      = "future"
-	testCarrierDepGroup = "carrier"
-	testLiveDepGroup    = "live"
-	testOtherRepGroup   = "other"
-	testRepGroupA       = "rg-a"
-	reqGroupPerl        = "perl"
-	reqGroupSleep       = "sleep"
+	signalTestMaxCores    = 1
+	serverRC              = `echo %s %s %s %s %d %d`
+	testCwd               = "/tmp"
+	manuallyAdded         = "manually_added"
+	reqGroupFake          = "fake_group"
+	reqGroupFallocate     = "fallocate"
+	futureDepGroup        = "future"
+	testCarrierDepGroup   = "carrier"
+	testLiveDepGroup      = "live"
+	testOtherRepGroup     = "other"
+	testRepGroupA         = "rg-a"
+	reqGroupPerl          = "perl"
+	reqGroupSleep         = "sleep"
+	awsAccessKeyIDEnv     = "AWS_ACCESS_KEY_ID"
+	awsSecretAccessKeyEnv = "AWS_SECRET_ACCESS_KEY"
 )
 
 // test command-line flag variables, populated by init() via the flag package.
@@ -185,6 +187,64 @@ func envWithoutLoadedModuleState(environ []string) []string {
 	}
 
 	return filtered
+}
+
+func envWithoutAWSCredentials(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+
+	for _, envvar := range environ {
+		name, _, _ := strings.Cut(envvar, "=")
+		if name == awsAccessKeyIDEnv || name == awsSecretAccessKeyEnv {
+			continue
+		}
+
+		filtered = append(filtered, envvar)
+	}
+
+	return filtered
+}
+
+//nolint:usetesting // t.Setenv cannot express "unset during test, restore later".
+func unsetAWSCredentialEnv(t *testing.T) {
+	t.Helper()
+
+	for _, name := range []string{awsAccessKeyIDEnv, awsSecretAccessKeyEnv} {
+		previousValue, wasSet := os.LookupEnv(name)
+		name, previousValue, wasSet := name, previousValue, wasSet
+
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("failed to unset %s: %s", name, err)
+		}
+
+		t.Cleanup(func() {
+			if wasSet {
+				if err := os.Setenv(name, previousValue); err != nil {
+					t.Fatalf("failed to restore %s: %s", name, err)
+				}
+
+				return
+			}
+
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatalf("failed to restore %s: %s", name, err)
+			}
+		})
+	}
+}
+
+func TestEnvWithoutAWSCredentials(t *testing.T) {
+	Convey("AWS credential environment variables are removed from test job environments", t, func() {
+		filtered := envWithoutAWSCredentials([]string{
+			"WR_TEST_ENV=kept",
+			awsAccessKeyIDEnv + "=stale-access-key",
+			awsSecretAccessKeyEnv + "=stale-secret-key",
+			"AWS_SESSION_TOKEN=kept",
+		})
+		So(filtered, ShouldResemble, []string{
+			"WR_TEST_ENV=kept",
+			"AWS_SESSION_TOKEN=kept",
+		})
+	})
 }
 
 func isLoadedModuleStateEnv(name string) bool {
@@ -8619,6 +8679,9 @@ func TestJobqueueWithMounts(t *testing.T) {
 		return
 	}
 
+	unsetAWSCredentialEnv(t)
+	mountEnvVars := envWithoutAWSCredentials(envVars)
+
 	restoreTimingGlobals := captureTimingGlobals()
 	defer restoreTimingGlobals()
 
@@ -8685,7 +8748,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			var jobs []*Job
 
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -8784,7 +8847,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 		Convey("Commands can read remote data and the cache gets deleted afterwards", func() {
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs, Behaviours: bs})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -8834,7 +8897,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			}
 
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "b", MountConfigs: mcs2, Behaviours: bs})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -8849,7 +8912,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			jobs = nil
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "c", MountConfigs: mcs3})
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "d", MountConfigs: mcs4})
-			inserts, already, err = jq.Add(jobs, envVars, true)
+			inserts, already, err = jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -8863,7 +8926,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		Convey("You can't add identical commands with the same mounts", func() {
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "a", MountConfigs: mcs, Behaviours: bs})
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "b", MountConfigs: mcs})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
@@ -8880,7 +8943,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			jobs = nil
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "c", MountConfigs: mcs5})
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "d", MountConfigs: mcs6})
-			inserts, already, err = jq.Add(jobs, envVars, true)
+			inserts, already, err = jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
@@ -8889,7 +8952,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		Convey("You can modify the mounts", func() {
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3"})
 
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
