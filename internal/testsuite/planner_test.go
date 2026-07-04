@@ -28,6 +28,8 @@ package testsuite
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"testing"
@@ -58,7 +60,7 @@ func TestGoTestLaneHonoursRunAndSkipPatterns(t *testing.T) {
 
 func TestPlannerCoversDiscoveredPackages(t *testing.T) {
 	Convey("special packages are split and all other packages stay automatic", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		packages := []string{
 			testModule,
@@ -85,7 +87,7 @@ func TestPlannerCoversDiscoveredPackages(t *testing.T) {
 
 func TestPlannerCoversRacePackagesAutomatically(t *testing.T) {
 	Convey("race mode covers every discovered package with the same split package planner", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		packages := []string{
 			testModule,
@@ -109,7 +111,7 @@ func TestPlannerCoversRacePackagesAutomatically(t *testing.T) {
 
 func TestPlannerCompilesSharedRaceRunnerBinary(t *testing.T) {
 	Convey("race mode compiles one non-race jobqueue helper for runner subprocesses", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeRace, testModule, []string{pkg(testModule, "jobqueue")})
 
@@ -117,7 +119,7 @@ func TestPlannerCompilesSharedRaceRunnerBinary(t *testing.T) {
 	})
 
 	Convey("normal test mode reuses the running jobqueue test binary", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
@@ -127,7 +129,7 @@ func TestPlannerCompilesSharedRaceRunnerBinary(t *testing.T) {
 
 func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 	Convey("known prefix-collision tests are explicit and future tests fall into the default lane", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
@@ -140,7 +142,7 @@ func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 
 func TestPlannerPreservesShardLanes(t *testing.T) {
 	Convey("tests split by WR_TEST_SHARD still get both shard lanes", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
@@ -178,6 +180,7 @@ func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
 	}
 
 	Convey("live OpenStack test functions move to serial lanes and stay covered", t, func() {
+		disableLiveS3MountEnv(t)
 		enableLiveOpenStackEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, packages)
@@ -195,7 +198,7 @@ func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
 	})
 
 	Convey("without the live OpenStack environment the normal parallel plan is unchanged", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, packages)
 
@@ -207,6 +210,44 @@ func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
 			ShouldResemble, []string{"jq_default"})
 		So(coveredPackages(plan), ShouldResemble, packages)
 	})
+}
+
+func TestPlannerSerializesLiveS3MountTestsWhenConfigured(t *testing.T) {
+	packages := []string{pkg(testModule, "jobqueue")}
+
+	Convey("live S3 mount tests move to a serial lane and stay covered", t, func() {
+		enableLiveS3MountEnv(t)
+		disableLiveOpenStackEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+
+		So(lanesForTestIn(plan.Serial, pkg(testModule, "jobqueue"), "TestJobqueueWithMounts"),
+			ShouldResemble, []string{"jobqueue_mounts"})
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithMounts"), ShouldBeEmpty)
+		So(coveredPackages(plan), ShouldResemble, packages)
+	})
+
+	Convey("without live S3 mount prerequisites the normal parallel plan is unchanged", t, func() {
+		disableLiveIntegrationEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+
+		So(lanesForTestIn(plan.Serial, pkg(testModule, "jobqueue"), "TestJobqueueWithMounts"), ShouldBeEmpty)
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithMounts"),
+			ShouldResemble, []string{"jq_default"})
+		So(coveredPackages(plan), ShouldResemble, packages)
+	})
+}
+
+func enableLiveS3MountEnv(t *testing.T) {
+	t.Helper()
+
+	home := t.TempDir()
+
+	t.Setenv(envS3MountPath, "s3://wr-test-bucket")
+	t.Setenv("HOME", home)
+
+	So(os.WriteFile(filepath.Join(home, s3ConfigFile), []byte("[default]\n"), 0600), ShouldBeNil)
 }
 
 func enableLiveOpenStackEnv(t *testing.T) {
@@ -236,7 +277,7 @@ func laneCoversPackage(lane Lane, packageName string) bool {
 
 func TestPlannerOmitsEmptyOtherLane(t *testing.T) {
 	Convey("a plan made only of split packages does not run an accidental root-package lane", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
 
@@ -300,7 +341,7 @@ func TestCompileParallelismScalesWithCPUs(t *testing.T) {
 
 func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
 	Convey("the highest selectable lane range fits below the default Linux ephemeral range", t, func() {
-		disableLiveOpenStackEnv(t)
+		disableLiveIntegrationEnv(t)
 
 		plan := NewPlan(ModeTest, testModule, []string{
 			pkg(testModule, "client"),
@@ -326,6 +367,13 @@ func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
 	})
 }
 
+func disableLiveIntegrationEnv(t *testing.T) {
+	t.Helper()
+
+	disableLiveOpenStackEnv(t)
+	disableLiveS3MountEnv(t)
+}
+
 func disableLiveOpenStackEnv(t *testing.T) {
 	t.Helper()
 
@@ -337,6 +385,13 @@ func disableLiveOpenStackEnv(t *testing.T) {
 	} {
 		t.Setenv(key, "")
 	}
+}
+
+func disableLiveS3MountEnv(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(envS3MountPath, "")
+	t.Setenv("HOME", t.TempDir())
 }
 
 func TestRunnerPrioritizesLongLanes(t *testing.T) {

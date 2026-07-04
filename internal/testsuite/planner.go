@@ -29,6 +29,7 @@ package testsuite
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -42,6 +43,8 @@ const (
 	envOpenStackUsername      = "OS_OS_USERNAME"
 	envOpenStackLocalUsername = "OS_LOCAL_USERNAME"
 	envOpenStackFlavorRegex   = "OS_FLAVOR_REGEX"
+	envS3MountPath            = "JOBQUEUE_REMOTES3_PATH"
+	s3ConfigFile              = ".s3cfg"
 )
 
 // Mode is the test-suite mode to run.
@@ -60,6 +63,10 @@ const (
 	// LaneKindGoTest runs go test over one or more packages.
 	LaneKindGoTest LaneKind = "go-test"
 )
+
+func jobqueueMountsLane(module string) Lane {
+	return jobqueueRunLane(module, jqConfig("jobqueue_mounts", 44, "TestJobqueueWithMounts"))
+}
 
 func liveOpenStackSerialLanes(module string, known map[string]bool, mode Mode) []Lane {
 	lanes := make([]Lane, 0, 3)
@@ -198,11 +205,12 @@ type Lane struct {
 func NewPlan(mode Mode, module string, packages []string) Plan {
 	plan := Plan{Mode: mode, Module: module}
 	liveOpenStack := liveOpenStackTestsEnabled()
+	liveS3Mounts := liveS3MountTestsEnabled()
 	excluded := specialPackages(module, mode, liveOpenStack)
 
 	plan.Compiles = compilePlan(module, packages, mode)
-	plan.Serial = serialLanes(module, packages, mode, liveOpenStack)
-	plan.Parallel = append(plan.Parallel, splitPackageLanes(module, packages, mode, liveOpenStack)...)
+	plan.Serial = serialLanes(module, packages, mode, liveOpenStack, liveS3Mounts)
+	plan.Parallel = append(plan.Parallel, splitPackageLanes(module, packages, mode, liveOpenStack, liveS3Mounts)...)
 
 	if other := otherLane(mode, packages, excluded); len(other.Packages) > 0 {
 		plan.Parallel = append(plan.Parallel, other)
@@ -260,9 +268,9 @@ func keepExistingCompiles(specs []Compile, packages []string) []Compile {
 	return kept
 }
 
-func serialLanes(module string, packages []string, mode Mode, liveOpenStack bool) []Lane {
+func serialLanes(module string, packages []string, mode Mode, liveOpenStack bool, liveS3Mounts bool) []Lane {
 	known := packageSet(packages)
-	lanes := make([]Lane, 0, 4)
+	lanes := make([]Lane, 0, 5)
 
 	if mode == ModeRace && known[pkg(module, "queue")] {
 		lanes = append(lanes, Lane{
@@ -277,15 +285,19 @@ func serialLanes(module string, packages []string, mode Mode, liveOpenStack bool
 		lanes = append(lanes, liveOpenStackSerialLanes(module, known, mode)...)
 	}
 
+	if liveS3Mounts && known[pkg(module, "jobqueue")] {
+		lanes = append(lanes, jobqueueMountsLane(module))
+	}
+
 	return lanes
 }
 
-func splitPackageLanes(module string, packages []string, mode Mode, liveOpenStack bool) []Lane {
+func splitPackageLanes(module string, packages []string, mode Mode, liveOpenStack bool, liveS3Mounts bool) []Lane {
 	known := packageSet(packages)
 	lanes := make([]Lane, 0, 32)
 
 	if known[pkg(module, "jobqueue")] {
-		lanes = append(lanes, jobqueueLanes(module, liveOpenStack)...)
+		lanes = append(lanes, jobqueueLanes(module, liveOpenStack, liveS3Mounts)...)
 	}
 
 	if known[pkg(module, "client")] {
@@ -316,7 +328,7 @@ func otherLane(mode Mode, packages []string, excluded map[string]bool) Lane {
 	}
 }
 
-func jobqueueLanes(module string, liveOpenStack bool) []Lane {
+func jobqueueLanes(module string, liveOpenStack bool, liveS3Mounts bool) []Lane {
 	lanes := make([]Lane, 0, 32)
 	explicit := make([]string, 0, 80)
 
@@ -327,6 +339,10 @@ func jobqueueLanes(module string, liveOpenStack bool) []Lane {
 
 	if liveOpenStack {
 		explicit = append(explicit, "TestJobqueueWithOpenStack")
+	}
+
+	if liveS3Mounts {
+		explicit = append(explicit, "TestJobqueueWithMounts")
 	}
 
 	lanes = append(lanes, Lane{
@@ -688,6 +704,24 @@ func liveOpenStackTestsEnabled() bool {
 	}
 
 	return true
+}
+
+func liveS3MountTestsEnabled() bool {
+	if os.Getenv(envS3MountPath) == "" {
+		return false
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+
+	info, err := os.Stat(filepath.Join(home, s3ConfigFile))
+	if err != nil {
+		return false
+	}
+
+	return !info.IsDir()
 }
 
 func otherPackages(packages []string, excluded map[string]bool) []string {
