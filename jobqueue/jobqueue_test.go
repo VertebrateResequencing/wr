@@ -29,6 +29,7 @@
 package jobqueue
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"errors"
@@ -7654,6 +7655,32 @@ func openStackJobqueueTestInCloud(ctx context.Context, resourceName, savePath st
 	return p.InCloud(), nil
 }
 
+type synchronizedLogCapture struct {
+	mu      sync.Mutex
+	content bytes.Buffer
+}
+
+func captureLogsAtLevel(level string) *synchronizedLogCapture {
+	capture := &synchronizedLogCapture{}
+	clog.ToHandlerAtLevel(log15.StreamHandler(capture, log15.LogfmtFormat()), level)
+
+	return capture
+}
+
+func (c *synchronizedLogCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.content.Write(p)
+}
+
+func (c *synchronizedLogCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.content.String()
+}
+
 func TestJobqueueWithOpenStack(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -7844,7 +7871,7 @@ sudo usermod -aG docker ` + osUser
 		}
 
 		Convey("You can add a job that runs on localhost", func() {
-			buff := clog.ToBufferAtLevel("debug")
+			buff := captureLogsAtLevel("debug")
 			tmpdir := t.TempDir()
 
 			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
@@ -7892,15 +7919,23 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 
+			sawServerAllocate := false
+			sawServerRelease := false
+
 			for m := range strings.SplitSeq(buff.String(), "\n") {
 				if strings.Contains(m, "server allocate") {
+					sawServerAllocate = true
 					So(m, ShouldContainSubstring, "serverid=localhost")
 				}
 
 				if strings.Contains(m, "server release") {
+					sawServerRelease = true
 					So(m, ShouldContainSubstring, "serverid=localhost")
 				}
 			}
+
+			So(sawServerAllocate, ShouldBeTrue)
+			So(sawServerRelease, ShouldBeTrue)
 		})
 
 		Convey("You can add a chain of jobs that run quickly one after the other", func() {
