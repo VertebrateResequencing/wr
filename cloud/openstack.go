@@ -198,33 +198,34 @@ type serverActiveWaiter func(context.Context, *servers.Server, string, bool) err
 
 // openstackp is our implementer of provideri.
 type openstackp struct {
-	lastFlavorCache   time.Time
-	externalNetworkID string
-	networkName       string
-	ownName           string
-	poolName          string
-	securityGroup     string
-	spawnTimes        ewma.MovingAverage
-	spawnTimesVolume  ewma.MovingAverage
-	tenantID          string
-	computeClient     *gophercloud.ServiceClient
-	errorBackoff      *backoff.Backoff
-	fmap              map[string]*Flavor
-	imap              map[string]*imageimages.Image
-	imageClient       *gophercloud.ServiceClient
-	ipNet             *net.IPNet
-	networkClient     *gophercloud.ServiceClient
-	ownServer         *servers.Server
-	fmapMutex         sync.RWMutex
-	imapMutex         sync.RWMutex
-	stMutex           sync.RWMutex
-	spMutex           sync.RWMutex
-	createdKeyPair    bool
-	useConfigDrive    bool
-	hasDefaultGroup   bool
-	spawnFailed       bool
-	networks          []servers.Network
-	createdPorts      map[string][]string
+	lastFlavorCache      time.Time
+	externalNetworkID    string
+	networkName          string
+	ownName              string
+	poolName             string
+	securityGroup        string
+	spawnTimes           ewma.MovingAverage
+	spawnTimesVolume     ewma.MovingAverage
+	tenantID             string
+	computeClient        *gophercloud.ServiceClient
+	errorBackoff         *backoff.Backoff
+	fmap                 map[string]*Flavor
+	imap                 map[string]*imageimages.Image
+	imageClient          *gophercloud.ServiceClient
+	ipNet                *net.IPNet
+	networkClient        *gophercloud.ServiceClient
+	ownServer            *servers.Server
+	fmapMutex            sync.RWMutex
+	imapMutex            sync.RWMutex
+	stMutex              sync.RWMutex
+	spMutex              sync.RWMutex
+	createdKeyPair       bool
+	createdSecurityGroup bool
+	useConfigDrive       bool
+	hasDefaultGroup      bool
+	spawnFailed          bool
+	networks             []servers.Network
+	createdPorts         map[string][]string
 }
 
 // requiredEnv returns envs that are definitely required.
@@ -988,6 +989,8 @@ func (p *openstackp) ensureSecurityGroup(ctx context.Context, resources *Resourc
 		if err != nil {
 			return err
 		}
+
+		p.createdSecurityGroup = true
 	}
 
 	resources.Details["secgroup"] = group.ID
@@ -2362,6 +2365,8 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 
 	if p.ownName == "" {
 		merr = p.tearDownNetworkResources(ctx, resources, merr, &didSomething)
+	} else if p.createdSecurityGroup {
+		merr = p.tearDownSecurityGroup(ctx, resources, merr, &didSomething)
 	}
 
 	merr = p.tearDownKeyPair(ctx, resources, merr)
@@ -2434,12 +2439,19 @@ func (p *openstackp) tearDownNetworkResources(ctx context.Context, resources *Re
 		"delete network (auto-deletes subnet)", func() error {
 			return networks.Delete(ctx, p.networkClient, resources.Details["network"]).ExtractErr()
 		})
-	merr = p.tearDownResource(ctx, resources.Details["secgroup"], merr, didSomething,
+
+	return p.tearDownSecurityGroup(ctx, resources, merr, didSomething)
+}
+
+// tearDownSecurityGroup deletes the deployment's security group, if one was
+// recorded.
+func (p *openstackp) tearDownSecurityGroup(ctx context.Context, resources *Resources,
+	merr *multierror.Error, didSomething *bool,
+) *multierror.Error {
+	return p.tearDownResource(ctx, resources.Details["secgroup"], merr, didSomething,
 		"delete security group", func() error {
 			return secgroups.Delete(ctx, p.computeClient, resources.Details["secgroup"]).ExtractErr()
 		})
-
-	return merr
 }
 
 // tearDownResource deletes a single resource identified by id (a no-op if id is

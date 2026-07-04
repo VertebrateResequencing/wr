@@ -49,6 +49,7 @@ const (
 	testOpenStackPortID        = "port-id"
 	testOpenStackServerID      = "server-id"
 	testOpenStackServerIPQuery = "ip_address=192.168.0.12"
+	testOpenStackSecGroupID    = "security-group-id"
 )
 
 func TestOpenStackCreateServerRetriesTransientFailures(t *testing.T) {
@@ -651,6 +652,105 @@ func TestOpenStackGetServerPortIDStopsRetryingWhenContextCancelled(t *testing.T)
 		So(err, ShouldEqual, context.Canceled)
 		So(portID, ShouldBeBlank)
 		So(lists.Load(), ShouldEqual, int32(1))
+	})
+}
+
+func TestOpenStackTearDownSecurityGroupInsideOpenStack(t *testing.T) {
+	Convey("OpenStack teardown deletes a security group created by this provider session", t, func() {
+		var (
+			groupDeletes atomic.Int32
+			ruleCreates  atomic.Int32
+		)
+
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/os-security-groups":
+				if _, err := io.WriteString(w, `{"security_groups":[{"id":"default-security-group-id","name":"default"}]}`); err != nil {
+					t.Errorf("write security group list response: %s", err)
+				}
+			case r.Method == http.MethodPost && r.URL.Path == "/os-security-groups":
+				if _, err := io.WriteString(w, `{"security_group":{"id":"`+testOpenStackSecGroupID+`","name":"`+testOpenStackNetworkName+`"}}`); err != nil {
+					t.Errorf("write security group create response: %s", err)
+				}
+			case r.Method == http.MethodPost && r.URL.Path == "/os-security-group-rules":
+				ruleCreates.Add(1)
+
+				if _, err := io.WriteString(w, `{"security_group_rule":{"id":"rule-id","parent_group_id":"`+testOpenStackSecGroupID+`"}}`); err != nil {
+					t.Errorf("write security group rule response: %s", err)
+				}
+			case r.Method == http.MethodGet && r.URL.Path == "/servers/detail":
+				if _, err := io.WriteString(w, `{"servers":[]}`); err != nil {
+					t.Errorf("write server list response: %s", err)
+				}
+			case r.Method == http.MethodDelete && r.URL.Path == "/os-security-groups/"+testOpenStackSecGroupID:
+				groupDeletes.Add(1)
+				w.WriteHeader(http.StatusAccepted)
+			default:
+				t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+				http.Error(w, "unexpected request", http.StatusNotFound)
+			}
+		}))
+		defer api.Close()
+
+		provider := &openstackp{
+			computeClient: fakeOpenStackComputeClient(api.URL),
+			ownName:       testOpenStackNetworkName + "-current-node",
+		}
+
+		resources := testResources()
+		err := provider.ensureSecurityGroup(context.Background(), resources, []int{22})
+		So(err, ShouldBeNil)
+		So(resources.Details["secgroup"], ShouldEqual, testOpenStackSecGroupID)
+		So(ruleCreates.Load(), ShouldEqual, int32(2))
+
+		err = provider.tearDown(context.Background(), resources)
+
+		So(err, ShouldBeNil)
+		So(groupDeletes.Load(), ShouldEqual, int32(1))
+	})
+
+	Convey("OpenStack teardown preserves an inherited security group", t, func() {
+		var groupDeletes atomic.Int32
+
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/os-security-groups":
+				if _, err := io.WriteString(w, `{"security_groups":[{"id":"`+testOpenStackSecGroupID+`","name":"`+testOpenStackNetworkName+`"}]}`); err != nil {
+					t.Errorf("write security group list response: %s", err)
+				}
+			case r.Method == http.MethodGet && r.URL.Path == "/servers/detail":
+				if _, err := io.WriteString(w, `{"servers":[]}`); err != nil {
+					t.Errorf("write server list response: %s", err)
+				}
+			case r.Method == http.MethodDelete && r.URL.Path == "/os-security-groups/"+testOpenStackSecGroupID:
+				groupDeletes.Add(1)
+				w.WriteHeader(http.StatusAccepted)
+			default:
+				t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+				http.Error(w, "unexpected request", http.StatusNotFound)
+			}
+		}))
+		defer api.Close()
+
+		provider := &openstackp{
+			computeClient: fakeOpenStackComputeClient(api.URL),
+			ownName:       testOpenStackNetworkName + "-current-node",
+		}
+
+		resources := testResources()
+		err := provider.ensureSecurityGroup(context.Background(), resources, []int{22})
+		So(err, ShouldBeNil)
+		So(resources.Details["secgroup"], ShouldEqual, testOpenStackSecGroupID)
+
+		err = provider.tearDown(context.Background(), resources)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "nothing to tear down")
+		So(groupDeletes.Load(), ShouldEqual, int32(0))
 	})
 }
 
