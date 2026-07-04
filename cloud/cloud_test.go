@@ -276,15 +276,7 @@ func TestOpenStack(t *testing.T) {
 
 			Convey("TearDown deletes all the resources that deploy made", func() {
 				err := p.TearDown(ctx)
-
-				if p.InCloud() {
-					// the deploy didn't actually create anything that
-					// teardown would delete, so it complains
-					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldContainSubstring, "nothing to tear down")
-				} else {
-					So(err, ShouldBeNil)
-				}
+				So(err, ShouldBeNil)
 
 				// *** should really use openstack API to confirm everything is
 				// really deleted...
