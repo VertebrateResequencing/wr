@@ -190,7 +190,7 @@ func TestOpenStack(t *testing.T) {
 
 	if os.Getenv("OS_PROJECT_NAME") != "" && os.Getenv("OS_PROJECT_ID") != "" {
 		Convey("You can get a new OpenStack Provider with both OS_PROJECT_NAME and OS_PROJECT_ID set", t, func() {
-			p, err := New(ctx, "openstack", resourceName, crfileprefix)
+			p, err := New(ctx, "openstack", resourceName, crfileprefix+"-project-name-and-id")
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 		})
@@ -198,7 +198,7 @@ func TestOpenStack(t *testing.T) {
 		Convey("You can get a new OpenStack Provider with just OS_PROJECT_NAME set", t, func() {
 			os.Unsetenv("OS_PROJECT_ID")
 
-			p, err := New(ctx, "openstack", resourceName, crfileprefix)
+			p, err := New(ctx, "openstack", resourceName, crfileprefix+"-project-name")
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 		})
