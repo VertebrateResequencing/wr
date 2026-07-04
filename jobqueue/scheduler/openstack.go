@@ -145,6 +145,7 @@ type opst struct {
 	stateMutex        sync.Mutex
 	rsMutex           sync.Mutex
 	spawnMutex        sync.Mutex
+	activeSpawns      sync.WaitGroup
 	spawnCanceller    map[string]map[string]chan struct{}
 	updatingState     bool
 }
@@ -826,6 +827,10 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 	s.spawnMutex.Lock()
 	defer s.spawnMutex.Unlock()
 
+	if s.cleanedUp() {
+		return
+	}
+
 	spawningTotal, spawningCmd := s.countSpawning(cmd)
 
 	if s.config.SimultaneousSpawns > 0 && spawningTotal >= s.config.SimultaneousSpawns {
@@ -856,6 +861,7 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 func (s *opst) startSpawns(ctx context.Context, todo int, sr spawnReqs, flavor *cloud.Flavor, cmd string) {
 	for range todo {
 		s.spawningNow[cmd]++
+		s.activeSpawns.Add(1)
 
 		go s.spawnOneInBackground(ctx, sr.reqForSpawn, flavor, sr.requestedOS, sr.requestedScript,
 			sr.requestedConfigFiles, sr.needsSharedDisk, cmd)
@@ -960,7 +966,11 @@ func (s *opst) spawnOneInBackground(ctx context.Context, reqForSpawn *Requiremen
 ) {
 	defer internal.LogPanic(ctx, "spawnMultiple", false)
 
-	s.spawn(ctx, reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd)
+	func() {
+		defer s.activeSpawns.Done()
+
+		s.spawn(ctx, reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd)
+	}()
 
 	s.spawnMutex.Lock()
 
@@ -2187,19 +2197,19 @@ func (s *opst) cleanup(ctx context.Context) {
 	s.runMutex.Lock()
 	defer s.runMutex.Unlock()
 
-	s.cleanMutex.Lock()
-	defer s.cleanMutex.Unlock()
-
 	s.spawnMutex.Lock()
-	defer s.spawnMutex.Unlock()
+	s.cleanMutex.Lock()
 
-	// prevent any further scheduling and queue processing, and destroy the
-	// queue
+	// prevent any further scheduling and queue processing
 	s.cleaned = true
+	s.cleanMutex.Unlock()
+	s.spawnMutex.Unlock()
 
 	if err := s.queue.Destroy(); err != nil {
 		clog.Warn(ctx, "cleanup queue destruction failed", "err", err)
 	}
+
+	s.activeSpawns.Wait()
 
 	// wait for any ongoing state update to complete, then keep stateMutex held
 	// so none can start while we destroy our servers

@@ -35,7 +35,10 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const spawnBeforeQuotaFlavorID = "tiny"
+const (
+	fakeProviderName         = "fake"
+	spawnBeforeQuotaFlavorID = "tiny"
+)
 
 var errSpawnBeforeQuota = errors.New("failed before using quota")
 
@@ -113,7 +116,7 @@ func TestProviderSpawnCallsUsingQuotaCallbackOnEarlyError(t *testing.T) {
 	Convey("Provider Spawn calls the using-quota callback when spawn returns before using quota", t, func() {
 		p := &Provider{
 			impl: &spawnBeforeQuotaErrorProvider{},
-			Name: "fake",
+			Name: fakeProviderName,
 		}
 		called := 0
 
@@ -130,6 +133,98 @@ func TestProviderSpawnCallsUsingQuotaCallbackOnEarlyError(t *testing.T) {
 	})
 }
 
+type teardownDuringSpawnProvider struct {
+	spawnBeforeQuotaErrorProvider
+
+	releaseSpawn    chan struct{}
+	spawnEntered    chan struct{}
+	tearDownEntered chan struct{}
+}
+
+func newTeardownDuringSpawnProvider() *teardownDuringSpawnProvider {
+	return &teardownDuringSpawnProvider{
+		releaseSpawn:    make(chan struct{}),
+		spawnEntered:    make(chan struct{}),
+		tearDownEntered: make(chan struct{}),
+	}
+}
+
+func (p *teardownDuringSpawnProvider) spawn(ctx context.Context, resources *Resources, os string, flavor string,
+	diskGB int, externalIP bool, usingQuotaCh chan bool,
+) (serverID, serverIP, serverName, adminPass string, err error) {
+	close(p.spawnEntered)
+	<-p.releaseSpawn
+
+	return "server-id", "192.0.2.1", "server-name", "", nil
+}
+
+func (p *teardownDuringSpawnProvider) tearDown(ctx context.Context, resources *Resources) error {
+	close(p.tearDownEntered)
+
+	resources.PrivateKey = ""
+
+	return nil
+}
+
+func TestProviderTearDownWaitsForInFlightSpawn(t *testing.T) {
+	Convey("Provider TearDown waits for an in-flight Spawn before mutating resources", t, func() {
+		privateKey := "private-key"
+		fakeProvider := newTeardownDuringSpawnProvider()
+		provider := &Provider{
+			impl: fakeProvider,
+			Name: fakeProviderName,
+			resources: &Resources{
+				ResourceName: "resource-name",
+				Details:      map[string]string{},
+				PrivateKey:   privateKey,
+				Servers:      map[string]*Server{},
+			},
+			savePath: filepath.Join(t.TempDir(), "resources"),
+			servers:  map[string]*Server{},
+		}
+
+		spawnResult := make(chan providerSpawnResult, 1)
+
+		go func() {
+			server, err := provider.Spawn(
+				context.Background(), "linux", "ubuntu", spawnBeforeQuotaFlavorID, 20, time.Minute, false,
+			)
+			spawnResult <- providerSpawnResult{server: server, err: err}
+		}()
+
+		<-fakeProvider.spawnEntered
+
+		tearDownErr := make(chan error, 1)
+		go func() {
+			tearDownErr <- provider.TearDown(context.Background())
+		}()
+
+		tearDownStarted := false
+
+		select {
+		case <-fakeProvider.tearDownEntered:
+			tearDownStarted = true
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		So(tearDownStarted, ShouldBeFalse)
+
+		close(fakeProvider.releaseSpawn)
+
+		result := <-spawnResult
+		So(result.err, ShouldBeNil)
+		So(result.server, ShouldNotBeNil)
+		So(result.server.PrivateKey, ShouldEqual, privateKey)
+		So(<-tearDownErr, ShouldBeNil)
+		So(provider.PrivateKey(), ShouldBeBlank)
+	})
+}
+
+type providerSpawnResult struct {
+	server *Server
+	err    error
+}
+
 type destroyContextKey struct{}
 
 func TestServerDestroyUsesDetachedProviderContext(t *testing.T) {
@@ -138,7 +233,7 @@ func TestServerDestroyUsesDetachedProviderContext(t *testing.T) {
 		fakeProvider := &destroyAfterCancelProvider{}
 		provider := &Provider{
 			impl:      fakeProvider,
-			Name:      "fake",
+			Name:      fakeProviderName,
 			resources: &Resources{Servers: map[string]*Server{serverID: nil}},
 			savePath:  filepath.Join(t.TempDir(), "resources"),
 		}
