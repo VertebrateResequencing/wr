@@ -63,6 +63,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	log15 "github.com/inconshreveable/log15/v3"
 	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
@@ -7655,6 +7656,15 @@ func openStackJobqueueTestInCloud(ctx context.Context, resourceName, savePath st
 	return p.InCloud(), nil
 }
 
+func uniqueOpenStackJobqueueTestResourceName(localUser string) string {
+	u, err := uuid.NewV4()
+	if err != nil {
+		return fmt.Sprintf("wr-testing-%s-%d", localUser, time.Now().UnixNano())
+	}
+
+	return fmt.Sprintf("wr-testing-%s-%s", localUser, u.String())
+}
+
 type synchronizedLogCapture struct {
 	mu      sync.Mutex
 	content bytes.Buffer
@@ -7692,7 +7702,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	osUser := os.Getenv("OS_OS_USERNAME")
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-	resourceName := "wr-testing-" + localUser
 
 	runOpenStack, err := shouldRunOpenStackJobqueueTest(ctx, osPrefix, osUser, localUser, flavorRegex,
 		filepath.Join(t.TempDir(), "os_resources_gate"), openStackJobqueueTestInCloud)
@@ -7733,6 +7742,8 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	setDomainIP(config.ManagerCertDomain)
 
 	runnertmpdir := t.TempDir()
+	resourceName := uniqueOpenStackJobqueueTestResourceName(localUser)
+	resourceSavePath := filepath.Join(runnertmpdir, "os_resources")
 
 	// our runnerCmd will be running ourselves in --runnermode on older OpenStack
 	// worker images, so compile a static test binary to avoid host glibc drift.
@@ -7746,6 +7757,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		OSPrefix:             osPrefix,
 		OSUser:               osUser,
 		OSRAM:                2048,
+		SavePath:             resourceSavePath,
 		FlavorRegex:          flavorRegex,
 		FlavorSets:           os.Getenv("OS_FLAVOR_SETS"),
 		ServerPorts:          []int{22},
@@ -8142,7 +8154,7 @@ sudo usermod -aG docker ` + osUser
 			other := make(map[string]string)
 
 			cores := runtime.NumCPU()
-			p, err := cloud.New(ctx, "openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
+			p, err := cloud.New(ctx, "openstack", resourceName, resourceSavePath)
 			So(err, ShouldBeNil)
 			flavor, err := p.CheapestServerFlavor(ctx, cores, 2048, flavorRegex)
 			So(err, ShouldBeNil)
@@ -8576,7 +8588,7 @@ sudo usermod -aG docker ` + osUser
 		})
 
 		Convey("The manager reacts correctly to spawned servers going down", func() {
-			p, err := cloud.New(ctx, "openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
+			p, err := cloud.New(ctx, "openstack", resourceName, resourceSavePath)
 			So(err, ShouldBeNil)
 
 			destroyedBadServer := 0

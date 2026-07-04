@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -60,6 +61,15 @@ const (
 )
 
 var maxCPU = runtime.NumCPU()
+
+func uniqueOpenStackTestResourceName(localUser string) string {
+	u, err := uuid.NewV4()
+	if err != nil {
+		return fmt.Sprintf("wr-testing-%s-%d", localUser, time.Now().UnixNano())
+	}
+
+	return fmt.Sprintf("wr-testing-%s-%s", localUser, u.String())
+}
 
 func TestMock(t *testing.T) {
 	ctx := context.Background()
@@ -694,7 +704,7 @@ func TestOpenstack(t *testing.T) {
 	osUser := os.Getenv("OS_OS_USERNAME")
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-	rName := "wr-testing-" + localUser
+	rName := uniqueOpenStackTestResourceName(localUser)
 	keepTime := 5 * time.Second
 
 	config := &ConfigOpenStack{
