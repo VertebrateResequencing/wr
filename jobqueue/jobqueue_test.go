@@ -2286,8 +2286,10 @@ func TestJobqueueBasics(t *testing.T) {
 						job.FailReason = FailReasonRAM
 					case i < 70:
 						job.FailReason = FailReasonDisk
+						job.PeakRAM = job.Requirements.RAM
 					default:
 						job.FailReason = FailReasonTime
+						job.PeakRAM = job.Requirements.RAM
 					}
 
 					server.db.updateJobAfterExit(ctx, job, []byte{}, []byte{}, false)
@@ -6658,11 +6660,13 @@ func TestJobqueueModify(t *testing.T) {
 			}
 
 			cmd := "false"
-			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			retryReqs := &jqs.Requirements{RAM: reqSchedSpecialRAM, Time: standardReqs.Time, Cores: standardReqs.Cores, Disk: standardReqs.Disk, Other: make(map[string]string)}
+			retryRgroup := schedulerGroupString(reqForScheduler(retryReqs), nil)
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: retryReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
 
 			add(1)
 
-			job := reserve(rgroup, cmd)
+			job := reserve(retryRgroup, cmd)
 			job = execute(job, false, "")
 			So(job.State, ShouldEqual, JobStateBuried)
 			So(job.Retries, ShouldEqual, 0)
@@ -6670,14 +6674,14 @@ func TestJobqueueModify(t *testing.T) {
 			jm.SetRetries(uint8(3))
 			modify("a", 1)
 
-			job = kick("a", rgroup, cmd, "")
+			job = kick("a", retryRgroup, cmd, "")
 			So(job.State, ShouldEqual, JobStateReady)
 			So(job.Retries, ShouldEqual, 3)
 
 			jm.SetNoRetriesOverWalltime(1 * time.Millisecond)
 			modify("a", 1)
 
-			job = reserve(rgroup, cmd)
+			job = reserve(retryRgroup, cmd)
 			So(job.NoRetriesOverWalltime, ShouldEqual, 1*time.Millisecond)
 		})
 

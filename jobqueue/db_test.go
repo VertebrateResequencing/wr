@@ -70,6 +70,86 @@ func TestDBBatchTuning(t *testing.T) {
 	})
 }
 
+func TestDBHighPeakMemoryRecommendation(t *testing.T) {
+	Convey("A high-memory non-RAM failure seeds recommendations but honours override always", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		const (
+			reqGroup     = "high-peak-signal"
+			requestedRAM = 16
+			peakRAM      = 543
+		)
+
+		now := time.Now()
+		job := testDBJob("python3 -c alloc", "rg-high-peak")
+		job.ReqGroup = reqGroup
+		job.Requirements.RAM = requestedRAM
+		job.Requirements.Time = time.Minute
+		job.State = JobStateDelayed
+		job.Exited = true
+		job.Exitcode = -1
+		job.FailReason = FailReasonSignal
+		job.PeakRAM = peakRAM
+		job.StartTime = now.Add(-time.Second)
+		job.EndTime = now
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{job}, false)
+		So(err, ShouldBeNil)
+
+		testDB.updateJobAfterExit(ctx, job, nil, nil, false)
+		testDB.waitForJobExitUpdates()
+
+		recRAM, err := testDB.recommendedReqGroupMemory(reqGroup)
+		So(err, ShouldBeNil)
+		So(recRAM, ShouldEqual, 600)
+
+		server := &Server{db: testDB}
+		recommendedReq := server.recommendedReqForGroup(reqGroup, make(map[string]*jqs.Requirements))
+		So(recommendedReq, ShouldNotBeNil)
+		So(recommendedReq.RAM, ShouldEqual, 600)
+
+		newRetry := func(override uint8) *Job {
+			retry := testDBJob("python3 -c alloc", "rg-high-peak")
+			retry.ReqGroup = reqGroup
+			retry.Override = override
+			retry.Requirements.RAM = requestedRAM
+			retry.Requirements.Time = time.Minute
+			retry.State = JobStateDelayed
+			retry.FailReason = FailReasonSignal
+			retry.PeakRAM = peakRAM
+
+			return retry
+		}
+
+		systemRetry := newRetry(jobOverridePreferSystemReqs)
+		updateJobRequirementsForRetry(systemRetry, systemRetry.Override, recommendedReq)
+		So(systemRetry.Requirements.RAM, ShouldEqual, 600)
+		So(systemRetry.RequirementsOrig.RAM, ShouldEqual, requestedRAM)
+		So(systemRetry.FailReason, ShouldEqual, FailReasonSignal)
+
+		alwaysRetry := newRetry(jobOverrideAlwaysUseJobReqs)
+		updateJobRequirementsForRetry(alwaysRetry, alwaysRetry.Override, recommendedReq)
+		So(alwaysRetry.Requirements.RAM, ShouldEqual, requestedRAM)
+		So(alwaysRetry.RequirementsOrig.RAM, ShouldEqual, requestedRAM)
+		So(alwaysRetry.FailReason, ShouldEqual, FailReasonSignal)
+	})
+}
+
 func TestDBReverseLookupIndex(t *testing.T) {
 	Convey("Opening an old DB rebuilds reverse lookup entries used by modify", t, func() {
 		ctx := context.Background()

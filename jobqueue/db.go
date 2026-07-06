@@ -161,6 +161,33 @@ func (s sobsd) Less(i, j int) bool {
 // a particular bucket.
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
+func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
+	requiredRAM := 0
+	if job.Requirements != nil {
+		requiredRAM = job.Requirements.RAM
+	}
+
+	return jobExitData{
+		key:          job.Key(),
+		stdo:         stdo,
+		stde:         stde,
+		exitcode:     job.Exitcode,
+		forceStorage: forceStorage,
+		failReason:   job.FailReason,
+		reqGroup:     job.ReqGroup,
+		peakRAM:      job.PeakRAM,
+		requiredRAM:  requiredRAM,
+		peakDisk:     job.PeakDisk,
+		secs:         int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds())),
+	}
+}
+
+func (e jobExitData) shouldRecordHighPeakRAMStat() bool {
+	return e.failReason != "" &&
+		e.failReason != FailReasonRAM &&
+		commandExceededMemoryEstimate(e.peakRAM, e.requiredRAM)
+}
+
 type db struct {
 	backupLast           time.Time
 	backupPath           string
@@ -1630,18 +1657,7 @@ func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, 
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
 
 	job.RLock()
-	exit := jobExitData{
-		key:          job.Key(),
-		stdo:         stdo,
-		stde:         stde,
-		exitcode:     job.Exitcode,
-		forceStorage: forceStorage,
-		failReason:   job.FailReason,
-		reqGroup:     job.ReqGroup,
-		peakRAM:      job.PeakRAM,
-		peakDisk:     job.PeakDisk,
-		secs:         int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds())),
-	}
+	exit := newJobExitData(job, stdo, stde, forceStorage)
 	err := enc.Encode(job)
 	job.RUnlock()
 
@@ -1690,6 +1706,7 @@ type jobExitData struct {
 	failReason   string
 	reqGroup     string
 	peakRAM      int
+	requiredRAM  int
 	peakDisk     int64
 	secs         int
 }
@@ -1747,6 +1764,12 @@ func (e jobExitData) updateStd(tx *bolt.Tx, key []byte) error {
 // updateFailStat records the job's resource usage in the appropriate stat
 // bucket when it failed for a resource-based reason.
 func (e jobExitData) updateFailStat(tx *bolt.Tx) error {
+	if e.shouldRecordHighPeakRAMStat() {
+		if err := putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM); err != nil {
+			return err
+		}
+	}
+
 	switch e.failReason {
 	case FailReasonRAM:
 		return putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM)
