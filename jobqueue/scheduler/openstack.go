@@ -1454,11 +1454,19 @@ func commandExecutable(cmd string) (string, error) {
 		return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, err)
 	}
 
-	if len(tokens) == 0 || tokens[0] == "" {
-		return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, errCommandHasNoExe)
+	for _, token := range tokens {
+		if isShellEnvAssignment(token) {
+			continue
+		}
+
+		if token == "" {
+			return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, errCommandHasNoExe)
+		}
+
+		return token, nil
 	}
 
-	return tokens[0], nil
+	return "", fmt.Errorf("could not parse command executable [%s]: %w", cmd, errCommandHasNoExe)
 }
 
 func (s *opst) remoteExeTokenResolves(
@@ -2261,4 +2269,31 @@ func (s *opst) destroyAllSpawnedServers(ctx context.Context) {
 
 		delete(s.servers, sid)
 	}
+}
+
+func isShellEnvAssignment(token string) bool {
+	name, _, ok := strings.Cut(token, "=")
+	if !ok || name == "" {
+		return false
+	}
+
+	if !isShellNameStart(name[0]) {
+		return false
+	}
+
+	for i := range len(name) - 1 {
+		if !isShellNameChar(name[i+1]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isShellNameChar(char byte) bool {
+	return isShellNameStart(char) || char >= '0' && char <= '9'
+}
+
+func isShellNameStart(char byte) bool {
+	return char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
 }

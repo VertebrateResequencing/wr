@@ -7786,7 +7786,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
-		RunnerCmd: runnerCmd +
+		RunnerCmd: "WR_LOGSMAXSIZEMB=500 WR_LOGSMAXBACKUPS=3 " + runnerCmd +
 			" -test.run TestJobqueueRunnerModeEntrypoint" +
 			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 			" --rtimeout %d --maxmins %d --rmanagerdir " +

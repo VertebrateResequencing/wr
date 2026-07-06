@@ -166,6 +166,34 @@ func TestOpenstackEnsureExeOnServer(t *testing.T) {
 		So(server.uploads, ShouldEqual, 0)
 	})
 
+	Convey("OpenStack executable checks skip leading shell environment assignments", t, func() {
+		ctx := context.Background()
+		cmd := "WR_LOGSMAXSIZEMB=500 WR_LOGSMAXBACKUPS=3 sleep 60"
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := &fakeOpenstackExeServer{
+			uploadErr: errUnexpectedUpload,
+		}
+		server.runCmd = func(cmd string, background bool) (string, string, error) {
+			if background {
+				return "", "", errUnexpectedBackgroundExeCheck
+			}
+
+			if strings.Contains(cmd, "command -v -- sleep") {
+				return remoteExePresent, "", nil
+			}
+
+			return remoteExeMissing, "", nil
+		}
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldBeNil)
+		So(server.runCmds, ShouldHaveLength, 1)
+		So(server.runCmds[0], ShouldContainSubstring, "command -v -- sleep")
+		So(server.runCmds[0], ShouldNotContainSubstring, "WR_LOGSMAXSIZEMB")
+		So(server.uploads, ShouldEqual, 0)
+	})
+
 	Convey("OpenStack executable checks preserve upload behaviour when the executable is missing remotely", t, func() {
 		ctx := context.Background()
 		cmd := openstackExeTestCmd
@@ -240,6 +268,20 @@ func TestOpenstackEnsureExeOnServer(t *testing.T) {
 	Convey("OpenStack executable checks reject commands without an executable", t, func() {
 		ctx := context.Background()
 		cmd := "   "
+		s := newOpenstackExeTestScheduler(ctx, cmd)
+		server := new(fakeOpenstackExeServer)
+
+		err := s.ensureExeOnRemoteServer(ctx, "server-1", server, cmd)
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "could not parse command executable")
+		So(server.runCmds, ShouldHaveLength, 0)
+		So(server.uploads, ShouldEqual, 0)
+	})
+
+	Convey("OpenStack executable checks reject commands with only environment assignments", t, func() {
+		ctx := context.Background()
+		cmd := "WR_LOGSMAXSIZEMB=500 WR_LOGSMAXBACKUPS=3"
 		s := newOpenstackExeTestScheduler(ctx, cmd)
 		server := new(fakeOpenstackExeServer)
 
