@@ -710,6 +710,14 @@ func goTestArgs(lane Lane) []string {
 		args = append(args, "-race")
 	}
 
+	if lane.RunPattern != "" {
+		args = append(args, "-run", lane.RunPattern)
+	}
+
+	if lane.SkipPattern != "" {
+		args = append(args, "-skip", lane.SkipPattern)
+	}
+
 	if lane.Parallelism > 0 {
 		args = append(args, "-p", strconv.Itoa(lane.Parallelism))
 	}

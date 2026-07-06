@@ -187,6 +187,10 @@ const (
 	cloudName     = "cloud"
 )
 
+// maxHostNameLength is the maximum length of a hostname; nameToHostName
+// truncates to this.
+const maxHostNameLength = 63
+
 // Error records an error and the operation and provider caused it.
 type Error struct {
 	Provider string // the provider's Name
@@ -265,13 +269,14 @@ type provideri interface {
 // Provider gives you access to all of the methods you'll need to interact with
 // a cloud provider.
 type Provider struct {
-	impl         provideri
-	Name         string
-	savePath     string
-	resources    *Resources
-	inCloud      bool
-	madeHeadNode bool
-	servers      map[string]*Server // by name
+	impl               provideri
+	Name               string
+	savePath           string
+	resources          *Resources
+	inCloud            bool
+	madeHeadNode       bool
+	servers            map[string]*Server // by name
+	spawnTearDownMutex sync.RWMutex
 	sync.RWMutex
 }
 
@@ -804,6 +809,9 @@ type SpawnUsingQuotaCallback func()
 func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID string,
 	diskGB int, ttd time.Duration, externalIP bool, usingQuotaCB ...SpawnUsingQuotaCallback,
 ) (*Server, error) {
+	p.spawnTearDownMutex.RLock()
+	defer p.spawnTearDownMutex.RUnlock()
+
 	f, found := p.impl.flavors(p.cloudContext(ctx))[flavorID]
 	if !found {
 		return nil, Error{cloudName, "Spawn", ErrBadFlavor}
@@ -815,13 +823,14 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 		return nil, err
 	}
 
+	privateKey := p.PrivateKey()
 	server := &Server{
 		ID:           serverID,
 		Name:         serverName,
 		IP:           serverIP,
 		OS:           os,
 		AdminPass:    adminPass,
-		PrivateKey:   p.PrivateKey(),
+		PrivateKey:   privateKey,
 		UserName:     osUser,
 		Flavor:       f,
 		Disk:         max(diskGB, f.Disk),
@@ -1079,8 +1088,11 @@ func (p *Provider) PrivateKey() string {
 // running on a cloud server, however, it will not delete anything needed by
 // this server, including the resource file that contains the private key.
 func (p *Provider) TearDown(ctx context.Context) error {
-	p.RLock()
-	defer p.RUnlock()
+	p.spawnTearDownMutex.Lock()
+	defer p.spawnTearDownMutex.Unlock()
+
+	p.Lock()
+	defer p.Unlock()
 
 	err := p.impl.tearDown(p.cloudContext(ctx), p.resources)
 	if err != nil {
@@ -1174,10 +1186,6 @@ func uniqueResourceName(prefix string) string {
 
 	return prefix + "-" + u.String()
 }
-
-// maxHostNameLength is the maximum length of a hostname; nameToHostName
-// truncates to this.
-const maxHostNameLength = 63
 
 // nameToHostName makes the given name compatible with being a hostname in the
 // same way that OpenStack horizon does: convert to lower case and convert non

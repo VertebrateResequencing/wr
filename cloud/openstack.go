@@ -34,6 +34,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -105,6 +106,18 @@ const ipVersion4 = 4
 // serverErrorBackoffFactor is the multiplier applied to the spawn() retry
 // backoff after each consecutive server creation failure.
 const serverErrorBackoffFactor = 1.5
+
+const openstackServerCreateAttempts = 3
+
+const openstackServerCreateRetryWait = 2 * time.Second
+
+const serverStatusNotFoundGracePolls = minimumServerSpawnTimeoutSecs
+
+const serverPortLookupAttempts = minimumServerSpawnTimeoutSecs
+
+const serverPortLookupRetryWait = time.Second
+
+const serverPortResourceType = "server port"
 
 // keyBits is the size of the RSA key we generate for ssh access to servers.
 const keyBits = 2048
@@ -181,35 +194,38 @@ var (
 	errNoImageWithPrefix     = errors.New("no OS image with prefix")
 )
 
+type serverActiveWaiter func(context.Context, *servers.Server, string, bool) error
+
 // openstackp is our implementer of provideri.
 type openstackp struct {
-	lastFlavorCache   time.Time
-	externalNetworkID string
-	networkName       string
-	ownName           string
-	poolName          string
-	securityGroup     string
-	spawnTimes        ewma.MovingAverage
-	spawnTimesVolume  ewma.MovingAverage
-	tenantID          string
-	computeClient     *gophercloud.ServiceClient
-	errorBackoff      *backoff.Backoff
-	fmap              map[string]*Flavor
-	imap              map[string]*imageimages.Image
-	imageClient       *gophercloud.ServiceClient
-	ipNet             *net.IPNet
-	networkClient     *gophercloud.ServiceClient
-	ownServer         *servers.Server
-	fmapMutex         sync.RWMutex
-	imapMutex         sync.RWMutex
-	stMutex           sync.RWMutex
-	spMutex           sync.RWMutex
-	createdKeyPair    bool
-	useConfigDrive    bool
-	hasDefaultGroup   bool
-	spawnFailed       bool
-	networks          []servers.Network
-	createdPorts      map[string][]string
+	lastFlavorCache      time.Time
+	externalNetworkID    string
+	networkName          string
+	ownName              string
+	poolName             string
+	securityGroup        string
+	spawnTimes           ewma.MovingAverage
+	spawnTimesVolume     ewma.MovingAverage
+	tenantID             string
+	computeClient        *gophercloud.ServiceClient
+	errorBackoff         *backoff.Backoff
+	fmap                 map[string]*Flavor
+	imap                 map[string]*imageimages.Image
+	imageClient          *gophercloud.ServiceClient
+	ipNet                *net.IPNet
+	networkClient        *gophercloud.ServiceClient
+	ownServer            *servers.Server
+	fmapMutex            sync.RWMutex
+	imapMutex            sync.RWMutex
+	stMutex              sync.RWMutex
+	spMutex              sync.RWMutex
+	createdKeyPair       bool
+	createdSecurityGroup bool
+	useConfigDrive       bool
+	hasDefaultGroup      bool
+	spawnFailed          bool
+	networks             []servers.Network
+	createdPorts         map[string][]string
 }
 
 // requiredEnv returns envs that are definitely required.
@@ -520,6 +536,296 @@ func (p *openstackp) getImageFromCache(prefix string) *imageimages.Image {
 	return nil
 }
 
+func (p *openstackp) getServerPortIDOnce(ctx context.Context, serverID string) (string, error) {
+	portID, err := p.getServerPortIDFromNetwork(ctx, serverID)
+	if err == nil || !isServerPortNotFound(err, serverID) {
+		return portID, err
+	}
+
+	if p.computeClient == nil {
+		return "", err
+	}
+
+	return p.getServerPortIDFromComputeFallbacks(ctx, serverID, err)
+}
+
+func (p *openstackp) getServerPortIDFromComputeFallbacks(ctx context.Context, serverID string,
+	networkErr error,
+) (string, error) {
+	interfacePortID, interfaceErr := p.getServerPortIDFromComputeInterfaces(ctx, serverID)
+	if interfaceErr == nil {
+		return interfacePortID, nil
+	}
+
+	if !retriableServerPortLookupError(interfaceErr, serverID) {
+		return "", interfaceErr
+	}
+
+	fixedIPPortID, fixedIPErr := p.getServerPortIDFromServerFixedIP(ctx, serverID)
+	if fixedIPErr == nil {
+		return fixedIPPortID, nil
+	}
+
+	if retriableServerPortLookupError(fixedIPErr, serverID) {
+		return "", networkErr
+	}
+
+	return "", fixedIPErr
+}
+
+func retriableServerPortLookupError(err error, serverID string) bool {
+	return isServerPortNotFound(err, serverID) || errorIsNotFound(err)
+}
+
+func (p *openstackp) getServerPortIDFromNetwork(ctx context.Context, serverID string) (string, error) {
+	pages, err := ports.List(p.networkClient, ports.ListOpts{
+		DeviceID: serverID,
+	}).AllPages(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	allPorts, err := ports.ExtractPorts(pages)
+	if err != nil {
+		return "", err
+	}
+
+	return p.serverPortIDFromNetworkPorts(allPorts, serverID)
+}
+
+func (p *openstackp) serverPortIDFromNetworkPorts(allPorts []ports.Port, serverID string) (string, error) {
+	for _, port := range allPorts {
+		if port.ID == "" {
+			continue
+		}
+
+		if p.portMatchesPrimaryNetworkOrIPNet(port) {
+			return port.ID, nil
+		}
+	}
+
+	if len(allPorts) == 1 && allPorts[0].ID != "" {
+		return allPorts[0].ID, nil
+	}
+
+	return "", gophercloud.ErrResourceNotFound{Name: serverID, ResourceType: serverPortResourceType}
+}
+
+func (p *openstackp) portMatchesPrimaryNetworkOrIPNet(port ports.Port) bool {
+	primaryNetworkID := p.primaryNetworkID()
+	if primaryNetworkID != "" && port.NetworkID == primaryNetworkID {
+		return true
+	}
+
+	return portFixedIPsContainIPNet(port.FixedIPs, p.ipNet)
+}
+
+func portFixedIPsContainIPNet(fixedIPs []ports.IP, ipNet *net.IPNet) bool {
+	for _, fixedIP := range fixedIPs {
+		if ipAddressInIPNet(fixedIP.IPAddress, ipNet) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *openstackp) getServerPortIDFromServerFixedIP(ctx context.Context, serverID string) (string, error) {
+	fixedIP, err := p.getServerFixedIP(ctx, serverID)
+	if err != nil {
+		if errorIsNotFound(err) {
+			return "", serverPortNotFoundError(serverID)
+		}
+
+		return "", err
+	}
+
+	if fixedIP == "" {
+		return "", serverPortNotFoundError(serverID)
+	}
+
+	return p.getServerPortIDFromFixedIP(ctx, serverID, fixedIP)
+}
+
+func (p *openstackp) getServerFixedIP(ctx context.Context, serverID string) (string, error) {
+	fixedIP, err := p.getServerIP(ctx, serverID)
+	if fixedIP != "" || unretriableServerAddressError(err) {
+		return fixedIP, err
+	}
+
+	fixedIP, err = p.getServerIPFromAllAddresses(ctx, serverID)
+	if fixedIP != "" || unretriableServerAddressError(err) {
+		return fixedIP, err
+	}
+
+	return p.getServerIPFromDetails(ctx, serverID)
+}
+
+func unretriableServerAddressError(err error) bool {
+	return err != nil && !errorIsNotFound(err)
+}
+
+func (p *openstackp) getServerPortIDFromFixedIP(ctx context.Context, serverID, fixedIP string) (string, error) {
+	pages, err := ports.List(p.networkClient, ports.ListOpts{
+		FixedIPs: []ports.FixedIPOpts{{IPAddress: fixedIP}},
+	}).AllPages(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	allPorts, err := ports.ExtractPorts(pages)
+	if err != nil {
+		return "", err
+	}
+
+	portID, err := p.serverPortIDFromFixedIPPorts(allPorts, serverID, fixedIP)
+	if err != nil {
+		clog.Debug(ctx, "server port fixed IP lookup failed", "id", serverID, "fixedIP", fixedIP,
+			"candidatePorts", len(allPorts), "err", err)
+	}
+
+	return portID, err
+}
+
+func (p *openstackp) serverPortIDFromFixedIPPorts(allPorts []ports.Port, serverID, fixedIP string) (string, error) {
+	candidateIDs, primaryNetworkCandidateIDs := p.serverPortIDsForFixedIP(allPorts, fixedIP)
+	if len(candidateIDs) == 0 {
+		return "", serverPortNotFoundError(serverID)
+	}
+
+	if len(candidateIDs) == 1 {
+		return candidateIDs[0], nil
+	}
+
+	if len(primaryNetworkCandidateIDs) == 1 {
+		return primaryNetworkCandidateIDs[0], nil
+	}
+
+	return "", gophercloud.ErrMultipleResourcesFound{
+		Name:         fixedIP,
+		Count:        len(candidateIDs),
+		ResourceType: serverPortResourceType,
+	}
+}
+
+func (p *openstackp) serverPortIDsForFixedIP(allPorts []ports.Port, fixedIP string) ([]string, []string) {
+	var candidateIDs, primaryNetworkCandidateIDs []string
+
+	primaryNetworkID := p.primaryNetworkID()
+
+	for _, port := range allPorts {
+		if port.ID == "" || !portFixedIPsContainIPAddress(port.FixedIPs, fixedIP) {
+			continue
+		}
+
+		candidateIDs = append(candidateIDs, port.ID)
+		if primaryNetworkID != "" && port.NetworkID == primaryNetworkID {
+			primaryNetworkCandidateIDs = append(primaryNetworkCandidateIDs, port.ID)
+		}
+	}
+
+	return candidateIDs, primaryNetworkCandidateIDs
+}
+
+func portFixedIPsContainIPAddress(fixedIPs []ports.IP, ipAddress string) bool {
+	for _, fixedIP := range fixedIPs {
+		if ipAddressesEqual(fixedIP.IPAddress, ipAddress) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *openstackp) primaryNetworkID() string {
+	if len(p.networks) == 0 {
+		return ""
+	}
+
+	return p.networks[0].UUID
+}
+
+func (p *openstackp) getServerPortIDFromComputeInterfaces(ctx context.Context, serverID string) (string, error) {
+	pages, err := attachinterfaces.List(p.computeClient, serverID).AllPages(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	allInterfaces, err := attachinterfaces.ExtractInterfaces(pages)
+	if err != nil {
+		return "", err
+	}
+
+	return p.serverPortIDFromComputeInterfaces(allInterfaces, serverID)
+}
+
+func (p *openstackp) serverPortIDFromComputeInterfaces(allInterfaces []attachinterfaces.Interface,
+	serverID string,
+) (string, error) {
+	for _, iface := range allInterfaces {
+		if iface.PortID == "" {
+			continue
+		}
+
+		if p.interfaceMatchesPrimaryNetworkOrIPNet(iface) {
+			return iface.PortID, nil
+		}
+	}
+
+	if len(allInterfaces) == 1 && allInterfaces[0].PortID != "" {
+		return allInterfaces[0].PortID, nil
+	}
+
+	return "", gophercloud.ErrResourceNotFound{Name: serverID, ResourceType: serverPortResourceType}
+}
+
+func (p *openstackp) interfaceMatchesPrimaryNetworkOrIPNet(iface attachinterfaces.Interface) bool {
+	primaryNetworkID := p.primaryNetworkID()
+	if primaryNetworkID != "" && iface.NetID == primaryNetworkID {
+		return true
+	}
+
+	return interfaceFixedIPsContainIPNet(iface.FixedIPs, p.ipNet)
+}
+
+func interfaceFixedIPsContainIPNet(fixedIPs []attachinterfaces.FixedIP, ipNet *net.IPNet) bool {
+	for _, fixedIP := range fixedIPs {
+		if ipAddressInIPNet(fixedIP.IPAddress, ipNet) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isServerPortNotFound(err error, serverID string) bool {
+	var notFound gophercloud.ErrResourceNotFound
+	if !errors.As(err, &notFound) {
+		return false
+	}
+
+	return notFound.Name == serverID && notFound.ResourceType == serverPortResourceType
+}
+
+func waitBeforeServerPortRetry(ctx context.Context, serverID string, attempt int, err error) error {
+	clog.Warn(ctx, "server port not visible yet; retrying", "id", serverID, "attempt", attempt, "maxAttempts",
+		serverPortLookupAttempts, "wait", serverPortLookupRetryWait, "err", err)
+
+	timer := time.NewTimer(serverPortLookupRetryWait)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func serverPortNotFoundError(serverID string) error {
+	return gophercloud.ErrResourceNotFound{Name: serverID, ResourceType: serverPortResourceType}
+}
+
 func enabledBool() *bool {
 	enabled := true
 
@@ -553,29 +859,18 @@ func (p *openstackp) networkIDFromName(ctx context.Context, name string) (string
 }
 
 func (p *openstackp) getServerPortID(ctx context.Context, serverID string) (string, error) {
-	pages, err := ports.List(p.networkClient, ports.ListOpts{
-		DeviceID:  serverID,
-		NetworkID: p.networks[0].UUID,
-	}).AllPages(ctx)
-	if err != nil {
-		return "", err
-	}
+	for attempt := range serverPortLookupAttempts {
+		portID, err := p.getServerPortIDOnce(ctx, serverID)
+		if err == nil || !isServerPortNotFound(err, serverID) || attempt+1 == serverPortLookupAttempts {
+			return portID, err
+		}
 
-	allPorts, err := ports.ExtractPorts(pages)
-	if err != nil {
-		return "", err
-	}
-
-	for _, port := range allPorts {
-		for _, fixedIP := range port.FixedIPs {
-			ip := net.ParseIP(fixedIP.IPAddress)
-			if ip != nil && p.ipNet.Contains(ip) {
-				return port.ID, nil
-			}
+		if waitErr := waitBeforeServerPortRetry(ctx, serverID, attempt+1, err); waitErr != nil {
+			return "", waitErr
 		}
 	}
 
-	return "", gophercloud.ErrResourceNotFound{Name: serverID, ResourceType: "server port"}
+	return "", serverPortNotFoundError(serverID)
 }
 
 // deploy achieves the aims of Deploy().
@@ -694,6 +989,8 @@ func (p *openstackp) ensureSecurityGroup(ctx context.Context, resources *Resourc
 		if err != nil {
 			return err
 		}
+
+		p.createdSecurityGroup = true
 	}
 
 	resources.Details["secgroup"] = group.ID
@@ -1322,16 +1619,44 @@ func (p *openstackp) spawn(ctx context.Context, resources *Resources, osPrefix s
 func (p *openstackp) createAndWaitForServer(ctx context.Context, resources *Resources,
 	image *imageimages.Image, flavorID string, flavor *Flavor, diskGB int, usingQuotaCh chan bool,
 ) (*servers.Server, string, error) {
+	return p.createAndWaitForServerWithWait(ctx, resources, image, flavorID, flavor, diskGB, usingQuotaCh,
+		p.waitForServerActive)
+}
+
+func (p *openstackp) createAndWaitForServerWithWait(ctx context.Context, resources *Resources,
+	image *imageimages.Image, flavorID string, flavor *Flavor, diskGB int, usingQuotaCh chan bool,
+	waitForActive serverActiveWaiter,
+) (*servers.Server, string, error) {
 	p.waitForPriorSpawnFailure(ctx)
 
-	server, serverName, createdVolume, err := p.createServer(ctx, resources, image, flavorID, flavor, diskGB)
+	quotaSignalled := false
 
-	serverID := ""
-	if server != nil {
-		serverID = server.ID
+	for attempt := range openstackServerCreateAttempts {
+		server, serverName, err := p.createAndWaitForServerAttempt(ctx, resources, image, flavorID, flavor, diskGB,
+			usingQuotaCh, &quotaSignalled, waitForActive)
+		if err == nil || !retryableCreatedServerWaitError(err) || attempt+1 == openstackServerCreateAttempts {
+			return server, serverName, err
+		}
+
+		if waitErr := p.waitBeforeServerCreateRetry(ctx, attempt+1, err); waitErr != nil {
+			return server, serverName, waitErr
+		}
 	}
 
-	usingQuotaCh <- true
+	return nil, "", errServerStatusUnknown
+}
+
+func retryableCreatedServerWaitError(err error) bool {
+	return errorIsNotFound(err)
+}
+
+func (p *openstackp) createAndWaitForServerAttempt(ctx context.Context, resources *Resources,
+	image *imageimages.Image, flavorID string, flavor *Flavor, diskGB int, usingQuotaCh chan bool,
+	quotaSignalled *bool, waitForActive serverActiveWaiter,
+) (*servers.Server, string, error) {
+	server, serverName, createdVolume, err := p.createServer(ctx, resources, image, flavorID, flavor, diskGB)
+
+	signalUsingQuotaOnce(usingQuotaCh, quotaSignalled)
 
 	if err != nil {
 		p.setSpawnFailed(true)
@@ -1339,11 +1664,27 @@ func (p *openstackp) createAndWaitForServer(ctx context.Context, resources *Reso
 		return server, serverName, err
 	}
 
-	if err = p.waitForServerActive(ctx, server, serverID, createdVolume); err != nil {
-		return server, serverName, err
+	err = waitForActive(ctx, server, serverIDFromCreatedServer(server), createdVolume)
+
+	return server, serverName, err
+}
+
+func signalUsingQuotaOnce(usingQuotaCh chan bool, quotaSignalled *bool) {
+	if *quotaSignalled {
+		return
 	}
 
-	return server, serverName, nil
+	usingQuotaCh <- true
+
+	*quotaSignalled = true
+}
+
+func serverIDFromCreatedServer(server *servers.Server) string {
+	if server == nil {
+		return ""
+	}
+
+	return server.ID
 }
 
 // waitForPriorSpawnFailure sleeps (backing off) if a previous spawn failed, to
@@ -1379,10 +1720,43 @@ func (p *openstackp) setSpawnFailed(failed bool) {
 func (p *openstackp) createServer(ctx context.Context, resources *Resources, image *imageimages.Image,
 	flavorID string, flavor *Flavor, diskGB int,
 ) (server *servers.Server, serverName string, createdVolume bool, err error) {
+	for attempt := range openstackServerCreateAttempts {
+		server, serverName, createdVolume, err = p.createServerAttempt(ctx, resources, image, flavorID, flavor,
+			diskGB, attempt+1)
+
+		if err == nil || !retryableServerCreateError(err) || attempt+1 == openstackServerCreateAttempts {
+			break
+		}
+
+		if waitErr := p.waitBeforeServerCreateRetry(ctx, attempt+1, err); waitErr != nil {
+			return server, serverName, createdVolume, waitErr
+		}
+	}
+
+	return server, serverName, createdVolume, err
+}
+
+func retryableServerCreateError(err error) bool {
+	var responseErr gophercloud.ErrUnexpectedResponseCode
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+
+	switch responseErr.Actual {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *openstackp) createServerAttempt(ctx context.Context, resources *Resources, image *imageimages.Image,
+	flavorID string, flavor *Flavor, diskGB int, attempt int,
+) (*servers.Server, string, bool, error) {
 	serverName, createOpts, createdVolume := p.buildServerCreateOpts(resources, image, flavorID, flavor, diskGB)
 
 	t := time.Now()
-	server, err = servers.Create(ctx, p.computeClient, keypairs.CreateOptsExt{
+	server, err := servers.Create(ctx, p.computeClient, keypairs.CreateOptsExt{
 		CreateOptsBuilder: createOpts,
 		KeyName:           resources.ResourceName,
 	}, nil).Extract()
@@ -1392,9 +1766,25 @@ func (p *openstackp) createServer(ctx context.Context, resources *Resources, ima
 		serverID = server.ID
 	}
 
-	clog.Debug(ctx, "server create attempted", "took", time.Since(t), "id", serverID, "worked", err == nil)
+	clog.Debug(ctx, "server create attempted", "took", time.Since(t), "id", serverID, "worked", err == nil,
+		"attempt", attempt)
 
 	return server, serverName, createdVolume, err
+}
+
+func (p *openstackp) waitBeforeServerCreateRetry(ctx context.Context, attempt int, err error) error {
+	clog.Warn(ctx, "server create failed transiently; retrying", "attempt", attempt, "maxAttempts",
+		openstackServerCreateAttempts, "wait", openstackServerCreateRetryWait, "err", err)
+
+	timer := time.NewTimer(openstackServerCreateRetryWait)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // buildServerCreateOpts builds the options for creating a new server with a
@@ -1461,7 +1851,7 @@ func (p *openstackp) waitForServerActive(ctx context.Context, server *servers.Se
 		p.setSpawnFailed(true)
 
 		delerr := servers.Delete(ctx, p.computeClient, server.ID).ExtractErr()
-		if delerr != nil {
+		if delerr != nil && !errorIsNotFound(delerr) {
 			err = fmt.Errorf("%w\nadditionally, there was an error deleting the bad server: %w", err, delerr)
 		}
 
@@ -1517,6 +1907,12 @@ func (p *openstackp) pollServerStatusTick(ctx context.Context, serverID string, 
 ) (done bool, err error) {
 	current, errf := servers.Get(ctx, p.computeClient, serverID).Extract()
 	if errf != nil {
+		if errorIsNotFound(errf) && attempts <= serverStatusNotFoundGracePolls {
+			clog.Warn(ctx, "created server not visible yet; retrying", "id", serverID, "polls", attempts, "err", errf)
+
+			return false, nil
+		}
+
 		return true, errf
 	}
 
@@ -1732,18 +2128,84 @@ func (p *openstackp) getServerIP(ctx context.Context, serverID string) (string, 
 		return "", err
 	}
 
+	return p.serverIPFromAddresses(allNetworkAddresses), nil
+}
+
+func (p *openstackp) getServerIPFromAllAddresses(ctx context.Context, serverID string) (string, error) {
+	allAddressPages, err := servers.ListAddresses(p.computeClient, serverID).AllPages(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	allAddresses, err := servers.ExtractAddresses(allAddressPages)
+	if err != nil {
+		return "", err
+	}
+
+	return p.serverIPFromAddressGroups(allAddresses), nil
+}
+
+func (p *openstackp) getServerIPFromDetails(ctx context.Context, serverID string) (string, error) {
+	server, err := servers.Get(ctx, p.computeClient, serverID).Extract()
+	if err != nil {
+		return "", err
+	}
+
+	allAddresses, err := serverAddressGroups(server.Addresses)
+	if err != nil {
+		return "", err
+	}
+
+	return p.serverIPFromAddressGroups(allAddresses), nil
+}
+
+func serverAddressGroups(rawAddresses map[string]any) (map[string][]servers.Address, error) {
+	var allAddresses map[string][]servers.Address
+
+	rawJSON, err := json.Marshal(rawAddresses)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = json.Unmarshal(rawJSON, &allAddresses); err != nil {
+		return nil, err
+	}
+
+	return allAddresses, nil
+}
+
+func (p *openstackp) serverIPFromAddressGroups(allAddresses map[string][]servers.Address) string {
+	for _, addresses := range allAddresses {
+		if address := p.serverIPFromAddresses(addresses); address != "" {
+			return address
+		}
+	}
+
+	return ""
+}
+
+func (p *openstackp) serverIPFromAddresses(allNetworkAddresses []servers.Address) string {
 	for _, address := range allNetworkAddresses {
 		if address.Version != ipVersion4 {
 			continue
 		}
 
-		ip := net.ParseIP(address.Address)
-		if ip != nil && p.ipNet.Contains(ip) {
-			return address.Address, nil
+		if ipAddressInIPNet(address.Address, p.ipNet) {
+			return address.Address
 		}
 	}
 
-	return "", nil
+	return ""
+}
+
+func ipAddressInIPNet(ipAddress string, ipNet *net.IPNet) bool {
+	if ipNet == nil {
+		return false
+	}
+
+	ip := net.ParseIP(ipAddress)
+
+	return ip != nil && ipNet.Contains(ip)
 }
 
 // checkServer achieves the aims of CheckServer().
@@ -1903,6 +2365,8 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 
 	if p.ownName == "" {
 		merr = p.tearDownNetworkResources(ctx, resources, merr, &didSomething)
+	} else if p.createdSecurityGroup {
+		merr = p.tearDownSecurityGroup(ctx, resources, merr, &didSomething)
 	}
 
 	merr = p.tearDownKeyPair(ctx, resources, merr)
@@ -1975,12 +2439,19 @@ func (p *openstackp) tearDownNetworkResources(ctx context.Context, resources *Re
 		"delete network (auto-deletes subnet)", func() error {
 			return networks.Delete(ctx, p.networkClient, resources.Details["network"]).ExtractErr()
 		})
-	merr = p.tearDownResource(ctx, resources.Details["secgroup"], merr, didSomething,
+
+	return p.tearDownSecurityGroup(ctx, resources, merr, didSomething)
+}
+
+// tearDownSecurityGroup deletes the deployment's security group, if one was
+// recorded.
+func (p *openstackp) tearDownSecurityGroup(ctx context.Context, resources *Resources,
+	merr *multierror.Error, didSomething *bool,
+) *multierror.Error {
+	return p.tearDownResource(ctx, resources.Details["secgroup"], merr, didSomething,
 		"delete security group", func() error {
 			return secgroups.Delete(ctx, p.computeClient, resources.Details["secgroup"]).ExtractErr()
 		})
-
-	return merr
 }
 
 // tearDownResource deletes a single resource identified by id (a no-op if id is
@@ -2307,6 +2778,17 @@ func (authEnv openstackAuthEnv) scope() *gophercloud.AuthScope {
 	}
 
 	return nil
+}
+
+func ipAddressesEqual(first, second string) bool {
+	firstIP := net.ParseIP(first)
+	secondIP := net.ParseIP(second)
+
+	if firstIP == nil || secondIP == nil {
+		return first == second
+	}
+
+	return firstIP.Equal(secondIP)
 }
 
 func firstOpenStackEnv(names ...string) string {

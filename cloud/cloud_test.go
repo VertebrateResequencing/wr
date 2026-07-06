@@ -152,7 +152,7 @@ func TestOpenStack(t *testing.T) {
 		t.Fatal(errh)
 	}
 
-	resourceName := "wr-testing-" + localUser
+	resourceName := uniqueResourceName("wr-testing-" + localUser)
 
 	if osPrefix == "" || osUser == "" || localUser == "" || flavorRegex == "" {
 		SkipConvey("Without our special OS_OS_PREFIX, OS_OS_USERNAME, OS_LOCAL_USERNAME and OS_FLAVOR_REGEX "+
@@ -190,7 +190,7 @@ func TestOpenStack(t *testing.T) {
 
 	if os.Getenv("OS_PROJECT_NAME") != "" && os.Getenv("OS_PROJECT_ID") != "" {
 		Convey("You can get a new OpenStack Provider with both OS_PROJECT_NAME and OS_PROJECT_ID set", t, func() {
-			p, err := New(ctx, "openstack", resourceName, crfileprefix)
+			p, err := New(ctx, "openstack", resourceName, crfileprefix+"-project-name-and-id")
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 		})
@@ -198,7 +198,7 @@ func TestOpenStack(t *testing.T) {
 		Convey("You can get a new OpenStack Provider with just OS_PROJECT_NAME set", t, func() {
 			os.Unsetenv("OS_PROJECT_ID")
 
-			p, err := New(ctx, "openstack", resourceName, crfileprefix)
+			p, err := New(ctx, "openstack", resourceName, crfileprefix+"-project-name")
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 		})
@@ -276,15 +276,7 @@ func TestOpenStack(t *testing.T) {
 
 			Convey("TearDown deletes all the resources that deploy made", func() {
 				err := p.TearDown(ctx)
-
-				if p.InCloud() {
-					// the deploy didn't actually create anything that
-					// teardown would delete, so it complains
-					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldContainSubstring, "nothing to tear down")
-				} else {
-					So(err, ShouldBeNil)
-				}
+				So(err, ShouldBeNil)
 
 				// *** should really use openstack API to confirm everything is
 				// really deleted...

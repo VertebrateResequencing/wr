@@ -29,6 +29,7 @@
 package jobqueue
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"errors"
@@ -62,6 +63,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	log15 "github.com/inconshreveable/log15/v3"
 	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
@@ -107,19 +109,21 @@ const (
 	// granted/started, so its start marker never appeared. It is small (1) so the
 	// capacity-holding job fills it and a second job must wait. This only affects
 	// the test daemon; production default behaviour is unchanged.
-	signalTestMaxCores  = 1
-	serverRC            = `echo %s %s %s %s %d %d`
-	testCwd             = "/tmp"
-	manuallyAdded       = "manually_added"
-	reqGroupFake        = "fake_group"
-	reqGroupFallocate   = "fallocate"
-	futureDepGroup      = "future"
-	testCarrierDepGroup = "carrier"
-	testLiveDepGroup    = "live"
-	testOtherRepGroup   = "other"
-	testRepGroupA       = "rg-a"
-	reqGroupPerl        = "perl"
-	reqGroupSleep       = "sleep"
+	signalTestMaxCores    = 1
+	serverRC              = `echo %s %s %s %s %d %d`
+	testCwd               = "/tmp"
+	manuallyAdded         = "manually_added"
+	reqGroupFake          = "fake_group"
+	reqGroupFallocate     = "fallocate"
+	futureDepGroup        = "future"
+	testCarrierDepGroup   = "carrier"
+	testLiveDepGroup      = "live"
+	testOtherRepGroup     = "other"
+	testRepGroupA         = "rg-a"
+	reqGroupPerl          = "perl"
+	reqGroupSleep         = "sleep"
+	awsAccessKeyIDEnv     = "AWS_ACCESS_KEY_ID"
+	awsSecretAccessKeyEnv = "AWS_SECRET_ACCESS_KEY" // #nosec G101 -- test env-var name only.
 )
 
 // test command-line flag variables, populated by init() via the flag package.
@@ -185,6 +189,63 @@ func envWithoutLoadedModuleState(environ []string) []string {
 	}
 
 	return filtered
+}
+
+func envWithoutAWSCredentials(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+
+	for _, envvar := range environ {
+		name, _, _ := strings.Cut(envvar, "=")
+		if name == awsAccessKeyIDEnv || name == awsSecretAccessKeyEnv {
+			continue
+		}
+
+		filtered = append(filtered, envvar)
+	}
+
+	return filtered
+}
+
+//nolint:usetesting // t.Setenv cannot express "unset during test, restore later".
+func unsetAWSCredentialEnv(t *testing.T) {
+	t.Helper()
+
+	for _, name := range []string{awsAccessKeyIDEnv, awsSecretAccessKeyEnv} {
+		previousValue, wasSet := os.LookupEnv(name)
+
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("failed to unset %s: %s", name, err)
+		}
+
+		t.Cleanup(func() {
+			if wasSet {
+				if err := os.Setenv(name, previousValue); err != nil {
+					t.Fatalf("failed to restore %s: %s", name, err)
+				}
+
+				return
+			}
+
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatalf("failed to restore %s: %s", name, err)
+			}
+		})
+	}
+}
+
+func TestEnvWithoutAWSCredentials(t *testing.T) {
+	Convey("AWS credential environment variables are removed from test job environments", t, func() {
+		filtered := envWithoutAWSCredentials([]string{
+			"WR_TEST_ENV=kept",
+			awsAccessKeyIDEnv + "=stale-access-key",
+			awsSecretAccessKeyEnv + "=stale-secret-key",
+			"AWS_SESSION_TOKEN=kept",
+		})
+		So(filtered, ShouldResemble, []string{
+			"WR_TEST_ENV=kept",
+			"AWS_SESSION_TOKEN=kept",
+		})
+	})
 }
 
 func isLoadedModuleStateEnv(name string) bool {
@@ -7594,6 +7655,41 @@ func openStackJobqueueTestInCloud(ctx context.Context, resourceName, savePath st
 	return p.InCloud(), nil
 }
 
+func uniqueOpenStackJobqueueTestResourceName(localUser string) string {
+	u, err := uuid.NewV4()
+	if err != nil {
+		return fmt.Sprintf("wr-testing-%s-%d", localUser, time.Now().UnixNano())
+	}
+
+	return fmt.Sprintf("wr-testing-%s-%s", localUser, u.String())
+}
+
+type synchronizedLogCapture struct {
+	mu      sync.Mutex
+	content bytes.Buffer
+}
+
+func captureLogsAtLevel(level string) *synchronizedLogCapture {
+	capture := &synchronizedLogCapture{}
+	clog.ToHandlerAtLevel(log15.StreamHandler(capture, log15.LogfmtFormat()), level)
+
+	return capture
+}
+
+func (c *synchronizedLogCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.content.Write(p)
+}
+
+func (c *synchronizedLogCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.content.String()
+}
+
 func TestJobqueueWithOpenStack(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -7605,7 +7701,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	osUser := os.Getenv("OS_OS_USERNAME")
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-	resourceName := "wr-testing-" + localUser
 
 	runOpenStack, err := shouldRunOpenStackJobqueueTest(ctx, osPrefix, osUser, localUser, flavorRegex,
 		filepath.Join(t.TempDir(), "os_resources_gate"), openStackJobqueueTestInCloud)
@@ -7646,6 +7741,8 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	setDomainIP(config.ManagerCertDomain)
 
 	runnertmpdir := t.TempDir()
+	resourceName := uniqueOpenStackJobqueueTestResourceName(localUser)
+	resourceSavePath := filepath.Join(runnertmpdir, "os_resources")
 
 	// our runnerCmd will be running ourselves in --runnermode on older OpenStack
 	// worker images, so compile a static test binary to avoid host glibc drift.
@@ -7659,6 +7756,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		OSPrefix:             osPrefix,
 		OSUser:               osUser,
 		OSRAM:                2048,
+		SavePath:             resourceSavePath,
 		FlavorRegex:          flavorRegex,
 		FlavorSets:           os.Getenv("OS_FLAVOR_SETS"),
 		ServerPorts:          []int{22},
@@ -7688,7 +7786,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
-		RunnerCmd: runnerCmd +
+		RunnerCmd: "WR_LOGSMAXSIZEMB=500 WR_LOGSMAXBACKUPS=3 " + runnerCmd +
 			" -test.run TestJobqueueRunnerModeEntrypoint" +
 			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 			" --rtimeout %d --maxmins %d --rmanagerdir " +
@@ -7783,8 +7881,31 @@ sudo usermod -aG docker ` + osUser
 			return waitRepGroupStateCountFor(repGroup, state, count, maxSpawnTime)
 		}
 
+		waitRepGroupRunningWithCloudHost := func(repGroup string, timeout time.Duration) (*Job, bool) {
+			limit := time.After(timeout)
+			ticker := time.NewTicker(500 * time.Millisecond)
+
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					got, errg := jq.GetByRepGroup(repGroup, false, 0, JobStateRunning, false, false)
+					if errg != nil {
+						fmt.Printf("GetByRepGroup failed: %s\n", errg)
+					}
+
+					if len(got) == 1 && got[0].HostID != "" && got[0].HostIP != "" {
+						return got[0], true
+					}
+				case <-limit:
+					return nil, false
+				}
+			}
+		}
+
 		Convey("You can add a job that runs on localhost", func() {
-			buff := clog.ToBufferAtLevel("debug")
+			buff := captureLogsAtLevel("debug")
 			tmpdir := t.TempDir()
 
 			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
@@ -7832,15 +7953,23 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 
+			sawServerAllocate := false
+			sawServerRelease := false
+
 			for m := range strings.SplitSeq(buff.String(), "\n") {
 				if strings.Contains(m, "server allocate") {
+					sawServerAllocate = true
 					So(m, ShouldContainSubstring, "serverid=localhost")
 				}
 
 				if strings.Contains(m, "server release") {
+					sawServerRelease = true
 					So(m, ShouldContainSubstring, "serverid=localhost")
 				}
 			}
+
+			So(sawServerAllocate, ShouldBeTrue)
+			So(sawServerRelease, ShouldBeTrue)
 		})
 
 		Convey("You can add a chain of jobs that run quickly one after the other", func() {
@@ -8047,7 +8176,7 @@ sudo usermod -aG docker ` + osUser
 			other := make(map[string]string)
 
 			cores := runtime.NumCPU()
-			p, err := cloud.New(ctx, "openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
+			p, err := cloud.New(ctx, "openstack", resourceName, resourceSavePath)
 			So(err, ShouldBeNil)
 			flavor, err := p.CheapestServerFlavor(ctx, cores, 2048, flavorRegex)
 			So(err, ShouldBeNil)
@@ -8481,7 +8610,7 @@ sudo usermod -aG docker ` + osUser
 		})
 
 		Convey("The manager reacts correctly to spawned servers going down", func() {
-			p, err := cloud.New(ctx, "openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
+			p, err := cloud.New(ctx, "openstack", resourceName, resourceSavePath)
 			So(err, ShouldBeNil)
 
 			destroyedBadServer := 0
@@ -8510,21 +8639,17 @@ sudo usermod -aG docker ` + osUser
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			So(waitRepGroupStateCountFor("sleep", JobStateRunning, 1, maxSpawnTime), ShouldBeTrue)
-
 			// Pretend the worker server went down and verify the manager notices,
 			// releases the lost job, and starts it again on a replacement server.
-			got, err := jq.GetByRepGroup("sleep", false, 0, JobStateRunning, false, false)
-			So(err, ShouldBeNil)
-			So(len(got), ShouldEqual, 1)
-			So(got[0].Host, ShouldNotEqual, host)
-			So(got[0].HostID, ShouldNotBeBlank)
-			So(got[0].HostIP, ShouldNotBeBlank)
+			got, ok := waitRepGroupRunningWithCloudHost("sleep", maxSpawnTime)
+			So(ok, ShouldBeTrue)
+			So(got, ShouldNotBeNil)
+			So(got.Host, ShouldNotEqual, host)
 
-			err = p.DestroyServer(ctx, got[0].HostID)
+			err = p.DestroyServer(ctx, got.HostID)
 			So(err, ShouldBeNil)
 
-			killedJobEssence := &JobEssence{JobKey: got[0].Key()}
+			killedJobEssence := &JobEssence{JobKey: got.Key()}
 
 			// wait for the killed job to be marked as lost and then release
 			// it
@@ -8619,6 +8744,10 @@ func TestJobqueueWithMounts(t *testing.T) {
 		return
 	}
 
+	unsetAWSCredentialEnv(t)
+
+	mountEnvVars := envWithoutAWSCredentials(envVars)
+
 	restoreTimingGlobals := captureTimingGlobals()
 	defer restoreTimingGlobals()
 
@@ -8685,7 +8814,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			var jobs []*Job
 
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -8784,7 +8913,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 		Convey("Commands can read remote data and the cache gets deleted afterwards", func() {
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs, Behaviours: bs})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -8834,7 +8963,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			}
 
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "b", MountConfigs: mcs2, Behaviours: bs})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -8849,7 +8978,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			jobs = nil
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "c", MountConfigs: mcs3})
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "d", MountConfigs: mcs4})
-			inserts, already, err = jq.Add(jobs, envVars, true)
+			inserts, already, err = jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -8863,7 +8992,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		Convey("You can't add identical commands with the same mounts", func() {
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "a", MountConfigs: mcs, Behaviours: bs})
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "b", MountConfigs: mcs})
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
@@ -8880,7 +9009,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			jobs = nil
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "c", MountConfigs: mcs5})
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "d", MountConfigs: mcs6})
-			inserts, already, err = jq.Add(jobs, envVars, true)
+			inserts, already, err = jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
@@ -8889,7 +9018,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		Convey("You can modify the mounts", func() {
 			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3"})
 
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
