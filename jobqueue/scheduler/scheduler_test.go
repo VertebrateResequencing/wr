@@ -45,6 +45,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,9 +59,128 @@ const (
 	testShell   = "bash"
 	sleepTenCmd = "sleep 10"
 	trueStr     = "true"
+
+	openstackServerFlavorWait = 120 * time.Second
 )
 
 var maxCPU = runtime.NumCPU()
+
+var (
+	errOpenstackLiveTestCancelled = errors.New("openstack live test cancelled")
+	errOpenstackLiveWaitTimeout   = errors.New("openstack live wait timed out")
+)
+
+type openstackLiveTestRun struct {
+	contextFunc func() context.Context
+	cancel      context.CancelFunc
+}
+
+func newOpenstackLiveTestRun(ctx context.Context) *openstackLiveTestRun {
+	liveCtx, cancel := context.WithCancel(ctx)
+
+	return &openstackLiveTestRun{
+		contextFunc: func() context.Context { return liveCtx },
+		cancel:      cancel,
+	}
+}
+
+func (r *openstackLiveTestRun) Context() context.Context {
+	return r.contextFunc()
+}
+
+func (r *openstackLiveTestRun) waitToFinish(
+	s *Scheduler, label string, maxWait, interval time.Duration,
+) error {
+	if err := r.alreadyCancelledErr(label, s); err != nil {
+		return err
+	}
+
+	if pollUntilFor(maxWait, interval, func() bool { return !s.Busy(r.Context()) }) {
+		return nil
+	}
+
+	r.cancel()
+
+	return fmt.Errorf("%w: %s timed out after %s: %s",
+		errOpenstackLiveWaitTimeout, label, maxWait, schedulerSnapshot(r.Context(), s))
+}
+
+func schedulerSnapshot(ctx context.Context, s *Scheduler) string {
+	busy := s.Busy(ctx)
+
+	switch impl := s.impl.(type) {
+	case *local:
+		return localSchedulerSnapshot(busy, impl)
+	case *opst:
+		return openstackSchedulerSnapshot(busy, impl)
+	default:
+		return fmt.Sprintf("scheduler busy=%t", busy)
+	}
+}
+
+func (r *openstackLiveTestRun) waitForServerFlavors(
+	oss *opst, label string, ignore map[string]bool, wanted map[int]int,
+) error {
+	if err := r.alreadyCancelledErr(label, nil); err != nil {
+		return err
+	}
+
+	ok := pollUntilFor(openstackServerFlavorWait, time.Second, func() bool {
+		if len(wanted) == 0 {
+			oss.stateUpdate(r.Context())
+		}
+
+		return flavorCountsSatisfied(serverFlavorCounts(oss, ignore), wanted)
+	})
+	if ok {
+		<-time.After(2 * time.Second)
+
+		return nil
+	}
+
+	r.cancel()
+
+	return fmt.Errorf("%w: %s timed out after %s waiting for server flavors: wanted=%v have=%v ignored=%d",
+		errOpenstackLiveWaitTimeout, label, openstackServerFlavorWait, wanted, serverFlavorCounts(oss, ignore),
+		len(ignore))
+}
+
+func (r *openstackLiveTestRun) alreadyCancelledErr(label string, s *Scheduler) error {
+	if r.Context().Err() == nil {
+		return nil
+	}
+
+	if s == nil {
+		return fmt.Errorf("%w: %s skipped because live test context is already cancelled: %w",
+			errOpenstackLiveTestCancelled, label, r.Context().Err())
+	}
+
+	return fmt.Errorf("%w: %s skipped because live test context is already cancelled: %w; %s",
+		errOpenstackLiveTestCancelled, label, r.Context().Err(), schedulerSnapshot(context.Background(), s))
+}
+
+func TestOpenstackLiveWaitTimeout(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("OpenStack live wait timeouts cancel work and explain what was stuck", t, func() {
+		liveRun := newOpenstackLiveTestRun(ctx)
+		s, err := New(liveRun.Context(), "local", &ConfigLocal{testShell, 1 * time.Second, 1, 0})
+		So(err, ShouldBeNil)
+
+		So(s, ShouldNotBeNil)
+		defer s.Cleanup(context.Background())
+
+		req := &Requirements{1, 1 * time.Second, 1, 0, nil, true, true, true}
+		err = s.Schedule(liveRun.Context(), "sleep 0.2", req, 0, 1)
+		So(err, ShouldBeNil)
+
+		err = liveRun.waitToFinish(s, "unit-test timeout", 10*time.Millisecond, time.Millisecond)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "unit-test timeout")
+		So(err.Error(), ShouldContainSubstring, "scheduler busy=true")
+		So(liveRun.Context().Err(), ShouldEqual, context.Canceled)
+	})
+}
 
 func uniqueOpenStackTestResourceName(localUser string) string {
 	u, err := uuid.NewV4()
@@ -95,6 +215,21 @@ func TestMock(t *testing.T) {
 			}
 		})
 	})
+}
+
+func shellCommandOutput(ctx context.Context, shell, command string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = time.Second
+
+	return cmd.Output()
 }
 
 type startOrderRecorder struct {
@@ -698,7 +833,10 @@ func testLocalFewerCPUs(ctx context.Context, t *testing.T) {
 }
 
 func TestOpenstack(t *testing.T) {
-	ctx := context.Background()
+	liveRun := newOpenstackLiveTestRun(context.Background())
+	defer liveRun.cancel()
+
+	ctx := liveRun.Context()
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
@@ -765,7 +903,7 @@ func TestOpenstack(t *testing.T) {
 		So(errn, ShouldBeNil)
 
 		So(s, ShouldNotBeNil)
-		defer s.Cleanup(ctx)
+		defer s.Cleanup(context.Background())
 
 		oss, ok := s.impl.(*opst)
 		So(ok, ShouldBeTrue)
@@ -881,14 +1019,14 @@ func TestOpenstack(t *testing.T) {
 		// running in openstack, because the scheduler will try to ssh to
 		// the servers it spawns
 		if novaCmd != "" && oss.provider.InCloud() {
-			testOpenstackScheduling(ctx, s, oss, tmpdir, novaCmd, rName, osPrefix, flavorRegex, keepTime)
+			testOpenstackScheduling(liveRun, s, oss, tmpdir, novaCmd, rName, osPrefix, flavorRegex, keepTime)
 		} else {
 			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova or openstack installed", func() {})
 		}
 	})
 
 	if novaCmd != "" {
-		testOpenstackMultipleSpawns(ctx, t, config)
+		testOpenstackMultipleSpawns(t, liveRun, config)
 	}
 }
 
@@ -1067,33 +1205,6 @@ func flavorCountsSatisfied(have, wanted map[int]int) bool {
 	return true
 }
 
-// waitForServerFlavors waits up to 2 minutes for oss's servers (ignoring those
-// in ignore) to match the wanted core-count flavor distribution, returning true
-// as soon as they do and false on timeout.
-func waitForServerFlavors(ctx context.Context, oss *opst, ignore map[string]bool, wanted map[int]int) bool {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	limit := time.After(120 * time.Second)
-
-	for {
-		select {
-		case <-ticker.C:
-			if len(wanted) == 0 {
-				oss.stateUpdate(ctx)
-			}
-
-			if flavorCountsSatisfied(serverFlavorCounts(oss, ignore), wanted) {
-				<-time.After(2 * time.Second)
-
-				return true
-			}
-		case <-limit:
-			return false
-		}
-	}
-}
-
 func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1111,8 +1222,7 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 	}
 
 	cmdStr += rName
-	cmd := exec.CommandContext(ctx, testShell, "-c", cmdStr)
-	out, err := cmd.Output()
+	out, err := shellCommandOutput(ctx, testShell, cmdStr)
 
 	if ctx.Err() != nil {
 		log.Printf("exec of [%s] timed out\n", cmdStr)
@@ -1148,9 +1258,8 @@ func novaCountMatchingPrefix(ctx context.Context, out []byte, novaCmd, rName, os
 
 	for _, name := range r.FindAll(out, -1) {
 		showCmdStr := novaCmd + " show " + string(name) + " | grep image"
-		showCmd := exec.CommandContext(ctx, testShell, "-c", showCmdStr)
 
-		showOut, err := showCmd.Output()
+		showOut, err := shellCommandOutput(ctx, testShell, showCmdStr)
 		if err != nil {
 			log.Printf("cmd [%s] failed: %s\n", showCmdStr, err)
 
@@ -1279,9 +1388,10 @@ func parsePidHostFile(path string, maxWait time.Duration) (int, string, bool) {
 // testOpenstackScheduling runs the real OpenStack scheduling scenarios (only
 // when running inside OpenStack with nova/openstack available).
 func testOpenstackScheduling(
-	ctx context.Context, s *Scheduler, oss *opst, tmpdir, novaCmd, rName, osPrefix, flavorRegex string,
+	liveRun *openstackLiveTestRun, s *Scheduler, oss *opst, tmpdir, novaCmd, rName, osPrefix, flavorRegex string,
 	keepTime time.Duration,
 ) {
+	ctx := liveRun.Context()
 	oFile := filepath.Join(tmpdir, "out")
 
 	Convey("Schedule() lets you...", func() {
@@ -1296,7 +1406,8 @@ func testOpenstackScheduling(
 			So(s.Busy(ctx), ShouldBeTrue)
 
 			// spawn a server, run the first job, get on deathrow
-			So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+			So(liveRun.waitToFinish(s, "deathrow warm-up", time.Duration(eta)*time.Second, time.Second),
+				ShouldBeNil)
 
 			// now Schedule a bunch of cmds in quick succession
 			var wg sync.WaitGroup
@@ -1313,7 +1424,8 @@ func testOpenstackScheduling(
 			wg.Wait()
 
 			// the test is that we don't hit a deadlock
-			So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+			So(liveRun.waitToFinish(s, "deathrow batch", time.Duration(eta)*time.Second, time.Second),
+				ShouldBeNil)
 		})
 
 		Convey("Run jobs that use a NFS shared disk and rely on the PostCreationScript, ForcedCommand having run, and the PreDestroyScript runs on scale down", func() {
@@ -1337,7 +1449,7 @@ func testOpenstackScheduling(
 			So(err, ShouldBeNil)
 
 			So(s.Busy(ctx), ShouldBeTrue)
-			So(waitToFinish(ctx, s, 240, 1000), ShouldBeTrue)
+			So(liveRun.waitToFinish(s, "shared disk jobs", 240*time.Second, time.Second), ShouldBeNil)
 
 			_, err = os.Stat("/shared/test1")
 			So(err, ShouldBeNil)
@@ -1391,7 +1503,8 @@ func testOpenstackScheduling(
 					return novaCountServers(novaCmd, rName, "", "o2.small")
 				}, spawnedCh)
 
-				So(waitToFinish(ctx, s, 120, 1000), ShouldBeTrue)
+				So(liveRun.waitToFinish(s, "requested flavor job", 120*time.Second, time.Second),
+					ShouldBeNil)
 
 				stopCh <- true
 
@@ -1423,7 +1536,8 @@ func testOpenstackScheduling(
 				return novaCountServers(novaCmd, rName, "")
 			}, spawnedCh)
 
-			So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+			So(liveRun.waitToFinish(s, "no-input jobs", time.Duration(eta)*time.Second, time.Second),
+				ShouldBeNil)
 
 			stopCh <- true
 
@@ -1459,7 +1573,8 @@ func testOpenstackScheduling(
 			err := s.Schedule(ctx, cmd, newReq, 0, newCount)
 			So(err, ShouldBeNil)
 			So(s.Busy(ctx), ShouldBeTrue)
-			So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+			So(liveRun.waitToFinish(s, "fail-first-spawn jobs", time.Duration(eta)*time.Second, time.Second),
+				ShouldBeNil)
 		})
 
 		Convey("Run jobs and have servers still self-terminate when a server is slow to spawn", func() {
@@ -1473,7 +1588,8 @@ func testOpenstackScheduling(
 			err := s.Schedule(ctx, cmd, newReq, 0, newCount)
 			So(err, ShouldBeNil)
 			So(s.Busy(ctx), ShouldBeTrue)
-			So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+			So(liveRun.waitToFinish(s, "slow-second-spawn jobs", time.Duration(eta)*time.Second, time.Second),
+				ShouldBeNil)
 
 			<-time.After(20 * time.Second)
 
@@ -1531,7 +1647,8 @@ func testOpenstackScheduling(
 					}
 				}()
 
-				So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
+				So(liveRun.waitToFinish(s, "CentOS override jobs", time.Duration(eta)*time.Second, time.Second),
+					ShouldBeNil)
 				ssync.Lock()
 				So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 				ssync.Unlock()
@@ -1548,7 +1665,7 @@ func testOpenstackScheduling(
 			})
 		}
 
-		testMultiCoreServers(ctx, s, oss, novaCmd, rName)
+		testMultiCoreServers(liveRun, s, oss, novaCmd, rName)
 
 		// *** when we have mocks, need to test that flavor sets work
 		// as expected by filling up hardware in one set and seeing that
@@ -1556,12 +1673,14 @@ func testOpenstackScheduling(
 	})
 
 	// wait a while for any remaining jobs to finish
-	So(waitToFinish(ctx, s, 60, 1000), ShouldBeTrue)
+	So(liveRun.waitToFinish(s, "final OpenStack drain", 60*time.Second, time.Second), ShouldBeNil)
 }
 
 // testMultiCoreServers checks several jobs can run at once on a multi-core
 // server, when a suitable multi-core flavor is available.
-func testMultiCoreServers(ctx context.Context, s *Scheduler, oss *opst, novaCmd, rName string) {
+func testMultiCoreServers(liveRun *openstackLiveTestRun, s *Scheduler, oss *opst, novaCmd, rName string) {
+	ctx := liveRun.Context()
+
 	const numCores = 5
 
 	skipMsg := "Skipping multi-core server tests due to lack of suitable multi-core server flavors"
@@ -1609,7 +1728,8 @@ func testMultiCoreServers(ctx context.Context, s *Scheduler, oss *opst, novaCmd,
 		// parallel, but not sequentially *** but how long does it take to
 		// spawn?! (50s in authors test area, but this will vary...) we need
 		// better confirmation of parallel run...
-		So(waitToFinish(ctx, s, waitSecs, 1000), ShouldBeTrue)
+		So(liveRun.waitToFinish(s, "multi-core jobs", time.Duration(waitSecs)*time.Second, time.Second),
+			ShouldBeNil)
 
 		spawned := <-spawnedCh
 		So(spawned, ShouldEqual, 1)
@@ -1618,8 +1738,10 @@ func testMultiCoreServers(ctx context.Context, s *Scheduler, oss *opst, novaCmd,
 
 // testOpenstackMultipleSpawns checks the openstack scheduler can spawn several
 // servers simultaneously.
-func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *ConfigOpenStack) {
+func testOpenstackMultipleSpawns(t *testing.T, liveRun *openstackLiveTestRun, config *ConfigOpenStack) {
 	t.Helper()
+
+	ctx := liveRun.Context()
 
 	Convey("You can get a new openstack scheduler that can do multiple spawns", t, func() {
 		tmpdir, errt := os.MkdirTemp("", "wr_schedulers_openstack_test_output_dir_")
@@ -1635,7 +1757,7 @@ func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *Conf
 
 		So(s, ShouldNotBeNil)
 		defer func() {
-			s.Cleanup(ctx)
+			s.Cleanup(context.Background())
 		}()
 
 		oss, ok := s.impl.(*opst)
@@ -1657,13 +1779,15 @@ func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *Conf
 
 			wanted := make(map[int]int)
 			wanted[2] = config.SimultaneousSpawns
-			So(waitForServerFlavors(ctx, oss, ignoreServers, wanted), ShouldBeTrue)
+			So(liveRun.waitForServerFlavors(oss, "multiple spawns initial small servers", ignoreServers, wanted),
+				ShouldBeNil)
 
 			err = s.Schedule(ctx, smallCmd, smallReq, 0, 0)
 			So(err, ShouldBeNil)
 
 			wanted = make(map[int]int)
-			So(waitForServerFlavors(ctx, oss, ignoreServers, wanted), ShouldBeTrue)
+			So(liveRun.waitForServerFlavors(oss, "multiple spawns small cleanup", ignoreServers, wanted),
+				ShouldBeNil)
 		})
 
 		Convey("You can Schedule many small cmds and then a higher priority large cmd and the large runs asap", func() {
@@ -1680,7 +1804,8 @@ func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *Conf
 			wanted := make(map[int]int)
 			wanted[2] = (config.SimultaneousSpawns * 2) - 1
 			wanted[4] = 1
-			So(waitForServerFlavors(ctx, oss, ignoreServers, wanted), ShouldBeTrue)
+			So(liveRun.waitForServerFlavors(oss, "multiple spawns priority mix", ignoreServers, wanted),
+				ShouldBeNil)
 
 			err = s.Schedule(ctx, smallCmd, smallReq, 0, 0)
 			So(err, ShouldBeNil)
@@ -1688,7 +1813,8 @@ func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *Conf
 			So(err, ShouldBeNil)
 
 			wanted = make(map[int]int)
-			So(waitForServerFlavors(ctx, oss, ignoreServers, wanted), ShouldBeTrue)
+			So(liveRun.waitForServerFlavors(oss, "multiple spawns priority cleanup", ignoreServers, wanted),
+				ShouldBeNil)
 		})
 
 		Convey("You can Schedule a large command and then a small cmd and get both running and sharing servers", func() {
@@ -1705,7 +1831,8 @@ func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *Conf
 			wanted := make(map[int]int)
 			wanted[8] = config.SimultaneousSpawns - 1
 			wanted[2] = 1
-			So(waitForServerFlavors(ctx, oss, ignoreServers, wanted), ShouldBeTrue)
+			So(liveRun.waitForServerFlavors(oss, "multiple spawns shared servers", ignoreServers, wanted),
+				ShouldBeNil)
 
 			oss.serversMutex.RLock()
 
@@ -1731,11 +1858,55 @@ func testOpenstackMultipleSpawns(ctx context.Context, t *testing.T, config *Conf
 			So(err, ShouldBeNil)
 
 			wanted = make(map[int]int)
-			So(waitForServerFlavors(ctx, oss, ignoreServers, wanted), ShouldBeTrue)
+			So(liveRun.waitForServerFlavors(oss, "multiple spawns shared cleanup", ignoreServers, wanted),
+				ShouldBeNil)
 
 			So(eightcores, ShouldEqual, config.SimultaneousSpawns-1)
 			So(space, ShouldEqual, 0)
 			So(twocores, ShouldBeBetweenOrEqual, 1, config.SimultaneousSpawns)
 		})
 	})
+}
+
+func TestShellCommandOutputTimeoutKillsChildren(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Timed-out shell commands kill child processes holding output pipes open", t, func() {
+		cmdCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer cancel()
+
+		started := time.Now()
+		_, err := shellCommandOutput(cmdCtx, testShell, "sleep 5 & wait")
+
+		So(err, ShouldNotBeNil)
+		So(time.Since(started), ShouldBeLessThan, time.Second)
+	})
+}
+
+func localSchedulerSnapshot(busy bool, s *local) string {
+	stats := s.queue.Stats()
+
+	return fmt.Sprintf("scheduler busy=%t queue_items=%d ready=%d running=%d buried=%d",
+		busy, stats.Items, stats.Ready,
+		stats.Running, stats.Buried)
+}
+
+func openstackSchedulerSnapshot(busy bool, s *opst) string {
+	stats := s.queue.Stats()
+
+	s.spawnMutex.Lock()
+
+	spawningTotal := 0
+	for _, spawning := range s.spawningNow {
+		spawningTotal += spawning
+	}
+	s.spawnMutex.Unlock()
+
+	s.serversMutex.RLock()
+	servers := len(s.servers)
+	spawnedServers := len(s.spawnedServers)
+	s.serversMutex.RUnlock()
+
+	return fmt.Sprintf("scheduler busy=%t queue_items=%d ready=%d running=%d buried=%d servers=%d spawned=%d spawning=%d",
+		busy, stats.Items, stats.Ready, stats.Running, stats.Buried, servers, spawnedServers, spawningTotal)
 }
