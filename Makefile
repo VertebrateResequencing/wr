@@ -69,11 +69,6 @@ WR_TEST_RUNNEREXECSHELL ?= /bin/bash
 #       Override the first port in the suite's run-specific lane port block.
 #       Normally auto-selected below the OS ephemeral port range; intended for
 #       debugging unusual port conflicts.
-#   WR_TEST_LIVE_OPENSTACK=1
-#       Opt in to live OpenStack lanes when the required OS_OS_PREFIX,
-#       OS_OS_USERNAME, OS_LOCAL_USERNAME and OS_FLAVOR_REGEX variables are set.
-#       Without this opt-in, normal suite lanes scrub sourced OS_* OpenStack
-#       variables so an rc file does not trigger or alter cloud tests.
 # WR_TEST_LANE, WR_TEST_SHARD and WR_TEST_RUNNER_BINARY are internal lane
 # controls set by the suite runner, not normal user-facing inputs.
 test: export CGO_ENABLED = 0

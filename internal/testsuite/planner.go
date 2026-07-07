@@ -43,7 +43,6 @@ const (
 	envOpenStackUsername      = "OS_OS_USERNAME"
 	envOpenStackLocalUsername = "OS_LOCAL_USERNAME"
 	envOpenStackFlavorRegex   = "OS_FLAVOR_REGEX"
-	envLiveOpenStack          = "WR_TEST_LIVE_OPENSTACK"
 	envS3MountPath            = "JOBQUEUE_REMOTES3_PATH"
 	s3ConfigFile              = ".s3cfg"
 )
@@ -167,56 +166,6 @@ func ParseMode(raw string) (Mode, error) {
 	}
 }
 
-func scrubLiveOpenStackEnvFromLanes(lanes []Lane) {
-	for i := range lanes {
-		scrubLiveOpenStackEnvFromLane(&lanes[i])
-	}
-}
-
-func scrubLiveOpenStackEnvFromLane(lane *Lane) {
-	keys := liveOpenStackScrubEnvKeys()
-	if lane.Env == nil {
-		lane.Env = make(map[string]string, len(keys))
-	}
-
-	for _, key := range keys {
-		lane.Env[key] = ""
-	}
-}
-
-func liveOpenStackScrubEnvKeys() []string {
-	seen := make(map[string]bool, 32)
-
-	for _, key := range liveOpenStackGateEnvKeys() {
-		seen[key] = true
-	}
-
-	for _, value := range os.Environ() {
-		key, _, ok := strings.Cut(value, "=")
-		if ok && strings.HasPrefix(key, "OS_") {
-			seen[key] = true
-		}
-	}
-
-	keys := make([]string, 0, len(seen))
-	for key := range seen {
-		keys = append(keys, key)
-	}
-
-	slices.Sort(keys)
-
-	return keys
-}
-
-func liveOpenStackGateEnvKeys() []string {
-	return []string{
-		envOpenStackPrefix,
-		envOpenStackUsername,
-		envOpenStackLocalUsername,
-		envOpenStackFlavorRegex,
-	}
-}
-
 // Plan is the complete set of work needed for one test-suite mode.
 type Plan struct {
 	Mode     Mode
@@ -265,10 +214,6 @@ func NewPlan(mode Mode, module string, packages []string) Plan {
 
 	if other := otherLane(mode, packages, excluded); len(other.Packages) > 0 {
 		plan.Parallel = append(plan.Parallel, other)
-	}
-
-	if !liveOpenStack {
-		scrubLiveOpenStackEnv(&plan)
 	}
 
 	return plan
@@ -411,11 +356,6 @@ func jobqueueLanes(module string, liveOpenStack bool, liveS3Mounts bool) []Lane 
 	})
 
 	return lanes
-}
-
-func scrubLiveOpenStackEnv(plan *Plan) {
-	scrubLiveOpenStackEnvFromLanes(plan.Serial)
-	scrubLiveOpenStackEnvFromLanes(plan.Parallel)
 }
 
 type jobqueueRunLaneConfig struct {
@@ -752,11 +692,12 @@ func cloudLane(module string) Lane {
 }
 
 func liveOpenStackTestsEnabled() bool {
-	if os.Getenv(envLiveOpenStack) != "1" {
-		return false
-	}
-
-	for _, key := range liveOpenStackGateEnvKeys() {
+	for _, key := range []string{
+		envOpenStackPrefix,
+		envOpenStackUsername,
+		envOpenStackLocalUsername,
+		envOpenStackFlavorRegex,
+	} {
 		if os.Getenv(key) == "" {
 			return false
 		}
