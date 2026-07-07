@@ -197,6 +197,21 @@ func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
 		So(coveredPackages(plan), ShouldResemble, packages)
 	})
 
+	Convey("a sourced OpenStack shell without explicit opt-in keeps the normal non-live plan", t, func() {
+		disableLiveS3MountEnv(t)
+		enableSourcedOpenStackEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+
+		So(plan.Serial, ShouldBeEmpty)
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "cloud"), "TestOpenStack"), ShouldResemble, []string{"other"})
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue/scheduler"), "TestOpenstack"),
+			ShouldResemble, []string{"scheduler"})
+		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithOpenStack"),
+			ShouldResemble, []string{"jq_default"})
+		So(coveredPackages(plan), ShouldResemble, packages)
+	})
+
 	Convey("without the live OpenStack environment the normal parallel plan is unchanged", t, func() {
 		disableLiveIntegrationEnv(t)
 
@@ -209,6 +224,40 @@ func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
 		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithOpenStack"),
 			ShouldResemble, []string{"jq_default"})
 		So(coveredPackages(plan), ShouldResemble, packages)
+	})
+}
+
+func TestRunnerScopesLiveOpenStackEnvironmentToOptInLanes(t *testing.T) {
+	packages := []string{
+		pkg(testModule, "cloud"),
+		pkg(testModule, "jobqueue"),
+		pkg(testModule, "jobqueue/scheduler"),
+	}
+
+	Convey("normal lanes override sourced OpenStack variables to empty", t, func() {
+		disableLiveS3MountEnv(t)
+		enableSourcedOpenStackEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+
+		assertLaneCommandEnvScrubsOpenStack(laneNamed(plan, "other"))
+		assertLaneCommandEnvScrubsOpenStack(laneNamed(plan, "scheduler"))
+		assertLaneCommandEnvScrubsOpenStack(laneNamed(plan, "jq_default"))
+	})
+
+	Convey("explicit live OpenStack lanes inherit sourced OpenStack variables", t, func() {
+		disableLiveS3MountEnv(t)
+		enableLiveOpenStackEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, packages)
+		env := envMap(commandEnv(laneNamed(plan, "scheduler_openstack").Env))
+
+		So(env[envOpenStackPrefix], ShouldEqual, "prefix")
+		So(env[envOpenStackUsername], ShouldEqual, "openstack-user")
+		So(env[envOpenStackLocalUsername], ShouldEqual, "local-user")
+		So(env[envOpenStackFlavorRegex], ShouldEqual, "tiny")
+		So(env["OS_AUTH_URL"], ShouldEqual, "https://openstack.example:5000/v3")
+		So(env["OS_USERNAME"], ShouldEqual, "credential-user")
 	})
 }
 
@@ -250,13 +299,24 @@ func enableLiveS3MountEnv(t *testing.T) {
 	So(os.WriteFile(filepath.Join(home, s3ConfigFile), []byte("[default]\n"), 0600), ShouldBeNil)
 }
 
+func assertLaneCommandEnvScrubsOpenStack(lane Lane) {
+	So(lane.Name, ShouldNotBeBlank)
+
+	env := envMap(commandEnv(lane.Env))
+
+	So(env[envOpenStackPrefix], ShouldBeBlank)
+	So(env[envOpenStackUsername], ShouldBeBlank)
+	So(env[envOpenStackLocalUsername], ShouldBeBlank)
+	So(env[envOpenStackFlavorRegex], ShouldBeBlank)
+	So(env["OS_AUTH_URL"], ShouldBeBlank)
+	So(env["OS_USERNAME"], ShouldBeBlank)
+}
+
 func enableLiveOpenStackEnv(t *testing.T) {
 	t.Helper()
 
-	t.Setenv(envOpenStackPrefix, "prefix")
-	t.Setenv(envOpenStackUsername, "openstack-user")
-	t.Setenv(envOpenStackLocalUsername, "local-user")
-	t.Setenv(envOpenStackFlavorRegex, "tiny")
+	enableSourcedOpenStackEnv(t)
+	t.Setenv(envLiveOpenStack, "1")
 }
 
 func lanesForTestIn(lanes []Lane, packageName string, testName string) []string {
@@ -367,6 +427,18 @@ func TestPortLaneRangesStayBelowDefaultEphemeralPorts(t *testing.T) {
 	})
 }
 
+func enableSourcedOpenStackEnv(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(envLiveOpenStack, "")
+	t.Setenv(envOpenStackPrefix, "prefix")
+	t.Setenv(envOpenStackUsername, "openstack-user")
+	t.Setenv(envOpenStackLocalUsername, "local-user")
+	t.Setenv(envOpenStackFlavorRegex, "tiny")
+	t.Setenv("OS_AUTH_URL", "https://openstack.example:5000/v3")
+	t.Setenv("OS_USERNAME", "credential-user")
+}
+
 func disableLiveIntegrationEnv(t *testing.T) {
 	t.Helper()
 
@@ -378,6 +450,7 @@ func disableLiveOpenStackEnv(t *testing.T) {
 	t.Helper()
 
 	for _, key := range []string{
+		envLiveOpenStack,
 		envOpenStackPrefix,
 		envOpenStackUsername,
 		envOpenStackLocalUsername,
