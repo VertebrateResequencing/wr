@@ -167,21 +167,46 @@ func TestOpenstackLiveWaitTimeout(t *testing.T) {
 
 	Convey("OpenStack live wait timeouts cancel work and explain what was stuck", t, func() {
 		liveRun := newOpenstackLiveTestRun(ctx)
-		s, err := New(liveRun.Context(), "local", &ConfigLocal{testShell, 1 * time.Second, 1, 0})
+		started := make(chan struct{})
+		release := make(chan struct{})
+
+		releaseRunner := sync.OnceFunc(func() { close(release) })
+		defer releaseRunner()
+
+		s, err := New(liveRun.Context(), mockSchedulerName, ConfigMock{
+			RunnerFunc: func(_ context.Context, _ string) {
+				close(started)
+				<-release
+			},
+		})
 		So(err, ShouldBeNil)
 
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup(context.Background())
 
 		req := &Requirements{1, 1 * time.Second, 1, 0, nil, true, true, true}
-		err = s.Schedule(liveRun.Context(), "sleep 0.2", req, 0, 1)
+		err = s.Schedule(liveRun.Context(), "unit-test timeout", req, 0, 1)
 		So(err, ShouldBeNil)
+		So(pollUntilFor(time.Second, time.Millisecond, func() bool {
+			select {
+			case <-started:
+				return true
+			default:
+				return false
+			}
+		}), ShouldBeTrue)
 
 		err = liveRun.waitToFinish(s, "unit-test timeout", 10*time.Millisecond, time.Millisecond)
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "unit-test timeout")
 		So(err.Error(), ShouldContainSubstring, "scheduler busy=true")
 		So(liveRun.Context().Err(), ShouldEqual, context.Canceled)
+
+		releaseRunner()
+
+		So(pollUntilFor(time.Second, time.Millisecond, func() bool {
+			return !s.Busy(context.Background())
+		}), ShouldBeTrue)
 	})
 
 	Convey("OpenStack live wait timeout diagnostics do not block on scheduler locks", t, func() {
