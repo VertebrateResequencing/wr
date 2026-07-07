@@ -72,8 +72,9 @@ import (
 )
 
 const (
-	localSchedulerName = "local"
-	maxSpawnTime       = 240 * time.Second
+	localSchedulerName                 = "local"
+	maxSpawnTime                       = 240 * time.Second
+	openStackNoDockerProbeShellCommand = "if docker info >/dev/null 2>&1; then exit 42; else exit 0; fi"
 	// runnerStartWait bounds how long tests wait for a server-spawned runner
 	// subprocess to actually start its job (produce a start marker, reach
 	// JobStateRunning, etc). The server spawns runners with a short reserve
@@ -7644,6 +7645,29 @@ func TestShouldRunOpenStackJobqueueTest(t *testing.T) {
 
 func TestShouldRunOpenStackNoDockerScenario(t *testing.T) {
 	Convey("OpenStack no-Docker coverage follows the runner-side Docker probe", t, func() {
+		Convey("the probe command completes when Docker is absent", func() {
+			err := runOpenStackNoDockerProbeShellCommand(t, t.TempDir())
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("the probe command exits non-zero when Docker is present", func() {
+			pathDir := t.TempDir()
+			docker := filepath.Join(pathDir, "docker")
+			dockerScript := []byte("#!/bin/sh\nexit 0\n")
+
+			So(os.WriteFile(docker, dockerScript, 0o600), ShouldBeNil)
+			So(os.Chmod(docker, 0o700), ShouldBeNil)
+
+			err := runOpenStackNoDockerProbeShellCommand(t, pathDir)
+
+			So(err, ShouldNotBeNil)
+
+			var exitErr *exec.ExitError
+			So(errors.As(err, &exitErr), ShouldBeTrue)
+			So(exitErr.ExitCode(), ShouldEqual, 42)
+		})
+
 		Convey("a completed no-Docker probe means the runner lacks Docker", func() {
 			run, err := shouldRunOpenStackNoDockerScenario([]*Job{{}}, nil, nil, nil)
 
@@ -7672,6 +7696,19 @@ func TestShouldRunOpenStackNoDockerScenario(t *testing.T) {
 			So(run, ShouldBeFalse)
 		})
 	})
+}
+
+func runOpenStackNoDockerProbeShellCommand(t *testing.T, pathDir string) error {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", openStackNoDockerProbeShellCommand)
+
+	cmd.Env = append(os.Environ(), "PATH="+pathDir)
+
+	return cmd.Run()
 }
 
 type openStackJobqueueInCloudDetector func(context.Context, string, string) (bool, error)
@@ -7978,7 +8015,7 @@ sudo usermod -aG docker ` + osUser
 			rg := "no_docker_probe_" + internal.RandomString()
 			other := map[string]string{"cloud_script": "true"}
 			jobs := []*Job{{
-				Cmd:          "/bin/sh -c 'if docker info >/dev/null 2>&1; then exit 42; fi'",
+				Cmd:          "/bin/sh -c '" + openStackNoDockerProbeShellCommand + "'",
 				Cwd:          "/tmp",
 				ReqGroup:     rg,
 				Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 1, Other: other},

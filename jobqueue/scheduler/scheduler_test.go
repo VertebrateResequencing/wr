@@ -306,6 +306,12 @@ func TestMock(t *testing.T) {
 }
 
 func shellCommandOutput(ctx context.Context, shell, command string) ([]byte, error) {
+	return shellCommandOutputWithProcessGroupKiller(ctx, shell, command, syscall.Kill)
+}
+
+func shellCommandOutputWithProcessGroupKiller(ctx context.Context, shell, command string,
+	kill processGroupKiller,
+) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -313,12 +319,19 @@ func shellCommandOutput(ctx context.Context, shell, command string) ([]byte, err
 			return nil
 		}
 
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+
+		return err
 	}
 	cmd.WaitDelay = time.Second
 
 	return cmd.Output()
 }
+
+type processGroupKiller func(int, syscall.Signal) error
 
 type startOrderRecorder struct {
 	dir        string
@@ -1969,6 +1982,55 @@ func TestShellCommandOutputTimeoutKillsChildren(t *testing.T) {
 		So(err, ShouldNotBeNil)
 		So(time.Since(started), ShouldBeLessThan, time.Second)
 	})
+
+	Convey("ESRCH from the cancellation hook does not fail a command that already exited", t, func() {
+		dir := t.TempDir()
+		startedPath := filepath.Join(dir, "started")
+		donePath := filepath.Join(dir, "done")
+		cmdStr := fmt.Sprintf("touch %q; while [ ! -e %q ]; do sleep 0.01; done", startedPath, donePath)
+		killerCalled := make(chan struct{})
+		outputErr := make(chan error, 1)
+		cmdCtx, cancel := context.WithCancel(ctx)
+
+		defer cancel()
+
+		go func() {
+			_, err := shellCommandOutputWithProcessGroupKiller(cmdCtx, testShell, cmdStr,
+				func(int, syscall.Signal) error {
+					close(killerCalled)
+
+					return syscall.ESRCH
+				},
+			)
+			outputErr <- err
+		}()
+
+		So(pollUntilFor(time.Second, 10*time.Millisecond, func() bool {
+			_, err := os.Stat(startedPath)
+
+			return err == nil
+		}), ShouldBeTrue)
+
+		cancel()
+		So(waitForShellCommandSignal(killerCalled, time.Second), ShouldBeTrue)
+		So(os.WriteFile(donePath, nil, 0o600), ShouldBeNil)
+
+		select {
+		case err := <-outputErr:
+			So(err, ShouldBeNil)
+		case <-time.After(time.Second):
+			So(false, ShouldBeTrue)
+		}
+	})
+}
+
+func waitForShellCommandSignal(signal <-chan struct{}, maxWait time.Duration) bool {
+	select {
+	case <-signal:
+		return true
+	case <-time.After(maxWait):
+		return false
+	}
 }
 
 func localSchedulerSnapshot(busy bool, s *local) string {
