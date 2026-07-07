@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -61,6 +62,8 @@ const (
 	trueStr     = "true"
 
 	openstackServerFlavorWait = 120 * time.Second
+	openstackSnapshotLockWait = 10 * time.Millisecond
+	unknownSnapshotCount      = "unknown"
 )
 
 var maxCPU = runtime.NumCPU()
@@ -179,6 +182,66 @@ func TestOpenstackLiveWaitTimeout(t *testing.T) {
 		So(err.Error(), ShouldContainSubstring, "unit-test timeout")
 		So(err.Error(), ShouldContainSubstring, "scheduler busy=true")
 		So(liveRun.Context().Err(), ShouldEqual, context.Canceled)
+	})
+
+	Convey("OpenStack live wait timeout diagnostics do not block on scheduler locks", t, func() {
+		liveRun := newOpenstackLiveTestRun(ctx)
+
+		oss := &opst{
+			local: local{
+				queue:   queue.New(ctx, localPlace),
+				running: make(map[string]int),
+			},
+			spawningNow: map[string]int{"locked": 1},
+		}
+		defer func() {
+			So(oss.queue.Destroy(), ShouldBeNil)
+		}()
+
+		_, err := oss.queue.Add(ctx, "locked-openstack-diagnostic", "", &job{cmd: "sleep 1", count: 1}, 0, 0,
+			queueItemTTR, "")
+		So(err, ShouldBeNil)
+
+		s := &Scheduler{
+			impl:    oss,
+			Name:    openstackScheduler,
+			limiter: make(map[string]int),
+		}
+
+		oss.spawnMutex.Lock()
+		oss.serversMutex.Lock()
+
+		started := time.Now()
+
+		done := make(chan error, 1)
+		go func() {
+			done <- liveRun.waitToFinish(s, "unit-test openstack lock timeout", time.Millisecond, time.Millisecond)
+		}()
+
+		var waitErr error
+
+		blocked := false
+
+		select {
+		case waitErr = <-done:
+		case <-time.After(200 * time.Millisecond):
+			blocked = true
+		}
+
+		oss.serversMutex.Unlock()
+		oss.spawnMutex.Unlock()
+
+		if blocked {
+			waitErr = <-done
+		}
+
+		So(blocked, ShouldBeFalse)
+		So(time.Since(started), ShouldBeLessThan, 200*time.Millisecond)
+		So(waitErr, ShouldNotBeNil)
+		So(waitErr.Error(), ShouldContainSubstring, "unit-test openstack lock timeout")
+		So(waitErr.Error(), ShouldContainSubstring, "servers=unknown")
+		So(waitErr.Error(), ShouldContainSubstring, "spawned=unknown")
+		So(waitErr.Error(), ShouldContainSubstring, "spawning=unknown")
 	})
 }
 
@@ -1894,19 +1957,58 @@ func localSchedulerSnapshot(busy bool, s *local) string {
 func openstackSchedulerSnapshot(busy bool, s *opst) string {
 	stats := s.queue.Stats()
 
-	s.spawnMutex.Lock()
+	spawningTotal := openstackSpawningSnapshot(s)
+	servers, spawnedServers := openstackServersSnapshot(s)
+
+	return fmt.Sprintf("scheduler busy=%t queue_items=%d ready=%d running=%d buried=%d servers=%s spawned=%s spawning=%s",
+		busy, stats.Items, stats.Ready, stats.Running, stats.Buried, servers, spawnedServers, spawningTotal)
+}
+
+func openstackSpawningSnapshot(s *opst) string {
+	if !trySnapshotLock(openstackSnapshotLockWait, s.spawnMutex.TryLock) {
+		return unknownSnapshotCount
+	}
+	defer s.spawnMutex.Unlock()
 
 	spawningTotal := 0
 	for _, spawning := range s.spawningNow {
 		spawningTotal += spawning
 	}
-	s.spawnMutex.Unlock()
 
-	s.serversMutex.RLock()
-	servers := len(s.servers)
-	spawnedServers := len(s.spawnedServers)
-	s.serversMutex.RUnlock()
+	return strconv.Itoa(spawningTotal)
+}
 
-	return fmt.Sprintf("scheduler busy=%t queue_items=%d ready=%d running=%d buried=%d servers=%d spawned=%d spawning=%d",
-		busy, stats.Items, stats.Ready, stats.Running, stats.Buried, servers, spawnedServers, spawningTotal)
+func openstackServersSnapshot(s *opst) (string, string) {
+	if !trySnapshotLock(openstackSnapshotLockWait, s.serversMutex.TryRLock) {
+		return unknownSnapshotCount, unknownSnapshotCount
+	}
+	defer s.serversMutex.RUnlock()
+
+	servers := strconv.Itoa(len(s.servers))
+	spawnedServers := strconv.Itoa(len(s.spawnedServers))
+
+	return servers, spawnedServers
+}
+
+func trySnapshotLock(maxWait time.Duration, tryLock func() bool) bool {
+	if tryLock() {
+		return true
+	}
+
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+			if tryLock() {
+				return true
+			}
+		}
+	}
 }
