@@ -13,6 +13,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      WR_TESTSUITE_MAX_PARALLEL: 4
+      WR_TESTSUITE_TIMINGS: 1
 
     steps:
     - uses: actions/checkout@v7.0.0
