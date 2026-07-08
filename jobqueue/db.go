@@ -241,6 +241,7 @@ func collectReverseLookupRebuildBucket(tx *bolt.Tx, bucket []byte, progress *dbU
 
 	err := b.ForEach(func(k, _ []byte) error {
 		processed++
+
 		totalProcessed := processedBefore + processed
 		if progress.progressDue(totalProcessed) {
 			progress.progress("rebuild job lookup index",
