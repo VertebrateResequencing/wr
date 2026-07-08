@@ -406,6 +406,62 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(reports, ShouldContain, "single fresh upgrade status")
 	})
 
+	Convey("manager startup trusts the DB upgrade status timestamp when filesystem mtime is coarse", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 200 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		preStart := time.Now().Add(-time.Second)
+
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		statusTime := time.Now()
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "fresh upgrade with coarse status mtime",
+			PID:       os.Getpid(),
+			StartedAt: preStart,
+			UpdatedAt: statusTime,
+		}, preStart.Truncate(time.Second))
+
+		started := time.Now()
+		readyAt := started.Add(60 * time.Millisecond)
+
+		var reports []string
+
+		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			if time.Now().After(readyAt) {
+				return &jobqueue.Client{}
+			}
+
+			return nil
+		}, func(status internal.DBUpgradeStatus) {
+			reports = append(reports, managerDBUpgradeStatusText(status))
+		})
+
+		So(jq, ShouldNotBeNil)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 50*time.Millisecond)
+		So(reports, ShouldContain, "fresh upgrade with coarse status mtime")
+	})
+
 	Convey("manager startup keeps waiting during a quiet commit phase while the upgrade process is alive", t, func() {
 		oldConfig := config
 		oldPoll := managerStartupPollInterval

@@ -715,7 +715,12 @@ func currentManagerDBUpgradeStatus(preStart time.Time) (internal.DBUpgradeStatus
 		return internal.DBUpgradeStatus{}, false
 	}
 
-	if !info.ModTime().After(preStart) {
+	statusTime := status.UpdatedAt
+	if statusTime.IsZero() {
+		statusTime = info.ModTime()
+	}
+
+	if !statusTime.After(preStart) {
 		return internal.DBUpgradeStatus{}, false
 	}
 
