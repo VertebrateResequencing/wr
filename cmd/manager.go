@@ -738,7 +738,7 @@ func managerDBUpgradeStatusFreshEnough(status internal.DBUpgradeStatus, info os.
 
 func managerDBUpgradeProcessRunning(pid int) bool {
 	if pid <= 0 {
-		return true
+		return false
 	}
 
 	err := syscall.Kill(pid, syscall.Signal(0))

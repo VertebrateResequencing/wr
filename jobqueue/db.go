@@ -242,10 +242,12 @@ func collectReverseLookupRebuildBucket(tx *bolt.Tx, bucket []byte, progress *dbU
 	err := b.ForEach(func(k, _ []byte) error {
 		processed++
 		totalProcessed := processedBefore + processed
-		progress.progress("rebuild job lookup index",
-			fmt.Sprintf("rebuilding database job lookup index from %s (%d entries processed, %d total)",
-				bucketName, processed, totalProcessed),
-			totalProcessed)
+		if progress.progressDue(totalProcessed) {
+			progress.progress("rebuild job lookup index",
+				fmt.Sprintf("rebuilding database job lookup index from %s (%d entries processed, %d total)",
+					bucketName, processed, totalProcessed),
+				totalProcessed)
+		}
 
 		appendReverseLookupRebuildEntry(entries, bucket, k)
 
@@ -960,11 +962,7 @@ func (r *dbUpgradeReporter) startPhase(state, detail string, processed int) {
 }
 
 func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
-	if r == nil || !r.started {
-		return
-	}
-
-	if processed%dbUpgradeProgressEntries != 0 && time.Since(r.lastWrite) < dbUpgradeProgressInterval {
+	if !r.progressDue(processed) {
 		return
 	}
 
@@ -973,6 +971,11 @@ func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
 
 	r.writeStatus(state, detail, processed)
 	r.info("database upgrade progress", "state", state, "detail", detail, "processed", processed)
+}
+
+func (r *dbUpgradeReporter) progressDue(processed int) bool {
+	return r != nil && r.started &&
+		(processed%dbUpgradeProgressEntries == 0 || time.Since(r.lastWrite) >= dbUpgradeProgressInterval)
 }
 
 func (r *dbUpgradeReporter) completePhase(state, detail string, processed int) {
@@ -1035,9 +1038,11 @@ func rebuildDepGroupEntries(depGroupBucket, lookupBucket *bolt.Bucket, progress 
 	processed := 0
 	err := lookupBucket.ForEach(func(k, _ []byte) error {
 		processed++
-		progress.progress("rebuild dep-group index",
-			fmt.Sprintf("rebuilding database dependency-group index (%d entries processed)", processed),
-			processed)
+		if progress.progressDue(processed) {
+			progress.progress("rebuild dep-group index",
+				fmt.Sprintf("rebuilding database dependency-group index (%d entries processed)", processed),
+				processed)
+		}
 
 		return putDepGroupFromLookupKey(depGroupBucket, k)
 	})

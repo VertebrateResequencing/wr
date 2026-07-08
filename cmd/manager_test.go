@@ -249,6 +249,59 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(jq, ShouldBeNil)
 		So(time.Since(started), ShouldBeLessThan, 150*time.Millisecond)
 	})
+
+	Convey("manager startup ignores a fresh DB upgrade status with an invalid PID", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 200 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		preStart := time.Now().Add(-time.Second)
+
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		statusTime := time.Now()
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "fresh upgrade with invalid pid",
+			PID:       0,
+			StartedAt: statusTime,
+			UpdatedAt: statusTime,
+		}, statusTime)
+
+		readyAt := time.Now().Add(60 * time.Millisecond)
+		reports := 0
+
+		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			if time.Now().After(readyAt) {
+				return &jobqueue.Client{}
+			}
+
+			return nil
+		}, func(internal.DBUpgradeStatus) {
+			reports++
+		})
+
+		So(jq, ShouldBeNil)
+		So(reports, ShouldEqual, 0)
+	})
 }
 
 func writeDBUpgradeStatusForTest(t *testing.T, dbFile string, status internal.DBUpgradeStatus, modTime time.Time) {
