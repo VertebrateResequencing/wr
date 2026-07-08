@@ -152,6 +152,8 @@ var (
 	errUnexpectedLiveJobs    = errors.New("unexpected live job count")
 	errFileStillExists       = errors.New("file still exists")
 	errNoFreeLanePort        = errors.New("no free test port in lane range")
+	errNoDockerResultQuery   = errors.New("no-Docker result query failed")
+	errNoDockerResultState   = errors.New("unexpected OpenStack no-Docker job result")
 )
 
 //nolint:gochecknoinits // registers test command-line flags
@@ -7638,6 +7640,38 @@ func TestShouldRunOpenStackJobqueueTest(t *testing.T) {
 	})
 }
 
+func TestShouldAssertOpenStackNoDockerFailure(t *testing.T) {
+	Convey("OpenStack no-Docker coverage follows the real monitored Docker job", t, func() {
+		Convey("a buried no-Docker job means the runner lacks usable Docker", func() {
+			assertFailure, err := shouldAssertOpenStackNoDockerFailure(nil, nil, []*Job{{}}, nil)
+
+			So(err, ShouldBeNil)
+			So(assertFailure, ShouldBeTrue)
+		})
+
+		Convey("a completed no-Docker job means the runner can run Docker", func() {
+			assertFailure, err := shouldAssertOpenStackNoDockerFailure([]*Job{{}}, nil, nil, nil)
+
+			So(err, ShouldBeNil)
+			So(assertFailure, ShouldBeFalse)
+		})
+
+		Convey("an ambiguous no-Docker job result is an error", func() {
+			assertFailure, err := shouldAssertOpenStackNoDockerFailure(nil, nil, nil, nil)
+
+			So(err, ShouldNotBeNil)
+			So(assertFailure, ShouldBeFalse)
+		})
+
+		Convey("result query errors are returned", func() {
+			assertFailure, err := shouldAssertOpenStackNoDockerFailure(nil, errNoDockerResultQuery, nil, nil)
+
+			So(err, ShouldEqual, errNoDockerResultQuery)
+			So(assertFailure, ShouldBeFalse)
+		})
+	})
+}
+
 type openStackJobqueueInCloudDetector func(context.Context, string, string) (bool, error)
 
 func shouldRunOpenStackJobqueueTest(ctx context.Context, osPrefix, osUser, localUser, flavorRegex,
@@ -7648,6 +7682,31 @@ func shouldRunOpenStackJobqueueTest(ctx context.Context, osPrefix, osUser, local
 	}
 
 	return detectInCloud(ctx, "wr-testing-"+localUser, savePath)
+}
+
+func shouldAssertOpenStackNoDockerFailure(completedJobs []*Job, completeErr error,
+	buriedJobs []*Job, buriedErr error,
+) (bool, error) {
+	if completeErr != nil {
+		return false, completeErr
+	}
+
+	if buriedErr != nil {
+		return false, buriedErr
+	}
+
+	completeCount := len(completedJobs)
+	buriedCount := len(buriedJobs)
+
+	switch {
+	case completeCount == 1 && buriedCount == 0:
+		return false, nil
+	case completeCount == 0 && buriedCount == 1:
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: %d complete and %d buried jobs", errNoDockerResultState,
+			completeCount, buriedCount)
+	}
 }
 
 func openStackJobqueueTestInCloud(ctx context.Context, resourceName, savePath string) (bool, error) {
@@ -7883,6 +7942,34 @@ sudo usermod -aG docker ` + osUser
 
 		waitRepGroupStateCount := func(repGroup string, state JobState, count int) bool {
 			return waitRepGroupStateCountFor(repGroup, state, count, maxSpawnTime)
+		}
+
+		waitRepGroupTerminalStateCountFor := func(repGroup string, count int, timeout time.Duration) bool {
+			limit := time.After(timeout)
+			ticker := time.NewTicker(500 * time.Millisecond)
+
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					complete, errc := jq.GetByRepGroup(repGroup, false, 0, JobStateComplete, false, false)
+					if errc != nil {
+						fmt.Printf("GetByRepGroup complete failed: %s\n", errc)
+					}
+
+					buried, errb := jq.GetByRepGroup(repGroup, false, 0, JobStateBuried, false, false)
+					if errb != nil {
+						fmt.Printf("GetByRepGroup buried failed: %s\n", errb)
+					}
+
+					if len(complete)+len(buried) == count {
+						return true
+					}
+				case <-limit:
+					return false
+				}
+			}
 		}
 
 		waitRepGroupRunningWithCloudHost := func(repGroup string, timeout time.Duration) (*Job, bool) {
@@ -8457,25 +8544,49 @@ sudo usermod -aG docker ` + osUser
 		})
 
 		Convey("You can run a cmd to get the memory and cpu usage when no docker containers are running", func() {
-			var jobs []*Job
+			rg := "noDocker_" + internal.RandomString()
+			jobs := []*Job{{
+				Cmd:           "docker run sendu/usememory:v1",
+				Cwd:           "/tmp",
+				ReqGroup:      rg,
+				Requirements:  &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1},
+				Override:      uint8(2),
+				Retries:       uint8(0),
+				RepGroup:      rg,
+				MonitorDocker: "?",
+			}}
+
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			terminal := waitRepGroupTerminalStateCountFor(rg, 1, maxSpawnTime)
+			So(terminal, ShouldBeTrue)
+
+			if !terminal {
+				return
+			}
+
+			complete, completeErr := jq.GetByRepGroup(rg, false, 0, JobStateComplete, false, false)
+			buried, buriedErr := jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+			assertNoDockerFailure, err := shouldAssertOpenStackNoDockerFailure(complete, completeErr, buried, buriedErr)
+			So(err, ShouldBeNil)
+
+			if err != nil {
+				return
+			}
+
+			if !assertNoDockerFailure {
+				SkipConvey("when docker is not installed (runner completed Docker command)", func() {})
+
+				return
+			}
 
 			Convey("when docker is not installed", func() {
-				jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1}, Override: uint8(2), Retries: uint8(0), RepGroup: "noDocker", MonitorDocker: "?"})
-
-				inserts, already, err := jq.Add(jobs, envVars, true)
-				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, 1)
-				So(already, ShouldEqual, 0)
-
-				// wait for the jobs to get run
-				done := make(chan bool, 1)
-				waitRun(done)
-
-				got, err := jq.GetByRepGroup("noDocker", false, 0, JobStateComplete, false, false)
-				So(len(got), ShouldBeZeroValue)
-				So(err, ShouldBeNil)
+				So(len(complete), ShouldBeZeroValue)
+				So(len(buried), ShouldEqual, 1)
 			})
-
 		})
 
 		Convey("You can run a cmd with a per-cmd set of config files", func() {
