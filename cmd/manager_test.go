@@ -27,14 +27,19 @@ package cmd
 
 import (
 	"compress/gzip"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+const testDBUpgradeState = "rebuild job lookup index"
 
 func TestGetBadLogLinesScansRotatedManagerLogs(t *testing.T) {
 	Convey("getBadLogLines finds bad lines since the latest manager start across rotated logs", t, func() {
@@ -108,4 +113,151 @@ func TestGetBadLogLinesHandlesLongLogLines(t *testing.T) {
 			"lvl=crit msg=\"later critical\"",
 		})
 	})
+}
+
+func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
+	Convey("manager startup waits past the initial timeout while a DB upgrade is active", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 200 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		preStart := time.Now().Add(-time.Second)
+
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		started := time.Now()
+		readyAt := started.Add(90 * time.Millisecond)
+		statusDone := make(chan struct{})
+		statusErr := make(chan error, 1)
+
+		So(internal.WriteDBUpgradeStatus(config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "rebuilding database job lookup index",
+			StartedAt: preStart,
+		}), ShouldBeNil)
+
+		go func() {
+			defer close(statusDone)
+
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				if time.Now().After(readyAt) {
+					return
+				}
+
+				err := internal.WriteDBUpgradeStatus(config.ManagerDBFile, internal.DBUpgradeStatus{
+					State:     testDBUpgradeState,
+					Detail:    "rebuilding database job lookup index",
+					StartedAt: preStart,
+				})
+				if err != nil {
+					statusErr <- err
+
+					return
+				}
+			}
+		}()
+
+		var reports []string
+
+		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			if time.Now().After(readyAt) {
+				return &jobqueue.Client{}
+			}
+
+			return nil
+		}, func(status internal.DBUpgradeStatus) {
+			reports = append(reports, managerDBUpgradeStatusText(status))
+		})
+
+		<-statusDone
+
+		select {
+		case err := <-statusErr:
+			So(err, ShouldBeNil)
+		default:
+		}
+
+		So(jq, ShouldNotBeNil)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 80*time.Millisecond)
+		So(reports, ShouldContain, "rebuilding database job lookup index")
+	})
+
+	Convey("manager startup still times out normally without a fresh DB upgrade", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 40 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		preStart := time.Now().Add(-time.Second)
+
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		stale := preStart.Add(-time.Second)
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "stale upgrade",
+			PID:       os.Getpid(),
+			StartedAt: stale,
+			UpdatedAt: stale,
+		}, stale)
+
+		started := time.Now()
+		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			return nil
+		}, func(internal.DBUpgradeStatus) {
+			So("stale upgrade should not be reported", ShouldBeBlank)
+		})
+
+		So(jq, ShouldBeNil)
+		So(time.Since(started), ShouldBeLessThan, 150*time.Millisecond)
+	})
+}
+
+func writeDBUpgradeStatusForTest(t *testing.T, dbFile string, status internal.DBUpgradeStatus, modTime time.Time) {
+	t.Helper()
+
+	payload, err := json.Marshal(status)
+	So(err, ShouldBeNil)
+
+	path := internal.DBUpgradeStatusPath(dbFile)
+	So(os.WriteFile(path, payload, 0o600), ShouldBeNil)
+	So(os.Chtimes(path, modTime, modTime), ShouldBeNil)
 }

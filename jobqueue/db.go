@@ -129,6 +129,11 @@ const (
 const slowBackupTestDelay = 100 * time.Millisecond
 
 const (
+	dbUpgradeProgressEntries  = 10000
+	dbUpgradeProgressInterval = 2 * time.Second
+)
+
+const (
 	limitGroupUnchanged limitGroupOutcome = iota
 	limitGroupChanged
 	limitGroupRemoved
@@ -375,6 +380,8 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		return nil, msg, err
 	}
 
+	upgrade := newDBUpgradeReporter(ctx, dbFile)
+
 	// ensure our buckets are in place
 	err = boltdb.Update(func(tx *bolt.Tx) error {
 		_, errf := tx.CreateBucketIfNotExists(bucketJobsLive)
@@ -415,7 +422,9 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if !hadDepGroups {
-			errf = rebuildDepGroups(tx)
+			upgrade.startPhase("rebuild dep-group index", "rebuilding database dependency-group index", 0)
+
+			errf = rebuildDepGroups(tx, upgrade)
 			if errf != nil {
 				return fmt.Errorf("rebuild bucket %s: %w", bucketDepGroups, errf)
 			}
@@ -434,7 +443,9 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if !hadJobLookupEntries {
-			errf = rebuildJobLookupEntries(tx)
+			upgrade.startPhase("rebuild job lookup index", "rebuilding database job lookup index", 0)
+
+			errf = rebuildJobLookupEntries(tx, upgrade)
 			if errf != nil {
 				return fmt.Errorf("rebuild bucket %s: %w", bucketJobLookupEntries, errf)
 			}
@@ -480,8 +491,13 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			return fmt.Errorf("create bucket %s: %w", bucketEndTimeToKey, errf)
 		}
 
+		if upgrade.active() {
+			upgrade.startPhase("commit database upgrade", "committing database upgrade", 0)
+		}
+
 		return nil
 	})
+	upgrade.finish(err)
 	if err != nil {
 		return nil, msg, err
 	}
@@ -761,6 +777,184 @@ func deleteLimitGroup(b *bolt.Bucket, key, existing []byte) (limitGroupOutcome, 
 	}
 
 	return limitGroupRemoved, nil
+}
+
+type dbUpgradeReporter struct {
+	dbFile         string
+	info           func(string, ...any)
+	warn           func(string, ...any)
+	startedAt      time.Time
+	lastWrite      time.Time
+	started        bool
+	phaseActive    bool
+	phaseStartedAt time.Time
+	phaseState     string
+	phaseDetail    string
+	phaseProcessed int
+}
+
+func newDBUpgradeReporter(ctx context.Context, dbFile string) *dbUpgradeReporter {
+	warn := func(msg string, args ...any) {
+		clog.Warn(ctx, msg, args...)
+	}
+	info := func(msg string, args ...any) {
+		clog.Info(ctx, msg, args...)
+	}
+
+	if err := internal.RemoveDBUpgradeStatus(dbFile); err != nil {
+		warn("failed to remove stale database upgrade status", "path", internal.DBUpgradeStatusPath(dbFile), "err", err)
+	}
+
+	return &dbUpgradeReporter{
+		dbFile:    dbFile,
+		info:      info,
+		warn:      warn,
+		startedAt: time.Now(),
+	}
+}
+
+func (r *dbUpgradeReporter) active() bool {
+	return r != nil && r.started
+}
+
+func (r *dbUpgradeReporter) startPhase(state, detail string, processed int) {
+	if r == nil {
+		return
+	}
+
+	if !r.started {
+		r.started = true
+		r.info("database upgrade started", "db", r.dbFile)
+	}
+
+	r.phaseActive = true
+	r.phaseStartedAt = time.Now()
+	r.phaseState = state
+	r.phaseDetail = detail
+	r.phaseProcessed = processed
+
+	r.writeStatus(state, detail, processed)
+	r.info("database upgrade step started", "state", state, "detail", detail, "processed", processed)
+}
+
+func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
+	if r == nil || !r.started {
+		return
+	}
+
+	if processed%dbUpgradeProgressEntries != 0 && time.Since(r.lastWrite) < dbUpgradeProgressInterval {
+		return
+	}
+
+	r.phaseDetail = detail
+	r.phaseProcessed = processed
+
+	r.writeStatus(state, detail, processed)
+	r.info("database upgrade progress", "state", state, "detail", detail, "processed", processed)
+}
+
+func (r *dbUpgradeReporter) completePhase(state, detail string, processed int) {
+	if r == nil || !r.phaseActive {
+		return
+	}
+
+	if state == "" {
+		state = r.phaseState
+	}
+
+	if detail == "" {
+		detail = r.phaseDetail
+	}
+
+	r.phaseActive = false
+	r.phaseState = state
+	r.phaseDetail = detail
+	r.phaseProcessed = processed
+
+	r.writeStatus(state, detail, processed)
+	r.info("database upgrade step complete", "state", state, "detail", detail,
+		"processed", processed, "took", time.Since(r.phaseStartedAt))
+}
+
+func (r *dbUpgradeReporter) writeStatus(state, detail string, processed int) {
+	status := internal.DBUpgradeStatus{
+		State:     state,
+		Detail:    detail,
+		Processed: processed,
+		StartedAt: r.startedAt,
+	}
+
+	if err := internal.WriteDBUpgradeStatus(r.dbFile, status); err != nil {
+		r.warn("failed to write database upgrade status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
+	}
+
+	r.lastWrite = time.Now()
+}
+
+func (r *dbUpgradeReporter) finish(upgradeErr error) {
+	if !r.active() {
+		return
+	}
+
+	if upgradeErr != nil {
+		r.warn("database upgrade failed", "db", r.dbFile, "state", r.phaseState, "err", upgradeErr,
+			"took", time.Since(r.startedAt))
+	} else {
+		r.completePhase(r.phaseState, r.phaseDetail, r.phaseProcessed)
+		r.info("database upgrade complete", "db", r.dbFile, "took", time.Since(r.startedAt))
+	}
+
+	if err := internal.RemoveDBUpgradeStatus(r.dbFile); err != nil {
+		r.warn("failed to remove database upgrade status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
+	}
+}
+
+func rebuildDepGroupEntries(depGroupBucket, lookupBucket *bolt.Bucket, progress *dbUpgradeReporter) (int, error) {
+	processed := 0
+	err := lookupBucket.ForEach(func(k, _ []byte) error {
+		processed++
+		progress.progress("rebuild dep-group index",
+			fmt.Sprintf("rebuilding database dependency-group index (%d entries processed)", processed),
+			processed)
+
+		return putDepGroupFromLookupKey(depGroupBucket, k)
+	})
+
+	return processed, err
+}
+
+func putDepGroupFromLookupKey(depGroupBucket *bolt.Bucket, lookupKey []byte) error {
+	idx := bytes.Index(lookupKey, []byte(dbDelimiter))
+	if idx <= 0 {
+		return nil
+	}
+
+	return depGroupBucket.Put(lookupKey[:idx], nil)
+}
+
+func rebuildJobLookupBucket(tx *bolt.Tx, bucket []byte, progress *dbUpgradeReporter,
+	processedBefore int,
+) (int, error) {
+	b := tx.Bucket(bucket)
+	if b == nil {
+		return 0, nil
+	}
+
+	processed := 0
+	bucketName := string(bucket)
+
+	err := b.ForEach(func(k, _ []byte) error {
+		processed++
+		totalProcessed := processedBefore + processed
+		progress.progress("rebuild job lookup index",
+			fmt.Sprintf("rebuilding database job lookup index from %s (%d entries processed, %d total)",
+				bucketName, processed, totalProcessed),
+			totalProcessed)
+
+		return putReverseLookupEntry(tx, bucket, k)
+	})
+
+	return processed, err
 }
 
 // putLimitGroup stores a non-negative limit for a group.
@@ -2715,20 +2909,21 @@ func parseReverseLookupEntry(entry, prefix []byte) (lookupBucket []byte, lookupK
 	return rest[:idx], rest[lookupKeyStart:], true
 }
 
-func rebuildJobLookupEntries(tx *bolt.Tx) error {
-	for _, bucket := range indexedLookupBuckets() {
-		b := tx.Bucket(bucket)
-		if b == nil {
-			continue
-		}
+func rebuildJobLookupEntries(tx *bolt.Tx, progress *dbUpgradeReporter) error {
+	totalProcessed := 0
 
-		err := b.ForEach(func(k, _ []byte) error {
-			return putReverseLookupEntry(tx, bucket, k)
-		})
+	for _, bucket := range indexedLookupBuckets() {
+		processed, err := rebuildJobLookupBucket(tx, bucket, progress, totalProcessed)
 		if err != nil {
 			return err
 		}
+
+		totalProcessed += processed
 	}
+
+	progress.completePhase("rebuild job lookup index",
+		fmt.Sprintf("rebuilt database job lookup index (%d entries processed)", totalProcessed),
+		totalProcessed)
 
 	return nil
 }
@@ -2737,22 +2932,28 @@ func indexedLookupBuckets() [][]byte {
 	return [][]byte{bucketRTK, bucketDTK, bucketRDTK}
 }
 
-func rebuildDepGroups(tx *bolt.Tx) error {
+func rebuildDepGroups(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 	depGroupBucket := tx.Bucket(bucketDepGroups)
 
 	lookupBucket := tx.Bucket(bucketDTK)
 	if depGroupBucket == nil || lookupBucket == nil {
+		progress.completePhase("rebuild dep-group index",
+			"rebuilt database dependency-group index (0 entries processed)",
+			0)
+
 		return nil
 	}
 
-	return lookupBucket.ForEach(func(k, _ []byte) error {
-		idx := bytes.Index(k, []byte(dbDelimiter))
-		if idx <= 0 {
-			return nil
-		}
+	processed, err := rebuildDepGroupEntries(depGroupBucket, lookupBucket, progress)
+	if err != nil {
+		return err
+	}
 
-		return depGroupBucket.Put(k[:idx], nil)
-	})
+	progress.completePhase("rebuild dep-group index",
+		fmt.Sprintf("rebuilt database dependency-group index (%d entries processed)", processed),
+		processed)
+
+	return nil
 }
 
 func lookupEntryJobKey(lookupKey []byte) []byte {

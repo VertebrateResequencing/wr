@@ -30,10 +30,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -233,6 +235,64 @@ func TestDBReverseLookupIndex(t *testing.T) {
 			return nil
 		})
 		So(err, ShouldBeNil)
+	})
+}
+
+func TestDBUpgradeProgress(t *testing.T) {
+	Convey("Opening an old DB logs upgrade progress and clears the status sidecar", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		parent := testDBJob("echo parent", "upgrade-parent")
+		parent.DepGroups = []string{"upgrade-parent-dg"}
+
+		child := testDBJob("echo child", "upgrade-child")
+		child.Dependencies = Dependencies{NewDepGroupDependency("upgrade-parent-dg")}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{parent, child}, false)
+		So(err, ShouldBeNil)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			if errd := tx.DeleteBucket(bucketDepGroups); errd != nil {
+				return errd
+			}
+
+			return tx.DeleteBucket(bucketJobLookupEntries)
+		})
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		logs.Reset()
+
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		output := logs.String()
+		So(output, ShouldContainSubstring, "database upgrade started")
+		So(output, ShouldContainSubstring, "database upgrade step started")
+		So(output, ShouldContainSubstring, "rebuilding database dependency-group index")
+		So(output, ShouldContainSubstring, "database upgrade step complete")
+		So(output, ShouldContainSubstring, "rebuilding database job lookup index")
+		So(output, ShouldContainSubstring, "committing database upgrade")
+		So(output, ShouldContainSubstring, "database upgrade complete")
+		So(output, ShouldContainSubstring, "processed=")
+		So(output, ShouldContainSubstring, "took=")
+
+		_, _, err = internal.ReadDBUpgradeStatus(dbFile)
+		So(os.IsNotExist(err), ShouldBeTrue)
 	})
 }
 
