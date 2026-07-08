@@ -39,7 +39,24 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const testDBUpgradeState = "rebuild job lookup index"
+const (
+	testDBUpgradeState  = "rebuild job lookup index"
+	testDBUpgradeDetail = "rebuilding database job lookup index"
+)
+
+func TestManagerDBUpgradeStatusLogMessage(t *testing.T) {
+	Convey("manager DB upgrade status logging distinguishes post-upgrade startup", t, func() {
+		So(managerDBUpgradeStatusLogMessage(internal.DBUpgradeStatus{
+			State:  testDBUpgradeState,
+			Detail: testDBUpgradeDetail,
+		}), ShouldEqual, "wr manager is upgrading its database: rebuilding database job lookup index")
+
+		So(managerDBUpgradeStatusLogMessage(internal.DBUpgradeStatus{
+			State:  internal.DBUpgradePostStartupState,
+			Detail: internal.DBUpgradePostStartupDetail,
+		}), ShouldEqual, "wr manager is starting after database upgrade: starting manager after database upgrade")
+	})
+}
 
 func TestGetBadLogLinesScansRotatedManagerLogs(t *testing.T) {
 	Convey("getBadLogLines finds bad lines since the latest manager start across rotated logs", t, func() {
@@ -150,7 +167,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 
 		So(internal.WriteDBUpgradeStatus(config.ManagerDBFile, internal.DBUpgradeStatus{
 			State:     testDBUpgradeState,
-			Detail:    "rebuilding database job lookup index",
+			Detail:    testDBUpgradeDetail,
 			StartedAt: preStart,
 		}), ShouldBeNil)
 
@@ -167,7 +184,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 
 				err := internal.WriteDBUpgradeStatus(config.ManagerDBFile, internal.DBUpgradeStatus{
 					State:     testDBUpgradeState,
-					Detail:    "rebuilding database job lookup index",
+					Detail:    testDBUpgradeDetail,
 					StartedAt: preStart,
 				})
 				if err != nil {

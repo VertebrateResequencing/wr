@@ -124,8 +124,8 @@ const (
 	// or write (used for the auth token and uploaded files).
 	ownerReadWrite = 0o600
 
-	postUpgradeStartupState  = "start manager after database upgrade"
-	postUpgradeStartupDetail = "starting manager after database upgrade"
+	postUpgradeStartupState  = internal.DBUpgradePostStartupState
+	postUpgradeStartupDetail = internal.DBUpgradePostStartupDetail
 
 	// ttrReleaseWait is how long the TTR callback waits for a lost item to
 	// return to the run queue before releasing it.

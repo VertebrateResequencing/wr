@@ -33,7 +33,15 @@ import (
 	"time"
 )
 
-const dbUpgradeStatusPerm = 0o600
+const (
+	dbUpgradeStatusPerm = 0o600
+
+	// DBUpgradePostStartupState and DBUpgradePostStartupDetail describe the
+	// post-upgrade phase where the database upgrade is done but the manager is
+	// still starting and cannot yet accept client connections.
+	DBUpgradePostStartupState  = "start manager after database upgrade"
+	DBUpgradePostStartupDetail = "starting manager after database upgrade"
+)
 
 // DBUpgradeStatus records a manager database upgrade phase that can be shown to
 // the user while the manager is not yet ready to accept connections.

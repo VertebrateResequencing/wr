@@ -901,7 +901,16 @@ func waitForManagerStartup(preStart time.Time, timeout time.Duration) *jobqueue.
 }
 
 func reportManagerDBUpgradeStatus(status internal.DBUpgradeStatus) {
-	info("wr manager is upgrading its database: %s", managerDBUpgradeStatusText(status))
+	info("%s", managerDBUpgradeStatusLogMessage(status))
+}
+
+func managerDBUpgradeStatusLogMessage(status internal.DBUpgradeStatus) string {
+	text := managerDBUpgradeStatusText(status)
+	if status.State == internal.DBUpgradePostStartupState || status.Detail == internal.DBUpgradePostStartupDetail {
+		return "wr manager is starting after database upgrade: " + text
+	}
+
+	return "wr manager is upgrading its database: " + text
 }
 
 func init() {
