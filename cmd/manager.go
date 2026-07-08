@@ -695,7 +695,12 @@ func (t *managerDBUpgradeReportTracker) extendDeadline(preStart time.Time, deadl
 		t.last = report
 	}
 
-	return time.Now().Add(managerDBUpgradeStatusFresh)
+	extended := time.Now().Add(managerDBUpgradeStatusFresh)
+	if extended.After(deadline) {
+		return extended
+	}
+
+	return deadline
 }
 
 func currentManagerDBUpgradeStatus(preStart time.Time) (internal.DBUpgradeStatus, bool) {

@@ -250,6 +250,64 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(time.Since(started), ShouldBeLessThan, 150*time.Millisecond)
 	})
 
+	Convey("manager startup keeps a longer timeout while a DB upgrade status is fresh", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 25 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		startupTimeout := 300 * time.Millisecond
+		preStart := time.Now().Add(-10 * time.Millisecond)
+
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		statusTime := time.Now()
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "single fresh upgrade status",
+			PID:       os.Getpid(),
+			StartedAt: preStart,
+			UpdatedAt: statusTime,
+		}, statusTime)
+
+		started := time.Now()
+		readyAt := started.Add(100 * time.Millisecond)
+		So(readyAt.Before(preStart.Add(startupTimeout)), ShouldBeTrue)
+
+		var reports []string
+
+		jq := waitForManagerStartupWith(preStart, startupTimeout, func(time.Duration) *jobqueue.Client {
+			if time.Now().After(readyAt) {
+				return &jobqueue.Client{}
+			}
+
+			return nil
+		}, func(status internal.DBUpgradeStatus) {
+			reports = append(reports, managerDBUpgradeStatusText(status))
+		})
+
+		So(jq, ShouldNotBeNil)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 90*time.Millisecond)
+		So(reports, ShouldContain, "single fresh upgrade status")
+	})
+
 	Convey("manager startup ignores a fresh DB upgrade status with an invalid PID", t, func() {
 		oldConfig := config
 		oldPoll := managerStartupPollInterval
