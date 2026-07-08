@@ -780,3 +780,95 @@ func countReverseLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
 
 	return count
 }
+
+func TestDBReverseLookupRebuildOrder(t *testing.T) {
+	Convey("Reverse lookup rebuild prepares destination-key ordered writes", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		jobKeyA := []byte("0000000000000000000000000000000a")
+		jobKeyB := []byte("8000000000000000000000000000000b")
+		jobKeyC := []byte("ffffffffffffffffffffffffffffffff")
+
+		var (
+			entries   reverseLookupEntries
+			processed int
+		)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			if errd := replaceLookupRebuildTestBucket(tx, bucketRTK, []byte("rg-z"+dbDelimiter+string(jobKeyC))); errd != nil {
+				return errd
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketDTK, []byte("dg-z"+dbDelimiter+string(jobKeyB))); errd != nil {
+				return errd
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketRDTK, []byte("rdg-z"+dbDelimiter+string(jobKeyA))); errd != nil {
+				return errd
+			}
+
+			entries, processed, err = collectReverseLookupRebuildEntries(tx, nil)
+
+			return err
+		})
+		So(err, ShouldBeNil)
+		So(processed, ShouldEqual, 3)
+		So(entries, ShouldHaveLength, 3)
+
+		for i := 1; i < len(entries); i++ {
+			So(bytes.Compare(entries[i-1], entries[i]), ShouldBeLessThanOrEqualTo, 0)
+		}
+
+		So(bytes.HasPrefix(entries[0], reverseLookupEntryPrefix(jobKeyA)), ShouldBeTrue)
+		So(bytes.HasPrefix(entries[1], reverseLookupEntryPrefix(jobKeyB)), ShouldBeTrue)
+		So(bytes.HasPrefix(entries[2], reverseLookupEntryPrefix(jobKeyC)), ShouldBeTrue)
+	})
+
+	Convey("Duplicate reverse lookup rebuild entries are compacted before write", t, func() {
+		entries := reverseLookupEntries{
+			[]byte("a"),
+			[]byte("a"),
+			[]byte("b"),
+			[]byte("b"),
+			[]byte("c"),
+		}
+
+		entries = compactSortedReverseLookupEntries(entries)
+
+		So(entries, ShouldResemble, reverseLookupEntries{
+			[]byte("a"),
+			[]byte("b"),
+			[]byte("c"),
+		})
+	})
+}
+
+func replaceLookupRebuildTestBucket(tx *bolt.Tx, bucket, key []byte) error {
+	if tx.Bucket(bucket) != nil {
+		if err := tx.DeleteBucket(bucket); err != nil {
+			return err
+		}
+	}
+
+	b, err := tx.CreateBucket(bucket)
+	if err != nil {
+		return err
+	}
+
+	return b.Put(key, nil)
+}

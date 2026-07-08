@@ -166,6 +166,128 @@ func (s sobsd) Less(i, j int) bool {
 // a particular bucket.
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
+// reverseLookupEntries stores complete keys for bucketJobLookupEntries. During
+// old-DB upgrades we collect only these index keys, not job payloads, so they
+// can be sorted into destination-bucket order before BoltDB sees any Put.
+type reverseLookupEntries [][]byte
+
+// collectReverseLookupRebuildEntries keeps one generated reverse key per
+// historical lookup key in memory for this one-time upgrade. That is
+// intentionally limited to index keys (not encoded jobs), and lets us sort once
+// so the new BoltDB bucket is written in destination-key order instead of doing
+// the hours-long random insertion pattern seen on large legacy DBs.
+func collectReverseLookupRebuildEntries(tx *bolt.Tx,
+	progress *dbUpgradeReporter,
+) (reverseLookupEntries, int, error) {
+	totalProcessed := 0
+	entries := reverseLookupEntries{}
+
+	for _, bucket := range indexedLookupBuckets() {
+		processed, err := collectReverseLookupRebuildBucket(tx, bucket, progress, totalProcessed, &entries)
+		if err != nil {
+			return nil, totalProcessed, err
+		}
+
+		totalProcessed += processed
+	}
+
+	sort.Sort(entries)
+
+	return compactSortedReverseLookupEntries(entries), totalProcessed, nil
+}
+
+func compactSortedReverseLookupEntries(entries reverseLookupEntries) reverseLookupEntries {
+	if len(entries) == 0 {
+		return entries
+	}
+
+	writeAt := 1
+	for _, entry := range entries[1:] {
+		if bytes.Equal(entry, entries[writeAt-1]) {
+			continue
+		}
+
+		entries[writeAt] = entry
+		writeAt++
+	}
+
+	clear(entries[writeAt:])
+
+	return entries[:writeAt]
+}
+
+func (r reverseLookupEntries) Len() int {
+	return len(r)
+}
+
+func (r reverseLookupEntries) Swap(i, j int) {
+	r[i], r[j] = r[j], r[i]
+}
+
+func (r reverseLookupEntries) Less(i, j int) bool {
+	return bytes.Compare(r[i], r[j]) < 0
+}
+
+func collectReverseLookupRebuildBucket(tx *bolt.Tx, bucket []byte, progress *dbUpgradeReporter,
+	processedBefore int, entries *reverseLookupEntries,
+) (int, error) {
+	b := tx.Bucket(bucket)
+	if b == nil {
+		return 0, nil
+	}
+
+	processed := 0
+	bucketName := string(bucket)
+
+	err := b.ForEach(func(k, _ []byte) error {
+		processed++
+		totalProcessed := processedBefore + processed
+		progress.progress("rebuild job lookup index",
+			fmt.Sprintf("rebuilding database job lookup index from %s (%d entries processed, %d total)",
+				bucketName, processed, totalProcessed),
+			totalProcessed)
+
+		appendReverseLookupRebuildEntry(entries, bucket, k)
+
+		return nil
+	})
+
+	return processed, err
+}
+
+func appendReverseLookupRebuildEntry(entries *reverseLookupEntries, lookupBucket, lookupKey []byte) {
+	jobKey := lookupEntryJobKey(lookupKey)
+	if len(jobKey) == 0 {
+		return
+	}
+
+	*entries = append(*entries, reverseLookupEntryKey(jobKey, lookupBucket, lookupKey))
+}
+
+func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, progress *dbUpgradeReporter,
+	totalProcessed int,
+) error {
+	b := tx.Bucket(bucketJobLookupEntries)
+	if b == nil {
+		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobLookupEntries)
+	}
+
+	for i, key := range entries {
+		if i > 0 && i%dbUpgradeProgressEntries == 0 {
+			progress.progress("rebuild job lookup index",
+				fmt.Sprintf("writing sorted database job lookup index (%d reverse entries written, %d entries processed)",
+					i, totalProcessed),
+				totalProcessed)
+		}
+
+		if err := b.Put(key, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
 	requiredRAM := 0
 	if job.Requirements != nil {
@@ -930,31 +1052,6 @@ func putDepGroupFromLookupKey(depGroupBucket *bolt.Bucket, lookupKey []byte) err
 	}
 
 	return depGroupBucket.Put(lookupKey[:idx], nil)
-}
-
-func rebuildJobLookupBucket(tx *bolt.Tx, bucket []byte, progress *dbUpgradeReporter,
-	processedBefore int,
-) (int, error) {
-	b := tx.Bucket(bucket)
-	if b == nil {
-		return 0, nil
-	}
-
-	processed := 0
-	bucketName := string(bucket)
-
-	err := b.ForEach(func(k, _ []byte) error {
-		processed++
-		totalProcessed := processedBefore + processed
-		progress.progress("rebuild job lookup index",
-			fmt.Sprintf("rebuilding database job lookup index from %s (%d entries processed, %d total)",
-				bucketName, processed, totalProcessed),
-			totalProcessed)
-
-		return putReverseLookupEntry(tx, bucket, k)
-	})
-
-	return processed, err
 }
 
 // putLimitGroup stores a non-negative limit for a group.
@@ -2910,19 +3007,18 @@ func parseReverseLookupEntry(entry, prefix []byte) (lookupBucket []byte, lookupK
 }
 
 func rebuildJobLookupEntries(tx *bolt.Tx, progress *dbUpgradeReporter) error {
-	totalProcessed := 0
+	entries, totalProcessed, err := collectReverseLookupRebuildEntries(tx, progress)
+	if err != nil {
+		return err
+	}
 
-	for _, bucket := range indexedLookupBuckets() {
-		processed, err := rebuildJobLookupBucket(tx, bucket, progress, totalProcessed)
-		if err != nil {
-			return err
-		}
-
-		totalProcessed += processed
+	if err = putReverseLookupRebuildEntries(tx, entries, progress, totalProcessed); err != nil {
+		return err
 	}
 
 	progress.completePhase("rebuild job lookup index",
-		fmt.Sprintf("rebuilt database job lookup index (%d entries processed)", totalProcessed),
+		fmt.Sprintf("rebuilt database job lookup index (%d entries processed, %d reverse entries written)",
+			totalProcessed, len(entries)),
 		totalProcessed)
 
 	return nil
