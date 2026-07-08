@@ -626,7 +626,7 @@ func waitForManagerStartupWith(preStart time.Time, timeout time.Duration, connec
 			return nil
 		}
 
-		if jq := connectIfManagerTokenReady(preStart, deadline, connector); jq != nil {
+		if jq := connectIfManagerTokenReady(deadline, connector); jq != nil {
 			return jq
 		}
 
@@ -651,18 +651,24 @@ func managerStartupSleep(deadline time.Time) time.Duration {
 	return wait
 }
 
-func connectIfManagerTokenReady(preStart, deadline time.Time, connector managerStartupConnector) *jobqueue.Client {
-	if !managerTokenReady(preStart) {
+func connectIfManagerTokenReady(deadline time.Time, connector managerStartupConnector) *jobqueue.Client {
+	if !managerTokenReady() {
 		return nil
 	}
 
 	return connector(managerStartupConnectWait(deadline))
 }
 
-func managerTokenReady(preStart time.Time) bool {
+func managerTokenReady() bool {
 	info, err := os.Stat(config.ManagerTokenFile)
+	if err != nil {
+		return false
+	}
 
-	return err == nil && info.ModTime().After(preStart)
+	// Some filesystems expose coarse mtimes, so a freshly-created token can
+	// fail strict preStart comparisons. Treat any non-empty token as a cue to
+	// try the socket; the connect-time ping below remains the readiness check.
+	return info.Size() > 0
 }
 
 func managerStartupConnectWait(deadline time.Time) time.Duration {

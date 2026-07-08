@@ -250,6 +250,104 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(time.Since(started), ShouldBeLessThan, 150*time.Millisecond)
 	})
 
+	Convey("manager startup connects when a new token has coarse filesystem mtime", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 40 * time.Millisecond
+
+		managerDir := filepath.Join(t.TempDir(), "manager")
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(managerDir, "db"),
+			ManagerTokenFile: filepath.Join(managerDir, "client.token"),
+		}
+
+		_, err := os.Stat(managerDir)
+		So(os.IsNotExist(err), ShouldBeTrue)
+
+		preStart := time.Now()
+
+		So(os.MkdirAll(managerDir, 0o700), ShouldBeNil)
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+		So(os.Chtimes(config.ManagerTokenFile, preStart.Truncate(time.Second), preStart.Truncate(time.Second)),
+			ShouldBeNil)
+
+		readyAt := time.Now().Add(30 * time.Millisecond)
+		attempts := 0
+
+		jq := waitForManagerStartupWith(preStart, 80*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			attempts++
+
+			if time.Now().After(readyAt) {
+				return &jobqueue.Client{}
+			}
+
+			return nil
+		}, func(internal.DBUpgradeStatus) {
+			So("new-token startup should not report an upgrade", ShouldBeBlank)
+		})
+
+		So(jq, ShouldNotBeNil)
+		So(attempts, ShouldBeGreaterThan, 0)
+	})
+
+	Convey("manager startup waits when a new token is empty", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 40 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		preStart := time.Now()
+
+		So(os.WriteFile(config.ManagerTokenFile, nil, 0o600), ShouldBeNil)
+
+		tokenTime := preStart.Add(time.Second)
+		So(os.Chtimes(config.ManagerTokenFile, tokenTime, tokenTime), ShouldBeNil)
+
+		attempts := 0
+		started := time.Now()
+
+		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			attempts++
+
+			return &jobqueue.Client{}
+		}, func(internal.DBUpgradeStatus) {
+			So("empty-token startup should not report an upgrade", ShouldBeBlank)
+		})
+
+		So(jq, ShouldBeNil)
+		So(attempts, ShouldEqual, 0)
+		So(time.Since(started), ShouldBeLessThan, 150*time.Millisecond)
+	})
+
 	Convey("manager startup keeps a longer timeout while a DB upgrade status is fresh", t, func() {
 		oldConfig := config
 		oldPoll := managerStartupPollInterval
