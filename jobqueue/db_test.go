@@ -858,7 +858,71 @@ func TestDBReverseLookupRebuildOrder(t *testing.T) {
 	})
 }
 
-func replaceLookupRebuildTestBucket(tx *bolt.Tx, bucket, key []byte) error {
+func TestDBReverseLookupRebuildProgress(t *testing.T) {
+	Convey("Reverse lookup rebuild progress reports cumulative source entries without fake totals", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+
+		testDB, _, err := initDB(
+			ctx,
+			dbFile,
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		progress := newDBUpgradeReporter(ctx, dbFile)
+		defer progress.finish(nil)
+
+		progress.startPhase("rebuild job lookup index", "rebuilding database job lookup index")
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			keys := make([][]byte, dbUpgradeProgressEntries)
+			for i := range dbUpgradeProgressEntries {
+				jobKey := fmt.Sprintf("%032d", i)
+				keys[i] = fmt.Appendf(nil, "rg-%05d%s%s", i, dbDelimiter, jobKey)
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketRTK, keys...); errd != nil {
+				return errd
+			}
+
+			for i := range dbUpgradeProgressEntries {
+				jobKey := fmt.Sprintf("%032d", dbUpgradeProgressEntries+i)
+				keys[i] = fmt.Appendf(nil, "dg-%05d%s%s", i, dbDelimiter, jobKey)
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketDTK, keys...); errd != nil {
+				return errd
+			}
+
+			return rebuildJobLookupEntries(tx, progress)
+		})
+		So(err, ShouldBeNil)
+
+		output := logs.String()
+		So(output, ShouldContainSubstring,
+			"rebuilding database job lookup index (10000 source entries processed so far; currently reading repgroupToKey)")
+		So(output, ShouldContainSubstring,
+			"rebuilding database job lookup index (20000 source entries processed so far; currently reading depgroupToKey)")
+		So(output, ShouldNotContainSubstring, "10000 total")
+		So(output, ShouldNotContainSubstring, "20000 total")
+		So(output, ShouldNotContainSubstring, "entries processed, 10000 total")
+	})
+}
+
+func replaceLookupRebuildTestBucket(tx *bolt.Tx, bucket []byte, keys ...[]byte) error {
 	if tx.Bucket(bucket) != nil {
 		if err := tx.DeleteBucket(bucket); err != nil {
 			return err
@@ -870,5 +934,11 @@ func replaceLookupRebuildTestBucket(tx *bolt.Tx, bucket, key []byte) error {
 		return err
 	}
 
-	return b.Put(key, nil)
+	for _, key := range keys {
+		if err = b.Put(key, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

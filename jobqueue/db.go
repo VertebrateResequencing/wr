@@ -245,8 +245,8 @@ func collectReverseLookupRebuildBucket(tx *bolt.Tx, bucket []byte, progress *dbU
 		totalProcessed := processedBefore + processed
 		if progress.progressDue(totalProcessed) {
 			progress.progress("rebuild job lookup index",
-				fmt.Sprintf("rebuilding database job lookup index from %s (%d entries processed, %d total)",
-					bucketName, processed, totalProcessed),
+				fmt.Sprintf("rebuilding database job lookup index (%d source entries processed so far; currently reading %s)",
+					totalProcessed, bucketName),
 				totalProcessed)
 		}
 
@@ -547,7 +547,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if !hadDepGroups {
-			upgrade.startPhase("rebuild dep-group index", "rebuilding database dependency-group index", 0)
+			upgrade.startPhase("rebuild dep-group index", "rebuilding database dependency-group index")
 
 			errf = rebuildDepGroups(tx, upgrade)
 			if errf != nil {
@@ -568,7 +568,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if !hadJobLookupEntries {
-			upgrade.startPhase("rebuild job lookup index", "rebuilding database job lookup index", 0)
+			upgrade.startPhase("rebuild job lookup index", "rebuilding database job lookup index")
 
 			errf = rebuildJobLookupEntries(tx, upgrade)
 			if errf != nil {
@@ -617,7 +617,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if upgrade.active() {
-			upgrade.startPhase("commit database upgrade", "committing database upgrade", 0)
+			upgrade.startPhase("commit database upgrade", "committing database upgrade")
 		}
 
 		return nil
@@ -942,7 +942,7 @@ func (r *dbUpgradeReporter) active() bool {
 	return r != nil && r.started
 }
 
-func (r *dbUpgradeReporter) startPhase(state, detail string, processed int) {
+func (r *dbUpgradeReporter) startPhase(state, detail string) {
 	if r == nil {
 		return
 	}
@@ -956,10 +956,10 @@ func (r *dbUpgradeReporter) startPhase(state, detail string, processed int) {
 	r.phaseStartedAt = time.Now()
 	r.phaseState = state
 	r.phaseDetail = detail
-	r.phaseProcessed = processed
+	r.phaseProcessed = 0
 
-	r.writeStatus(state, detail, processed)
-	r.info("database upgrade step started", "state", state, "detail", detail, "processed", processed)
+	r.writeStatus(state, detail, 0)
+	r.info("database upgrade step started", "state", state, "detail", detail, "processed", 0)
 }
 
 func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
