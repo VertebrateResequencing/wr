@@ -43,6 +43,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - `wr status -o c` and `-o summary` are now much faster on managers with very
   many completed commands, as the counts are computed without retrieving every
   matching job.
+- `wr add --deps` now waits for never-seen dep-groups and warns that typos can
+  block indefinitely.
 - `wr mod` is now much faster when modifying large numbers of commands.
 - `make test` and `make race` now use a Go test-suite runner that keeps passing
   output concise, shows clearer failure context, reports package-level
@@ -74,11 +76,6 @@ project adheres to [Semantic Versioning](http://semver.org/).
 ### Added
 - New go client `Scheduler` method
   `GetLastCompletionTimeByRepGroup(repgroup, match)`
-
-### Changed
-- `wr add --deps` now waits for never-seen dep-groups and warns that typos can
-  block indefinitely.
-
 
 ## [0.36.4] - 2026-03-03
 ### Added

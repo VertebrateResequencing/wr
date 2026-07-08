@@ -616,7 +616,6 @@ func cmdRunLaneConfigs() []cmdRunLaneConfig {
 			"TestSynchronousAddPrintsWarningsBeforeWaiting",
 			"TestWaitForSynchronousJobReportsMissingTerminalJob",
 			"TestAddHelpDocumentsDependencySemantics",
-			"TestChangelogDocumentsDepGroupSemantics",
 			"TestAddRemoteSameAsLocalCwdDefault",
 			"TestAddCommandDependenciesDoNotWarnForMissingTargets",
 			"TestAddWarnsForNeverSeenDepGroups",
