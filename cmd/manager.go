@@ -719,10 +719,10 @@ func currentManagerDBUpgradeStatus(preStart time.Time) (internal.DBUpgradeStatus
 		return internal.DBUpgradeStatus{}, false
 	}
 
-	if !managerDBUpgradeStatusFreshEnough(status, info) {
-		return internal.DBUpgradeStatus{}, false
-	}
-
+	// Bolt's final commit can legitimately leave the sidecar unchanged for
+	// longer than the freshness window. Once this startup has written a status,
+	// the live upgrade process is the authoritative signal that the manager is
+	// still in the DB upgrade path.
 	if !managerDBUpgradeProcessRunning(status.PID) {
 		return internal.DBUpgradeStatus{}, false
 	}
@@ -736,15 +736,6 @@ func managerDBUpgradeStatusText(status internal.DBUpgradeStatus) string {
 	}
 
 	return status.State
-}
-
-func managerDBUpgradeStatusFreshEnough(status internal.DBUpgradeStatus, info os.FileInfo) bool {
-	updatedAt := status.UpdatedAt
-	if updatedAt.IsZero() || info.ModTime().After(updatedAt) {
-		updatedAt = info.ModTime()
-	}
-
-	return time.Since(updatedAt) <= managerDBUpgradeStatusFresh
 }
 
 func managerDBUpgradeProcessRunning(pid int) bool {

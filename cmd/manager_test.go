@@ -406,6 +406,74 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(reports, ShouldContain, "single fresh upgrade status")
 	})
 
+	Convey("manager startup keeps waiting during a quiet commit phase while the upgrade process is alive", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldFresh := managerDBUpgradeStatusFresh
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerDBUpgradeStatusFresh = oldFresh
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerDBUpgradeStatusFresh = 25 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		preStart := time.Now().Add(-10 * time.Millisecond)
+		statusTime := time.Now()
+
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     "commit database upgrade",
+			Detail:    "committing database upgrade",
+			PID:       os.Getpid(),
+			StartedAt: preStart,
+			UpdatedAt: statusTime,
+		}, statusTime)
+
+		started := time.Now()
+		readyAt := started.Add(100 * time.Millisecond)
+
+		tokenErr := make(chan error, 1)
+
+		go func() {
+			time.Sleep(time.Until(readyAt))
+
+			tokenErr <- os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600)
+		}()
+
+		var reports []string
+
+		attempts := 0
+
+		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
+			attempts++
+
+			if time.Now().After(readyAt) {
+				return &jobqueue.Client{}
+			}
+
+			return nil
+		}, func(status internal.DBUpgradeStatus) {
+			reports = append(reports, managerDBUpgradeStatusText(status))
+		})
+
+		So(<-tokenErr, ShouldBeNil)
+		So(jq, ShouldNotBeNil)
+		So(attempts, ShouldBeGreaterThan, 0)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 90*time.Millisecond)
+		So(reports, ShouldContain, "committing database upgrade")
+	})
+
 	Convey("manager startup ignores a fresh DB upgrade status with an invalid PID", t, func() {
 		oldConfig := config
 		oldPoll := managerStartupPollInterval
