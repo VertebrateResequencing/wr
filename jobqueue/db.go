@@ -340,8 +340,9 @@ type db struct {
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
 	slowBackups    bool // just for testing purposes
-	recSecRound    int  // rounding (secs) for recommended reserve times; from the server's timings
-	recMBRound     int  // rounding (MBs) for recommended memory/disk; from the server's timings
+	upgradedOnOpen bool
+	recSecRound    int // rounding (secs) for recommended reserve times; from the server's timings
+	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -431,8 +432,9 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	}
 
 	var (
-		boltdb *bolt.DB
-		err    error
+		boltdb           *bolt.DB
+		err              error
+		openedExistingDB bool
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
@@ -446,8 +448,10 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
+			openedExistingDB = true
 		}
 	} else {
+		openedExistingDB = true
 		boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 		if err != nil {
 			// try the backup
@@ -546,7 +550,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			return fmt.Errorf("create bucket %s: %w", bucketDepGroups, errf)
 		}
 
-		if !hadDepGroups {
+		if openedExistingDB && !hadDepGroups {
 			upgrade.startPhase("rebuild dep-group index", "rebuilding database dependency-group index")
 
 			errf = rebuildDepGroups(tx, upgrade)
@@ -567,7 +571,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			return fmt.Errorf("create bucket %s: %w", bucketJobLookupEntries, errf)
 		}
 
-		if !hadJobLookupEntries {
+		if openedExistingDB && !hadJobLookupEntries {
 			upgrade.startPhase("rebuild job lookup index", "rebuilding database job lookup index")
 
 			errf = rebuildJobLookupEntries(tx, upgrade)
@@ -622,6 +626,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 		return nil
 	})
+	upgradedOnOpen := upgrade.active()
 	upgrade.finish(err)
 	if err != nil {
 		return nil, msg, err
@@ -646,6 +651,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupStopWait:     make(chan bool),
 		s3accessor:         accessor,
 		wg:                 waitgroup.New(),
+		upgradedOnOpen:     upgradedOnOpen,
 	}
 
 	return dbstruct, msg, err

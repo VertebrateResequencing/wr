@@ -124,6 +124,9 @@ const (
 	// or write (used for the auth token and uploaded files).
 	ownerReadWrite = 0o600
 
+	postUpgradeStartupState  = "start manager after database upgrade"
+	postUpgradeStartupDetail = "starting manager after database upgrade"
+
 	// ttrReleaseWait is how long the TTR callback waits for a lost item to
 	// return to the run queue before releasing it.
 	ttrReleaseWait = 50 * time.Millisecond
@@ -1936,6 +1939,27 @@ func joinStartupMessages(certMsg, dbMsg string) string {
 	}
 }
 
+func keepPostUpgradeStartupStatus(dbFile string, upgradedOnOpen bool, logger log15.Logger) func() {
+	if !upgradedOnOpen {
+		return func() {}
+	}
+
+	if err := internal.WriteDBUpgradeStatus(dbFile, internal.DBUpgradeStatus{
+		State:  postUpgradeStartupState,
+		Detail: postUpgradeStartupDetail,
+	}); err != nil {
+		logger.Warn("failed to write post-upgrade startup status", "path", internal.DBUpgradeStatusPath(dbFile),
+			"err", err)
+	}
+
+	return func() {
+		if err := internal.RemoveDBUpgradeStatus(dbFile); err != nil {
+			logger.Warn("failed to remove post-upgrade startup status", "path", internal.DBUpgradeStatusPath(dbFile),
+				"err", err)
+		}
+	}
+}
+
 // closeOnError calls closeFn (typically a deferred resource close) only when
 // *errp is already non-nil, wrapping any close error into *errp under name so
 // the original error is preserved.
@@ -2161,6 +2185,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
+	defer keepPostUpgradeStartupStatus(config.DBFile, db.upgradedOnOpen, serverLogger)()
 
 	sock, err := xrep.NewSocket()
 	if err != nil {
