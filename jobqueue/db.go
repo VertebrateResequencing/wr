@@ -276,8 +276,8 @@ func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, p
 	}
 
 	for i, key := range entries {
-		if i > 0 && i%dbUpgradeProgressEntries == 0 {
-			progress.progress("rebuild job lookup index",
+		if i > 0 && progress.progressDue(i) {
+			progress.writeProgress("rebuild job lookup index",
 				fmt.Sprintf("writing sorted database job lookup index (%d reverse entries written, %d entries processed)",
 					i, totalProcessed),
 				totalProcessed)
@@ -964,6 +964,14 @@ func (r *dbUpgradeReporter) startPhase(state, detail string, processed int) {
 
 func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
 	if !r.progressDue(processed) {
+		return
+	}
+
+	r.writeProgress(state, detail, processed)
+}
+
+func (r *dbUpgradeReporter) writeProgress(state, detail string, processed int) {
+	if r == nil {
 		return
 	}
 
