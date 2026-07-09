@@ -12,7 +12,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     env:
       WR_TESTSUITE_MAX_PARALLEL: 4
       WR_TESTSUITE_TIMINGS: 1
@@ -29,11 +29,11 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y singularity-container
-        sg docker -c "docker version"
+        docker version
         singularity --version
 
     - name: Run tests
-      run: sg docker -c "make test"
+      run: make test
 
     - name: Run tests with race detection
-      run: sg docker -c "make race"
+      run: make race
