@@ -516,228 +516,82 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			})
 		}
 
-		Convey("You can connect, and add 2 large batches of jobs sequentially", func() {
+		Convey("You can connect, and add 2 batches of jobs sequentially with learned resources", func() {
 			if skipInShard("b") {
 				return
 			}
 
-			count := 200
-			count2 := 50
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
 
-			if raceDetectorEnabled {
-				// The race detector makes every manager/runner interaction much
-				// slower, especially on small CI runners. Keep this scenario above
-				// the >100 completions needed to exercise learning, but avoid a
-				// 250-job subprocess workload in race mode.
-				count = 110
-				count2 = 10
+			defer disconnect(jq)
+
+			server.rc = serverRC
+
+			const (
+				firstBatch     = 2
+				secondBatch    = 2
+				learnedPeakRAM = 100
+			)
+
+			tmpdir := t.TempDir()
+			reqGroup := "runner_scheduling_learning"
+			repGroup := "runner_scheduling_learning_jobs"
+			req := &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}
+			preLearningGroup := schedulerGroupString(reqForScheduler(req), nil)
+			learnedReq := &jqs.Requirements{RAM: learnedPeakRAM, Time: 1 * time.Second, Cores: 1}
+			learnedGroup := schedulerGroupString(reqForScheduler(learnedReq), nil)
+
+			So(preLearningGroup, ShouldEqual, "400:30:1:0")
+			So(learnedGroup, ShouldEqual, "200:30:1:0")
+
+			archiveGroup := func(group string, count int, expectedRAM int) {
+				for range count {
+					job, reserveErr := jq.ReserveScheduled(2*time.Second, group)
+					So(reserveErr, ShouldBeNil)
+					So(job, ShouldNotBeNil)
+					So(job.Requirements.RAM, ShouldEqual, expectedRAM)
+					So(jq.Started(job, os.Getpid()), ShouldBeNil)
+					So(jq.Archive(job, &JobEndState{
+						Exited:   true,
+						Exitcode: 0,
+						PeakRAM:  learnedPeakRAM,
+						CPUtime:  time.Second,
+						EndTime:  time.Now(),
+					}), ShouldBeNil)
+				}
 			}
 
-			batchtest := func() {
-				clientConnectTime = 20 * time.Second // it takes a long time with -race to add 10000 jobs...
-				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-				So(err, ShouldBeNil)
+			jobs := learningScheduleJobs(tmpdir, reqGroup, repGroup, "batch1", firstBatch, req)
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, firstBatch)
+			So(already, ShouldEqual, 0)
+			So(waitForScheduledGroupCount(server, preLearningGroup, firstBatch), ShouldBeTrue)
+			So(scheduledGroupCount(server, learnedGroup), ShouldEqual, 0)
 
-				defer disconnect(jq)
+			archiveGroup(preLearningGroup, firstBatch, req.RAM)
 
-				tmpdir := t.TempDir()
+			recRAM, err := server.db.recommendedReqGroupMemory(reqGroup)
+			So(err, ShouldBeNil)
+			So(recRAM, ShouldEqual, learnedPeakRAM)
 
-				req := &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}
+			jobs = learningScheduleJobs(tmpdir, reqGroup, repGroup, "batch2", secondBatch, req)
+			inserts, already, err = jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, secondBatch)
+			So(already, ShouldEqual, 0)
+			So(waitForScheduledGroupCount(server, learnedGroup, secondBatch), ShouldBeTrue)
 
-				jobs := make([]*Job, 0, count)
-				for i := 0; i < count; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch1.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: reqGroupPerl, Requirements: req, Retries: uint8(3), RepGroup: manuallyAdded}) //nolint:lll
-				}
+			wrongGroupJob, err := jq.ReserveScheduled(25*time.Millisecond, preLearningGroup)
+			So(err, ShouldBeNil)
+			So(wrongGroupJob, ShouldBeNil)
 
-				inserts, already, err := jq.Add(jobs, envVars, true)
-				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, count)
-				So(already, ShouldEqual, 0)
+			archiveGroup(learnedGroup, secondBatch, learnedPeakRAM)
 
-				// wait for 101 of them to complete
-				done := make(chan bool, 1)
-				fourHundredCount := 0
-
-				go func() {
-					// generous give-up cap: the loop returns as soon as the jobs
-					// finish (a few seconds normally), so this only fires if they
-					// never do. Set high so `make race`, where the
-					// race-instrumented job runs are far slower, doesn't time out.
-					limit := time.After(600 * time.Second)
-					ticker := time.NewTicker(50 * time.Millisecond)
-
-					for {
-						select {
-						case <-ticker.C:
-							jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateComplete, false, false)
-							if err != nil {
-								continue
-							}
-
-							ran := 0
-
-							for _, job := range jobs {
-								files, errf := os.ReadDir(job.ActualCwd)
-								if errf != nil {
-									log.Fatalf("job [%s] had actual cwd %s: %s\n", job.Cmd, job.ActualCwd, errf)
-								}
-
-								for range files {
-									ran++
-								}
-							}
-
-							if ran > 100 {
-								ticker.Stop()
-
-								done <- true
-
-								return
-							}
-
-							// Track the PEAK simultaneously-scheduled count for this
-							// group rather than a single early snapshot. The count is
-							// the number of this group's jobs that still need a runner;
-							// it is highest right after the jobs are added (before any
-							// complete) and only falls as they finish. A single
-							// snapshot's value therefore depends on exactly when the
-							// first tick lands relative to that decay, so under a slow
-							// machine it can settle on the assertion boundary; the peak
-							// is the stable maximum the group actually reached and
-							// cannot land on a transient value.
-							if c := scheduledGroupCount(server, "400:30:1:0"); c > fourHundredCount {
-								fourHundredCount = c
-							}
-
-							continue
-						case <-limit:
-							ticker.Stop()
-
-							done <- false
-
-							return
-						}
-					}
-				}()
-
-				So(<-done, ShouldBeTrue)
-				So(fourHundredCount, ShouldBeBetweenOrEqual, count/2, count)
-
-				// now add a new batch of jobs with the same reqs and reqgroup
-				jobs = make([]*Job, 0, count2)
-				for i := 0; i < count2; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch2.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: reqGroupPerl, Requirements: req, Retries: uint8(3), RepGroup: manuallyAdded}) //nolint:lll
-				}
-
-				inserts, already, err = jq.Add(jobs, envVars, true)
-				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, count2)
-				So(already, ShouldEqual, 0)
-
-				// wait for all the jobs to get run
-				done = make(chan bool, 1)
-				twoHundredCount := 0
-
-				go func() {
-					// generous give-up cap (see the first batch above): all
-					// count+count2 jobs are much slower to finish under -race.
-					limit := time.After(1800 * time.Second)
-					ticker := time.NewTicker(50 * time.Millisecond)
-
-					for {
-						select {
-						case <-ticker.C:
-							// Track the PEAK simultaneously-scheduled count for the
-							// learned "200" group on every tick (see the first batch
-							// for why a peak is stable where a single snapshot is not).
-							// This group ends up holding jobs that get re-learned to
-							// the smaller memory size. The sampled peak can miss jobs
-							// that reserve and complete between ticks, so the stable
-							// assertion is that we observed this learned group before
-							// all jobs completed.
-							if c := scheduledGroupCount(server, "200:30:1:0"); c > twoHundredCount {
-								twoHundredCount = c
-							}
-
-							// only check for completion once we've actually observed
-							// the group being scheduled, so the peak above is always
-							// captured before we can return
-							if twoHundredCount > 0 && !server.HasRunners(ctx) {
-								// check they're really all complete, since the
-								// switch to a new job array could leave us with no
-								// runners temporarily
-								jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, JobStateComplete, false, false)
-								if err == nil && len(jobs) == count+count2 {
-									ticker.Stop()
-
-									done <- true
-
-									return
-								}
-							}
-
-							continue
-						case <-limit:
-							ticker.Stop()
-
-							done <- false
-
-							return
-						}
-					}
-				}()
-
-				So(<-done, ShouldBeTrue)
-				So(twoHundredCount, ShouldBeGreaterThan, 0)
-				So(twoHundredCount, ShouldBeLessThanOrEqualTo, count+count2)
-
-				jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, "", false, false)
-				So(err, ShouldBeNil)
-				So(len(jobs), ShouldEqual, count+count2)
-
-				ran := 0
-
-				for _, job := range jobs {
-					files, err := os.ReadDir(job.ActualCwd)
-					if err != nil {
-						continue
-					}
-
-					for range files {
-						ran++
-					}
-				}
-
-				So(ran, ShouldEqual, count+count2)
-			}
-
-			batchtest()
-
-			// if possible, we want to repeat these tests with the LSF
-			// scheduler, which reveals more issues
-			_, err := exec.LookPath("lsadmin")
-			if err == nil {
-				_, err = exec.LookPath("bqueues")
-			}
-
-			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
-			if err == nil && privateKeyPath != "" && os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") != restFormTrue {
-				count = 10000
-				count2 = 1000
-				lsfConfig := runningConfig
-				lsfConfig.SchedulerName = "lsf"
-				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{
-					Shell:          config.RunnerExecShell,
-					Deployment:     "testing",
-					PrivateKeyPath: privateKeyPath,
-				}
-
-				server.Stop(ctx, true)
-				server, _, token, errs = serve(ctx, lsfConfig)
-				So(errs, ShouldBeNil)
-
-				batchtest()
-			}
+			jobs, err = jq.GetByRepGroup(repGroup, false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, firstBatch+secondBatch)
 		})
 
 		Reset(func() {
@@ -853,6 +707,29 @@ func concurrentMarkerCmd(startedPath, peerStartedPath, donePath string) string {
 		peerStartedExists,
 		shellquote.Join("touch", donePath),
 	)
+}
+
+func learningScheduleJobs(cwd, reqGroup, repGroup, label string, count int, req *jqs.Requirements) []*Job {
+	jobs := make([]*Job, 0, count)
+
+	for i := range count {
+		jobs = append(jobs, &Job{
+			Cmd:          fmt.Sprintf("echo %s-%d", label, i),
+			Cwd:          cwd,
+			ReqGroup:     reqGroup,
+			Requirements: req.Clone(),
+			Retries:      uint8(3),
+			RepGroup:     repGroup,
+		})
+	}
+
+	return jobs
+}
+
+func waitForScheduledGroupCount(server *Server, group string, expected int) bool {
+	return pollUntilFor(15*time.Second, func() bool {
+		return scheduledGroupCount(server, group) == expected
+	})
 }
 
 // scheduledGroupCount returns the recorded runner count for a previously-

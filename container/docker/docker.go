@@ -28,11 +28,12 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"io"
 
 	"github.com/VertebrateResequencing/wr/container"
 	"github.com/VertebrateResequencing/wr/math/convert"
-	cn "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	cn "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // Interator implements the container/Interactor interface for docker.
@@ -51,14 +52,14 @@ func NewInteractor(cl *client.Client) *Interactor {
 // ContainerList implements the Interactor interface method, which returns the
 // list of containers.
 func (i *Interactor) ContainerList(ctx context.Context) ([]*container.Container, error) {
-	containerList, err := i.dockerClient.ContainerList(ctx, cn.ListOptions{})
+	containerList, err := i.dockerClient.ContainerList(ctx, client.ContainerListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
-	customCntrList := make([]*container.Container, len(containerList))
+	customCntrList := make([]*container.Container, len(containerList.Items))
 
-	for idx, cntr := range containerList {
+	for idx, cntr := range containerList.Items {
 		newCntr := &container.Container{ID: cntr.ID, Names: cntr.Names}
 		newCntr.TrimNamePrefixes()
 		customCntrList[idx] = newCntr
@@ -71,20 +72,21 @@ func (i *Interactor) ContainerList(ctx context.Context) ([]*container.Container,
 // container stats with the given id.
 func (i *Interactor) ContainerStats(ctx context.Context,
 	containerID string) (*container.Stats, error) {
-	stats, err := i.dockerClient.ContainerStats(ctx, containerID, false)
+	stats, err := i.dockerClient.ContainerStats(ctx, containerID, client.ContainerStatsOptions{})
 	if err != nil {
 		return nil, err
 	}
 
-	return decodeDockerContainerStats(stats)
+	return decodeDockerContainerStats(stats.Body)
 }
 
 // decodeDockerContainerStats takes Docker container stats and decodes them to return
 // the current memory usage (RSS, in MB) and total CPU (in seconds).
-func decodeDockerContainerStats(containerStats cn.StatsResponseReader) (*container.Stats, error) {
+func decodeDockerContainerStats(containerStats io.ReadCloser) (*container.Stats, error) {
 	var ds *cn.StatsResponse
 
-	err := json.NewDecoder(containerStats.Body).Decode(&ds)
+	err := json.NewDecoder(containerStats).Decode(&ds)
+	closeErr := containerStats.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -93,13 +95,13 @@ func decodeDockerContainerStats(containerStats cn.StatsResponseReader) (*contain
 	currentCustomStats.MemoryMB = convert.BytesToMB(ds.MemoryStats.Stats["rss"])
 	currentCustomStats.CPUSec = convert.NanosecondsToSec(ds.CPUStats.CPUUsage.TotalUsage)
 
-	err = containerStats.Body.Close()
-
-	return currentCustomStats, err
+	return currentCustomStats, closeErr
 }
 
 // ContainerKill implements the Interactor interface method, which kills the
 // container with the given id.
 func (i *Interactor) ContainerKill(ctx context.Context, containerID string) error {
-	return i.dockerClient.ContainerKill(ctx, containerID, "SIGKILL")
+	_, err := i.dockerClient.ContainerKill(ctx, containerID, client.ContainerKillOptions{Signal: "SIGKILL"})
+
+	return err
 }

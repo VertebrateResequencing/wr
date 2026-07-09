@@ -24,7 +24,14 @@ jobs:
       uses: actions/setup-go@v6.4.0
       with:
         go-version-file: go.mod
-    
+
+    - name: Install container runtimes
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y singularity-container
+        docker version
+        singularity --version
+
     - name: Run tests
       run: make test
 
