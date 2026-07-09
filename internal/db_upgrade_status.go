@@ -111,11 +111,40 @@ func writeDBUpgradeStatusFile(path string, payload []byte) error {
 		return err
 	}
 
-	if err = os.Rename(tmpName, path); err != nil {
+	if err = replaceDBUpgradeStatusFile(tmpName, path); err != nil {
 		return fmt.Errorf("publish database upgrade status: %w", err)
 	}
 
 	return nil
+}
+
+func replaceDBUpgradeStatusFile(tmpName, path string) error {
+	return replaceDBUpgradeStatusFileWith(tmpName, path, os.Rename, os.Remove, os.Stat)
+}
+
+func replaceDBUpgradeStatusFileWith(tmpName, path string,
+	rename func(string, string) error,
+	remove func(string) error,
+	stat func(string) (os.FileInfo, error),
+) error {
+	err := rename(tmpName, path)
+	if err == nil {
+		return nil
+	}
+
+	if !os.IsExist(err) {
+		return err
+	}
+
+	if _, statErr := stat(path); statErr != nil {
+		return err
+	}
+
+	if removeErr := remove(path); removeErr != nil {
+		return removeErr
+	}
+
+	return rename(tmpName, path)
 }
 
 func writeDBUpgradeStatusTemp(tmp *os.File, payload []byte) error {
