@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
+
+## [0.37.1] - 2026-07-09
+### Fixed
+- v0.37.0 needed to update existing databases, but this could timeout. Now
+  upgrades with feedback and runs to completion.
+- Update docker dependency to address potential security vulnerabilities.
+
+
 ## [0.37.0] - 2026-07-08
 ### Added
 - New `wr suspend` and `wr resume` commands, and a "suspended" job state, to
@@ -38,6 +46,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `managerdbbatchdelay` / `WR_MANAGERDBBATCHDELAY` and
   `managerdbbatchsize` / `WR_MANAGERDBBATCHSIZE`, for sites that need to tune
   throughput on high-latency storage.
+- Improved non-polling method of waiting for jobs to exit, used by
+  `wr add --sync` and available via the client pkg for go clients.
 
 ### Changed
 - `wr status -o c` and `-o summary` are now much faster on managers with very
