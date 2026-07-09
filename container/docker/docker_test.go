@@ -34,10 +34,9 @@ import (
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/container"
-	cn "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	nw "github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	cn "github.com/moby/moby/api/types/container"
+	nw "github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -119,7 +118,7 @@ func createContainers(ctx context.Context, cli *client.Client, containerNames []
 }
 
 func pullUbuntuImage(ctx context.Context, cli *client.Client) error {
-	rc, err := cli.ImagePull(ctx, "ubuntu", image.PullOptions{})
+	rc, err := cli.ImagePull(ctx, "ubuntu", client.ImagePullOptions{})
 	if err != nil {
 		return err
 	}
@@ -149,21 +148,28 @@ func createAndStartNamedContainers(ctx context.Context, cli *client.Client, cont
 }
 
 func createContainer(ctx context.Context, cli *client.Client, cname string) (string, error) {
-	cbody, err := cli.ContainerCreate(ctx, &cn.Config{Image: "ubuntu", Tty: true}, &cn.HostConfig{},
-		&nw.NetworkingConfig{}, &specs.Platform{Architecture: "amd64", OS: linuxOS}, cname)
+	cbody, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           &cn.Config{Image: "ubuntu", Tty: true},
+		HostConfig:       &cn.HostConfig{},
+		NetworkingConfig: &nw.NetworkingConfig{},
+		Platform:         &specs.Platform{Architecture: "amd64", OS: linuxOS},
+		Name:             cname,
+	})
 
 	return cbody.ID, err
 }
 
 func startContainer(ctx context.Context, cli *client.Client, containerID string) error {
-	return cli.ContainerStart(ctx, containerID, cn.StartOptions{})
+	_, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
+
+	return err
 }
 
 // removeContainers removes all the containers given a list of containers as a
 // part of clean up step.
 func removeContainers(ctx context.Context, cli *client.Client, containerIDs []string) error {
 	for _, cid := range containerIDs {
-		err := cli.ContainerRemove(ctx, cid, cn.RemoveOptions{Force: true})
+		_, err := cli.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true})
 		if err != nil {
 			return err
 		}
@@ -182,7 +188,7 @@ func TestDocker(t *testing.T) {
 	}
 
 	// Test if server is running, if not then skip the tests.
-	_, err = cli.Ping(ctx)
+	_, err = cli.Ping(ctx, client.PingOptions{})
 	if err != nil {
 		t.Skip("skipping docker tests: ", err)
 	}
@@ -202,18 +208,16 @@ func TestDocker(t *testing.T) {
 	Convey("Decode the Container stats", t, func() {
 		Convey("for empty ReaderCloser stats", func() {
 			emptyRC := io.NopCloser(bytes.NewReader([]byte("")))
-			emptyReaderCloserStats := cn.StatsResponseReader{Body: emptyRC, OSType: linuxOS}
 
-			stats, err := decodeDockerContainerStats(emptyReaderCloserStats)
+			stats, err := decodeDockerContainerStats(emptyRC)
 			So(stats, ShouldBeNil)
 			So(err, ShouldNotBeNil)
 		})
 
 		Convey("for non-empty ReaderCloser stats", func() {
 			nonEmptyRC := io.NopCloser(bytes.NewReader([]byte(testReaderCloserStats)))
-			nonEmptyReaderCloserStats := cn.StatsResponseReader{Body: nonEmptyRC, OSType: linuxOS}
 
-			stats, err := decodeDockerContainerStats(nonEmptyReaderCloserStats)
+			stats, err := decodeDockerContainerStats(nonEmptyRC)
 			So(stats, ShouldNotBeNil)
 			So(err, ShouldBeNil)
 		})

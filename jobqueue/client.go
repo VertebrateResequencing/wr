@@ -58,9 +58,9 @@ import (
 	"github.com/VertebrateResequencing/wr/fs/local"
 	"github.com/VertebrateResequencing/wr/internal"
 	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
-	"github.com/docker/docker/client"
 	"github.com/gofrs/uuid/v5"
 	"github.com/kballard/go-shellquote"
+	"github.com/moby/moby/client"
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/ugorji/go/codec"
 	"go.nanomsg.org/mangos/v3"

@@ -83,7 +83,7 @@ type Operator struct {
 // NewOperator creates a new Operator, working on containers using the supplied
 // Interactor. eg. to create an operator that can work with Docker containers:
 /*
-	 import  ("github.com/docker/docker/client"
+	 import  ("github.com/moby/moby/client"
 		 "github.com/wtsi-wr/container/docker"
 	 )
 	 ....
