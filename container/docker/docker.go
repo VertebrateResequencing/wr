@@ -86,6 +86,7 @@ func decodeDockerContainerStats(containerStats io.ReadCloser) (*container.Stats,
 	var ds *cn.StatsResponse
 
 	err := json.NewDecoder(containerStats).Decode(&ds)
+	closeErr := containerStats.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -94,9 +95,7 @@ func decodeDockerContainerStats(containerStats io.ReadCloser) (*container.Stats,
 	currentCustomStats.MemoryMB = convert.BytesToMB(ds.MemoryStats.Stats["rss"])
 	currentCustomStats.CPUSec = convert.NanosecondsToSec(ds.CPUStats.CPUUsage.TotalUsage)
 
-	err = containerStats.Close()
-
-	return currentCustomStats, err
+	return currentCustomStats, closeErr
 }
 
 // ContainerKill implements the Interactor interface method, which kills the

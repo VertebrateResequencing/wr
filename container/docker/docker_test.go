@@ -28,6 +28,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -42,6 +43,8 @@ import (
 )
 
 const linuxOS = "linux"
+
+var errCloseStats = errors.New("close stats")
 
 // testReaderCloserStats is the dummy ReaderCloserStats data used for
 // ContainerStats testing.
@@ -106,6 +109,63 @@ const testReaderCloserStats = `{
 			"id":"container_id2",
 			"networks":{}
 		}`
+
+type trackingReadCloser struct {
+	io.Reader
+	closeErr error
+	closed   bool
+}
+
+func (t *trackingReadCloser) Close() error {
+	t.closed = true
+
+	return t.closeErr
+}
+
+func TestDockerDecodeContainerStats(t *testing.T) {
+	Convey("Decode the Container stats", t, func() {
+		Convey("for empty ReaderCloser stats", func() {
+			emptyRC := &trackingReadCloser{Reader: bytes.NewReader([]byte(""))}
+
+			stats, err := decodeDockerContainerStats(emptyRC)
+			So(stats, ShouldBeNil)
+			So(err, ShouldNotBeNil)
+			So(emptyRC.closed, ShouldBeTrue)
+		})
+
+		Convey("returning the decode error when closing malformed stats fails", func() {
+			malformedRC := &trackingReadCloser{
+				Reader:   bytes.NewReader([]byte("}")),
+				closeErr: errCloseStats,
+			}
+
+			stats, err := decodeDockerContainerStats(malformedRC)
+			So(stats, ShouldBeNil)
+			So(err, ShouldNotEqual, errCloseStats)
+			So(malformedRC.closed, ShouldBeTrue)
+		})
+
+		Convey("for non-empty ReaderCloser stats", func() {
+			nonEmptyRC := io.NopCloser(bytes.NewReader([]byte(testReaderCloserStats)))
+
+			stats, err := decodeDockerContainerStats(nonEmptyRC)
+			So(stats, ShouldNotBeNil)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("returning the close error after decoding stats", func() {
+			nonEmptyRC := &trackingReadCloser{
+				Reader:   bytes.NewReader([]byte(testReaderCloserStats)),
+				closeErr: errCloseStats,
+			}
+
+			stats, err := decodeDockerContainerStats(nonEmptyRC)
+			So(stats, ShouldNotBeNil)
+			So(err, ShouldEqual, errCloseStats)
+			So(nonEmptyRC.closed, ShouldBeTrue)
+		})
+	})
+}
 
 // createContainers creates and starts the test containers, given a list of
 // container names.
@@ -203,24 +263,6 @@ func TestDocker(t *testing.T) {
 
 	Convey("Interactor implements container.Interactor", t, func() {
 		var _ container.Interactor = (*Interactor)(nil)
-	})
-
-	Convey("Decode the Container stats", t, func() {
-		Convey("for empty ReaderCloser stats", func() {
-			emptyRC := io.NopCloser(bytes.NewReader([]byte("")))
-
-			stats, err := decodeDockerContainerStats(emptyRC)
-			So(stats, ShouldBeNil)
-			So(err, ShouldNotBeNil)
-		})
-
-		Convey("for non-empty ReaderCloser stats", func() {
-			nonEmptyRC := io.NopCloser(bytes.NewReader([]byte(testReaderCloserStats)))
-
-			stats, err := decodeDockerContainerStats(nonEmptyRC)
-			So(stats, ShouldNotBeNil)
-			So(err, ShouldBeNil)
-		})
 	})
 
 	Convey("Given a Docker Operator", t, func() {
