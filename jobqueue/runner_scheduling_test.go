@@ -524,6 +524,15 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			count := 200
 			count2 := 50
 
+			if raceDetectorEnabled {
+				// The race detector makes every manager/runner interaction much
+				// slower, especially on small CI runners. Keep this scenario above
+				// the >100 completions needed to exercise learning, but avoid a
+				// 250-job subprocess workload in race mode.
+				count = 110
+				count2 = 10
+			}
+
 			batchtest := func() {
 				clientConnectTime = 20 * time.Second // it takes a long time with -race to add 10000 jobs...
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)

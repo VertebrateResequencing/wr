@@ -30,10 +30,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -233,6 +235,64 @@ func TestDBReverseLookupIndex(t *testing.T) {
 			return nil
 		})
 		So(err, ShouldBeNil)
+	})
+}
+
+func TestDBUpgradeProgress(t *testing.T) {
+	Convey("Opening an old DB logs upgrade progress and clears the status sidecar", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		parent := testDBJob("echo parent", "upgrade-parent")
+		parent.DepGroups = []string{"upgrade-parent-dg"}
+
+		child := testDBJob("echo child", "upgrade-child")
+		child.Dependencies = Dependencies{NewDepGroupDependency("upgrade-parent-dg")}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{parent, child}, false)
+		So(err, ShouldBeNil)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			if errd := tx.DeleteBucket(bucketDepGroups); errd != nil {
+				return errd
+			}
+
+			return tx.DeleteBucket(bucketJobLookupEntries)
+		})
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		logs.Reset()
+
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		output := logs.String()
+		So(output, ShouldContainSubstring, "database upgrade started")
+		So(output, ShouldContainSubstring, "database upgrade step started")
+		So(output, ShouldContainSubstring, "rebuilding database dependency-group index")
+		So(output, ShouldContainSubstring, "database upgrade step complete")
+		So(output, ShouldContainSubstring, "rebuilding database job lookup index")
+		So(output, ShouldContainSubstring, "committing database upgrade")
+		So(output, ShouldContainSubstring, "database upgrade complete")
+		So(output, ShouldContainSubstring, "processed=")
+		So(output, ShouldContainSubstring, "took=")
+
+		_, _, err = internal.ReadDBUpgradeStatus(dbFile)
+		So(os.IsNotExist(err), ShouldBeTrue)
 	})
 }
 
@@ -719,4 +779,166 @@ func countReverseLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
 	}
 
 	return count
+}
+
+func TestDBReverseLookupRebuildOrder(t *testing.T) {
+	Convey("Reverse lookup rebuild prepares destination-key ordered writes", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		jobKeyA := []byte("0000000000000000000000000000000a")
+		jobKeyB := []byte("8000000000000000000000000000000b")
+		jobKeyC := []byte("ffffffffffffffffffffffffffffffff")
+
+		var (
+			entries   reverseLookupEntries
+			processed int
+		)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			if errd := replaceLookupRebuildTestBucket(tx, bucketRTK, []byte("rg-z"+dbDelimiter+string(jobKeyC))); errd != nil {
+				return errd
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketDTK, []byte("dg-z"+dbDelimiter+string(jobKeyB))); errd != nil {
+				return errd
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketRDTK, []byte("rdg-z"+dbDelimiter+string(jobKeyA))); errd != nil {
+				return errd
+			}
+
+			entries, processed, err = collectReverseLookupRebuildEntries(tx, nil)
+
+			return err
+		})
+		So(err, ShouldBeNil)
+		So(processed, ShouldEqual, 3)
+		So(entries, ShouldHaveLength, 3)
+
+		for i := 1; i < len(entries); i++ {
+			So(bytes.Compare(entries[i-1], entries[i]), ShouldBeLessThanOrEqualTo, 0)
+		}
+
+		So(bytes.HasPrefix(entries[0], reverseLookupEntryPrefix(jobKeyA)), ShouldBeTrue)
+		So(bytes.HasPrefix(entries[1], reverseLookupEntryPrefix(jobKeyB)), ShouldBeTrue)
+		So(bytes.HasPrefix(entries[2], reverseLookupEntryPrefix(jobKeyC)), ShouldBeTrue)
+	})
+
+	Convey("Duplicate reverse lookup rebuild entries are compacted before write", t, func() {
+		entries := reverseLookupEntries{
+			[]byte("a"),
+			[]byte("a"),
+			[]byte("b"),
+			[]byte("b"),
+			[]byte("c"),
+		}
+
+		entries = compactSortedReverseLookupEntries(entries)
+
+		So(entries, ShouldResemble, reverseLookupEntries{
+			[]byte("a"),
+			[]byte("b"),
+			[]byte("c"),
+		})
+	})
+}
+
+func TestDBReverseLookupRebuildProgress(t *testing.T) {
+	Convey("Reverse lookup rebuild progress reports cumulative source entries without fake totals", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+
+		testDB, _, err := initDB(
+			ctx,
+			dbFile,
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		progress := newDBUpgradeReporter(ctx, dbFile)
+		defer progress.finish(nil)
+
+		progress.startPhase("rebuild job lookup index", "rebuilding database job lookup index")
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			keys := make([][]byte, dbUpgradeProgressEntries)
+			for i := range dbUpgradeProgressEntries {
+				jobKey := fmt.Sprintf("%032d", i)
+				keys[i] = fmt.Appendf(nil, "rg-%05d%s%s", i, dbDelimiter, jobKey)
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketRTK, keys...); errd != nil {
+				return errd
+			}
+
+			for i := range dbUpgradeProgressEntries {
+				jobKey := fmt.Sprintf("%032d", dbUpgradeProgressEntries+i)
+				keys[i] = fmt.Appendf(nil, "dg-%05d%s%s", i, dbDelimiter, jobKey)
+			}
+
+			if errd := replaceLookupRebuildTestBucket(tx, bucketDTK, keys...); errd != nil {
+				return errd
+			}
+
+			return rebuildJobLookupEntries(tx, progress)
+		})
+		So(err, ShouldBeNil)
+
+		output := logs.String()
+		So(output, ShouldContainSubstring,
+			"rebuilding database job lookup index (10000 source entries processed so far; currently reading repgroupToKey)")
+		So(output, ShouldContainSubstring,
+			"rebuilding database job lookup index (20000 source entries processed so far; currently reading depgroupToKey)")
+		So(output, ShouldNotContainSubstring, "10000 total")
+		So(output, ShouldNotContainSubstring, "20000 total")
+		So(output, ShouldNotContainSubstring, "entries processed, 10000 total")
+	})
+}
+
+func replaceLookupRebuildTestBucket(tx *bolt.Tx, bucket []byte, keys ...[]byte) error {
+	if tx.Bucket(bucket) != nil {
+		if err := tx.DeleteBucket(bucket); err != nil {
+			return err
+		}
+	}
+
+	b, err := tx.CreateBucket(bucket)
+	if err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		if err = b.Put(key, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

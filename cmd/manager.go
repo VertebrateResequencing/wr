@@ -99,6 +99,12 @@ const (
 
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
 
+var (
+	managerStartupPollInterval   = 250 * time.Millisecond
+	managerStartupConnectAttempt = 500 * time.Millisecond
+	managerDBUpgradeStatusFresh  = 30 * time.Second
+)
+
 // managerCmd represents the manager command.
 var managerCmd = &cobra.Command{
 	Use:   "manager",
@@ -216,9 +222,8 @@ fully.`,
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
-				internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 
-				jq := connect(mTimeout, true)
+				jq := waitForManagerStartup(preStart, mTimeout)
 				if jq == nil {
 					printLines(getBadLogLines())
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
@@ -607,6 +612,147 @@ func rotatedManagerLogNameParts(logPath string) (string, string) {
 	return prefix, ext
 }
 
+type managerStartupConnector func(time.Duration) *jobqueue.Client
+
+func waitForManagerStartupWith(preStart time.Time, timeout time.Duration, connector managerStartupConnector,
+	reportUpgrade managerDBUpgradeReporter,
+) *jobqueue.Client {
+	deadline := preStart.Add(timeout)
+	reportedUpgrade := managerDBUpgradeReportTracker{}
+
+	for {
+		deadline = reportedUpgrade.extendDeadline(preStart, deadline, reportUpgrade)
+		if managerStartupTimedOut(deadline) {
+			return nil
+		}
+
+		if jq := connectIfManagerTokenReady(deadline, connector); jq != nil {
+			return jq
+		}
+
+		if managerStartupTimedOut(deadline) {
+			return nil
+		}
+
+		time.Sleep(managerStartupSleep(deadline))
+	}
+}
+
+func managerStartupTimedOut(deadline time.Time) bool {
+	return time.Now().After(deadline)
+}
+
+func managerStartupSleep(deadline time.Time) time.Duration {
+	wait := time.Until(deadline)
+	if wait <= 0 || wait > managerStartupPollInterval {
+		return managerStartupPollInterval
+	}
+
+	return wait
+}
+
+func connectIfManagerTokenReady(deadline time.Time, connector managerStartupConnector) *jobqueue.Client {
+	if !managerTokenReady() {
+		return nil
+	}
+
+	return connector(managerStartupConnectWait(deadline))
+}
+
+func managerTokenReady() bool {
+	info, err := os.Stat(config.ManagerTokenFile)
+	if err != nil {
+		return false
+	}
+
+	// Some filesystems expose coarse mtimes, so a freshly-created token can
+	// fail strict preStart comparisons. Treat any non-empty token as a cue to
+	// try the socket; the connect-time ping below remains the readiness check.
+	return info.Size() > 0
+}
+
+func managerStartupConnectWait(deadline time.Time) time.Duration {
+	wait := time.Until(deadline)
+	if wait <= 0 || wait > managerStartupConnectAttempt {
+		return managerStartupConnectAttempt
+	}
+
+	return wait
+}
+
+type managerDBUpgradeReporter func(internal.DBUpgradeStatus)
+
+type managerDBUpgradeReportTracker struct {
+	last string
+}
+
+func (t *managerDBUpgradeReportTracker) extendDeadline(preStart time.Time, deadline time.Time,
+	reportUpgrade managerDBUpgradeReporter,
+) time.Time {
+	status, upgrading := currentManagerDBUpgradeStatus(preStart)
+	if !upgrading {
+		return deadline
+	}
+
+	report := managerDBUpgradeStatusText(status)
+	if report != t.last {
+		reportUpgrade(status)
+
+		t.last = report
+	}
+
+	extended := time.Now().Add(managerDBUpgradeStatusFresh)
+	if extended.After(deadline) {
+		return extended
+	}
+
+	return deadline
+}
+
+func currentManagerDBUpgradeStatus(preStart time.Time) (internal.DBUpgradeStatus, bool) {
+	status, info, err := internal.ReadDBUpgradeStatus(config.ManagerDBFile)
+	if err != nil {
+		return internal.DBUpgradeStatus{}, false
+	}
+
+	statusTime := status.UpdatedAt
+	if statusTime.IsZero() {
+		statusTime = info.ModTime()
+	}
+
+	if !statusTime.After(preStart) {
+		return internal.DBUpgradeStatus{}, false
+	}
+
+	// Bolt's final commit can legitimately leave the sidecar unchanged for
+	// longer than the freshness window. Once this startup has written a status,
+	// the live upgrade process is the authoritative signal that the manager is
+	// still in the DB upgrade path.
+	if !managerDBUpgradeProcessRunning(status.PID) {
+		return internal.DBUpgradeStatus{}, false
+	}
+
+	return status, true
+}
+
+func managerDBUpgradeStatusText(status internal.DBUpgradeStatus) string {
+	if status.Detail != "" {
+		return status.Detail
+	}
+
+	return status.State
+}
+
+func managerDBUpgradeProcessRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+
+	err := syscall.Kill(pid, syscall.Signal(0))
+
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
 func rotatedManagerLogTimestamp(name, prefix, ext string) (time.Time, bool, bool) {
 	timestamp, ok := parseRotatedManagerLogTimestamp(name, prefix, ext)
 	if ok {
@@ -746,6 +892,25 @@ func reportLiveStatus(jq *jobqueue.Client) {
 		fmt.Println("\nErrors in the log:")
 		printLines(lines)
 	}
+}
+
+func waitForManagerStartup(preStart time.Time, timeout time.Duration) *jobqueue.Client {
+	return waitForManagerStartupWith(preStart, timeout, func(wait time.Duration) *jobqueue.Client {
+		return connect(wait, true)
+	}, reportManagerDBUpgradeStatus)
+}
+
+func reportManagerDBUpgradeStatus(status internal.DBUpgradeStatus) {
+	info("%s", managerDBUpgradeStatusLogMessage(status))
+}
+
+func managerDBUpgradeStatusLogMessage(status internal.DBUpgradeStatus) string {
+	text := managerDBUpgradeStatusText(status)
+	if status.State == internal.DBUpgradePostStartupState || status.Detail == internal.DBUpgradePostStartupDetail {
+		return "wr manager is starting after database upgrade: " + text
+	}
+
+	return "wr manager is upgrading its database: " + text
 }
 
 func init() {

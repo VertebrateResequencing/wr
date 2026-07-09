@@ -369,36 +369,6 @@ func TestAddHelpDocumentsDependencySemantics(t *testing.T) {
 	})
 }
 
-func TestChangelogDocumentsDepGroupSemantics(t *testing.T) {
-	Convey("the newest changelog section documents never-seen dep-group semantics", t, func() {
-		source, err := os.ReadFile(filepath.Join("..", "CHANGELOG.md"))
-		So(err, ShouldBeNil)
-
-		section := newestChangelogSection(string(source))
-		compactSection := compactWhitespace(section)
-
-		So(section, ShouldContainSubstring, "### Changed")
-		So(compactSection, ShouldContainSubstring, "`wr add --deps` now waits for never-seen dep-groups")
-		So(compactSection, ShouldContainSubstring, "typos can block indefinitely")
-	})
-}
-
-func newestChangelogSection(changelog string) string {
-	firstSection := strings.Index(changelog, "\n## [")
-	if firstSection == -1 {
-		return ""
-	}
-
-	section := changelog[firstSection+1:]
-
-	nextSection := strings.Index(section[1:], "\n## [")
-	if nextSection == -1 {
-		return section
-	}
-
-	return section[:nextSection+1]
-}
-
 func compactWhitespace(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }

@@ -341,7 +341,13 @@ func TestJobqueueRunnerResourceLearning(t *testing.T) {
 				So(errj, ShouldBeNil)
 				So(len(complete), ShouldEqual, 1)
 				So(complete[0].Requirements, ShouldResemble, zeroReq)
+				So(complete[0].PeakRAM, ShouldBeGreaterThan, 0)
 				So(complete[0].PeakDisk, ShouldEqual, 200)
+				expectedLearnedRAM := roundRecommendation(
+					complete[0].PeakRAM,
+					complete[0].PeakRAM,
+					fixture.server.db.mbRound(),
+				)
 
 				jobs = append(jobs,
 					fallocateJob("fallocate -l 200M foo && echo 2", zeroReq, 0, "learns"),
@@ -370,7 +376,7 @@ func TestJobqueueRunnerResourceLearning(t *testing.T) {
 				So(len(complete), ShouldEqual, 1)
 				So(complete[0].Requirements, ShouldNotResemble, zeroReq)
 				So(complete[0].Requirements.Disk, ShouldEqual, 1)
-				So(complete[0].Requirements.RAM, ShouldEqual, 100)
+				So(complete[0].Requirements.RAM, ShouldEqual, expectedLearnedRAM)
 				So(complete[0].PeakDisk, ShouldEqual, 200)
 
 				complete, errj = jq.GetByRepGroup("learnsDiskNotMem", false, 0, JobStateComplete, false, false)
