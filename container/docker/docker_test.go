@@ -185,6 +185,7 @@ func pullUbuntuImage(ctx context.Context, cli *client.Client) error {
 
 	_, copyErr := io.Copy(os.Stdout, rc)
 	closeErr := rc.Close()
+
 	if copyErr != nil {
 		return copyErr
 	}
