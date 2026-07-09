@@ -183,9 +183,13 @@ func pullUbuntuImage(ctx context.Context, cli *client.Client) error {
 		return err
 	}
 
-	_, err = io.Copy(os.Stdout, rc)
+	_, copyErr := io.Copy(os.Stdout, rc)
+	closeErr := rc.Close()
+	if copyErr != nil {
+		return copyErr
+	}
 
-	return err
+	return closeErr
 }
 
 func createAndStartNamedContainers(ctx context.Context, cli *client.Client, containerNames []string) ([]string, error) {

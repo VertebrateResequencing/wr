@@ -83,9 +83,11 @@ type Operator struct {
 // NewOperator creates a new Operator, working on containers using the supplied
 // Interactor. eg. to create an operator that can work with Docker containers:
 /*
-	 import  ("github.com/moby/moby/client"
-		 "github.com/wtsi-wr/container/docker"
-	 )
+	import (
+		"github.com/moby/moby/client"
+
+		"github.com/VertebrateResequencing/wr/container/docker"
+	)
 	 ....
 	 {
 		 cli, err := client.NewClientWithOpts(client.FromEnv)
