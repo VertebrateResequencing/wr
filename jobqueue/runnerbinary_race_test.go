@@ -38,6 +38,8 @@ import (
 
 const envTestRunnerBinary = "WR_TEST_RUNNER_BINARY"
 
+const raceDetectorEnabled = true
+
 //nolint:gochecknoglobals // TestMain cleans up the process-wide compiled binary.
 var runnerBinaryTempDir string
 
