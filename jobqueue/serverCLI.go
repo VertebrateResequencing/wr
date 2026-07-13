@@ -1176,8 +1176,12 @@ func (s *Server) handleKill(ctx context.Context, cr *clientRequest) (*serverResp
 // resumed afterwards.
 func (s *Server) handleModify(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// modify jobs in the bury/delay/dependent/ready queue and the live bucket
-	if cr.Keys == nil || cr.Modifier == nil {
+	if cr.Keys == nil {
 		return nil, ErrBadRequest, ""
+	}
+
+	if validationErr, invalid := cr.Modifier.validationError(); invalid {
+		return nil, validationErr.Err, validationErr.Item
 	}
 
 	// to avoid race conditions with jobs that are currently pending, but become
@@ -1589,7 +1593,7 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		return &serverResponse{Existed: resumed}, "", ""
 	case "jdel":
 		return s.handleDelete(ctx, cr)
-	case "jmod":
+	case requestMethodModify:
 		return s.handleModify(ctx, cr)
 	case "jkill":
 		return s.handleKill(ctx, cr)

@@ -1639,6 +1639,37 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 	j.ContainerMountsSet = true
 }
 
+// validationError rejects nil entries in explicitly set pointer collections.
+func (j *JobModifier) validationError() (Error, bool) {
+	message := j.validationMessage()
+
+	if message == "" {
+		return Error{}, false
+	}
+
+	return Error{Op: requestMethodModify, Item: message, Err: ErrBadRequest}, true
+}
+
+func (j *JobModifier) validationMessage() string {
+	if j == nil {
+		return "modifier is nil"
+	}
+
+	if j.DependenciesSet {
+		if index := slices.Index(j.Dependencies, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Dependencies[%d] is nil", index)
+		}
+	}
+
+	if j.BehavioursSet {
+		if index := slices.Index(j.Behaviours, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Behaviours[%d] is nil", index)
+		}
+	}
+
+	return ""
+}
+
 // Modify takes existing jobs and modifies them all by setting the new values
 // that you have previously set using the Set*() methods. Other values are left
 // alone. Note that this could result in a Job's Key() changing.
@@ -1651,6 +1682,10 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 //
 // Returns a REVERSE mapping of new to old Job keys.
 func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
+	if validationErr, invalid := j.validationError(); invalid {
+		return nil, validationErr
+	}
+
 	keys := make(map[string]string)
 
 	for _, job := range jobs {
