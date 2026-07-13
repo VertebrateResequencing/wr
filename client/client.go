@@ -457,18 +457,20 @@ func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
 }
 
 func validateSubmissionJobs(op string, jobs []*jobqueue.Job) error {
-	for index, job := range jobs {
-		if job != nil {
-			continue
+	for jobIndex, job := range jobs {
+		if job == nil {
+			path := fmt.Sprintf("jobs[%d]", jobIndex)
+			jqErr := jobqueue.Error{Op: op, Item: path, Err: jobqueue.ErrBadRequest}
+
+			return fmt.Errorf("%w: job at index %d is nil", jqErr, jobIndex)
 		}
 
-		jqErr := jobqueue.Error{
-			Op:   op,
-			Item: fmt.Sprintf("jobs[%d]", index),
-			Err:  jobqueue.ErrBadRequest,
-		}
+		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
+			path := fmt.Sprintf("jobs[%d].Dependencies[%d]", jobIndex, dependencyIndex)
+			jqErr := jobqueue.Error{Op: op, Item: path, Err: jobqueue.ErrBadRequest}
 
-		return fmt.Errorf("%w: job at index %d is nil", jqErr, index)
+			return fmt.Errorf("%w: %s is nil", jqErr, path)
+		}
 	}
 
 	return nil

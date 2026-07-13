@@ -398,6 +398,20 @@ func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
 	return "/" + rel, nil
 }
 
+func malformedAddJobMessage(jobs []*Job) string {
+	for jobIndex, job := range jobs {
+		if job == nil {
+			return fmt.Sprintf("job at index %d is nil", jobIndex)
+		}
+
+		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Dependencies[%d] is nil", jobIndex, dependencyIndex)
+		}
+	}
+
+	return ""
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -614,8 +628,8 @@ func serverErrString(err error) string {
 func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// add jobs to the queue, and along side keep the environment variables
 	// they're supposed to execute under.
-	if nilJobIndex := slices.Index(cr.Jobs, nil); nilJobIndex >= 0 {
-		return nil, ErrBadRequest, fmt.Sprintf("job at index %d is nil", nilJobIndex)
+	if malformed := malformedAddJobMessage(cr.Jobs); malformed != "" {
+		return nil, ErrBadRequest, malformed
 	}
 
 	missingRequirements := slices.ContainsFunc(cr.Jobs, func(job *Job) bool {

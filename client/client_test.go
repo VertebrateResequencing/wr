@@ -400,6 +400,20 @@ func assertNilJobSubmissionError(err error, op string, index int) {
 	So(err.Error(), ShouldContainSubstring, fmt.Sprintf("job at index %d is nil", index))
 }
 
+func assertNilDependencySubmissionError(err error, op string, jobIndex, dependencyIndex int) {
+	var jqErr jobqueue.Error
+
+	path := fmt.Sprintf("jobs[%d].Dependencies[%d]", jobIndex, dependencyIndex)
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr, ShouldResemble, jobqueue.Error{
+		Op:   op,
+		Item: path,
+		Err:  jobqueue.ErrBadRequest,
+	})
+	So(err.Error(), ShouldContainSubstring, path+" is nil")
+}
+
 type waitForRunningSequenceJobqueue struct {
 	*pretendJobqueue
 	job    *jobqueue.Job
@@ -1508,6 +1522,97 @@ func TestSchedulerSubmissionMethodsRejectNilJobs(t *testing.T) {
 			So(jobs, ShouldBeNil)
 			So(errors.Is(err, context.Canceled), ShouldBeTrue)
 			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+	})
+}
+
+func TestSchedulerSubmissionMethodsRejectNilDependencies(t *testing.T) {
+	Convey("Scheduler submission methods reject a nil dependency before mutating or forwarding the batch", t, func() {
+		newJobs := func(prefix string) (*jobqueue.Job, *jobqueue.Job, []*jobqueue.Job) {
+			valid := &jobqueue.Job{Cmd: "echo " + prefix + " valid"}
+			malformedRequirements := DefaultRequirements()
+			malformed := &jobqueue.Job{
+				Cmd:          "echo " + prefix + " malformed",
+				Requirements: malformedRequirements,
+				Dependencies: jobqueue.Dependencies{&jobqueue.Dependency{}, nil},
+			}
+
+			return valid, malformed, []*jobqueue.Job{valid, malformed}
+		}
+
+		assertUnmodified := func(jq *pretendJobqueue, valid, malformed *jobqueue.Job) {
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(malformed.Requirements, ShouldNotBeNil)
+			So(malformed.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		}
+
+		Convey("SubmitJobs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("legacy")
+
+			err := s.SubmitJobs(jobs)
+
+			assertNilDependencySubmissionError(err, "SubmitJobs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndReturnIDs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("ids")
+
+			ids, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+
+			So(ids, ShouldBeNil)
+			assertNilDependencySubmissionError(err, "SubmitJobsAndReturnIDs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("wait")
+
+			done, err := s.SubmitJobsAndWait(context.Background(), jobs, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			assertNilDependencySubmissionError(err, "SubmitJobsAndWait", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait preserves pre-cancelled context precedence", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			done, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{{
+				Dependencies: jobqueue.Dependencies{nil},
+			}}, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("nil, empty and zero-valued dependencies remain valid", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			jobs := []*jobqueue.Job{
+				{Cmd: "echo nil dependencies", Dependencies: nil},
+				{Cmd: "echo empty dependencies", Dependencies: jobqueue.Dependencies{}},
+				{Cmd: "echo zero dependency", Dependencies: jobqueue.Dependencies{&jobqueue.Dependency{}}},
+			}
+
+			So(s.SubmitJobs(jobs), ShouldBeNil)
+			So(jq.jobBuffer, ShouldHaveLength, 3)
+
+			for _, job := range jobs {
+				So(job.Requirements, ShouldNotBeNil)
+			}
 		})
 	})
 }
