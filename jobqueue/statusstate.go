@@ -85,8 +85,7 @@ func newStatusState() *statusState {
 	}
 }
 
-// seed sets the authoritative counts from a full scan of current and completed
-// jobs. It is called once at server startup before any client connects. The
+// seed replaces the authoritative counts with a caller-provided snapshot. The
 // provided map is copied; the caller may reuse it afterwards.
 func (s *statusState) seed(counts map[string]map[JobState]int) {
 	s.mu.Lock()
@@ -96,6 +95,36 @@ func (s *statusState) seed(counts map[string]map[JobState]int) {
 	for repGroup, stateCounts := range counts {
 		s.counts[repGroup] = cleanCountCopy(stateCounts)
 	}
+}
+
+// hasRepGroup reports whether this RepGroup's persisted completion count has
+// already been loaded. An empty count map still means it has been loaded.
+func (s *statusState) hasRepGroup(repGroup string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, ok := s.counts[repGroup]
+
+	return ok
+}
+
+// seedRepGroupComplete initialises one RepGroup with its persisted completion
+// count. It leaves an existing entry untouched because live transitions may
+// already have populated it.
+func (s *statusState) seedRepGroupComplete(repGroup string, complete int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.counts[repGroup]; ok {
+		return
+	}
+
+	stateCounts := make(map[JobState]int)
+	if complete > 0 {
+		stateCounts[JobStateComplete] = complete
+	}
+
+	s.counts[repGroup] = stateCounts
 }
 
 // liveSeedLocked returns the fresh-connect seed: a copy of every RepGroup that

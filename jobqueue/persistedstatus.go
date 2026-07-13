@@ -76,6 +76,9 @@ func (db *db) retrievePersistedJobStatusGroups(keys []string) (map[string]persis
 		}
 
 		complete := tx.Bucket(bucketJobsComplete)
+		if complete == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobsComplete)
+		}
 
 		for _, key := range keys {
 			if _, done := statusGroups[key]; done {

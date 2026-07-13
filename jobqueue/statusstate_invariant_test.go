@@ -451,16 +451,13 @@ func TestArchivedDependencyResurrectionStatusInvariant(t *testing.T) {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
 		serverConfig.Timings.ItemTTR = time.Hour
+		serverConfig.dontWipeDevDB = true
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
-		defer server.Stop(ctx, true)
-
 		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
 
 		const depGroup = "invariant-resurrection-parent"
 
@@ -479,6 +476,14 @@ func TestArchivedDependencyResurrectionStatusInvariant(t *testing.T) {
 		archiveNextSubscriptionJob(jq)
 		archiveNextSubscriptionJob(jq)
 		assertCountsMatchGroundTruth(ctx, server)
+		disconnect(jq)
+		server.Stop(ctx, true)
+
+		server, _, token, err = serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
 
 		newParent := subscriptionTestJobs(parentRepGroup, standardReqs, 1)[0]
 		newParent.Cmd += " new"
@@ -499,6 +504,38 @@ func TestArchivedDependencyResurrectionStatusInvariant(t *testing.T) {
 			JobStateDependent: 1,
 		})
 
+		assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
+			parentRepGroup: {
+				JobStateReady:    1,
+				JobStateComplete: 1,
+			},
+			childRepGroup: {JobStateDependent: 1},
+			statusAllRepGroups: {
+				JobStateReady:     1,
+				JobStateDependent: 1,
+			},
+		})
+		disconnect(jq)
+		server.Stop(ctx, true)
+
+		server, _, token, err = serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		assertCountsMatchGroundTruth(ctx, server)
+		So(server.statusState.snapshot()[parentRepGroup], ShouldResemble, map[JobState]int{
+			JobStateReady:    1,
+			JobStateComplete: 1,
+		})
+		So(server.statusState.snapshot()[childRepGroup], ShouldResemble, map[JobState]int{
+			JobStateDependent: 1,
+		})
 		assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
 			parentRepGroup: {
 				JobStateReady:    1,
@@ -605,12 +642,8 @@ func TestHistoricalRepGroupRerunStatusInvariant(t *testing.T) {
 		server, _, token, err = serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
-		defer server.Stop(ctx, true)
-
 		jq, err = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
 
 		distinctA := subscriptionTestJobs("invariant-history-distinct-a", standardReqs, 1)[0]
 		distinctA.RepGroup = groupA
@@ -634,6 +667,26 @@ func TestHistoricalRepGroupRerunStatusInvariant(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(added, ShouldEqual, 1)
 		So(existed, ShouldEqual, 0)
+		assertCountsMatchGroundTruth(ctx, server)
+		assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
+			groupA:             {JobStateReady: 1},
+			groupB:             {JobStateReady: 1},
+			groupC:             {JobStateReady: 1},
+			statusAllRepGroups: {JobStateReady: 3},
+		})
+		disconnect(jq)
+		server.Stop(ctx, true)
+
+		server, _, token, err = serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
 		assertCountsMatchGroundTruth(ctx, server)
 		assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
 			groupA:             {JobStateReady: 1},
@@ -685,6 +738,107 @@ func jqAddAndArchive(addr string, serverConfig ServerConfig, token []byte, clien
 	archiveNextSubscriptionJob(jq)
 
 	return added, existed, nil
+}
+
+func TestFullArchivedRerunAfterStatusSeed(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A full archived rerun is counted exactly once at its first lazy seed", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.ItemTTR = time.Hour
+		serverConfig.dontWipeDevDB = true
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		const archivedCount = 4
+
+		repGroup := "invariant-full-seeded-rerun"
+		jobs := subscriptionTestJobs(repGroup, standardReqs, archivedCount)
+		added, existed, err := jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, archivedCount)
+		So(existed, ShouldEqual, 0)
+
+		for range archivedCount {
+			archiveNextSubscriptionJob(jq)
+		}
+
+		assertCountsMatchGroundTruth(ctx, server)
+		disconnect(jq)
+		server.Stop(ctx, true)
+
+		server, _, token, err = serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		added, existed, err = jq.Add(jobs, envVars, false)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, archivedCount)
+		So(existed, ShouldEqual, 0)
+		assertCountsMatchGroundTruth(ctx, server)
+		assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
+			repGroup:           {JobStateReady: archivedCount},
+			statusAllRepGroups: {JobStateReady: archivedCount},
+		})
+		disconnect(jq)
+		server.Stop(ctx, true)
+
+		server, _, token, err = serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		assertCountsMatchGroundTruth(ctx, server)
+		assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
+			repGroup:           {JobStateReady: archivedCount},
+			statusAllRepGroups: {JobStateReady: archivedCount},
+		})
+
+		for range archivedCount {
+			archiveNextSubscriptionJob(jq)
+		}
+
+		assertCountsMatchGroundTruth(ctx, server)
+		So(server.statusState.snapshot()[repGroup], ShouldResemble, map[JobState]int{
+			JobStateComplete: archivedCount,
+		})
+
+		distinct := subscriptionTestJobs("invariant-full-seeded-distinct", standardReqs, 1)[0]
+		distinct.RepGroup = repGroup
+		added, existed, err = jq.Add([]*Job{distinct}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+		assertCountsMatchGroundTruth(ctx, server)
+
+		for range 2 {
+			assertStatusWebSocketCounts(ctx, server, token, map[string]map[JobState]int{
+				repGroup: {
+					JobStateReady:    1,
+					JobStateComplete: archivedCount,
+				},
+				statusAllRepGroups: {JobStateReady: 1},
+			})
+		}
+	})
 }
 
 func TestConcurrentArchivedRerunAfterStatusSeed(t *testing.T) {
@@ -824,9 +978,9 @@ func assertCountsMatchGroundTruth(ctx context.Context, s *Server) {
 // itself uses: live jobs come from the in-memory queue (with Lost folded into
 // the reserved->running merge by statusStateCounts and itemStateToJobState),
 // and completed jobs come from the on-disk completed bucket per RepGroup. This
-// is the same data the `current` status snapshot and seedStatusStateFromCompletedDB
-// are built from, so statusState's counts must always equal it. The returned map
-// omits the statusAllRepGroups aggregate, which statusState derives internally,
+// is the same data the `current` status snapshot and lazy persisted-status seeds
+// are built from, so statusState's active counts must always equal it. The
+// returned map omits the statusAllRepGroups aggregate, which statusState derives internally,
 // and the deleted state, which statusState intentionally accumulates for the web
 // UI bar but which has no ground-truth backing (deleted jobs are removed from
 // both the live queue and the completed DB). It returns an error rather than

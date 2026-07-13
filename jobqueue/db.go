@@ -897,6 +897,47 @@ func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) 
 	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
 }
 
+// retrieveCompleteJobCountsByRepGroups gets archived-job counts for the
+// supplied RepGroups in one read transaction. It does not decode job payloads.
+func (db *db) retrieveCompleteJobCountsByRepGroups(repGroups []string) (map[string]int, error) {
+	counts := make(map[string]int, len(repGroups))
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		if completeJobBucket == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobsComplete)
+		}
+
+		lookupBucket := tx.Bucket(bucketRTK)
+		if lookupBucket == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRTK)
+		}
+
+		for _, repGroup := range repGroups {
+			counts[repGroup] = rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket, repGroup)
+		}
+
+		return nil
+	})
+
+	return counts, err
+}
+
+func rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket *bolt.Bucket, repGroup string) int {
+	prefix := []byte(repGroup + dbDelimiter)
+	cursor := lookupBucket.Cursor()
+	count := 0
+
+	for key, _ := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); key, _ = cursor.Next() {
+		jobKey := bytes.TrimPrefix(key, prefix)
+		if completeJobBucket.Get(jobKey) != nil {
+			count++
+		}
+	}
+
+	return count
+}
+
 // deleteLimitGroup deletes a limit group's stored value if it had one.
 func deleteLimitGroup(b *bolt.Bucket, key, existing []byte) (limitGroupOutcome, error) {
 	if existing == nil {

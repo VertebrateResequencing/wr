@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -34,8 +35,10 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 func TestRepGroupStatusCountsDoNotDecodeCompleteJobs(t *testing.T) {
@@ -84,6 +87,28 @@ func TestRepGroupStatusCountsDoNotDecodeCompleteJobs(t *testing.T) {
 			summary, errc := db.retrieveCompleteJobStatusByRepGroup(repGroup, false)
 			So(errc, ShouldBeNil)
 			So(summary.Counts[JobStateComplete], ShouldEqual, 1)
+		})
+
+		Convey("lazy startup seeding counts archived keys that have just become live", func() {
+			counts, errc := db.retrieveCompleteJobCountsByRepGroups([]string{repGroup})
+			So(errc, ShouldBeNil)
+			So(counts, ShouldResemble, map[string]int{repGroup: 2})
+		})
+
+		Convey("lazy startup seeding reports a missing RepGroup lookup bucket", func() {
+			assertLazyStatusSeedMissingBucket(db, repGroup, bucketRTK)
+		})
+
+		Convey("lazy startup seeding reports a missing completed-jobs bucket", func() {
+			assertLazyStatusSeedMissingBucket(db, repGroup, bucketJobsComplete)
+		})
+
+		Convey("recovery reports a missing reverse lookup bucket", func() {
+			assertRecoveryStatusSeedMissingBucket(db, repGroup, bucketJobLookupEntries)
+		})
+
+		Convey("recovery reports a missing completed-jobs bucket", func() {
+			assertRecoveryStatusSeedMissingBucket(db, repGroup, bucketJobsComplete)
 		})
 
 		Convey("summary detail mode still decodes only when compact job stats are requested", func() {
@@ -255,6 +280,52 @@ func TestClientRepGroupStatusCountsIncludeSuspended(t *testing.T) {
 		So(filtered[repGroup].Counts[JobStateReady], ShouldEqual, 0)
 		So(filtered[repGroup].Counts[JobStateComplete], ShouldEqual, 0)
 	})
+}
+
+func assertLazyStatusSeedMissingBucket(db *db, repGroup string, bucket []byte) {
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.DeleteBucket(bucket)
+	})
+	So(err, ShouldBeNil)
+
+	_, err = db.retrieveCompleteJobCountsByRepGroups([]string{repGroup})
+	assertBoltBucketError(err, bucket)
+
+	server := &Server{db: db, statusState: newStatusState()}
+	err = server.seedStatusStateForItemDefs([]*queue.ItemDef{{
+		Data: &Job{RepGroup: repGroup},
+	}})
+	assertJobqueueDBBucketError(err, bucket)
+}
+
+func assertRecoveryStatusSeedMissingBucket(db *db, repGroup string, bucket []byte) {
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.DeleteBucket(bucket)
+	})
+	So(err, ShouldBeNil)
+
+	server := &Server{db: db, statusState: newStatusState()}
+	err = server.recoverPriorJobs(context.Background(), ServerConfig{}, []*Job{{
+		Cmd: "echo recover status", RepGroup: repGroup,
+	}})
+	assertJobqueueDBBucketError(err, bucket)
+}
+
+func assertJobqueueDBBucketError(err error, bucket []byte) {
+	var jqErr Error
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr.Err, ShouldEqual, ErrDBError)
+	assertBoltBucketError(err, bucket)
+}
+
+func assertBoltBucketError(err error, bucket []byte) {
+	So(errors.Is(err, berrors.ErrBucketNotFound), ShouldBeTrue)
+	So(err, ShouldNotBeNil)
+
+	if err != nil {
+		So(err.Error(), ShouldContainSubstring, string(bucket))
+	}
 }
 
 func TestAddBulkDependentJobsRequeuesPersistedLiveOrphans(t *testing.T) {

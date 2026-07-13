@@ -759,6 +759,7 @@ type Server struct {
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
 	csmutex                   sync.RWMutex // to protect clientSubscriptions
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
+	statusSeedMutex           sync.Mutex   // serialises lazy persisted status seeding before queue transitions
 	sync.Mutex
 	wsmutex              sync.RWMutex
 	up                   bool
@@ -904,6 +905,63 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{Limit: limit, GetStd: getStd, GetEnv: getEnv})
 
 	return jobs, "", ""
+}
+
+// seedStatusStateForItemDefs loads persisted completion counts only for the
+// RepGroups that are about to become live. Complete-only RepGroups are omitted
+// from a fresh status-page seed, so scanning all historical RepGroups at startup
+// is both unnecessary and prohibitively expensive on large databases.
+func (s *Server) seedStatusStateForItemDefs(itemdefs []*queue.ItemDef) error {
+	const op = "seedStatusState"
+
+	if s.statusState == nil {
+		return nil
+	}
+
+	s.statusSeedMutex.Lock()
+	defer s.statusSeedMutex.Unlock()
+
+	repGroups := s.unseededStatusRepGroups(itemdefs)
+	if len(repGroups) == 0 {
+		return nil
+	}
+
+	counts, err := s.db.retrieveCompleteJobCountsByRepGroups(repGroups)
+	if err != nil {
+		return fmt.Errorf("%w: %w", Error{Op: op, Err: ErrDBError}, err)
+	}
+
+	for _, repGroup := range repGroups {
+		s.statusState.seedRepGroupComplete(repGroup, counts[repGroup])
+	}
+
+	return nil
+}
+
+func (s *Server) unseededStatusRepGroups(itemdefs []*queue.ItemDef) []string {
+	seen := make(map[string]struct{})
+	repGroups := make([]string, 0)
+
+	for _, itemdef := range itemdefs {
+		job, ok := itemdef.Data.(*Job)
+		if !ok {
+			continue
+		}
+
+		if _, ok = seen[job.RepGroup]; ok {
+			continue
+		}
+
+		seen[job.RepGroup] = struct{}{}
+
+		if !s.statusState.hasRepGroup(job.RepGroup) {
+			repGroups = append(repGroups, job.RepGroup)
+		}
+	}
+
+	sort.Strings(repGroups)
+
+	return repGroups
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -1381,39 +1439,6 @@ func updateJobRequirementsForRetry(
 
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
-}
-
-// seedStatusStateFromCompletedDB scans every RepGroup's completed jobs on disk
-// and seeds the absolute status state with their counts, so the status web UI
-// shows previously-completed work immediately on (re)start. Live job counts are
-// added afterwards by the queue-change callbacks of the recovery enqueue. It is
-// called once at startup before any client connects.
-func (s *Server) seedStatusStateFromCompletedDB() error {
-	const op = "seedStatusState"
-
-	repGroups, err := s.db.retrieveRepGroups()
-	if err != nil {
-		return Error{op, "", ErrDBError}
-	}
-
-	counts := make(map[string]map[JobState]int)
-
-	for _, repGroup := range repGroups {
-		complete, srerr, _ := s.getCompleteJobsByRepGroup(repGroup)
-		if srerr != "" {
-			return Error{op, "", srerr}
-		}
-
-		if len(complete) == 0 {
-			continue
-		}
-
-		counts[repGroup] = statusStateCounts(complete)
-	}
-
-	s.statusState.seed(counts)
-
-	return nil
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -2613,20 +2638,9 @@ func (s *Server) recordSchedulerMessage(msg string) {
 	s.schedCaster.Send(si)
 }
 
-// loadPriorState seeds the absolute status state from completed jobs already on
-// disk and re-enqueues any jobs that were still incomplete when a previous
-// server instance stopped.
+// loadPriorState re-enqueues any jobs that were still incomplete when a
+// previous server instance stopped.
 func (s *Server) loadPriorState(ctx context.Context, config ServerConfig, db *db) error {
-	// seed the absolute status state with the completed jobs already on disk
-	// from any prior run. This happens BEFORE the recovery enqueue below, whose
-	// queue-change callbacks add the live (ready/running/...) counts on top of
-	// these completed counts. Completed jobs never enter the queue, so they have
-	// no callback; the two sources are disjoint (completed jobs that are also
-	// live are excluded by the DB), so there is no double counting.
-	if err := s.seedStatusStateFromCompletedDB(); err != nil {
-		return err
-	}
-
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
 		return err
@@ -2641,6 +2655,10 @@ func (s *Server) loadPriorState(ctx context.Context, config ServerConfig, db *db
 func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, priorJobs []*Job) error {
 	if len(priorJobs) == 0 {
 		return nil
+	}
+
+	if err := s.markPersistedJobStatusGroups(priorJobs, true); err != nil {
+		return fmt.Errorf("%w: %w", Error{Op: "recoverPriorJobs", Err: ErrDBError}, err)
 	}
 
 	var (
@@ -3547,6 +3565,10 @@ func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk str
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
+	if err = s.seedStatusStateForItemDefs(itemdefs); err != nil {
+		return 0, 0, err
+	}
+
 	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
 
 	if readyCallbackExpected {
