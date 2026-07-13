@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -613,6 +614,10 @@ func serverErrString(err error) string {
 func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// add jobs to the queue, and along side keep the environment variables
 	// they're supposed to execute under.
+	if nilJobIndex := slices.Index(cr.Jobs, nil); nilJobIndex >= 0 {
+		return nil, ErrBadRequest, fmt.Sprintf("job at index %d is nil", nilJobIndex)
+	}
+
 	missingRequirements := slices.ContainsFunc(cr.Jobs, func(job *Job) bool {
 		return job != nil && job.Requirements == nil
 	})

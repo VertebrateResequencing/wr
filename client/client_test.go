@@ -30,6 +30,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"slices"
@@ -385,6 +386,18 @@ func TestSchedulerNewJobFromJSON(t *testing.T) {
 			So(err.Error(), ShouldContainSubstring, "cmd was not specified")
 		})
 	})
+}
+
+func assertNilJobSubmissionError(err error, op string, index int) {
+	var jqErr jobqueue.Error
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr, ShouldResemble, jobqueue.Error{
+		Op:   op,
+		Item: fmt.Sprintf("jobs[%d]", index),
+		Err:  jobqueue.ErrBadRequest,
+	})
+	So(err.Error(), ShouldContainSubstring, fmt.Sprintf("job at index %d is nil", index))
 }
 
 type waitForRunningSequenceJobqueue struct {
@@ -1439,6 +1452,64 @@ func cdNonExistantDir(t *testing.T) func() {
 	os.RemoveAll(tmpDir)
 
 	return d
+}
+
+func TestSchedulerSubmissionMethodsRejectNilJobs(t *testing.T) {
+	Convey("Scheduler submission methods reject a nil job before mutating or forwarding the batch", t, func() {
+		Convey("SubmitJobs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid := &jobqueue.Job{Cmd: "echo valid legacy job"}
+
+			err := s.SubmitJobs([]*jobqueue.Job{valid, nil})
+
+			assertNilJobSubmissionError(err, "SubmitJobs", 1)
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("SubmitJobsAndReturnIDs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid := &jobqueue.Job{Cmd: "echo valid id job"}
+
+			ids, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{valid, nil}, SubmitJobsOptions{})
+
+			So(ids, ShouldBeNil)
+			assertNilJobSubmissionError(err, "SubmitJobsAndReturnIDs", 1)
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("SubmitJobsAndWait returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid := &jobqueue.Job{Cmd: "echo valid wait job"}
+
+			jobs, err := s.SubmitJobsAndWait(context.Background(), []*jobqueue.Job{valid, nil}, SubmitJobsOptions{})
+
+			So(jobs, ShouldBeNil)
+			assertNilJobSubmissionError(err, "SubmitJobsAndWait", 1)
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("SubmitJobsAndWait preserves pre-cancelled context precedence", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			jobs, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{nil}, SubmitJobsOptions{})
+
+			So(jobs, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+	})
 }
 
 func TestFakeScheduler(t *testing.T) {

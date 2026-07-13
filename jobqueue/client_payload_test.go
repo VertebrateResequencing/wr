@@ -442,6 +442,50 @@ func TestServerRejectsAddWithoutRequirements(t *testing.T) {
 	})
 }
 
+func TestServerRejectsAddWithNilJob(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A mixed add request containing a nil job is rejected before anything is queued", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			q:     queue.New(ctx, "payload-nil-job"),
+			up:    true,
+		}
+		valid := &Job{
+			Cmd:          "echo valid job",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+		}
+
+		var encoded []byte
+
+		enc := codec.NewEncoderBytes(&encoded, ch)
+		err := enc.Encode(&clientRequest{
+			Method: requestMethodAdd,
+			Token:  token,
+			Env:    []byte("environment"),
+			Jobs:   []*Job{valid, nil},
+		})
+		So(err, ShouldBeNil)
+
+		err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "job at index 1 is nil")
+		So(sock.response().Err, ShouldEqual, ErrBadRequest)
+		So(server.q.Stats().Items, ShouldEqual, 0)
+		So(valid.EnvKey, ShouldBeBlank)
+	})
+}
+
 func newLiveExecuteCaptureClient(capture *liveTouchCapture) *Client {
 	client, _ := newCaptureClient()
 	client.touchInterval = liveExecuteTouchInterval
