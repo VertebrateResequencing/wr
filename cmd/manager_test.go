@@ -29,6 +29,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -597,6 +598,162 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		})
 
 		So(jq, ShouldBeNil)
+		So(reports, ShouldEqual, 0)
+	})
+}
+
+func TestWaitForLiveManagerStartup(t *testing.T) {
+	Convey("manager start keeps waiting for its live daemon and reports delayed startup", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+		oldConnect := managerStartupConnectAttempt
+		oldReport := managerStartupReportInterval
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+			managerStartupConnectAttempt = oldConnect
+			managerStartupReportInterval = oldReport
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		managerStartupConnectAttempt = time.Millisecond
+		managerStartupReportInterval = 15 * time.Millisecond
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		child := exec.Command("sleep", "30") //nolint:noctx // the test owns and terminates this process
+		So(child.Start(), ShouldBeNil)
+
+		processDone := monitorManagerStartupProcess(child.Process)
+
+		t.Cleanup(func() {
+			if child.ProcessState != nil {
+				return
+			}
+
+			if err := child.Process.Kill(); err == nil {
+				<-processDone
+			}
+		})
+
+		preStart := time.Now()
+		statusTime := preStart.Add(time.Millisecond)
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "progress from another process",
+			PID:       os.Getpid(),
+			StartedAt: preStart,
+			UpdatedAt: statusTime,
+		}, statusTime)
+		_, active := currentManagerDBUpgradeStatus(preStart, child.Process.Pid)
+		So(active, ShouldBeFalse)
+
+		statusTime = statusTime.Add(time.Millisecond)
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "startup phase from exact manager process",
+			PID:       child.Process.Pid,
+			StartedAt: preStart,
+			UpdatedAt: statusTime,
+		}, statusTime)
+
+		readyAt := preStart.Add(70 * time.Millisecond)
+
+		var reports []string
+
+		upgradeReports := 0
+
+		jq, err := waitForLiveManagerStartupWith(preStart, 20*time.Millisecond, child.Process.Pid, processDone,
+			func(time.Duration) *jobqueue.Client {
+				if time.Now().After(readyAt) {
+					return &jobqueue.Client{}
+				}
+
+				return nil
+			}, func(internal.DBUpgradeStatus) {
+				upgradeReports++
+			}, func(elapsed time.Duration, phase string) {
+				reports = append(reports, managerStartupWaitingLogMessage(elapsed, phase))
+			})
+
+		So(err, ShouldBeNil)
+		So(jq, ShouldNotBeNil)
+		So(time.Since(preStart), ShouldBeGreaterThanOrEqualTo, 60*time.Millisecond)
+		So(upgradeReports, ShouldBeGreaterThan, 0)
+		So(len(reports), ShouldBeGreaterThan, 1)
+		So(reports[0], ShouldContainSubstring, "wr manager is still starting")
+		So(reports[0], ShouldContainSubstring, "waiting for it to become ready")
+		So(reports[0], ShouldContainSubstring, "startup phase from exact manager process")
+		So(reports[0], ShouldNotContainSubstring, "progress from another process")
+	})
+
+	Convey("manager start reports when its daemon exits before becoming ready", t, func() {
+		oldConfig := config
+		oldPoll := managerStartupPollInterval
+
+		t.Cleanup(func() {
+			config = oldConfig
+			managerStartupPollInterval = oldPoll
+		})
+
+		managerStartupPollInterval = 5 * time.Millisecond
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(t.TempDir(), "db"),
+			ManagerTokenFile: filepath.Join(t.TempDir(), "client.token"),
+		}
+
+		child := exec.Command("sh", "-c", "exit 7") //nolint:noctx // short-lived test subprocess
+		So(child.Start(), ShouldBeNil)
+
+		processDone := monitorManagerStartupProcess(child.Process)
+		started := time.Now()
+
+		jq, err := waitForLiveManagerStartupWith(started, 2*time.Second, child.Process.Pid, processDone,
+			func(time.Duration) *jobqueue.Client {
+				return nil
+			}, func(internal.DBUpgradeStatus) {}, func(time.Duration, string) {})
+
+		So(jq, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "manager process")
+		So(err.Error(), ShouldContainSubstring, "exited before becoming ready")
+		So(err.Error(), ShouldContainSubstring, "exit status 7")
+		So(time.Since(started), ShouldBeLessThan, 500*time.Millisecond)
+	})
+
+	Convey("quick manager startup remains quiet", t, func() {
+		oldConfig := config
+
+		t.Cleanup(func() {
+			config = oldConfig
+		})
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
+
+		processDone := make(chan error)
+		reports := 0
+
+		jq, err := waitForLiveManagerStartupWith(time.Now(), time.Second, 123, processDone,
+			func(time.Duration) *jobqueue.Client {
+				return &jobqueue.Client{}
+			}, func(internal.DBUpgradeStatus) {}, func(time.Duration, string) {
+				reports++
+			})
+
+		So(err, ShouldBeNil)
+		So(jq, ShouldNotBeNil)
 		So(reports, ShouldEqual, 0)
 	})
 }
