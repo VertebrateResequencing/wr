@@ -61,6 +61,13 @@ const jobSchedLimitGroupSeparator = "~"
 // group names.
 const jobLimitGroupSeparator = ","
 
+// defaultMountRetries is the number of times muxfys retries a mount when the
+// MountConfig doesn't specify its own Retries.
+const defaultMountRetries = 10
+
+// errNoTargets is returned by Mount when a MountConfig has no usable Targets.
+var errNoTargets = errors.New("no Targets specified")
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -394,6 +401,13 @@ type Job struct {
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
 
+	// statusFromComplete marks a completed database record that is becoming
+	// live again. The first queue-add transition consumes it so the absolute
+	// status projection moves, rather than duplicates, every historical
+	// RepGroup contribution in statusCompleteRepGroups.
+	statusFromComplete      bool
+	statusCompleteRepGroups []string
+
 	sync.RWMutex
 }
 
@@ -683,13 +697,6 @@ func (j *Job) TriggerBehaviours(success bool) error {
 func (j *Job) RemovalRequested() bool {
 	return j.Behaviours.RemovalRequested()
 }
-
-// defaultMountRetries is the number of times muxfys retries a mount when the
-// MountConfig doesn't specify its own Retries.
-const defaultMountRetries = 10
-
-// errNoTargets is returned by Mount when a MountConfig has no usable Targets.
-var errNoTargets = errors.New("no Targets specified")
 
 // unmountOnError unmounts this Job's filesystems (discarding logs) following an
 // error, folding any unmount failure into the given error.

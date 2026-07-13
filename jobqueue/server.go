@@ -3671,6 +3671,10 @@ func (s *Server) createJobs(
 		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
+	if err = s.markPersistedJobStatusGroups(jobsToQueue, true); err != nil {
+		return added, dups, alreadyComplete, warnings, ErrDBError, err
+	}
+
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
 	added, dups, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)

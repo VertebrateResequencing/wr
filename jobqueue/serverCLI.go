@@ -1046,6 +1046,10 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState) (key, rg
 func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup, sgroup string) (
 	*serverResponse, string, string,
 ) {
+	if err := s.markPersistedJobStatusGroups([]*Job{job}, false); err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
 	if err := s.db.archiveJob(ctx, key, job); err != nil {
 		return nil, ErrDBError, err.Error()
 	}

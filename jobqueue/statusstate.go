@@ -173,13 +173,49 @@ func liveCountCopy(stateCounts map[JobState]int) map[JobState]int {
 // holds the terminal complete/deleted states, matching what the UI shows for
 // "+all+" (live jobs only).
 func (s *statusState) applyTransition(from, to JobState, repGroup string, n int) {
-	if n <= 0 || repGroup == "" || repGroup == statusAllRepGroups {
+	if !validCountContribution(repGroup, n) {
 		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.applyTransitionLocked(from, to, repGroup, n)
+}
+
+func validCountContribution(repGroup string, n int) bool {
+	return n > 0 && repGroup != "" && repGroup != statusAllRepGroups
+}
+
+// applyTransitions atomically applies all contributions emitted by one queue
+// change. A resurrected job whose RepGroup changed contributes two entries, so
+// holding the leaf lock across the batch prevents subscribers observing only
+// half of that move.
+func (s *statusState) applyTransitions(transitions []countContribution) {
+	if len(transitions) == 0 {
+		return
+	}
+
+	if len(transitions) == 1 {
+		transition := transitions[0]
+		s.applyTransition(transition.from, transition.to, transition.repGroup, transition.n)
+
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, transition := range transitions {
+		if !validCountContribution(transition.repGroup, transition.n) {
+			continue
+		}
+
+		s.applyTransitionLocked(transition.from, transition.to, transition.repGroup, transition.n)
+	}
+}
+
+func (s *statusState) applyTransitionLocked(from, to JobState, repGroup string, n int) {
 	s.applyToRepGroupLocked(repGroup, from, to, n)
 	s.applyToRepGroupLocked(statusAllRepGroups, aggregateState(from), aggregateState(to), n)
 
