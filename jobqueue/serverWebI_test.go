@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +42,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -456,6 +458,171 @@ func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeou
 	}
 
 	return true
+}
+
+func TestCompletedRepGroupStatusSurvivesRapidTransitionsAndReconnect(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Rapid successful jobs stay complete in live and reconnected status views", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.ItemTTR = time.Hour
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		// Hold the initial batch's new->ready callback while all six jobs run
+		// and four finish. Queue mutation must remain non-blocking, while status
+		// transitions must retain mutation order. Before ordered callback delivery,
+		// the later ready->running and running->complete callbacks overtook this
+		// one and the eventual late new->ready update corrupted absolute counts.
+		firstCallbackStarted := make(chan struct{})
+		releaseFirstCallback := make(chan struct{})
+		callbackFinished := make(chan struct{}, 11)
+
+		var blockFirstReady sync.Once
+
+		server.q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any) {
+			if fromQ == queue.SubQueueNew && toQ == queue.SubQueueReady {
+				blockFirstReady.Do(func() {
+					close(firstCallbackStarted)
+					<-releaseFirstCallback
+				})
+			}
+
+			server.emitChangeCallbackTransition(ctx, fromQ, toQ, data)
+
+			callbackFinished <- struct{}{}
+		})
+
+		repGroup := "status-rapid-complete"
+		jobs := subscriptionTestJobs(repGroup, standardReqs, 6)
+		added, already, err := jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 6)
+		So(already, ShouldEqual, 0)
+
+		select {
+		case <-firstCallbackStarted:
+		case <-time.After(3 * time.Second):
+			So("initial status callback did not start", ShouldBeBlank)
+		}
+
+		running := make([]*Job, 0, 6)
+
+		for range 6 {
+			job, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+			running = append(running, job)
+		}
+
+		for _, job := range running[:4] {
+			So(jq.Archive(job, &JobEndState{
+				Exited:   true,
+				Exitcode: 0,
+				EndTime:  time.Now(),
+			}), ShouldBeNil)
+		}
+
+		// Give the historical independently-spawned callbacks a deterministic
+		// chance to overtake the blocked first callback. Ordered delivery keeps
+		// them queued, so the bounded wait simply expires in the fixed code.
+		finished := 0
+		waitForOvertaking := time.After(250 * time.Millisecond)
+
+	overtakingWait:
+		for finished < 10 {
+			select {
+			case <-callbackFinished:
+				finished++
+			case <-waitForOvertaking:
+				break overtakingWait
+			}
+		}
+
+		close(releaseFirstCallback)
+
+		for finished < 11 {
+			select {
+			case <-callbackFinished:
+				finished++
+			case <-time.After(3 * time.Second):
+				So("status callbacks did not finish", ShouldBeBlank)
+
+				finished = 11
+			}
+		}
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
+			JobStateRunning:  2,
+			JobStateComplete: 4,
+		}, 3*time.Second), ShouldBeTrue)
+
+		// A fifth completion is a dirty live update on this connection. It must
+		// replace the RepGroup with five complete plus one running and no deleted.
+		So(jq.Archive(running[4], &JobEndState{
+			Exited:   true,
+			Exitcode: 0,
+			EndTime:  time.Now(),
+		}), ShouldBeNil)
+		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
+			JobStateRunning:  1,
+			JobStateComplete: 5,
+		}, 3*time.Second), ShouldBeTrue)
+
+		So(ws.Close(), ShouldBeNil)
+		ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
+			JobStateRunning:  1,
+			JobStateComplete: 5,
+		}, 3*time.Second), ShouldBeTrue)
+
+		summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
+		So(err, ShouldBeNil)
+		So(summaries[repGroup].Counts, ShouldResemble, map[JobState]int{
+			JobStateRunning:  1,
+			JobStateComplete: 5,
+		})
+	})
+}
+
+// readExactRepGroupState reads absolute messages until the requested RepGroup
+// has exactly the expected counts. Requiring full map equality also proves no
+// stale deleted (or other) state is present.
+func readExactRepGroupState(ws *websocket.Conn, repGroup string, expected map[JobState]int,
+	timeout time.Duration) bool {
+	return readAbsoluteStateUntil(ws, timeout, func(latest map[string]map[JobState]int) bool {
+		return maps.Equal(latest[repGroup], expected)
+	})
 }
 
 func TestServerWebI(t *testing.T) {

@@ -8,8 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../../..');
 const staticRoot = path.join(repoRoot, 'jobqueue/static');
-const defaultScreenshotOutput = path.join(repoRoot, '.tmp/agent/webui-test/status-webui-completed-repgroup.png');
-const defaultTraceOutput = path.join(repoRoot, '.tmp/agent/webui-test/status-webui-completed-repgroup-trace.json');
+const scenario = process.env.WR_FIXTURE_SCENARIO === 'deleted-refresh' ? 'deleted-refresh' : 'completed';
+const suffix = scenario === 'deleted-refresh' ? '-deleted-refresh-post-fix' : '';
+const defaultScreenshotOutput = path.join(repoRoot, `.tmp/agent/webui-test/status-webui-completed-repgroup${suffix}.png`);
+const defaultTraceOutput = path.join(repoRoot, `.tmp/agent/webui-test/status-webui-completed-repgroup${suffix}-trace.json`);
 const screenshotOutputPath = path.resolve(process.cwd(), process.argv[2] || defaultScreenshotOutput);
 const traceOutputPath = path.resolve(process.cwd(), process.argv[3] || defaultTraceOutput);
 
@@ -101,15 +103,18 @@ function createStaticServer() {
   });
 }
 
-function fakeWebSocketScript() {
+function fakeWebSocketScript(scenario) {
   return `(() => {
+    const SCENARIO = ${JSON.stringify(scenario)};
+
     window.__wrCompletedRepGroupFixture = {
       intervalTimers: [],
       requests: [],
       messages: [],
       samples: [],
       phase: 'boot',
-      currentRequests: 0
+      currentRequests: 0,
+      connections: 0
     };
 
     const originalSetInterval = window.setInterval.bind(window);
@@ -147,10 +152,39 @@ function fakeWebSocketScript() {
       { RepGroup: '+all+', Counts: {} }
     ];
 
+    // Post-fix regression for the reported successful-jobs-as-deleted sequence.
+    // The authoritative job store has six jobs in done-rg. Four complete while
+    // two keep running; both the live update and a fresh subscription must keep
+    // those completed counts. A fifth completion then arrives as a dirty update,
+    // which must publish five complete plus one running and no deleted state.
+    const deletedRefreshInitial = [
+      { RepGroup: '+all+', Counts: { running: 6 } },
+      { RepGroup: 'done-rg', Counts: { running: 6 } }
+    ];
+
+    const deletedRefreshFourComplete = [
+      { RepGroup: '+all+', Counts: { running: 2 } },
+      { RepGroup: 'done-rg', Counts: { running: 2, complete: 4 } }
+    ];
+
+    const deletedRefreshSeed = [
+      { RepGroup: '+all+', Counts: { running: 2 } },
+      { RepGroup: 'done-rg', Counts: { running: 2, complete: 4 } }
+    ];
+
+    const deletedRefreshDirty = [
+      { RepGroup: '+all+', Counts: { running: 1 } },
+      { RepGroup: 'done-rg', Counts: { running: 1, complete: 5 } }
+    ];
+
     class FixtureWebSocket {
       constructor() {
         this.readyState = 0;
         this.sent = [];
+        const previousConnections = Number(sessionStorage.getItem('wrCompletedRepGroupConnections') || '0');
+        this.connection = previousConnections + 1;
+        sessionStorage.setItem('wrCompletedRepGroupConnections', String(this.connection));
+        window.__wrCompletedRepGroupFixture.connections = this.connection;
         window.__wrCompletedRepGroupFixture.socket = this;
 
         setTimeout(() => {
@@ -176,6 +210,11 @@ function fakeWebSocketScript() {
 
         window.__wrCompletedRepGroupFixture.currentRequests += 1;
 
+        if (SCENARIO === 'deleted-refresh') {
+          this.runDeletedRefreshScenario();
+          return;
+        }
+
         window.__wrCompletedRepGroupFixture.phase = 'initial-current';
         this.emitEach(initialState, 5);
         setTimeout(() => {
@@ -190,6 +229,25 @@ function fakeWebSocketScript() {
           window.__wrCompletedRepGroupFixture.phase = 'live-aggregate-resend';
           this.emitEach(liveAggregateResend, 5);
         }, 2400);
+      }
+
+      runDeletedRefreshScenario() {
+        if (this.connection === 1) {
+          window.__wrCompletedRepGroupFixture.phase = 'initial-running';
+          this.emitEach(deletedRefreshInitial, 5);
+          setTimeout(() => {
+            window.__wrCompletedRepGroupFixture.phase = 'live-four-complete';
+            this.emitEach(deletedRefreshFourComplete, 5);
+          }, 500);
+          return;
+        }
+
+        window.__wrCompletedRepGroupFixture.phase = 'refreshed-authoritative-seed';
+        this.emitEach(deletedRefreshSeed, 5);
+        setTimeout(() => {
+          window.__wrCompletedRepGroupFixture.phase = 'later-dirty-fifth-complete';
+          this.emitEach(deletedRefreshDirty, 5);
+        }, 3000);
       }
 
       close() {
@@ -222,6 +280,8 @@ async function sampleStatus(page, label) {
     const repGroupElement = document.querySelector('[data-repgroup="done-rg"]');
     const badge = repGroupElement ? repGroupElement.querySelector('.badge') : null;
     const completeBar = repGroupElement ? repGroupElement.querySelector('.progress-bar-success') : null;
+    const progressBars = repGroupElement ? repGroupElement.querySelectorAll('.progress-bar') : [];
+    const deletedBar = progressBars[7] || null;
 
     const status = {
       label: sampleLabel,
@@ -232,11 +292,14 @@ async function sampleStatus(page, label) {
       repGroupTotal: repGroup ? repGroup.total() : null,
       repGroupReady: repGroup ? repGroup.ready() : null,
       repGroupRunning: repGroup ? repGroup.running() : null,
+      repGroupDeleted: repGroup ? repGroup.deleted() : null,
       repGroupComplete: repGroup ? repGroup.complete() : null,
       repGroupCompletePct: repGroup ? repGroup.completePct() : null,
       repGroupBadgeText: badge ? badge.textContent.trim() : null,
       repGroupCompleteBarText: completeBar ? completeBar.textContent.trim().replace(/\\s+/g, ' ') : null,
       repGroupCompleteBarWidth: completeBar ? completeBar.style.width : null,
+      repGroupDeletedBarText: deletedBar ? deletedBar.textContent.trim().replace(/\\s+/g, ' ') : null,
+      repGroupDeletedBarWidth: deletedBar ? deletedBar.style.width : null,
       repGroupText: repGroupElement ? repGroupElement.innerText : null,
       messageCount: window.__wrCompletedRepGroupFixture.messages.length,
       lastMessages: window.__wrCompletedRepGroupFixture.messages.slice(-4)
@@ -263,6 +326,19 @@ function assertCompletedRepGroupVisible(sample) {
   }
 }
 
+function assertDeletedRefreshMatchesAuthoritativeStatus(sample) {
+  if (!sample.repGroupExists ||
+    sample.repGroupTotal !== 6 ||
+    sample.repGroupRunning !== 1 ||
+    sample.repGroupComplete !== 5 ||
+    sample.repGroupDeleted !== 0 ||
+    sample.repGroupBadgeText !== '6') {
+    throw new Error(
+      `expected authoritative done-rg state (5 complete, 1 running, 0 deleted), saw ${JSON.stringify(sample)}`
+    );
+  }
+}
+
 async function captureScreenshot() {
   const { chromium } = await loadPlaywright();
   const server = await createStaticServer();
@@ -277,7 +353,9 @@ async function captureScreenshot() {
   let page;
   let capturedError;
   const trace = {
-    scenario: 'completed repgroup remains visible after live completion and current resync',
+    scenario: scenario === 'deleted-refresh'
+      ? 'successful completions must not project as deleted across refresh and later dirty updates'
+      : 'completed repgroup remains visible after live completion and current resync',
     source: {
       page: 'jobqueue/static/status.html',
       handler: 'jobqueue/static/js/wr/websocket-handler.js'
@@ -300,67 +378,133 @@ async function captureScreenshot() {
       console.error(`browser page error: ${error.message}`);
     });
 
-    await page.addInitScript(fakeWebSocketScript());
+    await page.addInitScript(fakeWebSocketScript(scenario));
     await page.goto(`${baseURL}/status.html?token=completed-repgroup-fixture`, {
       waitUntil: 'networkidle',
       timeout: 30000
     });
     await page.waitForSelector('body.ko-initialized', { timeout: 10000 });
-    await page.waitForFunction(() => {
-      const statusElement = document.getElementById('status');
-      const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
-      const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
-      const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
 
-      return repGroup && repGroup.ready() === 2 && repGroup.total() === 2;
-    }, undefined, { timeout: 10000 });
-    trace.samples.push(await sampleStatus(page, 'initial ready visible'));
+    if (scenario === 'deleted-refresh') {
+      await page.waitForFunction(() => {
+        const statusElement = document.getElementById('status');
+        const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
+        const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
+        const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
 
-    await page.waitForFunction(() => {
-      const statusElement = document.getElementById('status');
-      const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
-      const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
-      const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
-      const completeBar = document.querySelector('[data-repgroup="done-rg"] .progress-bar-success');
+        return window.__wrCompletedRepGroupFixture.phase === 'live-four-complete' &&
+          repGroup && repGroup.total() === 6 && repGroup.running() === 2 &&
+          repGroup.complete() === 4 && repGroup.deleted() === 0;
+      }, undefined, { timeout: 10000 });
+      await page.waitForTimeout(500);
+      trace.samples.push(await sampleStatus(page, 'live update keeps four successful completions'));
 
-      return repGroup &&
-        repGroup.complete() === 2 &&
-        repGroup.completePct() > 0 &&
-        completeBar &&
-        completeBar.textContent.includes('2 complete') &&
-        completeBar.style.width !== '0%' &&
-        completeBar.style.width !== '0px';
-    }, undefined, { timeout: 10000 });
-    const afterLiveComplete = await sampleStatus(page, 'after live completion');
-    trace.samples.push(afterLiveComplete);
-    assertCompletedRepGroupVisible(afterLiveComplete);
+      await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+      await page.waitForSelector('body.ko-initialized', { timeout: 10000 });
 
-    // After a later re-send of the (now empty) live aggregate, the completed
-    // RepGroup row must remain visible with its complete count.
-    await page.waitForFunction(() => {
-      return window.__wrCompletedRepGroupFixture.phase === 'live-aggregate-resend';
-    }, undefined, { timeout: 10000 });
-    await page.waitForTimeout(500);
-    const afterResync = await sampleStatus(page, 'after empty live aggregate resend');
-    trace.samples.push(afterResync);
-    assertCompletedRepGroupVisible(afterResync);
+      await page.waitForFunction(() => {
+        const statusElement = document.getElementById('status');
+        const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
+        const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
+        const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
 
-    const fixtureState = await page.evaluate(() => ({
-      requests: window.__wrCompletedRepGroupFixture.requests,
-      messages: window.__wrCompletedRepGroupFixture.messages,
-      samples: window.__wrCompletedRepGroupFixture.samples,
-      intervalTimers: window.__wrCompletedRepGroupFixture.intervalTimers
-    }));
-    trace.requests = fixtureState.requests;
-    trace.messages = fixtureState.messages;
-    trace.intervalTimers = fixtureState.intervalTimers;
-    trace.browserSamples = fixtureState.samples;
+        return window.__wrCompletedRepGroupFixture.phase === 'refreshed-authoritative-seed' &&
+          repGroup && repGroup.total() === 6 && repGroup.running() === 2 &&
+          repGroup.complete() === 4 && repGroup.deleted() === 0;
+      }, undefined, { timeout: 10000 });
+      await page.waitForTimeout(500);
+      trace.samples.push(await sampleStatus(page, 'refresh preserves four successful completions'));
 
-    if (trace.intervalTimers.some((timer) => timer.delay === 10000)) {
-      throw new Error(`status page registered blind periodic current timer: ${JSON.stringify(trace.intervalTimers)}`);
+      await page.waitForFunction(() => {
+        const statusElement = document.getElementById('status');
+        const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
+        const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
+        const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
+        const completeBar = document.querySelector('[data-repgroup="done-rg"] .progress-bar-success');
+
+        return window.__wrCompletedRepGroupFixture.phase === 'later-dirty-fifth-complete' &&
+          repGroup && repGroup.total() === 6 && repGroup.running() === 1 &&
+          repGroup.complete() === 5 && repGroup.deleted() === 0 && completeBar &&
+          completeBar.style.width === '83%' && completeBar.textContent.includes('5 complete');
+      }, undefined, { timeout: 10000 });
+      await page.waitForTimeout(200);
+
+      const afterFifthComplete = await sampleStatus(page, 'later dirty update keeps five successful completions');
+      trace.samples.push(afterFifthComplete);
+      assertDeletedRefreshMatchesAuthoritativeStatus(afterFifthComplete);
+      await page.screenshot({ path: screenshotOutputPath, fullPage: true });
+
+      const fixtureState = await page.evaluate(() => ({
+        requests: window.__wrCompletedRepGroupFixture.requests,
+        messages: window.__wrCompletedRepGroupFixture.messages,
+        samples: window.__wrCompletedRepGroupFixture.samples,
+        intervalTimers: window.__wrCompletedRepGroupFixture.intervalTimers
+      }));
+      trace.requests = fixtureState.requests;
+      trace.messages = fixtureState.messages;
+      trace.intervalTimers = fixtureState.intervalTimers;
+      trace.browserSamples = fixtureState.samples;
+
+      if (trace.intervalTimers.some((timer) => timer.delay === 10000)) {
+        throw new Error(`status page registered blind periodic current timer: ${JSON.stringify(trace.intervalTimers)}`);
+      }
+    } else {
+      await page.waitForFunction(() => {
+        const statusElement = document.getElementById('status');
+        const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
+        const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
+        const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
+
+        return repGroup && repGroup.ready() === 2 && repGroup.total() === 2;
+      }, undefined, { timeout: 10000 });
+      trace.samples.push(await sampleStatus(page, 'initial ready visible'));
+
+      await page.waitForFunction(() => {
+        const statusElement = document.getElementById('status');
+        const viewModel = window.ko && statusElement ? window.ko.dataFor(statusElement) : null;
+        const repGroupIndex = viewModel ? viewModel.repGroupLookup['done-rg'] : undefined;
+        const repGroup = repGroupIndex === undefined ? null : viewModel.repGroups[repGroupIndex];
+        const completeBar = document.querySelector('[data-repgroup="done-rg"] .progress-bar-success');
+
+        return repGroup &&
+          repGroup.complete() === 2 &&
+          repGroup.completePct() > 0 &&
+          completeBar &&
+          completeBar.textContent.includes('2 complete') &&
+          completeBar.style.width !== '0%' &&
+          completeBar.style.width !== '0px';
+      }, undefined, { timeout: 10000 });
+      const afterLiveComplete = await sampleStatus(page, 'after live completion');
+      trace.samples.push(afterLiveComplete);
+      assertCompletedRepGroupVisible(afterLiveComplete);
+
+      // After a later re-send of the (now empty) live aggregate, the completed
+      // RepGroup row must remain visible with its complete count.
+      await page.waitForFunction(() => {
+        return window.__wrCompletedRepGroupFixture.phase === 'live-aggregate-resend';
+      }, undefined, { timeout: 10000 });
+      await page.waitForTimeout(500);
+      const afterResync = await sampleStatus(page, 'after empty live aggregate resend');
+      trace.samples.push(afterResync);
+      assertCompletedRepGroupVisible(afterResync);
+
+      const fixtureState = await page.evaluate(() => ({
+        requests: window.__wrCompletedRepGroupFixture.requests,
+        messages: window.__wrCompletedRepGroupFixture.messages,
+        samples: window.__wrCompletedRepGroupFixture.samples,
+        intervalTimers: window.__wrCompletedRepGroupFixture.intervalTimers
+      }));
+      trace.requests = fixtureState.requests;
+      trace.messages = fixtureState.messages;
+      trace.intervalTimers = fixtureState.intervalTimers;
+      trace.browserSamples = fixtureState.samples;
+
+      if (trace.intervalTimers.some((timer) => timer.delay === 10000)) {
+        throw new Error(`status page registered blind periodic current timer: ${JSON.stringify(trace.intervalTimers)}`);
+      }
+
+      await page.screenshot({ path: screenshotOutputPath, fullPage: true });
     }
-
-    await page.screenshot({ path: screenshotOutputPath, fullPage: true });
   } catch (error) {
     capturedError = error;
     trace.failure = {
