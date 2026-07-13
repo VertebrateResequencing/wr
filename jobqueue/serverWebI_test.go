@@ -2424,6 +2424,104 @@ func clearWriteDeadlineBestEffort(ws *websocket.Conn) {
 	}
 }
 
+func TestStatusWSRequestFinishesBeforeServerShutdown(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Server shutdown waits for an active status websocket request", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		repGroup := "status-ws-shutdown"
+		_, err = jq.AddAndReturnIDs([]*Job{{
+			Cmd:          "echo status websocket shutdown",
+			Cwd:          testCwd,
+			ReqGroup:     repGroup,
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}}, envVars, true)
+		So(err, ShouldBeNil)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, err := drainWebSocket(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		hookEntered := make(chan struct{})
+		releaseRequest := make(chan struct{})
+
+		var (
+			hookOnce    sync.Once
+			releaseOnce sync.Once
+		)
+
+		server.statusWSDetailsHook = func() {
+			hookOnce.Do(func() {
+				close(hookEntered)
+				<-releaseRequest
+			})
+		}
+
+		defer func() {
+			server.statusWSDetailsHook = nil
+
+			releaseOnce.Do(func() { close(releaseRequest) })
+		}()
+
+		So(ws.WriteJSON(jstatusReq{
+			Request:  jstatusRequestDetails,
+			RepGroup: repGroup,
+			State:    JobStateReady,
+		}), ShouldBeNil)
+
+		select {
+		case <-hookEntered:
+		case <-time.After(time.Second):
+			So("timed out waiting for active websocket request", ShouldBeBlank)
+
+			return
+		}
+
+		stopDone := make(chan struct{})
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopDone)
+		}()
+
+		select {
+		case <-stopDone:
+			So("server shutdown returned while websocket request was active", ShouldBeBlank)
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		releaseOnce.Do(func() { close(releaseRequest) })
+
+		select {
+		case <-stopDone:
+		case <-time.After(ServerShutdownWaitTime):
+			So("timed out waiting for server shutdown", ShouldBeBlank)
+		}
+	})
+}
+
 func TestWebUIModificationStaticContract(t *testing.T) {
 	if runnermode || servermode {
 		return

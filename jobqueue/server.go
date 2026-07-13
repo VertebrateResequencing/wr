@@ -747,6 +747,7 @@ type Server struct {
 	pauseRequests             int
 	wsconns                   map[string]*websocket.Conn
 	wsWriteMutexes            map[string]*sync.Mutex // mutex per websocket connection
+	wsHandlerWG               sync.WaitGroup
 	clientSubscriptions       map[string]*serverSubscription
 	badServers                map[string]*cloud.Server
 	schedIssues               map[string]*schedulerIssue
@@ -1424,6 +1425,14 @@ func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 	defer job.RUnlock()
 
 	return len(job.WaitingForDepGroups) > 0
+}
+
+// runStatusWebSocketWorker runs one of a status websocket connection's
+// workers, marking it complete so shutdown can wait before closing the database.
+func (s *Server) runStatusWebSocketWorker(worker func()) {
+	defer s.wsHandlerWG.Done()
+
+	worker()
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -5232,15 +5241,24 @@ func (s *Server) splitSuffixedLimitGroup(group string) (string, *limiter.GroupDa
 // storeWebSocketConnection stores a connection and returns a unique identifier
 // so that it can be later closed with closeWebSocketConnection(unique) or
 // during Server shutdown.
-func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
+func (s *Server) storeWebSocketConnection(conn *websocket.Conn) (string, bool) {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	if !s.up {
+		return "", false
+	}
+
 	s.wsmutex.Lock()
 	defer s.wsmutex.Unlock()
+
+	s.wsHandlerWG.Add(statusWebSocketWorkerCount)
 
 	unique := logext.RandId(webSocketIDLength)
 	s.wsconns[unique] = conn
 	s.wsWriteMutexes[unique] = &sync.Mutex{}
 
-	return unique
+	return unique, true
 }
 
 // closeWebSocketConnection closes the connection that was stored with
@@ -5284,6 +5302,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.scheduler.Cleanup(ctx)
 
 	s.closeWebSockets(ctx)
+	s.wsHandlerWG.Wait()
 
 	s.badServerCaster.Close()
 	s.schedCaster.Close()

@@ -58,6 +58,10 @@ const (
 	// webSocketBufferSize is the read and write buffer size (bytes) for status
 	// page websocket connections.
 	webSocketBufferSize = 1024
+
+	// statusWebSocketWorkerCount is the number of goroutines started for each
+	// status page websocket connection.
+	statusWebSocketWorkerCount = 5
 )
 
 // statusStateSendThrottle bounds how often a status client is sent absolute
@@ -402,20 +406,38 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 
 		// when the server shuts down it will close our conn, ending the main
 		// goroutine
-		storedName := s.storeWebSocketConnection(conn)
+		storedName, stored := s.storeWebSocketConnection(conn)
+		if !stored {
+			if err := conn.Close(); err != nil {
+				clog.Warn(ctx, "websocket close failed", "err", err)
+			}
+
+			return
+		}
+
 		statusSubscriptionID := s.registerStatusSubscription()
 
 		// when the main goroutine closes we will end all the others
 		stopper := make(chan bool)
 
 		// go routine to read client requests and respond to them
-		go s.readStatusWSRequests(ctx, conn, storedName, statusSubscriptionID, stopper)
+		go s.runStatusWebSocketWorker(func() {
+			s.readStatusWSRequests(ctx, conn, storedName, statusSubscriptionID, stopper)
+		})
 
 		// Set up goroutines to push changes to the client
-		go s.setupStatusStateUpdateListener(ctx, conn, stopper, storedName)
-		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
-		go s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
-		go s.setupStatusSubscriptionUpdateListener(ctx, conn, stopper, storedName, statusSubscriptionID)
+		go s.runStatusWebSocketWorker(func() {
+			s.setupStatusStateUpdateListener(ctx, conn, stopper, storedName)
+		})
+		go s.runStatusWebSocketWorker(func() {
+			s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
+		})
+		go s.runStatusWebSocketWorker(func() {
+			s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
+		})
+		go s.runStatusWebSocketWorker(func() {
+			s.setupStatusSubscriptionUpdateListener(ctx, conn, stopper, storedName, statusSubscriptionID)
+		})
 	}
 }
 
