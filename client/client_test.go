@@ -414,6 +414,20 @@ func assertNilDependencySubmissionError(err error, op string, jobIndex, dependen
 	So(err.Error(), ShouldContainSubstring, path+" is nil")
 }
 
+func assertNilBehaviourSubmissionError(err error, op string, jobIndex, behaviourIndex int) {
+	var jqErr jobqueue.Error
+
+	path := fmt.Sprintf("jobs[%d].Behaviours[%d]", jobIndex, behaviourIndex)
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr, ShouldResemble, jobqueue.Error{
+		Op:   op,
+		Item: path,
+		Err:  jobqueue.ErrBadRequest,
+	})
+	So(err.Error(), ShouldContainSubstring, path+" is nil")
+}
+
 type waitForRunningSequenceJobqueue struct {
 	*pretendJobqueue
 	job    *jobqueue.Job
@@ -1609,6 +1623,105 @@ func TestSchedulerSubmissionMethodsRejectNilDependencies(t *testing.T) {
 
 			So(s.SubmitJobs(jobs), ShouldBeNil)
 			So(jq.jobBuffer, ShouldHaveLength, 3)
+
+			for _, job := range jobs {
+				So(job.Requirements, ShouldNotBeNil)
+			}
+		})
+	})
+}
+
+func TestSchedulerSubmissionMethodsRejectNilBehaviours(t *testing.T) {
+	Convey("Scheduler submission methods reject a nil behaviour before mutating or forwarding the batch", t, func() {
+		newJobs := func(prefix string) (*jobqueue.Job, *jobqueue.Job, []*jobqueue.Job) {
+			valid := &jobqueue.Job{Cmd: "echo " + prefix + " valid"}
+			malformedRequirements := DefaultRequirements()
+			malformed := &jobqueue.Job{
+				Cmd:          "echo " + prefix + " malformed",
+				Requirements: malformedRequirements,
+				Behaviours: jobqueue.Behaviours{
+					&jobqueue.Behaviour{When: jobqueue.OnSuccess, Do: jobqueue.Nothing},
+					nil,
+				},
+			}
+
+			return valid, malformed, []*jobqueue.Job{valid, malformed}
+		}
+
+		assertUnmodified := func(jq *pretendJobqueue, valid, malformed *jobqueue.Job) {
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(malformed.Requirements, ShouldNotBeNil)
+			So(malformed.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		}
+
+		Convey("SubmitJobs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("legacy")
+
+			err := s.SubmitJobs(jobs)
+
+			assertNilBehaviourSubmissionError(err, "SubmitJobs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndReturnIDs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("ids")
+
+			ids, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+
+			So(ids, ShouldBeNil)
+			assertNilBehaviourSubmissionError(err, "SubmitJobsAndReturnIDs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("wait")
+
+			done, err := s.SubmitJobsAndWait(context.Background(), jobs, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			assertNilBehaviourSubmissionError(err, "SubmitJobsAndWait", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait preserves pre-cancelled context precedence", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			done, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{{
+				Behaviours: jobqueue.Behaviours{nil},
+			}}, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("nil, empty and valid zero or remove behaviours remain valid", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			remove := &jobqueue.Behaviour{When: jobqueue.OnFailure, Do: jobqueue.Remove}
+			jobs := []*jobqueue.Job{
+				{Cmd: "echo nil behaviours", Behaviours: nil},
+				{Cmd: "echo empty behaviours", Behaviours: jobqueue.Behaviours{}},
+				{Cmd: "echo zero behaviour", Behaviours: jobqueue.Behaviours{&jobqueue.Behaviour{}}},
+				{Cmd: "echo remove behaviour", Behaviours: jobqueue.Behaviours{remove}},
+			}
+
+			So(s.SubmitJobs(jobs), ShouldBeNil)
+			So(jq.jobBuffer, ShouldHaveLength, 4)
+			So(jobs[2].TriggerBehaviours(true), ShouldBeNil)
+			So(jobs[2].Behaviours.String(), ShouldEqual, "{}")
+			So(jobs[3].RemovalRequested(), ShouldBeTrue)
 
 			for _, job := range jobs {
 				So(job.Requirements, ShouldNotBeNil)

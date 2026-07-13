@@ -471,6 +471,13 @@ func validateSubmissionJobs(op string, jobs []*jobqueue.Job) error {
 
 			return fmt.Errorf("%w: %s is nil", jqErr, path)
 		}
+
+		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
+			path := fmt.Sprintf("jobs[%d].Behaviours[%d]", jobIndex, behaviourIndex)
+			jqErr := jobqueue.Error{Op: op, Item: path, Err: jobqueue.ErrBadRequest}
+
+			return fmt.Errorf("%w: %s is nil", jqErr, path)
+		}
 	}
 
 	return nil
