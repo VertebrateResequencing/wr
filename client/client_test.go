@@ -47,8 +47,12 @@ import (
 )
 
 const (
-	missingSchedulerJobKey = "missing-key"
-	testDeployment         = "development"
+	missingSchedulerJobKey             = "missing-key"
+	schedulerQueueRequirementKey       = "scheduler_queue"
+	schedulerQueuesAvoidRequirementKey = "scheduler_queues_avoid"
+	testDeployment                     = "development"
+	testSchedulerQueue                 = "short"
+	testSchedulerQueuesAvoid           = "slow,big"
 )
 
 var (
@@ -156,6 +160,89 @@ func TestSchedulerGetJobByKey(t *testing.T) {
 	})
 }
 
+func TestSchedulerSubmitJobsDefaultsMissingRequirements(t *testing.T) {
+	Convey("Given a running manager that schedules runners", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		config.RunnerCmd = "true '%s' '%s' '%s' '%s' %d %d"
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		oldMinRequestTimeout := jobqueue.ClientMinRequestTimeout
+
+		jobqueue.ClientMinRequestTimeout = time.Second
+		defer func() {
+			jobqueue.ClientMinRequestTimeout = oldMinRequestTimeout
+		}()
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		job := &jobqueue.Job{
+			Cmd:      "echo default missing requirements",
+			RepGroup: "rg-default-missing-requirements",
+			ReqGroup: "req-default-missing-requirements",
+		}
+
+		err = s.SubmitJobs([]*jobqueue.Job{job})
+		So(err, ShouldBeNil)
+		So(job.Requirements, ShouldResemble, DefaultRequirements())
+		So(job.Override, ShouldEqual, 0)
+		So(server.GetServerStats().Ready, ShouldEqual, 1)
+	})
+}
+
+func TestSchedulerSubmissionMethodsDefaultMissingRequirements(t *testing.T) {
+	Convey("Scheduler submission methods default missing requirements", t, func() {
+		s := &Scheduler{
+			jq:          &pretendJobqueue{},
+			queue:       testSchedulerQueue,
+			queuesAvoid: testSchedulerQueuesAvoid,
+		}
+		configuredQueues := map[string]string{
+			schedulerQueueRequirementKey:       testSchedulerQueue,
+			schedulerQueuesAvoidRequirementKey: testSchedulerQueuesAvoid,
+		}
+		expectedRequirements := DefaultRequirements()
+		expectedRequirements.Other = configuredQueues
+
+		legacyJob := &jobqueue.Job{Cmd: "echo legacy defaults"}
+		So(s.SubmitJobs([]*jobqueue.Job{legacyJob}), ShouldBeNil)
+		So(legacyJob.Requirements, ShouldResemble, expectedRequirements)
+		So(legacyJob.Requirements.Other, ShouldResemble, configuredQueues)
+		So(legacyJob.Override, ShouldEqual, 0)
+
+		idJob := &jobqueue.Job{Cmd: "echo id defaults"}
+		ids, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{idJob}, SubmitJobsOptions{})
+		So(err, ShouldBeNil)
+		So(ids, ShouldResemble, []string{idJob.Key()})
+		So(idJob.Requirements, ShouldResemble, expectedRequirements)
+		So(idJob.Requirements.Other, ShouldResemble, configuredQueues)
+		So(idJob.Override, ShouldEqual, 0)
+
+		waitJob := &jobqueue.Job{Cmd: "echo wait defaults"}
+		done, err := s.SubmitJobsAndWait(context.Background(), []*jobqueue.Job{waitJob}, SubmitJobsOptions{})
+		So(err, ShouldBeNil)
+		So(done, ShouldResemble, []*jobqueue.Job{waitJob})
+		So(waitJob.Requirements, ShouldResemble, expectedRequirements)
+		So(waitJob.Requirements.Other, ShouldResemble, configuredQueues)
+		So(waitJob.Override, ShouldEqual, 0)
+	})
+}
+
 type schedulerJobStderrError string
 
 func (s schedulerJobStderrError) Error() string {
@@ -219,15 +306,15 @@ func TestSchedulerSubmitJobsAndReturnIDs(t *testing.T) {
 func TestSchedulerNewJobFromJSON(t *testing.T) {
 	Convey("Given a Scheduler configured with JSON job defaults", t, func() {
 		cwd := t.TempDir()
-		s := &Scheduler{cwd: cwd, queue: "short", queuesAvoid: "slow,big"}
+		s := &Scheduler{cwd: cwd, queue: testSchedulerQueue, queuesAvoid: testSchedulerQueuesAvoid}
 
 		Convey("JobDefaults maps Scheduler defaults into jobqueue defaults", func() {
 			defaults := s.JobDefaults()
 
 			So(defaults.Cwd, ShouldEqual, cwd)
 			So(defaults.CwdMatters, ShouldBeTrue)
-			So(defaults.SchedulerQueue, ShouldEqual, "short")
-			So(defaults.SchedulerQueuesAvoid, ShouldEqual, "slow,big")
+			So(defaults.SchedulerQueue, ShouldEqual, testSchedulerQueue)
+			So(defaults.SchedulerQueuesAvoid, ShouldEqual, testSchedulerQueuesAvoid)
 			So(defaults.Memory, ShouldEqual, 100)
 			So(defaults.Time, ShouldEqual, 10*time.Second)
 			So(defaults.CPUs, ShouldEqual, float64(1))
@@ -273,8 +360,8 @@ func TestSchedulerNewJobFromJSON(t *testing.T) {
 			So(job.Cwd, ShouldEqual, cwd)
 			So(job.CwdMatters, ShouldBeTrue)
 			So(job.Requirements.Other, ShouldResemble, map[string]string{
-				"scheduler_queue":        "short",
-				"scheduler_queues_avoid": "slow,big",
+				schedulerQueueRequirementKey:       testSchedulerQueue,
+				schedulerQueuesAvoidRequirementKey: testSchedulerQueuesAvoid,
 			})
 			So(job.Override, ShouldEqual, uint8(2))
 			So(job.MountConfigs, ShouldResemble, mounts)
@@ -1312,7 +1399,7 @@ func TestScheduler(t *testing.T) {
 				job := s.NewJob("cmd", "rep", "req", "", "", nil)
 				So(job.Requirements.RAM, ShouldEqual, dreq.RAM)
 				So(job.Override, ShouldEqual, 0)
-				So(job.Requirements.Other, ShouldResemble, map[string]string{"scheduler_queue": "foo"})
+				So(job.Requirements.Other, ShouldResemble, map[string]string{schedulerQueueRequirementKey: "foo"})
 			})
 
 			Convey("You can make a Scheduler with queues to avoid", func() {
@@ -1325,7 +1412,8 @@ func TestScheduler(t *testing.T) {
 				job := s.NewJob("cmd", "rep", "req", "", "", nil)
 				So(job.Requirements.RAM, ShouldEqual, dreq.RAM)
 				So(job.Override, ShouldEqual, 0)
-				So(job.Requirements.Other, ShouldResemble, map[string]string{"scheduler_queues_avoid": "avoid,queue"})
+				So(job.Requirements.Other, ShouldResemble,
+					map[string]string{schedulerQueuesAvoidRequirementKey: "avoid,queue"})
 			})
 		})
 

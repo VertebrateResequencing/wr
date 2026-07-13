@@ -613,7 +613,10 @@ func serverErrString(err error) string {
 func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// add jobs to the queue, and along side keep the environment variables
 	// they're supposed to execute under.
-	if cr.Env == nil || cr.Jobs == nil {
+	missingRequirements := slices.ContainsFunc(cr.Jobs, func(job *Job) bool {
+		return job != nil && job.Requirements == nil
+	})
+	if cr.Env == nil || cr.Jobs == nil || missingRequirements {
 		return nil, ErrBadRequest, ""
 	}
 

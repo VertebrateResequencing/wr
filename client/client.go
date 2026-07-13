@@ -444,6 +444,8 @@ func (s *Scheduler) EnableSudo() {
 // are returned.
 func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
 	opts SubmitJobsOptions) ([]string, error) {
+	s.defaultMissingRequirements(jobs)
+
 	return s.jq.AddAndReturnIDs(jobs, opts.envVars(), opts.ignoreComplete())
 }
 
@@ -451,6 +453,12 @@ func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
 // just-added job to reach a terminal state.
 func (s *Scheduler) SubmitJobsAndWait(ctx context.Context, jobs []*jobqueue.Job,
 	opts SubmitJobsOptions) ([]*jobqueue.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.defaultMissingRequirements(jobs)
+
 	got, err := s.jq.AddAndWait(ctx, jobs, opts.envVars(), opts.ignoreComplete())
 
 	return distinctJobsInKeyOrder(got), err
@@ -881,6 +889,20 @@ func (s *Scheduler) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
 	return s.jq.GetSchedulerAlerts()
 }
 
+func (s *Scheduler) defaultMissingRequirements(jobs []*jobqueue.Job) {
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+
+		job.Lock()
+		if job.Requirements == nil {
+			job.Requirements, job.Override = s.determineOverrideAndReq(nil)
+		}
+		job.Unlock()
+	}
+}
+
 func unfinishedWaitForJobKeys(keys []string,
 	terminal map[string]*jobqueue.Job) []string {
 	unfinished := make([]string, 0, len(keys))
@@ -1036,6 +1058,8 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // happens; the jobs are merely recorded for later retrieval with
 // SubmittedJobs().
 func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
+	s.defaultMissingRequirements(jobs)
+
 	inserts, _, err := s.jq.Add(jobs, os.Environ(), false)
 	if err != nil {
 		return err

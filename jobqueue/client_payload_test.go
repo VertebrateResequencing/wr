@@ -400,6 +400,48 @@ func assertTrimmedLifecycleRequest(req *clientRequest, method, key, failReason s
 	So(req.JobEndState.Stderr, ShouldResemble, endState.Stderr)
 }
 
+func TestServerRejectsAddWithoutRequirements(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("An add request without requirements is rejected instead of panicking", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			q:     queue.New(ctx, "payload-missing-requirements"),
+			up:    true,
+		}
+
+		var encoded []byte
+
+		enc := codec.NewEncoderBytes(&encoded, ch)
+		err := enc.Encode(&clientRequest{
+			Method: requestMethodAdd,
+			Token:  token,
+			Env:    []byte("environment"),
+			Jobs:   []*Job{{Cmd: "echo missing requirements"}},
+		})
+		So(err, ShouldBeNil)
+
+		err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+		So(err, ShouldNotBeNil)
+
+		var jqErr Error
+
+		So(errors.As(err, &jqErr), ShouldBeTrue)
+		So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
+		So(sock.response().Err, ShouldEqual, ErrBadRequest)
+	})
+}
+
 func newLiveExecuteCaptureClient(capture *liveTouchCapture) *Client {
 	client, _ := newCaptureClient()
 	client.touchInterval = liveExecuteTouchInterval
