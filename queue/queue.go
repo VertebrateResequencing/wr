@@ -157,6 +157,13 @@ func defaultTTRCallback(_ any) SubQueue {
 	return SubQueueReady
 }
 
+type changedNotification struct {
+	callback ChangedCallback
+	from     SubQueue
+	to       SubQueue
+	data     []any
+}
+
 // Suspend moves a delayed, ready, or dependent item to the suspended sub-queue.
 func (queue *Queue) Suspend(_ context.Context, key string) error {
 	queue.mutex.Lock()
@@ -182,8 +189,8 @@ func (queue *Queue) Suspend(_ context.Context, key string) error {
 	}
 
 	queue.suspendedQueue.push(item)
-	queue.mutex.Unlock()
 	queue.changed(from, SubQueueSuspended, []*Item{item})
+	queue.mutex.Unlock()
 
 	return nil
 }
@@ -239,17 +246,113 @@ func (queue *Queue) resumeSuspendedItem(ctx context.Context, item *Item) {
 	if len(item.UnresolvedDependencies()) > 0 {
 		queue.depQueue.push(item)
 		item.switchSuspendedDependent()
-		queue.mutex.Unlock()
 		queue.changed(SubQueueSuspended, SubQueueDependent, []*Item{item})
+		queue.mutex.Unlock()
 
 		return
 	}
 
 	queue.readyQueue.push(item)
 	item.switchSuspendedReady()
-	queue.mutex.Unlock()
 	queue.changed(SubQueueSuspended, SubQueueReady, []*Item{item})
+	queue.mutex.Unlock()
 	queue.readyAdded(ctx, "resumed")
+}
+
+// runChangedCallbacks drains pending transition notifications sequentially.
+func (queue *Queue) runChangedCallbacks() {
+	defer queue.finishChangedCallbacks()
+
+	for {
+		// changed records notifications while the transition mutex is held;
+		// wait for that transition to finish before dequeuing its notification.
+		queue.mutex.RLock()
+		notification, ok := queue.nextChangedCallback()
+		queue.mutex.RUnlock()
+
+		if !ok {
+			return
+		}
+
+		notification.callback(notification.from, notification.to, notification.data)
+	}
+}
+
+// finishChangedCallbacks releases the worker slot, or resumes draining after
+// a callback terminated the worker goroutine with runtime.Goexit.
+func (queue *Queue) finishChangedCallbacks() {
+	queue.changedCbMutex.Lock()
+	defer queue.changedCbMutex.Unlock()
+
+	if len(queue.changedCbPending) == 0 {
+		queue.changedCbRunning = false
+
+		return
+	}
+
+	go queue.runChangedCallbacks()
+}
+
+// nextChangedCallback returns the next pending transition notification.
+func (queue *Queue) nextChangedCallback() (changedNotification, bool) {
+	queue.changedCbMutex.Lock()
+	defer queue.changedCbMutex.Unlock()
+
+	if len(queue.changedCbPending) == 0 {
+		queue.changedCbPending = nil
+
+		return changedNotification{}, false
+	}
+
+	notification := queue.changedCbPending[0]
+	queue.changedCbPending[0] = changedNotification{}
+	queue.changedCbPending = queue.changedCbPending[1:]
+
+	return notification, true
+}
+
+// notifyManyAddedChanges queues changed callbacks for the items accumulated by
+// AddMany. The queue mutex must be held.
+func (queue *Queue) notifyManyAddedChanges(buckets *manyBuckets) {
+	if len(buckets.ready) > 0 {
+		queue.changed(SubQueueNew, SubQueueReady, buckets.ready)
+	}
+
+	if len(buckets.delay) > 0 {
+		queue.changed(SubQueueNew, SubQueueDelay, buckets.delay)
+	}
+
+	if len(buckets.dep) > 0 {
+		queue.changed(SubQueueNew, SubQueueDependent, buckets.dep)
+	}
+
+	if len(buckets.run) > 0 {
+		queue.changed(SubQueueNew, SubQueueRun, buckets.run)
+	}
+
+	if len(buckets.bury) > 0 {
+		queue.changed(SubQueueNew, SubQueueBury, buckets.bury)
+	}
+
+	if len(buckets.suspended) > 0 {
+		queue.changed(SubQueueNew, SubQueueSuspended, buckets.suspended)
+	}
+}
+
+// notifyTTRMoveChanges queues changed callbacks for items whose TTR expired.
+// The queue mutex must be held.
+func (queue *Queue) notifyTTRMoveChanges(moves ttrMoves) {
+	if len(moves.delayed) > 0 {
+		queue.changed(SubQueueRun, SubQueueDelay, moves.delayed)
+	}
+
+	if len(moves.buried) > 0 {
+		queue.changed(SubQueueRun, SubQueueBury, moves.buried)
+	}
+
+	if len(moves.ready) > 0 {
+		queue.changed(SubQueueRun, SubQueueReady, moves.ready)
+	}
 }
 
 // Error records an error and the operation, item and queue that caused it.
@@ -307,9 +410,12 @@ type Queue struct {
 	ttrCb                  TTRCallback
 	mutex                  sync.RWMutex
 	readyAddedCbMutex      sync.Mutex
+	changedCbMutex         sync.Mutex
+	changedCbPending       []changedNotification
 	closed                 bool
 	readyAddedCbRunning    bool
 	readyAddedCbRecall     bool
+	changedCbRunning       bool
 }
 
 // Stats holds information about the Queue's state.
@@ -475,14 +581,22 @@ func (queue *Queue) rescheduleReadyAddedIfRecall(ctx context.Context) {
 // sub-queue ('new' in the case of entering the queue for the first time), the
 // name of the moved-to sub-queue ('removed' in the case of the item being
 // removed from the queue), and a slice of item.Data() of everything that moved
-// in this way. The callback will be initiated in a go routine.
+// in this way. Callbacks are initiated in a goroutine and run sequentially in
+// transition-notification order.
 func (queue *Queue) SetChangedCallback(callback ChangedCallback) {
+	queue.changedCbMutex.Lock()
+	defer queue.changedCbMutex.Unlock()
+
 	queue.changedCb = callback
 }
 
-// changed checks if a changedCallback has been set, and if so calls it in a go
-// routine.
+// changed queues a changedCallback notification. The queue mutex must be held
+// so notifications are recorded in queue-transition order. A single goroutine
+// drains the notifications, so mutations do not wait for callbacks.
 func (queue *Queue) changed(from, to SubQueue, items []*Item) {
+	queue.changedCbMutex.Lock()
+	defer queue.changedCbMutex.Unlock()
+
 	if queue.changedCb == nil {
 		return
 	}
@@ -492,7 +606,19 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 		data = append(data, item.Data())
 	}
 
-	go queue.changedCb(from, to, data)
+	queue.changedCbPending = append(queue.changedCbPending, changedNotification{
+		callback: queue.changedCb,
+		from:     from,
+		to:       to,
+		data:     data,
+	})
+	if queue.changedCbRunning {
+		return
+	}
+
+	queue.changedCbRunning = true
+
+	go queue.runChangedCallbacks()
 }
 
 // SetTTRCallback sets a callback that will be called when an item in the run
@@ -635,8 +761,8 @@ func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue
 	case SubQueueSuspended:
 		item.switchDelaySuspended()
 		queue.suspendedQueue.push(item)
-		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueSuspended, []*Item{item})
+		queue.mutex.Unlock()
 	default:
 		queue.addReadyOrDelayedItem(ctx, item, delay)
 	}
@@ -650,9 +776,9 @@ func (queue *Queue) addRunItem(item *Item) {
 	item.touch()
 	queue.runQueue.push(item)
 	item.switchReadyRun()
+	queue.changed(SubQueueNew, SubQueueRun, []*Item{item})
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
-	queue.changed(SubQueueNew, SubQueueRun, []*Item{item})
 }
 
 // addBuryItem places a newly-added item directly onto the bury sub-queue (used
@@ -662,8 +788,8 @@ func (queue *Queue) addBuryItem(item *Item) {
 	item.switchDelayReady()
 	queue.buryQueue.push(item)
 	item.switchRunBury()
-	queue.mutex.Unlock()
 	queue.changed(SubQueueNew, SubQueueBury, []*Item{item})
+	queue.mutex.Unlock()
 }
 
 // addDependentItem places a newly-added item that has dependencies onto either
@@ -675,15 +801,15 @@ func (queue *Queue) addDependentItem(item *Item, startQueue SubQueue, deps []str
 		queue.setQueueDeps(item)
 		item.switchDelaySuspended()
 		queue.suspendedQueue.push(item)
-		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueSuspended, []*Item{item})
+		queue.mutex.Unlock()
 
 		return
 	}
 
 	queue.setItemDependencies(item, deps)
-	queue.mutex.Unlock()
 	queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
+	queue.mutex.Unlock()
 }
 
 // addReadyOrDelayedItem places a newly-added item with no dependencies and no
@@ -695,16 +821,16 @@ func (queue *Queue) addReadyOrDelayedItem(ctx context.Context, item *Item, delay
 		// put it directly on the ready queue
 		item.switchDelayReady()
 		queue.readyQueue.push(item)
-		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueReady, []*Item{item})
+		queue.mutex.Unlock()
 		queue.readyAdded(ctx, "new")
 
 		return
 	}
 
 	queue.delayQueue.push(item)
-	queue.mutex.Unlock()
 	queue.changed(SubQueueNew, SubQueueDelay, []*Item{item})
+	queue.mutex.Unlock()
 	queue.delayNotificationTrigger(item)
 }
 
@@ -793,9 +919,12 @@ func (queue *Queue) AddMany(ctx context.Context, items []*ItemDef) (added, dups 
 		defer queue.delayNotificationTrigger(buckets.delayTriggerItem)
 	}
 
+	queue.notifyManyAddedChanges(&buckets)
 	queue.mutex.Unlock()
 
-	queue.notifyManyAdded(ctx, &buckets)
+	if len(buckets.ready) > 0 {
+		queue.readyAdded(ctx, "new")
+	}
 
 	return added, dups, err
 }
@@ -919,35 +1048,6 @@ func (queue *Queue) addManyReadyOrDelayedItem(def *ItemDef, item *Item, buckets 
 	}
 }
 
-// notifyManyAdded issues the changed and readyAdded callbacks for the items
-// accumulated by AddMany.
-func (queue *Queue) notifyManyAdded(ctx context.Context, buckets *manyBuckets) {
-	if len(buckets.ready) > 0 {
-		queue.changed(SubQueueNew, SubQueueReady, buckets.ready)
-		queue.readyAdded(ctx, "new")
-	}
-
-	if len(buckets.delay) > 0 {
-		queue.changed(SubQueueNew, SubQueueDelay, buckets.delay)
-	}
-
-	if len(buckets.dep) > 0 {
-		queue.changed(SubQueueNew, SubQueueDependent, buckets.dep)
-	}
-
-	if len(buckets.run) > 0 {
-		queue.changed(SubQueueNew, SubQueueRun, buckets.run)
-	}
-
-	if len(buckets.bury) > 0 {
-		queue.changed(SubQueueNew, SubQueueBury, buckets.bury)
-	}
-
-	if len(buckets.suspended) > 0 {
-		queue.changed(SubQueueNew, SubQueueSuspended, buckets.suspended)
-	}
-}
-
 // Get is a thread-safe way to get an item by the key you used to Add() it.
 func (queue *Queue) Get(key string) (*Item, error) {
 	queue.mutex.RLock()
@@ -1026,20 +1126,21 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 	return nil
 }
 
-// notifyUpdate releases the mutex lock (held on entry) and fires the callbacks
-// resulting from an Update(): a move to ready if the item became ready, and a
-// move to dependent from changedFrom if it became dependent.
+// notifyUpdate queues changed callbacks while the mutex held on entry still
+// establishes transition order, then releases it and reports newly ready work.
 func (queue *Queue) notifyUpdate(ctx context.Context, item *Item, changedFrom SubQueue, addedReady bool) {
 	if addedReady {
-		queue.mutex.Unlock()
-		queue.readyAdded(ctx, "updated")
 		queue.changed(SubQueueDependent, SubQueueReady, []*Item{item})
-	} else {
-		queue.mutex.Unlock()
 	}
 
 	if changedFrom != "" {
 		queue.changed(changedFrom, SubQueueDependent, []*Item{item})
+	}
+
+	queue.mutex.Unlock()
+
+	if addedReady {
+		queue.readyAdded(ctx, "updated")
 	}
 }
 
@@ -1408,9 +1509,9 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 	queue.runQueue.push(item)
 	item.switchReadyRun()
 
+	queue.changed(SubQueueReady, SubQueueRun, []*Item{item})
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
-	queue.changed(SubQueueReady, SubQueueRun, []*Item{item})
 
 	return item, nil
 }
@@ -1533,16 +1634,16 @@ func (queue *Queue) Release(ctx context.Context, key string) error {
 	if item.delay.Nanoseconds() == 0 {
 		item.switchRunReady()
 		queue.readyQueue.push(item)
-		queue.mutex.Unlock()
 		queue.changed(SubQueueRun, SubQueueReady, []*Item{item})
+		queue.mutex.Unlock()
 		queue.readyAdded(ctx, "released")
 	} else {
 		item.restart()
 		queue.delayQueue.push(item)
 		item.switchRunDelay()
+		queue.changed(SubQueueRun, SubQueueDelay, []*Item{item})
 		queue.mutex.Unlock()
 		queue.delayNotificationTrigger(item)
-		queue.changed(SubQueueRun, SubQueueDelay, []*Item{item})
 	}
 
 	return nil
@@ -1561,8 +1662,8 @@ func (queue *Queue) Bury(key string) error {
 	queue.runQueue.remove(item)
 	queue.buryQueue.push(item)
 	item.switchRunBury()
-	queue.mutex.Unlock()
 	queue.changed(SubQueueRun, SubQueueBury, []*Item{item})
+	queue.mutex.Unlock()
 
 	return nil
 }
@@ -1581,13 +1682,13 @@ func (queue *Queue) Kick(ctx context.Context, key string) error {
 	if queue.itemHasDeps(item) {
 		queue.depQueue.push(item)
 		item.switchBuryDependent()
-		queue.mutex.Unlock()
 		queue.changed(SubQueueBury, SubQueueDependent, []*Item{item})
+		queue.mutex.Unlock()
 	} else {
 		queue.readyQueue.push(item)
 		item.switchBuryReady()
-		queue.mutex.Unlock()
 		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
+		queue.mutex.Unlock()
 		queue.readyAdded(ctx, "kicked")
 	}
 
@@ -1603,10 +1704,13 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 
 	addedReadyItems := queue.removeItem(item, key)
 
+	if len(addedReadyItems) > 0 {
+		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
+	}
+
 	queue.mutex.Unlock()
 
 	if len(addedReadyItems) > 0 {
-		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
 		queue.readyAdded(ctx, "dependent")
 	}
 
@@ -1787,10 +1891,14 @@ func (queue *Queue) moveReadyDelayedItems(ctx context.Context) {
 		item.switchDelayReady()
 		items = append(items, item)
 	}
-	queue.mutex.Unlock()
 
 	if len(items) > 0 {
 		queue.changed(SubQueueDelay, SubQueueReady, items)
+	}
+
+	queue.mutex.Unlock()
+
+	if len(items) > 0 {
 		queue.readyAdded(ctx, "delayed")
 	}
 }
@@ -1862,6 +1970,7 @@ type ttrMoves struct {
 func (queue *Queue) processTimedOutItems(ctx context.Context) {
 	queue.mutex.Lock()
 	moves := queue.releaseTimedOutItems()
+	queue.notifyTTRMoveChanges(moves)
 	queue.mutex.Unlock()
 
 	queue.notifyTTRMoves(ctx, moves)
@@ -1921,23 +2030,14 @@ func (queue *Queue) moveTimedOutItem(item *Item, moveTo SubQueue, moves *ttrMove
 	}
 }
 
-// notifyTTRMoves fires the changed and readyAdded callbacks for items that
-// moved out of the run sub-queue because their TTR expired.
+// notifyTTRMoves triggers queue processing and ready-added callbacks after the
+// TTR transitions and changed notifications have been recorded.
 func (queue *Queue) notifyTTRMoves(ctx context.Context, moves ttrMoves) {
-	if len(moves.delayed) > 0 {
-		for _, item := range moves.delayed {
-			queue.delayNotificationTrigger(item)
-		}
-
-		queue.changed(SubQueueRun, SubQueueDelay, moves.delayed)
-	}
-
-	if len(moves.buried) > 0 {
-		queue.changed(SubQueueRun, SubQueueBury, moves.buried)
+	for _, item := range moves.delayed {
+		queue.delayNotificationTrigger(item)
 	}
 
 	if len(moves.ready) > 0 {
-		queue.changed(SubQueueRun, SubQueueReady, moves.ready)
 		queue.readyAdded(ctx, "ttr")
 	}
 }

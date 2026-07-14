@@ -92,16 +92,19 @@ const (
 	// we need at least 2 to avoid locking up when mounting on a single-core host.
 	minManagerProcs = 2
 
-	// defaultManagerStartTimeout is the default value (in seconds) for the
-	// manager start command's --timeout flag.
+	// defaultManagerStartTimeout is how long manager start normally waits
+	// before it begins reporting that a live manager is still starting.
 	defaultManagerStartTimeout = 10
 )
 
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
 
+var errManagerProcessExited = errors.New("manager process exited before becoming ready")
+
 var (
 	managerStartupPollInterval   = 250 * time.Millisecond
 	managerStartupConnectAttempt = 500 * time.Millisecond
+	managerStartupReportInterval = 30 * time.Second
 	managerDBUpgradeStatusFresh  = 30 * time.Second
 )
 
@@ -223,10 +226,10 @@ fully.`,
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
 
-				jq := waitForManagerStartup(preStart, mTimeout)
+				jq, startupErr := waitForManagerStartup(child, preStart, mTimeout)
 				if jq == nil {
 					printLines(getBadLogLines())
-					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
+					die("wr manager failed to start on port %s: %s", config.ManagerPort, startupErr)
 				}
 
 				token, err := token()
@@ -621,7 +624,7 @@ func waitForManagerStartupWith(preStart time.Time, timeout time.Duration, connec
 	reportedUpgrade := managerDBUpgradeReportTracker{}
 
 	for {
-		deadline = reportedUpgrade.extendDeadline(preStart, deadline, reportUpgrade)
+		deadline = reportedUpgrade.extendDeadline(preStart, deadline, 0, reportUpgrade)
 		if managerStartupTimedOut(deadline) {
 			return nil
 		}
@@ -680,25 +683,97 @@ func managerStartupConnectWait(deadline time.Time) time.Duration {
 	return wait
 }
 
+func waitForLiveManagerStartupWith(preStart time.Time, timeout time.Duration, processPID int,
+	processDone <-chan error, connector managerStartupConnector, reportUpgrade managerDBUpgradeReporter,
+	reportWaiting managerStartupWaitingReporter,
+) (*jobqueue.Client, error) {
+	nextReport := preStart.Add(timeout)
+	reportedUpgrade := managerDBUpgradeReportTracker{}
+
+	for {
+		attempt := liveManagerStartupAttempt(preStart, processPID, processDone, connector, reportUpgrade,
+			&reportedUpgrade)
+		if attempt.client != nil || attempt.err != nil {
+			return attempt.client, attempt.err
+		}
+
+		nextReport = reportDelayedManagerStartup(preStart, nextReport, reportedUpgrade.current, reportWaiting)
+
+		time.Sleep(managerStartupPollInterval)
+	}
+}
+
+func liveManagerStartupAttempt(preStart time.Time, processPID int, processDone <-chan error,
+	connector managerStartupConnector, reportUpgrade managerDBUpgradeReporter,
+	reportedUpgrade *managerDBUpgradeReportTracker,
+) managerStartupAttempt {
+	if err := managerStartupProcessExit(processDone); err != nil {
+		return managerStartupAttempt{err: err}
+	}
+
+	reportedUpgrade.reportCurrent(preStart, processPID, reportUpgrade)
+
+	connectDeadline := time.Now().Add(managerStartupConnectAttempt)
+	if jq := connectIfManagerTokenReady(connectDeadline, connector); jq != nil {
+		return managerStartupAttempt{client: jq}
+	}
+
+	if err := managerStartupProcessExit(processDone); err != nil {
+		return managerStartupAttempt{err: err}
+	}
+
+	return managerStartupAttempt{}
+}
+
+func managerStartupProcessExit(processDone <-chan error) error {
+	if processDone == nil {
+		return nil
+	}
+
+	select {
+	case err, open := <-processDone:
+		if !open || err == nil {
+			return errManagerProcessExited
+		}
+
+		return err
+	default:
+		return nil
+	}
+}
+
+func reportDelayedManagerStartup(preStart time.Time, nextReport time.Time, phase string,
+	reportWaiting managerStartupWaitingReporter,
+) time.Time {
+	now := time.Now()
+	if now.Before(nextReport) {
+		return nextReport
+	}
+
+	reportWaiting(now.Sub(preStart), phase)
+
+	return now.Add(managerStartupReportInterval)
+}
+
+type managerStartupAttempt struct {
+	client *jobqueue.Client
+	err    error
+}
+
+type managerStartupWaitingReporter func(time.Duration, string)
+
 type managerDBUpgradeReporter func(internal.DBUpgradeStatus)
 
 type managerDBUpgradeReportTracker struct {
-	last string
+	last    string
+	current string
 }
 
 func (t *managerDBUpgradeReportTracker) extendDeadline(preStart time.Time, deadline time.Time,
-	reportUpgrade managerDBUpgradeReporter,
+	processPID int, reportUpgrade managerDBUpgradeReporter,
 ) time.Time {
-	status, upgrading := currentManagerDBUpgradeStatus(preStart)
-	if !upgrading {
+	if !t.reportCurrent(preStart, processPID, reportUpgrade) {
 		return deadline
-	}
-
-	report := managerDBUpgradeStatusText(status)
-	if report != t.last {
-		reportUpgrade(status)
-
-		t.last = report
 	}
 
 	extended := time.Now().Add(managerDBUpgradeStatusFresh)
@@ -709,9 +784,35 @@ func (t *managerDBUpgradeReportTracker) extendDeadline(preStart time.Time, deadl
 	return deadline
 }
 
-func currentManagerDBUpgradeStatus(preStart time.Time) (internal.DBUpgradeStatus, bool) {
+func (t *managerDBUpgradeReportTracker) reportCurrent(preStart time.Time, processPID int,
+	reportUpgrade managerDBUpgradeReporter,
+) bool {
+	status, upgrading := currentManagerDBUpgradeStatus(preStart, processPID)
+	if !upgrading {
+		t.current = ""
+
+		return false
+	}
+
+	report := managerDBUpgradeStatusText(status)
+
+	t.current = report
+	if report != t.last {
+		reportUpgrade(status)
+
+		t.last = report
+	}
+
+	return true
+}
+
+func currentManagerDBUpgradeStatus(preStart time.Time, processPID int) (internal.DBUpgradeStatus, bool) {
 	status, info, err := internal.ReadDBUpgradeStatus(config.ManagerDBFile)
 	if err != nil {
+		return internal.DBUpgradeStatus{}, false
+	}
+
+	if processPID > 0 && status.PID != processPID {
 		return internal.DBUpgradeStatus{}, false
 	}
 
@@ -741,6 +842,23 @@ func managerDBUpgradeStatusText(status internal.DBUpgradeStatus) string {
 	}
 
 	return status.State
+}
+
+func monitorManagerStartupProcess(process *os.Process) <-chan error {
+	done := make(chan error, 1)
+
+	go func() {
+		state, err := process.Wait()
+		if err != nil {
+			done <- fmt.Errorf("could not monitor manager process %d before it became ready: %w", process.Pid, err)
+		} else {
+			done <- fmt.Errorf("%w: process %d (%s)", errManagerProcessExited, process.Pid, state)
+		}
+
+		close(done)
+	}()
+
+	return done
 }
 
 func managerDBUpgradeProcessRunning(pid int) bool {
@@ -894,10 +1012,13 @@ func reportLiveStatus(jq *jobqueue.Client) {
 	}
 }
 
-func waitForManagerStartup(preStart time.Time, timeout time.Duration) *jobqueue.Client {
-	return waitForManagerStartupWith(preStart, timeout, func(wait time.Duration) *jobqueue.Client {
-		return connect(wait, true)
-	}, reportManagerDBUpgradeStatus)
+func waitForManagerStartup(process *os.Process, preStart time.Time,
+	timeout time.Duration,
+) (*jobqueue.Client, error) {
+	return waitForLiveManagerStartupWith(preStart, timeout, process.Pid, monitorManagerStartupProcess(process),
+		func(wait time.Duration) *jobqueue.Client {
+			return connect(wait, true)
+		}, reportManagerDBUpgradeStatus, reportManagerStartupWaiting)
 }
 
 func reportManagerDBUpgradeStatus(status internal.DBUpgradeStatus) {
@@ -911,6 +1032,24 @@ func managerDBUpgradeStatusLogMessage(status internal.DBUpgradeStatus) string {
 	}
 
 	return "wr manager is upgrading its database: " + text
+}
+
+func reportManagerStartupWaiting(elapsed time.Duration, phase string) {
+	info("%s", managerStartupWaitingLogMessage(elapsed, phase))
+}
+
+func managerStartupWaitingLogMessage(elapsed time.Duration, phase string) string {
+	elapsed = elapsed.Truncate(time.Second)
+	if elapsed < time.Second {
+		elapsed = time.Second
+	}
+
+	message := fmt.Sprintf("wr manager is still starting after %s", elapsed)
+	if phase != "" {
+		message += ": " + phase
+	}
+
+	return message + "; waiting for it to become ready"
 }
 
 func init() {
@@ -952,7 +1091,7 @@ func addManagerStartLocalFlags(defaultConfig *internal.Config, defaultMaxRAM int
 	flags.StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler,
 		"['local','lsf','openstack'] job scheduler")
 	flags.IntVarP(&managerTimeoutSeconds, "timeout", "t", defaultManagerStartTimeout,
-		"how long to wait in seconds for the manager to start up")
+		"how long to wait in seconds before reporting delayed manager startup")
 	flags.IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(),
 		"maximum number of local cores to use to run cmds; -1 means unlimited, 0 allows only 0-core jobs")
 	flags.IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM,

@@ -2136,6 +2136,10 @@ func (s *Server) modifiedJobStatuses(ctx context.Context, modified map[string]st
 func (s *Server) modifyJobsByKeys(ctx context.Context, keys []string,
 	modifier *JobModifier,
 ) (modified map[string]string, err error) {
+	if validationErr, invalid := modifier.validationError(); invalid {
+		return nil, validationErr
+	}
+
 	paused, err := s.Pause()
 	if err != nil {
 		return nil, err

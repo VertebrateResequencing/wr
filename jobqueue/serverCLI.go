@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -397,6 +398,24 @@ func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
 	return "/" + rel, nil
 }
 
+func malformedAddJobMessage(jobs []*Job) string {
+	for jobIndex, job := range jobs {
+		if job == nil {
+			return fmt.Sprintf("job at index %d is nil", jobIndex)
+		}
+
+		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Dependencies[%d] is nil", jobIndex, dependencyIndex)
+		}
+
+		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Behaviours[%d] is nil", jobIndex, behaviourIndex)
+		}
+	}
+
+	return ""
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -613,7 +632,14 @@ func serverErrString(err error) string {
 func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// add jobs to the queue, and along side keep the environment variables
 	// they're supposed to execute under.
-	if cr.Env == nil || cr.Jobs == nil {
+	if malformed := malformedAddJobMessage(cr.Jobs); malformed != "" {
+		return nil, ErrBadRequest, malformed
+	}
+
+	missingRequirements := slices.ContainsFunc(cr.Jobs, func(job *Job) bool {
+		return job != nil && job.Requirements == nil
+	})
+	if cr.Env == nil || cr.Jobs == nil || missingRequirements {
 		return nil, ErrBadRequest, ""
 	}
 
@@ -1020,6 +1046,10 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState) (key, rg
 func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup, sgroup string) (
 	*serverResponse, string, string,
 ) {
+	if err := s.markPersistedJobStatusGroups([]*Job{job}, false); err != nil {
+		return nil, ErrDBError, err.Error()
+	}
+
 	if err := s.db.archiveJob(ctx, key, job); err != nil {
 		return nil, ErrDBError, err.Error()
 	}
@@ -1150,8 +1180,12 @@ func (s *Server) handleKill(ctx context.Context, cr *clientRequest) (*serverResp
 // resumed afterwards.
 func (s *Server) handleModify(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// modify jobs in the bury/delay/dependent/ready queue and the live bucket
-	if cr.Keys == nil || cr.Modifier == nil {
+	if cr.Keys == nil {
 		return nil, ErrBadRequest, ""
+	}
+
+	if validationErr, invalid := cr.Modifier.validationError(); invalid {
+		return nil, validationErr.Err, validationErr.Item
 	}
 
 	// to avoid race conditions with jobs that are currently pending, but become
@@ -1563,7 +1597,7 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		return &serverResponse{Existed: resumed}, "", ""
 	case "jdel":
 		return s.handleDelete(ctx, cr)
-	case "jmod":
+	case requestMethodModify:
 		return s.handleModify(ctx, cr)
 	case "jkill":
 		return s.handleKill(ctx, cr)

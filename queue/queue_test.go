@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -41,12 +42,6 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 )
-
-type changedStruct struct {
-	from  SubQueue
-	to    SubQueue
-	count int
-}
 
 // commonly-repeated test fixture values, extracted to satisfy goconst.
 const (
@@ -59,6 +54,12 @@ const (
 	key6     = "key_6"
 	keyG2    = "key2"
 )
+
+type changedStruct struct {
+	from  SubQueue
+	to    SubQueue
+	count int
+}
 
 // synctestConvey runs a single top-level Convey block inside its own synctest
 // bubble. The queue's delay/ttr/reserve waits then use a synthetic clock and
@@ -2009,6 +2010,88 @@ func qdestroy(q *Queue) {
 	}
 }
 
+func TestQueueChangedCallbacksPreserveTransitionOrder(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Changed callbacks run in queue transition order", func() {
+		queue := New(ctx, "ordered changed callback queue")
+		defer qdestroy(queue)
+
+		firstStarted := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		recorder := &queueCallbackRecorder{}
+
+		queue.SetChangedCallback(func(from, to SubQueue, data []any) {
+			if from == SubQueueNew && to == SubQueueReady {
+				close(firstStarted)
+				<-releaseFirst
+			}
+
+			recorder.changed(from, to, data)
+		})
+
+		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		<-firstStarted
+
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		close(releaseFirst)
+		synctest.Wait()
+
+		So(recorder.changeRecords(), ShouldResemble, []*changedStruct{
+			{from: SubQueueNew, to: SubQueueReady, count: 1},
+			{from: SubQueueReady, to: SubQueueSuspended, count: 1},
+		})
+	})
+}
+
+func TestQueueChangedCallbacksFollowConcurrentTransitionOrder(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Changed callbacks follow concurrent queue transitions", func() {
+		queue := New(ctx, "concurrent changed callback queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		queue.ttrNotification <- true
+
+		synctest.Wait()
+
+		queue.ttrNotification <- true
+
+		reserveDone := make(chan error, 1)
+
+		go func() {
+			_, reserveErr := queue.Reserve("", 0)
+			reserveDone <- reserveErr
+		}()
+
+		for item.Stats().State != ItemStateRun {
+			runtime.Gosched()
+		}
+
+		err = queue.Bury(item.Key)
+		So(err, ShouldBeNil)
+		<-queue.startedTTRProcessing
+		So(<-reserveDone, ShouldBeNil)
+		<-queue.startedTTRProcessing
+		synctest.Wait()
+
+		So(recorder.changeRecords(), ShouldResemble, []*changedStruct{
+			{from: SubQueueReady, to: SubQueueRun, count: 1},
+			{from: SubQueueRun, to: SubQueueBury, count: 1},
+		})
+	})
+}
+
 func containsSingleItemChange(records []*changedStruct, from, to SubQueue) bool {
 	for _, record := range records {
 		if record.from == from && record.to == to && record.count == 1 {
@@ -2332,5 +2415,45 @@ func TestQueueSuspendResume(t *testing.T) {
 		So(records, ShouldHaveLength, 2)
 		So(containsSingleItemChange(records, SubQueueReady, SubQueueSuspended), ShouldBeTrue)
 		So(containsSingleItemChange(records, SubQueueSuspended, SubQueueReady), ShouldBeTrue)
+	})
+}
+
+func TestQueueChangedCallbacksContinueAfterGoexit(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Changed callbacks continue after a callback exits its goroutine", func() {
+		queue := New(ctx, "goexit changed callback queue")
+		defer qdestroy(queue)
+
+		firstStarted := make(chan struct{})
+		delivered := make(chan struct{}, 1)
+
+		queue.SetChangedCallback(func(from, to SubQueue, _ []any) {
+			if from == SubQueueNew && to == SubQueueReady {
+				close(firstStarted)
+				runtime.Goexit()
+			}
+
+			delivered <- struct{}{}
+		})
+
+		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		<-firstStarted
+		synctest.Wait()
+
+		err = queue.Suspend(ctx, item.Key)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		callbackDelivered := false
+
+		select {
+		case <-delivered:
+			callbackDelivered = true
+		default:
+		}
+
+		So(callbackDelivered, ShouldBeTrue)
 	})
 }

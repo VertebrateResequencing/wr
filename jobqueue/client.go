@@ -125,6 +125,7 @@ var (
 
 const (
 	requestMethodStart          = "jstart"
+	requestMethodModify         = "jmod"
 	requestMethodSubscribe      = "subscribe"
 	requestMethodTouch          = "jtouch"
 	requestMethodUnsubscribe    = "unsubscribe"
@@ -834,9 +835,13 @@ func (c *Client) AddAndReturnIDsWithWarnings(
 // internal job id (which will typically be the same, unless something critical
 // like the command line was changed).
 func (c *Client) Modify(jes []*JobEssence, modifier *JobModifier) (modified map[string]string, err error) {
+	if validationErr, invalid := modifier.validationError(); invalid {
+		return nil, validationErr
+	}
+
 	keys := c.jesToKeys(jes)
 
-	resp, err := c.request(&clientRequest{Method: "jmod", Keys: keys, Modifier: modifier})
+	resp, err := c.request(&clientRequest{Method: requestMethodModify, Keys: keys, Modifier: modifier})
 	if err != nil {
 		return nil, err
 	}

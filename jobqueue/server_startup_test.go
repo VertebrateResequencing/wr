@@ -32,7 +32,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"syscall"
@@ -41,7 +43,15 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
+)
+
+const (
+	startupActiveHistoryRepGroup     = "startup-active-history"
+	startupLargeCompletedHistorySize = 250000
+	startupSmallCompletedHistorySize = 25000
+	startupHistoryStartupScaleLimit  = 4
 )
 
 var errTimedOutWaitingForServeTokenRead = errors.New("timed out waiting for Serve to read the initial token")
@@ -335,4 +345,120 @@ func waitForTLSWebPort(address, caFile, certDomain string, timeout time.Duration
 type fifoReadResult struct {
 	payload []byte
 	err     error
+}
+
+func TestServeStartsQuicklyWithLargeCompletedHistory(t *testing.T) {
+	Convey("Serve readiness does not scale with completed-only history", t, func() {
+		ctx := context.Background()
+		_, smallConfig, _, _, _ := jobqueueTestInit(true)
+		smallElapsed := completedOnlyHistoryStartupDuration(ctx, t, smallConfig, startupSmallCompletedHistorySize)
+
+		_, largeConfig, _, _, _ := jobqueueTestInit(true)
+		largeElapsed := completedOnlyHistoryStartupDuration(ctx, t, largeConfig, startupLargeCompletedHistorySize)
+
+		t.Logf(
+			"Serve startup took %s with %d completed-only jobs and %s with %d",
+			smallElapsed,
+			startupSmallCompletedHistorySize,
+			largeElapsed,
+			startupLargeCompletedHistorySize,
+		)
+		So(largeElapsed, ShouldBeLessThan, startupHistoryStartupScaleLimit*smallElapsed)
+	})
+}
+
+func completedOnlyHistoryStartupDuration(ctx context.Context, t *testing.T, serverConfig ServerConfig,
+	historySize int,
+) time.Duration {
+	t.Helper()
+
+	serverConfig.dontWipeDevDB = true
+
+	prepareCompletedOnlyHistory(ctx, t, serverConfig, historySize)
+
+	started := time.Now()
+	server, _, token, err := Serve(ctx, serverConfig)
+	elapsed := time.Since(started)
+
+	if server != nil {
+		defer server.Stop(ctx, true)
+	}
+
+	So(err, ShouldBeNil)
+	So(token, ShouldHaveLength, tokenLength)
+
+	persistedToken, err := os.ReadFile(serverConfig.TokenFile)
+	So(err, ShouldBeNil)
+	So(persistedToken, ShouldResemble, token)
+	So(waitForStartupStatusCounts(server, startupActiveHistoryRepGroup, map[JobState]int{
+		JobStateReady:    1,
+		JobStateComplete: 1,
+	}, 2*time.Second), ShouldBeTrue)
+
+	return elapsed
+}
+
+func prepareCompletedOnlyHistory(ctx context.Context, t *testing.T, config ServerConfig, count int) {
+	t.Helper()
+
+	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
+	So(err, ShouldBeNil)
+
+	completed := testDBArchivedJob("echo completed", startupActiveHistoryRepGroup, time.Now())
+	live := testDBJob("echo live", startupActiveHistoryRepGroup)
+
+	jobsToQueue, jobsToUpdate, alreadyAdded, err := testDB.storeNewJobs(ctx, []*Job{completed, live}, false)
+	So(err, ShouldBeNil)
+	So(jobsToQueue, ShouldHaveLength, 2)
+	So(jobsToUpdate, ShouldHaveLength, 0)
+	So(alreadyAdded, ShouldEqual, 0)
+	So(testDB.archiveJob(ctx, completed.Key(), completed), ShouldBeNil)
+
+	job := testDBArchivedJob("echo historical", "historical", time.Now())
+
+	var encoded []byte
+	So(codec.NewEncoderBytes(&encoded, testDB.ch).Encode(job), ShouldBeNil)
+
+	err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+		completeBucket := tx.Bucket(bucketJobsComplete)
+		repGroupLookupBucket := tx.Bucket(bucketRTK)
+		repGroupsBucket := tx.Bucket(bucketRGs)
+
+		for i := range count {
+			key := []byte(fmt.Sprintf("history-key-%08d", i))
+			repGroup := fmt.Sprintf("history-group-%08d", i)
+
+			if errp := completeBucket.Put(key, encoded); errp != nil {
+				return errp
+			}
+
+			if errp := repGroupLookupBucket.Put(testDB.generateLookupKey(repGroup, key), nil); errp != nil {
+				return errp
+			}
+
+			if errp := repGroupsBucket.Put([]byte(repGroup), nil); errp != nil {
+				return errp
+			}
+		}
+
+		return nil
+	})
+	So(err, ShouldBeNil)
+	So(testDB.close(ctx), ShouldBeNil)
+}
+
+func waitForStartupStatusCounts(server *Server, repGroup string, expected map[JobState]int,
+	timeout time.Duration,
+) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		counts := server.statusState.snapshot()[repGroup]
+		if maps.Equal(counts, expected) {
+			return true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return false
 }

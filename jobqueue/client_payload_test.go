@@ -33,17 +33,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	"github.com/kballard/go-shellquote"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
+	bolt "go.etcd.io/bbolt"
 	"go.nanomsg.org/mangos/v3"
 )
 
@@ -101,9 +104,11 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 }
 
 type captureSocket struct {
-	ch      codec.Handle
-	sent    []byte
-	sentMsg []byte
+	ch        codec.Handle
+	sent      []byte
+	sentMsg   []byte
+	server    *Server
+	serverErr error
 }
 
 func newCaptureClient() (*Client, *captureSocket) {
@@ -125,11 +130,21 @@ func (s *captureSocket) Close() error {
 
 func (s *captureSocket) Send(msg []byte) error {
 	s.sent = append([]byte(nil), msg...)
+	if s.server != nil {
+		s.serverErr = s.server.handleRequest(context.Background(), &mangos.Message{Body: s.sent})
+	}
 
 	return nil
 }
 
 func (s *captureSocket) Recv() ([]byte, error) {
+	if s.sentMsg != nil {
+		response := slices.Clone(s.sentMsg)
+		s.sentMsg = nil
+
+		return response, nil
+	}
+
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
@@ -398,6 +413,345 @@ func assertTrimmedLifecycleRequest(req *clientRequest, method, key, failReason s
 	So(req.JobEndState.CPUtime, ShouldEqual, endState.CPUtime)
 	So(req.JobEndState.Stdout, ShouldResemble, endState.Stdout)
 	So(req.JobEndState.Stderr, ShouldResemble, endState.Stderr)
+}
+
+func TestServerRejectsAddWithoutRequirements(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("An add request without requirements is rejected instead of panicking", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			q:     queue.New(ctx, "payload-missing-requirements"),
+			up:    true,
+		}
+
+		var encoded []byte
+
+		enc := codec.NewEncoderBytes(&encoded, ch)
+		err := enc.Encode(&clientRequest{
+			Method: requestMethodAdd,
+			Token:  token,
+			Env:    []byte("environment"),
+			Jobs:   []*Job{{Cmd: "echo missing requirements"}},
+		})
+		So(err, ShouldBeNil)
+
+		err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+		So(err, ShouldNotBeNil)
+
+		var jqErr Error
+
+		So(errors.As(err, &jqErr), ShouldBeTrue)
+		So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
+		So(sock.response().Err, ShouldEqual, ErrBadRequest)
+	})
+}
+
+func TestServerRejectsAddWithNilJob(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A mixed add request containing a nil job is rejected before anything is queued", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			q:     queue.New(ctx, "payload-nil-job"),
+			up:    true,
+		}
+		valid := &Job{
+			Cmd:          "echo valid job",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+		}
+
+		var encoded []byte
+
+		enc := codec.NewEncoderBytes(&encoded, ch)
+		err := enc.Encode(&clientRequest{
+			Method: requestMethodAdd,
+			Token:  token,
+			Env:    []byte("environment"),
+			Jobs:   []*Job{valid, nil},
+		})
+		So(err, ShouldBeNil)
+
+		err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "job at index 1 is nil")
+		So(sock.response().Err, ShouldEqual, ErrBadRequest)
+		So(server.q.Stats().Items, ShouldEqual, 0)
+		So(valid.EnvKey, ShouldBeBlank)
+	})
+}
+
+func TestServerRejectsAddWithNilDependency(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Every jobqueue add API gets a bad request for a nil dependency at the server boundary", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			db:    testDB,
+			q:     queue.New(ctx, "payload-nil-dependency"),
+			rpl:   newRGToKeys(),
+			up:    true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+		valid := &Job{
+			Cmd:          "echo valid job",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+		}
+		malformed := &Job{
+			Cmd:          "echo malformed job",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+			Dependencies: Dependencies{&Dependency{}, nil},
+		}
+		jobs := []*Job{valid, malformed}
+		env := []string{"PAYLOAD_NIL_DEPENDENCY=1"}
+
+		assertRejected := func(err error) {
+			var jqErr Error
+
+			So(errors.As(err, &jqErr), ShouldBeTrue)
+			So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
+			So(sock.serverErr, ShouldNotBeNil)
+			So(sock.serverErr.Error(), ShouldContainSubstring, "jobs[1].Dependencies[1] is nil")
+			So(server.q.Stats().Items, ShouldEqual, 0)
+			So(valid.EnvKey, ShouldBeBlank)
+			So(malformed.EnvKey, ShouldBeBlank)
+		}
+
+		_, _, err = client.Add(jobs, env, false)
+		assertRejected(err)
+
+		_, _, _, err = client.AddWithWarnings(jobs, env, false)
+		assertRejected(err)
+
+		_, err = client.AddAndReturnIDs(jobs, env, false)
+		assertRejected(err)
+
+		_, _, err = client.AddAndReturnIDsWithWarnings(jobs, env, false)
+		assertRejected(err)
+
+		_, err = client.AddAndWait(ctx, jobs, env, false)
+		assertRejected(err)
+
+		_, _, err = client.AddAndWaitWithWarnings(ctx, jobs, env, false)
+		assertRejected(err)
+
+		err = testDB.bolt.View(func(tx *bolt.Tx) error {
+			So(tx.Bucket(bucketEnvs).Stats().KeyN, ShouldEqual, 0)
+
+			return nil
+		})
+		So(err, ShouldBeNil)
+
+		validAfterError := &Job{
+			Cmd:          "echo manager remains available",
+			RepGroup:     "payload-nil-dependency",
+			ReqGroup:     "payload-nil-dependency",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+			Dependencies: Dependencies{&Dependency{}},
+		}
+		added, existed, err := client.Add([]*Job{validAfterError}, env, false)
+
+		So(sock.serverErr, ShouldBeNil)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(existed, ShouldEqual, 0)
+		So(server.q.Stats().Items, ShouldEqual, 1)
+	})
+}
+
+func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Every encoded and public add variant gets a bad request for a nil behaviour "+
+		"at the server boundary", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			db:    testDB,
+			q:     queue.New(ctx, "payload-nil-behaviour"),
+			rpl:   newRGToKeys(),
+			up:    true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+		valid := &Job{
+			Cmd:          "echo valid behaviour job",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+		}
+		malformed := &Job{
+			Cmd:          "echo malformed job",
+			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+			Behaviours: Behaviours{
+				&Behaviour{When: OnSuccess, Do: Nothing},
+				nil,
+			},
+		}
+		jobs := []*Job{valid, malformed}
+		env := []string{"PAYLOAD_NIL_BEHAVIOUR=1"}
+
+		assertRejected := func(err error) {
+			var jqErr Error
+
+			So(errors.As(err, &jqErr), ShouldBeTrue)
+			So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
+			So(sock.serverErr, ShouldNotBeNil)
+			So(sock.serverErr.Error(), ShouldContainSubstring, "jobs[1].Behaviours[1] is nil")
+			So(server.q.Stats().Items, ShouldEqual, 0)
+			So(valid.EnvKey, ShouldBeBlank)
+			So(malformed.EnvKey, ShouldBeBlank)
+		}
+
+		for _, returnIDs := range []bool{false, true} {
+			var encoded []byte
+
+			enc := codec.NewEncoderBytes(&encoded, ch)
+			err = enc.Encode(&clientRequest{
+				Method: requestMethodAdd, Token: token, Env: []byte("encoded environment"),
+				Jobs: jobs, ReturnIDs: returnIDs,
+			})
+			So(err, ShouldBeNil)
+
+			err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+			So(err, ShouldNotBeNil)
+
+			var detailedErr Error
+
+			So(errors.As(err, &detailedErr), ShouldBeTrue)
+			So(detailedErr, ShouldResemble, Error{
+				Op: requestMethodAdd, Err: "jobs[1].Behaviours[1] is nil",
+			})
+			So(sock.response().Err, ShouldEqual, ErrBadRequest)
+			So(server.q.Stats().Items, ShouldEqual, 0)
+			So(valid.EnvKey, ShouldBeBlank)
+			So(malformed.EnvKey, ShouldBeBlank)
+		}
+
+		_, _, err = client.Add(jobs, env, false)
+		assertRejected(err)
+
+		_, _, _, err = client.AddWithWarnings(jobs, env, false)
+		assertRejected(err)
+
+		_, err = client.AddAndReturnIDs(jobs, env, false)
+		assertRejected(err)
+
+		_, _, err = client.AddAndReturnIDsWithWarnings(jobs, env, false)
+		assertRejected(err)
+
+		_, err = client.AddAndWait(ctx, jobs, env, false)
+		assertRejected(err)
+
+		_, _, err = client.AddAndWaitWithWarnings(ctx, jobs, env, false)
+		assertRejected(err)
+
+		err = testDB.bolt.View(func(tx *bolt.Tx) error {
+			So(tx.Bucket(bucketEnvs).Stats().KeyN, ShouldEqual, 0)
+
+			return nil
+		})
+		So(err, ShouldBeNil)
+
+		repGroup := "payload-nil-behaviour"
+		validAfterError := []*Job{
+			{
+				Cmd: "echo nil behaviours", RepGroup: repGroup, ReqGroup: repGroup,
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+			},
+			{
+				Cmd: "echo empty behaviours", RepGroup: repGroup, ReqGroup: repGroup,
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+				Behaviours:   Behaviours{},
+			},
+			{
+				Cmd: "echo zero behaviour", RepGroup: repGroup, ReqGroup: repGroup,
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+				Behaviours:   Behaviours{&Behaviour{}},
+			},
+			{
+				Cmd: "echo remove behaviour", RepGroup: repGroup, ReqGroup: repGroup,
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+				Behaviours:   Behaviours{&Behaviour{When: OnFailure, Do: Remove}},
+			},
+		}
+		added, existed, err := client.Add(validAfterError, env, false)
+
+		So(sock.serverErr, ShouldBeNil)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 4)
+		So(existed, ShouldEqual, 0)
+		So(server.q.Stats().Items, ShouldEqual, 4)
+
+		persisted, err := client.GetByRepGroup(repGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(persisted, ShouldHaveLength, 4)
+		So(slices.ContainsFunc(persisted, func(job *Job) bool {
+			return job.Cmd == "echo remove behaviour" && job.RemovalRequested()
+		}), ShouldBeTrue)
+	})
 }
 
 func newLiveExecuteCaptureClient(capture *liveTouchCapture) *Client {

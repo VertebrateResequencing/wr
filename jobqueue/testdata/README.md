@@ -133,6 +133,14 @@ ready/running/complete absolute states, then re-sends the (now empty) live
 `+all+` aggregate and asserts that the completed RepGroup remains visible with
 the correct completed count/bar. It is wired into `make browser-test`.
 
+Set `WR_FIXTURE_SCENARIO=deleted-refresh` to exercise the short-job ordering
+regression with six jobs in one RepGroup. The fixture verifies that four rapid
+completions remain complete in both the live view and a refreshed connection,
+then that the next dirty update renders five complete plus one running with no
+deleted jobs. The default output names use the `-deleted-refresh-post-fix`
+suffix so the pre-fix reproduction screenshot and trace remain available for
+comparison.
+
 ## Removed jobs refresh
 
 `removed-jobs-refresh/` contains a browser regression fixture for the "removed

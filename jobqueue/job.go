@@ -61,6 +61,13 @@ const jobSchedLimitGroupSeparator = "~"
 // group names.
 const jobLimitGroupSeparator = ","
 
+// defaultMountRetries is the number of times muxfys retries a mount when the
+// MountConfig doesn't specify its own Retries.
+const defaultMountRetries = 10
+
+// errNoTargets is returned by Mount when a MountConfig has no usable Targets.
+var errNoTargets = errors.New("no Targets specified")
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -394,6 +401,13 @@ type Job struct {
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
 
+	// statusFromComplete marks a completed database record that is becoming
+	// live again. The first queue-add transition consumes it so the absolute
+	// status projection moves, rather than duplicates, every historical
+	// RepGroup contribution in statusCompleteRepGroups.
+	statusFromComplete      bool
+	statusCompleteRepGroups []string
+
 	sync.RWMutex
 }
 
@@ -683,13 +697,6 @@ func (j *Job) TriggerBehaviours(success bool) error {
 func (j *Job) RemovalRequested() bool {
 	return j.Behaviours.RemovalRequested()
 }
-
-// defaultMountRetries is the number of times muxfys retries a mount when the
-// MountConfig doesn't specify its own Retries.
-const defaultMountRetries = 10
-
-// errNoTargets is returned by Mount when a MountConfig has no usable Targets.
-var errNoTargets = errors.New("no Targets specified")
 
 // unmountOnError unmounts this Job's filesystems (discarding logs) following an
 // error, folding any unmount failure into the given error.
@@ -1639,6 +1646,37 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 	j.ContainerMountsSet = true
 }
 
+// validationError rejects nil entries in explicitly set pointer collections.
+func (j *JobModifier) validationError() (Error, bool) {
+	message := j.validationMessage()
+
+	if message == "" {
+		return Error{}, false
+	}
+
+	return Error{Op: requestMethodModify, Item: message, Err: ErrBadRequest}, true
+}
+
+func (j *JobModifier) validationMessage() string {
+	if j == nil {
+		return "modifier is nil"
+	}
+
+	if j.DependenciesSet {
+		if index := slices.Index(j.Dependencies, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Dependencies[%d] is nil", index)
+		}
+	}
+
+	if j.BehavioursSet {
+		if index := slices.Index(j.Behaviours, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Behaviours[%d] is nil", index)
+		}
+	}
+
+	return ""
+}
+
 // Modify takes existing jobs and modifies them all by setting the new values
 // that you have previously set using the Set*() methods. Other values are left
 // alone. Note that this could result in a Job's Key() changing.
@@ -1651,6 +1689,10 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 //
 // Returns a REVERSE mapping of new to old Job keys.
 func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
+	if validationErr, invalid := j.validationError(); invalid {
+		return nil, validationErr
+	}
+
 	keys := make(map[string]string)
 
 	for _, job := range jobs {

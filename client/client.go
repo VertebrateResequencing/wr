@@ -67,17 +67,20 @@ var PretendSubmissions string //nolint:gochecknoglobals
 
 // some consts used by Scheduler.
 const (
-	getByEssenceOp             = "GetByEssence"
-	getByRepGroupMatchOp       = "GetByRepGroupMatch"
-	getJobByKeyOp              = "GetJobByKey"
-	newJobFromJSONOp           = "NewJobFromJSON"
-	waitForRunningOp           = "WaitForRunning"
-	waitForJobsOp              = "WaitForJobs"
-	jobRetries           uint8 = 30
-	reqRAM                     = 100
-	reqTime                    = 10 * time.Second
-	reqCores                   = 1
-	reqDisk                    = 1
+	getByEssenceOp                 = "GetByEssence"
+	getByRepGroupMatchOp           = "GetByRepGroupMatch"
+	getJobByKeyOp                  = "GetJobByKey"
+	newJobFromJSONOp               = "NewJobFromJSON"
+	submitJobsAndReturnIDsOp       = "SubmitJobsAndReturnIDs"
+	submitJobsAndWaitOp            = "SubmitJobsAndWait"
+	submitJobsOp                   = "SubmitJobs"
+	waitForRunningOp               = "WaitForRunning"
+	waitForJobsOp                  = "WaitForJobs"
+	jobRetries               uint8 = 30
+	reqRAM                         = 100
+	reqTime                        = 10 * time.Second
+	reqCores                       = 1
+	reqDisk                        = 1
 
 	waitForRunningDefaultPollInterval = 5 * time.Second
 )
@@ -444,13 +447,56 @@ func (s *Scheduler) EnableSudo() {
 // are returned.
 func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
 	opts SubmitJobsOptions) ([]string, error) {
+	if err := validateSubmissionJobs(submitJobsAndReturnIDsOp, jobs); err != nil {
+		return nil, err
+	}
+
+	s.defaultMissingRequirements(jobs)
+
 	return s.jq.AddAndReturnIDs(jobs, opts.envVars(), opts.ignoreComplete())
+}
+
+func validateSubmissionJobs(op string, jobs []*jobqueue.Job) error {
+	for jobIndex, job := range jobs {
+		if job == nil {
+			path := fmt.Sprintf("jobs[%d]", jobIndex)
+			jqErr := jobqueue.Error{Op: op, Item: path, Err: jobqueue.ErrBadRequest}
+
+			return fmt.Errorf("%w: job at index %d is nil", jqErr, jobIndex)
+		}
+
+		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
+			path := fmt.Sprintf("jobs[%d].Dependencies[%d]", jobIndex, dependencyIndex)
+			jqErr := jobqueue.Error{Op: op, Item: path, Err: jobqueue.ErrBadRequest}
+
+			return fmt.Errorf("%w: %s is nil", jqErr, path)
+		}
+
+		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
+			path := fmt.Sprintf("jobs[%d].Behaviours[%d]", jobIndex, behaviourIndex)
+			jqErr := jobqueue.Error{Op: op, Item: path, Err: jobqueue.ErrBadRequest}
+
+			return fmt.Errorf("%w: %s is nil", jqErr, path)
+		}
+	}
+
+	return nil
 }
 
 // SubmitJobsAndWait adds the given jobs to wr's queue and waits for every
 // just-added job to reach a terminal state.
 func (s *Scheduler) SubmitJobsAndWait(ctx context.Context, jobs []*jobqueue.Job,
 	opts SubmitJobsOptions) ([]*jobqueue.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := validateSubmissionJobs(submitJobsAndWaitOp, jobs); err != nil {
+		return nil, err
+	}
+
+	s.defaultMissingRequirements(jobs)
+
 	got, err := s.jq.AddAndWait(ctx, jobs, opts.envVars(), opts.ignoreComplete())
 
 	return distinctJobsInKeyOrder(got), err
@@ -881,6 +927,20 @@ func (s *Scheduler) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
 	return s.jq.GetSchedulerAlerts()
 }
 
+func (s *Scheduler) defaultMissingRequirements(jobs []*jobqueue.Job) {
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+
+		job.Lock()
+		if job.Requirements == nil {
+			job.Requirements, job.Override = s.determineOverrideAndReq(nil)
+		}
+		job.Unlock()
+	}
+}
+
 func unfinishedWaitForJobKeys(keys []string,
 	terminal map[string]*jobqueue.Job) []string {
 	unfinished := make([]string, 0, len(keys))
@@ -1036,6 +1096,12 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // happens; the jobs are merely recorded for later retrieval with
 // SubmittedJobs().
 func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
+	if err := validateSubmissionJobs(submitJobsOp, jobs); err != nil {
+		return err
+	}
+
+	s.defaultMissingRequirements(jobs)
+
 	inserts, _, err := s.jq.Add(jobs, os.Environ(), false)
 	if err != nil {
 		return err

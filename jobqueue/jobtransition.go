@@ -30,6 +30,7 @@ package jobqueue
 
 import (
 	"context"
+	"slices"
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -71,9 +72,7 @@ type countContribution struct {
 // neither statusState.mu nor any subscription lock is ever taken before the
 // queue lock.
 func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions func()) {
-	for _, c := range counts {
-		s.statusState.applyTransition(c.from, c.to, c.repGroup, c.n)
-	}
+	s.statusState.applyTransitions(counts)
 
 	if emitSubscriptions != nil {
 		emitSubscriptions()
@@ -85,38 +84,85 @@ func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions
 // state, not the running state, so they get their own contribution; the
 // statusAllRepGroups aggregate is maintained inside applyTransition.
 func changeCallbackCounts(from, to JobState, data []any) []countContribution {
-	groups := make(map[string]int)
-	groupsLost := make(map[string]int)
+	grouped := make(map[countContributionKey]int)
 
 	for _, inter := range data {
 		job := inter.(*Job) //nolint:errcheck,forcetypeassert
+		job.Lock()
+		repGroup := job.RepGroup
+		lost := job.Lost
+		statusFromComplete := from == JobStateNew && job.statusFromComplete
+		completeRepGroups := slices.Clone(job.statusCompleteRepGroups)
 
-		// track lost jobs
-		if from == JobStateRunning {
-			job.RLock()
-			l := job.Lost
-			job.RUnlock()
-
-			if l {
-				groupsLost[job.RepGroup]++
-
-				continue
-			}
+		if statusFromComplete {
+			job.statusFromComplete = false
 		}
 
-		groups[job.RepGroup]++
+		job.Unlock()
+
+		transitionFrom := from
+		if from == JobStateRunning && lost {
+			transitionFrom = JobStateLost
+		}
+
+		switch {
+		case statusFromComplete:
+			groupArchivedRerunContributions(grouped, to, repGroup, completeRepGroups)
+		default:
+			grouped[countContributionKey{transitionFrom, to, repGroup}]++
+			groupHistoricalCompletionContributions(grouped, to, repGroup, completeRepGroups)
+		}
 	}
 
-	counts := make([]countContribution, 0, len(groups)+len(groupsLost))
-	for group, count := range groups {
-		counts = append(counts, countContribution{from: from, to: to, repGroup: group, n: count})
-	}
-
-	for group, count := range groupsLost {
-		counts = append(counts, countContribution{from: JobStateLost, to: to, repGroup: group, n: count})
+	counts := make([]countContribution, 0, len(grouped))
+	for contribution, count := range grouped {
+		counts = append(counts, countContribution{
+			from: contribution.from, to: contribution.to, repGroup: contribution.repGroup, n: count,
+		})
 	}
 
 	return counts
+}
+
+func groupArchivedRerunContributions(grouped map[countContributionKey]int, to JobState,
+	repGroup string, completeRepGroups []string,
+) {
+	currentMoved := false
+
+	for _, completedRepGroup := range completeRepGroups {
+		if completedRepGroup == repGroup {
+			grouped[countContributionKey{JobStateComplete, to, repGroup}]++
+			currentMoved = true
+
+			continue
+		}
+
+		grouped[countContributionKey{from: JobStateComplete, repGroup: completedRepGroup}]++
+	}
+
+	if !currentMoved {
+		grouped[countContributionKey{to: to, repGroup: repGroup}]++
+	}
+}
+
+func groupHistoricalCompletionContributions(grouped map[countContributionKey]int, to JobState,
+	repGroup string, completeRepGroups []string,
+) {
+	if to != JobStateComplete {
+		return
+	}
+
+	for _, completedRepGroup := range completeRepGroups {
+		if completedRepGroup != repGroup {
+			grouped[countContributionKey{to: JobStateComplete, repGroup: completedRepGroup}]++
+		}
+	}
+}
+
+type countContributionKey struct {
+	from     JobState
+	to       JobState
+	repGroup string
 }
 
 // changeCallbackToState resolves the destination JobState for a change-callback

@@ -30,6 +30,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"slices"
@@ -47,8 +48,12 @@ import (
 )
 
 const (
-	missingSchedulerJobKey = "missing-key"
-	testDeployment         = "development"
+	missingSchedulerJobKey             = "missing-key"
+	schedulerQueueRequirementKey       = "scheduler_queue"
+	schedulerQueuesAvoidRequirementKey = "scheduler_queues_avoid"
+	testDeployment                     = "development"
+	testSchedulerQueue                 = "short"
+	testSchedulerQueuesAvoid           = "slow,big"
 )
 
 var (
@@ -156,6 +161,89 @@ func TestSchedulerGetJobByKey(t *testing.T) {
 	})
 }
 
+func TestSchedulerSubmitJobsDefaultsMissingRequirements(t *testing.T) {
+	Convey("Given a running manager that schedules runners", t, func() {
+		ctx := context.Background()
+
+		config, d := clienttesting.PrepareWrConfig(t)
+		defer d()
+
+		config.RunnerCmd = "true '%s' '%s' '%s' '%s' %d %d"
+
+		server := clienttesting.Serve(t, config)
+		defer server.Stop(ctx, true)
+
+		oldMinRequestTimeout := jobqueue.ClientMinRequestTimeout
+
+		jobqueue.ClientMinRequestTimeout = time.Second
+		defer func() {
+			jobqueue.ClientMinRequestTimeout = oldMinRequestTimeout
+		}()
+
+		s, err := New(SchedulerSettings{
+			Deployment: testDeployment,
+			Timeout:    time.Second,
+			Logger:     log15.New(),
+		})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		defer func() {
+			So(s.Disconnect(), ShouldBeNil)
+		}()
+
+		job := &jobqueue.Job{
+			Cmd:      "echo default missing requirements",
+			RepGroup: "rg-default-missing-requirements",
+			ReqGroup: "req-default-missing-requirements",
+		}
+
+		err = s.SubmitJobs([]*jobqueue.Job{job})
+		So(err, ShouldBeNil)
+		So(job.Requirements, ShouldResemble, DefaultRequirements())
+		So(job.Override, ShouldEqual, 0)
+		So(server.GetServerStats().Ready, ShouldEqual, 1)
+	})
+}
+
+func TestSchedulerSubmissionMethodsDefaultMissingRequirements(t *testing.T) {
+	Convey("Scheduler submission methods default missing requirements", t, func() {
+		s := &Scheduler{
+			jq:          &pretendJobqueue{},
+			queue:       testSchedulerQueue,
+			queuesAvoid: testSchedulerQueuesAvoid,
+		}
+		configuredQueues := map[string]string{
+			schedulerQueueRequirementKey:       testSchedulerQueue,
+			schedulerQueuesAvoidRequirementKey: testSchedulerQueuesAvoid,
+		}
+		expectedRequirements := DefaultRequirements()
+		expectedRequirements.Other = configuredQueues
+
+		legacyJob := &jobqueue.Job{Cmd: "echo legacy defaults"}
+		So(s.SubmitJobs([]*jobqueue.Job{legacyJob}), ShouldBeNil)
+		So(legacyJob.Requirements, ShouldResemble, expectedRequirements)
+		So(legacyJob.Requirements.Other, ShouldResemble, configuredQueues)
+		So(legacyJob.Override, ShouldEqual, 0)
+
+		idJob := &jobqueue.Job{Cmd: "echo id defaults"}
+		ids, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{idJob}, SubmitJobsOptions{})
+		So(err, ShouldBeNil)
+		So(ids, ShouldResemble, []string{idJob.Key()})
+		So(idJob.Requirements, ShouldResemble, expectedRequirements)
+		So(idJob.Requirements.Other, ShouldResemble, configuredQueues)
+		So(idJob.Override, ShouldEqual, 0)
+
+		waitJob := &jobqueue.Job{Cmd: "echo wait defaults"}
+		done, err := s.SubmitJobsAndWait(context.Background(), []*jobqueue.Job{waitJob}, SubmitJobsOptions{})
+		So(err, ShouldBeNil)
+		So(done, ShouldResemble, []*jobqueue.Job{waitJob})
+		So(waitJob.Requirements, ShouldResemble, expectedRequirements)
+		So(waitJob.Requirements.Other, ShouldResemble, configuredQueues)
+		So(waitJob.Override, ShouldEqual, 0)
+	})
+}
+
 type schedulerJobStderrError string
 
 func (s schedulerJobStderrError) Error() string {
@@ -219,15 +307,15 @@ func TestSchedulerSubmitJobsAndReturnIDs(t *testing.T) {
 func TestSchedulerNewJobFromJSON(t *testing.T) {
 	Convey("Given a Scheduler configured with JSON job defaults", t, func() {
 		cwd := t.TempDir()
-		s := &Scheduler{cwd: cwd, queue: "short", queuesAvoid: "slow,big"}
+		s := &Scheduler{cwd: cwd, queue: testSchedulerQueue, queuesAvoid: testSchedulerQueuesAvoid}
 
 		Convey("JobDefaults maps Scheduler defaults into jobqueue defaults", func() {
 			defaults := s.JobDefaults()
 
 			So(defaults.Cwd, ShouldEqual, cwd)
 			So(defaults.CwdMatters, ShouldBeTrue)
-			So(defaults.SchedulerQueue, ShouldEqual, "short")
-			So(defaults.SchedulerQueuesAvoid, ShouldEqual, "slow,big")
+			So(defaults.SchedulerQueue, ShouldEqual, testSchedulerQueue)
+			So(defaults.SchedulerQueuesAvoid, ShouldEqual, testSchedulerQueuesAvoid)
 			So(defaults.Memory, ShouldEqual, 100)
 			So(defaults.Time, ShouldEqual, 10*time.Second)
 			So(defaults.CPUs, ShouldEqual, float64(1))
@@ -273,8 +361,8 @@ func TestSchedulerNewJobFromJSON(t *testing.T) {
 			So(job.Cwd, ShouldEqual, cwd)
 			So(job.CwdMatters, ShouldBeTrue)
 			So(job.Requirements.Other, ShouldResemble, map[string]string{
-				"scheduler_queue":        "short",
-				"scheduler_queues_avoid": "slow,big",
+				schedulerQueueRequirementKey:       testSchedulerQueue,
+				schedulerQueuesAvoidRequirementKey: testSchedulerQueuesAvoid,
 			})
 			So(job.Override, ShouldEqual, uint8(2))
 			So(job.MountConfigs, ShouldResemble, mounts)
@@ -298,6 +386,46 @@ func TestSchedulerNewJobFromJSON(t *testing.T) {
 			So(err.Error(), ShouldContainSubstring, "cmd was not specified")
 		})
 	})
+}
+
+func assertNilJobSubmissionError(err error, op string, index int) {
+	var jqErr jobqueue.Error
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr, ShouldResemble, jobqueue.Error{
+		Op:   op,
+		Item: fmt.Sprintf("jobs[%d]", index),
+		Err:  jobqueue.ErrBadRequest,
+	})
+	So(err.Error(), ShouldContainSubstring, fmt.Sprintf("job at index %d is nil", index))
+}
+
+func assertNilDependencySubmissionError(err error, op string, jobIndex, dependencyIndex int) {
+	var jqErr jobqueue.Error
+
+	path := fmt.Sprintf("jobs[%d].Dependencies[%d]", jobIndex, dependencyIndex)
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr, ShouldResemble, jobqueue.Error{
+		Op:   op,
+		Item: path,
+		Err:  jobqueue.ErrBadRequest,
+	})
+	So(err.Error(), ShouldContainSubstring, path+" is nil")
+}
+
+func assertNilBehaviourSubmissionError(err error, op string, jobIndex, behaviourIndex int) {
+	var jqErr jobqueue.Error
+
+	path := fmt.Sprintf("jobs[%d].Behaviours[%d]", jobIndex, behaviourIndex)
+
+	So(errors.As(err, &jqErr), ShouldBeTrue)
+	So(jqErr, ShouldResemble, jobqueue.Error{
+		Op:   op,
+		Item: path,
+		Err:  jobqueue.ErrBadRequest,
+	})
+	So(err.Error(), ShouldContainSubstring, path+" is nil")
 }
 
 type waitForRunningSequenceJobqueue struct {
@@ -1312,7 +1440,7 @@ func TestScheduler(t *testing.T) {
 				job := s.NewJob("cmd", "rep", "req", "", "", nil)
 				So(job.Requirements.RAM, ShouldEqual, dreq.RAM)
 				So(job.Override, ShouldEqual, 0)
-				So(job.Requirements.Other, ShouldResemble, map[string]string{"scheduler_queue": "foo"})
+				So(job.Requirements.Other, ShouldResemble, map[string]string{schedulerQueueRequirementKey: "foo"})
 			})
 
 			Convey("You can make a Scheduler with queues to avoid", func() {
@@ -1325,7 +1453,8 @@ func TestScheduler(t *testing.T) {
 				job := s.NewJob("cmd", "rep", "req", "", "", nil)
 				So(job.Requirements.RAM, ShouldEqual, dreq.RAM)
 				So(job.Override, ShouldEqual, 0)
-				So(job.Requirements.Other, ShouldResemble, map[string]string{"scheduler_queues_avoid": "avoid,queue"})
+				So(job.Requirements.Other, ShouldResemble,
+					map[string]string{schedulerQueuesAvoidRequirementKey: "avoid,queue"})
 			})
 		})
 
@@ -1351,6 +1480,254 @@ func cdNonExistantDir(t *testing.T) func() {
 	os.RemoveAll(tmpDir)
 
 	return d
+}
+
+func TestSchedulerSubmissionMethodsRejectNilJobs(t *testing.T) {
+	Convey("Scheduler submission methods reject a nil job before mutating or forwarding the batch", t, func() {
+		Convey("SubmitJobs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid := &jobqueue.Job{Cmd: "echo valid legacy job"}
+
+			err := s.SubmitJobs([]*jobqueue.Job{valid, nil})
+
+			assertNilJobSubmissionError(err, "SubmitJobs", 1)
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("SubmitJobsAndReturnIDs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid := &jobqueue.Job{Cmd: "echo valid id job"}
+
+			ids, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{valid, nil}, SubmitJobsOptions{})
+
+			So(ids, ShouldBeNil)
+			assertNilJobSubmissionError(err, "SubmitJobsAndReturnIDs", 1)
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("SubmitJobsAndWait returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid := &jobqueue.Job{Cmd: "echo valid wait job"}
+
+			jobs, err := s.SubmitJobsAndWait(context.Background(), []*jobqueue.Job{valid, nil}, SubmitJobsOptions{})
+
+			So(jobs, ShouldBeNil)
+			assertNilJobSubmissionError(err, "SubmitJobsAndWait", 1)
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("SubmitJobsAndWait preserves pre-cancelled context precedence", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			jobs, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{nil}, SubmitJobsOptions{})
+
+			So(jobs, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+	})
+}
+
+func TestSchedulerSubmissionMethodsRejectNilDependencies(t *testing.T) {
+	Convey("Scheduler submission methods reject a nil dependency before mutating or forwarding the batch", t, func() {
+		newJobs := func(prefix string) (*jobqueue.Job, *jobqueue.Job, []*jobqueue.Job) {
+			valid := &jobqueue.Job{Cmd: "echo " + prefix + " valid"}
+			malformedRequirements := DefaultRequirements()
+			malformed := &jobqueue.Job{
+				Cmd:          "echo " + prefix + " malformed",
+				Requirements: malformedRequirements,
+				Dependencies: jobqueue.Dependencies{&jobqueue.Dependency{}, nil},
+			}
+
+			return valid, malformed, []*jobqueue.Job{valid, malformed}
+		}
+
+		assertUnmodified := func(jq *pretendJobqueue, valid, malformed *jobqueue.Job) {
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(malformed.Requirements, ShouldNotBeNil)
+			So(malformed.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		}
+
+		Convey("SubmitJobs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("legacy")
+
+			err := s.SubmitJobs(jobs)
+
+			assertNilDependencySubmissionError(err, "SubmitJobs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndReturnIDs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("ids")
+
+			ids, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+
+			So(ids, ShouldBeNil)
+			assertNilDependencySubmissionError(err, "SubmitJobsAndReturnIDs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("wait")
+
+			done, err := s.SubmitJobsAndWait(context.Background(), jobs, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			assertNilDependencySubmissionError(err, "SubmitJobsAndWait", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait preserves pre-cancelled context precedence", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			done, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{{
+				Dependencies: jobqueue.Dependencies{nil},
+			}}, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("nil, empty and zero-valued dependencies remain valid", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			jobs := []*jobqueue.Job{
+				{Cmd: "echo nil dependencies", Dependencies: nil},
+				{Cmd: "echo empty dependencies", Dependencies: jobqueue.Dependencies{}},
+				{Cmd: "echo zero dependency", Dependencies: jobqueue.Dependencies{&jobqueue.Dependency{}}},
+			}
+
+			So(s.SubmitJobs(jobs), ShouldBeNil)
+			So(jq.jobBuffer, ShouldHaveLength, 3)
+
+			for _, job := range jobs {
+				So(job.Requirements, ShouldNotBeNil)
+			}
+		})
+	})
+}
+
+func TestSchedulerSubmissionMethodsRejectNilBehaviours(t *testing.T) {
+	Convey("Scheduler submission methods reject a nil behaviour before mutating or forwarding the batch", t, func() {
+		newJobs := func(prefix string) (*jobqueue.Job, *jobqueue.Job, []*jobqueue.Job) {
+			valid := &jobqueue.Job{Cmd: "echo " + prefix + " valid"}
+			malformedRequirements := DefaultRequirements()
+			malformed := &jobqueue.Job{
+				Cmd:          "echo " + prefix + " malformed",
+				Requirements: malformedRequirements,
+				Behaviours: jobqueue.Behaviours{
+					&jobqueue.Behaviour{When: jobqueue.OnSuccess, Do: jobqueue.Nothing},
+					nil,
+				},
+			}
+
+			return valid, malformed, []*jobqueue.Job{valid, malformed}
+		}
+
+		assertUnmodified := func(jq *pretendJobqueue, valid, malformed *jobqueue.Job) {
+			So(valid.Requirements, ShouldBeNil)
+			So(valid.State, ShouldEqual, jobqueue.JobState(""))
+			So(malformed.Requirements, ShouldNotBeNil)
+			So(malformed.State, ShouldEqual, jobqueue.JobState(""))
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		}
+
+		Convey("SubmitJobs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("legacy")
+
+			err := s.SubmitJobs(jobs)
+
+			assertNilBehaviourSubmissionError(err, "SubmitJobs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndReturnIDs returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("ids")
+
+			ids, err := s.SubmitJobsAndReturnIDs(jobs, SubmitJobsOptions{})
+
+			So(ids, ShouldBeNil)
+			assertNilBehaviourSubmissionError(err, "SubmitJobsAndReturnIDs", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait returns a typed bad request", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			valid, malformed, jobs := newJobs("wait")
+
+			done, err := s.SubmitJobsAndWait(context.Background(), jobs, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			assertNilBehaviourSubmissionError(err, "SubmitJobsAndWait", 1, 1)
+			assertUnmodified(jq, valid, malformed)
+		})
+
+		Convey("SubmitJobsAndWait preserves pre-cancelled context precedence", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			done, err := s.SubmitJobsAndWait(ctx, []*jobqueue.Job{{
+				Behaviours: jobqueue.Behaviours{nil},
+			}}, SubmitJobsOptions{})
+
+			So(done, ShouldBeNil)
+			So(errors.Is(err, context.Canceled), ShouldBeTrue)
+			So(jq.jobBuffer, ShouldHaveLength, 0)
+		})
+
+		Convey("nil, empty and valid zero or remove behaviours remain valid", func() {
+			jq := &pretendJobqueue{}
+			s := &Scheduler{jq: jq}
+			remove := &jobqueue.Behaviour{When: jobqueue.OnFailure, Do: jobqueue.Remove}
+			jobs := []*jobqueue.Job{
+				{Cmd: "echo nil behaviours", Behaviours: nil},
+				{Cmd: "echo empty behaviours", Behaviours: jobqueue.Behaviours{}},
+				{Cmd: "echo zero behaviour", Behaviours: jobqueue.Behaviours{&jobqueue.Behaviour{}}},
+				{Cmd: "echo remove behaviour", Behaviours: jobqueue.Behaviours{remove}},
+			}
+
+			So(s.SubmitJobs(jobs), ShouldBeNil)
+			So(jq.jobBuffer, ShouldHaveLength, 4)
+			So(jobs[2].TriggerBehaviours(true), ShouldBeNil)
+			So(jobs[2].Behaviours.String(), ShouldEqual, "{}")
+			So(jobs[3].RemovalRequested(), ShouldBeTrue)
+
+			for _, job := range jobs {
+				So(job.Requirements, ShouldNotBeNil)
+			}
+		})
+	})
 }
 
 func TestFakeScheduler(t *testing.T) {
