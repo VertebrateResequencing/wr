@@ -72,7 +72,7 @@ type statusSubscriber struct {
 // last in the order queue.mutex -> job -> statusState.mu, so mu can never be
 // involved in a lock-order inversion (see issue 260625-7 attempt 5).
 type statusState struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	counts map[string]map[JobState]int
 	subs   map[*statusSubscriber]struct{}
 }
@@ -100,8 +100,8 @@ func (s *statusState) seed(counts map[string]map[JobState]int) {
 // hasRepGroup reports whether this RepGroup's persisted completion count has
 // already been loaded. An empty count map still means it has been loaded.
 func (s *statusState) hasRepGroup(repGroup string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	_, ok := s.counts[repGroup]
 
