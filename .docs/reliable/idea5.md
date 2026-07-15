@@ -111,3 +111,48 @@ Idea 1f/4. Every trial re-runs the `harness/` F0 test to confirm no regression.
   PASS; `exp_startup_ab.sh`/`exp_realdb_seed.sh` `initDB` + restart bounded
   regardless of history; `exp_reconnect.sh` bounded; `exp1.sh`/`exp_drive_ab.sh`
   ≥ v0.36.5 (expect better). Record numbers.
+
+## Trial results (spike on F0 baseline)
+
+Offline `split` tool + measurement on a synthetic **150,000-complete + 5,001-incomplete**
+DB (331 MB). Hot-only DB (dropped `jobscomplete`+`endTimeToKey`, pruned lookups to
+the incomplete set) = **12 MB (28× smaller)**, built in <1 s.
+
+| metric (warm, local) | full DB (331 MB) | hot-only (12 MB) |
+|---|---|---|
+| `initDB` (freelist) | 0–1 ms | 0 ms |
+| seedStatusStateForItemDefs | 180–192 ms | 0–1 ms |
+| time-to-responsive | 0.32 s | 0.27 s |
+
+**The full-vs-hot startup delta is almost entirely seeding** — which **Idea 3
+already removes**. Idea 5's *unique* lever is `initDB` (freelist load), which was
+**0 ms at this scale**: freelist time scales with **free-page count
+(fragmentation)**, not file size — the synthetic single-pass build had only 1847
+free pages, so it can't reproduce S4's 12.6 s (that comes from 1.9 M jobs churned
+over months). initDB cost must be extrapolated from S4 (**~1.0 s NFS / 12.6 s
+cold-local** on the real 6.2 GB DB). S5 archive decay reproduced (7047→6533/s as
+complete grew; PING p99 ~5 ms throughout — never blocked responsiveness); it's the
+history sitting in the operational b-tree, inherent BoltDB growth (HEAD ≥ v0.36.5).
+
+**Marginal value over Idea 2+3:** after 2 (respond first) + 3 (no seeding scan),
+time-to-responsive ≈ `initDB`. Idea 5's only unique startup contribution is
+bounding that `initDB` floor (~1 s NFS at real scale) plus stopping archive decay
+and bounding operational DB size. After 2+3+F0 the **reliability** failures
+(162–190 s seeding, false-lost) are gone; what remains is **efficiency**, not the
+reported symptoms.
+
+**Complexity:** full BoltDB two-store is **large/multi-week, high blast radius** —
+the hard parts are the archive hot path (`dropStaleEndTimeIndex` reads
+`jobscomplete`) and dependency/duplicate-check reads of completed history; ~8
+reporting read-sites reroute easily; local hot store needs a new backup story;
+SQLite variant = rewrite of the ~2700-line bbolt-coupled `db.go`.
+
+**F0 regression:** 4/4 deterministic tests PASS.
+
+**Verdict:** **future / extreme-scale option, NOT warranted now.** Revisit only if,
+after 2+3+F0 land, the real DB still shows a biting `initDB` or archive decay on
+NFS. **Smallest useful subset = Fix 1d** (`FreelistType: FreelistMapType` on the 5
+`bolt.Open` calls + periodic `bolt.Compact`) — captures most of the S4/S5 benefit
+at ~a day's work / near-zero risk, without touching archive/dependency/status read
+paths. (Validate map-freelist against `.tmp/db`, not synthetic scale — the benefit
+only shows at the real DB's fragmentation.)
