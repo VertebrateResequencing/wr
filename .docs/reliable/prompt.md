@@ -139,3 +139,35 @@ Harness thresholds (record numbers; `.docs/reliable/harness/`):
 - Gates: `make lint`, `make test`, `make race` clean.
 - Keep the independent harness tests in `.docs/reliable/harness/` as regression
   guards for F0 and the reproductions; the spec's own tests live in-package.
+
+## Notes (clarifications resolved)
+
+- **Scope / packaging (Q1):** Deliver ONE spec covering the full recommended
+  stack — Idea 3 (counters), Idea 2 (non-blocking startup), Fix 1f (decoupled
+  status), Fix 1c (local-scheduler recover-once), Fix 1d (map freelist +
+  compaction) — organised as separate implementation **phases in that priority
+  order**, each independently reviewable/mergeable. F0 (a19d390) is the done
+  baseline. Idea 4-full (separate-process projector) and Idea 5-full (hot/cold
+  storage split / SQLite) are explicitly **out of scope** (reserved for
+  future/extreme scale).
+- **Counter recompute / migration (Q2):** The one-off recompute for existing DBs
+  must **not block startup** — run it as a background task after the manager is
+  responsive (consistent with Idea 2). Operations start immediately; the web-UI
+  "complete" counts may under-report only during that one-time post-upgrade
+  window. The recompute must be crash-safe / re-runnable and must reconcile
+  correctly with archive increments happening concurrently (compute from a
+  consistent read-tx snapshot and add to the counter, rather than overwrite).
+  Runtime drift is prevented by construction: the counter is incremented in the
+  **same bolt transaction** as the archive write. Do **not** add an expensive
+  automatic periodic full-verify — the recompute is the repair tool (re-runnable);
+  log any detected anomaly for an admin-triggered recompute.
+- **Recovery mechanism (Q3):** Idea 2 uses the **minimal reorder** (respond first;
+  `loadPriorState` in a background goroutine). Recovered jobs becoming reservable
+  in a single batch at the end of background recovery is acceptable **because
+  Idea 3 makes recovery cheap** (seconds, no history scan). Chunked/streaming/
+  dependency-aware progressive recovery is **out of scope** (revisit only if
+  recovery is ever slow). **Do** include lightweight recovery **progress
+  reporting** (manager status / log shows "recovering: N/M restored") so a slow
+  recovery is never mistaken for "hung". Guard the concurrency the trial flagged:
+  protect `recoveredRunningJobs`; ensure a client re-adding a job that is also
+  being recovered cannot yield a wrong final state; preserve dependency ordering.
