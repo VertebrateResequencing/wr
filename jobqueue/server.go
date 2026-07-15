@@ -760,6 +760,7 @@ type Server struct {
 	csmutex                   sync.RWMutex // to protect clientSubscriptions
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	statusSeedMutex           sync.Mutex   // serialises lazy persisted status seeding before queue transitions
+	lastContactMu             sync.Mutex   // leaf lock protecting lastContact; never taken before queue/job locks
 	sync.Mutex
 	wsmutex              sync.RWMutex
 	up                   bool
@@ -771,7 +772,12 @@ type Server struct {
 	racRunning           bool
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
-	nextSubscriptionID   uint64
+	// lastContact records, per job key, the most recent time a runner contacted
+	// the manager about that job (a touch), captured as early as possible so it
+	// reflects when the runner reached us, not when its touch finished being
+	// processed under load. Guarded by lastContactMu.
+	lastContact        map[string]int64
+	nextSubscriptionID uint64
 
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
@@ -963,6 +969,64 @@ func (s *Server) unseededStatusRepGroups(itemdefs []*queue.ItemDef) []string {
 	sort.Strings(repGroups)
 
 	return repGroups
+}
+
+// recordJobContact notes that a runner contacted the manager about the job with
+// the given key, right now. It is called as early as possible in touch handling
+// (before any queue lock) so contact time reflects when the runner reached us,
+// not when its touch was eventually processed under load. lastContactMu is a
+// leaf lock, so this never nests inside the queue or job locks.
+func (s *Server) recordJobContact(key string) {
+	if key == "" {
+		return
+	}
+
+	now := time.Now().UnixNano()
+
+	s.lastContactMu.Lock()
+	s.lastContact[key] = now
+	s.lastContactMu.Unlock()
+}
+
+// contactedWithin reports whether a runner contacted the manager about the job
+// with the given key within the last window.
+func (s *Server) contactedWithin(key string, window time.Duration) bool {
+	s.lastContactMu.Lock()
+	last, ok := s.lastContact[key]
+	s.lastContactMu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	return time.Since(time.Unix(0, last)) < window
+}
+
+// forgetJobContacts drops the last-contact records for the given jobs. It is
+// called when jobs leave the run sub-queue, keeping lastContact bounded to
+// currently-running jobs and preventing a stale record from a previous run
+// (jobs reuse their key) making a fresh, silent runner look alive. It reads each
+// job's key under the job lock and only then takes lastContactMu, so it never
+// holds a job lock and lastContactMu at the same time.
+func (s *Server) forgetJobContacts(data []any) {
+	keys := make([]string, 0, len(data))
+
+	for _, inter := range data {
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
+		job.RLock()
+		keys = append(keys, job.Key())
+		job.RUnlock()
+	}
+
+	s.lastContactMu.Lock()
+	for _, key := range keys {
+		delete(s.lastContact, key)
+	}
+	s.lastContactMu.Unlock()
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -2313,6 +2377,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		schedCaster:               newCaster(),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
+		lastContact:               make(map[string]int64),
 		timings:                   timings,
 		itemTTR:                   timings.ItemTTR,
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
@@ -3129,11 +3194,19 @@ func (s *Server) createQueue(ctx context.Context) {
 	})
 }
 
-// ttrCallback handles a running item hitting its TTR (its runner died or had
-// networking issues). A still-running job is marked lost and kept in the run
-// queue while its death is confirmed asynchronously; otherwise the job is
-// delayed. The returned sub-queue tells the queue where to place the item.
+// ttrCallback handles a running item hitting its TTR. Its TTR expiring does NOT
+// by itself mean the runner is dead: under manager saturation a still-running
+// runner's touch can be processed after the deadline. So before marking a job
+// lost we check whether its runner actually contacted us within the last TTR
+// (recordJobContact, captured early in touch handling). If it did, the runner is
+// alive and we keep the job running with a fresh TTR (SubQueueRun) instead of
+// falsely losing it. Only a job with no recent contact is marked lost and kept
+// in the run queue while its death is confirmed asynchronously. A job that is
+// already lost stays parked in the run queue (a touch will recover it, or the
+// in-flight confirmation will kill it) without being re-marked or re-confirmed.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
+	ttr := s.itemTTRDuration()
+
 	job.Lock()
 
 	if job.StartTime.IsZero() || job.Exited {
@@ -3143,7 +3216,22 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 		return queue.SubQueueDelay
 	}
 
-	wasLost := job.Lost
+	// an already-lost job is left parked; its death is already being confirmed
+	// and a touch will recover it, so we neither re-mark nor re-confirm it.
+	if job.Lost {
+		job.Unlock()
+
+		return queue.SubQueueRun
+	}
+
+	// a runner that contacted us within the last TTR is alive but slow (e.g. the
+	// manager was saturated so its touch was processed late); keep it running.
+	if s.contactedWithin(job.Key(), ttr) {
+		job.Unlock()
+
+		return queue.SubQueueRun
+	}
+
 	job.Lost = true
 	job.FailReason = FailReasonLost
 	job.EndTime = time.Now()
@@ -3152,7 +3240,7 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	// we don't test recovered jobs are dead because they might have exited
 	// while the server wasn't running, and we want the existing client to tell
 	// us if it should be archived or buried
-	defer s.markJobLost(ctx, job, wasLost, lostUpdate)
+	defer s.markJobLost(ctx, job, false, lostUpdate)
 
 	return queue.SubQueueRun
 }

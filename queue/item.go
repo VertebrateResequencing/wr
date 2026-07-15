@@ -42,10 +42,6 @@ import (
 //nolint:gochecknoglobals
 var iid uint64
 
-// disabledTTRHours is how far in the future we set an item's releaseAt to
-// effectively disable its time to release.
-const disabledTTRHours = 8760
-
 // ItemState is how we describe the possible item states.
 type ItemState string
 
@@ -327,15 +323,6 @@ func (item *Item) releasable() bool {
 	}
 
 	return !item.releaseAt.After(time.Now())
-}
-
-// tempDisableTTR is a thread-safe way to effectively temporarily disable an
-// item's time to release by setting it to a year from now.
-func (item *Item) tempDisableTTR() {
-	item.mutex.Lock()
-	defer item.mutex.Unlock()
-
-	item.releaseAt = time.Now().Add(disabledTTRHours * time.Hour)
 }
 
 // update after we've switched from the delay to the ready sub-queue.

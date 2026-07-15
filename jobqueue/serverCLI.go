@@ -903,6 +903,12 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 // handleTouch refreshes a running job's TTR, recovering it from lost state and
 // applying any live status snapshot, or reports that kill has been called.
 func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// record that the runner contacted us about this job as early as possible,
+	// before getij/queue.Touch (which contend on queue.mutex under load), so
+	// lost-detection reflects when the runner reached us rather than when its
+	// touch finished being processed (see ttrCallback).
+	s.recordJobContact(cr.key())
+
 	item, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
@@ -968,6 +974,16 @@ func (s *Server) emitLiveTouchSnapshot(ctx context.Context, cr *clientRequest, j
 	}
 
 	applyLiveSnapshot(job, cr.JobEndState)
+
+	// Building the subscription update decompresses the job's stdout/stderr and
+	// enqueues a per-job update; that is wasted work when no client is subscribed
+	// to receive per-job updates (the common case - every touch would otherwise
+	// pay it). Skip it via the same idle fast-path the change-callback delivery
+	// path uses, so a touch with no subscribers stays cheap. The absolute web UI
+	// status counts are maintained separately and are unaffected.
+	if !s.hasAnyClientSubscriptions() {
+		return
+	}
 
 	update, err := jobUpdateFromLiveJob(job)
 	if err != nil {
