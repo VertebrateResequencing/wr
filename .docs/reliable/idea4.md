@@ -108,3 +108,47 @@ re-runs the `harness/` F0 test to confirm no regression.
   under 10k conns (isolation proof); a projector doing a 3-min history scan does
   **not** affect manager throughput/`TestReliableFalseLostUnderSaturation`;
   `exp_startup_ab.sh` restart ≤ a few s; `exp1.sh` ≥ v0.36.5. Record numbers.
+
+## Trial results (spike on F0 baseline)
+
+Env-gated `WR_STATUS_ENDPOINT` spike: a ~70-LOC status endpoint on its **own**
+`net.Listener`+`http.Server` goroutine returning `statusState.snapshot()` — never
+touching the mangos socket or queue. Measured `wr status` latency (ms, median)
+under runner load driven by loadrunner:
+
+| load | conns | mgr CPU% | mangos-counts | mangos-FULL (AllItems) | **decoupled** |
+|---|---|---|---|---|---|
+| unloaded | 0 | 27 | [40] | [66] | [0.5] |
+| drive 4000 (~20k msg/s) | 4000 | 159 | [64] | [113] | [0.56] |
+| drive 4000 + hold 3000 | 7000 | 195 | [48] | [129] | [0.51] |
+
+**Isolation proven:** the decoupled endpoint is **flat (~0.5 ms, ~0 delta)** at
+every load; the mangos heavy path ~doubles (66→129 ms) and even counts degrades —
+both traverse the single reader + queue locks. Recovers when load stops (matches
+"responsive once runners killed").
+
+**Two honest caveats:** (1) the 0.5 ms vs 66 ms *absolute* gap is inflated by
+client startup + response size — the fair metric is the **delta under load**
+(decoupled ≈ 0, mangos-FULL +60 ms). (2) The dramatic S6 26→460 ms (14×) was
+**pre-F0**; on the F0 baseline, **idle/steady 4000 conns barely degrade** (F0's
+per-touch gating), and degradation (~2–2.5×) only appears under high RPC *rate*.
+Production magnitude (10k+ conns, reconnection storms) would still hit the mangos
+path; the decoupled path is immune by construction.
+
+**Key architectural finding:** the **browser web UI is ALREADY off the mangos
+socket** (separate `/status_ws` websocket + in-process methods). The residual F
+symptom is the **CLI `wr status` AllItems path**; the coupling to operations is
+shared Server state (queue.mutex/DB/statusState.mu), not the socket — and F0/#547
+already gated/moved the expensive shared work. Full projector = ~2000–3500 LOC,
+multi-week, re-homing ~10 web-UI command paths + job-details subscription + a
+transition log — **not warranted just for F**.
+
+**F0 regression:** 4/4 deterministic tests PASS.
+
+**Verdict:** the decouple *principle* is the right/strongest answer for F, but the
+**full projector is overkill**. Recommended: **Fix 1f + "Idea-4-lite"** — make
+`wr status`/web UI use the cheap `statusState`/counts path (web UI already does),
+and add a separate status listener (~70 LOC, proven). Keep the full projector as a
+"maximal future-proofing" option in reserve. Composes on top of **Idea 3's
+counters** (so the decoupled endpoint's own seed is also cheap). Does **not** fix
+B — pair with Idea 3 (+2).
