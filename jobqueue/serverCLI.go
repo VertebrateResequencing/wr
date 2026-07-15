@@ -1002,7 +1002,7 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 		return nil, srerr, ""
 	}
 
-	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState, s.limiter)
+	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState, s.limiter, cr.ClientID)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1015,13 +1015,17 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 // its key, rep group and scheduler group (or an Err* string if it cannot be
 // archived).
 func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
-	lim *limiter.Limiter,
+	lim *limiter.Limiter, expectedReservedBy ...uuid.UUID,
 ) (key, rgroup, sgroup, srerr string) {
 	job.Lock()
 	defer job.Unlock()
 
 	if !job.canCompleteFromQueueState(item.Stats().State) {
 		return "", "", "", ErrBadJob
+	}
+
+	if len(expectedReservedBy) > 0 && job.ReservedBy != expectedReservedBy[0] {
+		return "", "", "", ErrMustReserve
 	}
 
 	if !job.canCompleteFromEndState(endState) {
@@ -1043,7 +1047,7 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
 
 func (j *Job) canCompleteFromQueueState(itemState queue.ItemState) bool {
 	if itemState == queue.ItemStateRun {
-		return true
+		return j.State == JobStateRunning
 	}
 
 	if j.FailReason != FailReasonLost {

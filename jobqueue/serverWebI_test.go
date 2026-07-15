@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -754,6 +755,35 @@ func readExactRepGroupState(ws *websocket.Conn, repGroup string, expected map[Jo
 	})
 }
 
+func TestArchiveServerCompletedJobDoesNotPreMutateBeforeMarkComplete(t *testing.T) {
+	Convey("archiveServerCompletedJob leaves job exit state untouched when markJobComplete rejects it", t, func() {
+		ctx := context.Background()
+		q := queue.New(ctx, "archive-webi-no-premutate")
+		job := &Job{
+			Cmd:       restFormTrue,
+			Cwd:       testCwd,
+			RepGroup:  archivePortalCompress,
+			ReqGroup:  archivePortalCompress,
+			StartTime: time.Now().Add(-time.Minute),
+			State:     JobStateBuried,
+			Exitcode:  -1,
+		}
+
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueBury)
+		So(err, ShouldBeNil)
+
+		archiveErr := archiveServerCompletedJob(ctx, &Server{}, item)
+		So(archiveErr, ShouldNotBeNil)
+
+		var jqerr Error
+		So(errors.As(archiveErr, &jqerr), ShouldBeTrue)
+		So(jqerr.Err, ShouldEqual, ErrBadJob)
+		So(job.Exited, ShouldBeFalse)
+		So(job.Exitcode, ShouldEqual, -1)
+		So(job.EndTime.IsZero(), ShouldBeTrue)
+	})
+}
+
 func archiveServerCompletedJob(ctx context.Context, server *Server, item *queue.Item) error {
 	job, ok := item.Data().(*Job)
 	if !ok {
@@ -761,7 +791,6 @@ func archiveServerCompletedJob(ctx context.Context, server *Server, item *queue.
 	}
 
 	endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-	job.updateAfterExit(endState, server.limiter)
 
 	key, repGroup, schedulerGroup, srerr := markJobComplete(item, job, endState, server.limiter)
 	if srerr != "" {

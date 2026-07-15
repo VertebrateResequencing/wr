@@ -122,7 +122,10 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 
 func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	if len(j.incrementedLimitGroups) > 0 {
-		lim.Decrement(j.incrementedLimitGroups)
+		if lim != nil {
+			lim.Decrement(j.incrementedLimitGroups)
+		}
+
 		j.incrementedLimitGroups = []string{}
 	}
 }

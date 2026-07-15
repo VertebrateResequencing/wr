@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -86,6 +87,89 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(job.State, ShouldEqual, JobStateComplete)
 		So(job.Lost, ShouldBeFalse)
 		So(job.FailReason, ShouldEqual, "")
+	})
+
+	Convey("A successful archive with a nil limiter does not panic after limit groups were noted", t, func() {
+		ctx := context.Background()
+		q := queue.New(ctx, "archive-nil-limiter")
+		job := &Job{
+			Cmd:         restFormTrue,
+			Cwd:         testCwd,
+			RepGroup:    archivePortalCompress,
+			ReqGroup:    archivePortalCompress,
+			StartTime:   time.Now().Add(-time.Minute),
+			State:       JobStateRunning,
+			LimitGroups: []string{"archive-limit"},
+		}
+		job.noteIncrementedLimitGroups(job.LimitGroups)
+
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		So(err, ShouldBeNil)
+
+		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
+
+		So(func() {
+			_, _, _, _ = markJobComplete(item, job, endState, nil)
+		}, ShouldNotPanic)
+		So(job.State, ShouldEqual, JobStateComplete)
+	})
+
+	Convey("markJobComplete rejects a stale archive after another runner reserves the job", t, func() {
+		ctx := context.Background()
+		q := queue.New(ctx, "archive-stale-reserver")
+		originalRunner, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+		rerunner, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		job := &Job{
+			Cmd:        restFormTrue,
+			Cwd:        testCwd,
+			RepGroup:   archivePortalCompress,
+			ReqGroup:   archivePortalCompress,
+			StartTime:  time.Now().Add(-time.Minute),
+			State:      JobStateRunning,
+			ReservedBy: rerunner,
+		}
+
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		So(err, ShouldBeNil)
+
+		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
+		_, _, _, srerr := markJobComplete(item, job, endState, nil, originalRunner)
+
+		So(srerr, ShouldEqual, ErrMustReserve)
+		So(job.State, ShouldEqual, JobStateRunning)
+		So(job.Exited, ShouldBeFalse)
+	})
+
+	Convey("markJobComplete rejects a lost-reclaim archive after the queue item is reserved for rerun", t, func() {
+		ctx := context.Background()
+		q := queue.New(ctx, "archive-stale-run-state")
+		originalRunner, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		job := &Job{
+			Cmd:        restFormTrue,
+			Cwd:        testCwd,
+			RepGroup:   archivePortalCompress,
+			ReqGroup:   archivePortalCompress,
+			StartTime:  time.Now().Add(-time.Minute),
+			State:      JobStateDelayed,
+			FailReason: FailReasonLost,
+			Exitcode:   -1,
+			ReservedBy: originalRunner,
+		}
+
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		So(err, ShouldBeNil)
+
+		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
+		_, _, _, srerr := markJobComplete(item, job, endState, nil, originalRunner)
+
+		So(srerr, ShouldEqual, ErrBadJob)
+		So(job.State, ShouldEqual, JobStateDelayed)
+		So(job.Exitcode, ShouldEqual, -1)
 	})
 
 	Convey("A successful archive can override a lost reclaim before rerun", t, func() {
