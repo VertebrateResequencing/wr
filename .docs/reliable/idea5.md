@@ -99,13 +99,13 @@ layer.
 | B | startup responsive | **core** — hot store is small/local; no history to open or scan |
 | C | false-lost consequence stays fixed | preserved |
 | D | removed-on-refresh stays fixed | preserved (seed logic unchanged; counts from the hot store) |
-| E | false-lost CAUSE | faster storage reduces processing latency but does **not** remove touch starvation → **must bundle F0** |
+| E | false-lost CAUSE | **DONE in baseline (F0, a19d390); idea must not regress it** |
 | F | status responsive under load | faster DB helps; needs F0/1f for the bound |
 | G | throughput not regressed | improved (small hot store, less commit cost) |
 
-**Honest scope:** Idea 5 attacks the storage substrate (B, and helps E/F/G by
-making every op faster), but the touch/TTR robustness (E) and status-vs-runner
-isolation (F) still require **F0**.
+**Honest scope:** F0 (a19d390) already fixes E; Idea 5 attacks the storage
+substrate (**B**) and lightens F/G. Status-vs-runner isolation (F) still needs
+Idea 1f/4. Every trial re-runs the `harness/` F0 test to confirm no regression.
 
 - [ ] **Full acceptance set (testing.md).** With Idea 5 + F0: the 3 Go tests all
   PASS; `exp_startup_ab.sh`/`exp_realdb_seed.sh` `initDB` + restart bounded

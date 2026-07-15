@@ -95,13 +95,13 @@ rather than by careful coding.
 | B | startup responsive | **core** — seeding/history projection is off the manager entirely |
 | C | false-lost consequence stays fixed | preserved (archive stays on the manager) |
 | D | removed-on-refresh stays fixed | the projector owns the seed; it **must** keep complete-only RepGroups |
-| E | false-lost CAUSE | decoupling removes web-UI/status contention (F0 layers 1–2 by construction), but pure **runner-only** load can still delay touch processing → **bundle F0 layer 3** (ingest-time last-contact) |
+| E | false-lost CAUSE | **DONE in baseline (F0, a19d390); decoupling further reduces E's load; idea must not regress it** |
 | F | status responsive under load | **core (strongest)** — status served by a separate listener/process runner traffic cannot delay |
 | G | throughput not regressed | preserved/better (no web-UI work on hot path) |
 
-**Honest scope:** Idea 4 is the strongest for F and removes most of E's load by
-construction, but still needs **F0 layer 3** (robust lost-detection) for E under
-runner-only saturation.
+**Honest scope:** F0 (a19d390) already fixes E; Idea 4 is the **strongest for F**
+(status served off the runner path) and further reduces hot-path load. Every trial
+re-runs the `harness/` F0 test to confirm no regression.
 
 - [ ] **Full acceptance set (testing.md).** With Idea 4 (+F0 layer 3): the 3 Go
   tests all PASS; `exp_reconnect.sh`/`exp_status_load2.sh` `wr status` bounded

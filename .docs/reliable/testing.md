@@ -310,7 +310,7 @@ reliable branch by `#547`/`#548`. Caveats on scope:
   fixed by `#548`. Other historical count-race variants (`#533` era) are covered
   by the existing suite; this is the one tied to the reported refresh symptom.
 
-### S8 — The CAUSE of false-lost is NOT fixed (reproduces on v0.37.1 AND HEAD)
+### S8 — The CAUSE of false-lost (was unfixed on v0.37.1 AND HEAD; **now fixed by F0**, commit a19d390)
 
 `harness/reliable_cause_test.go` (`TestReliableFalseLostUnderSaturation`). This
 targets what `#548` does **not** address. `item.touch()` resets `releaseAt =
@@ -324,18 +324,24 @@ connections; it samples the protected job's `Lost` flag directly from the server
 | | result |
 |---|---|
 | v0.37.1 | **FAIL** — `everLost=1, finalLost=true` (alive, touched job marked Lost and *stays* lost) |
-| HEAD (reliable) | **FAIL** — `everLost=1, finalLost=true` (reproduced on 2 reruns) |
+| HEAD before F0 | **FAIL** — `everLost=1, finalLost=true` (reproduced on 2 reruns) |
+| **HEAD + F0 (a19d390)** | **PASS** — `everLost=0` (3 runs); a job that stops being touched still goes Lost within ~1 TTR (`TestLostDetectionSilentRunner`) |
 
-So a saturated manager **falsely marks running, actively-touched jobs as Lost on
-both the release and the reliable branch**. `#548` only rescues the late
-*successful archive* after a false lost (S7); it does not stop the false lost
-itself. This is the runtime-load reliability bug (same root as S6: the single
-`RecvMsg` reader + per-touch work let other traffic delay touch processing). It is
-the mechanism behind the reported "jobs were running but then went lost" and the
-cascade (lost → confirm/rerun, or the late-archive path). Fix directions: reduce
-per-touch work (Idea 1e), stop status/adds competing with touches (Idea 4 / a
-separate listener), fast-path/prioritise touch processing, or make the TTR
-tolerant of processing latency under load — none of which `#547`/`#548` do.
+A saturated manager used to **falsely mark running, actively-touched jobs as
+Lost** — `#548` only rescued the late *successful archive* after a false lost
+(S7), not the false lost itself. **F0 (commit a19d390) fixes the cause**:
+lost-detection now keys off when the runner last *contacted* the manager
+(touch arrival recorded before the contended processing; `ttrCallback` won't mark
+a job Lost if it was contacted within the TTR; genuinely-silent runners still go
+Lost within ~1 TTR), and the per-touch web-UI work is gated behind
+`hasAnyClientSubscriptions()`. The heavy stress reproduction lives in
+`harness/reliable_cause_test.go` and remains as an **independent regression
+guard** every idea trial re-runs (it is throughput-sensitive under `-race`, so it
+is deliberately not in the committed suite; the committed guard is the
+deterministic `TestLostDetectionRecentContactNotLost`). This was the same root as
+S6 (single `RecvMsg` reader + per-touch work); F0 removes the per-touch work and
+makes detection latency-tolerant, but the broader S6 status-vs-runner contention
+is still what the architectural ideas target.
 
 ### Note on the real-LSF attempt
 
@@ -421,48 +427,50 @@ storage-split), each with its own trial checklist reusing this harness.
 
 ## Acceptance criteria — the full test set every idea must pass
 
-A complete fix must make **all** of these pass, starting from the reliable branch
-(HEAD), without regressing the ones already green. This is the set each
-`ideaN.md` trial checklist runs.
+The **baseline is now HEAD + F0 (commit a19d390)**. C, D and E already pass on
+that baseline; every idea trial must keep them green (F0 is the regression guard)
+AND additionally fix its own target (B startup, F responsiveness). This is the set
+each `ideaN.md` trial checklist runs.
 
 Go tests (drop `harness/reliable_repro_test.go` + `harness/reliable_cause_test.go`
 into `jobqueue/`, then `CGO_ENABLED=1 go test -tags netgo -run TestReliable ./jobqueue`):
 
-| id | test | HEAD now | required after fix |
-|---|---|---|---|
-| C (consequence) | `TestReliableFalseLostRerun` | PASS (fixed by #548) | **stay PASS** |
-| D (removed) | `TestReliableCompletedRepGroupRemovedOnRefresh` | PASS (fixed by #548) | **stay PASS** |
-| E (lost CAUSE) | `TestReliableFalseLostUnderSaturation` | **FAIL** | **PASS** |
+| id | test | v0.37.1 | HEAD before F0 | HEAD + F0 (baseline) | idea must |
+|---|---|---|---|---|---|
+| C (consequence) | `TestReliableFalseLostRerun` | FAIL | PASS (#548) | PASS | stay PASS |
+| D (removed) | `TestReliableCompletedRepGroupRemovedOnRefresh` | FAIL | PASS (#548) | PASS | stay PASS |
+| E (lost CAUSE) | `TestReliableFalseLostUnderSaturation` | FAIL | **FAIL** | **PASS (F0)** | **stay PASS (do not regress F0)** |
 
 Harness scenarios (thresholds, not asserts — record numbers):
 
-| id | scenario / script | HEAD now | required after fix |
+| id | scenario / script | HEAD+F0 baseline | idea must achieve |
 |---|---|---|---|
-| B (startup) | `exp_startup_ab.sh` (10k running), `exp_realdb_seed.sh` (real DB) | 162–190 s | responsive in **≤ a few s** regardless of history/running-jobs |
-| F (responsive) | `exp_reconnect.sh` / `exp_status_load2.sh` (10k conns) | `wr status` → ~460 ms, degrades with conns | bounded (**≲ baseline**) independent of runner count |
+| B (startup) | `exp_startup_ab.sh` (10k running), `exp_realdb_seed.sh` (real DB) | still 162–190 s (F0 did not touch startup) | responsive in **≤ a few s** regardless of history/running-jobs |
+| F (responsive) | `exp_reconnect.sh` / `exp_status_load2.sh` (10k conns) | improved by F0's touch gating but `wr status` still degrades with conns | bounded (**≲ baseline**) independent of runner count |
 | G (throughput) | `exp1.sh`, `exp_drive_ab.sh` | HEAD ≥ v0.36.5 | **not regressed** |
 
-### F0 — the shared "protect the hot path" fix (required for E and F)
+### F0 — the shared "protect the hot path" fix (DONE, commit a19d390)
 
-E (false-lost cause) and F (status responsiveness) share a root — runner
-keep-alive/lifecycle RPCs (touch/archive) getting delayed on the single-reader
-socket + per-touch work. **No idea's core mechanism fixes E on its own**, so every
-idea must also include this shared fix, in three layers:
+E (false-lost cause) and F (status responsiveness) shared a root — runner
+keep-alive/lifecycle RPCs (touch) getting delayed on the single-reader socket +
+per-touch work. **F0 is now implemented on the reliable branch** and makes E pass;
+it is the baseline every idea builds on and must not regress. What F0 did:
 
-1. **Make touches cheap** — gate *all* web-UI/subscription/stdout-stderr work off
-   the touch path (the ungated per-touch decompression, `serverCLI.go:965-977`), so
-   a touch is a tiny queue op (this is Idea 1e).
-2. **Don't let touches be starved** — give runner lifecycle RPCs (touch/archive)
-   priority over bulk `add`/`status`, or a dedicated ingest lane, so keep-alives
-   are never queued behind bulk/status traffic.
-3. **Make lost-detection robust to processing latency** — treat a job as alive
-   based on when the runner last *contacted* the manager (stamp touch arrival at
-   ingest, before heavy processing, or use the runner's live persistent
-   connection), not when the manager finished *processing* the touch; optionally an
-   adaptive grace period under load. This is what actually makes `TestReliable
-   FalseLostUnderSaturation` pass even if processing briefly lags.
+1. **Made touches cheap** — `emitLiveTouchSnapshot` (serverCLI.go) now gates the
+   stdout/stderr decompress + subscription enqueue behind `hasAnyClientSubscriptions()`
+   (live fields still updated), so a touch with no subscribers is a tiny op.
+2. **Recorded touch arrival early** — `handleTouch` calls `recordJobContact(key)`
+   as its first step (before `getij`/`queue.Touch`), so contact time reflects
+   arrival, not post-`queue.mutex` processing.
+3. **Made lost-detection latency-tolerant** — `ttrCallback` won't mark a running
+   job Lost if `contactedWithin(key, ItemTTR)`; it keeps it running (fresh TTR).
+   Genuinely-silent runners (no contact within the TTR) are still marked Lost
+   within ~1 TTR (`TestLostDetectionSilentRunner`).
 
-Layers 1+2 reduce the delay; layer 3 makes detection correct even when delay
-happens. Ideas that remove load from the request path (3 counters, 4 decouple,
-5 storage) make layers 1–2 easier but still need layer 3 for E under pure
-runner-only load.
+**Not fully addressed by F0 (still the ideas' job):** F0 removes the *per-touch*
+work and makes detection tolerant, but the deeper single-`RecvMsg`-reader
+contention (S6 — `wr status`/bulk traffic vs runner traffic) remains a
+responsiveness (F) concern, and startup (B) is untouched. Ideas that remove load
+from the request path (3 counters, 4 decouple, 5 storage) and non-blocking startup
+(2) address those; each must keep E green (re-run `TestReliableFalseLostUnderSaturation`
+from `harness/`).

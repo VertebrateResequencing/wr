@@ -90,15 +90,14 @@ that "the web UI cannot affect operations" at startup.
 | B | startup responsive | **core** — respond first, recover in background (definitive, any DB/history/scheduler) |
 | C | false-lost consequence stays fixed | preserved; background recovery must not lose/duplicate jobs (race tests) |
 | D | removed-on-refresh stays fixed | preserved; seed still includes complete-only RepGroups |
-| E | false-lost CAUSE | **not by core → must bundle F0** (Idea 1e touch gating + 1g ingest-time liveness/priority) |
+| E | false-lost CAUSE | **DONE in baseline (F0, a19d390); idea must not regress it** |
 | F | status responsive under load | startup responsiveness is core; **steady-state** responsiveness needs F0 (+ Idea 1f) |
 | G | throughput not regressed | preserved |
 
-**Honest scope:** Idea 2's core only guarantees B. It is "responsiveness-first",
-so it naturally *should* bundle the shared **F0** fix to extend that philosophy to
-steady state (touch priority + ingest-time last-contact), which is what closes E
-and F. Without F0, Idea 2 alone leaves `TestReliableFalseLostUnderSaturation`
-failing.
+**Honest scope:** F0 (a19d390) is already in the baseline, so E is green; Idea 2's
+job is **B (startup responsiveness)** by its core. Steady-state responsiveness (F)
+beyond F0's touch gating still needs help (Idea 1f / Idea 4). Every trial re-runs
+the `harness/` F0 test to confirm no regression.
 
 - [ ] **Full acceptance set (testing.md).** With Idea 2 + F0: the 3 Go tests all
   PASS (esp. `TestReliableFalseLostUnderSaturation`, which needs F0);

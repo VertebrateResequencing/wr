@@ -60,10 +60,10 @@ option that minimises it without risking durability.
 
 ## Fix 1e — Gate the remaining per-op web-UI work
 
-**Change:** add the existing `hasAnyClientSubscriptions()`/web-connected gate to
-the **touch** path (skip stdout/stderr decompression + `JobUpdate` build when no
-one is subscribed), and batch/skip `markPersistedJobStatusGroups` on archive
-(it only feeds web-UI counts; it can be derived from the incremental counts).
+**Touch-path gate: DONE in F0 (a19d390)** — `emitLiveTouchSnapshot` now gates the
+stdout/stderr decompression + `JobUpdate` build behind `hasAnyClientSubscriptions()`.
+**Remaining:** batch/skip `markPersistedJobStatusGroups` on archive (it only feeds
+web-UI counts; Idea 3 removes it entirely by maintaining the counts).
 
 ## Fix 1f — Keep `wr status` off the runner-traffic path
 
@@ -76,16 +76,16 @@ consider a separate listener/socket for human/status clients so a runner message
 storm can't queue ahead of them (Idea 4 does this properly). Also apply the
 touch-path subscriber gate (Fix 1e) so each touch is a smaller message to process.
 
-## Fix 1g — Robust lost-detection so a touched job is never falsely lost (F0 layers 2–3)
+## Fix 1g — Robust lost-detection so a touched job is never falsely lost — DONE in F0 (a19d390)
 
-**Change:** 1e makes touches cheap; 1g makes lost-detection correct even when
-processing lags. (i) Give runner lifecycle RPCs (touch/archive) priority over bulk
-`add`/`status` — a dedicated ingest lane or dispatch priority — so keep-alives are
-never queued behind bulk traffic. (ii) Stamp a job's "last contact" at touch
-**ingest** (when the message is read off the socket), before any heavy processing,
-and have the TTR sweep use that — so a job whose touch *arrived* in time is never
-reaped just because the manager processed it late; optionally an adaptive grace
-period under load. This is what makes `TestReliableFalseLostUnderSaturation` pass.
+Implemented: `handleTouch` records `recordJobContact(key)` before the contended
+processing, and `ttrCallback` keeps a job running (fresh TTR) if it was
+`contactedWithin(key, ItemTTR)`, only marking Lost when there was no contact in
+the window. Makes `TestReliableFalseLostUnderSaturation` pass while
+`TestLostDetectionSilentRunner` still detects genuinely-dead runners. (F0 did not
+add a separate touch *ingest lane*; it relied on cheap touches + latency-tolerant
+detection, which sufficed. A dedicated ingest lane remains a possible future
+hardening if runner traffic alone ever saturates the reader.)
 
 ## Coverage of the full test set (see testing.md acceptance criteria)
 
@@ -94,7 +94,7 @@ period under load. This is what makes `TestReliableFalseLostUnderSaturation` pas
 | B | startup responsive | 1a/1b (seeding off startup path) + 1d (freelist) |
 | C | false-lost consequence stays fixed | untouched; regression-checked |
 | D | removed-on-refresh stays fixed | 1a/1b async seed **must still populate complete-only RepGroups** for fresh subscribers (verify) |
-| E | false-lost CAUSE | **1e + 1g (= F0)** |
+| E | false-lost CAUSE | **DONE in baseline (F0, commit a19d390 — subsumes the old 1e + 1g); idea must not regress it** |
 | F | status responsive under load | 1e + 1f (status off the runner-traffic path) |
 | G | throughput not regressed | no hot-path work added |
 
