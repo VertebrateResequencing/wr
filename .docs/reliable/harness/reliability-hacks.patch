@@ -1,0 +1,129 @@
+diff --git a/jobqueue/db.go b/jobqueue/db.go
+index 8418b0c..7b80183 100644
+--- a/jobqueue/db.go
++++ b/jobqueue/db.go
+@@ -414,7 +414,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
+ 		}
+ 	}
+ 
+-	if wipeDevDB && deployment == internal.Development {
++	if wipeDevDB && deployment == internal.Development && os.Getenv("WR_RELIABILITY_KEEPDB") == "" { // TEMP reliability-test guard
+ 		errr := os.Remove(dbFile)
+ 		if errr != nil && !os.IsNotExist(errr) {
+ 			clog.Warn(ctx, "Failed to remove database file", "path", dbFile, "err", errr)
+diff --git a/jobqueue/server.go b/jobqueue/server.go
+index 9288778..1b2480b 100644
+--- a/jobqueue/server.go
++++ b/jobqueue/server.go
+@@ -2204,12 +2204,22 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
+ 		return s, msg, token, err
+ 	}
+ 
++	// TEMP reliability-test startup phase timing (env-gated).
++	relT := time.Now()
++	relLog := func(name string) {
++		if os.Getenv("WR_RELIABILITY_TIMING") != "" {
++			clog.Warn(ctx, "RELSTARTUP", "phase", name, "ms", time.Since(relT).Milliseconds())
++			relT = time.Now()
++		}
++	}
++
+ 	// we need to persist stuff to disk, and we do so using boltdb
+ 	db, msg, err := initDB(
+ 		ctx, config.DBFile, config.DBFileBackup, config.Deployment,
+ 		!config.dontWipeDevDB, config.forceBackups,
+ 	)
+ 	msg = joinStartupMessages(certMsg, msg)
++	relLog("initDB")
+ 
+ 	if err != nil {
+ 		return s, msg, token, err
+@@ -2322,10 +2332,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
+ 	// if we're restarting from a state where there were incomplete jobs, we
+ 	// need to load those in to our queue now
+ 	s.createQueue(ctx)
++	relLog("createQueue")
+ 
+ 	if err = s.loadPriorState(ctx, config, db); err != nil {
+ 		return nil, msg, token, err
+ 	}
++	relLog("loadPriorState")
+ 
+ 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
+ 	// waitgroup here since we call shutdown, which waits on the group)
+@@ -2346,11 +2358,15 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
+ 		return s, msg, token, err
+ 	}
+ 
++	relLog("webInterface+persistToken")
++
+ 	// now that we're ready, set up responding to command-line clients
+ 	wgk = wg.Add(1)
+ 
+ 	go s.serveClients(ctx, sock, wg, wgk, stopClientHandling, clientHandlingDone)
+ 
++	relLog("ready")
++
+ 	return s, msg, token, err
+ }
+ 
+@@ -2658,9 +2674,19 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
+ 		return nil
+ 	}
+ 
++	relStart := time.Now()
++	relSub := func(name string) {
++		if os.Getenv("WR_RELIABILITY_TIMING") != "" {
++			clog.Warn(ctx, "RELPRIOR", "sub", name, "ms", time.Since(relStart).Milliseconds(), "njobs", len(priorJobs))
++			relStart = time.Now()
++		}
++	}
++	relSub("recoverIncompleteJobs(before markPersisted)")
++
+ 	if err := s.markPersistedJobStatusGroups(priorJobs, true); err != nil {
+ 		return fmt.Errorf("%w: %w", Error{Op: "recoverPriorJobs", Err: ErrDBError}, err)
+ 	}
++	relSub("markPersistedJobStatusGroups")
+ 
+ 	var (
+ 		loginUser string
+@@ -2686,8 +2712,10 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
+ 
+ 		itemdefs = append(itemdefs, itemdef)
+ 	}
++	relSub("recoveredItemDef-loop(incompleteJobKeys deps)")
+ 
+ 	_, _, err := s.enqueueItems(ctx, itemdefs)
++	relSub("enqueueItems(seedStatusState+AddMany)")
+ 
+ 	return err
+ }
+@@ -3566,10 +3594,15 @@ func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk str
+ 
+ // enqueueItems adds new items to a queue, for when we have new jobs to handle.
+ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
++	relEQ := time.Now()
+ 	if err = s.seedStatusStateForItemDefs(itemdefs); err != nil {
+ 		return 0, 0, err
+ 	}
+ 
++	if os.Getenv("WR_RELIABILITY_TIMING") != "" {
++		clog.Warn(ctx, "RELEQ", "sub", "seedStatusStateForItemDefs", "ms", time.Since(relEQ).Milliseconds())
++	}
++
+ 	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
+ 
+ 	if readyCallbackExpected {
+@@ -4949,6 +4982,12 @@ func (s *Server) runnerCommand() string {
+ }
+ 
+ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
++	if os.Getenv("WR_RELIABILITY_NOSCHED") != "" { // TEMP reliability-test guard: never spawn runners/run commands
++		clog.Warn(ctx, "RELNOSCHED", "group", group.name)
++
++		return
++	}
++
+ 	rc := s.runnerCommand()
+ 	if rc == "" {
+ 		return
