@@ -247,3 +247,27 @@ Harness thresholds (record numbers; `.docs/reliable/harness/`):
   statusState-seeding semantics (no web-UI regression). Write the
   counter==recompute==ground-truth acceptance test against the RAW scan. The CLI
   keeps its own live-excluding function unchanged (separate concern).
+- **Counter maintenance must also cover the `modify` path (resolves round-4;
+  refines the increment-only framing to make "correct by construction" hold under
+  ALL runtime paths):** the raw scan `retrieveCompleteJobCountsByRepGroups` can also
+  DECREASE at runtime via the single RTK-deletion path —
+  `modifyLiveJobs → deleteOldLiveJobs → deleteLookupEntriesForJobKey` removes
+  `(R,oldKey)` from RTK; if `oldKey` is still in the complete bucket (a
+  re-added-then-modified previously-complete job), the raw count for R drops by 1.
+  Maintain the counter to equal the raw scan by construction. Cleanest design —
+  hook the underlying mutation primitives, each inside its existing bolt tx:
+  - RTK lookup entry **created** for `(R,K)` and `K ∈ complete` → `counter[R]++`
+    (covers both `storeNewJobs`/add and `modifyLiveJobsTx`'s new lookups);
+  - RTK lookup entry **deleted** for `(R,K)` and `K ∈ complete` → `counter[R]--`
+    (the modify path; spec-author must VERIFY `deleteLookupEntriesForJobKey` is the
+    ONLY runtime RTK-deletion site and that the normal remove path `deleteLiveJobs`
+    does NOT delete RTK);
+  - `K` **added** to the complete bucket (archive), not already present (idempotent
+    re-archive guard) → for every R with `(R,K) ∈ RTK`, `counter[R]++`;
+  - `K` is never deleted from the complete bucket (append-only) → no hook.
+  Clamp counters at ≥0 as a safety net (must never trigger if the logic is correct).
+  Keep the offline SET recompute as belt-and-braces + migration. **Extend the
+  counter==recompute==ground-truth acceptance test to include a `modify` step**
+  (re-add a completed key, modify it so its `Key()` changes, assert the counter
+  stays == the raw scan). Rationale: this manager runs for weeks/months and offline
+  recompute needs downtime, so correct-by-construction beats "repair later."
