@@ -103,3 +103,47 @@ re-runs the `harness/` F0 test to confirm no regression.
   PASS (E needs F0; verify D still PASS since the seed source changed);
   `exp_realdb_seed.sh` add/restart drop to ms/seconds; `exp_reconnect.sh` bounded;
   `exp1.sh`/`exp_drive_ab.sh` ≥ v0.36.5 (expect better — read-tx gone). Record numbers.
+
+## Trial results (spike on F0 baseline)
+
+Env-gated `WR_COUNTER_SEED` spike: a persisted `repGroupComplete` bucket
+incremented **inside `archiveJob`'s existing bolt tx**; `seedStatusStateForItemDefs`
+reads it (O(live repgroups) point reads) instead of the O(history) scan; plus a
+one-off `recompute` migration. ~130 LOC core (db.go, server.go) + ~90 tooling.
+
+**Effectiveness (measured, 60k-complete repgroup, local /tmp, warm):**
+
+| path | baseline (scan) | spike (counter) |
+|---|---|---|
+| cold `wr add` seed | 64 ms | **0 ms** |
+| restart seed (loadPriorState/RELEQ) | 66 ms | **0 ms** |
+| recompute (one-time migration, 60k) | — | **71 ms** (offline) |
+
+Both operational paths drop to **0 ms**, **independent of history size** — unlike
+Idea 1 (which defers the 64 ms scan but still pays it in the background), Idea 3
+**eliminates** it. Extrapolating S3: the 162 s restart / 190 s add on the
+700k-cold-NFS DB become ~0 on the operational path (time-to-responsive collapses
+to initDB + decode). The recompute is a one-time offline O(history) pass at DB
+upgrade; new DBs need none.
+
+**Correctness (verified):** counter written in the **same tx** as the
+complete-record ⇒ crash-consistent — a `kill -9` at 16.5k/30k completions left
+`mismatches=0` on restart (maintained counter == fresh recompute == `wr status`).
+Idempotent (guards re-archive/#547-rerun double-count). **Production gaps found:**
+must increment for **all** of a key's repgroups (spike did only `job.RepGroup` —
+cross-repgroup keys would under-count); needs the offline recompute at upgrade;
+complete-only scope is sufficient (other states are live, O(live jobs)).
+
+**Correction to this doc:** Idea 3 does **not** remove the per-archive
+`markPersistedJobStatusGroups` read-tx (R5) "for free" — that tx feeds the
+in-memory cross-repgroup/rerun accounting, not the count. R5 is bounded
+(O(job's own lookups)) and S5 showed archive throughput isn't regressed, so it's a
+separate minor cleanup.
+
+**F0 regression:** 4/4 deterministic tests PASS (gate off AND on).
+
+**Verdict:** the **durable fix for B** — removes the seeding root permanently on
+both paths, crash-consistent. Supersedes Idea 1's async-seed (no scan to defer, no
+double-count risk). Best combined with **Idea 2** (2+3 = respond first AND cheap
+recovery). Productionise: per-repgroup increments, offline recompute at upgrade,
+keep complete-only scope.
