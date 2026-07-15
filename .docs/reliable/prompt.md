@@ -223,3 +223,27 @@ Harness thresholds (record numbers; `.docs/reliable/harness/`):
   startup (re-blocks readiness) or online while serving (`bolt.Compact` copies the
   whole DB ≈2× disk and can't run cleanly with live writes on the 6.2 GB NFS DB).
   Validate the map-freelist benefit against the real `.tmp/db`, not synthetic scale.
+- **Counter backfill/recompute reconciliation — use SET, not additive
+  (supersedes the earlier "add rather than overwrite" wording):**
+  - **Online one-time backfill** (automatic on first start on an un-backfilled
+    DB): runs in the **background** (non-blocking startup), **per-repgroup**,
+    **SET** `counter[rg] = raw scan count` in small per-repgroup transactions
+    (never one giant whole-DB overwrite — the giant overwrite is what "rather than
+    overwrite" was guarding against), with a persisted per-repgroup **"backfilled"
+    marker** so it is crash-resumable and idempotent (re-run SETs the same value).
+    Reconcile with concurrent runtime increments so the converged counter equals
+    ground truth. During this one-time window a not-yet-backfilled repgroup's
+    web-UI complete count may lag (acceptable; the CLI is unaffected).
+  - **Offline admin repair** (manager stopped): SET all counters from a full scan
+    — authoritative, idempotent — shipped alongside the Fix 1d offline compaction
+    subcommand. "Re-runnable repair" = this offline SET (idempotent) plus online
+    crash-resume via the marker.
+- **Counter target = the RAW scan:** the counter must reproduce
+  `retrieveCompleteJobCountsByRepGroups` (the raw "(R,key)∈RTK && key∈completeBucket"
+  count, db.go:902), **NOT** the CLI's live-EXCLUDING
+  `retrieveCompleteJobStatusByRepGroup` (db.go:1677, which drops keys currently back
+  in the live bucket). They diverge when a key is simultaneously re-added (live) and
+  in the complete bucket; the counter matching the raw scan matches the CURRENT
+  statusState-seeding semantics (no web-UI regression). Write the
+  counter==recompute==ground-truth acceptance test against the RAW scan. The CLI
+  keeps its own live-excluding function unchanged (separate concern).
