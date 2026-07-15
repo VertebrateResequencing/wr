@@ -120,6 +120,13 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateRemoved:   JobStateComplete,
 }
 
+func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
+	if len(j.incrementedLimitGroups) > 0 {
+		lim.Decrement(j.incrementedLimitGroups)
+		j.incrementedLimitGroups = []string{}
+	}
+}
+
 func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, actualCwd string) string {
 	if state != JobStateRunning || actualCwd == "" {
 		return ""
@@ -1056,10 +1063,7 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 	j.Lock()
 	defer j.Unlock()
 
-	if len(j.incrementedLimitGroups) > 0 {
-		lim.Decrement(j.incrementedLimitGroups)
-		j.incrementedLimitGroups = []string{}
-	}
+	j.decrementLimitGroupsLocked(lim)
 }
 
 // Key calculates a unique key to describe the job.

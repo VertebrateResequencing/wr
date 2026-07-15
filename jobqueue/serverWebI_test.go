@@ -763,7 +763,7 @@ func archiveServerCompletedJob(ctx context.Context, server *Server, item *queue.
 	endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
 	job.updateAfterExit(endState, server.limiter)
 
-	key, repGroup, schedulerGroup, srerr := markJobComplete(item, job, endState)
+	key, repGroup, schedulerGroup, srerr := markJobComplete(item, job, endState, server.limiter)
 	if srerr != "" {
 		return Error{Op: archiveServerCompletedJobOp, Err: srerr}
 	}

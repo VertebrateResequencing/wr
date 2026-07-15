@@ -997,18 +997,12 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// remove the job from the queue, rpl and live bucket and add to complete
 	// bucket
-	item, job, srerr := s.getij(cr, true)
+	item, job, srerr := s.getij(cr, false)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
 
-	// first check the item is still in the run queue (eg. the job wasn't
-	// released by another process; unlike the other methods, queue package does
-	// not check we're in the run queue when Remove()ing, since you can remove
-	// from any queue)
-	job.updateAfterExit(cr.JobEndState, s.limiter)
-
-	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState)
+	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState, s.limiter)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1017,21 +1011,27 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 }
 
 // markJobComplete validates that a job is a successfully exited running job and,
-// if so, marks it complete under lock, returning its key, rep group and
-// scheduler group (or an Err* string if it cannot be archived).
-func markJobComplete(item *queue.Item, job *Job, endState *JobEndState) (key, rgroup, sgroup, srerr string) {
+// if so, applies its terminal state and marks it complete under lock, returning
+// its key, rep group and scheduler group (or an Err* string if it cannot be
+// archived).
+func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
+	lim *limiter.Limiter,
+) (key, rgroup, sgroup, srerr string) {
 	job.Lock()
 	defer job.Unlock()
 
-	switch {
-	case item.Stats().State != queue.ItemStateRun:
+	if !job.canCompleteFromQueueState(item.Stats().State) {
 		return "", "", "", ErrBadJob
-	case !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero():
+	}
+
+	if !job.canCompleteFromEndState(endState) {
 		return "", "", "", ErrBadRequest
 	}
 
+	job.applySuccessfulEndStateLocked(endState, lim)
 	job.State = JobStateComplete
 	job.FailReason = ""
+	job.Lost = false
 
 	if endState != nil {
 		job.StdOutC = endState.Stdout
@@ -1039,6 +1039,44 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState) (key, rg
 	}
 
 	return job.Key(), job.RepGroup, job.schedulerGroup, ""
+}
+
+func (j *Job) canCompleteFromQueueState(itemState queue.ItemState) bool {
+	if itemState == queue.ItemStateRun {
+		return true
+	}
+
+	if j.FailReason != FailReasonLost {
+		return false
+	}
+
+	switch itemState {
+	case queue.ItemStateDelay, queue.ItemStateReady:
+		return j.State == JobStateDelayed
+	case queue.ItemStateBury:
+		return j.State == JobStateBuried
+	default:
+		return false
+	}
+}
+
+func (j *Job) canCompleteFromEndState(endState *JobEndState) bool {
+	return endState != nil && endState.Exited && endState.Exitcode == 0 &&
+		!j.StartTime.IsZero() && !endState.EndTime.IsZero()
+}
+
+func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.Limiter) {
+	j.decrementLimitGroupsLocked(lim)
+	j.Exited = true
+	j.Exitcode = endState.Exitcode
+	j.PeakRAM = endState.PeakRAM
+	j.PeakDisk = endState.PeakDisk
+	j.CPUtime = endState.CPUtime
+	j.EndTime = endState.EndTime
+
+	if endState.Cwd != "" {
+		j.ActualCwd = endState.Cwd
+	}
 }
 
 // archiveCompletedJob persists a completed job to the complete bucket and
