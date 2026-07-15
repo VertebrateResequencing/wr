@@ -155,3 +155,38 @@ affected either way.
   `TestReliableFalseLostUnderSaturation`) all **PASS**; `exp_startup_ab.sh`/
   `exp_realdb_seed.sh` restart ≤ a few s; `exp_reconnect.sh` `wr status` bounded
   under 10k conns; `exp1.sh`/`exp_drive_ab.sh` ≥ v0.36.5. Record all numbers.
+
+## Trial results (spike on F0 baseline, 4613ea9)
+
+Env-gated `WR_SEED_ASYNC` spike of 1a/1b: `seedStatusStateForItemDefs` pushes
+unseen repgroups to a background worker instead of scanning inline. ~105 LOC, 2
+files, **no hot-path (reserve/touch/archive) changes**.
+
+**Effectiveness (measured, local /tmp, warm, one repgroup with 60000 complete):**
+- Cold `wr add` of one job to the 60k-history repgroup: **134 ms → 60 ms**; the
+  74 ms inline seed scan is fully off the add path (converges ~111 ms later in the
+  background).
+- Restart: `loadPriorState` seed **87 ms → 1 ms** (off the readiness path). Total
+  restart wall unchanged *at this scale* because `initDB` freelist (~300 ms) now
+  dominates → **pair with Fix 1d**. At production scale (S3: 700k-history repgroup,
+  cold NFS) the seed was 161.6 s of a 162.6 s restart, so the spike converts
+  **~162 s → ~1 s** there. Benefit scales with history × cache-coldness.
+- Background convergence produced correct counts (`complete:60000`).
+
+**F0 regression:** all 4 deterministic guards PASS (gate off AND on).
+**G throughput:** not regressed (no hot-path change). **F responsiveness:** NOT
+addressed (that's the single-RecvMsg-reader contention = Idea 4).
+
+**Risks found:** (1) the additive historical merge can **double-count** a job that
+completes during the seed window — a production version must make the merge
+idempotent (snapshot-at-enqueue or reconcile) — exactly what **Idea 3** removes by
+maintaining exact counts; (2) web-UI complete count lags by the scan duration
+(operations unaffected); (3) worker needs a lifecycle (stop before db.close).
+Nuance: `wr status -o counts` reads complete via a **direct DB scan**, not
+`statusState`, so the async seed only affects the **web-UI websocket** seed — and
+that CLI path itself does an O(history) scan per call (motivates Fix 1f).
+
+**Verdict:** low-risk, small, reviewable **stopgap** for B (startup + add stall);
+must be paired with 1d to move restart wall time; its double-count weakness is
+eliminated by Idea 3, and it does nothing for F (Idea 4). Good "ship now",
+superseded by counters later.
