@@ -104,3 +104,45 @@ the `harness/` F0 test to confirm no regression.
   `exp_startup_ab.sh`/`exp_realdb_seed.sh` restart ≤ a few s (core);
   `exp_reconnect.sh` `wr status` bounded under 10k conns; `exp1.sh`/
   `exp_drive_ab.sh` ≥ v0.36.5. Record numbers.
+
+## Trial results (spike on F0 baseline)
+
+Env-gated `WR_ASYNC_RECOVERY` spike: in `Serve`, `persistToken` + `serveClients` +
+web interface run BEFORE `loadPriorState`, which runs in a background goroutine
+(with an `s.recovering` flag). ~51 exec LOC, one file. Needed one concurrency fix
+(guard `recoveredRunningJobs` with a mutex).
+
+**Effectiveness — restart time-to-responsive (40k incomplete / 10k running, LSF+NOSCHED):**
+
+| storage | baseline (gate off) | spike (gate on) |
+|---|---|---|
+| local /tmp | 1.15 s (loadPriorState 624 ms on readiness path) | **0.51 s** |
+| NFS | 12.61 s (loadPriorState 12.23 s) | **0.34 s** (37×) |
+
+To-responsive ≈ `initDB + createQueue + web + token`, **independent of recovery
+cost** — so it generalises to the S3 real-DB case (~1 s responsive even though the
+162 s seeding still runs in the background). **Fixes B definitively and
+generically** (any cause: decode, deps, seeding, history, NFS). Correctness during
+recovery verified: status/ping/add all respond immediately; final accounting
+correct (40000, lost=0, no dups).
+
+**Key limitation:** the minimal reorder does NOT stream — `recoverIncompleteJobs`
+decodes all jobs then one `AddMany` at the end, so **recovered jobs are invisible
+and non-reservable until recovery fully completes** (NFS: queue 0/0 for ~10 s then
+jumps to full). idea2.md's "stream in batches / reserve ramp" needs chunked,
+dependency-aware decode+enqueue (more work). New work added during recovery IS
+immediately live.
+
+**Concurrency risks:** recoveredRunningJobs map race (fixed); re-add colliding
+with a recovered job (foreseen — AddMany dedups by key only, so state can be wrong
+if the re-add beats recovery); dependent-job ordering during recovery (foreseen).
+Everything else already lock-safe.
+
+**F0 regression:** 4/4 deterministic tests PASS (gate off AND on).
+
+**Verdict:** **necessary but not sufficient.** It guarantees the manager is never
+"stuck" on startup (the strongest fix for testing.md cause #2), but the recovery
+*work* still happens in the background, so recovered jobs aren't usable quickly and
+F is untouched. The real win is **Idea 2 + Idea 3** (maintained counters make
+recovery cheap → responsive AND fully recovered in seconds) or **2 + 1a/1b/1d**;
+**1c** removes the local `/proc` recovery cost; **4** adds F. Best combined, not alone.
