@@ -82,3 +82,26 @@ that "the web UI cannot affect operations" at startup.
   after a hard server crash") still passes with async recovery.
 - [ ] **Compose.** Confirm it stacks with Idea 1c (local one-scan recover) and
   Idea 3/5 so that even the background recovery is fast.
+
+## Coverage of the full test set (see testing.md acceptance criteria)
+
+| id | criterion | how Idea 2 covers it |
+|---|---|---|
+| B | startup responsive | **core** — respond first, recover in background (definitive, any DB/history/scheduler) |
+| C | false-lost consequence stays fixed | preserved; background recovery must not lose/duplicate jobs (race tests) |
+| D | removed-on-refresh stays fixed | preserved; seed still includes complete-only RepGroups |
+| E | false-lost CAUSE | **not by core → must bundle F0** (Idea 1e touch gating + 1g ingest-time liveness/priority) |
+| F | status responsive under load | startup responsiveness is core; **steady-state** responsiveness needs F0 (+ Idea 1f) |
+| G | throughput not regressed | preserved |
+
+**Honest scope:** Idea 2's core only guarantees B. It is "responsiveness-first",
+so it naturally *should* bundle the shared **F0** fix to extend that philosophy to
+steady state (touch priority + ingest-time last-contact), which is what closes E
+and F. Without F0, Idea 2 alone leaves `TestReliableFalseLostUnderSaturation`
+failing.
+
+- [ ] **Full acceptance set (testing.md).** With Idea 2 + F0: the 3 Go tests all
+  PASS (esp. `TestReliableFalseLostUnderSaturation`, which needs F0);
+  `exp_startup_ab.sh`/`exp_realdb_seed.sh` restart ≤ a few s (core);
+  `exp_reconnect.sh` `wr status` bounded under 10k conns; `exp1.sh`/
+  `exp_drive_ab.sh` ≥ v0.36.5. Record numbers.

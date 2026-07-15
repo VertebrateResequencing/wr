@@ -83,3 +83,22 @@ reduced to a handful of extra bytes per transaction — it cannot block operatio
 - [ ] **A/B vs v0.36.5.** S1 throughput ≥ v0.36.5; S3 add/restart now *better*
   than v0.36.5 (which scanned nothing but also had no counts — we now have both
   cheap and correct).
+
+## Coverage of the full test set (see testing.md acceptance criteria)
+
+| id | criterion | how Idea 3 covers it |
+|---|---|---|
+| B | startup responsive | **core** — counts read in O(RepGroups), no history scan at startup or add |
+| C | false-lost consequence stays fixed | preserved |
+| D | removed-on-refresh stays fixed | counters are the count source; the fresh seed **must still include complete-only RepGroups** (keep the #548 seed filter) |
+| E | false-lost CAUSE | **not by core → must bundle F0** (touch is not a counter concern) |
+| F | status responsive under load | improved (removes seeding scan + per-archive read-tx load) but needs F0/1f for the bound |
+| G | throughput not regressed | improved (per-archive read-tx removed) |
+
+**Honest scope:** Idea 3 removes the history-scan class (B, and load that helps
+F/G) but does nothing for touch/TTR, so it **must bundle F0** to pass E.
+
+- [ ] **Full acceptance set (testing.md).** With Idea 3 + F0: the 3 Go tests all
+  PASS (E needs F0; verify D still PASS since the seed source changed);
+  `exp_realdb_seed.sh` add/restart drop to ms/seconds; `exp_reconnect.sh` bounded;
+  `exp1.sh`/`exp_drive_ab.sh` ≥ v0.36.5 (expect better — read-tx gone). Record numbers.

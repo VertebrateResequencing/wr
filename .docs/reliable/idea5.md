@@ -91,3 +91,23 @@ layer.
 - [ ] **No-regression + durability.** `make test`, `make race`; crash-recovery
   test passes (kill -9 mid-churn → hot store consistent; cold store re-derivable);
   document the backup/relocation story for the local hot store.
+
+## Coverage of the full test set (see testing.md acceptance criteria)
+
+| id | criterion | how Idea 5 covers it |
+|---|---|---|
+| B | startup responsive | **core** — hot store is small/local; no history to open or scan |
+| C | false-lost consequence stays fixed | preserved |
+| D | removed-on-refresh stays fixed | preserved (seed logic unchanged; counts from the hot store) |
+| E | false-lost CAUSE | faster storage reduces processing latency but does **not** remove touch starvation → **must bundle F0** |
+| F | status responsive under load | faster DB helps; needs F0/1f for the bound |
+| G | throughput not regressed | improved (small hot store, less commit cost) |
+
+**Honest scope:** Idea 5 attacks the storage substrate (B, and helps E/F/G by
+making every op faster), but the touch/TTR robustness (E) and status-vs-runner
+isolation (F) still require **F0**.
+
+- [ ] **Full acceptance set (testing.md).** With Idea 5 + F0: the 3 Go tests all
+  PASS; `exp_startup_ab.sh`/`exp_realdb_seed.sh` `initDB` + restart bounded
+  regardless of history; `exp_reconnect.sh` bounded; `exp1.sh`/`exp_drive_ab.sh`
+  ≥ v0.36.5 (expect better). Record numbers.

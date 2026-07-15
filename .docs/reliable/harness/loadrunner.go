@@ -113,6 +113,27 @@ func main() {
 
 	worker := func(id int) {
 		defer wg.Done()
+
+		// churn: repeatedly connect -> ping -> disconnect, simulating unstable
+		// runners re-dialing a (re)started manager. Runs for -duration.
+		if *mode == "churn" {
+			deadline := t0.Add(*dur)
+			if *dur == 0 {
+				deadline = t0.Add(60 * time.Second)
+			}
+			for time.Now().Before(deadline) {
+				cc, err := jobqueue.ConnectUsingConfig(ctx, *deployment, 10*time.Second)
+				if err != nil {
+					atomic.AddInt64(&reserveEmpty, 1)
+					continue
+				}
+				cc.Ping(5 * time.Second) //nolint:errcheck
+				atomic.AddInt64(&reserved, 1)
+				cc.Disconnect() //nolint:errcheck
+			}
+			return
+		}
+
 		c, err := jobqueue.ConnectUsingConfig(ctx, *deployment, 30*time.Second)
 		if err != nil {
 			fmt.Printf("worker %d connect error: %v\n", id, err)

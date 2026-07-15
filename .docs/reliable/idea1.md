@@ -65,6 +65,42 @@ the **touch** path (skip stdout/stderr decompression + `JobUpdate` build when no
 one is subscribed), and batch/skip `markPersistedJobStatusGroups` on archive
 (it only feeds web-UI counts; it can be derived from the incremental counts).
 
+## Fix 1f — Keep `wr status` off the runner-traffic path
+
+**Change:** `wr status -i <rg>` uses the heavy `GetByRepGroup` → `AllItems()` path,
+whose request competes with every runner's touch/reserve/reconnect message on the
+single-reader mangos socket (`testing.md` S6: 26 ms → 460 ms at 10k runners).
+Two cheap mitigations: (i) make `wr status`/the web UI use the already-cheap
+`-o counts` summary path (`statusState`) by default instead of `AllItems`; (ii)
+consider a separate listener/socket for human/status clients so a runner message
+storm can't queue ahead of them (Idea 4 does this properly). Also apply the
+touch-path subscriber gate (Fix 1e) so each touch is a smaller message to process.
+
+## Fix 1g — Robust lost-detection so a touched job is never falsely lost (F0 layers 2–3)
+
+**Change:** 1e makes touches cheap; 1g makes lost-detection correct even when
+processing lags. (i) Give runner lifecycle RPCs (touch/archive) priority over bulk
+`add`/`status` — a dedicated ingest lane or dispatch priority — so keep-alives are
+never queued behind bulk traffic. (ii) Stamp a job's "last contact" at touch
+**ingest** (when the message is read off the socket), before any heavy processing,
+and have the TTR sweep use that — so a job whose touch *arrived* in time is never
+reaped just because the manager processed it late; optionally an adaptive grace
+period under load. This is what makes `TestReliableFalseLostUnderSaturation` pass.
+
+## Coverage of the full test set (see testing.md acceptance criteria)
+
+| id | criterion | how Idea 1 covers it |
+|---|---|---|
+| B | startup responsive | 1a/1b (seeding off startup path) + 1d (freelist) |
+| C | false-lost consequence stays fixed | untouched; regression-checked |
+| D | removed-on-refresh stays fixed | 1a/1b async seed **must still populate complete-only RepGroups** for fresh subscribers (verify) |
+| E | false-lost CAUSE | **1e + 1g (= F0)** |
+| F | status responsive under load | 1e + 1f (status off the runner-traffic path) |
+| G | throughput not regressed | no hot-path work added |
+
+Idea 1 is the natural home for the shared **F0** fix (it is the surgical grab-bag);
+with 1e+1g it fixes E directly.
+
 ## Priority alignment
 
 After 1a/1b, **no web-UI code runs on the `add`, reserve, touch, archive, or
@@ -111,3 +147,11 @@ affected either way.
 - [ ] **A/B vs v0.36.5.** Confirm S1 steady-state throughput is unchanged or
   better, and S3 add/restart are now comparable to (or better than) `v0.36.5`
   (which had no seeding at all).
+- [ ] **Fix 1g spike.** Add touch/archive ingest priority + ingest-time
+  last-contact stamping; run `TestReliableFalseLostUnderSaturation` → must go
+  **PASS** (was FAIL on HEAD).
+- [ ] **Full acceptance set (testing.md).** With all fixes on: the 3 Go tests
+  (`TestReliableFalseLostRerun`, `TestReliableCompletedRepGroupRemovedOnRefresh`,
+  `TestReliableFalseLostUnderSaturation`) all **PASS**; `exp_startup_ab.sh`/
+  `exp_realdb_seed.sh` restart ≤ a few s; `exp_reconnect.sh` `wr status` bounded
+  under 10k conns; `exp1.sh`/`exp_drive_ab.sh` ≥ v0.36.5. Record all numbers.

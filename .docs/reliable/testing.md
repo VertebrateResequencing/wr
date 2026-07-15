@@ -250,6 +250,132 @@ exp_drive_ab.sh <wr-safe> <loadrunner> <base> 60000 1000 <port>
 
 ---
 
+### S6 — Runtime status responsiveness vs runner connection load (M3)
+
+Reproduces the timeline's "status non-responsive while runners active, responsive
+once the LSF runners were killed". `wr status -i <rg>` (heavy path: `GetByRepGroup`
+→ `AllItems()`) latency vs number of connected "runners" (loadrunner `hold`,
+1 conn/runner), and vs reconnection churn:
+
+| runner connections | `wr status` latency | manager CPU |
+|---|---|---|
+| 0 (baseline) | ~26 ms | — |
+| 4,000 steady | ~40–127 ms (5×) | 112% |
+| 10,000 steady | ~100–460 ms (up to 14×) | 153% |
+| 1,500 churning (connect/ping/disconnect loop) | ~40–88 ms | — |
+
+`wr status -o counts` (the *fast* summary path) stayed ~33 ms throughout; **only
+the heavy `AllItems` path degrades**. Touches alone (10k jobs touched, holdper=20
+so only ~500 connections) did **not** degrade status. The driver is the **number
+of connected runners**: the manager reads every client message through a **single
+`RecvMsg` goroutine** on one shared mangos socket (`serveClients` →
+`receiveClientMessage`, `server.go:2440–2468`), so a `wr status` request queues
+behind the touch/reserve/reconnect traffic of thousands of runners; when the
+runners are killed that traffic stops and status is instant again — exactly the
+reported behaviour.
+
+**Honest limit:** on this 8-core node I reproduced the *direction and mechanism*
+(status latency scales with runner connection load, recovers when they stop) up to
+~0.5 s at 10k connections, but **not** a multi-second "non-responsive" freeze.
+Production likely crosses that threshold via (a) more runners, (b) a reconnection
+*storm* after a restart — thousands of runners whose touches timed out during the
+162 s seeding re-dial at once (TLS handshakes), (c) NFS lengthening lock holds, and
+(d) that storm hitting *while* the background seeding is still running. The single
+`RecvMsg` reader + per-touch work added since `#503` (each touch now carries a live
+snapshot) raise the per-runner message cost vs v0.36.5. This half of the timeline
+needs a production-scale rig to reproduce at full magnitude; the mechanism is shown.
+
+### S7 — Lost & removed correctness bugs: reproduced on v0.37.1, fixed on HEAD
+
+Deterministic Go tests (real `Server` + public client API, no LSF needed), in
+`harness/reliable_repro_test.go`. Drop into `jobqueue/` and
+`go test -run TestReliable...`.
+
+| test | what it does | v0.37.1 (release) | HEAD (reliable) |
+|---|---|---|---|
+| `TestReliableFalseLostRerun` | job reserved+started, marked lost & reclaimed, then its **successful** archive arrives | **FAIL** — archive rejected `bad job (not in queue or correct sub-queue)`, job → `delayed` (**re-run**) | **PASS** — archive accepted, job `complete` |
+| `TestReliableCompletedRepGroupRemovedOnRefresh` | all jobs in a RepGroup complete, then a **fresh** status client connects (web-UI refresh) | **FAIL** — authoritative state `complete=5` but fresh seed = `{}` (**RepGroup vanishes**) | **PASS** — fresh seed shows `complete=5` |
+
+So **both** the reported "false lost" and "falsely removed" symptoms genuinely
+reproduce on the **released v0.37.1**, and both are genuinely **fixed** on the
+reliable branch by `#547`/`#548`. Caveats on scope:
+
+- The false-lost test reproduces the *consequence* fixed by `#548` (a successful
+  archive being rejected after a false-lost reclaim, causing a re-run). It does
+  **not** exercise the *cause* — jobs being falsely marked lost when an
+  overloaded manager delays touches past the TTR, or when the runner is gone and
+  can't send the archive; that is the runtime-load problem (S6), not addressed by
+  `#548`.
+- The removed test reproduces the fresh-seed-drops-complete-only-RepGroup path
+  fixed by `#548`. Other historical count-race variants (`#533` era) are covered
+  by the existing suite; this is the one tied to the reported refresh symptom.
+
+### S8 — The CAUSE of false-lost is NOT fixed (reproduces on v0.37.1 AND HEAD)
+
+`harness/reliable_cause_test.go` (`TestReliableFalseLostUnderSaturation`). This
+targets what `#548` does **not** address. `item.touch()` resets `releaseAt =
+now + ttr` **only when the touch is processed**, and the TTR sweeper
+(`processTimedOutItems`) fires off the last *processed* touch — so if touch
+processing is delayed past `releaseAt` under load, a still-alive job is flipped to
+Lost. The test reserves+starts one job, touches it every **120 ms within a 500 ms
+TTR** (~4× margin, healthy), and saturates the manager with 120 concurrent client
+connections; it samples the protected job's `Lost` flag directly from the server.
+
+| | result |
+|---|---|
+| v0.37.1 | **FAIL** — `everLost=1, finalLost=true` (alive, touched job marked Lost and *stays* lost) |
+| HEAD (reliable) | **FAIL** — `everLost=1, finalLost=true` (reproduced on 2 reruns) |
+
+So a saturated manager **falsely marks running, actively-touched jobs as Lost on
+both the release and the reliable branch**. `#548` only rescues the late
+*successful archive* after a false lost (S7); it does not stop the false lost
+itself. This is the runtime-load reliability bug (same root as S6: the single
+`RecvMsg` reader + per-touch work let other traffic delay touch processing). It is
+the mechanism behind the reported "jobs were running but then went lost" and the
+cascade (lost → confirm/rerun, or the late-archive path). Fix directions: reduce
+per-touch work (Idea 1e), stop status/adds competing with touches (Idea 4 / a
+separate listener), fast-path/prioritise touch processing, or make the TTR
+tolerant of processing latency under load — none of which `#547`/`#548` do.
+
+### Note on the real-LSF attempt
+
+A real `-s lsf` run (real runner processes) was set up (`harness/exp_lsf_repro.sh`)
+but is **capacity-blocked** on this shared farm: the `normal` queue dispatched
+only ~30 concurrent slots (thousands stayed `PEND`), so thousands-of-real-runners
+scale wasn't achievable on demand. Also note: the manager `bsub`s runners using
+its **own** binary path, so that binary must live on a **shared** filesystem
+(NFS), not local `/tmp`, or remote nodes silently fail to exec it (runners show
+`RUN` in LSF but never connect/reserve). With the binary on NFS, real runners
+connect and complete jobs normally: a v0.37.1 churn run of 3000 short jobs
+cycled through **peak 138 concurrent** real runners to **3000/3000 complete,
+`lost=0`, zero count-accounting anomalies, status ~30 ms** throughout. So neither
+correctness symptom appears in *normal* real operation at achievable scale — they
+need the specific conditions the S7 tests create (a lost-then-archive race; a
+fresh connect to a complete-only RepGroup), which is why the deterministic Go
+tests are the right tool. The scale-dependent symptoms (S2/S3 startup, S6
+responsiveness) rely on the load-runner + real-DB rigs above; the correctness
+symptoms (S7) are proven in-process against v0.37.1.
+
+## How the reported timeline is explained
+
+1. *Ran for hours, then status non-responsive → killed.* Runtime status
+   degradation under the full runner fleet's message load (S6), worsening over time
+   as more/among longer-lived runners accumulate.
+2. *Restart slow but succeeded, status still non-responsive → killed again.* The
+   slow restart = recovery + `#547` seeding (S2/S3). During it the manager answers
+   nothing, so every runner's touch times out and they enter reconnect loops; when
+   the manager finally comes up it is buried under a reconnection/message storm
+   from thousands of runners (S6), so status stays slow.
+3. *Runners killed, restart slow again, then status responsive.* Still a slow
+   restart (seeding again), but with the runners gone there is no message/reconnect
+   storm afterwards, so once up, status is responsive. This is the tell that the
+   runtime half is runner-load-driven, not the DB/seeding.
+
+So: the **slow startups are fully explained and reproduced** (`#547` seeding); the
+**runtime status non-responsiveness is explained by, and its mechanism reproduced
+as, runner-connection message load on the single-reader socket** (full magnitude
+pending a production-scale rig).
+
 ## Root-cause summary (what to fix)
 
 **The single dominant cause of both reported symptoms is `#547`'s `statusState`
@@ -277,9 +403,66 @@ Ranked:
 5. **Per-archive read-tx / per-touch decompression** — minor per-op cost; **not**
    a regression (S5: HEAD's archive throughput > v0.36.5's). Cleanup only. →
    Ideas 1e, 3.
+6. **`wr status` (and any `AllItems` request) competes with all runner traffic on
+   the single-reader mangos socket** — status latency scales with connected-runner
+   count (S6). Explains the runtime non-responsiveness that clears when runners are
+   killed. → Ideas 1e (cut per-touch message work), 4 (serve status from a
+   separate listener/projector that runner traffic can't delay), and a dedicated
+   status socket / faster status path (`-o counts` is already cheap; make the web
+   UI + `wr status` use it).
 
 **Steady-state throughput is NOT regressed** (S1: HEAD ≥ v0.36.5). The problems
 are **startup blocking** and **history-scanning web-UI machinery on operational
 paths**. Every idea is judged against the numbers above; see `idea1.md`–`idea5.md`
 (surgical → non-blocking-startup → maintained-counters → decoupled-projector →
 storage-split), each with its own trial checklist reusing this harness.
+
+---
+
+## Acceptance criteria — the full test set every idea must pass
+
+A complete fix must make **all** of these pass, starting from the reliable branch
+(HEAD), without regressing the ones already green. This is the set each
+`ideaN.md` trial checklist runs.
+
+Go tests (drop `harness/reliable_repro_test.go` + `harness/reliable_cause_test.go`
+into `jobqueue/`, then `CGO_ENABLED=1 go test -tags netgo -run TestReliable ./jobqueue`):
+
+| id | test | HEAD now | required after fix |
+|---|---|---|---|
+| C (consequence) | `TestReliableFalseLostRerun` | PASS (fixed by #548) | **stay PASS** |
+| D (removed) | `TestReliableCompletedRepGroupRemovedOnRefresh` | PASS (fixed by #548) | **stay PASS** |
+| E (lost CAUSE) | `TestReliableFalseLostUnderSaturation` | **FAIL** | **PASS** |
+
+Harness scenarios (thresholds, not asserts — record numbers):
+
+| id | scenario / script | HEAD now | required after fix |
+|---|---|---|---|
+| B (startup) | `exp_startup_ab.sh` (10k running), `exp_realdb_seed.sh` (real DB) | 162–190 s | responsive in **≤ a few s** regardless of history/running-jobs |
+| F (responsive) | `exp_reconnect.sh` / `exp_status_load2.sh` (10k conns) | `wr status` → ~460 ms, degrades with conns | bounded (**≲ baseline**) independent of runner count |
+| G (throughput) | `exp1.sh`, `exp_drive_ab.sh` | HEAD ≥ v0.36.5 | **not regressed** |
+
+### F0 — the shared "protect the hot path" fix (required for E and F)
+
+E (false-lost cause) and F (status responsiveness) share a root — runner
+keep-alive/lifecycle RPCs (touch/archive) getting delayed on the single-reader
+socket + per-touch work. **No idea's core mechanism fixes E on its own**, so every
+idea must also include this shared fix, in three layers:
+
+1. **Make touches cheap** — gate *all* web-UI/subscription/stdout-stderr work off
+   the touch path (the ungated per-touch decompression, `serverCLI.go:965-977`), so
+   a touch is a tiny queue op (this is Idea 1e).
+2. **Don't let touches be starved** — give runner lifecycle RPCs (touch/archive)
+   priority over bulk `add`/`status`, or a dedicated ingest lane, so keep-alives
+   are never queued behind bulk/status traffic.
+3. **Make lost-detection robust to processing latency** — treat a job as alive
+   based on when the runner last *contacted* the manager (stamp touch arrival at
+   ingest, before heavy processing, or use the runner's live persistent
+   connection), not when the manager finished *processing* the touch; optionally an
+   adaptive grace period under load. This is what actually makes `TestReliable
+   FalseLostUnderSaturation` pass even if processing briefly lags.
+
+Layers 1+2 reduce the delay; layer 3 makes detection correct even when delay
+happens. Ideas that remove load from the request path (3 counters, 4 decouple,
+5 storage) make layers 1–2 easier but still need layer 3 for E under pure
+runner-only load.
