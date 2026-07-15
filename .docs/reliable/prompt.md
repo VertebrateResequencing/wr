@@ -171,3 +171,15 @@ Harness thresholds (record numbers; `.docs/reliable/harness/`):
   recovery is never mistaken for "hung". Guard the concurrency the trial flagged:
   protect `recoveredRunningJobs`; ensure a client re-adding a job that is also
   being recovered cannot yield a wrong final state; preserve dependency ordering.
+- **Status listener transport / user-facing behaviour (Q4/Q5) — Option B (no new
+  port, no user-facing change):** Do NOT change any `wr status` output modes or
+  defaults — `-o details` stays exactly as it is on the existing path. The manager
+  keeps its **2 ports** (mangos client/runner port + web/REST port); **no 3rd
+  port**. Decouple only by serving the cheap counts/summary + the web-UI status
+  from `statusState` via the **existing web/REST port** (a counts/summary endpoint
+  the web UI uses, and that cheap CLI invocations can use), so the web-UI status
+  page is fully isolated from runner traffic. The default `wr status -o details`
+  CLI path remains on the mangos socket unchanged — an acceptable residual
+  (occasional human command; mild ~2× degradation under extreme load after F0). A
+  dedicated second read-socket (Option C, which would need a 3rd port) is out of
+  scope.
