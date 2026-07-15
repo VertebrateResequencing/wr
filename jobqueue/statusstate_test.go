@@ -197,12 +197,12 @@ func TestStatusStateLockOrder(t *testing.T) {
 
 // TestStatusStateSeedSemantics covers the fresh-connect seed a refreshed or
 // newly-loaded status page receives as its first drain (issue: removed jobs
-// reappear after refresh). The seed must match the old `current` snapshot: a
-// RepGroup is included only if it has >=1 LIVE (non-terminal) job; for those it
-// sends the live states plus complete but NEVER deleted; complete-only and
-// deleted-only RepGroups are omitted entirely. Live updates AFTER subscribe must
-// still deliver complete and deleted (the transient red bar and the
-// completes-while-open retain) to already-connected clients.
+// reappear after refresh). A RepGroup with live jobs is seeded with its live
+// states plus complete, but never deleted; a normally completed RepGroup is
+// seeded as complete-only; deleted-only and complete+deleted-only RepGroups are
+// omitted. Live updates AFTER subscribe must still deliver complete and deleted
+// (the transient red bar and the completes-while-open retain) to already-
+// connected clients.
 func TestStatusStateSeedSemantics(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -226,6 +226,14 @@ func TestStatusStateSeedSemantics(t *testing.T) {
 		ss.applyTransition(JobStateNew, JobStateReady, "goneRG", 4)
 		ss.applyTransition(JobStateReady, JobStateDeleted, "goneRG", 4)
 
+		// mixedTerminalRG is the removed-jobs-refresh shape: some jobs completed
+		// normally, then the remaining jobs were removed. A refresh must not show
+		// that row again as completed or deleted, because part of the RepGroup was
+		// explicitly removed.
+		ss.applyTransition(JobStateNew, JobStateReady, "mixedTerminalRG", 7)
+		ss.applyTransition(JobStateReady, JobStateComplete, "mixedTerminalRG", 3)
+		ss.applyTransition(JobStateReady, JobStateDeleted, "mixedTerminalRG", 4)
+
 		sub := ss.subscribe()
 		defer ss.unsubscribe(sub)
 
@@ -240,12 +248,17 @@ func TestStatusStateSeedSemantics(t *testing.T) {
 			So(hasDeleted, ShouldBeFalse)
 		})
 
-		Convey("a complete-only RepGroup is omitted from the seed", func() {
-			So(seed, ShouldNotContainKey, "doneRG")
+		Convey("a complete-only RepGroup is seeded as complete", func() {
+			So(seed, ShouldContainKey, "doneRG")
+			So(seed["doneRG"], ShouldResemble, map[JobState]int{JobStateComplete: 3})
 		})
 
 		Convey("a deleted-only RepGroup is omitted from the seed", func() {
 			So(seed, ShouldNotContainKey, "goneRG")
+		})
+
+		Convey("a complete+deleted-only RepGroup is omitted from the seed", func() {
+			So(seed, ShouldNotContainKey, "mixedTerminalRG")
 		})
 
 		Convey("the +all+ live aggregate is seeded (and excludes terminal states)", func() {
@@ -444,13 +457,12 @@ func TestStatusState(t *testing.T) {
 			})
 		})
 
-		// A reconnect is a brand-new subscription, so it gets the same live-only
-		// seed a fresh page load gets. A RepGroup that became complete-only while
-		// the (now closed) connection was up is terminal, so it is omitted from
-		// the reconnect seed - the user-visible fix for removed/finished jobs
-		// reappearing after a refresh. This replaces the previous assertion that a
-		// reconnect re-sent complete-only RepGroups (the regressed behaviour).
-		Convey("reconnect (a fresh subscription) gets the live-only current map, omitting now-complete groups", func() {
+		// A reconnect is a brand-new subscription, so it gets the same seed a fresh
+		// page load gets. A RepGroup that became complete-only while the now-closed
+		// connection was up remains visible as completed progress; removed groups
+		// are distinguished by their deleted contribution in the seed semantics
+		// above.
+		Convey("reconnect (a fresh subscription) keeps now-complete groups visible", func() {
 			sub1 := ss.subscribe()
 			ss.drain(sub1)
 			// rgA's last 2 running jobs complete, so rgA is now complete-only.
@@ -462,7 +474,7 @@ func TestStatusState(t *testing.T) {
 			defer ss.unsubscribe(sub2)
 
 			full := ss.drain(sub2)
-			So(full, ShouldNotContainKey, "rgA")
+			So(full["rgA"], ShouldResemble, map[JobState]int{JobStateComplete: 6})
 			So(full["rgB"][JobStateReady], ShouldEqual, 1)
 		})
 	})
