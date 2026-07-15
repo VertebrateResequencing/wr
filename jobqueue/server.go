@@ -908,9 +908,10 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 }
 
 // seedStatusStateForItemDefs loads persisted completion counts only for the
-// RepGroups that are about to become live. Complete-only RepGroups are omitted
-// from a fresh status-page seed, so scanning all historical RepGroups at startup
-// is both unnecessary and prohibitively expensive on large databases.
+// RepGroups that are about to become live. Historical complete-only RepGroups
+// are not eagerly scanned at startup, which would be prohibitively expensive on
+// large databases; complete-only groups already known to statusState are still
+// included in fresh status-page seeds.
 func (s *Server) seedStatusStateForItemDefs(itemdefs []*queue.ItemDef) error {
 	const op = "seedStatusState"
 

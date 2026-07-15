@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -60,6 +61,8 @@ const (
 	webiSubRG1      = "sub_rg1"
 	webiSubRG2      = "sub_rg2"
 )
+
+const archiveServerCompletedJobOp = "archiveServerCompletedJob"
 
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
@@ -615,6 +618,133 @@ func TestCompletedRepGroupStatusSurvivesRapidTransitionsAndReconnect(t *testing.
 	})
 }
 
+func TestHighPressureCompletedRepGroupStatusSurvivesRefresh(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A results-frontend-style high pressure RepGroup keeps complete counts while live jobs remain", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.ItemTTR = time.Hour
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		const completedCount = 3001
+
+		repGroup := "status-high-pressure-complete"
+		jobs := subscriptionTestJobs(repGroup, standardReqs, completedCount+1)
+		added, already, err := jq.Add(jobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, completedCount+1)
+		So(already, ShouldEqual, 0)
+
+		runningItems := make([]*queue.Item, 0, completedCount+1)
+		for range completedCount + 1 {
+			job, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+			item, errg := server.q.Get(job.Key())
+			So(errg, ShouldBeNil)
+
+			runningItems = append(runningItems, item)
+		}
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
+			JobStateRunning: completedCount + 1,
+		}, 10*time.Second), ShouldBeTrue)
+
+		archiveErrs := make(chan error, completedCount)
+		archiveJobs := make(chan *queue.Item)
+
+		var archiveWG sync.WaitGroup
+
+		for range 64 {
+			archiveWG.Add(1)
+			go func() {
+				defer archiveWG.Done()
+
+				for item := range archiveJobs {
+					archiveErrs <- archiveServerCompletedJob(ctx, server, item)
+				}
+			}()
+		}
+
+		for _, item := range runningItems[:completedCount] {
+			archiveJobs <- item
+		}
+
+		close(archiveJobs)
+
+		archiveWG.Wait()
+		close(archiveErrs)
+
+		for archiveErr := range archiveErrs {
+			So(archiveErr, ShouldBeNil)
+		}
+
+		expected := map[JobState]int{
+			JobStateRunning:  1,
+			JobStateComplete: completedCount,
+		}
+		So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
+
+		So(ws.Close(), ShouldBeNil)
+		ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+		So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
+
+		summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
+		So(err, ShouldBeNil)
+		So(summaries[repGroup].Counts, ShouldResemble, expected)
+
+		So(archiveServerCompletedJob(ctx, server, runningItems[completedCount]), ShouldBeNil)
+
+		allComplete := map[JobState]int{JobStateComplete: completedCount + 1}
+		So(readExactRepGroupState(ws, repGroup, allComplete, 10*time.Second), ShouldBeTrue)
+
+		So(ws.Close(), ShouldBeNil)
+		ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+		So(readExactRepGroupState(ws, repGroup, allComplete, 10*time.Second), ShouldBeTrue)
+
+		summaries, err = jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
+		So(err, ShouldBeNil)
+		So(summaries[repGroup].Counts, ShouldResemble, allComplete)
+	})
+}
+
 // readExactRepGroupState reads absolute messages until the requested RepGroup
 // has exactly the expected counts. Requiring full map equality also proves no
 // stale deleted (or other) state is present.
@@ -623,6 +753,56 @@ func readExactRepGroupState(ws *websocket.Conn, repGroup string, expected map[Jo
 	return readAbsoluteStateUntil(ws, timeout, func(latest map[string]map[JobState]int) bool {
 		return maps.Equal(latest[repGroup], expected)
 	})
+}
+
+func TestArchiveServerCompletedJobDoesNotPreMutateBeforeMarkComplete(t *testing.T) {
+	Convey("archiveServerCompletedJob leaves job exit state untouched when markJobComplete rejects it", t, func() {
+		ctx := context.Background()
+		q := queue.New(ctx, "archive-webi-no-premutate")
+		job := &Job{
+			Cmd:       restFormTrue,
+			Cwd:       testCwd,
+			RepGroup:  archivePortalCompress,
+			ReqGroup:  archivePortalCompress,
+			StartTime: time.Now().Add(-time.Minute),
+			State:     JobStateBuried,
+			Exitcode:  -1,
+		}
+
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueBury)
+		So(err, ShouldBeNil)
+
+		archiveErr := archiveServerCompletedJob(ctx, &Server{}, item)
+		So(archiveErr, ShouldNotBeNil)
+
+		var jqerr Error
+		So(errors.As(archiveErr, &jqerr), ShouldBeTrue)
+		So(jqerr.Err, ShouldEqual, ErrBadJob)
+		So(job.Exited, ShouldBeFalse)
+		So(job.Exitcode, ShouldEqual, -1)
+		So(job.EndTime.IsZero(), ShouldBeTrue)
+	})
+}
+
+func archiveServerCompletedJob(ctx context.Context, server *Server, item *queue.Item) error {
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return Error{Op: archiveServerCompletedJobOp, Item: "item data is not a job", Err: ErrBadJob}
+	}
+
+	endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
+
+	key, repGroup, schedulerGroup, srerr := markJobComplete(item, job, endState, server.limiter)
+	if srerr != "" {
+		return Error{Op: archiveServerCompletedJobOp, Err: srerr}
+	}
+
+	_, srerr, qerr := server.archiveCompletedJob(ctx, job, key, repGroup, schedulerGroup)
+	if srerr != "" {
+		return Error{Op: archiveServerCompletedJobOp, Item: qerr, Err: srerr}
+	}
+
+	return nil
 }
 
 func TestServerWebI(t *testing.T) {

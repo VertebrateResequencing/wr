@@ -151,22 +151,22 @@ pending/ready. The LIVE view correctly shows `echo` as part green (complete) +
 part red (deleted). The BUG was that refreshing the page (a fresh websocket
 connection) made `echo` reappear, even though it now has only terminal members
 (complete + deleted, no live job): a freshly loaded page must show nothing for a
-complete-only / deleted-only RepGroup.
+RepGroup that has any deleted terminal contribution and no live jobs.
 
 The fix is server-side: the seed a freshly-connected (or refreshed) client
-receives must include a RepGroup only if it has at least one live job, send its
-live states plus complete, and never send deleted; complete-only / deleted-only
-RepGroups are omitted (`jobqueue/statusstate.go` `liveSeedLocked`). The frontend
-renders whatever RepGroups the server sends, so `screenshot.mjs` models the
-server seed in JS (`computeSeed`) and drives the real
-`websocket-handler.js` against it. Phase 1 keeps a page open while `echo`
+receives must send live states plus complete for RepGroups with live jobs, send
+normally completed RepGroups as complete-only, and never send deleted;
+deleted-only and complete+deleted-only RepGroups are omitted
+(`jobqueue/statusstate.go` `liveSeedLocked`). The frontend renders whatever
+RepGroups the server sends, so `screenshot.mjs` models the server seed in JS
+(`computeSeed`) and drives the real `websocket-handler.js` against it. Phase 1 keeps a page open while `echo`
 completes then is removed and asserts the red `(deleted)` bar shows live (the
 260625-6 live-retain / transient-red guarantee). Phase 2 opens a brand-new page
 (a refresh) whose fresh-connect seed is computed from the post-removal state and
 asserts the `echo` row is absent.
 
 `WR_FIXTURE_SEED` selects how the fresh-connect seed is computed: `filtered`
-(default) is the live-only seed the fixed server sends, so `echo` is omitted and
+(default) is the filtered seed the fixed server sends, so `echo` is omitted and
 the refresh assertion passes; `unfiltered` is the pre-fix server seed (every
 RepGroup, including deleted), which re-sends `echo`, so the refresh assertion
 fails and reproduces the bug. The live-phase assertions are identical for both.

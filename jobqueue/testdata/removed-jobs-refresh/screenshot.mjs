@@ -9,22 +9,23 @@
 // expected. The BUG is that REFRESHING the page (a fresh websocket connection)
 // makes echo reappear, even though echo now has only terminal members (complete
 // + deleted, no live job): a freshly loaded page must show NOTHING for a
-// complete-only / deleted-only RepGroup.
+// RepGroup that has any deleted terminal contribution and no live jobs.
 //
 // The fix is server-side: the seed a freshly-connected (or refreshed) client
-// receives must include a RepGroup only if it has >=1 LIVE job, send its live
-// states + complete, and NEVER send deleted; complete-only / deleted-only
-// RepGroups are omitted (jobqueue/statusstate.go liveSeedLocked). The frontend
-// renders whatever RepGroups the server sends, so this fixture models the server
-// seed in JS (computeSeed) and drives the real websocket-handler.js against it.
+// receives must send live states + complete for RepGroups with live jobs, send
+// normally completed RepGroups as complete-only, and NEVER send deleted;
+// deleted-only and complete+deleted-only RepGroups are omitted
+// (jobqueue/statusstate.go liveSeedLocked). The frontend renders whatever
+// RepGroups the server sends, so this fixture models the server seed in JS
+// (computeSeed) and drives the real websocket-handler.js against it.
 //
 // WR_FIXTURE_SEED selects how the post-removal fresh-connect seed is computed:
-//   - 'filtered' (default): the live-only seed the fixed server sends. echo is
+//   - 'filtered' (default): the filtered seed the fixed server sends. echo is
 //     complete+deleted only, so it is omitted, and the refreshed page shows no
 //     echo row. The assertions PASS.
 //   - 'unfiltered': the pre-fix server seed, which seeded a new subscriber with
-//     EVERY RepGroup in its counts (including complete-only/deleted-only ones and
-//     their deleted state). echo is re-sent, so the refreshed page shows the echo
+//     EVERY RepGroup in its counts (including deleted terminal ones and their
+//     deleted state). echo is re-sent, so the refreshed page shows the echo
 //     row again (with the red deleted bar). This reproduces the bug, so the
 //     refresh assertion FAILS.
 // The live-phase assertions (echo visible with a red deleted bar while the page
@@ -66,10 +67,11 @@ function hasLiveJob(counts) {
 }
 
 // computeSeed models the server's fresh-connect seed. When filtered (the fix),
-// a RepGroup is included only if it has a live job, and its deleted count is
-// dropped; complete is kept. When unfiltered (the pre-fix bug), every RepGroup
-// is sent verbatim, including its deleted count. The +all+ aggregate always
-// holds live jobs only (the server maintains that invariant separately).
+// a RepGroup with live jobs is sent without deleted, a complete-only RepGroup is
+// sent as complete, and deleted terminal RepGroups are omitted. When unfiltered
+// (the pre-fix bug), every RepGroup is sent verbatim, including its deleted
+// count. The +all+ aggregate always holds live jobs only (the server maintains
+// that invariant separately).
 function computeSeed(state, filtered) {
   const messages = [];
   const liveAggregate = {};
@@ -87,6 +89,10 @@ function computeSeed(state, filtered) {
   for (const [rg, counts] of Object.entries(state)) {
     if (filtered) {
       if (!hasLiveJob(counts)) {
+        if ((counts.complete || 0) > 0 && (counts.deleted || 0) <= 0) {
+          messages.push({ RepGroup: rg, Counts: { complete: counts.complete } });
+        }
+
         continue;
       }
 
