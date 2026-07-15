@@ -66,7 +66,7 @@ recovery cost — the strongest structural guarantee a `kill -9` restart is neve
   decode+enqueue so recovered jobs become reservable progressively rather than all
   at the end — the minimal reorder does not stream.) See `idea2.md` "Trial results".
 
-### 3. Serve status off the runner-traffic path (Fix 1f + "Idea-4-lite")
+### 3. Serve status off the runner-traffic path (Fix 1f + "Idea-4-lite") — SUPERSEDED / DROPPED (see Notes: web UI already decoupled; CLI stays ground-truth)
 Keep `wr status` and the web UI from competing with runner RPCs on the single
 `RecvMsg` mangos socket (testing.md S6):
 - Make `wr status` / the web UI use the cheap `statusState`/counts path, not the
@@ -183,3 +183,43 @@ Harness thresholds (record numbers; `.docs/reliable/harness/`):
   (occasional human command; mild ~2× degradation under extreme load after F0). A
   dedicated second read-socket (Option C, which would need a 3rd port) is out of
   scope.
+- **CLI `wr status` stays GROUND-TRUTH, unchanged (CONFIRMED):** `wr status`
+  (`getrs` → `getStatusByRepGroup`) must remain as-is — counts are re-derived on
+  every call from the live in-memory queue + a **direct scan of the actual
+  complete bucket** (`db.retrieveCompleteJobStatusByRepGroup`). This is the
+  always-correct source of truth and must **NEVER** be pointed at `statusState`
+  or the Idea-3 counter. Accepted price: for a huge-history repgroup the CLI pays
+  the O(history) complete scan (correct but can be slow; brief `queue.mutex.RLock`)
+  — acceptable for an occasional human command.
+- **Fix 1f DROPPED (CONFIRMED) — supersedes section 3 and the earlier Option-B
+  note:** the browser web UI already reads counts from `statusState` over the
+  `/status_ws` websocket (off the mangos socket), so once Idea 3 makes
+  `statusState`'s complete count fast+correct, the web-UI status page is already
+  fast+decoupled — **no separate status listener is needed**. Do not add a status
+  endpoint or repoint any `wr status` transport. **Final recommended stack: F0
+  (done) + Idea 3 (counters) + Idea 2 (non-blocking startup) + Fix 1c (local
+  recover-once) + Fix 1d (map freelist + offline compaction).**
+- **Recovery-window RPC safety (Q1):** With Idea 2's reorder, a reconnecting
+  pre-crash runner that touches/archives a job before it is restored must NOT be
+  spuriously failed (`ErrBadJob`) — that would be a new false-loss during
+  recovery. Invariant: restore running-job state early enough (and/or return a
+  benign, retry-able "recovering" response for not-yet-restored keys) that a
+  pre-crash runner's touch/archive is never lost due to recovery timing; a legit
+  successful archive in the recovery window must still be recorded. Add a test for
+  a runner touching/archiving during the recovery window.
+- **Counter correctness incl. re-run/cross-repgroup (Q3):** the persisted
+  per-repgroup complete counter must equal a fresh full recompute == the
+  ground-truth scan, **including** the re-run case: a completed key gains a
+  repgroup's count when a new repgroup→key `RTK` lookup is created for a key
+  already in the complete bucket — which happens at **add** time for the default
+  `ignoreComplete=false` re-add, not only at archive. So maintain the counter on
+  **both** the archive path and the add/`storeNewJobs` lookup-creation path;
+  enforce with a "counter == recompute == ground truth" acceptance test across
+  add→run→complete→remove→re-add(under a new repgroup)→bury churn. The counter
+  feeds the web UI only.
+- **Compaction / freelist (Q4):** apply `Options{FreelistType: FreelistMapType}`
+  to the manager's `bolt.Open` calls always. Ship compaction as an **offline
+  admin subcommand** (run while the manager is stopped); do **not** compact on
+  startup (re-blocks readiness) or online while serving (`bolt.Compact` copies the
+  whole DB ≈2× disk and can't run cleanly with live writes on the 6.2 GB NFS DB).
+  Validate the map-freelist benefit against the real `.tmp/db`, not synthetic scale.
