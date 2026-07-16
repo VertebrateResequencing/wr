@@ -378,7 +378,7 @@ type ReadyAddedCallback func(queuename string, allitemdata []any)
 type ChangedCallback func(from, to SubQueue, data []any)
 
 // TTRCallback is used as a callback to decide which sub-queue an item should
-// move to when a an item in the run sub-queue hits its TTR, based on that
+// move to when an item in the run sub-queue hits its TTR, based on that
 // item's data. Valid return values are SubQueueDelay, SubQueueReady and
 // SubQueueBury. SubQueueRun can be used to keep the item in the run sub-queue,
 // giving it a fresh TTR so it is re-checked after another full TTR. Other
