@@ -3010,7 +3010,7 @@ func (s *Server) recoverRunningJob(ctx context.Context, job *Job, loginUser stri
 
 	req := reqForScheduler(job.Requirements)
 
-	scheduleCmd := s.groupToScheduleCmd(ctx, s.rc, req.Stringify(), req)
+	scheduleCmd := s.groupToScheduleCmd(ctx, s.runnerCommand(), req.Stringify(), req)
 	recoveredHost := &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd}
 
 	errr := s.scheduler.Recover(ctx, scheduleCmd, req, recoveredHost)
