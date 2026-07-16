@@ -270,6 +270,84 @@ func waitUntilRecovered(server *Server) bool {
 	return !server.isRecovering()
 }
 
+// TestB1StopDuringActiveRecovery checks that a graceful Stop() overlapping the
+// live background prior-state recovery goroutine neither hangs nor panics and is
+// race-clean (finding 1: shutdown coordinates with recovery/backfill before
+// scheduler cleanup, DB close and queue destroy). It blocks recovery at
+// recoveryPauseHook, starts Stop() in a goroutine (shutdown cancels the
+// background context and waits for the goroutine early), then releases the hook
+// so recovery observes the cancellation and returns; Stop must then finish
+// promptly. The brief sleep only biases toward exercising the overlap - none of
+// the assertions depend on it, so the test is deterministic either way.
+func TestB1StopDuringActiveRecovery(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, reqs, connectTime := jobqueueTestInit(false)
+	serverConfig.Timings.ItemTTR = time.Hour
+
+	const rg = "b1_stop_during_recovery"
+
+	Convey("Stop() during active recovery completes without hang or panic", t, func() {
+		state := createPriorStateDB(ctx, config, serverConfig, addr, reqs, connectTime, rg, 2, 2, 2)
+		So(len(state.all()), ShouldEqual, 6)
+
+		hookEntered := make(chan struct{})
+		release := make(chan struct{})
+
+		var once sync.Once
+
+		recoveryPauseHookForTest = func() {
+			once.Do(func() { close(hookEntered) })
+			<-release
+		}
+		defer func() { recoveryPauseHookForTest = nil }()
+
+		serverConfig.dontWipeDevDB = true
+		server, _, _, err := serve(ctx, serverConfig)
+		serverConfig.dontWipeDevDB = false
+		recoveryPauseHookForTest = nil
+
+		So(err, ShouldBeNil)
+
+		// recovery has reached the hook and is blocked there, so the recovery
+		// goroutine is live for the duration of the Stop below.
+		select {
+		case <-hookEntered:
+		case <-time.After(2 * time.Second):
+			So("timed out waiting for recovery to reach the pause hook", ShouldBeBlank)
+
+			return
+		}
+
+		So(server.isRecovering(), ShouldBeTrue)
+
+		stopped := make(chan struct{})
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		// let Stop reach its early cancel-and-wait for the recovery goroutine,
+		// then release the hook so recovery observes the cancellation.
+		time.Sleep(50 * time.Millisecond)
+		close(release)
+
+		select {
+		case <-stopped:
+		case <-time.After(30 * time.Second):
+			So("Stop() did not complete during active recovery", ShouldBeBlank)
+
+			return
+		}
+
+		So(server.isRecovering(), ShouldBeFalse)
+	})
+}
+
 func TestB1RecoveryReproducesGroundTruth(t *testing.T) {
 	if runnermode || servermode {
 		return

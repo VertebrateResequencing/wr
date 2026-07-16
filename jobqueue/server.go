@@ -733,14 +733,22 @@ type Server struct {
 	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
 	rc string
 
-	ServerInfo                *ServerInfo
-	ServerVersions            *ServerVersions
-	db                        *db
-	done                      chan error
-	stopSigHandling           chan bool
-	stopClientHandling        chan bool
-	clientHandlingDone        chan struct{}
-	wg                        *waitgroup.WaitGroup
+	ServerInfo         *ServerInfo
+	ServerVersions     *ServerVersions
+	db                 *db
+	done               chan error
+	stopSigHandling    chan bool
+	stopClientHandling chan bool
+	clientHandlingDone chan struct{}
+	wg                 *waitgroup.WaitGroup
+	// bgWG tracks only the background startup goroutines (prior-state recovery
+	// and the one-time complete-counter backfill), separately from wg, so
+	// shutdown can wait for just them early - before scheduler cleanup, DB close
+	// and queue destroy - rather than at the final wg.Wait. bgCancel cancels the
+	// context those goroutines observe, so shutdown can tell them to abort
+	// promptly and quietly instead of racing the teardown.
+	bgWG                      *waitgroup.WaitGroup
+	bgCancel                  context.CancelFunc
 	q                         *queue.Queue
 	rpl                       *rgToKeys
 	limiter                   *limiter.Limiter
@@ -871,7 +879,9 @@ func (s *Server) isRecovering() bool {
 }
 
 // recoveryProgress returns how many prior jobs have been restored so far and the
-// total to restore, for observing recovery progress (spec B1).
+// total to restore, for observing recovery progress (spec B1). Because recovery
+// enqueues in a single batch, restored is all-or-nothing: it reads 0 until the
+// batch completes, then jumps straight to total (it never climbs job by job).
 func (s *Server) recoveryProgress() (restored, total int) {
 	s.ssmutex.RLock()
 	defer s.ssmutex.RUnlock()
@@ -904,6 +914,10 @@ func (s *Server) setRecoveryTotal(total int) {
 }
 
 // noteRecovered adds n to the count of prior jobs restored so far (spec B1).
+// In practice it is called once, with the full total, after the single-batch
+// enqueue completes, so the restored count goes from 0 straight to the total in
+// one step rather than climbing incrementally. The additive shape is kept so
+// the accounting stays correct should recovery ever move to multiple batches.
 func (s *Server) noteRecovered(n int) {
 	s.ssmutex.Lock()
 	defer s.ssmutex.Unlock()
@@ -1108,17 +1122,27 @@ func (s *Server) forgetJobContacts(data []any) {
 
 // startCounterBackfill launches the one-time online backfill of the per-repGroup
 // complete counter (spec A3) in a background goroutine, logging its start,
-// finish and any error via clog. It never blocks readiness.
+// finish and any error via clog. It never blocks readiness. It is registered on
+// s.bgWG (not s.wg) and observes ctx (s.bgCtx), so shutdown can cancel and await
+// it early, before the DB is closed; a shutdown-induced cancellation is an
+// expected quiet return (logged at Debug), not a failure.
 func (s *Server) startCounterBackfill(ctx context.Context) {
-	wgk := s.wg.Add(1)
+	wgk := s.bgWG.Add(1)
 
 	go func() {
 		defer internal.LogPanic(ctx, "jobqueue complete-counter backfill", true)
-		defer s.wg.Done(wgk)
+		defer s.bgWG.Done(wgk)
 
 		clog.Info(ctx, "per-repGroup complete-counter backfill started")
 
-		if err := s.db.backfillRepGroupCompleteCounts(ctx); err != nil {
+		err := s.db.backfillRepGroupCompleteCounts(ctx)
+		if err != nil && errors.Is(err, context.Canceled) {
+			clog.Debug(ctx, "per-repGroup complete-counter backfill aborted during shutdown", "err", err)
+
+			return
+		}
+
+		if err != nil {
 			clog.Warn(ctx, "per-repGroup complete-counter backfill did not complete", "err", err)
 
 			return
@@ -1148,7 +1172,7 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 
 	s.setRecoveryTotal(len(priorJobs))
 
-	wgk := s.wg.Add(1)
+	wgk := s.bgWG.Add(1)
 
 	go s.recoverInBackground(ctx, config, wgk, priorJobs)
 
@@ -1158,11 +1182,21 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 // recoverInBackground is the body of the background prior-state recovery
 // goroutine launched by startPriorStateRecovery (spec B1). It calls
 // recoveryPauseHook (if set) at the top so a test can block and observe the
-// recovering window, re-enqueues the prior jobs in a single batch, updates
-// progress via noteRecovered, and marks recovery finished on return.
+// recovering window, re-enqueues the prior jobs in a single batch, records the
+// result via noteRecovered, and marks recovery finished on return.
+//
+// Because the enqueue is a single batch, progress is all-or-nothing: the
+// restored count set by noteRecovered goes from 0 straight to the total in one
+// step once the batch has been enqueued (it is never incremented job by job).
+//
+// It is registered on s.bgWG (not s.wg) and observes ctx (s.bgCtx), so shutdown
+// can cancel and await it early, before scheduler cleanup, DB close and queue
+// destroy. On cancellation it returns quietly (finishRecovering still runs, so
+// the recovering flag is cleared) without calling scheduler.Recover, enqueuing,
+// or logging the shutdown as a failure.
 func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, wgk string, priorJobs []*Job) {
 	defer internal.LogPanic(ctx, "jobqueue prior-state recovery", true)
-	defer s.wg.Done(wgk)
+	defer s.bgWG.Done(wgk)
 	// re-schedule ready work once recovery has finished. Defers run LIFO, so
 	// finishRecovering (registered after this) runs first: by the time this
 	// fires, isRecovering() is already false, so any jobs added during the
@@ -1175,9 +1209,31 @@ func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, w
 		s.recoveryPauseHook()
 	}
 
+	s.recoverPriorJobsAndNote(ctx, config, priorJobs)
+}
+
+// recoverPriorJobsAndNote re-enqueues the prior jobs (in a single batch) and
+// records the result via noteRecovered, logging the outcome. It first bails if
+// shutdown has cancelled ctx (so we never touch the scheduler, DB or queue
+// during teardown), and treats a cancellation surfaced by recoverPriorJobs as
+// an expected quiet return rather than a failure.
+func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfig, priorJobs []*Job) {
+	if err := ctx.Err(); err != nil {
+		clog.Debug(ctx, "prior-state recovery aborted during shutdown", "err", err)
+
+		return
+	}
+
 	clog.Info(ctx, "recovering prior state", "total", len(priorJobs))
 
-	if err := s.recoverPriorJobs(ctx, config, priorJobs); err != nil {
+	err := s.recoverPriorJobs(ctx, config, priorJobs)
+	if err != nil && errors.Is(err, context.Canceled) {
+		clog.Debug(ctx, "prior-state recovery aborted during shutdown", "err", err)
+
+		return
+	}
+
+	if err != nil {
 		clog.Error(ctx, "prior-state recovery failed", "err", err)
 
 		return
@@ -1202,6 +1258,26 @@ func (s *Server) rescheduleReadyAfterRecovery(ctx context.Context) {
 
 	if q.Stats().Ready > 0 {
 		s.triggerReadyAddedCallback(ctx)
+	}
+}
+
+// stopBackgroundStartupTasks cancels and then waits for the background startup
+// goroutines (prior-state recovery and the one-time complete-counter backfill)
+// registered on s.bgWG. It is called early in shutdown, before scheduler
+// cleanup, DB close and queue destroy, so those goroutines finish (or abort on
+// the cancellation) before the resources they use are torn down. bgCancel fires
+// first and both goroutines check for cancellation at safe points, so they
+// return promptly; ServerShutdownWaitTime is only the threshold after which
+// bgWG.Wait logs any still-outstanding tasks (the wait itself does not time
+// out). It holds no server locks, so waiting cannot deadlock against the
+// goroutines' own lock acquisitions (queue mutex, rrjMu, ssmutex, db locks).
+func (s *Server) stopBackgroundStartupTasks() {
+	if s.bgCancel != nil {
+		s.bgCancel()
+	}
+
+	if s.bgWG != nil {
+		s.bgWG.Wait(ServerShutdownWaitTime)
 	}
 }
 
@@ -2521,6 +2597,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// our limiter will use a callback that gets group limits from our database
 	l := limiter.New(db.retrieveLimitGroup)
 
+	// bgCtx is the context the background startup goroutines (prior-state
+	// recovery and the one-time complete-counter backfill) observe; shutdown
+	// cancels it via s.bgCancel so those goroutines abort promptly and quietly
+	// rather than racing scheduler cleanup, DB close or queue destroy.
+	bgCtx, bgCancel := context.WithCancel(ctx)
+
 	s = &Server{
 		ServerInfo: &ServerInfo{
 			Addr:          ip + ":" + config.Port,
@@ -2550,6 +2632,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		clientHandlingDone:        clientHandlingDone,
 		done:                      done,
 		wg:                        wg,
+		bgWG:                      waitgroup.New(),
+		bgCancel:                  bgCancel,
 		up:                        true,
 		scheduler:                 sch,
 		previouslyScheduledGroups: make(map[string]*sgroup),
@@ -2616,7 +2700,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// total is known before the background goroutine runs, then re-enqueue them
 	// in the goroutine. Recovery keeps the single-batch enqueue so AddMany
 	// resolves dependencies within the one batch.
-	if err = s.startPriorStateRecovery(ctx, config, db); err != nil {
+	if err = s.startPriorStateRecovery(bgCtx, config, db); err != nil {
 		// the scan failed before the background goroutine (which would clear
 		// the flag) was launched, so clear the recovering flag we set above to
 		// avoid leaving it stuck true (production die()s on this error, but keep
@@ -2631,7 +2715,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// It is crash-resumable, so a shutdown or error mid-backfill simply resumes on
 	// the next start. It composes with the background recovery above; both run
 	// after the server is serving clients.
-	s.startCounterBackfill(ctx)
+	s.startCounterBackfill(bgCtx)
 
 	return s, msg, token, err
 }
@@ -2950,12 +3034,23 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 	itemdefs := make([]*queue.ItemDef, 0, len(priorJobs))
 
 	for _, job := range priorJobs {
+		// abort promptly if shutdown cancelled us, before doing further
+		// per-job scheduler.Recover work or the enqueue below (which would
+		// otherwise race scheduler cleanup and queue destroy during shutdown).
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		itemdef, err := s.recoveredItemDef(ctx, job, loginUser, ttd)
 		if err != nil {
 			return err
 		}
 
 		itemdefs = append(itemdefs, itemdef)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	_, _, err := s.enqueueItems(ctx, itemdefs)
@@ -3015,7 +3110,12 @@ func (s *Server) recoverRunningJob(ctx context.Context, job *Job, loginUser stri
 
 	errr := s.scheduler.Recover(ctx, scheduleCmd, req, recoveredHost)
 	if errr != nil {
-		clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			clog.Debug(ctx, "recovery of an old cmd skipped during shutdown",
+				"cmd", job.Cmd, "host", job.Host, "err", errr)
+		} else {
+			clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
+		}
 	}
 
 	s.rrjMu.Lock()
@@ -5630,6 +5730,13 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	if !s.beginShutdown(ctx, stopSigHandling) {
 		return
 	}
+
+	// stop the background startup goroutines (prior-state recovery and the
+	// one-time complete-counter backfill) before touching the scheduler, DB or
+	// queue below, so their late work can't race the teardown: no
+	// scheduler.Recover after scheduler.Cleanup, no DB ops after db.close, and
+	// no enqueue while s.q.Destroy runs.
+	s.stopBackgroundStartupTasks()
 
 	s.waitForRunnersToDie(ctx, wait)
 
