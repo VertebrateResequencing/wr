@@ -382,7 +382,7 @@ type ChangedCallback func(from, to SubQueue, data []any)
 // item's data. Valid return values are SubQueueDelay, SubQueueReady and
 // SubQueueBury. SubQueueRun can be used to keep the item in the run sub-queue,
 // giving it a fresh TTR so it is re-checked after another full TTR. Other
-// values will be treated as SubQueueReady).
+// values will be treated as SubQueueReady.
 type TTRCallback func(data any) SubQueue
 
 // Queue is a synchronised map of items that can shift to different sub-queues,

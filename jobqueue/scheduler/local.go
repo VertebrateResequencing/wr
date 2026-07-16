@@ -627,10 +627,12 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, _ *R
 
 // enumerateProcesses returns the current list of processes, reusing a cached
 // enumeration if it is younger than recoverProcessCacheTTL. Because recover()
-// is called once per running job during a single recovery pass, this ensures N
-// running jobs cause 1 process enumeration rather than N. The cache is guarded
-// by procCacheMutex since recover() may be called concurrently. On enumeration
-// error the cache is left untouched so the next call retries.
+// is called once per running job during a single recovery pass, this reduces N
+// running jobs to (typically) a single process enumeration for the pass rather
+// than N; a recovery pass lasting longer than recoverProcessCacheTTL may
+// re-enumerate. The cache is guarded by procCacheMutex since recover() may be
+// called concurrently. On enumeration error the cache is left untouched so the
+// next call retries.
 func (s *local) enumerateProcesses() ([]*process.Process, error) {
 	s.procCacheMutex.Lock()
 	defer s.procCacheMutex.Unlock()
