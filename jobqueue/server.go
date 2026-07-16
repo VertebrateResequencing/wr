@@ -890,6 +890,19 @@ func (s *Server) setRecovering(total int) {
 	s.recoveryRestored = 0
 }
 
+// setRecoveryTotal records the real total number of prior jobs to restore once
+// the cheap live-bucket scan has completed, without touching the recovering
+// flag or the restored count. This lets Serve mark recovering=true before it
+// starts accepting client RPCs (so the recovery window is closed with no false
+// losses, spec B2) while the true total is filled in later, before the
+// background recovery goroutine (and thus recoveryPauseHook) runs (spec B1).
+func (s *Server) setRecoveryTotal(total int) {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.recoveryTotal = total
+}
+
 // noteRecovered adds n to the count of prior jobs restored so far (spec B1).
 func (s *Server) noteRecovered(n int) {
 	s.ssmutex.Lock()
@@ -1116,19 +1129,24 @@ func (s *Server) startCounterBackfill(ctx context.Context) {
 }
 
 // startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
-// scan), marks the server as recovering with that total, and launches a
-// background goroutine that re-enqueues them so Serve returns while recovery is
-// still running (spec B1). The goroutine calls recoveryPauseHook (if set) at the
-// top so a test can block and observe the recovering window, updates progress
-// via noteRecovered, and calls finishRecovering when done. Recovery keeps the
-// single-batch enqueue (recoverPriorJobs -> enqueueItems).
+// scan), fills in that total on the already-active recovering state, and
+// launches a background goroutine that re-enqueues them so Serve returns while
+// recovery is still running (spec B1). The recovering flag was set true by
+// Serve before it began accepting client RPCs (so the recovery window is closed
+// with no false losses, spec B2); here we only fill in the true total, which
+// happens before the background goroutine (and thus recoveryPauseHook) runs so
+// progress reporting is correct at the pause (spec B1 acceptance test 4). The
+// goroutine calls recoveryPauseHook (if set) at the top so a test can block and
+// observe the recovering window, updates progress via noteRecovered, and calls
+// finishRecovering when done. Recovery keeps the single-batch enqueue
+// (recoverPriorJobs -> enqueueItems).
 func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfig, db *db) error {
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
 		return err
 	}
 
-	s.setRecovering(len(priorJobs))
+	s.setRecoveryTotal(len(priorJobs))
 
 	wgk := s.wg.Add(1)
 
@@ -2577,6 +2595,15 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		return s, msg, token, err
 	}
 
+	// mark ourselves recovering (total unknown for now) BEFORE we start
+	// accepting client RPCs, so a pre-crash runner reconnecting during the
+	// cheap live-bucket scan below gets a retryable ErrRecovering rather than a
+	// terminal ErrBadJob for a to-be-restored job (spec B2: recovery timing
+	// never causes a new false loss). This only sets an O(1) flag, so readiness
+	// is not delayed; the true total is filled in by startPriorStateRecovery
+	// after the scan, before the background goroutine runs (spec B1).
+	s.setRecovering(0)
+
 	// now that we're ready, set up responding to command-line clients
 	wgk = wg.Add(1)
 
@@ -2586,10 +2613,16 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// answers clients (ping/status/add) immediately regardless of how much
 	// history or how many running jobs the db holds (spec B1). We read the
 	// prior jobs synchronously (a cheap live-bucket scan) so recoveryProgress's
-	// total is known before we mark ourselves recovering, then re-enqueue them
+	// total is known before the background goroutine runs, then re-enqueue them
 	// in the goroutine. Recovery keeps the single-batch enqueue so AddMany
 	// resolves dependencies within the one batch.
 	if err = s.startPriorStateRecovery(ctx, config, db); err != nil {
+		// the scan failed before the background goroutine (which would clear
+		// the flag) was launched, so clear the recovering flag we set above to
+		// avoid leaving it stuck true (production die()s on this error, but keep
+		// it clean).
+		s.finishRecovering()
+
 		return s, msg, token, err
 	}
 
