@@ -12,9 +12,9 @@
 // RepGroup that has any deleted terminal contribution and no live jobs.
 //
 // The fix is server-side: the seed a freshly-connected (or refreshed) client
-// receives must send live states + complete for RepGroups with live jobs, send
-// normally completed RepGroups as complete-only, and NEVER send deleted;
-// deleted-only and complete+deleted-only RepGroups are omitted
+// receives must send live states + complete for RepGroups with live jobs, and
+// NEVER send deleted; complete-only, deleted-only and complete+deleted-only
+// RepGroups are all omitted
 // (jobqueue/statusstate.go liveSeedLocked). The frontend renders whatever
 // RepGroups the server sends, so this fixture models the server seed in JS
 // (computeSeed) and drives the real websocket-handler.js against it.
@@ -67,11 +67,11 @@ function hasLiveJob(counts) {
 }
 
 // computeSeed models the server's fresh-connect seed. When filtered (the fix),
-// a RepGroup with live jobs is sent without deleted, a complete-only RepGroup is
-// sent as complete, and deleted terminal RepGroups are omitted. When unfiltered
-// (the pre-fix bug), every RepGroup is sent verbatim, including its deleted
-// count. The +all+ aggregate always holds live jobs only (the server maintains
-// that invariant separately).
+// a RepGroup with live jobs is sent without deleted, and every RepGroup with no
+// live job (complete-only, deleted-only, or complete+deleted) is omitted. When
+// unfiltered (the pre-fix bug), every RepGroup is sent verbatim, including its
+// deleted count. The +all+ aggregate always holds live jobs only (the server
+// maintains that invariant separately).
 function computeSeed(state, filtered) {
   const messages = [];
   const liveAggregate = {};
@@ -89,10 +89,8 @@ function computeSeed(state, filtered) {
   for (const [rg, counts] of Object.entries(state)) {
     if (filtered) {
       if (!hasLiveJob(counts)) {
-        if ((counts.complete || 0) > 0 && (counts.deleted || 0) <= 0) {
-          messages.push({ RepGroup: rg, Counts: { complete: counts.complete } });
-        }
-
+        // a RepGroup with no live job (complete-only, deleted-only, or
+        // complete+deleted) is omitted entirely from the fresh-connect seed.
         continue;
       }
 
