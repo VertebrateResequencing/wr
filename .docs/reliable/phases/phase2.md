@@ -51,8 +51,8 @@ keys; hammering Add/Reserve/status through recovery keeps accounting exact under
 `-race`; `recoveryProgress` reports total == M / restored 0 at the pause and
 restored == total == M after, monotonic non-decreasing, never exceeding total).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: B2 - Recovery-window RPC safety
 
@@ -79,8 +79,8 @@ succeeds, job ends complete, repgroup counter incremented exactly once == RAW
 scan; a window touch of a not-yet-restored running key returns `ErrRecovering`
 and `recordJobContact` recorded the contact).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: B3 - Concurrency guards
 
@@ -99,8 +99,8 @@ Tests in `jobqueue/nonblocking_startup_test.go`. Covers both B3 acceptance tests
 run twice, repgroup counter == RAW scan; the full B1-B3 suite is `-race` clean,
 in particular around `recoveredRunningJobs`).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.4: Integration - non-blocking Serve + background backfill
 
@@ -125,8 +125,8 @@ together, placed here (the later of the two phases). It depends on A3's
    background-backfill paths compose (responsive-immediately from B1,
    convergence from A3).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (Section E)
 

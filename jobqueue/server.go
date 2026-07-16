@@ -95,6 +95,7 @@ const (
 	ErrPermissionDenied = "bad token: permission denied"
 	ErrBeingDrained     = "server is being drained"
 	ErrStopReserving    = "recovered on a new server; you should stop reserving"
+	ErrRecovering       = "server is recovering prior state, please retry"
 	ServerModeNormal    = "started"
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
@@ -220,6 +221,14 @@ var BsubID uint64 //nolint:gochecknoglobals
 // profiling the manager. It is unset by default, in which case no endpoint is
 // started and there is no profiling overhead.
 const envPprofAddr = "WR_PPROF_ADDR"
+
+// recoveryPauseHookForTest, if non-nil, is copied into each new Server's
+// recoveryPauseHook during Serve so a test can install a hook that blocks
+// background recovery before recovery has a chance to run. It is a test-only
+// seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
+var recoveryPauseHookForTest func()
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -744,28 +753,38 @@ type Server struct {
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
 	statusWSDetailsHook       func()
-	pauseRequests             int
-	wsconns                   map[string]*websocket.Conn
-	wsWriteMutexes            map[string]*sync.Mutex // mutex per websocket connection
-	wsHandlerWG               sync.WaitGroup
-	clientSubscriptions       map[string]*serverSubscription
-	badServers                map[string]*cloud.Server
-	schedIssues               map[string]*schedulerIssue
-	racmutex                  sync.RWMutex // to protect the readyaddedcallback
-	bsmutex                   sync.RWMutex
-	simutex                   sync.RWMutex
-	krmutex                   sync.RWMutex
-	ssmutex                   sync.RWMutex // "server state mutex": up, drain, blocking, ServerInfo.Mode, shutdown's q-nil
-	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
-	csmutex                   sync.RWMutex // to protect clientSubscriptions
-	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
-	statusSeedMutex           sync.Mutex   // serialises lazy persisted status seeding before queue transitions
-	lastContactMu             sync.Mutex   // leaf lock protecting lastContact; never taken before queue/job locks
+	// recoveryPauseHook, if non-nil, is called at the top of the background
+	// prior-state recovery goroutine so a test can block recovery and observe
+	// the recovering window (modelled on statusWSDetailsHook). nil in production.
+	recoveryPauseHook   func()
+	pauseRequests       int
+	wsconns             map[string]*websocket.Conn
+	wsWriteMutexes      map[string]*sync.Mutex // mutex per websocket connection
+	wsHandlerWG         sync.WaitGroup
+	clientSubscriptions map[string]*serverSubscription
+	badServers          map[string]*cloud.Server
+	schedIssues         map[string]*schedulerIssue
+	racmutex            sync.RWMutex // to protect the readyaddedcallback
+	bsmutex             sync.RWMutex
+	simutex             sync.RWMutex
+	krmutex             sync.RWMutex
+	ssmutex             sync.RWMutex // up, drain, blocking, Mode, shutdown's q-nil, recovering state
+	rrjMu               sync.RWMutex // leaf lock guarding recoveredRunningJobs
+	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
+	csmutex             sync.RWMutex // to protect clientSubscriptions
+	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
+	statusSeedMutex     sync.Mutex   // serialises lazy persisted status seeding before queue transitions
+	lastContactMu       sync.Mutex   // leaf lock protecting lastContact; never taken before queue/job locks
 	sync.Mutex
-	wsmutex              sync.RWMutex
-	up                   bool
-	drain                bool
-	blocking             bool
+	wsmutex  sync.RWMutex
+	up       bool
+	drain    bool
+	blocking bool
+	// recovering, recoveryTotal and recoveryRestored track background prior-state
+	// recovery (spec B1); all guarded by ssmutex.
+	recovering           bool
+	recoveryTotal        int
+	recoveryRestored     int
 	racChecking          bool
 	killRunners          bool
 	racPending           bool
@@ -840,6 +859,51 @@ func (s *Server) queueIfPresent() *queue.Queue {
 	defer s.ssmutex.RUnlock()
 
 	return s.q
+}
+
+// isRecovering reports whether the background prior-state recovery goroutine is
+// still running (spec B1).
+func (s *Server) isRecovering() bool {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.recovering
+}
+
+// recoveryProgress returns how many prior jobs have been restored so far and the
+// total to restore, for observing recovery progress (spec B1).
+func (s *Server) recoveryProgress() (restored, total int) {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.recoveryRestored, s.recoveryTotal
+}
+
+// setRecovering marks the server as recovering, records the total number of
+// prior jobs to restore and resets the restored count to 0 (spec B1).
+func (s *Server) setRecovering(total int) {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.recovering = true
+	s.recoveryTotal = total
+	s.recoveryRestored = 0
+}
+
+// noteRecovered adds n to the count of prior jobs restored so far (spec B1).
+func (s *Server) noteRecovered(n int) {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.recoveryRestored += n
+}
+
+// finishRecovering marks background prior-state recovery as complete (spec B1).
+func (s *Server) finishRecovering() {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.recovering = false
 }
 
 func (s *Server) setRACPending() {
@@ -1049,6 +1113,78 @@ func (s *Server) startCounterBackfill(ctx context.Context) {
 
 		clog.Info(ctx, "per-repGroup complete-counter backfill finished")
 	}()
+}
+
+// startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
+// scan), marks the server as recovering with that total, and launches a
+// background goroutine that re-enqueues them so Serve returns while recovery is
+// still running (spec B1). The goroutine calls recoveryPauseHook (if set) at the
+// top so a test can block and observe the recovering window, updates progress
+// via noteRecovered, and calls finishRecovering when done. Recovery keeps the
+// single-batch enqueue (recoverPriorJobs -> enqueueItems).
+func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfig, db *db) error {
+	priorJobs, err := db.recoverIncompleteJobs()
+	if err != nil {
+		return err
+	}
+
+	s.setRecovering(len(priorJobs))
+
+	wgk := s.wg.Add(1)
+
+	go s.recoverInBackground(ctx, config, wgk, priorJobs)
+
+	return nil
+}
+
+// recoverInBackground is the body of the background prior-state recovery
+// goroutine launched by startPriorStateRecovery (spec B1). It calls
+// recoveryPauseHook (if set) at the top so a test can block and observe the
+// recovering window, re-enqueues the prior jobs in a single batch, updates
+// progress via noteRecovered, and marks recovery finished on return.
+func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, wgk string, priorJobs []*Job) {
+	defer internal.LogPanic(ctx, "jobqueue prior-state recovery", true)
+	defer s.wg.Done(wgk)
+	// re-schedule ready work once recovery has finished. Defers run LIFO, so
+	// finishRecovering (registered after this) runs first: by the time this
+	// fires, isRecovering() is already false, so any jobs added during the
+	// recovery window are now scheduled against capacity that accounts for the
+	// recovered running jobs (spec B1: no overcommit during recovery).
+	defer s.rescheduleReadyAfterRecovery(ctx)
+	defer s.finishRecovering()
+
+	if s.recoveryPauseHook != nil {
+		s.recoveryPauseHook()
+	}
+
+	clog.Info(ctx, "recovering prior state", "total", len(priorJobs))
+
+	if err := s.recoverPriorJobs(ctx, config, priorJobs); err != nil {
+		clog.Error(ctx, "prior-state recovery failed", "err", err)
+
+		return
+	}
+
+	s.noteRecovered(len(priorJobs))
+
+	restored, total := s.recoveryProgress()
+	clog.Info(ctx, "recovering: prior state recovered", "restored", restored, "total", total)
+}
+
+// rescheduleReadyAfterRecovery re-triggers the ready-added callback when the
+// queue holds ready jobs, so any jobs added during the recovery window (whose
+// dispatch was gated by isRecovering) are now scheduled. It only fires when
+// there is ready work, mirroring waitThenRecheckRAC, so recovery never provokes
+// a spurious callback invocation. Must be called after finishRecovering.
+func (s *Server) rescheduleReadyAfterRecovery(ctx context.Context) {
+	q := s.queueIfPresent()
+	if q == nil {
+		return
+	}
+
+	if q.Stats().Ready > 0 {
+		s.triggerReadyAddedCallback(ctx)
+	}
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -1545,6 +1681,16 @@ func (s *Server) runStatusWebSocketWorker(worker func()) {
 	defer s.wsHandlerWG.Done()
 
 	worker()
+}
+
+// setRC sets the runner command template under racmutex, matching the locking
+// used by the readers (runnerCommand, readyAddedCallback). Production sets rc
+// once at construction before any reader can run, but tests reconfigure it on a
+// live server, so this synchronised setter keeps those writes race-free.
+func (s *Server) setRC(rc string) {
+	s.racmutex.Lock()
+	s.rc = rc
+	s.racmutex.Unlock()
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -2399,6 +2545,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		schedCaster:               newCaster(),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
+		recoveryPauseHook:         recoveryPauseHookForTest,
 		lastContact:               make(map[string]int64),
 		timings:                   timings,
 		itemTTR:                   timings.ItemTTR,
@@ -2406,13 +2553,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
 	}
 
-	// if we're restarting from a state where there were incomplete jobs, we
-	// need to load those in to our queue now
+	// create the queue now (its ready-added callback, which recovery's enqueue
+	// relies on, is registered here rather than in serveWebInterface, so it is
+	// safe for recovery to run in the background below).
 	s.createQueue(ctx)
-
-	if err = s.loadPriorState(ctx, config, db); err != nil {
-		return nil, msg, token, err
-	}
 
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
@@ -2438,11 +2582,22 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	go s.serveClients(ctx, sock, wg, wgk, stopClientHandling, clientHandlingDone)
 
+	// recover any prior incomplete jobs in the background, so the manager
+	// answers clients (ping/status/add) immediately regardless of how much
+	// history or how many running jobs the db holds (spec B1). We read the
+	// prior jobs synchronously (a cheap live-bucket scan) so recoveryProgress's
+	// total is known before we mark ourselves recovering, then re-enqueue them
+	// in the goroutine. Recovery keeps the single-batch enqueue so AddMany
+	// resolves dependencies within the one batch.
+	if err = s.startPriorStateRecovery(ctx, config, db); err != nil {
+		return s, msg, token, err
+	}
+
 	// build the maintained per-repGroup complete counter for a pre-upgrade DB in
 	// the background, so the one-time upgrade never blocks readiness (spec A3).
 	// It is crash-resumable, so a shutdown or error mid-backfill simply resumes on
-	// the next start. Phase 2 reorders Serve for fully non-blocking startup; this
-	// launch point only needs to be after the server is serving clients.
+	// the next start. It composes with the background recovery above; both run
+	// after the server is serving clients.
 	s.startCounterBackfill(ctx)
 
 	return s, msg, token, err
@@ -2733,17 +2888,6 @@ func (s *Server) recordSchedulerMessage(msg string) {
 	s.schedCaster.Send(si)
 }
 
-// loadPriorState re-enqueues any jobs that were still incomplete when a
-// previous server instance stopped.
-func (s *Server) loadPriorState(ctx context.Context, config ServerConfig, db *db) error {
-	priorJobs, err := db.recoverIncompleteJobs()
-	if err != nil {
-		return err
-	}
-
-	return s.recoverPriorJobs(ctx, config, priorJobs)
-}
-
 // recoverPriorJobs builds queue item definitions for jobs that were incomplete
 // when a previous server instance stopped, and enqueues them. It is a no-op if
 // there were no prior jobs.
@@ -2841,7 +2985,9 @@ func (s *Server) recoverRunningJob(ctx context.Context, job *Job, loginUser stri
 		clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 	}
 
+	s.rrjMu.Lock()
 	s.recoveredRunningJobs[job.Key()] = true
+	s.rrjMu.Unlock()
 }
 
 // Block makes you block while the server does the job of serving clients. This
@@ -3323,7 +3469,11 @@ type lostJobDetails struct {
 // confirmOrReleaseLostJob confirms whether a lost job is really dead and kills
 // it, or (if the user already called kill) releases it back to the run queue.
 func (s *Server) confirmOrReleaseLostJob(ctx context.Context, job *Job, d lostJobDetails) {
-	confirmedDead := !d.killCalled && !s.recoveredRunningJobs[d.key]
+	s.rrjMu.RLock()
+	recovered := s.recoveredRunningJobs[d.key]
+	s.rrjMu.RUnlock()
+
+	confirmedDead := !d.killCalled && !recovered
 	if confirmedDead {
 		confirmedDead = s.confirmJobDeadAndKill(ctx, d.key, d.host, d.pid, d.checkTimeout, d.checkRetryTime)
 	}
@@ -3376,7 +3526,15 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 
 	groups := s.buildSchedulerGroups(ctx, q, allitemdata, rc)
 
-	if rc != "" {
+	// We build scheduler groups above regardless (so newly added jobs get their
+	// reserve group and stay reservable), but we do NOT dispatch runners for new
+	// work while background prior-state recovery is still running (spec B1):
+	// recovered running jobs have not yet been fully re-accounted in the
+	// scheduler, so scheduling now could overcommit resources those recovered
+	// runners still occupy. When recovery finishes it re-triggers this callback
+	// (see recoverInBackground), so these ready jobs are then scheduled against
+	// capacity that includes the recovered running jobs.
+	if rc != "" && !s.isRecovering() {
 		s.scheduleGroupRunners(ctx, q, groups)
 	}
 }

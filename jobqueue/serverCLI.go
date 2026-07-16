@@ -1693,7 +1693,21 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 	}
 
 	item, err := s.q.Get(key)
-	if err != nil || (checkRunning && item.Stats().State != queue.ItemStateRun) {
+	if err != nil {
+		// the item is not in the queue. During the recovery window a
+		// to-be-restored job legitimately misses; report a retryable error so a
+		// reconnecting runner retries rather than treating it as a permanent
+		// failure (spec B2). Outside recovery this is a real bad job.
+		if s.isRecovering() {
+			return item, nil, ErrRecovering
+		}
+
+		return item, nil, ErrBadJob
+	}
+
+	if checkRunning && item.Stats().State != queue.ItemStateRun {
+		// the item exists but is in the wrong sub-queue: a real state error, not
+		// a recovery-timing miss, so it stays ErrBadJob even while recovering.
 		return item, nil, ErrBadJob
 	}
 

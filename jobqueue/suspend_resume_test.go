@@ -457,7 +457,7 @@ func TestJobqueueSuspendResumeLimitGroups(t *testing.T) {
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 
-		server.rc = serverRC
+		server.setRC(serverRC)
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)

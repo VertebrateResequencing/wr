@@ -1507,6 +1507,11 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 
 		server = restartSubscriptionTestServer(ctx, serverConfig)
 
+		// recovery now runs in the background (spec B1), so wait for the prior
+		// running job to be restored before archiving it; otherwise the archive
+		// races the recovery window and is refused with ErrRecovering.
+		So(waitUntilRecovered(server), ShouldBeTrue)
+
 		catchUpClient, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
 

@@ -526,7 +526,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 			defer disconnect(jq)
 
-			server.rc = serverRC
+			server.setRC(serverRC)
 
 			const (
 				firstBatch     = 2
