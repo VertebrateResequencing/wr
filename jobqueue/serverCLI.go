@@ -770,7 +770,7 @@ func (s *Server) waitForPendingReserves() {
 // ready because the client's first reserve targets a scheduler group we no
 // longer want more clients working on.
 func (s *Server) skipReserve(cr *clientRequest) bool {
-	if cr.SchedulerGroup == "" || !cr.FirstReserve || s.rc == "" {
+	if cr.SchedulerGroup == "" || !cr.FirstReserve || s.runnerCommand() == "" {
 		return false
 	}
 

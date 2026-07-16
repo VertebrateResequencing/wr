@@ -187,6 +187,7 @@ func TestB1NonBlockingResponsiveWhilePaused(t *testing.T) {
 			once.Do(func() { close(hookEntered) })
 			<-release
 		}
+		defer func() { recoveryPauseHookForTest = nil }()
 
 		serverConfig.dontWipeDevDB = true
 		server, _, token, err := serve(ctx, serverConfig)
@@ -374,6 +375,7 @@ func TestB1HammerDuringRecovery(t *testing.T) {
 			once.Do(func() { close(hookEntered) })
 			<-release
 		}
+		defer func() { recoveryPauseHookForTest = nil }()
 
 		serverConfig.dontWipeDevDB = true
 		server, _, token, err := serve(ctx, serverConfig)
@@ -504,6 +506,7 @@ func TestB1RecoveryProgressMonotonic(t *testing.T) {
 			once.Do(func() { close(hookEntered) })
 			<-release
 		}
+		defer func() { recoveryPauseHookForTest = nil }()
 
 		serverConfig.dontWipeDevDB = true
 		server, _, _, err := serve(ctx, serverConfig)
@@ -646,6 +649,7 @@ func b2PausedRecoveringServer(ctx context.Context, serverConfig ServerConfig) (*
 		once.Do(func() { close(hookEntered) })
 		<-release
 	}
+	defer func() { recoveryPauseHookForTest = nil }()
 
 	serverConfig.dontWipeDevDB = true
 	server, _, token, err := serve(ctx, serverConfig)
