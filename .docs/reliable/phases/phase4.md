@@ -37,8 +37,8 @@ opened by `initDB` and an existing db reopened both open without error and
 existing db tests pass; a written-then-reopened db round-trips stored and
 archived jobs identically - the option only affects freelist representation).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.2: D2 - Offline compaction subcommand [parallel with 4.1]
 
@@ -54,8 +54,8 @@ churned db compacts to a valid db whose buckets and every job/lookup/counter
 round-trip identically and whose output size is <= input; compaction invoked
 while a manager runs exits non-zero and leaves the db untouched).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill (review all items in the

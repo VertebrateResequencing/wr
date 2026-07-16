@@ -134,6 +134,55 @@ func TestGetBadLogLinesHandlesLongLogLines(t *testing.T) {
 	})
 }
 
+// TestManagerCompactRefusesWhileRunning covers D2 acceptance test 2: the
+// `wr manager compact` subcommand must refuse (exit non-zero) and leave the
+// database untouched while a manager is running. It mirrors
+// TestManagerRecomputeCountsRefusesWhileRunning: it drives the real Run func
+// against a real in-process manager reachable via connect(), swapping the
+// managerCompactExit seam so the non-zero exit is observable without terminating
+// the test process, and asserts the compaction call (the only thing that would
+// modify the db) is never invoked, so the db is provably untouched.
+func TestManagerCompactRefusesWhileRunning(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("compact refuses while a manager runs and leaves the db untouched", t, func() {
+		oldConfig := config
+		oldCAFile := caFile
+		oldExit := managerCompactExit
+		oldCompact := compactDBFile
+
+		t.Cleanup(func() {
+			config = oldConfig
+			caFile = oldCAFile
+			managerCompactExit = oldExit
+			compactDBFile = oldCompact
+		})
+
+		testConfig, _, _, _, server, _ := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+
+		exitCode := -1
+		managerCompactExit = func(code int) { exitCode = code }
+
+		compactCalled := false
+		compactDBFile = func(string) (int64, int64, error) {
+			compactCalled = true
+
+			return 0, 0, nil
+		}
+
+		managerCompactCmd.Run(managerCompactCmd, nil)
+
+		Convey("D2.2: it exits non-zero and never touches (compacts) the database", func() {
+			So(exitCode, ShouldEqual, 1)
+			So(compactCalled, ShouldBeFalse)
+		})
+	})
+}
+
 func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 	Convey("manager startup waits past the initial timeout while a DB upgrade is active", t, func() {
 		oldConfig := config

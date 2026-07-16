@@ -154,6 +154,12 @@ const (
 // delimiter-free), so this can never collide with a per-repGroup marker.
 var backfillSentinelKey = []byte(dbDelimiter + "allBackfilled") //nolint:gochecknoglobals
 
+// compactTxMaxSize bounds the size (bytes) of each bolt.Compact destination
+// transaction, so compacting a multi-gigabyte database commits regularly instead
+// of buffering the whole copy in one transaction (see bolt.Compact). A value of
+// 0 would use a single transaction.
+const compactTxMaxSize = 64 * 1024 * 1024
+
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
 	limitGroupChanged
@@ -459,7 +465,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 			msg = "created new empty db file " + dbFile
 		} else {
 			err = copyFile(dbBkFile, dbFile)
@@ -467,13 +473,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, msg, err
 			}
 
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 			openedExistingDB = true
 		}
 	} else {
 		openedExistingDB = true
-		boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+
+		boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 		if err != nil {
 			// try the backup
 			bkPath := dbBkFile
@@ -498,7 +505,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, nil)
+				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 				if errbk == nil {
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -518,7 +525,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 						return nil, msg, err
 					}
 
-					boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+					boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
@@ -1432,6 +1439,100 @@ func putDepGroupFromLookupKey(depGroupBucket *bolt.Bucket, lookupKey []byte) err
 	}
 
 	return depGroupBucket.Put(lookupKey[:idx], nil)
+}
+
+// CompactDBFile is the exported entry point for the offline `wr manager compact`
+// subcommand (spec D2). It compacts the BoltDB at dbFile, reclaiming the free
+// pages left by churn, and returns the file size (bytes) before and after.
+//
+// It opens the source with the map freelist, compacts (bolt.Compact) into a
+// temporary file in the SAME directory as dbFile, then atomically replaces the
+// original with os.Rename (same directory => same filesystem => atomic rename).
+// On any error the original file is left untouched and the temporary file is
+// removed, so a failed compaction never corrupts or partially overwrites the
+// database. The manager MUST be stopped: BoltDB permits only one process to open
+// the file at a time, so the subcommand refuses to run while a manager is up.
+func CompactDBFile(dbFile string) (beforeSize, afterSize int64, err error) {
+	beforeInfo, err := os.Stat(dbFile)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	beforeSize = beforeInfo.Size()
+
+	tmpPath, afterSize, err := compactToTempFile(dbFile)
+	if err != nil {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+
+		return beforeSize, 0, err
+	}
+
+	if err = os.Rename(tmpPath, dbFile); err != nil {
+		_ = os.Remove(tmpPath)
+
+		return beforeSize, afterSize, err
+	}
+
+	return beforeSize, afterSize, nil
+}
+
+// compactToTempFile compacts the BoltDB at dbFile into a fresh temporary file in
+// the SAME directory (so CompactDBFile's later os.Rename onto dbFile is an atomic
+// same-filesystem rename), returning the temp file's path and its (compacted)
+// size. On error it returns the temp path (if one was created) so the caller can
+// remove it, leaving the original database untouched.
+func compactToTempFile(dbFile string) (tmpPath string, afterSize int64, err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(dbFile), filepath.Base(dbFile)+".compact-*")
+	if err != nil {
+		return "", 0, err
+	}
+
+	tmpPath = tmp.Name()
+	if cerr := tmp.Close(); cerr != nil {
+		return tmpPath, 0, cerr
+	}
+
+	if err = compactBoltInto(tmpPath, dbFile); err != nil {
+		return tmpPath, 0, err
+	}
+
+	afterInfo, err := os.Stat(tmpPath)
+	if err != nil {
+		return tmpPath, 0, err
+	}
+
+	return tmpPath, afterInfo.Size(), nil
+}
+
+// compactBoltInto opens srcPath (map freelist) and the empty dstPath and copies a
+// compacted image of the source into the destination via bolt.Compact, closing
+// both handles before returning.
+func compactBoltInto(dstPath, srcPath string) (err error) {
+	src, err := bolt.Open(srcPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if cerr := src.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	dst, err := bolt.Open(dstPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if cerr := dst.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	return bolt.Compact(dst, src, compactTxMaxSize)
 }
 
 // countDeletedCompleteRTK decrements the complete counter for the repGroup in
