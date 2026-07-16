@@ -933,7 +933,7 @@ func (s *Server) seedStatusStateForItemDefs(itemdefs []*queue.ItemDef) error {
 		return nil
 	}
 
-	counts, err := s.db.retrieveCompleteJobCountsByRepGroups(repGroups)
+	counts, err := s.db.retrieveMaintainedCompleteCounts(repGroups)
 	if err != nil {
 		return fmt.Errorf("%w: %w", Error{Op: op, Err: ErrDBError}, err)
 	}
@@ -1027,6 +1027,28 @@ func (s *Server) forgetJobContacts(data []any) {
 		delete(s.lastContact, key)
 	}
 	s.lastContactMu.Unlock()
+}
+
+// startCounterBackfill launches the one-time online backfill of the per-repGroup
+// complete counter (spec A3) in a background goroutine, logging its start,
+// finish and any error via clog. It never blocks readiness.
+func (s *Server) startCounterBackfill(ctx context.Context) {
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue complete-counter backfill", true)
+		defer s.wg.Done(wgk)
+
+		clog.Info(ctx, "per-repGroup complete-counter backfill started")
+
+		if err := s.db.backfillRepGroupCompleteCounts(ctx); err != nil {
+			clog.Warn(ctx, "per-repGroup complete-counter backfill did not complete", "err", err)
+
+			return
+		}
+
+		clog.Info(ctx, "per-repGroup complete-counter backfill finished")
+	}()
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -2415,6 +2437,13 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	wgk = wg.Add(1)
 
 	go s.serveClients(ctx, sock, wg, wgk, stopClientHandling, clientHandlingDone)
+
+	// build the maintained per-repGroup complete counter for a pre-upgrade DB in
+	// the background, so the one-time upgrade never blocks readiness (spec A3).
+	// It is crash-resumable, so a shutdown or error mid-backfill simply resumes on
+	// the next start. Phase 2 reorders Serve for fully non-blocking startup; this
+	// launch point only needs to be after the server is serving clients.
+	s.startCounterBackfill(ctx)
 
 	return s, msg, token, err
 }

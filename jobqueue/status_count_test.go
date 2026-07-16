@@ -95,12 +95,16 @@ func TestRepGroupStatusCountsDoNotDecodeCompleteJobs(t *testing.T) {
 			So(counts, ShouldResemble, map[string]int{repGroup: 2})
 		})
 
-		Convey("lazy startup seeding reports a missing RepGroup lookup bucket", func() {
-			assertLazyStatusSeedMissingBucket(db, repGroup, bucketRTK)
+		Convey("the complete-count raw scan reports a missing RepGroup lookup bucket", func() {
+			assertRawCompleteCountMissingBucket(db, repGroup, bucketRTK)
 		})
 
-		Convey("lazy startup seeding reports a missing completed-jobs bucket", func() {
-			assertLazyStatusSeedMissingBucket(db, repGroup, bucketJobsComplete)
+		Convey("the complete-count raw scan reports a missing completed-jobs bucket", func() {
+			assertRawCompleteCountMissingBucket(db, repGroup, bucketJobsComplete)
+		})
+
+		Convey("lazy startup seeding reports a missing maintained-counter bucket", func() {
+			assertLazyStatusSeedMissingBucket(db, repGroup)
 		})
 
 		Convey("recovery reports a missing reverse lookup bucket", func() {
@@ -282,7 +286,11 @@ func TestClientRepGroupStatusCountsIncludeSuspended(t *testing.T) {
 	})
 }
 
-func assertLazyStatusSeedMissingBucket(db *db, repGroup string, bucket []byte) {
+// assertRawCompleteCountMissingBucket checks the RAW complete-count scan
+// (retrieveCompleteJobCountsByRepGroups, the CLI ground-truth path) surfaces a
+// missing bucket. This scan still reads bucketRTK and bucketJobsComplete; lazy
+// startup seeding no longer does (spec A2 moved it onto the maintained counter).
+func assertRawCompleteCountMissingBucket(db *db, repGroup string, bucket []byte) {
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		return tx.DeleteBucket(bucket)
 	})
@@ -290,12 +298,23 @@ func assertLazyStatusSeedMissingBucket(db *db, repGroup string, bucket []byte) {
 
 	_, err = db.retrieveCompleteJobCountsByRepGroups([]string{repGroup})
 	assertBoltBucketError(err, bucket)
+}
+
+// assertLazyStatusSeedMissingBucket checks lazy startup seeding surfaces a
+// missing maintained-counter bucket. Since spec A2, seeding reads
+// bucketRepGroupComplete via retrieveMaintainedCompleteCounts, so that is the
+// bucket whose absence it must report.
+func assertLazyStatusSeedMissingBucket(db *db, repGroup string) {
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.DeleteBucket(bucketRepGroupComplete)
+	})
+	So(err, ShouldBeNil)
 
 	server := &Server{db: db, statusState: newStatusState()}
 	err = server.seedStatusStateForItemDefs([]*queue.ItemDef{{
 		Data: &Job{RepGroup: repGroup},
 	}})
-	assertJobqueueDBBucketError(err, bucket)
+	assertJobqueueDBBucketError(err, bucketRepGroupComplete)
 }
 
 func assertRecoveryStatusSeedMissingBucket(db *db, repGroup string, bucket []byte) {

@@ -27,6 +27,7 @@ package cmd
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -755,6 +756,61 @@ func TestWaitForLiveManagerStartup(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(jq, ShouldNotBeNil)
 		So(reports, ShouldEqual, 0)
+	})
+}
+
+// TestManagerRecomputeCountsRefusesWhileRunning covers A4 acceptance test 3: the
+// `wr manager recompute-counts` subcommand must refuse (exit non-zero) and leave
+// the database untouched while a manager is running. It drives the real Run func
+// against a real in-process manager reachable via connect(), swapping the
+// managerRecomputeExit seam (as status.go's statusExit is swapped) so the
+// command's non-zero exit is observable without terminating the test process -
+// die()/os.Exit cannot be exercised in-process.
+//
+// "Does not modify the db" is asserted via the recomputeCounts seam rather than
+// a byte comparison, because a live manager legitimately writes to its own
+// database (e.g. the background counter backfill), which would make a raw
+// before/after comparison flaky. The only thing that would modify the db from
+// this command is the recompute call, so proving it is never invoked (the guard
+// returns first) is the exact, deterministic guarantee.
+func TestManagerRecomputeCountsRefusesWhileRunning(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("recompute-counts refuses while a manager runs and leaves the db untouched", t, func() {
+		oldConfig := config
+		oldCAFile := caFile
+		oldExit := managerRecomputeExit
+		oldRecompute := recomputeCounts
+
+		t.Cleanup(func() {
+			config = oldConfig
+			caFile = oldCAFile
+			managerRecomputeExit = oldExit
+			recomputeCounts = oldRecompute
+		})
+
+		testConfig, _, _, _, server, _ := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+
+		exitCode := -1
+		managerRecomputeExit = func(code int) { exitCode = code }
+
+		recomputeCalled := false
+		recomputeCounts = func(context.Context, string) (int, error) {
+			recomputeCalled = true
+
+			return 0, nil
+		}
+
+		managerRecomputeCountsCmd.Run(managerRecomputeCountsCmd, nil)
+
+		Convey("A4.3: it exits non-zero and never touches (recomputes) the database", func() {
+			So(exitCode, ShouldEqual, 1)
+			So(recomputeCalled, ShouldBeFalse)
+		})
 	})
 }
 

@@ -64,8 +64,8 @@ RAW scan after the step, including the cross-repgroup, key-changing-modify,
 idempotent re-archive, pre-existence, remove-does-not-delete-RTK, and mixed
 >= 3-repgroup churn cases).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Seeding reads the counter, not the scan
 
@@ -82,8 +82,8 @@ Covers all 3 acceptance tests from A2 (sentinel-differs-from-scan proves the
 counter is read; restart seeds N from the counter; Regression D
 `TestReliableCompletedRepGroupRemovedOnRefresh` stays green).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: A3 - One-time online background backfill
 
@@ -106,8 +106,8 @@ Covers all 3 acceptance tests from A3 (pre-upgrade DB backfills to RAW scan with
 markers; interrupted-then-rerun processes only unmarked repgroups; concurrent
 archives into a repgroup reconcile to RAW scan under `-race`).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.4: A4 - Offline recompute/repair subcommand
 
@@ -130,8 +130,8 @@ A4 (correct counters -> drift 0 no-op; corrupted counters -> all repaired to RAW
 scan with drift == number corrupted; subcommand refuses while a manager runs and
 does not modify the db).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.5: A5 - Crash consistency
 
@@ -147,8 +147,8 @@ mid-completion and restarts with no completion double-counted or lost (counter
 (a `--servermode` server SIGKILLed and restarted with `--keepdb`) lives in
 `TestJobqueueSignal`, not here.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (Section E)
 
