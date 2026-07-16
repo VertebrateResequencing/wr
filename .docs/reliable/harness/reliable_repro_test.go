@@ -6,9 +6,12 @@
  * archive is rejected (ErrBadJob) and the job re-runs. Fixed by #548.
  *
  * TestReliableCompletedRepGroupRemovedOnRefresh: after every job in a RepGroup
- * completes, a freshly-connected status client (web UI refresh) should still see
- * that RepGroup's completed count. On v0.37.1 the fresh seed drops complete-only
- * RepGroups, so they vanish ("jobs falsely appear removed"). Fixed by #548.
+ * completes, a freshly-connected status client (web UI refresh) must NOT re-show
+ * that complete-only RepGroup on its fresh seed - it disappears on refresh unless
+ * the user searches for it or it completed during the current session. The
+ * authoritative statusState still holds its complete count (so live-session
+ * visibility, 260625-6, is unaffected); only the fresh-connect seed omits it
+ * (260626-2).
  ******************************************************************************/
 
 package jobqueue
@@ -82,7 +85,7 @@ func TestReliableCompletedRepGroupRemovedOnRefresh(t *testing.T) {
 	const rg = "reliable_removed_rg"
 	const n = 5
 
-	Convey("A completed-only RepGroup must still appear in a fresh status seed (web UI refresh)", t, func() {
+	Convey("A completed-only RepGroup is OMITTED from a fresh status seed (web UI refresh)", t, func() {
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -126,14 +129,15 @@ func TestReliableCompletedRepGroupRemovedOnRefresh(t *testing.T) {
 		So(snap[rg][JobStateComplete], ShouldEqual, n) // authoritative state is correct
 
 		// a fresh client (web UI (re)connect / page refresh) subscribes and drains
-		// its seed. It must include the complete-only RepGroup.
+		// its seed. The complete-only RepGroup must be OMITTED, so a refresh does
+		// not re-show it.
 		sub := server.statusState.subscribe()
 		seed := server.statusState.drain(sub)
 		server.statusState.unsubscribe(sub)
 
 		t.Logf("RESULT authoritative complete=%d ; fresh-seed[%s]=%v", snap[rg][JobStateComplete], rg, seed[rg])
 
-		So(seed[rg], ShouldResemble, map[JobState]int{JobStateComplete: n})
+		So(seed, ShouldNotContainKey, rg)
 	})
 }
 

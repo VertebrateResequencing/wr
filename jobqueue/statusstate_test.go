@@ -198,11 +198,11 @@ func TestStatusStateLockOrder(t *testing.T) {
 // TestStatusStateSeedSemantics covers the fresh-connect seed a refreshed or
 // newly-loaded status page receives as its first drain (issue: removed jobs
 // reappear after refresh). A RepGroup with live jobs is seeded with its live
-// states plus complete, but never deleted; a normally completed RepGroup is
-// seeded as complete-only; deleted-only and complete+deleted-only RepGroups are
-// omitted. Live updates AFTER subscribe must still deliver complete and deleted
-// (the transient red bar and the completes-while-open retain) to already-
-// connected clients.
+// states plus complete, but never deleted; a complete-only RepGroup is OMITTED
+// (a fresh load must not re-show completed-only work); deleted-only and
+// complete+deleted-only RepGroups are also omitted. Live updates AFTER subscribe
+// must still deliver complete and deleted (the transient red bar and the
+// completes-while-open retain) to already-connected clients.
 func TestStatusStateSeedSemantics(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -248,9 +248,8 @@ func TestStatusStateSeedSemantics(t *testing.T) {
 			So(hasDeleted, ShouldBeFalse)
 		})
 
-		Convey("a complete-only RepGroup is seeded as complete", func() {
-			So(seed, ShouldContainKey, "doneRG")
-			So(seed["doneRG"], ShouldResemble, map[JobState]int{JobStateComplete: 3})
+		Convey("a complete-only RepGroup is OMITTED from the seed", func() {
+			So(seed, ShouldNotContainKey, "doneRG")
 		})
 
 		Convey("a deleted-only RepGroup is omitted from the seed", func() {
@@ -458,11 +457,12 @@ func TestStatusState(t *testing.T) {
 		})
 
 		// A reconnect is a brand-new subscription, so it gets the same seed a fresh
-		// page load gets. A RepGroup that became complete-only while the now-closed
-		// connection was up remains visible as completed progress; removed groups
-		// are distinguished by their deleted contribution in the seed semantics
-		// above.
-		Convey("reconnect (a fresh subscription) keeps now-complete groups visible", func() {
+		// page load gets: a RepGroup that became complete-only while the now-closed
+		// connection was up is OMITTED (complete-only groups are not re-shown on a
+		// fresh load). Live-session visibility (260625-6) is preserved on the
+		// ORIGINAL connection via dirty updates, not across a reconnect. RepGroups
+		// with live jobs (rgB) are still seeded.
+		Convey("reconnect (a fresh subscription) omits now-complete-only groups", func() {
 			sub1 := ss.subscribe()
 			ss.drain(sub1)
 			// rgA's last 2 running jobs complete, so rgA is now complete-only.
@@ -474,7 +474,7 @@ func TestStatusState(t *testing.T) {
 			defer ss.unsubscribe(sub2)
 
 			full := ss.drain(sub2)
-			So(full["rgA"], ShouldResemble, map[JobState]int{JobStateComplete: 6})
+			So(full, ShouldNotContainKey, "rgA")
 			So(full["rgB"][JobStateReady], ShouldEqual, 1)
 		})
 	})
