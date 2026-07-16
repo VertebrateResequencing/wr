@@ -89,6 +89,17 @@ const (
 	// has exited.
 	pidCheckInterval = 1 * time.Second
 
+	// recoverProcessCacheTTL is the freshness window during which recover()
+	// reuses a single process enumeration instead of enumerating again. Recovery
+	// calls recover() once per running job in a tight startup loop (a single
+	// "recovery pass"), so caching the enumeration for this window means N
+	// running jobs cause 1 enumeration instead of N. It is kept short so that a
+	// genuinely later, separate recovery re-enumerates; any value comfortably
+	// longer than one pass's loop suffices, since a pass only happens once at
+	// manager startup and per-pid liveness is tracked independently by
+	// monitorRecoveredPid.
+	recoverProcessCacheTTL = 5 * time.Second
+
 	// reserveWaitTimeout bounds how long processQueue() waits for spawned
 	// runners to reserve their resources before giving up.
 	reserveWaitTimeout = 1 * time.Minute
@@ -172,6 +183,9 @@ type local struct {
 	stopAuto          chan bool
 	recoveredPids     map[int]bool
 	stopPidMonitoring chan struct{}
+	processLister     func() ([]*process.Process, error)
+	procCache         []*process.Process
+	procCacheTime     time.Time
 	cleanMutex        sync.RWMutex
 	rcMutex           sync.RWMutex
 	resourceMutex     sync.RWMutex
@@ -179,6 +193,7 @@ type local struct {
 	mutex             sync.Mutex
 	rpMutex           sync.Mutex
 	apMutex           sync.Mutex
+	procCacheMutex    sync.Mutex
 	cleaned           bool
 	autoProcessing    bool
 	processing        bool
@@ -266,6 +281,7 @@ func (s *local) initialize(ctx context.Context, config any) error {
 
 	s.recoveredPids = make(map[int]bool)
 	s.stopPidMonitoring = make(chan struct{})
+	s.processLister = process.Processes
 
 	// stopAuto is created here and not in startAutoProcessing() to avoid data
 	// races with concurrent stop and start invocations
@@ -579,7 +595,7 @@ func (s *local) cmdCountRemaining(cmd string) int {
 // corresponding to the given cmd, note that the resources are in use, and
 // start tracking the pid to know when it exits to release those resources.
 func (s *local) recover(ctx context.Context, cmd string, req *Requirements, _ *RecoveredHostDetails) error {
-	processes, err := process.Processes()
+	processes, err := s.enumerateProcesses()
 	if err != nil {
 		return err
 	}
@@ -607,6 +623,31 @@ func (s *local) recover(ctx context.Context, cmd string, req *Requirements, _ *R
 	}
 
 	return nil
+}
+
+// enumerateProcesses returns the current list of processes, reusing a cached
+// enumeration if it is younger than recoverProcessCacheTTL. Because recover()
+// is called once per running job during a single recovery pass, this ensures N
+// running jobs cause 1 process enumeration rather than N. The cache is guarded
+// by procCacheMutex since recover() may be called concurrently. On enumeration
+// error the cache is left untouched so the next call retries.
+func (s *local) enumerateProcesses() ([]*process.Process, error) {
+	s.procCacheMutex.Lock()
+	defer s.procCacheMutex.Unlock()
+
+	if s.procCache != nil && time.Since(s.procCacheTime) < recoverProcessCacheTTL {
+		return s.procCache, nil
+	}
+
+	processes, err := s.processLister()
+	if err != nil {
+		return nil, err
+	}
+
+	s.procCache = processes
+	s.procCacheTime = time.Now()
+
+	return processes, nil
 }
 
 // recoverPid notes that the given pid is using the given req's resources, and

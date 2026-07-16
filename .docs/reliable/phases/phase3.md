@@ -38,8 +38,8 @@ is tracked; the LSF scheduler does no enumeration over 50 `Recover` calls and
 returns nil; two matching processes for one cmd track only one pid, preserving
 the existing `recoverPid` de-dup).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (Section E)
 
