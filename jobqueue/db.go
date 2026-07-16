@@ -70,6 +70,15 @@ const (
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 
+	// offlineDBOpenTimeout bounds how long the offline subcommands
+	// (RecomputeRepGroupCompleteCounts, CompactDBFile) wait for the BoltDB file
+	// lock before erroring. The up-check in cmd guards against a running manager,
+	// but if that check is fooled (e.g. a missing token file) a manager may still
+	// hold the lock; a bounded timeout makes the subcommand fail cleanly instead
+	// of blocking forever. The running manager's own initDB opens intentionally
+	// omit this and block/wait.
+	offlineDBOpenTimeout = 10 * time.Second
+
 	// s3ProfilePathParts is the number of parts in a "profile@path" S3 spec.
 	s3ProfilePathParts = 2
 )
@@ -1056,6 +1065,19 @@ func readRepGroupComplete(b *bolt.Bucket, key []byte) int {
 // sentinel). It respects ctx cancellation between repGroups. Intended to run in
 // a background goroutine once the manager is serving clients (see Serve).
 func (db *db) backfillRepGroupCompleteCounts(ctx context.Context) error {
+	done, err := db.fullyBackfilled()
+	if err != nil {
+		return err
+	}
+
+	if done {
+		// a previous backfill (or an offline recompute) already wrote the
+		// sentinel, so the whole DB is backfilled: skip the O(all-repGroups)
+		// write-tx pass entirely rather than re-processing every repGroup on each
+		// manager startup.
+		return nil
+	}
+
 	repGroups, err := db.retrieveRepGroups()
 	if err != nil {
 		return err
@@ -1129,6 +1151,28 @@ func setRepGroupCompleteFromRawScan(tx *bolt.Tx, repGroup string) (stored, raw i
 	binary.BigEndian.PutUint64(encoded, uint64(raw))
 
 	return stored, raw, counter.Put(key, encoded)
+}
+
+// fullyBackfilled reports whether the fully-backfilled sentinel
+// (backfillSentinelKey) is present in bucketRepGroupBackfilled, i.e. a previous
+// online backfill or offline recompute already processed every repGroup. The
+// online backfill uses this in a read-only tx to short-circuit its
+// O(all-repGroups) write-tx pass on every subsequent manager startup.
+func (db *db) fullyBackfilled() (bool, error) {
+	var done bool
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		markers := tx.Bucket(bucketRepGroupBackfilled)
+		if markers == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
+		}
+
+		done = markers.Get(backfillSentinelKey) != nil
+
+		return nil
+	})
+
+	return done, err
 }
 
 // markBackfillSentinel writes the fully-backfilled sentinel to
@@ -1244,7 +1288,17 @@ func countNewCompleteRTK(tx *bolt.Tx, rtkKey []byte, isNew bool) error {
 // the raw scan). The manager MUST be stopped: BoltDB permits only one process to
 // open the file, so the subcommand refuses to run while a manager is up.
 func RecomputeRepGroupCompleteCounts(ctx context.Context, dbFile string) (drift int, err error) {
-	boltdb, err := bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+	// bolt.Open would CREATE dbFile if it were absent and then report "0
+	// repgroups" as a spurious success; stat first so a nonexistent DB fails
+	// cleanly (mirrors CompactDBFile).
+	if _, err = os.Stat(dbFile); err != nil {
+		return 0, err
+	}
+
+	// a bounded timeout so, if the up-check was fooled and a manager still holds
+	// the file lock, this errors cleanly instead of blocking forever.
+	boltdb, err := bolt.Open(dbFile, dbFilePermission,
+		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
 	if err != nil {
 		return 0, err
 	}
@@ -1510,7 +1564,11 @@ func compactToTempFile(dbFile string) (tmpPath string, afterSize int64, err erro
 // compacted image of the source into the destination via bolt.Compact, closing
 // both handles before returning.
 func compactBoltInto(dstPath, srcPath string) (err error) {
-	src, err := bolt.Open(srcPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+	// a bounded timeout so, if the up-check was fooled and a manager still holds
+	// the source file lock, this errors cleanly instead of blocking forever (the
+	// dst is a fresh temp file, but it uses the same options for consistency).
+	src, err := bolt.Open(srcPath, dbFilePermission,
+		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
 	if err != nil {
 		return err
 	}
@@ -1521,7 +1579,8 @@ func compactBoltInto(dstPath, srcPath string) (err error) {
 		}
 	}()
 
-	dst, err := bolt.Open(dstPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+	dst, err := bolt.Open(dstPath, dbFilePermission,
+		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
 	if err != nil {
 		return err
 	}

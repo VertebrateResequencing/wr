@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"context"
 	"encoding/binary"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -663,6 +664,47 @@ func TestA3BackfillContextCancelled(t *testing.T) {
 	})
 }
 
+func TestA3BackfillSentinelShortCircuits(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a DB with the fully-backfilled sentinel set but an UNMARKED, corrupted repGroup", t, func() {
+		testDB := newCounterTestDB(t, ctx)
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		archiveCounterJob(ctx, testDB, "echo a1", rgA)
+		archiveCounterJob(ctx, testDB, "echo a2", rgA)
+		archiveCounterJob(ctx, testDB, "echo b1", rgB)
+
+		// Set the sentinel WITHOUT writing any per-repGroup markers, then corrupt
+		// rgA. This isolates the sentinel short-circuit from the per-repGroup
+		// marker skip: rgA has no marker, so if backfill actually ran its pass it
+		// WOULD repair rgA (the marker-skip does not fire). Only the sentinel
+		// short-circuit can leave the corrupted value in place, so asserting it
+		// survives proves the short-circuit fired (not merely a marker skip).
+		So(testDB.markBackfillSentinel(), ShouldBeNil)
+		So(backfillSentinelSet(testDB), ShouldBeTrue)
+		So(repGroupHasMarker(testDB, rgA), ShouldBeFalse)
+		setRepGroupCompleteCounter(testDB, rgA, 99)
+
+		Convey("A3: a subsequent backfill short-circuits on the sentinel and does NOT repair the corruption", func() {
+			So(testDB.backfillRepGroupCompleteCounts(ctx), ShouldBeNil)
+
+			// the sentinel made the whole pass a no-op: the wrong value survives,
+			// and rgA still has no marker (backfill never touched it).
+			So(maintainedCount(testDB, rgA), ShouldEqual, 99)
+			So(repGroupHasMarker(testDB, rgA), ShouldBeFalse)
+
+			Convey("A4: the offline recompute (which ignores the sentinel) DOES repair it", func() {
+				drift, err := testDB.recomputeRepGroupCompleteCounts(ctx)
+				So(err, ShouldBeNil)
+				So(drift, ShouldEqual, 1) // only rgA differed (99 != 2)
+				So(maintainedCount(testDB, rgA), ShouldEqual, 2)
+				So(counterMatchesRaw(testDB, rgA, rgB), ShouldResemble, map[string]int{rgA: 2, rgB: 1})
+			})
+		})
+	})
+}
+
 // A4 (spec.md section A4): offline recompute/repair. Unlike the online backfill,
 // recomputeRepGroupCompleteCounts ignores markers and processes EVERY repGroup,
 // SETting counter[rg] = the RAW scan computed in the same tx; it returns the
@@ -750,6 +792,24 @@ func TestA4RecomputeRepairsCorruptedCounters(t *testing.T) {
 
 			So(counterMatchesRaw(reopened, rgA, rgB, rgC),
 				ShouldResemble, map[string]int{rgA: 2, rgB: 1, rgC: 1})
+		})
+	})
+}
+
+func TestA4RecomputeNonexistentDBFile(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a path to a DB file that does not exist", t, func() {
+		dbFile := filepath.Join(t.TempDir(), "nonexistent.db")
+
+		Convey("A4: the exported recompute errors cleanly and does not create the file", func() {
+			drift, err := RecomputeRepGroupCompleteCounts(ctx, dbFile)
+			So(err, ShouldNotBeNil)
+			So(drift, ShouldEqual, 0)
+
+			// it must NOT have created an empty DB at the path.
+			_, statErr := os.Stat(dbFile)
+			So(os.IsNotExist(statErr), ShouldBeTrue)
 		})
 	})
 }
