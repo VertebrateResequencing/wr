@@ -678,6 +678,194 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 	})
 }
 
+// TestDBMapFreelistOpen covers D1 acceptance test 1: a fresh db opened by
+// initDB and an existing db reopened by initDB both open without error, and the
+// map freelist option actually takes effect (the option only affects freelist
+// representation, so behaviour is otherwise unchanged).
+func TestDBMapFreelistOpen(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("initDB opens a fresh db with the map freelist", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+		So(testDB.bolt.FreelistType, ShouldEqual, bolt.FreelistMapType)
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{testDBJob("echo freelist", "rg-freelist")}, false)
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		Convey("and reopening the existing db also uses the map freelist without error", func() {
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+			So(testDB.bolt.FreelistType, ShouldEqual, bolt.FreelistMapType)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			jobs, errr := testDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].Cmd, ShouldEqual, "echo freelist")
+		})
+	})
+}
+
+// TestDBMapFreelistRoundTrip covers D1 acceptance test 2: a db written and
+// reopened from disk round-trips both stored (live) and archived jobs
+// identically under the map freelist.
+func TestDBMapFreelistRoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a db with live and archived jobs written to an on-disk file", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		liveA := testDBJob("echo live a", "rg-live-a")
+		liveB := testDBJob("echo live b", "rg-live-b")
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{liveA, liveB}, false)
+		So(err, ShouldBeNil)
+
+		endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
+		archived := testDBArchivedJob("echo archived", "rg-archived", endTime)
+		So(testDB.archiveJob(ctx, archived.Key(), archived), ShouldBeNil)
+
+		So(testDB.close(ctx), ShouldBeNil)
+
+		Convey("reopening reads the same stored and archived jobs back", func() {
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			live, errr := testDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+			So(len(live), ShouldEqual, 2)
+
+			byKey := make(map[string]*Job, len(live))
+			for _, job := range live {
+				byKey[job.Key()] = job
+			}
+
+			So(byKey[liveA.Key()], ShouldNotBeNil)
+			So(byKey[liveA.Key()].Cmd, ShouldEqual, liveA.Cmd)
+			So(byKey[liveA.Key()].RepGroup, ShouldEqual, liveA.RepGroup)
+			So(byKey[liveB.Key()], ShouldNotBeNil)
+			So(byKey[liveB.Key()].Cmd, ShouldEqual, liveB.Cmd)
+			So(byKey[liveB.Key()].RepGroup, ShouldEqual, liveB.RepGroup)
+
+			complete, errr := testDB.retrieveCompleteJobsByKeys([]string{archived.Key()})
+			So(errr, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Key(), ShouldEqual, archived.Key())
+			So(complete[0].Cmd, ShouldEqual, archived.Cmd)
+			So(complete[0].State, ShouldEqual, JobStateComplete)
+			So(complete[0].EndTime.UnixNano(), ShouldEqual, endTime.UnixNano())
+		})
+	})
+}
+
+// TestDBCompactRoundTrip covers D2 acceptance test 1: a stopped-manager db file
+// with churn (free pages) compacts, via the exported CompactDBFile, to a valid
+// db whose top-level buckets and every job / lookup / counter round-trip
+// identically to the original, and whose output size is <= the input.
+func TestDBCompactRoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given an on-disk db churned to leave free pages", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		const perGroup = 60
+
+		repGroups := []string{"rg-a", "rg-b", "rg-c"}
+
+		var archivedKeys, deleteKeys []string
+
+		endTime := time.Now().Add(-time.Hour).Truncate(time.Nanosecond)
+
+		for _, rg := range repGroups {
+			batch := make([]*Job, 0, perGroup)
+			for i := range perGroup {
+				batch = append(batch, testDBJob(fmt.Sprintf("echo %s %d", rg, i), rg))
+			}
+
+			_, _, _, errs := testDB.storeNewJobs(ctx, batch, false)
+			So(errs, ShouldBeNil)
+
+			for i, job := range batch {
+				switch i % 3 {
+				case 0:
+					aj := testDBArchivedJob(job.Cmd, rg, endTime)
+					So(testDB.archiveJob(ctx, aj.Key(), aj), ShouldBeNil)
+					archivedKeys = append(archivedKeys, aj.Key())
+				case 1:
+					deleteKeys = append(deleteKeys, job.Key())
+				}
+			}
+		}
+
+		So(testDB.deleteLiveJobs(ctx, deleteKeys), ShouldBeNil)
+
+		wantBuckets := dbTopLevelBuckets(t, testDB)
+		wantLive := liveJobCmdsByKey(t, testDB)
+		wantRTK := dbBucketKeys(t, testDB, bucketRTK)
+		wantComplete := dbBucketKeys(t, testDB, bucketJobsComplete)
+
+		wantCounts, errc := testDB.retrieveMaintainedCompleteCounts(repGroups)
+		So(errc, ShouldBeNil)
+
+		wantArchived, erra := testDB.retrieveCompleteJobsByKeys(archivedKeys)
+		So(erra, ShouldBeNil)
+		So(len(wantArchived), ShouldEqual, len(archivedKeys))
+
+		wantArchivedSummary := archivedJobSummaries(wantArchived)
+
+		So(testDB.close(ctx), ShouldBeNil)
+
+		Convey("CompactDBFile shrinks it and preserves every bucket/job/lookup/counter", func() {
+			beforeSize, afterSize, errcmp := CompactDBFile(dbFile)
+			So(errcmp, ShouldBeNil)
+			So(beforeSize, ShouldBeGreaterThan, 0)
+			So(afterSize, ShouldBeLessThanOrEqualTo, beforeSize)
+
+			reDB, _, errr := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(errr, ShouldBeNil)
+
+			defer func() { So(reDB.close(ctx), ShouldBeNil) }()
+
+			So(dbTopLevelBuckets(t, reDB), ShouldResemble, wantBuckets)
+			So(liveJobCmdsByKey(t, reDB), ShouldResemble, wantLive)
+			So(dbBucketKeys(t, reDB, bucketRTK), ShouldResemble, wantRTK)
+			So(dbBucketKeys(t, reDB, bucketJobsComplete), ShouldResemble, wantComplete)
+
+			gotCounts, errgc := reDB.retrieveMaintainedCompleteCounts(repGroups)
+			So(errgc, ShouldBeNil)
+			So(gotCounts, ShouldResemble, wantCounts)
+
+			// counters still equal the RAW scan (ground truth) after compaction.
+			rawCounts, errraw := reDB.retrieveCompleteJobCountsByRepGroups(repGroups)
+			So(errraw, ShouldBeNil)
+			So(gotCounts, ShouldResemble, rawCounts)
+
+			gotArchived, errga := reDB.retrieveCompleteJobsByKeys(archivedKeys)
+			So(errga, ShouldBeNil)
+			So(archivedJobSummaries(gotArchived), ShouldResemble, wantArchivedSummary)
+		})
+	})
+}
+
 // testDBArchivedJob builds a job ready to be archived: it has its end state
 // (StartTime, EndTime, exit status and peak usage) populated so archiveJob can
 // record stats and the end-time index.
@@ -706,6 +894,76 @@ func testDBJob(cmd, repGroup string) *Job {
 		},
 		RepGroup: repGroup,
 	}
+}
+
+// dbTopLevelBuckets returns the names of every top-level bucket in the db, in
+// BoltDB's key order (so two calls on equivalent DBs compare directly).
+func dbTopLevelBuckets(t *testing.T, testDB *db) []string {
+	t.Helper()
+
+	var names []string
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		return tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
+			names = append(names, string(name))
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+
+	return names
+}
+
+// liveJobCmdsByKey decodes every live job and maps its Key to its Cmd.
+func liveJobCmdsByKey(t *testing.T, testDB *db) map[string]string {
+	t.Helper()
+
+	jobs, err := testDB.recoverIncompleteJobs()
+	So(err, ShouldBeNil)
+
+	byKey := make(map[string]string, len(jobs))
+	for _, job := range jobs {
+		byKey[job.Key()] = job.Cmd
+	}
+
+	return byKey
+}
+
+// dbBucketKeys returns every key in the named top-level bucket, in BoltDB's key
+// order (empty if the bucket is absent).
+func dbBucketKeys(t *testing.T, testDB *db, bucket []byte) []string {
+	t.Helper()
+
+	var keys []string
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		if b == nil {
+			return nil
+		}
+
+		return b.ForEach(func(k, _ []byte) error {
+			keys = append(keys, string(k))
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+
+	return keys
+}
+
+// archivedJobSummaries maps each job's Key to a compact fingerprint of the
+// fields that must survive a compaction round-trip, so two sets compare directly.
+func archivedJobSummaries(jobs []*Job) map[string]string {
+	summaries := make(map[string]string, len(jobs))
+	for _, job := range jobs {
+		summaries[job.Key()] = fmt.Sprintf("%s|%s|%v|%d",
+			job.Cmd, job.RepGroup, job.State, job.EndTime.UnixNano())
+	}
+
+	return summaries
 }
 
 // endTimeIndexEntries returns every key currently in bucketEndTimeToKey.

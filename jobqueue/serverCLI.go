@@ -770,7 +770,7 @@ func (s *Server) waitForPendingReserves() {
 // ready because the client's first reserve targets a scheduler group we no
 // longer want more clients working on.
 func (s *Server) skipReserve(cr *clientRequest) bool {
-	if cr.SchedulerGroup == "" || !cr.FirstReserve || s.rc == "" {
+	if cr.SchedulerGroup == "" || !cr.FirstReserve || s.runnerCommand() == "" {
 		return false
 	}
 
@@ -903,6 +903,12 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 // handleTouch refreshes a running job's TTR, recovering it from lost state and
 // applying any live status snapshot, or reports that kill has been called.
 func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	// record that the runner contacted us about this job as early as possible,
+	// before getij/queue.Touch (which contend on queue.mutex under load), so
+	// lost-detection reflects when the runner reached us rather than when its
+	// touch finished being processed (see ttrCallback).
+	s.recordJobContact(cr.key())
+
 	item, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
@@ -968,6 +974,16 @@ func (s *Server) emitLiveTouchSnapshot(ctx context.Context, cr *clientRequest, j
 	}
 
 	applyLiveSnapshot(job, cr.JobEndState)
+
+	// Building the subscription update decompresses the job's stdout/stderr and
+	// enqueues a per-job update; that is wasted work when no client is subscribed
+	// to receive per-job updates (the common case - every touch would otherwise
+	// pay it). Skip it via the same idle fast-path the change-callback delivery
+	// path uses, so a touch with no subscribers stays cheap. The absolute web UI
+	// status counts are maintained separately and are unaffected.
+	if !s.hasAnyClientSubscriptions() {
+		return
+	}
 
 	update, err := jobUpdateFromLiveJob(job)
 	if err != nil {
@@ -1677,7 +1693,21 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 	}
 
 	item, err := s.q.Get(key)
-	if err != nil || (checkRunning && item.Stats().State != queue.ItemStateRun) {
+	if err != nil {
+		// the item is not in the queue. During the recovery window a
+		// to-be-restored job legitimately misses; report a retryable error so a
+		// reconnecting runner retries rather than treating it as a permanent
+		// failure (spec B2). Outside recovery this is a real bad job.
+		if s.isRecovering() {
+			return item, nil, ErrRecovering
+		}
+
+		return item, nil, ErrBadJob
+	}
+
+	if checkRunning && item.Stats().State != queue.ItemStateRun {
+		// the item exists but is in the wrong sub-queue: a real state error, not
+		// a recovery-timing miss, so it stays ErrBadJob even while recovering.
 		return item, nil, ErrBadJob
 	}
 

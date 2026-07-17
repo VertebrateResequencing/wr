@@ -2099,7 +2099,7 @@ func TestJobqueueBasics(t *testing.T) {
 		server, _, token, errs = serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 
-		server.rc = serverRC // ReserveScheduled() only works if we have an rc
+		server.setRC(serverRC) // ReserveScheduled() only works if we have an rc
 
 		Convey("You can connect to the server using config", func() {
 			jq, err := ConnectUsingConfig(ctx, "development", clientConnectTime)
@@ -2447,9 +2447,7 @@ func TestJobqueueBasics(t *testing.T) {
 			}
 
 			Convey("You can add more jobs, but without storing environment variables", func() {
-				server.racmutex.Lock()
-				server.rc = ""
-				server.racmutex.Unlock()
+				server.setRC("")
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 
 				inserts, already, err := jq.Add([]*Job{{
@@ -2518,9 +2516,7 @@ func TestJobqueueBasics(t *testing.T) {
 			})
 
 			Convey("You can add more jobs, overriding certain environment variables", func() {
-				server.racmutex.Lock()
-				server.rc = ""
-				server.racmutex.Unlock()
+				server.setRC("")
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 
 				compressed, err := jq.CompressEnv([]string{"wr_jobqueue_test_no_envvar=c", "wr_jobqueue_test_no_envvar2=d"})
@@ -2559,9 +2555,7 @@ func TestJobqueueBasics(t *testing.T) {
 			})
 
 			Convey("You can execute a job as a different group", func() {
-				server.racmutex.Lock()
-				server.rc = ""
-				server.racmutex.Unlock()
+				server.setRC("")
 
 				second, ok, err := resolvableSupplementaryGroup()
 				So(err, ShouldBeNil)
@@ -5924,7 +5918,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			server.Stop(ctx, true)
 		}()
 
-		server.rc = serverRC
+		server.setRC(serverRC)
 
 		Convey("You can connect, and add jobs with LimitGroups", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -6145,7 +6139,7 @@ func TestJobqueueModules(t *testing.T) {
 			server.Stop(ctx, true)
 		}()
 
-		server.rc = serverRC
+		server.setRC(serverRC)
 
 		Convey("You can connect, and add a job with Modules", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -6218,7 +6212,7 @@ func TestJobqueueModify(t *testing.T) {
 			server.Stop(ctx, true)
 		}()
 
-		server.rc = serverRC
+		server.setRC(serverRC)
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
@@ -7188,6 +7182,10 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
 
+				// background recovery (spec B1) must re-enqueue the restored
+				// jobs before we query them.
+				So(waitUntilRecovered(server), ShouldBeTrue)
+
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
@@ -7211,6 +7209,10 @@ func TestJobqueueProduction(t *testing.T) {
 				server, _, token, errs = serve(ctx, serverConfig)
 				So(errs, ShouldBeNil)
 
+				// background recovery (spec B1) must re-enqueue the restored
+				// jobs before we query them.
+				So(waitUntilRecovered(server), ShouldBeTrue)
+
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
@@ -7231,6 +7233,10 @@ func TestJobqueueProduction(t *testing.T) {
 				assertNonEmptyFile(config.ManagerDBFile)
 				assertNonEmptyFile(managerDBBkFile)
 				assertBoltLiveJobs(managerDBBkFile, 2)
+
+				// background recovery (spec B1) must re-enqueue the restored
+				// jobs before we query them.
+				So(waitUntilRecovered(server), ShouldBeTrue)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -7257,6 +7263,10 @@ func TestJobqueueProduction(t *testing.T) {
 				assertNonEmptyFile(managerDBBkFile)
 				assertBoltLiveJobs(managerDBBkFile, 2)
 
+				// background recovery (spec B1) must re-enqueue the restored
+				// jobs before we query them.
+				So(waitUntilRecovered(server), ShouldBeTrue)
+
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
@@ -7282,6 +7292,10 @@ func TestJobqueueProduction(t *testing.T) {
 				serverConfig.dontWipeDevDB = false
 
 				So(errs, ShouldBeNil)
+
+				// background recovery (spec B1) must re-enqueue the remaining
+				// ready job before we can reserve it.
+				So(waitUntilRecovered(server), ShouldBeTrue)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -7484,6 +7498,14 @@ func TestJobqueueProduction(t *testing.T) {
 				serverConfig.dontWipeDevDB = false
 
 				So(errs, ShouldBeNil)
+
+				// recovery now runs in the background (spec B1), so wait for the
+				// prior running job to be re-enqueued before we look it up;
+				// otherwise GetByEssence races the recovery window and returns a
+				// nil job. Recovery of this tiny db is near-instant, so this stays
+				// well within the ItemTTR window the lost-detection check below
+				// relies on.
+				So(waitUntilRecovered(server), ShouldBeTrue)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)

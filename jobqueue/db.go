@@ -63,11 +63,21 @@ const (
 	dbDelimiter                   = "_::_"
 	jobStatWindowPercent          = float32(5)
 	dbFilePermission              = 0o600
+	repGroupCountBytes            = 8
 	rgEndTimeBytes                = 8
 	endTimeBytes                  = 8
 	envCacheSize                  = 12
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
+
+	// offlineDBOpenTimeout bounds how long the offline subcommands
+	// (RecomputeRepGroupCompleteCounts, CompactDBFile) wait for the BoltDB file
+	// lock before erroring. The up-check in cmd guards against a running manager,
+	// but if that check is fooled (e.g. a missing token file) a manager may still
+	// hold the lock; a bounded timeout makes the subcommand fail cleanly instead
+	// of blocking forever. The running manager's own initDB opens intentionally
+	// omit this and block/wait.
+	offlineDBOpenTimeout = 10 * time.Second
 
 	// s3ProfilePathParts is the number of parts in a "profile@path" S3 spec.
 	s3ProfilePathParts = 2
@@ -92,6 +102,17 @@ var (
 	bucketJobSecs          = []byte("jobSecs")
 	bucketRGEndTime        = []byte("repgroupEndTime") //nolint:gochecknoglobals
 	bucketEndTimeToKey     = []byte("endTimeToKey")    //nolint:gochecknoglobals
+
+	// bucketRepGroupComplete maps a repGroup to an 8-byte big-endian uint64
+	// count of its archived (complete) jobs, maintained inside the job-write
+	// transactions so it equals the RAW scan
+	// (retrieveCompleteJobCountsByRepGroups) by construction.
+	bucketRepGroupComplete = []byte("repGroupCompleteCount") //nolint:gochecknoglobals
+
+	// bucketRepGroupBackfilled records, per repGroup, a nil marker indicating
+	// its count has been backfilled; the sentinel key "" marks the whole
+	// backfill complete.
+	bucketRepGroupBackfilled = []byte("repGroupCompleteBackfilled") //nolint:gochecknoglobals
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -132,6 +153,21 @@ const (
 	dbUpgradeProgressEntries  = 10000
 	dbUpgradeProgressInterval = 2 * time.Second
 )
+
+// backfillSentinelKey is written to bucketRepGroupBackfilled once every
+// repGroup's complete count has been backfilled, marking the whole one-time
+// online backfill complete (spec A3). The spec describes this sentinel as the
+// empty key "", but bbolt forbids a zero-length key (errors.ErrKeyRequired), so
+// we use a key bearing dbDelimiter: no real repGroup can contain the delimiter
+// (see the RTK key format - every RTK scan assumes repGroups are
+// delimiter-free), so this can never collide with a per-repGroup marker.
+var backfillSentinelKey = []byte(dbDelimiter + "allBackfilled") //nolint:gochecknoglobals
+
+// compactTxMaxSize bounds the size (bytes) of each bolt.Compact destination
+// transaction, so compacting a multi-gigabyte database commits regularly instead
+// of buffering the whole copy in one transaction (see bolt.Compact). A value of
+// 0 would use a single transaction.
+const compactTxMaxSize = 64 * 1024 * 1024
 
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
@@ -438,7 +474,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 			msg = "created new empty db file " + dbFile
 		} else {
 			err = copyFile(dbBkFile, dbFile)
@@ -446,13 +482,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, msg, err
 			}
 
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 			openedExistingDB = true
 		}
 	} else {
 		openedExistingDB = true
-		boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+
+		boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 		if err != nil {
 			// try the backup
 			bkPath := dbBkFile
@@ -477,7 +514,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, nil)
+				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 				if errbk == nil {
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -497,7 +534,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 						return nil, msg, err
 					}
 
-					boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
+					boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
@@ -618,6 +655,16 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		_, errf = tx.CreateBucketIfNotExists(bucketEndTimeToKey)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketEndTimeToKey, errf)
+		}
+
+		_, errf = tx.CreateBucketIfNotExists(bucketRepGroupComplete)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketRepGroupComplete, errf)
+		}
+
+		_, errf = tx.CreateBucketIfNotExists(bucketRepGroupBackfilled)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketRepGroupBackfilled, errf)
 		}
 
 		if upgrade.active() {
@@ -815,8 +862,19 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
 		return err
 	}
 
+	// Counter hook 3: adding a key to the complete bucket for the first time
+	// increments the count of every repGroup that has an RTK entry for it. The
+	// wasComplete guard makes an idempotent re-archive a no-op.
+	wasComplete := tx.Bucket(bucketJobsComplete).Get(key) != nil
+
 	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
 		return err
+	}
+
+	if !wasComplete {
+		if err := incrementCompleteForKeyRepGroups(tx, key); err != nil {
+			return err
+		}
 	}
 
 	if err := putJobStats(tx, job); err != nil {
@@ -824,6 +882,24 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
 	}
 
 	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
+}
+
+// incrementCompleteForKeyRepGroups increments the complete counter of every
+// repGroup that currently has an RTK entry for jobKey, enumerated via the
+// reverse lookup index. Called when jobKey newly enters the complete bucket.
+func incrementCompleteForKeyRepGroups(tx *bolt.Tx, jobKey []byte) error {
+	reverse := tx.Bucket(bucketJobLookupEntries)
+	if reverse == nil {
+		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobLookupEntries)
+	}
+
+	for _, repGroup := range persistedRepGroupsForJobKey(reverse, jobKey) {
+		if err := adjustRepGroupComplete(tx, repGroup, 1); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // updateEndTimeIndex records job's end time in the time-ordered per-job index,
@@ -936,6 +1012,310 @@ func rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket *bolt.Bucket,
 	}
 
 	return count
+}
+
+// retrieveMaintainedCompleteCounts reads the maintained per-repGroup complete
+// counts from bucketRepGroupComplete with O(len(repGroups)) point reads,
+// returning 0 for any repGroup with no stored count. This is the cheap
+// replacement for retrieveCompleteJobCountsByRepGroups (the RAW scan) on the
+// operational seeding path; the two agree by construction.
+func (db *db) retrieveMaintainedCompleteCounts(repGroups []string) (map[string]int, error) {
+	counts := make(map[string]int, len(repGroups))
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRepGroupComplete)
+		if b == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupComplete)
+		}
+
+		for _, repGroup := range repGroups {
+			counts[repGroup] = readRepGroupComplete(b, []byte(repGroup))
+		}
+
+		return nil
+	})
+
+	return counts, err
+}
+
+// readRepGroupComplete decodes the stored 8-byte big-endian count for key,
+// returning 0 when absent or malformed.
+func readRepGroupComplete(b *bolt.Bucket, key []byte) int {
+	stored := b.Get(key)
+	if len(stored) != repGroupCountBytes {
+		return 0
+	}
+
+	//nolint:gosec // a per-repGroup complete count never approaches int max.
+	return int(binary.BigEndian.Uint64(stored))
+}
+
+// backfillRepGroupCompleteCounts performs the one-time online backfill of the
+// maintained per-repGroup complete counter for an existing (pre-upgrade) DB, so
+// upgrading a large DB never blocks startup and is crash-resumable. For each
+// repGroup (retrieveRepGroups) lacking a marker in bucketRepGroupBackfilled it
+// SETs, in a single bolt.Update transaction, counter[rg] = the RAW scan
+// (rawCompleteJobCountByRepGroup) computed in that same transaction, then writes
+// the repGroup's marker; when all repGroups are done it writes the sentinel. SET
+// (not additive) reconciles with concurrent runtime increments because bolt
+// serialises write transactions: an archive committed before a repGroup's tx is
+// counted by its raw scan, and one committed after increments on top of the SET.
+// It is idempotent and crash-resumable (the per-repGroup markers let a re-run
+// skip finished repGroups), and a new DB with no repGroups is a no-op (bar the
+// sentinel). It respects ctx cancellation between repGroups. Intended to run in
+// a background goroutine once the manager is serving clients (see Serve).
+func (db *db) backfillRepGroupCompleteCounts(ctx context.Context) error {
+	done, err := db.fullyBackfilled()
+	if err != nil {
+		return err
+	}
+
+	if done {
+		// a previous backfill (or an offline recompute) already wrote the
+		// sentinel, so the whole DB is backfilled: skip the O(all-repGroups)
+		// write-tx pass entirely rather than re-processing every repGroup on each
+		// manager startup.
+		return nil
+	}
+
+	repGroups, err := db.retrieveRepGroups()
+	if err != nil {
+		return err
+	}
+
+	for _, repGroup := range repGroups {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := db.backfillRepGroupComplete(repGroup); err != nil {
+			return err
+		}
+	}
+
+	return db.markBackfillSentinel()
+}
+
+// backfillRepGroupComplete backfills one repGroup's complete counter in a single
+// transaction: if it already has a marker this is a no-op (idempotent / crash
+// resume), otherwise it SETs the counter to the RAW scan computed in the same tx
+// (setRepGroupCompleteFromRawScan) and writes the marker.
+func (db *db) backfillRepGroupComplete(repGroup string) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		markers := tx.Bucket(bucketRepGroupBackfilled)
+		if markers == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
+		}
+
+		if markers.Get([]byte(repGroup)) != nil {
+			return nil
+		}
+
+		if _, _, err := setRepGroupCompleteFromRawScan(tx, repGroup); err != nil {
+			return err
+		}
+
+		return markers.Put([]byte(repGroup), nil)
+	})
+}
+
+// setRepGroupCompleteFromRawScan SETs bucketRepGroupComplete[repGroup] to the RAW
+// scan (rawCompleteJobCountByRepGroup) computed within tx, so the scan and the
+// SET share one consistent snapshot. This reconciles with any concurrent runtime
+// increments because bolt serialises write transactions. It returns the
+// previously stored value and the new raw value, so callers (the online backfill
+// A3 and the offline recompute A4) can detect drift.
+func setRepGroupCompleteFromRawScan(tx *bolt.Tx, repGroup string) (stored, raw int, err error) {
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	if completeJobBucket == nil {
+		return 0, 0, fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobsComplete)
+	}
+
+	lookupBucket := tx.Bucket(bucketRTK)
+	if lookupBucket == nil {
+		return 0, 0, fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRTK)
+	}
+
+	counter := tx.Bucket(bucketRepGroupComplete)
+	if counter == nil {
+		return 0, 0, fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupComplete)
+	}
+
+	key := []byte(repGroup)
+	stored = readRepGroupComplete(counter, key)
+	raw = rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket, repGroup)
+
+	encoded := make([]byte, repGroupCountBytes)
+
+	//nolint:gosec // a per-repGroup complete count never approaches int max.
+	binary.BigEndian.PutUint64(encoded, uint64(raw))
+
+	return stored, raw, counter.Put(key, encoded)
+}
+
+// fullyBackfilled reports whether the fully-backfilled sentinel
+// (backfillSentinelKey) is present in bucketRepGroupBackfilled, i.e. a previous
+// online backfill or offline recompute already processed every repGroup. The
+// online backfill uses this in a read-only tx to short-circuit its
+// O(all-repGroups) write-tx pass on every subsequent manager startup.
+func (db *db) fullyBackfilled() (bool, error) {
+	var done bool
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		markers := tx.Bucket(bucketRepGroupBackfilled)
+		if markers == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
+		}
+
+		done = markers.Get(backfillSentinelKey) != nil
+
+		return nil
+	})
+
+	return done, err
+}
+
+// markBackfillSentinel writes the fully-backfilled sentinel to
+// bucketRepGroupBackfilled.
+func (db *db) markBackfillSentinel() error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		markers := tx.Bucket(bucketRepGroupBackfilled)
+		if markers == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
+		}
+
+		return markers.Put(backfillSentinelKey, nil)
+	})
+}
+
+// recomputeRepGroupCompleteCounts is the offline belt-and-braces repair and
+// migration tool (spec A4). Unlike the online backfill it ignores backfill
+// markers and processes EVERY repGroup (retrieveRepGroups): for each, in a
+// single bolt.Update transaction, it SETs counter[rg] = the RAW scan
+// (rawCompleteJobCountByRepGroup) computed in that same transaction and writes
+// the repGroup's marker (setRepGroupCompleteFromRawScan, shared with A3). It
+// returns drift, the number of repGroups whose stored value differed from the
+// raw scan, for logging. It is idempotent (already-correct counters yield
+// drift 0 and no change), respects ctx cancellation between repGroups, and
+// writes the backfill sentinel when done, so a subsequent online backfill treats
+// the DB as fully backfilled. It is intended to run with the manager stopped;
+// see RecomputeRepGroupCompleteCounts for the entry point the offline
+// subcommand uses.
+func (db *db) recomputeRepGroupCompleteCounts(ctx context.Context) (drift int, err error) {
+	repGroups, err := db.retrieveRepGroups()
+	if err != nil {
+		return 0, err
+	}
+
+	for _, repGroup := range repGroups {
+		if cerr := ctx.Err(); cerr != nil {
+			return drift, cerr
+		}
+
+		changed, rerr := db.recomputeRepGroupComplete(repGroup)
+		if rerr != nil {
+			return drift, rerr
+		}
+
+		if changed {
+			drift++
+		}
+	}
+
+	return drift, db.markBackfillSentinel()
+}
+
+// recomputeRepGroupComplete SETs one repGroup's complete counter to the RAW scan
+// computed in the same transaction (setRepGroupCompleteFromRawScan) and writes
+// its marker, unconditionally (unlike the online backfill it does not skip
+// already-marked repGroups: it is a full repair). It reports whether the stored
+// value differed from the raw scan, so the caller can total the drift.
+func (db *db) recomputeRepGroupComplete(repGroup string) (changed bool, err error) {
+	err = db.bolt.Update(func(tx *bolt.Tx) error {
+		stored, raw, serr := setRepGroupCompleteFromRawScan(tx, repGroup)
+		if serr != nil {
+			return serr
+		}
+
+		changed = stored != raw
+
+		markers := tx.Bucket(bucketRepGroupBackfilled)
+		if markers == nil {
+			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
+		}
+
+		return markers.Put([]byte(repGroup), nil)
+	})
+
+	return changed, err
+}
+
+// ensureRecomputeBuckets creates, if absent, exactly the buckets the offline
+// recompute reads and writes, so RecomputeRepGroupCompleteCounts works on a DB
+// opened directly (outside initDB) without duplicating the whole schema setup.
+func (db *db) ensureRecomputeBuckets() error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		for _, name := range [][]byte{
+			bucketRGs, bucketJobsComplete, bucketRTK,
+			bucketRepGroupComplete, bucketRepGroupBackfilled,
+		} {
+			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+				return fmt.Errorf("create bucket %s: %w", name, err)
+			}
+		}
+
+		return nil
+	})
+}
+
+// countNewCompleteRTK increments the complete counter for the repGroup in an
+// RTK key when isNew is true and the key's jobKey is already complete. A no-op
+// otherwise (non-new entry, non-complete key, or unsplittable key).
+func countNewCompleteRTK(tx *bolt.Tx, rtkKey []byte, isNew bool) error {
+	if !isNew || !rtkKeyIsComplete(tx, rtkKey) {
+		return nil
+	}
+
+	return adjustRepGroupCompleteForRTKKey(tx, rtkKey, 1)
+}
+
+// RecomputeRepGroupCompleteCounts is the exported entry point for the offline
+// `wr manager recompute-counts` subcommand (spec A4). It opens the BoltDB at
+// dbFile directly with the map freelist, ensures the buckets the recompute reads
+// and writes exist, SETs every repGroup's maintained complete counter from a
+// full RAW scan (recomputeRepGroupCompleteCounts) and closes the DB cleanly. It
+// returns the drift (the number of repGroups whose stored value differed from
+// the raw scan). The manager MUST be stopped: BoltDB permits only one process to
+// open the file, so the subcommand refuses to run while a manager is up.
+func RecomputeRepGroupCompleteCounts(ctx context.Context, dbFile string) (drift int, err error) {
+	// bolt.Open would CREATE dbFile if it were absent and then report "0
+	// repgroups" as a spurious success; stat first so a nonexistent DB fails
+	// cleanly (mirrors CompactDBFile).
+	if _, err = os.Stat(dbFile); err != nil {
+		return 0, err
+	}
+
+	// a bounded timeout so, if the up-check was fooled and a manager still holds
+	// the file lock, this errors cleanly instead of blocking forever.
+	boltdb, err := bolt.Open(dbFile, dbFilePermission,
+		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
+	if err != nil {
+		return 0, err
+	}
+
+	recomputeDB := &db{bolt: boltdb}
+
+	defer func() {
+		if cerr := boltdb.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	if err = recomputeDB.ensureRecomputeBuckets(); err != nil {
+		return 0, err
+	}
+
+	return recomputeDB.recomputeRepGroupCompleteCounts(ctx)
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -1113,6 +1493,181 @@ func putDepGroupFromLookupKey(depGroupBucket *bolt.Bucket, lookupKey []byte) err
 	}
 
 	return depGroupBucket.Put(lookupKey[:idx], nil)
+}
+
+// CompactDBFile is the exported entry point for the offline `wr manager compact`
+// subcommand (spec D2). It compacts the BoltDB at dbFile, reclaiming the free
+// pages left by churn, and returns the file size (bytes) before and after.
+//
+// It opens the source with the map freelist, compacts (bolt.Compact) into a
+// temporary file in the SAME directory as dbFile, then atomically replaces the
+// original with os.Rename (same directory => same filesystem => atomic rename).
+// On any error the original file is left untouched and the temporary file is
+// removed, so a failed compaction never corrupts or partially overwrites the
+// database. The manager MUST be stopped: BoltDB permits only one process to open
+// the file at a time, so the subcommand refuses to run while a manager is up.
+func CompactDBFile(dbFile string) (beforeSize, afterSize int64, err error) {
+	beforeInfo, err := os.Stat(dbFile)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	beforeSize = beforeInfo.Size()
+
+	tmpPath, afterSize, err := compactToTempFile(dbFile)
+	if err != nil {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+
+		return beforeSize, 0, err
+	}
+
+	if err = os.Rename(tmpPath, dbFile); err != nil {
+		_ = os.Remove(tmpPath)
+
+		return beforeSize, afterSize, err
+	}
+
+	return beforeSize, afterSize, nil
+}
+
+// compactToTempFile compacts the BoltDB at dbFile into a fresh temporary file in
+// the SAME directory (so CompactDBFile's later os.Rename onto dbFile is an atomic
+// same-filesystem rename), returning the temp file's path and its (compacted)
+// size. On error it returns the temp path (if one was created) so the caller can
+// remove it, leaving the original database untouched.
+func compactToTempFile(dbFile string) (tmpPath string, afterSize int64, err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(dbFile), filepath.Base(dbFile)+".compact-*")
+	if err != nil {
+		return "", 0, err
+	}
+
+	tmpPath = tmp.Name()
+	if cerr := tmp.Close(); cerr != nil {
+		return tmpPath, 0, cerr
+	}
+
+	if err = compactBoltInto(tmpPath, dbFile); err != nil {
+		return tmpPath, 0, err
+	}
+
+	afterInfo, err := os.Stat(tmpPath)
+	if err != nil {
+		return tmpPath, 0, err
+	}
+
+	return tmpPath, afterInfo.Size(), nil
+}
+
+// compactBoltInto opens srcPath (map freelist) and the empty dstPath and copies a
+// compacted image of the source into the destination via bolt.Compact, closing
+// both handles before returning.
+func compactBoltInto(dstPath, srcPath string) (err error) {
+	// a bounded timeout so, if the up-check was fooled and a manager still holds
+	// the source file lock, this errors cleanly instead of blocking forever (the
+	// dst is a fresh temp file, but it uses the same options for consistency).
+	src, err := bolt.Open(srcPath, dbFilePermission,
+		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if cerr := src.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	dst, err := bolt.Open(dstPath, dbFilePermission,
+		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if cerr := dst.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	return bolt.Compact(dst, src, compactTxMaxSize)
+}
+
+// countDeletedCompleteRTK decrements the complete counter for the repGroup in
+// an RTK key when bucket is bucketRTK and the key's jobKey is still complete. A
+// no-op otherwise.
+func countDeletedCompleteRTK(tx *bolt.Tx, bucket, key []byte) error {
+	if !bytes.Equal(bucket, bucketRTK) || !rtkKeyIsComplete(tx, key) {
+		return nil
+	}
+
+	return adjustRepGroupCompleteForRTKKey(tx, key, -1)
+}
+
+// rtkKeyIsComplete reports whether the jobKey embedded in an RTK bucket key is
+// present in the complete bucket.
+func rtkKeyIsComplete(tx *bolt.Tx, rtkKey []byte) bool {
+	_, jobKey, ok := splitRTKKey(rtkKey)
+	if !ok {
+		return false
+	}
+
+	return tx.Bucket(bucketJobsComplete).Get(jobKey) != nil
+}
+
+// adjustRepGroupCompleteForRTKKey splits an RTK key and applies delta to its
+// repGroup's complete counter, ignoring an unsplittable key.
+func adjustRepGroupCompleteForRTKKey(tx *bolt.Tx, rtkKey []byte, delta int) error {
+	repGroup, _, ok := splitRTKKey(rtkKey)
+	if !ok {
+		return nil
+	}
+
+	return adjustRepGroupComplete(tx, repGroup, delta)
+}
+
+// splitRTKKey splits an RTK bucket key ("<repGroup>_::_<jobKey>") into its
+// repGroup and jobKey at the LAST dbDelimiter. repGroups never contain the
+// delimiter and jobKey is a delimiter-free FarmHash hex string, so the last
+// delimiter is the boundary. ok is false if no delimiter is present.
+func splitRTKKey(rtkKey []byte) (repGroup string, jobKey []byte, ok bool) {
+	idx := bytes.LastIndex(rtkKey, []byte(dbDelimiter))
+	if idx < 0 {
+		return "", nil, false
+	}
+
+	return string(rtkKey[:idx]), rtkKey[idx+len(dbDelimiter):], true
+}
+
+// adjustRepGroupComplete applies delta to bucketRepGroupComplete[repGroup] as a
+// read-modify-write inside the given transaction, so a db.bolt.Batch re-split
+// cannot double-apply (the counter has no in-memory mirror). The stored count
+// is clamped at >= 0: this is a safety net that must never trigger if the
+// maintenance hooks are correct, so a clamp is logged as an anomaly pointing
+// the admin at the offline "wr manager recompute-counts" repair (spec A4).
+func adjustRepGroupComplete(tx *bolt.Tx, repGroup string, delta int) error {
+	b := tx.Bucket(bucketRepGroupComplete)
+	if b == nil {
+		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupComplete)
+	}
+
+	key := []byte(repGroup)
+	next := readRepGroupComplete(b, key) + delta
+
+	if next < 0 {
+		clog.Warn(context.Background(),
+			"per-repGroup complete counter would go negative; clamping to 0 - "+
+				"run offline 'wr manager recompute-counts' to repair (spec A4)",
+			"repGroup", repGroup, "delta", delta)
+
+		next = 0
+	}
+
+	encoded := make([]byte, repGroupCountBytes)
+	binary.BigEndian.PutUint64(encoded, uint64(next))
+
+	return b.Put(key, encoded)
 }
 
 // putLimitGroup stores a non-negative limit for a group.
@@ -2413,8 +2968,13 @@ func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
 			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, d.bucket)
 		}
 
-		err := lookupBucket.Delete(d.key)
-		if err != nil {
+		// Counter hook 2: deleting an RTK entry whose jobKey is still complete
+		// decrements that repGroup's count.
+		if err := countDeletedCompleteRTK(tx, d.bucket, d.key); err != nil {
+			return err
+		}
+
+		if err := lookupBucket.Delete(d.key); err != nil {
 			return err
 		}
 	}
@@ -2704,9 +3264,21 @@ func (db *db) storeLookups(bucket []byte, lookups sobsd) error {
 // transaction when calling this.
 func (db *db) putLookups(tx *bolt.Tx, bucket []byte, lookups sobsd) error {
 	lookup := tx.Bucket(bucket)
+	isRTK := bytes.Equal(bucket, bucketRTK)
+
 	for _, doublet := range lookups {
+		// Counter hook 1: a brand-new RTK entry whose jobKey is already complete
+		// increments its repGroup's count. Pre-existence must be read before the
+		// Put so a genuine re-add is not double-counted; completeness is
+		// unaffected by the Put, so countNewCompleteRTK reads it afterwards.
+		isNewRTK := isRTK && lookup.Get(doublet[0]) == nil
+
 		err := lookup.Put(doublet[0], nil)
 		if err != nil {
+			return err
+		}
+
+		if err = countNewCompleteRTK(tx, doublet[0], isNewRTK); err != nil {
 			return err
 		}
 

@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -623,126 +624,137 @@ func TestHighPressureCompletedRepGroupStatusSurvivesRefresh(t *testing.T) {
 		return
 	}
 
-	Convey("A results-frontend-style high pressure RepGroup keeps complete counts while live jobs remain", t, func() {
-		ctx := context.Background()
-		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		serverConfig.Timings.ItemTTR = time.Hour
+	Convey("A high pressure RepGroup keeps complete counts across refresh while a live job remains, but a "+
+		"complete-only RepGroup is omitted from a fresh refresh (still visible live in-session and via CLI search)",
+		t, func() {
+			ctx := context.Background()
+			serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+			serverConfig.Timings.ItemTTR = time.Hour
 
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
+			server, _, token, err := serve(ctx, serverConfig)
+			So(err, ShouldBeNil)
 
-		defer server.Stop(ctx, true)
+			defer server.Stop(ctx, true)
 
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
 
-		defer disconnect(jq)
+			defer disconnect(jq)
 
-		const completedCount = 3001
+			const completedCount = 3001
 
-		repGroup := "status-high-pressure-complete"
-		jobs := subscriptionTestJobs(repGroup, standardReqs, completedCount+1)
-		added, already, err := jq.Add(jobs, envVars, true)
-		So(err, ShouldBeNil)
-		So(added, ShouldEqual, completedCount+1)
-		So(already, ShouldEqual, 0)
+			repGroup := "status-high-pressure-complete"
+			jobs := subscriptionTestJobs(repGroup, standardReqs, completedCount+1)
+			added, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, completedCount+1)
+			So(already, ShouldEqual, 0)
 
-		runningItems := make([]*queue.Item, 0, completedCount+1)
-		for range completedCount + 1 {
-			job, errr := jq.Reserve(2 * time.Second)
-			So(errr, ShouldBeNil)
-			So(job, ShouldNotBeNil)
-			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+			runningItems := make([]*queue.Item, 0, completedCount+1)
+			for range completedCount + 1 {
+				job, errr := jq.Reserve(2 * time.Second)
+				So(errr, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(jq.Started(job, os.Getpid()), ShouldBeNil)
 
-			item, errg := server.q.Get(job.Key())
-			So(errg, ShouldBeNil)
+				item, errg := server.q.Get(job.Key())
+				So(errg, ShouldBeNil)
 
-			runningItems = append(runningItems, item)
-		}
+				runningItems = append(runningItems, item)
+			}
 
-		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
-		defer testServer.Close()
+			testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+			defer testServer.Close()
 
-		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
-		header := http.Header{}
-		header.Add("Authorization", "Bearer "+string(token))
+			wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+			header := http.Header{}
+			header.Add("Authorization", "Bearer "+string(token))
 
-		ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-		So(err, ShouldBeNil)
+			ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+			So(err, ShouldBeNil)
 
-		defer ws.Close()
+			defer ws.Close()
 
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
-			JobStateRunning: completedCount + 1,
-		}, 10*time.Second), ShouldBeTrue)
+			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readExactRepGroupState(ws, repGroup, map[JobState]int{
+				JobStateRunning: completedCount + 1,
+			}, 10*time.Second), ShouldBeTrue)
 
-		archiveErrs := make(chan error, completedCount)
-		archiveJobs := make(chan *queue.Item)
+			archiveErrs := make(chan error, completedCount)
+			archiveJobs := make(chan *queue.Item)
 
-		var archiveWG sync.WaitGroup
+			var archiveWG sync.WaitGroup
 
-		for range 64 {
-			archiveWG.Add(1)
-			go func() {
-				defer archiveWG.Done()
+			for range 64 {
+				archiveWG.Add(1)
+				go func() {
+					defer archiveWG.Done()
 
-				for item := range archiveJobs {
-					archiveErrs <- archiveServerCompletedJob(ctx, server, item)
-				}
-			}()
-		}
+					for item := range archiveJobs {
+						archiveErrs <- archiveServerCompletedJob(ctx, server, item)
+					}
+				}()
+			}
 
-		for _, item := range runningItems[:completedCount] {
-			archiveJobs <- item
-		}
+			for _, item := range runningItems[:completedCount] {
+				archiveJobs <- item
+			}
 
-		close(archiveJobs)
+			close(archiveJobs)
 
-		archiveWG.Wait()
-		close(archiveErrs)
+			archiveWG.Wait()
+			close(archiveErrs)
 
-		for archiveErr := range archiveErrs {
-			So(archiveErr, ShouldBeNil)
-		}
+			for archiveErr := range archiveErrs {
+				So(archiveErr, ShouldBeNil)
+			}
 
-		expected := map[JobState]int{
-			JobStateRunning:  1,
-			JobStateComplete: completedCount,
-		}
-		So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
+			expected := map[JobState]int{
+				JobStateRunning:  1,
+				JobStateComplete: completedCount,
+			}
+			So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
 
-		So(ws.Close(), ShouldBeNil)
-		ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
-		So(err, ShouldBeNil)
+			So(ws.Close(), ShouldBeNil)
+			ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+			So(err, ShouldBeNil)
 
-		defer ws.Close()
+			defer ws.Close()
 
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
+			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
 
-		summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
-		So(err, ShouldBeNil)
-		So(summaries[repGroup].Counts, ShouldResemble, expected)
+			summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
+			So(err, ShouldBeNil)
+			So(summaries[repGroup].Counts, ShouldResemble, expected)
 
-		So(archiveServerCompletedJob(ctx, server, runningItems[completedCount]), ShouldBeNil)
+			So(archiveServerCompletedJob(ctx, server, runningItems[completedCount]), ShouldBeNil)
 
-		allComplete := map[JobState]int{JobStateComplete: completedCount + 1}
-		So(readExactRepGroupState(ws, repGroup, allComplete, 10*time.Second), ShouldBeTrue)
+			// The last live job completes WHILE this client is connected, so the
+			// already-connected client must still receive the complete count (the
+			// RepGroup stays visible for the rest of this live session: 260625-6).
+			allComplete := map[JobState]int{JobStateComplete: completedCount + 1}
+			So(readExactRepGroupState(ws, repGroup, allComplete, 10*time.Second), ShouldBeTrue)
 
-		So(ws.Close(), ShouldBeNil)
-		ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
-		So(err, ShouldBeNil)
+			So(ws.Close(), ShouldBeNil)
+			ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+			So(err, ShouldBeNil)
 
-		defer ws.Close()
+			defer ws.Close()
 
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, allComplete, 10*time.Second), ShouldBeTrue)
+			// A fresh reconnect (a page refresh) must NOT re-show the now complete-only
+			// RepGroup: it is omitted from the fresh-connect seed, so the client
+			// receives no message reviving it (260626-2). It reappears only if the user
+			// searches for it (the CLI ground-truth check below) or if it completes
+			// during a live session (the in-session check above).
+			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readRepGroupAbsentDuring(ws, repGroup, 5*time.Second), ShouldBeTrue)
 
-		summaries, err = jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
-		So(err, ShouldBeNil)
-		So(summaries[repGroup].Counts, ShouldResemble, allComplete)
-	})
+			// CLI search is ground-truth and SHOULD still report the completed jobs.
+			summaries, err = jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
+			So(err, ShouldBeNil)
+			So(summaries[repGroup].Counts, ShouldResemble, allComplete)
+		})
 }
 
 // readExactRepGroupState reads absolute messages until the requested RepGroup
@@ -803,6 +815,38 @@ func archiveServerCompletedJob(ctx context.Context, server *Server, item *queue.
 	}
 
 	return nil
+}
+
+// readRepGroupAbsentDuring reads absolute messages for the given window and
+// reports whether repGroup never appears with a positive total. A complete-only
+// RepGroup is omitted from a fresh-connect seed, so a freshly reconnected client
+// must receive no message reviving it; the window elapses with the RepGroup
+// never delivered and this returns true. If repGroup does arrive with any
+// positive count the fresh seed wrongly included it and this returns false. A
+// non-timeout read error also returns false rather than masking a broken
+// connection as a (trivially) absent RepGroup.
+func readRepGroupAbsentDuring(ws *websocket.Conn, repGroup string, window time.Duration) bool {
+	if err := ws.SetReadDeadline(time.Now().Add(window)); err != nil {
+		return false
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
+	for {
+		var msg jstateAbsolute
+		if err := ws.ReadJSON(&msg); err != nil {
+			// the read deadline elapsing with no reviving message is the success
+			// signal: the RepGroup was correctly omitted from the fresh seed.
+			// gorilla replaces a timeout with its own net.Error, so match on the
+			// Timeout() behaviour rather than os.ErrDeadlineExceeded.
+			var netErr net.Error
+
+			return errors.As(err, &netErr) && netErr.Timeout()
+		}
+
+		if msg.RepGroup == repGroup && statusCountsTotal(msg.Counts) > 0 {
+			return false
+		}
+	}
 }
 
 func TestServerWebI(t *testing.T) {

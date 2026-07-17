@@ -378,10 +378,11 @@ type ReadyAddedCallback func(queuename string, allitemdata []any)
 type ChangedCallback func(from, to SubQueue, data []any)
 
 // TTRCallback is used as a callback to decide which sub-queue an item should
-// move to when a an item in the run sub-queue hits its TTR, based on that
+// move to when an item in the run sub-queue hits its TTR, based on that
 // item's data. Valid return values are SubQueueDelay, SubQueueReady and
-// SubQueueBury. SubQueueRun can be used to avoid changing subqueue. Other
-// values will be treated as SubQueueReady).
+// SubQueueBury. SubQueueRun can be used to keep the item in the run sub-queue,
+// giving it a fresh TTR so it is re-checked after another full TTR. Other
+// values will be treated as SubQueueReady.
 type TTRCallback func(data any) SubQueue
 
 // Queue is a synchronised map of items that can shift to different sub-queues,
@@ -1993,9 +1994,12 @@ func (queue *Queue) releaseTimedOutItems() ttrMoves {
 		// obey the ttr callback
 		moveTo := queue.ttrCb(item.Data())
 		if moveTo == SubQueueRun {
-			// increase this item's time to release to a year from now, but keep
-			// it in the run queue
-			item.tempDisableTTR()
+			// keep it in the run queue, but give it a fresh TTR rather than
+			// disabling the TTR indefinitely: a still-running item whose handling
+			// merely lagged is re-checked after another full TTR, so a runner that
+			// then goes silent is still detected within a bounded time instead of
+			// being parked forever.
+			item.touch()
 			queue.runQueue.update(item)
 
 			continue

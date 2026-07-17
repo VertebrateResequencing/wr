@@ -558,6 +558,135 @@ somewhere.)`,
 	},
 }
 
+// managerRecomputeExit lets tests observe the non-zero exit of the
+// recompute-counts subcommand without terminating the test process (mirroring
+// statusExit in status.go). In production it is os.Exit, so the command dies
+// non-zero exactly as die() would.
+var managerRecomputeExit = os.Exit
+
+// recomputeCounts is the DB-mutating step of the recompute-counts subcommand, a
+// var so a test can prove the running-manager guard refuses before it is ever
+// called (i.e. the database is left untouched).
+var recomputeCounts = jobqueue.RecomputeRepGroupCompleteCounts
+
+var managerRecomputeCountsCmd = &cobra.Command{
+	Use:   "recompute-counts",
+	Short: "Recompute wr's per-repgroup completed-job counters",
+	Long: `Recompute wr's per-repgroup completed-job counters.
+
+wr maintains a per-repgroup counter of completed (archived) jobs inside its
+database, so that startup and 'wr add' never have to scan the whole completion
+history. This command SETs every counter from a full scan of the database, as a
+belt-and-braces repair and as the one-off migration tool for a database created
+before the counter existed.
+
+The manager must be stopped: this command opens the database file directly, and
+BoltDB permits only one process to open it at a time. It refuses to run (exiting
+non-zero, leaving the database untouched) if a manager is currently running.`,
+	Run: func(_ *cobra.Command, _ []string) {
+		// refuse to run while a manager is up (pid file / port check): it holds
+		// the database file open and maintains the counters itself.
+		jq := connect(1*time.Second, true)
+		if jq != nil {
+			pid := jq.ServerInfo.PID
+			if err := jq.Disconnect(); err != nil {
+				warn("failed to disconnect from the running manager: %s", err)
+			}
+
+			clog.Error(context.Background(), fmt.Sprintf("wr manager on port %s is currently running "+
+				"(pid %d); stop it before running recompute-counts", config.ManagerPort, pid))
+			managerRecomputeExit(1)
+
+			return
+		}
+
+		drift, err := recomputeCounts(context.Background(), config.ManagerDBFile)
+		if err != nil {
+			clog.Error(context.Background(), fmt.Sprintf("failed to recompute completed-job counts: %s", err))
+			managerRecomputeExit(1)
+
+			return
+		}
+
+		info("recomputed per-repgroup completed-job counts in %s (corrected %d repgroup(s))",
+			config.ManagerDBFile, drift)
+	},
+}
+
+// managerCompactExit lets tests observe the non-zero exit of the compact
+// subcommand without terminating the test process (mirroring
+// managerRecomputeExit). In production it is os.Exit, so the command dies
+// non-zero exactly as die() would.
+var managerCompactExit = os.Exit
+
+// compactDBFile is the DB-mutating step of the compact subcommand, a var so a
+// test can prove the running-manager guard refuses before it is ever called
+// (i.e. the database is left untouched).
+var compactDBFile = jobqueue.CompactDBFile
+
+var managerCompactCmd = &cobra.Command{
+	Use:   "compact",
+	Short: "Compact wr's database",
+	Long: `Compact wr's database file.
+
+Over its lifetime wr's database accumulates free pages as jobs are added,
+completed and removed. BoltDB does not shrink the file automatically, so it can
+grow much larger than the live data it holds. This command rewrites the database
+into a compacted copy (reclaiming that free space) and atomically replaces the
+original, reporting the size before and after.
+
+Compaction copies the whole database (needing roughly twice its size in free
+disk temporarily) and cannot run cleanly online, so the manager must be stopped:
+this command opens the database file directly, and BoltDB permits only one
+process to open it at a time. It refuses to run (exiting non-zero, leaving the
+database untouched) if a manager is currently running.`,
+	Run: func(_ *cobra.Command, _ []string) {
+		// refuse to run while a manager is up (pid file / port check): it holds
+		// the database file open, so compaction cannot open it and must not run.
+		jq := connect(1*time.Second, true)
+		if jq != nil {
+			pid := jq.ServerInfo.PID
+			if err := jq.Disconnect(); err != nil {
+				warn("failed to disconnect from the running manager: %s", err)
+			}
+
+			clog.Error(context.Background(), fmt.Sprintf("wr manager on port %s is currently running "+
+				"(pid %d); stop it before running compact", config.ManagerPort, pid))
+			managerCompactExit(1)
+
+			return
+		}
+
+		beforeSize, afterSize, err := compactDBFile(config.ManagerDBFile)
+		if err != nil {
+			clog.Error(context.Background(), fmt.Sprintf("failed to compact the database: %s", err))
+			managerCompactExit(1)
+
+			return
+		}
+
+		info("compacted %s: %s -> %s", config.ManagerDBFile,
+			humanBytes(beforeSize), humanBytes(afterSize))
+	},
+}
+
+// humanBytes formats a byte count as a short human-readable string (e.g. 1.5
+// MB), using decimal (1000-based) units to match common disk-usage reporting.
+func humanBytes(size int64) string {
+	const unit = 1000
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "kMGTPE"[exp])
+}
+
 type rotatedManagerLog struct {
 	path       string
 	timestamp  time.Time
@@ -1066,6 +1195,8 @@ func init() {
 	managerCmd.AddCommand(managerStopCmd)
 	managerCmd.AddCommand(managerStatusCmd)
 	managerCmd.AddCommand(managerBackupCmd)
+	managerCmd.AddCommand(managerRecomputeCountsCmd)
+	managerCmd.AddCommand(managerCompactCmd)
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(context.Background())

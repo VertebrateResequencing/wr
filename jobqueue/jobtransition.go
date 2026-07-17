@@ -207,6 +207,14 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 	state, emit := subscriptionUpdateState(from, to)
 	includeKeyStateChange := from == JobStateSuspended || to == JobStateSuspended
 
+	// once a job leaves the run sub-queue its last-contact record is no longer
+	// needed (a fresh reservation re-establishes it on the next touch); dropping
+	// it here keeps lastContact bounded to running jobs and stops a stale record
+	// outliving a completed run.
+	if fromQ == queue.SubQueueRun {
+		s.forgetJobContacts(data)
+	}
+
 	s.emitJobTransition(changeCallbackCounts(from, to, data), func() {
 		if !emit {
 			return

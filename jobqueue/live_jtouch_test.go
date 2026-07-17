@@ -87,12 +87,13 @@ func newLiveJTouchFixture(ctx context.Context, webPort string) *liveJTouchFixtur
 
 	return &liveJTouchFixture{
 		server: &Server{
-			ch:         ch,
-			sock:       sock,
-			token:      token,
-			q:          q,
-			up:         true,
-			ServerInfo: &ServerInfo{WebPort: webPort},
+			ch:          ch,
+			sock:        sock,
+			token:       token,
+			q:           q,
+			up:          true,
+			ServerInfo:  &ServerInfo{WebPort: webPort},
+			lastContact: make(map[string]int64),
 		},
 		sock:   sock,
 		job:    job,
