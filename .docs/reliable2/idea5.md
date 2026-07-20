@@ -82,6 +82,20 @@ RPC timing.
 - [ ] If pursued: incremental delivery mapping each of Ideas 1→4 onto a piece
       of this target so value lands early and risk is staged.
 
-## Trial results
+## Trial results (2026-07-20)
 
-_(to be filled during trialling)_
+**Not spiked (full re-architecture); reasoned assessment only.** The saturation
+threshold finding (idea2 Trial results) confirms the substrate diagnosis — a
+single serial reader + in-place strict state machine that diverges under load —
+which this idea replaces wholesale. But nothing observed this session *requires*
+the overhaul: the correctness half is already fixed by a proven ~15-line change
+(Idea 1), and the throughput half is very likely reachable by making the
+existing reader concurrent / offloading bulk reads (Idea 2) rather than
+swapping transport + persistence. **Verdict:** keep as the north star that
+Ideas 1–4 incrementally approximate (epoch→idempotent events, durable
+outcome→log, separate status→projection, concurrent intake→streaming); pursue
+only if a staged 1+2(+3/4) rollout demonstrably cannot meet the metrics at
+production scale. Its own checklist deliberately scopes the *trial* to a bounded
+event-log/stream-ingest prototype + a go/no-go vs the cheaper combination —
+that go/no-go is the right first step, not a rewrite, and was out of scope for a
+lean sequential session.

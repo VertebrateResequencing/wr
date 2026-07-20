@@ -88,6 +88,29 @@ v0.36.5 didn't need (because it never re-reserved an alive job).
 - [ ] Farm sanity: a small `portal_builder` run reaches `complete` for the
       jobs whose commands succeeded (no endless re-run).
 
-## Trial results
+## Trial results (2026-07-20)
 
-_(to be filled during trialling)_
+**Spiked and PROVEN (in-process, deterministic).** Temp change in
+`handleArchive`: when `getij` returns `ErrMustReserve` but the request is a
+genuine success (`Exited && Exitcode==0`) for an existing job, proceed with
+`markJobComplete` skipping the owner check ("completed success wins"). Against
+`TestReliable2DoubleReservationDiscardsSuccess`:
+- Baseline (current code): `archiveErrA="you must Reserve()…"`, `counts=map[running:1]`
+  — A's successful work discarded, job re-run by B.
+- With the spike: `archiveErrA=<nil>`, `counts=map[complete:1]` — A's success
+  recorded; the job is complete; B's later archive would find the item gone
+  (harmless no-op). Exactly the desired outcome.
+
+**Assessment.** Idea 1 is a small, low-risk, internal-only change that directly
+kills the "lost" (discarded successful work) and — with its `changeCallbackToState`
+guard — the "deleted" symptom. It restores v0.36.5's "owner's success wins"
+semantics. It does NOT address throughput/status-stall (M5) or the *wasted
+re-run* itself (B still re-ran the command); it makes the outcome correct, not
+efficient. **Best combined with Idea 2 (throughput) and/or Idea 3 (prevent the
+loss so there is no re-run to waste).** Caveat: the spike used the simplest
+guard (any success from a former holder wins); a production version needs the
+attempt-epoch so a *genuine* double-run resolves to exactly one winner and a
+stale/duplicate success can't complete a job that was legitimately reset — pin
+the exact high-saturation discard sub-cases (see testing.md) to size that guard.
+Not yet run: the M3 false-lost guard under the spike (expected unaffected — the
+change is archive-only), and behaviour under `-race`.

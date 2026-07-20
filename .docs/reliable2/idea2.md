@@ -77,6 +77,35 @@ keeps up so nothing diverges" property that made v0.36.5 immune.
       stays responsive while runners are active; commands that succeed reach
       `complete`.
 
-## Trial results
+## Trial results (2026-07-20)
 
-_(to be filled during trialling)_
+**Root strongly corroborated; fix NOT yet spiked (blocked on reproduction).**
+Two farm runs of the real `portal_builder` workload against current code
+established a clear **saturation threshold**:
+- ~3–4k concurrent runners (second run): **healthy** — jobs complete, ~0
+  archive rejections (the single reject captured was a benign duplicate archive
+  of an already-`complete` job: `itemState=delay jobState=complete exitcode=0`).
+- ~6–7k concurrent runners (first run): **catastrophic** — 19,394
+  `jarchive: bad job`, `complete`≈0, `wr manager stop` hung.
+
+This threshold behaviour is exactly Idea 2's thesis: the failure is the
+single-reader hot path falling behind above a runner-count threshold. v0.36.5's
+cheaper hot path had a higher threshold (immune at this workload's concurrency)
+— see testing.md "Why v0.36.5 was immune". So Idea 2 (make the reader
+concurrent / separate bulk reads / cheapen per-message work → raise the
+threshold) targets the root directly.
+
+**Why not spiked:** proving it requires re-running at ~6–7k concurrent, but my
+LSF fair-share was depleted by the repeated 37k-job runs (later runs only got
+~3–4k slots — below threshold), so the churn could not be re-triggered on
+demand this session; and a faithful concurrent-reader change is a substantial,
+race-prone transport edit that shouldn't be spiked without a reliable oracle.
+**Recommended before committing:** build a controllable saturation oracle —
+either regain farm fair-share for a ~6–7k run, or an in-process harness that
+lowers the threshold deterministically (e.g. a temp per-message processing
+delay simulating the heavier post-#503 hot path) + the RELDIAG archive-reject
+instrumentation — to (a) pin the exact discard sub-cases and (b) A/B the
+concurrent-reader / separate-status-listener change. This is also the only idea
+that addresses the status-stall (M5) and the *wasted re-run* (not just its
+correctness), so it is the leading candidate for the throughput half of the
+fix.

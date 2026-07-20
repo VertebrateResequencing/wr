@@ -76,6 +76,31 @@ than v0.36.5's incidental one, so it holds even at scales v0.36.5 never faced.
 - [ ] Farm: `portal_builder` at scale — no alive job marked lost; successful
       commands complete.
 
-## Trial results
+## Trial results (2026-07-20)
 
-_(to be filled during trialling)_
+**Partially validated by code + behaviour analysis; fix NOT spiked.** Relevant
+facts established this session:
+- The runner **never voluntarily releases** a job on touch failure — it logs
+  "could not touch" and keeps running + retrying (client.go execute loop). So
+  re-reservation is not runner-initiated.
+- The manager **does not release an alive job**: `ttrCallback` parks a
+  timed-out job in `SubQueueRun`; `confirmOrReleaseLostJob` only releases on a
+  user `kill`; `confirmJobDeadAndKill` keeps *re-checking* an alive job
+  (`confirmJobDead` false → retry) and only kills/re-runs a *confirmed-dead*
+  one (no such "killed after confirming dead" log lines fired on the farm).
+  Also: current code never sets `job.State = JobStateLost` (only the `Lost`
+  flag), so a parked-lost job still archives fine while it stays in `Run`.
+- F0 already keeps a *contacted* job in `Run`; but the contact is recorded in
+  `handleTouch` (after dispatch), so under saturation the touch **message**
+  backlogged in the single reader means contact isn't recorded in time.
+
+**Implication:** Idea 3's highest-value, low-risk piece is **edge-stamping
+contact at the transport layer** (record arrival the instant a runner's bytes
+are read, before dispatch), which makes liveness robust to processing latency
+without new transport. The lease/`bjobs` cross-check are larger and only
+justified if edge-stamping is insufficient. **Not spiked** because the exact
+high-saturation path that moves a job out of `Run` (enabling the discard) was
+not pinned (the diagnostic farm run was below the churn threshold; see idea2
+Trial results) — so it's unproven whether edge-stamped contact alone prevents
+the discard. Idea 3 attacks the *cause* (prevent loss) where Idea 1 patches the
+*consequence* (recover after loss); they compose. Idea 3 does not address M5.

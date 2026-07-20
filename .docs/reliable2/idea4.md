@@ -76,6 +76,21 @@ This is close in spirit to how robust batch systems decouple "task ran" from
 - [ ] Farm: `portal_builder` at scale — successful `zopfli`/`jq` commands all
       reach `complete`; none re-run; web UI shows complete.
 
-## Trial results
+## Trial results (2026-07-20)
 
-_(to be filled during trialling)_
+**Not spiked (architectural); reasoned assessment only.** The session confirmed
+the precondition this idea exploits: the command genuinely runs and succeeds
+(farm: "Stats of previous attempt: Exit code 0"), and the runner never abandons
+it (keeps retrying touches) — the failure is purely in *recording* that success
+through a contended RPC at saturation. A durable, runner-written outcome record
++ idempotent reconciliation would therefore make the discard impossible by
+construction (strictly stronger than Idea 1's in-band recovery, and independent
+of the throughput problem Idea 2 solves). Cost is real: new durable-write
+surface, crash-consistency, O(outstanding) reconciliation scan, GC. **Verdict:**
+a compelling "bulletproof correctness" option that subsumes Idea 1, but heavier
+than the evidence currently demands — the proven Idea 1 + a throughput fix
+(Idea 2) achieve the same user-visible correctness with far less new surface.
+Hold as the escalation if the simpler combination proves insufficient at scale.
+Not spiked because it needs a design (record location/format, reconciler hook)
+and the same reliable saturation oracle to prove value, neither cheap this
+session.
