@@ -51,6 +51,13 @@ Concretely:
 - M4: completed jobs broadcast `complete`, never `deleted`.
 - M3: double-run is bounded by the epoch (only one attempt wins).
 
+**v0.36.5 alignment (strongest):** this restores exactly what v0.36.5 did — its
+`jarchive` accepted an owner's successful result on an in-`Run` job with no
+`job.State` gate and no strict state machine, so a late success was never
+discarded. Idea 1 re-establishes that "owner's success wins" semantics on top
+of the retained accuracy machinery, with the epoch as the double-run guard that
+v0.36.5 didn't need (because it never re-reserved an alive job).
+
 ## Risks / tradeoffs
 
 - Must get the epoch/ownership check exactly right or you risk a *duplicate*

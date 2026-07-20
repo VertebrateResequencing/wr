@@ -41,6 +41,12 @@ lost/archive semantics at all.
 - M4: fewer non-complete removals → fewer `deleted` broadcasts (Idea 1's
   broadcast guard still recommended).
 
+**v0.36.5 alignment:** v0.36.5's `jtouch` was a tiny `q.Touch` + flag clear
+(no snapshot/decompress/subscription), so the manager kept up under the same
+load and jobs stayed alive in `Run`. `#503`/`#533` added the per-message/per-
+touch machinery this idea makes cheap/parallel again — restoring the "manager
+keeps up so nothing diverges" property that made v0.36.5 immune.
+
 ## Risks / tradeoffs
 
 - Concurrency on the intake path is the classic wr foot-gun; must preserve the

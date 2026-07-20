@@ -139,6 +139,57 @@ direction** reproduce here.
 
 ---
 
+## Why v0.36.5 was immune (and what it tells us to do)
+
+The user reports this churn never happened on `v0.36.5` — the release *before*
+the web-UI-accuracy work (`#503` subscriptions, `#533` absolute-state
+broadcasting, `#547` `statusState`/callback rework, `#548`). Diffing the hot
+path confirms two concrete, load-bearing differences:
+
+1. **v0.36.5's completion was lenient and recovery-friendly.** Its `jtouch` did
+   `q.Touch` + clear a `Lost` **flag** (no snapshot/decompress/subscription
+   work); its TTR callback parked a timed-out job in `SubQueueRun` as that flag;
+   and its `jarchive` accepted the result with just
+   `getij(checkRunning=true)` + `item.Stats().State == Run` + `owner` +
+   `Exitcode==0` — crucially **no `job.State` gate and no strict state
+   machine**. So a still-alive job whose touch/archive arrived late was simply
+   recovered/completed; an alive job was never moved out of `Run` and never
+   re-reserved. Late success = accepted.
+
+2. **The current strict state machine + projection is new.** `#547`/`#548`
+   introduced `canCompleteFromQueueState` (Run⇒`State==Running`,
+   else Lost&&Delayed, else `ErrBadJob`), the `statusState` projection, and
+   `changeCallbackToState` (which emits `JobStateDeleted` for any non-complete
+   removal). None of these exist in v0.36.5. This layer is what converts a
+   transient state-divergence under load into a **rejected successful archive**
+   ("lost") and a **`deleted`** broadcast to the web UI. (`JobStateDeleted`
+   existed as an enum value in v0.36.5, but nothing *emitted* it on an automatic
+   removal — there was no change-callback→state projection.)
+
+Net: v0.36.5 kept the manager cheap on the hot path and **let the runner's
+successful result win** even when its own liveness view was briefly wrong; the
+accuracy work raised the per-message/per-touch machinery **and** added a strict
+state machine + projection that can throw that successful result away and
+mislabel it `deleted`. (The exact trigger that moves a job out of `Run` under
+real load — runner touch-RPC timeout → give-up/exit, LSF `bkill` of
+"extraneous" runners, or release — was not fully isolated; but the invariant
+that matters is v0.36.5's: an alive owner's success is never discarded.)
+
+**This directly validates the idea ranking:** restore v0.36.5's two properties
+*without* losing the new web-UI accuracy (internal-only, per the speedup rule).
+- **Idea 1** restores lenient "owner's success wins" completion (+ its
+  `changeCallbackToState` complete-wins fix kills the `deleted` broadcast); the
+  attempt-epoch keeps it safe against genuine double-run — the closest match.
+- **Idea 2** restores the "manager keeps up / cheap hot path" that `#503`/`#533`
+  eroded.
+- **Idea 3** hardens the liveness that v0.36.5 got for free by keeping up.
+- **Ideas 4/5** go *beyond* v0.36.5 (durable/idempotent outcome), as belt-and-
+  braces if 1+2(+3) prove insufficient at full production scale.
+
+The evidence points to **Idea 1 + Idea 2** as the core combination (with Idea 3
+hardening), i.e. re-establish v0.36.5's reliability semantics on top of the
+retained accuracy machinery.
+
 ## What `#550` genuinely fixed (don't regress it)
 
 - **Startup on the real 1.9 M-complete DB is fast now.** Manager start returned

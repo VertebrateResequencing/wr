@@ -45,6 +45,11 @@ Make liveness independent of how fast the manager can *process* RPCs:
 - M5 (status stall) is **not** directly fixed here (the heavy read path still
   shares the reader) — pair with Idea 2's separate status listener.
 
+**v0.36.5 alignment:** v0.36.5 rarely false-lost because its cheap hot path kept
+up (liveness was accurate as a side effect). This idea makes non-loss of alive
+jobs *explicit and robust* regardless of manager load — a stronger guarantee
+than v0.36.5's incidental one, so it holds even at scales v0.36.5 never faced.
+
 ## Risks / tradeoffs
 
 - A separate heartbeat channel is new transport surface (auth, teardown).
