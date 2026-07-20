@@ -48,7 +48,63 @@ more piece of reproduction before committing. Hence this `choice.md` rather than
    the threshold; LSF fair-share was depleted by repeated 37k-job runs, so the
    churn couldn't be re-triggered on demand).
 
-## The decision
+## Option 0 — revert the web-UI hot-path machinery (simplest; aligns with the stated priority)
+
+An audit of `v0.36.5..HEAD` (CHANGELOG + `.docs/bugfixes/*` intent) shows the
+reliability problems are **entirely self-inflicted by the web-UI-accuracy work**
+and that the history is a chain of regressions-and-patches:
+
+- The post-0.36.5 changes' stated intent is overwhelmingly **web-UI features +
+  accuracy**: job subscriptions (`#503`), live RAM/CPU/STDOUT introspection
+  (`#530`), absolute-state broadcasting + "keep live counts authoritative under
+  high update rates" (`#533`), fast status counts (`#514`), reconnect/resync,
+  Rerun/modify/suspend web actions. This added ~2,180 lines of net-new hot-path
+  machinery (`statusstate.go`, `jobtransition.go`, `subscription.go`,
+  `server_subscription.go`) + 1,266 lines of invariant tests, and roughly
+  doubled `serverCLI.go`/`server.go`/`client.go`.
+- The bugfix docs then chase the fallout: `260708-2` ".tmp/db hangs
+  indefinitely on this branch", `260713-2` "restore consistent quiet startup"
+  (explicitly wanting v0.36.5 behaviour back), `260715-1` F0 false-lost-under-
+  saturation, `260716-1` web-UI-refresh regression, and the terse merge titles
+  `#535 "Fix speed regression"`, `#550 "Restore speed and reliability at LSF
+  scale"` — i.e. the commits themselves admit regressions.
+
+The user has already stated the priority: **reliability of job execution ≫
+web-UI accuracy ("worst case we revert to pre-0.36.5")**. Under that priority,
+the simplest and lowest-complexity fix is to **restore v0.36.5's hot-path
+semantics** (cheap touches; lenient "owner's success on an in-`Run` job wins";
+alive jobs never moved out of `Run`; no automatic `deleted` projection) rather
+than keep adding machinery to reconcile accuracy with reliability.
+
+- **This is NOT a clean `git revert`** of a range: the web-UI commits interleave
+  with orthogonal good work (MIT relicense, error-handling modernisation,
+  OpenStack/Docker fixes, future dep-groups `#529`, memory-misreport fix,
+  bulk-add dedup, hot-path key-gen speedups) and the code was heavily refactored
+  on top. It is a **surgical excision** of the subscription/statusState/
+  transition-projection/seeding machinery, returning `handleTouch`/`handleArchive`/
+  the TTR path/status to their v0.36.5 shape on top of today's tree.
+- **What it costs (goes away):** web-UI live job updates & live RAM/CPU/STDOUT,
+  absolute-state accurate counts, fast `-o c`/`summary`, reconnect/resync, the
+  Rerun button, and `wr add --sync`'s non-polling wait (all built on
+  subscriptions/statusState). Suspend/resume, `wr mod`, `--recent`, table mode,
+  log rotation are more separable and can likely be kept.
+- **What it keeps:** every orthogonal fix/feature above; and startup is fast
+  *for free* (v0.36.5 had no seeding, so no `#550` counter machinery is needed).
+- **Confidence/caveat:** the v0.36.5 immunity is established by code diff + the
+  user's report, **not** re-proven by running v0.36.5 at ~6–7k concurrent. And
+  the exact high-saturation discard sub-case wasn't fully pinned. So before
+  committing, validate by running a v0.36.5 (or surgically-reverted) build at
+  the churn-triggering scale and confirming clean completion + responsive status.
+
+**When Option 0 is best:** if the team can live without the live/accurate web UI
+(or accept a cheaper, decoupled read-only status view added back later). It is
+the direct answer to "stop piling on complexity."
+
+**When to prefer Part A/B below instead:** if the web-UI accuracy/live features
+are genuinely relied upon — then keep them and restore reliability *internally*
+with the proven Idea 1 (correctness) + a throughput fix (Part B).
+
+## The decision (if NOT reverting — keep the web UI, fix reliability internally)
 
 ### Part A — correctness (recommended, clear): Idea 1 + deleted-broadcast fix
 
