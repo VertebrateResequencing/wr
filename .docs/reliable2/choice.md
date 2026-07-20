@@ -104,7 +104,67 @@ the direct answer to "stop piling on complexity."
 are genuinely relied upon — then keep them and restore reliability *internally*
 with the proven Idea 1 (correctness) + a throughput fix (Part B).
 
-## The decision (if NOT reverting — keep the web UI, fix reliability internally)
+## Option R — CHOSEN: keep the features, remove only #533's count machinery + revert the completion path
+
+This is the refinement the maintainer selected: keep every genuinely-useful
+feature, drop only the web-UI *count-accuracy* rework (#533) and the completion
+"fix attempts" (#548) that broke reliable job running. The dependency audit
+shows this is feasible — the features do **not** depend on the broken machinery:
+
+- **Keep (verified independent of #533's `statusState`):** job subscriptions
+  (#503 `enqueueSubscriptionUpdate`), live RAM/CPU/STDOUT (#530/#534
+  `emitLiveTouchSnapshot`), reconnect/resync (`JobUpdateResync`; the code notes
+  subscriptions are "tracked separately… NOT covered by statusState"),
+  Rerun/modify/suspend web actions, and all orthogonal fixes (memory-misreport,
+  bulk-add dedup, `--rerun` deps, cloud quota leak, hot-path key-gen speedups).
+- **Remove:** `statusState` absolute counts, `changeCallbackToState` (the
+  `deleted` projection — sole source of the "deleted" symptom), `seedStatusState`
+  (sole source of the startup stall), and the #547/#550 machinery that existed
+  only to make `statusState` fast (seeding-avoidance, per-repgroup counters,
+  non-blocking-startup-for-seeding).
+- **Revert:** the completion/lost path — replace `canCompleteFromQueueState`
+  (#548) with v0.36.5's lenient `jarchive` (owner's success on an in-`Run` job
+  wins), so a successful archive is never discarded.
+
+Effect: "deleted", "lost" and the startup stall all disappear (their sources are
+removed/reverted); the status-stall returns to v0.36.5's acceptable single-reader
+profile (removing #533's per-transition count work + keeping touches cheap), so
+the bigger Idea 2 reader-decoupling becomes optional future headroom, not a
+requirement. Cost: web-UI aggregate *counts* revert to v0.36.5 quality
+(statusCaster; the flicker/overcount #533 addressed) and the fast
+`wr status -o counts` reverts to a scan unless one slim counter is kept. Per-job
+views, live data, reconnect and actions are unaffected.
+
+**One careful bit:** #533 *wrapped* the transition→subscription delivery inside
+`emitJobTransition` (which does `statusState.applyTransitions` **then**
+`emitSubscriptions()`). This is an **un-wrap**, not a `git revert`: keep the
+`emitSubscriptions()` closure, drop `applyTransitions` and the
+`changeCallbackToState` decision, restore v0.36.5's completion path.
+
+### Working with databases already upgraded by current code — NOT a problem
+
+Audited: the DB upgrade is **additive and non-destructive** — buckets are
+created with `CreateBucketIfNotExists`, there is **no in-DB schema-version gate**,
+no `DeleteBucket` of authoritative data, and indices are rebuilt from the
+authoritative job buckets. The `Job` struct grew by only 2 fields since v0.36.5
+and the (ugorji binc) codec tolerates field diffs on decode. So the reworked
+build opens a current-upgraded DB cleanly:
+- every bucket it needs (jobslive, jobscomplete, RTK, depgroups,
+  jobLookupEntries, stat buckets, envs, std) is present;
+- the #533/#550 buckets it no longer uses (`repGroupCompleteCount`,
+  `repGroupCompleteBackfilled`, `endTimeToKey`, `repgroupEndTime`) sit as
+  harmless dead buckets — the rework must simply **not assert their absence**;
+- jobs decode fine and the one-time index rebuilds do **not** re-run (buckets
+  already populated).
+Requirements to bake into the spec: don't error on the extra buckets; retain a
+decode-compatible `Job`; and add a compatibility test that opens a
+current-code-upgraded DB copy with the reworked build and verifies incomplete
+jobs recover + run and complete jobs are queryable. One rollback note (not a
+forward blocker): while the reworked build runs it won't maintain
+`repGroupCompleteCount`, so if you later roll **forward** to current code again
+you'd run its `recompute-counts` repair to refresh statusState.
+
+## The decision (if NOT choosing Option R — keep the full web-UI accuracy too, fix reliability internally)
 
 ### Part A — correctness (recommended, clear): Idea 1 + deleted-broadcast fix
 
