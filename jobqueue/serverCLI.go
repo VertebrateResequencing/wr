@@ -903,12 +903,6 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 // handleTouch refreshes a running job's TTR, recovering it from lost state and
 // applying any live status snapshot, or reports that kill has been called.
 func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
-	// record that the runner contacted us about this job as early as possible,
-	// before getij/queue.Touch (which contend on queue.mutex under load), so
-	// lost-detection reflects when the runner reached us rather than when its
-	// touch finished being processed (see ttrCallback).
-	s.recordJobContact(cr.key())
-
 	item, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
@@ -1012,13 +1006,16 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 // live bucket, and adds it to the complete bucket.
 func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// remove the job from the queue, rpl and live bucket and add to complete
-	// bucket
-	item, job, srerr := s.getij(cr, false)
+	// bucket. The item must be in queue.ItemStateRun (getij's checkRunning): this
+	// restores v0.36.5's lenient acceptance - an alive owner's successful archive
+	// is always accepted while it still holds the reservation - while preserving
+	// the ErrRecovering retry path and the owner check that yields ErrMustReserve.
+	_, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
 
-	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState, s.limiter, cr.ClientID)
+	key, rgroup, sgroup, srerr := markJobComplete(job, cr.JobEndState, s.limiter, cr.ClientID)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1030,15 +1027,11 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 // if so, applies its terminal state and marks it complete under lock, returning
 // its key, rep group and scheduler group (or an Err* string if it cannot be
 // archived).
-func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
+func markJobComplete(job *Job, endState *JobEndState,
 	lim *limiter.Limiter, expectedReservedBy ...uuid.UUID,
 ) (key, rgroup, sgroup, srerr string) {
 	job.Lock()
 	defer job.Unlock()
-
-	if !job.canCompleteFromQueueState(item.Stats().State) {
-		return "", "", "", ErrBadJob
-	}
 
 	if len(expectedReservedBy) > 0 && job.ReservedBy != expectedReservedBy[0] {
 		return "", "", "", ErrMustReserve
@@ -1059,25 +1052,6 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
 	}
 
 	return job.Key(), job.RepGroup, job.schedulerGroup, ""
-}
-
-func (j *Job) canCompleteFromQueueState(itemState queue.ItemState) bool {
-	if itemState == queue.ItemStateRun {
-		return j.State == JobStateRunning
-	}
-
-	if j.FailReason != FailReasonLost {
-		return false
-	}
-
-	switch itemState {
-	case queue.ItemStateDelay, queue.ItemStateReady:
-		return j.State == JobStateDelayed
-	case queue.ItemStateBury:
-		return j.State == JobStateBuried
-	default:
-		return false
-	}
 }
 
 func (j *Job) canCompleteFromEndState(endState *JobEndState) bool {

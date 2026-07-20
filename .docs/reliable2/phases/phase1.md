@@ -67,8 +67,8 @@ with `Lost==true`; runner B's 20 `Reserve` calls all return nil; owner A's
 `Archive` returns nil; the rep group shows `Counts[JobStateComplete]==1` with the
 command run exactly once; a genuine non-owner archiver gets `ErrMustReserve`).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: B1 - Pure v0.36.5 ttrCallback; F0 contact grace removed
 
@@ -111,8 +111,8 @@ the KEPT `TestLostDetectionSilentRunner`; an on-time-touched job stays
 `Lost` job recovers to `Lost==false` with its TTR reset on one late `Touch`,
 staying in `SubQueueRun`).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section H)
 

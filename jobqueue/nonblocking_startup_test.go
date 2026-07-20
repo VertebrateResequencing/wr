@@ -858,7 +858,6 @@ func TestB2WindowTouchReturnsRecovering(t *testing.T) {
 		}()
 
 		So(server.isRecovering(), ShouldBeTrue)
-		So(server.contactedWithin(runKey, time.Hour), ShouldBeFalse)
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, connectTime)
 		So(err, ShouldBeNil)
@@ -875,10 +874,6 @@ func TestB2WindowTouchReturnsRecovering(t *testing.T) {
 		So(strings.Contains(err.Error(), ErrRecovering), ShouldBeTrue)
 		So(strings.Contains(err.Error(), ErrBadJob), ShouldBeFalse)
 		So(strings.Contains(err.Error(), ErrBadRequest), ShouldBeFalse)
-
-		// handleTouch records the contact before getij, so the touch still
-		// registered the runner's contact even though it was refused.
-		So(server.contactedWithin(runKey, time.Hour), ShouldBeTrue)
 	})
 }
 
