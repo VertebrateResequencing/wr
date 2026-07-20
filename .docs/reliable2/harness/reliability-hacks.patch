@@ -1,0 +1,13 @@
+diff --git a/jobqueue/db.go b/jobqueue/db.go
+index 5b869b3..718565e 100644
+--- a/jobqueue/db.go
++++ b/jobqueue/db.go
+@@ -450,7 +450,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
+ 		}
+ 	}
+ 
+-	if wipeDevDB && deployment == internal.Development {
++	if wipeDevDB && deployment == internal.Development && os.Getenv("WR_RELIABILITY_KEEPDB") == "" { // TEMP reliability-test guard
+ 		errr := os.Remove(dbFile)
+ 		if errr != nil && !os.IsNotExist(errr) {
+ 			clog.Warn(ctx, "Failed to remove database file", "path", dbFile, "err", errr)
