@@ -33,8 +33,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -206,6 +208,141 @@ func TestSchedulerSubmitJobsDefaultsMissingRequirements(t *testing.T) {
 	})
 }
 
+func mapPointer(m map[string]string) uintptr {
+	return reflect.ValueOf(m).Pointer()
+}
+
+// jobHasConfiguredQueues reports whether job carries both the configured
+// scheduler_queue and scheduler_queues_avoid test values in its Requirements.
+func jobHasConfiguredQueues(job *jobqueue.Job) bool {
+	other := job.Requirements.Other
+
+	return other[schedulerQueuesAvoidRequirementKey] == testSchedulerQueuesAvoid &&
+		other[schedulerQueueRequirementKey] == testSchedulerQueue
+}
+
+func TestSchedulerNewJobQueuesAvoid(t *testing.T) {
+	Convey("Given a Scheduler configured only with queuesAvoid", t, func() {
+		s := &Scheduler{queuesAvoid: testSchedulerQueuesAvoid}
+
+		Convey("NewJob with nil req gives every job an independent queues_avoid map", func() {
+			const n = 200
+
+			maps := make([]map[string]string, 0, n)
+			missing := 0
+
+			for i := range n {
+				job := s.NewJob(fmt.Sprintf("echo nil-%d", i), "rg", "results_frontend", "", "", nil)
+				So(job.Override, ShouldEqual, 0)
+
+				if job.Requirements.Other[schedulerQueuesAvoidRequirementKey] != testSchedulerQueuesAvoid {
+					missing++
+				}
+
+				maps = append(maps, job.Requirements.Other)
+			}
+
+			So(missing, ShouldEqual, 0)
+
+			// each nil-req job must have its own Other map (no aliasing that a
+			// later mutation could corrupt).
+			shared := 0
+
+			for i := 1; i < len(maps); i++ {
+				if mapPointer(maps[i]) == mapPointer(maps[0]) {
+					shared++
+				}
+			}
+
+			So(shared, ShouldEqual, 0)
+		})
+
+		Convey("NewJob reusing one req object keeps queues_avoid on every job", func() {
+			const n = 200
+
+			req := &jqs.Requirements{RAM: 1000, Time: time.Minute, Cores: 1, Disk: 1}
+			missing := 0
+
+			for i := range n {
+				job := s.NewJob(fmt.Sprintf("echo reuse-%d", i), "rg", "results_frontend", "", "", req)
+				if job.Requirements.Other[schedulerQueuesAvoidRequirementKey] != testSchedulerQueuesAvoid {
+					missing++
+				}
+			}
+
+			So(missing, ShouldEqual, 0)
+		})
+	})
+}
+
+func TestSchedulerNewJobDoesNotAliasCallerReq(t *testing.T) {
+	Convey("Given a Scheduler with both a queue and queuesAvoid configured", t, func() {
+		s := &Scheduler{queue: testSchedulerQueue, queuesAvoid: testSchedulerQueuesAvoid}
+
+		Convey("NewJob called twice with one shared req returns independent Requirements", func() {
+			req := &jqs.Requirements{RAM: 1000, Time: time.Minute, Cores: 1, Disk: 1}
+
+			job1 := s.NewJob("echo one", "rg", "results_frontend", "", "", req)
+			job2 := s.NewJob("echo two", "rg", "results_frontend", "", "", req)
+
+			// the returned jobs must not alias each other or the caller's req:
+			// each must get its own Requirements and its own Other map, so a
+			// later mutation (or a concurrent NewJob) of one cannot corrupt the
+			// other or the caller's shared req.
+			So(job1.Requirements, ShouldNotPointTo, job2.Requirements)
+			So(job1.Requirements, ShouldNotPointTo, req)
+			So(job2.Requirements, ShouldNotPointTo, req)
+
+			So(mapPointer(job1.Requirements.Other), ShouldNotEqual, mapPointer(job2.Requirements.Other))
+
+			So(job1.Requirements.Other[schedulerQueuesAvoidRequirementKey], ShouldEqual, testSchedulerQueuesAvoid)
+			So(job2.Requirements.Other[schedulerQueuesAvoidRequirementKey], ShouldEqual, testSchedulerQueuesAvoid)
+			So(job1.Requirements.Other[schedulerQueueRequirementKey], ShouldEqual, testSchedulerQueue)
+			So(job2.Requirements.Other[schedulerQueueRequirementKey], ShouldEqual, testSchedulerQueue)
+		})
+	})
+}
+
+func TestSchedulerNewJobSharedReqConcurrent(t *testing.T) {
+	Convey("Given a Scheduler with both a queue and queuesAvoid configured", t, func() {
+		s := &Scheduler{queue: testSchedulerQueue, queuesAvoid: testSchedulerQueuesAvoid}
+
+		Convey("Many goroutines can share one req across concurrent NewJob calls", func() {
+			const n = 200
+
+			// a single req pointer, deliberately shared across every goroutine,
+			// as a real caller building a batch of similar jobs would do.
+			req := &jqs.Requirements{RAM: 1000, Time: time.Minute, Cores: 1, Disk: 1}
+
+			jobs := make([]*jobqueue.Job, n)
+
+			var wg sync.WaitGroup
+
+			for i := range n {
+				wg.Add(1)
+
+				go func(i int) {
+					defer wg.Done()
+
+					jobs[i] = s.NewJob(fmt.Sprintf("echo conc-%d", i), "rg", "results_frontend", "", "", req)
+				}(i)
+			}
+
+			wg.Wait()
+
+			missing := 0
+
+			for _, job := range jobs {
+				if !jobHasConfiguredQueues(job) {
+					missing++
+				}
+			}
+
+			So(missing, ShouldEqual, 0)
+		})
+	})
+}
+
 func TestSchedulerSubmissionMethodsDefaultMissingRequirements(t *testing.T) {
 	Convey("Scheduler submission methods default missing requirements", t, func() {
 		s := &Scheduler{
@@ -219,6 +356,7 @@ func TestSchedulerSubmissionMethodsDefaultMissingRequirements(t *testing.T) {
 		}
 		expectedRequirements := DefaultRequirements()
 		expectedRequirements.Other = configuredQueues
+		expectedRequirements.OtherSet = true
 
 		legacyJob := &jobqueue.Job{Cmd: "echo legacy defaults"}
 		So(s.SubmitJobs([]*jobqueue.Job{legacyJob}), ShouldBeNil)
