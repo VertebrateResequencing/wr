@@ -89,7 +89,12 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(job.Exited, ShouldBeTrue)
 		So(job.Exitcode, ShouldEqual, 0)
 		So(job.State, ShouldEqual, JobStateComplete)
-		So(job.Lost, ShouldBeFalse)
+		// markJobComplete intentionally does NOT clear Lost: a parked-lost job's
+		// removal must count lost->complete (not running->complete) in the web-UI
+		// counter, so Lost is left set until the job leaves the run queue (as the
+		// delete path also leaves it). It is invisible on a Complete job since
+		// buildJStatus only surfaces Lost when State==Running.
+		So(job.Lost, ShouldBeTrue)
 		So(job.FailReason, ShouldEqual, "")
 	})
 

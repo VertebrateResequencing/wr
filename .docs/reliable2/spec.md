@@ -198,8 +198,14 @@ Changes:
   `canCompleteFromQueueState(item.Stats().State)` gate. Keep the owner check
   (`ReservedBy == cr.ClientID` -> else `ErrMustReserve`) and the end-state check
   (`canCompleteFromEndState` -> else `ErrBadRequest`). On success set
-  `State=JobStateComplete`, `FailReason=""`, `Lost=false`, apply the end state,
-  and return key/repGroup/schedulerGroup.
+  `State=JobStateComplete` and `FailReason=""`, apply the end state, and return
+  key/repGroup/schedulerGroup. Do NOT clear `Lost`: a parked-lost job's
+  subsequent queue removal must be counted `lost->complete` (not
+  `running->complete`) by the web-UI counter chokepoint (`changeCallbackCounts`
+  reads `job.Lost` at removal time), so leaving `Lost` set avoids a stale `lost`
+  count and phantom-lost-on-refresh. `Lost` is invisible on a `Complete` job
+  (`buildJStatus` only surfaces it when `State==Running`), consistent with the
+  delete path, which likewise leaves `Lost` set through removal.
 - A `Lost`-but-parked-in-`Run` job (its `State` may still be `Running`) whose
   owner archives success is accepted, because the item is in `Run` and the owner
   matches - exactly v0.36.5's contract.

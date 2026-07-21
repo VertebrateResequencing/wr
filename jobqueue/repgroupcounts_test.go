@@ -300,6 +300,102 @@ func TestRepGroupCountsEmptyAfterRestart(t *testing.T) {
 	})
 }
 
+// TestReliable2ParkedLostArchiveClearsLostCount is the reliable2 regression for
+// the counter/emission model: a job parked Lost by the TTR callback (Lost==true
+// in SubQueueRun) whose owner then archives it successfully must be counted as
+// lost->complete, NOT running->complete. markJobComplete once cleared job.Lost
+// BEFORE the queue removal, so the change-callback chokepoint (changeCallbackCounts)
+// derived a running from-state; the running decrement then clamped to nothing and
+// left a stale lost:1 in the per-RepGroup and +all+ counters that never
+// decremented. That stale lost is treated as a LIVE job by the fresh-connect seed
+// filter (rgcHasLiveJob), so a fully-complete RepGroup wrongly REAPPEARED on a
+// page refresh showing a phantom lost bar (the same class as bugfix 260721-1).
+// This pins: after the archive the counter holds complete==1 and NO lost for the
+// RepGroup (and no stale lost in the +all+ aggregate), and a fresh subscriber's
+// connect-seed omits the now-complete RepGroup.
+func TestReliable2ParkedLostArchiveClearsLostCount(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const ttr = 500 * time.Millisecond
+
+	Convey("A parked-lost job archived successfully leaves no stale lost count and does not reappear on refresh",
+		t, func() {
+			ctx := context.Background()
+			serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+			serverConfig.Timings.ItemTTR = ttr
+
+			server, _, token, err := serve(ctx, serverConfig)
+			So(err, ShouldBeNil)
+
+			defer server.Stop(ctx, true)
+
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			repGroup := "rgc-parked-lost-archive"
+			jobs := subscriptionTestJobs(repGroup, standardReqs, 1)
+			added, _, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+
+			// Reserve+start with our own (alive) PID so the async dead-confirmation
+			// cannot remove the job before we archive it, then never touch so the
+			// TTR callback parks it Lost in SubQueueRun.
+			reserved, err := jq.Reserve(2 * time.Second)
+			So(err, ShouldBeNil)
+			So(reserved, ShouldNotBeNil)
+			So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+			key := reserved.Key()
+
+			// wait until the counter records the running->lost transition (the
+			// parked-lost state we are exercising).
+			lostRecorded := false
+			deadline := time.Now().Add(6 * ttr)
+
+			for time.Now().Before(deadline) {
+				_, lost, _, ok := serverJobState(server, key)
+				if ok && lost && server.repGroupCounts.wholeMap()[repGroup][JobStateLost] == 1 {
+					lostRecorded = true
+
+					break
+				}
+
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			So(lostRecorded, ShouldBeTrue)
+
+			// the owner's successful archive of the parked-lost job.
+			So(jq.Archive(reserved, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+			// the counter must now hold exactly one complete and NO lost for the
+			// RepGroup: the removal was counted lost->complete (decrementing the lost
+			// bucket), not running->complete (which clamps to nothing and leaves a
+			// stale lost:1).
+			So(server.repGroupCounts.wholeMap()[repGroup], ShouldResemble, map[JobState]int{
+				JobStateComplete: 1,
+			})
+
+			// the +all+ live aggregate must hold no stale lost either (complete is
+			// terminal, so +all+ drops back to empty).
+			So(server.repGroupCounts.wholeMap()[statusAllRepGroups], ShouldBeEmpty)
+
+			// a freshly-connected client (a page refresh) must NOT be seeded with the
+			// now-complete RepGroup: a stale lost would make rgcHasLiveJob treat it
+			// as live and wrongly revive the phantom lost bar.
+			ws, testServer := connectStatusWS(ctx, server, token)
+			defer testServer.Close()
+			defer ws.Close()
+
+			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readRepGroupAbsentDuring(ws, repGroup, 3*time.Second), ShouldBeTrue)
+		})
+}
+
 // connectStatusWS starts an httptest server exposing the jobqueue status
 // websocket and returns a dialled client connection plus the test server (which
 // the caller must Close).

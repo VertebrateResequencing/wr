@@ -1044,7 +1044,17 @@ func markJobComplete(job *Job, endState *JobEndState,
 	job.applySuccessfulEndStateLocked(endState, lim)
 	job.State = JobStateComplete
 	job.FailReason = ""
-	job.Lost = false
+	// deliberately do NOT clear job.Lost here. A job parked Lost (Lost==true in
+	// SubQueueRun) is held as `lost` by the web-UI counter; the change-callback
+	// chokepoint (changeCallbackCounts) reads job.Lost at removal time to decide
+	// whether this exit from the run queue is from the running or the lost bucket.
+	// Clearing it before archiveCompletedJob's s.q.Remove would make the removal
+	// count running->complete, whose running decrement clamps to nothing and
+	// leaves a stale lost:1 that reappears as a phantom lost bar on refresh. We
+	// therefore leave Lost set through the removal (exactly as removeDeletableJobs
+	// leaves it for a lost job being deleted), so the removal counts lost->complete.
+	// Lost is only ever surfaced when State==Running (see buildJStatus), so a
+	// Complete job carrying Lost==true is invisible everywhere else.
 
 	if endState != nil {
 		job.StdOutC = endState.Stdout
