@@ -4435,8 +4435,11 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// mark the job deleted BEFORE removing it, so the queue change callback
 		// (which reads each removed job's own State to decide complete vs deleted,
 		// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
-		// a deleted update for this genuinely-removed incomplete job.
+		// a deleted update for this genuinely-removed incomplete job. Capture the
+		// previous state so we can revert if the removal fails and the job remains
+		// in the queue (otherwise it would be left visibly Deleted).
 		job.Lock()
+		prevState := job.State
 		job.State = JobStateDeleted
 		job.Unlock()
 
@@ -4445,6 +4448,12 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 			pass.schedGroups[job.getSchedulerGroup()]++
 			pass.repGroups = append(pass.repGroups, job.RepGroup)
 			clog.Debug(ctx, "removed job", "cmd", job.Cmd)
+		} else {
+			// removal failed, so the job is still in the queue; revert its state
+			// so it is not left visibly Deleted.
+			job.Lock()
+			job.State = prevState
+			job.Unlock()
 		}
 	}
 

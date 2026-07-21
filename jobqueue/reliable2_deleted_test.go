@@ -48,6 +48,56 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// TestReliable2DeleteRemoveFailureRevert covers the failure path of
+// removeDeletableJobs: it sets job.State = JobStateDeleted BEFORE calling
+// s.q.Remove (so the queue change callback can broadcast a deleted update for a
+// genuinely-removed incomplete job), but if the removal fails the job remains in
+// the queue and must NOT be left visibly Deleted. A job that is not present in
+// the server's queue reproduces this deterministically: HasDependents returns
+// (false, nil) for its unknown key, but s.q.Remove returns ErrNotFound.
+func TestReliable2DeleteRemoveFailureRevert(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("removeDeletableJobs reverts a job's State when the queue removal fails", t, func() {
+		serverConfig, _, standardReqs, _ := subscriptionTestConfig(t)
+
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		// a job that was never added to the server's queue: its removal will fail.
+		job := &Job{
+			Cmd:          "echo reliable2 remove-failure-revert",
+			Cwd:          testCwd,
+			ReqGroup:     "reliable2-remove-failure",
+			Requirements: standardReqs,
+			RepGroup:     "reliable2-remove-failure",
+			State:        JobStateReady,
+		}
+
+		_, err = server.q.Get(job.Key())
+		So(err, ShouldNotBeNil)
+
+		pass := server.removeDeletableJobs(ctx, []*Job{job})
+
+		// the removal failed, so nothing was collected for deletion...
+		So(pass.toDelete, ShouldBeEmpty)
+
+		// ...and the job's State must be reverted to its previous value, not left
+		// visibly Deleted.
+		job.RLock()
+		state := job.State
+		job.RUnlock()
+		So(state, ShouldEqual, JobStateReady)
+		So(state, ShouldNotEqual, JobStateDeleted)
+	})
+}
+
 func TestReliable2DeletedProjection(t *testing.T) {
 	if runnermode || servermode {
 		return
