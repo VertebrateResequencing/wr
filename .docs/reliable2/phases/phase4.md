@@ -58,8 +58,8 @@ incomplete jobs are recovered and become reservable/runnable; (4) `bucketRTK`
 and `bucketJobLookupEntries` key counts are unchanged before vs after open (the
 one-time index rebuilds do NOT re-run).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 4.2: G1 - Do not store a corrupt duration stat [parallel with 4.1]
 
@@ -77,8 +77,8 @@ duration) -> no `bucketJobSecs` entry; valid positive duration -> a
 `bucketJobSecs` entry equal to `ceil(seconds)` is stored, happy path
 unaffected).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill (review all items in the
@@ -102,8 +102,8 @@ the recovery window -> a reconnecting runner's `j*` method gets `ErrRecovering`
 and become reservable after recovery finishes (serves acceptance #5's
 "incomplete jobs recover and run").
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section H)
 

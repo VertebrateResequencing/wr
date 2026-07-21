@@ -4,6 +4,72 @@ This directory holds data and small executable fixtures for `jobqueue` tests.
 Browser/UI repro scripts belong here, under a directory named for the behaviour
 they exercise, rather than in ad-hoc scratch paths or package roots.
 
+## dbcompat/db.golden (DB compatibility fixture)
+
+`dbcompat/db.golden` is a small committed BoltDB fixture used by
+`jobqueue/reliable2_dbcompat_test.go` to prove that the reworked ("Option R")
+build opens a database already upgraded by current/pre-removal `reliable2` code
+without error or data loss (spec.md section F1).
+
+It is produced by the committed generator `dbcompat/gen.go` (a `//go:build
+ignore` program, so it is excluded from the normal build and lint). The
+generator drives the real `jobqueue` DB open path: it starts an in-process
+`Serve` on a fresh development BoltDB, connects a client, and creates ~4 jobs
+across two rep groups:
+
+- two jobs in rep group `reliable2-dbcompat-complete`, reserved + started +
+  archived successfully (so `jobscomplete`, `endTimeToKey`, `repgroupEndTime`
+  and the now-dead `repGroupCompleteCount` populate, and the backfill sentinel
+  is written to the now-dead `repGroupCompleteBackfilled`);
+- two jobs in rep group `reliable2-dbcompat-incomplete`, left incomplete in
+  `jobslive`, each carrying non-empty `WaitingForDepGroups` and `LimitGroups`
+  (so `LimitGroupsForDisplay` is set too).
+
+The now-dead buckets `repGroupCompleteCount` and `repGroupCompleteBackfilled`
+are only written by pre-removal code, so the fixture MUST be regenerated from a
+pre-removal commit.
+
+### Regeneration procedure
+
+1. Check out a pre-removal `reliable2` commit that STILL maintains the
+   per-RepGroup complete counters - i.e. one that still has
+   `adjustRepGroupComplete`, the `CreateBucketIfNotExists` calls for
+   `repGroupCompleteCount` / `repGroupCompleteBackfilled`, and the backfill
+   sentinel write. The `reliable2` base commit `07355ba` ("Add reliable2 spec")
+   is such a commit (Phase 2 removed the backfill launcher and Phase 3 removed
+   the counter write-side and the buckets, so any commit at or before Phase 1,
+   `3cc9903`, works). Verify with, e.g.:
+
+   ```
+   git grep -n 'repGroupCompleteCount\|adjustRepGroupComplete\|backfillSentinelKey' <commit> -- jobqueue/db.go
+   ```
+
+   The cleanest way to build against that commit without disturbing your working
+   tree is a detached git worktree:
+
+   ```
+   git worktree add --detach /tmp/wr-genwt 07355ba
+   cp jobqueue/testdata/dbcompat/gen.go /tmp/wr-genwt/jobqueue/testdata/dbcompat/gen.go
+   ```
+
+2. Build and run the committed generator through the `jobqueue` DB open path,
+   passing the absolute output path as its sole argument:
+
+   ```
+   cd /tmp/wr-genwt
+   go run jobqueue/testdata/dbcompat/gen.go /abs/path/to/wr/jobqueue/testdata/dbcompat/db.golden
+   ```
+
+3. The generator writes the bolt file directly to that path. Return to your
+   normal checkout, `git add` the (binary) fixture, and remove the worktree:
+
+   ```
+   git worktree remove /tmp/wr-genwt
+   git add jobqueue/testdata/dbcompat/db.golden
+   ```
+
+   Keep the fixture small (a handful of jobs, as above).
+
 ## Status page absolute count protocol
 
 The status page receives idempotent absolute per-RepGroup counts over the

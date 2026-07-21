@@ -152,6 +152,96 @@ func TestDBHighPeakMemoryRecommendation(t *testing.T) {
 	})
 }
 
+func TestDBPutJobStatsCorruptDurationGuard(t *testing.T) {
+	ctx := context.Background()
+
+	newTestDB := func() *db {
+		tmpdir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		return testDB
+	}
+
+	Convey("putJobStats does not store a corrupt duration stat", t, func() {
+		Convey("A job with a zero EndTime stores RAM/disk but no duration entry", func() {
+			testDB := newTestDB()
+			defer func() {
+				So(testDB.close(ctx), ShouldBeNil)
+			}()
+
+			const reqGroup = "zero-endtime"
+
+			job := testDBJob("echo zero", "rg-zero")
+			job.ReqGroup = reqGroup
+			job.PeakRAM = 100
+			job.PeakDisk = 200
+			job.StartTime = time.Now()
+			job.EndTime = time.Time{}
+
+			err := testDB.bolt.Update(func(tx *bolt.Tx) error {
+				return putJobStats(tx, job)
+			})
+			So(err, ShouldBeNil)
+
+			So(statValuesForReqGroup(t, testDB, bucketJobSecs, reqGroup), ShouldBeEmpty)
+			So(statValuesForReqGroup(t, testDB, bucketJobRAM, reqGroup), ShouldHaveLength, 1)
+			So(statValuesForReqGroup(t, testDB, bucketJobDisk, reqGroup), ShouldHaveLength, 1)
+		})
+
+		Convey("A job with an EndTime before StartTime stores no duration entry", func() {
+			testDB := newTestDB()
+			defer func() {
+				So(testDB.close(ctx), ShouldBeNil)
+			}()
+
+			const reqGroup = "negative-duration"
+
+			job := testDBJob("echo negative", "rg-negative")
+			job.ReqGroup = reqGroup
+			job.PeakRAM = 100
+			job.PeakDisk = 200
+			job.StartTime = time.Now()
+			job.EndTime = job.StartTime.Add(-time.Minute)
+
+			err := testDB.bolt.Update(func(tx *bolt.Tx) error {
+				return putJobStats(tx, job)
+			})
+			So(err, ShouldBeNil)
+
+			So(statValuesForReqGroup(t, testDB, bucketJobSecs, reqGroup), ShouldBeEmpty)
+			So(statValuesForReqGroup(t, testDB, bucketJobRAM, reqGroup), ShouldHaveLength, 1)
+			So(statValuesForReqGroup(t, testDB, bucketJobDisk, reqGroup), ShouldHaveLength, 1)
+		})
+
+		Convey("A job with a valid positive duration stores ceil(seconds)", func() {
+			testDB := newTestDB()
+			defer func() {
+				So(testDB.close(ctx), ShouldBeNil)
+			}()
+
+			const reqGroup = "positive-duration"
+
+			job := testDBJob("echo positive", "rg-positive")
+			job.ReqGroup = reqGroup
+			job.PeakRAM = 100
+			job.PeakDisk = 200
+			job.StartTime = time.Now()
+			job.EndTime = job.StartTime.Add(1500 * time.Millisecond)
+
+			err := testDB.bolt.Update(func(tx *bolt.Tx) error {
+				return putJobStats(tx, job)
+			})
+			So(err, ShouldBeNil)
+
+			values := statValuesForReqGroup(t, testDB, bucketJobSecs, reqGroup)
+			So(values, ShouldHaveLength, 1)
+			So(values[0], ShouldEqual, "2")
+		})
+	})
+}
+
 func TestDBReverseLookupIndex(t *testing.T) {
 	Convey("Opening an old DB rebuilds reverse lookup entries used by modify", t, func() {
 		ctx := context.Background()
@@ -1025,6 +1115,34 @@ func countReverseLookupEntriesByJobKey(tx *bolt.Tx, jobKey string) int {
 	}
 
 	return count
+}
+
+// statValuesForReqGroup returns the stored stat values (as strings) held for the
+// given reqGroup in the named per-ReqGroup stat bucket, in BoltDB's key order.
+func statValuesForReqGroup(t *testing.T, testDB *db, bucket []byte, reqGroup string) []string {
+	t.Helper()
+
+	prefix := []byte(reqGroup + dbDelimiter)
+
+	var values []string
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		if b == nil {
+			return nil
+		}
+
+		return b.ForEach(func(k, v []byte) error {
+			if bytes.HasPrefix(k, prefix) {
+				values = append(values, string(v))
+			}
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+
+	return values
 }
 
 func TestDBReverseLookupRebuildOrder(t *testing.T) {

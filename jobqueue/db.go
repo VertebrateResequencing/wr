@@ -1542,7 +1542,16 @@ func putJobStats(tx *bolt.Tx, job *Job) error {
 		return err
 	}
 
-	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
+	if job.EndTime.IsZero() {
+		return nil
+	}
+
+	duration := job.EndTime.Sub(job.StartTime)
+	if duration <= 0 {
+		return nil
+	}
+
+	secs := int(math.Ceil(duration.Seconds()))
 
 	return putJobStat(tx.Bucket(bucketJobSecs), job.ReqGroup, secs)
 }
