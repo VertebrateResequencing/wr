@@ -823,9 +823,6 @@ func TestDBCompactRoundTrip(t *testing.T) {
 		wantRTK := dbBucketKeys(t, testDB, bucketRTK)
 		wantComplete := dbBucketKeys(t, testDB, bucketJobsComplete)
 
-		wantCounts, errc := testDB.retrieveMaintainedCompleteCounts(repGroups)
-		So(errc, ShouldBeNil)
-
 		wantArchived, erra := testDB.retrieveCompleteJobsByKeys(archivedKeys)
 		So(erra, ShouldBeNil)
 		So(len(wantArchived), ShouldEqual, len(archivedKeys))
@@ -834,7 +831,7 @@ func TestDBCompactRoundTrip(t *testing.T) {
 
 		So(testDB.close(ctx), ShouldBeNil)
 
-		Convey("CompactDBFile shrinks it and preserves every bucket/job/lookup/counter", func() {
+		Convey("CompactDBFile shrinks it and preserves every bucket/job/lookup", func() {
 			beforeSize, afterSize, errcmp := CompactDBFile(dbFile)
 			So(errcmp, ShouldBeNil)
 			So(beforeSize, ShouldBeGreaterThan, 0)
@@ -849,15 +846,6 @@ func TestDBCompactRoundTrip(t *testing.T) {
 			So(liveJobCmdsByKey(t, reDB), ShouldResemble, wantLive)
 			So(dbBucketKeys(t, reDB, bucketRTK), ShouldResemble, wantRTK)
 			So(dbBucketKeys(t, reDB, bucketJobsComplete), ShouldResemble, wantComplete)
-
-			gotCounts, errgc := reDB.retrieveMaintainedCompleteCounts(repGroups)
-			So(errgc, ShouldBeNil)
-			So(gotCounts, ShouldResemble, wantCounts)
-
-			// counters still equal the RAW scan (ground truth) after compaction.
-			rawCounts, errraw := reDB.retrieveCompleteJobCountsByRepGroups(repGroups)
-			So(errraw, ShouldBeNil)
-			So(gotCounts, ShouldResemble, rawCounts)
 
 			gotArchived, errga := reDB.retrieveCompleteJobsByKeys(archivedKeys)
 			So(errga, ShouldBeNil)

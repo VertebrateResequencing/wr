@@ -66,8 +66,8 @@ subcommand (cobra error / non-zero exit) - the command no longer exists; (2)
 `RecomputeRepGroupCompleteCounts` is not a symbol in the `jobqueue` package
 (compile-time; the deletion is complete).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section H)
 

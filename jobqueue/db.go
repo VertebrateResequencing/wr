@@ -42,7 +42,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,16 +63,15 @@ const (
 	dbDelimiter                   = "_::_"
 	jobStatWindowPercent          = float32(5)
 	dbFilePermission              = 0o600
-	repGroupCountBytes            = 8
 	rgEndTimeBytes                = 8
 	endTimeBytes                  = 8
 	envCacheSize                  = 12
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 
-	// offlineDBOpenTimeout bounds how long the offline subcommands
-	// (RecomputeRepGroupCompleteCounts, CompactDBFile) wait for the BoltDB file
-	// lock before erroring. The up-check in cmd guards against a running manager,
+	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFile)
+	// waits for the BoltDB file lock before erroring. The up-check in cmd guards
+	// against a running manager,
 	// but if that check is fooled (e.g. a missing token file) a manager may still
 	// hold the lock; a bounded timeout makes the subcommand fail cleanly instead
 	// of blocking forever. The running manager's own initDB opens intentionally
@@ -103,17 +101,6 @@ var (
 	bucketJobSecs          = []byte("jobSecs")
 	bucketRGEndTime        = []byte("repgroupEndTime") //nolint:gochecknoglobals
 	bucketEndTimeToKey     = []byte("endTimeToKey")    //nolint:gochecknoglobals
-
-	// bucketRepGroupComplete maps a repGroup to an 8-byte big-endian uint64
-	// count of its archived (complete) jobs, maintained inside the job-write
-	// transactions so it equals the RAW scan
-	// (retrieveCompleteJobCountsByRepGroups) by construction.
-	bucketRepGroupComplete = []byte("repGroupCompleteCount") //nolint:gochecknoglobals
-
-	// bucketRepGroupBackfilled records, per repGroup, a nil marker indicating
-	// its count has been backfilled; the sentinel key "" marks the whole
-	// backfill complete.
-	bucketRepGroupBackfilled = []byte("repGroupCompleteBackfilled") //nolint:gochecknoglobals
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -154,15 +141,6 @@ const (
 	dbUpgradeProgressEntries  = 10000
 	dbUpgradeProgressInterval = 2 * time.Second
 )
-
-// backfillSentinelKey is written to bucketRepGroupBackfilled once every
-// repGroup's complete count has been backfilled, marking the whole one-time
-// online backfill complete (spec A3). The spec describes this sentinel as the
-// empty key "", but bbolt forbids a zero-length key (errors.ErrKeyRequired), so
-// we use a key bearing dbDelimiter: no real repGroup can contain the delimiter
-// (see the RTK key format - every RTK scan assumes repGroups are
-// delimiter-free), so this can never collide with a per-repGroup marker.
-var backfillSentinelKey = []byte(dbDelimiter + "allBackfilled") //nolint:gochecknoglobals
 
 // compactTxMaxSize bounds the size (bytes) of each bolt.Compact destination
 // transaction, so compacting a multi-gigabyte database commits regularly instead
@@ -658,16 +636,6 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			return fmt.Errorf("create bucket %s: %w", bucketEndTimeToKey, errf)
 		}
 
-		_, errf = tx.CreateBucketIfNotExists(bucketRepGroupComplete)
-		if errf != nil {
-			return fmt.Errorf("create bucket %s: %w", bucketRepGroupComplete, errf)
-		}
-
-		_, errf = tx.CreateBucketIfNotExists(bucketRepGroupBackfilled)
-		if errf != nil {
-			return fmt.Errorf("create bucket %s: %w", bucketRepGroupBackfilled, errf)
-		}
-
 		if upgrade.active() {
 			upgrade.startPhase("commit database upgrade", "committing database upgrade")
 		}
@@ -863,19 +831,8 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
 		return err
 	}
 
-	// Counter hook 3: adding a key to the complete bucket for the first time
-	// increments the count of every repGroup that has an RTK entry for it. The
-	// wasComplete guard makes an idempotent re-archive a no-op.
-	wasComplete := tx.Bucket(bucketJobsComplete).Get(key) != nil
-
 	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
 		return err
-	}
-
-	if !wasComplete {
-		if err := incrementCompleteForKeyRepGroups(tx, key); err != nil {
-			return err
-		}
 	}
 
 	if err := putJobStats(tx, job); err != nil {
@@ -883,50 +840,6 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
 	}
 
 	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
-}
-
-// persistedRepGroupsForJobKey returns every distinct historical RepGroup that
-// has an RTK lookup entry for jobKey, enumerated via the reverse lookup index so
-// the cost is proportional to this key's own lookups rather than the whole
-// historical RepGroup index.
-func persistedRepGroupsForJobKey(reverse *bolt.Bucket, jobKey []byte) []string {
-	prefix := reverseLookupEntryPrefix(jobKey)
-	cursor := reverse.Cursor()
-	repGroups := make([]string, 0)
-
-	for entry, _ := cursor.Seek(prefix); bytes.HasPrefix(entry, prefix); entry, _ = cursor.Next() {
-		lookupBucket, lookupKey, ok := parseReverseLookupEntry(entry, prefix)
-		if !ok || !bytes.Equal(lookupBucket, bucketRTK) || !bytes.Equal(lookupEntryJobKey(lookupKey), jobKey) {
-			continue
-		}
-
-		idx := bytes.LastIndex(lookupKey, []byte(dbDelimiter))
-		if idx > 0 {
-			repGroups = append(repGroups, string(lookupKey[:idx]))
-		}
-	}
-
-	sort.Strings(repGroups)
-
-	return slices.Compact(repGroups)
-}
-
-// incrementCompleteForKeyRepGroups increments the complete counter of every
-// repGroup that currently has an RTK entry for jobKey, enumerated via the
-// reverse lookup index. Called when jobKey newly enters the complete bucket.
-func incrementCompleteForKeyRepGroups(tx *bolt.Tx, jobKey []byte) error {
-	reverse := tx.Bucket(bucketJobLookupEntries)
-	if reverse == nil {
-		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobLookupEntries)
-	}
-
-	for _, repGroup := range persistedRepGroupsForJobKey(reverse, jobKey) {
-		if err := adjustRepGroupComplete(tx, repGroup, 1); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // updateEndTimeIndex records job's end time in the time-ordered per-job index,
@@ -998,260 +911,6 @@ func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) 
 	oldTimeBytes := endTimeToBytes(oldNanos)
 
 	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
-}
-
-// retrieveCompleteJobCountsByRepGroups gets archived-job counts for the
-// supplied RepGroups in one read transaction. It does not decode job payloads.
-func (db *db) retrieveCompleteJobCountsByRepGroups(repGroups []string) (map[string]int, error) {
-	counts := make(map[string]int, len(repGroups))
-
-	err := db.bolt.View(func(tx *bolt.Tx) error {
-		completeJobBucket := tx.Bucket(bucketJobsComplete)
-		if completeJobBucket == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobsComplete)
-		}
-
-		lookupBucket := tx.Bucket(bucketRTK)
-		if lookupBucket == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRTK)
-		}
-
-		for _, repGroup := range repGroups {
-			counts[repGroup] = rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket, repGroup)
-		}
-
-		return nil
-	})
-
-	return counts, err
-}
-
-func rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket *bolt.Bucket, repGroup string) int {
-	prefix := []byte(repGroup + dbDelimiter)
-	cursor := lookupBucket.Cursor()
-	count := 0
-
-	for key, _ := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); key, _ = cursor.Next() {
-		jobKey := bytes.TrimPrefix(key, prefix)
-		if completeJobBucket.Get(jobKey) != nil {
-			count++
-		}
-	}
-
-	return count
-}
-
-// retrieveMaintainedCompleteCounts reads the maintained per-repGroup complete
-// counts from bucketRepGroupComplete with O(len(repGroups)) point reads,
-// returning 0 for any repGroup with no stored count. This is the cheap
-// replacement for retrieveCompleteJobCountsByRepGroups (the RAW scan) on the
-// operational seeding path; the two agree by construction.
-func (db *db) retrieveMaintainedCompleteCounts(repGroups []string) (map[string]int, error) {
-	counts := make(map[string]int, len(repGroups))
-
-	err := db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketRepGroupComplete)
-		if b == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupComplete)
-		}
-
-		for _, repGroup := range repGroups {
-			counts[repGroup] = readRepGroupComplete(b, []byte(repGroup))
-		}
-
-		return nil
-	})
-
-	return counts, err
-}
-
-// readRepGroupComplete decodes the stored 8-byte big-endian count for key,
-// returning 0 when absent or malformed.
-func readRepGroupComplete(b *bolt.Bucket, key []byte) int {
-	stored := b.Get(key)
-	if len(stored) != repGroupCountBytes {
-		return 0
-	}
-
-	//nolint:gosec // a per-repGroup complete count never approaches int max.
-	return int(binary.BigEndian.Uint64(stored))
-}
-
-// setRepGroupCompleteFromRawScan SETs bucketRepGroupComplete[repGroup] to the RAW
-// scan (rawCompleteJobCountByRepGroup) computed within tx, so the scan and the
-// SET share one consistent snapshot. This reconciles with any concurrent runtime
-// increments because bolt serialises write transactions. It returns the
-// previously stored value and the new raw value, so callers (the online backfill
-// A3 and the offline recompute A4) can detect drift.
-func setRepGroupCompleteFromRawScan(tx *bolt.Tx, repGroup string) (stored, raw int, err error) {
-	completeJobBucket := tx.Bucket(bucketJobsComplete)
-	if completeJobBucket == nil {
-		return 0, 0, fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketJobsComplete)
-	}
-
-	lookupBucket := tx.Bucket(bucketRTK)
-	if lookupBucket == nil {
-		return 0, 0, fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRTK)
-	}
-
-	counter := tx.Bucket(bucketRepGroupComplete)
-	if counter == nil {
-		return 0, 0, fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupComplete)
-	}
-
-	key := []byte(repGroup)
-	stored = readRepGroupComplete(counter, key)
-	raw = rawCompleteJobCountByRepGroup(completeJobBucket, lookupBucket, repGroup)
-
-	encoded := make([]byte, repGroupCountBytes)
-
-	//nolint:gosec // a per-repGroup complete count never approaches int max.
-	binary.BigEndian.PutUint64(encoded, uint64(raw))
-
-	return stored, raw, counter.Put(key, encoded)
-}
-
-// markBackfillSentinel writes the fully-backfilled sentinel to
-// bucketRepGroupBackfilled.
-func (db *db) markBackfillSentinel() error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		markers := tx.Bucket(bucketRepGroupBackfilled)
-		if markers == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
-		}
-
-		return markers.Put(backfillSentinelKey, nil)
-	})
-}
-
-// recomputeRepGroupCompleteCounts is the offline belt-and-braces repair and
-// migration tool (spec A4). Unlike the online backfill it ignores backfill
-// markers and processes EVERY repGroup (retrieveRepGroups): for each, in a
-// single bolt.Update transaction, it SETs counter[rg] = the RAW scan
-// (rawCompleteJobCountByRepGroup) computed in that same transaction and writes
-// the repGroup's marker (setRepGroupCompleteFromRawScan, shared with A3). It
-// returns drift, the number of repGroups whose stored value differed from the
-// raw scan, for logging. It is idempotent (already-correct counters yield
-// drift 0 and no change), respects ctx cancellation between repGroups, and
-// writes the backfill sentinel when done, so a subsequent online backfill treats
-// the DB as fully backfilled. It is intended to run with the manager stopped;
-// see RecomputeRepGroupCompleteCounts for the entry point the offline
-// subcommand uses.
-func (db *db) recomputeRepGroupCompleteCounts(ctx context.Context) (drift int, err error) {
-	repGroups, err := db.retrieveRepGroups()
-	if err != nil {
-		return 0, err
-	}
-
-	for _, repGroup := range repGroups {
-		if cerr := ctx.Err(); cerr != nil {
-			return drift, cerr
-		}
-
-		changed, rerr := db.recomputeRepGroupComplete(repGroup)
-		if rerr != nil {
-			return drift, rerr
-		}
-
-		if changed {
-			drift++
-		}
-	}
-
-	return drift, db.markBackfillSentinel()
-}
-
-// recomputeRepGroupComplete SETs one repGroup's complete counter to the RAW scan
-// computed in the same transaction (setRepGroupCompleteFromRawScan) and writes
-// its marker, unconditionally (unlike the online backfill it does not skip
-// already-marked repGroups: it is a full repair). It reports whether the stored
-// value differed from the raw scan, so the caller can total the drift.
-func (db *db) recomputeRepGroupComplete(repGroup string) (changed bool, err error) {
-	err = db.bolt.Update(func(tx *bolt.Tx) error {
-		stored, raw, serr := setRepGroupCompleteFromRawScan(tx, repGroup)
-		if serr != nil {
-			return serr
-		}
-
-		changed = stored != raw
-
-		markers := tx.Bucket(bucketRepGroupBackfilled)
-		if markers == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
-		}
-
-		return markers.Put([]byte(repGroup), nil)
-	})
-
-	return changed, err
-}
-
-// ensureRecomputeBuckets creates, if absent, exactly the buckets the offline
-// recompute reads and writes, so RecomputeRepGroupCompleteCounts works on a DB
-// opened directly (outside initDB) without duplicating the whole schema setup.
-func (db *db) ensureRecomputeBuckets() error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{
-			bucketRGs, bucketJobsComplete, bucketRTK,
-			bucketRepGroupComplete, bucketRepGroupBackfilled,
-		} {
-			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
-				return fmt.Errorf("create bucket %s: %w", name, err)
-			}
-		}
-
-		return nil
-	})
-}
-
-// countNewCompleteRTK increments the complete counter for the repGroup in an
-// RTK key when isNew is true and the key's jobKey is already complete. A no-op
-// otherwise (non-new entry, non-complete key, or unsplittable key).
-func countNewCompleteRTK(tx *bolt.Tx, rtkKey []byte, isNew bool) error {
-	if !isNew || !rtkKeyIsComplete(tx, rtkKey) {
-		return nil
-	}
-
-	return adjustRepGroupCompleteForRTKKey(tx, rtkKey, 1)
-}
-
-// RecomputeRepGroupCompleteCounts is the exported entry point for the offline
-// `wr manager recompute-counts` subcommand (spec A4). It opens the BoltDB at
-// dbFile directly with the map freelist, ensures the buckets the recompute reads
-// and writes exist, SETs every repGroup's maintained complete counter from a
-// full RAW scan (recomputeRepGroupCompleteCounts) and closes the DB cleanly. It
-// returns the drift (the number of repGroups whose stored value differed from
-// the raw scan). The manager MUST be stopped: BoltDB permits only one process to
-// open the file, so the subcommand refuses to run while a manager is up.
-func RecomputeRepGroupCompleteCounts(ctx context.Context, dbFile string) (drift int, err error) {
-	// bolt.Open would CREATE dbFile if it were absent and then report "0
-	// repgroups" as a spurious success; stat first so a nonexistent DB fails
-	// cleanly (mirrors CompactDBFile).
-	if _, err = os.Stat(dbFile); err != nil {
-		return 0, err
-	}
-
-	// a bounded timeout so, if the up-check was fooled and a manager still holds
-	// the file lock, this errors cleanly instead of blocking forever.
-	boltdb, err := bolt.Open(dbFile, dbFilePermission,
-		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
-	if err != nil {
-		return 0, err
-	}
-
-	recomputeDB := &db{bolt: boltdb}
-
-	defer func() {
-		if cerr := boltdb.Close(); cerr != nil && err == nil {
-			err = cerr
-		}
-	}()
-
-	if err = recomputeDB.ensureRecomputeBuckets(); err != nil {
-		return 0, err
-	}
-
-	return recomputeDB.recomputeRepGroupCompleteCounts(ctx)
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -1528,82 +1187,6 @@ func compactBoltInto(dstPath, srcPath string) (err error) {
 	}()
 
 	return bolt.Compact(dst, src, compactTxMaxSize)
-}
-
-// countDeletedCompleteRTK decrements the complete counter for the repGroup in
-// an RTK key when bucket is bucketRTK and the key's jobKey is still complete. A
-// no-op otherwise.
-func countDeletedCompleteRTK(tx *bolt.Tx, bucket, key []byte) error {
-	if !bytes.Equal(bucket, bucketRTK) || !rtkKeyIsComplete(tx, key) {
-		return nil
-	}
-
-	return adjustRepGroupCompleteForRTKKey(tx, key, -1)
-}
-
-// rtkKeyIsComplete reports whether the jobKey embedded in an RTK bucket key is
-// present in the complete bucket.
-func rtkKeyIsComplete(tx *bolt.Tx, rtkKey []byte) bool {
-	_, jobKey, ok := splitRTKKey(rtkKey)
-	if !ok {
-		return false
-	}
-
-	return tx.Bucket(bucketJobsComplete).Get(jobKey) != nil
-}
-
-// adjustRepGroupCompleteForRTKKey splits an RTK key and applies delta to its
-// repGroup's complete counter, ignoring an unsplittable key.
-func adjustRepGroupCompleteForRTKKey(tx *bolt.Tx, rtkKey []byte, delta int) error {
-	repGroup, _, ok := splitRTKKey(rtkKey)
-	if !ok {
-		return nil
-	}
-
-	return adjustRepGroupComplete(tx, repGroup, delta)
-}
-
-// splitRTKKey splits an RTK bucket key ("<repGroup>_::_<jobKey>") into its
-// repGroup and jobKey at the LAST dbDelimiter. repGroups never contain the
-// delimiter and jobKey is a delimiter-free FarmHash hex string, so the last
-// delimiter is the boundary. ok is false if no delimiter is present.
-func splitRTKKey(rtkKey []byte) (repGroup string, jobKey []byte, ok bool) {
-	idx := bytes.LastIndex(rtkKey, []byte(dbDelimiter))
-	if idx < 0 {
-		return "", nil, false
-	}
-
-	return string(rtkKey[:idx]), rtkKey[idx+len(dbDelimiter):], true
-}
-
-// adjustRepGroupComplete applies delta to bucketRepGroupComplete[repGroup] as a
-// read-modify-write inside the given transaction, so a db.bolt.Batch re-split
-// cannot double-apply (the counter has no in-memory mirror). The stored count
-// is clamped at >= 0: this is a safety net that must never trigger if the
-// maintenance hooks are correct, so a clamp is logged as an anomaly pointing
-// the admin at the offline "wr manager recompute-counts" repair (spec A4).
-func adjustRepGroupComplete(tx *bolt.Tx, repGroup string, delta int) error {
-	b := tx.Bucket(bucketRepGroupComplete)
-	if b == nil {
-		return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupComplete)
-	}
-
-	key := []byte(repGroup)
-	next := readRepGroupComplete(b, key) + delta
-
-	if next < 0 {
-		clog.Warn(context.Background(),
-			"per-repGroup complete counter would go negative; clamping to 0 - "+
-				"run offline 'wr manager recompute-counts' to repair (spec A4)",
-			"repGroup", repGroup, "delta", delta)
-
-		next = 0
-	}
-
-	encoded := make([]byte, repGroupCountBytes)
-	binary.BigEndian.PutUint64(encoded, uint64(next))
-
-	return b.Put(key, encoded)
 }
 
 // putLimitGroup stores a non-negative limit for a group.
@@ -2904,12 +2487,6 @@ func deleteLookupEntriesForJobKey(tx *bolt.Tx, jobKey []byte) error {
 			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, d.bucket)
 		}
 
-		// Counter hook 2: deleting an RTK entry whose jobKey is still complete
-		// decrements that repGroup's count.
-		if err := countDeletedCompleteRTK(tx, d.bucket, d.key); err != nil {
-			return err
-		}
-
 		if err := lookupBucket.Delete(d.key); err != nil {
 			return err
 		}
@@ -3200,21 +2777,10 @@ func (db *db) storeLookups(bucket []byte, lookups sobsd) error {
 // transaction when calling this.
 func (db *db) putLookups(tx *bolt.Tx, bucket []byte, lookups sobsd) error {
 	lookup := tx.Bucket(bucket)
-	isRTK := bytes.Equal(bucket, bucketRTK)
 
 	for _, doublet := range lookups {
-		// Counter hook 1: a brand-new RTK entry whose jobKey is already complete
-		// increments its repGroup's count. Pre-existence must be read before the
-		// Put so a genuine re-add is not double-counted; completeness is
-		// unaffected by the Put, so countNewCompleteRTK reads it afterwards.
-		isNewRTK := isRTK && lookup.Get(doublet[0]) == nil
-
 		err := lookup.Put(doublet[0], nil)
 		if err != nil {
-			return err
-		}
-
-		if err = countNewCompleteRTK(tx, doublet[0], isNewRTK); err != nil {
 			return err
 		}
 
