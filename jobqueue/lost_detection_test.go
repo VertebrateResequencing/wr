@@ -27,7 +27,8 @@ package jobqueue
 
 // This file guards the other half of the lost-contact contract: the fix that
 // stops a still-touched running job being falsely marked Lost (see ttrCallback
-// and TestReliableFalseLostUnderSaturation) must NOT disable lost detection. A
+// and the false-lost coverage in reliable2_lost_test.go, e.g.
+// TestReliable2OnTimeTouchedJobNeverLost) must NOT disable lost detection. A
 // running job whose runner goes silent (never touches) must still be marked Lost
 // within a bounded time.
 

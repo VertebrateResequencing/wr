@@ -289,11 +289,14 @@ func (c *repGroupCounts) unsubscribe(sub *repGroupCountsSubscriber) {
 }
 
 // drain returns the absolute counts a subscriber needs to apply since its last
-// drain. The first drain after subscribe returns the whole-map seed merged with
-// any RepGroup that transitioned between subscribe and now; subsequent drains
-// return only the currently-dirty RepGroups with their full current counts. A
-// dirty entry overrides any seed entry for the same RepGroup, as it is newer.
-// The returned counts are fresh copies, so no internal map escapes the lock.
+// drain. The first drain after subscribe returns the filtered fresh-connect seed
+// captured by subscribe (via liveSeedLocked: live RepGroups' live states plus
+// complete, with the deleted state stripped and complete-only/deleted-only
+// RepGroups omitted), merged with any RepGroup that transitioned between
+// subscribe and now; subsequent drains return only the currently-dirty RepGroups
+// with their full current counts. A dirty entry overrides any seed entry for the
+// same RepGroup, as it is newer. The returned counts are fresh copies, so no
+// internal map escapes the lock.
 func (c *repGroupCounts) drain(sub *repGroupCountsSubscriber) map[string]map[JobState]int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

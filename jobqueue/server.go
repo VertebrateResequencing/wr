@@ -4441,13 +4441,21 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		job.Lock()
 		prevState := job.State
 		job.State = JobStateDeleted
+		// capture the mutable fields we need after the lock is released, so
+		// they are not read unsynchronised (they can be modified by web modify
+		// paths). schedulerGroup is the field getSchedulerGroup() reads under
+		// its own lock; capture it directly here to avoid re-locking.
+		repGroup := job.RepGroup
+		cmd := job.Cmd
+		schedGroup := job.schedulerGroup
 		job.Unlock()
 
 		if err = s.q.Remove(ctx, jobkey); err == nil {
 			pass.toDelete = append(pass.toDelete, jobkey)
-			pass.schedGroups[job.getSchedulerGroup()]++
-			pass.repGroups = append(pass.repGroups, job.RepGroup)
-			clog.Debug(ctx, "removed job", "cmd", job.Cmd)
+			pass.schedGroups[schedGroup]++
+			pass.repGroups = append(pass.repGroups, repGroup)
+
+			clog.Debug(ctx, "removed job", "cmd", cmd)
 		} else {
 			// removal failed, so the job is still in the queue; revert its state
 			// so it is not left visibly Deleted.

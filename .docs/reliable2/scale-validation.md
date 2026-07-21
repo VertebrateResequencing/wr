@@ -29,8 +29,10 @@ backlog, the invariants hold exactly:
 - **M7 throughput** reported below (not regressed vs the A1-path expectation).
 
 M3 (false-lost of on-time-touched jobs) and M6 (startup) are covered by the
-committed unit suites (`TestLostDetectionRecentContactNotLost`,
-`TestReliableFalseLostUnderSaturation`; Phase 2 C2 startup tests) and are not
+committed unit suites (`TestReliable2OnTimeTouchedJobNeverLost` and
+`TestReliable2LostJobRecoversOnTouch` in `jobqueue/reliable2_lost_test.go`, plus
+`TestLostDetectionSilentRunner` in `jobqueue/lost_detection_test.go` for the
+complementary silent-runner guard; Phase 2 C2 startup tests) and are not
 re-measured here.
 
 ## The harness
