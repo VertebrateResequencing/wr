@@ -36,8 +36,8 @@ work with `wr status --suspended` listing suspended jobs; (4) `wr add --sync` fo
 a completing command returns on completion via the subscription (non-polling),
 unchanged. Run the full KEEP anchor suite green under `-race`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 5.2: I - Scale / throughput validation (#7) - VALIDATION, not a unit test
 
@@ -60,8 +60,16 @@ For this item, "implemented" means the validation run was performed and its
 result recorded in `.docs/reliable2/`; "reviewed" means the recorded metrics were
 checked against the thresholds above. This is a gate, not code.
 
-- [ ] implemented
-- [ ] reviewed
+The in-process saturation harness (`jobqueue/reliable2_scale_test.go`,
+`//go:build reliability`) was built and run at up to 3000 concurrent in-process
+runners; result recorded in `.docs/reliable2/scale-validation.md` (PASS: M1=1.0,
+M2=0, M4=0, bounded/responsive M5, M7 reported; genuine Lost-in-Run-while-alive
+churn exercised and every successful archive accepted). A full ~6-7k-runner farm
+`portal_builder` run remains a recommended pre-merge confirmation (needs the farm
+environment; not performed autonomously).
+
+- [x] implemented
+- [x] reviewed
 
 ## Merge gate
 
