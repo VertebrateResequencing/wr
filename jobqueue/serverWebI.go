@@ -923,17 +923,20 @@ func allowedItemJob(item *queue.Item, allowed map[queue.ItemState]bool) (*Job, *
 
 // setupStatusStateUpdateListener creates a goroutine that pushes idempotent
 // absolute per-RepGroup status counts to one WebSocket client. It subscribes to
-// the authoritative statusState (which seeds the subscriber with every current
-// RepGroup, so the client first receives the full current map), then drains and
-// sends only the RepGroups that change thereafter. On reconnect the client opens
-// a fresh connection and so gets a fresh subscription and a fresh full-state
-// push; there is no resync request path.
+// the slim repGroupCounts counter (which seeds the subscriber with the whole
+// current map, INCLUDING terminal states and terminal-only RepGroups, so the
+// client first receives the full current map), then drains and sends only the
+// RepGroups that change thereafter. The counter is never seeded from history, so
+// after a manager restart the client starts from an empty map that fills from
+// live transitions. On reconnect the client opens a fresh connection and so gets
+// a fresh subscription and a fresh full-state push; there is no resync request
+// path.
 func (s *Server) setupStatusStateUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
 	connName string) {
 	defer internal.LogPanic(ctx, "jobqueue websocket status updater", true)
 
-	sub := s.statusState.subscribe()
-	defer s.statusState.unsubscribe(sub)
+	sub := s.repGroupCounts.subscribe()
+	defer s.repGroupCounts.unsubscribe(sub)
 
 	for {
 		select {
@@ -948,7 +951,7 @@ func (s *Server) setupStatusStateUpdateListener(ctx context.Context, conn *webso
 			case <-time.After(statusStateSendThrottle):
 			}
 
-			if !s.sendStatusStateUpdates(ctx, conn, connName, s.statusState.drain(sub)) {
+			if !s.sendStatusStateUpdates(ctx, conn, connName, s.repGroupCounts.drain(sub)) {
 				return
 			}
 		}
@@ -958,7 +961,7 @@ func (s *Server) setupStatusStateUpdateListener(ctx context.Context, conn *webso
 // sendStatusStateUpdates writes one absolute message per dirty RepGroup to the
 // client. It returns false if the connection is gone or a write failed, so the
 // caller stops. The supplied map contains only fresh copies, so no internal
-// state escapes the statusState lock.
+// state escapes the repGroupCounts lock.
 func (s *Server) sendStatusStateUpdates(ctx context.Context, conn *websocket.Conn, connName string,
 	dirty map[string]map[JobState]int) bool {
 	if len(dirty) == 0 {

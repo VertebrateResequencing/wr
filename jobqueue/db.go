@@ -42,6 +42,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -884,6 +885,32 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
 	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
 }
 
+// persistedRepGroupsForJobKey returns every distinct historical RepGroup that
+// has an RTK lookup entry for jobKey, enumerated via the reverse lookup index so
+// the cost is proportional to this key's own lookups rather than the whole
+// historical RepGroup index.
+func persistedRepGroupsForJobKey(reverse *bolt.Bucket, jobKey []byte) []string {
+	prefix := reverseLookupEntryPrefix(jobKey)
+	cursor := reverse.Cursor()
+	repGroups := make([]string, 0)
+
+	for entry, _ := cursor.Seek(prefix); bytes.HasPrefix(entry, prefix); entry, _ = cursor.Next() {
+		lookupBucket, lookupKey, ok := parseReverseLookupEntry(entry, prefix)
+		if !ok || !bytes.Equal(lookupBucket, bucketRTK) || !bytes.Equal(lookupEntryJobKey(lookupKey), jobKey) {
+			continue
+		}
+
+		idx := bytes.LastIndex(lookupKey, []byte(dbDelimiter))
+		if idx > 0 {
+			repGroups = append(repGroups, string(lookupKey[:idx]))
+		}
+	}
+
+	sort.Strings(repGroups)
+
+	return slices.Compact(repGroups)
+}
+
 // incrementCompleteForKeyRepGroups increments the complete counter of every
 // repGroup that currently has an RTK entry for jobKey, enumerated via the
 // reverse lookup index. Called when jobKey newly enters the complete bucket.
@@ -1050,75 +1077,6 @@ func readRepGroupComplete(b *bolt.Bucket, key []byte) int {
 	return int(binary.BigEndian.Uint64(stored))
 }
 
-// backfillRepGroupCompleteCounts performs the one-time online backfill of the
-// maintained per-repGroup complete counter for an existing (pre-upgrade) DB, so
-// upgrading a large DB never blocks startup and is crash-resumable. For each
-// repGroup (retrieveRepGroups) lacking a marker in bucketRepGroupBackfilled it
-// SETs, in a single bolt.Update transaction, counter[rg] = the RAW scan
-// (rawCompleteJobCountByRepGroup) computed in that same transaction, then writes
-// the repGroup's marker; when all repGroups are done it writes the sentinel. SET
-// (not additive) reconciles with concurrent runtime increments because bolt
-// serialises write transactions: an archive committed before a repGroup's tx is
-// counted by its raw scan, and one committed after increments on top of the SET.
-// It is idempotent and crash-resumable (the per-repGroup markers let a re-run
-// skip finished repGroups), and a new DB with no repGroups is a no-op (bar the
-// sentinel). It respects ctx cancellation between repGroups. Intended to run in
-// a background goroutine once the manager is serving clients (see Serve).
-func (db *db) backfillRepGroupCompleteCounts(ctx context.Context) error {
-	done, err := db.fullyBackfilled()
-	if err != nil {
-		return err
-	}
-
-	if done {
-		// a previous backfill (or an offline recompute) already wrote the
-		// sentinel, so the whole DB is backfilled: skip the O(all-repGroups)
-		// write-tx pass entirely rather than re-processing every repGroup on each
-		// manager startup.
-		return nil
-	}
-
-	repGroups, err := db.retrieveRepGroups()
-	if err != nil {
-		return err
-	}
-
-	for _, repGroup := range repGroups {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if err := db.backfillRepGroupComplete(repGroup); err != nil {
-			return err
-		}
-	}
-
-	return db.markBackfillSentinel()
-}
-
-// backfillRepGroupComplete backfills one repGroup's complete counter in a single
-// transaction: if it already has a marker this is a no-op (idempotent / crash
-// resume), otherwise it SETs the counter to the RAW scan computed in the same tx
-// (setRepGroupCompleteFromRawScan) and writes the marker.
-func (db *db) backfillRepGroupComplete(repGroup string) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		markers := tx.Bucket(bucketRepGroupBackfilled)
-		if markers == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
-		}
-
-		if markers.Get([]byte(repGroup)) != nil {
-			return nil
-		}
-
-		if _, _, err := setRepGroupCompleteFromRawScan(tx, repGroup); err != nil {
-			return err
-		}
-
-		return markers.Put([]byte(repGroup), nil)
-	})
-}
-
 // setRepGroupCompleteFromRawScan SETs bucketRepGroupComplete[repGroup] to the RAW
 // scan (rawCompleteJobCountByRepGroup) computed within tx, so the scan and the
 // SET share one consistent snapshot. This reconciles with any concurrent runtime
@@ -1151,28 +1109,6 @@ func setRepGroupCompleteFromRawScan(tx *bolt.Tx, repGroup string) (stored, raw i
 	binary.BigEndian.PutUint64(encoded, uint64(raw))
 
 	return stored, raw, counter.Put(key, encoded)
-}
-
-// fullyBackfilled reports whether the fully-backfilled sentinel
-// (backfillSentinelKey) is present in bucketRepGroupBackfilled, i.e. a previous
-// online backfill or offline recompute already processed every repGroup. The
-// online backfill uses this in a read-only tx to short-circuit its
-// O(all-repGroups) write-tx pass on every subsequent manager startup.
-func (db *db) fullyBackfilled() (bool, error) {
-	var done bool
-
-	err := db.bolt.View(func(tx *bolt.Tx) error {
-		markers := tx.Bucket(bucketRepGroupBackfilled)
-		if markers == nil {
-			return fmt.Errorf("%w: %s", berrors.ErrBucketNotFound, bucketRepGroupBackfilled)
-		}
-
-		done = markers.Get(backfillSentinelKey) != nil
-
-		return nil
-	})
-
-	return done, err
 }
 
 // markBackfillSentinel writes the fully-backfilled sentinel to

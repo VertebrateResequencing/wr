@@ -411,13 +411,6 @@ type Job struct {
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
 
-	// statusFromComplete marks a completed database record that is becoming
-	// live again. The first queue-add transition consumes it so the absolute
-	// status projection moves, rather than duplicates, every historical
-	// RepGroup contribution in statusCompleteRepGroups.
-	statusFromComplete      bool
-	statusCompleteRepGroups []string
-
 	sync.RWMutex
 }
 

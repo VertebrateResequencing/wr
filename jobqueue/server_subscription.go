@@ -522,9 +522,9 @@ func (s *Server) enqueueSubscriptionDeliveries(deliveries []repGroupSubscription
 
 // hasAnyClientSubscriptions reports whether any JobUpdate client subscription
 // currently exists (a `wr add --sync` key subscription or a repGroup
-// subscription); it only checks s.clientSubscriptions. Status web UI
-// subscriptions are tracked separately (statusState) and are NOT covered by this
-// check. It takes a single csmutex.RLock so the common idle case (no syncing
+// subscription); it only checks s.clientSubscriptions. The status web UI bar
+// counts are tracked separately (the repGroupCounts counter) and are NOT covered
+// by this check. It takes a single csmutex.RLock so the common idle case (no syncing
 // client subscribed to these jobs) can skip the per-job subscription-delivery
 // loop entirely instead of paying a contended RLock and a *JobUpdate allocation
 // per job for nothing. It does not affect the absolute per-RepGroup status

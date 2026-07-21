@@ -695,8 +695,8 @@ func (c *caster) Close() {
 // member is done. The remaining casters (bad servers and scheduler issues) are
 // recoverable: a client re-requests "current", which re-broadcasts the latest
 // set, so a dropped update is harmless. The status counts no longer use the
-// caster at all; they use the idempotent absolute statusState, so there is no
-// overflow-to-resync conversion anywhere.
+// caster at all; they use the idempotent absolute repGroupCounts counter, so
+// there is no overflow-to-resync conversion anywhere.
 func (cm *casterMember) trySend(val any) {
 	cm.send.Lock()
 	defer cm.send.Unlock()
@@ -756,7 +756,7 @@ type Server struct {
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
 	pprofServer               *http.Server
-	statusState               *statusState
+	repGroupCounts            *repGroupCounts
 	badServerCaster           *caster
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
@@ -781,7 +781,6 @@ type Server struct {
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
 	csmutex             sync.RWMutex // to protect clientSubscriptions
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
-	statusSeedMutex     sync.Mutex   // serialises lazy persisted status seeding before queue transitions
 	sync.Mutex
 	wsmutex  sync.RWMutex
 	up       bool
@@ -996,96 +995,6 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{Limit: limit, GetStd: getStd, GetEnv: getEnv})
 
 	return jobs, "", ""
-}
-
-// seedStatusStateForItemDefs loads persisted completion counts only for the
-// RepGroups that are about to become live. Historical complete-only RepGroups
-// are not eagerly scanned at startup, which would be prohibitively expensive on
-// large databases; complete-only groups already known to statusState are still
-// included in fresh status-page seeds.
-func (s *Server) seedStatusStateForItemDefs(itemdefs []*queue.ItemDef) error {
-	const op = "seedStatusState"
-
-	if s.statusState == nil {
-		return nil
-	}
-
-	s.statusSeedMutex.Lock()
-	defer s.statusSeedMutex.Unlock()
-
-	repGroups := s.unseededStatusRepGroups(itemdefs)
-	if len(repGroups) == 0 {
-		return nil
-	}
-
-	counts, err := s.db.retrieveMaintainedCompleteCounts(repGroups)
-	if err != nil {
-		return fmt.Errorf("%w: %w", Error{Op: op, Err: ErrDBError}, err)
-	}
-
-	for _, repGroup := range repGroups {
-		s.statusState.seedRepGroupComplete(repGroup, counts[repGroup])
-	}
-
-	return nil
-}
-
-func (s *Server) unseededStatusRepGroups(itemdefs []*queue.ItemDef) []string {
-	seen := make(map[string]struct{})
-	repGroups := make([]string, 0)
-
-	for _, itemdef := range itemdefs {
-		job, ok := itemdef.Data.(*Job)
-		if !ok {
-			continue
-		}
-
-		if _, ok = seen[job.RepGroup]; ok {
-			continue
-		}
-
-		seen[job.RepGroup] = struct{}{}
-
-		if !s.statusState.hasRepGroup(job.RepGroup) {
-			repGroups = append(repGroups, job.RepGroup)
-		}
-	}
-
-	sort.Strings(repGroups)
-
-	return repGroups
-}
-
-// startCounterBackfill launches the one-time online backfill of the per-repGroup
-// complete counter (spec A3) in a background goroutine, logging its start,
-// finish and any error via clog. It never blocks readiness. It is registered on
-// s.bgWG (not s.wg) and observes ctx (s.bgCtx), so shutdown can cancel and await
-// it early, before the DB is closed; a shutdown-induced cancellation is an
-// expected quiet return (logged at Debug), not a failure.
-func (s *Server) startCounterBackfill(ctx context.Context) {
-	wgk := s.bgWG.Add(1)
-
-	go func() {
-		defer internal.LogPanic(ctx, "jobqueue complete-counter backfill", true)
-		defer s.bgWG.Done(wgk)
-
-		clog.Info(ctx, "per-repGroup complete-counter backfill started")
-
-		err := s.db.backfillRepGroupCompleteCounts(ctx)
-		if err != nil && errors.Is(err, context.Canceled) {
-			clog.Debug(ctx, "per-repGroup complete-counter backfill aborted during shutdown", "err", err)
-
-			return
-		}
-
-		if err != nil {
-			clog.Warn(ctx, "per-repGroup complete-counter backfill did not complete", "err", err)
-
-			return
-		}
-
-		clog.Info(ctx, "per-repGroup complete-counter backfill finished")
-	}()
 }
 
 // startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
@@ -2575,7 +2484,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		statusState:               newStatusState(),
+		repGroupCounts:            newRepGroupCounts(),
 		badServerCaster:           newCaster(),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		clientSubscriptions:       make(map[string]*serverSubscription),
@@ -2644,13 +2553,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 		return s, msg, token, err
 	}
-
-	// build the maintained per-repGroup complete counter for a pre-upgrade DB in
-	// the background, so the one-time upgrade never blocks readiness (spec A3).
-	// It is crash-resumable, so a shutdown or error mid-backfill simply resumes on
-	// the next start. It composes with the background recovery above; both run
-	// after the server is serving clients.
-	s.startCounterBackfill(bgCtx)
 
 	return s, msg, token, err
 }
@@ -2946,10 +2848,6 @@ func (s *Server) recordSchedulerMessage(msg string) {
 func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, priorJobs []*Job) error {
 	if len(priorJobs) == 0 {
 		return nil
-	}
-
-	if err := s.markPersistedJobStatusGroups(priorJobs, true); err != nil {
-		return fmt.Errorf("%w: %w", Error{Op: "recoverPriorJobs", Err: ErrDBError}, err)
 	}
 
 	var (
@@ -3495,8 +3393,8 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUp
 	// statusAllRepGroups aggregate is maintained internally), and the pre-built
 	// lost subscription update only if the job wasn't already lost. Both run
 	// after job.Unlock while queue.mutex is still held, preserving the strict
-	// leaf order queue.mutex -> statusState.mu and never nesting statusState.mu
-	// with the subscription locks.
+	// leaf order queue.mutex -> repGroupCounts.mu and never nesting
+	// repGroupCounts.mu with the subscription locks.
 	s.emitJobTransition(
 		[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
 		func() {
@@ -3898,10 +3796,6 @@ func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk str
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	if err = s.seedStatusStateForItemDefs(itemdefs); err != nil {
-		return 0, 0, err
-	}
-
 	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
 
 	if readyCallbackExpected {
@@ -4023,10 +3917,6 @@ func (s *Server) createJobs(
 	// recover, at worst the creating job will be run again - no jobs get lost.)
 	jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
 	if err != nil {
-		return added, dups, alreadyComplete, warnings, ErrDBError, err
-	}
-
-	if err = s.markPersistedJobStatusGroups(jobsToQueue, true); err != nil {
 		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
@@ -4541,6 +4431,14 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 
 			continue
 		}
+
+		// mark the job deleted BEFORE removing it, so the queue change callback
+		// (which reads each removed job's own State to decide complete vs deleted,
+		// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
+		// a deleted update for this genuinely-removed incomplete job.
+		job.Lock()
+		job.State = JobStateDeleted
+		job.Unlock()
 
 		if err = s.q.Remove(ctx, jobkey); err == nil {
 			pass.toDelete = append(pass.toDelete, jobkey)

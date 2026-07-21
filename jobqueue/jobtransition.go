@@ -26,11 +26,11 @@
 package jobqueue
 
 // This file contains the single chokepoint through which every job-state
-// transition updates both status projections, so neither can be forgotten.
+// transition updates the web-UI status counter and delivers the per-job
+// subscription updates, so neither can be forgotten.
 
 import (
 	"context"
-	"slices"
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -38,7 +38,7 @@ import (
 
 // countContribution is one (from -> to, n jobs in repGroup) increment applied to
 // the absolute status counts. A transition may produce several (e.g. the change
-// callback splits lost jobs into their own contribution).
+// callback groups jobs by their real from/to states).
 type countContribution struct {
 	from     JobState
 	to       JobState
@@ -47,12 +47,13 @@ type countContribution struct {
 }
 
 // emitJobTransition is the single chokepoint through which every job-state
-// transition updates BOTH status projections, so a future transition path
-// cannot update one and silently forget the other (which would drift the web UI
-// bar counts, or make a `wr add --sync`/details subscriber miss an update).
+// transition updates the web-UI status counter AND delivers the per-job
+// subscription updates, so a future transition path cannot update one and
+// silently forget the other (which would drift the web UI bar counts, or make a
+// `wr add --sync`/details subscriber miss an update).
 //
-// It first applies every count contribution to the authoritative absolute
-// statusState (the per-RepGroup web UI bar counts; always updated, on every
+// It first applies every count contribution to the slim per-RepGroup
+// repGroupCounts counter (the web UI bar counts; always updated, on every
 // transition), then runs emitSubscriptions to deliver the per-job subscription
 // updates. emitSubscriptions stays a caller-supplied closure because the two
 // delivery mechanisms remain SEPARATE and the per-job projection is
@@ -63,16 +64,16 @@ type countContribution struct {
 // nil closure for a transition with no per-job update.
 //
 // Lock discipline (concurrency-critical; a prior attempt deadlocked here): this
-// method introduces NO new lock. applyTransition (which takes the strict-leaf
-// statusState.mu) and emitSubscriptions (which takes the subscription/csmutex
+// method introduces NO new lock. applyTransitions (which takes the strict-leaf
+// repGroupCounts.mu) and emitSubscriptions (which takes the subscription/csmutex
 // locks) are invoked strictly SEQUENTIALLY and are never nested, and this method
 // holds no lock across them. Callers that run inside the queue change/TTR
 // callbacks still hold queue.mutex, preserving the established acquisition order
-// queue.mutex -> job -> statusState.mu (and queue.mutex -> subscription locks);
-// neither statusState.mu nor any subscription lock is ever taken before the
-// queue lock.
+// queue.mutex -> job -> repGroupCounts.mu (and queue.mutex -> subscription
+// locks); neither repGroupCounts.mu nor any subscription lock is ever taken
+// before the queue lock.
 func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions func()) {
-	s.statusState.applyTransitions(counts)
+	s.repGroupCounts.applyTransitions(counts)
 
 	if emitSubscriptions != nil {
 		emitSubscriptions()
@@ -80,40 +81,44 @@ func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions
 }
 
 // changeCallbackCounts builds the absolute-count contributions for a change-
-// callback transition, one per RepGroup. Lost jobs transition from the lost
-// state, not the running state, so they get their own contribution; the
-// statusAllRepGroups aggregate is maintained inside applyTransition.
-func changeCallbackCounts(from, to JobState, data []any) []countContribution {
+// callback transition, one increment per job grouped by (from, to, repGroup).
+// This is a plain per-RepGroup from->to increment (v0.36.5-quality accuracy): a
+// job's to-state is its own real State for a removal (complete vs deleted,
+// per-job) and the destination sub-queue's fixed mapping otherwise. Lost jobs
+// transition from the lost state, not the running state, so they get their own
+// contribution; the statusAllRepGroups aggregate is maintained inside
+// applyTransitions.
+func changeCallbackCounts(from JobState, toQ queue.SubQueue, data []any) []countContribution {
 	grouped := make(map[countContributionKey]int)
 
 	for _, inter := range data {
 		job := inter.(*Job) //nolint:errcheck,forcetypeassert
-		job.Lock()
+
+		job.RLock()
 		repGroup := job.RepGroup
 		lost := job.Lost
-		statusFromComplete := from == JobStateNew && job.statusFromComplete
-		completeRepGroups := slices.Clone(job.statusCompleteRepGroups)
+		to := subqueueToJobState[toQ]
 
-		if statusFromComplete {
-			job.statusFromComplete = false
+		if toQ == queue.SubQueueRemoved {
+			to = job.State
 		}
 
-		job.Unlock()
+		job.RUnlock()
 
 		transitionFrom := from
 		if from == JobStateRunning && lost {
 			transitionFrom = JobStateLost
 		}
 
-		switch {
-		case statusFromComplete:
-			groupArchivedRerunContributions(grouped, to, repGroup, completeRepGroups)
-		default:
-			grouped[countContributionKey{transitionFrom, to, repGroup}]++
-			groupHistoricalCompletionContributions(grouped, to, repGroup, completeRepGroups)
-		}
+		grouped[countContributionKey{transitionFrom, to, repGroup}]++
 	}
 
+	return contributionsFromGrouped(grouped)
+}
+
+// contributionsFromGrouped flattens the grouped (from, to, repGroup) -> count map
+// into the countContribution slice emitJobTransition applies.
+func contributionsFromGrouped(grouped map[countContributionKey]int) []countContribution {
 	counts := make([]countContribution, 0, len(grouped))
 	for contribution, count := range grouped {
 		counts = append(counts, countContribution{
@@ -124,104 +129,56 @@ func changeCallbackCounts(from, to JobState, data []any) []countContribution {
 	return counts
 }
 
-func groupArchivedRerunContributions(grouped map[countContributionKey]int, to JobState,
-	repGroup string, completeRepGroups []string,
-) {
-	currentMoved := false
-
-	for _, completedRepGroup := range completeRepGroups {
-		if completedRepGroup == repGroup {
-			grouped[countContributionKey{JobStateComplete, to, repGroup}]++
-			currentMoved = true
-
-			continue
-		}
-
-		grouped[countContributionKey{from: JobStateComplete, repGroup: completedRepGroup}]++
-	}
-
-	if !currentMoved {
-		grouped[countContributionKey{to: to, repGroup: repGroup}]++
-	}
-}
-
-func groupHistoricalCompletionContributions(grouped map[countContributionKey]int, to JobState,
-	repGroup string, completeRepGroups []string,
-) {
-	if to != JobStateComplete {
-		return
-	}
-
-	for _, completedRepGroup := range completeRepGroups {
-		if completedRepGroup != repGroup {
-			grouped[countContributionKey{to: JobStateComplete, repGroup: completedRepGroup}]++
-		}
-	}
-}
-
 type countContributionKey struct {
 	from     JobState
 	to       JobState
 	repGroup string
 }
 
-// changeCallbackToState resolves the destination JobState for a change-callback
-// event. Items removed from the queue are either deleted or completed, so that
-// case is disambiguated by inspecting the jobs' own state.
-func changeCallbackToState(toQ queue.SubQueue, data []any) JobState {
-	if toQ != queue.SubQueueRemoved {
-		return subqueueToJobState[toQ]
-	}
-
-	for _, inter := range data {
-		job := inter.(*Job) //nolint:errcheck,forcetypeassert
-		job.RLock()
-		jState := job.State
-		job.RUnlock()
-
-		if jState == JobStateComplete {
-			return JobStateComplete
-		}
-	}
-
-	return JobStateDeleted
-}
-
-// jobKeyAndRepGroup reads a job's key and RepGroup under its read lock.
-func jobKeyAndRepGroup(job *Job) (string, string) {
+// jobKeyRepGroupState reads a job's key and RepGroup under its read lock and
+// resolves its change-callback to-state (see emitChangeCallbackTransition): the
+// job's own real State for a removal (complete for a successful archive, deleted
+// for a user delete/remove, decided per-job so a batch mixing the two is never
+// collapsed to one answer), otherwise the destination sub-queue's fixed mapping.
+func jobKeyRepGroupState(job *Job, toQ queue.SubQueue) (string, string, JobState) {
 	job.RLock()
 	defer job.RUnlock()
 
-	return job.Key(), job.RepGroup
+	to := subqueueToJobState[toQ]
+	if toQ == queue.SubQueueRemoved {
+		to = job.State
+	}
+
+	return job.Key(), job.RepGroup, to
 }
 
 // emitChangeCallbackTransition is the queue change-callback's transition
-// emission. It disambiguates the from/to JobStates, then routes both
-// projections through emitJobTransition: the absolute per-RepGroup counts
+// emission. It resolves the from JobState from the source sub-queue, then routes
+// both projections through emitJobTransition: the absolute per-RepGroup counts
 // (with lost jobs tallied from the lost state, not running) and the per-job
 // subscription updates (gated by subscriptionUpdateState and per-subscriber
-// filtering, exactly as before).
+// filtering, exactly as before). Each job's to-state is derived from its own
+// real State at emission time (per-job, inside changeCallbackCounts and
+// enqueueChangeCallbackSubscriptions), so a succeeded job is reported complete
+// and a genuinely removed incomplete job is reported deleted.
 func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ queue.SubQueue, data []any) {
 	from := subqueueToJobState[fromQ]
-	to := changeCallbackToState(toQ, data)
-	state, emit := subscriptionUpdateState(from, to)
-	includeKeyStateChange := from == JobStateSuspended || to == JobStateSuspended
+	includeKeyStateChange := from == JobStateSuspended || toQ == queue.SubQueueSuspended
 
-	s.emitJobTransition(changeCallbackCounts(from, to, data), func() {
-		if !emit {
-			return
-		}
-
-		s.enqueueChangeCallbackSubscriptions(ctx, data, to, state, includeKeyStateChange)
+	s.emitJobTransition(changeCallbackCounts(from, toQ, data), func() {
+		s.enqueueChangeCallbackSubscriptions(ctx, data, from, toQ, includeKeyStateChange)
 	})
 }
 
 // enqueueChangeCallbackSubscriptions delivers the per-job subscription updates
-// for a subscription-relevant change-callback transition from a single per-job
-// status loop, applying the same per-subscriber gating as before: at least one
+// for a change-callback transition from a single per-job status loop, applying
+// the same per-subscriber gating as before: the transition must be
+// subscription-relevant for that job (subscriptionUpdateState), at least one
 // client must want the update (hasClientSubscriptionsForJobUpdate), and running
-// jobs wait briefly for their start time before the status snapshot. Each job is
-// converted to a status exactly once, and that single status feeds the
+// jobs wait briefly for their start time before the status snapshot. Each job's
+// to-state is its own real State for a removal (complete vs deleted), so a
+// succeeded job is delivered complete and a removed incomplete job deleted. Each
+// job is converted to a status exactly once, and that single status feeds the
 // subscription update (it is never separately written to the browser here).
 //
 // Idle fast-path: when there are no JobUpdate client subscriptions at all (the
@@ -238,7 +195,7 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 // hasClientSubscriptionsForJobUpdate RLock, so it adds no new lock and no new
 // nesting (the order queue.mutex -> subscription locks is preserved).
 func (s *Server) enqueueChangeCallbackSubscriptions(
-	ctx context.Context, data []any, to, state JobState, includeKeyStateChange bool,
+	ctx context.Context, data []any, from JobState, toQ queue.SubQueue, includeKeyStateChange bool,
 ) {
 	if !s.hasAnyClientSubscriptions() {
 		return
@@ -247,7 +204,13 @@ func (s *Server) enqueueChangeCallbackSubscriptions(
 	for _, inter := range data {
 		job := inter.(*Job) //nolint:errcheck,forcetypeassert
 
-		jobKey, repGroup := jobKeyAndRepGroup(job)
+		jobKey, repGroup, to := jobKeyRepGroupState(job, toQ)
+
+		state, emit := subscriptionUpdateState(from, to)
+		if !emit {
+			continue
+		}
+
 		if !s.hasClientSubscriptionsForJobUpdate(jobKey, repGroup, state, includeKeyStateChange) {
 			continue
 		}

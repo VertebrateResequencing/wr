@@ -63,8 +63,8 @@ new->ready->running->complete; a connected client receives a byte-compatible
 `jstateAbsolute` message; connect-seed via `wholeMap()` INCLUDES terminal-only
 RepGroups; a restarted manager's counter is empty until a live transition).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: C1 - Un-wrap the transition chokepoint; derive to-state from the job
 
@@ -134,8 +134,8 @@ key; a deleted INCOMPLETE job yields a `JobStateDeleted` update; the A1
 parked-lost-then-owner-archived-success churn emits no `deleted` broadcast for
 that key).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: C2 - Fast startup: no history scan, no seedStatusState
 
@@ -157,8 +157,8 @@ seconds); (2) no per-RepGroup complete counter is seeded - assert structurally
 that the web counter's `wholeMap()` is empty of pre-seeded `complete` counts
 until a live transition occurs.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.4: D2 - CLI wr status count path stays a scan (unchanged)
 
@@ -177,8 +177,8 @@ D2 acceptance test (after restart on a DB with N archived jobs in `rg`, with the
 web counter empty, `GetStatusByRepGroupMatch(rg, RepGroupMatchExact, nil, true,
 false)` returns `Counts[JobStateComplete] == N`).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section H)
 
