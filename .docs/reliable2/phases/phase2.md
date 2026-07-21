@@ -44,10 +44,17 @@ before queue/job/subscription locks).
   initialised empty in `Serve` (was the `newStatusState()` init at
   server.go:2642).
 - Wire the web-UI listener `setupStatusStateUpdateListener` (serverWebI.go:931) /
-  `sendStatusStateUpdates` (serverWebI.go:962): on (re)connect push `wholeMap()`,
-  the whole current in-memory map INCLUDING terminal states (do NOT replicate the
-  removed `liveSeedLocked` terminal-hiding filter); thereafter push per-RepGroup
-  `jstateAbsolute{RepGroup, Counts}` on change, throttled as today. The
+  `sendStatusStateUpdates` (serverWebI.go:962): on (re)connect push the FILTERED
+  fresh-connect seed (`liveSeedLocked`), which OMITS complete-only / deleted-only
+  / complete+deleted-only RepGroups and strips `deleted`, seeding a RepGroup only
+  if it has >=1 live job (its live states + `complete`); thereafter push
+  per-RepGroup `jstateAbsolute{RepGroup, Counts}` on change, throttled as today.
+  NOTE: this reverses the original D1 wording (which said to push the whole
+  `wholeMap()` INCLUDING terminal states and NOT replicate `liveSeedLocked`); it
+  is corrected per bugfix 260721-1, restoring 260626-2 / 260716-1 so a page
+  refresh does not re-show completed-only work. The counter still tracks ALL
+  states (`wholeMap()` backs the `"+all+"` aggregate and the live push path), so
+  a RepGroup completing WHILE connected stays visible (260625-6). The
   `jstateAbsolute` struct (server.go:504) and
   `static/js/wr/websocket-handler.js` are UNCHANGED. Do NOT revert to v0.36.5's
   `statusCaster`/`jstateCount` delta broadcasting. NEVER seed the counter from a
@@ -60,8 +67,10 @@ Items 2.2 and 2.3 in this phase; it MUST land before them (constraint above).
 Tests in the new file `jobqueue/repgroupcounts_test.go`. Covers all 4 acceptance
 tests from D1 (live absolute counts and `[statusAllRepGroups]` total across
 new->ready->running->complete; a connected client receives a byte-compatible
-`jstateAbsolute` message; connect-seed via `wholeMap()` INCLUDES terminal-only
-RepGroups; a restarted manager's counter is empty until a live transition).
+`jstateAbsolute` message; the fresh-connect seed OMITS terminal-only RepGroups
+while the counter's `wholeMap()` still tracks them - corrected per bugfix
+260721-1, reversing the original "seed INCLUDES terminal-only RepGroups" wording;
+a restarted manager's counter is empty until a live transition).
 
 - [x] implemented
 - [x] reviewed

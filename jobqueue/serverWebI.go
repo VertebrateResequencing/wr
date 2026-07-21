@@ -923,10 +923,11 @@ func allowedItemJob(item *queue.Item, allowed map[queue.ItemState]bool) (*Job, *
 
 // setupStatusStateUpdateListener creates a goroutine that pushes idempotent
 // absolute per-RepGroup status counts to one WebSocket client. It subscribes to
-// the slim repGroupCounts counter (which seeds the subscriber with the whole
-// current map, INCLUDING terminal states and terminal-only RepGroups, so the
-// client first receives the full current map), then drains and sends only the
-// RepGroups that change thereafter. The counter is never seeded from history, so
+// the slim repGroupCounts counter (which seeds the subscriber with the
+// fresh-connect filtered view: RepGroups with >=1 live job, their live + complete
+// counts, no deleted, and terminal-only RepGroups omitted, so a page refresh does
+// not re-show completed-only work), then drains and sends only the RepGroups that
+// change thereafter. The counter is never seeded from history, so
 // after a manager restart the client starts from an empty map that fills from
 // live transitions. On reconnect the client opens a fresh connection and so gets
 // a fresh subscription and a fresh full-state push; there is no resync request

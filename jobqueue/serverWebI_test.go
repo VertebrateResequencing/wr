@@ -624,9 +624,9 @@ func TestHighPressureCompletedRepGroupStatusSurvivesRefresh(t *testing.T) {
 		return
 	}
 
-	Convey("A high pressure RepGroup keeps complete counts across refresh while a live job remains, and a "+
-		"complete-only RepGroup is still shown on a fresh refresh (the slim counter's whole-map seed includes "+
-		"terminal states)",
+	Convey("A high pressure RepGroup keeps complete counts across refresh while a live job remains, but a "+
+		"complete-only RepGroup is omitted from a fresh refresh seed (terminal-hiding filter restored per "+
+		"bugfix 260721-1 / 260626-2 / 260716-1)",
 		t, func() {
 			ctx := context.Background()
 			serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
@@ -743,13 +743,13 @@ func TestHighPressureCompletedRepGroupStatusSurvivesRefresh(t *testing.T) {
 
 			defer ws.Close()
 
-			// A fresh reconnect (a page refresh) now RE-SHOWS the complete-only
-			// RepGroup: the slim repGroupCounts counter's whole-map connect-seed
-			// includes terminal states, unlike the removed statusState terminal-hiding
-			// filter (reliable2 D1). The complete counts are still live in the counter
-			// for this session, so the fresh client receives them on connect.
+			// A fresh reconnect (a page refresh) now OMITS the complete-only
+			// RepGroup: the repGroupCounts connect-seed applies the terminal-hiding
+			// filter (bugfix 260721-1, restoring 260626-2 / 260716-1), so a
+			// completed-only RepGroup does not re-appear on refresh even though the
+			// counter still tracks its complete count.
 			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-			So(readExactRepGroupState(ws, repGroup, allComplete, 5*time.Second), ShouldBeTrue)
+			So(readRepGroupAbsentDuring(ws, repGroup, 5*time.Second), ShouldBeTrue)
 
 			// CLI search is ground-truth and SHOULD still report the completed jobs.
 			summaries, err = jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)

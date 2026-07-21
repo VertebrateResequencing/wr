@@ -117,50 +117,117 @@ func TestRepGroupCountsWireFormat(t *testing.T) {
 	})
 }
 
-// TestRepGroupCountsSeedIncludesTerminal covers D1 acceptance test 3: RepGroups
-// whose only jobs are terminal (complete) ARE included in the connect-seed
-// (wholeMap), i.e. the removed terminal-hiding filter is not replicated.
-func TestRepGroupCountsSeedIncludesTerminal(t *testing.T) {
+// TestRepGroupCountsSeedOmitsTerminal covers D1 acceptance test 3 (corrected by
+// bugfix 260721-1, restoring 260626-2 / 260716-1): a RepGroup whose only jobs are
+// terminal (complete) is OMITTED from a fresh subscriber's connect-seed, so a
+// page refresh does not re-show completed-only work. The counter itself still
+// tracks the terminal count (wholeMap includes it) for the live push path and
+// the +all+ aggregate.
+func TestRepGroupCountsSeedOmitsTerminal(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
-	Convey("The connect-seed includes complete-only RepGroups (no terminal-hiding filter)", t, func() {
-		ctx := context.Background()
-		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		serverConfig.Timings.ItemTTR = time.Hour
+	Convey("The connect-seed omits complete-only RepGroups (terminal-hiding filter), but the counter keeps them",
+		t, func() {
+			ctx := context.Background()
+			serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+			serverConfig.Timings.ItemTTR = time.Hour
 
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
+			server, _, token, err := serve(ctx, serverConfig)
+			So(err, ShouldBeNil)
 
-		defer server.Stop(ctx, true)
+			defer server.Stop(ctx, true)
 
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
 
-		defer disconnect(jq)
+			defer disconnect(jq)
 
-		repGroup := "rgc-terminal-only"
-		jobs := subscriptionTestJobs(repGroup, standardReqs, 1)
-		added, _, err := jq.Add(jobs, envVars, true)
-		So(err, ShouldBeNil)
-		So(added, ShouldEqual, 1)
+			repGroup := "rgc-terminal-only"
+			jobs := subscriptionTestJobs(repGroup, standardReqs, 1)
+			added, _, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 1)
 
-		job, err := jq.Reserve(2 * time.Second)
-		So(err, ShouldBeNil)
-		So(job, ShouldNotBeNil)
-		So(jq.Started(job, os.Getpid()), ShouldBeNil)
-		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+			job, err := jq.Reserve(2 * time.Second)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+			So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
 
-		// a freshly-connected client must be seeded with the complete-only RepGroup.
-		ws, testServer := connectStatusWS(ctx, server, token)
-		defer testServer.Close()
-		defer ws.Close()
+			// the counter still tracks the terminal count (used by the +all+
+			// aggregate and the live per-RepGroup push path).
+			So(server.repGroupCounts.wholeMap()[repGroup], ShouldResemble, map[JobState]int{
+				JobStateComplete: 1,
+			})
 
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
-			JobStateComplete: 1,
-		}, 5*time.Second), ShouldBeTrue)
+			// but a freshly-connected client (a page refresh) must NOT be seeded
+			// with the complete-only RepGroup.
+			ws, testServer := connectStatusWS(ctx, server, token)
+			defer testServer.Close()
+			defer ws.Close()
+
+			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readRepGroupAbsentDuring(ws, repGroup, 3*time.Second), ShouldBeTrue)
+		})
+}
+
+// TestRepGroupCountsSeedFilter is a behavioural unit test on the seed builder: a
+// fully-complete (or deleted-only) RepGroup is absent from a fresh subscriber's
+// connect seed (a page refresh), while a RepGroup with >=1 live job is present
+// with its live + complete counts and no deleted state; and a RepGroup that
+// completes WHILE connected stays visible via the live drain path (260625-6).
+func TestRepGroupCountsSeedFilter(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A fresh subscriber's seed omits terminal-only RepGroups but keeps live ones", t, func() {
+		c := newRepGroupCounts()
+
+		live := "rgc-seed-live"
+		completeOnly := "rgc-seed-complete"
+		deletedOnly := "rgc-seed-deleted"
+
+		// a live RepGroup with partial progress: one running + two already complete.
+		c.applyTransitions([]countContribution{{to: JobStateRunning, repGroup: live, n: 1}})
+		c.applyTransitions([]countContribution{{to: JobStateComplete, repGroup: live, n: 2}})
+		// a complete-only RepGroup and a deleted-only RepGroup.
+		c.applyTransitions([]countContribution{{to: JobStateComplete, repGroup: completeOnly, n: 3}})
+		c.applyTransitions([]countContribution{{to: JobStateDeleted, repGroup: deletedOnly, n: 4}})
+
+		sub := c.subscribe()
+		seed := c.drain(sub)
+
+		// the live RepGroup is seeded with its live + complete counts, no deleted.
+		So(seed[live], ShouldResemble, map[JobState]int{JobStateRunning: 1, JobStateComplete: 2})
+
+		// the complete-only and deleted-only RepGroups are omitted from the seed.
+		_, ok := seed[completeOnly]
+		So(ok, ShouldBeFalse)
+		_, ok = seed[deletedOnly]
+		So(ok, ShouldBeFalse)
+
+		// the counter itself still tracks all states, including terminal-only groups.
+		So(c.wholeMap()[completeOnly], ShouldResemble, map[JobState]int{JobStateComplete: 3})
+		So(c.wholeMap()[deletedOnly], ShouldResemble, map[JobState]int{JobStateDeleted: 4})
+		So(c.wholeMap()[live][JobStateComplete], ShouldEqual, 2)
+	})
+
+	Convey("A RepGroup that completes while connected stays visible via the live drain (260625-6)", t, func() {
+		c := newRepGroupCounts()
+		rg := "rgc-seed-inflight"
+
+		c.applyTransitions([]countContribution{{to: JobStateRunning, repGroup: rg, n: 1}})
+
+		sub := c.subscribe()
+		So(c.drain(sub)[rg], ShouldResemble, map[JobState]int{JobStateRunning: 1})
+
+		// the job completes WHILE connected; the live drain still delivers the
+		// complete count so the RepGroup stays visible for this session.
+		c.applyTransitions([]countContribution{{from: JobStateRunning, to: JobStateComplete, repGroup: rg, n: 1}})
+		So(c.drain(sub)[rg], ShouldResemble, map[JobState]int{JobStateComplete: 1})
 	})
 }
 

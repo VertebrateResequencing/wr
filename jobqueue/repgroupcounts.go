@@ -31,11 +31,12 @@ import (
 )
 
 // repGroupCountsSubscriber represents one connected status web UI client. On its
-// first drain it receives the seed (the whole current absolute map, INCLUDING
-// terminal states), captured atomically at subscribe time; thereafter it
-// receives only the RepGroups that change, tracked in its dirty set. The wake
-// channel is a buffered, edge-triggered signal so applying a transition never
-// blocks the queue-mutation path.
+// first drain it receives the seed (the fresh-connect filtered view built by
+// liveSeedLocked: RepGroups with >=1 live job, their live + complete counts, no
+// deleted, and terminal-only RepGroups omitted), captured atomically at subscribe
+// time; thereafter it receives only the RepGroups that change, tracked in its
+// dirty set. The wake channel is a buffered, edge-triggered signal so applying a
+// transition never blocks the queue-mutation path.
 type repGroupCountsSubscriber struct {
 	seed  map[string]map[JobState]int
 	dirty map[string]struct{}
@@ -50,9 +51,13 @@ type repGroupCountsSubscriber struct {
 // accuracy is v0.36.5 quality (flicker / overcount under high update rates
 // accepted) but startup never scans completed history.
 //
-// Unlike the removed statusState projection, wholeMap does NOT hide terminal
-// (complete/deleted) states or terminal-only RepGroups from the connect-seed:
-// the whole current in-memory map is pushed to a freshly-connected client.
+// wholeMap returns the whole current in-memory map INCLUDING terminal
+// (complete/deleted) states and terminal-only RepGroups; it backs the +all+ live
+// aggregate and the live per-RepGroup push path (drain of dirty RepGroups). The
+// fresh-connect SEED delivered to a newly-subscribing client is instead the
+// filtered view built by liveSeedLocked (RepGroups with >=1 live job only, no
+// deleted, terminal-only RepGroups omitted), so a page refresh does not re-show
+// completed-only work (bugfix 260721-1, restoring 260626-2 / 260716-1).
 //
 // Lock discipline: mu is a strict LEAF. While it is held, no other lock may be
 // acquired. Callers that mutate the queue (the change callback and the TTR
@@ -196,11 +201,66 @@ func rgcCleanCopy(stateCounts map[JobState]int) map[JobState]int {
 	return out
 }
 
+// liveSeedLocked returns the fresh-connect seed: a copy of every RepGroup that
+// has at least one live (non-terminal) job, with the terminal deleted state
+// excluded from each (complete is kept so a partly-finished RepGroup shows its
+// progress). The statusAllRepGroups aggregate already holds only live states, so
+// it is included whenever it is non-empty. Complete-only, deleted-only and
+// complete+deleted-only RepGroups are dropped entirely, so a page refresh does
+// not re-show terminal-only work (bugfix 260721-1, restoring 260626-2 /
+// 260716-1). The counter itself still tracks terminal states (see wholeMap) for
+// the +all+ aggregate and the live per-RepGroup push path; only this
+// fresh-connect seed is filtered. Must be called with mu held; no internal map
+// escapes the lock.
+func (c *repGroupCounts) liveSeedLocked() map[string]map[JobState]int {
+	seed := make(map[string]map[JobState]int, len(c.counts))
+
+	for repGroup, stateCounts := range c.counts {
+		if repGroup == statusAllRepGroups {
+			if live := rgcCleanCopy(stateCounts); len(live) > 0 {
+				seed[repGroup] = live
+			}
+
+			continue
+		}
+
+		if counts := rgcSeedCountCopy(stateCounts); len(counts) > 0 {
+			seed[repGroup] = counts
+		}
+	}
+
+	return seed
+}
+
+// rgcSeedCountCopy returns the fresh-connect seed counts for one non-aggregate
+// RepGroup. A RepGroup is seeded only if it has at least one live (non-terminal)
+// job; such groups keep every positive non-deleted state, including complete
+// progress. Complete-only, deleted-only and complete+deleted-only groups all
+// return nil so a fresh load (page refresh) does not re-show terminal-only work.
+func rgcSeedCountCopy(stateCounts map[JobState]int) map[JobState]int {
+	if !rgcHasLiveJob(stateCounts) {
+		return nil
+	}
+
+	out := make(map[JobState]int, len(stateCounts))
+
+	for state, count := range stateCounts {
+		if count > 0 && state != JobStateDeleted {
+			out[state] = count
+		}
+	}
+
+	return out
+}
+
 // subscribe registers a new subscriber, capturing the seed it must receive as
-// its first drain: the whole current absolute map, including terminal states.
-// Registration happens under mu so no concurrent transition is missed: a
-// transition either runs before subscribe (its result is in the captured seed)
-// or after (it marks the new subscriber dirty).
+// its first drain: the fresh-connect filtered view (liveSeedLocked) that omits
+// terminal-only RepGroups and the deleted state, so a page refresh does not
+// re-show completed-only work. Registration happens under mu so no concurrent
+// transition is missed: a transition either runs before subscribe (its result is
+// in the captured seed) or after (it marks the new subscriber dirty and is
+// delivered live, including deleted/complete, keeping in-session RepGroups
+// visible per 260625-6).
 func (c *repGroupCounts) subscribe() *repGroupCountsSubscriber {
 	sub := &repGroupCountsSubscriber{
 		dirty: make(map[string]struct{}),
@@ -210,7 +270,7 @@ func (c *repGroupCounts) subscribe() *repGroupCountsSubscriber {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	sub.seed = c.wholeMapLocked()
+	sub.seed = c.liveSeedLocked()
 	c.subs[sub] = struct{}{}
 
 	// ensure the first drain fires even if there are no RepGroups yet, so a
@@ -256,4 +316,17 @@ func (c *repGroupCounts) drain(sub *repGroupCountsSubscriber) map[string]map[Job
 	clear(sub.dirty)
 
 	return out
+}
+
+// rgcHasLiveJob reports whether the state counts include at least one job in a
+// non-terminal state (anything other than complete or deleted) with a positive
+// count.
+func rgcHasLiveJob(stateCounts map[JobState]int) bool {
+	for state, count := range stateCounts {
+		if count > 0 && state != JobStateComplete && state != JobStateDeleted {
+			return true
+		}
+	}
+
+	return false
 }

@@ -416,9 +416,16 @@ Requirements:
   from `emitJobTransition` (C1). Same lock discipline as before (strict-leaf
   mutex, taken last; never before queue/job/subscription locks).
 - Web-UI listener (`serverWebI.go:setupStatusStateUpdateListener`,
-  `sendStatusStateUpdates`): on (re)connect push `wholeMap()` (the whole current
-  in-memory map, INCLUDING terminal states - do NOT replicate the removed
-  `liveSeedLocked` terminal-hiding filter); thereafter push per-RepGroup
+  `sendStatusStateUpdates`): on (re)connect push the FILTERED fresh-connect seed
+  (`liveSeedLocked`), which EXCLUDES complete-only / deleted-only /
+  complete+deleted-only RepGroups and strips the `deleted` state, including a
+  RepGroup only if it has >=1 live (non-terminal) job (its live states +
+  `complete`). This restores the pre-reliable2 terminal-hiding behaviour of
+  bugfixes 260626-2 / 260716-1 (corrected here per bugfix 260721-1): a page
+  refresh must not re-show completed-only work. The counter itself still tracks
+  ALL states (including terminal) - `wholeMap()` backs the `"+all+"` aggregate
+  and the live per-RepGroup push path - so a RepGroup completing WHILE connected
+  stays visible (260625-6). Thereafter push per-RepGroup
   `jstateAbsolute{RepGroup, Counts}` on change, throttled as today. The
   `jstateAbsolute` struct (`server.go:504`) and `websocket-handler.js` are
   UNCHANGED. Do NOT revert to v0.36.5's `statusCaster`/`jstateCount` delta
@@ -441,8 +448,12 @@ Requirements:
    receives a `jstateAbsolute{RepGroup, Counts}` JSON message whose fields and
    shape are byte-compatible with the pre-change format (unchanged wire).
 3. Given RepGroups whose only jobs are terminal (complete), when a client
-   connects, then the connect-seed (`wholeMap()`) INCLUDES those RepGroups'
-   counts (no terminal-hiding filter).
+   connects, then the fresh-connect seed (`liveSeedLocked`) OMITS those
+   RepGroups (terminal-hiding filter, corrected per bugfix 260721-1 restoring
+   260626-2 / 260716-1), even though the counter's `wholeMap()` still tracks
+   their terminal counts for the `"+all+"` aggregate and live push path. A
+   RepGroup with >=1 live job is seeded with its live states + `complete` and
+   never `deleted`.
 4. Given a restarted manager on a DB with prior completed jobs, when a client
    connects before any new transition, then the counter is empty (never seeded)
    - proving no history scan on startup.
@@ -685,8 +696,10 @@ on tested foundations from prior phases.
    no-false-`deleted` (C1).
 
 3. **Web-UI slim counter (section D).** Add `repGroupCounts`, wire it into
-   `emitJobTransition` and the web-UI status listener (connect-seed = whole map,
-   `jstateAbsolute` unchanged); confirm the CLI count path stays a scan (D2).
+   `emitJobTransition` and the web-UI status listener (fresh-connect seed =
+   filtered live view via `liveSeedLocked`, omitting terminal-only RepGroups per
+   bugfix 260721-1; counter still tracks all states; `jstateAbsolute`
+   unchanged); confirm the CLI count path stays a scan (D2).
    Depends on phase 2 (the transition un-wrap and `statusState` removal).
 
 4. **Remove `recompute-counts` (section E).** Delete the subcommand + backing
@@ -722,8 +735,10 @@ completion/lost/deleted invariants. Phases 3-6 are more separable.
   projection). Reconciles sec 2 (delete the projection) with KEEP (`#503`
   subscriptions still deliver a correct to-state).
 - **Slim counter, frontend unchanged (note 3).** A single absolute per-RepGroup
-  counter emitting the existing `jstateAbsolute`; never seeded; connect-seed
-  pushes the whole map (no terminal-hiding). CLI counts stay a scan (a
+  counter emitting the existing `jstateAbsolute`; never seeded; fresh-connect
+  seed is the filtered live view (`liveSeedLocked`) that omits terminal-only
+  RepGroups per bugfix 260721-1, while the counter still tracks all states for
+  the `"+all+"` aggregate and live pushes. CLI counts stay a scan (a
   never-seeded counter would under-report post-restart). Count accuracy =
   v0.36.5 quality (accepted).
 - **DB compat = additive (note, sec 4).** No schema-version gate; dead
