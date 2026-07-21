@@ -3337,13 +3337,15 @@ func (s *Server) createQueue(ctx context.Context) {
 
 // ttrCallback handles a running item hitting its TTR. A TTR-expired job is
 // marked lost and kept in the run queue while its death is confirmed
-// asynchronously; an on-time touch resets the TTR (via q.Touch) so this never
-// fires for a live, responsive runner, and a late touch clears the lost flag and
-// recovers the job. A job that is already lost stays parked in the run queue (a
-// touch will recover it, or the in-flight confirmation will kill it) without
-// being re-marked or re-confirmed. A spuriously-lost job under saturation is
-// benign: it stays parked in Run, is never re-reserved while its runner owns it,
-// and its owner's successful archive is always accepted.
+// asynchronously; an on-time touch resets the TTR (via q.Touch), and a late
+// touch clears the lost flag and recovers the job. Because RPCs are drained by a
+// single reader, under socket saturation a touch RPC can be processed after the
+// TTR deadline, so this callback can fire even for a still-alive, responsive
+// runner. That is benign: a spuriously-lost job is parked in Run, is never
+// re-reserved while its runner owns it, and its owner's successful archive is
+// still accepted; a later touch clears the lost flag. A job that is already lost
+// stays parked in the run queue (a touch will recover it, or the in-flight
+// confirmation will kill it) without being re-marked or re-confirmed.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	job.Lock()
 

@@ -1023,10 +1023,16 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 	return s.archiveCompletedJob(ctx, job, key, rgroup, sgroup)
 }
 
-// markJobComplete validates that a job is a successfully exited running job and,
-// if so, applies its terminal state and marks it complete under lock, returning
-// its key, rep group and scheduler group (or an Err* string if it cannot be
-// archived).
+// markJobComplete applies a successfully exited job's terminal state and marks it
+// complete under lock, returning its key, rep group and scheduler group (or an
+// Err* string if it cannot be completed). It does NOT gate on the queue item
+// state or job.State - that run-queue gating is done by getij(cr, true) at the
+// call site. It validates the owner (job.ReservedBy must match the optional
+// expectedReservedBy, else ErrMustReserve) and the end state
+// (canCompleteFromEndState, else ErrBadRequest); on success it applies the end
+// state, sets State to JobStateComplete and clears FailReason, but deliberately
+// does NOT clear job.Lost (see the inline comment) so a parked-lost job's later
+// removal is counted lost->complete.
 func markJobComplete(job *Job, endState *JobEndState,
 	lim *limiter.Limiter, expectedReservedBy ...uuid.UUID,
 ) (key, rgroup, sgroup, srerr string) {
