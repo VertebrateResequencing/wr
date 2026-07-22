@@ -132,44 +132,67 @@ Fair share on `normal` limited me to **~250–2800 concurrent runners** across
 runs (the user had "1000s"); this was enough to reproduce most symptoms and is
 noted where it bounds a result.
 
-### Issue B (the core, and the most serious): completion churn + throughput collapse at modest scale
+### Issue B (the core): double-reservation churn — one command runs on two runners
 
-This is the same class as the original `.docs/reliable2` churn — an executed
-command's result is **rejected** because the queue item has left the Run
-sub-queue — and it **still reproduces on this branch on real LSF**, at only a
-few hundred runners, in two flavours:
+The `jarchive: bad job` / `jrelease: not running` rejects are the **losing half
+of a double-reserved job**: the same command is handed to two runners; one wins
+(archives/removes the item) and the other's completion is rejected. Root cause
+(isolated by code trace — the old "Idea 3"):
 
-**B1 — succeeding jobs (`true`): archive rejected `bad job`.**
-120k `true` jobs (multi-group), ~300–470 runners:
-- `207` jobs logged `completed job`; then **frozen** (`ready` stuck at
-  119,793 = 120,000−207).
-- `208` × `jarchive(<key>): bad job (not in queue or correct sub-queue)`
-  (`serverCLI.go` archive path → `getij` non-Run → `ErrBadJob`).
-- Reservations froze at ~207 despite runners continuing to appear.
-This is exactly the "19,394 bad job / near-zero forward progress" symptom from
-the original farm run, reproduced here with trivial `true` commands.
+1. **The item's TTR is armed at Reserve, not at Started** (`queue.Reserve` calls
+   `item.touch()` at `queue/queue.go:1509`; `handleStart` does not re-arm it).
+   `ttrCallback` sends a **reserved-but-not-yet-Started** item to `SubQueueDelay`
+   (`server.go:3352-3356`, the `StartTime.IsZero()` branch) → delay → ready →
+   **re-reservable by a second runner**. So if a runner's first `Started`/`Touch`
+   is delayed past the `ItemTTR` (60s) minus the reserve→first-touch latency —
+   which happens under the single-reader RPC backlog during a connect storm — the
+   job is double-reserved. (A job that *has* started is instead parked in
+   `SubQueueRun` and its owner's late completion is still accepted — the retained
+   v0.36.5 leniency; so the divergence is specifically the reserved-not-started
+   window.)
+2. **The LSF `checkCmd` bkill race** (`lsf.go:1177-1201`, race documented in the
+   code): wr over-submits runners (one `[1-1000]` array per group) then `bkill`s
+   the "excess non-RUN" every scheduling cycle; a PEND element that transitions
+   to RUN (and reserves+starts a job) between the snapshot and the `bkill` is
+   killed mid-job, orphaning its Run item, which later TTRs out and is
+   re-reserved. (Confirmed indirectly: a clean 40k run left **38,302 array
+   elements `EXIT`ed (bkilled) vs 2,506 `DONE`** — wr bkills the vast bulk of the
+   runners it over-submits.)
 
-**B2 — failing jobs (`false`): release rejected `not running` → 24h livelock.**
+**The two flavours differ in consequence, which matters for the fix:**
+
+**B1 — succeeding jobs (`true`): the loser's archive is a HARMLESS DUPLICATE.**
+`ErrBadJob` means the item was already removed by the winning runner
+(`getij` `serverCLI.go:1691`), so **the job IS completed — no work is lost**.
+Verified: a clean isolated 40k `true` run (40 groups, foreground manager)
+completed **40,000 / 40,000**, `ready:0`, `badjob:0` despite the heavy bkill
+churn. The **cost is wasted double-execution**, not lost completions. For
+trivial `true` commands that is just noise; for the original workload's
+**multi-minute `jq`/`zopfli` commands it is catastrophic** — every double-run
+burns 2–3 CPU-minutes, and if it recurs the workflow appears to make little
+progress (the original "19,394 bad job, complete≈0"). (An earlier draft of this
+doc reported B1 as "frozen at 207 / forward progress lost"; that reading came
+from the confounded stale-manager phase and from misreading the by-design
+`complete: 0` of the unscoped CLI — corrected here: succeeding-job progress is
+**not** lost, it is duplicated.)
+
+**B2 — failing jobs (`false`): the loser's release livelocks the runner.**
 160k `false` jobs (multi-group), runners ramping 656 → 1268 → 2781:
-- `212` reserved & buried, then **frozen** (`ready` 159,788 the whole time).
-- `6000+` × `releaseJob failed … Release(<key>): not running` /
-  `jrelease(<key>): … not running`, climbing.
-Mechanism (traced): a non-zero exit makes the client send **`jrelease`**
-(client always releases a normal failure; server decides bury-after-N —
-`client.go:2323/2339-2390/2165`). If that `jrelease` lands after the 60s
-`ServerItemTTR` (transient during a connect/churn storm), the item was already
-marked Lost and killed out of Run, so `Queue.Release` returns `ErrNotRunning`
-(`queue/queue.go:1596-1602,131`). Because `handleRelease` uses
-`getij(checkRunning=false)` (`serverCLI.go:1116-1134,1675`), the client receives
-`ErrInternalError` (not `ErrBadJob`), which its `reportFinalState` loop treats
-as transient and **retries for 24h, disconnecting/reconnecting every 15s**
-(`client.go:2084-2131`, `retryTime=24h`, `retryWait=15s`), so the runner is
-pinned forever on one job and never reserves another. Hundreds of pinned runners
-= throughput ≈ 0.
+`6000+` × `releaseJob failed … Release(<key>): not running`. Here the loser
+sends **`jrelease`** (client always releases a normal non-zero exit —
+`client.go:2323/2339-2390/2165`); on the removed/not-Run item `Queue.Release`
+returns `ErrNotRunning` (`queue/queue.go:1596-1602,131`), and because
+`handleRelease` uses `getij(checkRunning=false)` (`serverCLI.go:1116-1134,1675`)
+the client gets `ErrInternalError` (not `ErrBadJob`), which its
+`reportFinalState` loop treats as transient and **retries for 24h,
+disconnecting/reconnecting every 15s** (`client.go:2084-2131`), pinning the
+runner so it never reserves again. **This is the real forward-progress killer**
+for failing workloads (throughput → 0). Fixing the client give-up (Idea 1)
+breaks the livelock; preventing double-reservation (Idea 2) removes the cause.
 
-> Note: because B2 pins runners in a slow 15s retry, it paradoxically keeps the
-> RPC *rate* low, so control ops stayed fast during pure-`false` runs. B1
-> (success) keeps the RPC rate high (see Issue 1/2/3 below).
+> Note: B2 pins runners in a slow 15s retry, which paradoxically keeps the RPC
+> *rate* low, so control ops stayed fast during pure-`false` runs. B1 (success)
+> keeps the RPC rate high (see Issue 1/2/3 below).
 
 ### Issues 1/2/3 — manager unresponsive to status / detail / suspend / limit under high-churn load
 
@@ -257,16 +280,14 @@ exactly what a web-front-end revert would remove.
   60s-timeout result above was taken during a higher-runner phase whose job mix
   was confounded by the stale-manager/port issue; it is a solid "unresponsive
   under load" reproduction but not a clean characterization.
-- **The exact trigger that moves a still-alive job out of the Run sub-queue**
-  under real LSF at only ~250 runners (where the single reader is *not* 60s
-  backlogged). Candidates not isolated: scheduler over/under-provisioning +
-  `checkCmd` reclaiming/`bkill`ing "extraneous" runners mid-job; double
-  reservation from a group-count mismatch; or runner give-up. Pinning this needs
-  a goroutine/pprof dump at the stall (requires `manager start -f`), which was
-  not done here. This is the same gap flagged in the original investigation
-  ("was not fully isolated").
 - **queues_avoid being dropped by the scheduler** — did **not** reproduce; the
   forced queue is honored (see the prerequisite-bug section).
+
+> (The trigger that moves a still-alive job out of Run — previously an open
+> question — is now identified: the reserved-not-started TTR eviction and the
+> `checkCmd` bkill race, see Issue B. A live goroutine dump at the stall was not
+> needed to conclude it; the code trace plus the clean-40k-vs-churny-120k
+> contrast were sufficient.)
 
 ---
 

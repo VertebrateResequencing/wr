@@ -77,26 +77,70 @@ minimal options:
 Add a regression test: instant-fail job whose item left Run → runner gives up
 and progresses, no 24h loop.
 
-## Idea 2 — make an alive owner's completion win even after it left Run (restore v0.36.5 semantics at *farm* scale)
+## Idea 2 — stop the double-reservation that causes Issue B (the real root cause)
 
-This is the original `choice.md` Idea 1 ("owner's success wins"), but the
-in-process harness (`scale-validation.md`, M2=0) did **not** catch that real LSF
-still churns (Issue B1: 208 `bad job` at ~300 runners). The fix must hold when
-the runner is on a remote node and the item left Run for *scheduler* reasons
-(not just TTR): accept the archive/release from the reservation's genuine owner
-(match owner+attempt) and reconcile the queue, rather than rejecting on the
-current sub-queue state. Re-validate against a **real LSF** run, not only
-in-process — the in-process harness is not sufficient (it uses `os.Getpid()`
-live processes and a TTR tuned above the backlog).
+Diagnosis complete (was "Idea 3"): the `bad job`/`not running` rejects are the
+losing half of a **double-reserved** job — the same command handed to two
+runners. So the correct fix is to **prevent the double reservation**, not
+(as an earlier draft proposed) to "accept the loser's late success" — for
+succeeding jobs the winner already completes the job (the loser's archive is a
+harmless duplicate; a clean 40k run completed 40,000/40,000), so there is no
+lost success to rescue; the harm is **wasted double-execution** (catastrophic
+for the multi-minute real workload) plus the failing-job livelock (Idea 1).
 
-## Idea 3 — isolate and fix the "job leaves Run at ~250 runners" trigger
+Two independent causes to fix (see repro.md Issue B for the traced detail):
 
-Not isolated here (see repro.md limitations). Next step: run with
-`manager start -f` (enables pprof per project notes), reproduce the B1 stall,
-and take a goroutine + queue-state dump at the freeze to determine whether it is
-(a) scheduler over-provision + `checkCmd`/`bkill` of a mid-job runner,
-(b) double reservation from a group-count mismatch, or (c) runner give-up. The
-fix for Issue B depends on which.
+- **(a) A timed-out *reserved-but-not-started* item is requeued on a
+  `StartTime.IsZero()` "death proxy" — with no liveness check.** The item's TTR
+  is armed at Reserve (`queue.Reserve → item.touch()`, `queue/queue.go:1509`);
+  when it fires, `ttrCallback` takes the `job.StartTime.IsZero()` branch and
+  returns `SubQueueDelay` (`server.go:3352-3356`) → delay → ready →
+  re-reservable. But `StartTime.IsZero()` only means "the `Started` RPC has not
+  been *processed* yet", which under the single-reader backlog is **not** the
+  same as "the client died" — so a live-but-backlogged runner's job is handed to
+  a second runner.
+
+  **The fix must keep a reclaim timer** (a client really can die between Reserve
+  and Started — e.g. LSF `bkill`, node failure — and that reservation must be
+  reclaimable, or the job is stuck in Run forever). So do **not** simply move the
+  TTR to `Started`; that reintroduces the hole. Instead, **base the requeue on
+  confirmed absence of the reserving runner, not on `StartTime`**, giving the
+  reserved-not-started path the same "park-and-confirm-dead" treatment the
+  started path already gets:
+  - Have the runner report its **host+pid at Reserve** (it knows them
+    immediately, before running anything), so the reserved-not-started TTR path
+    can confirm death via the scheduler (`ProcessNotRunningOnHost` / LSF `bjobs`)
+    exactly as the started path does. On TTR: mark Lost, **park in Run
+    (un-reservable by others)**, confirm dead; requeue only if confirmed dead
+    (→ no hole), keep if alive (→ no double-reservation). This liveness signal is
+    independent of the backlogged RPC stream.
+  - Complementary/alternative: restore an **F0-style contact timestamp** recorded
+    at message-receive time (reliable2 removed it) and refuse to requeue a
+    reserved item contacted within the window — the client already touches from
+    Reserve (`client.go:1420-1427`, ticker starts *before* `Started`), so a live
+    runner's touches prove liveness if they are drained in time.
+  - Either way, extreme backlog can still starve the liveness signal itself —
+    that residual is the single-reader ceiling (Idea 5), which this fix should be
+    paired with.
+- **(b) `checkCmd` bkill race** (`lsf.go:1177-1201`, race documented in-code):
+  wr over-submits (`[1-1000]` per group) then `bkill`s "excess non-RUN" runners;
+  a PEND→RUN element can be killed mid-job (a clean 40k run bkilled 38,302 of
+  ~40k elements), and a killed busy runner's work is wasted and its job re-run.
+  This is hole-free to fix and is likely the **dominant** real-farm driver at
+  modest scale (where the reader is not 60s-backlogged): don't over-submit so
+  aggressively (relates to the array-cap work, Idea 0), and re-check `RUN`
+  immediately before `bkill` (drop any now-running), or track which submitted
+  elements wr has already handed a reservation and never kill those.
+
+Note (a) and (b) compose: (b) stops wr wasting work by killing its own busy
+runners; (a) makes any genuine reclaim liveness-confirmed so it is never a
+double-reservation and never a stuck job.
+
+Re-validate on **real LSF** (not just the in-process harness — it uses
+`os.Getpid()` live processes and a TTR above the backlog, and so passed M2=0
+while real LSF still churned). Success metric: near-zero `bad job` **and**
+near-zero double-execution (each command runs once) at a few thousand runners,
+with a deliberately-killed reserved-not-started runner's job still reclaimed.
 
 ## Idea 4 — raise the saturation threshold (the front-end contribution to Issues 1–3)
 
@@ -109,7 +153,7 @@ fix for Issue B depends on which.
   (`server_subscription.go:532`, `jobtransition.go:200`).
 Either way, or a full front-end revert, restores headroom.
 
-## Idea 5 — the real ceiling: decouple the single RPC reader (deferred Idea 2)
+## Idea 5 — the real ceiling: decouple the single RPC reader (the original investigation's deferred "Idea 2")
 
 `serveClients → receiveClientMessage → sock.RecvMsg()` (`server.go:2656/2671`)
 admits one message at a time. Even with per-request goroutine handling, this
@@ -149,6 +193,7 @@ question below leans toward (a) unless the accurate-counts feature is worth it.
 
 1. Idea 0 (bugfix 260722-1) — unblocks large same-req batches.
 2. Idea 1 — stops the failing-job livelock (biggest forward-progress win, tiny).
-3. Idea 3 — isolate the Run-eviction trigger, then Idea 2 to fix B1.
+3. Idea 2 — stop double-reservation (TTR-at-Started + `checkCmd` race), killing
+   the wasted double-execution behind Issue B; re-validate on real LSF.
 4. Decide the front-end question → Idea 6 (+ Idea 4) or a full revert.
 5. Idea 5 (single-reader decouple) if "thousands responsive" is required.
