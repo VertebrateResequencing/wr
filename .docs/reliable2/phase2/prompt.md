@@ -273,3 +273,214 @@ Notes for whoever runs Tier B:
   complete Tier A + the gated in-process harness autonomously, and clearly flag
   Tier B as a **required human validation** before merge — do not mark the work
   done on Tier A alone.
+
+---
+
+## Notes — clarifications resolved before authoring
+
+These decisions were made by the user during spec-writing and are binding. They
+refine (and where noted override defaults in) the sections above.
+
+### N1. Web-front-end revert is COUNTER-ONLY (refines §1)
+
+Do a counter-only revert, NOT a full v0.36.5 web revert.
+- REMOVE only the absolute-count machinery: `repGroupCounts` (server.go),
+  `repgroupcounts.go`, the `jstateAbsolute` message and its `/status_ws` push
+  (serverWebI.go), and the absolute-count half of
+  `emitJobTransition`/`applyTransitions` (jobtransition.go).
+- RESTORE from v0.36.5 (commit 11fe092): the concurrent change-callback dispatch
+  — replace the serial `runChangedCallbacks` (queue/queue.go:263) with v0.36.5's
+  per-batch `go queue.changedCb(...)` fan-out (11fe092:queue/queue.go:330); and
+  the v0.36.5 web status-bar feed (`statusCaster`/`jstateCount`, scan-on-connect,
+  and the v0.36.5 `websocket-handler.js`/page behaviour). Web-UI counts revert to
+  v0.36.5 quality.
+- KEEP (these are phase-1 Option R, already merged — do NOT remove): the #503
+  per-job subscription delivery (`server_subscription.go`/`subscription.go`,
+  `enqueueChangeCallbackSubscriptions`), live RAM/CPU/STDOUT introspection,
+  reconnect/resync, and `wr add --sync`'s non-polling wait.
+- Because `emitJobTransition` currently drives BOTH the counter AND #503
+  delivery, the surgery must SPLIT them: keep the subscription-delivery half,
+  delete the counter half. Ideas 4 and 6 remain out of scope/moot.
+
+### N1a. Counter-only revert — exact web-side scope (refines N1)
+
+The revert is SURGICAL: revert the counts only; keep everything else.
+- KEEP every current KEEP web front-end feature: `IsPushUpdate` live
+  RAM/CPU/STDOUT pushes, reconnect fresh-state, modify-job (`modify-job.js`), and
+  in-flight tracking (`inflight-tracking.js`). Do NOT do a literal "restore
+  v0.36.5 `websocket-handler.js`" — that would delete these KEEP front-ends. On
+  the JS side edit ONLY the status-bar count consumption.
+- PRESERVE the phase-1 terminal-hiding fresh-connect seed (the `liveSeedLocked`
+  behaviour at serverWebI.go:926-929, from bugfixes 260626-2/260716-1/260721-1)
+  so a page refresh does NOT re-show completed-only repgroups. Because that seed
+  currently lives inside the `repGroupCounts` counter being removed, its
+  terminal-hiding logic must be RE-HOMED onto the reverted delta feed, not
+  dropped.
+- SERVER: replace only `repGroupCounts`/`jstateAbsolute` with v0.36.5's
+  `statusCaster`/`jstateCount` delta broadcast (+ scan-on-connect), retaining the
+  terminal-hiding seed on top.
+- Net user-visible regression is ONLY status-bar count flicker/overcount to
+  v0.36.5 quality; no other web feature is lost and the terminal-hiding-on-refresh
+  fix is retained.
+- REJECTED: a wholesale status-page revert that drops the live-introspection /
+  reconnect / modify-job / in-flight web front-ends.
+
+### N1b. Effect of the counter-only choice on the (moot) ideas 4 & 6
+
+The surgical counter-only revert does NOT change the mootness verdict: ideas 4
+and 6 must still NOT be implemented as distinct work items.
+- Idea 6 (fix count divergence): still moot — the diverging absolute counter
+  (`repGroupCounts`/`jstateAbsolute`, the source of repro.md Issue 4) is removed
+  outright and replaced by v0.36.5's delta feed; there is no absolute counter left
+  to "fix," and count quality intentionally reverts to v0.36.5 level.
+- Idea 4 "make the counter conditional": still moot — the counter is removed
+  entirely.
+- Idea 4 "de-serialise the drainer": still achieved BY the revert (N1 restores
+  v0.36.5's concurrent `go queue.changedCb(...)`), not implemented as a separate
+  idea.
+- The counter-only choice's ONE consequence (versus a full revert): the restored
+  concurrent `changedCb` fan-out now also drives the RETAINED #503 subscription
+  delivery (`enqueueChangeCallbackSubscriptions`) concurrently. This was verified
+  (code trace) NOT to reintroduce the unresponsiveness. The decisive fact: the
+  per-transition serialiser being removed is the counter's single EXCLUSIVE
+  `repGroupCounts.mu` (repgroupcounts.go:66-70, `Lock()`ed across the whole batch
+  on every transition at :86-106) — NOT anything in the #503 path. Under a
+  concurrent `go changedCb` fan-out that one exclusive mutex would re-serialise
+  every transition goroutine; removing the counter removes it. The retained #503
+  delivery, by contrast, uses only `csmutex.RLock` (shared reads never block each
+  other; the sole `csmutex.Lock` writers are subscribe/unsubscribe/shutdown, never
+  per transition), has a zero-subscriber early-out (`if
+  !hasAnyClientSubscriptions() { return }`, jobtransition.go:200-202), performs
+  the actual client delivery as a buffered channel send AFTER the lock is released
+  (server_subscription.go:504-521), and is bounded by (batch × subscribers) with
+  no full job/repgroup scans. (v0.36.5 itself already ran a per-transition
+  detail-push loop over subscribed connections, so retaining #503 adds no
+  materially more idle per-transition work than the v0.36.5 baseline — its idle
+  path is actually leaner.) These are internal locking invariants with no
+  user-facing change and need NO user decision; the revert MUST preserve them:
+    1. THE decisive requirement — the revert MUST actually remove the
+       `repGroupCounts.applyTransitions` call from the per-transition path.
+       Leaving it in place re-serialises the restored concurrent dispatch
+       regardless of #503.
+    2. Keep the `hasAnyClientSubscriptions()` early-out at the top of the
+       subscription closure (one `csmutex.RLock` + `len()`, then return when the
+       subscriber map is empty).
+    3. Keep `csmutex` an `RWMutex`; all per-transition access stays `RLock`; never
+       add a per-transition `csmutex.Lock` (writers stay confined to
+       subscribe/unsubscribe/shutdown).
+    4. Never hold `csmutex` (or any server-wide lock) across the actual client
+       delivery — delivery stays a buffered channel send performed after the lock
+       is released.
+    5. Use the restored v0.36.5 `statusCaster.Send` delta broadcast for the
+       web-bar counts; do NOT reintroduce ANY single server-wide exclusive mutex
+       on the per-transition path (that was exactly `repGroupCounts.mu`).
+  Verify BOTH under `-race` AND under load (control-op responsiveness while a
+  fleet churns), not `-race` alone. This is an implementation constraint on the
+  revert, not a resurrection of idea 4.
+
+### N2. Idea 2(a): host+pid reported in the Reserve request (refines §3a)
+
+- The runner reports its own host + `os.Getpid()` in the Reserve `clientRequest`;
+  the server records them on the job in `respondWithReservedJob` INSTEAD OF
+  zeroing Host/Pid in `resetJobForReservation` (serverCLI.go:842-844). No new RPC;
+  do NOT piggyback on the touch stream (that stream is exactly what Idea 5
+  decouples). The reserve-time pid is the runner's own pid and is overwritten by
+  the command's pid at Started.
+- Reclaim reuses the EXISTING started-path machinery: split the `ttrCallback`
+  `StartTime.IsZero() || job.Exited` branch (server.go:3352) so the `job.Exited`
+  case still goes straight to `SubQueueDelay`, while the reserved-not-started case
+  is parked in Run (un-reservable) and confirmed dead via
+  `markJobLost`/`confirmOrReleaseLostJob` (which snapshots job.Host/job.Pid),
+  using `ProcessNotRunningOnHost`/LSF `bjobs` — a signal independent of the
+  backlogged RPC stream.
+- Old-client fallback (reserve carries no host+pid → pid==0): keep the job PARKED
+  in Run; never blindly re-reserve a reservation that cannot be confirmed dead. Do
+  NOT revert to the old `StartTime`-based requeue for this case.
+
+### N3. Idea 2(b): protect reserved LSF array elements from bkill (refines §3b)
+
+- Fix by TRACKING RESERVED ELEMENTS, not by re-checking RUN before bkill: wr must
+  record which submitted LSF array elements it has already handed a reservation
+  to, and `killExcessCmds` (lsf.go:1176-1204) must NEVER bkill a tracked element.
+  This is robust to `bjobs` status lag (a PEND→RUN element that just
+  reserved+started is protected because wr knows it handed out that reservation,
+  without depending on bjobs having caught up to RUN).
+- The spec author must design how a reserved LSF array element is identified and
+  correlated back to the runner/reservation so the protection is reliable.
+- Boundary with bugfix 260722-1: this spec owns ONLY the "never bkill an element
+  we have reserved to" protection. Reducing the VOLUME of over-submission (the
+  array-cap / uncapped `bsub` array behaviour) belongs entirely to the separate
+  260722-1 `/bugfix`. Coordinate; do not duplicate or double-fix.
+
+### N4. Idea 5: concurrent readers on the existing socket (refines §4)
+
+- Decouple by running MULTIPLE concurrent reader goroutines each calling
+  `sock.RecvMsg()` (server.go:2670) on the EXISTING mangos socket — not a separate
+  socket/port, not priority admission. No new port and no wire/protocol change;
+  stay wire-compatible with existing runners and CLIs.
+- HARD REQUIREMENT: the mangos REP-style socket must handle concurrent
+  request/reply safely (historically a wr foot-gun). The spec author should
+  investigate mangos `Context` objects (the idiomatic mechanism for concurrent
+  request/reply on one REP socket) versus raw concurrent `RecvMsg`, and the design
+  MUST be proven under `-race`. If concurrent handling on this socket proves
+  genuinely unsafe, surface it as a blocker (per agent-conduct) rather than
+  silently switching designs.
+
+### N5. Test strategy and the "done" bar (refines Final validation)
+
+- Tier-A committed tests use the Option-R deterministic style (`os.Getpid()` for
+  an "alive" owner, a definitely-dead pid for "confirmed dead", short `ItemTTR`),
+  covering the behaviours enumerated in the Tier A list. TDD: fail before, pass
+  after; run under `make test`/`make race`.
+- KEEP `jobqueue/reliable2_scale_test.go` (//go:build reliability) but add a
+  header comment documenting that it under-reproduces (os.Getpid live processes +
+  a TTR above the backlog → it passed M2=0 while real LSF churned). It is a
+  non-authoritative support test, never the sole evidence.
+- "Done" bar: completing Tier A + the gated in-process harness constitutes the
+  CODING being done and may be completed autonomously. Tier-B real-LSF end-to-end
+  validation (recorded in a new `.docs/reliable2/phase2/validation.md`) is a
+  REQUIRED gate before merge — do NOT mark the overall work done on Tier A alone.
+  See N6 for who runs Tier B: the implementing agent at the end when it can reach
+  the isolated dev farm at scale, else a human as fallback. Either way it must be
+  actually executed, never skipped or simulated.
+
+### N6. Tier-B may be run by the implementing agent, not only a human (refines N5 / Final validation)
+
+The original "required human validation" wording was only a fallback for a
+session lacking farm access; it is NOT a requirement that a human specifically
+run Tier B. This note supersedes the "human" wording in N5 and the Final
+validation section.
+- Tier-B real-LSF validation remains a REQUIRED gate before merge, producing
+  `.docs/reliable2/phase2/validation.md`, and must never be skipped or claimed
+  done on Tier-A alone (the in-process harness was shown insufficient).
+- It SHOULD be run by the implementing agent at the END of the work when the
+  session can reach real LSF at scale on the isolated DEVELOPMENT deployment. A
+  human runs it only as a fallback when the agent genuinely cannot (no real-LSF
+  access, or fair-share cannot permit a representative run).
+- Whoever runs it MUST follow the existing safety constraints: use ONLY the dev
+  manager (ports 51780/51781), never touch production; be a good farm citizen
+  (considerate scale, force jobs to an appropriate queue, expect fair-share to
+  cap concurrency); `bkill` all `wrd_*` arrays afterwards; and note `wr manager
+  stop` can hang under load (kill the dev pid directly after verifying it is the
+  dev binary).
+- The surviving distinction: Tier-B is a REAL-LSF gate (not a committed unit
+  test) and must actually be executed, not simulated.
+
+### N7. Harden the phase-1 JS revert with the existing browser-test fixtures (refines N1a / §1)
+
+The phase-1 JS status-bar edit (spec story A3) and the retained
+terminal-hiding-on-refresh behaviour (A4) touch a historically fragile area
+(terminal-hiding regressed three times: bugfixes 260626-2/260716-1/260721-1), so
+add a browser-level regression guard.
+- The existing browser-test fixtures covering this area MUST remain green after
+  the JS status-bar edit; run `make browser-test`. The spec author must VERIFY
+  the exact fixture names in the repo's browser-test setup (the candidates
+  identified are `completed-repgroup-visibility`, `removed-jobs-refresh`,
+  `repgroup-bar-flicker`) and use the real names/paths as they exist.
+- Update those fixtures ONLY as strictly needed to reflect the reverted
+  v0.36.5-quality count DISPLAY; do not weaken their terminal-hiding / refresh
+  assertions.
+- This is a phase-1 acceptance criterion guarding A3/A4: add it to the A3/A4
+  acceptance tests and the Tier-A list, and reflect it in phase1. It is
+  belt-and-suspenders on top of the server-side Go tests, which remain the
+  primary guard.
