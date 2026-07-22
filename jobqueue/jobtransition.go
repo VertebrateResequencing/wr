@@ -38,7 +38,9 @@ import (
 
 // countContribution is one (from -> to, n jobs in repGroup) increment applied to
 // the absolute status counts. A transition may produce several (e.g. the change
-// callback groups jobs by their real from/to states).
+// callback groups jobs by their real from/to states). It is grouped per
+// (from, to, repGroup) and fed to sendStatusCounts, which broadcasts one
+// jstateCount delta per contribution to the status web page.
 type countContribution struct {
 	from     JobState
 	to       JobState
@@ -47,13 +49,13 @@ type countContribution struct {
 }
 
 // emitJobTransition is the single chokepoint through which every job-state
-// transition updates the web-UI status counter AND delivers the per-job
+// transition feeds the web-UI status counts AND delivers the per-job
 // subscription updates, so a future transition path cannot update one and
 // silently forget the other (which would drift the web UI bar counts, or make a
 // `wr add --sync`/details subscriber miss an update).
 //
-// It first applies every count contribution to the slim per-RepGroup
-// repGroupCounts counter (the web UI bar counts; always updated, on every
+// It first broadcasts every count contribution as a v0.36.5-style jstateCount
+// delta via sendStatusCounts (the web UI bar counts; always sent, on every
 // transition), then runs emitSubscriptions to deliver the per-job subscription
 // updates. emitSubscriptions stays a caller-supplied closure because the two
 // delivery mechanisms remain SEPARATE and the per-job projection is
@@ -63,20 +65,63 @@ type countContribution struct {
 // Centralising the EMISSION here does not change WHICH updates are sent. Pass a
 // nil closure for a transition with no per-job update.
 //
-// Lock discipline (concurrency-critical; a prior attempt deadlocked here): this
-// method introduces NO new lock. applyTransitions (which takes the strict-leaf
-// repGroupCounts.mu) and emitSubscriptions (which takes the subscription/csmutex
-// locks) are invoked strictly SEQUENTIALLY and are never nested, and this method
-// holds no lock across them. Callers that run inside the queue change/TTR
-// callbacks still hold queue.mutex, preserving the established acquisition order
-// queue.mutex -> job -> repGroupCounts.mu (and queue.mutex -> subscription
-// locks); neither repGroupCounts.mu nor any subscription lock is ever taken
-// before the queue lock.
+// Lock discipline (concurrency-critical; N1b): this method introduces NO
+// server-wide exclusive lock on the per-transition path. sendStatusCounts
+// (whose statusCaster.Send takes only a shared RLock to snapshot members plus a
+// per-web-client mutex and a non-blocking buffered send) and emitSubscriptions
+// (which takes the subscription/csmutex RLock) are invoked strictly
+// SEQUENTIALLY and are never nested, and this method holds no lock across them.
+// Callers that run inside the queue change/TTR callbacks still hold queue.mutex,
+// preserving the established acquisition order queue.mutex -> subscription
+// locks; no subscription lock is ever taken before the queue lock.
 func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions func()) {
-	s.repGroupCounts.applyTransitions(counts)
+	s.sendStatusCounts(counts)
 
 	if emitSubscriptions != nil {
 		emitSubscriptions()
+	}
+}
+
+// stateTransition is a (from, to) JobState pair, used to aggregate count
+// contributions across RepGroups for the "+all+" status delta.
+type stateTransition struct {
+	from JobState
+	to   JobState
+}
+
+// sendStatusCounts broadcasts each grouped count contribution to the status web
+// page as a v0.36.5-style jstateCount delta: one per (from, to, repGroup) group,
+// plus one per (from, to) for the "+all+" aggregate that tracks the live total
+// across all RepGroups. This is the restored delta feed that replaces the
+// absolute per-RepGroup counter for the web UI status bars. It preserves the N1b
+// concurrency invariant: statusCaster.Send takes only a shared RLock to snapshot
+// members plus a per-web-client mutex and a non-blocking buffered send, never a
+// server-wide exclusive lock on the per-transition path.
+func (s *Server) sendStatusCounts(counts []countContribution) {
+	if len(counts) == 0 {
+		return
+	}
+
+	allGrouped := make(map[stateTransition]int, len(counts))
+
+	for _, contribution := range counts {
+		s.statusCaster.Send(&jstateCount{
+			RepGroup:  contribution.repGroup,
+			FromState: contribution.from,
+			ToState:   contribution.to,
+			Count:     contribution.n,
+		})
+
+		allGrouped[stateTransition{contribution.from, contribution.to}] += contribution.n
+	}
+
+	for transition, count := range allGrouped {
+		s.statusCaster.Send(&jstateCount{
+			RepGroup:  statusAllRepGroups,
+			FromState: transition.from,
+			ToState:   transition.to,
+			Count:     count,
+		})
 	}
 }
 
@@ -86,8 +131,8 @@ func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions
 // job's to-state is its own real State for a removal (complete vs deleted,
 // per-job) and the destination sub-queue's fixed mapping otherwise. Lost jobs
 // transition from the lost state, not the running state, so they get their own
-// contribution; the statusAllRepGroups aggregate is maintained inside
-// applyTransitions.
+// contribution; the statusAllRepGroups ("+all+") aggregate is derived from these
+// contributions inside sendStatusCounts.
 func changeCallbackCounts(from JobState, toQ queue.SubQueue, data []any) []countContribution {
 	grouped := make(map[countContributionKey]int)
 
@@ -154,7 +199,7 @@ func jobKeyRepGroupState(job *Job, toQ queue.SubQueue) (string, string, JobState
 
 // emitChangeCallbackTransition is the queue change-callback's transition
 // emission. It resolves the from JobState from the source sub-queue, then routes
-// both projections through emitJobTransition: the absolute per-RepGroup counts
+// both projections through emitJobTransition: the web-UI status-count deltas
 // (with lost jobs tallied from the lost state, not running) and the per-job
 // subscription updates (gated by subscriptionUpdateState and per-subscriber
 // filtering, exactly as before). Each job's to-state is derived from its own
@@ -187,10 +232,11 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 // csmutex.RLock, skipping the per-job allocations and contended RLocks that would
 // otherwise deliver nothing. This activates regardless of whether a status web
 // UI is connected, because the web UI does not rely on this per-job JobUpdate
-// delivery. This is purely the per-job subscription delivery; the absolute
-// per-RepGroup status counts have already been applied by emitJobTransition
-// before this closure runs, so a web UI client that connects LATER still gets
-// correct seed counts. The early csmutex.RLock is in the same async
+// delivery. This is purely the per-job subscription delivery; the web-UI status
+// counts have already been broadcast as jstateCount deltas by emitJobTransition
+// before this closure runs, and a web UI client that connects LATER seeds its
+// bars from the incomplete-only scan-on-connect. The early csmutex.RLock is in
+// the same async
 // change-callback context as the existing per-job
 // hasClientSubscriptionsForJobUpdate RLock, so it adds no new lock and no new
 // nesting (the order queue.mutex -> subscription locks is preserved).

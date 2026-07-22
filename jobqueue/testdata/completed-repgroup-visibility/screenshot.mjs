@@ -126,31 +126,30 @@ function fakeWebSocketScript(scenario) {
     };
 
     // The RepGroup starts with 2 ready jobs, runs them, then completes them. The
-    // server holds the absolute counts and sends them as { RepGroup, Counts };
-    // the client replaces the RepGroup's counts wholesale.
+    // server sends v0.36.5-style jstateCount deltas: seed counts as deltas from
+    // 'new', then each live transition as a from->to delta.
     const initialState = [
-      { RepGroup: '+all+', Counts: { ready: 2 } },
-      { RepGroup: 'done-rg', Counts: { ready: 2 } }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 2 },
+      { RepGroup: 'done-rg', FromState: 'new', ToState: 'ready', Count: 2 }
     ];
 
     const runningState = [
-      { RepGroup: '+all+', Counts: { running: 2 } },
-      { RepGroup: 'done-rg', Counts: { running: 2 } }
+      { RepGroup: '+all+', FromState: 'ready', ToState: 'running', Count: 2 },
+      { RepGroup: 'done-rg', FromState: 'ready', ToState: 'running', Count: 2 }
     ];
 
     const completedState = [
-      // +all+ counts only live jobs, so it is now empty ...
-      { RepGroup: '+all+', Counts: {} },
+      // running -> complete. complete is terminal on +all+, so its live
+      // aggregate just loses the running count and is now empty ...
+      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 2 },
       // ... but the completed RepGroup keeps its complete count and stays visible.
-      { RepGroup: 'done-rg', Counts: { complete: 2 } }
+      { RepGroup: 'done-rg', FromState: 'running', ToState: 'complete', Count: 2 }
     ];
 
-    // A later steady-state re-send of the (now empty) live aggregate must not
-    // remove the completed RepGroup row: complete counts are not "live", but the
-    // row stays visible with its complete count under the absolute protocol.
-    const liveAggregateResend = [
-      { RepGroup: '+all+', Counts: {} }
-    ];
+    // A later wake of the coalescing sender with no live jobs to seed produces no
+    // delta at all; the completed RepGroup row must stay visible with its
+    // complete count regardless (there is no wholesale replace to remove it).
+    const liveAggregateResend = [];
 
     // Post-fix regression for the reported successful-jobs-as-deleted sequence.
     // The authoritative job store has six jobs in done-rg. Four complete while
@@ -158,23 +157,26 @@ function fakeWebSocketScript(scenario) {
     // those completed counts. A fifth completion then arrives as a dirty update,
     // which must publish five complete plus one running and no deleted state.
     const deletedRefreshInitial = [
-      { RepGroup: '+all+', Counts: { running: 6 } },
-      { RepGroup: 'done-rg', Counts: { running: 6 } }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'running', Count: 6 },
+      { RepGroup: 'done-rg', FromState: 'new', ToState: 'running', Count: 6 }
     ];
 
     const deletedRefreshFourComplete = [
-      { RepGroup: '+all+', Counts: { running: 2 } },
-      { RepGroup: 'done-rg', Counts: { running: 2, complete: 4 } }
+      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 4 },
+      { RepGroup: 'done-rg', FromState: 'running', ToState: 'complete', Count: 4 }
     ];
 
+    // The refresh is a fresh connection, so the seed rebuilds state from 'new':
+    // two still running plus four already complete.
     const deletedRefreshSeed = [
-      { RepGroup: '+all+', Counts: { running: 2 } },
-      { RepGroup: 'done-rg', Counts: { running: 2, complete: 4 } }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'running', Count: 2 },
+      { RepGroup: 'done-rg', FromState: 'new', ToState: 'running', Count: 2 },
+      { RepGroup: 'done-rg', FromState: 'new', ToState: 'complete', Count: 4 }
     ];
 
     const deletedRefreshDirty = [
-      { RepGroup: '+all+', Counts: { running: 1 } },
-      { RepGroup: 'done-rg', Counts: { running: 1, complete: 5 } }
+      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 1 },
+      { RepGroup: 'done-rg', FromState: 'running', ToState: 'complete', Count: 1 }
     ];
 
     class FixtureWebSocket {

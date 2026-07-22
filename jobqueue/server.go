@@ -494,16 +494,16 @@ type BadServer struct {
 	Problem string
 }
 
-// jstateAbsolute is the idempotent absolute per-RepGroup status message we send
-// to the status webpage. Counts holds the current absolute number of jobs in
-// each JobState for the RepGroup (states with zero jobs are omitted). The client
-// replaces the RepGroup's displayed counts wholesale, so the message is
-// idempotent: applying it twice is a no-op and a dropped intermediate is
-// harmless because the next message overwrites it. "+all+" is the special group
-// representing all live jobs across all RepGroups.
-type jstateAbsolute struct {
-	RepGroup string
-	Counts   map[JobState]int
+// jstateCount is a from->to state-count delta sent to the status web page: the
+// count in FromState drops by Count, the count in ToState rises by Count. This
+// is v0.36.5's status-bar feed, restored (alongside statusCaster) in place of
+// the removed absolute per-RepGroup counter. RepGroup "+all+" aggregates all
+// live jobs across all RepGroups.
+type jstateCount struct {
+	RepGroup  string
+	FromState JobState
+	ToState   JobState
+	Count     int
 }
 
 // SchedulerIssue is the details of a scheduler problem encountered that we send
@@ -694,8 +694,10 @@ func (c *caster) Close() {
 // member's 1-slot buffer, dropping val if the buffer is already full or the
 // member is done. The remaining casters (bad servers and scheduler issues) are
 // recoverable: a client re-requests "current", which re-broadcasts the latest
-// set, so a dropped update is harmless. The status counts no longer use the
-// caster at all; they use the idempotent absolute repGroupCounts counter, so
+// set, so a dropped update is harmless. The status counts use the same caster
+// mechanism via statusCaster, broadcasting non-idempotent jstateCount deltas
+// (the accepted v0.36.5 flicker/overcount quality): a dropped delta is not
+// re-derivable, but a client reconnect re-seeds from the scan-on-connect, so
 // there is no overflow-to-resync conversion anywhere.
 func (cm *casterMember) trySend(val any) {
 	cm.send.Lock()
@@ -756,7 +758,7 @@ type Server struct {
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
 	pprofServer               *http.Server
-	repGroupCounts            *repGroupCounts
+	statusCaster              *caster
 	badServerCaster           *caster
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
@@ -2484,7 +2486,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		repGroupCounts:            newRepGroupCounts(),
+		statusCaster:              newCaster(),
 		badServerCaster:           newCaster(),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		clientSubscriptions:       make(map[string]*serverSubscription),
@@ -2635,6 +2637,15 @@ func (s *Server) startBroadcasters(ctx context.Context, wg *waitgroup.WaitGroup)
 		defer wg.Done(wgk5)
 
 		s.schedCaster.Broadcasting(0)
+	}()
+
+	wgk6 := wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue web server status casting", true)
+		defer wg.Done(wgk6)
+
+		s.statusCaster.Broadcasting(0)
 	}()
 }
 
@@ -3391,12 +3402,12 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUp
 	job.Unlock()
 
 	// since our changed callback won't be called, record this running -> lost
-	// transition through the single chokepoint: the absolute count always (the
-	// statusAllRepGroups aggregate is maintained internally), and the pre-built
-	// lost subscription update only if the job wasn't already lost. Both run
-	// after job.Unlock while queue.mutex is still held, preserving the strict
-	// leaf order queue.mutex -> repGroupCounts.mu and never nesting
-	// repGroupCounts.mu with the subscription locks.
+	// transition through the single chokepoint: the web-UI status-count delta
+	// always (statusCaster derives the "+all+" aggregate from the contribution),
+	// and the pre-built lost subscription update only if the job wasn't already
+	// lost. Both run after job.Unlock while queue.mutex is still held; neither
+	// statusCaster.Send nor the subscription locks are ever taken before the
+	// queue lock.
 	s.emitJobTransition(
 		[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
 		func() {
@@ -5589,6 +5600,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	s.badServerCaster.Close()
 	s.schedCaster.Close()
+	s.statusCaster.Close()
 
 	s.shutdownHTTPServer(ctx)
 

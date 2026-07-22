@@ -29,11 +29,10 @@ package jobqueue
 // C2 (fast startup: no history scan, no seedStatusState) and section D2 (the CLI
 // wr status count path stays a scan, unchanged). With seedStatusStateForItemDefs
 // and startCounterBackfill removed, startup no longer seeds any status counts:
-// the slim repGroupCounts counter (Item 2.1) starts empty and only fills from
-// live transitions, so a large completed-only history cannot make startup scale.
-// The CLI count path (getStatusByRepGroup) still scans the live queue + complete
-// bucket, so it stays accurate after a restart even though the web counter is
-// empty.
+// the web-UI status bars are fed purely by live jstateCount deltas, so a large
+// completed-only history cannot make startup scale. The CLI count path
+// (getStatusByRepGroup) still scans the live queue + complete bucket, so it
+// stays accurate after a restart even though the web feed carries no history.
 
 import (
 	"context"
@@ -74,10 +73,9 @@ const (
 	d2RepGroup         = "reliable2-d2-rg"
 )
 
-// TestReliable2FastStartupNoHistoryScan covers both C2 acceptance tests: (1)
-// startup time does not scale with completed-only history size, and (2) no
-// per-RepGroup complete counter is seeded (the web counter's whole map carries
-// no pre-seeded complete counts until a live transition occurs).
+// TestReliable2FastStartupNoHistoryScan covers the C2 acceptance test: startup
+// time does not scale with completed-only history size (there is no per-RepGroup
+// complete counter to seed from history - the web feed is live-delta only).
 func TestReliable2FastStartupNoHistoryScan(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -100,17 +98,12 @@ func TestReliable2FastStartupNoHistoryScan(t *testing.T) {
 			smallElapsed, c2SmallHistorySize, largeElapsed, c2LargeHistorySize,
 		)
 
-		// C2 acceptance test 1: no scaling with history size, and an absolute
-		// responsiveness bound.
+		// C2 acceptance test: no scaling with history size, and an absolute
+		// responsiveness bound. Wait for the background recovery to finish so the
+		// large-history startup is fully settled before the assertions.
 		So(largeElapsed, ShouldBeLessThan, c2HistoryScaleLimit*smallElapsed)
 		So(largeElapsed, ShouldBeLessThan, c2AbsoluteStartupLimit)
-
-		// C2 acceptance test 2: the web counter is not seeded from history. Even
-		// though the large DB holds 250k+ complete jobs, the slim counter carries
-		// no complete counts until a live transition occurs. Wait for the
-		// background recovery to finish first so the assertion is deterministic.
 		So(waitUntilRecovered(largeServer), ShouldBeTrue)
-		So(completeCountsInWholeMap(largeServer), ShouldEqual, 0)
 	})
 }
 
@@ -195,10 +188,10 @@ func prepareCompletedHistory(ctx context.Context, t *testing.T, config ServerCon
 }
 
 // TestReliable2CLIStatusCountStaysAScan covers the D2 acceptance test: after a
-// restart on a DB with N archived jobs in a rep group, with the web counter
-// empty (never seeded), the CLI fast-count path still returns an accurate
-// complete count because getStatusByRepGroup scans the live queue + complete
-// bucket rather than consuming the slim web-UI counter.
+// restart on a DB with N archived jobs in a rep group, with no web-UI counter
+// (the live delta feed carries no history), the CLI fast-count path still
+// returns an accurate complete count because getStatusByRepGroup scans the live
+// queue + complete bucket rather than consuming any server-side counter.
 func TestReliable2CLIStatusCountStaysAScan(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -217,10 +210,6 @@ func TestReliable2CLIStatusCountStaysAScan(t *testing.T) {
 		defer server.Stop(ctx, true)
 
 		So(waitUntilRecovered(server), ShouldBeTrue)
-
-		// the slim web-UI counter is never seeded from history, so it carries no
-		// complete counts here - proving the scan below is independent of it.
-		So(completeCountsInWholeMap(server), ShouldEqual, 0)
 
 		jq, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(errc, ShouldBeNil)
@@ -262,16 +251,4 @@ func prepareArchivedJobsInRepGroup(ctx context.Context, t *testing.T, config Ser
 	}
 
 	So(testDB.close(ctx), ShouldBeNil)
-}
-
-// completeCountsInWholeMap sums the JobStateComplete counts across every
-// RepGroup in the server's slim web-UI counter. A never-seeded counter returns
-// 0 until a live complete transition occurs.
-func completeCountsInWholeMap(server *Server) int {
-	total := 0
-	for _, counts := range server.repGroupCounts.wholeMap() {
-		total += counts[JobStateComplete]
-	}
-
-	return total
 }

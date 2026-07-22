@@ -997,8 +997,8 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 	job.Unlock()
 
 	// our changed callback won't be called, so this lost -> running transition's
-	// absolute count is recorded via the chokepoint (the statusAllRepGroups
-	// aggregate is maintained internally).
+	// count is recorded via the chokepoint, which broadcasts it as a jstateCount
+	// delta (statusCaster derives the "+all+" aggregate from the contribution).
 	return countContribution{from: JobStateLost, to: JobStateRunning, repGroup: repGroup, n: 1}
 }
 

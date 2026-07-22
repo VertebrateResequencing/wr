@@ -64,12 +64,6 @@ const (
 	statusWebSocketWorkerCount = 5
 )
 
-// statusStateSendThrottle bounds how often a status client is sent absolute
-// updates. Because the payload is absolute (last-write-wins), waiting briefly
-// between drains coalesces a burst of transitions into one message per RepGroup
-// without ever losing the final state.
-const statusStateSendThrottle = 50 * time.Millisecond
-
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
 type jstatusReq struct {
 	// possible Requests are:
@@ -105,6 +99,21 @@ type jstatusReq struct {
 	FailReason string
 	ServerID   string // required argument for confirmBadServer
 	Msg        string // required argument for dismissMsg
+}
+
+// webInterfaceStatusSendGroupStateCount sends the per-RepGroup state counts to
+// the status webpage websocket as jstateCount deltas from the new state, so a
+// fresh connection's counts are seeded the v0.36.5 way (reserved is merged into
+// running for display).
+func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) error {
+	for to, count := range statusStateCounts(jobs) {
+		msg := &jstateCount{RepGroup: repGroup, FromState: JobStateNew, ToState: to, Count: count}
+		if err := conn.WriteJSON(msg); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func statusStateCounts(jobs []*Job) map[JobState]int {
@@ -427,7 +436,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 
 		// Set up goroutines to push changes to the client
 		go s.runStatusWebSocketWorker(func() {
-			s.setupStatusStateUpdateListener(ctx, conn, stopper, storedName)
+			s.setupUpdateListener(ctx, conn, stopper, storedName, s.statusCaster, "status updater")
 		})
 		go s.runStatusWebSocketWorker(func() {
 			s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
@@ -508,7 +517,7 @@ func (s *Server) handleStatusWSRequest(ctx context.Context, r statusWSRequest) {
 func (s *Server) handleStatusWSCommand(ctx context.Context, r statusWSRequest) {
 	switch r.req.Request {
 	case jstatusRequestCurrent:
-		s.broadcastCurrentStatus()
+		s.sendCurrentStatus(ctx, r)
 	case jstatusRequestDetails:
 		s.sendJobDetails(ctx, r)
 	case jstatusRequestUnsubscribe:
@@ -538,12 +547,17 @@ func (s *Server) handleStatusWSCommand(ctx context.Context, r statusWSRequest) {
 	}
 }
 
-// broadcastCurrentStatus re-broadcasts the recoverable bad-server and
-// scheduler-issue sets in response to a "current" request. The status counts
-// themselves are pushed as idempotent absolute per-RepGroup state by the
-// per-client sender (which sends the full current map on connect/reconnect), so
-// only the lossy-caster sets need re-broadcasting here.
-func (s *Server) broadcastCurrentStatus() {
+// sendCurrentStatus responds to a "current" request with v0.36.5's
+// scan-on-connect: it sends the requesting client the current per-RepGroup
+// status-count seed as jstateCount deltas (incomplete-only for the "+all+" live
+// aggregate, plus each incomplete RepGroup's live-and-complete counts), then
+// re-broadcasts the recoverable bad-server and scheduler-issue sets. The scan is
+// incomplete-only so a completed-only RepGroup is naturally omitted from a fresh
+// connection's seed (terminal-hiding on refresh); a RepGroup that COMPLETES
+// while connected stays visible via the live running->complete delta.
+func (s *Server) sendCurrentStatus(ctx context.Context, r statusWSRequest) {
+	s.sendCurrentStatusCounts(ctx, r)
+
 	for _, bs := range s.getBadServers() {
 		s.badServerCaster.Send(bs)
 	}
@@ -553,6 +567,39 @@ func (s *Server) broadcastCurrentStatus() {
 
 	for _, si := range s.schedIssues {
 		s.schedCaster.Send(si)
+	}
+}
+
+// sendCurrentStatusCounts sends the scan-on-connect status-count seed to the
+// requesting client under its write mutex. It gets all current (incomplete)
+// jobs, seeds the "+all+" live aggregate from them, then for each RepGroup among
+// them seeds that RepGroup from its incomplete jobs plus its complete jobs.
+func (s *Server) sendCurrentStatusCounts(ctx context.Context, r statusWSRequest) {
+	jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false, false)
+
+	r.writeMutex.Lock()
+	defer r.writeMutex.Unlock()
+
+	if err := webInterfaceStatusSendGroupStateCount(r.conn, statusAllRepGroups, jobs); err != nil {
+		return
+	}
+
+	repGroups := make(map[string][]*Job)
+	for _, job := range jobs {
+		repGroups[job.RepGroup] = append(repGroups[job.RepGroup], job)
+	}
+
+	for repGroup, rgJobs := range repGroups {
+		complete, _, qerr := s.getCompleteJobsByRepGroup(repGroup)
+		if qerr != "" {
+			return
+		}
+
+		rgJobs = append(rgJobs, complete...)
+
+		if err := webInterfaceStatusSendGroupStateCount(r.conn, repGroup, rgJobs); err != nil {
+			return
+		}
 	}
 }
 
@@ -919,77 +966,6 @@ func allowedItemJob(item *queue.Item, allowed map[queue.ItemState]bool) (*Job, *
 	job, ok := item.Data().(*Job)
 
 	return job, stats, ok
-}
-
-// setupStatusStateUpdateListener creates a goroutine that pushes idempotent
-// absolute per-RepGroup status counts to one WebSocket client. It subscribes to
-// the slim repGroupCounts counter (which seeds the subscriber with the
-// fresh-connect filtered view: RepGroups with >=1 live job, their live + complete
-// counts, no deleted, and terminal-only RepGroups omitted, so a page refresh does
-// not re-show completed-only work), then drains and sends only the RepGroups that
-// change thereafter. The counter is never seeded from history, so
-// after a manager restart the client starts from an empty map that fills from
-// live transitions. On reconnect the client opens a fresh connection and so gets
-// a fresh subscription and a fresh full-state push; there is no resync request
-// path.
-func (s *Server) setupStatusStateUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
-	connName string) {
-	defer internal.LogPanic(ctx, "jobqueue websocket status updater", true)
-
-	sub := s.repGroupCounts.subscribe()
-	defer s.repGroupCounts.unsubscribe(sub)
-
-	for {
-		select {
-		case <-stop:
-			return
-		case <-sub.wake:
-			// briefly coalesce a burst of transitions into one push per
-			// RepGroup; absolute state makes this lossless.
-			select {
-			case <-stop:
-				return
-			case <-time.After(statusStateSendThrottle):
-			}
-
-			if !s.sendStatusStateUpdates(ctx, conn, connName, s.repGroupCounts.drain(sub)) {
-				return
-			}
-		}
-	}
-}
-
-// sendStatusStateUpdates writes one absolute message per dirty RepGroup to the
-// client. It returns false if the connection is gone or a write failed, so the
-// caller stops. The supplied map contains only fresh copies, so no internal
-// state escapes the repGroupCounts lock.
-func (s *Server) sendStatusStateUpdates(ctx context.Context, conn *websocket.Conn, connName string,
-	dirty map[string]map[JobState]int) bool {
-	if len(dirty) == 0 {
-		return true
-	}
-
-	s.wsmutex.RLock()
-	writeMutex := s.wsWriteMutexes[connName]
-	s.wsmutex.RUnlock()
-
-	if writeMutex == nil {
-		return false
-	}
-
-	writeMutex.Lock()
-	defer writeMutex.Unlock()
-
-	for repGroup, counts := range dirty {
-		err := conn.WriteJSON(&jstateAbsolute{RepGroup: repGroup, Counts: counts})
-		if err != nil {
-			clog.Warn(ctx, "status updater failed to send JSON to client", "err", err)
-
-			return false
-		}
-	}
-
-	return true
 }
 
 func (s *Server) rerunCompletedJobs(ctx context.Context, jobs []*Job) {

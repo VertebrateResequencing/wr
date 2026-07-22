@@ -13,9 +13,9 @@
 //
 // This fixture serves the real jobqueue/static status page, injects a fake
 // WebSocket that drives the real websocket-handler.js with a realistic storm
-// of ABSOLUTE-state messages for one RepGroup ("echo"), moving ~10000 jobs
-// ready -> running -> complete over hundreds of messages at storm rate, ending
-// all-complete. A high-frequency in-page sampler (requestAnimationFrame) reads
+// of v0.36.5-style from->to state-count deltas for one RepGroup ("echo"),
+// moving ~10000 jobs ready -> running -> complete over hundreds of messages at
+// storm rate, ending all-complete. A high-frequency in-page sampler (requestAnimationFrame) reads
 // the ACTUAL rendered segment widths of `[data-repgroup="echo"] .progress-bar`
 // (summed pixel width / container pixel width = filled %), and asserts:
 //
@@ -134,11 +134,11 @@ function createStaticServer() {
   });
 }
 
-// The fake socket drives a realistic high-rate storm of ABSOLUTE-state messages
-// for one RepGroup, moving ~10000 jobs ready -> running -> complete over
-// hundreds of messages, ending all-complete. Each message carries the current
-// absolute per-state counts ({ RepGroup, Counts }), exactly as the server
-// pushes. An in-page sampler reads the rendered segment widths of the bar.
+// The fake socket drives a realistic high-rate storm of from->to state-count
+// delta messages for one RepGroup, moving ~10000 jobs ready -> running ->
+// complete over hundreds of messages, ending all-complete. Each message carries
+// a { RepGroup, FromState, ToState, Count } delta, exactly as the server pushes
+// (v0.36.5 protocol). An in-page sampler reads the rendered segment widths of the bar.
 function fakeWebSocketScript() {
   return `(() => {
     const TOTAL_JOBS = 10000;
@@ -160,6 +160,15 @@ function fakeWebSocketScript() {
       // ---- rendered-DOM sampler aggregates ----
       sampleCount: 0,
       barPopulated: false,
+      // barFilledOnce flips true the first frame the rendered bar reaches ~full
+      // (filled >= 95%). Flicker/collapse judging is armed only from that point,
+      // so the one-time initial paint ramp - the segments are created at width 0
+      // and the CSS width transition animates them up to full over the first
+      // render, exactly the "brief pre-population render latency (the same on any
+      // page load)" this fixture documents as not-counted - is excluded. Any
+      // collapse AFTER the bar has been full (the pre-fix "cleared and redrawn on
+      // every change" symptom) is still caught.
+      barFilledOnce: false,
       // segmentsSeen flips true on the first frame the bar's segment nodes
       // actually exist in the DOM (which can lag total() > 0 by a rate-limit
       // window on initial render). Recreation is only judged after this.
@@ -264,7 +273,13 @@ function fakeWebSocketScript() {
         }
       }
 
-      if (fixture.barPopulated && filled !== null) {
+      // Arm judging once the bar has first rendered ~full, excluding the initial
+      // 0 -> full paint ramp (see barFilledOnce).
+      if (filled !== null && filled >= 95) {
+        fixture.barFilledOnce = true;
+      }
+
+      if (fixture.barPopulated && fixture.barFilledOnce && filled !== null) {
         fixture.populatedFrames += 1;
 
         if (fixture.minFilledAfterPopulated === null || filled < fixture.minFilledAfterPopulated) {
@@ -367,32 +382,48 @@ function fakeWebSocketScript() {
         return counts;
       }
 
+      // emitStep converts the change in ground-truth absolute counts between two
+      // storm steps into the v0.36.5-style from->to jstateCount deltas the server
+      // sends (this monotonic storm only moves jobs ready -> running -> complete).
+      // The same deltas drive both the per-RepGroup row and the "+all+" live
+      // aggregate; the handler drops the terminal complete side for "+all+".
+      emitStep(prev, cur) {
+        const readyToRunning = prev.ready - cur.ready;
+        const runningToComplete = cur.complete - prev.complete;
+
+        if (readyToRunning > 0) {
+          this.raw({ RepGroup: '+all+', FromState: 'ready', ToState: 'running', Count: readyToRunning });
+          this.raw({ RepGroup: REPGROUP, FromState: 'ready', ToState: 'running', Count: readyToRunning });
+        }
+
+        if (runningToComplete > 0) {
+          this.raw({ RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: runningToComplete });
+          this.raw({ RepGroup: REPGROUP, FromState: 'running', ToState: 'complete', Count: runningToComplete });
+        }
+      }
+
       startStorm() {
         window.__wrBarFixture.phase = 'storm';
 
-        // Initial absolute state: all jobs ready.
-        const initial = this.countsAtStep(0);
-        this.raw({ RepGroup: '+all+', Counts: { ready: TOTAL_JOBS } });
-        this.raw({ RepGroup: REPGROUP, Counts: initial });
+        // Initial state: all jobs ready, seeded as jstateCount deltas from 'new'.
+        this.prev = this.countsAtStep(0);
+        this.raw({ RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: TOTAL_JOBS });
+        this.raw({ RepGroup: REPGROUP, FromState: 'new', ToState: 'ready', Count: TOTAL_JOBS });
 
         const tick = () => {
           this.step += 1;
-          const counts = this.countsAtStep(this.step);
-
-          // The live +all+ aggregate only ever shows incomplete jobs.
-          const allCounts = emptyCounts();
-          allCounts.ready = counts.ready;
-          allCounts.running = counts.running;
-
-          this.raw({ RepGroup: '+all+', Counts: allCounts });
-          this.raw({ RepGroup: REPGROUP, Counts: counts });
+          let counts = this.countsAtStep(this.step);
 
           if (this.step >= STORM_MESSAGES) {
-            // Final authoritative all-complete push.
-            const finalCounts = emptyCounts();
-            finalCounts.complete = TOTAL_JOBS;
-            this.raw({ RepGroup: REPGROUP, Counts: finalCounts });
-            this.raw({ RepGroup: '+all+', Counts: emptyCounts() });
+            // Final all-complete state; the remaining deltas converge the row.
+            counts = emptyCounts();
+            counts.complete = TOTAL_JOBS;
+          }
+
+          this.emitStep(this.prev, counts);
+          this.prev = counts;
+
+          if (this.step >= STORM_MESSAGES) {
             window.__wrBarFixture.phase = 'converged';
             window.__wrBarFixture.done = true;
             return;

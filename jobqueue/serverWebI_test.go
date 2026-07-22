@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +43,6 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -62,8 +60,6 @@ const (
 	webiSubRG1      = "sub_rg1"
 	webiSubRG2      = "sub_rg2"
 )
-
-const archiveServerCompletedJobOp = "archiveServerCompletedJob"
 
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
@@ -387,11 +383,12 @@ func TestStatusCurrentAbsoluteState(t *testing.T) {
 	})
 }
 
-// readAbsoluteStateUntil reads absolute per-RepGroup messages, applying each
-// wholesale to a running view, until the predicate holds or the timeout expires.
+// readAbsoluteStateUntil reads v0.36.5-style jstateCount delta messages,
+// accumulating them into a running per-RepGroup view, until the predicate holds
+// against that view or the timeout expires.
 func readAbsoluteStateUntil(ws *websocket.Conn, timeout time.Duration,
 	until func(latest map[string]map[JobState]int) bool) bool {
-	latest := make(map[string]map[JobState]int)
+	acc := newDeltaCounts()
 
 	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return false
@@ -399,20 +396,16 @@ func readAbsoluteStateUntil(ws *websocket.Conn, timeout time.Duration,
 	defer clearReadDeadlineBestEffort(ws)
 
 	for {
-		if until(latest) {
+		if until(acc.latest) {
 			return true
 		}
 
-		var msg jstateAbsolute
+		var msg jstateCount
 		if err := ws.ReadJSON(&msg); err != nil {
 			return false
 		}
 
-		if msg.RepGroup == "" {
-			continue
-		}
-
-		latest[msg.RepGroup] = msg.Counts
+		acc.apply(msg)
 	}
 }
 
@@ -425,368 +418,19 @@ func statusCountsTotal(counts map[JobState]int) int {
 	return total
 }
 
-// readJStateCounts reads absolute per-RepGroup status messages until every
-// expected (repGroup, state, count) tuple is present in the latest absolute
-// state seen for that RepGroup, or the timeout expires. Because absolute
-// messages are last-write-wins per RepGroup, it tracks the most recent counts
-// for each RepGroup rather than matching individual messages.
+// readJStateCounts reads v0.36.5-style jstateCount delta messages, accumulating
+// them per RepGroup, until every expected (repGroup, state, count) tuple matches
+// the accumulated state or the timeout expires.
 func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeout time.Duration) bool {
-	latest := make(map[string]map[JobState]int)
-
-	allPresent := func() bool {
+	return readJStateDeltasUntil(ws, timeout, func(acc *deltaCounts) bool {
 		for _, want := range expected {
-			if latest[want.repGroup][want.state] != want.count {
+			if acc.count(want.repGroup, want.state) != want.count {
 				return false
 			}
 		}
 
 		return true
-	}
-
-	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return false
-	}
-	defer clearReadDeadlineBestEffort(ws)
-
-	for !allPresent() {
-		var msg jstateAbsolute
-		if err := ws.ReadJSON(&msg); err != nil {
-			return false
-		}
-
-		if msg.RepGroup == "" || msg.Counts == nil {
-			continue
-		}
-
-		latest[msg.RepGroup] = msg.Counts
-	}
-
-	return true
-}
-
-func TestCompletedRepGroupStatusSurvivesRapidTransitionsAndReconnect(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	Convey("Rapid successful jobs stay complete in live and reconnected status views", t, func() {
-		ctx := context.Background()
-		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		serverConfig.Timings.ItemTTR = time.Hour
-
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
-
-		defer server.Stop(ctx, true)
-
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		// Hold the initial batch's new->ready callback while all six jobs run
-		// and four finish. Queue mutation must remain non-blocking, while status
-		// transitions must retain mutation order. Before ordered callback delivery,
-		// the later ready->running and running->complete callbacks overtook this
-		// one and the eventual late new->ready update corrupted absolute counts.
-		firstCallbackStarted := make(chan struct{})
-		releaseFirstCallback := make(chan struct{})
-		callbackFinished := make(chan struct{}, 11)
-
-		var blockFirstReady sync.Once
-
-		server.q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any) {
-			if fromQ == queue.SubQueueNew && toQ == queue.SubQueueReady {
-				blockFirstReady.Do(func() {
-					close(firstCallbackStarted)
-					<-releaseFirstCallback
-				})
-			}
-
-			server.emitChangeCallbackTransition(ctx, fromQ, toQ, data)
-
-			callbackFinished <- struct{}{}
-		})
-
-		repGroup := "status-rapid-complete"
-		jobs := subscriptionTestJobs(repGroup, standardReqs, 6)
-		added, already, err := jq.Add(jobs, envVars, true)
-		So(err, ShouldBeNil)
-		So(added, ShouldEqual, 6)
-		So(already, ShouldEqual, 0)
-
-		select {
-		case <-firstCallbackStarted:
-		case <-time.After(3 * time.Second):
-			So("initial status callback did not start", ShouldBeBlank)
-		}
-
-		running := make([]*Job, 0, 6)
-
-		for range 6 {
-			job, errr := jq.Reserve(2 * time.Second)
-			So(errr, ShouldBeNil)
-			So(job, ShouldNotBeNil)
-			So(jq.Started(job, os.Getpid()), ShouldBeNil)
-			running = append(running, job)
-		}
-
-		for _, job := range running[:4] {
-			So(jq.Archive(job, &JobEndState{
-				Exited:   true,
-				Exitcode: 0,
-				EndTime:  time.Now(),
-			}), ShouldBeNil)
-		}
-
-		// Give the historical independently-spawned callbacks a deterministic
-		// chance to overtake the blocked first callback. Ordered delivery keeps
-		// them queued, so the bounded wait simply expires in the fixed code.
-		finished := 0
-		waitForOvertaking := time.After(250 * time.Millisecond)
-
-	overtakingWait:
-		for finished < 10 {
-			select {
-			case <-callbackFinished:
-				finished++
-			case <-waitForOvertaking:
-				break overtakingWait
-			}
-		}
-
-		close(releaseFirstCallback)
-
-		for finished < 11 {
-			select {
-			case <-callbackFinished:
-				finished++
-			case <-time.After(3 * time.Second):
-				So("status callbacks did not finish", ShouldBeBlank)
-
-				finished = 11
-			}
-		}
-
-		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
-		defer testServer.Close()
-
-		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
-		header := http.Header{}
-		header.Add("Authorization", "Bearer "+string(token))
-
-		ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-		So(err, ShouldBeNil)
-
-		defer ws.Close()
-
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
-			JobStateRunning:  2,
-			JobStateComplete: 4,
-		}, 3*time.Second), ShouldBeTrue)
-
-		// A fifth completion is a dirty live update on this connection. It must
-		// replace the RepGroup with five complete plus one running and no deleted.
-		So(jq.Archive(running[4], &JobEndState{
-			Exited:   true,
-			Exitcode: 0,
-			EndTime:  time.Now(),
-		}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
-			JobStateRunning:  1,
-			JobStateComplete: 5,
-		}, 3*time.Second), ShouldBeTrue)
-
-		So(ws.Close(), ShouldBeNil)
-		ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
-		So(err, ShouldBeNil)
-
-		defer ws.Close()
-
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-		So(readExactRepGroupState(ws, repGroup, map[JobState]int{
-			JobStateRunning:  1,
-			JobStateComplete: 5,
-		}, 3*time.Second), ShouldBeTrue)
-
-		summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
-		So(err, ShouldBeNil)
-		So(summaries[repGroup].Counts, ShouldResemble, map[JobState]int{
-			JobStateRunning:  1,
-			JobStateComplete: 5,
-		})
 	})
-}
-
-func TestHighPressureCompletedRepGroupStatusSurvivesRefresh(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	Convey("A high pressure RepGroup keeps complete counts across refresh while a live job remains, but a "+
-		"complete-only RepGroup is omitted from a fresh refresh seed (terminal-hiding filter restored per "+
-		"bugfix 260721-1 / 260626-2 / 260716-1)",
-		t, func() {
-			ctx := context.Background()
-			serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-			serverConfig.Timings.ItemTTR = time.Hour
-
-			server, _, token, err := serve(ctx, serverConfig)
-			So(err, ShouldBeNil)
-
-			defer server.Stop(ctx, true)
-
-			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-			So(err, ShouldBeNil)
-
-			defer disconnect(jq)
-
-			const completedCount = 3001
-
-			repGroup := "status-high-pressure-complete"
-			jobs := subscriptionTestJobs(repGroup, standardReqs, completedCount+1)
-			added, already, err := jq.Add(jobs, envVars, true)
-			So(err, ShouldBeNil)
-			So(added, ShouldEqual, completedCount+1)
-			So(already, ShouldEqual, 0)
-
-			runningItems := make([]*queue.Item, 0, completedCount+1)
-			for range completedCount + 1 {
-				job, errr := jq.Reserve(2 * time.Second)
-				So(errr, ShouldBeNil)
-				So(job, ShouldNotBeNil)
-				So(jq.Started(job, os.Getpid()), ShouldBeNil)
-
-				item, errg := server.q.Get(job.Key())
-				So(errg, ShouldBeNil)
-
-				runningItems = append(runningItems, item)
-			}
-
-			testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
-			defer testServer.Close()
-
-			wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
-			header := http.Header{}
-			header.Add("Authorization", "Bearer "+string(token))
-
-			ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-			So(err, ShouldBeNil)
-
-			defer ws.Close()
-
-			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-			So(readExactRepGroupState(ws, repGroup, map[JobState]int{
-				JobStateRunning: completedCount + 1,
-			}, 10*time.Second), ShouldBeTrue)
-
-			archiveErrs := make(chan error, completedCount)
-			archiveJobs := make(chan *queue.Item)
-
-			var archiveWG sync.WaitGroup
-
-			for range 64 {
-				archiveWG.Add(1)
-				go func() {
-					defer archiveWG.Done()
-
-					for item := range archiveJobs {
-						archiveErrs <- archiveServerCompletedJob(ctx, server, item)
-					}
-				}()
-			}
-
-			for _, item := range runningItems[:completedCount] {
-				archiveJobs <- item
-			}
-
-			close(archiveJobs)
-
-			archiveWG.Wait()
-			close(archiveErrs)
-
-			for archiveErr := range archiveErrs {
-				So(archiveErr, ShouldBeNil)
-			}
-
-			expected := map[JobState]int{
-				JobStateRunning:  1,
-				JobStateComplete: completedCount,
-			}
-			So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
-
-			So(ws.Close(), ShouldBeNil)
-			ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
-			So(err, ShouldBeNil)
-
-			defer ws.Close()
-
-			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-			So(readExactRepGroupState(ws, repGroup, expected, 10*time.Second), ShouldBeTrue)
-
-			summaries, err := jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
-			So(err, ShouldBeNil)
-			So(summaries[repGroup].Counts, ShouldResemble, expected)
-
-			So(archiveServerCompletedJob(ctx, server, runningItems[completedCount]), ShouldBeNil)
-
-			// The last live job completes WHILE this client is connected, so the
-			// already-connected client must still receive the complete count (the
-			// RepGroup stays visible for the rest of this live session: 260625-6).
-			allComplete := map[JobState]int{JobStateComplete: completedCount + 1}
-			So(readExactRepGroupState(ws, repGroup, allComplete, 10*time.Second), ShouldBeTrue)
-
-			So(ws.Close(), ShouldBeNil)
-			ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
-			So(err, ShouldBeNil)
-
-			defer ws.Close()
-
-			// A fresh reconnect (a page refresh) now OMITS the complete-only
-			// RepGroup: the repGroupCounts connect-seed applies the terminal-hiding
-			// filter (bugfix 260721-1, restoring 260626-2 / 260716-1), so a
-			// completed-only RepGroup does not re-appear on refresh even though the
-			// counter still tracks its complete count.
-			So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-			So(readRepGroupAbsentDuring(ws, repGroup, 5*time.Second), ShouldBeTrue)
-
-			// CLI search is ground-truth and SHOULD still report the completed jobs.
-			summaries, err = jq.GetStatusByRepGroupMatch(repGroup, RepGroupMatchExact, nil, true, false)
-			So(err, ShouldBeNil)
-			So(summaries[repGroup].Counts, ShouldResemble, allComplete)
-		})
-}
-
-// readExactRepGroupState reads absolute messages until the requested RepGroup
-// has exactly the expected counts. Requiring full map equality also proves no
-// stale deleted (or other) state is present.
-func readExactRepGroupState(ws *websocket.Conn, repGroup string, expected map[JobState]int,
-	timeout time.Duration) bool {
-	return readAbsoluteStateUntil(ws, timeout, func(latest map[string]map[JobState]int) bool {
-		return maps.Equal(latest[repGroup], expected)
-	})
-}
-
-func archiveServerCompletedJob(ctx context.Context, server *Server, item *queue.Item) error {
-	job, ok := item.Data().(*Job)
-	if !ok {
-		return Error{Op: archiveServerCompletedJobOp, Item: "item data is not a job", Err: ErrBadJob}
-	}
-
-	endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-
-	key, repGroup, schedulerGroup, srerr := markJobComplete(job, endState, server.limiter)
-	if srerr != "" {
-		return Error{Op: archiveServerCompletedJobOp, Err: srerr}
-	}
-
-	_, srerr, qerr := server.archiveCompletedJob(ctx, job, key, repGroup, schedulerGroup)
-	if srerr != "" {
-		return Error{Op: archiveServerCompletedJobOp, Item: qerr, Err: srerr}
-	}
-
-	return nil
 }
 
 // readRepGroupAbsentDuring reads absolute messages for the given window and
@@ -804,7 +448,7 @@ func readRepGroupAbsentDuring(ws *websocket.Conn, repGroup string, window time.D
 	defer clearReadDeadlineBestEffort(ws)
 
 	for {
-		var msg jstateAbsolute
+		var msg jstateCount
 		if err := ws.ReadJSON(&msg); err != nil {
 			// the read deadline elapsing with no reviving message is the success
 			// signal: the RepGroup was correctly omitted from the fresh seed.
@@ -815,10 +459,216 @@ func readRepGroupAbsentDuring(ws *websocket.Conn, repGroup string, window time.D
 			return errors.As(err, &netErr) && netErr.Timeout()
 		}
 
-		if msg.RepGroup == repGroup && statusCountsTotal(msg.Counts) > 0 {
+		if msg.RepGroup == repGroup && msg.ToState != "" && msg.Count > 0 {
 			return false
 		}
 	}
+}
+
+// TestReliable2WebRevertTerminalHiddenOnRefresh covers A4.1: a terminal-only rep
+// group (its only jobs are complete) yields no live seed for that rep group when
+// a /status_ws client connects and requests "current". This is the
+// terminal-hiding-on-refresh property (preserving 260626-2/260716-1/260721-1),
+// retained for free by A3's incomplete-only getJobsCurrent scan-on-connect: the
+// fresh seed's "+all+" aggregate and its per-RepGroup breakdown are both built
+// from getJobsCurrent (incomplete jobs only), so a rep group with only complete
+// jobs never appears in the seed.
+//
+// The assertion would genuinely fail if scan-on-connect regressed to a
+// complete-inclusive scan (e.g. getJobs including complete jobs instead of
+// getJobsCurrent): the terminal-only rep group would then be seeded with a
+// positive complete count, and readRepGroupAbsentDuring would observe that
+// reviving message and return false. A live rep group added alongside is a
+// positive control proving the seed does fire and does deliver non-terminal
+// groups, so a true result cannot come from a dead/empty connection.
+func TestReliable2WebRevertTerminalHiddenOnRefresh(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("A terminal-only rep group is omitted from a fresh status seed on refresh", t, func() {
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.ItemTTR = time.Hour
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		const completeCount = 2
+
+		terminalGroup := "rg-web-terminal-refresh"
+		liveGroup := "rg-web-live-refresh"
+
+		// terminal-only rep group: add jobs and run them all to completion, so
+		// its only jobs are complete (terminal).
+		terminalJobs := make([]*Job, 0, completeCount)
+		for i := range completeCount {
+			terminalJobs = append(terminalJobs, &Job{
+				Cmd:          "echo terminal refresh " + strings.Repeat("x", i+1),
+				Cwd:          testCwd,
+				ReqGroup:     "web-terminal-refresh-group",
+				Requirements: standardReqs,
+				RepGroup:     terminalGroup,
+			})
+		}
+
+		added, already, err := jq.Add(terminalJobs, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, completeCount)
+		So(already, ShouldEqual, 0)
+
+		for range completeCount {
+			rjob, errr := jq.Reserve(2 * time.Second)
+			So(errr, ShouldBeNil)
+			So(rjob, ShouldNotBeNil)
+			So(jq.Started(rjob, os.Getpid()), ShouldBeNil)
+			So(jq.Archive(rjob, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+		}
+
+		// live rep group: a ready job left live, as a positive control that the
+		// scan-on-connect seed fires and delivers non-terminal groups.
+		added, already, err = jq.Add([]*Job{{
+			Cmd:          "echo live refresh",
+			Cwd:          testCwd,
+			ReqGroup:     "web-live-refresh-group",
+			Requirements: standardReqs,
+			RepGroup:     liveGroup,
+		}}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		Convey("The fresh seed delivers the live group but omits the terminal-only group", func() {
+			// positive control: a fresh connection's "current" seed delivers the
+			// live rep group and the "+all+" aggregate, proving the seed fired.
+			wsControl, _, errc := websocket.DefaultDialer.Dial(wsURL, header)
+			So(errc, ShouldBeNil)
+
+			defer wsControl.Close()
+
+			So(wsControl.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readJStateDeltasUntil(wsControl, 5*time.Second, func(acc *deltaCounts) bool {
+				return acc.count(liveGroup, JobStateReady) == 1 &&
+					acc.count(webStatusAllRepGroups, JobStateReady) == 1
+			}), ShouldBeTrue)
+
+			// guard: a separate fresh connection's "current" seed never revives
+			// the terminal-only rep group (terminal-hiding on refresh).
+			wsGuard, _, errg := websocket.DefaultDialer.Dial(wsURL, header)
+			So(errg, ShouldBeNil)
+
+			defer wsGuard.Close()
+
+			So(wsGuard.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readRepGroupAbsentDuring(wsGuard, terminalGroup, 3*time.Second), ShouldBeTrue)
+		})
+	})
+}
+
+// TestReliable2WebRevertCompletesWhileConnectedStaysVisible covers A4.2: a rep
+// group with live jobs that then complete WHILE a client is connected yields the
+// running->complete jstateCount deltas, and the rep group stays visible in that
+// connected client's view (260625-6). Terminal-hiding (A4.1) applies only to a
+// fresh-connect seed; a completion observed live keeps the rep group present via
+// the running->complete delta, so the connected client still shows a positive
+// complete count. As a direct contrast, a fresh connection made afterwards finds
+// the now-terminal-only rep group correctly hidden on refresh.
+func TestReliable2WebRevertCompletesWhileConnectedStaysVisible(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("A rep group that completes while connected stays visible via live deltas", t, func() {
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.ItemTTR = time.Hour
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		testServer := httptest.NewServer(webInterfaceStatusWS(ctx, server))
+		defer testServer.Close()
+
+		wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http")
+		header := http.Header{}
+		header.Add("Authorization", "Bearer "+string(token))
+
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		So(err, ShouldBeNil)
+
+		defer ws.Close()
+
+		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+
+		repGroup := "rg-web-complete-while-connected"
+		job := &Job{
+			Cmd:          "echo complete while connected",
+			Cwd:          testCwd,
+			ReqGroup:     "web-complete-connected-group",
+			Requirements: standardReqs,
+			RepGroup:     repGroup,
+		}
+
+		added, already, err := jq.Add([]*Job{job}, envVars, true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		rjob, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(rjob, ShouldNotBeNil)
+		So(jq.Started(rjob, os.Getpid()), ShouldBeNil)
+
+		// the connected client sees the job go live (ready->running delta).
+		So(readJStateDeltasUntil(ws, 5*time.Second, func(acc *deltaCounts) bool {
+			return acc.count(repGroup, JobStateRunning) == 1 &&
+				acc.count(webStatusAllRepGroups, JobStateRunning) == 1
+		}), ShouldBeTrue)
+
+		So(jq.Archive(rjob, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		// the running->complete delta arrives WHILE connected: the rep group
+		// stays visible (a positive complete count remains in the client's view),
+		// nothing is left running, and "+all+" drops back to zero running.
+		So(readJStateDeltasUntil(ws, 5*time.Second, func(acc *deltaCounts) bool {
+			return acc.count(repGroup, JobStateComplete) == 1 &&
+				acc.count(repGroup, JobStateRunning) == 0 &&
+				acc.count(webStatusAllRepGroups, JobStateRunning) == 0
+		}), ShouldBeTrue)
+
+		Convey("A fresh connection made afterwards hides the now-terminal-only rep group", func() {
+			wsFresh, _, errf := websocket.DefaultDialer.Dial(wsURL, header)
+			So(errf, ShouldBeNil)
+
+			defer wsFresh.Close()
+
+			So(wsFresh.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
+			So(readRepGroupAbsentDuring(wsFresh, repGroup, 3*time.Second), ShouldBeTrue)
+		})
+	})
 }
 
 func TestServerWebI(t *testing.T) {
@@ -1654,14 +1504,14 @@ func TestServerWebI(t *testing.T) {
 
 				wg.Add(3)
 
-				r1ch := make(chan jstateAbsolute, 1)
-				r2ch := make(chan jstateAbsolute, 1)
-				r3ch := make(chan jstateAbsolute, 1)
+				r1ch := make(chan jstateCount, 1)
+				r2ch := make(chan jstateCount, 1)
+				r3ch := make(chan jstateCount, 1)
 
 				go func() {
 					defer wg.Done()
 
-					var sc jstateAbsolute
+					var sc jstateCount
 
 					ws.ReadJSON(&sc) //nolint:errcheck
 
@@ -1671,7 +1521,7 @@ func TestServerWebI(t *testing.T) {
 				go func() {
 					defer wg.Done()
 
-					var sc jstateAbsolute
+					var sc jstateCount
 
 					ws2.ReadJSON(&sc) //nolint:errcheck
 
@@ -1681,7 +1531,7 @@ func TestServerWebI(t *testing.T) {
 				go func() {
 					defer wg.Done()
 
-					var sc jstateAbsolute
+					var sc jstateCount
 
 					ws3.ReadJSON(&sc) //nolint:errcheck
 
@@ -1714,7 +1564,7 @@ func TestServerWebI(t *testing.T) {
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
-				var sc jstateAbsolute
+				var sc jstateCount
 
 				// Read an absolute status message with a deadline instead of
 				// pre-sleeping: the per-client sender pushes the current absolute

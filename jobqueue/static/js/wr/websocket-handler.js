@@ -41,28 +41,6 @@ function resetLiveCounts(viewModel) {
     }
 }
 
-// setTrackerCounts applies an authoritative absolute count map to a tracker by
-// writing each count observable directly to its new value (states absent from
-// the message become 0). It deliberately does NOT zero-then-set and does NOT
-// touch the pct observables: writing the pcts to 0 between updates would
-// collapse every bound bar segment to 0 width on each storm message (the bar
-// "flickers so fast it looks like it's not there"). The count observables are
-// rate-limited and idempotent, so unchanged states do not notify and changed
-// ones transition smoothly; the rate-limited `total` computed then recomputes
-// the pcts via updateProgressBars so the bar animates its proportions instead
-// of being cleared and redrawn.
-function setTrackerCounts(tracker, counts) {
-    if (!tracker) {
-        return;
-    }
-
-    for (const property of countProperties) {
-        if (typeof tracker[property] === 'function') {
-            tracker[property](counts[property] || 0);
-        }
-    }
-}
-
 function getOrCreateRepGroupTracker(viewModel, rg) {
     if (viewModel.repGroupLookup.hasOwnProperty(rg)) {
         return viewModel.repGroups[viewModel.repGroupLookup[rg]];
@@ -177,8 +155,8 @@ export function setupWebSocket(viewModel) {
                 try {
                     const json = JSON.parse(e.data);
 
-                    if (json.hasOwnProperty('Counts')) {
-                        handleAbsoluteStateMessage(viewModel, json);
+                    if (json.hasOwnProperty('FromState')) {
+                        handleStateChangeMessage(viewModel, json);
                     } else if (json.hasOwnProperty('State')) {
                         handleJobDetailsMessage(viewModel, json);
                     } else if (json.hasOwnProperty('IP')) {
@@ -200,26 +178,107 @@ export function setupWebSocket(viewModel) {
     connect();
 }
 
-/**
- * Handles an absolute per-RepGroup status message from the WebSocket by
- * replacing that RepGroup's counts wholesale. This is idempotent: applying the
- * same message twice is a no-op, and a dropped intermediate message is harmless
- * because the next one overwrites it. "+all+" updates the live in-flight totals.
- * @param {StatusViewModel} viewModel - The main view model
- * @param {object} json - The JSON message data ({ RepGroup, Counts })
- */
-function handleAbsoluteStateMessage(viewModel, json) {
-    const rg = json['RepGroup'];
-    const counts = json['Counts'] || {};
+// stateToProperty maps a wire JobState string to the tracker's count observable
+// name. States with no bar segment (e.g. "new") map to undefined and are
+// ignored.
+const stateToProperty = {
+    delayed: 'delayed',
+    dependent: 'dependent',
+    suspended: 'suspended',
+    ready: 'ready',
+    reserved: 'running',
+    running: 'running',
+    lost: 'lost',
+    buried: 'buried',
+    complete: 'complete',
+    deleted: 'deleted',
+};
 
-    let tracker;
-    if (rg == "+all+") {
-        tracker = viewModel.inflight;
-    } else {
-        tracker = getOrCreateRepGroupTracker(viewModel, rg);
+/**
+ * Handles a v0.36.5-style from->to state-count delta message from the WebSocket
+ * by decrementing the FromState count and incrementing the ToState count by
+ * Count on the RepGroup tracker (and the "+all+" in-flight tracker). Because the
+ * feed is lossy and unordered (v0.36.5 quality), an out-of-order delta that
+ * would drive a count negative is instead recorded as an amount to ignore from a
+ * future increment of that state, keeping counts non-negative. "+all+" tracks
+ * only live states, so terminal complete/deleted are not applied to it.
+ * @param {StatusViewModel} viewModel - The main view model
+ * @param {object} json - The JSON message data ({ RepGroup, FromState, ToState, Count })
+ */
+function handleStateChangeMessage(viewModel, json) {
+    const rg = json['RepGroup'];
+    const isAll = rg == "+all+";
+    const tracker = isAll ? viewModel.inflight : getOrCreateRepGroupTracker(viewModel, rg);
+    const count = json['Count'];
+
+    if (!viewModel.ignore) {
+        viewModel.ignore = {};
     }
 
-    setTrackerCounts(tracker, counts);
+    const fromProperty = stateToProperty[json['FromState']];
+    const toProperty = terminalOnAll(isAll, json['ToState']) ? undefined : stateToProperty[json['ToState']];
+
+    const ignored = applyIgnoredToState(viewModel, rg, json['ToState'], count);
+
+    applyFromDelta(viewModel, tracker, rg, json['FromState'], fromProperty, count);
+
+    if (!ignored && toProperty && typeof tracker[toProperty] === 'function') {
+        tracker[toProperty](tracker[toProperty]() + count);
+    }
+}
+
+// terminalOnAll reports whether a to-state is a terminal state that must not be
+// applied to the "+all+" live aggregate (which tracks only in-flight jobs).
+function terminalOnAll(isAll, toState) {
+    return isAll && (toState == 'complete' || toState == 'deleted');
+}
+
+// applyIgnoredToState consumes a pending "ignore" amount for this RepGroup's
+// to-state (created when an earlier from-delta went negative) and returns true
+// if the whole delta was absorbed by the ignore and should not increment the
+// to-state.
+function applyIgnoredToState(viewModel, rg, toState, count) {
+    const rgIgnore = viewModel.ignore[rg];
+
+    if (rgIgnore && rgIgnore.hasOwnProperty(toState) && rgIgnore[toState] >= count) {
+        rgIgnore[toState] -= count;
+
+        if (rgIgnore[toState] == 0) {
+            delete rgIgnore[toState];
+
+            if (Object.keys(rgIgnore).length == 0) {
+                delete viewModel.ignore[rg];
+            }
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+// applyFromDelta decrements a tracker's from-state count by the delta, clamping
+// at zero and recording the shortfall as an amount to ignore from a future
+// increment of that state (handles out-of-order deltas).
+function applyFromDelta(viewModel, tracker, rg, fromState, fromProperty, count) {
+    if (!fromProperty || typeof tracker[fromProperty] !== 'function') {
+        return;
+    }
+
+    const newFrom = tracker[fromProperty]() - count;
+
+    if (newFrom >= 0) {
+        tracker[fromProperty](newFrom);
+
+        return;
+    }
+
+    if (!viewModel.ignore[rg]) {
+        viewModel.ignore[rg] = {};
+    }
+
+    viewModel.ignore[rg][fromState] = (viewModel.ignore[rg][fromState] || 0) + count;
+    tracker[fromProperty](0);
 }
 
 /**

@@ -27,7 +27,6 @@ package jobqueue
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,51 +68,6 @@ func TestRepGroupCountsLiveAbsolute(t *testing.T) {
 		So(c.wholeMap()[rg], ShouldResemble, map[JobState]int{JobStateComplete: 1})
 		// the +all+ aggregate excludes terminal states, so it drops back to empty.
 		So(c.wholeMap()[statusAllRepGroups], ShouldBeEmpty)
-	})
-}
-
-// TestRepGroupCountsWireFormat covers D1 acceptance test 2: a connected web-UI
-// status client receives a jstateAbsolute JSON message that is byte-compatible
-// with the pre-change wire format.
-func TestRepGroupCountsWireFormat(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	Convey("A connected status client receives a byte-compatible jstateAbsolute message", t, func() {
-		ctx := context.Background()
-		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
-
-		defer server.Stop(ctx, true)
-
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		repGroup := "rgc-wire"
-		jobs := subscriptionTestJobs(repGroup, standardReqs, 1)
-		added, already, err := jq.Add(jobs, envVars, true)
-		So(err, ShouldBeNil)
-		So(added, ShouldEqual, 1)
-		So(already, ShouldEqual, 0)
-
-		ws, testServer := connectStatusWS(ctx, server, token)
-		defer testServer.Close()
-		defer ws.Close()
-
-		So(ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
-
-		expected, err := json.Marshal(&jstateAbsolute{
-			RepGroup: repGroup,
-			Counts:   map[JobState]int{JobStateReady: 1},
-		})
-		So(err, ShouldBeNil)
-
-		So(readRawJStateAbsolute(ws, repGroup, string(expected), 5*time.Second), ShouldBeTrue)
 	})
 }
 
@@ -410,39 +364,4 @@ func connectStatusWS(ctx context.Context, server *Server, token []byte) (*websoc
 	So(err, ShouldBeNil)
 
 	return ws, testServer
-}
-
-// readRawJStateAbsolute reads raw websocket messages until it sees one for the
-// given RepGroup whose raw bytes exactly equal the expected JSON (proving
-// byte-compatible wire format), or the timeout expires. Messages for other
-// RepGroups (and the +all+ aggregate), and intermediate states for this
-// RepGroup (e.g. an initial new before ready), are skipped.
-func readRawJStateAbsolute(ws *websocket.Conn, repGroup, expected string, timeout time.Duration) bool {
-	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return false
-	}
-	defer clearReadDeadlineBestEffort(ws)
-
-	for {
-		_, raw, err := ws.ReadMessage()
-		if err != nil {
-			return false
-		}
-
-		var msg jstateAbsolute
-		if json.Unmarshal(raw, &msg) != nil {
-			continue
-		}
-
-		if msg.RepGroup != repGroup {
-			continue
-		}
-
-		// gorilla's WriteJSON uses a json.Encoder, which appends a trailing
-		// newline; json.Marshal (used to build expected) does not, so compare the
-		// trimmed wire bytes.
-		if strings.TrimSpace(string(raw)) == expected {
-			return true
-		}
-	}
 }

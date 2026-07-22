@@ -103,8 +103,8 @@ function fakeWebSocketScript() {
     window.__wrDependentFixtureRequests = [];
 
     const currentSnapshot = [
-      { RepGroup: '+all+', Counts: { dependent: 1 } },
-      { RepGroup: 'bigmod', Counts: { dependent: 1 } }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'dependent', Count: 1 },
+      { RepGroup: 'bigmod', FromState: 'new', ToState: 'dependent', Count: 1 }
     ];
 
     const dependentJob = {

@@ -66,12 +66,13 @@ function hasLiveJob(counts) {
   return LIVE_STATES.some((state) => (counts[state] || 0) > 0);
 }
 
-// computeSeed models the server's fresh-connect seed. When filtered (the fix),
-// a RepGroup with live jobs is sent without deleted, and every RepGroup with no
-// live job (complete-only, deleted-only, or complete+deleted) is omitted. When
-// unfiltered (the pre-fix bug), every RepGroup is sent verbatim, including its
-// deleted count. The +all+ aggregate always holds live jobs only (the server
-// maintains that invariant separately).
+// computeSeed models the server's fresh-connect seed, sent the v0.36.5 way as
+// jstateCount deltas from 'new' (one per non-zero state). When filtered (the
+// fix), a RepGroup with live jobs is seeded without deleted, and every RepGroup
+// with no live job (complete-only, deleted-only, or complete+deleted) is
+// omitted. When unfiltered (the pre-fix bug), every RepGroup is seeded verbatim,
+// including its deleted count. The +all+ aggregate always holds live jobs only
+// (the server maintains that invariant separately).
 function computeSeed(state, filtered) {
   const messages = [];
   const liveAggregate = {};
@@ -84,33 +85,27 @@ function computeSeed(state, filtered) {
     }
   }
 
-  messages.push({ RepGroup: '+all+', Counts: liveAggregate });
+  for (const [live, count] of Object.entries(liveAggregate)) {
+    messages.push({ RepGroup: '+all+', FromState: 'new', ToState: live, Count: count });
+  }
 
   for (const [rg, counts] of Object.entries(state)) {
-    if (filtered) {
-      if (!hasLiveJob(counts)) {
-        // a RepGroup with no live job (complete-only, deleted-only, or
-        // complete+deleted) is omitted entirely from the fresh-connect seed.
+    if (filtered && !hasLiveJob(counts)) {
+      // a RepGroup with no live job (complete-only, deleted-only, or
+      // complete+deleted) is omitted entirely from the fresh-connect seed.
+      continue;
+    }
+
+    for (const [stateName, count] of Object.entries(counts)) {
+      if (count <= 0) {
         continue;
       }
 
-      const sent = {};
-      for (const [state, count] of Object.entries(counts)) {
-        if (count > 0 && state !== 'deleted') {
-          sent[state] = count;
-        }
+      if (filtered && stateName === 'deleted') {
+        continue;
       }
 
-      messages.push({ RepGroup: rg, Counts: sent });
-    } else {
-      const sent = {};
-      for (const [state, count] of Object.entries(counts)) {
-        if (count > 0) {
-          sent[state] = count;
-        }
-      }
-
-      messages.push({ RepGroup: rg, Counts: sent });
+      messages.push({ RepGroup: rg, FromState: 'new', ToState: stateName, Count: count });
     }
   }
 
@@ -200,12 +195,12 @@ function createStaticServer() {
 }
 
 // fakeWebSocketScript installs a fake WebSocket that replays a fixed list of
-// absolute-state message batches in response to the client's "current" request.
-// Each batch is emitted message-by-message with a small delay, mirroring how the
-// server sends one { RepGroup, Counts } per dirty RepGroup. batches is an array
-// of { phase, messages } applied in order; the live phases model updates pushed
-// to an already-connected client, the seed batch models the first drain a fresh
-// connection receives.
+// from->to state-count delta message batches in response to the client's
+// "current" request. Each batch is emitted message-by-message with a small
+// delay, mirroring how the server sends { RepGroup, FromState, ToState, Count }
+// deltas. batches is an array of { phase, messages } applied in order; the live
+// phases model updates pushed to an already-connected client, the seed batch
+// models the first drain a fresh connection receives.
 function fakeWebSocketScript(batches) {
   return `(() => {
     const BATCHES = ${JSON.stringify(batches)};
@@ -368,14 +363,17 @@ async function run() {
   // updates carry complete and deleted, so the red deleted bar appears.
   const liveSeed = computeSeed({ [REP_GROUP]: { ready: TOTAL } }, true);
   const afterComplete = [
-    { RepGroup: '+all+', Counts: { ready: REMOVED } },
-    { RepGroup: REP_GROUP, Counts: { ready: REMOVED, complete: COMPLETED } }
+    // COMPLETED jobs finish: ready -> complete. complete is terminal on +all+,
+    // so its live aggregate just loses the ready count.
+    { RepGroup: '+all+', FromState: 'ready', ToState: 'complete', Count: COMPLETED },
+    { RepGroup: REP_GROUP, FromState: 'ready', ToState: 'complete', Count: COMPLETED }
   ];
   const afterRemoval = [
-    // every remaining live job removed: +all+ is now empty (no live jobs) ...
-    { RepGroup: '+all+', Counts: {} },
-    // ... and echo carries its complete + deleted counts as a live update.
-    { RepGroup: REP_GROUP, Counts: { complete: COMPLETED, deleted: REMOVED } }
+    // every remaining live job removed: ready -> deleted. deleted is terminal on
+    // +all+, so its live aggregate is now empty (no live jobs) ...
+    { RepGroup: '+all+', FromState: 'ready', ToState: 'deleted', Count: REMOVED },
+    // ... and echo gains its deleted count as a live update (keeping complete).
+    { RepGroup: REP_GROUP, FromState: 'ready', ToState: 'deleted', Count: REMOVED }
   ];
 
   const liveBatches = [

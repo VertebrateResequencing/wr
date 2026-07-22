@@ -280,7 +280,11 @@ func (c *repGroupCounts) subscribe() *repGroupCountsSubscriber {
 	return sub
 }
 
-// unsubscribe removes a subscriber.
+// unsubscribe removes a subscriber. Its sole caller, the old absolute-count web
+// listener, was removed by item 1.2/A3 (which restores the v0.36.5 delta feed);
+// item 1.3/A1 removes this whole counter, so it is retained unused until then.
+//
+//nolint:unused // removed by item 1.3/A1; kept so 1.2/A3 compiles.
 func (c *repGroupCounts) unsubscribe(sub *repGroupCountsSubscriber) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -89,8 +89,8 @@ serial-drainer ordering/Goexit tests
 `TestQueueChangedCallbacksContinueAfterGoexit`) - no remaining test may assert
 transition-order preservation.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A3 - Restore the v0.36.5 status-bar delta feed + scan-on-connect
 
@@ -164,8 +164,8 @@ returns `Counts[JobStateComplete] == N` - the Issue-4 fix (no diverging
 counter); (3) the browser guard above (A3.3) - `make browser-test` keeps
 `repgroup-bar-flicker` green after the JS status-bar edit.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: A1 - Remove the per-RepGroup counter; split the chokepoint
 
@@ -211,8 +211,8 @@ a subscriber to a rep group whose job runs to success (`Exitcode==0`) still
 receives a terminal `JobUpdate` with to-state `JobStateComplete` and never
 `JobStateDeleted` (KEEP #503 delivery unaffected by removing the counter).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.4: A4 - Terminal-hiding-on-refresh retained
 
@@ -245,8 +245,8 @@ running->complete `jstateCount` deltas and the rep group stays visible; (3) the
 browser guard above (A4.3) - `make browser-test` keeps `removed-jobs-refresh`
 and `completed-repgroup-visibility` green after the JS status-bar edit.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section E1)
 
