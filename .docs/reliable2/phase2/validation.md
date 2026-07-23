@@ -6,7 +6,10 @@ scale-only scheduler deadlock found and fixed (`dfa196f`). The 160k
 over-submission stall was root-caused to bugfix **260722-1** and **also fixed**
 (`5d60467`): the 160k churn now drains fully (160,000/160,000). The two
 DB-preserving-restart checks (Issue-4-after-restart, Idea-1) were completed on
-an isolated production-mode manager (prod preserves the DB). No known
+an isolated production-mode manager (prod preserves the DB). A later web-UI
+status regression under a fast burst to a slow browser (bug **260723-1**: the
+status delta feed dropped on the caster's 1-slot buffer) was found and **fixed**
+(`1049c19`, never-drop status transport) and re-validated end-to-end. No known
 outstanding issue.
 
 Tier B is the required real-LSF gate (spec §E3). It was executed by the
@@ -93,13 +96,41 @@ An early run showed a ~0.004% `bkill`-race bury under `--retries 0` (a runner
 bkilled in the tiny window before its reserve registers; harmless with retries,
 down from the pre-fix ~95% bkill rate).
 
-**Final full-scale re-confirmation on complete HEAD `ed3f523`** (all phase-1..5
+**Web-UI status regression (bug 260723-1) — found, fixed, re-validated.** A
+separate report surfaced that under a fast completion burst to a *slow browser*
+the web status bar flickered and then froze mid-progress (CLI stayed correct),
+whereas v0.36.5 ended at a stable full bar. Root cause: the counter-only revert
+restored the v0.36.5 `jstateCount` delta data model but left #533's internal
+`caster`, whose `trySend` drops on a 1-slot buffer overflow — fine for the
+idempotent bad-server/scheduler feeds, fatal for the non-idempotent status
+deltas (a dropped `running→complete` is lost forever; a live connection only
+re-seeds on reconnect). v0.36.5's `grafov/bcast` (force-pinned to commit
+`e9affb593f6c`) never dropped. Fixed (`1049c19`) with a never-drop caster mode
+for the status feed only (unbounded per-member queue + pump goroutine; N1b
+preserved; no `bcast` re-added, no resync, no absolute counter). Verified
+end-to-end: a **slow** wsprobe (throttled to model a slow browser; added via
+`--slow`, commit `7488322`) watching a 10,000-`echo` burst on the local
+scheduler applied all 40,002 delta messages and **converged to `complete=10000`**
+with zero drops (pre-fix it stuck at an undercount); the deterministic Go test
+`TestReliable2StatusFeedNeverDrops` fails-before/passes-after under `-race`.
+
+**Final full-scale re-confirmation on complete HEAD (incl. 260722-1 fix
+`5d60467`, backoff refactor `ed3f523`, web-status fix `1049c19`)** (all phase-1..5
 + deadlock fix `dfa196f` + 260722-1 `5d60467` + the `wr/backoff` retry-backoff
-refactor `ed3f523`): 160k churn **FULLY DRAINED at t+478s — 160,000/160,000**
-(`rgtrue` 80000 `complete`/0 `buried`; `rgfalse` 80000 `buried`), **0 `bad job`
-/ 0 `not running`** throughout, control RPCs **77-262 ms** the entire run,
-runners scaled 100→500, steady forward progress, no deadlock, no stall (this run
-had zero bkill-race buries). Everything works end-to-end at full scale.
+refactor `ed3f523` + web-status never-drop fix `1049c19`): the 160k churn was
+re-run twice to full drain — the latest, on the web-fix HEAD, **FULLY DRAINED at
+t+622s — 160,000/160,000** (`rgtrue` 79999 `complete` + 1 `buried`; `rgfalse`
+80000 `buried`), **1 `jarchive: bad job` total and 0 `not running`** across
+160,000 jobs, control RPCs **79-361 ms** the entire run, runners scaled to
+~1200, steady forward progress, no deadlock, no stall. (The single bad-job and
+single bury are `--retries 0` residuals of the inherent reserve-window
+`bkill` race, ~0.001%; harmless with retries.)
+
+Tier-A on the final HEAD: `make lint` 0 issues, `make test` 343 passed, `make
+race` 343 passed with **no data race**, `make browser-test` green (the three
+status fixtures intact), and `TestReliable2StatusFeedNeverDrops`/`TestCaster`/
+`TestReliable2WebRevert` clean under `-race -count=3`. Everything works
+end-to-end at full scale.
 
 ### Issue 4 — web `/status_ws` vs CLI: PASS (live-tracking); restart-history not CLI-testable on dev
 
