@@ -216,6 +216,18 @@ var (
 // pretending to be bsub.
 var BsubID uint64 //nolint:gochecknoglobals
 
+// numRPCReaders is the number of concurrent goroutines that call RecvMsg() on
+// the single command socket to admit client RPCs (spec B1). A small fixed value
+// lets control/status RPCs (wr status, wr limit, wr suspend) be admitted without
+// queuing behind a burst of reserve/touch/archive traffic, since Go channel
+// receives fan out one message per receiver and mangos routes each reply by the
+// message's pipe-ID header regardless of which reader admitted it. It is a
+// package var (not user-configurable) purely so tests can lower it to 1 or raise
+// it; production always uses the default.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var numRPCReaders = 6
+
 // envPprofAddr is the environment variable that, when set to a host:port (eg.
 // "localhost:6060"), makes Serve() start an opt-in net/http/pprof endpoint for
 // profiling the manager. It is unset by default, in which case no endpoint is
@@ -1125,6 +1137,33 @@ func (s *Server) stopBackgroundStartupTasks() {
 
 	if s.bgWG != nil {
 		s.bgWG.Wait(ServerShutdownWaitTime)
+	}
+}
+
+// serveClientsReader is one RPC reader: it receives client requests from the
+// command socket and handles each in its own goroutine until stopClientHandling
+// is signalled.
+func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg *waitgroup.WaitGroup,
+	readers *sync.WaitGroup, stopClientHandling <-chan bool) {
+	// log panics and die
+	defer internal.LogPanic(ctx, "jobqueue serving", true)
+	defer readers.Done()
+
+	for {
+		select {
+		case <-stopClientHandling: // s.shutdown() closes this
+			return
+		default:
+			// receive a clientRequest from a client
+			m, ok := s.receiveClientMessage(ctx, sock)
+			if !ok {
+				continue
+			}
+
+			// parse the request, do the desired work and respond to the client
+			wgk2 := wg.Add(1)
+			go s.dispatchClientRequest(ctx, m, wg, wgk2)
+		}
 	}
 }
 
@@ -2649,8 +2688,14 @@ func (s *Server) startBroadcasters(ctx context.Context, wg *waitgroup.WaitGroup)
 	}()
 }
 
-// serveClients receives client requests from the command socket and handles
-// each in its own goroutine until stopClientHandling is signalled.
+// serveClients launches numRPCReaders concurrent reader goroutines that admit
+// client requests from the single command socket, and closes clientHandlingDone
+// only once every reader has stopped, so waitForClientHandling still blocks
+// until serving has fully stopped (spec B1). Concurrent RecvMsg() on this raw
+// xrep socket is safe: mangos snapshots the shared recvQ channel under a brief
+// lock and a Go channel receive delivers each message to exactly one reader, so
+// distinct requests fan out to distinct readers without cross-talk, and each
+// reply is routed by the message's own pipe-ID header (see reply/SendMsg).
 func (s *Server) serveClients(ctx context.Context, sock mangos.Socket, wg *waitgroup.WaitGroup,
 	wgk string, stopClientHandling <-chan bool, clientHandlingDone chan<- struct{}) {
 	// log panics and die
@@ -2658,22 +2703,23 @@ func (s *Server) serveClients(ctx context.Context, sock mangos.Socket, wg *waitg
 	defer wg.Done(wgk)
 	defer close(clientHandlingDone)
 
-	for {
-		select {
-		case <-stopClientHandling: // s.shutdown() sends this
-			return
-		default:
-			// receive a clientRequest from a client
-			m, ok := s.receiveClientMessage(ctx, sock)
-			if !ok {
-				continue
-			}
-
-			// parse the request, do the desired work and respond to the client
-			wgk2 := wg.Add(1)
-			go s.dispatchClientRequest(ctx, m, wg, wgk2)
-		}
+	n := numRPCReaders
+	if n < 1 {
+		n = 1
 	}
+
+	var readers sync.WaitGroup
+
+	readers.Add(n)
+
+	for range n {
+		go s.serveClientsReader(ctx, sock, wg, &readers, stopClientHandling)
+	}
+
+	// block until every reader has exited (all observe the same closed
+	// stopClientHandling), so clientHandlingDone (deferred above) closes only
+	// after serving has fully stopped.
+	readers.Wait()
 }
 
 // receiveClientMessage receives the next message from the command socket. It

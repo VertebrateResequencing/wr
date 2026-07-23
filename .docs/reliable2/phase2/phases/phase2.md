@@ -71,8 +71,8 @@ single reader (`numRPCReaders = 1`) it is starved. Test 2 SUPPORTS but is not
 the sole evidence; the headline responsiveness claim is Tier B (real LSF at
 scale, Phase 5).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section E1)
 

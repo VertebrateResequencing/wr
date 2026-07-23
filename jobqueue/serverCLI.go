@@ -473,6 +473,21 @@ func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, str
 		return ErrClosedStop, "The server has been stopped"
 	}
 
+	// once shutdown has begun (up=false), refuse to register a new client
+	// subscription: any subscription created now is torn down moments later when
+	// closeClientSubscriptions runs and the command socket closes, so a
+	// reconnecting subscriber that bound to this dying server would be forced to
+	// reconnect a second time (to the replacement server) and emit a second,
+	// spurious JobUpdateResync. Rejecting here makes the subscriber's reconnect
+	// retry until the replacement server is up, so it resubscribes exactly once.
+	// This matters because concurrent RPC readers (spec B1) let a subscribe be
+	// admitted and served during the brief shutdown window that a single reader
+	// almost never hit. Pause/drain keep up=true, so graceful draining is
+	// unaffected.
+	if !up && cr.Method == requestMethodSubscribe {
+		return ErrClosedStop, "The server is shutting down"
+	}
+
 	return "", ""
 }
 
