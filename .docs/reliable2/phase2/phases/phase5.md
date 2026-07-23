@@ -121,8 +121,20 @@ Tier A + the in-process harness, FLAG Tier B as the required real-LSF gate not
 yet performed (per N5/N6), and still produce `validation.md`. Either way
 Tier B must be actually executed, never simulated. This is a gate, not code.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
+
+Tier B was executed on the isolated dev manager and recorded in
+`.docs/reliable2/phase2/validation.md`: Issues 1-3 (responsiveness), Issue B/B2
+(churn: 0 bad-job / 0 not-running, 40k drains 100%), and Issue 4 (web delta
+feed agrees with CLI, no diverging counter) all PASS. A scale-only pre-existing
+scheduler-group deadlock surfaced at 160k was root-caused and fixed (`dfa196f`,
+committed with a deterministic regression test); the re-run was deadlock-free.
+The Issue-4-after-restart and Idea-1 crash-recovery sub-checks are not
+CLI-testable on the dev deployment (it always wipes the DB on restart) and are
+covered deterministically by Tier-A A3.2/D2.1. The only remaining 160k limit is
+the explicitly-deferred over-submission / slow-`bsub` issue (bugfix 260722-1),
+out of this spec's scope.
 
 ## Merge gate
 
