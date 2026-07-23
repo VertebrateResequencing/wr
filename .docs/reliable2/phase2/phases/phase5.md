@@ -64,8 +64,8 @@ For this item, "implemented" means the full KEEP anchor suite runs green under
 `-race` and the scale-test header comment is added; "reviewed" means no KEEP
 test was weakened or deleted and the header comment is present.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 5.2: E3 - Tier-B real-LSF validation (required real-LSF gate)
 

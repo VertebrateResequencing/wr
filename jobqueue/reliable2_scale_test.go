@@ -25,6 +25,28 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  ******************************************************************************/
 
+// WARNING - THIS TEST UNDER-REPRODUCES THE REAL FAILURE; IT IS A
+// NON-AUTHORITATIVE SUPPORT TEST ONLY, NEVER THE SOLE EVIDENCE.
+//
+// This in-process harness passed with M2 (archive-rejection) == 0 while real
+// LSF at scale actually churned. Two structural reasons make it weaker than
+// the real system:
+//   - it drives Started/Touch/Archive with live in-process runners whose pid is
+//     os.Getpid(), so every "owner" is genuinely alive and the liveness checks
+//     the manager makes always succeed - it cannot exhibit the confirmed-dead /
+//     stale-owner cases that real LSF (with real, exiting scheduler processes)
+//     produces, and
+//   - it must run with a TTR set comfortably ABOVE the saturated single-reader's
+//     per-RPC backlog (see the NOTE on TTR below), so a job's Started/Touch RPC
+//     is never itself delayed past the TTR - exactly the delay that, on the real
+//     farm, drives the churn.
+//
+// It is therefore kept only as a SUPPORTING signal and must never be treated as
+// the authoritative reproduction or as sufficient evidence on its own. The
+// AUTHORITATIVE reproduction is Tier B - real LSF at scale on the isolated dev
+// deployment - recorded in .docs/reliable2/phase2/validation.md (see spec.md
+// section E3 and phase5.md Item 5.2).
+//
 // This file is the in-process SATURATION HARNESS for the reliable2 scale/
 // throughput validation gate (spec.md section I, phase5.md Item 5.2). It is
 // NOT a normal unit test: it is excluded from the default build and the
