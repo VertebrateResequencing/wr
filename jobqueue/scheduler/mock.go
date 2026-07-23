@@ -69,6 +69,14 @@ type ConfigMock struct {
 	// (eg. bsub). Close the channel to release all blocked (and allow future)
 	// schedule() calls. Leave nil for normal non-blocking behaviour.
 	ScheduleBlock <-chan struct{}
+
+	// ScheduleError, if non-nil, is called near the start of every schedule()
+	// call (after ScheduleBlock); if it returns a non-nil error, schedule()
+	// returns that error immediately without running any runners. This lets a
+	// test drive the server's scheduling-failure and retry paths (eg. by
+	// returning an error for the first N calls, then nil). Leave nil for normal
+	// behaviour.
+	ScheduleError func() error
 }
 
 // mock is a scheduleri implementation that runs RunnerFunc goroutines instead
@@ -111,6 +119,12 @@ func (s *mock) initialize(_ context.Context, config any) error {
 func (s *mock) schedule(ctx context.Context, cmd string, _ *Requirements, _ uint8, count int) error {
 	if s.config.ScheduleBlock != nil {
 		<-s.config.ScheduleBlock
+	}
+
+	if s.config.ScheduleError != nil {
+		if err := s.config.ScheduleError(); err != nil {
+			return err
+		}
 	}
 
 	s.mutex.Lock()

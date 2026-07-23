@@ -55,6 +55,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/backoff"
+	backofftime "github.com/VertebrateResequencing/wr/backoff/time"
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -249,9 +251,13 @@ const (
 	// (rather than Warn) so a permanently-failing submit becomes visible.
 	persistentScheduleFailures = 3
 
-	// scheduleRetryMaxBackoff caps the exponential backoff between retries of a
-	// failing scheduling attempt.
-	scheduleRetryMaxBackoff = 30 * time.Minute
+	// scheduleRetryBackoffMax caps the jittered exponential backoff between
+	// retries of a failing scheduling attempt (used as the retry backoff's Max).
+	scheduleRetryBackoffMax = 30 * time.Minute
+
+	// scheduleRetryBackoffFactor is the multiplier applied to the retry backoff
+	// after each consecutive scheduling failure (used as the backoff's Factor).
+	scheduleRetryBackoffFactor = 2
 )
 
 const (
@@ -556,12 +562,49 @@ type sgroup struct {
 	skipped  int
 	req      *scheduler.Requirements
 	priority uint8
-	// failures counts consecutive scheduling failures for this group, driving
-	// exponential backoff in retryScheduleRunnersLater. It is only accumulated
-	// within a single persistent retry loop (clone/snapshot deliberately reset
-	// it to 0), and is accessed under the same locking discipline as count.
+	// failures counts consecutive scheduling failures for this group. It drives
+	// only the Warn->Error log escalation (at persistentScheduleFailures); the
+	// retry delay itself is driven by retryBackoff. It is only accumulated within
+	// a single persistent retry loop (clone/snapshot deliberately reset it to 0),
+	// and is accessed under the same locking discipline as count.
 	failures int
+	// retryBackoff is the lazily-created, per-group jittered exponential backoff
+	// used to space out schedule retries. clone/snapshot deliberately leave it
+	// nil so a fresh group starts with a fresh backoff, while the retry chain
+	// reuses the same object it was handed. Accessed under the same locking
+	// discipline as failures.
+	retryBackoff *backoff.Backoff
 	sync.RWMutex
+}
+
+// ensureRetryBackoff returns the group's schedule-retry backoff, lazily creating
+// it on first use with the given Min and the package-level retry Max/Factor,
+// using a real-time Sleeper (whose Sleep aborts on context cancellation). The
+// caller must have the same exclusive access as for failures (the group lock, or
+// exclusive ownership of a fresh clone/snapshot).
+func (s *sgroup) ensureRetryBackoff(minDelay time.Duration) *backoff.Backoff {
+	if s.retryBackoff == nil {
+		s.retryBackoff = &backoff.Backoff{
+			Min:     minDelay,
+			Max:     scheduleRetryBackoffMax,
+			Factor:  scheduleRetryBackoffFactor,
+			Sleeper: &backofftime.Sleeper{},
+		}
+	}
+
+	return s.retryBackoff
+}
+
+// resetRetryState clears the group's consecutive failure count and, if a retry
+// backoff has been created, resets it so the next retry sleeps for Min again.
+// Called on a successful schedule, under the same locking discipline as
+// failures.
+func (s *sgroup) resetRetryState() {
+	s.failures = 0
+
+	if s.retryBackoff != nil {
+		s.retryBackoff.Reset()
+	}
 }
 
 // clone creates a new copy of the sgroup with the given count.
@@ -1704,27 +1747,6 @@ func (s *Server) setRC(rc string) {
 	s.racmutex.Lock()
 	s.rc = rc
 	s.racmutex.Unlock()
-}
-
-// scheduleRetryDelay returns how long to wait before retrying a failed
-// scheduling attempt, given the number of consecutive failures so far. The
-// first retry waits CheckRunnerTime; each subsequent one doubles the delay, up
-// to scheduleRetryMaxBackoff.
-func (s *Server) scheduleRetryDelay(failures int) time.Duration {
-	base := s.timings.CheckRunnerTime
-	if failures <= 1 {
-		return base
-	}
-
-	delay := base
-	for range failures - 1 {
-		delay *= 2
-		if delay >= scheduleRetryMaxBackoff {
-			return scheduleRetryMaxBackoff
-		}
-	}
-
-	return delay
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -5338,7 +5360,7 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 
 	err := s.scheduler.Schedule(ctx, scheduleCmd, group.req, group.priority, group.count)
 	if err == nil {
-		group.failures = 0
+		group.resetRetryState()
 
 		return
 	}
@@ -5422,12 +5444,13 @@ func (s *Server) buryImpossibleItem(ctx context.Context, item *queue.Item) {
 }
 
 // retryScheduleRunnersLater re-attempts scheduling runners for group after a
-// backoff delay (exponential in the group's consecutive failure count, capped),
-// unless the server is shutting down. The backoff stops a persistently-failing
-// submit (eg. a queue that always rejects) from re-running with the same count
-// forever at a fixed interval.
+// delay drawn from the group's per-group backoff (a jittered exponential that
+// starts at CheckRunnerTime and is capped at scheduleRetryBackoffMax), unless
+// the server is shutting down. This stops a persistently-failing submit (eg. a
+// queue that always rejects) from re-running with the same count forever at a
+// fixed interval, while the jitter avoids many groups retrying in lockstep.
 func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
-	delay := s.scheduleRetryDelay(group.failures)
+	b := group.ensureRetryBackoff(s.timings.CheckRunnerTime)
 
 	wgk := s.wg.Add(1)
 
@@ -5435,9 +5458,25 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 		defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
 		defer s.wg.Done(wgk)
 
-		select {
-		case <-time.After(delay):
-		case <-s.stopClientHandling:
+		// Bridge s.stopClientHandling (closed on shutdown) to a cancellable
+		// context so the jittered backoff sleep aborts promptly: a pending sleep
+		// (up to scheduleRetryBackoffMax) must not block s.wg and hang manager
+		// shutdown. The bridge goroutine also exits when the sleep completes
+		// normally (cancel via defer closes sleepCtx.Done()).
+		sleepCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		go func() {
+			select {
+			case <-s.stopClientHandling:
+				cancel()
+			case <-sleepCtx.Done():
+			}
+		}()
+
+		b.Sleep(sleepCtx)
+
+		if sleepCtx.Err() != nil {
 			return
 		}
 
