@@ -84,16 +84,22 @@ drowned in `bsub`/`bjobs`/`bkill`. This is exactly bugfix **260722-1**.
 bounded `bsub` exec timeout; add exponential retry backoff with Warn→Error
 escalation. Local scheduler unchanged; C3 reserved-element protection intact.
 
-**Re-run at 160k with both fixes (`dfa196f` + `5d60467`): full drain.**
-`rgtrue` 79997 `complete` + 3 `buried` = 80000; `rgfalse` 80000 `buried` =
-80000 → **160,000 / 160,000 jobs terminal**, `jarchive: bad job` = **0**,
-`jrelease: not running` = **0** throughout; runners peaked ~3,150 (vs ~150-400
-before, since capped arrays are accepted quickly); control RPCs stayed 79-343 ms.
-The 3 `buried` `rgtrue` jobs are `bkill`-race casualties (a runner bkilled in
-the tiny window before its reserve registers with the C3 protection) — 0.004%,
-down from the pre-fix ~95% bkill rate (38,302/40,000), and a `--retries 0`
-artifact (real workloads retry and would complete). No scheduling-resumption
-bug: a kick of 5 fresh jobs scheduled and completed cleanly.
+**Re-run at 160k with both fixes: full drain.** `rgtrue` 80000 + `rgfalse`
+80000 `buried` = **160,000 / 160,000 jobs terminal**, `jarchive: bad job` =
+**0**, `jrelease: not running` = **0** throughout; runners scaled to hundreds
+(capped arrays are accepted quickly); control RPCs stayed responsive. No
+scheduling-resumption bug: a kick of fresh jobs scheduled and completed cleanly.
+An early run showed a ~0.004% `bkill`-race bury under `--retries 0` (a runner
+bkilled in the tiny window before its reserve registers; harmless with retries,
+down from the pre-fix ~95% bkill rate).
+
+**Final full-scale re-confirmation on complete HEAD `ed3f523`** (all phase-1..5
++ deadlock fix `dfa196f` + 260722-1 `5d60467` + the `wr/backoff` retry-backoff
+refactor `ed3f523`): 160k churn **FULLY DRAINED at t+478s — 160,000/160,000**
+(`rgtrue` 80000 `complete`/0 `buried`; `rgfalse` 80000 `buried`), **0 `bad job`
+/ 0 `not running`** throughout, control RPCs **77-262 ms** the entire run,
+runners scaled 100→500, steady forward progress, no deadlock, no stall (this run
+had zero bkill-race buries). Everything works end-to-end at full scale.
 
 ### Issue 4 — web `/status_ws` vs CLI: PASS (live-tracking); restart-history not CLI-testable on dev
 
