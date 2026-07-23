@@ -54,8 +54,9 @@ is_ours() { ps -o cmd= -p "$1" 2>/dev/null | grep -qF "$WR"; }
 safe_kill() {
   local pid="$1"
   [ -n "$pid" ] || return 0
+  if ! ps -p "$pid" >/dev/null 2>&1; then echo "manager pid $pid already stopped"; return 0; fi
   if is_ours "$pid"; then kill -9 "$pid" && echo "killed our manager pid $pid"; else
-    echo "refusing to kill pid $pid (not our isolated binary)"; fi
+    echo "refusing to kill pid $pid (running process is not our isolated binary)"; fi
 }
 mgr_pid() { cat "$1/pid" 2>/dev/null; }
 
@@ -176,6 +177,28 @@ cmd_prod_stop() {  # stop the isolated prod-mode manager only (verified pid); do
   echo "if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*')."
 }
 
+cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-mode LSF manager
+  need_bin; ensure_config
+  safe_kill "$(mgr_pid "$PROD_RUN")"; rm -rf "$PROD_RUN" 2>/dev/null; rm -f "$WRDEV_ROOT/cr_count"
+  cmd_prod_start lsf
+  printf '{"cmd":"bash -c \\"echo ran >> %s/cr_count; sleep 30\\"","queue":"%s","memory":"500M"}\n' \
+    "$WRDEV_ROOT" "$QUEUE" > "$WRDEV_ROOT/cr.json"
+  osunset; timeout 40 "$WR" add -f "$WRDEV_ROOT/cr.json" --rep_grp rgCR --retries 0 --deployment production 2>&1 | tail -1
+  local r=0; for _ in $(seq 1 30); do sleep 5; r=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | grep -oE 'running: [0-9]+' | grep -oE '[0-9]+'); [ "${r:-0}" -ge 1 ] && break; done
+  local jid; jid=$(timeout 40 bjobs -o 'jobid job_name stat' -noheader 2>/dev/null | awk '$2 ~ /^wrp_/ && $3=="RUN"{print $1; exit}')
+  echo "job running; marker=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0) my wrp_ jobid=$jid"
+  echo "--- killing prod manager mid-run (LSF runner $jid survives), then restarting (DB preserved) ---"
+  safe_kill "$(mgr_pid "$PROD_RUN")"; sleep 12
+  cmd_prod_start lsf
+  local ok=0
+  for _ in $(seq 1 20); do sleep 8; local c m; c=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | tr '\n' ' '); m=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0); echo "  rgCR[$c] marker=$m"; echo "$c" | grep -qE 'complete: 1' && { ok=1; break; }; done
+  [ "$ok" = 1 ] && [ "$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null)" = 1 ] \
+    && echo "PASS: re-sent archive accepted (complete=1), command ran exactly once" \
+    || echo "FAIL: check rgCR / marker above"
+  [ -n "$jid" ] && timeout 30 bkill "$jid" >/dev/null 2>&1  # exact jobid only, never 'wrp_*'
+  safe_kill "$(mgr_pid "$PROD_RUN")"
+}
+
 cmd_dump() {  # dump - start dev manager FOREGROUND, so you can SIGQUIT it for a goroutine dump
   need_bin; ensure_config
   cmd_stop >/dev/null 2>&1 || true
@@ -223,6 +246,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
+  crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
   clean                 stop all our managers + bkill wrd_ (production untouched)
   status                show what is running
@@ -243,6 +267,7 @@ case "${1:-help}" in
   web-burst) cmd_web_burst "${2:-10000}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
+  crash-recovery) cmd_crash_recovery ;;
   dump) cmd_dump "${2:-lsf}" ;;
   clean) cmd_clean ;;
   status) cmd_status ;;

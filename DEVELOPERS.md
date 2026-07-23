@@ -160,7 +160,7 @@ for:
 | **Web-vs-CLI count divergence** | `wrdev.sh probe` (wsprobe on `/status_ws`) vs `wr status -i <rg> -o counts` | web delta feed agrees with the CLI; no accumulating server-side counter to drift |
 | **Web status flicker/freeze under a burst** | `wrdev.sh web-burst` — a large fast-completing batch + a **slow** wsprobe (a fast reader can't reproduce it) | the reconstructed web count converges to the true total; nothing dropped/frozen |
 | **Deadlock / stall** (CLI fine, manager stops progressing) | reproduce at scale, then `wrdev.sh dump` | goroutine dump shows a lock cycle or a lock held across `bsub`/`bjobs` |
-| **Crash-recovery** (a genuine success survives a restart) | `wrdev.sh prod-crash-recovery` (prod-mode preserves the DB) | after restart within `retryTime`, the re-sent archive is accepted, `complete`, and the command ran **once** (marker file) |
+| **Crash-recovery** (a genuine success survives a restart) | `wrdev.sh crash-recovery` (prod-mode preserves the DB) | after restart within `retryTime`, the re-sent archive is accepted, `complete`, and the command ran **once** (marker file) |
 | **Slow startup** | measure `Serve()` time with N completed-only jobs (see `jobqueue/reliable2_startup_test.go`) | startup does not scale with history size |
 
 For churn/responsiveness the authoritative evidence is a **real-LSF** run; the
