@@ -236,8 +236,7 @@ func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ qu
 // counts have already been broadcast as jstateCount deltas by emitJobTransition
 // before this closure runs, and a web UI client that connects LATER seeds its
 // bars from the incomplete-only scan-on-connect. The early csmutex.RLock is in
-// the same async
-// change-callback context as the existing per-job
+// the same async change-callback context as the existing per-job
 // hasClientSubscriptionsForJobUpdate RLock, so it adds no new lock and no new
 // nesting (the order queue.mutex -> subscription locks is preserved).
 func (s *Server) enqueueChangeCallbackSubscriptions(

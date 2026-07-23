@@ -74,10 +74,9 @@ type JobState string
 // JobState* constants represent all the possible job states. The fake "new" and
 // "deleted" states are for the benefit of the web interface (the jstateCount
 // status-bar delta feed). "lost" is also a "fake" state indicating the job was
-// running and we lost
-// contact with it; it may be dead. "unknown" is an error case that shouldn't
-// happen. "deletable" is a meta state that can be used when filtering jobs to
-// mean !(reserved|running|complete).
+// running and we lost contact with it; it may be dead. "unknown" is an error
+// case that shouldn't happen. "deletable" is a meta state that can be used
+// when filtering jobs to mean !(reserved|running|complete).
 const (
 	JobStateNew       JobState = "new"
 	JobStateDelayed   JobState = "delayed"
