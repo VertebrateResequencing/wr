@@ -242,6 +242,18 @@ const envPprofAddr = "WR_PPROF_ADDR"
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
 
+// sgroup represents a scheduler group.
+const (
+	// persistentScheduleFailures is the number of consecutive scheduling
+	// failures for a group after which the failure is logged at Error level
+	// (rather than Warn) so a permanently-failing submit becomes visible.
+	persistentScheduleFailures = 3
+
+	// scheduleRetryMaxBackoff caps the exponential backoff between retries of a
+	// failing scheduling attempt.
+	scheduleRetryMaxBackoff = 30 * time.Minute
+)
+
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
 	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
@@ -538,13 +550,17 @@ type SchedulerAlerts struct {
 	BadServers []*BadServer
 }
 
-// sgroup represents a scheduler group.
 type sgroup struct {
 	name     string
 	count    int
 	skipped  int
 	req      *scheduler.Requirements
 	priority uint8
+	// failures counts consecutive scheduling failures for this group, driving
+	// exponential backoff in retryScheduleRunnersLater. It is only accumulated
+	// within a single persistent retry loop (clone/snapshot deliberately reset
+	// it to 0), and is accessed under the same locking discipline as count.
+	failures int
 	sync.RWMutex
 }
 
@@ -1688,6 +1704,27 @@ func (s *Server) setRC(rc string) {
 	s.racmutex.Lock()
 	s.rc = rc
 	s.racmutex.Unlock()
+}
+
+// scheduleRetryDelay returns how long to wait before retrying a failed
+// scheduling attempt, given the number of consecutive failures so far. The
+// first retry waits CheckRunnerTime; each subsequent one doubles the delay, up
+// to scheduleRetryMaxBackoff.
+func (s *Server) scheduleRetryDelay(failures int) time.Duration {
+	base := s.timings.CheckRunnerTime
+	if failures <= 1 {
+		return base
+	}
+
+	delay := base
+	for range failures - 1 {
+		delay *= 2
+		if delay >= scheduleRetryMaxBackoff {
+			return scheduleRetryMaxBackoff
+		}
+	}
+
+	return delay
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -5301,6 +5338,8 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 
 	err := s.scheduler.Schedule(ctx, scheduleCmd, group.req, group.priority, group.count)
 	if err == nil {
+		group.failures = 0
+
 		return
 	}
 
@@ -5314,9 +5353,20 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 	}
 
 	if problem {
-		// log the error *** and inform (by email) the user about this problem if
-		// it's persistent, once per hour (day?)
-		clog.Warn(ctx, "Server scheduling runners error", "err", err)
+		group.failures++
+
+		// log the error, escalating to Error once the failure is persistent so a
+		// permanently-failing submit is visible (not swallowed by an endless
+		// stream of identical warnings) *** and inform (by email) the user about
+		// this problem if it's persistent, once per hour (day?)
+		if group.failures >= persistentScheduleFailures {
+			clog.Error(ctx, "Server scheduling runners persistently failing",
+				"err", err, "group", group.name, "consecutiveFailures", group.failures)
+		} else {
+			clog.Warn(ctx, "Server scheduling runners error",
+				"err", err, "group", group.name, "consecutiveFailures", group.failures)
+		}
+
 		s.retryScheduleRunnersLater(ctx, group)
 	}
 }
@@ -5371,9 +5421,14 @@ func (s *Server) buryImpossibleItem(ctx context.Context, item *queue.Item) {
 	}
 }
 
-// retryScheduleRunnersLater re-attempts scheduling runners for group after
-// CheckRunnerTime, unless the server is shutting down.
+// retryScheduleRunnersLater re-attempts scheduling runners for group after a
+// backoff delay (exponential in the group's consecutive failure count, capped),
+// unless the server is shutting down. The backoff stops a persistently-failing
+// submit (eg. a queue that always rejects) from re-running with the same count
+// forever at a fixed interval.
 func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
+	delay := s.scheduleRetryDelay(group.failures)
+
 	wgk := s.wg.Add(1)
 
 	go func() {
@@ -5381,7 +5436,7 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 		defer s.wg.Done(wgk)
 
 		select {
-		case <-time.After(s.timings.CheckRunnerTime):
+		case <-time.After(delay):
 		case <-s.stopClientHandling:
 			return
 		}

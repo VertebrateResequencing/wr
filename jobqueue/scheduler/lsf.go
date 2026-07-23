@@ -133,7 +133,37 @@ const (
 	// bjobsAppearPollFreq is how often we poll bjobs while waiting for a
 	// submitted job to appear.
 	bjobsAppearPollFreq = 100 * time.Millisecond
+
+	// defaultMaxBsubArraySize is the conservative default cap on the number of
+	// elements wr puts in a single bsub job array (the common LSF MAX_JOB_ARRAY
+	// default). See maxBsubArraySize.
+	defaultMaxBsubArraySize = 1000
+
+	// defaultBsubExecTimeout is the default bound on how long a single bsub exec
+	// may take before it is killed and turned into a retryable error. See
+	// bsubExecTimeout.
+	defaultBsubExecTimeout = 5 * time.Minute
+
+	// bsubKillGracePeriod is how long, after the bsub exec timeout kills bsub,
+	// we wait before force-closing its output pipes so the exec returns even if
+	// a child process is still holding them open.
+	bsubKillGracePeriod = 2 * time.Second
 )
+
+// maxBsubArraySize caps the number of elements wr places in a single bsub job
+// array (-J name[1-N]). A same-requirement batch larger than this is split
+// across several arrays submitted in one scheduling pass, so an oversized
+// single array (which some LSF installations accept but then hang on for
+// minutes) is never emitted. It is a package var so tests can lower it.
+var maxBsubArraySize = defaultMaxBsubArraySize //nolint:gochecknoglobals
+
+// bsubExecTimeout bounds how long a single bsub invocation may run before it is
+// killed, turning a hung/pathological bsub into a logged, retryable error
+// rather than a silent indefinite block. It is deliberately applied via a
+// context derived from context.Background() (not the scheduling context), so
+// scheduling-context cancellation cannot abort an in-flight submission. It is a
+// package var so tests can lower it.
+var bsubExecTimeout = defaultBsubExecTimeout //nolint:gochecknoglobals
 
 // lsf is our implementer of scheduleri.
 type lsf struct {
@@ -863,17 +893,44 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, _ uin
 		return nil
 	}
 
-	bsubArgs := s.generateBsubArgs(ctx, queue, req, cmd, stillNeeded)
+	// split stillNeeded across as many arrays of at most maxBsubArraySize as
+	// required, submitting each in this one scheduling pass. An oversized single
+	// array is never emitted (some LSF installations accept it but then hang for
+	// minutes). Each array gets its own uniquified, cmd-correlated name (via
+	// generateBsubName), so checkCmd/killExcessCmds keep working across chunks.
+	for remaining := stillNeeded; remaining > 0; remaining -= maxBsubArraySize {
+		chunk := remaining
+		if chunk > maxBsubArraySize {
+			chunk = maxBsubArraySize
+		}
 
-	return s.submitToQueue(ctx, bsubArgs)
+		bsubArgs := s.generateBsubArgs(ctx, queue, req, cmd, chunk)
+
+		if err := s.submitToQueue(ctx, bsubArgs); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // submitToQueue runs bsub with the given args and waits until the submitted job
 // appears in bjobs (see waitForBjob for why).
 func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
-	// submit to the queue
-	//nolint:gosec,noctx // LSF job submission; must complete regardless of scheduling ctx cancellation
-	bsubcmd := exec.Command(s.bsubExe, bsubArgs...)
+	// submit to the queue. We derive the exec context from context.Background()
+	// rather than the scheduling ctx so scheduling-context cancellation cannot
+	// abort an in-flight submission, but bound it with bsubExecTimeout so a
+	// hung/oversized bsub becomes a logged, retryable error instead of blocking
+	// this group's scheduling forever.
+	execCtx, cancel := context.WithTimeout(context.Background(), bsubExecTimeout)
+	defer cancel()
+
+	//nolint:gosec,contextcheck // LSF job submission; execCtx is deliberately detached from the scheduling ctx (see above)
+	bsubcmd := exec.CommandContext(execCtx, s.bsubExe, bsubArgs...)
+
+	// WaitDelay ensures Output() returns promptly after the timeout kills bsub,
+	// even if a child of bsub is still holding the output pipe open.
+	bsubcmd.WaitDelay = bsubKillGracePeriod
 
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
