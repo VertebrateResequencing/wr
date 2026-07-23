@@ -32,6 +32,13 @@ function resetTrackerCounts(tracker) {
 }
 
 function resetLiveCounts(viewModel) {
+    // clear the out-of-order delta compensation state too: a reconnect re-seeds
+    // every count from a fresh scan-on-connect, so a stale ignore amount left
+    // over from the previous connection must not suppress the new seed's
+    // to-state increments (which would leave counts undercounted after
+    // reconnect).
+    viewModel.ignore = {};
+
     resetTrackerCounts(viewModel.inflight);
 
     for (const repgroup of viewModel.repGroups) {
