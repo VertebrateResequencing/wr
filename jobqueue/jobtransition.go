@@ -128,7 +128,7 @@ func (s *Server) sendStatusCounts(counts []countContribution) {
 	}
 }
 
-// changeCallbackCounts builds the absolute-count contributions for a change-
+// changeCallbackCounts builds the count contributions for a change-
 // callback transition, one increment per job grouped by (from, to, repGroup).
 // This is a plain per-RepGroup from->to increment (v0.36.5-quality accuracy): a
 // job's to-state is its own real State for a removal (complete vs deleted,

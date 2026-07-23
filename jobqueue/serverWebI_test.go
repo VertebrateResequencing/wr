@@ -337,7 +337,7 @@ func TestStatusCurrentAbsoluteState(t *testing.T) {
 		err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 		So(err, ShouldBeNil)
 
-		// the absolute state is pushed on connect: both jobs ready, in the
+		// the current-state counts are pushed on connect: both jobs ready, in the
 		// RepGroup and the +all+ live aggregate.
 		So(readJStateCounts(ws, []expectedJStateCount{
 			{repGroup: webStatusAllRepGroups, state: JobStateReady, count: 2},
@@ -433,7 +433,7 @@ func readJStateCounts(ws *websocket.Conn, expected []expectedJStateCount, timeou
 	})
 }
 
-// readRepGroupAbsentDuring reads absolute messages for the given window and
+// readRepGroupAbsentDuring reads jstateCount delta messages for the given window and
 // reports whether repGroup never appears with a positive total. A complete-only
 // RepGroup is omitted from a fresh-connect seed, so a freshly reconnected client
 // must receive no message reviving it; the window elapses with the RepGroup
@@ -817,7 +817,7 @@ func TestServerWebI(t *testing.T) {
 
 				// At this point: rg1 has 1 running + 1 complete, rg2 has 1
 				// complete + 1 buried; the +all+ live aggregate has 1 running + 1
-				// buried (complete is terminal, so not in +all+). The absolute
+				// buried (complete is terminal, so not in +all+). The current
 				// state pushed on connect must reflect exactly this.
 				ok := readAbsoluteStateUntil(ws, 5*time.Second, func(latest map[string]map[JobState]int) bool {
 					all := latest[webStatusAllRepGroups]

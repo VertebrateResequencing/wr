@@ -36,7 +36,7 @@
 //     the manager makes always succeed - it cannot exhibit the confirmed-dead /
 //     stale-owner cases that real LSF (with real, exiting scheduler processes)
 //     produces, and
-//   - it must run with a TTR set comfortably ABOVE the saturated single-reader's
+//   - it must run with a TTR set comfortably ABOVE the saturated reader pool's
 //     per-RPC backlog (see the NOTE on TTR below), so a job's Started/Touch RPC
 //     is never itself delayed past the TTR - exactly the delay that, on the real
 //     farm, drives the churn.
@@ -56,7 +56,7 @@
 //
 // It scales up the deterministic A1 oracle (TestReliable2HoldingRunnerArchiveAccepted)
 // to many concurrent in-process runners driving the real jobqueue server
-// through the single-reader command socket under the exact conditions that, on
+// through the shared command socket under the exact conditions that, on
 // the PRE-revert code, produced the churn described in testing.md:
 //
 //   - a short ItemTTR so a running job's TTR expires easily,
@@ -68,10 +68,10 @@
 //     job never re-reserved; on the pre-revert strict state machine this archive
 //     was rejected ("jarchive: bad job" / ErrMustReserve) and the successful work
 //     discarded and re-run,
-//   - sheer connection concurrency to saturate the single serveClients reader
-//     (there is no separate tunable "reader threshold" in the server; the reader
-//     is structurally one goroutine calling sock.RecvMsg() in a loop, so we
-//     saturate it with many concurrent connections, as documented in
+//   - sheer connection concurrency to saturate the serveClients reader pool
+//     (the server runs numRPCReaders concurrent goroutines that each call
+//     sock.RecvMsg() on the shared command socket in a loop, so we saturate them
+//     with many concurrent connections, as documented in
 //     scale-validation.md),
 //   - a status-details listener (the same server-side subscription the web UI
 //     uses, stateChanges=true, scoped to every job key) counting every
@@ -79,7 +79,7 @@
 //     `wr status` sampler (the GetByRepGroup/AllItems path) measuring M5 idle
 //     vs under load.
 //
-// NOTE on TTR: the TTR must be set comfortably ABOVE the saturated single-reader's
+// NOTE on TTR: the TTR must be set comfortably ABOVE the saturated reader pool's
 // per-RPC processing latency at the chosen connection count. If the TTR is shorter
 // than that backlog (e.g. sub-second TTR at >=2000 connections), a runner's
 // Started/Touch RPC can itself be delayed past the TTR, so the manager correctly
@@ -435,7 +435,7 @@ func TestReliable2ScaleSaturation(t *testing.T) {
 	// (manager "unresponsive, needs kill -9"). The genuine acceptance is that
 	// status stays RESPONSIVE under saturation - it must not enter the
 	// multi-second freeze. We assert an absolute responsiveness bound rather than
-	// a ratio: the single-reader socket is architecturally unchanged by Option R
+	// a ratio: the shared command socket is architecturally unchanged by Option R
 	// (decoupling it is out-of-scope Idea 2), so the ratio off a sub-millisecond
 	// idle baseline naturally grows with connection count while absolute latency
 	// stays in the low-millisecond range. The ratio is reported above for context.
