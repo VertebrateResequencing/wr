@@ -36,8 +36,8 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 )
 
-// countContribution is one (from -> to, n jobs in repGroup) increment applied to
-// the absolute status counts. A transition may produce several (e.g. the change
+// countContribution is one (from -> to, n jobs in repGroup) increment to the
+// web-UI status counts. A transition may produce several (e.g. the change
 // callback groups jobs by their real from/to states). It is grouped per
 // (from, to, repGroup) and fed to sendStatusCounts, which broadcasts one
 // jstateCount delta per contribution to the status web page.

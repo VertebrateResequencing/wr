@@ -1566,10 +1566,10 @@ func TestServerWebI(t *testing.T) {
 
 				var sc jstateCount
 
-				// Read an absolute status message with a deadline instead of
-				// pre-sleeping: the per-client sender pushes the current absolute
-				// state on connect, and the deadline tolerates a slow response
-				// under heavy parallel-test load.
+				// Read a status-count delta with a deadline instead of
+				// pre-sleeping: the per-client sender pushes the scan-on-connect
+				// count seed on connect, and the deadline tolerates a slow
+				// response under heavy parallel-test load.
 				So(ws.SetReadDeadline(time.Now().Add(30*time.Second)), ShouldBeNil)
 				defer clearReadDeadlineBestEffort(ws)
 
@@ -1821,8 +1821,9 @@ func assertEditableStatusFields(status JStatus) {
 
 // drainSetupUntilDetails consumes the connect-time messages on a status
 // websocket up to and including the response to a details request: the server
-// pushes the full absolute per-RepGroup state on connect (count broadcasts with
-// no Key) followed by the details-request job status (with a Key). It reads only
+// pushes the scan-on-connect per-RepGroup count seed on connect (count
+// broadcasts with no Key) followed by the details-request job status (with a
+// Key). It reads only
 // COMPLETE messages and never relies on a read timeout, so it does not leave the
 // gorilla connection in the undefined post-timeout state (which would break the
 // ordered push-update reads that follow). Callers must have issued a details
@@ -2264,7 +2265,7 @@ func drainWebSocket(wsURL string, header http.Header) (*websocket.Conn, error) {
 }
 
 func testNoMoreMessages(ws *websocket.Conn) bool {
-	// The status websocket carries unsolicited absolute per-RepGroup count
+	// The status websocket carries unsolicited per-RepGroup count-delta
 	// broadcasts (which decode into a JStatus with an empty Key), pushed on
 	// connect and whenever counts change. Those are expected, so skip them and
 	// only fail if a real message (a job status with a Key, or any other shape)
@@ -2305,7 +2306,7 @@ func readUntilStatus(ws *websocket.Conn) (*JStatus, error) {
 			return nil, err
 		}
 
-		// skip the unsolicited absolute per-RepGroup count broadcasts (no Key /
+		// skip the unsolicited per-RepGroup count-delta broadcasts (no Key /
 		// State), which now interleave with job-detail push updates.
 		_, hasKey := msg["Key"]
 		_, hasState := msg["State"]
