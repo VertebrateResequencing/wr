@@ -103,9 +103,15 @@ Each of these was a real, diagnosed failure. Do not reintroduce them.
    real-scale run (see §4); Tier-A tests alone are insufficient.
 
 10. **Internal-only means internal-only.** Reliability/perf fixes must not
-    change user-facing behaviour (the one deliberate exception on record is the
-    web status counts reverting to v0.36.5 flicker/overcount quality). See
-    `.docs/reliable2/` "speedups internal-only".
+    change user-facing behaviour. The web status counts were once allowed to
+    revert to v0.36.5 flicker/overcount quality as a deliberate tradeoff; that
+    flicker has since been fixed **purely client-side** (an order-independent
+    occupancy reconciliation in `jobqueue/static/js/wr/websocket-handler.js`),
+    with **no** server change — so the reliability constraints here (no
+    server-side counter, no hot-path lock, no startup scan) are untouched while
+    the displayed counts are exact again. See `.docs/flicker/` and
+    `.docs/reliable2/` "speedups internal-only". Do not "fix" this on the server
+    (that is what rules 2 and 6 forbid).
 
 ---
 
@@ -159,6 +165,7 @@ for:
 | **Control-RPC unresponsiveness** (`wr status`/`limit`/`suspend` time out) | during `wrdev.sh churn`, time control RPCs (the monitor does this) | RPCs stay in low-ms, never the 60s client timeout, while the fleet churns |
 | **Web-vs-CLI count divergence** | `wrdev.sh probe` (wsprobe on `/status_ws`) vs `wr status -i <rg> -o counts` | web delta feed agrees with the CLI; no accumulating server-side counter to drift |
 | **Web status flicker/freeze under a burst** | `wrdev.sh web-burst` — a large fast-completing batch + a **slow** wsprobe (a fast reader can't reproduce it) | the reconstructed web count converges to the true total; nothing dropped/frozen |
+| **Web status flicker / transient overcount / connect-mid-burst divergence** | `wrdev.sh flicker-check` — a deterministic node harness driving the real `websocket-handler.js` with out-of-order + seed-race + rerun-cycle delta streams, plus the browser fixtures | reconstructed per-RepGroup and `+all+` counts stay coherent (no transient overcount, no dip) and converge exactly; the browser bar never collapses. Runs without a manager or LSF |
 | **Deadlock / stall** (CLI fine, manager stops progressing) | reproduce at scale, then `wrdev.sh dump` | goroutine dump shows a lock cycle or a lock held across `bsub`/`bjobs` |
 | **Crash-recovery** (a genuine success survives a restart) | `wrdev.sh crash-recovery` (prod-mode preserves the DB) | after restart within `retryTime`, the re-sent archive is accepted, `complete`, and the command ran **once** (marker file) |
 | **Slow startup** | measure `Serve()` time with N completed-only jobs (see `jobqueue/reliable2_startup_test.go`) | startup does not scale with history size |
@@ -176,6 +183,10 @@ context of a specific past problem:
 
 - `.docs/reliable/`, `.docs/reliable2/`, `.docs/reliable2/phase2/` — the
   investigations, specs, and design decisions (notes N1–N6).
+- `.docs/flicker/` — the web status-bar flicker / transient-overcount
+  investigation (`issue.md`) and the client-side fix (`solution.md`), reproduced
+  and guarded by `jobqueue/testdata/status-count-reconcile/` (see
+  `wrdev.sh flicker-check`).
 - `.docs/reliable2/phase2/validation.md` — the recorded real-LSF Tier-B results.
 - `.docs/bugfixes/*.md` — dated, verbatim bug write-ups with root cause + fix
   (e.g. `260722-1` uncapped bsub array, `260723-1` web status delta drop). Scan
