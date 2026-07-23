@@ -68,7 +68,7 @@ type countContribution struct {
 // Lock discipline (concurrency-critical; N1b): this method introduces NO
 // server-wide exclusive lock on the per-transition path. sendStatusCounts
 // (whose statusCaster.Send takes only a shared RLock to snapshot members plus a
-// per-web-client mutex and a non-blocking buffered send) and emitSubscriptions
+// short per-member mutex and a fast unbounded-queue append) and emitSubscriptions
 // (which takes the subscription/csmutex RLock) are invoked strictly
 // SEQUENTIALLY and are never nested, and this method holds no lock across them.
 // Callers reach this method by three paths with different lock state: the TTR
@@ -98,8 +98,9 @@ type stateTransition struct {
 // across all RepGroups. This is the restored delta feed that replaces the
 // absolute per-RepGroup counter for the web UI status bars. It preserves the N1b
 // concurrency invariant: statusCaster.Send takes only a shared RLock to snapshot
-// members plus a per-web-client mutex and a non-blocking buffered send, never a
-// server-wide exclusive lock on the per-transition path.
+// members plus a short per-member mutex and a fast unbounded-queue append (the
+// status feed never drops; the actual client write happens later in the pump
+// goroutine), never a server-wide exclusive lock on the per-transition path.
 func (s *Server) sendStatusCounts(counts []countContribution) {
 	if len(counts) == 0 {
 		return

@@ -67,7 +67,7 @@ func TestCaster(t *testing.T) {
 	}
 
 	Convey("A caster sends updates to active members", t, func() {
-		caster := newCaster()
+		caster := newCaster(false)
 
 		receiver := caster.Join()
 		defer receiver.Close()
@@ -83,7 +83,7 @@ func TestCaster(t *testing.T) {
 	})
 
 	Convey("Closing a caster member cancels a pending send", t, func() {
-		caster := newCaster()
+		caster := newCaster(false)
 		receiver := caster.Join()
 
 		if cap(receiver.In) > 0 {
@@ -122,11 +122,12 @@ func TestCaster(t *testing.T) {
 	})
 
 	Convey("Sending to a full caster member never blocks the sender", t, func() {
-		// The remaining casters (bad servers, scheduler issues) are recoverable:
-		// on overflow the newest update is dropped rather than blocking the
-		// sender, and a later "current" request re-broadcasts the latest set. The
-		// status counts no longer use the caster at all.
-		caster := newCaster()
+		// The drop-on-overflow casters (bad servers, scheduler issues) are
+		// recoverable: on overflow the newest update is dropped rather than
+		// blocking the sender, and a later "current" request re-broadcasts the
+		// latest set. The status caster uses never-drop mode instead (see
+		// newCaster) because its jstateCount deltas are non-idempotent.
+		caster := newCaster(false)
 		receiver := caster.Join()
 
 		defer receiver.Close()

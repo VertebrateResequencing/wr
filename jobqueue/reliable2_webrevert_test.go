@@ -384,3 +384,131 @@ func readJStateDeltasUntil(ws *websocket.Conn, timeout time.Duration,
 		acc.apply(msg)
 	}
 }
+
+// TestReliable2StatusFeedNeverDrops covers bug 260723-1: the status caster feed
+// must never drop non-idempotent jstateCount deltas, even when the browser
+// (modelled by a deliberately slow consumer) drains far slower than the
+// transition hot path produces. The companion sub-test confirms the
+// bad-server/scheduler caster mode is UNCHANGED (still drop-on-overflow), so the
+// fix did not make every feed unbounded.
+func TestReliable2StatusFeedNeverDrops(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		jobCount    = 10000
+		perJobMsgs  = 6 // 3 transitions x (rep group + "+all+")
+		totalMsgs   = jobCount * perJobMsgs
+		consumerNap = 20 * time.Microsecond
+		repGroup    = "rg-never-drop"
+	)
+
+	Convey("The never-drop status caster delivers every delta to a slow consumer", t, func() {
+		c := newCaster(true)
+		defer c.Close()
+
+		member := c.Join()
+
+		acc := newDeltaCounts()
+		consumerDone := make(chan struct{})
+
+		go func() {
+			defer close(consumerDone)
+
+			for received := 0; received < totalMsgs; received++ {
+				select {
+				case v := <-member.In:
+					acc.apply(*asJStateCount(v))
+					time.Sleep(consumerNap) // model a throttled browser
+				case <-time.After(30 * time.Second):
+					return // safety net: never block the suite if a delta was dropped
+				}
+			}
+		}()
+
+		for range jobCount {
+			jobBurstDeltas(c, repGroup) // producer outruns the slow consumer
+		}
+
+		<-consumerDone
+
+		// nothing was dropped: every job's running->complete delta landed, and the
+		// live ("+all+") non-complete states net back to zero.
+		So(acc.count(repGroup, JobStateComplete), ShouldEqual, jobCount)
+		So(acc.count(repGroup, JobStateRunning), ShouldEqual, 0)
+		So(acc.count(repGroup, JobStateReady), ShouldEqual, 0)
+		So(acc.count(statusAllRepGroups, JobStateComplete), ShouldEqual, jobCount)
+		So(acc.count(statusAllRepGroups, JobStateRunning), ShouldEqual, 0)
+		So(acc.count(statusAllRepGroups, JobStateReady), ShouldEqual, 0)
+	})
+
+	Convey("The drop-on-overflow caster (bad-server/scheduler mode) still drops under a slow consumer", t, func() {
+		c := newCaster(false)
+		defer c.Close()
+
+		member := c.Join()
+
+		acc := newDeltaCounts()
+		stop := make(chan struct{})
+		consumerDone := make(chan struct{})
+
+		go func() {
+			defer close(consumerDone)
+
+			for {
+				select {
+				case <-stop:
+					return
+				case v := <-member.In:
+					acc.apply(*asJStateCount(v))
+					time.Sleep(consumerNap)
+				}
+			}
+		}()
+
+		for range jobCount {
+			jobBurstDeltas(c, repGroup)
+		}
+
+		// give the slow consumer a grace period to drain what little it buffered,
+		// then stop it: the 1-slot buffer means the vast majority was dropped.
+		time.Sleep(200 * time.Millisecond)
+		close(stop)
+		<-consumerDone
+
+		So(acc.count(repGroup, JobStateComplete), ShouldBeLessThan, jobCount)
+	})
+}
+
+// asJStateCount recovers the *jstateCount a caster member received. The caster
+// only ever carries the pointers the test sends, so the assertion always holds;
+// the two-value form is used purely to keep the linter happy.
+func asJStateCount(v any) *jstateCount {
+	msg, ok := v.(*jstateCount)
+	if !ok {
+		return &jstateCount{}
+	}
+
+	return msg
+}
+
+// jobBurstDeltas sends, via c, the jstateCount deltas for one job's full life
+// (new->ready->running->complete) in repGroup, plus the matching "+all+"
+// aggregate deltas, mirroring sendStatusCounts. Each of the six deltas is a
+// separate Send, as the transition hot path would emit them.
+func jobBurstDeltas(c *caster, repGroup string) {
+	transitions := []struct {
+		from JobState
+		to   JobState
+	}{
+		{JobStateNew, JobStateReady},
+		{JobStateReady, JobStateRunning},
+		{JobStateRunning, JobStateComplete},
+	}
+
+	for _, t := range transitions {
+		c.Send(&jstateCount{RepGroup: repGroup, FromState: t.from, ToState: t.to, Count: 1})
+		c.Send(&jstateCount{RepGroup: statusAllRepGroups, FromState: t.from, ToState: t.to, Count: 1})
+	}
+}

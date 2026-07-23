@@ -700,6 +700,13 @@ type casterMember struct {
 	done  chan struct{}
 	send  sync.Mutex
 	once  sync.Once
+
+	// queue and notify are only used by never-drop members (see caster.neverDrop
+	// and casterMember.pump). queue is an unbounded buffer of pending values
+	// guarded by send; notify is a coalescing (buffered-1) wake-up for the pump
+	// goroutine that drains queue into In at client speed.
+	queue  []any
+	notify chan struct{}
 }
 
 func (cm *casterMember) Close() {
@@ -714,11 +721,19 @@ func (cm *casterMember) Close() {
 type caster struct {
 	members map[*casterMember]struct{}
 	closed  bool
+	// neverDrop, when true, makes members buffer every sent value in an unbounded
+	// in-memory queue drained to In at client speed, so no value is ever dropped.
+	// This is required for the status feed, whose jstateCount deltas are
+	// non-idempotent (a dropped running->complete delta is never re-derived on a
+	// live connection). When false, members drop on overflow of a 1-slot buffer,
+	// which is safe for the bad-server/scheduler feeds because they carry
+	// idempotent full sets recovered by the next set or a client re-request.
+	neverDrop bool
 	sync.RWMutex
 }
 
-func newCaster() *caster {
-	return &caster{members: make(map[*casterMember]struct{})}
+func newCaster(neverDrop bool) *caster {
+	return &caster{members: make(map[*casterMember]struct{}), neverDrop: neverDrop}
 }
 
 func (c *caster) Broadcasting(time.Duration) {}
@@ -728,6 +743,12 @@ func (c *caster) Join() *casterMember {
 		group: c,
 		In:    make(chan any, 1),
 		done:  make(chan struct{}),
+	}
+
+	if c.neverDrop {
+		member.notify = make(chan struct{}, 1)
+
+		go member.pump()
 	}
 
 	c.Lock()
@@ -777,24 +798,91 @@ func (c *caster) Close() {
 	}
 }
 
-// trySend serialises sends to this member via send.Lock (so a concurrent Send
-// may block briefly), then performs a non-blocking send of val into the
+// trySend delivers val to this member, using one of two disciplines depending on
+// the member's caster mode.
+//
+// For a never-drop member (the status feed), it appends val to the member's
+// unbounded in-memory queue under send.Lock and wakes the pump goroutine, which
+// drains the queue into In at client speed. The append is fast and NEVER drops,
+// so non-idempotent jstateCount deltas (a running->complete delta is not
+// re-derivable on a live connection) always reach the browser. The trade-off,
+// as v0.36.5 accepted with bcast, is unbounded memory under a permanently-stuck
+// client.
+//
+// For a drop-on-overflow member (the bad-server and scheduler feeds), it
+// serialises via send.Lock then performs a non-blocking send of val into the
 // member's 1-slot buffer, dropping val if the buffer is already full or the
-// member is done. The remaining casters (bad servers and scheduler issues) are
-// recoverable: a client re-requests "current", which re-broadcasts the latest
-// set, so a dropped update is harmless. The status counts use the same caster
-// mechanism via statusCaster, broadcasting non-idempotent jstateCount deltas
-// (the accepted v0.36.5 flicker/overcount quality): a dropped delta is not
-// re-derivable, but a client reconnect re-seeds from the scan-on-connect, so
-// there is no overflow-to-resync conversion anywhere.
+// member is done. Those feeds are recoverable: they carry idempotent full sets,
+// and a client re-requests "current", which re-broadcasts the latest set, so a
+// dropped update is harmless.
 func (cm *casterMember) trySend(val any) {
 	cm.send.Lock()
 	defer cm.send.Unlock()
+
+	if cm.group.neverDrop {
+		select {
+		case <-cm.done:
+			return
+		default:
+		}
+
+		cm.queue = append(cm.queue, val)
+
+		select {
+		case cm.notify <- struct{}{}:
+		default:
+		}
+
+		return
+	}
 
 	select {
 	case <-cm.done:
 	case cm.In <- val:
 	default:
+	}
+}
+
+// pump runs for a never-drop member only. It waits for the notify wake-up, then
+// drains the whole pending queue into In, blocking on In per value at the slow
+// client's speed. New values appended while a batch is in flight coalesce a
+// fresh notify, so no wake-up is lost and nothing is dropped. It exits when the
+// member is closed.
+func (cm *casterMember) pump() {
+	for {
+		select {
+		case <-cm.done:
+			return
+		case <-cm.notify:
+		}
+
+		if cm.drainQueue() {
+			return
+		}
+	}
+}
+
+// drainQueue moves every currently-queued value into In, blocking per value on a
+// slow consumer, until the queue is empty. It returns true if the member was
+// closed mid-drain (signalling pump to exit).
+func (cm *casterMember) drainQueue() bool {
+	for {
+		cm.send.Lock()
+		batch := cm.queue
+		cm.queue = nil
+		cm.send.Unlock()
+
+		if len(batch) == 0 {
+			return false
+		}
+
+		for _, val := range batch {
+			select {
+			case <-cm.done:
+				return true
+			case cm.In <- val:
+			}
+		}
 	}
 }
 
@@ -2601,12 +2689,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		statusCaster:              newCaster(),
-		badServerCaster:           newCaster(),
+		statusCaster:              newCaster(true),
+		badServerCaster:           newCaster(false),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		clientSubscriptions:       make(map[string]*serverSubscription),
 		badServers:                make(map[string]*cloud.Server),
-		schedCaster:               newCaster(),
+		schedCaster:               newCaster(false),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
 		recoveryPauseHook:         recoveryPauseHookForTest,
