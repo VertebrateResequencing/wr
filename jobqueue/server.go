@@ -562,6 +562,23 @@ func (s *sgroup) clone(count int) *sgroup {
 	}
 }
 
+// snapshot returns a clone of the sgroup carrying its current count, taken under
+// a single read lock. Use this (rather than clone) when the current count is
+// wanted, so scheduling can operate on a stable copy without holding any sgroup
+// lock across slow scheduler operations.
+func (s *sgroup) snapshot() *sgroup {
+	s.RLock()
+	defer s.RUnlock()
+
+	return &sgroup{
+		name:     s.name,
+		count:    s.count,
+		skipped:  s.skipped,
+		req:      s.req.Clone(),
+		priority: s.priority,
+	}
+}
+
 // getCount is a thread-safe way of getting the current count.
 func (s *sgroup) getCount() int {
 	s.RLock()
@@ -3731,7 +3748,14 @@ func (s *Server) scheduleGroupRunners(ctx context.Context, q *queue.Queue, group
 }
 
 // scheduleGroup records group as previously scheduled and asynchronously
-// schedules its runners. Must be called with s.psgmutex held.
+// schedules its runners against a snapshot of the group. It does NOT hold the
+// sgroup lock across scheduleRunners: the external scheduler command (eg. bsub)
+// can be slow, and holding the sgroup write lock across it would block
+// concurrent count decrements and skip checks (which take the sgroup RLock while
+// holding s.psgmutex), deadlocking the archive/scheduling paths. The real group
+// stays in previouslyScheduledGroups so decrementGroupCount/hasSkips operate on
+// it normally; scheduling correctness for the same cmd is preserved by the
+// scheduler's own per-cmd coalescing. Must be called with s.psgmutex held.
 func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) {
 	if group.count <= 0 {
 		clog.Debug(ctx, "rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
@@ -3741,16 +3765,16 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 
 	s.previouslyScheduledGroups[name] = group
 
+	snapshot := group.snapshot()
+
 	wgk := s.wg.Add(1)
 
-	group.Lock()
 	go func(group *sgroup) {
 		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
 		defer s.wg.Done(wgk)
 
 		s.scheduleRunners(ctx, group)
-		group.Unlock()
-	}(group)
+	}(snapshot)
 }
 
 // accountForRunningJobs adds currently running jobs into the group counts so

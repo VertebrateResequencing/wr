@@ -62,6 +62,13 @@ type ConfigMock struct {
 	// ReserveTimeoutSeconds is what reserveTimeout() returns (how long a runner
 	// should wait for a job). Defaults to 1 if <= 0.
 	ReserveTimeoutSeconds int
+
+	// ScheduleBlock, if non-nil, is received from at the start of every
+	// schedule() call (before any other work or lock is taken), letting a test
+	// hold Schedule() calls open to simulate a slow external scheduler command
+	// (eg. bsub). Close the channel to release all blocked (and allow future)
+	// schedule() calls. Leave nil for normal non-blocking behaviour.
+	ScheduleBlock <-chan struct{}
 }
 
 // mock is a scheduleri implementation that runs RunnerFunc goroutines instead
@@ -102,6 +109,10 @@ func (s *mock) initialize(_ context.Context, config any) error {
 // running, the excess are left to finish on their own (a runner finishes when
 // RunnerFunc returns, i.e. when there is no more work).
 func (s *mock) schedule(ctx context.Context, cmd string, _ *Requirements, _ uint8, count int) error {
+	if s.config.ScheduleBlock != nil {
+		<-s.config.ScheduleBlock
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
