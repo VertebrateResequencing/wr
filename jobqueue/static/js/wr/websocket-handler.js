@@ -95,10 +95,12 @@ export function setupWebSocket(viewModel) {
     let reportedClose = false;
     const renderedWebSocketErrors = new Set();
 
-    // The server pushes idempotent absolute per-RepGroup state, sending the full
-    // current map as soon as we connect (and again on reconnect, since that is a
-    // fresh connection). The "current" request only (re)broadcasts the bad-server
-    // and scheduler-issue sets; status counts need no resync.
+    // On connect (and again on reconnect, since that is a fresh connection) we
+    // send a "current" request. The server replies with the scan-on-connect
+    // status-count seed (jstateCount deltas from the "new" state) and also
+    // (re)broadcasts the recoverable bad-server and scheduler-issue sets. On a
+    // reconnect the stale live counts (and the out-of-order ignore state) are
+    // cleared first in onopen, so the fresh seed is applied cleanly.
     const sendCurrentStatus = (ws) => {
         if (viewModel.ws === ws && ws.readyState === 1) {
             ws.send(currentRequest);
