@@ -130,11 +130,12 @@ Tier B was executed on the isolated dev manager and recorded in
 feed agrees with CLI, no diverging counter) all PASS. A scale-only pre-existing
 scheduler-group deadlock surfaced at 160k was root-caused and fixed (`dfa196f`,
 committed with a deterministic regression test); the re-run was deadlock-free.
-The Issue-4-after-restart and Idea-1 crash-recovery sub-checks are not
-CLI-testable on the dev deployment (it always wipes the DB on restart) and are
-covered deterministically by Tier-A A3.2/D2.1. The only remaining 160k limit is
-the explicitly-deferred over-submission / slow-`bsub` issue (bugfix 260722-1),
-out of this spec's scope.
+The Issue-4-after-restart and Idea-1 crash-recovery sub-checks need a
+DB-preserving restart (the dev deployment always wipes the DB), so they were
+completed on an isolated production-mode manager (both PASS) and are also
+covered deterministically by Tier-A A3.2/D2.1. The 160k over-submission stall
+was root-caused to bugfix 260722-1 and fixed (`5d60467`); the 160k churn now
+drains fully (160,000/160,000).
 
 ## Merge gate
 

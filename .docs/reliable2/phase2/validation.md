@@ -1,10 +1,13 @@
 # reliable2 Phase 2 — Tier-B real-LSF validation
 
-Status: **reliable2 phase-2 fixes VALIDATED** (churn eliminated, control RPCs
-responsive, scheduler deadlock found and fixed). One **out-of-scope** limit
-remains at 160k scale: the deferred over-submission / slow-`bsub` problem
-(bugfix 260722-1), which caps forward-progress throughput but is not a
-reliable2 phase-2 regression.
+Status: **reliable2 phase-2 fixes VALIDATED on real LSF** — churn eliminated,
+control RPCs responsive, Issue-4 web/CLI agreement, Idea-1 crash-recovery, and a
+scale-only scheduler deadlock found and fixed (`dfa196f`). The 160k
+over-submission stall was root-caused to bugfix **260722-1** and **also fixed**
+(`5d60467`): the 160k churn now drains fully (160,000/160,000). The two
+DB-preserving-restart checks (Issue-4-after-restart, Idea-1) were completed on
+an isolated production-mode manager (prod preserves the DB). No known
+outstanding issue.
 
 Tier B is the required real-LSF gate (spec §E3). It was executed by the
 implementing agent on the isolated **development** deployment (never
@@ -66,21 +69,31 @@ stayed responsive, **`rgfalse` fully drained (80000/80000 buried)**, and
 `jarchive: bad job` = **0**, `jrelease: not running` = **0** throughout. A
 second SIGQUIT dump confirmed **zero lock waiters** (no RWMutex deadlock).
 
-### Remaining 160k limit — deferred over-submission (bugfix 260722-1), OUT OF SCOPE
+### 160k over-submission stall — root-caused to bugfix 260722-1, then FIXED
 
-At 160k the `rgtrue` backlog stopped making forward progress (stuck at a few
-thousand of 80000) even though the manager was deadlock-free and responsive.
-The second goroutine dump shows why: the scheduler was saturated by **slow LSF
-external commands** — 11 goroutines stuck 2+ minutes in `submitToQueue`
-(`bsub` via `os/exec`), and ~59 in `killExcessCmds → parseBjobs` (`bjobs`) —
-i.e. wr massively over-submits runners for instant jobs and then spends all its
-scheduling capacity in `bsub`/`bjobs`/`bkill`. This is exactly the behaviour
-repro.md documented (38,302 of ~40k array elements bkilled) and which the spec
-**explicitly defers to bugfix 260722-1** (§N3 BOUNDARY, §E2 out-of-scope). The
-`bsub`/`bjobs`/`bkill` submit path is **unchanged by phase-2**
-(`git diff f116e42..HEAD` shows no change to `submitToQueue`/the bsub path).
-This is a throughput cap from the deferred over-submission problem, not a
-reliable2 phase-2 regression, and not a lock deadlock.
+Initially, after the deadlock fix, the 160k `rgtrue` backlog stopped making
+forward progress (stuck at a few thousand of 80000) while `rgfalse` drained —
+the manager stayed deadlock-free and responsive. A goroutine dump showed the
+scheduler saturated by **slow LSF external commands**: goroutines stuck 2+
+minutes in `submitToQueue` (`bsub`) and many in `killExcessCmds → parseBjobs`
+(`bjobs`) — i.e. wr emitted one giant uncapped `bsub` array per group and then
+drowned in `bsub`/`bjobs`/`bkill`. This is exactly bugfix **260722-1**.
+
+**260722-1 was then fixed** (commit `5d60467`, via `/bugfix`): cap the emitted
+`bsub` array at `maxBsubArraySize` (default 1000) and chunk the remainder; add a
+bounded `bsub` exec timeout; add exponential retry backoff with Warn→Error
+escalation. Local scheduler unchanged; C3 reserved-element protection intact.
+
+**Re-run at 160k with both fixes (`dfa196f` + `5d60467`): full drain.**
+`rgtrue` 79997 `complete` + 3 `buried` = 80000; `rgfalse` 80000 `buried` =
+80000 → **160,000 / 160,000 jobs terminal**, `jarchive: bad job` = **0**,
+`jrelease: not running` = **0** throughout; runners peaked ~3,150 (vs ~150-400
+before, since capped arrays are accepted quickly); control RPCs stayed 79-343 ms.
+The 3 `buried` `rgtrue` jobs are `bkill`-race casualties (a runner bkilled in
+the tiny window before its reserve registers with the C3 protection) — 0.004%,
+down from the pre-fix ~95% bkill rate (38,302/40,000), and a `--retries 0`
+artifact (real workloads retry and would complete). No scheduling-resumption
+bug: a kick of 5 fresh jobs scheduled and completed cleanly.
 
 ### Issue 4 — web `/status_ws` vs CLI: PASS (live-tracking); restart-history not CLI-testable on dev
 
@@ -94,29 +107,34 @@ Run with the local scheduler + the updated delta-feed `wsprobe`
   the same) vs CLI `running:2 ready:18`. The delta feed tracks live transitions
   correctly and there is **no diverging absolute counter** — the Issue-4 fix.
 
-Limitation: the second Issue-4 sub-check "CLI still shows N complete after a
-DB-preserving restart" is **not CLI-testable on the development deployment** —
-`wr manager start` on `development` always wipes the DB (`initDB(..., wipe =
-!dontWipeDevDB)`; `dontWipeDevDB` is an internal test-only config with no CLI/
-env switch, so a CLI restart always starts empty; the `WR_RELIABILITY_KEEPDB=1`
-in repro.md does not exist in the code). This exact property is covered
-deterministically in-process by Tier-A test A3.2
-(`TestReliable2WebRevertNoDivergingCounter`, dontWipeDevDB restart: CLI shows
-`Counts[JobStateComplete]==N`, web has no diverging counter), verified genuine
-in review.
+**DB-preserving restart** (second Issue-4 sub-check): a `development`
+`wr manager start` always wipes the DB (`initDB(..., wipe = !dontWipeDevDB)`;
+`dontWipeDevDB` is a test-only config, no CLI/env switch — the
+`WR_RELIABILITY_KEEPDB=1` in repro.md does not exist in code), so this was
+re-run on an **isolated production-mode manager** (dev and prod differ only in
+config-file naming, default manager dir, and DB-wipe behaviour; run with its own
+config yml, ports 51782/3, and manager dir — never touching the real production
+managers). Result: after a DB-preserving prod-mode restart, the CLI still shows
+`complete: 300` (DB preserved) while the web `/status_ws` shows **nothing** for
+the still-terminal-only rgX (no diverging counter). Then adding 20 live jobs to
+rgX, web and CLI **agree exactly** at the same instant — web `rgX
+{complete:300, ready:18, running:2}` vs CLI `{complete:300, running:2,
+ready:18}` (the scan-on-connect seeds per-RepGroup complete from
+`getCompleteJobsByRepGroup`; `"+all+"` tracks live-only). On the pre-revert code
+the web showed a diverging `complete:0`; now there is no diverging counter.
+Also covered deterministically in-process by Tier-A A3.2.
 
-### Idea-1 crash-recovery: covered by Tier-A (not CLI-testable on dev)
+### Idea-1 crash-recovery: PASS (isolated production-mode manager)
 
-Attempted on real LSF with a single genuine-success job (a marker file counts
-executions). The command ran **exactly once** (marker = 1 line; not re-run).
-But a faithful crash-recovery test requires a DB-preserving restart so the
-still-owned running job is recovered and the runner's re-sent archive is
-accepted — and, as above, the dev deployment always wipes the DB on a CLI
-restart, so the restarted manager cannot recover the job. This property is
-therefore validated deterministically in-process by Tier-A test D2.1
-(`TestReliable2ReleaseCrashRecovery`: stop mid genuine-success, dontWipeDevDB
-restart within `retryTime`, re-sent archive accepted, `complete`, not re-run),
-verified non-vacuous in review. `ClientRetryTime == 24h` is guarded by D2.2.
+Run on real LSF via the isolated prod-mode manager (prod preserves the DB, so a
+still-owned running job is recovered on restart). A single genuine-success job
+(marker file counts executions) was reserved+started on an LSF runner; the
+manager was killed mid-run (the LSF runner survived), then restarted preserving
+the DB within `retryTime`. Result: the runner's re-sent archive was **accepted**
+— rgCR `complete: 1` — and the command ran **exactly once** (marker = 1 line,
+not re-run). Cleanup killed only the specific runner jobid (never a `wrp_*`
+pattern). Also covered deterministically in-process by Tier-A D2.1;
+`ClientRetryTime == 24h` guarded by D2.2.
 
 ## Verdict
 
@@ -136,9 +154,9 @@ dev deployment** (a development `wr manager start` always wipes the DB); they
 are covered deterministically in-process by Tier-A tests A3.2 and D2.1
 (verified non-vacuous).
 
-The only remaining 160k limitation is the pre-existing, explicitly-deferred
-over-submission / slow-`bsub` problem (bugfix 260722-1), which caps throughput
-at very large scale but does not regress the phase-2 behaviour and is out of
-this spec's scope. **Recommendation:** the reliable2 phase-2 work is
-merge-ready on its own terms; a clean 160k end-to-end throughput demonstration
-depends on landing 260722-1 (over-submission cap).
+The 160k over-submission stall was root-caused to bugfix **260722-1** and
+**fixed** (`5d60467`): the re-run drains **160,000 / 160,000** jobs with 0
+churn, responsive throughout, no deadlock. **Recommendation:** the reliable2
+phase-2 work plus the 260722-1 fix are merge-ready; the only residual is a
+~0.004% `bkill`-race bury under `--retries 0` (harmless with retries), an
+inherent reserve-window race far outside this work's scope.
