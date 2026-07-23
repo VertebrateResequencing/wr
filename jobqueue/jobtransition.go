@@ -71,9 +71,12 @@ type countContribution struct {
 // per-web-client mutex and a non-blocking buffered send) and emitSubscriptions
 // (which takes the subscription/csmutex RLock) are invoked strictly
 // SEQUENTIALLY and are never nested, and this method holds no lock across them.
-// Callers that run inside the queue change/TTR callbacks still hold queue.mutex,
-// preserving the established acquisition order queue.mutex -> subscription
-// locks; no subscription lock is ever taken before the queue lock.
+// Callers reach this method by three paths with different lock state: the TTR
+// callback (markJobLost) still holds queue.mutex; the queue change callback runs
+// asynchronously in its own goroutine, and the touch path runs in an RPC
+// handler, so neither of those holds queue.mutex. In every case no subscription
+// lock is ever taken before queue.mutex, so the established acquisition order
+// queue.mutex -> subscription locks is never violated.
 func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions func()) {
 	s.sendStatusCounts(counts)
 
