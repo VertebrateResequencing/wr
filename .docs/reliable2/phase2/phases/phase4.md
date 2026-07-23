@@ -66,8 +66,8 @@ its next reserve (fail-before: `ErrInternalError` returned `giveUp == false`);
 non-zero-exit release-for-retry) yields `nil` (or the job is buried after
 retries) - regression guard that the fix does not break normal releases.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.2: D2 - Crash-recovery success still recorded; retryTime stays 24h
 
@@ -95,8 +95,8 @@ command is NOT re-run (`GetStatusByRepGroupMatch` shows
 `Counts[JobStateComplete] == 1`) - guards that D1's give-up did not discard a
 genuine unrecorded success; (2) `ClientRetryTime` is 24h (unchanged) - guard.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Regression guards (KEEP surfaces, section E1)
 

@@ -1144,7 +1144,14 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // (if forceBury, or it has failed too many times).
 func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
 	failMsg string) (*serverResponse, string, string) {
-	_, job, srerr := s.getij(cr, false)
+	// require the item to still be in the Run sub-queue (getij's checkRunning),
+	// mirroring handleArchive. A release whose item has left Run - e.g. a winning
+	// double-reservation runner already dealt with it - is authoritatively "gone"
+	// on a live manager and returns ErrBadJob (or ErrRecovering while recovering),
+	// which lands in the client's give-up set so the losing runner abandons the
+	// dead reservation promptly instead of looping for the full 24h retryTime. A
+	// legitimate release (item in Run, owner matches) still proceeds (srerr == "").
+	_, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
