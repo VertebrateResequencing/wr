@@ -2,13 +2,20 @@
 
 ## Status
 
-Known, accepted, **cosmetic and self-correcting** residual behaviour. This is
-*not* a regression to be chased down urgently — it is the deliberately-accepted
-v0.36.5-quality tradeoff that came back when #533 was reverted on the
-`reliable2` branch (now merged to `develop`). It is documented here so the
-behaviour is understood and can be revisited later on its own terms.
+**Fixed** (this PR). The flicker/overcount — and a worse, previously-unnoticed
+*permanent* divergence on a browser that connects mid-burst — are resolved by a
+purely **client-side**, order-independent occupancy reconciliation in
+`jobqueue/static/js/wr/websocket-handler.js`. There is **no server change**, so
+the reliability constraints that motivated reverting #533 are untouched. See
+[`solution.md`](solution.md) for the fix (and why other approaches were
+rejected) and `DEVELOPERS.md` §2 rule 10.
 
-**No fix is proposed in this document.**
+The rest of this document is the **original problem statement** the fix
+addresses, retained for context. Before the fix this was a known, accepted,
+**cosmetic and self-correcting** residual behaviour: the deliberately-accepted
+v0.36.5-quality tradeoff that came back when #533 was reverted on the
+`reliable2` branch (now merged to `develop`). Read the present-tense
+descriptions below as "how it behaved before this PR".
 
 ## What you see
 
