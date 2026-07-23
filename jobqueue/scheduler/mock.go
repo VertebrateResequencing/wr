@@ -189,6 +189,9 @@ func (s *mock) setMessageCallBack(_ context.Context, _ MessageCallBack) {}
 
 func (s *mock) setBadServerCallBack(_ context.Context, _ BadServerCallBack) {}
 
+// reserved is a no-op for the mock scheduler.
+func (s *mock) reserved(_ string) {}
+
 // cleanup achieves the aims of Cleanup().
 func (s *mock) cleanup(_ context.Context) {
 	s.mutex.Lock()

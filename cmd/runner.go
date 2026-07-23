@@ -172,6 +172,11 @@ complete.`,
 			}
 		}()
 
+		// tell the server which scheduler element (e.g. LSF "jobid[index]") this
+		// runner is, so a job it reserves is never killed as excess mid-job. Empty
+		// when not running under a recognised scheduler.
+		jq.SetReserveSchedulerID(reserveSchedulerID())
+
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
 		var (
@@ -323,6 +328,24 @@ complete.`,
 
 		info("wr runner exiting, having run %d commands, because %s", numrun, exitReason)
 	},
+}
+
+// reserveSchedulerID returns this runner's scheduler element id in the
+// "jobid[index]" form that matches the scheduler's killable id, so the server
+// can mark the element reserved and never kill it as excess. Currently only LSF
+// is supported (via LSB_JOBID, with [LSB_JOBINDEX] appended when set); it
+// returns "" when not running under LSF.
+func reserveSchedulerID() string {
+	jobID := os.Getenv("LSB_JOBID")
+	if jobID == "" {
+		return ""
+	}
+
+	if index := os.Getenv("LSB_JOBINDEX"); index != "" {
+		return fmt.Sprintf("%s[%s]", jobID, index)
+	}
+
+	return jobID
 }
 
 func init() {

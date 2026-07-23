@@ -56,8 +56,8 @@ BEFORE any `Started` call (fail-before: `resetJobForReservation` zeroed them);
 (2) a reserve request carrying no host+pid (old-client shape) leaves the job's
 `Pid == 0` and the reservation still succeeds (backward compatible).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Batch 1 (parallel, after Item 3.1 is reviewed)
 
@@ -105,8 +105,8 @@ confirmed; (3) old-client fallback parks - a reserved-not-started job with
 `Pid == 0` is parked in `SubQueueRun` and a second client's repeated `Reserve`
 returns `nil`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.3: C3 - Never bkill a reserved LSF array element [parallel with 3.2]
 
@@ -155,8 +155,8 @@ element no longer appears in a subsequent `bjobs` snapshot is removed from the
 set when the prune runs (bounded memory); (3) a non-LSF scheduler's
 `Reserved(id)` is a no-op and does not error.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill (review all items in the

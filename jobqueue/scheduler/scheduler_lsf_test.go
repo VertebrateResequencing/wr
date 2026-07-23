@@ -33,6 +33,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"testing"
 	"time"
 
@@ -527,6 +528,68 @@ func TestLSFQueueSelection(t *testing.T) {
 		Convey("an impossible job (more memory than any queue allows) errors", func() {
 			_, err := s.determineQueue(&Requirements{9999999999, 1 * time.Minute, 1, 20, noOther, true, true, true})
 			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
+// TestLSFReservedElements covers the C3 acceptance tests (never bkill a reserved
+// LSF array element) as pure-function tests, needing no real LSF.
+func TestLSFReservedElements(t *testing.T) {
+	Convey("Given a killCollector over maxAllowed with a reserved element recorded", t, func() {
+		// reAid matches the [index] suffix that killableID uses to build the
+		// jobid[index] killable id from a bjobs job id + job name.
+		reAid := regexp.MustCompile(`\[(\d+)\]$`)
+		kc := &killCollector{
+			reAid:      reAid,
+			toKill:     []string{"-b"},
+			maxAllowed: 1,
+			reserved:   map[string]bool{"12345[7]": true},
+		}
+
+		// first element (RUN) fills the single allowed slot.
+		kc.consider("100", "RUN", "wrname[1]")
+
+		// the reserved element is PEND (non-RUN, normally killable as excess)...
+		kc.consider("12345", "PEND", "wrname[7]")
+
+		// ...as is an unreserved excess element.
+		kc.consider("200", "PEND", "wrname[8]")
+
+		Convey("the reserved element is protected while the unreserved excess is killed", func() {
+			So(kc.toKill, ShouldNotContain, "12345[7]")
+			So(kc.toKill, ShouldContain, "200[8]")
+		})
+	})
+
+	Convey("Given an lsf scheduler with a reserved set", t, func() {
+		s := &lsf{
+			reservedElements: map[string]bool{
+				"12345[7]": true,
+				"12345[8]": true,
+				"99999[1]": true,
+			},
+		}
+
+		Convey("pruneReserved drops ids absent from a subsequent full bjobs snapshot", func() {
+			// 12345[7] has exited so parseBjobs no longer reports it.
+			present := map[string]bool{"12345[8]": true, "99999[1]": true}
+			s.pruneReserved(present)
+
+			So(s.reservedElements, ShouldNotContainKey, "12345[7]")
+			So(s.reservedElements, ShouldContainKey, "12345[8]")
+			So(s.reservedElements, ShouldContainKey, "99999[1]")
+			So(len(s.reservedElements), ShouldEqual, 2)
+		})
+	})
+
+	Convey("Given a non-LSF scheduler", t, func() {
+		ctx := context.Background()
+		s, err := New(ctx, "local", &ConfigLocal{testShell, time.Second, 0, 0})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		Convey("Reserved() is a no-op and does not panic", func() {
+			So(func() { s.Reserved("12345[7]") }, ShouldNotPanic)
 		})
 	})
 }

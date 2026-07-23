@@ -87,6 +87,13 @@ const (
 	ErrBadFlavor    = "unknown server flavor"
 )
 
+// Reserved records that a scheduler element (opaque, scheduler-specific id,
+// e.g. LSF "jobid[index]") has been handed a wr job reservation, so it must not
+// be killed as excess. Non-LSF schedulers ignore it.
+func (s *Scheduler) Reserved(schedulerID string) {
+	s.impl.reserved(schedulerID)
+}
+
 // Error records an error and the operation and scheduler that caused it.
 type Error struct {
 	Scheduler string // the scheduler's Name
@@ -254,6 +261,9 @@ type scheduleri interface {
 
 	// setBadServerCallBack achieves the aims of SetBadServerCallBack().
 	setBadServerCallBack(ctx context.Context, cb BadServerCallBack)
+
+	// reserved achieves the aims of Reserved().
+	reserved(schedulerID string)
 
 	// cleanup does any clean up once you've finished using the job scheduler.
 	cleanup(ctx context.Context)

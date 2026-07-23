@@ -43,6 +43,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/bsubresource"
@@ -147,6 +148,11 @@ type lsf struct {
 	bjobsExe           string
 	bkillExe           string
 	privateKey         string
+	// reservedElements holds the scheduler element ids (jobid[index] form) that
+	// wr has handed a job reservation to, so killExcessCmds never bkills them as
+	// excess even before bjobs reports them as RUN. Guarded by reservedMu.
+	reservedElements map[string]bool
+	reservedMu       sync.Mutex
 }
 
 // ConfigLSF represents the configuration options required by the LSF scheduler.
@@ -248,6 +254,48 @@ func (s *lsf) detectMemLimitMultiplier() error {
 	}
 
 	return nil
+}
+
+// reserved records that the given scheduler element id (an LSF "jobid[index]")
+// has been handed a wr job reservation, so killExcessCmds must never bkill it as
+// excess, even before bjobs reports it as RUN.
+func (s *lsf) reserved(schedulerID string) {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	if s.reservedElements == nil {
+		s.reservedElements = make(map[string]bool)
+	}
+
+	s.reservedElements[schedulerID] = true
+}
+
+// snapshotReserved returns a copy of the currently reserved element ids, safe to
+// read without holding reservedMu.
+func (s *lsf) snapshotReserved() map[string]bool {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	snapshot := make(map[string]bool, len(s.reservedElements))
+	for id := range s.reservedElements {
+		snapshot[id] = true
+	}
+
+	return snapshot
+}
+
+// pruneReserved drops any reserved element ids not present in the given full
+// snapshot of currently-known LSF element ids (parseBjobs excludes exited
+// elements), bounding the reserved set over a long-lived manager.
+func (s *lsf) pruneReserved(present map[string]bool) {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	for id := range s.reservedElements {
+		if !present[id] {
+			delete(s.reservedElements, id)
+		}
+	}
 }
 
 // bqueuesParser holds the mutable state used while parsing the output of
@@ -1124,26 +1172,53 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, maxAllowed int) (count i
 	// as multiple different arrays, each with a uniqified job name. It gets
 	// uniquified because otherwise none of the jobs in the second array would
 	// start until the first array with the same name ended.
+	// an empty cmd means we scan all of this deployment's wr jobs, giving a full
+	// bjobs snapshot we can use to prune the reserved-element set.
+	full := cmd == ""
+
 	var jobPrefix string
-	if cmd == "" {
+	if full {
 		jobPrefix = fmt.Sprintf("wr%s_", s.config.Deployment[0:1])
 	} else {
 		jobPrefix = jobName(cmd, s.config.Deployment, false)
 	}
 
 	if maxAllowed < 0 {
-		return s.countCmds(jobPrefix)
+		return s.countCmds(jobPrefix, full)
 	}
 
 	return s.killExcessCmds(ctx, jobPrefix, maxAllowed)
 }
 
-// countCmds counts how many jobs with the given prefix are known to LSF.
-func (s *lsf) countCmds(jobPrefix string) (count int, err error) {
-	cb := func(_, _, _ string) {
+// countCmds counts how many jobs with the given prefix are known to LSF. When
+// full is true the prefix covers all of this deployment's wr jobs, so the
+// scanned element ids are used to prune the reserved-element set (bounded
+// memory over a long-lived manager).
+func (s *lsf) countCmds(jobPrefix string, full bool) (count int, err error) {
+	var (
+		present map[string]bool
+		reAid   *regexp.Regexp
+	)
+
+	if full {
+		present = make(map[string]bool)
+		reAid = regexp.MustCompile(`\[(\d+)\]$`)
+	}
+
+	cb := func(jobID, _, jobName string) {
 		count++
+
+		if full {
+			if id := killableID(jobID, jobName, reAid); id != "" {
+				present[id] = true
+			}
+		}
 	}
 	err = s.parseBjobs(jobPrefix, cb)
+
+	if full {
+		s.pruneReserved(present)
+	}
 
 	return count, err
 }
@@ -1152,6 +1227,7 @@ func (s *lsf) countCmds(jobPrefix string) (count int, err error) {
 // beyond a maximum, so they can be killed.
 type killCollector struct {
 	reAid      *regexp.Regexp
+	reserved   map[string]bool
 	toKill     []string
 	count      int
 	maxAllowed int
@@ -1162,7 +1238,16 @@ type killCollector struct {
 func (k *killCollector) consider(jobID, stat, jobName string) {
 	k.count++
 	if k.count > k.maxAllowed && stat != "RUN" {
-		if sidaid := killableID(jobID, jobName, k.reAid); sidaid != "" {
+		sidaid := killableID(jobID, jobName, k.reAid)
+
+		if sidaid != "" && k.reserved[sidaid] {
+			// wr has handed this element a job reservation; never kill it, even
+			// though bjobs still reports it as non-RUN. Keep it counted toward
+			// maxAllowed since it is effectively active.
+			return
+		}
+
+		if sidaid != "" {
 			k.toKill = append(k.toKill, sidaid)
 		}
 
@@ -1184,6 +1269,7 @@ func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed i
 	// cmds to start running and then get killed.
 	kc := &killCollector{
 		reAid:      regexp.MustCompile(`\[(\d+)\]$`),
+		reserved:   s.snapshotReserved(),
 		toKill:     []string{"-b"},
 		maxAllowed: maxAllowed,
 	}

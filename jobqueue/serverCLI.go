@@ -835,7 +835,20 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 
 	sjob.Lock()
 	sjob.DelayTime = delay
+	// record which runner holds this reservation (its own host+pid) before the
+	// command's own pid is reported at Started, so a reserved-not-started job's
+	// liveness can be confirmed independently of the RPC stream. An old client
+	// sends no host+pid, leaving Host "" and Pid 0.
+	sjob.Host = cr.Host
+	sjob.Pid = cr.Pid
 	sjob.Unlock()
+
+	// tell the scheduler which of its elements (e.g. an LSF "jobid[index]") holds
+	// this reservation, so it is never killed as excess mid-job. An old/non-LSF
+	// client sends no SchedulerID.
+	if cr.SchedulerID != "" {
+		s.scheduler.Reserved(cr.SchedulerID)
+	}
 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
@@ -854,8 +867,9 @@ func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8
 
 	sjob.ReservedBy = clientID // *** we should unset this on moving out of run state, to save space
 	sjob.Exited = false
-	sjob.Pid = 0
-	sjob.Host = ""
+	// Host/Pid are NOT zeroed here: respondWithReservedJob records the reserving
+	// runner's host+pid so a reserved-not-started job's liveness can be confirmed.
+	// StartTime stays zeroed - it is set at Started.
 	sjob.StartTime = time.Time{}
 	sjob.EndTime = time.Time{}
 	sjob.PeakRAM = 0

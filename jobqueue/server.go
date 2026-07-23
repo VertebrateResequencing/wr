@@ -3395,18 +3395,31 @@ func (s *Server) createQueue(ctx context.Context) {
 // ttrCallback handles a running item hitting its TTR. A TTR-expired job is
 // marked lost and kept in the run queue while its death is confirmed
 // asynchronously; an on-time touch resets the TTR (via q.Touch), and a late
-// touch clears the lost flag and recovers the job. Because RPCs are drained by a
-// single reader, under socket saturation a touch RPC can be processed after the
-// TTR deadline, so this callback can fire even for a still-alive, responsive
-// runner. That is benign: a spuriously-lost job is parked in Run, is never
-// re-reserved while its runner owns it, and its owner's successful archive is
-// still accepted; a later touch clears the lost flag. A job that is already lost
-// stays parked in the run queue (a touch will recover it, or the in-flight
-// confirmation will kill it) without being re-marked or re-confirmed.
+// touch clears the lost flag and recovers the job. Under socket saturation a
+// touch RPC can be processed after the TTR deadline, so this callback can fire
+// even for a still-alive, responsive runner. That is benign: a spuriously-lost
+// job is parked in Run, is never re-reserved while its runner owns it, and its
+// owner's successful archive is still accepted; a later touch clears the lost
+// flag. A job that is already lost stays parked in the run queue (a touch will
+// recover it, or the in-flight confirmation will kill it) without being
+// re-marked or re-confirmed.
+//
+// Both a started-then-silent job and a reserved-but-never-started job whose TTR
+// expires are handled the same way: marked lost and parked in Run, with death
+// confirmed asynchronously via the runner's host+pid (recorded at reserve for
+// the reserved-not-started case, spec C1/C2). We never requeue a
+// reserved-not-started job on a StartTime.IsZero() proxy, so a live-but-
+// backlogged runner's job is never re-reserved, while a genuinely dead runner's
+// job is still reclaimed once confirmed dead; an old client (pid 0) is not
+// confirmed dead and stays parked (confirmJobDead returns false), recovering
+// only when its Started/Touch finally drains. Only a released/finished item
+// (job.Exited) awaiting its delay proceeds to the delay sub-queue.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	job.Lock()
 
-	if job.StartTime.IsZero() || job.Exited {
+	// a released/finished item awaiting its delay is not a live reservation; let
+	// it proceed to the delay sub-queue as before.
+	if job.Exited {
 		job.Unlock()
 		job.decrementLimitGroups(s.limiter)
 
