@@ -55,6 +55,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/backoff"
+	backofftime "github.com/VertebrateResequencing/wr/backoff/time"
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -216,6 +218,18 @@ var (
 // pretending to be bsub.
 var BsubID uint64 //nolint:gochecknoglobals
 
+// numRPCReaders is the number of concurrent goroutines that call RecvMsg() on
+// the single command socket to admit client RPCs (spec B1). A small fixed value
+// lets control/status RPCs (wr status, wr limit, wr suspend) be admitted without
+// queuing behind a burst of reserve/touch/archive traffic, since Go channel
+// receives fan out one message per receiver and mangos routes each reply by the
+// message's pipe-ID header regardless of which reader admitted it. It is a
+// package var (not user-configurable) purely so tests can lower it to 1 or raise
+// it; production always uses the default.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var numRPCReaders = 6
+
 // envPprofAddr is the environment variable that, when set to a host:port (eg.
 // "localhost:6060"), makes Serve() start an opt-in net/http/pprof endpoint for
 // profiling the manager. It is unset by default, in which case no endpoint is
@@ -229,6 +243,22 @@ const envPprofAddr = "WR_PPROF_ADDR"
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
+
+// sgroup represents a scheduler group.
+const (
+	// persistentScheduleFailures is the number of consecutive scheduling
+	// failures for a group after which the failure is logged at Error level
+	// (rather than Warn) so a permanently-failing submit becomes visible.
+	persistentScheduleFailures = 3
+
+	// scheduleRetryBackoffMax caps the jittered exponential backoff between
+	// retries of a failing scheduling attempt (used as the retry backoff's Max).
+	scheduleRetryBackoffMax = 30 * time.Minute
+
+	// scheduleRetryBackoffFactor is the multiplier applied to the retry backoff
+	// after each consecutive scheduling failure (used as the backoff's Factor).
+	scheduleRetryBackoffFactor = 2
+)
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -494,16 +524,16 @@ type BadServer struct {
 	Problem string
 }
 
-// jstateAbsolute is the idempotent absolute per-RepGroup status message we send
-// to the status webpage. Counts holds the current absolute number of jobs in
-// each JobState for the RepGroup (states with zero jobs are omitted). The client
-// replaces the RepGroup's displayed counts wholesale, so the message is
-// idempotent: applying it twice is a no-op and a dropped intermediate is
-// harmless because the next message overwrites it. "+all+" is the special group
-// representing all live jobs across all RepGroups.
-type jstateAbsolute struct {
-	RepGroup string
-	Counts   map[JobState]int
+// jstateCount is a from->to state-count delta sent to the status web page: the
+// count in FromState drops by Count, the count in ToState rises by Count. This
+// is v0.36.5's status-bar feed, restored (alongside statusCaster) in place of
+// the removed absolute per-RepGroup counter. RepGroup "+all+" aggregates all
+// live jobs across all RepGroups.
+type jstateCount struct {
+	RepGroup  string
+	FromState JobState
+	ToState   JobState
+	Count     int
 }
 
 // SchedulerIssue is the details of a scheduler problem encountered that we send
@@ -526,14 +556,55 @@ type SchedulerAlerts struct {
 	BadServers []*BadServer
 }
 
-// sgroup represents a scheduler group.
 type sgroup struct {
 	name     string
 	count    int
 	skipped  int
 	req      *scheduler.Requirements
 	priority uint8
+	// failures counts consecutive scheduling failures for this group. It drives
+	// only the Warn->Error log escalation (at persistentScheduleFailures); the
+	// retry delay itself is driven by retryBackoff. It is only accumulated within
+	// a single persistent retry loop (clone/snapshot deliberately reset it to 0),
+	// and is accessed under the same locking discipline as count.
+	failures int
+	// retryBackoff is the lazily-created, per-group jittered exponential backoff
+	// used to space out schedule retries. clone/snapshot deliberately leave it
+	// nil so a fresh group starts with a fresh backoff, while the retry chain
+	// reuses the same object it was handed. Accessed under the same locking
+	// discipline as failures.
+	retryBackoff *backoff.Backoff
 	sync.RWMutex
+}
+
+// ensureRetryBackoff returns the group's schedule-retry backoff, lazily creating
+// it on first use with the given Min and the package-level retry Max/Factor,
+// using a real-time Sleeper (whose Sleep aborts on context cancellation). The
+// caller must have the same exclusive access as for failures (the group lock, or
+// exclusive ownership of a fresh clone/snapshot).
+func (s *sgroup) ensureRetryBackoff(minDelay time.Duration) *backoff.Backoff {
+	if s.retryBackoff == nil {
+		s.retryBackoff = &backoff.Backoff{
+			Min:     minDelay,
+			Max:     scheduleRetryBackoffMax,
+			Factor:  scheduleRetryBackoffFactor,
+			Sleeper: &backofftime.Sleeper{},
+		}
+	}
+
+	return s.retryBackoff
+}
+
+// resetRetryState clears the group's consecutive failure count and, if a retry
+// backoff has been created, resets it so the next retry sleeps for Min again.
+// Called on a successful schedule, under the same locking discipline as
+// failures.
+func (s *sgroup) resetRetryState() {
+	s.failures = 0
+
+	if s.retryBackoff != nil {
+		s.retryBackoff.Reset()
+	}
 }
 
 // clone creates a new copy of the sgroup with the given count.
@@ -544,6 +615,23 @@ func (s *sgroup) clone(count int) *sgroup {
 	return &sgroup{
 		name:     s.name,
 		count:    count,
+		skipped:  s.skipped,
+		req:      s.req.Clone(),
+		priority: s.priority,
+	}
+}
+
+// snapshot returns a clone of the sgroup carrying its current count, taken under
+// a single read lock. Use this (rather than clone) when the current count is
+// wanted, so scheduling can operate on a stable copy without holding any sgroup
+// lock across slow scheduler operations.
+func (s *sgroup) snapshot() *sgroup {
+	s.RLock()
+	defer s.RUnlock()
+
+	return &sgroup{
+		name:     s.name,
+		count:    s.count,
 		skipped:  s.skipped,
 		req:      s.req.Clone(),
 		priority: s.priority,
@@ -612,6 +700,13 @@ type casterMember struct {
 	done  chan struct{}
 	send  sync.Mutex
 	once  sync.Once
+
+	// queue and notify are only used by never-drop members (see caster.neverDrop
+	// and casterMember.pump). queue is an unbounded buffer of pending values
+	// guarded by send; notify is a coalescing (buffered-1) wake-up for the pump
+	// goroutine that drains queue into In at client speed.
+	queue  []any
+	notify chan struct{}
 }
 
 func (cm *casterMember) Close() {
@@ -626,11 +721,19 @@ func (cm *casterMember) Close() {
 type caster struct {
 	members map[*casterMember]struct{}
 	closed  bool
+	// neverDrop, when true, makes members buffer every sent value in an unbounded
+	// in-memory queue drained to In at client speed, so no value is ever dropped.
+	// This is required for the status feed, whose jstateCount deltas are
+	// non-idempotent (a dropped running->complete delta is never re-derived on a
+	// live connection). When false, members drop on overflow of a 1-slot buffer,
+	// which is safe for the bad-server/scheduler feeds because they carry
+	// idempotent full sets recovered by the next set or a client re-request.
+	neverDrop bool
 	sync.RWMutex
 }
 
-func newCaster() *caster {
-	return &caster{members: make(map[*casterMember]struct{})}
+func newCaster(neverDrop bool) *caster {
+	return &caster{members: make(map[*casterMember]struct{}), neverDrop: neverDrop}
 }
 
 func (c *caster) Broadcasting(time.Duration) {}
@@ -640,6 +743,12 @@ func (c *caster) Join() *casterMember {
 		group: c,
 		In:    make(chan any, 1),
 		done:  make(chan struct{}),
+	}
+
+	if c.neverDrop {
+		member.notify = make(chan struct{}, 1)
+
+		go member.pump()
 	}
 
 	c.Lock()
@@ -689,22 +798,91 @@ func (c *caster) Close() {
 	}
 }
 
-// trySend serialises sends to this member via send.Lock (so a concurrent Send
-// may block briefly), then performs a non-blocking send of val into the
+// trySend delivers val to this member, using one of two disciplines depending on
+// the member's caster mode.
+//
+// For a never-drop member (the status feed), it appends val to the member's
+// unbounded in-memory queue under send.Lock and wakes the pump goroutine, which
+// drains the queue into In at client speed. The append is fast and NEVER drops,
+// so non-idempotent jstateCount deltas (a running->complete delta is not
+// re-derivable on a live connection) always reach the browser. The trade-off,
+// as v0.36.5 accepted with bcast, is unbounded memory under a permanently-stuck
+// client.
+//
+// For a drop-on-overflow member (the bad-server and scheduler feeds), it
+// serialises via send.Lock then performs a non-blocking send of val into the
 // member's 1-slot buffer, dropping val if the buffer is already full or the
-// member is done. The remaining casters (bad servers and scheduler issues) are
-// recoverable: a client re-requests "current", which re-broadcasts the latest
-// set, so a dropped update is harmless. The status counts no longer use the
-// caster at all; they use the idempotent absolute statusState, so there is no
-// overflow-to-resync conversion anywhere.
+// member is done. Those feeds are recoverable: they carry idempotent full sets,
+// and a client re-requests "current", which re-broadcasts the latest set, so a
+// dropped update is harmless.
 func (cm *casterMember) trySend(val any) {
 	cm.send.Lock()
 	defer cm.send.Unlock()
+
+	if cm.group.neverDrop {
+		select {
+		case <-cm.done:
+			return
+		default:
+		}
+
+		cm.queue = append(cm.queue, val)
+
+		select {
+		case cm.notify <- struct{}{}:
+		default:
+		}
+
+		return
+	}
 
 	select {
 	case <-cm.done:
 	case cm.In <- val:
 	default:
+	}
+}
+
+// pump runs for a never-drop member only. It waits for the notify wake-up, then
+// drains the whole pending queue into In, blocking on In per value at the slow
+// client's speed. New values appended while a batch is in flight coalesce a
+// fresh notify, so no wake-up is lost and nothing is dropped. It exits when the
+// member is closed.
+func (cm *casterMember) pump() {
+	for {
+		select {
+		case <-cm.done:
+			return
+		case <-cm.notify:
+		}
+
+		if cm.drainQueue() {
+			return
+		}
+	}
+}
+
+// drainQueue moves every currently-queued value into In, blocking per value on a
+// slow consumer, until the queue is empty. It returns true if the member was
+// closed mid-drain (signalling pump to exit).
+func (cm *casterMember) drainQueue() bool {
+	for {
+		cm.send.Lock()
+		batch := cm.queue
+		cm.queue = nil
+		cm.send.Unlock()
+
+		if len(batch) == 0 {
+			return false
+		}
+
+		for _, val := range batch {
+			select {
+			case <-cm.done:
+				return true
+			case cm.In <- val:
+			}
+		}
 	}
 }
 
@@ -756,7 +934,7 @@ type Server struct {
 	previouslyScheduledGroups map[string]*sgroup
 	httpServer                *http.Server
 	pprofServer               *http.Server
-	statusState               *statusState
+	statusCaster              *caster
 	badServerCaster           *caster
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
@@ -781,8 +959,6 @@ type Server struct {
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
 	csmutex             sync.RWMutex // to protect clientSubscriptions
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
-	statusSeedMutex     sync.Mutex   // serialises lazy persisted status seeding before queue transitions
-	lastContactMu       sync.Mutex   // leaf lock protecting lastContact; never taken before queue/job locks
 	sync.Mutex
 	wsmutex  sync.RWMutex
 	up       bool
@@ -799,12 +975,7 @@ type Server struct {
 	racRunning           bool
 	waitingReserves      []chan struct{}
 	recoveredRunningJobs map[string]bool
-	// lastContact records, per job key, the most recent time a runner contacted
-	// the manager about that job (a touch), captured as early as possible so it
-	// reflects when the runner reached us, not when its touch finished being
-	// processed under load. Guarded by lastContactMu.
-	lastContact        map[string]int64
-	nextSubscriptionID uint64
+	nextSubscriptionID   uint64
 
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
@@ -1004,154 +1175,6 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 	return jobs, "", ""
 }
 
-// seedStatusStateForItemDefs loads persisted completion counts only for the
-// RepGroups that are about to become live. Historical complete-only RepGroups
-// are not eagerly scanned at startup, which would be prohibitively expensive on
-// large databases; complete-only groups already known to statusState are still
-// included in fresh status-page seeds.
-func (s *Server) seedStatusStateForItemDefs(itemdefs []*queue.ItemDef) error {
-	const op = "seedStatusState"
-
-	if s.statusState == nil {
-		return nil
-	}
-
-	s.statusSeedMutex.Lock()
-	defer s.statusSeedMutex.Unlock()
-
-	repGroups := s.unseededStatusRepGroups(itemdefs)
-	if len(repGroups) == 0 {
-		return nil
-	}
-
-	counts, err := s.db.retrieveMaintainedCompleteCounts(repGroups)
-	if err != nil {
-		return fmt.Errorf("%w: %w", Error{Op: op, Err: ErrDBError}, err)
-	}
-
-	for _, repGroup := range repGroups {
-		s.statusState.seedRepGroupComplete(repGroup, counts[repGroup])
-	}
-
-	return nil
-}
-
-func (s *Server) unseededStatusRepGroups(itemdefs []*queue.ItemDef) []string {
-	seen := make(map[string]struct{})
-	repGroups := make([]string, 0)
-
-	for _, itemdef := range itemdefs {
-		job, ok := itemdef.Data.(*Job)
-		if !ok {
-			continue
-		}
-
-		if _, ok = seen[job.RepGroup]; ok {
-			continue
-		}
-
-		seen[job.RepGroup] = struct{}{}
-
-		if !s.statusState.hasRepGroup(job.RepGroup) {
-			repGroups = append(repGroups, job.RepGroup)
-		}
-	}
-
-	sort.Strings(repGroups)
-
-	return repGroups
-}
-
-// recordJobContact notes that a runner contacted the manager about the job with
-// the given key, right now. It is called as early as possible in touch handling
-// (before any queue lock) so contact time reflects when the runner reached us,
-// not when its touch was eventually processed under load. lastContactMu is a
-// leaf lock, so this never nests inside the queue or job locks.
-func (s *Server) recordJobContact(key string) {
-	if key == "" {
-		return
-	}
-
-	now := time.Now().UnixNano()
-
-	s.lastContactMu.Lock()
-	s.lastContact[key] = now
-	s.lastContactMu.Unlock()
-}
-
-// contactedWithin reports whether a runner contacted the manager about the job
-// with the given key within the last window.
-func (s *Server) contactedWithin(key string, window time.Duration) bool {
-	s.lastContactMu.Lock()
-	last, ok := s.lastContact[key]
-	s.lastContactMu.Unlock()
-
-	if !ok {
-		return false
-	}
-
-	return time.Since(time.Unix(0, last)) < window
-}
-
-// forgetJobContacts drops the last-contact records for the given jobs. It is
-// called when jobs leave the run sub-queue, keeping lastContact bounded to
-// currently-running jobs and preventing a stale record from a previous run
-// (jobs reuse their key) making a fresh, silent runner look alive. It reads each
-// job's key under the job lock and only then takes lastContactMu, so it never
-// holds a job lock and lastContactMu at the same time.
-func (s *Server) forgetJobContacts(data []any) {
-	keys := make([]string, 0, len(data))
-
-	for _, inter := range data {
-		job, ok := inter.(*Job)
-		if !ok {
-			continue
-		}
-
-		job.RLock()
-		keys = append(keys, job.Key())
-		job.RUnlock()
-	}
-
-	s.lastContactMu.Lock()
-	for _, key := range keys {
-		delete(s.lastContact, key)
-	}
-	s.lastContactMu.Unlock()
-}
-
-// startCounterBackfill launches the one-time online backfill of the per-repGroup
-// complete counter (spec A3) in a background goroutine, logging its start,
-// finish and any error via clog. It never blocks readiness. It is registered on
-// s.bgWG (not s.wg) and observes ctx (s.bgCtx), so shutdown can cancel and await
-// it early, before the DB is closed; a shutdown-induced cancellation is an
-// expected quiet return (logged at Debug), not a failure.
-func (s *Server) startCounterBackfill(ctx context.Context) {
-	wgk := s.bgWG.Add(1)
-
-	go func() {
-		defer internal.LogPanic(ctx, "jobqueue complete-counter backfill", true)
-		defer s.bgWG.Done(wgk)
-
-		clog.Info(ctx, "per-repGroup complete-counter backfill started")
-
-		err := s.db.backfillRepGroupCompleteCounts(ctx)
-		if err != nil && errors.Is(err, context.Canceled) {
-			clog.Debug(ctx, "per-repGroup complete-counter backfill aborted during shutdown", "err", err)
-
-			return
-		}
-
-		if err != nil {
-			clog.Warn(ctx, "per-repGroup complete-counter backfill did not complete", "err", err)
-
-			return
-		}
-
-		clog.Info(ctx, "per-repGroup complete-counter backfill finished")
-	}()
-}
-
 // startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
 // scan), fills in that total on the already-active recovering state, and
 // launches a background goroutine that re-enqueues them so Serve returns while
@@ -1278,6 +1301,33 @@ func (s *Server) stopBackgroundStartupTasks() {
 
 	if s.bgWG != nil {
 		s.bgWG.Wait(ServerShutdownWaitTime)
+	}
+}
+
+// serveClientsReader is one RPC reader: it receives client requests from the
+// command socket and handles each in its own goroutine until stopClientHandling
+// is signalled.
+func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg *waitgroup.WaitGroup,
+	readers *sync.WaitGroup, stopClientHandling <-chan bool) {
+	// log panics and die
+	defer internal.LogPanic(ctx, "jobqueue serving", true)
+	defer readers.Done()
+
+	for {
+		select {
+		case <-stopClientHandling: // s.shutdown() closes this
+			return
+		default:
+			// receive a clientRequest from a client
+			m, ok := s.receiveClientMessage(ctx, sock)
+			if !ok {
+				continue
+			}
+
+			// parse the request, do the desired work and respond to the client
+			wgk2 := wg.Add(1)
+			go s.dispatchClientRequest(ctx, m, wg, wgk2)
+		}
 	}
 }
 
@@ -2639,16 +2689,15 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		previouslyScheduledGroups: make(map[string]*sgroup),
 		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
-		statusState:               newStatusState(),
-		badServerCaster:           newCaster(),
+		statusCaster:              newCaster(true),
+		badServerCaster:           newCaster(false),
 		wsWriteMutexes:            make(map[string]*sync.Mutex),
 		clientSubscriptions:       make(map[string]*serverSubscription),
 		badServers:                make(map[string]*cloud.Server),
-		schedCaster:               newCaster(),
+		schedCaster:               newCaster(false),
 		schedIssues:               make(map[string]*schedulerIssue),
 		recoveredRunningJobs:      make(map[string]bool),
 		recoveryPauseHook:         recoveryPauseHookForTest,
-		lastContact:               make(map[string]int64),
 		timings:                   timings,
 		itemTTR:                   timings.ItemTTR,
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
@@ -2709,13 +2758,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 		return s, msg, token, err
 	}
-
-	// build the maintained per-repGroup complete counter for a pre-upgrade DB in
-	// the background, so the one-time upgrade never blocks readiness (spec A3).
-	// It is crash-resumable, so a shutdown or error mid-backfill simply resumes on
-	// the next start. It composes with the background recovery above; both run
-	// after the server is serving clients.
-	s.startCounterBackfill(bgCtx)
 
 	return s, msg, token, err
 }
@@ -2799,10 +2841,25 @@ func (s *Server) startBroadcasters(ctx context.Context, wg *waitgroup.WaitGroup)
 
 		s.schedCaster.Broadcasting(0)
 	}()
+
+	wgk6 := wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue web server status casting", true)
+		defer wg.Done(wgk6)
+
+		s.statusCaster.Broadcasting(0)
+	}()
 }
 
-// serveClients receives client requests from the command socket and handles
-// each in its own goroutine until stopClientHandling is signalled.
+// serveClients launches numRPCReaders concurrent reader goroutines that admit
+// client requests from the single command socket, and closes clientHandlingDone
+// only once every reader has stopped, so waitForClientHandling still blocks
+// until serving has fully stopped (spec B1). Concurrent RecvMsg() on this raw
+// xrep socket is safe: mangos snapshots the shared recvQ channel under a brief
+// lock and a Go channel receive delivers each message to exactly one reader, so
+// distinct requests fan out to distinct readers without cross-talk, and each
+// reply is routed by the message's own pipe-ID header (see reply/SendMsg).
 func (s *Server) serveClients(ctx context.Context, sock mangos.Socket, wg *waitgroup.WaitGroup,
 	wgk string, stopClientHandling <-chan bool, clientHandlingDone chan<- struct{}) {
 	// log panics and die
@@ -2810,22 +2867,23 @@ func (s *Server) serveClients(ctx context.Context, sock mangos.Socket, wg *waitg
 	defer wg.Done(wgk)
 	defer close(clientHandlingDone)
 
-	for {
-		select {
-		case <-stopClientHandling: // s.shutdown() sends this
-			return
-		default:
-			// receive a clientRequest from a client
-			m, ok := s.receiveClientMessage(ctx, sock)
-			if !ok {
-				continue
-			}
-
-			// parse the request, do the desired work and respond to the client
-			wgk2 := wg.Add(1)
-			go s.dispatchClientRequest(ctx, m, wg, wgk2)
-		}
+	n := numRPCReaders
+	if n < 1 {
+		n = 1
 	}
+
+	var readers sync.WaitGroup
+
+	readers.Add(n)
+
+	for range n {
+		go s.serveClientsReader(ctx, sock, wg, &readers, stopClientHandling)
+	}
+
+	// block until every reader has exited (all observe the same closed
+	// stopClientHandling), so clientHandlingDone (deferred above) closes only
+	// after serving has fully stopped.
+	readers.Wait()
 }
 
 // receiveClientMessage receives the next message from the command socket. It
@@ -3011,10 +3069,6 @@ func (s *Server) recordSchedulerMessage(msg string) {
 func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, priorJobs []*Job) error {
 	if len(priorJobs) == 0 {
 		return nil
-	}
-
-	if err := s.markPersistedJobStatusGroups(priorJobs, true); err != nil {
-		return fmt.Errorf("%w: %w", Error{Op: "recoverPriorJobs", Err: ErrDBError}, err)
 	}
 
 	var (
@@ -3502,22 +3556,34 @@ func (s *Server) createQueue(ctx context.Context) {
 	})
 }
 
-// ttrCallback handles a running item hitting its TTR. Its TTR expiring does NOT
-// by itself mean the runner is dead: under manager saturation a still-running
-// runner's touch can be processed after the deadline. So before marking a job
-// lost we check whether its runner actually contacted us within the last TTR
-// (recordJobContact, captured early in touch handling). If it did, the runner is
-// alive and we keep the job running with a fresh TTR (SubQueueRun) instead of
-// falsely losing it. Only a job with no recent contact is marked lost and kept
-// in the run queue while its death is confirmed asynchronously. A job that is
-// already lost stays parked in the run queue (a touch will recover it, or the
-// in-flight confirmation will kill it) without being re-marked or re-confirmed.
+// ttrCallback handles a running item hitting its TTR. A TTR-expired job is
+// marked lost and kept in the run queue while its death is confirmed
+// asynchronously; an on-time touch resets the TTR (via q.Touch), and a late
+// touch clears the lost flag and recovers the job. Under socket saturation a
+// touch RPC can be processed after the TTR deadline, so this callback can fire
+// even for a still-alive, responsive runner. That is benign: a spuriously-lost
+// job is parked in Run, is never re-reserved while its runner owns it, and its
+// owner's successful archive is still accepted; a later touch clears the lost
+// flag. A job that is already lost stays parked in the run queue (a touch will
+// recover it, or the in-flight confirmation will kill it) without being
+// re-marked or re-confirmed.
+//
+// Both a started-then-silent job and a reserved-but-never-started job whose TTR
+// expires are handled the same way: marked lost and parked in Run, with death
+// confirmed asynchronously via the runner's host+pid (recorded at reserve for
+// the reserved-not-started case, spec C1/C2). We never requeue a
+// reserved-not-started job on a StartTime.IsZero() proxy, so a live-but-
+// backlogged runner's job is never re-reserved, while a genuinely dead runner's
+// job is still reclaimed once confirmed dead; an old client (pid 0) is not
+// confirmed dead and stays parked (confirmJobDead returns false), recovering
+// only when its Started/Touch finally drains. Only a released/finished item
+// (job.Exited) awaiting its delay proceeds to the delay sub-queue.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
-	ttr := s.itemTTRDuration()
-
 	job.Lock()
 
-	if job.StartTime.IsZero() || job.Exited {
+	// a released/finished item awaiting its delay is not a live reservation; let
+	// it proceed to the delay sub-queue as before.
+	if job.Exited {
 		job.Unlock()
 		job.decrementLimitGroups(s.limiter)
 
@@ -3527,14 +3593,6 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	// an already-lost job is left parked; its death is already being confirmed
 	// and a touch will recover it, so we neither re-mark nor re-confirm it.
 	if job.Lost {
-		job.Unlock()
-
-		return queue.SubQueueRun
-	}
-
-	// a runner that contacted us within the last TTR is alive but slow (e.g. the
-	// manager was saturated so its touch was processed late); keep it running.
-	if s.contactedWithin(job.Key(), ttr) {
 		job.Unlock()
 
 		return queue.SubQueueRun
@@ -3567,12 +3625,12 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUp
 	job.Unlock()
 
 	// since our changed callback won't be called, record this running -> lost
-	// transition through the single chokepoint: the absolute count always (the
-	// statusAllRepGroups aggregate is maintained internally), and the pre-built
-	// lost subscription update only if the job wasn't already lost. Both run
-	// after job.Unlock while queue.mutex is still held, preserving the strict
-	// leaf order queue.mutex -> statusState.mu and never nesting statusState.mu
-	// with the subscription locks.
+	// transition through the single chokepoint: the web-UI status-count delta
+	// always (statusCaster derives the "+all+" aggregate from the contribution),
+	// and the pre-built lost subscription update only if the job wasn't already
+	// lost. Both run after job.Unlock while queue.mutex is still held; neither
+	// statusCaster.Send nor the subscription locks are ever taken before the
+	// queue lock.
 	s.emitJobTransition(
 		[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
 		func() {
@@ -3837,7 +3895,14 @@ func (s *Server) scheduleGroupRunners(ctx context.Context, q *queue.Queue, group
 }
 
 // scheduleGroup records group as previously scheduled and asynchronously
-// schedules its runners. Must be called with s.psgmutex held.
+// schedules its runners against a snapshot of the group. It does NOT hold the
+// sgroup lock across scheduleRunners: the external scheduler command (eg. bsub)
+// can be slow, and holding the sgroup write lock across it would block
+// concurrent count decrements and skip checks (which take the sgroup RLock while
+// holding s.psgmutex), deadlocking the archive/scheduling paths. The real group
+// stays in previouslyScheduledGroups so decrementGroupCount/hasSkips operate on
+// it normally; scheduling correctness for the same cmd is preserved by the
+// scheduler's own per-cmd coalescing. Must be called with s.psgmutex held.
 func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) {
 	if group.count <= 0 {
 		clog.Debug(ctx, "rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
@@ -3847,16 +3912,16 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 
 	s.previouslyScheduledGroups[name] = group
 
+	snapshot := group.snapshot()
+
 	wgk := s.wg.Add(1)
 
-	group.Lock()
 	go func(group *sgroup) {
 		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
 		defer s.wg.Done(wgk)
 
 		s.scheduleRunners(ctx, group)
-		group.Unlock()
-	}(group)
+	}(snapshot)
 }
 
 // accountForRunningJobs adds currently running jobs into the group counts so
@@ -3974,10 +4039,6 @@ func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk str
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	if err = s.seedStatusStateForItemDefs(itemdefs); err != nil {
-		return 0, 0, err
-	}
-
 	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
 
 	if readyCallbackExpected {
@@ -4099,10 +4160,6 @@ func (s *Server) createJobs(
 	// recover, at worst the creating job will be run again - no jobs get lost.)
 	jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
 	if err != nil {
-		return added, dups, alreadyComplete, warnings, ErrDBError, err
-	}
-
-	if err = s.markPersistedJobStatusGroups(jobsToQueue, true); err != nil {
 		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
@@ -4618,11 +4675,36 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 			continue
 		}
 
+		// mark the job deleted BEFORE removing it, so the queue change callback
+		// (which reads each removed job's own State to decide complete vs deleted,
+		// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
+		// a deleted update for this genuinely-removed incomplete job. Capture the
+		// previous state so we can revert if the removal fails and the job remains
+		// in the queue (otherwise it would be left visibly Deleted).
+		job.Lock()
+		prevState := job.State
+		job.State = JobStateDeleted
+		// capture the mutable fields we need after the lock is released, so
+		// they are not read unsynchronised (they can be modified by web modify
+		// paths). schedulerGroup is the field getSchedulerGroup() reads under
+		// its own lock; capture it directly here to avoid re-locking.
+		repGroup := job.RepGroup
+		cmd := job.Cmd
+		schedGroup := job.schedulerGroup
+		job.Unlock()
+
 		if err = s.q.Remove(ctx, jobkey); err == nil {
 			pass.toDelete = append(pass.toDelete, jobkey)
-			pass.schedGroups[job.getSchedulerGroup()]++
-			pass.repGroups = append(pass.repGroups, job.RepGroup)
-			clog.Debug(ctx, "removed job", "cmd", job.Cmd)
+			pass.schedGroups[schedGroup]++
+			pass.repGroups = append(pass.repGroups, repGroup)
+
+			clog.Debug(ctx, "removed job", "cmd", cmd)
+		} else {
+			// removal failed, so the job is still in the queue; revert its state
+			// so it is not left visibly Deleted.
+			job.Lock()
+			job.State = prevState
+			job.Unlock()
 		}
 	}
 
@@ -5366,6 +5448,8 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 
 	err := s.scheduler.Schedule(ctx, scheduleCmd, group.req, group.priority, group.count)
 	if err == nil {
+		group.resetRetryState()
+
 		return
 	}
 
@@ -5379,9 +5463,20 @@ func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
 	}
 
 	if problem {
-		// log the error *** and inform (by email) the user about this problem if
-		// it's persistent, once per hour (day?)
-		clog.Warn(ctx, "Server scheduling runners error", "err", err)
+		group.failures++
+
+		// log the error, escalating to Error once the failure is persistent so a
+		// permanently-failing submit is visible (not swallowed by an endless
+		// stream of identical warnings) *** and inform (by email) the user about
+		// this problem if it's persistent, once per hour (day?)
+		if group.failures >= persistentScheduleFailures {
+			clog.Error(ctx, "Server scheduling runners persistently failing",
+				"err", err, "group", group.name, "consecutiveFailures", group.failures)
+		} else {
+			clog.Warn(ctx, "Server scheduling runners error",
+				"err", err, "group", group.name, "consecutiveFailures", group.failures)
+		}
+
 		s.retryScheduleRunnersLater(ctx, group)
 	}
 }
@@ -5436,18 +5531,40 @@ func (s *Server) buryImpossibleItem(ctx context.Context, item *queue.Item) {
 	}
 }
 
-// retryScheduleRunnersLater re-attempts scheduling runners for group after
-// CheckRunnerTime, unless the server is shutting down.
+// retryScheduleRunnersLater re-attempts scheduling runners for group after a
+// delay drawn from the group's per-group backoff (a jittered exponential that
+// starts at CheckRunnerTime and is capped at scheduleRetryBackoffMax), unless
+// the server is shutting down. This stops a persistently-failing submit (eg. a
+// queue that always rejects) from re-running with the same count forever at a
+// fixed interval, while the jitter avoids many groups retrying in lockstep.
 func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
+	b := group.ensureRetryBackoff(s.timings.CheckRunnerTime)
+
 	wgk := s.wg.Add(1)
 
 	go func() {
 		defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
 		defer s.wg.Done(wgk)
 
-		select {
-		case <-time.After(s.timings.CheckRunnerTime):
-		case <-s.stopClientHandling:
+		// Bridge s.stopClientHandling (closed on shutdown) to a cancellable
+		// context so the jittered backoff sleep aborts promptly: a pending sleep
+		// (up to scheduleRetryBackoffMax) must not block s.wg and hang manager
+		// shutdown. The bridge goroutine also exits when the sleep completes
+		// normally (cancel via defer closes sleepCtx.Done()).
+		sleepCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		go func() {
+			select {
+			case <-s.stopClientHandling:
+				cancel()
+			case <-sleepCtx.Done():
+			}
+		}()
+
+		b.Sleep(sleepCtx)
+
+		if sleepCtx.Err() != nil {
 			return
 		}
 
@@ -5748,6 +5865,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	s.badServerCaster.Close()
 	s.schedCaster.Close()
+	s.statusCaster.Close()
 
 	s.shutdownHTTPServer(ctx)
 

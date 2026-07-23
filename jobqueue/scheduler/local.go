@@ -1431,6 +1431,11 @@ func (s *local) setMessageCallBack(_ context.Context, _ MessageCallBack) {}
 // setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
 func (s *local) setBadServerCallBack(_ context.Context, _ BadServerCallBack) {}
 
+// reserved is a no-op: the local scheduler runs commands directly and has no
+// excess scheduler elements to guard against killing. (Also inherited by the
+// openstack scheduler, which embeds local.)
+func (s *local) reserved(_ string) {}
+
 // cleanup destroys our internal queue.
 func (s *local) cleanup(ctx context.Context) {
 	s.mutex.Lock()

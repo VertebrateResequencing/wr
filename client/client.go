@@ -1051,35 +1051,44 @@ func createDependencies(dep string) jobqueue.Dependencies {
 	return dependencies
 }
 
-// determineOverrideAndReq returns the given req and an override of 1 if req is
-// not nil, otherwise returns a default req and override of 0.
+// determineOverrideAndReq returns a fresh Requirements based on the given req
+// (with an override of 1), or a default req (with an override of 0) if req is
+// nil. Any configured scheduler queue and queues-to-avoid are added to the
+// returned req's Other.
+//
+// The returned Requirements is always independent of the caller's input: we
+// clone req (deep-copying its Other map) before adding anything, and never
+// mutate or alias the caller's value. Callers commonly share one *Requirements
+// across many NewJob() calls; mutating it in place would alias every resulting
+// Job onto the same Other map, corrupting them - and racing on that map - when
+// Jobs are created concurrently.
 func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Requirements, uint8) {
 	override := uint8(1)
 
 	if req == nil {
 		req = DefaultRequirements()
 		override = 0
+	} else {
+		req = req.Clone()
+	}
+
+	if s.queue == "" && s.queuesAvoid == "" {
+		return req, override
+	}
+
+	if req.Other == nil {
+		req.Other = make(map[string]string)
 	}
 
 	if s.queue != "" {
-		other := req.Other
-		if other == nil {
-			other = make(map[string]string)
-		}
-
-		other["scheduler_queue"] = s.queue
-		req.Other = other
+		req.Other["scheduler_queue"] = s.queue
 	}
 
 	if s.queuesAvoid != "" {
-		other := req.Other
-		if other == nil {
-			other = make(map[string]string)
-		}
-
-		other["scheduler_queues_avoid"] = s.queuesAvoid
-		req.Other = other
+		req.Other["scheduler_queues_avoid"] = s.queuesAvoid
 	}
+
+	req.OtherSet = true
 
 	return req, override
 }

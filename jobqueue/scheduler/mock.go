@@ -62,6 +62,21 @@ type ConfigMock struct {
 	// ReserveTimeoutSeconds is what reserveTimeout() returns (how long a runner
 	// should wait for a job). Defaults to 1 if <= 0.
 	ReserveTimeoutSeconds int
+
+	// ScheduleBlock, if non-nil, is received from at the start of every
+	// schedule() call (before any other work or lock is taken), letting a test
+	// hold Schedule() calls open to simulate a slow external scheduler command
+	// (eg. bsub). Close the channel to release all blocked (and allow future)
+	// schedule() calls. Leave nil for normal non-blocking behaviour.
+	ScheduleBlock <-chan struct{}
+
+	// ScheduleError, if non-nil, is called near the start of every schedule()
+	// call (after ScheduleBlock); if it returns a non-nil error, schedule()
+	// returns that error immediately without running any runners. This lets a
+	// test drive the server's scheduling-failure and retry paths (eg. by
+	// returning an error for the first N calls, then nil). Leave nil for normal
+	// behaviour.
+	ScheduleError func() error
 }
 
 // mock is a scheduleri implementation that runs RunnerFunc goroutines instead
@@ -102,6 +117,16 @@ func (s *mock) initialize(_ context.Context, config any) error {
 // running, the excess are left to finish on their own (a runner finishes when
 // RunnerFunc returns, i.e. when there is no more work).
 func (s *mock) schedule(ctx context.Context, cmd string, _ *Requirements, _ uint8, count int) error {
+	if s.config.ScheduleBlock != nil {
+		<-s.config.ScheduleBlock
+	}
+
+	if s.config.ScheduleError != nil {
+		if err := s.config.ScheduleError(); err != nil {
+			return err
+		}
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -188,6 +213,9 @@ func (s *mock) getHost(_ string) (Host, bool) {
 func (s *mock) setMessageCallBack(_ context.Context, _ MessageCallBack) {}
 
 func (s *mock) setBadServerCallBack(_ context.Context, _ BadServerCallBack) {}
+
+// reserved is a no-op for the mock scheduler.
+func (s *mock) reserved(_ string) {}
 
 // cleanup achieves the aims of Cleanup().
 func (s *mock) cleanup(_ context.Context) {

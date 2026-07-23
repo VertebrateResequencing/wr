@@ -473,6 +473,21 @@ func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, str
 		return ErrClosedStop, "The server has been stopped"
 	}
 
+	// once shutdown has begun (up=false), refuse to register a new client
+	// subscription: any subscription created now is torn down moments later when
+	// closeClientSubscriptions runs and the command socket closes, so a
+	// reconnecting subscriber that bound to this dying server would be forced to
+	// reconnect a second time (to the replacement server) and emit a second,
+	// spurious JobUpdateResync. Rejecting here makes the subscriber's reconnect
+	// retry until the replacement server is up, so it resubscribes exactly once.
+	// This matters because concurrent RPC readers (spec B1) let a subscribe be
+	// admitted and served during the brief shutdown window that a single reader
+	// almost never hit. Pause/drain keep up=true, so graceful draining is
+	// unaffected.
+	if !up && cr.Method == requestMethodSubscribe {
+		return ErrClosedStop, "The server is shutting down"
+	}
+
 	return "", ""
 }
 
@@ -820,7 +835,20 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 
 	sjob.Lock()
 	sjob.DelayTime = delay
+	// record which runner holds this reservation (its own host+pid) before the
+	// command's own pid is reported at Started, so a reserved-not-started job's
+	// liveness can be confirmed independently of the RPC stream. An old client
+	// sends no host+pid, leaving Host "" and Pid 0.
+	sjob.Host = cr.Host
+	sjob.Pid = cr.Pid
 	sjob.Unlock()
+
+	// tell the scheduler which of its elements (e.g. an LSF "jobid[index]") holds
+	// this reservation, so it is never killed as excess mid-job. An old/non-LSF
+	// client sends no SchedulerID.
+	if cr.SchedulerID != "" {
+		s.scheduler.Reserved(cr.SchedulerID)
+	}
 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
@@ -839,8 +867,9 @@ func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8
 
 	sjob.ReservedBy = clientID // *** we should unset this on moving out of run state, to save space
 	sjob.Exited = false
-	sjob.Pid = 0
-	sjob.Host = ""
+	// Host/Pid are NOT zeroed here: respondWithReservedJob records the reserving
+	// runner's host+pid so a reserved-not-started job's liveness can be confirmed.
+	// StartTime stays zeroed - it is set at Started.
 	sjob.StartTime = time.Time{}
 	sjob.EndTime = time.Time{}
 	sjob.PeakRAM = 0
@@ -903,12 +932,6 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 // handleTouch refreshes a running job's TTR, recovering it from lost state and
 // applying any live status snapshot, or reports that kill has been called.
 func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
-	// record that the runner contacted us about this job as early as possible,
-	// before getij/queue.Touch (which contend on queue.mutex under load), so
-	// lost-detection reflects when the runner reached us rather than when its
-	// touch finished being processed (see ttrCallback).
-	s.recordJobContact(cr.key())
-
 	item, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
@@ -1003,8 +1026,8 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 	job.Unlock()
 
 	// our changed callback won't be called, so this lost -> running transition's
-	// absolute count is recorded via the chokepoint (the statusAllRepGroups
-	// aggregate is maintained internally).
+	// count is recorded via the chokepoint, which broadcasts it as a jstateCount
+	// delta (statusCaster derives the "+all+" aggregate from the contribution).
 	return countContribution{from: JobStateLost, to: JobStateRunning, repGroup: repGroup, n: 1}
 }
 
@@ -1012,13 +1035,16 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 // live bucket, and adds it to the complete bucket.
 func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// remove the job from the queue, rpl and live bucket and add to complete
-	// bucket
-	item, job, srerr := s.getij(cr, false)
+	// bucket. The item must be in queue.ItemStateRun (getij's checkRunning): this
+	// restores v0.36.5's lenient acceptance - an alive owner's successful archive
+	// is always accepted while it still holds the reservation - while preserving
+	// the ErrRecovering retry path and the owner check that yields ErrMustReserve.
+	_, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
 
-	key, rgroup, sgroup, srerr := markJobComplete(item, job, cr.JobEndState, s.limiter, cr.ClientID)
+	key, rgroup, sgroup, srerr := markJobComplete(job, cr.JobEndState, s.limiter, cr.ClientID)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1026,19 +1052,21 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 	return s.archiveCompletedJob(ctx, job, key, rgroup, sgroup)
 }
 
-// markJobComplete validates that a job is a successfully exited running job and,
-// if so, applies its terminal state and marks it complete under lock, returning
-// its key, rep group and scheduler group (or an Err* string if it cannot be
-// archived).
-func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
+// markJobComplete applies a successfully exited job's terminal state and marks it
+// complete under lock, returning its key, rep group and scheduler group (or an
+// Err* string if it cannot be completed). It does NOT gate on the queue item
+// state or job.State - that run-queue gating is done by getij(cr, true) at the
+// call site. It validates the owner (job.ReservedBy must match the optional
+// expectedReservedBy, else ErrMustReserve) and the end state
+// (canCompleteFromEndState, else ErrBadRequest); on success it applies the end
+// state, sets State to JobStateComplete and clears FailReason, but deliberately
+// does NOT clear job.Lost (see the inline comment) so a parked-lost job's later
+// removal is counted lost->complete.
+func markJobComplete(job *Job, endState *JobEndState,
 	lim *limiter.Limiter, expectedReservedBy ...uuid.UUID,
 ) (key, rgroup, sgroup, srerr string) {
 	job.Lock()
 	defer job.Unlock()
-
-	if !job.canCompleteFromQueueState(item.Stats().State) {
-		return "", "", "", ErrBadJob
-	}
 
 	if len(expectedReservedBy) > 0 && job.ReservedBy != expectedReservedBy[0] {
 		return "", "", "", ErrMustReserve
@@ -1051,7 +1079,17 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
 	job.applySuccessfulEndStateLocked(endState, lim)
 	job.State = JobStateComplete
 	job.FailReason = ""
-	job.Lost = false
+	// deliberately do NOT clear job.Lost here. A job parked Lost (Lost==true in
+	// SubQueueRun) is held as `lost` by the web-UI counter; the change-callback
+	// chokepoint (changeCallbackCounts) reads job.Lost at removal time to decide
+	// whether this exit from the run queue is from the running or the lost bucket.
+	// Clearing it before archiveCompletedJob's s.q.Remove would make the removal
+	// count running->complete, whose running decrement clamps to nothing and
+	// leaves a stale lost:1 that reappears as a phantom lost bar on refresh. We
+	// therefore leave Lost set through the removal (exactly as removeDeletableJobs
+	// leaves it for a lost job being deleted), so the removal counts lost->complete.
+	// Lost is only ever surfaced when State==Running (see buildJStatus), so a
+	// Complete job carrying Lost==true is invisible everywhere else.
 
 	if endState != nil {
 		job.StdOutC = endState.Stdout
@@ -1059,25 +1097,6 @@ func markJobComplete(item *queue.Item, job *Job, endState *JobEndState,
 	}
 
 	return job.Key(), job.RepGroup, job.schedulerGroup, ""
-}
-
-func (j *Job) canCompleteFromQueueState(itemState queue.ItemState) bool {
-	if itemState == queue.ItemStateRun {
-		return j.State == JobStateRunning
-	}
-
-	if j.FailReason != FailReasonLost {
-		return false
-	}
-
-	switch itemState {
-	case queue.ItemStateDelay, queue.ItemStateReady:
-		return j.State == JobStateDelayed
-	case queue.ItemStateBury:
-		return j.State == JobStateBuried
-	default:
-		return false
-	}
 }
 
 func (j *Job) canCompleteFromEndState(endState *JobEndState) bool {
@@ -1104,10 +1123,6 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup, sgroup string) (
 	*serverResponse, string, string,
 ) {
-	if err := s.markPersistedJobStatusGroups([]*Job{job}, false); err != nil {
-		return nil, ErrDBError, err.Error()
-	}
-
 	if err := s.db.archiveJob(ctx, key, job); err != nil {
 		return nil, ErrDBError, err.Error()
 	}
@@ -1129,7 +1144,14 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // (if forceBury, or it has failed too many times).
 func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
 	failMsg string) (*serverResponse, string, string) {
-	_, job, srerr := s.getij(cr, false)
+	// require the item to still be in the Run sub-queue (getij's checkRunning),
+	// mirroring handleArchive. A release whose item has left Run - e.g. a winning
+	// double-reservation runner already dealt with it - is authoritatively "gone"
+	// on a live manager and returns ErrBadJob (or ErrRecovering while recovering),
+	// which lands in the client's give-up set so the losing runner abandons the
+	// dead reservation promptly instead of looping for the full 24h retryTime. A
+	// legitimate release (item in Run, owner matches) still proceeds (srerr == "").
+	_, job, srerr := s.getij(cr, true)
 	if srerr != "" {
 		return nil, srerr, ""
 	}

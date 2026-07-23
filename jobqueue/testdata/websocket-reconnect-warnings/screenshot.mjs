@@ -110,21 +110,23 @@ function fakeWebSocketScript() {
       urls: []
     };
 
-    // Absolute per-RepGroup state. On (re)connect the server pushes the full
-    // current map as { RepGroup, Counts }.
+    // v0.36.5-style per-RepGroup state feed. On (re)connect the server seeds the
+    // current counts as jstateCount deltas from 'new'; live changes then arrive
+    // as from->to deltas. A reconnect is a fresh connection, so the handler
+    // resets live counts before the fresh seed arrives.
     const initialSnapshot = [
-      { RepGroup: '+all+', Counts: { ready: 1 } },
-      { RepGroup: 'reconnect-rg', Counts: { ready: 1 } }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'ready', Count: 1 },
+      { RepGroup: 'reconnect-rg', FromState: 'new', ToState: 'ready', Count: 1 }
     ];
 
     const reconnectedSnapshot = [
-      { RepGroup: '+all+', Counts: { running: 1 } },
-      { RepGroup: 'reconnect-rg', Counts: { running: 1 } }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'running', Count: 1 },
+      { RepGroup: 'reconnect-rg', FromState: 'new', ToState: 'running', Count: 1 }
     ];
 
     const completionActivity = [
-      { RepGroup: '+all+', Counts: {} },
-      { RepGroup: 'reconnect-rg', Counts: { complete: 1 } }
+      { RepGroup: '+all+', FromState: 'running', ToState: 'complete', Count: 1 },
+      { RepGroup: 'reconnect-rg', FromState: 'running', ToState: 'complete', Count: 1 }
     ];
 
     class FixtureWebSocket {

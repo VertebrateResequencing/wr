@@ -225,10 +225,13 @@ type clientRequest struct {
 	Path                    string // desired path File should be stored at, can be blank
 	CloudServerID           string
 	FailReason              string
+	Host                    string // ADDITIVE wire-only: reserving runner's host (old client sends "")
+	SchedulerID             string // ADDITIVE wire-only: reserving runner's scheduler element id (old/non-LSF sends "")
 	Job                     *Job
 	JobEndState             *JobEndState
 	Modifier                *JobModifier
 	Limit                   int
+	Pid                     int // ADDITIVE wire-only: reserving runner's pid (old client sends 0)
 	Timeout                 time.Duration
 	Period                  time.Duration
 	ClientID                uuid.UUID
@@ -368,6 +371,28 @@ func (c *Client) GetRecent(period time.Duration, limit int, state JobState, getS
 	return resp.Jobs, err
 }
 
+// SetReserveSchedulerID records the scheduler element id (e.g. an LSF
+// "jobid[index]") of the runner using this client, so subsequent Reserve /
+// ReserveScheduled requests tell the server which scheduler element holds the
+// reservation, ensuring it is never killed as excess. Pass "" for
+// non-scheduler/non-LSF clients (the default).
+func (c *Client) SetReserveSchedulerID(schedulerID string) {
+	c.reserveSchedulerID = schedulerID
+}
+
+// reserveHostAndPid returns this runner's hostname (falling back to localhost if
+// it can't be determined) and its own pid, to stamp on a reserve request so the
+// server can record which runner holds the reservation before the command's own
+// pid is reported at Started.
+func reserveHostAndPid() (string, int) {
+	host, err := os.Hostname()
+	if err != nil {
+		host = localhost
+	}
+
+	return host, os.Getpid()
+}
+
 func currentProcessTreeCPUtime(pid int) time.Duration {
 	pid32, ok := processPID(pid)
 	if !ok {
@@ -425,6 +450,13 @@ type Client struct {
 	// liveTouchHook is used by in-package tests to inspect the live touch state
 	// assembled during Execute().
 	liveTouchHook func(*JobEndState)
+
+	// reserveSchedulerID is the scheduler element id (e.g. an LSF "jobid[index]")
+	// of the runner using this client, set by the runner via
+	// SetReserveSchedulerID and sent on reserve requests so the server can tell
+	// the scheduler which element holds the reservation (it must not be killed as
+	// excess). Empty for non-scheduler/non-LSF clients.
+	reserveSchedulerID string
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -869,7 +901,12 @@ func (c *Client) Reserve(timeout time.Duration) (*Job, error) {
 		c.hasReserved = true
 	}
 
-	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, FirstReserve: fr})
+	host, pid := reserveHostAndPid()
+
+	resp, err := c.request(&clientRequest{
+		Method: requestMethodReserve, Timeout: timeout, FirstReserve: fr, Host: host, Pid: pid,
+		SchedulerID: c.reserveSchedulerID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -895,8 +932,11 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 		c.hasReserved = true
 	}
 
+	host, pid := reserveHostAndPid()
+
 	resp, err := c.request(&clientRequest{
-		Method: "reserve", Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr,
+		Method: requestMethodReserve, Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr,
+		Host: host, Pid: pid, SchedulerID: c.reserveSchedulerID,
 	})
 	if err != nil {
 		return nil, err

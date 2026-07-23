@@ -72,11 +72,15 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 			Lost:       true,
 		}
 
-		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		_, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
+		// markJobComplete no longer gates on the queue sub-state (that guard was
+		// reverted to v0.36.5 semantics and now lives in getij(cr, true), exercised
+		// end-to-end by TestReliable2HoldingRunnerArchiveAccepted); a Lost job whose
+		// owner archives success is accepted.
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		key, repGroup, schedulerGroup, srerr := markJobComplete(item, job, endState, nil)
+		key, repGroup, schedulerGroup, srerr := markJobComplete(job, endState, nil)
 
 		So(srerr, ShouldEqual, "")
 		So(key, ShouldEqual, job.Key())
@@ -85,7 +89,12 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(job.Exited, ShouldBeTrue)
 		So(job.Exitcode, ShouldEqual, 0)
 		So(job.State, ShouldEqual, JobStateComplete)
-		So(job.Lost, ShouldBeFalse)
+		// markJobComplete intentionally does NOT clear Lost: a parked-lost job's
+		// removal must count lost->complete (not running->complete) in the web-UI
+		// counter, so Lost is left set until the job leaves the run queue (as the
+		// delete path also leaves it). It is invisible on a Complete job since
+		// buildJStatus only surfaces Lost when State==Running.
+		So(job.Lost, ShouldBeTrue)
 		So(job.FailReason, ShouldEqual, "")
 	})
 
@@ -103,13 +112,13 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		}
 		job.noteIncrementedLimitGroups(job.LimitGroups)
 
-		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		_, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
 
 		So(func() {
-			_, _, _, _ = markJobComplete(item, job, endState, nil)
+			_, _, _, _ = markJobComplete(job, endState, nil)
 		}, ShouldNotPanic)
 		So(job.State, ShouldEqual, JobStateComplete)
 	})
@@ -132,44 +141,15 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 			ReservedBy: rerunner,
 		}
 
-		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		_, err = q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		_, _, _, srerr := markJobComplete(item, job, endState, nil, originalRunner)
+		_, _, _, srerr := markJobComplete(job, endState, nil, originalRunner)
 
 		So(srerr, ShouldEqual, ErrMustReserve)
 		So(job.State, ShouldEqual, JobStateRunning)
 		So(job.Exited, ShouldBeFalse)
-	})
-
-	Convey("markJobComplete rejects a lost-reclaim archive after the queue item is reserved for rerun", t, func() {
-		ctx := context.Background()
-		q := queue.New(ctx, "archive-stale-run-state")
-		originalRunner, err := uuid.NewV4()
-		So(err, ShouldBeNil)
-
-		job := &Job{
-			Cmd:        restFormTrue,
-			Cwd:        testCwd,
-			RepGroup:   archivePortalCompress,
-			ReqGroup:   archivePortalCompress,
-			StartTime:  time.Now().Add(-time.Minute),
-			State:      JobStateDelayed,
-			FailReason: FailReasonLost,
-			Exitcode:   -1,
-			ReservedBy: originalRunner,
-		}
-
-		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
-		So(err, ShouldBeNil)
-
-		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		_, _, _, srerr := markJobComplete(item, job, endState, nil, originalRunner)
-
-		So(srerr, ShouldEqual, ErrBadJob)
-		So(job.State, ShouldEqual, JobStateDelayed)
-		So(job.Exitcode, ShouldEqual, -1)
 	})
 
 	Convey("A successful archive can override a lost reclaim before rerun", t, func() {
@@ -197,7 +177,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: lostTime.Add(500 * time.Millisecond)}
-		_, _, _, srerr := markJobComplete(item, job, endState, nil)
+		_, _, _, srerr := markJobComplete(job, endState, nil)
 
 		So(srerr, ShouldEqual, "")
 		So(job.Exited, ShouldBeTrue)
@@ -208,43 +188,27 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(job.FailReason, ShouldEqual, "")
 	})
 
-	Convey("A successful archive still rejects an ordinary non-running job", t, func() {
+	Convey("A successful archive with an invalid (non-zero exit) end state is rejected", t, func() {
 		ctx := context.Background()
-		cases := []struct {
-			name       string
-			startQueue queue.SubQueue
-			delay      time.Duration
-			state      JobState
-		}{
-			{name: "ready", startQueue: queue.SubQueueRun, state: JobStateDelayed},
-			{name: "delayed", delay: time.Minute, state: JobStateDelayed},
-			{name: "buried", startQueue: queue.SubQueueBury, state: JobStateBuried},
+		q := queue.New(ctx, "archive-bad-endstate")
+		job := &Job{
+			Cmd:       restFormTrue,
+			Cwd:       testCwd,
+			RepGroup:  archivePortalCompress,
+			ReqGroup:  archivePortalCompress,
+			StartTime: time.Now().Add(-time.Minute),
+			State:     JobStateRunning,
 		}
 
-		for _, tc := range cases {
-			q := queue.New(ctx, "archive-ordinary-"+tc.name)
-			job := &Job{
-				Cmd:       restFormTrue + " # " + tc.name,
-				Cwd:       testCwd,
-				RepGroup:  archivePortalCompress,
-				ReqGroup:  archivePortalCompress,
-				StartTime: time.Now().Add(-time.Second),
-				State:     tc.state,
-			}
+		_, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		So(err, ShouldBeNil)
 
-			item, err := q.Add(ctx, job.Key(), "", job, 0, tc.delay, time.Minute, tc.startQueue)
-			So(err, ShouldBeNil)
+		endState := &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()}
+		_, _, _, srerr := markJobComplete(job, endState, nil)
 
-			if tc.name == "ready" {
-				So(q.Release(ctx, job.Key()), ShouldBeNil)
-			}
-
-			endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-			_, _, _, srerr := markJobComplete(item, job, endState, nil)
-
-			So(srerr, ShouldEqual, ErrBadJob)
-			So(job.State, ShouldEqual, tc.state)
-		}
+		So(srerr, ShouldEqual, ErrBadRequest)
+		So(job.State, ShouldEqual, JobStateRunning)
+		So(job.Exited, ShouldBeFalse)
 	})
 }
 
@@ -256,7 +220,13 @@ func TestSuccessfulArchiveOverridesLostReclaimBeforeRerun(t *testing.T) {
 	ctx := context.Background()
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	Convey("A stale successful archive wins after lost reclaim but before rerun", t, func() {
+	Convey("A successful archive is rejected once the job was released out of the run queue", t, func() {
+		// The reverted jarchive requires the queue item to be in SubQueueRun
+		// (getij(cr, true)); an explicitly-released job has left Run, so its archive
+		// is rejected as ErrBadJob. Under the full reliability fix an alive job is
+		// never released - it parks Lost in Run, where its owner's archive is
+		// accepted (TestReliable2HoldingRunnerArchiveAccepted) - so this only bites
+		// a genuinely-released job, exactly as in v0.36.5.
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -289,11 +259,16 @@ func TestSuccessfulArchiveOverridesLostReclaimBeforeRerun(t *testing.T) {
 		So(jq.Release(reserved, lostEnd, FailReasonLost), ShouldBeNil)
 
 		successEnd := &JobEndState{Exited: true, Exitcode: 0, EndTime: lostEnd.EndTime.Add(time.Second)}
-		So(jq.Archive(reserved, successEnd), ShouldBeNil)
+		archiveErr := jq.Archive(reserved, successEnd)
+		So(archiveErr, ShouldNotBeNil)
+
+		var jqerr Error
+		So(errors.As(archiveErr, &jqerr), ShouldBeTrue)
+		So(jqerr.Err, ShouldEqual, ErrBadJob)
 
 		summaries, err := jq.GetStatusByRepGroupMatch(archivePortalCompress, RepGroupMatchExact, nil, true, false)
 		So(err, ShouldBeNil)
-		So(summaries[archivePortalCompress].Counts, ShouldResemble, map[JobState]int{JobStateComplete: 1})
+		So(summaries[archivePortalCompress].Counts[JobStateComplete], ShouldEqual, 0)
 	})
 
 	Convey("A stale successful archive cannot win after another runner reserves the job", t, func() {

@@ -33,6 +33,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,10 +46,6 @@ import (
 )
 
 var testLogger = log15.Root() //nolint:gochecknoglobals
-
-func init() {
-	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
-}
 
 // TestLSFQueueSelection tests the LSF scheduler's queue-selection logic
 // (determineQueue and its helpers) directly, by constructing the parsed queue
@@ -59,6 +59,10 @@ const (
 	memlimitKey = "memlimit"
 	runlimitKey = "runlimit"
 )
+
+func init() {
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+}
 
 func TestLSF(t *testing.T) {
 	ctx := context.Background()
@@ -531,6 +535,68 @@ func TestLSFQueueSelection(t *testing.T) {
 	})
 }
 
+// TestLSFReservedElements covers the C3 acceptance tests (never bkill a reserved
+// LSF array element) as pure-function tests, needing no real LSF.
+func TestLSFReservedElements(t *testing.T) {
+	Convey("Given a killCollector over maxAllowed with a reserved element recorded", t, func() {
+		// reAid matches the [index] suffix that killableID uses to build the
+		// jobid[index] killable id from a bjobs job id + job name.
+		reAid := regexp.MustCompile(`\[(\d+)\]$`)
+		kc := &killCollector{
+			reAid:      reAid,
+			toKill:     []string{"-b"},
+			maxAllowed: 1,
+			reserved:   map[string]bool{"12345[7]": true},
+		}
+
+		// first element (RUN) fills the single allowed slot.
+		kc.consider("100", "RUN", "wrname[1]")
+
+		// the reserved element is PEND (non-RUN, normally killable as excess)...
+		kc.consider("12345", "PEND", "wrname[7]")
+
+		// ...as is an unreserved excess element.
+		kc.consider("200", "PEND", "wrname[8]")
+
+		Convey("the reserved element is protected while the unreserved excess is killed", func() {
+			So(kc.toKill, ShouldNotContain, "12345[7]")
+			So(kc.toKill, ShouldContain, "200[8]")
+		})
+	})
+
+	Convey("Given an lsf scheduler with a reserved set", t, func() {
+		s := &lsf{
+			reservedElements: map[string]bool{
+				"12345[7]": true,
+				"12345[8]": true,
+				"99999[1]": true,
+			},
+		}
+
+		Convey("pruneReserved drops ids absent from a subsequent full bjobs snapshot", func() {
+			// 12345[7] has exited so parseBjobs no longer reports it.
+			present := map[string]bool{"12345[8]": true, "99999[1]": true}
+			s.pruneReserved(present)
+
+			So(s.reservedElements, ShouldNotContainKey, "12345[7]")
+			So(s.reservedElements, ShouldContainKey, "12345[8]")
+			So(s.reservedElements, ShouldContainKey, "99999[1]")
+			So(len(s.reservedElements), ShouldEqual, 2)
+		})
+	})
+
+	Convey("Given a non-LSF scheduler", t, func() {
+		ctx := context.Background()
+		s, err := New(ctx, "local", &ConfigLocal{testShell, time.Second, 0, 0})
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+
+		Convey("Reserved() is a no-op and does not panic", func() {
+			So(func() { s.Reserved("12345[7]") }, ShouldNotPanic)
+		})
+	})
+}
+
 func lsfMarkerCmd(startDir, finishDir string, sleepSeconds int) string {
 	return fmt.Sprintf(
 		"perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); sleep(%d); @b = tempfile(DIR => q[%s]); exit(0);'",
@@ -559,4 +625,194 @@ func waitForLSFRunningJobs(ctx context.Context, s *Scheduler, startDir, finishDi
 	})
 
 	return started, ok
+}
+
+func TestLSFArrayChunking(t *testing.T) {
+	ctx := context.Background()
+	req := &Requirements{RAM: 100, Time: time.Minute, Cores: 1, Other: map[string]string{}}
+
+	Convey("Given an lsf scheduler with fake LSF exes and a small max array size", t, func() {
+		dir := t.TempDir()
+		jArgsFile := filepath.Join(dir, "jargs")
+		s := newFakeLSFScheduler(t, dir, jArgsFile, 0)
+
+		origMax := maxBsubArraySize
+
+		maxBsubArraySize = 1000
+		defer func() { maxBsubArraySize = origMax }()
+
+		Convey("scheduling a count far above the cap splits into capped, unique arrays", func() {
+			const count = 160000
+
+			err := s.schedule(ctx, "false", req, 0, count)
+			So(err, ShouldBeNil)
+
+			names, sizes := parseJArrays(t, jArgsFile)
+
+			// (a) no single array exceeds the cap.
+			maxSeen := 0
+			total := 0
+
+			for _, n := range sizes {
+				if n > maxSeen {
+					maxSeen = n
+				}
+
+				total += n
+			}
+
+			So(maxSeen, ShouldBeLessThanOrEqualTo, maxBsubArraySize)
+
+			// (b) the arrays' sizes sum to the needed count.
+			So(total, ShouldEqual, count)
+
+			// number of arrays is ceil(count/cap).
+			So(len(sizes), ShouldEqual, (count+maxBsubArraySize-1)/maxBsubArraySize)
+
+			// (c) each array name is unique and correlated to the cmd (shares the
+			// non-unique cmd prefix that checkCmd/killExcessCmds filter on).
+			prefix := jobName("false", "development", false)
+			seen := make(map[string]bool)
+			nonUnique := 0
+			badPrefix := 0
+
+			for _, name := range names {
+				if seen[name] {
+					nonUnique++
+				}
+
+				seen[name] = true
+
+				if !strings.HasPrefix(name, prefix) {
+					badPrefix++
+				}
+			}
+
+			So(nonUnique, ShouldEqual, 0)
+			So(badPrefix, ShouldEqual, 0)
+			So(len(seen), ShouldEqual, len(sizes))
+		})
+	})
+
+	Convey("Given an lsf scheduler whose bsub hangs", t, func() {
+		dir := t.TempDir()
+		jArgsFile := filepath.Join(dir, "jargs")
+		s := newFakeLSFScheduler(t, dir, jArgsFile, 30)
+
+		origTimeout := bsubExecTimeout
+
+		bsubExecTimeout = 300 * time.Millisecond
+		defer func() { bsubExecTimeout = origTimeout }()
+
+		Convey("schedule returns a retryable error bounded by the exec timeout", func() {
+			start := time.Now()
+			err := s.schedule(ctx, "false", req, 0, 1)
+			elapsed := time.Since(start)
+
+			So(err, ShouldNotBeNil)
+			So(elapsed, ShouldBeLessThan, 10*time.Second)
+		})
+	})
+}
+
+// newFakeLSFScheduler builds an *lsf wired to fake bsub/bjobs/bkill executables
+// written into dir, so schedule() can be driven without a real LSF. The fake
+// bsub appends the value of each -J argument (one per line) to jArgsFile and
+// prints a parseable "Job <id>" line; bsubSleep, if >0, makes the fake bsub
+// sleep that many seconds before responding (to exercise the exec timeout).
+func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, bsubSleep int) *lsf {
+	t.Helper()
+
+	sleep := ""
+	if bsubSleep > 0 {
+		sleep = fmt.Sprintf("sleep %d\n", bsubSleep)
+	}
+
+	bsubExe := filepath.Join(dir, "bsub")
+	writeFakeExe(t, bsubExe, fmt.Sprintf(`#!/bin/bash
+%scapture=0
+for a in "$@"; do
+  if [ "$capture" = "1" ]; then echo "$a" >> %q; capture=0; fi
+  if [ "$a" = "-J" ]; then capture=1; fi
+done
+echo "Job <321>"
+`, sleep, jArgsFile))
+
+	// bjobs is called both as `bjobs -w` (list, must report nothing so the
+	// scheduler thinks 0 are already scheduled) and as `bjobs -w <id>` (the
+	// post-submit appearance check, which must report a long-enough line).
+	bjobsExe := filepath.Join(dir, "bjobs")
+	writeFakeExe(t, bjobsExe, `#!/bin/bash
+if [ -n "$2" ]; then
+  echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
+fi
+`)
+
+	bkillExe := filepath.Join(dir, "bkill")
+	writeFakeExe(t, bkillExe, "#!/bin/bash\nexit 0\n")
+
+	s := &lsf{
+		config:             &ConfigLSF{Deployment: "development", Shell: "bash"},
+		bsubExe:            bsubExe,
+		bjobsExe:           bjobsExe,
+		bkillExe:           bkillExe,
+		memLimitMultiplier: 1,
+		sortedqs:           []string{"normal"},
+		queues:             map[string]map[string]int{"normal": {memlimitKey: 0, runlimitKey: 0}},
+	}
+	s.setupMonthsAndRegexes()
+
+	return s
+}
+
+func writeFakeExe(t *testing.T, path, body string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(body), 0700); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+}
+
+// parseJArrays reads the recorded -J arguments and returns, per array, the
+// name (portion before any [1-N]) and the element count N (1 when there is no
+// [1-N] suffix).
+func parseJArrays(t *testing.T, jArgsFile string) (names []string, sizes []int) {
+	t.Helper()
+
+	data, err := os.ReadFile(jArgsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	re := regexp.MustCompile(`^(.+)\[1-(\d+)\]$`)
+
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+
+		name, size := parseJArray(t, re, line)
+		names = append(names, name)
+		sizes = append(sizes, size)
+	}
+
+	return names, sizes
+}
+
+// parseJArray parses a single recorded -J argument into its name and element
+// count (1 when there is no [1-N] suffix).
+func parseJArray(t *testing.T, re *regexp.Regexp, line string) (string, int) {
+	t.Helper()
+
+	m := re.FindStringSubmatch(line)
+	if len(m) != 3 {
+		return line, 1
+	}
+
+	n, err := strconv.Atoi(m[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return m[1], n
 }

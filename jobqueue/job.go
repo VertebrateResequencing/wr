@@ -72,11 +72,11 @@ var errNoTargets = errors.New("no Targets specified")
 type JobState string
 
 // JobState* constants represent all the possible job states. The fake "new" and
-// "deleted" states are for the benefit of the web interface (jstateAbsolute).
-// "lost" is also a "fake" state indicating the job was running and we lost
-// contact with it; it may be dead. "unknown" is an error case that shouldn't
-// happen. "deletable" is a meta state that can be used when filtering jobs to
-// mean !(reserved|running|complete).
+// "deleted" states are for the benefit of the web interface (the jstateCount
+// status-bar delta feed). "lost" is also a "fake" state indicating the job was
+// running and we lost contact with it; it may be dead. "unknown" is an error
+// case that shouldn't happen. "deletable" is a meta state that can be used
+// when filtering jobs to mean !(reserved|running|complete).
 const (
 	JobStateNew       JobState = "new"
 	JobStateDelayed   JobState = "delayed"
@@ -410,13 +410,6 @@ type Job struct {
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
-
-	// statusFromComplete marks a completed database record that is becoming
-	// live again. The first queue-add transition consumes it so the absolute
-	// status projection moves, rather than duplicates, every historical
-	// RepGroup contribution in statusCompleteRepGroups.
-	statusFromComplete      bool
-	statusCompleteRepGroups []string
 
 	sync.RWMutex
 }

@@ -4,30 +4,89 @@ This directory holds data and small executable fixtures for `jobqueue` tests.
 Browser/UI repro scripts belong here, under a directory named for the behaviour
 they exercise, rather than in ad-hoc scratch paths or package roots.
 
-## Status page absolute count protocol
+## dbcompat/db.golden (DB compatibility fixture)
 
-The status page receives idempotent absolute per-RepGroup counts over the
-websocket as `{ RepGroup, Counts }` messages (issue 260625-7). The client
-replaces a RepGroup's displayed counts wholesale, so dropped or duplicated
-messages are harmless. The fixtures below drive this absolute protocol; older
-fixtures that previously injected non-idempotent count deltas / snapshot+resync
-messages have been migrated to it while keeping their behavioural assertions.
+`dbcompat/db.golden` is a small committed BoltDB fixture used by
+`jobqueue/reliable2_dbcompat_test.go` to prove that the reworked ("Option R")
+build opens a database already upgraded by current/pre-removal `reliable2` code
+without error or data loss (spec.md section F1).
 
-## Repgroup flicker and overcount
+It is produced by the committed generator `dbcompat/gen.go` (a `//go:build
+ignore` program, so it is excluded from the normal build and lint). The
+generator drives the real `jobqueue` DB open path: it starts an in-process
+`Serve` on a fresh development BoltDB, connects a client, and creates ~4 jobs
+across two rep groups:
 
-`repgroup-flicker-overcount/` contains the issue-260625-7 regression fixture for
-the status web UI that "flickers so fast it looks like it's not there" with a
-per-RepGroup total that "keeps rising above the total number of jobs actually
-added". `screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, and
-drives a high-rate `ready -> running -> complete` transition storm for a fixed
-number of jobs in one RepGroup while a ~200 Hz in-page sampler watches the
-Knockout view model. It asserts the row never drops to 0 / disappears while jobs
-exist (no flicker) and never exceeds the number of jobs added (no overcount), and
-converges exactly. By default it drives the idempotent absolute protocol (which
-passes). Set `WR_FIXTURE_PROTOCOL=delta` to instead drive the legacy
-non-idempotent delta protocol over a model of the lossy 1-slot coalescing caster;
-against the pre-fix `websocket-handler.js` that variant reproduces both symptoms
-and fails. It is wired into `make browser-test`.
+- two jobs in rep group `reliable2-dbcompat-complete`, reserved + started +
+  archived successfully (so `jobscomplete`, `endTimeToKey`, `repgroupEndTime`
+  and the now-dead `repGroupCompleteCount` populate, and the backfill sentinel
+  is written to the now-dead `repGroupCompleteBackfilled`);
+- two jobs in rep group `reliable2-dbcompat-incomplete`, left incomplete in
+  `jobslive`, each carrying non-empty `WaitingForDepGroups` and `LimitGroups`
+  (so `LimitGroupsForDisplay` is set too).
+
+The now-dead buckets `repGroupCompleteCount` and `repGroupCompleteBackfilled`
+are only written by pre-removal code, so the fixture MUST be regenerated from a
+pre-removal commit.
+
+### Regeneration procedure
+
+1. Check out a pre-removal `reliable2` commit that STILL maintains the
+   per-RepGroup complete counters - i.e. one that still has
+   `adjustRepGroupComplete`, the `CreateBucketIfNotExists` calls for
+   `repGroupCompleteCount` / `repGroupCompleteBackfilled`, and the backfill
+   sentinel write. The `reliable2` base commit `07355ba` ("Add reliable2 spec")
+   is such a commit (Phase 2 removed the backfill launcher and Phase 3 removed
+   the counter write-side and the buckets, so any commit at or before Phase 1,
+   `3cc9903`, works). Verify with, e.g.:
+
+   ```
+   git grep -n 'repGroupCompleteCount\|adjustRepGroupComplete\|backfillSentinelKey' <commit> -- jobqueue/db.go
+   ```
+
+   The cleanest way to build against that commit without disturbing your working
+   tree is a detached git worktree:
+
+   ```
+   git worktree add --detach /tmp/wr-genwt 07355ba
+   cp jobqueue/testdata/dbcompat/gen.go /tmp/wr-genwt/jobqueue/testdata/dbcompat/gen.go
+   ```
+
+2. Build and run the committed generator through the `jobqueue` DB open path,
+   passing the absolute output path as its sole argument:
+
+   ```
+   cd /tmp/wr-genwt
+   go run jobqueue/testdata/dbcompat/gen.go /abs/path/to/wr/jobqueue/testdata/dbcompat/db.golden
+   ```
+
+3. The generator writes the bolt file directly to that path. Return to your
+   normal checkout, `git add` the (binary) fixture, and remove the worktree:
+
+   ```
+   git worktree remove /tmp/wr-genwt
+   git add jobqueue/testdata/dbcompat/db.golden
+   ```
+
+   Keep the fixture small (a handful of jobs, as above).
+
+## Status page count delta protocol
+
+The status page receives v0.36.5-style per-RepGroup count deltas over the
+websocket as `{ RepGroup, FromState, ToState, Count }` messages: the count in
+`FromState` drops by `Count` and the count in `ToState` rises by `Count`.
+`+all+` aggregates the live jobs across all RepGroups. The feed is lossy and
+unordered, so the client compensates for an out-of-order delta that would drive
+a count negative (clamping at zero and recording an amount to ignore from a
+later increment of that state), and a reconnecting client re-seeds from a fresh
+scan-on-connect rather than any resync: it sends a "current" request and the
+server replies with the seed as deltas from the `new` state (incomplete-only, so
+a completed-only RepGroup is omitted from a fresh connection). The fixtures below
+drive this delta protocol.
+
+Use `make browser-test` (or the alias `make webui-test`) to run these browser
+fixtures as a discoverable gate. The normal `make test` and `make race` targets
+do not run browser tests.
 
 ## Repgroup bar flicker
 
@@ -42,7 +101,7 @@ staying full and only its colour proportions shifting. The requirement is that
 numbers change, not be cleared and redrawn on every change."
 
 `screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, and drives
-a realistic storm of idempotent absolute-state messages for one RepGroup
+a realistic storm of jstateCount delta messages for one RepGroup
 (`echo`), moving ~10000 jobs ready -> running -> complete over hundreds of
 messages at storm rate (~20/sec), ending all-complete. A requestAnimationFrame
 sampler reads the ACTUAL rendered segment widths of
@@ -57,25 +116,6 @@ start tearing the bar down). On the pre-fix code (a)/(c) fail: ~872/938
 populated frames collapse and ~94% are below 95% (minimum filled 0%); after the
 fix all are 0 and the minimum filled is ~97%. It is wired into
 `make browser-test`.
-
-## Status page stale counts
-
-`status-page-stale-counts/` contains the issue-260625-5 web UI regression
-fixtures, migrated to the absolute protocol:
-
-- `repro.mjs` loads the real status-page websocket handler and checks that an
-  authoritative absolute per-RepGroup update clears stale live counts (e.g. a
-  RepGroup left showing jobs running/pending) by replacing the counts wholesale.
-  Run it with `--assert` for the regression check, or without that flag to
-  generate an HTML repro artifact.
-- `screenshot.mjs` serves `jobqueue/static`, injects a fake websocket, delivers
-  stale then authoritative absolute state, verifies the stale running/pending
-  counts clear and the RepGroup shows its real terminal state, searches for
-  `tabletest`, and writes a post-fix screenshot.
-
-Use `make browser-test` (or the alias `make webui-test`) to run these browser
-fixtures as a discoverable gate. The normal `make test` and `make race` targets
-do not run browser tests.
 
 ## Dependent job details
 
@@ -111,27 +151,15 @@ websocket, opens a running job details row whose live stdout/stderr are already
 visible, then delivers a live heartbeat push and asserts that peak RAM, CPU
 time, STDOUT, and STDERR are all visible together.
 
-## Status page snapshot twitch
-
-`status-page-snapshot-twitch/` contains a browser regression fixture for
-steady-state RepGroup twitching (issue 260625-6), migrated to the absolute
-protocol. It serves the real status page, injects a fake websocket, pushes the
-steady-state absolute counts (`bigmod` = 15,000 dependent), then re-sends the
-same absolute state with the per-RepGroup part delayed, and asserts that the
-visible `bigmod` row remains at exactly 15,000 dependent jobs throughout (no
-twitch to a partial/zero value). It also asserts that the status page does not
-register the old blind 10-second current-status polling timer. It is wired into
-`make browser-test`.
-
 ## Completed RepGroup visibility
 
 `completed-repgroup-visibility/` contains a browser regression fixture for a
 RepGroup that transitions from pending to all complete while the status page is
-open (issue 260625-6), migrated to the absolute protocol. It serves the real
-status page, injects a fake websocket, drives the RepGroup through
-ready/running/complete absolute states, then re-sends the (now empty) live
-`+all+` aggregate and asserts that the completed RepGroup remains visible with
-the correct completed count/bar. It is wired into `make browser-test`.
+open (issue 260625-6). It serves the real status page, injects a fake websocket,
+drives the RepGroup through ready/running/complete as jstateCount deltas (the
+live `+all+` aggregate returning to empty as the jobs complete) and asserts that
+the completed RepGroup remains visible with the correct completed count/bar. It
+is wired into `make browser-test`.
 
 Set `WR_FIXTURE_SCENARIO=deleted-refresh` to exercise the short-job ordering
 regression with six jobs in one RepGroup. The fixture verifies that four rapid
@@ -154,10 +182,11 @@ connection) made `echo` reappear, even though it now has only terminal members
 RepGroup that has any deleted terminal contribution and no live jobs.
 
 The fix is server-side: the seed a freshly-connected (or refreshed) client
-receives must send live states plus complete for RepGroups with live jobs, send
-normally completed RepGroups as complete-only, and never send deleted;
-deleted-only and complete+deleted-only RepGroups are omitted
-(`jobqueue/statusstate.go` `liveSeedLocked`). The frontend renders whatever
+receives is the incomplete-only scan-on-connect - live states plus complete for
+RepGroups that still have live jobs - so a RepGroup with only terminal members
+(complete-only, complete+deleted, or deleted-only) is omitted and never re-shown,
+and deleted is never seeded (`jobqueue/serverWebI.go`
+`sendCurrentStatusCounts`). The frontend renders whatever
 RepGroups the server sends, so `screenshot.mjs` models the server seed in JS
 (`computeSeed`) and drives the real `websocket-handler.js` against it. Phase 1 keeps a page open while `echo`
 completes then is removed and asserts the red `(deleted)` bar shows live (the

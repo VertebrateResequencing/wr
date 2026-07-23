@@ -157,13 +157,6 @@ func defaultTTRCallback(_ any) SubQueue {
 	return SubQueueReady
 }
 
-type changedNotification struct {
-	callback ChangedCallback
-	from     SubQueue
-	to       SubQueue
-	data     []any
-}
-
 // Suspend moves a delayed, ready, or dependent item to the suspended sub-queue.
 func (queue *Queue) Suspend(_ context.Context, key string) error {
 	queue.mutex.Lock()
@@ -257,58 +250,6 @@ func (queue *Queue) resumeSuspendedItem(ctx context.Context, item *Item) {
 	queue.changed(SubQueueSuspended, SubQueueReady, []*Item{item})
 	queue.mutex.Unlock()
 	queue.readyAdded(ctx, "resumed")
-}
-
-// runChangedCallbacks drains pending transition notifications sequentially.
-func (queue *Queue) runChangedCallbacks() {
-	defer queue.finishChangedCallbacks()
-
-	for {
-		// changed records notifications while the transition mutex is held;
-		// wait for that transition to finish before dequeuing its notification.
-		queue.mutex.RLock()
-		notification, ok := queue.nextChangedCallback()
-		queue.mutex.RUnlock()
-
-		if !ok {
-			return
-		}
-
-		notification.callback(notification.from, notification.to, notification.data)
-	}
-}
-
-// finishChangedCallbacks releases the worker slot, or resumes draining after
-// a callback terminated the worker goroutine with runtime.Goexit.
-func (queue *Queue) finishChangedCallbacks() {
-	queue.changedCbMutex.Lock()
-	defer queue.changedCbMutex.Unlock()
-
-	if len(queue.changedCbPending) == 0 {
-		queue.changedCbRunning = false
-
-		return
-	}
-
-	go queue.runChangedCallbacks()
-}
-
-// nextChangedCallback returns the next pending transition notification.
-func (queue *Queue) nextChangedCallback() (changedNotification, bool) {
-	queue.changedCbMutex.Lock()
-	defer queue.changedCbMutex.Unlock()
-
-	if len(queue.changedCbPending) == 0 {
-		queue.changedCbPending = nil
-
-		return changedNotification{}, false
-	}
-
-	notification := queue.changedCbPending[0]
-	queue.changedCbPending[0] = changedNotification{}
-	queue.changedCbPending = queue.changedCbPending[1:]
-
-	return notification, true
 }
 
 // notifyManyAddedChanges queues changed callbacks for the items accumulated by
@@ -411,12 +352,9 @@ type Queue struct {
 	ttrCb                  TTRCallback
 	mutex                  sync.RWMutex
 	readyAddedCbMutex      sync.Mutex
-	changedCbMutex         sync.Mutex
-	changedCbPending       []changedNotification
 	closed                 bool
 	readyAddedCbRunning    bool
 	readyAddedCbRecall     bool
-	changedCbRunning       bool
 }
 
 // Stats holds information about the Queue's state.
@@ -582,44 +520,22 @@ func (queue *Queue) rescheduleReadyAddedIfRecall(ctx context.Context) {
 // sub-queue ('new' in the case of entering the queue for the first time), the
 // name of the moved-to sub-queue ('removed' in the case of the item being
 // removed from the queue), and a slice of item.Data() of everything that moved
-// in this way. Callbacks are initiated in a goroutine and run sequentially in
-// transition-notification order.
+// in this way. The callback will be initiated in a go routine.
 func (queue *Queue) SetChangedCallback(callback ChangedCallback) {
-	queue.changedCbMutex.Lock()
-	defer queue.changedCbMutex.Unlock()
-
 	queue.changedCb = callback
 }
 
-// changed queues a changedCallback notification. The queue mutex must be held
-// so notifications are recorded in queue-transition order. A single goroutine
-// drains the notifications, so mutations do not wait for callbacks.
+// changed checks if a changedCallback has been set, and if so calls it in a go
+// routine.
 func (queue *Queue) changed(from, to SubQueue, items []*Item) {
-	queue.changedCbMutex.Lock()
-	defer queue.changedCbMutex.Unlock()
+	if queue.changedCb != nil {
+		data := make([]any, 0, len(items))
+		for _, item := range items {
+			data = append(data, item.Data())
+		}
 
-	if queue.changedCb == nil {
-		return
+		go queue.changedCb(from, to, data)
 	}
-
-	data := make([]any, 0, len(items))
-	for _, item := range items {
-		data = append(data, item.Data())
-	}
-
-	queue.changedCbPending = append(queue.changedCbPending, changedNotification{
-		callback: queue.changedCb,
-		from:     from,
-		to:       to,
-		data:     data,
-	})
-	if queue.changedCbRunning {
-		return
-	}
-
-	queue.changedCbRunning = true
-
-	go queue.runChangedCallbacks()
 }
 
 // SetTTRCallback sets a callback that will be called when an item in the run

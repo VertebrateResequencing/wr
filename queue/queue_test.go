@@ -32,7 +32,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -2010,88 +2009,6 @@ func qdestroy(q *Queue) {
 	}
 }
 
-func TestQueueChangedCallbacksPreserveTransitionOrder(t *testing.T) {
-	ctx := context.Background()
-
-	synctestConvey(t, "Changed callbacks run in queue transition order", func() {
-		queue := New(ctx, "ordered changed callback queue")
-		defer qdestroy(queue)
-
-		firstStarted := make(chan struct{})
-		releaseFirst := make(chan struct{})
-		recorder := &queueCallbackRecorder{}
-
-		queue.SetChangedCallback(func(from, to SubQueue, data []any) {
-			if from == SubQueueNew && to == SubQueueReady {
-				close(firstStarted)
-				<-releaseFirst
-			}
-
-			recorder.changed(from, to, data)
-		})
-
-		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
-		So(err, ShouldBeNil)
-		<-firstStarted
-
-		err = queue.Suspend(ctx, item.Key)
-		So(err, ShouldBeNil)
-		synctest.Wait()
-
-		close(releaseFirst)
-		synctest.Wait()
-
-		So(recorder.changeRecords(), ShouldResemble, []*changedStruct{
-			{from: SubQueueNew, to: SubQueueReady, count: 1},
-			{from: SubQueueReady, to: SubQueueSuspended, count: 1},
-		})
-	})
-}
-
-func TestQueueChangedCallbacksFollowConcurrentTransitionOrder(t *testing.T) {
-	ctx := context.Background()
-
-	synctestConvey(t, "Changed callbacks follow concurrent queue transitions", func() {
-		queue := New(ctx, "concurrent changed callback queue")
-		defer qdestroy(queue)
-
-		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
-		So(err, ShouldBeNil)
-
-		recorder := &queueCallbackRecorder{}
-		queue.SetChangedCallback(recorder.changed)
-
-		queue.ttrNotification <- true
-
-		synctest.Wait()
-
-		queue.ttrNotification <- true
-
-		reserveDone := make(chan error, 1)
-
-		go func() {
-			_, reserveErr := queue.Reserve("", 0)
-			reserveDone <- reserveErr
-		}()
-
-		for item.Stats().State != ItemStateRun {
-			runtime.Gosched()
-		}
-
-		err = queue.Bury(item.Key)
-		So(err, ShouldBeNil)
-		<-queue.startedTTRProcessing
-		So(<-reserveDone, ShouldBeNil)
-		<-queue.startedTTRProcessing
-		synctest.Wait()
-
-		So(recorder.changeRecords(), ShouldResemble, []*changedStruct{
-			{from: SubQueueReady, to: SubQueueRun, count: 1},
-			{from: SubQueueRun, to: SubQueueBury, count: 1},
-		})
-	})
-}
-
 func containsSingleItemChange(records []*changedStruct, from, to SubQueue) bool {
 	for _, record := range records {
 		if record.from == from && record.to == to && record.count == 1 {
@@ -2418,42 +2335,82 @@ func TestQueueSuspendResume(t *testing.T) {
 	})
 }
 
-func TestQueueChangedCallbacksContinueAfterGoexit(t *testing.T) {
+func TestQueueChangedCallbackDispatchesConcurrently(t *testing.T) {
 	ctx := context.Background()
 
-	synctestConvey(t, "Changed callbacks continue after a callback exits its goroutine", func() {
-		queue := New(ctx, "goexit changed callback queue")
+	synctestConvey(t, "A changed callback runs on a goroutine distinct from the "+
+		"transitioning caller", func() {
+		queue := New(ctx, "concurrent dispatch changed callback queue")
 		defer qdestroy(queue)
 
-		firstStarted := make(chan struct{})
-		delivered := make(chan struct{}, 1)
+		started := make(chan struct{})
+		release := make(chan struct{})
 
 		queue.SetChangedCallback(func(from, to SubQueue, _ []any) {
 			if from == SubQueueNew && to == SubQueueReady {
-				close(firstStarted)
-				runtime.Goexit()
+				close(started)
+				<-release
 			}
+		})
 
-			delivered <- struct{}{}
+		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		// The callback is blocked in its own goroutine, yet Add has already
+		// returned: the transition method did not wait for the callback body,
+		// proving the callback is dispatched concurrently.
+		<-started
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+
+		close(release)
+		synctest.Wait()
+	})
+}
+
+func TestQueueChangedCallbacksRunConcurrently(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Two overlapping transition batches run their callbacks "+
+		"concurrently", func() {
+		queue := New(ctx, "concurrent batches changed callback queue")
+		defer qdestroy(queue)
+
+		firstStarted := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		secondStarted := make(chan struct{})
+
+		queue.SetChangedCallback(func(from, to SubQueue, _ []any) {
+			switch {
+			case from == SubQueueNew && to == SubQueueReady:
+				close(firstStarted)
+				<-releaseFirst
+			case from == SubQueueReady && to == SubQueueSuspended:
+				close(secondStarted)
+			}
 		})
 
 		item, err := queue.Add(ctx, "ready", "", testData, 0, 0, time.Minute, "")
 		So(err, ShouldBeNil)
 		<-firstStarted
-		synctest.Wait()
 
+		// The first batch's callback is still blocked. A second batch's callback
+		// must be able to run to completion regardless: the fan-out is not
+		// serialised behind the first callback.
 		err = queue.Suspend(ctx, item.Key)
 		So(err, ShouldBeNil)
 		synctest.Wait()
 
-		callbackDelivered := false
+		secondRan := false
 
 		select {
-		case <-delivered:
-			callbackDelivered = true
+		case <-secondStarted:
+			secondRan = true
 		default:
 		}
 
-		So(callbackDelivered, ShouldBeTrue)
+		So(secondRan, ShouldBeTrue)
+
+		close(releaseFirst)
+		synctest.Wait()
 	})
 }

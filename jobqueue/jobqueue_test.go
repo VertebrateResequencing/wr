@@ -4086,14 +4086,23 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 							So(job2.Attempts, ShouldEqual, 3)
 							So(job2.UntilBuried, ShouldEqual, 3)
 
-							Convey("If you do nothing with a reserved job, it auto reverts back to delayed", func() {
-								// With no touches the reserved job is auto-released
-								// once its TTR expires; poll for that transition
-								// instead of sampling at a fixed offset, which
-								// races the server's TTR timer under load.
-								job2 = waitUntilJobState(jq2, &JobEssence{Cmd: sleepFalseCmd}, JobStateDelayed, 30)
+							Convey("If you do nothing with a reserved job, it is parked as lost (not re-reserved)", func() {
+								// spec.md C2/C2.1 (reliable2 phase2): a
+								// reserved-but-never-started job whose TTR
+								// expires is no longer reverted to delayed and
+								// made re-reservable. Because the reserving
+								// client (this test process) is alive, its
+								// pid (recorded at reserve, C1) is confirmed
+								// alive, so the job is marked Lost and PARKED in
+								// the run queue rather than requeued on the old
+								// StartTime.IsZero() proxy. With no touches the
+								// job transitions running->lost once its TTR
+								// expires; poll for that transition instead of
+								// sampling at a fixed offset, which races the
+								// server's TTR timer under load.
+								job2 = waitUntilJobState(jq2, &JobEssence{Cmd: sleepFalseCmd}, JobStateLost, 30)
 								So(job2, ShouldNotBeNil)
-								So(job2.State, ShouldEqual, JobStateDelayed)
+								So(job2.State, ShouldEqual, JobStateLost)
 								So(job2.Attempts, ShouldEqual, 3)
 								So(job2.UntilBuried, ShouldEqual, 3)
 							})
@@ -6051,14 +6060,32 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				So(err, ShouldBeNil)
 			})
 
-			Convey("Failing to start a job after reserving it does not use up the limit", func() {
+			Convey("A reserved-but-not-started job whose TTR expires keeps holding its limit slot", func() {
+				// spec.md C2 (reliable2 phase2): a reserved-not-started job
+				// whose TTR expires is now treated like the started path - it
+				// is marked Lost and PARKED in the run queue, and its limit
+				// slot is NOT decremented (only job.Exited / released items
+				// decrement on the delay path). Because the reserving client
+				// (this test process) is alive, its pid is confirmed alive so
+				// the job stays parked rather than being reclaimed, and its
+				// limit slot stays occupied. This deliberately supersedes the
+				// old behaviour where an untouched reservation reverted to
+				// delayed and freed its slot: freeing it would let another job
+				// into the group while a live-but-backlogged runner may still
+				// start the parked one, over-admitting past the limit. In
+				// production the slot is released once the runner is confirmed
+				// dead (killJob -> releaseJob) or finally starts and the job
+				// completes; a genuinely abandoned reservation is reclaimed via
+				// confirm-dead, not via the TTR requeue this change removed.
 				jobs := reserveJobs()
 				So(len(jobs), ShouldEqual, 2)
 
 				<-time.After(2 * time.Second)
 
+				// the two parked-lost reservations still occupy both limit-b
+				// slots, so no further job in the group can be reserved.
 				jobs = reserveJobs()
-				So(len(jobs), ShouldEqual, 2)
+				So(len(jobs), ShouldEqual, 0)
 			})
 
 			Convey("Burying jobs after reserving them does not use up the limit", func() {
