@@ -243,17 +243,19 @@ func (s *lsf) initialize(ctx context.Context, config any) error {
 // an unreadable or mis-pathed key is diagnosable instead of leaving every ssh
 // check to fail invisibly.
 func (s *lsf) loadPrivateKey(ctx context.Context) {
+	if s.config.PrivateKeyPath == "" {
+		return
+	}
+
 	content, err := os.ReadFile(internal.TildaToHome(s.config.PrivateKeyPath))
-	if err == nil {
-		s.privateKey = string(content)
+	if err != nil {
+		clog.Warn(ctx, "could not read the private key needed to confirm lost jobs are dead via ssh",
+			"path", s.config.PrivateKeyPath, "err", err)
 
 		return
 	}
 
-	if s.config.PrivateKeyPath != "" {
-		clog.Warn(ctx, "could not read the private key needed to confirm lost jobs are dead via ssh",
-			"path", s.config.PrivateKeyPath, "err", err)
-	}
+	s.privateKey = string(content)
 }
 
 // setupMonthsAndRegexes sets up what should be global vars, but we don't really
