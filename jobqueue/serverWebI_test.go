@@ -3186,6 +3186,36 @@ assert.equal(errorVM.detailsOA()[0].Priority, 1);
 	})
 }
 
+// TestStatusCountReconcile drives the real websocket-handler.js delta-application
+// logic through the deterministic reconcile-harness with adversarial (out-of-
+// order, seed-race, rerun-cycle) jstateCount streams and asserts the
+// reconstructed per-RepGroup and "+all+" counts stay coherent and converge
+// exactly. It guards against the web status-bar flicker / transient-overcount /
+// connect-mid-burst divergence family (.docs/flicker/).
+func TestStatusCountReconcile(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required to exercise the status page JavaScript")
+	}
+
+	Convey("The status page delta-application logic reconciles counts exactly and order-independently", t, func() {
+		repoRoot := repoRootForWebUITest(t)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "node",
+			"jobqueue/testdata/status-count-reconcile/reconcile-harness.mjs")
+		cmd.Dir = repoRoot
+		output, err := cmd.CombinedOutput()
+		So(err, ShouldBeNil)
+		So(string(output), ShouldContainSubstring, "ALL SCENARIOS COHERENT AND CONVERGENT")
+	})
+}
+
 func TestStatusPageLiveIntrospectionAssets(t *testing.T) {
 	if runnermode || servermode {
 		return

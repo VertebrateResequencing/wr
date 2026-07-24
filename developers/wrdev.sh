@@ -162,6 +162,49 @@ cmd_web_burst() {  # web-burst [N] - reproduce the status-bar freeze-under-burst
   cmd_stop >/dev/null 2>&1
 }
 
+cmd_flicker_check() {  # flicker-check [handler.js] - reproduce/verify the web status-bar flicker/overcount family
+  need_repo
+  command -v node >/dev/null 2>&1 || die "node is required for flicker-check"
+  local fixdir="$REPO/jobqueue/testdata/status-count-reconcile"
+  local handler="${1:-$REPO/jobqueue/static/js/wr/websocket-handler.js}"
+  local rc=0
+
+  # 1) Deterministic count-level reproducer (no browser). This is the primary,
+  #    non-flaky gate: it drives the REAL delta-application logic with
+  #    out-of-order, seed-race and rerun-cycle streams and asserts the
+  #    reconstructed counts stay coherent and converge exactly. FAILS on the
+  #    pre-fix handler (overcount + permanent seed-race divergence), PASSES on a
+  #    correct one. Pass an alternate handler path to A/B a candidate fix.
+  echo "=== flicker count-level reproducer (deterministic) ==="
+  timeout 120 node "$fixdir/reconcile-harness.mjs" "$handler" --verbose || rc=1
+
+  # 2) Browser fixtures for the rendered bar. Uses the same persisted Playwright
+  #    package/browser cache as `make browser-test`; skipped if absent.
+  local pwroot="${WEBUI_TEST_PLAYWRIGHT_ROOT:-$HOME/.cache/wr-webui-playwright}"
+  local pwpkg="${PLAYWRIGHT_PACKAGE_DIR:-$pwroot/node_modules/playwright}"
+  local pwbrowsers="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+  local art="$REPO/.tmp/agent/webui-test"; mkdir -p "$art"
+  if [ -d "$pwpkg" ]; then
+    echo "=== flicker browser fixtures (Playwright) ==="
+    for fx in repgroup-bar-flicker status-count-reconcile; do
+      echo "--- $fx ---"
+      # artifact basename matches the make browser-test naming (the
+      # status-count-reconcile fixture writes status-webui-count-reconcile.*)
+      local base="status-webui-${fx#status-}"
+      PLAYWRIGHT_PACKAGE_DIR="$pwpkg" PLAYWRIGHT_BROWSERS_PATH="$pwbrowsers" \
+        timeout 180 node "$REPO/jobqueue/testdata/$fx/screenshot.mjs" \
+          "$art/$base.png" "$art/$base-trace.json" \
+        && echo "  $fx PASS" || { echo "  $fx FAIL"; rc=1; }
+    done
+  else
+    echo "(Playwright package not found at $pwpkg; skipping browser fixtures."
+    echo " Run 'make browser-test' once to install it, or set PLAYWRIGHT_PACKAGE_DIR.)"
+  fi
+
+  [ "$rc" -eq 0 ] && echo "flicker-check: PASS" || echo "flicker-check: FAIL (flicker/overcount/divergence present)"
+  return "$rc"
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -244,6 +287,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   monitor [halfN]       watch drain / churn counts / control-RPC latency
   probe [secs] [slowms] read the dev web /status_ws feed via wsprobe
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
+  flicker-check [h.js]  reproduce/verify the web status-bar flicker/overcount family
+                        (deterministic node harness + browser fixtures; no manager needed)
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -265,6 +310,7 @@ case "${1:-help}" in
   monitor) cmd_monitor "${2:-20000}" ;;
   probe) cmd_probe "${2:-3}" "${3:-0}" ;;
   web-burst) cmd_web_burst "${2:-10000}" ;;
+  flicker-check) cmd_flicker_check "${2:-}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;
