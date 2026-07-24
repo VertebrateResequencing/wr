@@ -254,7 +254,6 @@ async function captureScreenshot() {
     const finalSample = await sampleRepGroup(page);
     const fixtureState = await page.evaluate(() => {
       const f = window.__wrReconcile;
-      f.finalRgTotal = f.finalRgTotal; // keep shape
       return {
         maxRgTotal: f.maxRgTotal, maxAllTotal: f.maxAllTotal, peakOvercount: f.peakOvercount,
         populatedFrames: f.populatedFrames, minFilledAfterPopulated: f.minFilledAfterPopulated,

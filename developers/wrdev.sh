@@ -188,9 +188,12 @@ cmd_flicker_check() {  # flicker-check [handler.js] - reproduce/verify the web s
     echo "=== flicker browser fixtures (Playwright) ==="
     for fx in repgroup-bar-flicker status-count-reconcile; do
       echo "--- $fx ---"
+      # artifact basename matches the make browser-test naming (the
+      # status-count-reconcile fixture writes status-webui-count-reconcile.*)
+      local base="status-webui-${fx#status-}"
       PLAYWRIGHT_PACKAGE_DIR="$pwpkg" PLAYWRIGHT_BROWSERS_PATH="$pwbrowsers" \
         timeout 180 node "$REPO/jobqueue/testdata/$fx/screenshot.mjs" \
-          "$art/status-webui-$fx.png" "$art/status-webui-$fx-trace.json" \
+          "$art/$base.png" "$art/$base-trace.json" \
         && echo "  $fx PASS" || { echo "  $fx FAIL"; rc=1; }
     done
   else
