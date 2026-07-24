@@ -26,11 +26,23 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/clog"
+	log15 "github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// captureLogCtx returns a context whose clog output is captured into the returned
+// buffer, so a test can assert whether a code path logged anything.
+func captureLogCtx() (context.Context, *bytes.Buffer) {
+	buf := new(bytes.Buffer)
+	handler := log15.StreamHandler(buf, log15.LogfmtFormat())
+
+	return clog.ContextWithLogHandler(context.Background(), handler), buf
+}
 
 type processStatusScheduler struct {
 	mock
@@ -73,5 +85,67 @@ func TestProcessNotRunningOnHostUsesProcessState(t *testing.T) {
 		s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{err: context.Canceled}}}
 
 		So(s.ProcessNotRunningOnHost(context.Background(), 42, "host"), ShouldBeFalse)
+	})
+}
+
+// TestProcessNotRunningOnHostLogsWhenInconclusive is the reliable3 §1 regression
+// test: when ProcessNotRunningOnHost cannot determine whether a process is alive
+// or dead (so a lost job's death cannot be confirmed) it must fail LOUDLY - a warn
+// log - rather than silently returning "assume alive". The three could-not-
+// determine cases are a missing host, a host command (ssh) error, and ps output
+// that is neither empty nor a recognised process state. Crucially, the alive/dead
+// verdict for a correctly-configured, working check must be UNCHANGED and produce
+// no spurious warning.
+func TestProcessNotRunningOnHostLogsWhenInconclusive(t *testing.T) {
+	Convey("A could-not-determine outcome returns false AND logs a warning", t, func() {
+		Convey("when the host cannot be found", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: nil}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+			So(buf.String(), ShouldContainSubstring, "could not confirm")
+		})
+
+		Convey("when the host command errors", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{err: context.Canceled}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+			So(buf.String(), ShouldContainSubstring, "could not confirm")
+		})
+
+		Convey("when the ps output is neither empty nor a plausible process state", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: "3\n"}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+			So(buf.String(), ShouldContainSubstring, "could not confirm")
+		})
+	})
+
+	Convey("A working check keeps its verdict and logs nothing", t, func() {
+		Convey("a live (sleeping) process is still reported running, no warning", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: "Ss\n"}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+			So(buf.String(), ShouldBeEmpty)
+		})
+
+		Convey("an absent process is still reported not-running, no warning", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: ""}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeTrue)
+			So(buf.String(), ShouldBeEmpty)
+		})
+
+		Convey("a zombie process is still reported not-running, no warning", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: "Z+\n"}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeTrue)
+			So(buf.String(), ShouldBeEmpty)
+		})
 	})
 }

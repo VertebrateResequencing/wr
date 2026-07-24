@@ -64,6 +64,47 @@ func init() {
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
 }
 
+// TestLSFLoadPrivateKey is the reliable3 §1b regression test: lsf.initialize used
+// to swallow a private-key read error (the `if err == nil { store }`), leaving an
+// empty key so every lost-job ssh check silently failed. loadPrivateKey must now
+// log a warning when a configured key path cannot be read, while still loading a
+// readable key and staying quiet when no path is configured. It needs no real
+// LSF, so it runs everywhere.
+func TestLSFLoadPrivateKey(t *testing.T) {
+	Convey("loadPrivateKey warns when a configured key path cannot be read", t, func() {
+		s := &lsf{config: &ConfigLSF{PrivateKeyPath: filepath.Join(t.TempDir(), "does-not-exist")}}
+		ctx, buf := captureLogCtx()
+
+		s.loadPrivateKey(ctx)
+
+		So(s.privateKey, ShouldBeEmpty)
+		So(buf.String(), ShouldContainSubstring, "could not read the private key")
+	})
+
+	Convey("loadPrivateKey loads a readable key without warning", t, func() {
+		keyPath := filepath.Join(t.TempDir(), "id_wr")
+		So(os.WriteFile(keyPath, []byte("PRIVATE-KEY-CONTENT"), 0o600), ShouldBeNil)
+
+		s := &lsf{config: &ConfigLSF{PrivateKeyPath: keyPath}}
+		ctx, buf := captureLogCtx()
+
+		s.loadPrivateKey(ctx)
+
+		So(s.privateKey, ShouldEqual, "PRIVATE-KEY-CONTENT")
+		So(buf.String(), ShouldBeEmpty)
+	})
+
+	Convey("loadPrivateKey stays quiet when no key path is configured", t, func() {
+		s := &lsf{config: &ConfigLSF{PrivateKeyPath: ""}}
+		ctx, buf := captureLogCtx()
+
+		s.loadPrivateKey(ctx)
+
+		So(s.privateKey, ShouldBeEmpty)
+		So(buf.String(), ShouldBeEmpty)
+	})
+}
+
 func TestLSF(t *testing.T) {
 	ctx := context.Background()
 	// check if LSF seems to be installed

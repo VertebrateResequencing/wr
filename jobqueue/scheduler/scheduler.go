@@ -57,6 +57,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -87,11 +88,63 @@ const (
 	ErrBadFlavor    = "unknown server flavor"
 )
 
+// cannotConfirmWarnInterval rate-limits the warnCannotConfirm log so a persistent
+// misconfiguration cannot flood the manager log while still remaining visible.
+const cannotConfirmWarnInterval = time.Minute
+
+// processLiveness is the outcome of interpreting a host's `ps` output for a pid.
+type processLiveness int
+
+const (
+	processDead    processLiveness = iota // no such process, or a zombie
+	processAlive                          // a recognised, live process state
+	processUnknown                        // output we cannot interpret
+)
+
 // Reserved records that a scheduler element (opaque, scheduler-specific id,
 // e.g. LSF "jobid[index]") has been handed a wr job reservation, so it must not
 // be killed as excess. Non-LSF schedulers ignore it.
 func (s *Scheduler) Reserved(schedulerID string) {
 	s.impl.reserved(schedulerID)
+}
+
+// interpretProcessState maps the trimmed stdout of the remote
+// `ps -o stat= -p <pid>` command (see ProcessNotRunningOnHost's CONTRACT WARNING)
+// to a liveness outcome: empty output (no such process) or a zombie ("Z...") is
+// dead; any other recognised process-state code is alive; anything else is
+// unknown (eg. a misconfigured forced command emitting a line count rather than a
+// bare stat), which the caller must NOT treat as a confident alive/dead answer.
+func interpretProcessState(state string) processLiveness {
+	switch {
+	case state == "" || strings.HasPrefix(state, "Z"):
+		return processDead
+	case isProcessState(state):
+		return processAlive
+	default:
+		return processUnknown
+	}
+}
+
+// warnCannotConfirm logs, at most once per cannotConfirmWarnInterval, that
+// ProcessNotRunningOnHost could not determine whether pid on hostName is alive or
+// dead, so a lost job's death cannot be confirmed (and its limit-group slot cannot
+// be reclaimed). This makes a broken confirmation path - a bad ssh key, an
+// unreachable host, or a forced command whose output no longer matches the parse
+// contract - diagnosable instead of silently masquerading as a healthy manager.
+func (s *Scheduler) warnCannotConfirm(ctx context.Context, hostName string, pid int, reason string) {
+	now := time.Now().UnixNano()
+
+	last := s.lastCannotConfirm.Load()
+	if last != 0 && now-last < int64(cannotConfirmWarnInterval) {
+		return
+	}
+
+	if !s.lastCannotConfirm.CompareAndSwap(last, now) {
+		return
+	}
+
+	clog.Warn(ctx, "could not confirm whether a lost job's process is still running on its host",
+		"host", hostName, "pid", pid, "reason", reason)
 }
 
 // Error records an error and the operation and scheduler that caused it.
@@ -292,6 +345,10 @@ type Scheduler struct {
 	impl    scheduleri
 	Name    string
 	limiter map[string]int
+	// lastCannotConfirm is the UnixNano time ProcessNotRunningOnHost last logged a
+	// could-not-determine warning. It rate-limits that warning (accessed
+	// atomically) so a persistent misconfiguration cannot flood the log.
+	lastCannotConfirm atomic.Int64
 	sync.Mutex
 }
 
@@ -507,23 +564,49 @@ func (s *Scheduler) GetHost(hostName string) Host {
 func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
+		s.warnCannotConfirm(ctx, hostName, pid, "could not get the host to ssh to")
+
 		return false
 	}
 
 	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
 	if err != nil {
+		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
+
 		return false
 	}
 
 	state := strings.TrimSpace(stdo)
 
-	return state == "" || strings.HasPrefix(state, "Z")
+	switch interpretProcessState(state) {
+	case processDead:
+		return true
+	case processAlive:
+		return false
+	case processUnknown:
+		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+state)
+	}
+
+	return false
 }
 
 // Cleanup means you've finished using a scheduler and it can delete any
 // remaining jobs in its system and clean up any other used resources.
 func (s *Scheduler) Cleanup(ctx context.Context) {
 	s.impl.cleanup(s.typeContext(ctx))
+}
+
+// isProcessState reports whether state begins with a recognised ps process-state
+// code (see ps(1) STATE): the leading character is the primary state, optionally
+// followed by modifier characters we ignore here.
+func isProcessState(state string) bool {
+	const processStateCodes = "DIRSTtWXZ"
+
+	if state == "" {
+		return false
+	}
+
+	return strings.IndexByte(processStateCodes, state[0]) >= 0
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-
