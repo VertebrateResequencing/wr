@@ -362,7 +362,10 @@ runnerexecshell: "bash"
 # every check look like "still running" and cause the stall described above. A
 # working example (single line; substitute your own key and comment):
 #
-#   command="p=$(echo \"$SSH_ORIGINAL_COMMAND\" | grep -oE '[-]p [0-9]+' | grep -oE '[0-9]+' | head -1); ps -o stat= -p \"${p:-0}\" 2>/dev/null || test $? -eq 1" ssh-ed25519 AAAA...your-public-key... wr lost-job ps check
+` +
+	`#   command="p=$(echo \"$SSH_ORIGINAL_COMMAND\" | grep -oE '[-]p [0-9]+' | grep -oE '[0-9]+' | head -1); ` +
+	`ps -o stat= -p \"${p:-0}\" 2>/dev/null || test $? -eq 1" ` +
+	`ssh-ed25519 AAAA...your-public-key... wr lost-job ps check` + `
 #
 # This extracts only the pid from whatever command wr sends and runs the ps
 # check on it, so the key cannot be used to run anything else, while still
