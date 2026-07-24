@@ -79,6 +79,21 @@ such a failure **loud**, so it can never again masquerade as a healthy manager:
   **swallows** a read error, leaving an empty key (all ssh then fails). Log a warn
   when the key cannot be read.
 
+**CRITICAL finding (reproducer-proven, `wrdev.sh limit-stall-check`): §1 as scoped
+here DIAGNOSES but does NOT FIX the stall.** With the loud-logging fix applied, the
+stall reproducer still shows `scheduled=0 skipped=5000` — the phantom slots still
+accumulate and exhaust the limit; §1 only makes the failure visible so an operator
+can apply the operational `authorized_keys` correction. **Preventing the stall in
+code requires reclaiming lost jobs without depending solely on the ssh
+confirmation** — i.e. the currently-Reserved `1c` (scheduler-native / LSF-`bjobs`
+liveness check) and/or `1d` (bounded give-up that releases a lost job's limit slot
+after N failed confirmations). That is a reliability-semantics change (a released
+"lost" job whose runner was actually alive could double-run, so it interacts with
+the v0.36.5-lenient acceptance and the recovery window) and is therefore
+**/spec-writer scope, not /bugfix** — pursue it only if operational reliance on the
+`authorized_keys` fix + this loud warning is deemed insufficient (see
+Implementation path).
+
 ### 2. Stop over-provisioning runners — removes the flood that causes the churn
 ~95% of runners idle-exit; the manager requested `count=3313` for a 2000-limit
 group, and up to **13,271 runners summed across sibling groups in one rac cycle**
@@ -98,7 +113,13 @@ runners that already idle-exited). Two mechanisms (`background.md` finding 2):
   the budget is allocated **first-come** across siblings; if sibling groups differ in
   priority, allocate the shared budget preferring higher-priority groups (a two-pass
   build, or order the ready scan by group priority) so a low-priority sibling can't
-  starve a high-priority one of the shared budget.
+  starve a high-priority one of the shared budget. **Reproducer:** `wrdev.sh
+  priority-fairness-check` (`TestReliable3PriorityFairnessStarvation`) — a
+  low-priority sibling scanned first takes the whole budget (`high(pri250).count=0`).
+  A ~20-LOC temp fix (sort ready jobs by priority-desc in `buildSchedulerGroups`
+  before the count loop) gave the budget to the high-priority sibling; lint + focused
+  tests green. Small, /bugfix-scale; interacts with §2b (same rac accounting) so
+  implement them together off one consistent read.
 - **2b. Do not inflate `count` with phantom/lost Run entries.**
   `accountForRunningJobs` (`server.go:3929`) adds **all** Run-sub-queue jobs
   (including lost-parked phantoms) on top of the (now-capped) ready count, and the
@@ -108,7 +129,13 @@ runners that already idle-exited). Two mechanisms (`background.md` finding 2):
   limiter read used for the running snapshot, and/or cap each group's final `count`
   at remaining + its own running) so `count` for a limit-grouped scheduler group
   never exceeds the limit group's true remaining capacity even with running jobs
-  present. (§2a's test covers the ready-only case; add a running-jobs case here.)
+  present. **Reproducer:** `wrdev.sh overcount-check` (`TestReliable3OverCountRunningSnapshot`,
+  build tag `reliability_repro`) — reserves land between the capacity read and the
+  running snapshot → `finalCount=3500` for a 2000 limit. A ~40-LOC temp fix
+  (one consistent per-limit-group read, trim summed sibling counts to ≤ limit at the
+  end of `accountForRunningJobs`) capped it to 2000 with lint + focused tests green.
+  Small, /bugfix-scale; folds naturally with §2a below into one consistent-read
+  change to the rac accounting.
 - Preserve enough headroom for wr's pull model (a modest over-request is fine), but
   never request N×limit or limit+phantoms.
 
@@ -125,6 +152,35 @@ runners that already idle-exited). Two mechanisms (`background.md` finding 2):
   its parse, **update those docs in the same change** and add a migration note
   (sites with a forced command must update it), so this class of regression cannot
   recur silently.
+
+## Implementation path (decided from reproducer experiments)
+
+Each remaining issue now has a committed reproducer (build tag `reliability_repro`,
+`jobqueue/reliable3_repro_test.go`, run via the `wrdev.sh` commands below) that
+demonstrates it on current code, plus a validated minimal temp fix. These
+reproducers are **deterministic in-process** demonstrations (they control the
+interleaving faithfully), not LSF-load runs — chosen because an LSF-driven version
+would flood the shared cluster and is fair-share-flaky; that is the "good-enough,
+non-flaky" bar, better than a probabilistic load test where the mechanism allows it.
+
+- **`/bugfix` (small, localized, do now):** §2b over-count cap + §2a priority-fair
+  allocation (fold into ONE change: one consistent per-limit-group read driving both
+  the priority-ordered ready budget and the final ≤-limit cap in the rac accounting,
+  ~50-60 LOC in `server.go`), and §1 loud logging + key-load log (~31 LOC across
+  `scheduler.go`/`lsf.go`), and §3 observability. Each is TDD-able like the 2a fix
+  (`324c746`); experiments confirmed small fixes pass their reproducer and keep
+  `make lint` + focused tests green.
+- **`/spec-writer` (larger, only if chosen):** an actual code fix for the **stall**
+  — reclaiming lost jobs without depending solely on ssh confirmation (the Reserved
+  `1c`/`1d`). §1's loud logging does NOT prevent the stall (reproducer-proven); this
+  is a reliability-semantics change (double-run risk on a wrongly-released lost job)
+  that warrants a spec + phases, not a bugfix. **Open decision for the user:** accept
+  operational reliance (fix `authorized_keys` + ship the loud §1 warning via
+  `/bugfix`), OR bring the stall reclaim into scope via `/spec-writer`.
+
+Reproducer commands (all in-process, no manager/LSF; not part of `make test`):
+`wrdev.sh overcount-check` (§2b), `limit-stall-check` (§1 silent-confirm + stall),
+`priority-fairness-check` (§2a).
 
 ## KEEP — must remain fully working (do not remove or break)
 

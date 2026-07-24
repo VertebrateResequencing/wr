@@ -229,15 +229,26 @@ reduces the churn itself and the LSF waste. Finding 5 is for the user to manage.
   tests), plus a `developers/wrdev.sh overprovision-check` gate that runs it at
   production scale. (An earlier hand-rolled prototype was reverted so `/bugfix` could
   redo it via TDD.)
+- **Built reproducers + ran fix experiments for the remaining issues** (committed
+  `1c072ea`): build-tagged (`reliability_repro`) in-process reproducers in
+  `jobqueue/reliable3_repro_test.go` + `wrdev.sh` commands `overcount-check` (§2b:
+  `finalCount=3500` for a 2000 limit), `limit-stall-check` (§1: silent
+  cannot-confirm + `phantomSlots=2000 → scheduled=0 skipped=5000`), and
+  `priority-fairness-check` (§2a: `high(pri250).count=0`). Each demonstrates the bug
+  on current code; each had a validated minimal temp fix (reverted). **Pivotal
+  finding: §1's loud-logging fix DIAGNOSES but does not PREVENT the stall** — with it
+  applied, `limit-stall-check` still shows `scheduled=0`; only reclaiming lost jobs
+  (Reserved `1c`/`1d`) or the operational `authorized_keys` fix un-stalls it.
 
 ## What should be done next
 
-See `.docs/reliable3/prompt.md` (input to `/spec-writer`). Remaining code work:
-make lost-job confirmation failures **loud** (§1: fail-visibly + log the swallowed
-key-load error — the reclaim mechanism itself is corrected operationally via the
-`authorized_keys` line); finish finding 2 (§2b: keep a single group's `count` ≤
-remaining + its own running under the non-atomic running snapshot; and a
-priority-fair allocation of the shared budget across siblings); and observability
-(§3). Reserved: `queue.mutex` contention, group-thrash damping, and an
-ssh-independent reclaim path — only if measured necessary. Validate end-to-end at
-LSF scale on the farm.
+See `.docs/reliable3/prompt.md` "Implementation path". Decided from the experiments:
+the small, localized fixes — §2b over-count cap + §2a priority-fair allocation
+(fold into one consistent-read rac-accounting change), §1 loud logging + key-load
+log, and §3 observability — are all **/bugfix**-scale (TDD, like `324c746`). The
+**stall itself is out of scope for those**: §1-loud only surfaces it. A code fix
+for the stall needs ssh-independent lost-job reclamation (Reserved `1c`/`1d`), a
+reliability-semantics change = **/spec-writer** scope, to pursue only if operational
+reliance (`authorized_keys` + the loud warning) is judged insufficient. Reserved
+still: `queue.mutex` contention, group-thrash damping. Validate end-to-end at LSF
+scale on the farm.
