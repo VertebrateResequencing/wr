@@ -205,6 +205,24 @@ cmd_flicker_check() {  # flicker-check [handler.js] - reproduce/verify the web s
   return "$rc"
 }
 
+cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - runner over-provisioning invariant
+  # Deterministic, in-process (no manager, no LSF): reproduces the reliable3 LSF-scale
+  # bug where sibling scheduler groups sharing ONE limit group each get the limit
+  # group's full remaining capacity, so the summed runner request is up to
+  # siblings x limit (production saw 13,271 for a 2000 limit). Asserts the summed
+  # request stays <= the limit. FAILS on the pre-fix per-scheduler-group accounting,
+  # PASSES with the shared per-limit-group budget. A required gate for the fix.
+  need_repo
+  local limit="${1:-2000}" siblings="${2:-50}" ready="${3:-5000}"
+  echo "over-provisioning invariant (deterministic, prod-scale): summed runner request across"
+  echo "sibling scheduler groups sharing one limit group must be <= the limit."
+  echo "scale: limit=$limit siblings=$siblings readyPerGroup=$ready (pre-fix code requests ~limit*siblings)"
+  osunset
+  WR_OP_LIMIT="$limit" WR_OP_SIBLINGS="$siblings" WR_OP_READY="$ready" \
+    timeout 180 go -C "$REPO" test ./jobqueue/ -run TestReliable3LimitGroupOverProvision -count=1 -v 2>&1 \
+    | grep -aE 'over-provision check|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -289,6 +307,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
   flicker-check [h.js]  reproduce/verify the web status-bar flicker/overcount family
                         (deterministic node harness + browser fixtures; no manager needed)
+  overprovision-check [limit] [siblings] [ready]
+                        deterministic prod-scale check: summed runners requested per limit
+                        group stay <= the limit (fails on pre-fix per-group accounting; no manager)
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -311,6 +332,7 @@ case "${1:-help}" in
   probe) cmd_probe "${2:-3}" "${3:-0}" ;;
   web-burst) cmd_web_burst "${2:-10000}" ;;
   flicker-check) cmd_flicker_check "${2:-}" ;;
+  overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;
