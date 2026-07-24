@@ -46,12 +46,16 @@ remove the over-provisioning flood that mass-produces lost jobs in the first pla
   it (validated line in background.md) is a mercury-side change that unsticks the
   live manager. The competing `nf-main_rnaseq` pipeline / fair-share starvation is
   the user's to manage.
-- **§2a IS ALREADY IMPLEMENTED + committed on `reliable3`** (commit `a1f939f`): the
-  shared-per-limit-group-budget fix in `countJobInGroup` (`server.go`), its
-  regression test `TestReliable3LimitGroupOverProvision` (`jobqueue/`), and the
-  `developers/wrdev.sh overprovision-check` gate. Treat it as baseline (like the docs
-  above); the test + gate MUST stay green. The remaining §2 work (2b consistency +
-  priority-fair allocation) is described in §2.
+- **§2a IS ALREADY IMPLEMENTED on `reliable3`** — reimplemented via `/bugfix`
+  (commit `324c746`, checklist `.docs/bugfixes/260724-1.md`): the
+  shared-per-limit-group-budget fix in `countJobInGroup` (`server.go`,
+  `seedLimitGroupBudgets`) + its regression test
+  `TestReliable3LimitGroupOverProvision` (`jobqueue/reliable3_overprovision_test.go`).
+  (An earlier hand-rolled prototype of the same fix was reverted so `/bugfix` could
+  redo it via TDD + reviewer.) The `developers/wrdev.sh overprovision-check` gate
+  landed earlier on the branch. Treat all three as baseline (like the docs above);
+  the test + gate MUST stay green. Remaining §2 work (2b consistency + priority-fair
+  allocation) is in §2.
 
 ## The desired solution (implement in this priority order)
 
@@ -81,7 +85,7 @@ group, and up to **13,271 runners summed across sibling groups in one rac cycle*
 (6.6× the limit); 126× `checkCmd bkill failed "No matching job found"` (culling
 runners that already idle-exited). Two mechanisms (`background.md` finding 2):
 - **2a. Limit-group capacity shared across sibling scheduler groups — DONE
-  (`a1f939f`).** `groupRemainingCapacity` used to cache remaining capacity keyed by
+  (`324c746`).** `groupRemainingCapacity` used to cache remaining capacity keyed by
   **scheduler group**, but the limit is per **limit group**, so each sibling
   scheduler-group string mapping to the same limit group independently received the
   full remaining capacity within one rac cycle (measured: up to 10 sibling groups,
@@ -142,7 +146,7 @@ runners that already idle-exited). Two mechanisms (`background.md` finding 2):
 ## Acceptance criteria (TDD targets)
 
 1. **Over-provisioning bounded (§2a — already green, must STAY green + be extended).**
-   `TestReliable3LimitGroupOverProvision` (committed, `a1f939f`) asserts that with
+   `TestReliable3LimitGroupOverProvision` (committed, `324c746`) asserts that with
    several sibling scheduler groups mapping to one limit group and a ready backlog far
    exceeding the limit, the **sum of runners requested for that limit group is ≤ the
    limit**. It passes now and must not regress; run under `-race`. **Extend it** with
@@ -194,7 +198,7 @@ runners that already idle-exited). Two mechanisms (`background.md` finding 2):
 ## Testing (how to validate)
 
 - **Committed deterministic Go test (must stay green): `TestReliable3LimitGroupOverProvision`**
-  (`jobqueue/reliable3_overprovision_test.go`, `a1f939f`) — sets a limit group to
+  (`jobqueue/reliable3_overprovision_test.go`, `324c746`) — sets a limit group to
   limit N, feeds many ready jobs across K sibling scheduler groups (distinct
   requirements, same `~lg` limit-group suffix) through `countJobInGroup` with a
   shared budget map, and asserts the **summed `sgroup.count` across the siblings ≤

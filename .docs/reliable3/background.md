@@ -106,7 +106,7 @@ manager request far more runners than can ever hold a limit slot:
   (~29%) requested more than the limit. (The limit is still enforced at reserve
   time via `incrementReserveLimit`, so no more than 2000 actually run — the excess
   just idle-exit, but every one still connects and adds RPC load.) **FIXED
-  (`a1f939f`):** `countJobInGroup` now shares one budget per limit group per rac
+  (`324c746`):** `countJobInGroup` now shares one budget per limit group per rac
   cycle, so the summed request across siblings ≤ the limit; proven by
   `TestReliable3LimitGroupOverProvision` (Σ = K×N pre-fix → N post-fix) and
   `wrdev.sh overprovision-check`.
@@ -221,11 +221,14 @@ reduces the churn itself and the LSF waste. Finding 5 is for the user to manage.
   exact command/parse contract, and an example restricted `authorized_keys` line;
   and added a CONTRACT WARNING doc comment on `ProcessNotRunningOnHost`
   (`jobqueue/scheduler/scheduler.go`).
-- **Implemented + committed finding 2(a)'s fix (`a1f939f`):** the shared
-  per-limit-group budget in `countJobInGroup`, its regression test
+- **Implemented finding 2(a)'s fix via `/bugfix` (`324c746`, checklist
+  `.docs/bugfixes/260724-1.md`):** the shared per-limit-group budget in
+  `countJobInGroup` (`seedLimitGroupBudgets`) + its regression test
   `TestReliable3LimitGroupOverProvision` (fails pre-fix at Σ = K×N, passes post-fix
-  at Σ = N; no regression in the limit-group / scheduler-deadlock tests), and a
-  `developers/wrdev.sh overprovision-check` gate that runs it at production scale.
+  at Σ = N; reviewer-verified; no regression in the limit-group / scheduler-deadlock
+  tests), plus a `developers/wrdev.sh overprovision-check` gate that runs it at
+  production scale. (An earlier hand-rolled prototype was reverted so `/bugfix` could
+  redo it via TDD.)
 
 ## What should be done next
 
