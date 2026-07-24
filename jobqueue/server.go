@@ -1804,6 +1804,23 @@ func updateJobRequirementsForRetry(
 	}
 }
 
+// seedLimitGroupBudgets returns the limit groups of schedulerGroup, lazily seeding
+// each one's remaining-capacity budget into limitBudgets (shared across the sibling
+// scheduler groups of a rac cycle). A budget of -1 means the group has no limit, so
+// it never blocks and is never decremented.
+func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string,
+	limitBudgets map[string]int) []string {
+	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+
+	for _, lg := range limitGroups {
+		if _, set := limitBudgets[lg]; !set {
+			limitBudgets[lg] = s.limiter.GetRemainingCapacity(ctx, []string{lg})
+		}
+	}
+
+	return limitGroups
+}
+
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
@@ -3822,10 +3839,18 @@ func (s *Server) recommendedReqForGroup(reqGroup string,
 }
 
 // countJobInGroup records a single ready job against its scheduler group,
-// creating the group if needed and skipping jobs that would exceed the group's
-// limit-group capacity.
+// creating the group if needed and skipping jobs that would exceed the remaining
+// capacity of any of the job's limit groups.
+//
+// limitBudgets holds the remaining capacity PER LIMIT GROUP for this rac cycle. It
+// is shared across every sibling scheduler group that maps to the same limit group
+// and is decremented as each job is counted, so the summed runner request for a
+// limit group never exceeds its capacity. (Keying the budget per scheduler group
+// instead, as the old groupRemainingCapacity did, let each of N sibling scheduler
+// groups sharing one limit group independently request that group's full remaining
+// capacity within a rac cycle -> up to N x the limit runners requested for it.)
 func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
-	groupLimits map[string]int, snapshot schedulerGroupSnapshot) {
+	limitBudgets map[string]int, snapshot schedulerGroupSnapshot) {
 	schedulerGroup := snapshot.group
 
 	group, set := groups[schedulerGroup]
@@ -3837,39 +3862,30 @@ func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
 		groups[schedulerGroup] = group
 	}
 
-	// ignore jobs that would put us over the limit
-	limit := s.groupRemainingCapacity(ctx, schedulerGroup, groupLimits)
-	if limit >= 0 && group.count == limit {
-		group.skipped++
+	limitGroups := s.seedLimitGroupBudgets(ctx, schedulerGroup, limitBudgets)
 
-		return
+	// ignore jobs that would put any of the job's limit groups over its limit. A
+	// budget of -1 means "no limit", so it never blocks (and is never decremented).
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] == 0 {
+			group.skipped++
+
+			return
+		}
 	}
 
 	group.count++
 
+	// consume one unit of each limited limit group's shared budget
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] > 0 {
+			limitBudgets[lg]--
+		}
+	}
+
 	if snapshot.priority > group.priority {
 		group.priority = snapshot.priority
 	}
-}
-
-// groupRemainingCapacity returns the remaining limit-group capacity for a
-// scheduler group (-1 if the group has no limit groups), caching the result in
-// groupLimits.
-func (s *Server) groupRemainingCapacity(ctx context.Context, schedulerGroup string, groupLimits map[string]int) int {
-	if limit, set := groupLimits[schedulerGroup]; set {
-		return limit
-	}
-
-	limit := -1
-
-	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
-	if len(limitGroups) > 0 {
-		limit = s.limiter.GetRemainingCapacity(ctx, limitGroups)
-	}
-
-	groupLimits[schedulerGroup] = limit
-
-	return limit
 }
 
 // scheduleGroupRunners adds running jobs into the group counts, unschedules
