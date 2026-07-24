@@ -64,13 +64,17 @@ func readySnapshots(snapshots []schedulerGroupSnapshot, group string, priority u
 }
 
 // addRunningJobs adds n jobs to the queue's run sub-queue, all in the given
-// scheduler group, so accountForRunningJobs counts them. Returns how many were
-// added and any error, for the caller to assert.
-func addRunningJobs(ctx context.Context, q *queue.Queue, group string, n int) (int, error) {
+// scheduler group and with the given job priority, so accountForRunningJobs counts
+// them (and picks up their priority). Returns how many were added and any error,
+// for the caller to assert.
+func addRunningJobs(ctx context.Context, q *queue.Queue, group string, priority uint8, n int) (int, error) {
 	defs := make([]*queue.ItemDef, 0, n)
 
 	for i := range n {
-		job := &Job{}
+		// a valid Requirements is needed for the running-only-group path
+		// (groupForRunningJob clones job.Requirements when the group is not already
+		// present from the ready phase).
+		job := &Job{Priority: priority, Requirements: &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}}
 		job.setSchedulerGroup(group)
 		defs = append(defs, &queue.ItemDef{
 			Key:          fmt.Sprintf("%s-run-%d", group, i),
@@ -127,7 +131,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		q := queue.New(ctx, "reliable3-overcount-fix")
 		defer func() { So(q.Destroy(), ShouldBeNil) }()
 
-		added, err := addRunningJobs(ctx, q, grpName, totalRunning)
+		added, err := addRunningJobs(ctx, q, grpName, 0, totalRunning)
 		So(err, ShouldBeNil)
 		So(added, ShouldEqual, totalRunning)
 
@@ -164,7 +168,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		for i := range siblings {
 			s.limiter.Increment(ctx, []string{"lg"})
 
-			added, err := addRunningJobs(ctx, q, grpNames[i], runningPerSibling)
+			added, err := addRunningJobs(ctx, q, grpNames[i], 0, runningPerSibling)
 			So(err, ShouldBeNil)
 			So(added, ShouldEqual, runningPerSibling)
 		}
@@ -195,7 +199,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		q := queue.New(ctx, "reliable3-nolimit")
 		defer func() { So(q.Destroy(), ShouldBeNil) }()
 
-		added, err := addRunningJobs(ctx, q, grpName, running)
+		added, err := addRunningJobs(ctx, q, grpName, 0, running)
 		So(err, ShouldBeNil)
 		So(added, ShouldEqual, running)
 
@@ -225,6 +229,108 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		Convey("the high-priority sibling gets the budget, the low-priority one is starved", func() {
 			So(groups[highGrp].count, ShouldEqual, limit)
 			So(groups[lowGrp].count, ShouldEqual, 0)
+		})
+	})
+
+	Convey("A running-only high-priority group is not trimmed before a lower-priority ready sibling", t, func() {
+		// COMMENT B regression: accountForRunningJobs must give a running-only group
+		// the priority of its running jobs, otherwise the cap (trimGroupsToLimit,
+		// which trims lowest-priority first) would trim the high-priority running
+		// group's runners ahead of a genuinely lower-priority ready sibling.
+		limit := 100
+		runCount := limit / 2
+
+		s := newOverProvisionServer(limit)
+		readyLowGrp := "100:30:1:1:samehash" + lgSuffix // priority 10 (ready)
+		runHighGrp := "200:30:1:1:samehash" + lgSuffix  // priority 250 (running-only)
+
+		// the low-priority ready sibling fills the whole limit first (held=0 =>
+		// budget=limit), so nothing is skipped and there is no ready backlog.
+		groups := make(map[string]*sgroup)
+		s.countReadyJobsByPriority(ctx, groups, readySnapshots(nil, readyLowGrp, 10, req, limit))
+		So(groups[readyLowGrp].count, ShouldEqual, limit)
+
+		// the high-priority sibling then appears purely via running jobs (reserves
+		// that landed after the capacity read), overshooting the limit by runCount.
+		q := queue.New(ctx, "reliable3-priority-running")
+		defer func() { So(q.Destroy(), ShouldBeNil) }()
+
+		added, err := addRunningJobs(ctx, q, runHighGrp, 250, runCount)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, runCount)
+
+		s.accountForRunningJobs(q, groups)
+
+		Convey("the running-only group's priority reflects its running jobs", func() {
+			So(groups[runHighGrp].priority, ShouldEqual, 250)
+		})
+
+		Convey("the high-priority running group keeps all its runners", func() {
+			So(groups[runHighGrp].count, ShouldEqual, runCount)
+		})
+
+		Convey("the lower-priority ready sibling is the one trimmed, summed at the limit", func() {
+			So(groups[readyLowGrp].count, ShouldEqual, limit-runCount)
+			So(groups[readyLowGrp].count+groups[runHighGrp].count, ShouldEqual, limit)
+		})
+	})
+
+	Convey("The cap trims running over-count without inflating skipped (§2b-skipped)", t, func() {
+		// COMMENT A: the shared budget guarantees summed READY count <= remaining
+		// capacity, so the amount the cap trims is exactly the running over-count
+		// (drift). That is NOT deferred ready work, so it must not be added to
+		// skipped: the genuine ready backlog is already recorded by countJobInGroup,
+		// and inflating skipped with running units would pin the target at the limit
+		// with no ready work to backfill (re-over-provisioning).
+		limit := 100
+		initialHeld := 20
+		readyBacklog := limit + 50
+		drift := 30
+
+		s := newOverProvisionServer(limit)
+		grpName := "200:30:1:1:samehash" + lgSuffix
+
+		// initialHeld slots are held when the ready budget is read => remaining = 80.
+		for range initialHeld {
+			s.limiter.Increment(ctx, []string{"lg"})
+		}
+
+		groups := make(map[string]*sgroup)
+		s.countReadyJobsByPriority(ctx, groups, readySnapshots(nil, grpName, 0, req, readyBacklog))
+
+		readyCount := groups[grpName].count
+		readySkipped := groups[grpName].skipped
+
+		So(readyCount, ShouldEqual, limit-initialHeld)                  // 80 counted
+		So(readySkipped, ShouldEqual, readyBacklog-(limit-initialHeld)) // 70 skipped backlog
+
+		// drift more reserves land after the read; all totalRunning jobs are running.
+		totalRunning := initialHeld + drift
+
+		q := queue.New(ctx, "reliable3-skipped-not-inflated")
+		defer func() { So(q.Destroy(), ShouldBeNil) }()
+
+		added, err := addRunningJobs(ctx, q, grpName, 0, totalRunning)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, totalRunning)
+
+		s.accountForRunningJobs(q, groups)
+
+		Convey("count is capped at the limit (pre-cap it was ready+running > limit)", func() {
+			So(groups[grpName].count, ShouldEqual, limit)
+		})
+
+		Convey("skipped still reflects ONLY the ready backlog, not the trimmed running over-count", func() {
+			So(groups[grpName].skipped, ShouldEqual, readySkipped)
+		})
+
+		Convey("a completion is absorbed by the ready-backlog skipped, so the target does not ratchet down", func() {
+			s.previouslyScheduledGroups[grpName] = groups[grpName]
+			So(s.hasSkippedScheduledGroups(), ShouldBeTrue)
+
+			countBefore := groups[grpName].count
+			So(groups[grpName].decrement(1), ShouldEqual, -1)
+			So(groups[grpName].count, ShouldEqual, countBefore)
 		})
 	})
 }
