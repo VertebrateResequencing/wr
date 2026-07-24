@@ -1334,8 +1334,11 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 
 // prepareReadyJob updates one ready job's requirements and, when rc is set, its
 // scheduler group, returning the snapshot to be counted with ready=true. When rc
-// is empty the job is only re-requirement'd (so newly added jobs still get their
-// reserve group) and not counted, so ready=false.
+// is empty the job's requirements are still (re)computed (so scheduling and
+// learning see up-to-date values) but its scheduler group and queue reserve group
+// are left untouched, and it is not counted, so ready=false. (The reserve group is
+// established at job-add time; this function only updates it, via setSchedulerGroup
+// and q.SetReserveGroup, when rc is set and the group has changed.)
 func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
 	job.RLock()

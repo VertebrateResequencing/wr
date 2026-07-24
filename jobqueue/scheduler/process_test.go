@@ -181,6 +181,17 @@ func TestProcessNotRunningOnHostLogsWhenInconclusive(t *testing.T) {
 			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
 			So(buf.String(), ShouldContainSubstring, "could not confirm")
 		})
+
+		Convey("when the ps output starts with Z but is not a valid stat token", func() {
+			// Regression (reliable3): "Zebra"-style output was previously treated
+			// as a dead zombie (returned true, logged nothing), so a live job
+			// whose confirm-check returned garbage could be wrongly reclaimed.
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: "Zebra\n"}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+			So(buf.String(), ShouldContainSubstring, "could not confirm")
+		})
 	})
 
 	Convey("A working check keeps its verdict and logs nothing", t, func() {
@@ -226,9 +237,30 @@ func TestInterpretProcessState(t *testing.T) {
 			}
 		})
 
-		Convey("empty output and zombies are dead", func() {
-			for _, state := range []string{"", "Z", "Z+"} {
+		Convey("empty output is dead", func() {
+			So(interpretProcessState(""), ShouldEqual, processDead)
+		})
+
+		Convey("a valid stat token starting with Z (a zombie) is dead", func() {
+			for _, state := range []string{"Z", "Z+", "Zs"} {
+				So(isProcessState(state), ShouldBeTrue)
 				So(interpretProcessState(state), ShouldEqual, processDead)
+			}
+		})
+
+		Convey("output starting with Z that is not a valid stat token is unknown, not dead", func() {
+			// Regression (reliable3): a loose strings.HasPrefix(state, "Z") check
+			// previously classified any Z-led output as a confirmed-dead zombie, so
+			// garbage or banner output that merely began with Z wrongly declared a
+			// live job dead and eligible for reclaim. It must instead be unknown
+			// (surfaced by warnCannotConfirm), exactly like non-Z garbage.
+			for _, state := range []string{
+				"Zebra",                // a word that merely starts with the zombie code
+				"Zombie detected\nfoo", // a multi-line banner starting with Z
+				"Z zombie",             // a Z stat code then an embedded space and text
+			} {
+				So(isProcessState(state), ShouldBeFalse)
+				So(interpretProcessState(state), ShouldEqual, processUnknown)
 			}
 		})
 

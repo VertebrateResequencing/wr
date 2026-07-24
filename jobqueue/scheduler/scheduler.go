@@ -116,18 +116,24 @@ func (s *Scheduler) Reserved(schedulerID string) {
 
 // interpretProcessState maps the trimmed stdout of the remote
 // `ps -o stat= -p <pid>` command (see ProcessNotRunningOnHost's CONTRACT WARNING)
-// to a liveness outcome: empty output (no such process) or a zombie ("Z...") is
-// dead; any other recognised process-state code is alive; anything else is
-// unknown (eg. a misconfigured forced command emitting a line count rather than a
-// bare stat), which the caller must NOT treat as a confident alive/dead answer.
+// to a liveness outcome: empty output (no such process) is dead; a valid stat
+// token that is a zombie (a recognised token beginning with "Z", e.g. "Z" or
+// "Z+") is dead; any other valid stat token is alive; and anything that is not a
+// well-formed single stat token is unknown, which the caller must NOT treat as a
+// confident alive/dead answer. The unknown bucket deliberately catches output
+// that merely starts with a state letter but is not a bare stat - a "Zebra" word,
+// a multi-line banner, or a misconfigured forced command emitting a line count -
+// so such garbage is never mistaken for a confirmed-dead zombie.
 func interpretProcessState(state string) processLiveness {
 	switch {
-	case state == "" || strings.HasPrefix(state, "Z"):
+	case state == "":
 		return processDead
-	case isProcessState(state):
-		return processAlive
-	default:
+	case !isProcessState(state):
 		return processUnknown
+	case state[0] == 'Z':
+		return processDead
+	default:
+		return processAlive
 	}
 }
 
