@@ -104,8 +104,8 @@ func TestReliable3LimitGroupOverProvision(t *testing.T) {
 			total += grp.count
 		}
 
-		fmt.Printf("over-provision check: limit=%d siblingGroups=%d readyPerGroup=%d "+
-			"=> summed runner request=%d (buggy per-group accounting would give ~%d)\n",
+		t.Logf("over-provision check: limit=%d siblingGroups=%d readyPerGroup=%d "+
+			"=> summed runner request=%d (buggy per-group accounting would give ~%d)",
 			limit, siblingGroups, readyPerGroup, total, siblingGroups*limit)
 
 		Convey("the summed runner request across siblings does not exceed the limit", func() {

@@ -3874,7 +3874,8 @@ func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
 // each one's remaining-capacity budget into limitBudgets (shared across sibling
 // scheduler groups for this rac cycle). A budget of -1 means the group has no
 // limit (never blocks, never decremented).
-func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string, limitBudgets map[string]int) []string {
+func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string,
+	limitBudgets map[string]int) []string {
 	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
 
 	for _, lg := range limitGroups {
