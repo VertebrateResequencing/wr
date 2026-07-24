@@ -223,6 +223,64 @@ cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - 
     | grep -aE 'over-provision check|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
 }
 
+cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReserves] - reliable3 2b over-count
+  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
+  # make test) for reliable3 ISSUE 2b: a single scheduler group's final scheduling
+  # count exceeds its limit group's limit because countJobInGroup caps the ready count
+  # against an EARLY capacity read while accountForRunningJobs later adds ALL running
+  # jobs on top with no limit check. Reserves landing in that non-atomic window inflate
+  # the count (production saw 3313 for a 2000 limit). PASSES on current (buggy) code,
+  # showing finalCount = limit + windowReserves > limit.
+  need_repo
+  local limit="${1:-2000}" initial="${2:-300}" window="${3:-1500}"
+  echo "reliable3 2b over-count (deterministic, in-process): a group's count exceeds its limit"
+  echo "when reserves land between the early capacity read and the later running snapshot."
+  echo "scale: limit=$limit initialRunning=$initial windowReserves=$window (finalCount should be limit+window)"
+  osunset
+  WR_OP_LIMIT="$limit" WR_RC_INITIAL="$initial" WR_RC_WINDOW="$window" \
+    timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+    -run TestReliable3OverCountRunningSnapshot -count=1 -v 2>&1 \
+    | grep -aE 'OVERCOUNT-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+}
+
+cmd_limit_stall_check() {  # limit-stall-check [limit] [ready] - reliable3 §1 silent-confirm stall
+  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
+  # make test) for reliable3 ISSUE 1: (1) scheduler.ProcessNotRunningOnHost and
+  # lsf.initialize fail SILENTLY (no log) when death-confirmation cannot succeed, and
+  # (2) the CONSEQUENCE - a limit group full of phantom slots (unconfirmable lost jobs)
+  # skips every new ready job, so scheduling stalls. PASSES on current code. NOTE: a
+  # "loud only" fix logs the failure but does NOT clear the phantom slots, so the stall
+  # part still reproduces after it - that is the headline finding.
+  need_repo
+  local limit="${1:-2000}" ready="${2:-5000}"
+  echo "reliable3 §1 silent-confirmation + limit-slot stall (deterministic, in-process)."
+  echo "scale: limit=$limit phantomSlots=$limit newReady=$ready (all new ready jobs should be skipped)."
+  echo "the SilentConfirm part shows ProcessNotRunningOnHost/lsf.initialize log NOTHING on failure."
+  osunset
+  WR_OP_LIMIT="$limit" WR_STALL_READY="$ready" \
+    timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+    -run 'TestReliable3LimitSlotStall|TestReliable3SilentConfirmFailure' -count=1 -v 2>&1 \
+    | grep -aE 'LIMIT-STALL-REPRO|SILENT-CONFIRM-REPRO|KEY-SWALLOW-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+}
+
+cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] - reliable3 2a fairness
+  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
+  # make test) for reliable3 ISSUE 2a's refinement: the shared per-limit-group budget is
+  # allocated FIRST-COME across sibling scheduler groups, so a low-priority sibling
+  # scanned first consumes the whole budget and starves a higher-priority sibling.
+  # PASSES on current code, showing the high-priority sibling gets count=0.
+  need_repo
+  local limit="${1:-2000}" extra="${2:-500}"
+  echo "reliable3 2a priority fairness (deterministic, in-process): a low-priority sibling"
+  echo "scanned first starves a higher-priority sibling of the shared limit-group budget."
+  echo "scale: limit=$limit readyPerGroup=$((limit + extra)) (high-priority sibling should get 0)"
+  osunset
+  WR_OP_LIMIT="$limit" WR_PF_READY="$extra" \
+    timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+    -run TestReliable3PriorityFairnessStarvation -count=1 -v 2>&1 \
+    | grep -aE 'PRIORITY-FAIRNESS-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -310,6 +368,15 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   overprovision-check [limit] [siblings] [ready]
                         deterministic prod-scale check: summed runners requested per limit
                         group stay <= the limit (fails on pre-fix per-group accounting; no manager)
+  overcount-check [limit] [initialRunning] [windowReserves]
+                        reliable3 2b reproducer: a group's count exceeds its limit when reserves
+                        land between the early capacity read and the running snapshot (no manager)
+  limit-stall-check [limit] [ready]
+                        reliable3 §1 reproducer: silent death-confirmation failure + phantom-slot
+                        limit-group stall (all new ready jobs skipped); loud-only won't clear it
+  priority-fairness-check [limit] [readyExtra]
+                        reliable3 2a reproducer: first-come budget allocation starves a higher-
+                        priority sibling scanned after a low-priority one (no manager)
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -333,6 +400,9 @@ case "${1:-help}" in
   web-burst) cmd_web_burst "${2:-10000}" ;;
   flicker-check) cmd_flicker_check "${2:-}" ;;
   overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
+  overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
+  limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
+  priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;
