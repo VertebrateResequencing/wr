@@ -28,6 +28,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -51,6 +52,57 @@ type processStatusScheduler struct {
 
 func (s *processStatusScheduler) getHost(_ string) (Host, bool) {
 	return s.host, s.host != nil
+}
+
+// TestProcessNotRunningOnHostBoundsLoggedOutput guards that a misbehaving or verbose
+// forced command (see ProcessNotRunningOnHost's CONTRACT WARNING) whose output is
+// neither empty nor a bare process state cannot blow up the manager log: the warn
+// must carry only a short, single-line, length-capped excerpt of that output, not
+// the whole (potentially multi-line/banner) blob.
+func TestProcessNotRunningOnHostBoundsLoggedOutput(t *testing.T) {
+	Convey("loggableProcessOutput bounds an excerpt to a single capped line", t, func() {
+		Convey("a short single-line value is passed through verbatim, no ellipsis", func() {
+			So(loggableProcessOutput("3"), ShouldEqual, "3")
+		})
+
+		Convey("only the first line is kept, with an ellipsis marker", func() {
+			So(loggableProcessOutput("first\nsecond\nthird"), ShouldEqual, "first...")
+		})
+
+		Convey("an over-long first line is capped to loggableProcessOutputMax + ellipsis", func() {
+			excerpt := loggableProcessOutput(strings.Repeat("x", loggableProcessOutputMax+50))
+			So(excerpt, ShouldEqual, strings.Repeat("x", loggableProcessOutputMax)+"...")
+		})
+
+		Convey("the length cap falls on a rune boundary (no split multi-byte rune)", func() {
+			excerpt := loggableProcessOutput(strings.Repeat("€", loggableProcessOutputMax+10))
+			So(excerpt, ShouldEqual, strings.Repeat("€", loggableProcessOutputMax)+"...")
+		})
+	})
+
+	Convey("A huge multi-line unexpected ps output is logged only as a bounded excerpt", t, func() {
+		blob := strings.Repeat("x", 5000) + "\n" + strings.Repeat("noise line\n", 1000)
+		s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: blob}}}
+		ctx, buf := captureLogCtx()
+
+		So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+
+		logged := buf.String()
+
+		Convey("the could-not-confirm verdict is still logged", func() {
+			So(logged, ShouldContainSubstring, "could not confirm")
+		})
+
+		Convey("the whole log line is bounded far below the raw output size", func() {
+			So(len(blob), ShouldBeGreaterThan, 10000)
+			So(len(logged), ShouldBeLessThan, 512)
+		})
+
+		Convey("later lines of the blob are dropped, and a truncation marker is present", func() {
+			So(logged, ShouldNotContainSubstring, "noise")
+			So(logged, ShouldContainSubstring, "...")
+		})
+	})
 }
 
 type processStatusHost struct {

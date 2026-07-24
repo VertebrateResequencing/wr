@@ -92,6 +92,12 @@ const (
 // misconfiguration cannot flood the manager log while still remaining visible.
 const cannotConfirmWarnInterval = time.Minute
 
+// loggableProcessOutputMax bounds how many characters of unexpected remote ps
+// output warnCannotConfirm will log. It keeps a misbehaving or verbose forced
+// command (see ProcessNotRunningOnHost's CONTRACT WARNING) that emits many lines or
+// a large banner from blowing up the manager log.
+const loggableProcessOutputMax = 120
+
 // processLiveness is the outcome of interpreting a host's `ps` output for a pid.
 type processLiveness int
 
@@ -145,6 +151,39 @@ func (s *Scheduler) warnCannotConfirm(ctx context.Context, hostName string, pid 
 
 	clog.Warn(ctx, "could not confirm whether a lost job's process is still running on its host",
 		"host", hostName, "pid", pid, "reason", reason)
+}
+
+// loggableProcessOutput returns a short, single-line, length-capped excerpt of a
+// remote command's output that is safe to put in a log field: only its first line,
+// truncated to loggableProcessOutputMax characters, with a trailing "..." marker
+// whenever anything (a longer first line, or any further lines) was dropped. The
+// length cap is applied on a rune boundary so a multi-byte rune is never split.
+func loggableProcessOutput(output string) string {
+	excerpt := output
+	truncated := false
+
+	if i := strings.IndexByte(excerpt, '\n'); i >= 0 {
+		excerpt = excerpt[:i]
+		truncated = true
+	}
+
+	count := 0
+	for pos := range excerpt {
+		if count == loggableProcessOutputMax {
+			excerpt = excerpt[:pos]
+			truncated = true
+
+			break
+		}
+
+		count++
+	}
+
+	if truncated {
+		excerpt += "..."
+	}
+
+	return excerpt
 }
 
 // Error records an error and the operation and scheduler that caused it.
@@ -584,7 +623,7 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 	case processAlive:
 		return false
 	case processUnknown:
-		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+state)
+		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+loggableProcessOutput(state))
 	}
 
 	return false

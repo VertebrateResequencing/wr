@@ -50,6 +50,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1860,22 +1861,59 @@ func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup strin
 
 // countReadyJobsByPriority counts the given ready-job snapshots against their
 // scheduler groups, sharing one remaining-capacity budget per limit group across
-// all sibling scheduler groups of this rac cycle (see countJobInGroup). Snapshots
+// all sibling scheduler groups of this rac cycle (see countJobInGroup). When the
+// budget can actually be contended (see readyJobsCanContendLimitBudget), snapshots
 // are counted highest-priority-first, so that when siblings share a limit group
 // whose capacity is limited, the shared budget is allocated to higher-priority
 // scheduler groups before lower-priority ones - a low-priority sibling scanned
 // first must not starve a higher-priority one of the budget.
 func (s *Server) countReadyJobsByPriority(ctx context.Context, groups map[string]*sgroup,
 	snapshots []schedulerGroupSnapshot) {
-	slices.SortStableFunc(snapshots, func(a, b schedulerGroupSnapshot) int {
-		return cmp.Compare(b.priority, a.priority)
-	})
+	// The highest-priority-first ordering only changes the outcome when a shared
+	// per-limit-group budget can actually be contended: countJobInGroup hands that
+	// budget to whichever snapshot it counts first, so a higher-priority scheduler
+	// group must be counted before a lower-priority sibling sharing the same limit
+	// group. When no limit group can withhold budget from a job, every snapshot just
+	// increments its group's count and raises its group's priority - both
+	// order-independent - so the O(n log n) sort over all n ready jobs is pure waste.
+	// Skip it in that (common) case; see readyJobsCanContendLimitBudget.
+	if s.readyJobsCanContendLimitBudget(snapshots) {
+		slices.SortStableFunc(snapshots, func(a, b schedulerGroupSnapshot) int {
+			return cmp.Compare(b.priority, a.priority)
+		})
+	}
 
 	limitBudgets := make(map[string]int)
 
 	for _, snapshot := range snapshots {
 		s.countJobInGroup(ctx, groups, limitBudgets, snapshot)
 	}
+}
+
+// readyJobsCanContendLimitBudget reports whether the order in which the given
+// ready-job snapshots are counted could change the outcome, i.e. whether
+// countReadyJobsByPriority must sort them highest-priority-first before counting.
+// Counting order only matters when a count-limited limit group's shared budget can
+// be exhausted mid-cycle, which requires BOTH that at least one count limit is
+// configured AND that at least one ready job carries a limit group. A non-count
+// limit group can only ever yield an unlimited (-1) or fully-closed (0) budget (see
+// limiter group.capacity), neither of which depends on counting order, so restricting
+// to count limits (GetLimits) is correct. A scheduler-group string carries a limit
+// group iff it contains jobSchedLimitGroupSeparator (see schedulerGroupString), so a
+// zero-allocation substring test suffices; a false positive would only cost an
+// unnecessary sort, never a wrong count.
+func (s *Server) readyJobsCanContendLimitBudget(snapshots []schedulerGroupSnapshot) bool {
+	if len(s.limiter.GetLimits()) == 0 {
+		return false
+	}
+
+	for _, snapshot := range snapshots {
+		if strings.Contains(snapshot.group, jobSchedLimitGroupSeparator) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // capGroupCountsToLimits ensures that, for every limit group, the summed runner

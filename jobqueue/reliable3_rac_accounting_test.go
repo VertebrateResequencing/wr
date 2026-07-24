@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -272,6 +273,68 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		Convey("the lower-priority ready sibling is the one trimmed, summed at the limit", func() {
 			So(groups[readyLowGrp].count, ShouldEqual, limit-runCount)
 			So(groups[readyLowGrp].count+groups[runHighGrp].count, ShouldEqual, limit)
+		})
+	})
+
+	Convey("The priority sort is gated to when a limit-group budget can be contended (§2a-priority)", t, func() {
+		// countReadyJobsByPriority must sort highest-priority-first only when the
+		// shared per-limit-group budget can actually be contended (a count limit is
+		// configured AND a ready job carries a limit group); otherwise the sort is
+		// pure waste and must be skipped, leaving the snapshot order untouched.
+		Convey("with a count limit carried by ready jobs it sorts, preserving priority-fairness", func() {
+			limit := 5
+			readyPerGroup := limit + 3
+
+			s := newOverProvisionServer(limit)
+			lowGrp := "100:30:1:1:samehash" + lgSuffix  // priority 0, scanned first
+			highGrp := "200:30:1:1:samehash" + lgSuffix // priority 250, scanned last
+
+			snapshots := readySnapshots(nil, lowGrp, 0, req, readyPerGroup)
+			snapshots = readySnapshots(snapshots, highGrp, 250, req, readyPerGroup)
+
+			So(s.readyJobsCanContendLimitBudget(snapshots), ShouldBeTrue)
+
+			groups := make(map[string]*sgroup)
+			s.countReadyJobsByPriority(ctx, groups, snapshots)
+
+			So(groups[highGrp].count, ShouldEqual, limit)
+			So(groups[lowGrp].count, ShouldEqual, 0)
+		})
+
+		Convey("with no ready job carrying a limit group the sort is skipped (order untouched)", func() {
+			s := newOverProvisionServer(100) // a count limit IS configured...
+			lowGrp := "100:30:1:1:samehash"  // ...but these carry no limit group
+			highGrp := "200:30:1:1:samehash"
+
+			snapshots := readySnapshots(nil, lowGrp, 0, req, 3)
+			snapshots = readySnapshots(snapshots, highGrp, 250, req, 3)
+
+			So(s.readyJobsCanContendLimitBudget(snapshots), ShouldBeFalse)
+
+			groups := make(map[string]*sgroup)
+			s.countReadyJobsByPriority(ctx, groups, snapshots)
+
+			// a sort would have moved the priority-250 snapshots to the front; the
+			// original low-then-high order surviving proves the sort was skipped.
+			So(snapshots[0].group, ShouldEqual, lowGrp)
+			So(snapshots[0].priority, ShouldEqual, uint8(0))
+			So(snapshots[len(snapshots)-1].group, ShouldEqual, highGrp)
+
+			// and with no limit group nothing is capped: every ready job is counted.
+			So(groups[lowGrp].count, ShouldEqual, 3)
+			So(groups[highGrp].count, ShouldEqual, 3)
+		})
+
+		Convey("with no count limit configured at all the sort is skipped", func() {
+			lim := limiter.New(func(_ context.Context, _ string) *limiter.GroupData { return nil })
+			s := &Server{limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
+
+			// even snapshots that DO carry a limit-group suffix cannot contend a
+			// budget when no count limit exists.
+			snapshots := readySnapshots(nil, "100:30:1:1:samehash"+lgSuffix, 0, req, 4)
+
+			So(s.limiter.GetLimits(), ShouldBeEmpty)
+			So(s.readyJobsCanContendLimitBudget(snapshots), ShouldBeFalse)
 		})
 	})
 
