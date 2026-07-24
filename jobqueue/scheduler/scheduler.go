@@ -635,17 +635,35 @@ func (s *Scheduler) Cleanup(ctx context.Context) {
 	s.impl.cleanup(s.typeContext(ctx))
 }
 
-// isProcessState reports whether state begins with a recognised ps process-state
-// code (see ps(1) STATE): the leading character is the primary state, optionally
-// followed by modifier characters we ignore here.
+// isProcessState reports whether state is a single, whitespace-free ps stat token
+// (as emitted by `ps -o stat=`): its first byte must be a recognised primary
+// process-state code (see ps(1) STATE) and every later byte a recognised stat
+// modifier, all within a short length bound. A header ("STAT"), a multi-line banner,
+// output with an embedded space, or an over-long blob is therefore rejected and left
+// to fall through to processUnknown, rather than being mistaken for a live process
+// merely because it happens to start with a state letter.
 func isProcessState(state string) bool {
-	const processStateCodes = "DIRSTtWXZ"
+	const (
+		primaryStateCodes = "DIRSTtWXZ"
+		stateModifiers    = "<NLsl+"
+		maxStateLen       = 8
+	)
 
-	if state == "" {
+	if state == "" || len(state) > maxStateLen {
 		return false
 	}
 
-	return strings.IndexByte(processStateCodes, state[0]) >= 0
+	if strings.IndexByte(primaryStateCodes, state[0]) < 0 {
+		return false
+	}
+
+	for _, modifier := range state[1:] {
+		if !strings.ContainsRune(stateModifiers, modifier) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

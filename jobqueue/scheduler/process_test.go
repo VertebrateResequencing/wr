@@ -173,6 +173,14 @@ func TestProcessNotRunningOnHostLogsWhenInconclusive(t *testing.T) {
 			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
 			So(buf.String(), ShouldContainSubstring, "could not confirm")
 		})
+
+		Convey("when the ps output is a header rather than a bare stat", func() {
+			s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{stdout: "STAT\n"}}}
+			ctx, buf := captureLogCtx()
+
+			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeFalse)
+			So(buf.String(), ShouldContainSubstring, "could not confirm")
+		})
 	})
 
 	Convey("A working check keeps its verdict and logs nothing", t, func() {
@@ -198,6 +206,44 @@ func TestProcessNotRunningOnHostLogsWhenInconclusive(t *testing.T) {
 
 			So(s.ProcessNotRunningOnHost(ctx, 42, "host"), ShouldBeTrue)
 			So(buf.String(), ShouldBeEmpty)
+		})
+	})
+}
+
+// TestInterpretProcessState pins down the ps-stat parsing that underpins
+// ProcessNotRunningOnHost's liveness verdict (reliable3 §1). Only a genuine, single-
+// token `ps -o stat=` value counts as alive; empty output or a zombie is dead; and
+// anything that is not a well-formed stat token - a "STAT" header, a multi-line
+// banner, output with an embedded space, or an over-long blob - must be unknown, so
+// it is surfaced by warnCannotConfirm instead of silently masquerading as a live
+// process just because it happens to start with a state letter.
+func TestInterpretProcessState(t *testing.T) {
+	Convey("interpretProcessState maps ps stat output to a liveness verdict", t, func() {
+		Convey("a well-formed live stat token is alive", func() {
+			for _, state := range []string{"S", "Ss", "R+", "S<", "SNs", "D", "I", "Ts"} {
+				So(isProcessState(state), ShouldBeTrue)
+				So(interpretProcessState(state), ShouldEqual, processAlive)
+			}
+		})
+
+		Convey("empty output and zombies are dead", func() {
+			for _, state := range []string{"", "Z", "Z+"} {
+				So(interpretProcessState(state), ShouldEqual, processDead)
+			}
+		})
+
+		Convey("output that is not a single stat token is unknown", func() {
+			for _, state := range []string{
+				"STAT",      // a ps header line
+				"Ss\nextra", // a multi-line banner starting with a state letter
+				"S foo",     // an embedded space
+				"Sssssssss", // over-long, though every character is otherwise valid
+				"Rebooting", // an over-long all-letters blob starting with a state code
+				"foo",       // lowercase-led garbage that is not a valid token
+			} {
+				So(isProcessState(state), ShouldBeFalse)
+				So(interpretProcessState(state), ShouldEqual, processUnknown)
+			}
 		})
 	})
 }
