@@ -33,9 +33,17 @@
 //
 // (or via the developers/wrdev.sh overcount-check / limit-stall-check /
 // priority-fairness-check commands). Unlike the shipped red-until-fixed TDD
-// tests, these reproducers ASSERT THE BUGGY BEHAVIOUR: they PASS on current
-// (unfixed) code, demonstrating each defect, and would flip if the corresponding
-// fix were applied (except the limit-stall one - see its comment).
+// tests, these reproducers ASSERT THE BUGGY BEHAVIOUR: they were written to
+// PASS on PRE-fix code, each demonstrating one original defect. THIS BRANCH
+// APPLIES the fixes, so the reproducers NO LONGER reproduce: running them now
+// (go test -tags reliability_repro ./jobqueue/) is EXPECTED TO FAIL for the
+// fixed issues, because their buggy-behaviour assertions no longer hold (the
+// over-count, priority-fairness and silent-confirm reproducers all flip to
+// failing). The lone exception is the limit-stall reproducer: it models the
+// phantom-slot consequence at the limiter level and the shipped confirmation
+// fix is loud-only, so it still passes - see its comment. They are retained to
+// document each original bug and to demonstrate it against a PRE-fix checkout
+// (e.g. git stash, or checking out the pre-fix commit).
 //
 // They deliberately exercise the real accounting primitives (countJobInGroup,
 // accountForRunningJobs, seedLimitGroupBudgets, the limiter, and

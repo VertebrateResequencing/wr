@@ -218,9 +218,11 @@ cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - 
   echo "sibling scheduler groups sharing one limit group must be <= the limit."
   echo "scale: limit=$limit siblings=$siblings readyPerGroup=$ready (pre-fix code requests ~limit*siblings)"
   osunset
-  WR_OP_LIMIT="$limit" WR_OP_SIBLINGS="$siblings" WR_OP_READY="$ready" \
-    timeout 180 go -C "$REPO" test ./jobqueue/ -run TestReliable3LimitGroupOverProvision -count=1 -v 2>&1 \
-    | grep -aE 'over-provision check|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  local out rc
+  out=$(WR_OP_LIMIT="$limit" WR_OP_SIBLINGS="$siblings" WR_OP_READY="$ready" \
+    timeout 180 go -C "$REPO" test ./jobqueue/ -run TestReliable3LimitGroupOverProvision -count=1 -v 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'over-provision check|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  return "$rc"
 }
 
 cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReserves] - reliable3 2b over-count
@@ -237,10 +239,12 @@ cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReser
   echo "when reserves land between the early capacity read and the later running snapshot."
   echo "scale: limit=$limit initialRunning=$initial windowReserves=$window (finalCount should be limit+window)"
   osunset
-  WR_OP_LIMIT="$limit" WR_RC_INITIAL="$initial" WR_RC_WINDOW="$window" \
+  local out rc
+  out=$(WR_OP_LIMIT="$limit" WR_RC_INITIAL="$initial" WR_RC_WINDOW="$window" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run TestReliable3OverCountRunningSnapshot -count=1 -v 2>&1 \
-    | grep -aE 'OVERCOUNT-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+    -run TestReliable3OverCountRunningSnapshot -count=1 -v 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'OVERCOUNT-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  return "$rc"
 }
 
 cmd_limit_stall_check() {  # limit-stall-check [limit] [ready] - reliable3 §1 silent-confirm stall
@@ -257,10 +261,12 @@ cmd_limit_stall_check() {  # limit-stall-check [limit] [ready] - reliable3 §1 s
   echo "scale: limit=$limit phantomSlots=$limit newReady=$ready (all new ready jobs should be skipped)."
   echo "the SilentConfirm part shows ProcessNotRunningOnHost/lsf.initialize log NOTHING on failure."
   osunset
-  WR_OP_LIMIT="$limit" WR_STALL_READY="$ready" \
+  local out rc
+  out=$(WR_OP_LIMIT="$limit" WR_STALL_READY="$ready" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run 'TestReliable3LimitSlotStall|TestReliable3SilentConfirmFailure' -count=1 -v 2>&1 \
-    | grep -aE 'LIMIT-STALL-REPRO|SILENT-CONFIRM-REPRO|KEY-SWALLOW-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+    -run 'TestReliable3LimitSlotStall|TestReliable3SilentConfirmFailure' -count=1 -v 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'LIMIT-STALL-REPRO|SILENT-CONFIRM-REPRO|KEY-SWALLOW-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  return "$rc"
 }
 
 cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] - reliable3 2a fairness
@@ -275,10 +281,12 @@ cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] 
   echo "scanned first starves a higher-priority sibling of the shared limit-group budget."
   echo "scale: limit=$limit readyPerGroup=$((limit + extra)) (high-priority sibling should get 0)"
   osunset
-  WR_OP_LIMIT="$limit" WR_PF_READY="$extra" \
+  local out rc
+  out=$(WR_OP_LIMIT="$limit" WR_PF_READY="$extra" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run TestReliable3PriorityFairnessStarvation -count=1 -v 2>&1 \
-    | grep -aE 'PRIORITY-FAIRNESS-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+    -run TestReliable3PriorityFairnessStarvation -count=1 -v 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'PRIORITY-FAIRNESS-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  return "$rc"
 }
 
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
