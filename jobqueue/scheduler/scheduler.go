@@ -492,6 +492,18 @@ func (s *Scheduler) GetHost(hostName string) Host {
 // running, or if the ssh wasn't possible. This is to find out if a process is
 // really dead, or if there might just be a temporary networking problem where
 // ssh might fail. The ssh attempt can be cancelled using the supplied context.
+//
+// CONTRACT WARNING: the remote command below is a compatibility contract with
+// any forced command a user has configured for this key in their farm nodes'
+// authorized_keys (see the privatekeypath docs in cmd/conf.go). It runs
+// `ps -o stat= -p <pid>` and treats EMPTY output as "dead". Do NOT change the
+// command or the way its output is interpreted without a migration plan: a
+// user's forced command that reproduces the old output (e.g. an older wr sent
+// `ps -p <pid> | wc -l` and users wrapped keys to emit that count) will then
+// silently mis-report every process as still running, so lost jobs are never
+// reclaimed and limit-group scheduling stalls. Prefer to fail loudly (log) on
+// output that is neither empty nor a plausible process state, rather than
+// treating an unexpected value as "still running".
 func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
