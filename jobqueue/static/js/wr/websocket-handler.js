@@ -208,10 +208,6 @@ const stateToProperty = {
     deleted: 'deleted',
 };
 
-// ALL_BUCKETS is the full set of distinct display buckets, iterated when
-// mirroring the internal occupancy onto a tracker's count observables.
-const ALL_BUCKETS = ['delayed', 'dependent', 'suspended', 'ready', 'running', 'lost', 'buried', 'deleted', 'complete'];
-
 // reconModel returns (lazily creating) the per-tracker occupancy-reconciliation
 // state. occ[bucket] is how many jobs are currently in each bucket (always
 // >= 0); pending[from][to] holds observed exits we cannot apply yet because we
@@ -302,7 +298,7 @@ function settle(model, startNode) {
 // tracker's count observables, writing only genuine changes so Knockout
 // re-renders the affected bar segments smoothly rather than on every message.
 function syncDisplay(tracker, model) {
-    for (const bucket of ALL_BUCKETS) {
+    for (const bucket of countProperties) {
         if (!isDisplayed(tracker, bucket)) {
             continue;
         }

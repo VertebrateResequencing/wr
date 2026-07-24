@@ -79,7 +79,12 @@ function contentType(filePath) {
 }
 
 function staticPathFor(requestPath) {
-  const cleanPath = decodeURIComponent(requestPath.split('?')[0]);
+  let cleanPath;
+  try {
+    cleanPath = decodeURIComponent(requestPath.split('?')[0]);
+  } catch {
+    return null;
+  }
   const relative = cleanPath === '/' || cleanPath === '/status' ? 'status.html' : cleanPath.replace(/^\/+/, '');
   const resolved = path.resolve(staticRoot, relative);
   if (resolved !== staticRoot && !resolved.startsWith(staticRoot + path.sep)) {
