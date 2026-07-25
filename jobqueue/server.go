@@ -1019,12 +1019,16 @@ type Server struct {
 	// racScanWork is INERT observability for the reliable4 rac-scan-bound
 	// invariant (issue #1). buildSchedulerGroups resets it to 0 at the start of
 	// each cycle, and prepareReadyJob (the EXPENSIVE per-job path) increments it
-	// once per call. buildSchedulerGroups runs prepareReadyJob only for the jobs it
-	// selects as schedulable this cycle (its cheap priority/limit-group pre-pass
-	// does not count), so this lets the backlog-rescan reproducer assert that a rac
-	// cycle's per-job work stays bounded by the schedulable count (~limit), not by
-	// the ready backlog size. It affects no scheduling behaviour: nothing reads it
-	// except that test.
+	// once per call. When a runner command is configured (rc != "", the production
+	// case the backlog-rescan reproducer drives), buildSchedulerGroups runs
+	// prepareReadyJob only for the jobs its priority/limit-group selection deems
+	// schedulable this cycle (the cheap pre-pass does not count), so the counter
+	// stays bounded by the schedulable count (~limit), not by the ready backlog
+	// size. The rc == "" path (a manager with no scheduler command) schedules
+	// nothing but still refreshes every ready job's requirements, calling
+	// prepareReadyJob once per ready job, so there racScanWork equals the backlog
+	// and the bound does not apply. It affects no scheduling behaviour: nothing
+	// reads it except that test.
 	racScanWork atomic.Int64
 
 	// timings holds this server's resolved timing parameters. The fixed ones

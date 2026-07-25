@@ -2986,12 +2986,17 @@ func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 }
 
 // isDefinitiveStartReject reports whether a failed Started() report was a
-// definitive server-side rejection (the job is not, or is no longer, ours to run,
-// so the still-running command must be killed to avoid a double-run) rather than a
-// transient RPC failure. A timeout, connection loss, or the retryable
-// ErrRecovering is transient: the command is healthy and kept running while
-// contact is re-established in the background, mirroring the touch loop, which
-// likewise only kills on an explicit server signal and otherwise retries.
+// definitive server-side rejection (the job is not, or is no longer, ours to run)
+// rather than a transient RPC failure. The two callers act on that verdict
+// differently: the SYNCHRONOUS caller in Execute, immediately after exec, kills
+// the still-running command on a definitive rejection to avoid a double-run; a
+// definitive rejection discovered LATER during background retry (reportStartAttempt
+// via retryStartReport) does NOT kill - it stops retrying and leaves the job to the
+// touch loop and the archive-time owner check (which is itself double-run-safe). A
+// timeout, connection loss, or the retryable ErrRecovering is not definitive: the
+// command is healthy and kept running while contact is re-established in the
+// background, mirroring the touch loop, which likewise only kills on an explicit
+// server signal and otherwise retries.
 func isDefinitiveStartReject(err error) bool {
 	if err == nil {
 		return false
