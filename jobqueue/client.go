@@ -2039,19 +2039,50 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		oomMonitor = monitor
 	}
 
-	// update the server that we've started the job
-	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
-	err = c.Started(job, cmd.Process.Pid)
-	if err != nil {
-		// if we can't access the server, may as well bail out now - kill the
-		// command (and don't bother trying to Release(); it will auto-Release)
+	// report to the server that we've started the job (its pid, our host). A
+	// definitive rejection (the job is not, or is no longer, ours to run) still
+	// kills the command to avoid a double-run, but a TRANSIENT failure of this
+	// outbound report (server slow or briefly unreachable, e.g. "receive time
+	// out" under saturation) must NOT destroy the healthy running command: we
+	// keep it running, let the ongoing touch loop hold the job's TTR, and re-send
+	// the report in the background until it lands. Server slowness then costs
+	// latency, not lost work - mirroring the touch loop, which likewise tolerates
+	// transient errors and only kills on an explicit server signal.
+	//nolint:contextcheck // behaviours run detached from the cancellable job context
+	killAfterStartFailure := func(startErr error) error {
+		// kill the command (and don't bother trying to Release(); it will
+		// auto-Release)
 		extra := recoveryExtra("killing the cmd", cmd.Process.Kill())
-		//nolint:contextcheck // behaviours run detached from the cancellable job context
 		extra += recoveryExtra("triggering behaviours", job.TriggerBehaviours(false))
 		extra += unmountExtra(job)
 
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %w%s",
-			job.Cmd, err, extra)
+			job.Cmd, startErr, extra)
+	}
+
+	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
+	startReq, err := c.startedRequest(job, cmd.Process.Pid)
+	if err != nil {
+		// we couldn't even build the report (e.g. cannot determine our IP): a
+		// local failure, so bail out and kill as before.
+		return killAfterStartFailure(err)
+	}
+
+	if _, err = c.request(startReq); err != nil {
+		if isDefinitiveStartReject(err) {
+			return killAfterStartFailure(err)
+		}
+
+		// transient failure: keep the healthy command running and re-report in
+		// the background; the touch loop keeps the job alive via its TTR.
+		serverContact.recordTouchResult(err)
+		clog.Warn(ctx, "could not report command start to server; keeping the healthy "+
+			"command running and re-reporting in the background", "err", err)
+
+		stopReporting := make(chan struct{})
+		c.retryStartReport(ctx, startReq, serverContact, stopReporting)
+
+		defer close(stopReporting)
 	}
 
 	// update peak mem and disk used by command, and check if we use too much
@@ -2906,6 +2937,23 @@ func compressStd(data []byte) []byte {
 // about it (use one of the Get methods afterwards to get a new object with the
 // HostID set if necessary).
 func (c *Client) Started(job *Job, pid int) error {
+	req, err := c.startedRequest(job, pid)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.request(req)
+
+	return err
+}
+
+// startedRequest records the job's host/pid/start-time (under lock, exactly as
+// Started() did before this was split out) and returns the jstart request to send
+// to the server. It is separated from the send so that the post-exec report can be
+// re-sent in the background after a transient failure without re-mutating job
+// (which would race the resource monitor's lock-free read of job.Pid): the caller
+// re-sends the SAME returned request.
+func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 	// host details
 	host, err := os.Hostname()
 	if err != nil {
@@ -2914,7 +2962,7 @@ func (c *Client) Started(job *Job, pid int) error {
 
 	hostIP, err := internal.CurrentIP("")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	job.Lock()
@@ -2934,9 +2982,87 @@ func (c *Client) Started(job *Job, pid int) error {
 	requestJob.ActualCwd = job.ActualCwd
 	job.Unlock()
 
-	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
+	return &clientRequest{Method: requestMethodStart, Job: requestJob}, nil
+}
 
-	return err
+// isDefinitiveStartReject reports whether a failed Started() report was a
+// definitive server-side rejection (the job is not, or is no longer, ours to run,
+// so the still-running command must be killed to avoid a double-run) rather than a
+// transient RPC failure. A timeout, connection loss, or the retryable
+// ErrRecovering is transient: the command is healthy and kept running while
+// contact is re-established in the background, mirroring the touch loop, which
+// likewise only kills on an explicit server signal and otherwise retries.
+func isDefinitiveStartReject(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := err.Error()
+	for _, reject := range []string{ErrBadJob, ErrBadRequest, ErrMustReserve} {
+		if strings.Contains(msg, reject) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// retryStartReport re-sends the post-exec Started() report in the background after
+// its first attempt failed transiently, so a slow or briefly unreachable server
+// eventually learns the running command's pid without the healthy command being
+// killed. It re-sends the SAME pre-built request every retryWait (never
+// re-mutating job) until the report is accepted, the server definitively rejects
+// it (the job is no longer ours - left to the touch loop and the archive-time
+// owner check rather than killed here, exactly as the touch loop tolerates a
+// bad-job touch), or stop is closed (Execute has finished with the command). The
+// concurrent touch loop keeps the job's TTR alive throughout.
+func (c *Client) retryStartReport(ctx context.Context, startReq *clientRequest,
+	serverContact *serverContactState, stop <-chan struct{},
+) {
+	go func() {
+		ticker := time.NewTicker(c.retryWait)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if c.reportStartAttempt(ctx, startReq, serverContact) {
+					return
+				}
+			}
+		}
+	}()
+}
+
+// reportStartAttempt makes one background attempt to re-send the post-exec
+// Started() report, recording the outcome on serverContact. It returns true when
+// no further attempts should be made: the report was accepted, or the server
+// definitively rejected it.
+func (c *Client) reportStartAttempt(ctx context.Context, startReq *clientRequest,
+	serverContact *serverContactState,
+) bool {
+	_, err := c.request(startReq)
+	if err == nil {
+		serverContact.recordTouchResult(nil)
+		clog.Info(ctx, "reported command start to server after retrying")
+
+		return true
+	}
+
+	serverContact.recordTouchResult(err)
+
+	if isDefinitiveStartReject(err) {
+		clog.Warn(ctx, "server rejected the delayed command-start report; "+
+			"leaving the job to the touch loop", "err", err)
+
+		return true
+	}
+
+	clog.Warn(ctx, "could not report command start to server; will keep retrying", "err", err)
+
+	return false
 }
 
 func keyOnlyJob(job *Job) *Job {
