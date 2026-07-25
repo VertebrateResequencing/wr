@@ -954,7 +954,16 @@ func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
 
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
-		return Error{lsfScheduler, opSchedule, fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)}
+		// QUICK HACK (uncommitted, reliable4 prod trial): bsub's stderr holds the
+		// real LSF rejection reason (e.g. pending-job threshold, restricted queue).
+		// Output() populates ExitError.Stderr when cmd.Stderr is nil, so surface it
+		// instead of the bare "exit status 255".
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok { //nolint:errorlint // Output sets ExitError.Stderr directly, unwrapped
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+
+		return Error{lsfScheduler, opSchedule, fmt.Sprintf("failed to run %s %s: %s (bsub stderr: %q)", s.bsubExe, bsubArgs, err, stderr)}
 	}
 
 	matches := s.bsubRegex.FindStringSubmatch(string(bsubout))

@@ -101,13 +101,14 @@ cmd_build() {
   echo "OK"
 }
 
-cmd_start() {  # start [lsf|local]
+cmd_start() {  # start [lsf|local]   (set WRDEV_DEBUG=1 to run the manager with --debug, like production)
   need_bin; ensure_config
   local sched="${1:-lsf}"
+  local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
   cmd_stop >/dev/null 2>&1 || true
   rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
-  echo "starting isolated dev manager (-s $sched) on :$DEV_PORT / web :$DEV_WEB"
-  osunset ; timeout 90 "$WR" manager start --deployment development -s "$sched" 2>&1 \
+  echo "starting isolated dev manager (-s $sched${dbg:+ $dbg}) on :$DEV_PORT / web :$DEV_WEB"
+  osunset ; timeout 90 "$WR" manager start --deployment development -s "$sched" $dbg 2>&1 \
     | grep -aE 'started on|token=' | head -2
   echo "pid $(mgr_pid "$DEV_RUN")   token $(cat "$DEV_RUN/client.token" 2>/dev/null)"
 }
@@ -166,6 +167,129 @@ cmd_monitor() {  # watch drain + churn counts + control-RPC latency until termin
     [ "$stall" -ge 8 ] && { echo "NO PROGRESS ~6min at terminal=$total (investigate: $0 dump)"; break; }
     sleep 45
   done
+}
+
+cmd_limit_drain() {  # limit-drain [N] [limit] [runsec] - LSF-scale FAITHFUL repro of the production stall
+  # Unlike churn (no limit group, drains freely), this recreates the production
+  # shape: N >> limit SHORT-but-touch-needing jobs in ONE shared limit group, so
+  # only `limit` run at once behind a huge ready backlog, across MEM_GROUPS memory
+  # groups (=> many sibling scheduler groups sharing the one limit, as in prod).
+  # Under saturation the touch-during-run TTR miss -> false-lost -> confirm-dead/
+  # release -> archive-reject -> rerun loop makes `complete` stall while the backlog
+  # stays put and confirmed_dead climbs. Set WRDEV_DEBUG=1 (manager --debug, like
+  # production) to test the logging confound. It PASSES (drains) only once the stall
+  # is actually fixed - so it is the gate for any fix.
+  need_bin
+  ensure_dev_manager
+  local n="${1:-60000}" limit="${2:-2000}" runsec="${3:-30}" padkb="${4:-0}"
+  # padkb pads each job's cmd (after a '#', so it stays a no-op comment) up to ~padkb KB,
+  # so that WITH --debug the per-reserve "reserved job" log line matches production's ~25KB
+  # portal_builder cmd lines - the debug-logging I/O is the suspected stall trigger, and short
+  # cmds do NOT replicate it. The pad is passed via env (not the perl arg list) to stay safe.
+  local pad=""
+  [ "$padkb" -gt 0 ] && pad=$(head -c $((padkb*1024)) /dev/zero | tr '\0' x)
+  echo "reliable4 STALL repro: $n jobs (sleep $runsec, cmd pad ${padkb}KB) in ONE limit group reprolimit:$limit across $MEM_GROUPS mem groups"
+  echo "manager debug=${WRDEV_DEBUG:-0} (WRDEV_DEBUG=1 matches production's --debug; change requires a fresh 'start')"
+  PAD="$pad" perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep $runsec #'.\$i.' '.\$ENV{PAD}.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/limit.json"
+  local out rc
+  # retries 30 so a false-lost job RE-RUNS (as in prod) instead of burying on the
+  # first lost-release; this makes the stall show as FROZEN complete, not drain-to-buried.
+  out=$(osunset ; timeout 300 "$WR" add -f "$WRDEV_ROOT/limit.json" --rep_grp rglimit \
+    --limit_grps "reprolimit:$limit" --retries 30 --deployment development 2>&1); rc=$?
+  echo "$out" | tail -2
+  if [ "$rc" -ne 0 ] || echo "$out" | grep -qiE 'could not reach the server|Connect\(\)'; then
+    die "limit-drain aborted - could not add jobs (is the dev manager running?)"
+  fi
+  echo "$out" | grep -qE 'Added [1-9][0-9]* new commands' || die "limit-drain aborted - 0 jobs added"
+  cmd_limit_monitor "$n"
+}
+
+cmd_limit_monitor() {  # drain/stall monitor for the single limit-group workload
+  need_bin
+  local n="${1:-60000}"; local t0; t0=$(date +%s); local prevc=-1 stall=0
+  num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
+  for _ in $(seq 1 80); do
+    local st cc cb cr cl crun s e
+    st=$(osunset ; timeout 30 "$WR" status --deployment development -i rglimit -o counts 2>/dev/null)
+    cc=$(num "$st" complete); cb=$(num "$st" buried); cr=$(num "$st" running); cl=$(echo "$st" | grep -oE 'lost[^0-9]*[0-9]+' | grep -oE '[0-9]+' | head -1)
+    cc=${cc:-0}; cb=${cb:-0}; cr=${cr:-0}; cl=${cl:-0}
+    crun=$(timeout 20 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
+    local bj kd ar
+    bj=$(grep -ac 'bad job' "$DEV_RUN/log" 2>/dev/null); bj=${bj:-0}
+    kd=$(grep -ac 'killed a job after confirming it was dead' "$DEV_RUN/log" 2>/dev/null); kd=${kd:-0}
+    ar=$(grep -ac 'jarchive.*bad job\|jarchive.*must Reserve' "$DEV_RUN/log" 2>/dev/null); ar=${ar:-0}
+    s=$(date +%s%3N); timeout 65 "$WR" status --deployment development -i rglimit -o counts >/dev/null 2>&1; e=$(date +%s%3N)
+    echo "t+$(( $(date +%s)-t0 ))s complete=$cc/$n running=$cr lost=$cl LSF_RUN=$crun buried=$cb badjob=$bj confirmed_dead=$kd archive_reject=$ar status_rpc=$((e-s))ms"
+    if [ $((cc+cb)) -ge "$n" ]; then echo "FULLY DRAINED (complete=$cc buried=$cb)"; break; fi
+    if [ "$cc" -eq "$prevc" ]; then stall=$((stall+1)); else stall=0; fi
+    prevc=$cc
+    [ "$stall" -ge 6 ] && { echo "STALL REPRODUCED: complete stuck at $cc/~$n for ~4.5min while work remains (running=$cr lost=$cl badjob=$bj confirmed_dead=$kd archive_reject=$ar). goroutine dump: $0 dump"; break; }
+    sleep 45
+  done
+}
+
+cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - reliable4 DB-backup freeze/churn
+  # FAITHFUL, PORTABLE repro of the CONFIRMED production stall root: on a LARGE DB the
+  # periodic backup (db.backupToBackupFile does a full-file CopyFile every 30s) freezes
+  # the manager - GBs of I/O + the bolt read-tx mmaplock held for the whole copy - so
+  # archive/touch RPCs time out past the TTR -> jobs falsely lost -> confirmed-dead ->
+  # rerun churn. It needs PROD mode (dev never backs up - which is exactly why the
+  # dev-manager reproducers all drained cleanly) + a genuinely big DB. This inflates a
+  # FRESH dbGB DB from scratch (no pre-existing/production DB needed - portable to any
+  # machine), starts an isolated PROD-mode manager on it, runs N sleep jobs (which
+  # CANNOT fail, so any delayed/lost/badjob is pure backup-induced churn), and watches
+  # for churn + manager freezes coinciding with backups. Healthy code: drains with ~0
+  # delayed and no freezes. Pre-fix: churns. Set WRDEV_ROOT to a disk with room for ~2x
+  # dbGB (the DB + its backup); that env var is where all DB files are stored.
+  need_bin; ensure_config
+  local dbgb="${1:-8}" n="${2:-8000}" limit="${3:-2000}" runsec="${4:-30}"
+  local pr="$PROD_RUN" plog="$PROD_RUN/log"
+  cmd_prod_stop >/dev/null 2>&1; sleep 2
+  # start from a clean slate: fresh inflated DB AND fresh log, so the churn metrics
+  # (badjob delta, delayed, freezes) reflect only this run. dbGB must be big enough
+  # that each backup CopyFile takes long enough to stall archives past the TTR - the
+  # threshold depends on your storage speed, so raise dbGB (or lower it once fixed).
+  mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  echo "inflating a fresh ${dbgb}GB bolt DB at $pr/db (each backup CopyFile's this whole file)"
+  WR_INFLATE_DB="$pr/db" WR_INFLATE_GB="$dbgb" timeout 900 \
+    go -C "$REPO" test -tags reliability_repro ./jobqueue/ -run TestReliable4InflateDB -count=1 >/dev/null 2>&1 \
+    || die "DB inflation failed (is $WRDEV_ROOT on a disk with room for ~2x ${dbgb}GB?)"
+  echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes"
+  echo "starting isolated PROD-mode manager (backups ON) on the big DB"
+  cmd_prod_start lsf 2>&1 | tail -1; sleep 5
+  echo "adding $n sleep-$runsec jobs (limit $limit); they CANNOT fail, so delayed/lost/badjob == churn"
+  perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep $runsec #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/bkjobs.json"
+  osunset; timeout 180 "$WR" add -f "$WRDEV_ROOT/bkjobs.json" --rep_grp rgbk --limit_grps "bklimit:$limit" --retries 30 --deployment production 2>&1 | tail -1
+  local t0; t0=$(date +%s); local maxdelayed=0 basebadjob=-1 maxbadjob=0 maxrpc=0
+  num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
+  for _ in $(seq 1 40); do
+    local st cc cd cl cr run bj kd s e rpc
+    st=$(osunset; timeout 30 "$WR" status --deployment production -i rgbk -o counts 2>/dev/null)
+    cc=$(num "$st" complete); cd=$(num "$st" delayed); cr=$(num "$st" running); cl=$(echo "$st"|grep -oE 'lost[^0-9]*[0-9]+'|grep -oE '[0-9]+'|head -1)
+    cc=${cc:-0}; cd=${cd:-0}; cr=${cr:-0}; cl=${cl:-0}
+    run=$(timeout 20 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
+    bj=$(grep -ac 'bad job' "$plog" 2>/dev/null); bj=${bj:-0}; kd=$(grep -ac 'confirming it was dead' "$plog" 2>/dev/null); kd=${kd:-0}
+    [ "$basebadjob" -lt 0 ] && basebadjob=$bj
+    s=$(date +%s%3N); timeout 65 "$WR" status --deployment production -i rgbk -o counts >/dev/null 2>&1; e=$(date +%s%3N); rpc=$((e-s))
+    [ "$cd" -gt "$maxdelayed" ] && maxdelayed=$cd
+    [ "$bj" -gt "$maxbadjob" ] && maxbadjob=$bj
+    [ "$rpc" -gt "$maxrpc" ] && maxrpc=$rpc
+    echo "t+$(( $(date +%s)-t0 ))s complete=$cc/$n running=$cr delayed=$cd lost=$cl LSF_RUN=$run confirmed_dead=$kd badjob=$bj status_rpc=${rpc}ms"
+    [ "$cc" -ge "$n" ] && break
+    sleep 30
+  done
+  echo "## manager log freezes (gaps) during the run:"
+  grep -oaP 'T\d\d:\d\d:\d\d' "$plog" 2>/dev/null | uniq | awk -F: '{t=$1*3600+$2*60+$3} NR==1{p=t} {if(t-p>5)print "  GAP "(t-p)"s ending "$0; p=t}' | tail -6
+  local badjobdelta=$(( maxbadjob - basebadjob ))
+  echo "## VERDICT: maxDelayed=$maxdelayed badjobDelta=$badjobdelta maxStatusRPC=${maxrpc}ms"
+  if [ "$maxdelayed" -gt 50 ] || [ "$badjobdelta" -gt 200 ] || [ "$maxrpc" -gt 1500 ]; then
+    echo "BACKUP-STALL REPRODUCED: sleep jobs churned and/or the manager froze during backups of the ${dbgb}GB DB (FAILS until the backup fix lands)"
+  else
+    echo "NO STALL: jobs drained cleanly despite backups (the fix works)"
+  fi
+  echo "## CLEANUP"; cmd_prod_stop 2>&1 | tail -1
+  bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk '$2 ~ /^wrp_/{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
+  rm -f "$WRDEV_ROOT/bkjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
 }
 
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
@@ -444,6 +568,17 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   start [lsf|local]     start the isolated dev manager (default lsf)
   stop                  kill the (verified) dev manager + bkill wrd_ jobs
   churn [N]             ensure dev manager up, submit N true/false jobs (default 40000) then monitor
+  limit-drain [N] [limit] [runsec] [padKB]
+                        FAITHFUL LSF-scale stall repro: N>>limit jobs in ONE limit group
+                        (defaults 60000 2000 30 0); must fully drain once the stall is fixed.
+                        Set WRDEV_DEBUG=1 (manager --debug, like prod) + padKB~25 so per-reserve
+                        log lines match production's ~25KB cmds (the suspected stall trigger).
+  backup-stall-check [dbGB] [N] [limit] [runsec]
+                        CONFIRMED-root repro: inflates a fresh dbGB DB from scratch (portable),
+                        runs an isolated PROD-mode manager (backups ON) + N sleep jobs, showing
+                        the periodic full-file DB backup freeze the manager -> archive timeouts ->
+                        churn (defaults 6 8000 2000 30). Fails until the backup fix lands.
+                        WRDEV_ROOT is where the DB + backup are stored (needs ~2x dbGB free).
   monitor [halfN]       watch drain / churn counts / control-RPC latency
   probe [secs] [slowms] read the dev web /status_ws feed via wsprobe
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
@@ -495,6 +630,8 @@ case "${1:-help}" in
   priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
+  limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
+  backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;
