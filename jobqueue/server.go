@@ -589,6 +589,24 @@ type sgroup struct {
 	sync.RWMutex
 }
 
+// ensureGroup returns groups[snapshot.group], creating it (seeded with the
+// snapshot's requirements) on first use. The scheduler group string encodes the
+// requirements, so every job mapping to the same group carries the same
+// requirements, and it does not matter whether a counted or a skipped job creates
+// the group first.
+func ensureGroup(groups map[string]*sgroup, snapshot schedulerGroupSnapshot) *sgroup {
+	group, set := groups[snapshot.group]
+	if !set {
+		group = &sgroup{
+			name: snapshot.group,
+			req:  snapshot.requirements.Clone(),
+		}
+		groups[snapshot.group] = group
+	}
+
+	return group
+}
+
 // ensureRetryBackoff returns the group's schedule-retry backoff, lazily creating
 // it on first use with the given Min and the package-level retry Max/Factor,
 // using a real-time Sleeper (whose Sleep aborts on context cancellation). The
@@ -906,6 +924,16 @@ type repGroupStatusOptions struct {
 	IncludeStatusDetails bool
 }
 
+// readyJobCandidate pairs a ready job with a CHEAP scheduler-group snapshot of it
+// (priority, current scheduler group and requirements, taken via a single
+// job.RLock with no DB access and no q.SetReserveGroup). buildSchedulerGroups takes
+// one per ready job, then runs the expensive prepareReadyJob path only on the
+// subset it selects as schedulable this cycle.
+type readyJobCandidate struct {
+	job      *Job
+	snapshot schedulerGroupSnapshot
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token     []byte
@@ -987,6 +1015,17 @@ type Server struct {
 
 	// lastRunToken is the last runToken this manager minted; only mintRunToken touches it.
 	lastRunToken atomic.Uint64
+
+	// racScanWork is INERT observability for the reliable4 rac-scan-bound
+	// invariant (issue #1). buildSchedulerGroups resets it to 0 at the start of
+	// each cycle, and prepareReadyJob (the EXPENSIVE per-job path) increments it
+	// once per call. buildSchedulerGroups runs prepareReadyJob only for the jobs it
+	// selects as schedulable this cycle (its cheap priority/limit-group pre-pass
+	// does not count), so this lets the backlog-rescan reproducer assert that a rac
+	// cycle's per-job work stays bounded by the schedulable count (~limit), not by
+	// the ready backlog size. It affects no scheduling behaviour: nothing reads it
+	// except that test.
+	racScanWork atomic.Int64
 
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
@@ -1351,6 +1390,11 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 // and q.SetReserveGroup, when rc is set and the group has changed.)
 func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
+	// count one unit of EXPENSIVE per-job scheduling work (see Server.racScanWork):
+	// buildSchedulerGroups runs this only for the jobs it selects as schedulable
+	// this cycle, so the counter stays bounded by the schedulable count.
+	s.racScanWork.Add(1)
+
 	job.RLock()
 	jobOverride := job.Override
 	reqGroup := job.ReqGroup
@@ -2004,6 +2048,172 @@ func trimGroupsToLimit(siblings []*sgroup, limit int) {
 		trim := min(group.count, overage)
 		group.count -= trim
 		overage -= trim
+	}
+}
+
+// snapshotReadyJobs takes a CHEAP scheduler-group snapshot of every ready job,
+// pairing each with its job. This is the O(backlog) pre-pass that lets
+// buildSchedulerGroups decide which jobs are schedulable this cycle without running
+// the expensive prepareReadyJob path (requirement recompute + q.SetReserveGroup)
+// for the limit-blocked backlog. It does no DB access and does not count towards
+// racScanWork (only prepareReadyJob does).
+func (s *Server) snapshotReadyJobs(allitemdata []any) []readyJobCandidate {
+	candidates := make([]readyJobCandidate, 0, len(allitemdata))
+
+	for _, inter := range allitemdata {
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
+		candidates = append(candidates, readyJobCandidate{
+			job:      job,
+			snapshot: job.schedulerGroupSnapshot(),
+		})
+	}
+
+	return candidates
+}
+
+// scheduleReadyJobsByPriority selects, priority-fair within each limit group, the
+// ready jobs that are schedulable this cycle (bounded by each limit group's
+// remaining capacity), runs the expensive prepareReadyJob path only for those, and
+// counts them into their scheduler groups. Limit-blocked jobs are recorded as
+// skipped WITHOUT that expensive work, so a rac cycle's per-job work stays bounded
+// by the schedulable count, not the ready-backlog size.
+//
+// Selection uses the SAME shared per-limit-group budget accounting as
+// countJobInGroup (seedLimitGroupBudgets), so the reliable3 over-provision and
+// priority-fairness invariants are preserved: a limit group's summed schedulable
+// count never exceeds its remaining capacity, and the budget is handed to the
+// highest-priority jobs first. A job carrying no limit group is never blocked, so
+// it is always schedulable (as before).
+func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue,
+	groups map[string]*sgroup, candidates []readyJobCandidate, rc string,
+	reqGroupToReqs map[string]*scheduler.Requirements) {
+	// When any job carries a limit group its shared budget can be contended, so
+	// count highest-priority-first: a low-priority job scanned first must not starve
+	// a higher-priority one of the budget. When no job carries a limit group nothing
+	// can be blocked, so the sort would not change the outcome and is skipped (the
+	// gate is on limit-group presence, not GetLimits(), because a limit is enforced
+	// via GetRemainingCapacity's callback even before the group is first vivified,
+	// so GetLimits() can still be empty here).
+	if candidatesCarryLimitGroup(candidates) {
+		slices.SortStableFunc(candidates, func(a, b readyJobCandidate) int {
+			return cmp.Compare(b.snapshot.priority, a.snapshot.priority)
+		})
+	}
+
+	limitBudgets := make(map[string]int)
+
+	for _, candidate := range candidates {
+		if s.readyJobLimitBlocked(ctx, limitBudgets, candidate.snapshot) {
+			s.recordSkippedReadyJob(ctx, q, groups, candidate)
+
+			continue
+		}
+
+		s.prepareAndCountReadyJob(ctx, q, groups, candidate.job, rc, reqGroupToReqs)
+	}
+}
+
+// candidatesCarryLimitGroup reports whether any ready-job candidate carries a limit
+// group (its scheduler group string contains jobSchedLimitGroupSeparator), i.e.
+// whether a shared per-limit-group budget could be contended this cycle and so
+// scheduleReadyJobsByPriority must sort the candidates highest-priority-first.
+func candidatesCarryLimitGroup(candidates []readyJobCandidate) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(candidate.snapshot.group, jobSchedLimitGroupSeparator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// recordSkippedReadyJob records one limit-blocked ready job against its scheduler
+// group's skipped count and keeps it reservable, WITHOUT the expensive
+// prepareReadyJob requirement recompute. The skipped count keeps the deferred job
+// accounted so a later completion re-triggers scheduling (decrementGroupCount /
+// hasSkippedScheduledGroups) and it is fully prepared once it becomes schedulable.
+// Meanwhile it must still be reservable so a runner scheduled for its group can pick
+// it up the moment capacity frees, so we establish its scheduler/queue reserve group
+// from the cheap snapshot (a one-time write, a no-op on later cycles once the group
+// is set), which does not count towards racScanWork.
+func (s *Server) recordSkippedReadyJob(ctx context.Context, q *queue.Queue,
+	groups map[string]*sgroup, candidate readyJobCandidate) {
+	ensureGroup(groups, candidate.snapshot).skipped++
+
+	s.ensureReserveGroup(ctx, q, candidate.job, candidate.snapshot)
+}
+
+// ensureReserveGroup establishes a ready job's scheduler and queue reserve group
+// from its cheap pre-pass snapshot, but ONLY when the group actually changed
+// (snapshot.previousGroup != snapshot.group). This makes a limit-blocked job
+// reservable without the expensive prepareReadyJob requirement recompute, and is a
+// one-time cost per job: once its group is set, later rac cycles find it unchanged
+// and do no work, keeping the sustained hot loop bounded. It deliberately does NOT
+// recompute requirements (that is deferred to prepareReadyJob when the job becomes
+// schedulable), so on the rare cycle where a job's requirements would change this
+// sets the pre-change group; prepareReadyJob later corrects it when scheduling.
+func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Job,
+	snapshot schedulerGroupSnapshot) {
+	if snapshot.previousGroup == snapshot.group {
+		return
+	}
+
+	job.setSchedulerGroup(snapshot.group)
+
+	warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
+}
+
+// readyJobLimitBlocked reports whether the snapshot's ready job is limit-blocked
+// this cycle. If it is NOT blocked it consumes one unit of each of its limited
+// limit groups' shared budget (so the summed schedulable count for a limit group
+// never exceeds its remaining capacity) and returns false; if some limit group's
+// budget is already exhausted it consumes nothing and returns true. This is the
+// same shared per-limit-group budget accounting countJobInGroup applies, decoupled
+// from the expensive prepareReadyJob work so only schedulable jobs incur it. A
+// job's limit groups come from its LimitGroups (fixed), so they are unaffected by
+// any requirement change prepareReadyJob later makes to a schedulable job.
+func (s *Server) readyJobLimitBlocked(ctx context.Context, limitBudgets map[string]int,
+	snapshot schedulerGroupSnapshot) bool {
+	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
+
+	// a budget of -1 means "no limit", so it never blocks and is never decremented.
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] == 0 {
+			return true
+		}
+	}
+
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] > 0 {
+			limitBudgets[lg]--
+		}
+	}
+
+	return false
+}
+
+// prepareAndCountReadyJob runs the expensive prepareReadyJob path for one
+// schedulable ready job (updating its requirements and, on change, its scheduler
+// and queue reserve group so runners can reserve it) and counts the resulting
+// post-update snapshot against its scheduler group. prepareReadyJob increments
+// racScanWork, so this is the only per-job path that does.
+func (s *Server) prepareAndCountReadyJob(ctx context.Context, q *queue.Queue,
+	groups map[string]*sgroup, job *Job, rc string,
+	reqGroupToReqs map[string]*scheduler.Requirements) {
+	snapshot, ready := s.prepareReadyJob(ctx, q, job, rc, reqGroupToReqs)
+	if !ready {
+		return
+	}
+
+	group := ensureGroup(groups, snapshot)
+	group.count++
+
+	if snapshot.priority > group.priority {
+		group.priority = snapshot.priority
 	}
 }
 
@@ -3967,26 +4177,44 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 }
 
 // buildSchedulerGroups calculates, sets and counts the ready jobs by scheduler
-// group, updating each job's requirements and (when rc is set) its scheduler
-// group, while respecting limit-group capacities.
+// group, updating each schedulable job's requirements and (when rc is set) its
+// scheduler group, while respecting limit-group capacities.
+//
+// It bounds a rac cycle's EXPENSIVE per-job work (prepareReadyJob: requirement
+// recompute + q.SetReserveGroup) by the SCHEDULABLE count, not the ready-backlog
+// size: a cheap O(backlog) pre-pass snapshots every ready job, then the expensive
+// work runs only for the jobs a priority-fair, limit-group-budgeted selection can
+// actually schedule this cycle. The limit-blocked remainder is recorded as skipped
+// (cheaply), keeping it accounted so a later completion re-triggers the callback
+// (decrementGroupCount / hasSkippedScheduledGroups) and schedules it then; a
+// deferred job keeps its add-time reserve group, so it stays reservable meanwhile.
 func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 	allitemdata []any, rc string) map[string]*sgroup {
 	groups := make(map[string]*sgroup)
 	reqGroupToReqs := make(map[string]*scheduler.Requirements)
-	snapshots := make([]schedulerGroupSnapshot, 0, len(allitemdata))
 
-	for _, inter := range allitemdata {
-		job, ok := inter.(*Job)
-		if !ok {
-			continue
+	// reset the inert rac-scan-work counter (see Server.racScanWork); prepareReadyJob
+	// increments it, so it measures only the expensive per-job work done below.
+	s.racScanWork.Store(0)
+
+	// cheap O(backlog) pre-pass: snapshot every ready job WITHOUT the expensive
+	// prepareReadyJob work, so we can decide which jobs are schedulable this cycle
+	// before spending that work only on them.
+	candidates := s.snapshotReadyJobs(allitemdata)
+
+	if rc == "" {
+		// no runner command: we schedule nothing (and return empty groups), but
+		// still (re)compute every ready job's requirements so scheduling and
+		// learning see up-to-date values. prepareReadyJob leaves the scheduler and
+		// reserve group untouched when rc is empty.
+		for _, candidate := range candidates {
+			s.prepareReadyJob(ctx, q, candidate.job, rc, reqGroupToReqs)
 		}
 
-		if snapshot, ready := s.prepareReadyJob(ctx, q, job, rc, reqGroupToReqs); ready {
-			snapshots = append(snapshots, snapshot)
-		}
+		return groups
 	}
 
-	s.countReadyJobsByPriority(ctx, groups, snapshots)
+	s.scheduleReadyJobsByPriority(ctx, q, groups, candidates, rc, reqGroupToReqs)
 
 	return groups
 }
@@ -4039,18 +4267,9 @@ func (s *Server) recommendedReqForGroup(reqGroup string,
 // capacity within a rac cycle -> up to N x the limit runners requested for it.)
 func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
 	limitBudgets map[string]int, snapshot schedulerGroupSnapshot) {
-	schedulerGroup := snapshot.group
+	group := ensureGroup(groups, snapshot)
 
-	group, set := groups[schedulerGroup]
-	if !set {
-		group = &sgroup{
-			name: schedulerGroup,
-			req:  snapshot.requirements.Clone(),
-		}
-		groups[schedulerGroup] = group
-	}
-
-	limitGroups := s.seedLimitGroupBudgets(ctx, schedulerGroup, limitBudgets)
+	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
 
 	// ignore jobs that would put any of the job's limit groups over its limit. A
 	// budget of -1 means "no limit", so it never blocks (and is never decremented).
