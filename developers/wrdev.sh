@@ -289,6 +289,50 @@ cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] 
   return "$rc"
 }
 
+cmd_backlog_rescan_check() {  # backlog-rescan-check [limit] [backlog] - reliable4 #1 rac backlog rescan
+  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
+  # make test) for reliable4 ISSUE #1: the ready-added callback re-scans the WHOLE ready
+  # backlog every cycle - buildSchedulerGroups runs prepareReadyJob for every ready job,
+  # including the ones whose limit group is saturated and so cannot be scheduled. It adds
+  # `backlog` ready jobs behind ONE limit group (limit L) on a real in-process server, then
+  # drives one buildSchedulerGroups cycle and reads the inert racScanWork counter. Unlike
+  # the reliable3 reproducers, this asserts the FIXED invariant, so it FAILS on current
+  # (pre-fix) code: scanWork == backlog, far above the L + margin bound (want O(schedulable)).
+  need_repo
+  local limit="${1:-2000}" backlog="${2:-50000}"
+  echo "reliable4 #1 rac backlog rescan (deterministic, in-process): a rac cycle's per-job"
+  echo "scheduling work should be bounded by the schedulable count (~limit), not the ready backlog."
+  echo "scale: limit=$limit backlog=$backlog (pre-fix scanWork == backlog; want <= limit+100)"
+  osunset
+  local out rc
+  out=$(WR_OP_LIMIT="$limit" WR_BR_BACKLOG="$backlog" \
+    timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+    -run TestReliable4BacklogRescan -count=1 -v 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'BACKLOG-RESCAN-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  return "$rc"
+}
+
+cmd_runner_started_timeout_check() {  # runner-started-timeout-check - reliable4 #3 Started() kills healthy cmd
+  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of make
+  # test) for reliable4 ISSUE #3: after exec, the runner reports its PID via c.Started();
+  # if that outbound RPC times out (server saturation), Execute KILLS the still-healthy
+  # command instead of tolerating-and-retrying like the touch loop does. It runs a real
+  # command (`sleep 1; echo ran > marker`) via an in-process capture client whose socket
+  # fails the FIRST Started() RPC once with a "receive time out". Asserts the FIXED
+  # invariant (the marker is written), so it FAILS on current code: the command is killed
+  # mid-sleep, execErr = "started running, but I killed it due to a jobqueue server error".
+  need_repo
+  echo "reliable4 #3 Started() timeout kills a healthy command (deterministic, in-process):"
+  echo "a transient post-exec Started() RPC failure must NOT destroy a healthy running command."
+  echo "expect (pre-fix) markerWritten=false and 'I killed it due to a jobqueue server error'."
+  osunset
+  local out rc
+  out=$(timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+    -run TestReliable4StartedTimeoutKillsHealthyCommand -count=1 -v 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'STARTED-TIMEOUT-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+  return "$rc"
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -385,6 +429,12 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   priority-fairness-check [limit] [readyExtra]
                         reliable3 2a reproducer: first-come budget allocation starves a higher-
                         priority sibling scanned after a low-priority one (no manager)
+  backlog-rescan-check [limit] [backlog]
+                        reliable4 #1 reproducer: a rac cycle scans the whole ready backlog
+                        (racScanWork == backlog); fails until the scan is bounded to ~limit
+  runner-started-timeout-check
+                        reliable4 #3 reproducer: a transient post-exec Started() RPC timeout
+                        kills a healthy running command; fails until Started() tolerates it
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -411,6 +461,8 @@ case "${1:-help}" in
   overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
   limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
   priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
+  backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
+  runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;
