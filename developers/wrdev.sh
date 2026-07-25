@@ -60,6 +60,22 @@ safe_kill() {
 }
 mgr_pid() { cat "$1/pid" 2>/dev/null; }
 
+# ensure_dev_manager guarantees OUR isolated dev manager is up before jobs are
+# added, so churn can never silently loop at terminal=0 just because nothing was
+# running. If a dev manager we own is already alive it is REUSED (never
+# restarted/wiped); otherwise a fresh one is started with cmd_start lsf.
+ensure_dev_manager() {
+  local pid; pid=$(mgr_pid "$DEV_RUN")
+  if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1 && is_ours "$pid"; then
+    echo "reusing running dev manager pid $pid"
+    return 0
+  fi
+  echo "no dev manager running; starting one"
+  cmd_start lsf
+  pid=$(mgr_pid "$DEV_RUN")
+  { [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; } || die "could not start dev manager"
+}
+
 bkill_dev() {  # dev jobs are wrd_* only; safe. (prod-mode wrp_* is NEVER pattern-killed here)
   for _ in 1 2 3; do
     timeout 120 bkill -J 'wrd_*' 0 >/dev/null 2>&1
@@ -103,14 +119,30 @@ cmd_stop() {  # wr manager stop hangs under load; kill our verified pid + bkill 
 
 cmd_churn() {  # churn [N]  (default 40000; ~half true half false, across memory groups)
   need_bin
+  ensure_dev_manager
   local n="${1:-40000}"; local half=$(( n / 2 ))
   echo "generating $n jobs ($half true + $half false) across $MEM_GROUPS memory groups"
   perl -e "for my \$i (1..$half){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"true #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/true.json"
   perl -e "for my \$i (1..$half){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"false #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/false.json"
-  osunset
-  timeout 180 "$WR" add -f "$WRDEV_ROOT/true.json"  --rep_grp rgtrue  --retries 0 --deployment development 2>&1 | tail -1
-  timeout 180 "$WR" add -f "$WRDEV_ROOT/false.json" --rep_grp rgfalse --retries 0 --deployment development 2>&1 | tail -1
+  churn_add "$WRDEV_ROOT/true.json"  rgtrue
+  churn_add "$WRDEV_ROOT/false.json" rgfalse
   cmd_monitor "$half"
+}
+
+# churn_add adds one job file, failing FAST and LOUD if the manager is unreachable
+# or nothing was added, so churn never silently drops into cmd_monitor looping at
+# terminal=0 (which looks exactly like a scheduling stall but is really "no manager
+# running"). Echoes wr's own output, then inspects its exit code and message.
+churn_add() {
+  local file="$1" rg="$2" out rc
+  out=$(osunset ; timeout 180 "$WR" add -f "$file" --rep_grp "$rg" --retries 0 --deployment development 2>&1); rc=$?
+  echo "$out" | tail -2
+  if [ "$rc" -ne 0 ] || echo "$out" | grep -qiE 'could not reach the server|Connect\(\)|connection refused'; then
+    die "churn aborted - could not add jobs (is the dev manager running? Connect error above)"
+  fi
+  if ! echo "$out" | grep -qE 'Added [1-9][0-9]* new commands'; then
+    die "churn aborted - could not add jobs (is the dev manager running? Connect error above)"
+  fi
 }
 
 cmd_monitor() {  # watch drain + churn counts + control-RPC latency until terminal/stall
@@ -411,7 +443,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   build                 build wr + wsprobe from the current checkout into \$WRDEV_ROOT
   start [lsf|local]     start the isolated dev manager (default lsf)
   stop                  kill the (verified) dev manager + bkill wrd_ jobs
-  churn [N]             submit N true/false jobs (default 40000) then monitor
+  churn [N]             ensure dev manager up, submit N true/false jobs (default 40000) then monitor
   monitor [halfN]       watch drain / churn counts / control-RPC latency
   probe [secs] [slowms] read the dev web /status_ws feed via wsprobe
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
