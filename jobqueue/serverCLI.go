@@ -912,6 +912,16 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 		return false
 	}
 
+	// idempotent ack: a DUPLICATE report of the SAME start (e.g. retryStartReport
+	// re-sending after a reply was lost) must not re-increment Attempts, which would
+	// prematurely erode the retry budget (UntilBuried) and bury the job one real
+	// attempt early. A genuinely new attempt is a new process (different pid) or a
+	// different host, so Running + same pid + same host uniquely identifies a
+	// duplicate of the current start (pids are not reused fast enough to alias).
+	if job.State == JobStateRunning && job.Pid == crJob.Pid && job.Host == crJob.Host {
+		return true
+	}
+
 	job.Host = crJob.Host
 	if job.Host != "" {
 		job.HostID = s.scheduler.HostToID(job.Host)

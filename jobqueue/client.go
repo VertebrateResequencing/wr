@@ -3002,14 +3002,22 @@ func isDefinitiveStartReject(err error) bool {
 		return false
 	}
 
-	msg := err.Error()
-	for _, reject := range []string{ErrBadJob, ErrBadRequest, ErrMustReserve} {
-		if strings.Contains(msg, reject) {
-			return true
-		}
+	// c.request wraps a server RESPONSE carrying an error into a typed jobqueue.Error
+	// whose .Err field is EXACTLY one of our sentinel strings (handleStart returns
+	// the raw sentinel). Match on that typed value rather than substring-scanning the
+	// rendered message: a transport/timeout/connection failure (a non-Error error, or
+	// the retryable ErrRecovering) is NOT a definitive rejection and stays transient.
+	var jqErr Error
+	if !errors.As(err, &jqErr) {
+		return false
 	}
 
-	return false
+	switch jqErr.Err {
+	case ErrBadJob, ErrBadRequest, ErrMustReserve:
+		return true
+	default:
+		return false
+	}
 }
 
 // retryStartReport re-sends the post-exec Started() report in the background after
