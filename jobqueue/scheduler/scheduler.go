@@ -57,6 +57,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -87,11 +88,108 @@ const (
 	ErrBadFlavor    = "unknown server flavor"
 )
 
+// cannotConfirmWarnInterval rate-limits the warnCannotConfirm log so a persistent
+// misconfiguration cannot flood the manager log while still remaining visible.
+const cannotConfirmWarnInterval = time.Minute
+
+// loggableProcessOutputMax bounds how many characters of unexpected remote ps
+// output warnCannotConfirm will log. It keeps a misbehaving or verbose forced
+// command (see ProcessNotRunningOnHost's CONTRACT WARNING) that emits many lines or
+// a large banner from blowing up the manager log.
+const loggableProcessOutputMax = 120
+
+// processLiveness is the outcome of interpreting a host's `ps` output for a pid.
+type processLiveness int
+
+const (
+	processDead    processLiveness = iota // no such process, or a zombie
+	processAlive                          // a recognised, live process state
+	processUnknown                        // output we cannot interpret
+)
+
 // Reserved records that a scheduler element (opaque, scheduler-specific id,
 // e.g. LSF "jobid[index]") has been handed a wr job reservation, so it must not
 // be killed as excess. Non-LSF schedulers ignore it.
 func (s *Scheduler) Reserved(schedulerID string) {
 	s.impl.reserved(schedulerID)
+}
+
+// interpretProcessState maps the trimmed stdout of the remote
+// `ps -o stat= -p <pid>` command (see ProcessNotRunningOnHost's CONTRACT WARNING)
+// to a liveness outcome: empty output (no such process) is dead; a valid stat
+// token that is a zombie (a recognised token beginning with "Z", e.g. "Z" or
+// "Z+") is dead; any other valid stat token is alive; and anything that is not a
+// well-formed single stat token is unknown, which the caller must NOT treat as a
+// confident alive/dead answer. The unknown bucket deliberately catches output
+// that merely starts with a state letter but is not a bare stat - a "Zebra" word,
+// a multi-line banner, or a misconfigured forced command emitting a line count -
+// so such garbage is never mistaken for a confirmed-dead zombie.
+func interpretProcessState(state string) processLiveness {
+	switch {
+	case state == "":
+		return processDead
+	case !isProcessState(state):
+		return processUnknown
+	case state[0] == 'Z':
+		return processDead
+	default:
+		return processAlive
+	}
+}
+
+// warnCannotConfirm logs, at most once per cannotConfirmWarnInterval, that
+// ProcessNotRunningOnHost could not determine whether pid on hostName is alive or
+// dead, so a lost job's death cannot be confirmed (and its limit-group slot cannot
+// be reclaimed). This makes a broken confirmation path - a bad ssh key, an
+// unreachable host, or a forced command whose output no longer matches the parse
+// contract - diagnosable instead of silently masquerading as a healthy manager.
+func (s *Scheduler) warnCannotConfirm(ctx context.Context, hostName string, pid int, reason string) {
+	now := time.Now().UnixNano()
+
+	last := s.lastCannotConfirm.Load()
+	if last != 0 && now-last < int64(cannotConfirmWarnInterval) {
+		return
+	}
+
+	if !s.lastCannotConfirm.CompareAndSwap(last, now) {
+		return
+	}
+
+	clog.Warn(ctx, "could not confirm whether a lost job's process is still running on its host",
+		"host", hostName, "pid", pid, "reason", reason)
+}
+
+// loggableProcessOutput returns a short, single-line, length-capped excerpt of a
+// remote command's output that is safe to put in a log field: only its first line,
+// truncated to loggableProcessOutputMax characters, with a trailing "..." marker
+// whenever anything (a longer first line, or any further lines) was dropped. The
+// length cap is applied on a rune boundary so a multi-byte rune is never split.
+func loggableProcessOutput(output string) string {
+	excerpt := output
+	truncated := false
+
+	if i := strings.IndexByte(excerpt, '\n'); i >= 0 {
+		excerpt = excerpt[:i]
+		truncated = true
+	}
+
+	count := 0
+	for pos := range excerpt {
+		if count == loggableProcessOutputMax {
+			excerpt = excerpt[:pos]
+			truncated = true
+
+			break
+		}
+
+		count++
+	}
+
+	if truncated {
+		excerpt += "..."
+	}
+
+	return excerpt
 }
 
 // Error records an error and the operation and scheduler that caused it.
@@ -292,6 +390,10 @@ type Scheduler struct {
 	impl    scheduleri
 	Name    string
 	limiter map[string]int
+	// lastCannotConfirm is the UnixNano time ProcessNotRunningOnHost last logged a
+	// could-not-determine warning. It rate-limits that warning (accessed
+	// atomically) so a persistent misconfiguration cannot flood the log.
+	lastCannotConfirm atomic.Int64
 	sync.Mutex
 }
 
@@ -492,26 +594,82 @@ func (s *Scheduler) GetHost(hostName string) Host {
 // running, or if the ssh wasn't possible. This is to find out if a process is
 // really dead, or if there might just be a temporary networking problem where
 // ssh might fail. The ssh attempt can be cancelled using the supplied context.
+//
+// CONTRACT WARNING: the remote command below is a compatibility contract with
+// any forced command a user has configured for this key in their farm nodes'
+// authorized_keys (see the privatekeypath docs in cmd/conf.go). It runs
+// `ps -o stat= -p <pid>` and treats EMPTY output as "dead". Do NOT change the
+// command or the way its output is interpreted without a migration plan: a
+// user's forced command that reproduces the old output (e.g. an older wr sent
+// `ps -p <pid> | wc -l` and users wrapped keys to emit that count) will then
+// silently mis-report every process as still running, so lost jobs are never
+// reclaimed and limit-group scheduling stalls. Prefer to fail loudly (log) on
+// output that is neither empty nor a plausible process state, rather than
+// treating an unexpected value as "still running".
 func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
+		s.warnCannotConfirm(ctx, hostName, pid, "could not get the host to ssh to")
+
 		return false
 	}
 
 	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
 	if err != nil {
+		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
+
 		return false
 	}
 
 	state := strings.TrimSpace(stdo)
 
-	return state == "" || strings.HasPrefix(state, "Z")
+	switch interpretProcessState(state) {
+	case processDead:
+		return true
+	case processAlive:
+		return false
+	case processUnknown:
+		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+loggableProcessOutput(state))
+	}
+
+	return false
 }
 
 // Cleanup means you've finished using a scheduler and it can delete any
 // remaining jobs in its system and clean up any other used resources.
 func (s *Scheduler) Cleanup(ctx context.Context) {
 	s.impl.cleanup(s.typeContext(ctx))
+}
+
+// isProcessState reports whether state is a single, whitespace-free ps stat token
+// (as emitted by `ps -o stat=`): its first byte must be a recognised primary
+// process-state code (see ps(1) STATE) and every later byte a recognised stat
+// modifier, all within a short length bound. A header ("STAT"), a multi-line banner,
+// output with an embedded space, or an over-long blob is therefore rejected and left
+// to fall through to processUnknown, rather than being mistaken for a live process
+// merely because it happens to start with a state letter.
+func isProcessState(state string) bool {
+	const (
+		primaryStateCodes = "DIRSTtWXZ"
+		stateModifiers    = "<NLsl+"
+		maxStateLen       = 8
+	)
+
+	if state == "" || len(state) > maxStateLen {
+		return false
+	}
+
+	if strings.IndexByte(primaryStateCodes, state[0]) < 0 {
+		return false
+	}
+
+	for _, modifier := range state[1:] {
+		if !strings.ContainsRune(stateModifiers, modifier) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

@@ -50,6 +50,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1331,6 +1332,46 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 	}
 }
 
+// prepareReadyJob updates one ready job's requirements and, when rc is set, its
+// scheduler group, returning the snapshot to be counted with ready=true. When rc
+// is empty the job's requirements are still (re)computed (so scheduling and
+// learning see up-to-date values) but its scheduler group and queue reserve group
+// are left untouched, and it is not counted, so ready=false. (The reserve group is
+// established at job-add time; this function only updates it, via setSchedulerGroup
+// and q.SetReserveGroup, when rc is set and the group has changed.)
+func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
+	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
+	job.RLock()
+	jobOverride := job.Override
+	reqGroup := job.ReqGroup
+	failureUpdateNeeded := failureMayUpdateJobRequirements(job)
+	job.RUnlock()
+
+	// depending on job.Override, get memory, disk and time recommendations,
+	// which are rounded to get fewer larger groups
+	recommendedReq := s.recommendedReqForGroup(reqGroup, reqGroupToReqs)
+
+	if recommendedReq != nil || failureUpdateNeeded {
+		job.Lock()
+		updateJobRequirementsForRetry(job, jobOverride, recommendedReq)
+		job.Unlock()
+	}
+
+	if rc == "" {
+		return schedulerGroupSnapshot{}, false
+	}
+
+	snapshot := job.schedulerGroupSnapshot()
+
+	if snapshot.previousGroup != snapshot.group {
+		job.setSchedulerGroup(snapshot.group)
+
+		warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
+	}
+
+	return snapshot, true
+}
+
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
 	if err == nil {
 		return
@@ -1801,6 +1842,158 @@ func updateJobRequirementsForRetry(
 		increaseJobDiskAfterFailure(job)
 	case FailReasonTime:
 		increaseJobTimeAfterFailure(job)
+	}
+}
+
+// seedLimitGroupBudgets returns the limit groups of schedulerGroup, lazily seeding
+// each one's remaining-capacity budget into limitBudgets (shared across the sibling
+// scheduler groups of a rac cycle). A budget of -1 means the group has no limit, so
+// it never blocks and is never decremented.
+func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string,
+	limitBudgets map[string]int) []string {
+	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+
+	for _, lg := range limitGroups {
+		if _, set := limitBudgets[lg]; !set {
+			limitBudgets[lg] = s.limiter.GetRemainingCapacity(ctx, []string{lg})
+		}
+	}
+
+	return limitGroups
+}
+
+// countReadyJobsByPriority counts the given ready-job snapshots against their
+// scheduler groups, sharing one remaining-capacity budget per limit group across
+// all sibling scheduler groups of this rac cycle (see countJobInGroup). When the
+// budget can actually be contended (see readyJobsCanContendLimitBudget), snapshots
+// are counted highest-priority-first, so that when siblings share a limit group
+// whose capacity is limited, the shared budget is allocated to higher-priority
+// scheduler groups before lower-priority ones - a low-priority sibling scanned
+// first must not starve a higher-priority one of the budget.
+func (s *Server) countReadyJobsByPriority(ctx context.Context, groups map[string]*sgroup,
+	snapshots []schedulerGroupSnapshot) {
+	// The highest-priority-first ordering only changes the outcome when a shared
+	// per-limit-group budget can actually be contended: countJobInGroup hands that
+	// budget to whichever snapshot it counts first, so a higher-priority scheduler
+	// group must be counted before a lower-priority sibling sharing the same limit
+	// group. When no limit group can withhold budget from a job, every snapshot just
+	// increments its group's count and raises its group's priority - both
+	// order-independent - so the O(n log n) sort over all n ready jobs is pure waste.
+	// Skip it in that (common) case; see readyJobsCanContendLimitBudget.
+	if s.readyJobsCanContendLimitBudget(snapshots) {
+		slices.SortStableFunc(snapshots, func(a, b schedulerGroupSnapshot) int {
+			return cmp.Compare(b.priority, a.priority)
+		})
+	}
+
+	limitBudgets := make(map[string]int)
+
+	for _, snapshot := range snapshots {
+		s.countJobInGroup(ctx, groups, limitBudgets, snapshot)
+	}
+}
+
+// readyJobsCanContendLimitBudget reports whether the order in which the given
+// ready-job snapshots are counted could change the outcome, i.e. whether
+// countReadyJobsByPriority must sort them highest-priority-first before counting.
+// Counting order only matters when a count-limited limit group's shared budget can
+// be exhausted mid-cycle, which requires BOTH that at least one count limit is
+// configured AND that at least one ready job carries a limit group. A non-count
+// limit group can only ever yield an unlimited (-1) or fully-closed (0) budget (see
+// limiter group.capacity), neither of which depends on counting order, so restricting
+// to count limits (GetLimits) is correct. A scheduler-group string carries a limit
+// group iff it contains jobSchedLimitGroupSeparator (see schedulerGroupString), so a
+// zero-allocation substring test suffices; a false positive would only cost an
+// unnecessary sort, never a wrong count.
+func (s *Server) readyJobsCanContendLimitBudget(snapshots []schedulerGroupSnapshot) bool {
+	if len(s.limiter.GetLimits()) == 0 {
+		return false
+	}
+
+	for _, snapshot := range snapshots {
+		if strings.Contains(snapshot.group, jobSchedLimitGroupSeparator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// capGroupCountsToLimits ensures that, for every limit group, the summed runner
+// request across its sibling scheduler groups does not exceed that limit group's
+// limit. The ready count was capped against the limit group's remaining capacity
+// (countJobInGroup), but accountForRunningJobs then adds every running job on top,
+// and the running snapshot is not read atomically with that earlier capacity read,
+// so reserves landing in between (and lost-parked phantoms) can push the summed
+// count over the limit. Reading each limit group's limit once here and trimming
+// the summed sibling counts back to it keeps the request bounded, so we never ask
+// the scheduler for many multiples of the runnable work. Groups with no (count)
+// limit are never touched. Must be called with s.psgmutex held.
+func (s *Server) capGroupCountsToLimits(groups map[string]*sgroup) {
+	limits := s.limiter.GetLimits()
+	if len(limits) == 0 {
+		return
+	}
+
+	siblingsByLimitGroup := make(map[string][]*sgroup)
+
+	for name, group := range groups {
+		for _, lg := range s.schedGroupToLimitGroups(name) {
+			if _, limited := limits[lg]; limited {
+				siblingsByLimitGroup[lg] = append(siblingsByLimitGroup[lg], group)
+			}
+		}
+	}
+
+	for lg, siblings := range siblingsByLimitGroup {
+		trimGroupsToLimit(siblings, limits[lg])
+	}
+}
+
+// trimGroupsToLimit reduces the counts of the given sibling scheduler groups (all
+// sharing one limit group) so their summed count does not exceed limit, trimming
+// lower-priority groups first so higher-priority work keeps its runners (each
+// group's priority reflects both its ready and its running jobs; see
+// accountForRunningJobs). It only reduces counts, so applying it per limit group
+// converges even when a scheduler group belongs to several limit groups.
+//
+// It deliberately does NOT record the trimmed units as skipped. skipped exists to
+// remember READY jobs deferred behind a limit, so that a later completion is
+// absorbed against them (keeping the runner target) and re-triggers scheduling
+// (sgroup.decrement / hasSkippedScheduledGroups); countJobInGroup already records
+// every such ready job as it exhausts the shared per-limit-group budget. What this
+// trim removes is different in kind: the shared budget guarantees the summed READY
+// count never exceeds the limit group's remaining capacity (limit - held), so any
+// amount by which the summed count exceeds limit here is entirely attributable to
+// running jobs counted on top of that capacity - reserves that landed after the
+// capacity read, or lost-parked phantoms. Those are slots already occupied, not
+// deferred ready work; the genuine ready backlog is already in skipped. Recording
+// this running over-count as skipped as well would pin the runner target at the
+// limit as those running jobs complete even when no ready work is waiting to
+// backfill, re-introducing the very over-provisioning this cap exists to remove.
+func trimGroupsToLimit(siblings []*sgroup, limit int) {
+	total := 0
+	for _, group := range siblings {
+		total += group.count
+	}
+
+	overage := total - limit
+	if overage <= 0 {
+		return
+	}
+
+	slices.SortStableFunc(siblings, func(a, b *sgroup) int {
+		return cmp.Compare(a.priority, b.priority)
+	})
+
+	for _, group := range siblings {
+		if overage <= 0 {
+			break
+		}
+
+		trim := min(group.count, overage)
+		group.count -= trim
+		overage -= trim
 	}
 }
 
@@ -3737,7 +3930,7 @@ func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 	allitemdata []any, rc string) map[string]*sgroup {
 	groups := make(map[string]*sgroup)
 	reqGroupToReqs := make(map[string]*scheduler.Requirements)
-	groupLimits := make(map[string]int)
+	snapshots := make([]schedulerGroupSnapshot, 0, len(allitemdata))
 
 	for _, inter := range allitemdata {
 		job, ok := inter.(*Job)
@@ -3745,45 +3938,14 @@ func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 			continue
 		}
 
-		s.processReadyJob(ctx, q, job, rc, groups, reqGroupToReqs, groupLimits)
+		if snapshot, ready := s.prepareReadyJob(ctx, q, job, rc, reqGroupToReqs); ready {
+			snapshots = append(snapshots, snapshot)
+		}
 	}
+
+	s.countReadyJobsByPriority(ctx, groups, snapshots)
 
 	return groups
-}
-
-// processReadyJob updates one ready job's requirements and scheduler group, and
-// (when rc is set) counts it against its scheduler group.
-func (s *Server) processReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
-	groups map[string]*sgroup, reqGroupToReqs map[string]*scheduler.Requirements, groupLimits map[string]int) {
-	job.RLock()
-	jobOverride := job.Override
-	reqGroup := job.ReqGroup
-	failureUpdateNeeded := failureMayUpdateJobRequirements(job)
-	job.RUnlock()
-
-	// depending on job.Override, get memory, disk and time recommendations,
-	// which are rounded to get fewer larger groups
-	recommendedReq := s.recommendedReqForGroup(reqGroup, reqGroupToReqs)
-
-	if recommendedReq != nil || failureUpdateNeeded {
-		job.Lock()
-		updateJobRequirementsForRetry(job, jobOverride, recommendedReq)
-		job.Unlock()
-	}
-
-	snapshot := job.schedulerGroupSnapshot()
-
-	if rc == "" {
-		return
-	}
-
-	if snapshot.previousGroup != snapshot.group {
-		job.setSchedulerGroup(snapshot.group)
-
-		warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
-	}
-
-	s.countJobInGroup(ctx, groups, groupLimits, snapshot)
 }
 
 // recommendedReqForGroup returns the recommended requirements for reqGroup,
@@ -3822,10 +3984,18 @@ func (s *Server) recommendedReqForGroup(reqGroup string,
 }
 
 // countJobInGroup records a single ready job against its scheduler group,
-// creating the group if needed and skipping jobs that would exceed the group's
-// limit-group capacity.
+// creating the group if needed and skipping jobs that would exceed the remaining
+// capacity of any of the job's limit groups.
+//
+// limitBudgets holds the remaining capacity PER LIMIT GROUP for this rac cycle. It
+// is shared across every sibling scheduler group that maps to the same limit group
+// and is decremented as each job is counted, so the summed runner request for a
+// limit group never exceeds its capacity. (Keying the budget per scheduler group
+// instead, as the old groupRemainingCapacity did, let each of N sibling scheduler
+// groups sharing one limit group independently request that group's full remaining
+// capacity within a rac cycle -> up to N x the limit runners requested for it.)
 func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
-	groupLimits map[string]int, snapshot schedulerGroupSnapshot) {
+	limitBudgets map[string]int, snapshot schedulerGroupSnapshot) {
 	schedulerGroup := snapshot.group
 
 	group, set := groups[schedulerGroup]
@@ -3837,39 +4007,30 @@ func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
 		groups[schedulerGroup] = group
 	}
 
-	// ignore jobs that would put us over the limit
-	limit := s.groupRemainingCapacity(ctx, schedulerGroup, groupLimits)
-	if limit >= 0 && group.count == limit {
-		group.skipped++
+	limitGroups := s.seedLimitGroupBudgets(ctx, schedulerGroup, limitBudgets)
 
-		return
+	// ignore jobs that would put any of the job's limit groups over its limit. A
+	// budget of -1 means "no limit", so it never blocks (and is never decremented).
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] == 0 {
+			group.skipped++
+
+			return
+		}
 	}
 
 	group.count++
 
+	// consume one unit of each limited limit group's shared budget
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] > 0 {
+			limitBudgets[lg]--
+		}
+	}
+
 	if snapshot.priority > group.priority {
 		group.priority = snapshot.priority
 	}
-}
-
-// groupRemainingCapacity returns the remaining limit-group capacity for a
-// scheduler group (-1 if the group has no limit groups), caching the result in
-// groupLimits.
-func (s *Server) groupRemainingCapacity(ctx context.Context, schedulerGroup string, groupLimits map[string]int) int {
-	if limit, set := groupLimits[schedulerGroup]; set {
-		return limit
-	}
-
-	limit := -1
-
-	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
-	if len(limitGroups) > 0 {
-		limit = s.limiter.GetRemainingCapacity(ctx, limitGroups)
-	}
-
-	groupLimits[schedulerGroup] = limit
-
-	return limit
 }
 
 // scheduleGroupRunners adds running jobs into the group counts, unschedules
@@ -3925,7 +4086,20 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 }
 
 // accountForRunningJobs adds currently running jobs into the group counts so
-// scheduling accounts for them. Must be called with s.psgmutex held.
+// scheduling accounts for them, then caps each limit group's summed request at its
+// limit (capGroupCountsToLimits).
+//
+// As each running job is added, it also raises its group's priority to the max of
+// its ready jobs' and running jobs' priorities, so the group's priority reflects
+// BOTH its ready and its running work. This matters because the cap trims
+// lower-priority groups first: without it, a group that exists ONLY because of its
+// running jobs (created by groupForRunningJob) would keep priority 0 and be trimmed
+// ahead of a genuinely lower-priority sibling, wrongly dropping the higher-priority
+// work's runners.
+//
+// Must be called with s.psgmutex held. The groups are still private to this rac
+// cycle (not yet published to previouslyScheduledGroups), so their fields are
+// mutated without the per-sgroup lock, as elsewhere in the build/account path.
 func (s *Server) accountForRunningJobs(q *queue.Queue, groups map[string]*sgroup) {
 	for _, inter := range q.GetRunningData() {
 		job, ok := inter.(*Job)
@@ -3933,7 +4107,10 @@ func (s *Server) accountForRunningJobs(q *queue.Queue, groups map[string]*sgroup
 			continue
 		}
 
-		schedulerGroup := job.getSchedulerGroup()
+		job.RLock()
+		schedulerGroup := job.schedulerGroup
+		priority := job.Priority
+		job.RUnlock()
 
 		group, set := groups[schedulerGroup]
 		if !set {
@@ -3942,12 +4119,21 @@ func (s *Server) accountForRunningJobs(q *queue.Queue, groups map[string]*sgroup
 		}
 
 		group.count++
+
+		if priority > group.priority {
+			group.priority = priority
+		}
 	}
+
+	s.capGroupCountsToLimits(groups)
 }
 
 // groupForRunningJob returns the sgroup a running job belongs to, reusing a
-// previously scheduled group's requirements if known, otherwise building a new
-// group from the job's own requirements.
+// previously scheduled group's requirements (and priority) if known, otherwise
+// building a new group from the job's own requirements and priority. Seeding the
+// priority from the job (rather than leaving it at 0) is what lets a running-only
+// group be ordered correctly against its siblings when the cap has to trim (see
+// accountForRunningJobs / trimGroupsToLimit).
 func (s *Server) groupForRunningJob(schedulerGroup string, job *Job) *sgroup {
 	if prev, set := s.previouslyScheduledGroups[schedulerGroup]; set {
 		return prev.clone(0)
@@ -3959,8 +4145,9 @@ func (s *Server) groupForRunningJob(schedulerGroup string, job *Job) *sgroup {
 	defer job.Unlock()
 
 	return &sgroup{
-		name: schedulerGroup,
-		req:  job.Requirements.Clone(),
+		name:     schedulerGroup,
+		req:      job.Requirements.Clone(),
+		priority: job.Priority,
 	}
 }
 

@@ -340,6 +340,36 @@ runnerexecshell: "bash"
 #
 # This may be used by some schedulers (currently only LSF) to ssh to servers in
 # order to check on jobs that lose contact with the wr manager.
+#
+# When an LSF job stops touching the manager within its time-to-release, the
+# manager sshes to the job's host (as you, using this key) to check if the
+# job's process is really dead before reclaiming it. If it cannot confirm the
+# process is dead, the job is left occupying its slot (including any limit-group
+# slot). So if this check never succeeds, lost jobs are never reclaimed, limit
+# groups fill up with dead-but-uncleared jobs, and scheduling can grind to a
+# halt. The exact command the manager runs over ssh is:
+#
+#   ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1
+#
+# and it treats EMPTY output as "process is dead" (a non-empty process state, or
+# any ssh error, means "still running / cannot confirm").
+#
+# For security you may want to restrict this key so it can ONLY run that ps
+# check on your farm nodes, via a forced command in the remote
+# ~/.ssh/authorized_keys. IMPORTANT: the forced command must reproduce the raw
+# 'ps -o stat=' output above (empty for a dead pid) - a wrapper that instead
+# returns a transformed value (e.g. a line count from '... | wc -l') will make
+# every check look like "still running" and cause the stall described above. A
+# working example (single line; substitute your own key and comment):
+#
+` +
+	`#   command="p=$(echo \"$SSH_ORIGINAL_COMMAND\" | grep -oE '[-]p [0-9]+' | grep -oE '[0-9]+' | head -1); ` +
+	`ps -o stat= -p \"${p:-0}\" 2>/dev/null || test $? -eq 1" ` +
+	`ssh-ed25519 AAAA...your-public-key... wr lost-job ps check` + `
+#
+# This extracts only the pid from whatever command wr sends and runs the ps
+# check on it, so the key cannot be used to run anything else, while still
+# returning exactly what the manager expects.
 privatekeypath: "~/.ssh/id_rsa"
 
 # cloudflavor: What server flavors can be automatically picked?
