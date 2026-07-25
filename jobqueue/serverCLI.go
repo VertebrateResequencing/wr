@@ -917,8 +917,14 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	// prematurely erode the retry budget (UntilBuried) and bury the job one real
 	// attempt early. A genuinely new attempt is a new process (different pid) or a
 	// different host, so Running + same pid + same host uniquely identifies a
-	// duplicate of the current start (pids are not reused fast enough to alias).
+	// duplicate of the current start (pids are not reused fast enough to alias). We
+	// still clear Lost, because the duplicate report is fresh proof the runner is
+	// alive (a spurious TTR-driven markJobLost can set Lost=true while State stays
+	// Running); we deliberately do NOT touch Attempts/StartTime/EndTime, which is the
+	// whole point of the guard.
 	if job.State == JobStateRunning && job.Pid == crJob.Pid && job.Host == crJob.Host {
+		job.Lost = false
+
 		return true
 	}
 

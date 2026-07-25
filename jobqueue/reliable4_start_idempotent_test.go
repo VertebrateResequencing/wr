@@ -100,6 +100,30 @@ func TestReliable4StartIdempotent(t *testing.T) {
 				So(attempts, ShouldEqual, 2)
 			})
 		})
+
+		Convey("A duplicate Started() report clears a spurious Lost without a new attempt", func() {
+			pid := os.Getpid()
+			So(jq.Started(reserved, pid), ShouldBeNil)
+
+			attempts, ok := serverJobAttempts(server, key)
+			So(ok, ShouldBeTrue)
+			So(attempts, ShouldEqual, 1)
+			So(serverJobLost(server, key), ShouldBeFalse)
+
+			// simulate a spurious TTR-driven markJobLost setting Lost=true on the
+			// still-alive, still-Running job while its Started() reply was in flight.
+			So(setServerJobLost(server, key), ShouldBeTrue)
+			So(serverJobLost(server, key), ShouldBeTrue)
+
+			// the retryStartReport re-send of the SAME start (same host+pid) is fresh
+			// proof of liveness: it must un-lose the job WITHOUT starting a new attempt.
+			So(jq.Started(reserved, pid), ShouldBeNil)
+
+			attempts, ok = serverJobAttempts(server, key)
+			So(ok, ShouldBeTrue)
+			So(attempts, ShouldEqual, 1)
+			So(serverJobLost(server, key), ShouldBeFalse)
+		})
 	})
 }
 
@@ -121,4 +145,45 @@ func serverJobAttempts(server *Server, key string) (int, bool) {
 	j.RUnlock()
 
 	return attempts, true
+}
+
+// serverJobLost reads the server-side job.Lost for the given key under lock,
+// returning false if the item is not in the queue.
+func serverJobLost(server *Server, key string) bool {
+	item, err := server.q.Get(key)
+	if err != nil || item == nil {
+		return false
+	}
+
+	j, isJob := item.Data().(*Job)
+	if !isJob {
+		return false
+	}
+
+	j.RLock()
+	lost := j.Lost
+	j.RUnlock()
+
+	return lost
+}
+
+// setServerJobLost sets the server-side job.Lost=true for the given key under
+// lock, modelling a spurious TTR-driven markJobLost on a still-Running job. It
+// returns false if the item is not in the queue.
+func setServerJobLost(server *Server, key string) bool {
+	item, err := server.q.Get(key)
+	if err != nil || item == nil {
+		return false
+	}
+
+	j, isJob := item.Data().(*Job)
+	if !isJob {
+		return false
+	}
+
+	j.Lock()
+	j.Lost = true
+	j.Unlock()
+
+	return true
 }
