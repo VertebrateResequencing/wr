@@ -746,6 +746,27 @@ func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, e
 	return stderr
 }
 
+// retryStartReportLoop re-sends startReq every retryWait until reportStartAttempt
+// says to stop (accepted or definitively rejected) or stop is closed. It is the
+// periodic fallback used by retryStartReport after its immediate first attempt.
+func (c *Client) retryStartReportLoop(ctx context.Context, startReq *clientRequest,
+	serverContact *serverContactState, stop <-chan struct{},
+) {
+	ticker := time.NewTicker(c.retryWait)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if c.reportStartAttempt(ctx, startReq, serverContact) {
+				return
+			}
+		}
+	}
+}
+
 // dialClientSocket creates a req socket configured with TLS for the given
 // server and dials it, returning ErrNoServer if the dial fails.
 func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (mangos.Socket, error) {
@@ -3023,29 +3044,27 @@ func isDefinitiveStartReject(err error) bool {
 // retryStartReport re-sends the post-exec Started() report in the background after
 // its first attempt failed transiently, so a slow or briefly unreachable server
 // eventually learns the running command's pid without the healthy command being
-// killed. It re-sends the SAME pre-built request every retryWait (never
-// re-mutating job) until the report is accepted, the server definitively rejects
-// it (the job is no longer ours - left to the touch loop and the archive-time
-// owner check rather than killed here, exactly as the touch loop tolerates a
-// bad-job touch), or stop is closed (Execute has finished with the command). The
-// concurrent touch loop keeps the job's TTR alive throughout.
+// killed. It re-sends the SAME pre-built request (never re-mutating job): once
+// IMMEDIATELY, then every retryWait, until the report is accepted, the server
+// definitively rejects it (the job is no longer ours - left to the touch loop and
+// the archive-time owner check rather than killed here, exactly as the touch loop
+// tolerates a bad-job touch), or stop is closed (Execute has finished with the
+// command). The immediate first attempt matters for a command that finishes faster
+// than retryWait: the server only records StartTime on a successful Started(), and
+// completion is rejected while StartTime is zero, so waiting a full retryWait before
+// re-reporting could let a short command's Archive lose to the still-zero StartTime.
+// The concurrent touch loop keeps the job's TTR alive throughout.
 func (c *Client) retryStartReport(ctx context.Context, startReq *clientRequest,
 	serverContact *serverContactState, stop <-chan struct{},
 ) {
 	go func() {
-		ticker := time.NewTicker(c.retryWait)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				if c.reportStartAttempt(ctx, startReq, serverContact) {
-					return
-				}
-			}
+		// try immediately so a short-lived command's start is recorded in time,
+		// only falling back to the periodic ticker if this still fails transiently.
+		if c.reportStartAttempt(ctx, startReq, serverContact) {
+			return
 		}
+
+		c.retryStartReportLoop(ctx, startReq, serverContact, stop)
 	}()
 }
 
