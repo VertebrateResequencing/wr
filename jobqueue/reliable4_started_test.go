@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kballard/go-shellquote"
 	. "github.com/smartystreets/goconvey/convey"
@@ -151,6 +152,44 @@ func TestReliable4StartedReportFailure(t *testing.T) {
 		So(sock.starts(), ShouldBeGreaterThanOrEqualTo, 2)
 
 		Convey("the command runs to completion, its side effect happens and Execute succeeds", func() {
+			So(statErr, ShouldBeNil)
+			So(execErr, ShouldBeNil)
+		})
+	})
+
+	Convey("A transient Started() failure re-reports the start IMMEDIATELY, before a full retryWait", t, func() {
+		// A fast command (no sleep) whose FIRST jstart fails transiently, with
+		// retryWait set far LARGER than the command's lifetime. The server only
+		// records StartTime on a successful Started(), and completion is rejected
+		// while StartTime is zero, so a short command needs its start re-reported
+		// promptly. Pre-fix the ticker fires first (after retryWait): it never ticks
+		// within this command's life, so Execute finishes and closes stop having
+		// re-sent nothing (only the initial, failed jstart is seen). Post-fix the
+		// immediate first attempt re-sends right away, so a second jstart is seen
+		// well within the 30s ticker window.
+		capture := &liveTouchCapture{}
+		sock := &startReportSocket{transient: true}
+		client := newStartReportClient(sock, capture)
+		client.retryWait = 30 * time.Second
+		cwd := liveExecuteCwd(t)
+		marker := filepath.Join(cwd, "ran")
+		cmd := "echo ran > " + shellquote.Join(marker)
+		job := liveExecuteJob(client, cwd, cmd)
+
+		execErr := client.Execute(ctx, job, "/bin/sh")
+
+		_, statErr := os.Stat(marker)
+
+		// the immediate retry runs in a background goroutine; give it a brief moment
+		// to send. Pre-fix nothing ever re-sends (the goroutine exits via stop), so
+		// this simply exhausts the wait and the assertion below fails as intended.
+		deadline := time.Now().Add(2 * time.Second)
+		for sock.starts() < 2 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		Convey("a second start report is sent long before retryWait and the command completes", func() {
+			So(sock.starts(), ShouldBeGreaterThanOrEqualTo, 2)
 			So(statErr, ShouldBeNil)
 			So(execErr, ShouldBeNil)
 		})
