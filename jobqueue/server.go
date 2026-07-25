@@ -3317,6 +3317,25 @@ func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser strin
 
 	job.setWaitingForDepGroups(waitingForDepGroups)
 
+	// schedulerGroup is unexported, so it is not gob-serialised and comes back
+	// empty on decode. For a recovered running job this must be recomputed from
+	// the persisted Requirements+LimitGroups (exactly schedulerGroupSnapshot().
+	// group, which matches the scheduler cmd identity recoverRunningJob uses), so
+	// both this ItemDef's ReserveGroup and later accountForRunningJobs (which
+	// reads job.schedulerGroup directly) bucket the job under its real group
+	// rather than the empty group "" - otherwise the manager schedules empty-group
+	// runners that immediately exit and never adds the running work to its real
+	// group. Only JobStateRunning jobs need this: they start in the run sub-queue
+	// and never pass through prepareReadyJob (which recomputes the group for ready
+	// jobs on the next rac cycle). Ready/other recovered jobs must keep an empty
+	// group so a group-less Reserve() can still pop them from the ready sub-queue.
+	// Snapshot (RLock) and set (Lock) are separate statements to avoid
+	// self-deadlock.
+	if job.State == JobStateRunning && job.getSchedulerGroup() == "" {
+		group := job.schedulerGroupSnapshot().group
+		job.setSchedulerGroup(group)
+	}
+
 	itemdef := &queue.ItemDef{
 		Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
 		Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
