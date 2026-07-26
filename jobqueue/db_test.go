@@ -72,6 +72,53 @@ func TestDBBatchTuning(t *testing.T) {
 	})
 }
 
+// TestBackupCopyWriterChunking checks that backupCopyWriter.Write honours its
+// syncEvery bound even when a single incoming write is larger than syncEvery: it
+// must pace once per syncEvery-sized interval, not once for the whole burst. Before
+// the chunking fix a single large write jumped sinceSync past syncEvery and zeroed
+// it, so the copy could accumulate an unbounded dirty-page backlog behind one late
+// pace, weakening the bound on a concurrent foreground fdatasync's latency.
+func TestBackupCopyWriterChunking(t *testing.T) {
+	const (
+		syncEvery = 4
+		intervals = 3
+	)
+
+	Convey("Given a backupCopyWriter with a tiny syncEvery and a pace counter", t, func() {
+		origHook := backupPaceHook
+		defer func() { backupPaceHook = origHook }()
+
+		var paceCount int
+
+		backupPaceHook = func() { paceCount++ }
+
+		f, err := os.CreateTemp(t.TempDir(), "backupchunk")
+		So(err, ShouldBeNil)
+
+		defer func() { So(f.Close(), ShouldBeNil) }()
+
+		w := &backupCopyWriter{f: f, syncEvery: syncEvery}
+
+		Convey("A single Write spanning several intervals paces once per interval", func() {
+			p := bytes.Repeat([]byte("z"), syncEvery*intervals)
+
+			n, errw := w.Write(p)
+			So(errw, ShouldBeNil)
+			So(n, ShouldEqual, len(p))
+
+			// one pace per completed interval, not a single pace for the whole burst
+			// (the unchunked writer gave 1 pace here regardless of how far the write
+			// overshot syncEvery).
+			So(paceCount, ShouldEqual, intervals)
+
+			// the copy's bytes are exactly what we asked to write.
+			got, errr := os.ReadFile(f.Name())
+			So(errr, ShouldBeNil)
+			So(got, ShouldResemble, p)
+		})
+	})
+}
+
 func TestDBHighPeakMemoryRecommendation(t *testing.T) {
 	Convey("A high-memory non-RAM failure seeds recommendations but honours override always", t, func() {
 		ctx := context.Background()
