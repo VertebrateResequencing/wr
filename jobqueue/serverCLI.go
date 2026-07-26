@@ -935,6 +935,7 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 
 	job.HostIP = crJob.HostIP
 	job.Pid = crJob.Pid
+	job.RunnerPid = crJob.RunnerPid
 	job.StartTime = time.Now()
 	job.EndTime = time.Time{}
 	job.Attempts++

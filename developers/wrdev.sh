@@ -335,6 +335,30 @@ cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] -
   rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
 }
 
+cmd_ttrmiss_check() {  # ttrmiss-check [jobs] [runners] [archiveDelayMs] - in-process TTR-miss archive-reject churn
+  # Deterministic, in-process (no LSF/manager, build-tagged reliability_repro): a runner
+  # pool does reserve -> Started(deadPid) -> [optionally keep touching] -> wait archiveDelay
+  # -> Archive(success). With WR_TTRMISS_TOUCH=0 and archiveDelay>TTR it reproduces the churn
+  # (a completed job's late archive rejected -> re-run -> success discarded). Knobs (env):
+  #   WR_TTRMISS_TOUCH=1        model a healthy touching runner (control: no churn)
+  #   WR_TTRMISS_RUNNER_DEAD=1  model a genuinely-dead runner (must still re-run)
+  #   WR_EXP_RUNNERPID=1        FIX C: record+check the runner pid (live runner never re-run;
+  #                             also enables a 1h max-parked-Lost backstop)
+  #   WR_EXP_LOSTBACKSTOP_MS=N  override the backstop (kills a wedged runner after N ms)
+  #   WR_TTRMISS_SECONDS=N      run duration (default 60)
+  # The dedicated TestReliable4TtrBackstopKill validates the Fix-C + kill-backstop path.
+  # See .docs/reliable4/ttrmiss.md.
+  need_repo
+  local jobs="${1:-60}" runners="${2:-20}" delay="${3:-1500}" secs="${WR_TTRMISS_SECONDS:-60}"
+  echo "in-process TTR-miss churn: jobs=$jobs runners=$runners archiveDelayMs=$delay TTR=500ms seconds=$secs"
+  echo "  knobs: TOUCH=${WR_TTRMISS_TOUCH:-0} RUNNER_DEAD=${WR_TTRMISS_RUNNER_DEAD:-0} EXP_RUNNERPID=${WR_EXP_RUNNERPID:-} EXP_LOSTBACKSTOP_MS=${WR_EXP_LOSTBACKSTOP_MS:-}"
+  osunset
+  WR_TTRMISS_JOBS="$jobs" WR_TTRMISS_RUNNERS="$runners" WR_TTRMISS_ARCHIVE_DELAY_MS="$delay" WR_TTRMISS_TTR_MS=500 WR_TTRMISS_SECONDS="$secs" \
+    timeout $((secs + 150)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4TtrMissChurn -count=1 -v -timeout $((secs + 120))s 2>&1 \
+    | grep -aE 'TTRMISS|PASS|FAIL|panic|^ok ' | grep -avE 'no test files'
+}
+
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
   [ -x "$WSPROBE" ] || die "no wsprobe; run: $0 build"
   local secs="${1:-3}" slow="${2:-0}"

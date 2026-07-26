@@ -50,6 +50,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2569,12 +2570,22 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 
 	timeout, _ := s.lostJobCheckDurations()
 
+	// how long the job has been parked Lost: ttrCallback stamps job.EndTime when it
+	// marks the job Lost, and nothing resets it while it stays parked (a recovering
+	// touch clears it, a completing archive removes the job). Used by the backstop.
+	var lostFor time.Duration
+	if !job.EndTime.IsZero() {
+		lostFor = time.Since(job.EndTime)
+	}
+
 	pin := job.pinBehavioursLocked()
 
 	return lostJobDetails{
 		key:          pin.workSpace.key,
 		host:         job.Host,
 		pid:          job.Pid,
+		runnerPid:    job.RunnerPid,
+		lostFor:      lostFor,
 		checkTimeout: timeout,
 		pin:          pin,
 	}, true
@@ -4065,6 +4076,7 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, lostUpdate *JobUpdat
 	killCalled := job.killCalled
 	jobHost := job.Host
 	jobPID := job.Pid
+	jobRunnerPID := job.RunnerPid
 	repGroup := job.RepGroup
 
 	// pinned in the same breath as the decision, and carried to the kill; see pin
@@ -4087,7 +4099,7 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, lostUpdate *JobUpdat
 	)
 
 	go s.confirmOrReleaseLostJob(ctx, lostJobDetails{
-		key: jobKey, host: jobHost, pid: jobPID, killCalled: killCalled, pin: pin,
+		key: jobKey, host: jobHost, pid: jobPID, runnerPid: jobRunnerPID, killCalled: killCalled, pin: pin,
 		checkTimeout: serverLostJobCheckTimeout, checkRetryTime: serverLostJobCheckRetryTime,
 	})
 }
@@ -4098,9 +4110,14 @@ type lostJobDetails struct {
 	key            string
 	host           string
 	pid            int
+	runnerPid      int
 	killCalled     bool
 	checkTimeout   time.Duration
 	checkRetryTime time.Duration
+
+	// lostFor is how long the job had been parked Lost when this snapshot was
+	// taken; the retry path's backstop uses it to spot a wedged runner.
+	lostFor time.Duration
 
 	// pin is the lost RUN: its Behaviours and the state they must act on, taken when
 	// the job was declared lost and carried to the kill rather than re-fetched,
@@ -4838,7 +4855,7 @@ func (s *Server) mintRunToken() runToken {
 // It reports nothing: the goroutine it starts is the only thing that knows
 // whether the kill happened, and it logs that.
 func (s *Server) confirmJobDeadAndKill(ctx context.Context, d lostJobDetails) {
-	if !s.confirmJobDead(ctx, d.pid, d.host, d.checkTimeout) {
+	if !s.confirmJobDead(ctx, d.pid, d.runnerPid, d.host, d.checkTimeout) {
 		go s.confirmJobDeadAndKillAfterRetryTime(ctx, d.key, d.checkRetryTime)
 
 		return
@@ -4908,8 +4925,14 @@ func (s *Server) triggerLostRunBehaviours(ctx context.Context, d lostJobDetails)
 	}
 }
 
-// confirmJobDead() checks if the actual PID isn't running on the job's host.
-func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
+// confirmJobDead() checks that the job's process(es) are not running on its host.
+// The command's child pid is dead the moment the command finishes (success or
+// not), so on its own it falsely condemns a job that merely completed but whose
+// runner is slow/starved to archive. When WR_EXP_RUNNERPID is set and a runner pid
+// was reported (jobRunnerPID > 0), the job is considered dead only if BOTH the
+// command AND its runner process are gone: a live runner will still send the
+// archive, so we must not re-run underneath it. (EXPERIMENTAL/temporary knob.)
+func (s *Server) confirmJobDead(ctx context.Context, jobPID, jobRunnerPID int, jobHost string,
 	serverLostJobCheckTimeout time.Duration) bool {
 	if jobPID == 0 {
 		return false
@@ -4918,7 +4941,18 @@ func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
 	ctx, cancel := context.WithTimeout(ctx, serverLostJobCheckTimeout)
 	defer cancel()
 
-	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
+	if !s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost) {
+		return false
+	}
+
+	// the command's process is gone; also require the runner process to be gone
+	// before declaring the job dead (else a live-but-slow runner's completed job
+	// would be falsely re-run, discarding its pending success).
+	if os.Getenv("WR_EXP_RUNNERPID") == "1" && jobRunnerPID > 0 {
+		return s.scheduler.ProcessNotRunningOnHost(ctx, jobRunnerPID, jobHost)
+	}
+
+	return true
 }
 
 func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string,
@@ -4935,12 +4969,60 @@ func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey
 			return
 		}
 
+		// backstop: if the job has been parked Lost far longer than any plausible
+		// archive delay, its runner is wedged. Force-KILL the runner (and command)
+		// process on the host, so the confirmJobDeadAndKill below finds both gone and
+		// re-runs the job via the normal path (rather than a special force-rerun that
+		// could race a recovering runner). If the runner somehow recovers, its later
+		// archive is rejected (new-run-wins).
+		if backstop := lostBackstopDuration(); backstop > 0 && d.lostFor > backstop {
+			s.backstopKillWedgedRunner(ctx, d)
+		}
+
 		d.checkRetryTime = serverLostJobCheckRetryTime
 
 		s.confirmJobDeadAndKill(ctx, d)
 	case <-s.stopClientHandling:
 		return
 	}
+}
+
+// backstopKillWedgedRunner force-kills a wedged runner (and its lost command) on
+// the host, best-effort with a warning on failure. After this the normal
+// dead-confirmation finds both pids gone and re-runs the job.
+func (s *Server) backstopKillWedgedRunner(ctx context.Context, d lostJobDetails) {
+	if errk := s.scheduler.KillProcessOnHost(ctx, d.runnerPid, d.host); errk != nil {
+		clog.Warn(ctx, "backstop: failed to kill wedged runner",
+			"host", d.host, "pid", d.runnerPid, "err", errk)
+	}
+
+	if errk := s.scheduler.KillProcessOnHost(ctx, d.pid, d.host); errk != nil {
+		clog.Warn(ctx, "backstop: failed to kill lost command",
+			"host", d.host, "pid", d.pid, "err", errk)
+	}
+}
+
+// lostBackstopDuration is how long a job may sit parked Lost (runner apparently
+// alive but silent) before the backstop force-kills the runner. WR_EXP_LOSTBACKSTOP_MS
+// overrides it (<=0 disables); otherwise, when the runner-pid liveness fix
+// (WR_EXP_RUNNERPID) is active it defaults to a large, production-reasonable 1h that
+// is essentially never hit in normal operation; without that fix it is off (0), so
+// default behaviour is unchanged. (The real fix will make this a proper config value.)
+func lostBackstopDuration() time.Duration {
+	if v := os.Getenv("WR_EXP_LOSTBACKSTOP_MS"); v != "" {
+		ms, err := strconv.Atoi(v)
+		if err != nil || ms <= 0 {
+			return 0
+		}
+
+		return time.Duration(ms) * time.Millisecond
+	}
+
+	if os.Getenv("WR_EXP_RUNNERPID") == "1" {
+		return time.Hour
+	}
+
+	return 0
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates

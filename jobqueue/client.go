@@ -2996,6 +2996,7 @@ func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 	requestJob.Host = job.Host
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
+	requestJob.RunnerPid = os.Getpid() // this client IS the runner process; report it for liveness
 
 	// the working directory resolveWorkingDir already created. Reporting it HERE
 	// lets the manager clean up after a run that dies without ever touching, and

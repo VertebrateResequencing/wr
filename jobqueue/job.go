@@ -445,6 +445,13 @@ type Job struct {
 	FailReason string
 	// pid of the running or ran process.
 	Pid int
+	// RunnerPid is the pid of the wr runner process that reserved and is executing
+	// this job (its own os.Getpid()), as distinct from Pid (the command's child
+	// process). The runner outlives the command and is what sends the archive, so it
+	// is the correct liveness signal: a lost job is only truly dead (and safe to
+	// re-run) if BOTH the command AND its runner are gone. 0 if not reported (old
+	// records / pre-Started).
+	RunnerPid int
 	// host the process is running or did run on.
 	Host string
 	// host id the process is running or did run on (cloud specific).
