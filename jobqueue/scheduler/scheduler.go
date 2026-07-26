@@ -192,6 +192,17 @@ func loggableProcessOutput(output string) string {
 	return excerpt
 }
 
+// killProcessCommand builds the exact shell command KillProcessOnHost sends over
+// ssh to force-kill pid. It is a package-level helper (rather than an inline
+// Sprintf) so the compatibility contract described in KillProcessOnHost's CONTRACT
+// WARNING can be unit-tested in isolation. The "%[1]d" verb places the same pid in
+// both the literal `kill -9 <pid>` (run by an unrestricted key or the updated
+// forced command's kill branch) and the `# wr-kill -p <pid>` token (from which the
+// forced command's shared extractor reads the pid).
+func killProcessCommand(pid int) string {
+	return fmt.Sprintf("kill -9 %[1]d 2>/dev/null || true # wr-kill -p %[1]d", pid)
+}
+
 // Error records an error and the operation and scheduler that caused it.
 type Error struct {
 	Scheduler string // the scheduler's Name
@@ -606,6 +617,10 @@ func (s *Scheduler) GetHost(hostName string) Host {
 // reclaimed and limit-group scheduling stalls. Prefer to fail loudly (log) on
 // output that is neither empty nor a plausible process state, rather than
 // treating an unexpected value as "still running".
+//
+// KillProcessOnHost sends a second, parallel command (`kill -9 <pid>`) under the
+// same forced-command contract; see its CONTRACT WARNING and the cmd/conf.go
+// example that parses BOTH the ps string here and that kill string.
 func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
@@ -641,6 +656,25 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 // runner that has stopped reporting for far longer than any plausible archive
 // delay, so the normal dead-confirmation path can then re-run its job. Returns an
 // error only if the host is unreachable / the kill could not be issued.
+//
+// CONTRACT WARNING: like ProcessNotRunningOnHost, the remote command below is a
+// compatibility contract with any forced command a user has configured for this
+// key in their farm nodes' authorized_keys (see the privatekeypath docs in
+// cmd/conf.go). The command killProcessCommand builds is:
+//
+//	kill -9 <pid> 2>/dev/null || true # wr-kill -p <pid>
+//
+// which (a) is a valid literal kill for an unrestricted key (the trailing "#" is a
+// shell comment); (b) carries the pid in the SAME "-p <pid>" token the ps-check's
+// extractor already parses; and (c) begins with the "kill" marker an UPDATED
+// forced command can branch on to run the real kill. On the OLD ps-only forced
+// command (which ignores the requested command, extracts the pid, and only ever
+// runs `ps -o stat= -p <pid>`) this degrades to a harmless `ps -p <pid>`: no kill
+// happens and no error is returned, so the backstop is a SAFE NO-OP -- the wedged
+// job simply stays parked, exactly today's behaviour, no regression. Only an
+// operator who installs the updated forced command (or uses an unrestricted key)
+// gets the actual kill. Do NOT change the string without a migration plan and a
+// matching update to the cmd/conf.go example forced command.
 func (s *Scheduler) KillProcessOnHost(ctx context.Context, pid int, hostName string) error {
 	if pid <= 0 {
 		return nil
@@ -651,7 +685,7 @@ func (s *Scheduler) KillProcessOnHost(ctx context.Context, pid int, hostName str
 		return fmt.Errorf("could not get host %q to kill pid %d", hostName, pid) //nolint:err113
 	}
 
-	_, _, err := host.RunCmd(ctx, fmt.Sprintf("kill -9 %d 2>/dev/null || true", pid), false)
+	_, _, err := host.RunCmd(ctx, killProcessCommand(pid), false)
 
 	return err
 }

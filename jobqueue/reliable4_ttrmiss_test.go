@@ -256,23 +256,9 @@ func reliable4TtrRunner(server *Server, addr, caFile, certDomain string, token [
 	}
 }
 
-// setServerJobRunnerPid overwrites the server-side job's recorded RunnerPid under
-// lock (white-box; the test is in package jobqueue), to model a dead runner.
-func setServerJobRunnerPid(server *Server, key string, pid int) {
-	item, err := server.q.Get(key)
-	if err != nil || item == nil {
-		return
-	}
-
-	job, ok := item.Data().(*Job)
-	if !ok {
-		return
-	}
-
-	job.Lock()
-	job.RunnerPid = pid
-	job.Unlock()
-}
+// (setServerJobRunnerPid lives in the untagged reliable4_runnerpid_test.go so the
+// make-test regression tests can share it; it compiles alongside this file under
+// the reliability_repro tag.)
 
 // reliable4TtrWaitThenArchive waits archiveDelay (optionally touching, like a
 // healthy runner) then archives the success and records the outcome. Touching is
@@ -390,12 +376,12 @@ func TestReliable4TtrBackstopKill(t *testing.T) {
 		rg       = "reliable4_ttr_backstop_rg"
 	)
 
-	t.Setenv("WR_EXP_RUNNERPID", "1")
-	t.Setenv("WR_EXP_LOSTBACKSTOP_MS", strconv.Itoa(int(backstop/time.Millisecond)))
-
+	// the runner-pid liveness fix is the default now; set a short backstop via config
+	// (its real home) rather than the removed WR_EXP_* env knobs.
 	ctx := context.Background()
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 	serverConfig.Timings.ItemTTR = ttr
+	serverConfig.Timings.LostRunnerBackstop = backstop
 
 	server, _, token, err := serve(ctx, serverConfig)
 	if err != nil {
@@ -495,10 +481,6 @@ func TestReliable4TtrBackstopKill(t *testing.T) {
 		"runner (pid %d) and the job was reclaimed/re-run after ~%s", childPid, backstop)
 }
 
-// processAliveLocally reports whether pid is a live (non-zombie) process on this host.
-func processAliveLocally(pid int) bool {
-	out, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	state := strings.TrimSpace(string(out))
-
-	return state != "" && !strings.HasPrefix(state, "Z")
-}
+// (processAliveLocally lives in the untagged reliable4_runnerpid_test.go, shared
+// with the make-test regression tests; it compiles alongside this file under the
+// reliability_repro tag.)

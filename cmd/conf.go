@@ -370,6 +370,31 @@ runnerexecshell: "bash"
 # This extracts only the pid from whatever command wr sends and runs the ps
 # check on it, so the key cannot be used to run anything else, while still
 # returning exactly what the manager expects.
+#
+# BACKSTOP KILL (optional): wr can additionally force-kill a wedged runner that
+# has gone silent for far longer than any plausible archive delay
+# (ServerConfig.Timings.LostRunnerBackstop, default 1h), so its limit-group slot
+# is reclaimed rather than held indefinitely. To ENABLE that in production the key
+# must ALSO permit 'kill -9 <pid>'. If you keep the ps-only example above, the
+# backstop simply degrades to a harmless ps (no kill) and wedged jobs stay parked
+# exactly as they do today - no regression. To enable the kill, install an UPDATED
+# forced command that branches on what wr sends (single line; substitute your own
+# key and comment):
+#
+` +
+	`#   command="c=\"$SSH_ORIGINAL_COMMAND\"; p=$(echo \"$c\" | grep -oE '[-]p [0-9]+' | ` +
+	`grep -oE '[0-9]+' | head -1); case \"$c\" in kill*) kill -9 \"${p:-0}\" 2>/dev/null || true;; ` +
+	`*) ps -o stat= -p \"${p:-0}\" 2>/dev/null || test $? -eq 1;; esac" ` +
+	`ssh-ed25519 AAAA...your-public-key... wr lost-job ps + backstop kill` + `
+#
+# This still only ever runs 'ps' or 'kill -9' on a digits-only pid extracted from
+# what wr sends - no arbitrary commands, no injection. wr sends either the ps check
+# 'ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1' (matched by the *) branch) or
+# the kill 'kill -9 <pid> 2>/dev/null || true # wr-kill -p <pid>' (matched by the
+# kill*) branch); both carry the pid in the same '-p <pid>' token the extractor
+# reads. And because the forced command runs as the login user (not root), 'kill
+# -9' can only signal THAT user's own processes - exactly the wr runners you already
+# own on that node - so the added privilege over ps-only is modest.
 privatekeypath: "~/.ssh/id_rsa"
 
 # cloudflavor: What server flavors can be automatically picked?
