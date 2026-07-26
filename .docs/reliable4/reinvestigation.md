@@ -59,13 +59,32 @@ incremental `fsync` 32MB maxLat **0.70s (zero churn)**. Identical 0.70s at 6.89G
 and 10GB confirms the archive-latency bound is **size-independent** — it meets the
 "cope with 10GB backups without any job churn" bar.
 
-**Backup-duration cost (measured, 6.89GB):** the fix makes each backup copy take
-~**36s** vs baseline ~**20s** (~1.8×) — the price of ~220 synchronous `fsync`
-round-trips. Bounded, not catastrophic, and archives stay at 0.77s throughout. So
-the fix trades a slightly longer, more-continuous backup for zero archive freeze.
-(A `sync_file_range(WRITE)`+`fadvise(DONTNEED)` variant would bound dirty pages
-without the synchronous round-trips, avoiding the bloat, at the cost of being
-Linux-specific — a possible refinement.)
+**Backup-duration cost + method/interval tuning (measured, 6.89GB).** A plain
+`fsync`-every-N-MB fix bloats the copy (~36s vs baseline ~20s at N=32MB — the
+synchronous round-trips). The Linux `sync_file_range` variant was tuned against it:
+- async-only `sync_file_range(WRITE)` per chunk: low bloat (~25s) but WEAK freeze
+  protection (5.5s) — it nudges writeback but doesn't bound dirty.
+- **pipelined** `sync_file_range` (start current chunk's writeback, then
+  WAIT_BEFORE|WRITE|WAIT_AFTER the *previous* chunk + `FADV_DONTNEED`): bounds dirty
+  to ~2 chunks with writeback overlapping the copy → **fsync-level tight freeze with
+  less bloat**.
+
+Interval sweep (freeze = max archive latency; the user prioritises freeze):
+
+| N | fsync freeze / copy | pipelined-SFR freeze / copy |
+|---|---|---|
+| 4MB | 759ms / 47s | 2519ms / 20s |
+| **8MB** | **633ms / 46s** | **686ms / 24s** |
+| 16MB | 730ms / 36s | 744ms / 33s |
+| 32MB | 770ms / 36s | 900ms / 29s |
+
+Freeze is **floored at ~0.65s** for N≤32MB (it's the archive commit's own latency
+during a paced backup, not the interval); 4MB gives no gain. **N=8MB** is the
+consistent minimum for both methods. Chosen design: **pace every 8MB; Linux =
+pipelined `sync_file_range`, non-Linux = full `fsync`; final `fsync` for
+durability.** At 8MB both hit the freeze floor, so Linux additionally gets the low
+bloat (24s vs 46s). The freeze is bounded by ~one interval of backup write,
+independent of DB size and storage speed.
 
 **End-to-end LSF (`backup-stall-check`, 6.89GB, 4000 sleep-20 jobs / limit 2000,
 NO --debug):** baseline `maxStatusRPC=751ms`, `badjobDelta=311`; fix
