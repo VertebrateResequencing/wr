@@ -242,7 +242,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   # delayed and no freezes. Pre-fix: churns. Set WRDEV_ROOT to a disk with room for ~2x
   # dbGB (the DB + its backup); that env var is where all DB files are stored.
   need_bin; ensure_config
-  local dbgb="${1:-8}" n="${2:-8000}" limit="${3:-2000}" runsec="${4:-30}"
+  local dbgb="${1:-8}" n="${2:-8000}" limit="${3:-2000}" runsec="${4:-30}" records="${5:-2100000}" flgb="${6:-2}"
   local pr="$PROD_RUN" plog="$PROD_RUN/log"
   cmd_prod_stop >/dev/null 2>&1; sleep 2
   # start from a clean slate: fresh inflated DB AND fresh log, so the churn metrics
@@ -250,10 +250,23 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   # that each backup CopyFile takes long enough to stall archives past the TTR - the
   # threshold depends on your storage speed, so raise dbGB (or lower it once fixed).
   mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
-  echo "inflating a fresh ${dbgb}GB bolt DB at $pr/db (each backup CopyFile's this whole file)"
-  WR_INFLATE_DB="$pr/db" WR_INFLATE_GB="$dbgb" timeout 900 \
-    go -C "$REPO" test -tags reliability_repro ./jobqueue/ -run TestReliable4InflateDB -count=1 >/dev/null 2>&1 \
-    || die "DB inflation failed (is $WRDEV_ROOT on a disk with room for ~2x ${dbgb}GB?)"
+  # A record-dense DB is what reproduces: ~$records real complete-job records + a
+  # large persisted freelist (~${flgb}GB) so every archive commit rewrites a big
+  # freelist AND the full-file backup copies GBs. Padding-only DBs (few big values,
+  # ~empty freelist) do NOT reproduce even when larger - see the generator header.
+  # Set WRDEV_PRISTINE_DB to a pre-generated big DB to COPY it (fast) instead of
+  # regenerating (2.1M records takes ~20min); that pristine copy is never mutated.
+  if [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ]; then
+    echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db"
+    cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || die "could not copy pristine DB"
+  else
+    echo "inflating a fresh record-dense DB at $pr/db ($records records, ~${dbgb}GB, ~${flgb}GB freelist)"
+    WR_INFLATE_DB="$pr/db" WR_INFLATE_RECORDS="$records" WR_INFLATE_GB="$dbgb" WR_INFLATE_FREELIST_GB="$flgb" \
+      timeout "${WRDEV_INFLATE_TIMEOUT:-2400}" \
+      go -C "$REPO" test -tags reliability_repro ./jobqueue/ -run TestReliable4InflateDB -count=1 \
+        -timeout "${WRDEV_INFLATE_TIMEOUT:-2400}s" >/dev/null 2>&1 \
+      || die "DB inflation failed (is $WRDEV_ROOT on a disk with room for ~2x ${dbgb}GB?)"
+  fi
   echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes"
   echo "starting isolated PROD-mode manager (backups ON) on the big DB"
   cmd_prod_start lsf 2>&1 | tail -1; sleep 5
@@ -290,6 +303,36 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   echo "## CLEANUP"; cmd_prod_stop 2>&1 | tail -1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk '$2 ~ /^wrp_/{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/bkjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+}
+
+cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] - FAST in-process repro/iterate
+  # Deterministic, NO LSF and NO manager: opens a pre-generated record-dense big DB
+  # via the REAL initDB (production, backups ON) and hammers db.archiveJob from many
+  # goroutines - exactly what the server's archive RPC handler does. It measures each
+  # archive's wall-clock latency; during each periodic full-file backup the archive
+  # commits stall, and any archive over the TTR would be falsely lost -> churn. This is
+  # the FAST iteration harness for backup-stall fixes (seconds to run, no cluster).
+  # A/B a candidate fix via the WR_EXP_* env knobs (see db.go). Requires WRDEV_PRISTINE_DB
+  # (a big DB from the generator); it is COPIED to a scratch path each run (the run
+  # mutates it) so the pristine copy is reused across iterations.
+  need_repo
+  local archivers="${1:-50}" seconds="${2:-180}" pausems="${3:-100}"
+  local pristine="${WRDEV_PRISTINE_DB:-}"
+  { [ -n "$pristine" ] && [ -f "$pristine" ]; } \
+    || die "set WRDEV_PRISTINE_DB to a generated big DB (see backup-stall-check / TestReliable4InflateDB)"
+  local work="$WRDEV_ROOT/stall_work_db"
+  mkdir -p "$WRDEV_ROOT"
+  echo "copying pristine DB $pristine -> $work (mutated by the run)"
+  cp -f "$pristine" "$work" || die "could not copy pristine DB"
+  rm -f "${work}_bk" "${work}_bk.tmp" 2>/dev/null
+  echo "in-process backup-stall: archivers=$archivers seconds=$seconds pauseMs=$pausems"
+  echo "  EXP knobs: NOFREELISTSYNC=${WR_EXP_NOFREELISTSYNC:-} BACKUP_K=${WR_EXP_BACKUP_K:-} THROTTLE_MBPS=${WR_EXP_BACKUP_THROTTLE_MBPS:-} PREGROW_MB=${WR_EXP_PREGROW_MB:-} ARCHIVEDB=${WR_EXP_ARCHIVE_DB:-}"
+  osunset
+  WR_STALL_DB="$work" WR_STALL_ARCHIVERS="$archivers" WR_STALL_SECONDS="$seconds" WR_STALL_PAUSE_MS="$pausems" \
+    timeout $((seconds + 360)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4BackupStall -count=1 -v -timeout $((seconds + 300))s 2>&1 \
+    | grep -aE 'STALL|INFLATE|DUMP|relevant|goroutine|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
+  rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
 }
 
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
@@ -573,12 +616,18 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         (defaults 60000 2000 30 0); must fully drain once the stall is fixed.
                         Set WRDEV_DEBUG=1 (manager --debug, like prod) + padKB~25 so per-reserve
                         log lines match production's ~25KB cmds (the suspected stall trigger).
-  backup-stall-check [dbGB] [N] [limit] [runsec]
-                        CONFIRMED-root repro: inflates a fresh dbGB DB from scratch (portable),
+  backup-stall-check [dbGB] [N] [limit] [runsec] [records] [freelistGB]
+                        FAITHFUL LSF repro: inflates a fresh RECORD-DENSE DB from scratch
+                        (records real complete-jobs + a large persisted freelist; portable),
                         runs an isolated PROD-mode manager (backups ON) + N sleep jobs, showing
                         the periodic full-file DB backup freeze the manager -> archive timeouts ->
-                        churn (defaults 6 8000 2000 30). Fails until the backup fix lands.
-                        WRDEV_ROOT is where the DB + backup are stored (needs ~2x dbGB free).
+                        churn (defaults 8 8000 2000 30 2100000 2). Fails until the backup fix lands.
+                        WRDEV_ROOT holds the DB + backup (needs ~2x dbGB free). Set WRDEV_PRISTINE_DB
+                        to COPY a pre-generated DB instead of regenerating. A/B a fix with WR_EXP_*.
+  backup-stall-fast [archivers] [seconds] [pauseMs]
+                        FAST in-process repro (no LSF/manager): opens WRDEV_PRISTINE_DB via the real
+                        initDB (backups ON) and hammers db.archiveJob, timing each; archives over the
+                        TTR would churn. Seconds to run - the iteration harness for fixes (WR_EXP_*).
   monitor [halfN]       watch drain / churn counts / control-RPC latency
   probe [secs] [slowms] read the dev web /status_ws feed via wsprobe
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
@@ -631,7 +680,8 @@ case "${1:-help}" in
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
-  backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" ;;
+  backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
+  backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;
