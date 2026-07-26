@@ -35,6 +35,7 @@ package scheduler
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -346,6 +347,21 @@ func (s *lsf) pruneReserved(present map[string]bool) {
 			delete(s.reservedElements, id)
 		}
 	}
+}
+
+// bsubStderr returns bsub's stderr, extracted from an error returned by
+// exec.Cmd.Output(). When bsub starts but exits non-zero, Output() returns an
+// *exec.ExitError whose Stderr field holds the captured stderr (captured because
+// submitToQueue leaves Cmd.Stderr nil); that stderr carries the real LSF
+// rejection reason. Any other error (e.g. bsub could not be executed at all)
+// yields an empty string.
+func bsubStderr(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return strings.TrimSpace(string(exitErr.Stderr))
+	}
+
+	return ""
 }
 
 // bqueuesParser holds the mutable state used while parsing the output of
@@ -954,16 +970,16 @@ func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
 
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
-		// QUICK HACK (uncommitted, reliable4 prod trial): bsub's stderr holds the
-		// real LSF rejection reason (e.g. pending-job threshold, restricted queue).
-		// Output() populates ExitError.Stderr when cmd.Stderr is nil, so surface it
-		// instead of the bare "exit status 255".
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok { //nolint:errorlint // Output sets ExitError.Stderr directly, unwrapped
-			stderr = strings.TrimSpace(string(ee.Stderr))
-		}
+		// bsub reports the real reason an LSF submission was rejected (e.g. a
+		// pending-job threshold or a restricted queue) on its stderr, while err
+		// itself carries only the bare exit status (typically "exit status 255").
+		// bsubStderr recovers that stderr (captured by Output() into the returned
+		// *exec.ExitError) so we surface it alongside the exit status, making the
+		// rejection diagnosable rather than opaque.
+		msg := fmt.Sprintf("failed to run %s %s: %s (bsub stderr: %q)",
+			s.bsubExe, bsubArgs, err, bsubStderr(err))
 
-		return Error{lsfScheduler, opSchedule, fmt.Sprintf("failed to run %s %s: %s (bsub stderr: %q)", s.bsubExe, bsubArgs, err, stderr)}
+		return Error{lsfScheduler, opSchedule, msg}
 	}
 
 	matches := s.bsubRegex.FindStringSubmatch(string(bsubout))

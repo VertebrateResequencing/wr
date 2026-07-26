@@ -47,8 +47,9 @@
 //	  go test -tags reliability_repro ./jobqueue/ -run TestReliable4BackupStall -v
 //
 // The DB is MUTATED (new records archived, backups written); restore a pristine
-// copy between runs. Experimental fix knobs (WR_EXP_*) are read by initDB / the
-// backup path and let this same test A/B candidate mitigations.
+// copy between runs. The fix under test - a paced, chunked backup copy - is now
+// the default (see db_backupsync_linux.go), so the former experimental A/B knobs
+// (WR_EXP_*) no longer exist and this test simply exercises that default.
 
 package jobqueue
 
