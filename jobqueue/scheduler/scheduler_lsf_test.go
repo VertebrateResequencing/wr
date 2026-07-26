@@ -105,6 +105,28 @@ func TestLSFLoadPrivateKey(t *testing.T) {
 	})
 }
 
+// TestLSFSubmitToQueueStderr guards that when bsub fails, submitToQueue surfaces
+// bsub's stderr (which holds the real LSF rejection reason) in the returned
+// error, rather than only the bare "exit status 255". It needs no real LSF:
+// bsubExe is pointed at a tiny script that writes a known message to stderr and
+// exits non-zero, and submitToQueue returns on the Output() error before any
+// bjobs/regex work, so the fake script alone exercises the real error path.
+func TestLSFSubmitToQueueStderr(t *testing.T) {
+	Convey("submitToQueue surfaces bsub's stderr in the returned error when bsub fails", t, func() {
+		const wantStderr = "Job not submitted: pending job threshold reached"
+
+		fakeBsub := filepath.Join(t.TempDir(), "bsub")
+		writeFakeExe(t, fakeBsub, "#!/bin/sh\necho '"+wantStderr+"' >&2\nexit 255\n")
+
+		s := &lsf{bsubExe: fakeBsub}
+
+		err := s.submitToQueue(context.Background(), []string{"-J", "test"})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, wantStderr)
+		So(err.Error(), ShouldContainSubstring, "(bsub stderr:")
+	})
+}
+
 func TestLSF(t *testing.T) {
 	ctx := context.Background()
 	// check if LSF seems to be installed
