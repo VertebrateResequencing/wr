@@ -148,6 +148,27 @@ const (
 // 0 would use a single transaction.
 const compactTxMaxSize = 64 * 1024 * 1024
 
+// backupCopySyncInterval is how many bytes copyBackup writes to the backup file
+// before forcing writeback of that region (see backupCopyWriter.pace). 8 MiB caps
+// the delay a concurrent foreground archive/touch commit's fdatasync can suffer to
+// roughly one interval's worth of backup writeback, independent of the DB's size
+// or the storage's speed; it was tuned as the freeze-floor minimum below which the
+// periodic full-file backup no longer stalls the manager.
+const backupCopySyncInterval = 8 * 1024 * 1024
+
+//nolint:gochecknoglobals // prod-inert test seams for exercising the backup copy's pacing.
+var (
+	// backupCopySyncBytes is the pacing interval copyBackup uses; it defaults to
+	// backupCopySyncInterval and is a var only so tests can shrink it to exercise
+	// pacing on a small DB. Production never changes it.
+	backupCopySyncBytes int64 = backupCopySyncInterval
+
+	// backupPaceHook, when non-nil, is called at the start of each
+	// backupCopyWriter.pace(). It is nil in production and exists only so tests
+	// can observe that the backup copy is being paced.
+	backupPaceHook func()
+)
+
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
 	limitGroupChanged
@@ -306,6 +327,26 @@ func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, p
 	return nil
 }
 
+// pace bounds the backup copy's dirty-page backlog for the bytes written since the
+// last pace. On Linux it starts asynchronous writeback of the just-written range
+// and waits on the previous one (cheap, pipelined, no full-file round-trip);
+// elsewhere it falls back to a full fsync (portable, but adds copy duration).
+func (w *backupCopyWriter) pace() error {
+	if backupPaceHook != nil {
+		backupPaceHook()
+	}
+
+	curOffset, curLength := w.syncedOffset, w.written-w.syncedOffset
+	if handled, err := backupPaceRange(w.f, curOffset, curLength, w.prevOffset, w.prevLength); handled {
+		w.prevOffset, w.prevLength = curOffset, curLength
+		w.syncedOffset = w.written
+
+		return err
+	}
+
+	return w.f.Sync()
+}
+
 func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
 	requiredRAM := 0
 	if job.Requirements != nil {
@@ -360,72 +401,22 @@ type db struct {
 	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
 }
 
-// ---------------------------------------------------------------------------
-// reliable4 backup-stall EXPERIMENTAL knobs (TEMPORARY; env-gated no-ops).
-//
-// These let developers/wrdev.sh backup-stall-{check,fast} A/B candidate
-// mitigations for the big-DB backup stall (see .docs/reliable4/reinvestigation.md)
-// WITHOUT changing any default behaviour: each knob is inert unless its env var is
-// set. They will be removed once the real fix is chosen/implemented.
-// ---------------------------------------------------------------------------
-
-// boltOpenOptions returns the bbolt open options for the live database.
-// WR_EXP_NOFREELISTSYNC=1 sets NoFreelistSync, which skips the per-commit
-// full-freelist write (tx.Commit -> commitFreelist). On a churned, high-freelist
-// DB that write is the record/churn-correlated cost that stalls archive commits
-// during a backup; skipping it makes commits cheap (the freelist is instead
-// rebuilt by a one-time page scan on the next open).
-func boltOpenOptions() *bolt.Options {
-	opts := &bolt.Options{FreelistType: bolt.FreelistMapType}
-
-	if os.Getenv("WR_EXP_NOFREELISTSYNC") == "1" {
-		opts.NoFreelistSync = true
-	}
-
-	return opts
-}
-
-// applyBackupWait updates db.backupWait after a backup of the given duration.
-// By default it preserves the existing behaviour (raise the spacing to the last
-// backup's duration if that exceeded the minimum, so we never back up more often
-// than a backup takes). WR_EXP_BACKUP_K=<float>, when set, instead sets the
-// spacing to max(minimumTimeBetweenBackups, K*lastDuration) to space big-DB
-// backups out further (a frequency mitigation, not a per-freeze severity fix).
-// Caller must hold db.Lock.
-func (db *db) applyBackupWait(duration time.Duration) {
-	if v := os.Getenv("WR_EXP_BACKUP_K"); v != "" {
-		if k, err := strconv.ParseFloat(v, 64); err == nil && k > 0 {
-			db.backupWait = max(time.Duration(float64(duration)*k), minimumTimeBetweenBackups)
-
-			return
-		}
-	}
-
-	if duration > minimumTimeBetweenBackups {
-		db.backupWait = duration
-	}
-}
-
-// backupCopyWriter streams the backup copy to f, optionally rate-limiting to
-// bytesPerSec (WR_EXP_BACKUP_THROTTLE_MBPS) and/or forcing an incremental
-// f.Sync() every syncEvery bytes (WR_EXP_BACKUP_SYNC_MB). The periodic sync stops
-// the copy's writes accumulating as GBs of dirty (NFS) pages that would starve a
-// concurrent archive's fdatasync (the stall's remaining cause once the per-commit
-// freelist write is removed).
+// backupCopyWriter streams a consistent DB backup copy to f, forcing writeback of
+// the copy every syncEvery bytes via pace(). Without this the copy's writes
+// accumulate as gigabytes of dirty (e.g. NFS) pages that starve a concurrent
+// foreground archive's fdatasync, freezing the manager for the copy's duration
+// (the periodic full-file backup stall).
 type backupCopyWriter struct {
-	f           *os.File
-	start       time.Time
-	written     int64
-	sinceSync   int64
-	bytesPerSec int64
-	syncEvery   int64
+	f            *os.File
+	written      int64
+	sinceSync    int64
+	syncedOffset int64
+	prevOffset   int64 // previous paced chunk (SFR pipeline: one chunk behind)
+	prevLength   int64
+	syncEvery    int64
 }
 
 func (w *backupCopyWriter) Write(p []byte) (int, error) {
-	if w.start.IsZero() {
-		w.start = time.Now()
-	}
-
 	n, err := w.f.Write(p)
 	w.written += int64(n)
 
@@ -433,45 +424,35 @@ func (w *backupCopyWriter) Write(p []byte) (int, error) {
 		return n, err
 	}
 
-	if w.syncEvery > 0 {
-		w.sinceSync += int64(n)
-		if w.sinceSync >= w.syncEvery {
-			if serr := w.f.Sync(); serr != nil {
-				return n, serr
-			}
-
-			w.sinceSync = 0
-		}
+	if w.syncEvery <= 0 {
+		return n, nil
 	}
 
-	if w.bytesPerSec > 0 {
-		expected := time.Duration(float64(w.written) / float64(w.bytesPerSec) * float64(time.Second))
-		if elapsed := time.Since(w.start); expected > elapsed {
-			time.Sleep(expected - elapsed)
-		}
+	w.sinceSync += int64(n)
+	if w.sinceSync < w.syncEvery {
+		return n, nil
 	}
 
-	return n, err
+	w.sinceSync = 0
+
+	return n, w.pace()
 }
 
-// copyBackup writes a consistent copy of the DB (read tx) to path. By default it
-// uses tx.CopyFile; if WR_EXP_BACKUP_THROTTLE_MBPS or WR_EXP_BACKUP_SYNC_MB is
-// set it instead streams via a backupCopyWriter that throttles and/or
-// incrementally syncs the copy.
+// copyBackup writes a consistent copy of the DB (via a read tx) to path. It always
+// streams the copy through a backupCopyWriter that paces writeback every
+// backupCopySyncBytes, then fsyncs for durability. This produces the same file
+// tx.CopyFile would, but without letting the copy's dirty pages accumulate and
+// stall concurrent foreground commits.
 func (db *db) copyBackup(tx *bolt.Tx, path string) error {
-	mbps, _ := strconv.Atoi(os.Getenv("WR_EXP_BACKUP_THROTTLE_MBPS"))
-	syncMB, _ := strconv.Atoi(os.Getenv("WR_EXP_BACKUP_SYNC_MB"))
-
-	if mbps <= 0 && syncMB <= 0 {
-		return tx.CopyFile(path, dbFilePermission)
-	}
-
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, dbFilePermission)
 	if err != nil {
 		return err
 	}
 
-	w := &backupCopyWriter{f: f, bytesPerSec: int64(mbps) << 20, syncEvery: int64(syncMB) << 20}
+	w := &backupCopyWriter{
+		f:         f,
+		syncEvery: backupCopySyncBytes,
+	}
 
 	_, werr := tx.WriteTo(w)
 	if werr == nil {
@@ -479,6 +460,7 @@ func (db *db) copyBackup(tx *bolt.Tx, path string) error {
 	}
 
 	cerr := f.Close()
+
 	if werr != nil {
 		return werr
 	}
@@ -579,7 +561,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, boltOpenOptions())
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 			msg = "created new empty db file " + dbFile
 		} else {
 			err = copyFile(dbBkFile, dbFile)
@@ -587,14 +569,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, msg, err
 			}
 
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, boltOpenOptions())
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 			openedExistingDB = true
 		}
 	} else {
 		openedExistingDB = true
 
-		boltdb, err = bolt.Open(dbFile, dbFilePermission, boltOpenOptions())
+		boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 		if err != nil {
 			// try the backup
 			bkPath := dbBkFile
@@ -619,7 +601,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, boltOpenOptions())
+				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 				if errbk == nil {
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -639,7 +621,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 						return nil, msg, err
 					}
 
-					boltdb, err = bolt.Open(dbFile, dbFilePermission, boltOpenOptions())
+					boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
@@ -3110,7 +3092,11 @@ func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
 	db.backingUp = false
 	db.backupLast = time.Now()
 
-	db.applyBackupWait(time.Since(start))
+	// don't backup more often than backups take
+	duration := time.Since(start)
+	if duration > minimumTimeBetweenBackups {
+		db.backupWait = duration
+	}
 
 	if db.backupFinal {
 		// close() has been called, don't do any more backups and tell close()

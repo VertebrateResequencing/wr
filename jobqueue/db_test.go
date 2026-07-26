@@ -1049,6 +1049,110 @@ func TestDBCompactRoundTrip(t *testing.T) {
 	})
 }
 
+// TestDBBackupCopy checks copyBackup: it must produce a correct, re-openable copy
+// of the live DB, and it must pace that copy's writeback in backupCopySyncBytes
+// chunks rather than in one unpaced burst (the burst is what lets a big-DB backup
+// starve a concurrent foreground commit's fdatasync and freeze the manager).
+func TestDBBackupCopy(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		payloadValueSize      = 4 * 1024
+		payloadEntries        = 1024
+		testInterval          = 128 * 1024
+		minIntervalsSpanned   = 4
+		minPacesForMultiChunk = 2
+	)
+
+	Convey("Given a db populated past several backup pacing intervals", t, func() {
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		// real schema data, so the copy is compared against a non-trivial DB.
+		job := testDBArchivedJob("echo backup", "rg-backup", time.Now().Truncate(time.Nanosecond))
+		So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+
+		// bulk bytes, so the copy spans several pacing intervals.
+		payloadBucket := []byte("backupCopyTestPayload")
+		value := bytes.Repeat([]byte("x"), payloadValueSize)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			b, errc := tx.CreateBucketIfNotExists(payloadBucket)
+			if errc != nil {
+				return errc
+			}
+
+			for i := range payloadEntries {
+				if errp := b.Put(fmt.Appendf(nil, "k%06d", i), value); errp != nil {
+					return errp
+				}
+			}
+
+			return nil
+		})
+		So(err, ShouldBeNil)
+
+		copyPath := filepath.Join(tmpdir, "copy.db")
+
+		Convey("copyBackup produces a re-openable, data-identical copy", func() {
+			err = testDB.bolt.View(func(tx *bolt.Tx) error {
+				return testDB.copyBackup(tx, copyPath)
+			})
+			So(err, ShouldBeNil)
+
+			originalData := dbAllBucketData(t, testDB.bolt)
+			So(len(originalData), ShouldBeGreaterThan, payloadEntries)
+
+			copyDB, errc := bolt.Open(copyPath, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+			So(errc, ShouldBeNil)
+
+			copyData := dbAllBucketData(t, copyDB)
+			So(copyDB.Close(), ShouldBeNil)
+
+			So(copyData, ShouldResemble, originalData)
+		})
+
+		Convey("copyBackup paces writeback in backupCopySyncBytes-sized chunks", func() {
+			origBytes := backupCopySyncBytes
+			origHook := backupPaceHook
+
+			defer func() {
+				backupCopySyncBytes = origBytes
+				backupPaceHook = origHook
+			}()
+
+			var paceCount int
+
+			backupCopySyncBytes = testInterval
+			backupPaceHook = func() { paceCount++ }
+
+			err = testDB.bolt.View(func(tx *bolt.Tx) error {
+				return testDB.copyBackup(tx, copyPath)
+			})
+			So(err, ShouldBeNil)
+
+			info, errs := os.Stat(copyPath)
+			So(errs, ShouldBeNil)
+
+			maxPaces := int(info.Size() / testInterval)
+
+			// the copy genuinely spans several intervals...
+			So(maxPaces, ShouldBeGreaterThanOrEqualTo, minIntervalsSpanned)
+
+			// ...it was paced more than once (an unpaced tx.CopyFile would give 0)...
+			So(paceCount, ShouldBeGreaterThanOrEqualTo, minPacesForMultiChunk)
+
+			// ...and never more often than there were intervals to pace.
+			So(paceCount, ShouldBeLessThanOrEqualTo, maxPaces)
+		})
+	})
+}
+
 // testDBArchivedJob builds a job ready to be archived: it has its end state
 // (StartTime, EndTime, exit status and peak usage) populated so archiveJob can
 // record stats and the end-time index.
@@ -1077,6 +1181,38 @@ func testDBJob(cmd, repGroup string) *Job {
 		},
 		RepGroup: repGroup,
 	}
+}
+
+// dbAllBucketData returns every key/value across all (possibly nested) buckets in
+// bdb, keyed by a slash-joined bucket path, so two BoltDB files can be compared
+// for logical data equality.
+func dbAllBucketData(t *testing.T, bdb *bolt.DB) map[string]string {
+	t.Helper()
+
+	data := make(map[string]string)
+
+	err := bdb.View(func(tx *bolt.Tx) error {
+		return tx.ForEach(func(name []byte, b *bolt.Bucket) error {
+			return dbCollectBucket(string(name)+"/", b, data)
+		})
+	})
+	So(err, ShouldBeNil)
+
+	return data
+}
+
+// dbCollectBucket recursively records b's key/values into data under prefix,
+// descending into nested buckets (whose cursor value is nil).
+func dbCollectBucket(prefix string, b *bolt.Bucket, data map[string]string) error {
+	return b.ForEach(func(k, v []byte) error {
+		if v == nil {
+			return dbCollectBucket(prefix+string(k)+"/", b.Bucket(k), data)
+		}
+
+		data[prefix+string(k)] = string(v)
+
+		return nil
+	})
 }
 
 // dbTopLevelBuckets returns the names of every top-level bucket in the db, in
