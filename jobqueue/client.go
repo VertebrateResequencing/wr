@@ -2623,6 +2623,7 @@ func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 	requestJob.Host = job.Host
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
+	requestJob.RunnerPid = os.Getpid() // this client IS the runner process; report it for liveness
 	job.Unlock()
 
 	return &clientRequest{Method: requestMethodStart, Job: requestJob}, nil

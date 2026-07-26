@@ -635,6 +635,27 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 	return false
 }
 
+// KillProcessOnHost force-kills (SIGKILL) the given pid on hostName, best-effort:
+// a pid that is already gone is not an error. It is the counterpart to
+// ProcessNotRunningOnHost, used as a last-resort backstop to terminate a wedged
+// runner that has stopped reporting for far longer than any plausible archive
+// delay, so the normal dead-confirmation path can then re-run its job. Returns an
+// error only if the host is unreachable / the kill could not be issued.
+func (s *Scheduler) KillProcessOnHost(ctx context.Context, pid int, hostName string) error {
+	if pid <= 0 {
+		return nil
+	}
+
+	host, ok := s.impl.getHost(hostName)
+	if !ok {
+		return fmt.Errorf("could not get host %q to kill pid %d", hostName, pid) //nolint:err113
+	}
+
+	_, _, err := host.RunCmd(ctx, fmt.Sprintf("kill -9 %d 2>/dev/null || true", pid), false)
+
+	return err
+}
+
 // Cleanup means you've finished using a scheduler and it can delete any
 // remaining jobs in its system and clean up any other used resources.
 func (s *Scheduler) Cleanup(ctx context.Context) {
