@@ -2,7 +2,92 @@
 
 ---
 
-## ⛳ RESUME HERE (read this first — status as of 2026-07-26 early)
+## ✅ STATUS as of 2026-07-26 (read this first — reproducer done, root cause confirmed, fix found)
+
+**TL;DR:** the backup stall is now **reproduced from scratch**, its root cause is
+**confirmed** (not what UPDATE 2 guessed), and a **simple, validated fix** eliminates
+it. Recommendation at the bottom: **/bugfix** (small, localized).
+
+### The faithful from-scratch reproducer (built + committed)
+The trigger is the DB's complete-job **record count / churn**, not file size. A
+padding DB (few huge values, ~empty freelist) never reproduced even at 8GB.
+`jobqueue/reliable4_backup_repro_test.go` (`TestReliable4InflateDB`, build tag
+`reliability_repro`) now generates a DB with three production-like properties:
+(1) ~2.1M **real** codec-encoded complete-job records + the `endTimeToKey` index;
+(2) multi-GB size; (3) a **large persisted freelist** (throwaway bucket filled then
+`DeleteBucket`'d as the final write, so its pages persist as free on reopen). Two
+harnesses drive it (`developers/wrdev.sh`):
+- `backup-stall-fast [archivers] [seconds] [pauseMs]` — FAST, in-process, no LSF:
+  opens the big DB via the real `initDB` (prod, backups on) and hammers
+  `db.archiveJob`, timing each; a backup that freezes archives past the TTR = churn.
+  Uses `WRDEV_PRISTINE_DB` (copied per run). This is the iteration harness.
+- `backup-stall-check [dbGB] [N] [limit] [runsec] [records] [freelistGB]` — the
+  faithful end-to-end LSF gate (record-dense DB + prod manager + sleep jobs).
+Generate a pristine DB once: `WR_INFLATE_DB=... WR_INFLATE_RECORDS=2100000
+WR_INFLATE_GB=6 WR_INFLATE_FREELIST_GB=2 go test -tags reliability_repro ./jobqueue/
+-run TestReliable4InflateDB -timeout 3600s`.
+
+### Root cause (CONFIRMED — corrects UPDATE 2's "the copy is the problem")
+The backup **copy** is a **sequential** `io.CopyN` of `tx.Size()` bytes
+(bbolt tx.go `WriteTo`) and, on a 91GB-RAM box, reads mostly from page cache — so
+the copy's cost is ~the 6–10GB **write** to the `_bk` file, and is NOT the thing
+that scales with record count. The freeze is in the **foreground write path**:
+- A goroutine dump DURING a reproduced freeze shows: **all archivers parked in
+  `bbolt (*DB).Batch` (chan receive)**, **2 goroutines in `syscall`** (the one
+  bbolt write-tx committer + the backup copy), **none in `mmaplock`/`RWMutex`**.
+- So it is pure **I/O contention**, not a Go lock and not an mmap remap: the
+  backup's big write burst on the shared (NFS) filesystem stalls the single bbolt
+  write-tx committer's `write`/`fdatasync`, and every archiver serialises behind
+  bbolt's one writer (Batch). The freeze lasts ~the whole copy ⇒ 6.89GB → ~15s here,
+  6GB → 108s in production (slower/contended storage). Load-independent, recurs each
+  backup interval.
+- The per-commit **freelist write** (bbolt rewrites the whole freelist every commit;
+  ~4MB on a 3GB freelist) is a real **throughput** tax (see NoFreelistSync below) but
+  is NOT the freeze cause.
+
+### Experiments (in-process, 6.89GB DB / 3.1GB freelist, on /nfs/hgi)
+| config | archive throughput | max archive latency (freeze) |
+|---|---|---|
+| baseline | ~140/s | **15.8s** |
+| `NoFreelistSync` | ~390/s (2.8×) | 16.9s (freeze remains) |
+| throttle copy 100MB/s | ~390/s | 6.0s (reduced, not gone; copy 70s ⇒ staler) |
+| **incremental backup `fsync` every 32MB** | ~130/s | **0.70s (freeze GONE)** |
+| incremental fsync + NoFreelistSync | ~370/s | 0.59s |
+
+### The fix (validated) — incremental backup fsync
+Make the backup copy `f.Sync()` every ~32MB instead of buffering the whole multi-GB
+write. This keeps the backup's dirty-page backlog small so it never clogs the
+writeback queue the archive `fdatasync` waits on — **without** capping bandwidth
+(unlike throttle, so backups stay fresh) and **without** `NoFreelistSync`'s cost.
+Crucially the archive `fdatasync` then only ever waits behind ≤32MB of backup write,
+so archive latency is **bounded independent of total DB size AND storage speed**
+(32MB even on 10×-slower prod storage is sub-second) — this is what robustly kills
+the 108s production freeze. Prototyped behind `WR_EXP_BACKUP_SYNC_MB` in
+`db.copyBackup` (jobqueue/db.go). Optional add-ons, not required for zero churn:
+`NoFreelistSync` (`WR_EXP_NOFREELISTSYNC`, 2.8× archive throughput, but the freelist
+is rebuilt by a page-scan on next open — measure that cost); adaptive interval
+(`WR_EXP_BACKUP_K`, fewer backups). The archive-DB split (below) is a larger
+redesign that would also cut backup I/O **volume/staleness**, but is NOT needed to
+stop churn.
+
+### Recommendation
+**/bugfix.** The churn fix is a small, localized change to the backup copy path
+(incrementally fsync the destination), unit-testable via the existing
+`slowBackups`/`backupCopyWriter` hooks, with no change to DB durability, consistency,
+open behaviour, or the freelist. Make `SYNC_MB` a sensible default (≈16–32MB), keep
+it configurable, and drop the temporary `WR_EXP_*` scaffolding. (The archive-DB
+split remains a good, separate /spec-writer project if backup I/O **volume** on a
+growing history later becomes the concern — it is not the churn fix.)
+
+### Still TODO by the fresh agent
+- Confirm the fix at **10GB** (`pristine10` generating) via `backup-stall-fast` and
+  the LSF `backup-stall-check`; tune the sync interval.
+- Measure `NoFreelistSync` open-scan cost on 6–10GB before deciding to include it.
+- Turn OFF prod `--debug`. Isolated test dir: `/nfs/hgi/wr` (home is full).
+
+---
+
+## (HISTORICAL — superseded by the STATUS block above; UPDATE 2's "backup copy" root cause was corrected) earlier RESUME HERE
 
 **Where we are:** #1 (rac scan bound) and #3 (Started-timeout kill) shipped in PR
 #555 and are correct but NOT sufficient. Production still stalls at LSF scale.
