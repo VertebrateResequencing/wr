@@ -140,12 +140,16 @@ func TestReliable2Release(t *testing.T) {
 // to give up promptly on a not-in-Run release, but that give-up MUST NOT
 // swallow a genuine unrecorded success from a runner whose command finished
 // while the manager was crashed. The KEEP'd recovery window
-// (recoverInBackground/isRecovering/ErrRecovering; confirmOrReleaseLostJob
-// permanently protects recovered jobs via recoveredRunningJobs) restores a
-// still-owned running job into the Run sub-queue on restart, so the re-sent
-// archive is accepted (getij(cr, true) finds it) rather than discarded. This is
-// a behaviour + guard test only: no production change is expected, and if the
-// re-sent archive were wrongly discarded/re-run these assertions genuinely fail.
+// (recoverInBackground/isRecovering/ErrRecovering) restores a still-owned
+// running job into the Run sub-queue on restart, so the re-sent archive is
+// accepted (getij(cr, true) finds it) rather than discarded. What keeps that
+// safe once the recovered job's TTR lapses is confirmJobDead's both-pid liveness
+// check (checklist 260726-3/4): the runner here is os.Getpid(), still alive, so
+// the job is never confirmed dead / re-run and the re-sent archive still lands
+// (the old permanent recovered-protection this once relied on has been removed
+// as it bypassed the dead-check and backstop). This is a behaviour + guard test
+// only: no production change is expected, and if the re-sent archive were wrongly
+// discarded/re-run these assertions genuinely fail.
 func TestReliable2ReleaseCrashRecovery(t *testing.T) {
 	if runnermode || servermode {
 		return

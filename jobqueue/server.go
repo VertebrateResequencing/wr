@@ -1004,7 +1004,6 @@ type Server struct {
 	simutex             sync.RWMutex
 	krmutex             sync.RWMutex
 	ssmutex             sync.RWMutex // up, drain, blocking, Mode, shutdown's q-nil, recovering state
-	rrjMu               sync.RWMutex // leaf lock guarding recoveredRunningJobs
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
@@ -1015,17 +1014,16 @@ type Server struct {
 	blocking bool
 	// recovering, recoveryTotal and recoveryRestored track background prior-state
 	// recovery (spec B1); all guarded by ssmutex.
-	recovering           bool
-	recoveryTotal        int
-	recoveryRestored     int
-	racChecking          bool
-	killRunners          bool
-	subsClosed           bool // shutdown swept the subscriptions; see storeClientSubscription
-	racPending           bool
-	racRunning           bool
-	waitingReserves      []chan struct{}
-	recoveredRunningJobs map[string]bool
-	nextSubscriptionID   uint64
+	recovering         bool
+	recoveryTotal      int
+	recoveryRestored   int
+	racChecking        bool
+	killRunners        bool
+	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
+	racPending         bool
+	racRunning         bool
+	waitingReserves    []chan struct{}
+	nextSubscriptionID uint64
 
 	// lastRunToken is the last runToken this manager minted; only mintRunToken touches it.
 	lastRunToken atomic.Uint64
@@ -1361,7 +1359,7 @@ func (s *Server) rescheduleReadyAfterRecovery(ctx context.Context) {
 // return promptly; ServerShutdownWaitTime is only the threshold after which
 // bgWG.Wait logs any still-outstanding tasks (the wait itself does not time
 // out). It holds no server locks, so waiting cannot deadlock against the
-// goroutines' own lock acquisitions (queue mutex, rrjMu, ssmutex, db locks).
+// goroutines' own lock acquisitions (queue mutex, ssmutex, db locks).
 func (s *Server) stopBackgroundStartupTasks() {
 	if s.bgCancel != nil {
 		s.bgCancel()
@@ -3144,7 +3142,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               newCaster(false),
 		schedIssues:               make(map[string]*schedulerIssue),
-		recoveredRunningJobs:      make(map[string]bool),
 		recoveryPauseHook:         recoveryPauseHookForTest,
 		timings:                   timings,
 		itemTTR:                   timings.ItemTTR,
@@ -3638,10 +3635,6 @@ func (s *Server) recoverRunningJob(ctx context.Context, job *Job, loginUser stri
 			clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 		}
 	}
-
-	s.rrjMu.Lock()
-	s.recoveredRunningJobs[job.Key()] = true
-	s.rrjMu.Unlock()
 }
 
 // Block makes you block while the server does the job of serving clients. This
@@ -4072,9 +4065,12 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	job.EndTime = time.Now()
 	lostUpdate := jobUpdateFromLockedJob(job, JobStateLost)
 
-	// we don't test recovered jobs are dead because they might have exited
-	// while the server wasn't running, and we want the existing client to tell
-	// us if it should be archived or buried
+	// a recovered running job (restored on restart) is confirm-checked for death
+	// exactly like any other lost job: if its runner never reconnects it must be
+	// reclaimed, not parked forever. confirmJobDead's both-pid liveness check is
+	// what preserves an unrecorded success - it will not declare the job dead
+	// while its runner pid is still alive, so a slow/starved runner's command that
+	// finished while the server was down still gets to report its archive.
 	defer s.markJobLost(ctx, job, lostUpdate)
 
 	return queue.SubQueueRun
@@ -4145,12 +4141,8 @@ type lostJobDetails struct {
 // It is given the lost RUN rather than the queue's *Job, which every run of the
 // job shares: both branches check the job is still the pinned run first.
 func (s *Server) confirmOrReleaseLostJob(ctx context.Context, d lostJobDetails) {
-	s.rrjMu.RLock()
-	recovered := s.recoveredRunningJobs[d.key]
-	s.rrjMu.RUnlock()
-
 	switch {
-	case !d.killCalled && !recovered:
+	case !d.killCalled:
 		s.confirmJobDeadAndKill(ctx, d)
 	case d.killCalled:
 		defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
