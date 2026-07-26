@@ -347,6 +347,31 @@ func (w *backupCopyWriter) pace() error {
 	return w.f.Sync()
 }
 
+// writePacedChunk writes the leading syncEvery-bounded slice of p to the backup
+// file, advancing w.written and w.sinceSync, and paces once if that slice completes
+// a syncEvery interval. Sizing each slice to the interval boundary keeps pacing at
+// most one interval behind regardless of len(p). It returns the bytes consumed and
+// the first error (a short write or a pace failure).
+func (w *backupCopyWriter) writePacedChunk(p []byte) (int, error) {
+	chunk := p[:min(int64(len(p)), w.syncEvery-w.sinceSync)]
+
+	n, err := w.f.Write(chunk)
+	w.written += int64(n)
+	w.sinceSync += int64(n)
+
+	if err != nil {
+		return n, err
+	}
+
+	if w.sinceSync < w.syncEvery {
+		return n, nil
+	}
+
+	w.sinceSync = 0
+
+	return n, w.pace()
+}
+
 func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
 	requiredRAM := 0
 	if job.Requirements != nil {
@@ -416,26 +441,32 @@ type backupCopyWriter struct {
 	syncEvery    int64
 }
 
+// Write streams p to the backup file, pacing writeback every syncEvery bytes. It
+// splits p into sub-writes that each land on a syncEvery boundary, so a single
+// write larger than syncEvery (tx.WriteTo can hand us one) still paces once per
+// interval instead of accumulating an unbounded dirty-page backlog behind one late
+// pace. It returns the bytes consumed from p and the first error encountered.
 func (w *backupCopyWriter) Write(p []byte) (int, error) {
-	n, err := w.f.Write(p)
-	w.written += int64(n)
+	if w.syncEvery <= 0 {
+		n, err := w.f.Write(p)
+		w.written += int64(n)
 
-	if err != nil {
 		return n, err
 	}
 
-	if w.syncEvery <= 0 {
-		return n, nil
+	var total int
+
+	for len(p) > 0 {
+		n, err := w.writePacedChunk(p)
+		total += n
+		p = p[n:]
+
+		if err != nil {
+			return total, err
+		}
 	}
 
-	w.sinceSync += int64(n)
-	if w.sinceSync < w.syncEvery {
-		return n, nil
-	}
-
-	w.sinceSync = 0
-
-	return n, w.pace()
+	return total, nil
 }
 
 // copyBackup writes a consistent copy of the DB (via a read tx) to path. It always
