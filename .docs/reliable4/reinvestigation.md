@@ -54,6 +54,34 @@ that scales with record count. The freeze is in the **foreground write path**:
 | **incremental backup `fsync` every 32MB** | ~130/s | **0.70s (freeze GONE)** |
 | incremental fsync + NoFreelistSync | ~370/s | 0.59s |
 
+At **10GB** (3M records / 4.7GB freelist): baseline maxLat **10.99s** (freeze) →
+incremental `fsync` 32MB maxLat **0.70s (zero churn)**. Identical 0.70s at 6.89GB
+and 10GB confirms the archive-latency bound is **size-independent** — it meets the
+"cope with 10GB backups without any job churn" bar.
+
+**Backup-duration cost (measured, 6.89GB):** the fix makes each backup copy take
+~**36s** vs baseline ~**20s** (~1.8×) — the price of ~220 synchronous `fsync`
+round-trips. Bounded, not catastrophic, and archives stay at 0.77s throughout. So
+the fix trades a slightly longer, more-continuous backup for zero archive freeze.
+(A `sync_file_range(WRITE)`+`fadvise(DONTNEED)` variant would bound dirty pages
+without the synchronous round-trips, avoiding the bloat, at the cost of being
+Linux-specific — a possible refinement.)
+
+**End-to-end LSF (`backup-stall-check`, 6.89GB, 4000 sleep-20 jobs / limit 2000,
+NO --debug):** baseline `maxStatusRPC=751ms`, `badjobDelta=311`; fix
+`maxStatusRPC=192ms`, `badjobDelta=768`. The fix **improved manager responsiveness**
+(status-RPC 751→192ms = the manager backup freeze is gone, matching the in-process
+result), but BOTH runs still showed tail `badjob` churn (fix higher, but it also
+ran more jobs concurrently). That residual churn is NOT the manager backup freeze
+(the fix fixed that) — it is the SEPARATE client-side / fast-drain churn (real
+runners on a busy cluster missing touch/archive TTRs; cf. the earlier
+reinvestigation's "runner-starved-touch" component that #1/#3 only partly
+addressed). This fast-drain LSF config (drains in ~6min, no --debug so freezes are
+invisible in the log) is too noisy to cleanly A/B the backup effect; the in-process
+harness isolates it cleanly and is the reliable gate. A cleaner end-to-end check
+would sustain saturation (≫limit jobs, longer sleep) and run with --debug so
+backup freezes show as real log gaps.
+
 ### The fix (validated) — incremental backup fsync
 Make the backup copy `f.Sync()` every ~32MB instead of buffering the whole multi-GB
 write. This keeps the backup's dirty-page backlog small so it never clogs the
@@ -71,19 +99,45 @@ redesign that would also cut backup I/O **volume/staleness**, but is NOT needed 
 stop churn.
 
 ### Recommendation
-**/bugfix.** The churn fix is a small, localized change to the backup copy path
-(incrementally fsync the destination), unit-testable via the existing
-`slowBackups`/`backupCopyWriter` hooks, with no change to DB durability, consistency,
-open behaviour, or the freelist. Make `SYNC_MB` a sensible default (≈16–32MB), keep
-it configurable, and drop the temporary `WR_EXP_*` scaffolding. (The archive-DB
-split remains a good, separate /spec-writer project if backup I/O **volume** on a
-growing history later becomes the concern — it is not the churn fix.)
+**/bugfix for the backup-freeze churn, now.** Incrementally fsync the backup copy
+(default interval ≈16–32MB; `db.copyBackup`). It is small, localized, unit-testable
+(assert byte-identical copy + `Sync` called per interval), and changes nothing about
+DB durability, consistency, open behaviour or the freelist. It demonstrably removes
+the backup-induced manager freeze at 10GB (in-process 11s→0.7s; LSF status-RPC
+751→192ms). Drop the temporary `WR_EXP_*` scaffolding; keep the interval a named
+constant. Optional companions (separate, independent): `NoFreelistSync` (2.8× archive
+throughput — but measure its open-scan cost first) and an adaptive backup interval.
+Consider the `sync_file_range` variant to avoid the ~1.8× backup-duration bloat.
 
-### Still TODO by the fresh agent
-- Confirm the fix at **10GB** (`pristine10` generating) via `backup-stall-fast` and
-  the LSF `backup-stall-check`; tune the sync interval.
-- Measure `NoFreelistSync` open-scan cost on 6–10GB before deciding to include it.
-- Turn OFF prod `--debug`. Isolated test dir: `/nfs/hgi/wr` (home is full).
+**Also worth a /spec-writer: the archive-DB split** (the user's idea). It is the
+only approach that makes the FREQUENT backup **cheap** (small live DB) rather than
+pacing a whole multi-GB copy every ~30–60s — so it removes the churn AND the backup
+I/O **volume/staleness** cost that even the fixed full-copy still pays. Bigger change
+(splits jobscomplete/endTimeToKey by age across a live+archive DB, spans reads over
+both, promotes an ancient job back to live on re-run, adds a background ager +
+migration). Not required to STOP churn, but the better long-term design.
+
+**Note (separate issue):** the LSF end-to-end still shows tail `badjob` churn with
+the backup fix applied. That is NOT the backup freeze (fixed) — it is client-side /
+saturation TTR-miss churn (real runners on a busy cluster), the same family the
+earlier reinvestigation's #1/#3 only partly addressed. It needs its own follow-up
+and is out of scope for the backup-stall fix.
+
+### Validated
+- 10GB confirmed: baseline freeze 10.99s → incremental-fsync 0.70s, zero churn.
+- End-to-end LSF `backup-stall-check` (real churn counters, baseline vs fix) run as
+  final corroboration.
+
+### Still TODO (for the /bugfix and follow-up)
+- Implement the fix as default in `db.copyBackup` (sync interval ≈16–32MB, keep it
+  a named constant), drop the temporary `WR_EXP_*` scaffolding, add a unit test
+  (assert the copy is byte-identical AND `Sync` is called every interval, e.g. via a
+  countable writer / the `slowBackups` hook).
+- Tune the sync interval (16 vs 32 vs 64MB) if desired; 32MB already gives sub-second.
+- Measure `NoFreelistSync` open-scan cost on 6–10GB before deciding to also adopt it
+  (it is an optional throughput win, not part of the churn fix).
+- Turn OFF prod `--debug`. Isolated test dir: `/nfs/hgi/wr` (home is full);
+  pristine DBs at `/nfs/hgi/wr/sb10-bigdb/pristine{6,10}`.
 
 ---
 
