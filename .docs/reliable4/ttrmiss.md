@@ -1,9 +1,28 @@
 # reliable4 — TTR-miss archive-reject churn
 
-Status: 2026-07-26. Reproduced, root-caused, and a simple fix validated.
-**Recommendation (bottom): /bugfix** (a small grace before a confirmed-dead lost
-job is rerun), with the fuller "accept-late-success" being a /spec-writer escalation
-that is likely unnecessary.
+Status: 2026-07-26. **FIXED (finalized, default on)** via /bugfix `260726-3` — Fix C
+(record the runner's own pid; confirm a lost job dead only if BOTH the command AND
+runner pids are gone) plus the wedged-runner kill backstop, both now the DEFAULT (the
+`WR_EXP_RUNNERPID` / `WR_EXP_LOSTBACKSTOP_MS` gates are removed). The backstop is a real
+config value, `ServerConfig.Timings.LostRunnerBackstop` (default `ServerLostRunnerBackstop`
+= 1h; tests set it low). Regressions that run in `make test`:
+`jobqueue/TestReliable4RunnerPidLiveness` (live runner's completed job not re-run, late
+archive accepted), `jobqueue/TestReliable4LostRunnerBackstop` (wedged-but-alive runner
+force-killed after the backstop, slot reclaimed), and
+`jobqueue/scheduler/TestKillProcessCommandContract` (the kill-string forced-command
+contract). The build-tagged reproducers (`reliable4_ttrmiss_test.go`,
+`developers/wrdev.sh ttrmiss-check`) remain.
+
+**OPERATIONAL REQUIREMENT for the backstop KILL in production:** wr force-kills a wedged
+runner over ssh with `kill -9 <pid> 2>/dev/null || true # wr-kill -p <pid>`. Against the
+existing ps-only forced command that farm operators install in `~/.ssh/authorized_keys`
+(see cmd/conf.go privatekeypath docs) this degrades to a harmless `ps -p <pid>` — **no
+kill, no error — a SAFE NO-OP** (the wedged job simply stays parked, exactly today's
+behaviour, no regression). To actually ENABLE the backstop kill, the operator must install
+the UPDATED forced command documented in cmd/conf.go (which also permits `kill -9` and
+branches on the `kill` marker), or use an unrestricted key. The main fix (Part 1, not
+re-running a live runner's completed job) needs NO operational change — it uses only the
+existing `ps -o stat=` liveness check. Below is the original investigation write-up.
 
 ## What this is
 

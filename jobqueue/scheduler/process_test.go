@@ -28,6 +28,9 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -35,6 +38,20 @@ import (
 	log15 "github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// updatedForcedCommandParser mirrors the "ps + backstop kill" forced command
+// documented in cmd/conf.go (the case/grep parsing), with the terminal kill/ps
+// actions replaced by an echo of what they WOULD run, so the parse contract can be
+// exercised in a test without actually killing anything.
+const updatedForcedCommandParser = `c="$SSH_ORIGINAL_COMMAND"; ` +
+	`p=$(echo "$c" | grep -oE '[-]p [0-9]+' | grep -oE '[0-9]+' | head -1); ` +
+	`case "$c" in kill*) echo "KILL ${p:-0}";; *) echo "PS ${p:-0}";; esac`
+
+// psOnlyForcedCommandParser mirrors the ORIGINAL ps-only forced command in
+// cmd/conf.go, which ignores the requested command and only ever runs ps on the
+// extracted pid (here echoed as "PS <pid>").
+const psOnlyForcedCommandParser = `p=$(echo "$SSH_ORIGINAL_COMMAND" | grep -oE '[-]p [0-9]+' | ` +
+	`grep -oE '[0-9]+' | head -1); echo "PS ${p:-0}"`
 
 // captureLogCtx returns a context whose clog output is captured into the returned
 // buffer, so a test can assert whether a code path logged anything.
@@ -278,4 +295,59 @@ func TestInterpretProcessState(t *testing.T) {
 			}
 		})
 	})
+}
+
+// TestKillProcessCommandContract guards the compatibility contract of the string
+// KillProcessOnHost sends (see its CONTRACT WARNING), the way TestInterpretProcessState
+// guards the ps contract: it must (a) start with "kill", (b) carry the pid in a
+// "-p <pid>" token, and (c) be parsed by the documented updated forced command to
+// an actual `kill -9 <pid>`. It also pins the SAFE NO-OP degradation on the old
+// ps-only forced command, and that the updated forced command still runs the ps
+// liveness check correctly.
+func TestKillProcessCommandContract(t *testing.T) {
+	const pid = 424242
+
+	killStr := killProcessCommand(pid)
+	psStr := fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid)
+
+	Convey("The kill command string satisfies the forced-command contract", t, func() {
+		Convey("(a) it starts with the kill marker an updated forced command branches on", func() {
+			So(strings.HasPrefix(killStr, "kill"), ShouldBeTrue)
+		})
+
+		Convey("(b) it carries the pid in the same '-p <pid>' token the ps extractor uses", func() {
+			So(killStr, ShouldContainSubstring, fmt.Sprintf("-p %d", pid))
+			So(killStr, ShouldContainSubstring, fmt.Sprintf("kill -9 %d", pid))
+		})
+
+		Convey("(c) the documented updated forced command parses it to kill -9 <pid>", func() {
+			got, err := runForcedCommandParser(updatedForcedCommandParser, killStr)
+			So(err, ShouldBeNil)
+			So(got, ShouldEqual, fmt.Sprintf("KILL %d", pid))
+		})
+
+		Convey("the same forced command still runs the ps liveness check on the ps string", func() {
+			got, err := runForcedCommandParser(updatedForcedCommandParser, psStr)
+			So(err, ShouldBeNil)
+			So(got, ShouldEqual, fmt.Sprintf("PS %d", pid))
+		})
+
+		Convey("on the OLD ps-only forced command the kill string is a SAFE NO-OP (ps, no kill)", func() {
+			got, err := runForcedCommandParser(psOnlyForcedCommandParser, killStr)
+			So(err, ShouldBeNil)
+			So(got, ShouldEqual, fmt.Sprintf("PS %d", pid))
+		})
+	})
+}
+
+// runForcedCommandParser runs one of the forced-command parsers above under sh,
+// with SSH_ORIGINAL_COMMAND set to the command wr would send, and returns its
+// trimmed stdout (e.g. "KILL 424242" or "PS 424242").
+func runForcedCommandParser(parser, sshOriginalCommand string) (string, error) {
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", parser) // #nosec G204 -- fixed test parser
+
+	cmd.Env = append(os.Environ(), "SSH_ORIGINAL_COMMAND="+sshOriginalCommand)
+	out, err := cmd.Output()
+
+	return strings.TrimSpace(string(out)), err
 }
