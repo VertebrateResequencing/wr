@@ -187,6 +187,14 @@ func TestReliable4BackupStall(t *testing.T) {
 		}()
 	}
 
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		reliable4BackupTimer(t, dbBk, stop)
+	}()
+
 	runReliable4StallMonitor(t, db, stats, dbBk, seconds)
 
 	close(stop)
@@ -304,6 +312,40 @@ func runReliable4StallMonitor(t *testing.T, db *db, stats *reliable4StallStats, 
 		t.Logf("STALL t+%3.0fs archives=%d (%.0f/s) windowMaxLat=%s overSoft=%d overHard=%d errors=%d backup=%v",
 			time.Since(start).Seconds(), total, rate, windowMax.Round(time.Millisecond),
 			stats.overSoft.Load(), stats.overHard.Load(), stats.errors.Load(), backingUp)
+	}
+}
+
+// reliable4BackupTimer watches the temp backup file to time each backup copy's
+// wall-clock duration, so we can see whether a mitigation (e.g. incremental
+// fsync) bloats the copy. It logs each completed backup's duration.
+func reliable4BackupTimer(t *testing.T, dbBk string, stop <-chan struct{}) {
+	tmp := dbBk + ".tmp"
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	var (
+		started time.Time
+		n       int
+	)
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+
+		_, err := os.Stat(tmp)
+		present := err == nil
+
+		switch {
+		case present && started.IsZero():
+			started = time.Now()
+		case !present && !started.IsZero():
+			n++
+			t.Logf("BACKUP#%d copy took %s", n, time.Since(started).Round(time.Millisecond))
+			started = time.Time{}
+		}
 	}
 }
 

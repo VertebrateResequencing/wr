@@ -331,7 +331,7 @@ cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] -
   WR_STALL_DB="$work" WR_STALL_ARCHIVERS="$archivers" WR_STALL_SECONDS="$seconds" WR_STALL_PAUSE_MS="$pausems" \
     timeout $((seconds + 360)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4BackupStall -count=1 -v -timeout $((seconds + 300))s 2>&1 \
-    | grep -aE 'STALL|INFLATE|DUMP|relevant|goroutine|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
+    | grep -aE 'STALL|INFLATE|DUMP|BACKUP|relevant|goroutine|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
   rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
 }
 
