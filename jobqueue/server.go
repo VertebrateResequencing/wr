@@ -195,6 +195,7 @@ var (
 	ServerLostJobCheckTimeout                       = 15 * time.Second
 	ServerLostJobCheckRetryTime                     = 30 * time.Minute
 	ServerLostRunnerBackstop                        = 1 * time.Hour
+	ServerConfirmDeadConcurrency                    = 16
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
@@ -323,6 +324,19 @@ type ServerTimings struct {
 	// privatekeypath docs in cmd/conf.go and KillProcessOnHost). Tests set it low.
 	LostRunnerBackstop time.Duration
 
+	// ConfirmDeadConcurrency bounds how many lost jobs may be confirmed dead
+	// concurrently, i.e. the maximum number of confirmJobDead ->
+	// scheduler.ProcessNotRunningOnHost "ssh" checks in flight at once (default
+	// ServerConfirmDeadConcurrency). Under a mass false-lost event (a
+	// freeze/overload firing the TTR on thousands of jobs at once) markJobLost
+	// would otherwise spawn an unbounded storm of concurrent ssh sessions
+	// (file descriptors, network, CPU, and load on the single ssh auth path);
+	// excess confirmations wait for a slot. A delayed confirmation is safe: the
+	// both-pid check never condemns a live runner, so genuinely-dead jobs are
+	// merely reclaimed a little more slowly. Tests set it low. Non-positive
+	// values are replaced by the default.
+	ConfirmDeadConcurrency int
+
 	// ReleaseDelayMin is the minimum backoff before a released job becomes
 	// runnable again (default ClientReleaseDelayMin).
 	ReleaseDelayMin time.Duration
@@ -392,6 +406,10 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.TouchInterval = dfltDuration(t.TouchInterval, ClientTouchInterval)
 	t.RetryWait = dfltDuration(t.RetryWait, ClientRetryWait)
 	t.RetryTime = dfltDuration(t.RetryTime, ClientRetryTime)
+
+	if t.ConfirmDeadConcurrency <= 0 {
+		t.ConfirmDeadConcurrency = ServerConfirmDeadConcurrency
+	}
 
 	if t.RecSecRound <= 0 {
 		t.RecSecRound = RecSecRound
@@ -1053,6 +1071,14 @@ type Server struct {
 	itemTTR               time.Duration
 	lostJobCheckTimeout   time.Duration
 	lostJobCheckRetryTime time.Duration
+
+	// confirmDeadLimiter is a counting semaphore (buffered to
+	// timings.ConfirmDeadConcurrency) that bounds how many lost jobs may be
+	// confirmed dead -- i.e. run confirmJobDead's scheduler.ProcessNotRunningOnHost
+	// "ssh" checks -- concurrently, so a mass false-lost event cannot spawn an
+	// unbounded ssh storm. It is a per-Server field (not a package global) so
+	// independent servers, and tests, can size it differently.
+	confirmDeadLimiter chan struct{}
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -3147,6 +3173,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		itemTTR:                   timings.ItemTTR,
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
+		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
 	}
 
 	// create the queue now (its ready-added callback, which recovery's enqueue
@@ -4946,6 +4973,18 @@ func (s *Server) confirmJobDead(ctx context.Context, jobPID, jobRunnerPID int, j
 	if jobPID == 0 {
 		return false
 	}
+
+	// bound how many confirm-dead ssh checks run concurrently: under a mass
+	// false-lost event markJobLost spawns one confirmOrReleaseLostJob goroutine
+	// per lost job, and without this each would fire ProcessNotRunningOnHost ssh
+	// sessions at once (an FD/network/CPU storm on the single ssh auth path).
+	// Excess confirmations wait here for a slot. This covers both the initial
+	// confirmation and the confirmJobDeadAndKillAfterRetryTime retry, since both
+	// reach the ssh checks through this function. Delaying a confirmation is safe:
+	// the both-pid check below never condemns a live runner, so a genuinely-dead
+	// job is merely reclaimed a little later.
+	s.confirmDeadLimiter <- struct{}{}
+	defer func() { <-s.confirmDeadLimiter }()
 
 	ctx, cancel := context.WithTimeout(ctx, serverLostJobCheckTimeout)
 	defer cancel()
