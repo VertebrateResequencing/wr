@@ -46,6 +46,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/muxfys/v5"
@@ -68,6 +69,14 @@ const (
 	envCacheSize                  = 12
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
+
+	// backupDirtyPollInterval is how often the backup ticker checks the
+	// (lock-free) backupDirty flag. This is only the CHECK cadence: actual
+	// backups stay spaced out by backupWait (>= minimumTimeBetweenBackups) via
+	// waitBeforeBackup. A short cadence preserves the pre-fix behaviour that the
+	// first backup after activity is prompt (only subsequent ones are spaced),
+	// which several backup regression tests rely on.
+	backupDirtyPollInterval = 1 * time.Second
 
 	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFile)
 	// waits for the BoltDB file lock before erroring. The up-check in cmd guards
@@ -408,15 +417,24 @@ type db struct {
 	backupMount          *muxfys.MuxFys
 	backupNotification   chan bool
 	backupWait           time.Duration
+	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit int
 	wg                   *waitgroup.WaitGroup
 	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
+	// backupMu guards the backup-state fields below (backingUp, backupFinal,
+	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
+	// backup coordination off the exclusive db RWMutex so the archive/exit hot
+	// path never contends with it. backupDirty is lock-free (set by every
+	// completion, consumed by the backup ticker).
+	backupMu       sync.Mutex
+	backupDirty    atomic.Bool
 	backingUp      bool
 	backupFinal    bool
 	backupQueued   bool
+	backupStopped  bool // set by close() so no further periodic backup starts
 	backupsEnabled bool
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
@@ -804,9 +822,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupNotification: make(chan bool),
 		backupWait:         minimumTimeBetweenBackups,
 		backupStopWait:     make(chan bool),
+		backupTickerStop:   make(chan struct{}),
 		s3accessor:         accessor,
 		wg:                 waitgroup.New(),
 		upgradedOnOpen:     upgradedOnOpen,
+	}
+
+	if backupsEnabled {
+		go dbstruct.backupTicker(ctx)
 	}
 
 	return dbstruct, msg, err
@@ -1412,7 +1435,7 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	// silently skipped)
 
 	if err == nil && alreadyAdded != len(jobs) {
-		db.backgroundBackup(ctx)
+		db.backupDirty.Store(true)
 	}
 
 	return jobsToQueue, jobsToUpdate, alreadyAdded, err
@@ -1662,7 +1685,8 @@ func (db *db) checkIfComplete(key string) (bool, error) {
 // stdout/err.
 //
 // The key you supply must be the key of the job you supply, or bad things will
-// happen - no checking is done! A backgroundBackup() is triggered afterwards.
+// happen - no checking is done! The db is marked dirty afterwards, so the
+// backup ticker will back it up (this path takes no db lock).
 func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	var encoded []byte
 
@@ -1680,7 +1704,7 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		return db.archiveJobTx(tx, []byte(key), encoded, job)
 	})
 
-	db.backgroundBackup(ctx)
+	db.backupDirty.Store(true)
 
 	return err
 }
@@ -1751,7 +1775,7 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 		return err
 	}
 
-	db.backgroundBackup(ctx)
+	db.backupDirty.Store(true)
 	// *** we're not removing the lookup entries from the bucket*TK buckets, or
 	// their reverse entries, because the lookup buckets are historical.
 
@@ -2415,7 +2439,7 @@ func (db *db) launchJobChangeUpdate(ctx context.Context, key, encoded []byte) {
 			return
 		}
 
-		db.backgroundBackup(ctx)
+		db.backupDirty.Store(true)
 	}()
 }
 
@@ -2447,7 +2471,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 		clog.Error(ctx, "Database error during modify", "err", err)
 	}
 
-	go db.backgroundBackup(ctx)
+	db.backupDirty.Store(true)
 
 	return err
 }
@@ -2984,9 +3008,10 @@ func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
 	return nil
 }
 
-// close shuts down the db, should be used prior to exiting. Ensures any
-// ongoing backgroundBackup() completes first (but does not wait for backup() to
-// complete).
+// close shuts down the db, should be used prior to exiting. It stops the
+// periodic backup ticker, waits for any in-progress periodic backup and all
+// ongoing async write transactions to finish, then writes a final backup that
+// captures the fully-drained committed state before closing bolt.
 func (db *db) close(ctx context.Context) error {
 	db.Lock()
 	defer db.Unlock()
@@ -2997,37 +3022,87 @@ func (db *db) close(ctx context.Context) error {
 
 	db.closed = true
 
-	// before actually closing, wait for any go routines doing database
-	// transactions to complete
-	db.waitForOngoingTransactions()
-
-	// do a final backup
-	if db.backupsEnabled && db.backupQueued {
-		clog.Debug(ctx, "Jobqueue database not backed up, will do final backup")
-		db.backupToBackupFile(ctx, false)
-	}
+	db.finaliseBackup(ctx)
 
 	return db.closeBolt()
 }
 
-// waitForOngoingTransactions waits, with db.Lock held, for any in-progress
-// background backup and database transaction goroutines to finish. It
-// temporarily releases db.Lock while waiting, and re-acquires it before
-// returning.
-func (db *db) waitForOngoingTransactions() {
-	if db.backingUp {
-		db.backupFinal = true
-		close(db.backupStopWait)
-		db.Unlock()
-		<-db.backupNotification
-	} else {
-		db.Unlock()
+// finaliseBackup is called once from close() (with db.Lock held). It stops the
+// periodic backup ticker (if backups are enabled), waits for any in-progress
+// periodic backup and all ongoing async write transactions to finish, then -
+// unlike the periodic path - writes a final backup that captures everything, so
+// a clean shutdown's backup is complete. No backup-path code takes db.Lock, so
+// holding it here does not deadlock the in-progress backup we wait for.
+func (db *db) finaliseBackup(ctx context.Context) {
+	var inProgress bool
+
+	if db.backupsEnabled {
+		inProgress = db.stopBackupTicker()
 	}
 
+	// drain ongoing async write transactions so the final backup captures them.
 	db.wgMutex.Lock()
 	db.wg.Wait(dbRunningTransactionsWaitTime)
 	db.wgMutex.Unlock()
-	db.Lock()
+
+	if db.backupsEnabled && (db.backupDirty.Swap(false) || inProgress) {
+		clog.Debug(ctx, "Jobqueue database doing final backup before close")
+		db.backupToBackupFile(ctx, false)
+	}
+}
+
+// stopBackupTicker stops the periodic backup ticker and, if a periodic backup is
+// currently running, waits for it to finish (cutting short any spacing wait so
+// shutdown stays prompt). It returns whether a backup was in progress. Only
+// called from close(), when backups are enabled.
+func (db *db) stopBackupTicker() bool {
+	close(db.backupTickerStop)
+
+	db.backupMu.Lock()
+	db.backupStopped = true
+
+	inProgress := db.backingUp
+	if inProgress {
+		db.backupFinal = true
+		close(db.backupStopWait)
+	}
+	db.backupMu.Unlock()
+
+	if inProgress {
+		<-db.backupNotification
+	}
+
+	return inProgress
+}
+
+// backupTicker is the single long-lived goroutine that drives periodic backups.
+// Every backupDirtyPollInterval it consumes the lock-free backupDirty flag and,
+// if set, runs one backup (spaced out by backupWait via waitBeforeBackup). It
+// runs until close() closes backupTickerStop. Decoupling backup-triggering from
+// the archive/exit hot path (which now just sets backupDirty, taking no lock) is
+// the point of the fix.
+func (db *db) backupTicker(ctx context.Context) {
+	defer internal.LogPanic(ctx, "jobqueue database backup ticker", true)
+
+	for db.awaitBackupTick() {
+		if db.backupDirty.Swap(false) {
+			db.backgroundBackup(ctx)
+		}
+	}
+}
+
+// awaitBackupTick waits one backupDirtyPollInterval, returning true when it is
+// time to check backupDirty, or false when close() has stopped the ticker.
+func (db *db) awaitBackupTick() bool {
+	timer := time.NewTimer(backupDirtyPollInterval)
+	defer timer.Stop()
+
+	select {
+	case <-db.backupTickerStop:
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // closeBolt closes the underlying bolt db and unmounts any backup mount,
@@ -3052,15 +3127,16 @@ func (db *db) closeBolt() error {
 
 // backgroundBackup backs up the database to a file (the location given during
 // initDB()) in a goroutine, doing one backup at a time and queueing a further
-// backup if any other backup requests come in while a backup is running. Any
-// errors are silently ignored. Spaces out sequential backups so that there is a
-// gap of max(30s, [time taken to complete previous backup]) seconds between
-// them.
+// backup if the ticker fires again while a backup is running. Any errors are
+// silently ignored. Spaces out sequential backups so that there is a gap of
+// max(30s, [time taken to complete previous backup]) seconds between them. It is
+// driven by the backup ticker (and requeues), never by the hot path, and takes
+// only backupMu - never the db RWMutex.
 func (db *db) backgroundBackup(ctx context.Context) {
-	db.Lock()
-	defer db.Unlock()
+	db.backupMu.Lock()
+	defer db.backupMu.Unlock()
 
-	if db.closed || !db.backupsEnabled {
+	if db.backupStopped || !db.backupsEnabled {
 		return
 	}
 
@@ -3119,7 +3195,7 @@ func (db *db) waitBeforeBackup(last time.Time, wait time.Duration, doNotWait boo
 // finishBackgroundBackup updates backup bookkeeping after a backup completes
 // and either notifies a waiting close() or kicks off a queued backup.
 func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
-	db.Lock()
+	db.backupMu.Lock()
 	db.backingUp = false
 	db.backupLast = time.Now()
 
@@ -3130,11 +3206,10 @@ func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
 	}
 
 	if db.backupFinal {
-		// close() has been called, don't do any more backups and tell close()
-		// we finished our backup
+		// close() is waiting for this in-progress backup; tell it we finished
+		// and do not start any more backups.
 		db.backupFinal = false
-		db.backupStopWait = make(chan bool)
-		db.Unlock()
+		db.backupMu.Unlock()
 
 		db.backupNotification <- true
 
@@ -3143,27 +3218,24 @@ func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
 
 	if db.backupQueued {
 		db.backupQueued = false
-		db.Unlock()
+		db.backupMu.Unlock()
 		db.backgroundBackup(ctx)
 	} else {
-		db.Unlock()
+		db.backupMu.Unlock()
 	}
 }
 
-// backupToBackupFile is used by backgroundBackup() and close() to do the actual
-// backup.
+// backupToBackupFile writes a consistent snapshot of the committed database to
+// the backup file. It is called by the periodic backup ticker (via
+// runBackgroundBackup) and by close()'s final backup. bbolt's read transaction
+// already yields a consistent view of committed state, so the PERIODIC path does
+// NOT drain in-flight async writes here - that would hold db.wgMutex across a
+// (up to) dbRunningTransactionsWaitTime wg.Wait, blocking every new async-write
+// registration and serialising the exit hot path. A periodic backup may
+// therefore miss the last few in-flight writes (they land in the next backup) -
+// fine for a disaster-recovery fallback. close() instead drains the wg BEFORE
+// calling this, so a clean shutdown's final backup still captures everything.
 func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
-	// we most likely triggered this backup immediately following an operation
-	// that alters (the important parts of) the database; wait for those
-	// transactions to actually complete before backing up
-	db.wgMutex.Lock()
-	db.wg.Wait(dbRunningTransactionsWaitTime)
-
-	wgk := db.wg.Add(1)
-
-	db.wgMutex.Unlock()
-	defer db.wg.Done(wgk)
-
 	// create the new backup file with temp name
 	tmpBackupPath := db.backupPathTmp
 

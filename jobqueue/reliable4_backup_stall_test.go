@@ -353,9 +353,9 @@ func reliable4BackupTimer(t *testing.T, dbBk string, stop <-chan struct{}) {
 // reliable4BackupInProgress reports whether a backup is currently running, via
 // the db flag and the presence of the temp backup file.
 func reliable4BackupInProgress(db *db, dbBk string) bool {
-	db.RLock()
+	db.backupMu.Lock()
 	flag := db.backingUp
-	db.RUnlock()
+	db.backupMu.Unlock()
 
 	if flag {
 		return true
