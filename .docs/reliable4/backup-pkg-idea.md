@@ -1,10 +1,12 @@
 # PARKED: extract a general-purpose public bolt-backup package
 
-Decision (2026-07-27): capture this now, DEFER the work. We finish the wr reliability
-work first; once wr is fully reliable we refactor the backup code out to a new public
-package on a NEW branch, and wr depends on it. **Part-C-type copy-I/O relief belongs IN
-this package, not in-tree** — so do NOT implement an in-tree Part C throttle/stage; fold
-it into the package instead.
+Decision (2026-07-27): capture the PACKAGE-EXTRACTION idea now, DEFER only the extraction.
+On THIS branch (reliable4) we still implement everything needed for reliability IN-TREE —
+including **Part C** (copy-I/O relief: throttle/stage), which is part of completing
+reliability, done in `jobqueue/db.go` like Parts A+B. ONLY LATER, once wr is fully reliable,
+do we refactor ALL the backup code (Parts A+B, the paced writer, AND the in-tree Part C) out
+to a new public package on a NEW branch, and make wr depend on it. So: implement Part C
+in-tree now; extract it (with the rest) to the package later — do not skip it here.
 
 ## Why
 We have several repos that back up bolt DBs. The naive backup
