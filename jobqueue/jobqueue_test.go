@@ -480,8 +480,8 @@ func waitForFileToDisappear(path string, maxWait time.Duration) error {
 }
 
 func configureFastTestBackups(db *db) {
-	db.Lock()
-	defer db.Unlock()
+	db.backupMu.Lock()
+	defer db.backupMu.Unlock()
 
 	db.slowBackups = true
 	db.backupWait = 0
