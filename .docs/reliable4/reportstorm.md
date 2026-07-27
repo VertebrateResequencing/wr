@@ -208,6 +208,30 @@ Interpretation / what the fix must address (now evidence-backed, not hypothesise
   freeze > a few seconds. It reproduces at 50k/2000; raise the DB size or `limit` to make the
   freeze longer / the spiral deeper.
 
+CONFIRMED CAUSE — real-manager profiling under the reproduced churn (not hypothesised)
+--------------------------------------------------------------------------------------
+The isolated manager was run with `WR_RS_PPROF=6060` (WR_PPROF_ADDR endpoint) and sampled
+with goroutine dumps every 5s during the freeze. Distilled evidence:
+`.docs/reliable4/reportstorm_profile_evidence.txt`. During a backup freeze (peak dump
+~10,096 goroutines):
+  - (1) BACKUP goroutine 113 `[runnable]`: `runBackgroundBackup → backupToBackupFile →
+        copyBackup → bbolt.(*Tx).WriteTo → backupCopyWriter.Write` — io.CopyN of 0x27f21a000
+        (= the whole 10.7GB file), actively burning NFS write bandwidth.
+  - (2) COMMITTER goroutine 57125 `[runnable]`: `bbolt.(*batch).run → DB.Update →
+        Tx.Commit → freelist.Free` — the single write-tx, slow because the disk is saturated
+        by (1).
+  - (3) ~4780 ARCHIVERS blocked `[chan receive]`: `dispatchClientRequest → handleArchive →
+        archiveCompletedJob → archiveJob (db.go:1664) → bbolt.(*DB).Batch` — real report RPCs
+        waiting for (2).
+  - BLOCK profile: **31.25% of all cumulative block time is in handleArchive → archiveJob**
+    (bbolt.Batch), `backgroundBackup` 6.6% — i.e. report RPCs waiting on the committer IS the
+    dominant wait. Confirms the in-process block profile at real scale.
+  - SECONDARY (confirmed): ~852 goroutines in `golang.org/x/crypto/ssh` and confirmed_dead=213
+    — mass false-lost under the freeze spawns unbounded concurrent confirm-dead SSH sessions.
+This is the mechanism, measured: full-file backup starves the bbolt committer on NFS → report
+RPCs pile in bbolt.Batch past the 60s floor → time out → retry finds the item moved/removed →
+`jarchive/jtouch/jstart bad job` → success discarded + rerun.
+
 Fix strategy / recommendation
 -----------------------------
 Layer 1 is the proven dominant cause, is self-contained, and is the only layer the

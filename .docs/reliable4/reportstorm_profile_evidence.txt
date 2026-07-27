@@ -1,0 +1,102 @@
+reliable4 report-storm: REAL-MANAGER profile confirmation (2026-07-27)
+Isolated PROD-mode manager (pid from run), 10GB DB, backups ON, ~2000 LSF runners.
+Peak goroutine dump: g_1785142479.txt = 10096 goroutines during a backup freeze.
+
+== leaf-frame histogram (top blocking areas) ==
+   4359 go.etcd.io/bbolt.
+   2202 internal/poll.runtime_pollWait
+   2005 go.nanomsg.org/mangos/v3/protocol/xrep.
+    729 golang.org/x/crypto/ssh.
+    419 internal/sync.runtime_SemacquireMutex
+    132 sync.runtime_notifyListWait
+     71 github.com/VertebrateResequencing/wr/cloud.watchSSHSessionTimeout
+     71 github.com/VertebrateResequencing/wr/cloud.newSSHSessionWithTimeout
+     70 github.com/VertebrateResequencing/wr/cloud.sshDial
+     16 github.com/VertebrateResequencing/wr/cloud.
+     13 github.com/VertebrateResequencing/wr/jobqueue.
+      2 github.com/VertebrateResequencing/wr/queue.
+
+== (1) BACKUP goroutine: streaming the whole 10.7GB DB ==
+goroutine 113 [runnable]:
+github.com/VertebrateResequencing/wr/jobqueue.(*backupCopyWriter).Write(0x2e44ce9a2500, {0x2e44cd232000?, 0x8000?, 0x8000?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:449 +0xdf
+io.copyBuffer({0x134e9a0, 0x2e44ce9a2500}, {0x134df60, 0x2e44cca94fd8}, {0x0, 0x0, 0x0})
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/io/io.go:431 +0x1d4
+io.Copy(...)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/io/io.go:388
+io.CopyN({0x134e9a0, 0x2e44ce9a2500}, {0x1350720, 0x2e44ccc04690}, 0x27f21a000)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/io/io.go:364 +0x8c
+go.etcd.io/bbolt.(*Tx).WriteTo(0x2e44cd79a000, {0x134e9a0, 0x2e44ce9a2500})
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/tx.go:459 +0x78b
+github.com/VertebrateResequencing/wr/jobqueue.(*db).copyBackup(0x2e44cc78bd40?, 0x2e44cd79a000, {0x2e44c2c420c0?, 0x0?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:488 +0x8f
+github.com/VertebrateResequencing/wr/jobqueue.(*db).backupToBackupFile.func1(0x2e44c2d3a008?)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:3173 +0x25
+go.etcd.io/bbolt.(*DB).View(0x2e44c2bc4210?, 0x2e44d2de0ed8)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/db.go:939 +0x6c
+github.com/VertebrateResequencing/wr/jobqueue.(*db).backupToBackupFile(0x2e44c2c16000, {0x13570b8, 0x2e44c2b53d70}, 0x0)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:3172 +0x17e
+github.com/VertebrateResequencing/wr/jobqueue.(*db).runBackgroundBackup(0x2e44c2c16000, {0x13570b8, 0x2e44c2b53d70}, {0xd6879a?, 0x0?, 0x0?}, 0xd68720?, 0x40?, 0x0)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:3097 +0xd9
+created by github.com/VertebrateResequencing/wr/jobqueue.(*db).backgroundBackup in goroutine 92
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:3077 +0x167
+== (2) COMMITTER: the single bbolt write-tx in Commit (slow: NFS saturated by backup) ==
+goroutine 56944 [runnable]:
+internal/sync.runtime_Semrelease(0x2e44cd6efc90?, 0x36?, 0x2e44c2814040?)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/runtime/sema.go:124 +0x13
+internal/sync.(*Mutex).unlockSlow(0x2e44c2bc41e0?, 0x1ccb530?)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/internal/sync/mutex.go:232 +0x59
+internal/sync.(*Mutex).Unlock(...)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/internal/sync/mutex.go:198
+sync.(*Mutex).Unlock(...)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/sync/mutex.go:65
+go.etcd.io/bbolt.(*Tx).close(0x2e44c3c20460)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/tx.go:357 +0xda
+go.etcd.io/bbolt.(*Tx).Commit(0x2e44c3c20460)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/tx.go:275 +0x871
+go.etcd.io/bbolt.(*DB).Update(0x2e44cd466000?, 0x2e44d104cf18)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/db.go:915 +0xca
+go.etcd.io/bbolt.(*batch).run(0x2e44c94d47c0)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/db.go:1023 +0x117
+sync.(*Once).doSlow(0x45c430?, 0x2e44cf131340?)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/sync/once.go:78 +0xac
+sync.(*Once).Do(...)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/sync/once.go:69
+go.etcd.io/bbolt.(*batch).trigger(...)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/db.go:1005
+created by time.goFunc
+	/nfs/users/nfs_s/sb10/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.linux-amd64/src/time/sleep.go:215 +0x2d
+== (3) BLOCKED ARCHIVER: report RPC waiting in bbolt.Batch ==
+goroutine 64330 [chan receive]:
+go.etcd.io/bbolt.(*DB).Batch(0x2e44c2d3a008, 0x2e44d1b1a360)
+	/nfs/users/nfs_s/sb10/go/pkg/mod/go.etcd.io/bbolt@v1.4.3/db.go:984 +0x2dd
+github.com/VertebrateResequencing/wr/jobqueue.(*db).archiveJob(0x2e44c2c16000, {0x13570b8, 0x2e44c2b53d70}, {0x2e44cf44a700, 0x20}, 0x2e44c406d188)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go:1664 +0x17e
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).archiveCompletedJob(0x2e44c3bb5188, {0x13570b8, 0x2e44c2b53d70}, 0x2e44c406d188, {0x2e44cf44a700, 0x20}, {0x2e44c4064938, 0x4}, {0x2e44d7a7e880, 0x36})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:1143 +0x67
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).handleArchive(0x2e44c3bb5188, {0x13570b8, 0x2e44c2b53d70}, 0x2e44cd0f2000)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:1069 +0xdc
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).dispatchMethod(0x2e44c3bb5188, {0x13570b8, 0x2e44c2b53d70}, 0x2e44c8d2be90?, 0x97?)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:1666 +0x4af
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).handleRequest(0x2e44c3bb5188, {0x13570b8, 0x2e44c2b53d70}, 0x2e44d249e800)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:457 +0x146
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).dispatchClientRequest(0x2e44c3bb5188, {0x13570b8, 0x2e44c2b53d70}, 0x45c430?, 0x13570b8?, {0x2e44ce6db620?, 0x2e44c8d2bfb0?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:3349 +0xa5
+created by github.com/VertebrateResequencing/wr/jobqueue.(*Server).serveClientsReader in goroutine 27
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:1387 +0x1ba
+== BLOCK profile top (cumulative wait) ==
+File: wr
+Build ID: 0baeedf16a8aade96ff3b86544dd4dd744a0d102
+Type: delay
+Time: 2026-07-27 09:58:15 BST
+Showing nodes accounting for 445.28hrs, 99.73% of 446.47hrs total
+Dropped 331 nodes (cum <= 2.23hrs)
+Showing top 10 nodes out of 25
+      flat  flat%   sum%        cum   cum%
+ 261.61hrs 58.59% 58.59%  261.61hrs 58.59%  runtime.chanrecv1
+ 129.96hrs 29.11% 87.70%  129.96hrs 29.11%  runtime.selectgo
+  53.69hrs 12.03% 99.73%   53.69hrs 12.03%  sync.(*Mutex).Lock (inline)
+   0.02hrs 0.0035% 99.73%   29.51hrs  6.61%  sync.(*RWMutex).Lock
+
+== churn signature (manager log) ==
+   3797 jarchive(<hash>): bad job (not in queue or correct sub-queue)
