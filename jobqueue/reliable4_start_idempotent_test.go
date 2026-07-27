@@ -127,6 +127,73 @@ func TestReliable4StartIdempotent(t *testing.T) {
 	})
 }
 
+// TestReliable4StartIdempotentRunnerPid covers the PR #555 follow-up to the
+// idempotent-ack branch of applyJobStart: a DUPLICATE Started() for the same
+// host+pid must ALSO adopt a FIRST-SEEN runner pid. A job that went Running with
+// RunnerPid==0 (recovered from the DB, or first-started by an older runner that
+// reported no runner pid) whose current runner now re-sends Started() carrying a
+// real RunnerPid must record it, so confirmJobDead keeps the both-pid liveness
+// protection instead of falling back to the command-pid-only verdict. The
+// deliberately-preserved idempotent fields (Attempts/StartTime) must NOT change,
+// and an already-set non-zero RunnerPid must never be clobbered or overwritten.
+func TestReliable4StartIdempotentRunnerPid(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		pid       = 424242
+		host      = "runnerpid.example"
+		runnerPid = 515151
+	)
+
+	server := &Server{}
+	startTime := time.Now().Add(-time.Minute)
+
+	Convey("A duplicate Started() ack adopts a first-seen runner pid without a new attempt", t, func() {
+		job := &Job{
+			State: JobStateRunning, Pid: pid, Host: host, RunnerPid: 0,
+			Attempts: 1, StartTime: startTime, Lost: true,
+		}
+		crJob := &Job{Pid: pid, Host: host, RunnerPid: runnerPid}
+
+		So(server.applyJobStart(job, crJob), ShouldBeTrue)
+
+		// the newly-reported runner pid is recorded (restoring both-pid liveness)...
+		So(job.RunnerPid, ShouldEqual, runnerPid)
+		// ...the spurious Lost is cleared (fresh proof the runner is alive)...
+		So(job.Lost, ShouldBeFalse)
+		// ...but the idempotent guarantees are preserved: no new attempt, same start.
+		So(job.Attempts, ShouldEqual, uint32(1))
+		So(job.StartTime.Equal(startTime), ShouldBeTrue)
+	})
+
+	Convey("A duplicate Started() ack without a runner pid does not clobber an existing one", t, func() {
+		job := &Job{
+			State: JobStateRunning, Pid: pid, Host: host, RunnerPid: runnerPid,
+			Attempts: 1, StartTime: startTime,
+		}
+		crJob := &Job{Pid: pid, Host: host, RunnerPid: 0}
+
+		So(server.applyJobStart(job, crJob), ShouldBeTrue)
+
+		So(job.RunnerPid, ShouldEqual, runnerPid)
+		So(job.Attempts, ShouldEqual, uint32(1))
+	})
+
+	Convey("A duplicate Started() ack never overwrites an already-set runner pid", t, func() {
+		job := &Job{
+			State: JobStateRunning, Pid: pid, Host: host, RunnerPid: runnerPid,
+			Attempts: 1, StartTime: startTime,
+		}
+		crJob := &Job{Pid: pid, Host: host, RunnerPid: runnerPid + 1}
+
+		So(server.applyJobStart(job, crJob), ShouldBeTrue)
+
+		So(job.RunnerPid, ShouldEqual, runnerPid)
+	})
+}
+
 // serverJobAttempts reads the server-side job.Attempts for the given key under
 // lock, returning ok=false if the item is not in the queue.
 func serverJobAttempts(server *Server, key string) (int, bool) {
