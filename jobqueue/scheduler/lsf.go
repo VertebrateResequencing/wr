@@ -1282,7 +1282,7 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, maxAllowed int) (count i
 	if full {
 		// must match jobName's "wr<initial><token>_" layout so an isolated
 		// manager's WR_JOBNAME_TOKEN-namespaced jobs are still recognised as ours.
-		jobPrefix = fmt.Sprintf("wr%s%s_", s.config.Deployment[0:1], jobNameToken())
+		jobPrefix = jobNamePrefix(s.config.Deployment)
 	} else {
 		jobPrefix = jobName(cmd, s.config.Deployment, false)
 	}
@@ -1495,7 +1495,7 @@ func (s *lsf) cleanup(ctx context.Context) {
 		toKill = append(toKill, jobID)
 	}
 
-	err := s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
+	err := s.parseBjobs(jobNamePrefix(s.config.Deployment), cb)
 	if err != nil {
 		clog.Error(ctx, "cleaup parse bjobs failed", "err", err)
 	}

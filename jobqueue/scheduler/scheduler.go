@@ -740,13 +740,27 @@ func isProcessState(state string) bool {
 // (and its width) byte-identical to before.
 func jobName(cmd string, deployment string, unique bool) string {
 	l, h := farm.Hash128([]byte(cmd))
-	name := fmt.Sprintf("wr%s%s_%016x%016x", deployment[0:1], jobNameToken(), l, h)
+	name := jobNamePrefix(deployment) + fmt.Sprintf("%016x%016x", l, h)
 
 	if unique {
 		name += "_" + internal.RandomString()
 	}
 
 	return name
+}
+
+// jobNamePrefix returns the constant "wr<deployment-initial><token>_" prefix
+// shared by every scheduler job name (see jobName). It is the single source of
+// that prefix: job-name scans that must match all of a deployment's jobs (the
+// LSF checkCmd full-scan pruning and cleanup() bkill) derive their scan prefix
+// from here, so they stay byte-identical to jobName's leading prefix and can
+// never drift into matching - and killing - a different deployment's jobs.
+//
+// When WR_JOBNAME_TOKEN is set the token is included (see jobNameToken), so an
+// isolated manager scans only its own namespaced jobs; unset, it is the legacy
+// "wr<initial>_" prefix, byte-identical to before.
+func jobNamePrefix(deployment string) string {
+	return fmt.Sprintf("wr%s%s_", deployment[0:1], jobNameToken())
 }
 
 // jobNameToken returns the sanitised (alphanumeric-only) value of the
