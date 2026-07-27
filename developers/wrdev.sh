@@ -361,6 +361,55 @@ cmd_ttrmiss_check() {  # ttrmiss-check [jobs] [runners] [archiveDelayMs] - in-pr
     | grep -aE 'TTRMISS|PASS|FAIL|panic|^ok ' | grep -avE 'no test files'
 }
 
+cmd_report_storm() {  # report-storm [jobs] [runners] [limit] [seconds] - reliable4 post-resume report storm
+  # FAITHFUL in-process LOAD reproducer (build-tagged reliability_repro; NO LSF, NO manager process,
+  # NO runner subprocess) for the reliable4 "post-resume report storm": N fast jobs behind ONE small
+  # limit group across a few sibling memory groups, and M concurrent REAL client "runners" tight-
+  # looping ReserveScheduled -> Started(os.Getpid()) -> [15s-style touch loop] -> [stop touching] ->
+  # Archive(success), classifying every RPC exactly as the runner's reportFinalState retry loop. In
+  # prod the manager could not service reports fast enough: reports hit err="receive time out" ->
+  # reconnect -> retry -> rejected "bad job" -> "will need to be rerun", so successful fast commands
+  # were re-run forever and `complete` never advanced. It measures per-RPC outcomes (accepted / bad
+  # job / must-reserve / receive-time-out / other) for started+touch+archive, archive latency
+  # max/p50/p99, reserves, reconnects, and the live queue breakdown; final VERDICT = drained or churned.
+  # Optional big-DB confound (adds realistic archive-commit latency + periodic backups):
+  #   WR_RS_DB=/nfs/hgi/wr/sb10-bigdb/pristine10  (serve() opens a mutable COPY under WRDEV_ROOT;
+  #                                                 needs ~2x its size of scratch there)
+  # Other env knobs: WR_RS_TTR_MS (server ItemTTR, default 60000 = real), WR_RS_CMD_MS (simulated
+  # command runtime, default 0 = pure storm), WR_RS_STATUS=N (N concurrent `wr status`-style pollers
+  # that drive the O(backlog) s.q.AllItems() scan + complete-jobs DB read - the prime-suspect
+  # amplifier the runner storm alone does not exercise), WR_RS_STATUS_MS (poll interval, default 500).
+  # NOTE: in-process the client's per-request receive
+  # deadline is floored at 60s (ClientMinRequestTimeout) and all runners share ONE live pid, so on
+  # the fixed branch this is expected to DRAIN cleanly (a negative control / regression guard). The
+  # faithful churn needs real (NFS) storage + thousands of distinct dying runner processes; use the
+  # LSF-scale limit-drain for that.
+  need_repo
+  local jobs="${1:-5000}" runners="${2:-200}" limit="${3:-2000}" secs="${4:-120}"
+  echo "in-process report-storm: jobs=$jobs runners=$runners limit=$limit seconds=$secs bigDB=${WR_RS_DB:-none}"
+  echo "  knobs: WR_RS_TTR_MS=${WR_RS_TTR_MS:-60000} WR_RS_CMD_MS=${WR_RS_CMD_MS:-0} WRDEV_ROOT=$WRDEV_ROOT"
+  echo "  status_pollers=${WR_RS_STATUS:-0} (interval ${WR_RS_STATUS_MS:-500}ms) profile=${WR_RS_PROFILE_DIR:-off}"
+  mkdir -p "$WRDEV_ROOT"
+  osunset
+  WR_RS_JOBS="$jobs" WR_RS_RUNNERS="$runners" WR_RS_LIMIT="$limit" WR_RS_SECONDS="$secs" \
+  WR_RS_DB="${WR_RS_DB:-}" WR_RS_PROFILE_DIR="${WR_RS_PROFILE_DIR:-}" \
+  WR_RS_STATUS="${WR_RS_STATUS:-0}" WR_RS_STATUS_MS="${WR_RS_STATUS_MS:-500}" \
+    timeout $((secs + 600)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4ReportStorm -count=1 -v -timeout $((secs + 540))s 2>&1 \
+    | grep -aE 'REPORTSTORM|PASS|FAIL|panic|^ok ' | grep -avE 'no test files'
+}
+
+cmd_report_storm_profile() {  # report-storm-profile [jobs] [runners] [limit] [seconds] - report-storm + pprof
+  # As report-storm, but with the mutex+block+CPU profiler ON (writes
+  # reportstorm_<config>.{cpu,mutex,block}.pprof to WRDEV_ROOT). Use this to PIN the
+  # serialization point by symbol name, e.g. at the 50k-backlog + M=1000 config:
+  #   wrdev.sh report-storm-profile 50000 1000 2000 240
+  #   go tool pprof -top -nodecount=25 $WRDEV_ROOT/reportstorm_j50000_r1000_l2000.mutex.pprof
+  #   go tool pprof -top -nodecount=25 $WRDEV_ROOT/reportstorm_j50000_r1000_l2000.block.pprof
+  # (append _bigdb to the name when WR_RS_DB is set). Profiling perturbs timings slightly.
+  WR_RS_PROFILE_DIR="$WRDEV_ROOT" cmd_report_storm "${1:-50000}" "${2:-1000}" "${3:-2000}" "${4:-240}"
+}
+
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
   [ -x "$WSPROBE" ] || die "no wsprobe; run: $0 build"
   local secs="${1:-3}" slow="${2:-0}"
@@ -677,6 +726,16 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   runner-started-timeout-check
                         reliable4 #3 reproducer: a transient post-exec Started() RPC timeout
                         kills a healthy running command; fails until Started() tolerates it
+  ttrmiss-check [jobs] [runners] [archiveDelayMs]
+                        reliable4 in-process TTR-miss archive-reject churn: a starved/dead runner's
+                        late success is rejected + re-run (knobs WR_TTRMISS_TOUCH / _RUNNER_DEAD)
+  report-storm [jobs] [runners] [limit] [seconds]
+                        reliable4 FAITHFUL in-process report-storm LOAD repro: N fast jobs behind one
+                        limit group + M real runner goroutines; classifies every report RPC (defaults
+                        5000 200 2000 120). Set WR_RS_DB=<bigdb> for the archive-commit/backup confound.
+  report-storm-profile [jobs] [runners] [limit] [seconds]
+                        as report-storm but with the CPU+mutex+block profiler ON (pprof files to
+                        WRDEV_ROOT) to PIN the serialization point (defaults 50000 1000 2000 240)
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -705,6 +764,9 @@ case "${1:-help}" in
   priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
+  ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
+  report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
+  report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
   limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
   backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
   backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
