@@ -53,6 +53,7 @@ import (
 	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
 	"maps"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -730,13 +731,53 @@ func isProcessState(state string) bool {
 // jobName could be useful to a scheduleri implementer if it needs a constant-
 // width (length 36) string unique to the cmd and deployment, and optionally
 // suffixed with a random string (length 9, total length 45).
+//
+// When the WR_JOBNAME_TOKEN environment variable is set (see jobNameToken), the
+// token is inserted right after the deployment initial (e.g. "wrp<token>_..."),
+// so an isolated development/reproducer manager's scheduler jobs can be told
+// apart from a real deployment's "wrp_..." / "wrd_..." jobs and cleaned up
+// safely. The token is empty in production and normal use, leaving the name
+// (and its width) byte-identical to before.
 func jobName(cmd string, deployment string, unique bool) string {
 	l, h := farm.Hash128([]byte(cmd))
-	name := fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
+	name := fmt.Sprintf("wr%s%s_%016x%016x", deployment[0:1], jobNameToken(), l, h)
 
 	if unique {
 		name += "_" + internal.RandomString()
 	}
 
 	return name
+}
+
+// jobNameToken returns the sanitised (alphanumeric-only) value of the
+// WR_JOBNAME_TOKEN environment variable, or "" if unset. It namespaces a
+// manager's scheduler job names (wrp<token>_...) so it identifies and kills only
+// its OWN jobs, never another manager's (see jobName).
+//
+// This supports the real requirement that multiple production deployments on
+// different ports coexist safely: today's shared wrp_ prefix lets one manager's
+// cleanup match another's jobs. INTERIM: driven by an env var; the proper fix
+// derives the namespace from the manager's port via config so it is automatic
+// and needs no opt-in. See .docs/bugfixes/260727-1.md.
+func jobNameToken() string {
+	tok := os.Getenv("WR_JOBNAME_TOKEN")
+	if tok == "" {
+		return ""
+	}
+
+	var b strings.Builder
+
+	for _, r := range tok {
+		if isJobNameTokenChar(r) {
+			b.WriteRune(r)
+		}
+	}
+
+	return b.String()
+}
+
+// isJobNameTokenChar reports whether r is allowed in a job-name token (ASCII
+// alphanumerics only, so the token can never break the job-name layout).
+func isJobNameTokenChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }

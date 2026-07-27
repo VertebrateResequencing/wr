@@ -1280,7 +1280,9 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, maxAllowed int) (count i
 
 	var jobPrefix string
 	if full {
-		jobPrefix = fmt.Sprintf("wr%s_", s.config.Deployment[0:1])
+		// must match jobName's "wr<initial><token>_" layout so an isolated
+		// manager's WR_JOBNAME_TOKEN-namespaced jobs are still recognised as ours.
+		jobPrefix = fmt.Sprintf("wr%s%s_", s.config.Deployment[0:1], jobNameToken())
 	} else {
 		jobPrefix = jobName(cmd, s.config.Deployment, false)
 	}
