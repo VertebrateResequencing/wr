@@ -879,3 +879,41 @@ func parseJArray(t *testing.T, re *regexp.Regexp, line string) (string, int) {
 
 	return m[1], n
 }
+
+// TestLSFJobNamePrefix pins that the job-name prefix the LSF checkCmd full-scan
+// and cleanup() paths scan (and bkill) for is derived from the same source as
+// jobName, so it is WR_JOBNAME_TOKEN-inclusive and can never drift into matching
+// a *different* deployment's jobs. A legacy, un-tokenised cleanup prefix would
+// both miss this manager's own namespaced jobs and match (and bkill) another
+// deployment's jobs - the cross-deployment kill the token exists to prevent.
+// See jobNamePrefix in scheduler.go and .docs/bugfixes/260727-1.md.
+func TestLSFJobNamePrefix(t *testing.T) {
+	const deployment = "production"
+
+	Convey("The shared job-name scan prefix is consistent with jobName", t, func() {
+		Convey("Without WR_JOBNAME_TOKEN it is the legacy wr<initial>_ prefix", func() {
+			t.Setenv("WR_JOBNAME_TOKEN", "")
+
+			prefix := jobNamePrefix(deployment)
+
+			So(prefix, ShouldEqual, "wrp_")
+			So(jobName("anycmd", deployment, false), ShouldStartWith, prefix)
+		})
+
+		Convey("With WR_JOBNAME_TOKEN set it namespaces the prefix with the token", func() {
+			t.Setenv("WR_JOBNAME_TOKEN", "iso42")
+
+			prefix := jobNamePrefix(deployment)
+
+			// the scan prefix (used by both cleanup() and the checkCmd
+			// full-scan) must include the token so it matches jobName's
+			// namespaced output, i.e. this manager's OWN jobs...
+			So(prefix, ShouldEqual, "wrpiso42_")
+			So(jobName("anycmd", deployment, false), ShouldStartWith, prefix)
+
+			// ...and must NOT be the legacy wr<initial>_ prefix, which would
+			// instead match a different (e.g. production) deployment's jobs.
+			So(jobName("anycmd", deployment, false), ShouldNotStartWith, "wrp_")
+		})
+	})
+}
