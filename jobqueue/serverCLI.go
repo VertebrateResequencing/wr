@@ -1056,12 +1056,18 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 // live bucket, and adds it to the complete bucket.
 func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// remove the job from the queue, rpl and live bucket and add to complete
-	// bucket. The item must be in queue.ItemStateRun (getij's checkRunning): this
-	// restores v0.36.5's lenient acceptance - an alive owner's successful archive
-	// is always accepted while it still holds the reservation - while preserving
-	// the ErrRecovering retry path and the owner check that yields ErrMustReserve.
-	_, job, srerr := s.getij(cr, true)
+	// bucket. getijForReport accepts the owner's successful archive while the item
+	// is in ANY in-flight sub-queue (Run, or Delay/Ready after a busy manager
+	// speculatively released it) - not just Run - so a completed job's result is
+	// not discarded and re-run. A job that is already gone-and-complete is handled
+	// idempotently (jobAlreadyComplete), a new owner yields ErrMustReserve
+	// (new-run-wins) and a missing item during recovery yields ErrRecovering.
+	job, srerr := s.getijForReport(cr)
 	if srerr != "" {
+		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
+			return nil, "", "" // idempotent: the job is already archived/complete
+		}
+
 		return nil, srerr, ""
 	}
 
@@ -1076,9 +1082,9 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 // markJobComplete applies a successfully exited job's terminal state and marks it
 // complete under lock, returning its key, rep group and scheduler group (or an
 // Err* string if it cannot be completed). It does NOT gate on the queue item
-// state or job.State - that run-queue gating is done by getij(cr, true) at the
-// call site. It validates the owner (job.ReservedBy must match the optional
-// expectedReservedBy, else ErrMustReserve) and the end state
+// state or job.State - that item/ownership gating is done by getijForReport at
+// the call site (handleArchive). It validates the owner (job.ReservedBy must
+// match the optional expectedReservedBy, else ErrMustReserve) and the end state
 // (canCompleteFromEndState, else ErrBadRequest); on success it applies the end
 // state, sets State to JobStateComplete and clears FailReason, but deliberately
 // does NOT clear job.Lost (see the inline comment) so a parked-lost job's later
@@ -1162,15 +1168,23 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // (if forceBury, or it has failed too many times).
 func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
 	failMsg string) (*serverResponse, string, string) {
-	// require the item to still be in the Run sub-queue (getij's checkRunning),
-	// mirroring handleArchive. A release whose item has left Run - e.g. a winning
-	// double-reservation runner already dealt with it - is authoritatively "gone"
-	// on a live manager and returns ErrBadJob (or ErrRecovering while recovering),
-	// which lands in the client's give-up set so the losing runner abandons the
-	// dead reservation promptly instead of looping for the full 24h retryTime. A
-	// legitimate release (item in Run, owner matches) still proceeds (srerr == "").
-	_, job, srerr := s.getij(cr, true)
+	// getijForReport accepts the owner's release/bury report while the item is in
+	// ANY in-flight sub-queue (Run, or Delay/Ready after a busy manager
+	// speculatively released it) - not just Run - mirroring handleArchive, so a
+	// genuine failure report is applied rather than discarded and the job re-run.
+	// A job that is already gone-and-complete is handled idempotently
+	// (jobAlreadyComplete). A new owner yields ErrMustReserve (new-run-wins). A
+	// terminal (e.g. a winning double-reservation runner already buried it) or
+	// otherwise-gone item yields ErrBadJob, which lands in the client's give-up
+	// set so the losing runner abandons the dead reservation promptly instead of
+	// looping for the full 24h retryTime (reliable2 D1); a missing item during
+	// recovery yields ErrRecovering.
+	job, srerr := s.getijForReport(cr)
 	if srerr != "" {
+		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
+			return nil, "", "" // idempotent: the job is already terminal
+		}
+
 		return nil, srerr, ""
 	}
 
@@ -1722,6 +1736,68 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 	default:
 		return nil, ErrUnknownCommand, ""
 	}
+}
+
+// getijForReport resolves the item and job for a runner's FINAL-state report
+// (archive/release/bury). Unlike getij(cr, true) it does NOT require the item to
+// still be in the Run sub-queue: an exiting runner is the authority on its
+// command's outcome, so while it still holds the reservation (job.ReservedBy ==
+// cr.ClientID) its report is applied wherever a busy manager has parked the item
+// (Run, or Delay after a speculative lost-release), rather than being rejected as
+// ErrBadJob and re-run. A report from a client that no longer holds the
+// reservation - a genuinely new runner took the job over - is rejected with
+// ErrMustReserve (new-run-wins). A missing item is retryable during recovery
+// (ErrRecovering) and otherwise ErrBadJob (the caller may still treat an
+// already-completed job idempotently via jobAlreadyComplete).
+func (s *Server) getijForReport(cr *clientRequest) (*Job, string) {
+	key := cr.key()
+	if key == "" {
+		return nil, ErrBadRequest
+	}
+
+	item, err := s.q.Get(key)
+	if err != nil {
+		if s.isRecovering() {
+			return nil, ErrRecovering
+		}
+
+		return nil, ErrBadJob
+	}
+
+	// accept a report only for an IN-FLIGHT item: Run (normal, or parked Lost),
+	// or Delay/Ready after a busy manager speculatively released it. A TERMINAL
+	// item (Bury) or any other state is authoritatively "gone/resolved", so we
+	// return ErrBadJob and the runner gives up cleanly (D1) instead of looping on
+	// an internal release error - and an already-completed job is handled
+	// idempotently by the caller via jobAlreadyComplete.
+	switch item.Stats().State {
+	case queue.ItemStateRun, queue.ItemStateDelay, queue.ItemStateReady:
+	default:
+		return nil, ErrBadJob
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return nil, ErrBadJob
+	}
+
+	if cr.ClientID != job.ReservedBy {
+		return job, ErrMustReserve
+	}
+
+	return job, ""
+}
+
+// jobAlreadyComplete reports whether the keyed job is already in the completed
+// bucket. It makes a runner's archive/release retry idempotent when a busy
+// manager processed the first attempt but the response was lost to a client
+// timeout: the job is already done, so the caller returns success rather than
+// ErrBadJob (which the runner treats as a reason to re-run an already-complete
+// job, discarding the work and doubling it up).
+func (s *Server) jobAlreadyComplete(key string) bool {
+	jobs, err := s.db.retrieveCompleteJobsByKeys([]string{key})
+
+	return err == nil && len(jobs) > 0
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get

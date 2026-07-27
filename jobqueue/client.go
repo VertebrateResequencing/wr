@@ -2585,8 +2585,12 @@ func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconne
 
 	disconnected = c.disconnectAfterFailure(ctx)
 
-	if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) {
-		// this is a permanent error, give up
+	if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) ||
+		strings.Contains(err.Error(), ErrMustReserve) {
+		// a permanent error: the job is gone/terminal (ErrBadJob/ErrBadRequest) or a
+		// new runner has taken it over (ErrMustReserve, new-run-wins). Either way this
+		// runner must give up promptly rather than loop the 24h retry - the new owner
+		// (or the already-applied terminal state) is authoritative.
 		return disconnected, true
 	}
 

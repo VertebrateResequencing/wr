@@ -5077,6 +5077,18 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 		s.deleteJobIfRequested(ctx, job)
 	case item.Stats().State == queue.ItemStateDelay:
 		return currentState == JobStateDelayed, nil
+	case item.Stats().State == queue.ItemStateReady:
+		// a redundant release whose reservation the manager already released
+		// (TTR/lost, or a double-reservation) finds its item in ready once the
+		// release delay has elapsed (or immediately, for a zero-delay job).
+		// finalizeReleasedJob set job.State to JobStateDelayed at that first release
+		// (it never sets JobStateReady), so - mirroring the Delay case's job.State
+		// check - currentState==JobStateDelayed means the release is already applied
+		// and this report is idempotent: skip finalizeReleasedJob to avoid a double
+		// UntilBuried/group-count decrement. Ownership is confirmed by getijForReport
+		// before we get here; without this case the report would fall through to the
+		// default q.Release and error ErrNotRunning (looping the client's retry).
+		return currentState == JobStateDelayed, nil
 	default:
 		if errq := q.Release(ctx, key); errq != nil {
 			return false, errq

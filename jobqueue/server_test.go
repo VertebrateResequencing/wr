@@ -220,13 +220,14 @@ func TestSuccessfulArchiveOverridesLostReclaimBeforeRerun(t *testing.T) {
 	ctx := context.Background()
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	Convey("A successful archive is rejected once the job was released out of the run queue", t, func() {
-		// The reverted jarchive requires the queue item to be in SubQueueRun
-		// (getij(cr, true)); an explicitly-released job has left Run, so its archive
-		// is rejected as ErrBadJob. Under the full reliability fix an alive job is
-		// never released - it parks Lost in Run, where its owner's archive is
-		// accepted (TestReliable2HoldingRunnerArchiveAccepted) - so this only bites
-		// a genuinely-released job, exactly as in v0.36.5.
+	Convey("A successful archive completes the job even after a speculative release (owner unchanged)", t, func() {
+		// The holistic busy-exit fix (reliable4) accepts a final-state report from
+		// the reservation owner whenever the item is still in an in-flight sub-queue
+		// (Run, or Delay/Ready after a speculative release), gated by ownership. So a
+		// job the busy manager released still gets completed by its owner's success
+		// archive rather than being rejected as ErrBadJob and re-run. This replaces
+		// the earlier v0.36.5 "released -> reject" boundary; new-run-wins is still
+		// enforced (see the next Convey).
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -258,17 +259,21 @@ func TestSuccessfulArchiveOverridesLostReclaimBeforeRerun(t *testing.T) {
 		lostEnd := &JobEndState{Exited: true, Exitcode: -1, EndTime: time.Now()}
 		So(jq.Release(reserved, lostEnd, FailReasonLost), ShouldBeNil)
 
+		// Holistic busy-exit fix (reliable4): the original owner still holds the
+		// reservation (ReservedBy unchanged) and no new runner has taken the job
+		// over, so its successful archive is ACCEPTED and completes the job even
+		// though a speculative release moved the item to Delay - the success is not
+		// discarded and re-run. This deliberately replaces the earlier v0.36.5
+		// "released -> ErrBadJob" boundary (which discarded successes under a busy
+		// manager) with a precise ownership check; new-run-wins is still enforced by
+		// the ownership check, exercised by the next Convey.
 		successEnd := &JobEndState{Exited: true, Exitcode: 0, EndTime: lostEnd.EndTime.Add(time.Second)}
 		archiveErr := jq.Archive(reserved, successEnd)
-		So(archiveErr, ShouldNotBeNil)
-
-		var jqerr Error
-		So(errors.As(archiveErr, &jqerr), ShouldBeTrue)
-		So(jqerr.Err, ShouldEqual, ErrBadJob)
+		So(archiveErr, ShouldBeNil)
 
 		summaries, err := jq.GetStatusByRepGroupMatch(archivePortalCompress, RepGroupMatchExact, nil, true, false)
 		So(err, ShouldBeNil)
-		So(summaries[archivePortalCompress].Counts[JobStateComplete], ShouldEqual, 0)
+		So(summaries[archivePortalCompress].Counts[JobStateComplete], ShouldEqual, 1)
 	})
 
 	Convey("A stale successful archive cannot win after another runner reserves the job", t, func() {
