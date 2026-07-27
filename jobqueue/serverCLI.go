@@ -921,9 +921,18 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	// still clear Lost, because the duplicate report is fresh proof the runner is
 	// alive (a spurious TTR-driven markJobLost can set Lost=true while State stays
 	// Running); we deliberately do NOT touch Attempts/StartTime/EndTime, which is the
-	// whole point of the guard.
+	// whole point of the guard. We DO adopt a first-seen runner pid: a job that went
+	// Running with RunnerPid==0 (recovered from the DB, or first-started by an older
+	// runner that reported none) needs the current runner's pid recorded so
+	// confirmJobDead keeps the both-pid liveness protection instead of falling back
+	// to the command-pid-only verdict; we only fill an unset RunnerPid and never
+	// overwrite or clobber an existing one.
 	if job.State == JobStateRunning && job.Pid == crJob.Pid && job.Host == crJob.Host {
 		job.Lost = false
+
+		if job.RunnerPid == 0 && crJob.RunnerPid > 0 {
+			job.RunnerPid = crJob.RunnerPid
+		}
 
 		return true
 	}
