@@ -47,11 +47,17 @@ managerweb: "$DEV_WEB"
 managerhost: "localhost"
 managerdir: "$WRDEV_ROOT/.wr"
 EOF
+  # optional: put the DB backup on a DIFFERENT filesystem than the DB (WRDEV_PROD_BKFILE),
+  # to test whether a separate-volume backup avoids the NFS-write contention that starves
+  # the committer (direction E). Absolute path => wr keeps it as-is (see internal/config.go).
+  local bkline=""
+  [ -n "${WRDEV_PROD_BKFILE:-}" ] && bkline="managerdbbkfile: \"$WRDEV_PROD_BKFILE\""
   cat > "$CONFIG_DIR/.wr_config.production.yml" <<EOF
 managerport: "$PROD_PORT"
 managerweb: "$PROD_WEB"
 managerhost: "localhost"
 managerdir: "$WRDEV_ROOT/.wr-prod"
+$bkline
 EOF
 }
 
@@ -438,9 +444,15 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   # (big DB to copy; REQUIRED), WR_RS_PADKB (pad each cmd ~NKB to match prod's ~25KB debug lines),
   # WRDEV_DEBUG=1 (manager --debug, like prod). To amplify without more LSF slots, raise `limit`
   # (more concurrent archivers => longer backup stall) or use a bigger DB.
-  need_bin; ensure_config
+  need_bin
   local n="${1:-100000}" limit="${2:-2000}" runsec="${3:-1}"
   local pr="$PROD_RUN" plog="$PROD_RUN/log"
+  # optional: back the DB up to a DIFFERENT filesystem (direction E). WR_RS_BKDIR=<dir on
+  # another FS, e.g. Lustre> => the manager's db_bk lives there, so backup writes don't
+  # contend for the DB filesystem's write bandwidth. Must be set before ensure_config.
+  [ -n "${WR_RS_BKDIR:-}" ] && export WRDEV_PROD_BKFILE="$WR_RS_BKDIR/db_bk_$PROD_JOBTOKEN"
+  ensure_config
+  [ -n "${WR_RS_BKDIR:-}" ] && echo "backup filesystem: $WRDEV_PROD_BKFILE (separate from DB on $pr/db)"
   [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ] \
     || die "set WRDEV_PRISTINE_DB to a big pre-generated DB (make one with: $0 backup-stall-check, or see its header)"
   cmd_prod_stop >/dev/null 2>&1; sleep 2
@@ -490,6 +502,7 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/rsjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+  [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
 }
 
 report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-mode manager)
@@ -854,7 +867,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         LSF runners (distinct pids) + backup stall crossing 60s => the discard+rerun
                         spiral (defaults 100000 2000 1). REQUIRES WRDEV_PRISTINE_DB=<big DB>. Safe:
                         its LSF jobs are namespaced (never a real wrp_*). WRDEV_DEBUG=1 / WR_RS_PADKB /
-                        WR_RS_PPROF=<port> (profile the real manager: goroutine dumps + block/mutex/heap).
+                        WR_RS_PPROF=<port> (profile the real manager) / WR_RS_BKDIR=<dir on another FS,
+                        e.g. Lustre> (back up to a separate filesystem so it can't starve the DB's I/O).
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
