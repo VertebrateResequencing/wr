@@ -20,6 +20,13 @@ PROD_WEB="${PROD_WEB:-51783}"
 QUEUE="${QUEUE:-normal}"            # LSF queue to force jobs to
 MEM_GROUPS="${MEM_GROUPS:-100}"     # spread jobs across this many memory groups
 
+# WR_JOBNAME_TOKEN for our ISOLATED prod-mode manager: its LSF jobs are named
+# wrp<token>_* instead of wrp_*, so they can NEVER be confused with (or bkilled
+# alongside) a REAL --deployment production manager's wrp_* jobs. See the naming
+# hack in jobqueue/scheduler/{scheduler,lsf}.go and .docs/bugfixes/260727-1.md.
+PROD_JOBTOKEN="${PROD_JOBTOKEN:-iso$PROD_PORT}"
+PROD_JOB_PREFIX="wrp${PROD_JOBTOKEN}_"   # LSF job-name prefix of our isolated prod manager
+
 WR="$WRDEV_ROOT/wr"                 # isolated binary (all our managers use this)
 WSPROBE="$WRDEV_ROOT/wsprobe"
 CONFIG_DIR="$WRDEV_ROOT/config"
@@ -301,7 +308,9 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
     echo "NO STALL: jobs drained cleanly despite backups (the fix works)"
   fi
   echo "## CLEANUP"; cmd_prod_stop 2>&1 | tail -1
-  bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk '$2 ~ /^wrp_/{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
+  # SAFE: our isolated manager's jobs are namespaced ${PROD_JOB_PREFIX}* (never a real wrp_*)
+  timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
+  bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/bkjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
 }
 
@@ -408,6 +417,108 @@ cmd_report_storm_profile() {  # report-storm-profile [jobs] [runners] [limit] [s
   #   go tool pprof -top -nodecount=25 $WRDEV_ROOT/reportstorm_j50000_r1000_l2000.block.pprof
   # (append _bigdb to the name when WR_RS_DB is set). Profiling perturbs timings slightly.
   WR_RS_PROFILE_DIR="$WRDEV_ROOT" cmd_report_storm "${1:-50000}" "${2:-1000}" "${3:-2000}" "${4:-240}"
+}
+
+cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale FAITHFUL report-storm CHURN repro
+  # The in-process report-storm CANNOT reproduce the prod churn: the client receive deadline
+  # is floored at 60s (ClientMinRequestTimeout), so a report only times out if ONE server RPC
+  # exceeds 60s, and in-process (fast storage, ONE shared runner pid) the worst was 16.5s and
+  # a spuriously-lost job just parks (its owner's archive still accepted). Reproducing the churn
+  # needs the two prod-only amplifiers, which THIS provides:
+  #   (1) real (NFS) storage + a big DB so the periodic full-file backup starves the bbolt
+  #       committer past 60s (raise WRDEV_PRISTINE_DB size / concurrency until a GAP > 60s shows);
+  #   (2) real LSF runners = thousands of DISTINCT pids, so a job whose runner exited/was killed
+  #       is confirmed dead and released -> its late archive is then rejected "bad job" -> the
+  #       success is discarded and the job re-runs (retries 30) -> the spiral.
+  # Shape (like prod's results_portal:2000): N >> limit SHORT jobs in ONE limit group across
+  # MEM_GROUPS memory groups on an isolated PROD-mode manager (backups ON) opened on a COPY of a
+  # big pre-generated DB. Its LSF jobs are namespaced ${PROD_JOB_PREFIX}* so cleanup is SAFE while
+  # a real production manager runs. Healthy code drains; pre-fix, complete STALLS while badjob /
+  # confirmed_dead / delayed climb and the manager log shows backup GAPs. Knobs: WRDEV_PRISTINE_DB
+  # (big DB to copy; REQUIRED), WR_RS_PADKB (pad each cmd ~NKB to match prod's ~25KB debug lines),
+  # WRDEV_DEBUG=1 (manager --debug, like prod). To amplify without more LSF slots, raise `limit`
+  # (more concurrent archivers => longer backup stall) or use a bigger DB.
+  need_bin; ensure_config
+  local n="${1:-100000}" limit="${2:-2000}" runsec="${3:-1}"
+  local pr="$PROD_RUN" plog="$PROD_RUN/log"
+  [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ] \
+    || die "set WRDEV_PRISTINE_DB to a big pre-generated DB (make one with: $0 backup-stall-check, or see its header)"
+  cmd_prod_stop >/dev/null 2>&1; sleep 2
+  mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
+  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"
+  echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes; LSF jobs will be ${PROD_JOB_PREFIX}*"
+  local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
+  local ppf=""; [ -n "${WR_RS_PPROF:-}" ] && ppf="WR_PPROF_ADDR=localhost:$WR_RS_PPROF"
+  echo "starting isolated PROD-mode manager (backups ON) on the big DB; debug=${WRDEV_DEBUG:-0} pprof=${WR_RS_PPROF:-off}"
+  # shellcheck disable=SC2086 # deliberate word-splitting of the optional env assignments
+  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" $ppf timeout 90 "$WR" manager start --deployment production -s lsf $dbg 2>&1 \
+    | grep -aE 'started on|token=' | head -2
+  echo "pid $(mgr_pid "$PROD_RUN")"
+  sleep 5
+  # optional pprof sampler: dump all goroutine stacks every 5s so we CATCH a freeze in the
+  # act (the pprof http server runs on its own goroutine, unaffected by the DB-committer
+  # freeze, so it keeps answering). Correlate a dump's mtime with a log GAP to see who is
+  # blocked where (expect: bbolt committer in fdatasync, backup in tx.WriteTo, archivers in
+  # Batch sync.Cond.Wait). Enable with WR_RS_PPROF=<port>.
+  local sampler_pid="" pdir=""
+  if [ -n "${WR_RS_PPROF:-}" ]; then
+    pdir="$WRDEV_ROOT/rsprof"; mkdir -p "$pdir"; rm -f "$pdir"/* 2>/dev/null
+    ( while true; do timeout 8 curl -s "http://localhost:$WR_RS_PPROF/debug/pprof/goroutine?debug=2" -o "$pdir/g_$(date +%s).txt" 2>/dev/null; sleep 5; done ) &
+    sampler_pid=$!
+    echo "goroutine sampler pid $sampler_pid -> $pdir (every 5s)"
+  fi
+  local pad=""; local padkb="${WR_RS_PADKB:-0}"
+  [ "$padkb" -gt 0 ] && pad=$(head -c $((padkb*1024)) /dev/zero | tr '\0' x)
+  echo "adding $n sleep-$runsec jobs (limit reprolimit:$limit, pad ${padkb}KB) across $MEM_GROUPS mem groups"
+  PAD="$pad" perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep $runsec #'.\$i.' '.\$ENV{PAD}.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/rsjobs.json"
+  local out rc
+  out=$(osunset; timeout 300 "$WR" add -f "$WRDEV_ROOT/rsjobs.json" --rep_grp rgrs --limit_grps "reprolimit:$limit" --retries 30 --deployment production 2>&1); rc=$?
+  echo "$out" | tail -1
+  echo "$out" | grep -qE 'Added [1-9][0-9]* new commands' || die "report-storm-lsf aborted - 0 jobs added (manager up?)"
+  report_storm_lsf_monitor "$n" "$plog"
+  if [ -n "${WR_RS_PPROF:-}" ]; then
+    echo "## capturing block/mutex/heap profiles -> $pdir (analyse with: go tool pprof -top <file>)"
+    timeout 20 curl -s "http://localhost:$WR_RS_PPROF/debug/pprof/block" -o "$pdir/block.pprof" 2>/dev/null
+    timeout 20 curl -s "http://localhost:$WR_RS_PPROF/debug/pprof/mutex" -o "$pdir/mutex.pprof" 2>/dev/null
+    timeout 20 curl -s "http://localhost:$WR_RS_PPROF/debug/pprof/heap"  -o "$pdir/heap.pprof"  2>/dev/null
+    [ -n "$sampler_pid" ] && kill "$sampler_pid" 2>/dev/null
+    echo "captured $(ls -1 "$pdir"/g_*.txt 2>/dev/null | wc -l) goroutine dumps + block/mutex/heap"
+  fi
+  echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
+  # SAFE: only our namespaced isolated-manager jobs; NEVER a real wrp_*
+  timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
+  bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
+  rm -f "$WRDEV_ROOT/rsjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+}
+
+report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-mode manager)
+  local n="${1:-100000}" plog="$2"; local t0; t0=$(date +%s); local prevc=-1 stall=0
+  local basebad=-1 maxrpc=0 maxdelayed=0 maxlost=0 bj=0
+  num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
+  for _ in $(seq 1 60); do
+    local st cc cb cr cl cd run kd ar s e rpc
+    st=$(osunset; timeout 30 "$WR" status --deployment production -i rgrs -o counts 2>/dev/null)
+    cc=$(num "$st" complete); cb=$(num "$st" buried); cr=$(num "$st" running); cd=$(num "$st" delayed)
+    cl=$(echo "$st"|grep -oE 'lost[^0-9]*[0-9]+'|grep -oE '[0-9]+'|head -1)
+    cc=${cc:-0}; cb=${cb:-0}; cr=${cr:-0}; cd=${cd:-0}; cl=${cl:-0}
+    run=$(timeout 20 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
+    bj=$(grep -ac 'bad job' "$plog" 2>/dev/null); bj=${bj:-0}
+    kd=$(grep -ac 'confirming it was dead' "$plog" 2>/dev/null); kd=${kd:-0}
+    ar=$(grep -ac 'jarchive.*bad job\|jarchive.*must Reserve' "$plog" 2>/dev/null); ar=${ar:-0}
+    [ "$basebad" -lt 0 ] && basebad=$bj
+    s=$(date +%s%3N); timeout 65 "$WR" status --deployment production -i rgrs -o counts >/dev/null 2>&1; e=$(date +%s%3N); rpc=$((e-s))
+    [ "$cd" -gt "$maxdelayed" ] && maxdelayed=$cd; [ "$rpc" -gt "$maxrpc" ] && maxrpc=$rpc; [ "$cl" -gt "$maxlost" ] && maxlost=$cl
+    echo "t+$(( $(date +%s)-t0 ))s complete=$cc/$n running=$cr delayed=$cd lost=$cl LSF_RUN=$run badjob=$bj confirmed_dead=$kd archive_reject=$ar status_rpc=${rpc}ms"
+    [ $((cc+cb)) -ge "$n" ] && { echo "FULLY DRAINED (complete=$cc buried=$cb)"; break; }
+    if [ "$cc" -eq "$prevc" ]; then stall=$((stall+1)); else stall=0; fi
+    prevc=$cc
+    [ "$stall" -ge 6 ] && { echo "CHURN/STALL REPRODUCED: complete stuck at $cc/$n ~3min (badjob=$bj confirmed_dead=$kd archive_reject=$ar delayed=$cd lost=$cl)"; break; }
+    sleep 30
+  done
+  echo "## manager log freezes (gaps >5s) - a gap > 60s crosses the client receive floor:"
+  grep -oaP 'T\d\d:\d\d:\d\d' "$plog" 2>/dev/null | uniq | awk -F: '{t=$1*3600+$2*60+$3} NR==1{p=t} {if(t-p>5)print "  GAP "(t-p)"s ending "$0; p=t}' | tail -10
+  echo "## VERDICT: badjobDelta=$(( bj - basebad )) maxDelayed=$maxdelayed maxLost=$maxlost maxStatusRPC=${maxrpc}ms"
 }
 
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
@@ -611,8 +722,9 @@ cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (prese
   need_bin; ensure_config
   local sched="${1:-local}"
   echo "starting ISOLATED prod-mode manager (-s $sched) on :$PROD_PORT / web :$PROD_WEB"
-  echo "NOTE: prod-mode LSF runners are wrp_* - clean up by exact jobid, never 'wrp_*' pattern"
-  osunset ; timeout 90 "$WR" manager start --deployment production -s "$sched" 2>&1 \
+  echo "NOTE: our prod-mode LSF runners are ${PROD_JOB_PREFIX}* (WR_JOBNAME_TOKEN=$PROD_JOBTOKEN);"
+  echo "      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern."
+  osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 90 "$WR" manager start --deployment production -s "$sched" 2>&1 \
     | grep -aE 'started on|token=' | head -2
   echo "pid $(mgr_pid "$PROD_RUN")"
 }
@@ -630,7 +742,7 @@ cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-m
     "$WRDEV_ROOT" "$QUEUE" > "$WRDEV_ROOT/cr.json"
   osunset; timeout 40 "$WR" add -f "$WRDEV_ROOT/cr.json" --rep_grp rgCR --retries 0 --deployment production 2>&1 | tail -1
   local r=0; for _ in $(seq 1 30); do sleep 5; r=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | grep -oE 'running: [0-9]+' | grep -oE '[0-9]+'); [ "${r:-0}" -ge 1 ] && break; done
-  local jid; jid=$(timeout 40 bjobs -o 'jobid job_name stat' -noheader 2>/dev/null | awk '$2 ~ /^wrp_/ && $3=="RUN"{print $1; exit}')
+  local jid; jid=$(timeout 40 bjobs -o 'jobid job_name stat' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1 && $3=="RUN"{print $1; exit}')
   echo "job running; marker=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0) my wrp_ jobid=$jid"
   echo "--- killing prod manager mid-run (LSF runner $jid survives), then restarting (DB preserved) ---"
   safe_kill "$(mgr_pid "$PROD_RUN")"; sleep 12
@@ -736,6 +848,13 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   report-storm-profile [jobs] [runners] [limit] [seconds]
                         as report-storm but with the CPU+mutex+block profiler ON (pprof files to
                         WRDEV_ROOT) to PIN the serialization point (defaults 50000 1000 2000 240)
+  report-storm-lsf [jobs] [limit] [runsec]
+                        reliable4 FAITHFUL LSF-scale report-storm CHURN repro: isolated PROD-mode
+                        manager (backups ON) on a big DB copy + N fast jobs in one limit group; real
+                        LSF runners (distinct pids) + backup stall crossing 60s => the discard+rerun
+                        spiral (defaults 100000 2000 1). REQUIRES WRDEV_PRISTINE_DB=<big DB>. Safe:
+                        its LSF jobs are namespaced (never a real wrp_*). WRDEV_DEBUG=1 / WR_RS_PADKB /
+                        WR_RS_PPROF=<port> (profile the real manager: goroutine dumps + block/mutex/heap).
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -767,6 +886,7 @@ case "${1:-help}" in
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
   report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
+  report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
   limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
   backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
   backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;

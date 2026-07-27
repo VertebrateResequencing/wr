@@ -14,8 +14,15 @@ Status block (read first)
 - **Headline:** the in-process path CANNOT reproduce the churn on `11910e3` at any
   tested config — a deliberate NEGATIVE result, not a tuning gap. But the profiler
   PINNED the mechanism, and it overturns the earlier queue-mutex hypothesis.
-- **Decision pending:** /bugfix (backup-starvation, self-contained, validatable
-  in-process) vs /spec-writer (the full holistic 3-layer fix). See "Fix strategy".
+- **UPDATE 2026-07-27: the churn IS now reproduced FAITHFULLY at LSF scale** via a new
+  `wrdev.sh report-storm-lsf` (isolated PROD-mode manager on a 10GB DB copy, backups ON,
+  + 50k fast jobs behind reprolimit:2000 → ~2000 real LSF runners). The 10GB backup on
+  NFS froze the manager for **122s** (>> the 60s client floor), and archive-reject churn
+  climbed to **4089** `jarchive(...): bad job (not in queue or correct sub-queue)` (plus 17
+  `jtouch`, 1 `jstart`) — the exact prod signature. See "LSF reproduction" below.
+- **Decision:** the mechanism is proven. Proceed to the holistic fix (Layer 1 backup
+  starvation is the root; L2 idempotency/accept-when-moved is confirmed necessary since
+  the churn is `jarchive bad job` with confirmed_dead=0). `report-storm-lsf` is the gate.
 
 The prod failure (from live logs)
 ---------------------------------
@@ -148,6 +155,58 @@ Three-layer diagnosis (the holistic fix must address all three)
    a job whose runner is actively contacting (any received RPC) should not be
    confirmed dead, and `confirmJobDead`/`ProcessNotRunningOnHost` correctness under a
    failing SSH forced-command is operational (see memory).
+
+LSF reproduction (2026-07-27) — the churn, replicated
+-----------------------------------------------------
+`developers/wrdev.sh report-storm-lsf [jobs] [limit] [runsec]` (defaults 100000 2000 1)
+reproduces the prod churn faithfully. It supplies the two prod-only amplifiers the
+in-process harness structurally lacked:
+  1. real (NFS) storage + a big DB: isolated PROD-mode manager (backups ON) opened on a
+     COPY of `/nfs/hgi/wr/sb10-bigdb/pristine10` (10GB);
+  2. real LSF runners = thousands of DISTINCT pids.
+Shape: N fast `sleep 1` jobs in ONE limit group (reprolimit:2000) across MEM_GROUPS
+memory groups, so ~2000 real `wr runner` processes tight-loop reserve→start→touch→archive.
+
+SAFETY: the isolated manager runs on port 51782 as user sb10; its LSF jobs are namespaced
+`wrpiso51782_*` via the WR_JOBNAME_TOKEN hack (jobqueue/scheduler/{scheduler,lsf}.go),
+which can NEVER match a real production manager's `wrp_*`. Cleanup only ever bkills that
+namespace. (Proper multi-deployment fix: .docs/bugfixes/260727-1.md.)
+
+Run (`report-storm-lsf 50000 2000 1`, WRDEV_PRISTINE_DB=pristine10) — churn appeared once
+the first big backup froze the committer past 60s:
+
+    t+123s complete=4467  running=1550 delayed=741 lost=7  LSF_RUN=1969 badjob=0     archive_reject=0
+    t+153s complete=5486  running=1357 delayed=128 lost=7  LSF_RUN=1973 badjob=1080  archive_reject=1080
+    t+184s complete=5903  running=1353 delayed=400 lost=7  LSF_RUN=1900 badjob=1588  archive_reject=1588
+    t+276s complete=9061  running=585  delayed=0   lost=7  LSF_RUN=1941 badjob=3513  archive_reject=3495
+    t+307s complete=10148 running=1972 delayed=0   lost=7  LSF_RUN=1981 badjob=4107  archive_reject=4089
+
+Manager-log freezes (a gap > 60s crosses the client receive floor):
+
+    GAP 122s ending T09:40:11   <-- 122s committer freeze during a 10GB backup
+    GAP  46s ending T09:41:28
+    GAP  35s ending T09:43:12
+    GAP  30s ending T09:40:42
+
+Exact rejection signature (identical to prod), from the manager log:
+
+    4089  jarchive(<hash>): bad job (not in queue or correct sub-queue)
+      17  jtouch(<hash>):   bad job (not in queue or correct sub-queue)
+       1  jstart(<hash>):   bad job (not in queue or correct sub-queue)
+
+Interpretation / what the fix must address (now evidence-backed, not hypothesised):
+- The 122s freeze = the full-file 10GB backup starving the single bbolt committer on NFS
+  (block profile already showed reports waiting in `handleArchive → Batch sync.Cond.Wait`).
+  It far exceeds the 60s `ClientMinRequestTimeout`, so EVERY in-flight report times out.
+- `confirmed_dead=0` throughout, yet `jarchive ... bad job` dominates ⇒ the churn is NOT the
+  confirm-dead/release path here; it is the **idempotency / item-moved path**: the runner's
+  archive is blocked behind the frozen committer past 60s → the client reconnects and RETRIES,
+  but by then the original archive has committed+removed the job (or the 60s TTR moved the
+  item), so the retry gets `bad job` and the client re-runs already-successful work. `jtouch`
+  and `jstart` show the SAME across-stage failure the holistic fix must cover.
+- `report-storm-lsf` is the GATE: healthy code must drain it with ~0 `jarchive bad job` and no
+  freeze > a few seconds. It reproduces at 50k/2000; raise the DB size or `limit` to make the
+  freeze longer / the spiral deeper.
 
 Fix strategy / recommendation
 -----------------------------
