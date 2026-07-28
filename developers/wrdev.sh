@@ -534,6 +534,187 @@ report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-m
   echo "## VERDICT: badjobDelta=$(( bj - basebad )) maxDelayed=$maxdelayed maxLost=$maxlost maxStatusRPC=${maxrpc}ms"
 }
 
+cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD FREEZE repro (write-storm)
+  # FAITHFUL scale reproducer of the CONFIRMED prod-freeze root cause (live pprof
+  # 2026-07-28; see ../.docs/reliable4/prod-freeze-pprof-diagnosis.md). Un-suspending
+  # a large batch flips ~100k jobs' state at once; each state change spawns ONE
+  # unbounded `go db.bolt.Batch` (updateJobAfterChange), so on a big freelist-bloated
+  # DB the bbolt committer collapses into thousands of tiny serialised fsync'd txns
+  # (CPU-bound in freelist.Free/spill) and the whole manager freezes: control RPCs and
+  # the synchronous archive path block past the client's 60s floor -> churn.
+  #
+  # Shape (exactly the prod trigger): N jobs in ONE limit group set to 0 (so they are
+  # ready-but-blocked and NEVER run - zero LSF load, totally farm-safe) on an isolated
+  # PROD-mode manager (backups ON, pprof ON) opened on a COPY of a big freelist-bloated
+  # DB. We mass-SUSPEND them (stage), let that settle, then fire the BURST: a single
+  # `wr resume` un-suspends all N at once => N simultaneous updateJobAfterChange.
+  #
+  # An embedded goroutine classifier (the prod _capture_load.sh logic) samples the
+  # pprof endpoint every few seconds and reports the freeze signature:
+  #   total   = total goroutines (prod: 119k -> 438k)
+  #   bw      = goroutines blocked in bbolt.(*DB).Batch  (prod: 114,459; freeze if >3000)
+  #   bwmax   = max minutes any Batch caller has been blocked (freeze if >=1)
+  #   in_commit = goroutines in Tx.Commit/write/fdatasync (the stuck committer)
+  # plus each tick a control-plane `wr status` RPC is timed (prod: blocked >60s).
+  #
+  # PASS/FAIL: pre-fix -> bw explodes to ~N, bwmax climbs >=1min, status RPC and log
+  # GAPs cross 60s => FREEZE REPRODUCED. After the bounded single-writer fix -> bw
+  # stays low and drains fast, no bwmax growth, status stays responsive => NO FREEZE.
+  # This is the authoritative gate a /bugfix reviewer must re-run post-fix.
+  #
+  # REQUIRES WRDEV_PRISTINE_DB = a big freelist-bloated DB to copy: the real prod.db
+  # copy (/nfs/hgi/wr/sb10-bigdb/prod.db - most faithful for the SUSTAINED >60s freeze,
+  # but NB it recovers its own live jobs; use only with -s local) or a record-dense
+  # pristine* DB (see backup-stall-check; all-complete, no live recovery - the clean
+  # choice for the bw-explosion signature). WRDEV_ROOT needs room for ~2x the DB (copy
+  # + backup); point it at a roomy filesystem (e.g. /nfs/hgi/wr/...), NOT a small home.
+  # Goroutine dumps are classified then deleted so they cannot fill the disk.
+  need_bin; ensure_config
+  local n="${1:-100000}" pprof="${2:-6062}"
+  local pr="$PROD_RUN" plog="$PROD_RUN/log"
+  [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ] \
+    || die "set WRDEV_PRISTINE_DB to a big freelist-bloated DB (e.g. /nfs/hgi/wr/sb10-bigdb/pristine10 or .../prod.db)"
+  cmd_prod_stop >/dev/null 2>&1; sleep 2
+  mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
+  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"
+  echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes; scheduler=local (limit 0 => 0 LSF jobs)"
+  echo "starting isolated PROD-mode manager (backups ON, pprof localhost:$pprof) on the big DB"
+  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$pprof" timeout 90 "$WR" \
+    manager start --deployment production -s local 2>&1 | grep -aE 'started on|token=' | head -2
+  echo "pid $(mgr_pid "$PROD_RUN")"
+  sleep 8
+
+  echo "adding $n sleep-1 jobs in limit group burstlimit:0 (ready-but-blocked; NEVER run) rep_grp rgburst"
+  perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep 1 #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/ubjobs.json"
+  local out rc
+  out=$(osunset; timeout 300 "$WR" add -f "$WRDEV_ROOT/ubjobs.json" --rep_grp rgburst --limit_grps "burstlimit:0" --retries 0 --deployment production 2>&1); rc=$?
+  echo "$out" | tail -1
+  echo "$out" | grep -qE 'Added [1-9][0-9]* new commands' || die "unsuspend-burst aborted - 0 jobs added (manager up?)"
+  sleep 3
+
+  echo "STAGING: mass-suspend all $n jobs (ready -> suspended), then let the write goroutines settle"
+  osunset; timeout 180 "$WR" suspend --deployment production -i rgburst >/dev/null 2>&1
+  ub_wait_settle "$pprof" "suspend-stage"
+
+  # start the goroutine classifier BEFORE the burst so we catch its onset.
+  local pdir="$WRDEV_ROOT/ubprof"; mkdir -p "$pdir"; rm -f "$pdir"/* 2>/dev/null
+  ub_sampler "$pprof" "$pdir" &
+  local sampler_pid=$!
+  echo "goroutine classifier pid $sampler_pid -> $pdir/signals.tsv (every 3s)"
+  sleep 3
+
+  echo "=== BURST: un-suspend all $n jobs at once (the prod trigger) ==="
+  local bs be
+  bs=$(date +%s%3N)
+  osunset; timeout 300 "$WR" resume --deployment production -i rgburst >/dev/null 2>&1
+  be=$(date +%s%3N)
+  echo "resume RPC returned in $((be-bs))ms (the storm is now in the background write goroutines)"
+
+  ub_monitor "$pprof" "$plog" "$n"
+
+  kill "$sampler_pid" 2>/dev/null
+  echo "## goroutine classifier peak signals:"
+  awk -F'\t' 'NR>1{if($2>mt)mt=$2; if($3>mb)mb=$3; if($4>mx)mx=$4; if($5>mc)mc=$5}
+    END{printf "  peak total=%d  peak bw(Batch-blocked)=%d  peak bwmax=%dmin  peak in_commit=%d\n", mt,mb,mx,mc}' \
+    "$pdir/signals.tsv" 2>/dev/null
+  local peakbw peakbwmax
+  peakbw=$(awk -F'\t' 'NR>1&&$3>m{m=$3}END{print m+0}' "$pdir/signals.tsv" 2>/dev/null)
+  peakbwmax=$(awk -F'\t' 'NR>1&&$4>m{m=$4}END{print m+0}' "$pdir/signals.tsv" 2>/dev/null)
+  echo "## VERDICT (write-storm): peak bw(Batch-blocked goroutines)=${peakbw:-0} peak bwmax=${peakbwmax:-0}min maxStatusRPC (see above)"
+  if [ "${peakbw:-0}" -gt 5000 ]; then
+    echo "WRITE-STORM REPRODUCED: the un-suspend burst spawned ${peakbw} concurrent bbolt.(*DB).Batch goroutines"
+    echo "  (prod measured 114,459). The unbounded per-change 'go db.bolt.Batch' is the freeze's engine."
+    if [ "${peakbwmax:-0}" -ge 1 ]; then
+      echo "  + SUSTAINED FREEZE: a committer stayed blocked >=${peakbwmax}min (crosses the 60s client floor => churn)."
+    else
+      echo "  NB the storm here drained without any single committer blocking >=1min (this synthetic freelist"
+      echo "  commits faster than prod's). For the sustained >60s freeze use the real freelist-bloated"
+      echo "  WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/prod.db and/or a bigger burst; the bw explosion above"
+      echo "  IS the DB-size-independent primary signature and the clean pre/post-fix A/B gate."
+    fi
+  else
+    echo "NO WRITE-STORM: best-effort writes stayed bounded (peak bw=${peakbw:-0}) - the single-writer fix works."
+  fi
+  echo "## manager log freezes (gaps >5s; a gap >60s crosses the client receive floor):"
+  grep -oaP 'T\d\d:\d\d:\d\d' "$plog" 2>/dev/null | uniq | awk -F: '{t=$1*3600+$2*60+$3} NR==1{p=t} {if(t-p>5)print "  GAP "(t-p)"s ending "$0; p=t}' | tail -10
+
+  echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
+  rm -f "$WRDEV_ROOT/ubjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+}
+
+# ub_wait_settle waits until the total goroutine count stops moving (the staged
+# suspend's write goroutines have drained), so the burst starts from a clean base.
+ub_wait_settle() {  # <pprofPort> <label>
+  local pprof="$1" label="$2" prev=-1 same=0
+  for _ in $(seq 1 40); do
+    local tot
+    tot=$(timeout 8 curl -s "http://localhost:$pprof/debug/pprof/goroutine?debug=1" 2>/dev/null \
+      | grep -oE '^goroutine profile: total [0-9]+' | grep -oE '[0-9]+$')
+    tot=${tot:-0}
+    if [ "$tot" -eq "$prev" ]; then same=$((same+1)); [ "$same" -ge 3 ] && break; else same=0; fi
+    prev=$tot
+    sleep 2
+  done
+  echo "  $label settled at total goroutines=$prev"
+}
+
+# ub_sampler is the embedded prod _capture_load.sh classifier: every 3s it grabs a
+# full goroutine dump, classifies write-path involvement + max block minutes, appends
+# a TSV row and emits sparse FREEZE-START/ONGOING/CLEARED lines.
+ub_sampler() {  # <pprofPort> <outdir>
+  local pprof="$1" pdir="$2"
+  local ct="$pdir/signals.tsv"
+  echo -e "epoch\ttotal\tbw\tbwmax\tin_commit\tin_backup\tssh" > "$ct"
+  local frozen=0 fsince=0
+  while true; do
+    local now raw
+    now=$(date +%s); raw="$pdir/goro2_${now}.txt"
+    if ! timeout 30 curl -sS "http://localhost:$pprof/debug/pprof/goroutine?debug=2" -o "$raw" 2>/dev/null; then
+      echo "  CURL-FAIL epoch=$now (pprof unreachable or >30s to answer - itself a strong freeze signal)"
+      sleep 3; continue
+    fi
+    local total ssh
+    total=$(grep -c '^goroutine ' "$raw")
+    ssh=$(grep -c 'handleGlobalRequests' "$raw")
+    read bw bwmax cw bkw < <(awk '
+      function flush(){ if(!inb)return; if(isB){bw++; if(mins>bwm)bwm=mins} if(isC)cw++; if(isK)bkw++; inb=0 }
+      /^goroutine /{ flush(); inb=1; isB=0; isC=0; isK=0; mins=0
+        if($0 ~ /minutes\]/){ n=$0; sub(/ minutes\].*/,"",n); sub(/.*[^0-9]/,"",n); mins=n+0 } }
+      /bbolt\.\(\*DB\)\.Batch/{isB=1}
+      /fdatasync|Fdatasync|bbolt\.\(\*Tx\)\.Commit|bbolt\.\(\*Tx\)\.write/{isC=1}
+      /backupToBackupFile|backgroundBackup|copyBackup|bbolt\.\(\*Tx\)\.WriteTo/{isK=1}
+      /^$/{flush()}
+      END{flush(); printf "%d %d %d %d", bw,bwm,cw,bkw}' "$raw")
+    echo -e "${now}\t${total}\t${bw}\t${bwmax}\t${cw}\t${bkw}\t${ssh}" >> "$ct"
+    rm -f "$raw" 2>/dev/null  # do NOT retain dumps (each is MBs x many => fills the disk); signals.tsv has what we need
+    local isfz=0
+    if [ "${bw:-0}" -gt 3000 ] || [ "${bwmax:-0}" -ge 1 ]; then isfz=1; fi
+    local sig="total=$total bw=$bw bwmax=${bwmax}m in_commit=$cw in_backup=$bkw ssh=$ssh"
+    if [ "$isfz" -eq 1 ] && [ "$frozen" -eq 0 ]; then frozen=1; fsince=$now; echo "  FREEZE-START epoch=$now $sig"
+    elif [ "$isfz" -eq 1 ]; then echo "  FREEZE-ONGOING dur=$((now-fsince))s $sig"
+    elif [ "$isfz" -eq 0 ] && [ "$frozen" -eq 1 ]; then frozen=0; echo "  FREEZE-CLEARED dur=$((now-fsince))s $sig"
+    fi
+    sleep 3
+  done
+}
+
+# ub_monitor watches control-plane responsiveness (status RPC latency) + queue state
+# for a few minutes after the burst.
+ub_monitor() {  # <pprofPort> <plog> <n>
+  local pprof="$1" plog="$2" n="$3"; local t0; t0=$(date +%s); local maxrpc=0
+  num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
+  for _ in $(seq 1 40); do
+    local st cr csu s e rpc
+    s=$(date +%s%3N); st=$(osunset; timeout 65 "$WR" status --deployment production -i rgburst -o counts 2>/dev/null); e=$(date +%s%3N); rpc=$((e-s))
+    cr=$(num "$st" ready); csu=$(num "$st" suspended); cr=${cr:-0}; csu=${csu:-0}
+    [ "$rpc" -gt "$maxrpc" ] && maxrpc=$rpc
+    echo "t+$(( $(date +%s)-t0 ))s ready=$cr suspended=$csu status_rpc=${rpc}ms"
+    sleep 3
+  done
+  echo "## VERDICT: maxStatusRPC=${maxrpc}ms (prod froze control RPCs past the 60000ms client floor)"
+}
+
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
   [ -x "$WSPROBE" ] || die "no wsprobe; run: $0 build"
   local secs="${1:-3}" slow="${2:-0}"
@@ -869,6 +1050,16 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         its LSF jobs are namespaced (never a real wrp_*). WRDEV_DEBUG=1 / WR_RS_PADKB /
                         WR_RS_PPROF=<port> (profile the real manager) / WR_RS_BKDIR=<dir on another FS,
                         e.g. Lustre> (back up to a separate filesystem so it can't starve the DB's I/O).
+  unsuspend-burst [jobs] [pprofPort]
+                        reliable4 FAITHFUL PROD-FREEZE repro (write-storm root cause): N jobs in ONE
+                        limit group set to 0 (ready-but-blocked; NEVER run => 0 LSF load) on an
+                        isolated PROD-mode manager (backups+pprof ON) on a big freelist-bloated DB copy;
+                        mass-suspend to stage, then a single `wr resume` un-suspends all N at once =>
+                        the unbounded per-change `go db.bolt.Batch` storm. An embedded goroutine
+                        classifier reports the freeze signature (bw Batch-blocked / bwmax / in_commit /
+                        total) + control-RPC latency (defaults 100000 6062). REQUIRES
+                        WRDEV_PRISTINE_DB=<big DB> (pristine10, or .../prod.db). Post-fix gate: bw stays
+                        low, no bwmax growth, status stays responsive.
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -901,6 +1092,7 @@ case "${1:-help}" in
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
   report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
   report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
+  unsuspend-burst) cmd_unsuspend_burst "${2:-100000}" "${3:-6062}" ;;
   limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
   backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
   backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
