@@ -84,7 +84,7 @@ Two things that run learned:
 |---|-----|-----------|-------|
 | 1 | **Bounded, coalescing, dedup-by-key single writer** for best-effort change/exit updates | A (RED) + B (gate) | **/bugfix** |
 | 2 | Keep the synchronous archive path off the best-effort lane | falls out of Fix 1; B shows it | with Fix 1 |
-| 3 | bbolt `NoFreelistSync=true` at open | B (per-commit cost); no fast test | **/bugfix** (small) |
+| 3 | bbolt `NoFreelistSync=true` at open | — | TRIED, **DROPPED** (breaks C2 startup invariant; marginal after Fix 1) |
 | 4b | Recovery-gate `jsuspend`/`jresume`/`getsetlg` | — (design decision) | documented follow-up |
 | 5 | Bound/evict the confirm-dead SSH connection cache | needs a new cloud dialer seam | **/bugfix** (implementer adds seam) |
 
@@ -130,13 +130,24 @@ existing `BenchmarkUpdateJobState` bolt_writes/job not regressed (ideally lower)
 and the reviewer re-runs `wrdev.sh unsuspend-burst` (ideally on prod.db) and sees
 peak `bw` stay low (no explosion), no `bwmax` growth, status RPC responsive.
 
-## Fix 3 — `NoFreelistSync`
+## Fix 3 — `NoFreelistSync` — TRIED AND DROPPED (2026-07-29)
 
-Add `NoFreelistSync: true` to the `bolt.Open` options (`db.go:613/621/628`). Stops
-writing the churn-bloated freelist on every commit — a big per-commit win on the
-7.9GB DB. Validate the slower first-open (freelist rebuild) is acceptable for prod
-restart. No fast test (benefit is scale-only, shown by B); a unit test can assert
-the option is set.
+The idea: add `NoFreelistSync: true` to the `bolt.Open` options so commits stop
+writing the churn-bloated freelist. It was implemented and tested, but **dropped**:
+`NoFreelistSync` makes bbolt rebuild the freelist by scanning the whole DB on the
+first write-tx after open (O(db size)), which reintroduces history-proportional
+startup cost and reproducibly breaks the reliable2 `TestReliable2FastStartupNoHistoryScan`
+acceptance test (DEVELOPERS.md rule 6 — startup must not scale with completed-job
+count; a real past outage). Stash-controlled: startup went 1.0x → 5.8–8.2x for
+250k jobs, extrapolating to many seconds per restart on the 7.9GB prod DB.
+
+Crucially, its benefit is now marginal: **Fix 1 already coalesced the write path
+from thousands of tiny commits to a few**, so the per-commit freelist-write cost
+this targeted is largely gone. Trading it for a multi-second restart-scan
+regression is a bad deal. See `.docs/bugfixes/260729-1.md` bug #2. A possible
+future follow-up (needs its own spec/tests): `NoFreelistSync` at runtime +
+persist the freelist on GRACEFUL shutdown, so only an ungraceful crash pays the
+open scan.
 
 ## Fix 5 — confirm-dead SSH connection cache (cloud package)
 
