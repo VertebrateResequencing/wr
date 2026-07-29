@@ -160,6 +160,75 @@ func (s *Scheduler) warnCannotConfirm(ctx context.Context, hostName string, pid 
 		"host", hostName, "pid", pid, "reason", reason)
 }
 
+// ProcessesNotRunningOnHost checks, over a SINGLE reused connection to hostName,
+// whether each pid in pids is still running, returning a map from pid to
+// not-running (true means the process is gone, i.e. confirmed dead). It opens the
+// host connection ONCE (getHost), runs the same per-pid check as
+// ProcessNotRunningOnHost over that one connection for every pid -- so all of a
+// dead host's lost-job pid checks share one ssh client instead of dialling one
+// connection per check -- then closes the connection once.
+//
+// A pid whose liveness cannot be determined (the host could not be obtained, its
+// ps command failed, or the output was unrecognised) maps to false, exactly as
+// ProcessNotRunningOnHost returns false in those cases, so a lost job is never
+// falsely confirmed dead by an inconclusive check. The whole batch is bounded by
+// the caller's context: a cancelled/timed-out context fails the remaining checks
+// closed (false), leaving those jobs parked for a later retry.
+func (s *Scheduler) ProcessesNotRunningOnHost(ctx context.Context, hostName string, pids []int) map[int]bool {
+	notRunning := make(map[int]bool, len(pids))
+
+	if len(pids) == 0 {
+		return notRunning
+	}
+
+	host, ok := s.impl.getHost(hostName)
+	if !ok {
+		for _, pid := range pids {
+			s.warnCannotConfirm(ctx, hostName, pid, "could not get the host to ssh to")
+
+			notRunning[pid] = false
+		}
+
+		return notRunning
+	}
+
+	defer host.Close(ctx)
+
+	for _, pid := range pids {
+		notRunning[pid] = s.processNotRunningOnHost(ctx, host, hostName, pid)
+	}
+
+	return notRunning
+}
+
+// processNotRunningOnHost runs the `ps -o stat= -p <pid>` liveness-check command
+// (see ProcessNotRunningOnHost's CONTRACT WARNING, which this embodies) for one
+// pid over an already-obtained Host connection, returning true if the process is
+// not running. It is the shared core of ProcessNotRunningOnHost (single pid, owns
+// its connection) and ProcessesNotRunningOnHost (many pids, one shared
+// connection). An errored or unrecognised result returns false (cannot confirm).
+func (s *Scheduler) processNotRunningOnHost(ctx context.Context, host Host, hostName string, pid int) bool {
+	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
+	if err != nil {
+		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
+
+		return false
+	}
+
+	state := strings.TrimSpace(stdo)
+
+	switch interpretProcessState(state) {
+	case processDead:
+		return true
+	case processAlive:
+		return false
+	case processUnknown:
+		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+loggableProcessOutput(state))
+	}
+
+	return false
+}
+
 // loggableProcessOutput returns a short, single-line, length-capped excerpt of a
 // remote command's output that is safe to put in a log field: only its first line,
 // truncated to loggableProcessOutputMax characters, with a trailing "..." marker
@@ -640,25 +709,7 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 
 	defer host.Close(ctx)
 
-	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
-	if err != nil {
-		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
-
-		return false
-	}
-
-	state := strings.TrimSpace(stdo)
-
-	switch interpretProcessState(state) {
-	case processDead:
-		return true
-	case processAlive:
-		return false
-	case processUnknown:
-		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+loggableProcessOutput(state))
-	}
-
-	return false
+	return s.processNotRunningOnHost(ctx, host, hostName, pid)
 }
 
 // KillProcessOnHost force-kills (SIGKILL) the given pid on hostName, best-effort:

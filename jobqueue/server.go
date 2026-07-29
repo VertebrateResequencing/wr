@@ -313,8 +313,8 @@ type ServerTimings struct {
 	LostJobCheckRetryTime time.Duration
 
 	// LostRunnerBackstop is how long a job may sit parked Lost -- its command's
-	// process gone but its runner process apparently still alive (so
-	// confirmJobDead will not declare it dead) -- before the server treats the
+	// process gone but its runner process apparently still alive (so the
+	// confirm-dead check will not declare it dead) -- before the server treats the
 	// runner as wedged and force-kills it on its host, letting the normal
 	// dead-confirmation path re-run the job and reclaim its limit-group slot
 	// (default ServerLostRunnerBackstop, a generous 1h essentially never hit in
@@ -324,17 +324,17 @@ type ServerTimings struct {
 	// privatekeypath docs in cmd/conf.go and KillProcessOnHost). Tests set it low.
 	LostRunnerBackstop time.Duration
 
-	// ConfirmDeadConcurrency bounds how many lost jobs may be confirmed dead
-	// concurrently, i.e. the maximum number of confirmJobDead ->
-	// scheduler.ProcessNotRunningOnHost "ssh" checks in flight at once (default
-	// ServerConfirmDeadConcurrency). Under a mass false-lost event (a
+	// ConfirmDeadConcurrency bounds how many HOSTS are confirm-dead ssh-checked at
+	// once (default ServerConfirmDeadConcurrency). The confirm-dead coordinator
+	// (confirmdead.go) groups a host's lost-job pid checks onto one connection and
+	// holds one slot here per host it is checking. Under a mass false-lost event (a
 	// freeze/overload firing the TTR on thousands of jobs at once) markJobLost
-	// would otherwise spawn an unbounded storm of concurrent ssh sessions
-	// (file descriptors, network, CPU, and load on the single ssh auth path);
-	// excess confirmations wait for a slot. A delayed confirmation is safe: the
-	// both-pid check never condemns a live runner, so genuinely-dead jobs are
-	// merely reclaimed a little more slowly. Tests set it low. Non-positive
-	// values are replaced by the default.
+	// would otherwise spawn an unbounded storm of concurrent ssh sessions (file
+	// descriptors, network, CPU, and load on the single ssh auth path); excess
+	// hosts' checks wait for a slot. A delayed confirmation is safe: the both-pid
+	// check never condemns a live runner, so genuinely-dead jobs are merely
+	// reclaimed a little more slowly. Tests set it low. Non-positive values are
+	// replaced by the default.
 	ConfirmDeadConcurrency int
 
 	// ReleaseDelayMin is the minimum backoff before a released job becomes
@@ -1073,12 +1073,18 @@ type Server struct {
 	lostJobCheckRetryTime time.Duration
 
 	// confirmDeadLimiter is a counting semaphore (buffered to
-	// timings.ConfirmDeadConcurrency) that bounds how many lost jobs may be
-	// confirmed dead -- i.e. run confirmJobDead's scheduler.ProcessNotRunningOnHost
-	// "ssh" checks -- concurrently, so a mass false-lost event cannot spawn an
-	// unbounded ssh storm. It is a per-Server field (not a package global) so
-	// independent servers, and tests, can size it differently.
+	// timings.ConfirmDeadConcurrency) that bounds how many HOSTS are being
+	// confirm-dead ssh-checked at once. The confirm-dead coordinator groups a
+	// host's lost-job pid checks onto one connection and holds one slot here per
+	// host it is checking, so a mass false-lost event (a whole node's jobs going
+	// lost together) cannot spawn an unbounded ssh storm. It is a per-Server field
+	// (not a package global) so independent servers, and tests, can size it
+	// differently.
 	confirmDeadLimiter chan struct{}
+
+	// confirmDead groups lost jobs' confirm-dead ssh checks by host so all of a
+	// dead host's pid checks share one ssh connection (see confirmdead.go).
+	confirmDead *confirmDeadCoordinator
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -3176,6 +3182,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
 	}
 
+	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
+	// the fully-built Server, so it is wired up after the literal above.
+	s.confirmDead = newConfirmDeadCoordinator(s)
+
 	// create the queue now (its ready-added callback, which recovery's enqueue
 	// relies on, is registered here rather than in serveWebInterface, so it is
 	// safe for recovery to run in the background below).
@@ -4064,7 +4074,7 @@ func (s *Server) createQueue(ctx context.Context) {
 // reserved-not-started job on a StartTime.IsZero() proxy, so a live-but-
 // backlogged runner's job is never re-reserved, while a genuinely dead runner's
 // job is still reclaimed once confirmed dead; an old client (pid 0) is not
-// confirmed dead and stays parked (confirmJobDead returns false), recovering
+// confirmed dead and stays parked (a pid-0 job is never confirmed dead), recovering
 // only when its Started/Touch finally drains. Only a released/finished item
 // (job.Exited) awaiting its delay proceeds to the delay sub-queue.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
@@ -4094,7 +4104,7 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 
 	// a recovered running job (restored on restart) is confirm-checked for death
 	// exactly like any other lost job: if its runner never reconnects it must be
-	// reclaimed, not parked forever. confirmJobDead's both-pid liveness check is
+	// reclaimed, not parked forever. The confirm-dead both-pid liveness check is
 	// what preserves an unrecorded success - it will not declare the job dead
 	// while its runner pid is still alive, so a slow/starved runner's command that
 	// finished while the server was down still gets to report its archive.
@@ -4162,26 +4172,31 @@ type lostJobDetails struct {
 	pin pinnedBehaviours
 }
 
-// confirmOrReleaseLostJob confirms whether a lost job is really dead and kills
-// it, or (if the user already called kill) releases it back to the run queue.
+// confirmOrReleaseLostJob handles a lost job: if the user already called kill it
+// is released back to the run queue; otherwise its death is confirmed (and it is
+// then killed, or retried) via the confirm-dead coordinator, which GROUPS the ssh
+// pid check(s) with other lost jobs on the same host so they share one connection
+// instead of dialling one per check (see confirmdead.go). The coordinator
+// preserves the both-pid liveness semantics and the retry/backstop cadence.
 //
 // It is given the lost RUN rather than the queue's *Job, which every run of the
 // job shares: both branches check the job is still the pinned run first.
 func (s *Server) confirmOrReleaseLostJob(ctx context.Context, d lostJobDetails) {
-	switch {
-	case !d.killCalled:
-		s.confirmJobDeadAndKill(ctx, d)
-	case d.killCalled:
-		defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
+	if !d.killCalled {
+		s.confirmDead.enqueue(ctx, d)
 
-		// wait for the item to go back to run queue
-		<-time.After(ttrReleaseWait)
+		return
+	}
 
-		// no behaviours: the user asked for the job to stop, not for its work to be
-		// swept. The wait is long enough for a different run to be under this key.
-		if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
-			clog.Warn(ctx, "failed to release job after TTR", "err", err)
-		}
+	defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
+
+	// wait for the item to go back to run queue
+	<-time.After(ttrReleaseWait)
+
+	// no behaviours: the user asked for the job to stop, not for its work to be
+	// swept. The wait is long enough for a different run to be under this key.
+	if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
+		clog.Warn(ctx, "failed to release job after TTR", "err", err)
 	}
 }
 
@@ -4879,23 +4894,6 @@ func (s *Server) mintRunToken() runToken {
 	return runToken(s.lastRunToken.Add(1))
 }
 
-// confirmJobDeadAndKill calls confirmJobDead(). If it confirms, kills the job
-// and triggers behaviours in a goroutine. If not, arranges to re-call this after
-// the configured retry time. This is so that if we can't currently confirm the
-// job is dead due to an ssh issue, but later on the job really does die because
-// the server it was running on gets rebooted, we eventually auto-kill the job.
-// It reports nothing: the goroutine it starts is the only thing that knows
-// whether the kill happened, and it logs that.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, d lostJobDetails) {
-	if !s.confirmJobDead(ctx, d.pid, d.runnerPid, d.host, d.checkTimeout) {
-		go s.confirmJobDeadAndKillAfterRetryTime(ctx, d.key, d.checkRetryTime)
-
-		return
-	}
-
-	go s.killLostJobAndTriggerBehaviours(ctx, d)
-}
-
 // killLostJobAndTriggerBehaviours releases the lost RUN whose behaviours d
 // carries and, only if it really released that run, triggers them, logging any
 // problems. killLostRun refuses a job that is no longer that run, so the
@@ -4954,86 +4952,6 @@ func (s *Server) triggerLostRunBehaviours(ctx context.Context, d lostJobDetails)
 	//nolint:contextcheck // behaviours run detached from the cancellable job context
 	if errt := d.pin.trigger(); errt != nil {
 		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
-	}
-}
-
-// confirmJobDead() checks that the job's process(es) are not running on its host.
-// The command's child pid is dead the moment the command finishes (success or
-// not), so on its own it falsely condemns a job that merely completed but whose
-// runner is slow/starved to archive: that job would be re-run and its late,
-// successful archive rejected as a bad job (the success discarded). So when a
-// runner pid was reported (jobRunnerPID > 0), the job is considered dead only if
-// BOTH the command AND its runner process are gone -- a live runner will still
-// send the archive, so we must not re-run underneath it. A job recorded before
-// this behaviour existed (or whose runner never reported a pid) has
-// jobRunnerPID == 0 and falls back to the original command-pid-only check, so
-// pre-upgrade in-flight jobs are unaffected.
-func (s *Server) confirmJobDead(ctx context.Context, jobPID, jobRunnerPID int, jobHost string,
-	serverLostJobCheckTimeout time.Duration) bool {
-	if jobPID == 0 {
-		return false
-	}
-
-	// bound how many confirm-dead ssh checks run concurrently: under a mass
-	// false-lost event markJobLost spawns one confirmOrReleaseLostJob goroutine
-	// per lost job, and without this each would fire ProcessNotRunningOnHost ssh
-	// sessions at once (an FD/network/CPU storm on the single ssh auth path).
-	// Excess confirmations wait here for a slot. This covers both the initial
-	// confirmation and the confirmJobDeadAndKillAfterRetryTime retry, since both
-	// reach the ssh checks through this function. Delaying a confirmation is safe:
-	// the both-pid check below never condemns a live runner, so a genuinely-dead
-	// job is merely reclaimed a little later.
-	s.confirmDeadLimiter <- struct{}{}
-	defer func() { <-s.confirmDeadLimiter }()
-
-	ctx, cancel := context.WithTimeout(ctx, serverLostJobCheckTimeout)
-	defer cancel()
-
-	if !s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost) {
-		return false
-	}
-
-	// the command's process is gone; if we know the runner's pid, also require the
-	// runner process to be gone before declaring the job dead (else a live-but-slow
-	// runner's completed job would be falsely re-run, discarding its pending
-	// success). With no runner pid (old records) keep the command-pid-only verdict.
-	if jobRunnerPID > 0 {
-		return s.scheduler.ProcessNotRunningOnHost(ctx, jobRunnerPID, jobHost)
-	}
-
-	return true
-}
-
-func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string,
-	serverLostJobCheckRetryTime time.Duration) {
-	timer := time.NewTimer(serverLostJobCheckRetryTime)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		// the check pins the run the job is still lost in; the confirmJobDead call
-		// below reopens the same window, so killLostRun is satisfied again after it.
-		d, ok := s.lostJobRetryCheck(jobKey)
-		if !ok {
-			return
-		}
-
-		// backstop: if the job has been parked Lost far longer than any plausible
-		// archive delay (LostRunnerBackstop, default ServerLostRunnerBackstop), its
-		// runner is wedged. Force-KILL the runner (and command) process on the host,
-		// so the confirmJobDeadAndKill below finds both gone and re-runs the job via
-		// the normal path (rather than a special force-rerun that could race a
-		// recovering runner). If the runner somehow recovers, its later archive is
-		// rejected (new-run-wins).
-		if backstop := s.timings.LostRunnerBackstop; backstop > 0 && d.lostFor > backstop {
-			s.backstopKillWedgedRunner(ctx, d)
-		}
-
-		d.checkRetryTime = serverLostJobCheckRetryTime
-
-		s.confirmJobDeadAndKill(ctx, d)
-	case <-s.stopClientHandling:
-		return
 	}
 }
 

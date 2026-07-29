@@ -924,8 +924,8 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	// whole point of the guard. We DO adopt a first-seen runner pid: a job that went
 	// Running with RunnerPid==0 (recovered from the DB, or first-started by an older
 	// runner that reported none) needs the current runner's pid recorded so
-	// confirmJobDead keeps the both-pid liveness protection instead of falling back
-	// to the command-pid-only verdict; we only fill an unset RunnerPid and never
+	// the confirm-dead check keeps the both-pid liveness protection instead of falling
+	// back to the command-pid-only verdict; we only fill an unset RunnerPid and never
 	// overwrite or clobber an existing one.
 	if job.State == JobStateRunning && job.Pid == crJob.Pid && job.Host == crJob.Host {
 		job.Lost = false
