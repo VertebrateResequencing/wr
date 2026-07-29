@@ -304,7 +304,7 @@ func reliable4WSSamplePeak(baseline int) int {
 			peak = cur
 		}
 
-		if cur == prev {
+		if cur == prev { //nolint:nestif // pre-existing settle-counter; logic unchanged
 			stable++
 			if stable >= reliable4WSSettleChecks {
 				return peak
