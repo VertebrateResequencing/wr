@@ -42,12 +42,21 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// errTransientQuotingSentinel is a NON-typed transient error whose rendered text
+// merely CONTAINS a give-up sentinel; the typed classifier must treat it as
+// transient (the old substring scan wrongly treated it as a definitive give-up).
+var errTransientQuotingSentinel = errors.New("connection closed: " + ErrBadJob)
+
+// errPlainTransient is an ordinary transient RPC failure carrying no sentinel.
+var errPlainTransient = errors.New("receive time out")
 
 // TestReliable2Release covers the three D1 acceptance tests.
 func TestReliable2Release(t *testing.T) {
@@ -130,6 +139,58 @@ func TestReliable2Release(t *testing.T) {
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
 			So(item, ShouldNotBeNil)
+		})
+	})
+}
+
+// TestHandleFinalStateErrorTypedGiveUp guards that the runner give-up decision in
+// handleFinalStateError (whether a runner discards its completed work) is driven
+// by the TYPED server error - a jobqueue.Error whose .Err is one of the give-up
+// sentinels - and NOT by a substring scan of the rendered message. The give-up
+// set is exactly ErrBadJob, ErrBadRequest and ErrMustReserve. A transient error
+// whose text merely CONTAINS one of those sentinels (e.g. a connection error that
+// quotes a prior server reply) must stay transient so the runner keeps retrying,
+// mirroring the typed match the sibling start-report path already uses. It needs
+// no real server: handleFinalStateError only logs, disconnects and classifies, so
+// an in-process capture client exercises the real give-up path.
+func TestHandleFinalStateErrorTypedGiveUp(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("handleFinalStateError gives up only on a typed give-up sentinel", t, func() {
+		client, _ := newCaptureClient()
+		client.retryWait = time.Millisecond // the transient (non-give-up) path sleeps this
+
+		Convey("a typed jobqueue.Error carrying a give-up sentinel makes the runner give up", func() {
+			// isDefinitiveReject consults only .Err, so Op/Item are left unset.
+			_, giveUp := client.handleFinalStateError(ctx, Error{Err: ErrBadJob})
+			So(giveUp, ShouldBeTrue)
+
+			_, giveUp = client.handleFinalStateError(ctx, Error{Err: ErrMustReserve})
+			So(giveUp, ShouldBeTrue)
+
+			_, giveUp = client.handleFinalStateError(ctx, Error{Err: ErrBadRequest})
+			So(giveUp, ShouldBeTrue)
+		})
+
+		Convey("a transient error whose text merely CONTAINS a sentinel does NOT give up", func() {
+			// the exact robustness the typed match adds: pre-fix the substring scan
+			// matched this and wrongly discarded the runner's completed work.
+			_, giveUp := client.handleFinalStateError(ctx, errTransientQuotingSentinel)
+			So(giveUp, ShouldBeFalse)
+		})
+
+		Convey("a plain transient error and the retryable ErrRecovering do not give up", func() {
+			_, giveUp := client.handleFinalStateError(ctx, errPlainTransient)
+			So(giveUp, ShouldBeFalse)
+
+			// ErrRecovering is a typed jobqueue.Error but NOT a give-up sentinel: crash
+			// recovery depends on the runner continuing to retry.
+			_, giveUp = client.handleFinalStateError(ctx, Error{Err: ErrRecovering})
+			So(giveUp, ShouldBeFalse)
 		})
 	})
 }

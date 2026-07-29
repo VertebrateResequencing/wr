@@ -105,14 +105,16 @@ func TestLSFLoadPrivateKey(t *testing.T) {
 	})
 }
 
-// TestLSFSubmitToQueueStderr guards that when bsub fails, submitToQueue surfaces
-// bsub's stderr (which holds the real LSF rejection reason) in the returned
-// error, rather than only the bare "exit status 255". It needs no real LSF:
-// bsubExe is pointed at a tiny script that writes a known message to stderr and
-// exits non-zero, and submitToQueue returns on the Output() error before any
-// bjobs/regex work, so the fake script alone exercises the real error path.
+// TestLSFSubmitToQueueStderr guards submitToQueue's bsub-failure error message.
+// When bsub runs but exits non-zero it surfaces bsub's stderr (which holds the
+// real LSF rejection reason) rather than only the bare "exit status 255"; when
+// bsub could not be executed at all there is no stderr, so the "(bsub stderr:"
+// suffix is omitted rather than misleadingly showing an empty one. It needs no
+// real LSF: bsubExe is pointed at a tiny script (or a missing path), and
+// submitToQueue returns on the Output() error before any bjobs/regex work, so
+// the fake alone exercises the real error path.
 func TestLSFSubmitToQueueStderr(t *testing.T) {
-	Convey("submitToQueue surfaces bsub's stderr in the returned error when bsub fails", t, func() {
+	Convey("submitToQueue surfaces bsub's stderr in the returned error when bsub exits non-zero", t, func() {
 		const wantStderr = "Job not submitted: pending job threshold reached"
 
 		fakeBsub := filepath.Join(t.TempDir(), "bsub")
@@ -124,6 +126,20 @@ func TestLSFSubmitToQueueStderr(t *testing.T) {
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, wantStderr)
 		So(err.Error(), ShouldContainSubstring, "(bsub stderr:")
+	})
+
+	Convey("submitToQueue omits the stderr suffix when bsub could not be executed at all", t, func() {
+		// a non-existent bsub makes Output() fail with an *exec.Error (not an
+		// *exec.ExitError), so bsubStderr returns "": the empty `(bsub stderr: "")`
+		// suffix must be omitted rather than hiding the real failure mode.
+		missingBsub := filepath.Join(t.TempDir(), "does-not-exist-bsub")
+
+		s := &lsf{bsubExe: missingBsub}
+
+		err := s.submitToQueue(context.Background(), []string{"-J", "test"})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "failed to run "+missingBsub)
+		So(err.Error(), ShouldNotContainSubstring, "(bsub stderr:")
 	})
 }
 

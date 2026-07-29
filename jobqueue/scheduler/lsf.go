@@ -995,9 +995,13 @@ func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
 		// itself carries only the bare exit status (typically "exit status 255").
 		// bsubStderr recovers that stderr (captured by Output() into the returned
 		// *exec.ExitError) so we surface it alongside the exit status, making the
-		// rejection diagnosable rather than opaque.
-		msg := fmt.Sprintf("failed to run %s %s: %s (bsub stderr: %q)",
-			s.bsubExe, bsubArgs, err, bsubStderr(err))
+		// rejection diagnosable rather than opaque. When bsub could not be executed
+		// at all there is no stderr, so the suffix is omitted rather than appending a
+		// misleading empty (bsub stderr: "") that would hide the real failure mode.
+		msg := fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)
+		if stderr := bsubStderr(err); stderr != "" {
+			msg += fmt.Sprintf(" (bsub stderr: %q)", stderr)
+		}
 
 		return Error{lsfScheduler, opSchedule, msg}
 	}
