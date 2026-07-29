@@ -350,6 +350,27 @@ cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] -
   rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
 }
 
+cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5 confirm-dead SSH leak repro
+  # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
+  # Drives Scheduler.ProcessNotRunningOnHost (the lost-job dead-confirmation ssh check) N
+  # times against a reachable host and counts the ssh-client goroutines left alive. On LSF
+  # each check does getHost -> cloud.NewServer (fresh) -> RunCmd -> dials an ssh client and
+  # closes only the SESSION; the Host interface has no Close() and the throwaway server is
+  # never Destroy()ed, so the client (its goroutines + socket) is NEVER closed - a per-check
+  # leak (confirmJobDead does 2 checks/lost job; prod saw confirm-dead ssh conns 892->~5,300,
+  # ~31,875 goroutines). Needs LSF present + PASSWORDLESS ssh to the host (default localhost;
+  # the leak only forms on SUCCESSFUL dials - a failed dial errors out before caching the
+  # client), and SKIPS otherwise. RED now; GREEN once the confirm-dead path closes its host
+  # connection after use (add Host.Close(); group checks per host over one connection).
+  need_repo
+  local checks="${1:-40}" host="${2:-localhost}"
+  osunset
+  WR_CDLEAK_N="$checks" WR_CDLEAK_HOST="$host" \
+    timeout 300 go -C "$REPO" test -tags reliability_repro ./jobqueue/scheduler/ \
+      -run TestReliable4ConfirmDeadSSHLeak -count=1 -v -timeout 240s 2>&1 \
+    | grep -aE 'CONFIRMDEAD-LEAK|confirm-dead SSH|PASS|FAIL|SKIP|panic|^ok |^---' | grep -avE 'no test files'
+}
+
 cmd_ttrmiss_check() {  # ttrmiss-check [jobs] [runners] [archiveDelayMs] - in-process TTR-miss archive-reject churn
   # Deterministic, in-process (no LSF/manager, build-tagged reliability_repro): a runner
   # pool does reserve -> Started(deadPid) -> [optionally keep touching] -> wait archiveDelay
@@ -1035,6 +1056,10 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   ttrmiss-check [jobs] [runners] [archiveDelayMs]
                         reliable4 in-process TTR-miss archive-reject churn: a starved/dead runner's
                         late success is rejected + re-run (knobs WR_TTRMISS_TOUCH / _RUNNER_DEAD)
+  confirm-dead-leak [checks] [host]
+                        reliable4 Fix 5 repro (real LSF + ssh): drives ProcessNotRunningOnHost N times
+                        and counts leaked ssh-client goroutines; each check dials a client that is never
+                        closed (defaults 40 localhost). Needs LSF + passwordless ssh to host; skips else.
   report-storm [jobs] [runners] [limit] [seconds]
                         reliable4 FAITHFUL in-process report-storm LOAD repro: N fast jobs behind one
                         limit group + M real runner goroutines; classifies every report RPC (defaults
@@ -1089,6 +1114,7 @@ case "${1:-help}" in
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
+  confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
   report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
   report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
