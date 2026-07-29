@@ -196,6 +196,13 @@ storm — goroutine/fd growth, NOT the freeze trigger (bug #1 already fixed that
 
 ## Fix 4b — recovery-gating (documented follow-up, design decision)
 
+> SUPERSEDED (2026-07-29) by the "serve clients only when fully ready" design —
+> see `.docs/reliable4/fixprompt.md` (input for `/spec-writer`). Not serving
+> clients until recovery is complete closes this gap by construction (no window in
+> which a control RPC can be silently lost), and also fixes the empty/half web-UI
+> and the completed-jobs-missing-until-refresh symptoms. Prefer that over the
+> per-RPC gating described below.
+
 `jsuspend`/`jresume`/`getsetlg` (`serverCLI.go:1696`/`1707`/`1740`) call
 `suspendJobs`/`resumeJobs`/`getSetLimitGroup` directly and are NOT gated by
 `isRecovering()` (unlike the runner report paths `getij`/`getijForReport`, which
