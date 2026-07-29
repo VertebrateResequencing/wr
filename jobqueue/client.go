@@ -565,6 +565,46 @@ func reserveHostAndPid() (string, int) {
 	return host, os.Getpid()
 }
 
+// isDefinitiveReject reports whether a failed server report - a Started() report or
+// a final-state Archive/Release/Bury report - was a definitive server-side rejection
+// (the job is not, or is no longer, ours) rather than a transient RPC failure. It is
+// the single give-up test shared by every report path, so the set that counts as
+// definitive stays identical across them.
+//
+// The callers act on a definitive verdict differently: the SYNCHRONOUS Started()
+// caller in Execute, immediately after exec, kills the still-running command to avoid
+// a double-run; a definitive rejection found LATER during the background Started()
+// retry (reportStartAttempt via retryStartReport) does NOT kill - it stops retrying
+// and leaves the job to the touch loop and the double-run-safe archive-time owner
+// check; and handleFinalStateError gives up its retry loop (discarding the completed
+// work) rather than looping the full 24h ClientRetryTime, the already-applied terminal
+// state or the new owner being authoritative. A timeout, connection loss, or the
+// retryable ErrRecovering is NOT definitive: the command/report is kept alive and
+// re-tried in the background, mirroring the touch loop, which likewise only acts on an
+// explicit server signal and otherwise retries.
+func isDefinitiveReject(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// c.request wraps a server RESPONSE carrying an error into a typed jobqueue.Error
+	// whose .Err field is EXACTLY one of our sentinel strings (the server handlers
+	// return the raw sentinel). Match on that typed value rather than substring-scanning the
+	// rendered message: a transport/timeout/connection failure (a non-Error error, or
+	// the retryable ErrRecovering) is NOT a definitive rejection and stays transient.
+	var jqErr Error
+	if !errors.As(err, &jqErr) {
+		return false
+	}
+
+	switch jqErr.Err {
+	case ErrBadJob, ErrBadRequest, ErrMustReserve:
+		return true
+	default:
+		return false
+	}
+}
+
 func currentProcessTreeCPUtime(pid int) time.Duration {
 	pid32, ok := processPID(pid)
 	if !ok {
@@ -2090,7 +2130,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	if _, err = c.request(startReq); err != nil {
-		if isDefinitiveStartReject(err) {
+		if isDefinitiveReject(err) {
 			return killAfterStartFailure(err)
 		}
 
@@ -2585,12 +2625,14 @@ func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconne
 
 	disconnected = c.disconnectAfterFailure(ctx)
 
-	if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) ||
-		strings.Contains(err.Error(), ErrMustReserve) {
+	if isDefinitiveReject(err) {
 		// a permanent error: the job is gone/terminal (ErrBadJob/ErrBadRequest) or a
 		// new runner has taken it over (ErrMustReserve, new-run-wins). Either way this
 		// runner must give up promptly rather than loop the 24h retry - the new owner
-		// (or the already-applied terminal state) is authoritative.
+		// (or the already-applied terminal state) is authoritative. Matched by typed
+		// jobqueue.Error value, not substring, so only an authoritative server
+		// rejection - never a transient error whose text merely contains a sentinel -
+		// discards this runner's completed work.
 		return disconnected, true
 	}
 
@@ -3011,41 +3053,6 @@ func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 	return &clientRequest{Method: requestMethodStart, Job: requestJob}, nil
 }
 
-// isDefinitiveStartReject reports whether a failed Started() report was a
-// definitive server-side rejection (the job is not, or is no longer, ours to run)
-// rather than a transient RPC failure. The two callers act on that verdict
-// differently: the SYNCHRONOUS caller in Execute, immediately after exec, kills
-// the still-running command on a definitive rejection to avoid a double-run; a
-// definitive rejection discovered LATER during background retry (reportStartAttempt
-// via retryStartReport) does NOT kill - it stops retrying and leaves the job to the
-// touch loop and the archive-time owner check (which is itself double-run-safe). A
-// timeout, connection loss, or the retryable ErrRecovering is not definitive: the
-// command is healthy and kept running while contact is re-established in the
-// background, mirroring the touch loop, which likewise only kills on an explicit
-// server signal and otherwise retries.
-func isDefinitiveStartReject(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// c.request wraps a server RESPONSE carrying an error into a typed jobqueue.Error
-	// whose .Err field is EXACTLY one of our sentinel strings (handleStart returns
-	// the raw sentinel). Match on that typed value rather than substring-scanning the
-	// rendered message: a transport/timeout/connection failure (a non-Error error, or
-	// the retryable ErrRecovering) is NOT a definitive rejection and stays transient.
-	var jqErr Error
-	if !errors.As(err, &jqErr) {
-		return false
-	}
-
-	switch jqErr.Err {
-	case ErrBadJob, ErrBadRequest, ErrMustReserve:
-		return true
-	default:
-		return false
-	}
-}
-
 // retryStartReport re-sends the post-exec Started() report in the background after
 // its first attempt failed transiently, so a slow or briefly unreachable server
 // eventually learns the running command's pid without the healthy command being
@@ -3090,7 +3097,7 @@ func (c *Client) reportStartAttempt(ctx context.Context, startReq *clientRequest
 
 	serverContact.recordTouchResult(err)
 
-	if isDefinitiveStartReject(err) {
+	if isDefinitiveReject(err) {
 		clog.Warn(ctx, "server rejected the delayed command-start report; "+
 			"leaving the job to the touch loop", "err", err)
 
