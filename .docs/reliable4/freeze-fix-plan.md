@@ -66,17 +66,34 @@ classifier (the prod `_capture_load.sh` logic) reports the freeze signature ever
 
 Confirmed run (pristine6, 7GB, N=60000): `bw` → **57,053**, drained over 32s.
 
-Two things that run learned:
-- **Sustained >60s freeze needs the real prod.db.** pristine6's synthetic freelist
-  commits fast enough that 57k goroutines drained in 32s with `bwmax=0` and status
-  RPC < 1.4s. The 7.9GB churn-bloated `prod.db` (CPU-bound `freelist.Free`/`spill`)
-  is what keeps the committer stuck > 60s. The **bw explosion is the
-  DB-independent primary signature** and the clean A/B gate; the >60s freeze is the
-  amplified consequence. NB `prod.db` recovers its own ~118k live jobs on startup —
-  use `-s local` (the mode already sets this); those recovered jobs make the burst
-  even more faithful.
-- **Disk:** put `WRDEV_ROOT` on a roomy FS (needs ~2× the DB for copy+backup).
-  Goroutine dumps are classified-then-deleted so they can't fill the disk.
+B shows only the DB-independent **goroutine explosion** (`bw`) and (as first written)
+measured a READ (`wr status`), so it never demonstrated the >60s ARCHIVE
+starvation — that is what C does. **Disk:** put `WRDEV_ROOT` on a roomy FS
+(~2× the DB); goroutine dumps are classified-then-deleted.
+
+> ⚠️ Do NOT run a manager on the real `prod.db`: recovery re-enqueues its ~118k
+> REAL live jobs and the scheduler would EXECUTE them (locally under `-s local`, or
+> `bsub` under `-s lsf`). The freeze needs only prod's freelist SHAPE, not its jobs
+> — use a synthetic big-freelist DB (C). An earlier note here suggesting `-s local`
+> on prod.db was wrong and unsafe.
+
+### C. Faithful FREEZE A/B (the definitive gate) — `wrdev.sh writestorm-freeze` / `TestReliable4WriteStormFreeze`
+
+The freeze's per-commit cost is CPU-bound `freelist.Free`/`spill`, so the FULL
+freeze reproduces IN-PROCESS on a big-freelist SYNTHETIC DB (no prod.db, no LSF, no
+manager, no real commands). It fires the N-job `updateJobAfterChange` storm and
+TIMES `db.archiveJob` — the actual prod victim — on `pristine10` (~4.6GB freelist).
+A/B the fix by running it in a pre-fix `git worktree` vs the fixed tree.
+
+CONFIRMED A/B (pristine10, N=100000, identical DB both sides):
+- **PRE-FIX (`7373697`):** +99,106 goroutines, **max `archiveJob` latency 1m13.5s**
+  (8 archives over the 60s client floor), storm drain 1m27s → the freeze
+  (falsely-lost → churn). Test FAILS.
+- **POST-FIX (`ed763b0`):** +1 goroutine, **max `archiveJob` latency 6.9s** (0 over
+  the floor), storm drain 9s → no freeze. Test PASSES.
+
+This is the authoritative freeze gate: it reproduces the *sustained* >60s archive
+starvation (not just the goroutine count) and shows the fix eliminates it.
 
 ## Fix routing
 

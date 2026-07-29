@@ -350,6 +350,30 @@ cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] -
   rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
 }
 
+cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL prod-freeze repro (A/B)
+  # The FAITHFUL freeze repro: on a big freelist-bloated DB, fire an N-job
+  # updateJobAfterChange storm and TIME db.archiveJob (the prod freeze victim). The
+  # freeze is CPU-bound freelist.Free/spill per commit, so it reproduces in-process
+  # (no LSF, no manager, no real commands run - SAFE). PRE-FIX: goroutines explode
+  # ~=N AND a synchronous archive is starved past the 60s client floor (freeze ->
+  # falsely-lost -> churn) => the test FAILS. POST-FIX (single coalescing writer):
+  # goroutines bounded AND archive stays well under 60s => PASS. Confirmed A/B on
+  # pristine10 (~4.6GB freelist, N=100k): pre-fix maxArchiveLat 1m13s / 99k
+  # goroutines; post-fix under the floor. Needs a big DB (WR_WSFREEZE_DB or
+  # WRDEV_PRISTINE_DB) + RAM for N goroutines; it is COPIED (mutated) each run.
+  # To A/B the fix itself, run this in a pre-fix `git worktree` vs the fixed tree.
+  need_repo
+  local n="${1:-100000}" archivers="${2:-8}"
+  local db="${WR_WSFREEZE_DB:-${WRDEV_PRISTINE_DB:-}}"
+  { [ -n "$db" ] && [ -f "$db" ]; } \
+    || die "set WR_WSFREEZE_DB (or WRDEV_PRISTINE_DB) to a big freelist DB (see backup-stall-check / TestReliable4InflateDB)"
+  osunset
+  WR_WSFREEZE_DB="$db" WR_WSFREEZE_N="$n" WR_WSFREEZE_ARCHIVERS="$archivers" \
+    timeout 2400 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4WriteStormFreeze -count=1 -v -timeout 39m 2>&1 \
+    | grep -aE 'WSFREEZE|FREEZE|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
+}
+
 cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5 confirm-dead SSH leak repro
   # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
   # Drives Scheduler.ProcessNotRunningOnHost (the lost-job dead-confirmation ssh check) N
@@ -1056,6 +1080,12 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   ttrmiss-check [jobs] [runners] [archiveDelayMs]
                         reliable4 in-process TTR-miss archive-reject churn: a starved/dead runner's
                         late success is rejected + re-run (knobs WR_TTRMISS_TOUCH / _RUNNER_DEAD)
+  writestorm-freeze [N] [archivers]
+                        reliable4 FULL prod-freeze A/B repro (in-process, SAFE): fires an N-job
+                        updateJobAfterChange storm on a big freelist DB (WR_WSFREEZE_DB / WRDEV_PRISTINE_DB)
+                        and times db.archiveJob. Pre-fix a synchronous archive is starved past the 60s
+                        client floor (freeze->churn) + goroutines explode ~=N; post-fix bounded + under
+                        the floor (defaults 100000 8). Confirmed pre-fix 1m13s @ N=100k on pristine10.
   confirm-dead-leak [checks] [host]
                         reliable4 Fix 5 repro (real LSF + ssh): drives ProcessNotRunningOnHost N times
                         and counts leaked ssh-client goroutines; each check dials a client that is never
@@ -1115,6 +1145,7 @@ case "${1:-help}" in
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
+  writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
   report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
   report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
