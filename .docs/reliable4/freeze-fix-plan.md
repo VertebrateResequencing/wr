@@ -197,7 +197,7 @@ storm — goroutine/fd growth, NOT the freeze trigger (bug #1 already fixed that
 ## Fix 4b — recovery-gating (documented follow-up, design decision)
 
 > SUPERSEDED (2026-07-29) by the "serve clients only when fully ready" design —
-> see `.docs/reliable4/fixprompt.md` (input for `/spec-writer`). Not serving
+> see `.docs/serve-when-ready/prompt.md` (input for `/spec-writer`). Not serving
 > clients until recovery is complete closes this gap by construction (no window in
 > which a control RPC can be silently lost), and also fixes the empty/half web-UI
 > and the completed-jobs-missing-until-refresh symptoms. Prefer that over the
