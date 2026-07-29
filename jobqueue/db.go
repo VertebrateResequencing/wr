@@ -408,6 +408,56 @@ func (e jobExitData) shouldRecordHighPeakRAMStat() bool {
 		commandExceededMemoryEstimate(e.peakRAM, e.requiredRAM)
 }
 
+// beBatch is a snapshot of pending best-effort writes, taken by swapBestEffort
+// and persisted by the writer in one transaction.
+type beBatch struct {
+	changes map[string][]byte
+	exits   []jobExitData
+	wgkeys  []string
+}
+
+// apply writes the batch's coalesced live-bucket changes and its ordered exit ops
+// within tx.
+func (b beBatch) apply(tx *bolt.Tx) error {
+	if err := b.applyChanges(tx); err != nil {
+		return err
+	}
+
+	return b.applyExits(tx)
+}
+
+// applyChanges rewrites each coalesced live job, but only if it is still present,
+// preserving the archive-vs-change race guard: a "started" update must not
+// resurrect a job that a concurrent archiveJob already removed from the live
+// bucket.
+func (b beBatch) applyChanges(tx *bolt.Tx) error {
+	bjl := tx.Bucket(bucketJobsLive)
+
+	for key, encoded := range b.changes {
+		if bjl.Get([]byte(key)) == nil {
+			continue
+		}
+
+		if err := bjl.Put([]byte(key), encoded); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyExits runs each exit op's transactional update (live-bucket rewrite, std
+// refresh and fail-stat) in order, preserving every per-op side effect.
+func (b beBatch) applyExits(tx *bolt.Tx) error {
+	for i := range b.exits {
+		if err := b.exits[i].update(tx); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 type db struct {
 	backupLast           time.Time
 	backupPath           string
@@ -420,10 +470,25 @@ type db struct {
 	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
 	envcache             *lru.ARCCache[string, []byte]
-	updatingAfterJobExit int
+	updatingAfterJobExit atomic.Int64
 	wg                   *waitgroup.WaitGroup
 	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
+	// The best-effort change/exit updates are persisted by a single long-lived
+	// writer goroutine (bestEffortWriter) that folds ALL currently-pending work
+	// into ONE write transaction per drain, instead of spawning one goroutine plus
+	// one tiny bolt batch per state change. The old per-change spawn piled up ~100k
+	// goroutines on a mass un-suspend and collapsed into thousands of fsync'd txns
+	// that starved the synchronous archive path (the reliable4 prod freeze). beMu
+	// guards the pending structures below; the writer never takes db.Lock or
+	// db.wgMutex, so enqueuing under those locks can never deadlock against it.
+	beMu         sync.Mutex
+	beChanges    map[string][]byte // key -> latest encoded live value (coalescing, latest-wins)
+	beExits      []jobExitData     // exit ops, applied in order (std/fail-stat side effects, not coalesced)
+	beWGKeys     []string          // db.wg keys to Done once the pending batch is persisted
+	beSignal     chan struct{}     // buffered(1) kick: work is pending
+	beStop       chan struct{}     // closed by close() to stop the writer after a final drain
+	beWriterDone chan struct{}     // closed by the writer when it has fully stopped
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -825,8 +890,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupTickerStop:   make(chan struct{}),
 		s3accessor:         accessor,
 		wg:                 waitgroup.New(),
+		beChanges:          make(map[string][]byte),
+		beSignal:           make(chan struct{}, 1),
+		beStop:             make(chan struct{}),
+		beWriterDone:       make(chan struct{}),
 		upgradedOnOpen:     upgradedOnOpen,
 	}
+
+	go dbstruct.bestEffortWriter(ctx)
 
 	if backupsEnabled {
 		go dbstruct.backupTicker(ctx)
@@ -1090,6 +1161,101 @@ func (db *db) decodeJob(encoded []byte) (*Job, error) {
 	job.dropImpossibleCleanups()
 
 	return job, nil
+}
+
+// bestEffortWriter is the single long-lived goroutine that persists all queued
+// best-effort change/exit updates. Each wake drains everything currently pending
+// into ONE write transaction, so a mass state-change burst can neither spawn an
+// unbounded number of write goroutines nor collapse into thousands of tiny
+// fsync'd txns that starve the synchronous archive path (the reliable4 freeze).
+// Started by initDB; stopped, after a final drain, by close() via
+// stopBestEffortWriter.
+func (db *db) bestEffortWriter(ctx context.Context) {
+	defer close(db.beWriterDone)
+	defer internal.LogPanic(ctx, "jobqueue database best-effort writer", true)
+
+	for {
+		select {
+		case <-db.beStop:
+			db.drainBestEffort(ctx)
+
+			return
+		case <-db.beSignal:
+			db.drainBestEffort(ctx)
+		}
+	}
+}
+
+// kickBestEffortWriter wakes the writer to drain pending work. beSignal is
+// buffered(1) so this never blocks the caller (which may hold db.Lock/wgMutex)
+// and coalesced kicks are harmless: one drain persists everything pending.
+func (db *db) kickBestEffortWriter() {
+	select {
+	case db.beSignal <- struct{}{}:
+	default:
+	}
+}
+
+// drainBestEffort persists every currently-pending best-effort write in a single
+// transaction, then releases the batch's wg/exit tracking. Best-effort: a write
+// error is logged, not returned.
+func (db *db) drainBestEffort(ctx context.Context) {
+	batch := db.swapBestEffort()
+	if len(batch.wgkeys) == 0 {
+		return
+	}
+
+	defer db.doneBestEffort(batch)
+
+	if err := db.bolt.Update(batch.apply); err != nil {
+		clog.Error(ctx, "Database best-effort job update failed", "err", err)
+
+		return
+	}
+
+	// Only change-updates mark the db dirty for backup, exactly as the pre-fix
+	// per-path code did (launchJobChangeUpdate set it; launchJobExitUpdate did
+	// not); a periodic backup may lag the last exit-only writes, which is fine for
+	// the DR snapshot (see bugfix 260727-2).
+	if len(batch.changes) > 0 {
+		db.backupDirty.Store(true)
+	}
+}
+
+// swapBestEffort atomically takes ownership of all currently-pending best-effort
+// work and resets the shared structures, so enqueuers keep appending (never
+// blocking) while the writer persists the snapshot.
+func (db *db) swapBestEffort() beBatch {
+	db.beMu.Lock()
+	defer db.beMu.Unlock()
+
+	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys}
+	db.beChanges = make(map[string][]byte)
+	db.beExits = nil
+	db.beWGKeys = nil
+
+	return batch
+}
+
+// doneBestEffort releases a drained batch's db.wg tracking and decrements the
+// in-progress exit counter. It is deferred so it runs even if the write panicked
+// or errored, so close()'s wg.Wait and waitForJobExitUpdates can never hang.
+func (db *db) doneBestEffort(batch beBatch) {
+	for _, wgk := range batch.wgkeys {
+		db.wg.Done(wgk)
+	}
+
+	if len(batch.exits) > 0 {
+		db.updatingAfterJobExit.Add(-int64(len(batch.exits)))
+	}
+}
+
+// stopBestEffortWriter tells the writer to do a final drain and exit, then waits
+// for it. Called once from finaliseBackup (close()), before the wg drain and
+// final backup, so no queued change/exit write is lost on shutdown.
+func (db *db) stopBestEffortWriter() {
+	close(db.beStop)
+	<-db.beWriterDone
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -2237,12 +2403,12 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byt
 		return
 	}
 
-	db.updatingAfterJobExit++
+	db.updatingAfterJobExit.Add(1)
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
-	db.launchJobExitUpdate(ctx, exit)
+	db.launchJobExitUpdate(exit)
 }
 
 // snapshotJobExit encodes the job and snapshots the fields needed to persist it
@@ -2268,26 +2434,18 @@ func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, 
 	return exit, true
 }
 
-// launchJobExitUpdate runs exit.update in a background batch, decrementing the
-// in-progress counter when done. Must be called with db.Lock and db.wgMutex
-// held.
-func (db *db) launchJobExitUpdate(ctx context.Context, exit jobExitData) {
-	wgk := db.wg.Add(1)
+// launchJobExitUpdate queues an exit op for the best-effort writer. Exit ops are
+// not coalesced (their std/fail-stat side effects must each run), so the writer
+// applies them in order within its folded write tx. db.updatingAfterJobExit was
+// already incremented by updateJobAfterExit and is decremented by the writer once
+// the op is persisted. Must be called with db.Lock and db.wgMutex held.
+func (db *db) launchJobExitUpdate(exit jobExitData) {
+	db.beMu.Lock()
+	db.beExits = append(db.beExits, exit)
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.beMu.Unlock()
 
-	go func() {
-		defer internal.LogPanic(ctx, "updateJobAfterExit", true)
-
-		err := db.bolt.Batch(exit.update)
-		db.wg.Done(wgk)
-
-		if err != nil {
-			clog.Error(ctx, "Database operation updateJobAfterExit failed", "err", err)
-		}
-
-		db.Lock()
-		db.updatingAfterJobExit--
-		db.Unlock()
-	}()
+	db.kickBestEffortWriter()
 }
 
 // jobExitData is the snapshot of a job's state needed to persist it after it
@@ -2407,40 +2565,21 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
-	db.launchJobChangeUpdate(ctx, key, encoded)
+	db.launchJobChangeUpdate(key, encoded)
 }
 
-// launchJobChangeUpdate rewrites the live job in a background batch and triggers
-// a backup. Must be called with db.RLock and db.wgMutex held.
-func (db *db) launchJobChangeUpdate(ctx context.Context, key, encoded []byte) {
-	wgk := db.wg.Add(1)
+// launchJobChangeUpdate queues the job's latest encoded live-bucket value for the
+// best-effort writer, coalescing by key so a churning job is persisted once per
+// drain (latest-wins), not once per change. The archive-vs-change guard (only
+// rewrite a job that is still live) is applied by the writer at drain time. Must
+// be called with db.RLock and db.wgMutex held.
+func (db *db) launchJobChangeUpdate(key, encoded []byte) {
+	db.beMu.Lock()
+	db.beChanges[string(key)] = encoded
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.beMu.Unlock()
 
-	go func() {
-		defer internal.LogPanic(ctx, "updateJobAfterChange", true)
-
-		err := db.bolt.Batch(func(tx *bolt.Tx) error {
-			bjl := tx.Bucket(bucketJobsLive)
-			if bjl.Get(key) == nil {
-				// it's possible for these batches to be interleaved with
-				// archiveJob batches, and for this batch to update that a job
-				// was started to actually execute after the batch that says the
-				// job completed, removing it from the live bucket. In that
-				// case, don't add it back to the live bucket here.
-				return nil
-			}
-
-			return bjl.Put(key, encoded)
-		})
-		db.wg.Done(wgk)
-
-		if err != nil {
-			clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
-
-			return
-		}
-
-		db.backupDirty.Store(true)
-	}()
+	db.kickBestEffortWriter()
 }
 
 // modifyLiveJobs is for use if jobs currently in the queue are modified such
@@ -2699,16 +2838,7 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 // *** this method of waiting seems really bad and should be improved, but in
 // practice we probably never wait.
 func (db *db) waitForJobExitUpdates() {
-	for {
-		db.RLock()
-
-		if db.updatingAfterJobExit == 0 {
-			db.RUnlock()
-
-			return
-		}
-
-		db.RUnlock()
+	for db.updatingAfterJobExit.Load() != 0 {
 		<-time.After(jobExitUpdatePollInterval)
 	}
 }
@@ -3039,6 +3169,11 @@ func (db *db) finaliseBackup(ctx context.Context) {
 	if db.backupsEnabled {
 		inProgress = db.stopBackupTicker()
 	}
+
+	// stop the best-effort writer and drain its queue first, so all enqueued
+	// change/exit writes are persisted (and their db.wg tracking released) before
+	// the wg drain and final backup below.
+	db.stopBestEffortWriter()
 
 	// drain ongoing async write transactions so the final backup captures them.
 	db.wgMutex.Lock()
