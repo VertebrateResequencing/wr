@@ -84,6 +84,12 @@ type ConfigMock struct {
 	// schedulers run against a getHost'd Host) without any real hosts. Leave nil
 	// for the default behaviour, where getHost reports no host exists.
 	RunCmdFunc func(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+
+	// GetHostHook, if non-nil, is called with the host name each time getHost
+	// returns a Host - i.e. each time an ssh connection to a host would be opened.
+	// A test can count these to verify that confirm-dead checks are GROUPED onto
+	// few connections per host rather than one connection per check.
+	GetHostHook func(host string)
 }
 
 // mockHost is a stub Host whose RunCmd delegates to a supplied function, letting
@@ -229,8 +235,12 @@ func (s *mock) hostToID(_ string) string {
 	return ""
 }
 
-func (s *mock) getHost(_ string) (Host, bool) {
+func (s *mock) getHost(host string) (Host, bool) {
 	if s.config.RunCmdFunc != nil {
+		if s.config.GetHostHook != nil {
+			s.config.GetHostHook(host)
+		}
+
 		return &mockHost{runCmd: s.config.RunCmdFunc}, true
 	}
 

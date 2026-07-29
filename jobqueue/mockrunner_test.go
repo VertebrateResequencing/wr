@@ -53,6 +53,10 @@ func fakeRunnerSchedGrp(cmd string) string {
 // fake runner only cares about the group.
 const mockRunnerCmd = "fakerunner %s %s %s %s %d %d"
 
+// schedulerNameMock is the SchedulerName that selects the in-process mock
+// scheduler in tests.
+const schedulerNameMock = "mock"
+
 // fakeReqGroup is the ReqGroup used by mock-runner test jobs.
 const fakeReqGroup = "fake"
 
@@ -169,7 +173,7 @@ func TestJobqueueMockRunner(t *testing.T) {
 	// a meaningful (but short) CheckRunnerTime so the scheduling-gap assertion
 	// below still detects the old "delayed by a full CheckRunnerTime" regression.
 	serverConfig.Timings.CheckRunnerTime = 2 * time.Second
-	serverConfig.SchedulerName = "mock"
+	serverConfig.SchedulerName = schedulerNameMock
 	serverConfig.RunnerCmd = mockRunnerCmd
 	serverConfig.SchedulerConfig = &jqs.ConfigMock{
 		RunnerFunc: newFakeRunnerFunc(caFileWrap(config.ManagerCAFile), addr,

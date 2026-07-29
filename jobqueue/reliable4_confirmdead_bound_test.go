@@ -26,12 +26,15 @@
 package jobqueue
 
 // Untagged, fast, deterministic behavioural regression test for the reliable4
-// "confirm-dead ssh storm" fix (Layer 3, checklist 260727-4): markJobLost spawns
-// a confirmOrReleaseLostJob goroutine per lost job, so a mass false-lost event
-// (a freeze firing the TTR on thousands of jobs at once) would otherwise fire
-// thousands of concurrent confirmJobDead -> scheduler.ProcessNotRunningOnHost
-// "ssh" checks at once (the ~852-goroutine ssh storm). The fix bounds those
-// concurrent checks with a per-Server semaphore sized ConfirmDeadConcurrency.
+// "confirm-dead ssh storm" fix (Layer 3, checklist 260727-4; grouping follow-up
+// 260729-3): markJobLost spawns a confirmOrReleaseLostJob goroutine per lost job,
+// so a mass false-lost event (a freeze firing the TTR on thousands of jobs at
+// once) would otherwise fire thousands of concurrent scheduler ssh checks at once
+// (the ~852-goroutine ssh storm). The fix routes them through the confirm-dead
+// coordinator, which groups a host's checks onto one connection and bounds the
+// number of HOSTS ssh-checked at once with a per-Server semaphore sized
+// ConfirmDeadConcurrency. This test uses one job per distinct host (so each is its
+// own host batch) to exercise that per-host bound directly.
 
 import (
 	"context"
@@ -47,10 +50,12 @@ import (
 
 // TestReliable4ConfirmDeadConcurrencyBound drives the per-lost-job confirm path
 // (exactly what markJobLost spawns: go confirmOrReleaseLostJob) for M jobs at
-// once, where M >> the bound N, using the mock scheduler's RunCmd seam to record
-// the peak number of ProcessNotRunningOnHost checks in flight simultaneously. It
-// asserts that peak never exceeds N. Without the semaphore the peak equals M
-// (unbounded storm); with it the peak is capped at N.
+// once, each on its OWN host, where M >> the bound N, using the mock scheduler's
+// RunCmd seam to record the peak number of scheduler ssh checks in flight
+// simultaneously. Because each job is on a distinct host it is its own host batch
+// and needs a limiter slot, so the peak equals the number of hosts ssh-checked at
+// once. It asserts that peak never exceeds N. Without the semaphore the peak
+// equals M (unbounded storm); with it the peak is capped at N.
 func TestReliable4ConfirmDeadConcurrencyBound(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -63,7 +68,7 @@ func TestReliable4ConfirmDeadConcurrencyBound(t *testing.T) {
 
 	ctx := context.Background()
 	_, serverConfig, _, _, _ := jobqueueTestInit(true) //nolint:dogsled
-	serverConfig.SchedulerName = "mock"
+	serverConfig.SchedulerName = schedulerNameMock
 	serverConfig.RunnerCmd = mockRunnerCmd
 	serverConfig.Timings.ConfirmDeadConcurrency = bound
 
@@ -108,10 +113,12 @@ func TestReliable4ConfirmDeadConcurrencyBound(t *testing.T) {
 				defer wg.Done()
 
 				// exactly what markJobLost spawns per lost job (killCalled false =>
-				// confirm-then-kill path, pid > 0 so confirmJobDead does the check,
-				// runnerPid 0 so it is a single check per job).
+				// confirm-then-kill path, pid > 0 so the check runs, runnerPid 0 so it
+				// is a single pid check per job). A DISTINCT host per job makes each its
+				// own host batch, so the peak in-flight equals the number of hosts
+				// checked at once -- exactly what the per-host limiter bounds.
 				server.confirmOrReleaseLostJob(ctx, &Job{}, lostJobDetails{
-					key: "cdkey" + strconv.Itoa(i), host: "mockhost",
+					key: "cdkey" + strconv.Itoa(i), host: "mockhost" + strconv.Itoa(i),
 					pid: 1000 + i, runnerPid: 0, killCalled: false,
 					checkTimeout: checkTimeout, checkRetryTime: checkRetry,
 				})
