@@ -125,10 +125,18 @@ func TestProcessNotRunningOnHostBoundsLoggedOutput(t *testing.T) {
 type processStatusHost struct {
 	stdout string
 	err    error
+	closed int
 }
 
 func (h *processStatusHost) RunCmd(_ context.Context, _ string, _ bool) (string, string, error) {
 	return h.stdout, "", h.err
+}
+
+// Close records that the confirm-dead path closed this host after its check,
+// which is what stops the real cloud.Server-backed hosts leaking their ssh
+// client connection.
+func (h *processStatusHost) Close(_ context.Context) {
+	h.closed++
 }
 
 func TestProcessNotRunningOnHostUsesProcessState(t *testing.T) {
@@ -154,6 +162,49 @@ func TestProcessNotRunningOnHostUsesProcessState(t *testing.T) {
 		s := &Scheduler{impl: &processStatusScheduler{host: &processStatusHost{err: context.Canceled}}}
 
 		So(s.ProcessNotRunningOnHost(context.Background(), 42, "host"), ShouldBeFalse)
+	})
+}
+
+// TestConfirmDeadClosesHost guards the SSH-connection leak fix: the confirm-dead
+// path must Close() the Host it obtained from getHost after every check (so the
+// throwaway cloud.Server-backed hosts do not leak their dialled ssh client), and
+// that Close must happen whether the remote check succeeds or errors.
+func TestConfirmDeadClosesHost(t *testing.T) {
+	Convey("The confirm-dead path closes the host it got from getHost after each check", t, func() {
+		Convey("ProcessNotRunningOnHost closes the host when the process is alive", func() {
+			h := &processStatusHost{stdout: "S\n"}
+			s := &Scheduler{impl: &processStatusScheduler{host: h}}
+
+			So(s.ProcessNotRunningOnHost(context.Background(), 42, "host"), ShouldBeFalse)
+			So(h.closed, ShouldEqual, 1)
+		})
+
+		Convey("ProcessNotRunningOnHost closes the host even when the remote command errors", func() {
+			h := &processStatusHost{err: context.Canceled}
+			s := &Scheduler{impl: &processStatusScheduler{host: h}}
+
+			So(s.ProcessNotRunningOnHost(context.Background(), 42, "host"), ShouldBeFalse)
+			So(h.closed, ShouldEqual, 1)
+		})
+
+		Convey("KillProcessOnHost closes the host after issuing the kill", func() {
+			h := &processStatusHost{}
+			s := &Scheduler{impl: &processStatusScheduler{host: h}}
+
+			So(s.KillProcessOnHost(context.Background(), 42, "host"), ShouldBeNil)
+			So(h.closed, ShouldEqual, 1)
+		})
+
+		Convey("Repeated checks close the host once per check (no accumulation of open connections)", func() {
+			h := &processStatusHost{stdout: ""}
+			s := &Scheduler{impl: &processStatusScheduler{host: h}}
+
+			for range 5 {
+				s.ProcessNotRunningOnHost(context.Background(), 42, "host")
+			}
+
+			So(h.closed, ShouldEqual, 5)
+		})
 	})
 }
 

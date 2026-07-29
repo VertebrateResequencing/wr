@@ -86,7 +86,7 @@ Two things that run learned:
 | 2 | Keep the synchronous archive path off the best-effort lane | falls out of Fix 1; B shows it | with Fix 1 |
 | 3 | bbolt `NoFreelistSync=true` at open | — | TRIED, **DROPPED** (breaks C2 startup invariant; marginal after Fix 1) |
 | 4b | Recovery-gate `jsuspend`/`jresume`/`getsetlg` | — (design decision) | documented follow-up |
-| 5 | Bound/evict the confirm-dead SSH connection cache | needs a new cloud dialer seam | **/bugfix** (implementer adds seam) |
+| 5 | Confirm-dead SSH leak → host-grouped open/check/close coordinator | END-TO-END on LSF here (wrdev.sh) + a fast unit test via a `Host.Close()`/batch seam | **/bugfix** |
 
 Fix 4a (redundant re-suspend) and 4c (limit not held) from the diagnosis are NOT
 separate bugs: re-suspend/re-resume no-ops are already guarded at the queue layer
@@ -166,13 +166,33 @@ Precise map (from a code sweep):
 - Concurrency IS bounded (`ServerConfirmDeadConcurrency=16`, `server.go:4922`); the
   CACHE is not. Prod grew 892 → ~5,300.
 
-Fix: bound/evict `Provider.servers` (LRU/TTL) and/or close idle `sshClients` after
-the check; fix the LSF fresh-Server leak (reuse or close). Reproducer: a NEW cloud
-unit test — `cloud.Server.SSHClient` dials `ssh.Dial` directly with no seam, so the
-implementer must add an injectable dialer, drive N distinct hosts, and assert the
-open-client / cached-server count is bounded. (Cannot be reproduced here: the farm
-is LSF and the cloud tests are OpenStack-integration only.) Secondary amplifier —
-goroutine/fd growth, not the freeze trigger.
+Correction (2026-07-29): on LSF it is not a "cache" at all — it is a pure LEAK.
+`lsf.getHost` returns a FRESH `cloud.NewServer` per call; `RunCmd` dials a new
+`ssh.Client` and closes only the session, never the client; the throwaway Server is
+never `Destroy()`ed. And `confirmJobDead` calls `ProcessNotRunningOnHost` TWICE per
+job (command pid + runner pid, `server.go:4928`/`4937`), so it leaks ~2 ssh
+connections (+ their goroutines) per lost job. The 10-session multiplex and the
+`Provider.servers` map only apply to the OpenStack path (not HGI prod, which is
+`-s lsf`).
+
+Fix (shape agreed 2026-07-29): a confirm-dead coordinator that COLLECTS pending
+checks, GROUPS them by host, opens ONE connection per host, runs that host's pid
+checks over it, then CLOSES it. Closing fixes the leak; one-connection-per-host
+collapses ~2N dials into ~1 per host (lost jobs cluster on the dead node). Needs a
+`Host.Close()` on the scheduler interface (optionally a batch
+`ProcessesNotRunningOnHost(host, pids)`); bound by concurrent HOSTS (replacing the
+per-check semaphore); preserve the retry cadence + per-job kill. Open/close per
+batch is the leak-free v1; a TTL/LRU connection cache is a later optimisation; a
+single multi-pid `ps` is gated on mercury's forced-command.
+
+Reproducers: (1) END-TO-END ON LSF, here — earlier notes wrongly said this was
+impossible. A `wrdev.sh` mode that submits jobs, induces lost→confirm-dead, and
+measures the manager's leaked ssh-client goroutines / open fds (goroutine dump,
+`/proc/<pid>/fd`); post-fix the count stays bounded. This is the authoritative
+gate. (2) A FAST in-process unit test needs a seam: the `mock` scheduler does no
+SSH and `cloud.Server.SSHClient` dials `ssh.Dial` directly — the `Host.Close()` +
+batch method above give the mock that seam. Secondary amplifier of the recovery
+storm — goroutine/fd growth, NOT the freeze trigger (bug #1 already fixed that).
 
 ## Fix 4b — recovery-gating (documented follow-up, design decision)
 
