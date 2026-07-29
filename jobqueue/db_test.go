@@ -701,6 +701,33 @@ func TestDBEndTimeIndex(t *testing.T) {
 	})
 }
 
+func TestDBCheckIfComplete(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a fresh db with one archived job", t, func() {
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		job := testDBArchivedJob("echo complete", "rg-complete", time.Now().Truncate(time.Nanosecond))
+		So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+
+		Convey("checkIfComplete is true for the archived job's key", func() {
+			complete, errc := testDB.checkIfComplete(job.Key())
+			So(errc, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+		})
+
+		Convey("checkIfComplete is false for a key that was never archived", func() {
+			complete, errc := testDB.checkIfComplete("no.such.key")
+			So(errc, ShouldBeNil)
+			So(complete, ShouldBeFalse)
+		})
+	})
+}
+
 func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 	ctx := context.Background()
 

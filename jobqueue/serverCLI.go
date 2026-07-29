@@ -1804,9 +1804,9 @@ func (s *Server) getijForReport(cr *clientRequest) (*Job, string) {
 // ErrBadJob (which the runner treats as a reason to re-run an already-complete
 // job, discarding the work and doubling it up).
 func (s *Server) jobAlreadyComplete(key string) bool {
-	jobs, err := s.db.retrieveCompleteJobsByKeys([]string{key})
+	complete, err := s.db.checkIfComplete(key)
 
-	return err == nil && len(jobs) > 0
+	return err == nil && complete
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
