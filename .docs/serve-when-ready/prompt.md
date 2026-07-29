@@ -1,4 +1,4 @@
-# fixprompt — serve clients only when the manager is fully ready
+# Serve clients only when the manager is fully ready
 
 Input for the `/spec-writer` workflow. This is a "changing fundamentals" change
 (it reverses the reliable2 spec-B1 background-recovery decision), so it gets a
