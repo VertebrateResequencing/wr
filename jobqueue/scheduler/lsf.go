@@ -1518,7 +1518,7 @@ func (s *lsf) cleanup(ctx context.Context) {
 
 	err := s.parseBjobs(jobNamePrefix(s.config.Deployment), cb)
 	if err != nil {
-		clog.Error(ctx, "cleaup parse bjobs failed", "err", err)
+		clog.Error(ctx, "cleanup parse bjobs failed", "err", err)
 	}
 
 	if len(toKill) > 1 {
