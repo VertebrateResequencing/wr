@@ -159,6 +159,10 @@ type postProcessor func(ctx context.Context)
 // the execution of a command, and we no longer need to run more of the cmd.
 type unneededCmdHandler func(cmd string)
 
+// Close satisfies the Host interface. It is a no-op: running commands locally
+// opens no ssh connection or other resource that needs releasing.
+func (l *localHost) Close(_ context.Context) {}
+
 // local is our implementer of scheduleri.
 type local struct {
 	config            *ConfigLocal

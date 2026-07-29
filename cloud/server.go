@@ -922,6 +922,39 @@ func providerDestroyContext(ctx context.Context) (context.Context, context.Cance
 	return context.WithDeadline(detachedCtx, deadline)
 }
 
+// CloseSSHConnections closes any ssh client connections this Server has opened
+// (via SSHClient/SSHSession/RunCmd), stopping their per-connection background
+// goroutines and releasing the underlying TCP sockets. Unlike Destroy() it does
+// NOT run any destroy script or do cloud-provider teardown: it only drops the ssh
+// connections, leaving the Server struct otherwise usable (a subsequent RunCmd
+// would simply dial afresh).
+//
+// It is for callers that use a Server purely as an ssh transport to an existing
+// host and must release the dialled client once done, so its goroutines and
+// socket do not leak. It is safe to call when nothing was ever dialled (a no-op)
+// and is idempotent. Do not call it concurrently with a RunCmd on the same
+// Server.
+func (s *Server) CloseSSHConnections(ctx context.Context) {
+	ctx = s.getContextWithServerID(ctx)
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.closeSSHClients(ctx)
+	s.sshClients = nil
+	s.sshClientSessions = nil
+	s.sshStarted = false
+}
+
+// Close satisfies interfaces that require a Close(context.Context) method (in
+// particular the job scheduler's Host, letting a *Server returned from a cloud
+// scheduler's getHost be used directly as a Host). It is deliberately a NO-OP: a
+// *Server is a long-lived handle that cloud schedulers cache and reuse for many
+// operations on the same host, so dropping its ssh connections implicitly on
+// Close would break that reuse. Drop the ssh connections explicitly with
+// CloseSSHConnections(), or tear the whole server down with Destroy().
+func (s *Server) Close(_ context.Context) {}
+
 // watchSSHSessionTimeout sends a timeout or cancellation error on done if the
 // session isn't established (signalled on worked) within sshShortTimeOut or
 // before ctx is cancelled. Intended to be run in a goroutine.

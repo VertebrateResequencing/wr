@@ -166,6 +166,26 @@ var maxBsubArraySize = defaultMaxBsubArraySize //nolint:gochecknoglobals
 // package var so tests can lower it.
 var bsubExecTimeout = defaultBsubExecTimeout //nolint:gochecknoglobals
 
+// lsfHost adapts the throwaway cloud.Server that lsf.getHost dials for a single
+// confirm-dead ssh command so that Close() actually drops that server's ssh
+// connection. Each getHost call makes a FRESH server; without closing it the
+// dialled ssh client (its background goroutines and socket) would leak per check.
+// (cloud.Server's own Close is a deliberate no-op, correct for the cached, shared
+// servers cloud schedulers reuse, so a throwaway server needs this wrapper.)
+type lsfHost struct {
+	server *cloud.Server
+}
+
+// RunCmd runs the command on the underlying throwaway server.
+func (h *lsfHost) RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error) {
+	return h.server.RunCmd(ctx, cmd, background)
+}
+
+// Close drops the throwaway server's ssh connection so it does not leak.
+func (h *lsfHost) Close(ctx context.Context) {
+	h.server.CloseSSHConnections(ctx)
+}
+
 // lsf is our implementer of scheduleri.
 type lsf struct {
 	config             *ConfigLSF
@@ -1466,7 +1486,8 @@ func (s *lsf) hostToID(_ string) string {
 	return ""
 }
 
-// getHost returns a cloud.Server for the given host.
+// getHost returns a Host backed by a fresh throwaway cloud.Server for the given
+// host, whose Close() closes the ssh connection it dials.
 func (s *lsf) getHost(host string) (Host, bool) {
 	name := "unknown"
 	if user, err := user.Current(); err == nil {
@@ -1478,7 +1499,7 @@ func (s *lsf) getHost(host string) (Host, bool) {
 		return nil, false
 	}
 
-	return server, true
+	return &lsfHost{server: server}, true
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

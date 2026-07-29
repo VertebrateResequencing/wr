@@ -98,6 +98,10 @@ func (h *mockHost) RunCmd(ctx context.Context, cmd string, background bool) (str
 	return h.runCmd(ctx, cmd, background)
 }
 
+// Close satisfies the Host interface. It is a no-op: the mock host opens no ssh
+// connection or other resource that needs releasing.
+func (h *mockHost) Close(_ context.Context) {}
+
 // mock is a scheduleri implementation that runs RunnerFunc goroutines instead
 // of spawning runner subprocesses.
 type mock struct {

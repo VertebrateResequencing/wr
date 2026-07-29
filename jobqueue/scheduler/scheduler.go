@@ -329,6 +329,14 @@ type Host interface {
 	// cancellable with the context, returning stdout, stderr from the command,
 	// or an error if running the command wasn't possible.
 	RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+
+	// Close releases any resources (in particular ssh connections) that using
+	// the Host opened. Callers that obtain a Host from a scheduler's getHost must
+	// Close it when done, so a throwaway per-command host does not leak its ssh
+	// client (its background goroutines and socket). It is a no-op for hosts that
+	// hold no closable resources, or that wrap a cached connection shared with
+	// other operations.
+	Close(ctx context.Context)
 }
 
 // scheduleri interface must be satisfied to add support for a particular job
@@ -630,6 +638,8 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 		return false
 	}
 
+	defer host.Close(ctx)
+
 	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
 	if err != nil {
 		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
@@ -685,6 +695,8 @@ func (s *Scheduler) KillProcessOnHost(ctx context.Context, pid int, hostName str
 	if !ok {
 		return fmt.Errorf("could not get host %q to kill pid %d", hostName, pid) //nolint:err113
 	}
+
+	defer host.Close(ctx)
 
 	_, _, err := host.RunCmd(ctx, killProcessCommand(pid), false)
 
