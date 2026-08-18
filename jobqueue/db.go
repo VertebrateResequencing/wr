@@ -475,8 +475,15 @@ type db struct {
 	bolt                 *bolt.DB
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit atomic.Int64
-	wg                   *waitgroup.WaitGroup
-	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
+	// archivedDecodes counts how many archived jobs decodeArchivedJob has actually
+	// codec-decoded. It is INERT observability in the style of Job.derivations and
+	// archiveTxObserver: nothing but the reliable4 history-scan tests read it and it
+	// affects no behaviour. It lives on the db, rather than being a package global,
+	// so a test counts only the decodes of ITS OWN server; a process-wide counter
+	// would be perturbed by any other live server in the same test binary.
+	archivedDecodes atomic.Uint64
+	wg              *waitgroup.WaitGroup
+	wgMutex         sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
 	// The best-effort change/exit updates are persisted by a single long-lived
 	// writer goroutine (bestEffortWriter) that folds ALL currently-pending work
@@ -2265,6 +2272,28 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 	return rgs, err
 }
 
+// repGroupHasHistory says if repGroup has any archived (complete) job, ie. if it
+// has completion history in the database.
+//
+// archiveJobTx always records a RepGroup's end time (updateRGEndTime), so this is
+// a single O(log n) B+tree Get: it answers "did anything in this RepGroup ever
+// complete?" without the unbounded cursor scan and codec decode of every one of
+// those jobs that actually fetching them costs (see
+// repGroupOptions.IncludeComplete).
+func (db *db) repGroupHasHistory(repGroup string) bool {
+	has := false
+
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		has = len(tx.Bucket(bucketRGEndTime).Get([]byte(repGroup))) == rgEndTimeBytes
+
+		return nil
+	}); err != nil {
+		return false
+	}
+
+	return has
+}
+
 // retrieveLastCompletionTimeByRepGroup gets the latest archived completion
 // time for each supplied RepGroup as UTC instants.
 func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
@@ -2328,6 +2357,8 @@ func (db *db) decodeArchivedJob(completeJobBucket, newJobBucket *bolt.Bucket, ke
 	if len(encoded) == 0 || newJobBucket.Get(key) != nil {
 		return nil, nil //nolint:nilnil // absent/live job is a valid non-error nil result
 	}
+
+	db.archivedDecodes.Add(1)
 
 	return db.decodeJob(encoded)
 }

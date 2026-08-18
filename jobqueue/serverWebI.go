@@ -608,9 +608,12 @@ func (s *Server) sendCurrentStatusCounts(ctx context.Context, r statusWSRequest)
 func (s *Server) sendJobDetails(ctx context.Context, r statusWSRequest) {
 	req := r.req
 
+	// the status webpage lists a RepGroup's complete jobs alongside its live ones
+	// (and offers to re-run them), so this asks for the history.
 	opts := repGroupOptions{
-		RepGroup: req.RepGroup,
-		Match:    normalizeRepGroupMatch("", req.Search),
+		RepGroup:        req.RepGroup,
+		Match:           normalizeRepGroupMatch("", req.Search),
+		IncludeComplete: true,
 		limitJobsOptions: limitJobsOptions{
 			Limit:      req.Limit,
 			Offset:     req.Offset,

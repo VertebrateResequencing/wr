@@ -1303,6 +1303,16 @@ func runStatusForTest(t *testing.T, args ...string) string {
 func resetStatusForTest(t *testing.T) {
 	t.Helper()
 
+	// the --recent selectors these tests set (directly, or by parsing --recent) are
+	// package-level vars that outlive the test, and only `wr status` has a flag to
+	// reset them from: a leftover cmdRecent made every later suspend/resume selection
+	// test die with "-f, -i, -l and -a are mutually exclusive", since countGetJobArgs
+	// counts cmdRecent too. Clear them when the test that reset them finishes.
+	t.Cleanup(func() {
+		cmdRecent = ""
+		cmdRecentPeriod = 0
+	})
+
 	cmdFileStatus = ""
 	cmdIDStatus = ""
 	cmdIDIsSubStr = false

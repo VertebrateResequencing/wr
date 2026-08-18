@@ -199,7 +199,9 @@ func restJobsModificationTargets(ctx context.Context, s *Server, ids string) ([]
 	}
 
 	if len(targets) == 0 {
-		return nil, http.StatusNotFound, errRESTModifyNotFound
+		status, err := restJobsModificationEmptyStatus(s, ids)
+
+		return nil, status, err
 	}
 
 	return targets, http.StatusOK, nil
@@ -223,6 +225,13 @@ func restJobsModificationTarget(ctx context.Context, s *Server, id string) ([]*J
 }
 
 func restJobsModificationRepGroupTarget(ctx context.Context, s *Server, id string) ([]*Job, int, error) {
+	// deliberately does NOT ask for complete jobs: only restEditableState (delayed,
+	// ready, dependent, buried) jobs can be modified, so every archived job this
+	// used to decode was discarded by restEditableJobKeys, at the cost of an
+	// unbounded scan (reliable4 FINDING 1). The documented 409-vs-404 distinction for
+	// a RepGroup with nothing but complete jobs is preserved without that scan by
+	// restJobsModificationEmptyStatus, which asks the O(log n) end-time index whether
+	// the RepGroup has any history at all.
 	opts := repGroupOptions{
 		RepGroup: id,
 		Match:    RepGroupMatchExact,
@@ -234,6 +243,25 @@ func restJobsModificationRepGroupTarget(ctx context.Context, s *Server, id strin
 	}
 
 	return jobs, http.StatusOK, nil
+}
+
+// restJobsModificationEmptyStatus decides which refusal a modification whose ids
+// matched no live job gets: 404 is reserved for ids that resolve to no queued or
+// complete job and no RepGroup, so an id with archived history resolved to
+// complete jobs, which are not an editable state, and is the 409 case.
+//
+// It does not fetch that history to find out (see
+// restJobsModificationRepGroupTarget): every archive records its RepGroup's end
+// time, so this is one O(log n) Get per id. A 32-char job key simply has no such
+// entry, unless it happens to also name a RepGroup with history.
+func restJobsModificationEmptyStatus(s *Server, ids string) (int, error) {
+	for id := range strings.SplitSeq(ids, ",") {
+		if s.db.repGroupHasHistory(strings.TrimSpace(id)) {
+			return http.StatusConflict, errRESTModifyNoEditable
+		}
+	}
+
+	return http.StatusNotFound, errRESTModifyNotFound
 }
 
 func restEditableJobKeys(jobs []*Job) []string {
@@ -1534,10 +1562,13 @@ func (s *Server) restJobsStatusByID(ctx context.Context, id string, q restStatus
 		}
 	}
 
-	// id might be a Job.RepGroup
+	// id might be a Job.RepGroup. This is the REST status endpoint, so it wants the
+	// RepGroup's archived jobs as well as its live ones (a state filter of eg. ready
+	// still avoids the history, as before).
 	opts := repGroupOptions{
-		RepGroup: id,
-		Match:    normalizeRepGroupMatch("", q.search),
+		RepGroup:        id,
+		Match:           normalizeRepGroupMatch("", q.search),
+		IncludeComplete: true,
 		limitJobsOptions: limitJobsOptions{
 			Limit:               q.limit,
 			State:               q.state,

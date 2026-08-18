@@ -1521,9 +1521,16 @@ func (s *Server) handleGetByRepGroup(ctx context.Context, cr *clientRequest) (*s
 		return nil, ErrBadRequest, ""
 	}
 
+	// this is the request `wr status -i` makes, and Client.GetByRepGroupMatch's
+	// documented contract is to return complete jobs as well as live ones, so it
+	// asks for the history. What keeps a caller that can only act on LIVE jobs off
+	// that scan is its State filter: `wr suspend`/`wr resume` send
+	// JobStateIncomplete, `wr remove`/`wr mod` JobStateDeletable, and any
+	// non-complete state stops getDBJobsByRepGroup before it reads the DB.
 	opts := repGroupOptions{
-		RepGroup: cr.Job.RepGroup,
-		Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
+		RepGroup:        cr.Job.RepGroup,
+		Match:           normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
+		IncludeComplete: true,
 		limitJobsOptions: limitJobsOptions{
 			Limit:               cr.Limit,
 			State:               cr.State,

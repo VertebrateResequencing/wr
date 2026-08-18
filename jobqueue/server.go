@@ -5520,6 +5520,15 @@ func (s *Server) checkJobByKey(key string) (bool, error) {
 type repGroupOptions struct {
 	RepGroup string // The RepGroup to get jobs for
 	Match    RepGroupMatch
+	// IncludeComplete must be set by (and only by) callers that genuinely want
+	// archived jobs as well as live ones, because satisfying it means
+	// cursor-scanning and codec-decoding the ENTIRE archived history of every
+	// matching RepGroup, with no limit, offset or streaming. On the production DB
+	// that cost minutes of CPU per request and 12GB of heap (reliable4 FINDING 1),
+	// so it must be an explicit ask: it used to be inferred from State being empty,
+	// which silently handed the whole scan to every caller that just did not have a
+	// state to filter on.
+	IncludeComplete bool
 	limitJobsOptions
 }
 
@@ -5536,7 +5545,8 @@ func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 	}
 }
 
-// getJobsByRepGroup gets jobs in the given group (current and complete).
+// getJobsByRepGroup gets the live jobs in the given group, plus its complete ones
+// if opts.IncludeComplete is set (which is unbounded work - see the warning there).
 func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (jobs []*Job, srerr string, qerr string) {
 	rgs, srerr, qerr := s.getRepGroupsList(opts.RepGroup, opts.Match)
 	if srerr != "" {
@@ -5548,7 +5558,7 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd)
 		jobs = append(jobs, queueJobs...)
 
-		complete := s.getDBJobsByRepGroup(rg, opts.State, &srerr, &qerr)
+		complete := s.getDBJobsByRepGroup(rg, opts, &srerr, &qerr)
 		jobs = append(jobs, complete...)
 	}
 
@@ -5596,9 +5606,15 @@ func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, ge
 	return jobs
 }
 
-// getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup.
-func (s *Server) getDBJobsByRepGroup(rg string, state JobState, srerr *string, qerr *string) []*Job {
-	if state != "" && state != JobStateComplete {
+// getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup,
+// but only if the caller explicitly asked for complete jobs (see
+// repGroupOptions.IncludeComplete) and its state filter can match one.
+func (s *Server) getDBJobsByRepGroup(rg string, opts repGroupOptions, srerr *string, qerr *string) []*Job {
+	if !opts.IncludeComplete {
+		return nil
+	}
+
+	if opts.State != "" && opts.State != JobStateComplete {
 		return nil
 	}
 
@@ -5874,6 +5890,10 @@ func (s *Server) matchesStateFilter(jobState JobState, filterState JobState) boo
 
 	if filterState == JobStateDeletable {
 		return jobState != JobStateReserved && jobState != JobStateRunning && jobState != JobStateComplete
+	}
+
+	if filterState == JobStateIncomplete {
+		return jobState != JobStateComplete
 	}
 
 	return jobState == filterState
