@@ -702,13 +702,17 @@ func reliable4ACAwait(t *testing.T, ch chan error) error {
 
 // archiveTxRecorder observes archive transactional work through the prod-inert
 // archiveTxObserver seam. It counts the DISTINCT write transactions archives are
-// applied in (bolt's Tx.ID is unique per write transaction) and which keys shared
-// each of them, can charge an artificial per-transaction commit cost (standing in
-// for prod's freelist-bound commit on a multi-GB DB), and can hold the first
-// transaction open so a queue of pending archives forms behind it.
+// applied in (bolt's Tx.ID is unique per write transaction) and how many archives
+// shared each of them, can charge an artificial per-transaction commit cost
+// (standing in for prod's freelist-bound commit on a multi-GB DB), and can hold
+// the first transaction open so a queue of pending archives forms behind it.
 type archiveTxRecorder struct {
-	mu   sync.Mutex
-	keys map[int][]string
+	mu sync.Mutex
+
+	// perTx counts the archives each write transaction applied, keyed on its
+	// Tx.ID. Only the counts are kept, so a long benchmark retains nothing
+	// per-archive.
+	perTx map[int]int
 
 	// commitCost is slept once per NEW transaction, inside it, so batching a
 	// transaction's worth of archives genuinely pays for itself.
@@ -725,7 +729,7 @@ func newArchiveTxRecorder(tb testing.TB) *archiveTxRecorder {
 	tb.Helper()
 
 	rec := &archiveTxRecorder{
-		keys:    make(map[int][]string),
+		perTx:   make(map[int]int),
 		started: make(chan struct{}, 4096),
 	}
 
@@ -770,10 +774,11 @@ func (r *archiveTxRecorder) awaitTx(tb testing.TB) {
 
 // observe records one archive's transactional work. It runs INSIDE the bolt write
 // transaction, on whichever goroutine is applying it.
-func (r *archiveTxRecorder) observe(txID int, key []byte) {
+func (r *archiveTxRecorder) observe(txID int, _ []byte) {
 	r.mu.Lock()
-	isNew := r.keys[txID] == nil
-	r.keys[txID] = append(r.keys[txID], string(key))
+	_, seen := r.perTx[txID]
+	isNew := !seen
+	r.perTx[txID]++
 
 	gate := r.gate
 	if !isNew || r.gateUsed {
@@ -809,11 +814,11 @@ func (r *archiveTxRecorder) transactions() (int, int) {
 
 	biggest := 0
 
-	for _, keys := range r.keys {
-		if len(keys) > biggest {
-			biggest = len(keys)
+	for _, n := range r.perTx {
+		if n > biggest {
+			biggest = n
 		}
 	}
 
-	return len(r.keys), biggest
+	return len(r.perTx), biggest
 }

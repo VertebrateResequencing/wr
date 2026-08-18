@@ -346,6 +346,10 @@ func arJitter(rng *rand.Rand, think time.Duration, percent int64) time.Duration 
 // and opens the copy through the real initDB in development mode, ie. with backups
 // OFF: the 2026-08-17 profiling explicitly ruled the backup out (backup frames were
 // absent when the runner-side timeouts fired), so this isolates the write lock.
+//
+// Scratch is $WRDEV_ROOT when set (developers/wrdev.sh passes it in, and removes
+// the copy itself if this process is killed before its own cleanup runs), else the
+// source DB's own directory.
 func arOpenBigDB(t *testing.T, ctx context.Context, dbFile string) *db {
 	t.Helper()
 

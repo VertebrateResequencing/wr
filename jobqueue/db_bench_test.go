@@ -471,10 +471,11 @@ func makeBenchJobs(prefix string, n int) []*Job {
 // of archiveJobsConcurrently: a worker that hits an archiveJob error must keep
 // draining the unbuffered work channel rather than returning, otherwise the
 // sender deadlocks once enough workers have exited. We force every archiveJob to
-// fail by closing the database first (bolt then returns ErrDatabaseNotOpen), and
-// run the real helper via testing.Benchmark inside a watchdog: a regression to
-// early-return would hang here, which the timeout turns into a clear failure
-// instead of a stuck test run.
+// fail by closing the database first (the stopped archive writer then rejects
+// each archive with errDBClosed, before bolt is reached), and run the real helper
+// via testing.Benchmark inside a watchdog: a regression to early-return would
+// hang here, which the timeout turns into a clear failure instead of a stuck
+// test run.
 func TestArchiveJobsConcurrentlyDoesNotDeadlockOnError(t *testing.T) {
 	if runnermode || servermode {
 		return
