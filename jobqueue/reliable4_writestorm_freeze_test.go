@@ -182,8 +182,13 @@ func TestReliable4WriteStormFreeze(t *testing.T) {
 	}
 }
 
-// wsfOpenBigDB opens the big DB in development mode (no wipe, NO backups) so this
-// isolates the write-storm from the backup path, via the real initDB.
+// wsfOpenBigDB copies the big DB to scratch (so the pristine one is never mutated)
+// and opens the copy in development mode (no wipe, NO backups) so this isolates the
+// write-storm from the backup path, via the real initDB.
+//
+// Scratch is $WRDEV_ROOT when set (developers/wrdev.sh passes it in, and removes
+// the copy itself if this process is killed before its own cleanup runs), else the
+// source DB's own directory.
 func wsfOpenBigDB(t *testing.T, ctx context.Context, dbFile string) *db {
 	t.Helper()
 

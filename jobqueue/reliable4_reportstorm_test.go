@@ -588,6 +588,10 @@ func reliable4RSTouchInterval(ttr time.Duration) time.Duration {
 // pre-generated DB (WR_RS_DB) with backups enabled, so archive commits have
 // realistic latency and periodic backups (as in TestReliable4BackupStall). It
 // returns a cleanup func that removes the working copy.
+//
+// Scratch is $WRDEV_ROOT when set (developers/wrdev.sh passes it in, and removes
+// the copy itself if this process is killed before that cleanup runs), else the
+// source DB's own directory.
 func reliable4RSConfigureDB(t *testing.T, serverConfig *ServerConfig, p reliable4RSParams) func() {
 	if p.dbFile == "" {
 		return func() {}

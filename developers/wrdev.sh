@@ -360,18 +360,27 @@ cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL 
   # goroutines bounded AND archive stays well under 60s => PASS. Confirmed A/B on
   # pristine10 (~4.6GB freelist, N=100k): pre-fix maxArchiveLat 1m13s / 99k
   # goroutines; post-fix under the floor. Needs a big DB (WR_WSFREEZE_DB or
-  # WRDEV_PRISTINE_DB) + RAM for N goroutines; it is COPIED (mutated) each run.
+  # WRDEV_PRISTINE_DB) + RAM for N goroutines; each run COPIES it into $WRDEV_ROOT (which
+  # needs room for it) and mutates only that copy, removed again below.
   # To A/B the fix itself, run this in a pre-fix `git worktree` vs the fixed tree.
   need_repo
   local n="${1:-100000}" archivers="${2:-8}"
   local db="${WR_WSFREEZE_DB:-${WRDEV_PRISTINE_DB:-}}"
   { [ -n "$db" ] && [ -f "$db" ]; } \
     || die "set WR_WSFREEZE_DB (or WRDEV_PRISTINE_DB) to a big freelist DB (see backup-stall-check / TestReliable4InflateDB)"
+  local work="$WRDEV_ROOT/wsfreeze_work_db" rc=0
+  mkdir -p "$WRDEV_ROOT"
+  echo "in-process write-storm freeze: N=$n archivers=$archivers"
+  echo "  DB $db ($(ls -la "$db" | awk '{print $5}') bytes; COPIED to $work, never mutated in place)"
   osunset
-  WR_WSFREEZE_DB="$db" WR_WSFREEZE_N="$n" WR_WSFREEZE_ARCHIVERS="$archivers" \
+  WRDEV_ROOT="$WRDEV_ROOT" WR_WSFREEZE_DB="$db" WR_WSFREEZE_N="$n" WR_WSFREEZE_ARCHIVERS="$archivers" \
     timeout 2400 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4WriteStormFreeze -count=1 -v -timeout 39m 2>&1 \
-    | grep -aE 'WSFREEZE|FREEZE|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
+    | grep -aE 'WSFREEZE|FREEZE|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files' || rc=$?
+  # the Go test removes its own copy, but only if it lives to run its cleanup: a
+  # timeout-killed or interrupted run would otherwise leave the whole DB behind.
+  rm -f "$work" "${work}_bk" 2>/dev/null
+  return "$rc"
 }
 
 cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4 FINDING 2 SCALE GATE
@@ -399,7 +408,8 @@ cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4
   # unparseable or zero archive count, zero depth samples, a non-zero go test exit and any
   # archive error all exit 1 (fast-failing archives would otherwise look like low latency).
   # Needs WR_ARCHRATE_DB (or WRDEV_PRISTINE_DB) = a big DB from the generator (see
-  # backup-stall-check / TestReliable4InflateDB); it is COPIED (mutated) each run.
+  # backup-stall-check / TestReliable4InflateDB); each run COPIES it into $WRDEV_ROOT (which
+  # needs room for it) and mutates only that copy, removed again below.
   # A/B the fix by running this in a pre-fix `git worktree` vs the fixed tree.
   need_repo
   local archivers="${1:-660}" secs="${2:-180}" thinkms="${3:-3800}"
@@ -407,15 +417,15 @@ cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4
   local db="${WR_ARCHRATE_DB:-${WRDEV_PRISTINE_DB:-}}" gorc=0
   { [ -n "$db" ] && [ -f "$db" ]; } \
     || die "set WR_ARCHRATE_DB (or WRDEV_PRISTINE_DB) to a big freelist DB (see backup-stall-check / TestReliable4InflateDB)"
-  local out="$WRDEV_ROOT/archive-rate.out"
+  local out="$WRDEV_ROOT/archive-rate.out" work="$WRDEV_ROOT/archrate_work_db"
   mkdir -p "$WRDEV_ROOT"
   echo "reliable4 FINDING 2 archive-rate gate: $archivers archivers, ${thinkms}ms think time, ${secs}s window"
-  echo "  DB $db ($(ls -la "$db" | awk '{print $5}') bytes; COPIED to \$WRDEV_ROOT, never mutated in place)"
+  echo "  DB $db ($(ls -la "$db" | awk '{print $5}') bytes; COPIED to $work, never mutated in place)"
   echo "  prod pre-fix numbers to beat: queue ~600 deep, ~12 archives/s, mean block 43000ms, tail >60000ms"
   echo "  gate: mean <= ${maxmeanms}ms, p99 <= ${maxp99ms}ms, 0 archives over the 60s client floor"
   osunset
-  WR_ARCHRATE_DB="$db" WR_ARCHRATE_ARCHIVERS="$archivers" WR_ARCHRATE_SECONDS="$secs" \
-    WR_ARCHRATE_THINK_MS="$thinkms" \
+  WRDEV_ROOT="$WRDEV_ROOT" WR_ARCHRATE_DB="$db" WR_ARCHRATE_ARCHIVERS="$archivers" \
+    WR_ARCHRATE_SECONDS="$secs" WR_ARCHRATE_THINK_MS="$thinkms" \
     timeout $((secs + 1800)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4ArchiveRate -count=1 -v -timeout $((secs + 1700))s > "$out" 2>&1 || gorc=$?
   grep -aE 'ARCHRATE|PASS|FAIL|panic|^ok |^---' "$out" | grep -avE 'no test files'
@@ -462,7 +472,7 @@ cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4
          "stays at ${mean}ms mean / ${p99}ms p99 with the queue never deeper than $maxdepth"
   fi
   echo "## CLEANUP"
-  rm -f "$WRDEV_ROOT/archrate_work_db" "$WRDEV_ROOT/archrate_work_db_bk" 2>/dev/null
+  rm -f "$work" "${work}_bk" 2>/dev/null
   return "$verdict"
 }
 
@@ -525,8 +535,8 @@ cmd_report_storm() {  # report-storm [jobs] [runners] [limit] [seconds] - reliab
   # job / must-reserve / receive-time-out / other) for started+touch+archive, archive latency
   # max/p50/p99, reserves, reconnects, and the live queue breakdown; final VERDICT = drained or churned.
   # Optional big-DB confound (adds realistic archive-commit latency + periodic backups):
-  #   WR_RS_DB=/nfs/hgi/wr/sb10-bigdb/pristine10  (serve() opens a mutable COPY under WRDEV_ROOT;
-  #                                                 needs ~2x its size of scratch there)
+  #   WR_RS_DB=/nfs/hgi/wr/sb10-bigdb/pristine10  (serve() opens a mutable COPY under WRDEV_ROOT,
+  #                                                 removed again below; needs ~2x its size there)
   # Other env knobs: WR_RS_TTR_MS (server ItemTTR, default 60000 = real), WR_RS_CMD_MS (simulated
   # command runtime, default 0 = pure storm), WR_RS_STATUS=N (N concurrent `wr status`-style pollers
   # that drive the O(backlog) s.q.AllItems() scan + complete-jobs DB read - the prime-suspect
@@ -538,17 +548,25 @@ cmd_report_storm() {  # report-storm [jobs] [runners] [limit] [seconds] - reliab
   # LSF-scale limit-drain for that.
   need_repo
   local jobs="${1:-5000}" runners="${2:-200}" limit="${3:-2000}" secs="${4:-120}"
+  local work="$WRDEV_ROOT/reliable4_reportstorm_work_db" rc=0
   echo "in-process report-storm: jobs=$jobs runners=$runners limit=$limit seconds=$secs bigDB=${WR_RS_DB:-none}"
   echo "  knobs: WR_RS_TTR_MS=${WR_RS_TTR_MS:-60000} WR_RS_CMD_MS=${WR_RS_CMD_MS:-0} WRDEV_ROOT=$WRDEV_ROOT"
   echo "  status_pollers=${WR_RS_STATUS:-0} (interval ${WR_RS_STATUS_MS:-500}ms) profile=${WR_RS_PROFILE_DIR:-off}"
+  [ -n "${WR_RS_DB:-}" ] && echo "  big DB ${WR_RS_DB} COPIED to $work, never mutated in place"
   mkdir -p "$WRDEV_ROOT"
   osunset
+  WRDEV_ROOT="$WRDEV_ROOT" \
   WR_RS_JOBS="$jobs" WR_RS_RUNNERS="$runners" WR_RS_LIMIT="$limit" WR_RS_SECONDS="$secs" \
   WR_RS_DB="${WR_RS_DB:-}" WR_RS_PROFILE_DIR="${WR_RS_PROFILE_DIR:-}" \
   WR_RS_STATUS="${WR_RS_STATUS:-0}" WR_RS_STATUS_MS="${WR_RS_STATUS_MS:-500}" \
     timeout $((secs + 600)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4ReportStorm -count=1 -v -timeout $((secs + 540))s 2>&1 \
-    | grep -aE 'REPORTSTORM|PASS|FAIL|panic|^ok ' | grep -avE 'no test files'
+    | grep -aE 'REPORTSTORM|PASS|FAIL|panic|^ok ' | grep -avE 'no test files' || rc=$?
+  # the Go test removes its own copy (and its backups), but only if it lives to run
+  # its cleanup: a timeout-killed or interrupted run would otherwise leave the whole
+  # DB behind.
+  rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
+  return "$rc"
 }
 
 cmd_report_storm_profile() {  # report-storm-profile [jobs] [runners] [limit] [seconds] - report-storm + pprof
