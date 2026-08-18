@@ -374,6 +374,98 @@ cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL 
     | grep -aE 'WSFREEZE|FREEZE|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
 }
 
+cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4 FINDING 2 SCALE GATE
+  # SCALE GATE for reliable4 FINDING 2 (.docs/reliable4/prod-run-20260817.md): a SUSTAINED
+  # archive rate on a 10GB-class DB must not queue up on the single bbolt write lock. It
+  # recreates the measured production regime in-process and SAFELY (no LSF, no manager, no
+  # real job command ever executes): ARCHIVERS concurrent "runners", each doing think-then-
+  # synchronously-archive on a COPY of a big freelist-bloated DB opened through the real
+  # initDB, so every commit pays production's real freelist/page cost - measured at ~109ms
+  # per single-archive transaction on pristine10, ie. ~9 archives/s if each archive commits
+  # its own (production drained at ~12/s). The think time is JITTERED so the archivers do
+  # not run in lockstep: 660 archives arriving in the same microsecond all land in ONE of
+  # bbolt's 10ms batching windows and coalesce even WITHOUT the fix, which would make this
+  # gate pass vacuously. Jittered arrivals reproduce production spacing, where bbolt's Batch
+  # stops coalescing at all (it detaches its batch the instant one starts, so arrivals
+  # further apart than MaxBatchDelay each get a transaction of their own).
+  #
+  # It reports what production reported: archive throughput, mean/p50/p99/max archive
+  # latency and archive queue depth. PROD PRE-FIX NUMBERS TO BEAT (~660 runners): queue ~600
+  # deep, ~12 archives/s, MEAN block 43.0s, tail over the 60s ClientMinRequestTimeout floor
+  # (which is what put successfully exited compress jobs into `delayed`). GATE (the doc's
+  # targets): mean < 5s and p99 < 60s, and zero archives over the client floor.
+  #
+  # A MISSING or INVALID measurement is a FAIL, never a PASS: no ARCHRATE-SUMMARY line, an
+  # unparseable or zero archive count, zero depth samples, a non-zero go test exit and any
+  # archive error all exit 1 (fast-failing archives would otherwise look like low latency).
+  # Needs WR_ARCHRATE_DB (or WRDEV_PRISTINE_DB) = a big DB from the generator (see
+  # backup-stall-check / TestReliable4InflateDB); it is COPIED (mutated) each run.
+  # A/B the fix by running this in a pre-fix `git worktree` vs the fixed tree.
+  need_repo
+  local archivers="${1:-660}" secs="${2:-180}" thinkms="${3:-3800}"
+  local maxmeanms="${WRDEV_ARCHRATE_MAX_MEAN_MS:-5000}" maxp99ms="${WRDEV_ARCHRATE_MAX_P99_MS:-60000}"
+  local db="${WR_ARCHRATE_DB:-${WRDEV_PRISTINE_DB:-}}" gorc=0
+  { [ -n "$db" ] && [ -f "$db" ]; } \
+    || die "set WR_ARCHRATE_DB (or WRDEV_PRISTINE_DB) to a big freelist DB (see backup-stall-check / TestReliable4InflateDB)"
+  local out="$WRDEV_ROOT/archive-rate.out"
+  mkdir -p "$WRDEV_ROOT"
+  echo "reliable4 FINDING 2 archive-rate gate: $archivers archivers, ${thinkms}ms think time, ${secs}s window"
+  echo "  DB $db ($(ls -la "$db" | awk '{print $5}') bytes; COPIED to \$WRDEV_ROOT, never mutated in place)"
+  echo "  prod pre-fix numbers to beat: queue ~600 deep, ~12 archives/s, mean block 43000ms, tail >60000ms"
+  echo "  gate: mean <= ${maxmeanms}ms, p99 <= ${maxp99ms}ms, 0 archives over the 60s client floor"
+  osunset
+  WR_ARCHRATE_DB="$db" WR_ARCHRATE_ARCHIVERS="$archivers" WR_ARCHRATE_SECONDS="$secs" \
+    WR_ARCHRATE_THINK_MS="$thinkms" \
+    timeout $((secs + 1800)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4ArchiveRate -count=1 -v -timeout $((secs + 1700))s > "$out" 2>&1 || gorc=$?
+  grep -aE 'ARCHRATE|PASS|FAIL|panic|^ok |^---' "$out" | grep -avE 'no test files'
+
+  local sum archives mean p99 maxms rate meandepth maxdepth overfloor errs
+  sum=$(grep -aoE 'ARCHRATE-SUMMARY .*' "$out" | tail -1)
+  ar_num(){ echo "$sum" | grep -aoE "$1=[0-9]+" | grep -aoE '[0-9]+$' | head -1; }
+  archives=$(ar_num archives); mean=$(ar_num meanMs); p99=$(ar_num p99Ms); maxms=$(ar_num maxMs)
+  meandepth=$(ar_num meanDepth); maxdepth=$(ar_num maxDepth); overfloor=$(ar_num overFloor)
+  errs=$(ar_num errors)
+  rate=$(echo "$sum" | grep -aoE 'rate=[0-9.]+' | cut -d= -f2)
+  for v in archives mean p99 maxms meandepth maxdepth overfloor errs; do
+    case "${!v}" in (*[!0-9]*|'') eval "$v=-1" ;; esac
+  done
+
+  echo "## VERDICT: archives=$archives rate=${rate:-?}/s meanLatency=${mean}ms p99=${p99}ms max=${maxms}ms" \
+       "queueDepth mean=$meandepth max=$maxdepth overClientFloor=$overfloor archiveErrors=$errs goExit=$gorc"
+  # a gate that PASSES when the measurement is missing is worse than no gate, so an absent
+  # summary line, an unreadable/zero archive count, and an unreadable depth sample are all
+  # hard FAILURES rather than "0ms, PASS".
+  local verdict=0 unmeasured=""
+  [ -n "$sum" ] || unmeasured="the run produced no ARCHRATE-SUMMARY line (test crashed, timed out, skipped, or could not open the DB?)"
+  [ -z "$unmeasured" ] && [ "$archives" -le 0 ] \
+    && unmeasured="no archive completed, so no latency was measured (archives=$archives)"
+  [ -z "$unmeasured" ] && { [ "$mean" -lt 0 ] || [ "$p99" -lt 0 ]; } \
+    && unmeasured="could not read meanMs/p99Ms out of the summary line"
+  [ -z "$unmeasured" ] && [ "$maxdepth" -lt 0 ] \
+    && unmeasured="could not read a queue-depth sample, so the queue was never observed"
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; inspect $out"
+  elif [ "$gorc" -ne 0 ] || [ "$errs" -ne 0 ]; then
+    verdict=1
+    echo "FAIL (TEST FAILED): the reproducer itself failed (go test exit $gorc, archive errors $errs), so the"
+    echo "  latency numbers above are not a valid measurement of a healthy archive path; inspect $out"
+  elif [ "$mean" -gt "$maxmeanms" ] || [ "$p99" -gt "$maxp99ms" ] || [ "$overfloor" -gt 0 ]; then
+    verdict=1
+    echo "FAIL: the archive path is queueing on the single bolt write lock again"
+    echo "  => pending archives must be folded into ONE db.Update per commit, each waiter replied to"
+    echo "     individually (see archiveWriter/applyArchives in jobqueue/db.go)"
+  else
+    echo "PASS: a sustained $archivers-archiver rate on a $(( $(ls -la "$db" | awk '{print $5}') / 1073741824 ))GB-class DB" \
+         "stays at ${mean}ms mean / ${p99}ms p99 with the queue never deeper than $maxdepth"
+  fi
+  echo "## CLEANUP"
+  rm -f "$WRDEV_ROOT/archrate_work_db" "$WRDEV_ROOT/archrate_work_db_bk" 2>/dev/null
+  return "$verdict"
+}
+
 cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5 confirm-dead SSH leak repro
   # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
   # Drives Scheduler.ProcessNotRunningOnHost (the lost-job dead-confirmation ssh check) N
@@ -1241,6 +1333,17 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         and times db.archiveJob. Pre-fix a synchronous archive is starved past the 60s
                         client floor (freeze->churn) + goroutines explode ~=N; post-fix bounded + under
                         the floor (defaults 100000 8). Confirmed pre-fix 1m13s @ N=100k on pristine10.
+  archive-rate [archivers] [seconds] [thinkMs]
+                        reliable4 FINDING 2 SCALE GATE (in-process, SAFE - no LSF/manager/commands):
+                        N concurrent "runners" think-then-synchronously-archive on a COPY of a big
+                        freelist-bloated DB (WR_ARCHRATE_DB / WRDEV_PRISTINE_DB) opened via the real
+                        initDB, so the arrival rate outruns the transaction rate exactly as production
+                        did (defaults 660 180 3800). Reports archive throughput, mean/p50/p99/max
+                        latency and queue depth. Prod pre-fix: queue ~600 deep, ~12/s, mean block
+                        43000ms, tail over the 60s client floor. PASS = mean <= 5000ms, p99 <= 60000ms
+                        and nothing over the floor (WRDEV_ARCHRATE_MAX_MEAN_MS / _MAX_P99_MS); FAIL =
+                        the archives queue on the one write lock again, OR nothing was measured, OR
+                        the reproducer itself failed (non-zero go test exit / any archive error).
   confirm-dead-leak [checks] [host]
                         reliable4 Fix 5 repro (real LSF + ssh): drives ProcessNotRunningOnHost N times
                         and counts leaked ssh-client goroutines; each check dials a client that is never
@@ -1300,6 +1403,7 @@ case "${1:-help}" in
   idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
+  archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
   writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
