@@ -253,8 +253,8 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 				case jobqueue.JobStateSuspended:
 					sus += 1 + job.Similar
 				default:
-					// other states (new, deleted, deletable, unknown) are not
-					// counted
+					// other states (new, deleted, deletable, incomplete,
+					// unknown) are not counted
 				}
 			}
 

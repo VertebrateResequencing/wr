@@ -81,10 +81,19 @@ Each of these was a real, diagnosed failure. Do not reintroduce them.
    (`LSB_JOBID[LSB_JOBINDEX]` == `killableID`) and skip them, robust to `bjobs`
    status lag.
 
-6. **Never cold-scan completed-job history on startup.** Seeding any in-memory
-   structure by scanning all historical completed jobs made restarts take
-   minutes on a real DB. Startup time must not scale with completed-job count
-   (there is an absolute-responsiveness test guarding this).
+6. **Never cold-scan completed-job history on startup, or on a control path.**
+   Seeding any in-memory structure by scanning all historical completed jobs made
+   restarts take minutes on a real DB. Startup time must not scale with
+   completed-job count (there is an absolute-responsiveness test guarding this).
+   The same applies to any **control** path: `wr resume -i <rg> -z` used to scan
+   and decode every matching RepGroup's whole archived history, so it timed out
+   and took the manager's heap from 0.35GB to 12.1GB. Fetching complete jobs must
+   be an explicit ask (`repGroupOptions.IncludeComplete`), and a command that can
+   only act on live jobs must say so with a state filter (`JobStateIncomplete` /
+   `JobStateDeletable`) rather than asking for every state. When only a *fact*
+   about the history is needed, ask an index for it: "has this RepGroup ever
+   completed anything?" is one `bucketRGEndTime` Get (`db.repGroupHasHistory`),
+   not a scan.
 
 7. **Cap what you hand external tools.** An uncapped `bsub -J name[1-N]` for a
    huge same-requirements batch hangs LSF for minutes with no error. Cap+chunk

@@ -1190,6 +1190,182 @@ ib_rac_driver() {  # <triggerSeconds> <cycleCountFile>
   done
 }
 
+cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - reliable4 FINDING 1 SCALE GATE
+  # SCALE GATE for reliable4 FINDING 1 (.docs/reliable4/prod-run-20260817.md): a control
+  # command that can only ever act on LIVE jobs must stay responsive no matter how much
+  # ARCHIVED history the database holds. In production `wr resume -i portal -z` died with
+  # `receive time out` after 120s while two handleGetByRepGroup goroutines kept
+  # decodeArchivedJob-ing for 12+ minutes AFTER the client had given up, taking the manager's
+  # heap 348MB -> 12,143MB with multi-second GC pauses; the operator could not un-suspend the
+  # queue at all, and `-a` (the only history-free route) was the sole workaround.
+  #
+  # This is an end-to-end gate on the REAL binary: it seeds a database with `archived`
+  # archived jobs spread over `groups` RepGroups (via TestReliable4SeedArchivedHistory -
+  # bulk-inserted, because running that many jobs through the queue would take hours), points
+  # an isolated PROD-mode manager at it (prod mode preserves the DB; dev mode wipes it), adds
+  # `live` ready jobs in the FIRST of those RepGroups behind a limit group set to 0 - so they
+  # are a real live backlog that can NEVER be scheduled, no runner is ever launched and no LSF
+  # job is ever submitted (farm-safe) - and then TIMES THE ACTUAL CLI COMMANDS the doc names:
+  # `wr limit`, `wr suspend -i <rg>` and `wr resume -i <substr> -z`.
+  #
+  # It also reports the manager's peak-RSS growth (VmHWM) across those commands, which is the
+  # heap excursion prod suffered, and then takes a REFERENCE measurement: `wr status -i <rg>`
+  # legitimately DOES want the history, so its timing and job count prove the seeded history
+  # is real, reachable through this very RPC path, and expensive - which is what stops a PASS
+  # here from being vacuous. The reference deliberately runs AFTER the timed commands: VmHWM
+  # is a high-water MARK, so a reference scan taken first would make its own (legitimate)
+  # excursion the baseline, and no growth the timed commands caused could ever be reported.
+  #
+  # GATE (the doc's batch targets): limit/suspend/resume all under WRDEV_HS_MAX_MS (5000ms),
+  # peak-RSS growth under WRDEV_HS_MAX_RSS_MB, and the commands must actually have done their
+  # work (suspended == resumed == live). A MISSING or INVALID measurement is a FAIL, never a
+  # PASS: no seed line, a seeded history too small to gate on, a dead manager, jobs not added,
+  # a reference scan that did not return the seeded history, or an unparseable timing/RSS all
+  # exit 1. The size floors matter because the pre-fix cost is PROPORTIONAL to the history:
+  # `wr suspend -i <rg>` decoded one group's records and `wr resume -i <substr> -z` decoded
+  # every group's, so with a small history the pre-fix code passes too and the gate proves
+  # nothing (WRDEV_HS_MIN_PERGROUP / WRDEV_HS_MIN_ARCHIVED).
+  #
+  # Disk: the seeded DB is ~5KB per archived job (production-sized records plus bolt page and
+  # index overhead) and prod mode also keeps a backup copy, so the defaults need ~2GB free in
+  # $PROD_RUN; both are removed in CLEANUP below. A/B the fix by running this in a pre-fix
+  # `git worktree` vs the fixed tree - but note the pre-fix side DECODES the whole history
+  # into RAM, so give the machine room for it.
+  need_repo; need_bin; ensure_config
+  local archived="${1:-200000}" groups="${2:-20}" live="${3:-5000}"
+  local maxms="${WRDEV_HS_MAX_MS:-5000}" maxrssmb="${WRDEV_HS_MAX_RSS_MB:-512}"
+  local minpergroup="${WRDEV_HS_MIN_PERGROUP:-1000}" minarchived="${WRDEV_HS_MIN_ARCHIVED:-100000}"
+  local rgp="hsrg" rg1="hsrg0" lg="hslimit"
+  local dbf="$PROD_RUN/db" jobs="$WRDEV_ROOT/hsjobs.json" out="$WRDEV_ROOT/control-rpc-history.out"
+  mkdir -p "$WRDEV_ROOT"
+  echo "reliable4 FINDING 1 control-RPC gate: $archived archived jobs over $groups rep groups,"
+  echo "  $live live ready-but-blocked jobs ($lg:0, so no runner and no LSF job is ever created),"
+  echo "  then the REAL 'wr limit', 'wr suspend -i $rg1' and 'wr resume -i $rgp -z' are timed."
+  echo "  prod pre-fix: 'wr resume -i portal -z' timed out at 120s, kept scanning for 12+ min,"
+  echo "  manager heap 348MB -> 12143MB. Gate: each command <= ${maxms}ms, peak-RSS growth <= ${maxrssmb}MB."
+  echo "  A MISSING measurement (no seed, dead manager, no reference scan) is a FAIL, not a PASS,"
+  echo "  as is a history too small to gate on (>= $minpergroup per group and >= $minarchived in total:"
+  echo "  the pre-fix cost was proportional to it, so a small history passes pre-fix as well)."
+  osunset
+  safe_kill "$(mgr_pid "$PROD_RUN")" >/dev/null 2>&1; sleep 2
+  rm -rf "$PROD_RUN" 2>/dev/null; mkdir -p "$PROD_RUN"
+
+  echo "=== seeding $dbf ==="
+  local seed
+  WRDEV_ROOT="$WRDEV_ROOT" WR_HS_DB="$dbf" WR_HS_ARCHIVED="$archived" WR_HS_GROUPS="$groups" \
+    WR_HS_RG_PREFIX="$rgp" timeout 3600 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4SeedArchivedHistory -count=1 -v -timeout 3500s > "$out" 2>&1 || true
+  seed=$(grep -aoE 'HISTORY-SEED .*' "$out" | tail -1)
+  echo "  ${seed:-<no HISTORY-SEED line; see $out>}"
+  local pergroup; pergroup=$(echo "$seed" | grep -aoE 'perGroup=[0-9]+' | cut -d= -f2)
+  local seeded; seeded=$(echo "$seed" | grep -aoE 'archived=[0-9]+' | cut -d= -f2)
+  for v in pergroup seeded; do
+    case "${!v}" in (*[!0-9]*|'') eval "$v=-1" ;; esac
+  done
+
+  echo "=== starting the isolated prod-mode manager on that DB ==="
+  cmd_prod_start local 2>&1 | sed 's/^/  /'
+  local mpid; mpid=$(mgr_pid "$PROD_RUN")
+  sleep 3
+
+  local added=""
+  if [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; then
+    perl -e "for my \$i (1..$live){print '{\"cmd\":\"sleep 1 #hs'.\$i.'\"}'.\"\n\"}" > "$jobs"
+    added=$(timeout 900 "$WR" add -f "$jobs" --rep_grp "$rg1" --limit_grps "$lg:0" \
+      --retries 0 --deployment production 2>&1 | grep -aoE 'Added [0-9]+ new commands' | grep -aoE '[0-9]+')
+    echo "  added ${added:-0} live jobs to $rg1 (limit group $lg:0)"
+  fi
+  case "${added:-x}" in (*[!0-9]*|'') added=-1 ;; esac
+
+  # the timed control commands, FIRST, so that the VmHWM baseline sampled here is the
+  # manager's steady state with the live backlog in it: VmHWM is a high-water MARK, so
+  # anything memory-hungry done before this sample (notably the reference history scan
+  # below, which decodes a whole group's records on purpose) would raise the baseline and
+  # hide exactly the excursion this metric exists to catch.
+  local rss0=-1 rss1=-1 limms=-1 susms=-1 resms=-1 suspended=-1 resumed=-1 t0 t1
+  if [ "$added" -gt 0 ]; then
+    rss0=$(awk '/^VmHWM:/{print $2}' "/proc/$mpid/status" 2>/dev/null)
+    t0=$(date +%s%3N); timeout 600 "$WR" limit --deployment production -g "$lg" >/dev/null 2>&1
+    t1=$(date +%s%3N); limms=$((t1 - t0))
+    t0=$(date +%s%3N)
+    suspended=$(timeout 600 "$WR" suspend --deployment production -i "$rg1" 2>&1 \
+      | grep -aoE 'Suspended [0-9]+' | grep -aoE '[0-9]+')
+    t1=$(date +%s%3N); susms=$((t1 - t0))
+    t0=$(date +%s%3N)
+    resumed=$(timeout 600 "$WR" resume --deployment production -i "$rgp" -z 2>&1 \
+      | grep -aoE 'Resumed [0-9]+' | grep -aoE '[0-9]+')
+    t1=$(date +%s%3N); resms=$((t1 - t0))
+    rss1=$(awk '/^VmHWM:/{print $2}' "/proc/$mpid/status" 2>/dev/null)
+  fi
+  for v in rss0 rss1 suspended resumed; do
+    case "${!v}" in (*[!0-9]*|'') eval "$v=-1" ;; esac
+  done
+  local rssmb=-1
+  { [ "$rss0" -ge 0 ] && [ "$rss1" -ge 0 ]; } && rssmb=$(((rss1 - rss0) / 1024))
+
+  # the reference, deliberately AFTER the measurement above: `wr status` DOES want the
+  # history, so this both proves the seeded history is real and reachable through the same
+  # getbr RPC the timed commands used, and shows what paying for it costs. EVERY history-
+  # decoding request belongs here rather than earlier, the counts display included, for the
+  # VmHWM baseline reason above.
+  local refjobs=-1 refms=-1
+  if [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; then
+    t0=$(date +%s%3N)
+    refjobs=$(timeout 1800 "$WR" status --deployment production -i "$rg1" -o plain 2>/dev/null \
+      | awk -F'\t' '$2=="complete"{n++} END{print n+0}')
+    t1=$(date +%s%3N); refms=$((t1 - t0))
+    echo "  reference 'wr status -i $rg1' returned $refjobs complete jobs in ${refms}ms (it decodes them all)"
+    echo "  counts after resuming: $(timeout 300 "$WR" status --deployment production -i "$rg1" \
+      -o counts 2>/dev/null | tr '\n' ' ')"
+  fi
+  case "${refjobs:-x}" in (*[!0-9]*|'') refjobs=-1 ;; esac
+
+  echo "## VERDICT: limit=${limms}ms suspend=${susms}ms (suspended=$suspended)" \
+       "resume -z=${resms}ms (resumed=$resumed) peakRSSgrowth=${rssmb}MB" \
+       "[reference history scan: $refjobs jobs in ${refms}ms]"
+  # a gate that PASSES when the measurement is missing is worse than no gate, so an absent
+  # seed line, a history too small for the pre-fix code to have failed on either, a manager
+  # that never came up, jobs that were not added, a reference scan that did not return the
+  # seeded history and an unreadable timing/RSS are all hard FAILURES.
+  local verdict=0 unmeasured=""
+  [ -n "$seed" ] && [ "$pergroup" -gt 0 ] && [ "$seeded" -gt 0 ] \
+    || unmeasured="the seeder produced no usable HISTORY-SEED line, so there is no archived history to gate on"
+  [ -z "$unmeasured" ] && { [ "$pergroup" -lt "$minpergroup" ] || [ "$seeded" -lt "$minarchived" ]; } \
+    && unmeasured="the seeded history is too small to gate on (perGroup=$pergroup needs >= $minpergroup, total=$seeded needs >= $minarchived): the pre-fix cost was proportional to the history, so at this size the unfixed code comes in under ${maxms}ms too and a PASS would prove nothing (raise the archived/groups arguments, or lower WRDEV_HS_MIN_PERGROUP/WRDEV_HS_MIN_ARCHIVED if you know what you are doing)"
+  [ -z "$unmeasured" ] && { [ -z "$mpid" ] || ! ps -p "$mpid" >/dev/null 2>&1; } \
+    && unmeasured="the isolated prod-mode manager is not running, so nothing served these requests"
+  [ -z "$unmeasured" ] && [ "$added" -ne "$live" ] \
+    && unmeasured="only $added of $live live jobs were added, so suspend/resume had nothing real to select"
+  [ -z "$unmeasured" ] && [ "$refjobs" -ne "$pergroup" ] \
+    && unmeasured="the reference 'wr status -i $rg1' returned $refjobs complete jobs, not the $pergroup seeded: the history is not reachable, so a fast suspend/resume proves nothing"
+  [ -z "$unmeasured" ] && { [ "$limms" -lt 0 ] || [ "$susms" -lt 0 ] || [ "$resms" -lt 0 ] || [ "$rssmb" -lt 0 ]; } \
+    && unmeasured="could not read a timing or the manager's VmHWM, so the commands were not measured"
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; inspect $out and $PROD_RUN"
+  elif [ "$suspended" -ne "$live" ] || [ "$resumed" -ne "$live" ]; then
+    verdict=1
+    echo "FAIL (WRONG RESULT): suspended=$suspended resumed=$resumed, expected $live each"
+    echo "  => the commands returned quickly but no longer act on the jobs they used to, so the"
+    echo "     state filter is excluding live jobs it must not (see JobStateIncomplete)"
+  elif [ "$limms" -gt "$maxms" ] || [ "$susms" -gt "$maxms" ] || [ "$resms" -gt "$maxms" ] \
+    || [ "$rssmb" -gt "$maxrssmb" ]; then
+    verdict=1
+    echo "FAIL: a control command is paying for the archived history again (>${maxms}ms or >${maxrssmb}MB)"
+    echo "  => suspend/resume must send a state filter (cmd/suspend.go getSelectedJobs) and"
+    echo "     getJobsByRepGroup must only fetch complete jobs when asked (repGroupOptions.IncludeComplete)"
+  else
+    echo "PASS: with $archived archived jobs over $groups rep groups (a $refms ms scan when a request"
+    echo "  actually asks for it), limit/suspend/resume -z cost ${limms}/${susms}/${resms}ms and ${rssmb}MB"
+  fi
+  echo "## CLEANUP"
+  safe_kill "$(mgr_pid "$PROD_RUN")"
+  rm -f "$jobs" 2>/dev/null
+  rm -rf "$PROD_RUN" 2>/dev/null
+  return "$verdict"
+}
+
 cmd_runner_started_timeout_check() {  # runner-started-timeout-check - reliable4 #3 Started() kills healthy cmd
   # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of make
   # test) for reliable4 ISSUE #3: after exec, the runner reports its PID via c.Started();
@@ -1339,6 +1515,21 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         floor (thresholds WRDEV_IDLE_MAX_MS / WRDEV_IDLE_MAX_SNAP_MS); FAIL = the
                         O(backlog) MD5+sort+allocate derivation is back, OR the run produced no
                         measurement to judge (no profile, no samples, no rac cycles).
+  control-rpc-history [archived] [groups] [live]
+                        reliable4 FINDING 1 SCALE GATE (real binary, farm-safe - no LSF job and no
+                        runner is ever created): seeds a DB with N archived jobs over G rep groups,
+                        points an isolated PROD-mode manager at it, adds L live ready-but-blocked
+                        jobs (hslimit:0) in the first group, then TIMES the real 'wr limit',
+                        'wr suspend -i <rg>' and 'wr resume -i <substr> -z' and reports the
+                        manager's peak-RSS growth (defaults 200000 20 5000; needs ~2GB free in
+                        \$WRDEV_ROOT/.wr-prod_production, removed again afterwards). Prod pre-fix:
+                        'wr resume -i portal -z' timed out at 120s, kept scanning 12+ minutes, heap
+                        348MB -> 12143MB. PASS = each command <= WRDEV_HS_MAX_MS (5000) with
+                        <= WRDEV_HS_MAX_RSS_MB growth AND suspended == resumed == L; FAIL = a
+                        command pays for the history again, OR it stopped acting on live jobs, OR
+                        nothing was measured (no seed, dead manager, no reference history scan),
+                        OR the seeded history is under WRDEV_HS_MIN_PERGROUP (1000) per group or
+                        WRDEV_HS_MIN_ARCHIVED (100000) in total, which the pre-fix code passes too.
   runner-started-timeout-check
                         reliable4 #3 reproducer: a transient post-exec Started() RPC timeout
                         kills a healthy running command; fails until Started() tolerates it
@@ -1419,6 +1610,7 @@ case "${1:-help}" in
   priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
   idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
+  control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;

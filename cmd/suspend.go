@@ -141,8 +141,18 @@ func disconnectSelectedJobsClient(jq *jobqueue.Client) {
 	}
 }
 
+// getSelectedJobs gets the jobs the user selected with -f, -i, -l or -a.
+//
+// A state filter is ALWAYS sent, not just with -a. Suspending and resuming can
+// only ever affect a job that is still live in the queue, so asking for
+// JobStateIncomplete discards nothing the caller was going to use - but sending
+// no filter at all made the manager cursor-scan and codec-decode the entire
+// archived history of every matching report group, which on the production DB ran
+// CPU-bound for over 12 minutes, took its heap from 0.35GB to 12.1GB and left the
+// operator unable to un-suspend the queue (reliable4 FINDING 1). -a keeps its own
+// filter, which already went to the in-memory-only getJobsCurrent path.
 func getSelectedJobs(jq *jobqueue.Client, allState jobqueue.JobState) []*jobqueue.Job {
-	var state jobqueue.JobState
+	state := jobqueue.JobStateIncomplete
 	if cmdAll {
 		state = allState
 	}

@@ -76,21 +76,27 @@ type JobState string
 // status-bar delta feed). "lost" is also a "fake" state indicating the job was
 // running and we lost contact with it; it may be dead. "unknown" is an error
 // case that shouldn't happen. "deletable" is a meta state that can be used
-// when filtering jobs to mean !(reserved|running|complete).
+// when filtering jobs to mean !(reserved|running|complete), and "incomplete" is
+// a meta state meaning !complete, ie. every job still live in the queue: it lets
+// a command that can only ever act on live jobs (wr suspend, wr resume) say so,
+// which is what keeps the manager from scanning and decoding the whole archived
+// history of every matching RepGroup for them (reliable4 FINDING 1). Neither
+// meta state is ever the state OF a job, so they are only meaningful as filters.
 const (
-	JobStateNew       JobState = "new"
-	JobStateDelayed   JobState = "delayed"
-	JobStateReady     JobState = "ready"
-	JobStateReserved  JobState = "reserved"
-	JobStateRunning   JobState = "running"
-	JobStateLost      JobState = "lost"
-	JobStateBuried    JobState = "buried"
-	JobStateDependent JobState = "dependent"
-	JobStateSuspended JobState = "suspended"
-	JobStateComplete  JobState = "complete"
-	JobStateDeleted   JobState = "deleted"
-	JobStateDeletable JobState = "deletable"
-	JobStateUnknown   JobState = "unknown"
+	JobStateNew        JobState = "new"
+	JobStateDelayed    JobState = "delayed"
+	JobStateReady      JobState = "ready"
+	JobStateReserved   JobState = "reserved"
+	JobStateRunning    JobState = "running"
+	JobStateLost       JobState = "lost"
+	JobStateBuried     JobState = "buried"
+	JobStateDependent  JobState = "dependent"
+	JobStateSuspended  JobState = "suspended"
+	JobStateComplete   JobState = "complete"
+	JobStateDeleted    JobState = "deleted"
+	JobStateDeletable  JobState = "deletable"
+	JobStateIncomplete JobState = "incomplete"
+	JobStateUnknown    JobState = "unknown"
 )
 
 // subqueueToJobState converts queue.SubQueue entries to JobStates.
