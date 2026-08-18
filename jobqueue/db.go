@@ -124,6 +124,10 @@ var (
 // errDBClosed is returned when an operation is attempted on a closed database.
 var errDBClosed = errors.New("database closed")
 
+// errArchivePanic is returned to the one caller whose archive panicked, so a
+// malformed job fails only itself (as it did under bbolt.Batch's safelyCall).
+var errArchivePanic = errors.New("panic while archiving job")
+
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
 // updateJobAfterExit() calls to complete.
 const jobExitUpdatePollInterval = 10 * time.Millisecond
@@ -489,6 +493,27 @@ type db struct {
 	beSignal     chan struct{}     // buffered(1) kick: work is pending
 	beStop       chan struct{}     // closed by close() to stop the writer after a final drain
 	beWriterDone chan struct{}     // closed by the writer when it has fully stopped
+	// Archives are SYNCHRONOUS - the client's archive RPC blocks on the outcome -
+	// but they too are persisted by a single long-lived coalescing writer
+	// (archiveWriter), which folds every currently-pending archive into ONE
+	// db.Update and then replies to each waiter individually. Previously each
+	// archive committed its own transaction via db.bolt.Batch, and bbolt's batching
+	// could not save it: Batch detaches its current batch the instant one STARTS
+	// and arms a fresh MaxBatchDelay timer, so archives arriving further apart than
+	// that delay each got a transaction of their own and queued on the single bolt
+	// write lock. Live production (2026-08-17, ~660 runners) measured that queue
+	// persistently ~600 deep draining at ~12/s, spread over 234 concurrent
+	// bbolt.(*batch).run goroutines, for a MEAN archive block of 43s against the
+	// 60s ClientMinRequestTimeout floor - which turned successfully exited jobs
+	// into `delayed` ones (reliable4 FINDING 2). arMu guards the pending queue; the
+	// writer takes neither db.Lock nor db.wgMutex, so the archive path stays off
+	// the exclusive db lock exactly as before (bugfix 260727-2 part A).
+	arMu         sync.Mutex
+	arPending    []*archiveOp  // archives waiting to be folded into the next transaction
+	arSignal     chan struct{} // buffered(1) kick: archives are pending
+	arStop       chan struct{} // closed by close() to stop the writer after a final drain
+	arWriterDone chan struct{} // closed by the writer when it has fully stopped
+	arStopped    bool          // guarded by arMu: the writer will drain no more
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -894,10 +919,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		beSignal:           make(chan struct{}, 1),
 		beStop:             make(chan struct{}),
 		beWriterDone:       make(chan struct{}),
+		arSignal:           make(chan struct{}, 1),
+		arStop:             make(chan struct{}),
+		arWriterDone:       make(chan struct{}),
 		upgradedOnOpen:     upgradedOnOpen,
 	}
 
 	go dbstruct.bestEffortWriter(ctx)
+	go dbstruct.archiveWriter(ctx)
 
 	if backupsEnabled {
 		go dbstruct.backupTicker(ctx)
@@ -1047,6 +1076,18 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 	return endTimeToBytes(cutoff.UnixNano())
 }
 
+// archiveTxObserver, when non-nil, is called at the start of every archive's
+// transactional work with the id of the write transaction it is being applied in
+// and the job key being archived. It is nil in production (a single nil compare
+// per archive) and affects no behaviour: it is INERT observability in the style
+// of Job.derivations, and exists so the reliable4 coalescing tests can count how
+// many SEPARATE write transactions M concurrent archives cost (bolt's Tx.ID is
+// unique per write transaction), which is the invariant the coalescing archive
+// writer exists to hold.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like backupPaceHook above.
+var archiveTxObserver func(txID int, key []byte)
+
 // archiveJobTx is the transactional part of archiveJob: it moves the job from
 // the live bucket to the complete bucket, removes its std buckets, records its
 // resource-usage stats, updates its repgroup end time and records the job's end
@@ -1054,6 +1095,10 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 // before the complete-record Put because it recovers the job's prior end time
 // from that record to drop any stale forward index entry.
 func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
+	if archiveTxObserver != nil {
+		archiveTxObserver(tx.ID(), key)
+	}
+
 	for _, bucket := range [][]byte{bucketStdO, bucketStdE, bucketJobsLive} {
 		if err := tx.Bucket(bucket).Delete(key); err != nil {
 			return err
@@ -1256,6 +1301,195 @@ func (db *db) doneBestEffort(batch beBatch) {
 func (db *db) stopBestEffortWriter() {
 	close(db.beStop)
 	<-db.beWriterDone
+}
+
+// archiveOp is one caller's pending archive, waiting for the coalescing archive
+// writer to persist it and hand back its own outcome.
+type archiveOp struct {
+	key     []byte
+	encoded []byte
+	job     *Job
+	result  chan error // buffered(1): this caller's individual reply
+	replied bool       // writer-only, so reply() is idempotent
+}
+
+// reply gives this archive's own outcome to its waiting caller, at most once.
+// result is buffered and never closed, so this neither blocks the writer nor can
+// ever send on a closed channel.
+func (op *archiveOp) reply(err error) {
+	if op.replied {
+		return
+	}
+
+	op.replied = true
+	op.result <- err
+}
+
+// archiveWriter is the single long-lived goroutine that persists archives. Each
+// wake folds EVERY currently-pending archive into ONE write transaction and then
+// replies to each waiter individually, so a deep archive queue drains in one
+// commit rather than one commit per job (see the arMu comment on the db struct for
+// the production failure this exists to prevent). Started by initDB; stopped,
+// after a final drain, by close() via stopArchiveWriter.
+func (db *db) archiveWriter(ctx context.Context) {
+	defer close(db.arWriterDone)
+	defer db.failPendingArchives()
+	defer internal.LogPanic(ctx, "jobqueue database archive writer", true)
+
+	for {
+		select {
+		case <-db.arStop:
+			db.drainArchives(true)
+
+			return
+		case <-db.arSignal:
+			db.drainArchives(false)
+		}
+	}
+}
+
+// enqueueArchive queues op for the archive writer and kicks it. It reports false
+// if the writer has already made its final drain, so the caller is told the
+// database is closed instead of waiting for a reply that can never come. arSignal
+// is buffered(1), so the kick never blocks and coalesced kicks are harmless: one
+// drain persists everything pending.
+func (db *db) enqueueArchive(op *archiveOp) bool {
+	db.arMu.Lock()
+
+	if db.arStopped {
+		db.arMu.Unlock()
+
+		return false
+	}
+
+	db.arPending = append(db.arPending, op)
+	db.arMu.Unlock()
+
+	select {
+	case db.arSignal <- struct{}{}:
+	default:
+	}
+
+	return true
+}
+
+// swapArchives takes ownership of every currently-pending archive and resets the
+// queue, so callers keep enqueuing (never blocking) while the writer persists the
+// snapshot. When final is true it also latches the queue shut in the same critical
+// section, so an archive submitted after the last drain is rejected rather than
+// left waiting forever.
+func (db *db) swapArchives(final bool) []*archiveOp {
+	db.arMu.Lock()
+	defer db.arMu.Unlock()
+
+	ops := db.arPending
+	db.arPending = nil
+
+	if final {
+		db.arStopped = true
+	}
+
+	return ops
+}
+
+// drainArchives persists every currently-pending archive, all of them in ONE write
+// transaction, and replies to each waiter with its own outcome.
+func (db *db) drainArchives(final bool) {
+	ops := db.swapArchives(final)
+	if len(ops) == 0 {
+		return
+	}
+
+	db.applyArchives(ops)
+
+	// mark the db dirty for the backup ticker exactly as the pre-fix per-archive
+	// path did: unconditionally, after the write attempt.
+	db.backupDirty.Store(true)
+}
+
+// applyArchives folds ops into ONE write transaction and replies to each waiter
+// individually. It mirrors bbolt.Batch's per-caller error semantics, so one bad
+// job cannot fail its batch-mates: an archive that fails the shared transaction is
+// taken out of it and the rest are retried together, then each removed archive is
+// re-run in a transaction of its own so its caller gets its own error. The loop
+// always terminates because every pass either replies to everything left or
+// removes one op.
+func (db *db) applyArchives(ops []*archiveOp) {
+	var solo []*archiveOp
+
+	for len(ops) > 0 {
+		failed := -1
+
+		err := db.archiveTx(ops, &failed)
+		if failed >= 0 {
+			solo = append(solo, ops[failed])
+			ops[failed], ops = ops[len(ops)-1], ops[:len(ops)-1]
+
+			continue
+		}
+
+		for _, op := range ops {
+			op.reply(err)
+		}
+
+		break
+	}
+
+	for _, op := range solo {
+		op.reply(db.archiveTx([]*archiveOp{op}, nil))
+	}
+}
+
+// archiveTx applies every op's archive within one write transaction. If an op's
+// own work fails, its index is recorded in failed (when non-nil) and the whole
+// transaction is rolled back, so the caller can take that op out and retry the
+// rest.
+func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		for i, op := range ops {
+			if err := db.applyArchiveOp(tx, op); err != nil {
+				if failed != nil {
+					*failed = i
+				}
+
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// applyArchiveOp applies one archive within tx, turning a panic into that
+// archive's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does
+// not, so without it a single malformed job would take the whole manager down
+// instead of failing one archive; the transaction is rolled back either way.
+func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%w: %v", errArchivePanic, p)
+		}
+	}()
+
+	return db.archiveJobTx(tx, op.key, op.encoded, op.job)
+}
+
+// failPendingArchives latches the archive queue shut and fails anything still in
+// it. The normal shutdown drain (drainArchives(true)) leaves nothing to do here;
+// this is the safety net for a writer that stopped without it, so no archive
+// caller can be left waiting forever.
+func (db *db) failPendingArchives() {
+	for _, op := range db.swapArchives(true) {
+		op.reply(errDBClosed)
+	}
+}
+
+// stopArchiveWriter tells the archive writer to do a final drain and exit, then
+// waits for it. Called once from finaliseBackup (close()), before the wg drain and
+// final backup, so no queued archive is lost on shutdown.
+func (db *db) stopArchiveWriter() {
+	close(db.arStop)
+	<-db.arWriterDone
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -1853,6 +2087,14 @@ func (db *db) checkIfComplete(key string) (bool, error) {
 // The key you supply must be the key of the job you supply, or bad things will
 // happen - no checking is done! The db is marked dirty afterwards, so the
 // backup ticker will back it up (this path takes no db lock).
+//
+// The job is encoded here, OUTSIDE any transaction, and then handed to the single
+// coalescing archiveWriter, which folds it in with every other archive pending at
+// that moment into ONE db.Update and replies here with this archive's own outcome.
+// That keeps the per-job CPU (encoding) off the one bolt write lock and makes a
+// deep archive queue cost one commit rather than one commit per job; see the arMu
+// comment on the db struct. This call blocks until its own archive is persisted,
+// exactly as the previous db.bolt.Batch did.
 func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	var encoded []byte
 
@@ -1866,13 +2108,18 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		return err
 	}
 
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
-		return db.archiveJobTx(tx, []byte(key), encoded, job)
-	})
+	op := &archiveOp{
+		key:     []byte(key),
+		encoded: encoded,
+		job:     job,
+		result:  make(chan error, 1),
+	}
 
-	db.backupDirty.Store(true)
+	if !db.enqueueArchive(op) {
+		return errDBClosed
+	}
 
-	return err
+	return <-op.result
 }
 
 // putJobStats records a completed job's peak RAM, peak disk and runtime in
@@ -3170,9 +3417,12 @@ func (db *db) finaliseBackup(ctx context.Context) {
 		inProgress = db.stopBackupTicker()
 	}
 
-	// stop the best-effort writer and drain its queue first, so all enqueued
-	// change/exit writes are persisted (and their db.wg tracking released) before
-	// the wg drain and final backup below.
+	// stop the archive and best-effort writers and drain their queues first, so
+	// every enqueued archive is persisted (and its caller replied to) and all
+	// enqueued change/exit writes are persisted (and their db.wg tracking released)
+	// before the wg drain and final backup below. The archive queue is drained
+	// first because its callers are synchronously waiting on the outcome.
+	db.stopArchiveWriter()
 	db.stopBestEffortWriter()
 
 	// drain ongoing async write transactions so the final backup captures them.
