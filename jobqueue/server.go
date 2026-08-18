@@ -1920,6 +1920,22 @@ func updateJobRequirementsForRetry(
 	jobOverride uint8,
 	recommendedReq *scheduler.Requirements,
 ) {
+	// Requirements is an input of the memoised derived scheduler-group strings
+	// (jobDerived), and everything below can change it in place on EITHER exit:
+	// applyRecommendedJobRequirements applies a learned value for any resource the
+	// user did not specify whatever their override (see cmd/add.go's "If you
+	// choose to override eg. only disk..."), including on the
+	// jobOverrideAlwaysUseJobReqs early return below. Invalidating in a defer is
+	// therefore not just tidier, it is the only placement no future edit to those
+	// branches or that early return can silently defeat.
+	//
+	// It is also deliberately unconditional rather than conditional on a value
+	// actually changing: only the jobs a rac cycle deems schedulable reach here
+	// (prepareReadyJob is the bounded half of the cycle, see
+	// scheduleReadyJobsByPriority), so re-deriving when the numbers happen to come
+	// out the same costs nothing at backlog scale.
+	defer job.invalidateDerivedLocked()
+
 	if job.RequirementsOrig == nil {
 		job.RequirementsOrig = &scheduler.Requirements{
 			RAM:     job.Requirements.RAM,
@@ -4796,6 +4812,10 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 	for _, group := range job.LimitGroups {
 		job.LimitGroupsForDisplay = append(job.LimitGroupsForDisplay, displayByName[group])
 	}
+
+	// LimitGroups is an input of the memoised derived scheduler-group strings
+	// (jobDerived), and we may have just rewritten it, so they must be recomputed.
+	job.invalidateDerivedLocked()
 }
 
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the

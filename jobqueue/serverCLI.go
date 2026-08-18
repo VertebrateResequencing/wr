@@ -1408,8 +1408,15 @@ func (s *Server) persistModifiedJobs(ctx context.Context, cr *clientRequest,
 	// additional handling of changed limit groups
 	if cr.Modifier.LimitGroupsSet {
 		limitGroups := make(map[string]*limiter.GroupData)
+
 		for _, job := range toModify {
+			// handleUserSpecifiedJobLimitGroups rewrites job.LimitGroups (and
+			// invalidates the job's memoised derived scheduler-group strings), so
+			// the job's lock must be held, as its own docs and the equivalent REST
+			// path (storeModifiedLimitGroups) require.
+			job.Lock()
 			s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+			job.Unlock()
 		}
 
 		if err := s.storeLimitGroups(limitGroups); err != nil {

@@ -936,6 +936,150 @@ cmd_backlog_rescan_check() {  # backlog-rescan-check [limit] [backlog] - reliabl
   return "$rc"
 }
 
+cmd_idle_backlog_cpu() {  # idle-backlog-cpu [jobs] [seconds] [pprofPort] - reliable4 FINDING 3 idle-backlog CPU burn
+  # SCALE GATE for reliable4 FINDING 3 (.docs/reliable4/prod-run-20260817.md): an IDLE
+  # manager with a big limit-blocked ready backlog must burn almost no CPU. It recreates
+  # the live 245x A/B exactly: N jobs in ONE limit group set to 0, so they are all
+  # ready-but-blocked, nothing is ever schedulable, NO runners are ever launched (so this
+  # is farm-safe: -s local, zero LSF jobs) and there is zero real work to do. Pre-fix the
+  # O(backlog) rac pre-pass recomputed 2 MD5s + a sort + several allocations for every one
+  # of those jobs on every cycle: prod measured 19,640ms of CPU per 25s (0.79 cores) with
+  # 41.8% of it in Job.schedulerGroupSnapshot, versus 80ms per 25s with an empty backlog.
+  #
+  # rac cycles only run when something enters ready (or once a minute on
+  # CheckRunnerTime), so a background driver adds ONE job (into the same limit-0 group, so
+  # it too is blocked and never runs) every WRDEV_IDLE_TRIGGER_S seconds for the whole
+  # sample window; each add fires the ready-added callback, i.e. one full pre-pass over the
+  # whole backlog. The rate is deliberately FIXED (and reported per cycle) rather than a
+  # tight loop: a tight loop just saturates the manager whatever a cycle costs, whereas
+  # production cycled at the rate its completions arrived, so a fixed rate is what makes
+  # the CPU numbers comparable to the live A/B and sensitive to the per-cycle cost.
+  #
+  # It then takes a real CPU profile of the manager and reports the manager's total CPU,
+  # the CPU inside Job.schedulerGroupSnapshot, and both again per rac cycle. PASS = the
+  # memoised pre-pass keeps them near the empty-backlog floor; FAIL = the O(N)
+  # MD5+sort+allocate recomputation is back.
+  need_bin; ensure_config
+  local n="${1:-50000}" secs="${2:-25}" pprof="${3:-6063}"
+  local maxms="${WRDEV_IDLE_MAX_MS:-2500}" maxsnapms="${WRDEV_IDLE_MAX_SNAP_MS:-800}"
+  local trig="${WRDEV_IDLE_TRIGGER_S:-2}"
+  local ptxt="$WRDEV_ROOT/idle-backlog-cpu.top" pcount="$WRDEV_ROOT/idle-backlog-cpu.cycles"
+  echo "reliable4 FINDING 3 idle-backlog CPU gate: $n ready-but-blocked jobs (limit group idlelimit:0),"
+  echo "no runners, ${secs}s CPU profile of the manager while one rac cycle is driven every ${trig}s."
+  echo "prod pre-fix numbers to beat: 19640ms per 25s (0.79 cores), 41.8% of it (8210ms) in"
+  echo "schedulerGroupSnapshot; prod empty-backlog floor: 80ms per 25s."
+  echo "Gate: total <= ${maxms}ms and schedulerGroupSnapshot <= ${maxsnapms}ms per ${secs}s. The gate is on"
+  echo "ABSOLUTE cpu, not on the snapshot SHARE: post-fix the pre-pass is still O(backlog) CHEAP"
+  echo "field reads (the memo is read under each job's read lock), so it stays a large share of a"
+  echo "tiny total - a share threshold would flag a manager that is doing almost nothing."
+  echo "A MISSING measurement (no profile, no samples, no rac cycles) is a FAIL, not a PASS."
+  cmd_stop >/dev/null 2>&1 || true
+  rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
+  echo "starting isolated dev manager (-s local, pprof localhost:$pprof); dev mode wipes the DB"
+  osunset ; env WR_PPROF_ADDR="localhost:$pprof" timeout 90 "$WR" manager start \
+    --deployment development -s local 2>&1 | grep -aE 'started on|token=' | head -2
+  local mpid; mpid=$(mgr_pid "$DEV_RUN")
+  { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
+  echo "pid $mpid"
+  sleep 3
+
+  echo "adding $n jobs in limit group idlelimit:0 (rep_grp rgidle); they can NEVER be scheduled"
+  perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep 1 #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" \
+    > "$WRDEV_ROOT/idlejobs.json"
+  local out rc
+  out=$(osunset; timeout 600 "$WR" add -f "$WRDEV_ROOT/idlejobs.json" --rep_grp rgidle \
+    --limit_grps "idlelimit:0" --retries 0 --deployment development 2>&1); rc=$?
+  echo "$out" | tail -1
+  { [ "$rc" -eq 0 ] && echo "$out" | grep -qE 'Added [1-9][0-9]* new commands'; } \
+    || die "idle-backlog-cpu aborted - jobs not added (manager up?)"
+  echo "ready backlog: $(osunset; timeout 60 "$WR" status --deployment development -i rgidle -o counts 2>/dev/null | tr '\n' ' ')"
+  sleep 5
+
+  echo 0 > "$pcount"
+  ib_rac_driver "$trig" "$pcount" &
+  local driver_pid=$!
+  echo "rac-cycle driver pid $driver_pid (one extra blocked job every ${trig}s => one rac cycle each)"
+
+  echo "=== sampling ${secs}s CPU profile of the manager ==="
+  timeout $((secs + 90)) go tool pprof -top -cum -nodecount=25 \
+    "http://localhost:$pprof/debug/pprof/profile?seconds=$secs" > "$ptxt" 2>&1
+  kill "$driver_pid" 2>/dev/null; wait "$driver_pid" 2>/dev/null
+
+  local totms totpct snapline snapms snapshare
+  totms=$(grep -aoE 'Total samples = [0-9.]+(ms|s|mins)' "$ptxt" | head -1 | awk '{print $4}' | ib_ms)
+  totpct=$(grep -aoE 'Total samples =.*\( *[0-9.]+%\)' "$ptxt" | grep -aoE '[0-9.]+%' | head -1)
+  snapline=$(grep -aE '\(\*Job\)\.schedulerGroupSnapshot$' "$ptxt" | head -1)
+  snapms=$(echo "$snapline" | awk '{print $4}' | ib_ms)
+  snapshare=$(echo "$snapline" | awk '{print $5}')
+  echo "## profile top (also saved to $ptxt):"
+  grep -aE 'Duration:|Total samples|schedulerGroupSnapshot|^ +[0-9]' "$ptxt" | head -12
+  local cycles; cycles=$(cat "$pcount" 2>/dev/null); cycles=${cycles:-0}
+  case "$cycles" in (*[!0-9]*|'') cycles=0 ;; esac  # unreadable count == not measured, see below
+  echo "## VERDICT: totalCPU=${totms}ms per ${secs}s (${totpct:-?} of one core)"
+  echo "##          schedulerGroupSnapshot=${snapms}ms (${snapshare:-0%} of that total)"
+  if [ "$cycles" -gt 0 ]; then
+    echo "##          $cycles rac cycles over $n ready jobs => $((totms / cycles))ms manager CPU per cycle," \
+         "$((snapms / cycles))ms of it in the snapshot"
+  fi
+  # a gate that PASSES when the measurement is missing is worse than no gate, so a
+  # profile without a Duration: line (pprof fetch failed, or the manager died), an
+  # unparseable/zero total, or a driver that never fired a cycle (so the pre-pass was
+  # never exercised) are all hard FAILURES rather than "0ms, PASS".
+  local verdict=0 unmeasured=""
+  grep -qaE '^Duration:' "$ptxt" \
+    || unmeasured="the profile has no 'Duration:' line, so no CPU profile was taken (manager died, or no pprof on localhost:$pprof?)"
+  [ -z "$unmeasured" ] && [ "$totms" -le 0 ] \
+    && unmeasured="could not read a 'Total samples = <n><unit>' figure from the profile (truncated profile, or zero samples)"
+  [ -z "$unmeasured" ] && [ "$cycles" -le 0 ] \
+    && unmeasured="the rac-cycle driver fired 0 cycles, so the O(backlog) pre-pass was never exercised"
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; inspect $ptxt"
+  elif [ "$totms" -gt "$maxms" ] || [ "$snapms" -gt "$maxsnapms" ]; then
+    verdict=1
+    echo "FAIL: the idle backlog is burning CPU again (total >${maxms}ms or snapshot >${maxsnapms}ms per ${secs}s)"
+    echo "  => the per-ready-job scheduler-group derivation is no longer memoised (see jobDerived in job.go)"
+  else
+    echo "PASS: an idle $n-job limit-blocked backlog costs ~no CPU; the derivation is memoised"
+  fi
+  echo "## CLEANUP"
+  cmd_stop >/dev/null 2>&1
+  rm -f "$WRDEV_ROOT/idlejobs.json" "$WRDEV_ROOT/idledriver.json" 2>/dev/null
+  return "$verdict"
+}
+
+# ib_ms reads a pprof duration (eg. 160ms, 1.20s, 2.5mins) on stdin and prints it as
+# whole milliseconds, 0 if there was nothing to read (which its caller must treat as an
+# unmeasured FAIL, never as a cheap PASS).
+ib_ms() {
+  awk '{v=$1
+    if (v ~ /mins$/) {sub(/mins$/,"",v); printf "%d", v*60000}
+    else if (v ~ /ms$/) {sub(/ms$/,"",v); printf "%d", v}
+    else if (v ~ /s$/) {sub(/s$/,"",v); printf "%d", v*1000}
+    else {printf "0"}
+    exit}
+    END{if (NR==0) printf "0"}'
+}
+
+# ib_rac_driver keeps rac cycles firing for the whole profile window by adding one more
+# job to the SAME limit-0 group every triggerSeconds: entering ready fires
+# the ready-added callback (one full pre-pass over the backlog) while the job itself stays
+# blocked, so it can never run and never launches a runner. It records how many triggers
+# (== rac cycles) it has fired in cycleCountFile, so the CPU can be reported per cycle.
+ib_rac_driver() {  # <triggerSeconds> <cycleCountFile>
+  local trig="$1" pcount="$2" i=0
+  while true; do
+    i=$((i + 1))
+    printf '{"cmd":"sleep 1 #driver-%d","queue":"%s","memory":"500M"}\n' "$i" "$QUEUE" \
+      > "$WRDEV_ROOT/idledriver.json"
+    timeout 60 "$WR" add -f "$WRDEV_ROOT/idledriver.json" --rep_grp rgidledriver \
+      --limit_grps "idlelimit:0" --retries 0 --deployment development >/dev/null 2>&1
+    echo "$i" > "$pcount"
+    sleep "$trig"
+  done
+}
+
 cmd_runner_started_timeout_check() {  # runner-started-timeout-check - reliable4 #3 Started() kills healthy cmd
   # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of make
   # test) for reliable4 ISSUE #3: after exec, the runner reports its PID via c.Started();
@@ -1074,6 +1218,17 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   backlog-rescan-check [limit] [backlog]
                         reliable4 #1 reproducer: a rac cycle scans the whole ready backlog
                         (racScanWork == backlog); fails until the scan is bounded to ~limit
+  idle-backlog-cpu [jobs] [seconds] [pprofPort]
+                        reliable4 FINDING 3 SCALE GATE: N jobs in ONE limit group set to 0 (all
+                        ready-but-blocked, nothing schedulable, NO runners => farm-safe) on an
+                        isolated dev manager with pprof ON; a driver keeps rac cycles firing while
+                        a real CPU profile is taken, and it reports the manager's total CPU and the
+                        cumulative CPU in Job.schedulerGroupSnapshot (defaults 50000 25 6063).
+                        Prod pre-fix: 19640ms per 25s (0.79 cores), 8210ms (41.8%) of it in the
+                        snapshot; empty-backlog floor 80ms per 25s. PASS = both stay near that
+                        floor (thresholds WRDEV_IDLE_MAX_MS / WRDEV_IDLE_MAX_SNAP_MS); FAIL = the
+                        O(backlog) MD5+sort+allocate derivation is back, OR the run produced no
+                        measurement to judge (no profile, no samples, no rac cycles).
   runner-started-timeout-check
                         reliable4 #3 reproducer: a transient post-exec Started() RPC timeout
                         kills a healthy running command; fails until Started() tolerates it
@@ -1142,6 +1297,7 @@ case "${1:-help}" in
   limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
   priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
+  idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
