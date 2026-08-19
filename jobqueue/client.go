@@ -74,6 +74,7 @@ const (
 	FailReasonStart    = "command failed to start"
 	FailReasonCPerm    = "command permission problem"
 	FailReasonCFound   = "command not found"
+	FailReasonCArgs    = "command line too long"
 	FailReasonCExit    = "command invalid exit code"
 	FailReasonExit     = "command exited non-zero"
 	FailReasonRAM      = "command used too much RAM"
@@ -208,6 +209,13 @@ var errGetRecentState = errors.New(
 // errRecvDeadlineType is returned if mangos ever stops reporting the socket's
 // receive deadline as a time.Duration.
 var errRecvDeadlineType = errors.New("socket receive deadline was not a duration")
+
+// startFailureCmdMax is how much of a command line a permanent start failure
+// quotes in its error. The E2BIG case is BY DEFINITION a command line over
+// MAX_ARG_STRLEN, and every runner logs this error, so quoting the whole thing
+// is what took production's runner logs to 1.3MB single lines; the length is the
+// actionable fact there, not the bytes.
+const startFailureCmdMax = 200
 
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
@@ -550,6 +558,98 @@ func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
 	}
 
 	return sr, nil
+}
+
+// reportStartFailure reports a cmd.Start() failure to the server and returns the
+// error to give Execute's caller.
+//
+// A fork/exec failure that can never succeed (see permanentStartFailReason) is
+// buried on this FIRST attempt with a FailReason naming the real cause: releasing
+// it just spends another scheduled runner, another reservation, another copy of
+// the command over RPC and another bolt write to learn the same answer again, and
+// because the server only decrements UntilBuried for a job whose StartTime is set
+// - which an exec that never started never has - those retries are unbounded.
+// Any other start failure may be transient (host load, a deploy race, a briefly
+// exhausted resource), so it is released for a retry exactly as before.
+//
+// The bury records the error as the job's stderr (via buryWrapErr), because a
+// bury is only operator-recoverable - with `wr kick` - if the operator can see
+// what was actually wrong: the FailReason alone cannot distinguish a missing
+// shell from a missing command. `wr status` shows it as a "Details:" line, since
+// the job never exited. The command line is abbreviated (abbreviateCmdLine) so
+// that an over-MAX_ARG_STRLEN Cmd is not copied whole into the error, which is
+// what took production's runner log lines to 1.3MB.
+func (c *Client) reportStartFailure(job *Job, jc string, startErr error) error {
+	failReason, permanent := permanentStartFailReason(startErr)
+	if !permanent {
+		extra := recoveryExtra("releasing the job", c.Release(job, nil, FailReasonStart))
+		extra += unmountExtra(job)
+
+		return fmt.Errorf("could not start command [%s]: %w%s", jc, startErr, extra)
+	}
+
+	// unmounted before burying, so that any failure to unmount is recorded in
+	// the job's stderr along with the start failure itself.
+	buryErr := fmt.Errorf("could not start command [%s]: %w (%s, which is permanent, so it has been buried)%s",
+		abbreviateCmdLine(jc), startErr, failReason, unmountExtra(job))
+
+	return c.buryWrapErr(job, failReason, buryErr)
+}
+
+// permanentStartFailReason classifies a cmd.Start() error, returning the
+// FailReason to bury with and true if the fork/exec can never succeed for this
+// job however often it is retried, or "" and false if the failure may be
+// transient (in which case the job must be released for a retry).
+//
+// cmd.Start() surfaces a fork/exec failure as an *fs.PathError with Op
+// "fork/exec" wrapping the raw errno, so errors.Is finds the errno through the
+// wrapper (pinned by TestReliable4ForkExecErrnoWrapping).
+//
+// The permanent set is deliberately tiny, because misclassifying a transient
+// failure buries healthy work - far worse than an extra retry. In particular
+// ETXTBSY (the executable is being written right now), ENOMEM, EAGAIN and
+// EMFILE/ENFILE are load- or race-dependent and must stay retryable, as must a
+// bare-name $PATH lookup miss: that arrives as *exec.Error wrapping
+// exec.ErrNotFound rather than an errno, and $PATH is per-host, so another host
+// can legitimately succeed.
+//
+// That $PATH carve-out does NOT make the ENOENT/EACCES cases below inconsistent
+// with it, even though a path is per-host too, and the two branches cannot be
+// collapsed into each other: exec.Command only pre-resolves the name via
+// LookPath when filepath.Base(name) == name, so a bare name can only ever fail
+// with *exec.Error{Err: exec.ErrNotFound} and never with an errno, while a
+// slash-containing path skips LookPath entirely and fails with the raw errno
+// from the exec syscall. The two are therefore disjoint by construction (both
+// halves pinned by TestReliable4ForkExecErrnoWrapping), and reaching an errno
+// here means an explicit path that does not exist or is not executable. Burying
+// that matches wr's existing policy for a command that gets far enough to give
+// shell exit code 127 or 126, which classifyExitStatus already buries as
+// FailReasonCFound/FailReasonCPerm because it "seems permanent".
+func permanentStartFailReason(err error) (string, bool) {
+	switch {
+	case errors.Is(err, syscall.E2BIG):
+		// the command line exceeds Linux's MAX_ARG_STRLEN (128KB for a SINGLE
+		// argv element, whatever the much larger total ARG_MAX is), and wr passes
+		// the whole command line to the shell as one argument. True on every
+		// host, at every time.
+		return FailReasonCArgs, true
+	case errors.Is(err, syscall.ENOENT):
+		return FailReasonCFound, true
+	case errors.Is(err, syscall.EACCES):
+		return FailReasonCPerm, true
+	default:
+		return "", false
+	}
+}
+
+// abbreviateCmdLine renders a command line for an error message, replacing
+// everything past startFailureCmdMax bytes with its total length.
+func abbreviateCmdLine(jc string) string {
+	if len(jc) <= startFailureCmdMax {
+		return jc
+	}
+
+	return fmt.Sprintf("%s[...] (truncated; %d bytes total)", jc[:startFailureCmdMax], len(jc))
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -2078,13 +2178,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	err = cmd.Start()
 	if err != nil {
-		// some obscure internal error about setting things up
 		stopTouching <- true
 
-		extra := recoveryExtra("releasing the job", c.Release(job, nil, FailReasonStart))
-		extra += unmountExtra(job)
-
-		return fmt.Errorf("could not start command [%s]: %w%s", jc, err, extra)
+		return c.reportStartFailure(job, jc, err)
 	}
 
 	// the run owns its workspace from here on: the c.Started failure path below
