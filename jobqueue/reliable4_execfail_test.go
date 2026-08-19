@@ -60,6 +60,12 @@ const (
 // for a genuinely transient failure) every cycle is consumed.
 const execFailMaxAttempts = 4
 
+// execFailRetries is the Retries value execFailRun gives its job, so a failure
+// the server counts buries it on attempt execFailRetries+1 - which is inside
+// execFailMaxAttempts, so an UNCOUNTED (unbounded) retry loop shows up as
+// hitting the cap instead.
+const execFailRetries = 2
+
 // TestReliable4ForkExecErrnoWrapping pins HOW cmd.Start() surfaces the errnos
 // this fix classifies, so the classification is built on a measured fact rather
 // than an assumption about the standard library: a fork/exec failure arrives as
@@ -147,9 +153,9 @@ type execFailOutcome struct {
 // execFailRun adds a single job with the given command, then reserves and
 // Executes it under the given shell up to execFailMaxAttempts times, stopping as
 // soon as the job is no longer reservable (which is what burying it achieves).
-// It returns what it measured. Retries is 2 so that an UntilBuried-driven bury
-// would happen well within execFailMaxAttempts if the server counted these as
-// real attempts - it does not, which is the unbounded-retry half of the bug.
+// It returns what it measured. execFailRetries is set so that an
+// UntilBuried-driven bury happens well within execFailMaxAttempts, leaving room
+// for a run that ignores the retry budget to be seen doing so.
 func execFailRun(ctx context.Context, t *testing.T, jq *Client, server *Server, cmd, shell string) execFailOutcome {
 	t.Helper()
 
@@ -159,7 +165,7 @@ func execFailRun(ctx context.Context, t *testing.T, jq *Client, server *Server, 
 	repGroup := "reliable4_execfail"
 	job := &Job{
 		Cmd: cmd, Cwd: cwd, CwdMatters: true,
-		RepGroup: repGroup, ReqGroup: repGroup, Retries: 2,
+		RepGroup: repGroup, ReqGroup: repGroup, Retries: execFailRetries,
 		Requirements: &jqs.Requirements{
 			RAM: 10, Time: 10 * time.Second, Cores: 0, Other: make(map[string]string),
 		},
@@ -199,9 +205,11 @@ func execFailRun(ctx context.Context, t *testing.T, jq *Client, server *Server, 
 // reservation, the full command over RPC and a bolt write over and over (600+
 // such events across 150 runner logs in 25 production minutes, 109 from one
 // runner alone). Worse than the doc's observed ~31 attempts, the retries are
-// UNBOUNDED: the server only decrements UntilBuried for a job whose StartTime is
-// set, and an exec that never started never reported a start, so the retry
-// ceiling is never reached however many times it fails.
+// UNBOUNDED: the server only decremented UntilBuried for a job whose StartTime
+// was set, and an exec that never started never reported a start, so the retry
+// ceiling was never reached however many times it failed (fixed separately by
+// ITEM A - see TestReliable4PreStartReleaseRetries - which is why the ETXTBSY
+// negative control below now ends buried rather than looping).
 //
 // It asserts the fixed invariant - buried on the FIRST attempt with a FailReason
 // naming the real cause, exactly one reservation consumed - so it FAILS on
@@ -268,25 +276,34 @@ func TestReliable4ExecImpossibleBuriedFirstAttempt(t *testing.T) {
 			So(run.attempts, ShouldEqual, 0)
 		})
 
-		Convey("A genuinely transient start failure (ETXTBSY) is still released and retried", func() {
+		Convey("A genuinely transient start failure (ETXTBSY) is released and retried, not buried at once", func() {
 			// this is the negative control that stops the permanent set being
 			// widened: a shell that is being written to right now cannot exec, but
-			// will exec fine a moment later, so burying it would destroy healthy
-			// work. Proven transient in-band below: the very same job runs to
-			// completion once the write handle is closed.
+			// will exec fine a moment later, so burying it on the FIRST attempt
+			// would destroy healthy work. It still gets its whole retry budget
+			// (execFailRun sets Retries 2, so three attempts) - it is only spending
+			// those retries, rather than looping for ever, that ITEM A changed; see
+			// TestReliable4PreStartReleaseRetries. Proven transient in-band below:
+			// the very same job runs to completion once the write handle is closed.
 			busy, closeBusy := testBusyExecutable(t.TempDir())
 			defer closeBusy()
 
 			run := execFailRun(ctx, t, jq, server, "echo hi", busy)
 
-			So(run.reserves, ShouldEqual, execFailMaxAttempts)
-			So(run.state, ShouldEqual, JobStateDelayed)
+			So(run.reserves, ShouldBeGreaterThan, 1)
+			So(run.reserves, ShouldEqual, execFailRetries+1)
+			So(run.reserves, ShouldBeLessThan, execFailMaxAttempts)
+			So(run.state, ShouldEqual, JobStateBuried)
 			So(run.failReason, ShouldEqual, FailReasonStart)
 			So(run.execErr, ShouldNotBeNil)
 			So(run.execErr.Error(), ShouldContainSubstring, "text file busy")
 
 			Convey("and once the write handle is closed the same job runs and completes", func() {
 				closeBusy()
+
+				kicked, errk := jq.Kick([]*JobEssence{{JobKey: run.key}})
+				So(errk, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
 
 				job := execFailReserve(jq)
 				So(job, ShouldNotBeNil)

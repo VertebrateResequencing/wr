@@ -1512,10 +1512,12 @@ cmd_exec_impossible_retries() {  # exec-impossible-retries [jobs] [seconds] [cor
   # failure and released for a retry: 608 such events across 150 runner logs in 25 minutes,
   # 109 of them from ONE runner. Every retry spends a scheduled runner, a reservation, a copy
   # of the (enormous) command over RPC and a bolt write, to learn the same answer again - and
-  # the retries are UNBOUNDED, because the server only decrements UntilBuried for a job whose
-  # StartTime is set, and an exec that never started never reported a start. So even
-  # --retries 0 cannot stop it: the retry ceiling is never reached. That is why this gate uses
-  # --retries 2 and still expects a bury.
+  # the retries were UNBOUNDED, because the server only decremented UntilBuried for a job whose
+  # StartTime was set and an exec that never started never reported a start, so not even
+  # --retries 0 could stop it. ITEM A has since bounded them at --retries+1 (see the sibling
+  # transient-start-retries gate), but Retries+1 runner slots spent relearning a permanent answer
+  # is Retries+1 too many, so this gate still demands a bury on attempt ONE. That is why it uses
+  # --retries 2: a job that merely obeys its retry budget would take 3 attempts and FAIL here.
   #
   # End-to-end on the REAL binary, and farm-safe: -s local, so no LSF job is ever submitted
   # and the only processes are our own dev manager plus at most `cores` local runners. It runs
@@ -1641,7 +1643,9 @@ ef_run() {  # <jobs> <seconds> <repGroup> <logdir> <jobfile> <padKB> <managerPid
   if [ "$buried" -ne "$jobs" ]; then
     echo "FAIL: only $buried/$jobs unrunnable jobs were buried after ${waited}s ($attempts exec attempts so far)"
     echo "  => an exec-impossible command is being released for a retry instead of buried;"
-    echo "     with StartTime never set the retry ceiling is never reached, so this never ends"
+    echo "     ITEM A caps those retries at --retries+1, so this now ends - but every one of them"
+    echo "     still burns a scheduled runner, a reservation, a copy of the command over RPC and a"
+    echo "     bolt write to relearn an answer the FIRST attempt already gave"
     return 1
   fi
   if [ "$attempts" -ne "$jobs" ]; then
@@ -1670,11 +1674,12 @@ ef_status_reasons() {  # <repGroup> <failReason>
     | awk -v r="Previous problem: $2" '/^Cwd: /{s++} $0==r{m++} END{printf "%d %d\n", s+0, m+0}'
 }
 
-# ef_attempts counts the `argument list too long` exec failures across every runner log. Runner
-# log lines can be ~130KB here (the failing command is quoted), so -o keeps the output small.
-ef_attempts() {  # <logdir>
+# ef_attempts counts exec failures matching a pattern (default the exec-impossible gate's
+# `argument list too long`) across every runner log. Runner log lines can be ~130KB here (the
+# failing command is quoted), so -o keeps the output small.
+ef_attempts() {  # <logdir> [pattern]
   local n
-  n=$(grep -rhao 'argument list too long' "$1" 2>/dev/null | wc -l)
+  n=$(grep -rhao "${2:-argument list too long}" "$1" 2>/dev/null | wc -l)
   case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
 }
 
@@ -1684,6 +1689,160 @@ ef_num() {  # <countsBlob> <name>
   local n
   n=$(printf '%s' "$1" | grep -aoE "$2: [0-9]+" | grep -aoE '[0-9]+' | head -1)
   case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
+}
+
+cmd_transient_start_retries() {  # transient-start-retries [jobs] [seconds] [cores] [retries] - reliable4 ITEM A SCALE GATE
+  # SCALE GATE for reliable4 ITEM A (.docs/reliable4/next-steps-260819.md): a release that happens
+  # BEFORE the job reported a start must still spend one of the job's --retries. The server sets
+  # StartTime only from a landed start report (applyJobStart needs a real pid+host) and
+  # resetJobForReservation re-zeroes it at every reservation, so a command that fails inside
+  # cmd.Start() used to be released with UntilBuried untouched: an UNBOUNDED retry loop that
+  # ignores --retries entirely and burns a scheduled runner, a reservation, a copy of the command
+  # over RPC and a bolt write every time round. A pre-fix scale run sat at `delayed: 20, buried: 0`
+  # for 90s while exec attempts climbed 20 -> 47 across 22 runner logs.
+  #
+  # 0d22eda closed this only for the three PERMANENT errnos it buries (E2BIG/ENOENT/EACCES; see the
+  # exec-impossible-retries gate). This gate covers the half it deliberately left alone: a
+  # TRANSIENT-classified start failure, which must be retried - but only `retries` times.
+  #
+  # How the transient start failure is induced, end-to-end on the REAL binary and farm-safe
+  # (-s local, so no LSF job is ever submitted): jobs are added with --group, which makes
+  # buildExecCmd exec `newgrp` (a BARE name, resolved on the runner's own PATH) instead of the
+  # shell. A directory holding a `newgrp` that is executable but is not a valid executable format
+  # is prepended to the manager's PATH, so every one of these jobs fails cmd.Start() with ENOEXEC
+  # ("exec format error") - an errno permanentStartFailReason deliberately classifies as TRANSIENT
+  # (it is the "a node with a broken loader" case), so the job is released, not buried on attempt
+  # one. Nothing else in wr ever execs `newgrp`, and the shell is untouched, so the manager still
+  # launches its runners normally. This is why the gate cannot simply make the shell unusable: the
+  # local scheduler launches runners with that same shell.
+  #
+  # It then measures THREE independent things:
+  #   attempts = `exec format error` lines across ALL runner logs (the runner-side truth)
+  #   buried   = the rep group's buried count from `wr status` (the manager-side truth)
+  #   reasoned = how many jobs give `command failed to start` as their problem (the CAUSE)
+  # PASS = buried == jobs AND attempts == jobs*(retries+1) AND reasoned == jobs: the retries are
+  # spent, the ceiling is reached, and the operator is told why. Pre-fix: buried == 0 and attempts
+  # keeps climbing past jobs*(retries+1) for as long as the window lasts.
+  # A MISSING measurement (dead manager, nothing added, no runner logs, zero attempts, unparseable
+  # counts, no jobs reported by `wr status`) is a hard FAIL, never a cheap PASS.
+  need_bin; ensure_config
+  local jobs="${1:-20}" secs="${2:-300}" cores="${3:-2}" retries="${4:-2}"
+  local rg=rgtransientstart
+  local logdir="$WRDEV_ROOT/tsfail-runnerlogs" work="$WRDEV_ROOT/tsfail.json" badpath="$WRDEV_ROOT/tsfail-path"
+  local want=$((jobs * (retries + 1)))
+  echo "reliable4 ITEM A transient-start gate: $jobs jobs with --retries $retries whose cmd.Start()"
+  echo "fails with ENOEXEC every time (a bare-name 'newgrp' on the runner's PATH that is executable"
+  echo "but not a valid executable format), on an isolated dev manager (-s local, --max_cores $cores,"
+  echo "--runner_filelog). ENOEXEC is deliberately TRANSIENT, so these are released, not buried at once."
+  echo "Gate: buried == $jobs AND execAttempts == $want (jobs*(retries+1)) AND all $jobs give"
+  echo "'command failed to start' as their problem."
+  echo "Pre-fix: buried == 0 and attempts climb past $want without bound (UntilBuried never decrements"
+  echo "for a job that never reported a start, so the retry ceiling is never reached)."
+  echo "A MISSING measurement (no runner logs, 0 attempts, dead manager) is a FAIL, not a PASS."
+  rm -rf "$logdir" "$badpath" 2>/dev/null; mkdir -p "$logdir" "$badpath"
+  # executable, but not a valid executable format => execve gives ENOEXEC. Go's os/exec does NOT
+  # fall back to a shell the way a shell would, so cmd.Start() fails outright.
+  printf '\0\1\2\3 not a valid executable\n' > "$badpath/newgrp"
+  chmod 755 "$badpath/newgrp"
+  cmd_stop >/dev/null 2>&1 || true
+  rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
+  echo "starting isolated dev manager (-s local) with $badpath prepended to PATH; dev mode wipes the DB"
+  osunset ; PATH="$badpath:$PATH" timeout 90 "$WR" manager start --deployment development -s local \
+    --max_cores "$cores" --runner_filelog "$logdir" 2>&1 | grep -aE 'started on|token=' | head -2
+  local mpid; mpid=$(mgr_pid "$DEV_RUN")
+  { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
+  echo "pid $mpid"
+  sleep 3
+
+  local rc=0
+  ts_run "$jobs" "$secs" "$rg" "$logdir" "$work" "$retries" "$want" "$mpid" || rc=$?
+  echo "## CLEANUP"
+  cmd_stop >/dev/null 2>&1
+  ef_reap_runners "$logdir"
+  rm -rf "$logdir" "$badpath" 2>/dev/null; rm -f "$work" 2>/dev/null
+  return "$rc"
+}
+
+# ts_run does the measured part of transient-start-retries, so the caller can always clean up the
+# runner-log dir, the fake-newgrp dir and the job file without its `rm`s swallowing the FAIL exit
+# code.
+ts_run() {  # <jobs> <seconds> <repGroup> <logdir> <jobfile> <retries> <wantAttempts> <managerPid>
+  local jobs="$1" secs="$2" rg="$3" logdir="$4" work="$5" retries="$6" want="$7" mpid="$8"
+  local pat="exec format error" reason="command failed to start"
+  echo "generating $jobs jobs -> $work"
+  perl -e "for my \$i (1..$jobs){ print '{\"cmd\":\"echo transient-start '.\$i.'\",\"memory\":\"100M\",\"cpus\":1}'.\"\n\" }" \
+    > "$work"
+  local out arc
+  out=$(osunset; timeout 300 "$WR" add -f "$work" --rep_grp "$rg" --retries "$retries" \
+    --group "$(id -gn)" --deployment development 2>&1); arc=$?
+  echo "$out" | tail -1
+  if [ "$arc" -ne 0 ] || ! echo "$out" | grep -qE "Added $jobs new commands"; then
+    echo "FAIL (NOT MEASURED): $jobs jobs were not added (manager up? see the wr add output above)"
+    return 1
+  fi
+
+  echo "waiting up to ${secs}s for all $jobs to be buried (post-fix: after exactly $((retries + 1)) attempts each)."
+  echo "NB: the release backoff starts at ClientReleaseDelayMin (30s) and doubles, so the expected"
+  echo "    post-fix wall time is ~2 backoffs (~90-150s); a longer window only helps a pre-fix run climb."
+  local counts="" buried=0 waited=0 attempts=0
+  while [ "$waited" -lt "$secs" ]; do
+    sleep 10; waited=$((waited + 10))
+    counts=$(osunset; timeout 60 "$WR" status --deployment development -i "$rg" -o counts 2>/dev/null | tr '\n' ' ')
+    buried=$(ef_num "$counts" buried)
+    attempts=$(ef_attempts "$logdir" "$pat")
+    echo "  t=${waited}s $rg[$counts] attempts=$attempts (want $want)"
+    [ "$buried" -ge "$jobs" ] && break
+  done
+
+  # give any in-flight retry a moment to land, so an over-shooting run is caught rather than
+  # measured mid-flight and reported as an exact hit.
+  sleep 10
+  attempts=$(ef_attempts "$logdir" "$pat")
+  local logfiles; logfiles=$(find "$logdir" -type f 2>/dev/null | wc -l)
+  local stanzas=0 reasoned=0 sr
+  sr=$(ef_status_reasons "$rg" "$reason")
+  stanzas=${sr%% *}; reasoned=${sr##* }
+  case "$stanzas" in (*[!0-9]*|'') stanzas=0 ;; esac
+  case "$reasoned" in (*[!0-9]*|'') reasoned=0 ;; esac
+  echo "## VERDICT: buried=$buried/$jobs  execAttempts=$attempts (want $want)  runnerLogFiles=$logfiles"
+  echo "##          failReason '$reason' on $reasoned/$stanzas reported jobs"
+  echo "##          counts: $rg[$counts]"
+
+  # a gate that PASSES when the measurement is missing is worse than no gate.
+  local unmeasured=""
+  [ "$jobs" -gt 0 ] || unmeasured="asked for $jobs jobs, so there was nothing to measure"
+  [ -z "$unmeasured" ] && { ps -p "$mpid" >/dev/null 2>&1 || unmeasured="the dev manager (pid $mpid) died during the run"; }
+  [ -z "$unmeasured" ] && [ -z "$counts" ] \
+    && unmeasured="'wr status -i $rg -o counts' returned nothing, so no manager-side state was read"
+  [ -z "$unmeasured" ] && [ "$logfiles" -le 0 ] \
+    && unmeasured="no runner log files under $logdir, so no runner ever started (--runner_filelog broken?)"
+  [ -z "$unmeasured" ] && [ "$attempts" -le 0 ] \
+    && unmeasured="0 '$pat' lines in the runner logs, so the transient start failure never happened"
+  [ -z "$unmeasured" ] && [ "$stanzas" -le 0 ] \
+    && unmeasured="'wr status -i $rg --limit 0' reported no jobs, so no FailReason could be read"
+  if [ -n "$unmeasured" ]; then
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; inspect $logdir and the counts above"
+    return 1
+  fi
+  if [ "$buried" -ne "$jobs" ]; then
+    echo "FAIL: only $buried/$jobs jobs were buried after ${waited}s ($attempts exec attempts, want $want)"
+    echo "  => a pre-start release is not spending a retry, so --retries is ignored and this never ends"
+    return 1
+  fi
+  if [ "$attempts" -ne "$want" ]; then
+    echo "FAIL: $jobs jobs with --retries $retries cost $attempts exec attempts (want exactly $want)"
+    echo "  => the retry budget is not being spent exactly once per attempt"
+    return 1
+  fi
+  if [ "$reasoned" -ne "$jobs" ]; then
+    echo "FAIL: only $reasoned/$jobs jobs give '$reason' as their problem ($stanzas jobs reported)"
+    echo "  => the jobs ended for the wrong reason, so the operator cannot see what to fix"
+    return 1
+  fi
+  echo "PASS: $jobs jobs with --retries $retries cost exactly $attempts exec attempts (== $want),"
+  echo "      all $buried are buried, and all $reasoned give '$reason' as their problem"
+  return 0
 }
 
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
@@ -1892,6 +2051,18 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         (defaults 20 120 2; WRDEV_EXECFAIL_PADKB overrides the 130KB Cmd padding).
                         Pre-fix: buried == 0 (the retry ceiling is never reached because StartTime
                         is never set) and attempts >> N and still climbing.
+  transient-start-retries [jobs] [seconds] [cores] [retries]
+                        reliable4 ITEM A SCALE GATE (real binary, farm-safe - -s local, no LSF job
+                        ever submitted): N jobs with --retries R whose cmd.Start() fails with a
+                        TRANSIENT errno every time (they are added with --group, so buildExecCmd
+                        execs the bare name `newgrp`, and a `newgrp` that is executable but not a
+                        valid executable format is prepended to the manager's PATH => ENOEXEC, which
+                        permanentStartFailReason deliberately keeps retryable). Asserts the retries
+                        are actually SPENT: buried == N (manager side) AND 'exec format error' lines
+                        == N*(R+1) (runner side) AND 'command failed to start' as the problem of all
+                        N (defaults 20 300 2 2). Pre-fix: buried == 0 and attempts climb past
+                        N*(R+1) without bound, because UntilBuried only ever decremented for a job
+                        whose StartTime was set and a start that never happened never sets it.
   bkill-hygiene [elements] [hangSeconds]
                         reliable4 FINDING 4 SCALE GATE (fake bjobs/bkill exes, so farm-safe - no
                         manager, no bsub, no real bkill - but the REAL killExcessCmds path, driven at
@@ -1934,6 +2105,7 @@ case "${1:-help}" in
   control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
+  transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;

@@ -32,6 +32,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -2379,6 +2380,29 @@ func (j *JobModifier) applyContainer(job *Job) {
 	if j.ContainerMountsSet {
 		job.ContainerMounts = j.ContainerMounts
 	}
+}
+
+// initialUntilBuried returns the retry budget a job starts (or restarts) with,
+// given its Retries: the first attempt, plus one per retry.
+//
+// It saturates instead of wrapping. UntilBuried is a uint8 and Retries is a
+// documented, accepted 0-255 (cmd/add.go's "--retries [0-255]", wr mod -r, and
+// the REST API's restModifyUint8Max), so a plain Retries+1 overflows to 0 at
+// the maximum - seeding a LIVE job with an already-exhausted budget. That is
+// exactly the state finalizeReleasedJob's clamp defends against: the release
+// path would not bury the item (there is no budget left to spend down to the
+// bury threshold) while finalizeReleasedJob still called the job buried, so
+// wr status would report it buried for ever while it kept being reserved, run
+// and released, burning a runner slot each time.
+//
+// Saturating costs the --retries 255 case exactly one attempt (255 attempts
+// rather than a nonsensical 256) and leaves every other value untouched.
+func initialUntilBuried(retries uint8) uint8 {
+	if retries == math.MaxUint8 {
+		return math.MaxUint8
+	}
+
+	return retries + 1
 }
 
 func quoteRemoteCwd(cwd string) string {

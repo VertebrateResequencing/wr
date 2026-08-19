@@ -818,7 +818,7 @@ func resetJobStatusFields(job *Job) {
 	job.EnvCRetrieved = false
 	job.State = JobStateReady
 	job.Attempts = 0
-	job.UntilBuried = job.Retries + 1
+	job.UntilBuried = initialUntilBuried(job.Retries)
 	job.ReservedBy = uuid.UUID{}
 	job.Similar = 0
 	job.DelayTime = 0

@@ -1201,7 +1201,13 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 		cr.JobEndState = &JobEndState{}
 	}
 
-	if errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, forceBury); errq != nil {
+	if errq := s.releaseJob(ctx, job, releaseReport{
+		endState:     cr.JobEndState,
+		failReason:   cr.failReason(),
+		attempted:    cr.Attempted,
+		forceStorage: true,
+		forceBury:    forceBury,
+	}); errq != nil {
 		clog.Warn(ctx, failMsg, "err", errq)
 
 		return nil, ErrInternalError, errq.Error()

@@ -292,6 +292,11 @@ type clientRequest struct {
 	ConfirmDeadCloudServers bool
 	DestroyCloudHost        string
 	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
+	// Attempted is ADDITIVE wire-only: on a release it says the runner actually
+	// tried to run the job's Cmd, so the release must spend one of the job's
+	// retries even though no start was ever reported (an old client sends false,
+	// keeping its pre-existing unbounded-retry behaviour).
+	Attempted bool
 }
 
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
@@ -566,11 +571,14 @@ func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
 // A fork/exec failure that can never succeed (see permanentStartFailReason) is
 // buried on this FIRST attempt with a FailReason naming the real cause: releasing
 // it just spends another scheduled runner, another reservation, another copy of
-// the command over RPC and another bolt write to learn the same answer again, and
-// because the server only decrements UntilBuried for a job whose StartTime is set
-// - which an exec that never started never has - those retries are unbounded.
-// Any other start failure may be transient (host load, a deploy race, a briefly
-// exhausted resource), so it is released for a retry exactly as before.
+// the command over RPC and another bolt write to learn the same answer again.
+// Those retries are no longer unbounded - releaseAfterAttempt below makes a
+// pre-start release spend one of the job's Retries, so even an unclassified
+// never-startable command now stops after Retries+1 attempts - but Retries+1
+// runner slots spent relearning a permanent answer is still Retries+1 too many,
+// which is what the permanent bury saves. Any other start failure may be
+// transient (host load, a deploy race, a briefly exhausted resource), so it is
+// released for a retry, spending one of the job's Retries per attempt.
 //
 // The bury records the error as the job's stderr (via buryWrapErr), because a
 // bury is only operator-recoverable - with `wr kick` - if the operator can see
@@ -582,7 +590,7 @@ func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
 func (c *Client) reportStartFailure(job *Job, jc string, startErr error) error {
 	failReason, permanent := permanentStartFailReason(startErr)
 	if !permanent {
-		extra := recoveryExtra("releasing the job", c.Release(job, nil, FailReasonStart))
+		extra := recoveryExtra("releasing the job", c.releaseAfterAttempt(job, nil, FailReasonStart))
 		extra += unmountExtra(job)
 
 		return fmt.Errorf("could not start command [%s]: %w%s", jc, startErr, extra)
@@ -650,6 +658,38 @@ func abbreviateCmdLine(jc string) string {
 	}
 
 	return fmt.Sprintf("%s[...] (truncated; %d bytes total)", jc[:startFailureCmdMax], len(jc))
+}
+
+// releaseAfterAttempt is Release for a job whose Cmd we actually tried to run.
+// It tells the server to spend one of the job's Retries on this release even if
+// the job never got as far as reporting a start, so a command that can never
+// start is buried after Retries+1 attempts instead of retrying for ever.
+func (c *Client) releaseAfterAttempt(job *Job, jes *JobEndState, failreason string) error {
+	return c.release(job, jes, failreason, true)
+}
+
+// release sends the jrelease request and applies what the server would have done
+// to our local copy of job.
+func (c *Client) release(job *Job, jes *JobEndState, failreason string, attempted bool) error {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
+
+	key := setJobFailReason(job, failreason)
+
+	_, err := c.request(&clientRequest{
+		Method:      "jrelease",
+		Keys:        []string{key},
+		JobEndState: jes,
+		FailReason:  failreason,
+		Attempted:   attempted,
+	})
+	if err != nil {
+		return err
+	}
+
+	c.finishRelease(job, jes, attempted)
+
+	return nil
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -2770,7 +2810,10 @@ func (c *Client) applyFinalState(job *Job, jes *JobEndState, action execAction) 
 	case action.bury:
 		return c.Bury(job, jes, action.failreason)
 	case action.release:
-		return c.Release(job, jes, action.failreason) // which buries after job.Retries fails in a row
+		// releaseAfterAttempt, not Release: the Cmd was run, so this spends one of
+		// the job's Retries and buries it after Retries+1 failures in a row - even
+		// if the start report never landed and the server has no StartTime for it.
+		return c.releaseAfterAttempt(job, jes, action.failreason)
 	case action.archive:
 		return c.Archive(job, jes)
 	default:
@@ -3324,44 +3367,48 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	return nil
 }
 
-// Release places a job back on the jobqueue, for use when you can't handle the
-// job right now (eg. there was a suspected transient error) but maybe someone
-// else can later. Note that you must reserve a job before you can release it.
+// Release hands a reserved job back to the jobqueue WITHOUT having tried to run
+// its Cmd, for use when you can't handle the job right now (eg. you don't have
+// enough time left, or you couldn't read its environment) but maybe someone else
+// can later. Note that you must reserve a job before you can release it.
+//
 // You can only Release() the same job as many times as its Retries value if it
-// has been run and failed; a subsequent call to Release() will instead result
-// in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
-// number of times.)
+// has been run: once the job has reported a start (Started()), every release of
+// it spends one of its Retries however that release is made, and a subsequent
+// call to Release() will instead result in a Bury(). If the job's Cmd was never
+// started and was not attempted, you can Release() an unlimited number of times.
+//
+// A release that follows an actual attempt to run the Cmd - which is what
+// Execute() reports, whether the command failed to start or ran and ended badly
+// - always spends one of the job's Retries, even when no start was ever
+// reported, and the job is buried once they are used up.
 func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
-	c.teMutex.Lock()
-	defer c.teMutex.Unlock()
-
-	key := setJobFailReason(job, failreason)
-
-	_, err := c.request(&clientRequest{
-		Method:      "jrelease",
-		Keys:        []string{key},
-		JobEndState: jes,
-		FailReason:  failreason,
-	})
-	if err != nil {
-		return err
-	}
-
-	c.finishRelease(job, jes)
-
-	return nil
+	return c.release(job, jes, failreason, false)
 }
 
 // finishRelease updates our local copy of job with the state the server would
 // have applied after a release.
-func (c *Client) finishRelease(job *Job, jes *JobEndState) {
+//
+// attempted mirrors the server's releaseSpendsARetry: an attempted release
+// spends a retry whether or not the command got as far as exiting, so without
+// it a runner whose cmd.Start() failed (jes is nil there, so job.Exited stays
+// false) would be left holding a job.UntilBuried and job.State that disagree
+// with the server's.
+//
+// This closes the client/server divergence for the paths that report an attempt
+// - Execute's applyFinalState and reportStartFailure - ONLY. A plain Release()
+// made after a start report has landed still diverges when the job did not exit
+// non-zero: there the server spends a retry on the strength of its StartTime,
+// which the client does not track. Fixing that would need the server's answer on
+// the wire, which no caller has ever needed.
+func (c *Client) finishRelease(job *Job, jes *JobEndState, attempted bool) {
 	job.Lock()
 	defer job.Unlock()
 
 	c.ended(job, jes)
 
 	// update our process with what the server would have done
-	if job.Exited && job.Exitcode != 0 {
+	if attempted || (job.Exited && job.Exitcode != 0) {
 		job.UntilBuried--
 	}
 

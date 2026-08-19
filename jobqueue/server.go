@@ -966,6 +966,79 @@ type readyJobCandidate struct {
 	snapshot schedulerGroupSnapshot
 }
 
+// releaseReport describes one release of a job: the end state and fail reason
+// to record, whether the release must be persisted or forced to a bury, and -
+// crucially for the retry budget - whether it was reported by the job's owner
+// after it actually tried to run the command.
+type releaseReport struct {
+	endState   *JobEndState
+	failReason string
+
+	// attempted is true when the job's OWNER reported this release having
+	// actually tried to run the job's Cmd (a cmd.Start() failure, or a command
+	// that ran and then ended badly). Such a release spends one of the job's
+	// retries even when the job has no server-side StartTime: StartTime is only
+	// set by a landed start report (applyJobStart, which needs a real pid+host)
+	// and resetJobForReservation re-zeroes it at every reservation, so without
+	// this a command that fails before it can start retries for ever, ignoring
+	// --retries and burning a scheduled runner per iteration.
+	//
+	// It is deliberately false for a MANAGER-initiated release (TTR/lost/kill),
+	// and for an owner handing a job straight back without running it (see
+	// Client.Release): a job that never reported a start may be a healthy runner
+	// merely slow to get its Started() through under load, and taking its
+	// retries away would be exactly the false-lost failure this whole effort
+	// exists to fight.
+	attempted bool
+
+	// forceStorage forces the released job's new state to be written to disk.
+	forceStorage bool
+
+	// forceBury buries the job regardless of its remaining retry budget.
+	forceBury bool
+
+	// spendsRetry is the answer to releaseSpendsARetry for this release, decided
+	// ONCE by releaseJobSnapshot and then carried to finalizeReleasedJob. It is
+	// filled in by releaseJobSnapshot, never by a caller.
+	//
+	// It has to be carried rather than recomputed because the two sites that need
+	// it take different locks at different times (RLock in releaseJobSnapshot,
+	// Lock in finalizeReleasedJob, with applyReleaseQueueChange in between), and
+	// job.StartTime is mutable: a jstart landing in that window on a release that
+	// is not attempted would make the snapshot decide "do not bury" while
+	// finalizeReleasedJob decided "spend a retry", so UntilBuried could reach 0
+	// with the item left in Delay - and the next attempted release would then
+	// underflow the uint8 to 255, silently restoring the unbounded retrying this
+	// field exists to remove.
+	spendsRetry bool
+}
+
+// lostJobReleaseReport is the release report the manager makes on its own
+// behalf when it gives up on a job whose runner is confirmed dead, or which the
+// user killed. It is never "attempted": the manager cannot know whether the
+// runner got as far as trying to run the command, so a job that never reported
+// a start keeps its full retry budget.
+func lostJobReleaseReport() releaseReport {
+	return releaseReport{
+		endState:   &JobEndState{Exitcode: -1, Exited: true},
+		failReason: FailReasonLost,
+	}
+}
+
+// releaseSpendsARetry reports whether this release counts as one of the job's
+// Retries, which it does if the job's command was actually tried: either the
+// job reported a start, or its owner reported the release having tried to run
+// the command (see releaseReport.attempted, which is what makes a job whose
+// command can never start obey --retries instead of retrying for ever).
+//
+// job must be at least read-locked. Call this ONCE per release, from
+// releaseJobSnapshot, and read the answer back off releaseReport.spendsRetry
+// afterwards: job.StartTime is mutable, so a second evaluation can disagree with
+// the first (see releaseReport.spendsRetry).
+func releaseSpendsARetry(job *Job, rep releaseReport) bool {
+	return rep.attempted || !job.StartTime.IsZero()
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token     []byte
@@ -4643,7 +4716,7 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 
 		job.dropImpossibleCleanups()
 
-		job.UntilBuried = job.Retries + 1
+		job.UntilBuried = initialUntilBuried(job.Retries)
 		if rcSet {
 			job.schedulerGroup = job.generateSchedulerGroup(job.Requirements)
 		}
@@ -4992,11 +5065,12 @@ func (s *Server) backstopKillWedgedRunner(ctx context.Context, d lostJobDetails)
 
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
-func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState, failReason string,
-	forceStorage, forceBury bool) error {
+func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) error {
 	// first check the job hasn't already been released/buried, only attempt
-	// queue changes if not
-	bury, key, currentState := releaseJobSnapshot(job, forceBury)
+	// queue changes if not. This also decides rep.spendsRetry, once, so that
+	// finalizeReleasedJob below cannot reach a different verdict from a
+	// job.StartTime that changed in between (see releaseReport.spendsRetry).
+	bury, key, currentState := releaseJobSnapshot(job, &rep)
 
 	q := s.queueIfPresent()
 	if q == nil {
@@ -5017,21 +5091,39 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 		return nil
 	}
 
-	s.finalizeReleasedJob(ctx, job, endState, failReason, forceStorage, forceBury)
+	s.finalizeReleasedJob(ctx, job, rep)
 
 	return nil
 }
 
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
-// needs: whether the job should be buried, its key, and its current state.
-func releaseJobSnapshot(job *Job, forceBury bool) (bool, string, JobState) {
+// needs: whether the job should be buried, its key, and its current state. It
+// also records rep.spendsRetry, which is the only place that gets decided.
+func releaseJobSnapshot(job *Job, rep *releaseReport) (bool, string, JobState) {
 	job.RLock()
 	defer job.RUnlock()
 
-	bury := forceBury
-	if !bury && !job.StartTime.IsZero() {
-		bury = job.UntilBuried == 1
+	rep.spendsRetry = releaseSpendsARetry(job, *rep)
+
+	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB
+	// buried, so the two can never disagree. It calls it buried whenever the
+	// budget it leaves behind is 0, which is what remaining works out here: a
+	// release that spends a retry decrements (clamped at 0), one that does not
+	// leaves the budget alone.
+	//
+	// Testing the whole remaining budget, rather than just "is it 1 and about to
+	// be spent", is what stops a live job that somehow reaches 0 from being
+	// reported buried by wr status while its item sits in delay - reserved,
+	// re-run and re-released for ever, burning a runner slot each time.
+	// initialUntilBuried now prevents that at source, so this is defence in
+	// depth against a future route to a live 0 (or a job read back from a
+	// database an older manager wrote).
+	remaining := job.UntilBuried
+	if rep.spendsRetry && remaining > 0 {
+		remaining--
 	}
+
+	bury := rep.forceBury || remaining == 0
 
 	return bury, job.Key(), job.State
 }
@@ -5078,16 +5170,21 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 // finalizeReleasedJob updates a released job's state (to buried or delayed,
 // obeying its Retries count), persists it, and decrements its scheduler group
 // count.
-func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, endState *JobEndState,
-	failReason string, forceStorage, forceBury bool) {
-	job.updateAfterExit(endState, s.limiter)
+func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport) {
+	job.updateAfterExit(rep.endState, s.limiter)
 
 	job.Lock()
-	if forceBury {
+	if rep.forceBury {
 		job.UntilBuried = 0
-	} else if !job.StartTime.IsZero() {
-		// obey jobs's Retries count by adjusting UntilBuried if a client
-		// reserved this job and started to run the job's cmd
+	} else if rep.spendsRetry && job.UntilBuried > 0 {
+		// obey the job's Retries count by adjusting UntilBuried if a client
+		// reserved this job and tried to run the job's cmd. releaseJobSnapshot
+		// decided spendsRetry; do not re-derive it here (see
+		// releaseReport.spendsRetry).
+		//
+		// The > 0 clamp is load-bearing, not defensive noise: UntilBuried is a
+		// uint8, so decrementing an already-exhausted budget wraps it to 255 and
+		// silently restores the unbounded retrying this whole change removes.
 		job.UntilBuried--
 	}
 
@@ -5103,11 +5200,11 @@ func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, endState *Jo
 		msg = "released job"
 	}
 
-	job.FailReason = failReason
+	job.FailReason = rep.failReason
 	job.Unlock()
 
 	s.decrementGroupCount(ctx, sgroup)
-	s.db.updateJobAfterExit(ctx, job, endState.Stdout, endState.Stderr, forceStorage)
+	s.db.updateJobAfterExit(ctx, job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
 	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
 }
 
@@ -5201,8 +5298,7 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 	// released reports that this WAS the run to release, not that the queue change
 	// succeeded. ttrCallback does not re-mark an already-lost job, so no second
 	// confirmation is coming and withholding the behaviours would leak for ever.
-	return true, true, s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true},
-		FailReasonLost, false, false)
+	return true, true, s.releaseJob(ctx, job, lostJobReleaseReport())
 }
 
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue
@@ -5414,7 +5510,7 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 		err := s.q.Kick(ctx, job.Key())
 		if err == nil {
 			job.Lock()
-			job.UntilBuried = job.Retries + 1
+			job.UntilBuried = initialUntilBuried(job.Retries)
 			clog.Debug(ctx, "unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
 			job.State = JobStateReady
 			job.Unlock()

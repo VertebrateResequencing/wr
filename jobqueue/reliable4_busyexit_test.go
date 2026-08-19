@@ -69,8 +69,10 @@ func forceServerRelease(server *Server, key string) {
 	}
 
 	//nolint:errcheck // best-effort white-box state forcing in a test helper
-	server.releaseJob(context.Background(), job,
-		&JobEndState{Exited: true, Exitcode: -1, EndTime: time.Now()}, FailReasonLost, false, false)
+	server.releaseJob(context.Background(), job, releaseReport{
+		endState:   &JobEndState{Exited: true, Exitcode: -1, EndTime: time.Now()},
+		failReason: FailReasonLost,
+	})
 }
 
 // waitForItemSubQueue polls the keyed item's live sub-queue state until it
