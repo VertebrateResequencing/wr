@@ -42,11 +42,14 @@ import (
 	"os/exec"
 	"os/user"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/backoff"
 	"github.com/VertebrateResequencing/wr/bsubresource"
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -149,6 +152,56 @@ const (
 	// we wait before force-closing its output pipes so the exec returns even if
 	// a child process is still holding them open.
 	bsubKillGracePeriod = 2 * time.Second
+
+	// defaultMaxBkillBatchSize is the conservative default cap on the number of
+	// LSF element ids wr hands a single bkill. It matches
+	// defaultMaxBsubArraySize: an excess-runner kill is the mirror of the array
+	// submission that created those elements, so the same batch size bounds both
+	// sides with one obvious knob, keeps a single argv small (~12KB, far under
+	// any ARG_MAX) and bounds how much work one bkill asks mbatchd for, which is
+	// what makes bkillExecTimeout meaningful. See maxBkillBatchSize.
+	defaultMaxBkillBatchSize = 1000
+
+	// defaultBkillExecTimeout is the default bound on how long a single bkill
+	// exec may take before it is abandoned. It is much shorter than
+	// defaultBsubExecTimeout because the kill path runs inside a scheduling pass:
+	// a bkill of at most defaultMaxBkillBatchSize ids that has not returned in a
+	// minute is wedged, and waiting longer only delays excess-runner
+	// reclamation. See bkillExecTimeout.
+	defaultBkillExecTimeout = 1 * time.Minute
+
+	// bkillGracePeriod is how long, after the bkill exec timeout kills bkill, we
+	// wait before force-closing its output pipes so the exec returns even if a
+	// child process is still holding them open.
+	bkillGracePeriod = 2 * time.Second
+
+	// defaultKillBackoffMin is the default minimum interval that must pass before
+	// wr re-issues a bkill for an element it has already asked LSF to kill. It is
+	// comfortably longer than the few seconds bjobs takes to stop reporting a
+	// killed element, so the normal case costs no repeat kill at all, while an
+	// element that really is still there is retried promptly. See killBackoffMin.
+	defaultKillBackoffMin = 30 * time.Second
+
+	// defaultKillBackoffMax is the default ceiling of the re-kill interval. An
+	// element that survives repeated kills means LSF is not acting on them, so wr
+	// stops asking every cycle - but it never stops asking, so an over-provisioned
+	// runner cannot be stranded un-reclaimed. See killBackoffMax.
+	defaultKillBackoffMax = 5 * time.Minute
+
+	// killBackoffFactor is the multiplier applied to the re-kill interval each
+	// time a kill has to be repeated.
+	killBackoffFactor = 2
+
+	// killDeferralRetentionCeilings is how many killBackoffMax intervals past its
+	// next-attempt deadline a deferral is kept before being swept: long enough
+	// that an element which keeps needing killing keeps its escalation, short
+	// enough that elements LSF has stopped reporting cannot accumulate.
+	killDeferralRetentionCeilings = 2
+
+	// bkillSummarySampleIDs is how many element ids the bounded kill summary log
+	// includes as a sample. The whole id list is never logged: at prod scale that
+	// was ~26KB per warn line and 75KB/min of manager log.
+	bkillSummarySampleIDs = 3
 )
 
 // maxBsubArraySize caps the number of elements wr places in a single bsub job
@@ -165,6 +218,75 @@ var maxBsubArraySize = defaultMaxBsubArraySize //nolint:gochecknoglobals
 // scheduling-context cancellation cannot abort an in-flight submission. It is a
 // package var so tests can lower it.
 var bsubExecTimeout = defaultBsubExecTimeout //nolint:gochecknoglobals
+
+// maxBkillBatchSize caps the number of LSF element ids wr hands a single bkill
+// (DEVELOPERS.md rule 7). A kill cycle with more excess elements than this is
+// split into as many batches as needed, each its own bkill exec, so an unbounded
+// argv (~1,900 ids measured on the live production manager, proportionally larger
+// at higher limits) is never emitted. It is a package var so tests can lower it.
+var maxBkillBatchSize = defaultMaxBkillBatchSize //nolint:gochecknoglobals
+
+// bkillExecTimeout bounds how long a single bkill invocation may run before it is
+// killed, so a hung bkill cannot block excess-runner reclamation indefinitely. As
+// with bsubExecTimeout it is applied via a context derived from
+// context.Background() rather than the scheduling context, so scheduling-context
+// cancellation cannot abort a kill LSF has already been asked for. It is a
+// package var so tests can lower it.
+var bkillExecTimeout = defaultBkillExecTimeout //nolint:gochecknoglobals
+
+// killBackoffMin and killBackoffMax bound the jittered exponential interval that
+// must pass before wr re-issues a bkill for an element it has already asked LSF
+// to kill (DEVELOPERS.md rules 7 and 8). They are package vars so tests can
+// lower them.
+var (
+	killBackoffMin = defaultKillBackoffMin //nolint:gochecknoglobals
+	killBackoffMax = defaultKillBackoffMax //nolint:gochecknoglobals
+)
+
+// bkillLineKind is the kind of per-element outcome a bkill output line reports.
+type bkillLineKind int
+
+const (
+	bkillLineUnknown bkillLineKind = iota
+	bkillLineKilled
+	bkillLineGone
+)
+
+// bkillLineOutcome returns the element id a bkill output line reports on, and
+// what it says happened to that element. The id is empty if the line reports
+// neither.
+func bkillLineOutcome(reID *regexp.Regexp, line string) (string, bkillLineKind) {
+	kind := classifyBkillLine(line)
+	if kind == bkillLineUnknown {
+		return "", bkillLineUnknown
+	}
+
+	match := reID.FindStringSubmatch(line)
+	if len(match) != reMatchOneGroup {
+		return "", bkillLineUnknown
+	}
+
+	return match[1], kind
+}
+
+// classifyBkillLine says whether a bkill output line reports an element as being
+// killed, as already gone, or as neither. The phrases must stay spelled exactly as
+// LSF spells them (hence the nolint on LSF's American spelling below).
+func classifyBkillLine(line string) bkillLineKind {
+	switch {
+	case strings.Contains(line, "No matching job found"),
+		strings.Contains(line, "already finished"),
+		strings.Contains(line, "is not found"):
+		return bkillLineGone
+	case strings.Contains(line, "is being terminated"),
+		strings.Contains(line, "is being signaled"), //nolint:misspell // LSF's own message
+		strings.Contains(line, "is being requeued"),
+		strings.Contains(line, "has been sent"):
+		return bkillLineKilled
+	default:
+		return bkillLineUnknown
+	}
+}
 
 // lsfHost adapts the throwaway cloud.Server that lsf.getHost dials for a single
 // confirm-dead ssh command so that Close() actually drops that server's ssh
@@ -186,6 +308,192 @@ func (h *lsfHost) Close(ctx context.Context) {
 	h.server.CloseSSHConnections(ctx)
 }
 
+// killSummary is what one kill cycle achieved, so that it can be reported in one
+// bounded log line instead of the whole id list.
+type killSummary struct {
+	requested   int    // elements handed to a bkill
+	killed      int    // elements bkill is terminating (or accepted silently)
+	alreadyGone int    // elements LSF no longer knows about, so nothing to reclaim
+	unaccounted int    // elements bkill neither killed nor explained
+	retried     int    // due elements wr had already asked LSF to kill
+	deferred    int    // excess elements the back-off left alone this cycle
+	abandoned   int    // due elements not asked about, because a bkill did not complete
+	batches     int    // bkill invocations
+	failure     string // why a bkill could not be run to completion
+	exit        string // a bkill's non-zero exit status
+	out         string // a bounded excerpt of a failing bkill's output
+}
+
+// account classifies one bkill's output against the ids it was given. LSF reports
+// what happened per element ("Job <id> is being terminated", "Job <id>: No
+// matching job found"), so elements actually killed can be distinguished from
+// elements that were already gone. Elements bkill said nothing about count as
+// killed if it exited cleanly (it accepted the request; bkill -b can be silent)
+// and as unaccounted otherwise - which is what stops a "No matching job found"
+// hiding un-reclaimed over-provisioned runners.
+func (k *killSummary) account(ids []string, out string, err error) {
+	unexplained := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		unexplained[id] = true
+	}
+
+	k.accountLines(out, unexplained)
+
+	if err == nil {
+		k.killed += len(unexplained)
+	} else {
+		k.unaccounted += len(unexplained)
+	}
+}
+
+// accountLines credits every element that a line of the given bkill output reports
+// on, removing it from unexplained as it goes.
+func (k *killSummary) accountLines(out string, unexplained map[string]bool) {
+	reID := regexp.MustCompile(`Job <([^>]+)>`)
+
+	for line := range strings.SplitSeq(out, "\n") {
+		id, kind := bkillLineOutcome(reID, line)
+		if id == "" || !unexplained[id] {
+			continue
+		}
+
+		delete(unexplained, id)
+
+		if kind == bkillLineKilled {
+			k.killed++
+		} else {
+			k.alreadyGone++
+		}
+	}
+}
+
+// fail records that a bkill could not be run to completion, with a bounded
+// excerpt of whatever it had said.
+func (k *killSummary) fail(reason, out string) {
+	if k.failure == "" {
+		k.failure = reason
+		k.out = loggableProcessOutput(out)
+	}
+}
+
+// log reports the cycle in ONE bounded line: counts, a few sample ids and (only
+// when something went wrong) a capped excerpt of bkill's output. It escalates to
+// warn when something was left unexplained - elements bkill did not account for,
+// batches abandoned by a bkill that never completed, a bkill that could not be
+// run, or elements wr had to ask LSF about again (an element still reported as
+// excess after wr already had it killed is the "lost slots never reclaimed"
+// symptom, and the back-off means this can only be logged once per interval, not
+// once per cycle). Everything else - including the non-zero exit LSF returns when
+// some elements were simply already gone - is benign, and logged at debug.
+func (k *killSummary) log(ctx context.Context, bkillExe string, due []string) {
+	if !k.needsAttention() {
+		clog.Debug(ctx, "checkCmd bkilled excess runners", k.logArgs(bkillExe, due)...)
+
+		return
+	}
+
+	clog.Warn(ctx, "checkCmd bkill did not reclaim all excess runners", k.logArgs(bkillExe, due)...)
+}
+
+// needsAttention reports whether this cycle left something unexplained, and so
+// should be logged at warn rather than debug.
+func (k *killSummary) needsAttention() bool {
+	return k.unaccounted > 0 || k.abandoned > 0 || k.retried > 0 || k.failure != ""
+}
+
+// logArgs returns the bounded key/value pairs describing this cycle: counts, a
+// sample of the ids, and (only when something needs attention) the reason and a
+// capped excerpt of bkill's output. The full id list and the full output are never
+// included.
+func (k *killSummary) logArgs(bkillExe string, due []string) []any {
+	args := []any{
+		"cmd", bkillExe,
+		"requested", k.requested,
+		"killed", k.killed,
+		"alreadyGone", k.alreadyGone,
+		"unaccounted", k.unaccounted,
+		"retried", k.retried,
+		"deferred", k.deferred,
+		"abandoned", k.abandoned,
+		"batches", k.batches,
+		"sample", bkillSample(due),
+	}
+
+	if k.exit != "" {
+		args = append(args, "exit", k.exit)
+	}
+
+	if !k.needsAttention() {
+		return args
+	}
+
+	if k.failure != "" {
+		args = append(args, "err", k.failure)
+	}
+
+	if k.out != "" {
+		args = append(args, "out", k.out)
+	}
+
+	return args
+}
+
+// bkillSample returns a bounded, readable sample of the given element ids: the
+// first bkillSummarySampleIDs of them plus how many more there were, so a summary
+// can name some ids without ever dumping the whole list.
+func bkillSample(ids []string) string {
+	if len(ids) <= bkillSummarySampleIDs {
+		return strings.Join(ids, " ")
+	}
+
+	return fmt.Sprintf("%s +%d more", strings.Join(ids[:bkillSummarySampleIDs], " "),
+		len(ids)-bkillSummarySampleIDs)
+}
+
+// ranToCompletion records how a bkill exec ended - execErr being its exec
+// context's error (non-nil if the timeout fired) and err the error from running
+// it - and reports whether bkill actually ran to completion.
+func (k *killSummary) ranToCompletion(execErr, err error, out string) bool {
+	if execErr != nil {
+		k.fail(fmt.Sprintf("bkill timed out after %s", bkillExecTimeout), out)
+
+		return false
+	}
+
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		k.fail(err.Error(), out)
+
+		return false
+	}
+
+	if err != nil {
+		// bkill exits non-zero if ANY element it was given was already gone, which
+		// is normal; the counts say whether that is all it was.
+		k.exit = err.Error()
+		k.out = loggableProcessOutput(out)
+	}
+
+	return true
+}
+
+// deferredSleeper is a backoff.Sleeper that records the duration it is asked to
+// sleep for instead of sleeping, so a poll-driven caller can turn the house
+// backoff's jittered exponential into a deadline. See lsf.nextKillInterval.
+type deferredSleeper struct {
+	nanos atomic.Int64
+}
+
+// Sleep records d and returns immediately.
+func (d *deferredSleeper) Sleep(_ context.Context, dur time.Duration) {
+	d.nanos.Store(int64(dur))
+}
+
+// recorded returns the duration most recently passed to Sleep.
+func (d *deferredSleeper) recorded() time.Duration {
+	return time.Duration(d.nanos.Load())
+}
+
 // lsf is our implementer of scheduleri.
 type lsf struct {
 	config             *ConfigLSF
@@ -204,6 +512,16 @@ type lsf struct {
 	// excess even before bjobs reports them as RUN. Guarded by reservedMu.
 	reservedElements map[string]bool
 	reservedMu       sync.Mutex
+	// killDeferred holds, per element id wr has asked bkill to kill, the earliest
+	// time wr may ask LSF to kill it again, so an identical failing kill is not
+	// re-issued every scheduling cycle. killBackoff (with killSleeper) is the
+	// house backoff that calculates those intervals. All are guarded by killMu and
+	// only used by the excess-runner kill path.
+	killDeferred map[string]time.Time
+	killBackoff  *backoff.Backoff
+	killSleeper  *deferredSleeper
+	killSwept    time.Time // when killDeferred was last swept of long-expired entries
+	killMu       sync.Mutex
 }
 
 // ConfigLSF represents the configuration options required by the LSF scheduler.
@@ -367,6 +685,212 @@ func (s *lsf) pruneReserved(present map[string]bool) {
 			delete(s.reservedElements, id)
 		}
 	}
+}
+
+// killElements asks LSF to kill the given excess LSF element ids. The ids are
+// handed to bkill in batches of at most maxBkillBatchSize, each exec bounded by
+// bkillExecTimeout (DEVELOPERS.md rule 7: cap what you hand external tools, and
+// time-bound it), skipping elements wr has already asked LSF to kill recently
+// (see dueForKill and nextKillInterval; rule 8), and the whole cycle produces ONE
+// bounded summary log line rather than the entire id list (which cost ~75KB/min
+// of manager log at prod scale).
+//
+// WHICH elements get killed is deliberately unchanged: the collector's decisions
+// - including never handing bkill an element wr has given a job reservation to,
+// and killExcessCmds' documented race trade-off of letting some cmds start and
+// then killing them - are untouched, and the only elements left for a later cycle
+// are ones wr has ALREADY asked LSF to kill.
+func (s *lsf) killElements(ctx context.Context, ids []string) {
+	due, sum := s.dueForKill(ids)
+	if len(due) == 0 {
+		clog.Debug(ctx, "checkCmd bkill of excess runners deferred", "deferred", sum.deferred)
+
+		return
+	}
+
+	// the deferral deadline is calculated once per cycle, so it costs one backoff
+	// step and one log line however many elements are being killed.
+	deadline := time.Now().Add(s.nextKillInterval(ctx, sum.retried > 0))
+
+	//nolint:contextcheck // bkillBatch deliberately takes no ctx: its exec must not be cancellable by the scheduling ctx
+	for batch := range slices.Chunk(due, maxBkillBatchSize) {
+		s.markKillsIssued(batch, deadline)
+
+		sum.batches++
+
+		if !s.bkillBatch(batch, &sum) {
+			// this bkill never completed, so don't pile more onto a wedged LSF;
+			// the batches not asked about are left un-deferred, so the next cycle
+			// picks them up immediately.
+			break
+		}
+	}
+
+	sum.abandoned = len(due) - sum.requested
+
+	sum.log(ctx, s.bkillExe, due)
+}
+
+// dueForKill splits the given excess element ids into those wr may bkill now
+// (returned) and those deferred because wr has already asked LSF to kill them and
+// the back-off interval has not passed yet (counted in the returned summary,
+// along with how many of the due ids are repeat attempts). An element wr has
+// never asked about is always due immediately, so newly over-provisioned runners
+// are never left waiting.
+//
+// It also drops long-expired deferrals, bounding the map over a long-lived
+// manager.
+func (s *lsf) dueForKill(ids []string) ([]string, killSummary) {
+	now := time.Now()
+
+	s.killMu.Lock()
+	defer s.killMu.Unlock()
+
+	s.sweepKillDeferrals(now)
+
+	var (
+		due []string
+		sum killSummary
+	)
+
+	for _, id := range ids {
+		until, known := s.killDeferred[id]
+
+		if known && now.Before(until) {
+			sum.deferred++
+
+			continue
+		}
+
+		if known {
+			sum.retried++
+		}
+
+		due = append(due, id)
+	}
+
+	return due, sum
+}
+
+// sweepKillDeferrals drops deferrals whose next-attempt deadline passed more than
+// a couple of back-off ceilings ago: LSF has not reported those elements as
+// excess since, so they are gone and their state can go too. A deferral that is
+// merely due is kept, so an element that keeps needing killing keeps escalating
+// rather than starting again at killBackoffMin.
+//
+// It walks the whole map, so it is rate-limited to once per killBackoffMin: every
+// scheduler group with excess elements calls the kill path every scheduling cycle,
+// and this bounds memory, it does not need to be prompt. killMu must be held.
+func (s *lsf) sweepKillDeferrals(now time.Time) {
+	if now.Sub(s.killSwept) < killBackoffMin {
+		return
+	}
+
+	s.killSwept = now
+	retention := killDeferralRetentionCeilings * killBackoffMax
+
+	for id, until := range s.killDeferred {
+		if now.Sub(until) > retention {
+			delete(s.killDeferred, id)
+		}
+	}
+}
+
+// markKillsIssued records that wr has just asked LSF to kill the given elements,
+// so they will not be asked about again before the given deadline.
+func (s *lsf) markKillsIssued(ids []string, deadline time.Time) {
+	s.killMu.Lock()
+	defer s.killMu.Unlock()
+
+	if s.killDeferred == nil {
+		s.killDeferred = make(map[string]time.Time, len(ids))
+	}
+
+	for _, id := range ids {
+		s.killDeferred[id] = deadline
+	}
+}
+
+// nextKillInterval returns how long wr will leave the elements it is about to
+// bkill alone before asking LSF about them again. It is the house
+// backoff.Backoff's jittered exponential (DEVELOPERS.md rule 8): it escalates
+// from killBackoffMin towards killBackoffMax while kills keep having to be
+// repeated, and resets to killBackoffMin as soon as a cycle needs no repeat. The
+// ceiling means wr stops asking every cycle, but it never stops asking, so an
+// over-provisioned runner cannot be stranded un-reclaimed.
+//
+// The wait is expressed as a DEADLINE rather than by actually sleeping, because
+// this path is polled once per scheduling pass: a deadline needs no goroutine
+// (parking one per element - thousands at prod scale - is the goroutine-storm
+// anti-pattern reliable4 removed elsewhere) and cannot block the pass.
+// backoff.Sleeper is the seam the package provides for deciding how the sleeping
+// happens, and deferredSleeper simply records the duration.
+func (s *lsf) nextKillInterval(ctx context.Context, repeating bool) time.Duration {
+	s.killMu.Lock()
+
+	if s.killBackoff == nil {
+		s.killSleeper = &deferredSleeper{}
+		s.killBackoff = &backoff.Backoff{
+			Min:     killBackoffMin,
+			Max:     killBackoffMax,
+			Factor:  killBackoffFactor,
+			Sleeper: s.killSleeper,
+		}
+	}
+
+	b, sleeper := s.killBackoff, s.killSleeper
+
+	s.killMu.Unlock()
+
+	if !repeating {
+		b.Reset()
+	}
+
+	// this does not sleep; it makes the Backoff work out the next interval and
+	// hand it to our Sleeper. The duration is read back atomically because two
+	// scheduler groups can be killing at once (either group's interval is a valid
+	// one to use).
+	b.Sleep(ctx)
+
+	return sleeper.recorded()
+}
+
+// bkillBatch runs one bkill for the given element ids, recording in sum what it
+// achieved. It returns false if that bkill could not be run to completion (it hit
+// bkillExecTimeout, or could not be executed at all), in which case the caller
+// must not issue further batches this cycle.
+func (s *lsf) bkillBatch(ids []string, sum *killSummary) bool {
+	// as in submitToQueue, the exec context is derived from context.Background()
+	// rather than the scheduling ctx (which is why this takes no ctx), so
+	// scheduling-context cancellation cannot abort a kill LSF has already been
+	// asked for; bkillExecTimeout then bounds it so a hung bkill cannot block
+	// excess-runner reclamation indefinitely.
+	execCtx, cancel := context.WithTimeout(context.Background(), bkillExecTimeout)
+	defer cancel()
+
+	//nolint:gosec // LSF management command; execCtx is deliberately not the scheduling ctx (see above)
+	killcmd := exec.CommandContext(execCtx, s.bkillExe, bkillArgs(ids)...)
+
+	// WaitDelay ensures CombinedOutput() returns promptly once the timeout has
+	// killed bkill, even if a child of bkill is still holding the pipes open.
+	killcmd.WaitDelay = bkillGracePeriod
+
+	out, err := killcmd.CombinedOutput()
+
+	sum.requested += len(ids)
+	sum.account(ids, string(out), err)
+
+	return sum.ranToCompletion(execCtx.Err(), err, string(out))
+}
+
+// bkillArgs returns the argv for a bkill of the given element ids. The -b flag is
+// the one wr has always used, so LSF deals with a bulk kill request as fast as it
+// can.
+func bkillArgs(ids []string) []string {
+	args := make([]string, 0, len(ids)+1)
+	args = append(args, "-b")
+
+	return append(args, ids...)
 }
 
 // bsubStderr returns bsub's stderr, extracted from an error returned by
@@ -1354,8 +1878,10 @@ func (s *lsf) countCmds(jobPrefix string, full bool) (count int, err error) {
 // killCollector counts running cmds and collects the ids of non-running cmds
 // beyond a maximum, so they can be killed.
 type killCollector struct {
-	reAid      *regexp.Regexp
-	reserved   map[string]bool
+	reAid    *regexp.Regexp
+	reserved map[string]bool
+	// toKill holds just the element ids (killElements batches them into bkill
+	// argvs, so no bkill flags belong here).
 	toKill     []string
 	count      int
 	maxAllowed int
@@ -1398,20 +1924,13 @@ func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed i
 	kc := &killCollector{
 		reAid:      regexp.MustCompile(`\[(\d+)\]$`),
 		reserved:   s.snapshotReserved(),
-		toKill:     []string{"-b"},
 		maxAllowed: maxAllowed,
 	}
 
 	err = s.parseBjobs(jobPrefix, kc.consider)
 
-	if len(kc.toKill) > 1 {
-		//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
-		killcmd := exec.Command(s.bkillExe, kc.toKill...)
-
-		out, errk := killcmd.CombinedOutput()
-		if errk != nil && !strings.HasPrefix(string(out), "Job has already finished") {
-			clog.Warn(ctx, "checkCmd bkill failed", "cmd", s.bkillExe, "toKill", kc.toKill, "err", errk, "out", string(out))
-		}
+	if len(kc.toKill) > 0 {
+		s.killElements(ctx, kc.toKill)
 	}
 
 	return kc.count, err
