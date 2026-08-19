@@ -1046,6 +1046,123 @@ cmd_backlog_rescan_check() {  # backlog-rescan-check [limit] [backlog] - reliabl
   return "$rc"
 }
 
+cmd_bkill_hygiene() {  # bkill-hygiene [elements] [hangSeconds] - reliable4 FINDING 4 SCALE GATE
+  # SCALE GATE for reliable4 FINDING 4 (.docs/reliable4/prod-run-20260817.md): the excess-runner
+  # kill path handed bkill ONE unbounded argv (~1,900 element ids measured live), with no timeout
+  # and no context, re-issued the IDENTICAL failing kill on the next scheduling cycle (339390[7..13]
+  # killed at 15:36:09 and again at 15:36:10), and logged the whole id list - 116 warnings and
+  # ~75KB/min of pure `toKill=` text, which is what made the manager log unreadable during the
+  # incident, and which hid whether those elements were already gone (benign) or live
+  # over-provisioned runners that were never reclaimed (the reliable3 "lost slots" symptom).
+  #
+  # It is INDICATIVE, not faithful, and farm-safe by construction: the real bkill cannot be driven
+  # at this scale without killing real LSF jobs, so bjobs and bkill are fake exes in a temp dir
+  # (NO LSF job is ever submitted or killed, and no manager is started at all), while everything
+  # on the wr side - the collector, the argv building, the exec, the back-off and the logging - is
+  # the real killExcessCmds path, driven at the prod-measured element count.
+  #
+  # It measures the five things prod could not distinguish:
+  #   maxArgv      largest single bkill argv (pre-fix: all $elements ids in one exec)
+  #   invocations  bkills per cycle (pre-fix: 1, however many ids there are)
+  #   cycle2*      whether the next cycle repeats the same ids (pre-fix: all of them, 1s later)
+  #   killed/gone  the killed-vs-already-gone split (pre-fix: not reported at all, so -1)
+  #   logBytes     one cycle's logging (pre-fix: ~104KB; the headline symptom)
+  #   elapsedMs    how long a HUNG bkill blocks the kill path (pre-fix: forever)
+  # A MISSING measurement (no summary line, unparseable number, no bkill invoked) is a hard FAIL,
+  # never a cheap PASS.
+  need_repo
+  local elements="${1:-1900}" hang="${2:-120}"
+  local cap=1000 logmax=4096 hangbound=90000
+  local out="$WRDEV_ROOT/bkill-hygiene.out"
+  echo "reliable4 FINDING 4 bkill hygiene gate: $elements excess LSF array elements, fake bjobs/bkill"
+  echo "(farm-safe: no manager, no bsub, no real bkill), hanging-bkill case sleeps ${hang}s."
+  echo "Gate: maxArgv <= $cap AND uniqueIDs == $elements AND logBytes <= $logmax AND cycle2RepeatedIDs == 0"
+  echo "      AND killedReported/goneReported both >= 0 AND a hung bkill returns within ${hangbound}ms."
+  echo "prod pre-fix: one ~1,900-id argv, ~104KB of log per cycle, the same ids re-killed every cycle."
+  mkdir -p "$WRDEV_ROOT" 2>/dev/null
+  osunset
+  local rc=0
+  WR_BK_ELEMENTS="$elements" WR_BK_HANG="$hang" \
+    timeout 900 go -C "$REPO" test -tags reliability_repro ./jobqueue/scheduler/ \
+    -run TestReliable4BkillHygieneScale -count=1 -v > "$out" 2>&1 || rc=$?
+  grep -aE 'BKILL-HYGIENE|Expected|--- (PASS|FAIL)|^(ok|FAIL)' "$out" || true
+
+  local chunk repeat outcome hangline
+  chunk=$(grep -a 'BKILL-HYGIENE-CHUNK:' "$out" | tail -1)
+  repeat=$(grep -a 'BKILL-HYGIENE-REPEAT:' "$out" | tail -1)
+  outcome=$(grep -a 'BKILL-HYGIENE-OUTCOME:' "$out" | tail -1)
+  hangline=$(grep -a 'BKILL-HYGIENE-HANG:' "$out" | tail -1)
+
+  local invocations maxargv uniqueids logbytes repeated killed gone elapsed
+  invocations=$(bk_num "$chunk" invocations); maxargv=$(bk_num "$chunk" maxArgv)
+  uniqueids=$(bk_num "$chunk" uniqueIDs); logbytes=$(bk_num "$chunk" logBytes)
+  repeated=$(bk_num "$repeat" cycle2RepeatedIDs)
+  killed=$(bk_num "$outcome" killedReported); gone=$(bk_num "$outcome" goneReported)
+  elapsed=$(bk_num "$hangline" elapsedMs)
+
+  echo "## VERDICT: maxArgv=$maxargv (cap $cap)  invocations=$invocations  uniqueIDs=$uniqueids/$elements"
+  echo "##          logBytes=$logbytes (max $logmax)  cycle2RepeatedIDs=$repeated"
+  echo "##          killedReported=$killed goneReported=$gone  hungBkillElapsedMs=$elapsed (max $hangbound)"
+
+  # a gate that PASSES when the measurement is missing is worse than no gate.
+  local unmeasured=""
+  [ -n "$chunk" ] || unmeasured="no BKILL-HYGIENE-CHUNK line: the scale test did not run to its first measurement"
+  [ -z "$unmeasured" ] && [ -z "$repeat" ] && unmeasured="no BKILL-HYGIENE-REPEAT line: the second cycle was never measured"
+  [ -z "$unmeasured" ] && [ -z "$outcome" ] && unmeasured="no BKILL-HYGIENE-OUTCOME line: the killed-vs-gone split was never measured"
+  [ -z "$unmeasured" ] && [ -z "$hangline" ] && unmeasured="no BKILL-HYGIENE-HANG line: the hung-bkill case was never measured"
+  if [ -z "$unmeasured" ]; then
+    local v
+    for v in "$invocations" "$maxargv" "$uniqueids" "$logbytes" "$repeated" "$killed" "$gone" "$elapsed"; do
+      case "$v" in
+        ''|*[!0-9-]*) unmeasured="a measurement was missing or unparseable in the lines above"; break ;;
+      esac
+    done
+  fi
+  [ -z "$unmeasured" ] && [ "$invocations" -le 0 ] \
+    && unmeasured="0 bkill invocations, so the fake bkill was never run and nothing was measured"
+  [ -z "$unmeasured" ] && [ "$logbytes" -le 0 ] \
+    && unmeasured="0 log bytes, so no kill cycle was logged at all"
+  local failed=""
+  if [ -z "$unmeasured" ]; then
+    [ "$maxargv" -le "$cap" ] || failed="a single bkill argv held $maxargv ids (cap $cap): rule 7 uncapped again"
+    [ -z "$failed" ] && [ "$uniqueids" -ne "$elements" ] \
+      && failed="the batches covered $uniqueids of $elements excess elements: chunking is dropping kills"
+    [ -z "$failed" ] && [ "$logbytes" -gt "$logmax" ] \
+      && failed="one cycle logged $logbytes bytes (max $logmax): the whole id list is being logged again"
+    [ -z "$failed" ] && [ "$repeated" -ne 0 ] \
+      && failed="the next cycle re-issued $repeated of the same ids: the kill back-off is gone"
+    [ -z "$failed" ] && { [ "$killed" -lt 0 ] || [ "$gone" -lt 0 ]; } \
+      && failed="the summary does not report killed vs alreadyGone, so an unreclaimed runner still hides"
+    [ -z "$failed" ] && [ "$elapsed" -gt "$hangbound" ] \
+      && failed="a hung bkill blocked the kill path for ${elapsed}ms (max $hangbound): the exec timeout is gone"
+  fi
+
+  local verdict=0
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; see the test output greped above"
+  elif [ -n "$failed" ]; then
+    verdict=1
+    echo "FAIL: $failed"
+  elif [ "$rc" -ne 0 ]; then
+    verdict="$rc"
+    echo "FAIL: the scale test itself failed (rc=$rc) even though the measurements are within bounds"
+  else
+    echo "PASS: the excess-runner kill is chunked to <= $cap ids per bkill, time-bounded, backed off"
+    echo "      and summarised in $logbytes bytes with a killed-vs-already-gone split"
+  fi
+  echo "## CLEANUP"
+  rm -f "$out" 2>/dev/null
+  return "$verdict"
+}
+
+# bk_num extracts a `key=<int>` value (which may be negative) from one of the scale test's
+# BKILL-HYGIENE lines, printing nothing when the key is absent (so the caller FAILs NOT MEASURED).
+bk_num() {  # <line> <key>
+  printf '%s\n' "$1" | grep -aoE "$2=-?[0-9]+" | tail -1 | cut -d= -f2
+}
+
 cmd_idle_backlog_cpu() {  # idle-backlog-cpu [jobs] [seconds] [pprofPort] - reliable4 FINDING 3 idle-backlog CPU burn
   # SCALE GATE for reliable4 FINDING 3 (.docs/reliable4/prod-run-20260817.md): an IDLE
   # manager with a big limit-blocked ready backlog must burn almost no CPU. It recreates
@@ -1775,6 +1892,16 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         (defaults 20 120 2; WRDEV_EXECFAIL_PADKB overrides the 130KB Cmd padding).
                         Pre-fix: buried == 0 (the retry ceiling is never reached because StartTime
                         is never set) and attempts >> N and still climbing.
+  bkill-hygiene [elements] [hangSeconds]
+                        reliable4 FINDING 4 SCALE GATE (fake bjobs/bkill exes, so farm-safe - no
+                        manager, no bsub, no real bkill - but the REAL killExcessCmds path, driven at
+                        the prod-measured element count): asserts no single bkill argv exceeds the
+                        1000-id cap, the batches cover every excess element, one cycle logs <= 4096
+                        bytes, the next cycle re-issues NONE of the same ids, the summary reports the
+                        killed-vs-alreadyGone split, and a HUNG bkill returns within 90s
+                        (defaults 1900 120). Pre-fix: one ~1,900-id argv, ~104KB of log per cycle,
+                        all 1,900 ids re-killed on the next cycle, no killed/gone split, and a hung
+                        bkill blocks the kill path for as long as it hangs.
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -1803,6 +1930,7 @@ case "${1:-help}" in
   priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
   backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
   idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
+  bkill-hygiene) cmd_bkill_hygiene "${2:-1900}" "${3:-120}" ;;
   control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
