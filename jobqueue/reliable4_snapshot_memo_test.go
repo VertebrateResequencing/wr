@@ -113,7 +113,9 @@ func TestReliable4SchedulerGroupSnapshotMemoised(t *testing.T) {
 	Convey("rac cycles over an unchanged limit-blocked ready backlog do no per-job derivation", t, func() {
 		server, allitemdata := memoBacklogServer(t, ctx, memoBacklog)
 
-		// the first cycle derives each ready job's strings once...
+		// the first cycle derives each ready job's strings once. Every job starts
+		// cold (nothing derives at add time, and the paused server runs no cycle
+		// of its own), so this is exactly one derivation per ready job.
 		cold := memoDerivationsDuring(allitemdata, func() {
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
 		})
@@ -131,6 +133,15 @@ func TestReliable4SchedulerGroupSnapshotMemoised(t *testing.T) {
 		}
 
 		So(steady, ShouldEqual, 0)
+
+		// cumulatively, then, these memoSteadyCycles+1 cycles over memoBacklog
+		// ready jobs cost exactly one derivation per job, not one per job per
+		// cycle. That is the two assertions above restated as a total, and it is
+		// the form that would still hold if a future change let some other cycle
+		// run concurrently with these: derivedLocked re-checks under the job's
+		// write lock, so no job can derive twice unless something invalidated its
+		// memo in between.
+		So(memoDerivations(allitemdata), ShouldEqual, memoBacklog)
 
 		// a steady-state cycle also allocates little per ready job
 		mallocs := memoMallocsDuring(func() {
@@ -249,10 +260,11 @@ func TestReliable4SchedulerGroupSnapshotInvalidated(t *testing.T) {
 	})
 }
 
-// memoBacklogServer starts an isolated server, adds n limit-0 (so permanently
-// ready-but-blocked) jobs to it, waits for them all to be in the queue and
-// returns the server and the ready item data a rac cycle receives. The server and
-// client are torn down when the test ends.
+// memoBacklogServer starts an isolated PAUSED server (so the only rac cycles that
+// ever run are the ones the test drives itself, see below), adds n limit-0 (so
+// permanently ready-but-blocked) jobs to it, waits for them all to be in the queue
+// and returns the server and the ready item data a rac cycle receives. The server
+// and client are torn down when the test ends.
 func memoBacklogServer(t *testing.T, ctx context.Context, n int) (*Server, []any) {
 	t.Helper()
 
@@ -262,6 +274,26 @@ func memoBacklogServer(t *testing.T, ctx context.Context, n int) (*Server, []any
 	So(err, ShouldBeNil)
 
 	t.Cleanup(func() { server.Stop(ctx, true) })
+
+	// pause the server before adding anything, for the rest of the test. This
+	// server has no runner command, so its own background rac cycles take
+	// buildSchedulerGroups' rc == "" branch, which runs prepareReadyJob for
+	// EVERY ready job (a fresh database still yields a non-nil, all-zero
+	// recommendation) and therefore INVALIDATES every job's memo. Left running,
+	// one of those cycles races the ones the tests drive below, in BOTH
+	// directions: its cheap pre-pass can warm memos a driven cold cycle has not
+	// reached yet (17,392 derivations instead of 20,000, seen in the wild at
+	// host load ~100), and its invalidating half can make jobs that cycle
+	// already derived cold again (21,580 instead of 20,000, 5 failures out of 5
+	// when such a cycle is triggered deliberately). Pausing is how the server
+	// itself makes the queue quiescent for a bulk change (see handleModify), it
+	// does not gate Add, and it leaves the measured path - the
+	// buildSchedulerGroups calls the tests make directly - byte for byte the
+	// same. So every derivation counted below is one a test caused, and the
+	// counts are exact rather than merely usually right.
+	paused, err := server.Pause()
+	So(err, ShouldBeNil)
+	So(paused, ShouldBeTrue)
 
 	jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 	So(err, ShouldBeNil)
