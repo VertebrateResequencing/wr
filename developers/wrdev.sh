@@ -1387,6 +1387,188 @@ cmd_runner_started_timeout_check() {  # runner-started-timeout-check - reliable4
   return "$rc"
 }
 
+cmd_exec_impossible_retries() {  # exec-impossible-retries [jobs] [seconds] [cores] - reliable4 FINDING 5 SCALE GATE
+  # SCALE GATE for reliable4 FINDING 5 (.docs/reliable4/prod-run-20260817.md): a command that
+  # can NEVER exec must cost exactly ONE runner slot and ONE attempt, not N. In production a
+  # Cmd over Linux's MAX_ARG_STRLEN (128KB for a SINGLE argv element, whatever the much larger
+  # ARG_MAX is) failed `fork/exec ...: argument list too long`, was treated as a transient
+  # failure and released for a retry: 608 such events across 150 runner logs in 25 minutes,
+  # 109 of them from ONE runner. Every retry spends a scheduled runner, a reservation, a copy
+  # of the (enormous) command over RPC and a bolt write, to learn the same answer again - and
+  # the retries are UNBOUNDED, because the server only decrements UntilBuried for a job whose
+  # StartTime is set, and an exec that never started never reported a start. So even
+  # --retries 0 cannot stop it: the retry ceiling is never reached. That is why this gate uses
+  # --retries 2 and still expects a bury.
+  #
+  # End-to-end on the REAL binary, and farm-safe: -s local, so no LSF job is ever submitted
+  # and the only processes are our own dev manager plus at most `cores` local runners. It runs
+  # the isolated dev manager with --runner_filelog (the capability that made this failure
+  # visible in production at all), adds `jobs` jobs whose Cmd is over MAX_ARG_STRLEN, waits up
+  # to `seconds` for them to reach a terminal state, then measures THREE independent things:
+  #   attempts = `argument list too long` lines across ALL runner logs (the runner-side truth)
+  #   buried   = the rep group's buried count from `wr status` (the manager-side truth)
+  #   reasoned = how many buried jobs give `command line too long` as their problem (the CAUSE)
+  # PASS = all three == jobs: one slot, one attempt, a permanent verdict, for the right reason.
+  # Pre-fix: buried == 0 and attempts >> jobs and still climbing when the window ends. The
+  # `reasoned` measurement is what stops an over-wide "bury every start failure" change - which
+  # would bury healthy transiently-failing work - from passing this gate on the counts alone.
+  # A MISSING measurement (dead manager, nothing added, no runner logs, zero attempts,
+  # unparseable counts, no jobs reported by `wr status`) is a hard FAIL, never a cheap PASS.
+  need_bin; ensure_config
+  local jobs="${1:-20}" secs="${2:-120}" cores="${3:-2}"
+  local rg=rgexecfail
+  local logdir="$WRDEV_ROOT/execfail-runnerlogs" work="$WRDEV_ROOT/execfail.json"
+  # 128KB is MAX_ARG_STRLEN; go over it so exec fails immediately and deterministically.
+  local padkb="${WRDEV_EXECFAIL_PADKB:-130}"
+  echo "reliable4 FINDING 5 exec-impossible gate: $jobs jobs whose Cmd is ~${padkb}KB (over the 128KB"
+  echo "MAX_ARG_STRLEN single-argv cap), on an isolated dev manager (-s local, --max_cores $cores,"
+  echo "--runner_filelog). Such a command can never exec on any host at any time."
+  echo "prod pre-fix: 608 'argument list too long' events / 150 runner logs / 25min, 109 from one runner."
+  echo "Gate: buried == $jobs AND attempts == $jobs (exactly one runner slot and one attempt per job),"
+  echo "and all $jobs give 'command line too long' as their problem (buried for the RIGHT reason)."
+  echo "A MISSING measurement (no runner logs, 0 attempts, dead manager) is a FAIL, not a PASS."
+  rm -rf "$logdir" 2>/dev/null; mkdir -p "$logdir"
+  cmd_stop >/dev/null 2>&1 || true
+  rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
+  echo "starting isolated dev manager (-s local); dev mode wipes the DB"
+  osunset ; timeout 90 "$WR" manager start --deployment development -s local \
+    --max_cores "$cores" --runner_filelog "$logdir" 2>&1 | grep -aE 'started on|token=' | head -2
+  local mpid; mpid=$(mgr_pid "$DEV_RUN")
+  { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
+  echo "pid $mpid"
+  sleep 3
+
+  local rc=0
+  ef_run "$jobs" "$secs" "$rg" "$logdir" "$work" "$padkb" "$mpid" || rc=$?
+  echo "## CLEANUP"
+  cmd_stop >/dev/null 2>&1
+  ef_reap_runners "$logdir"
+  rm -rf "$logdir" 2>/dev/null; rm -f "$work" 2>/dev/null
+  return "$rc"
+}
+
+# ef_reap_runners kills any of OUR local runners still alive from this gate. cmd_stop only kills
+# the manager (and bkills LSF jobs), and a -s local runner that is mid-reserve outlives it; on a
+# pre-fix/FAIL run there is always one, since the retry storm never ends. Three gates stand
+# between this and someone else's production manager on the same shared host: only this user's
+# processes are considered (ps -u), the argv must contain a `--logdir` whose NEXT argument is
+# EXACTLY this gate's log dir (an argv-aware awk match, not a substring one - a substring match
+# would also reap a process whose logdir merely has ours as a prefix), and each surviving
+# candidate is re-checked with is_ours so it must be our isolated binary. ps output is captured
+# BEFORE it is filtered, so the filter's own command line can never self-match.
+ef_reap_runners() {  # <logdir>
+  local list; list=$(ps -u "$(id -un)" -o pid=,args= 2>/dev/null)
+  printf '%s\n' "$list" \
+    | awk -v d="$1" '{for(i=2;i<NF;i++) if ($i=="--logdir" && $(i+1)==d) {print $1; break}}' | while read -r p; do
+    [ -n "$p" ] || continue
+    is_ours "$p" && kill -9 "$p" 2>/dev/null && echo "killed our leftover local runner pid $p"
+  done
+}
+
+# ef_run does the measured part of exec-impossible-retries, so the caller can always clean up
+# the runner-log dir and the (large) job file without its `rm`s swallowing the FAIL exit code.
+ef_run() {  # <jobs> <seconds> <repGroup> <logdir> <jobfile> <padKB> <managerPid>
+  local jobs="$1" secs="$2" rg="$3" logdir="$4" work="$5" padkb="$6" mpid="$7"
+  echo "generating $jobs jobs with a ~${padkb}KB Cmd -> $work"
+  perl -e "my \$pad='x' x ($padkb*1024); for my \$i (1..$jobs){ print '{\"cmd\":\"echo '.\$pad.' #'.\$i.'\",\"memory\":\"100M\",\"cpus\":1}'.\"\n\" }" \
+    > "$work"
+  local out arc
+  out=$(osunset; timeout 300 "$WR" add -f "$work" --rep_grp "$rg" --retries 2 \
+    --deployment development 2>&1); arc=$?
+  echo "$out" | tail -1
+  if [ "$arc" -ne 0 ] || ! echo "$out" | grep -qE "Added $jobs new commands"; then
+    echo "FAIL (NOT MEASURED): $jobs jobs were not added (manager up? see the wr add output above)"
+    return 1
+  fi
+
+  echo "waiting up to ${secs}s for all $jobs to reach a terminal state (post-fix: buried on attempt 1)"
+  local counts="" buried=0 waited=0
+  while [ "$waited" -lt "$secs" ]; do
+    sleep 5; waited=$((waited + 5))
+    counts=$(osunset; timeout 60 "$WR" status --deployment development -i "$rg" -o counts 2>/dev/null | tr '\n' ' ')
+    buried=$(ef_num "$counts" buried)
+    echo "  t=${waited}s $rg[$counts] attempts=$(ef_attempts "$logdir")"
+    [ "$buried" -ge "$jobs" ] && break
+  done
+
+  local attempts; attempts=$(ef_attempts "$logdir")
+  local logfiles; logfiles=$(find "$logdir" -type f 2>/dev/null | wc -l)
+  # the CAUSE is measured too, not just the count: buried==N alone would also be satisfied by an
+  # over-wide "bury every start failure" change, which would bury healthy transiently-failing work.
+  local reason="command line too long" stanzas=0 reasoned=0 sr
+  sr=$(ef_status_reasons "$rg" "$reason")
+  stanzas=${sr%% *}; reasoned=${sr##* }
+  case "$stanzas" in (*[!0-9]*|'') stanzas=0 ;; esac
+  case "$reasoned" in (*[!0-9]*|'') reasoned=0 ;; esac
+  echo "## VERDICT: buried=$buried/$jobs  execAttempts=$attempts  runnerLogFiles=$logfiles"
+  echo "##          failReason '$reason' on $reasoned/$stanzas reported jobs"
+  echo "##          counts: $rg[$counts]"
+
+  # a gate that PASSES when the measurement is missing is worse than no gate.
+  local unmeasured=""
+  [ "$jobs" -gt 0 ] || unmeasured="asked for $jobs jobs, so there was nothing to measure"
+  [ -z "$unmeasured" ] && { ps -p "$mpid" >/dev/null 2>&1 || unmeasured="the dev manager (pid $mpid) died during the run"; }
+  [ -z "$unmeasured" ] && [ -z "$counts" ] \
+    && unmeasured="'wr status -i $rg -o counts' returned nothing, so no manager-side state was read"
+  [ -z "$unmeasured" ] && [ "$logfiles" -le 0 ] \
+    && unmeasured="no runner log files under $logdir, so no runner ever started (--runner_filelog broken?)"
+  [ -z "$unmeasured" ] && [ "$attempts" -le 0 ] \
+    && unmeasured="0 'argument list too long' lines in the runner logs, so the exec failure never happened"
+  [ -z "$unmeasured" ] && [ "$stanzas" -le 0 ] \
+    && unmeasured="'wr status -i $rg --limit 0' reported no jobs, so no FailReason could be read"
+  if [ -n "$unmeasured" ]; then
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; inspect $logdir and the counts above"
+    return 1
+  fi
+  if [ "$buried" -ne "$jobs" ]; then
+    echo "FAIL: only $buried/$jobs unrunnable jobs were buried after ${waited}s ($attempts exec attempts so far)"
+    echo "  => an exec-impossible command is being released for a retry instead of buried;"
+    echo "     with StartTime never set the retry ceiling is never reached, so this never ends"
+    return 1
+  fi
+  if [ "$attempts" -ne "$jobs" ]; then
+    echo "FAIL: $jobs unrunnable jobs cost $attempts exec attempts (want exactly $jobs, one runner slot each)"
+    echo "  => something is re-attempting a command that can never exec"
+    return 1
+  fi
+  if [ "$reasoned" -ne "$jobs" ]; then
+    echo "FAIL: only $reasoned/$jobs buried jobs give '$reason' as their problem ($stanzas jobs reported)"
+    echo "  => the jobs were buried for the wrong reason, so the operator cannot see what to fix;"
+    echo "     a blanket 'bury every start failure' would look like this, and would bury healthy work"
+    return 1
+  fi
+  echo "PASS: $jobs unrunnable jobs cost exactly $attempts exec attempts, all $buried are buried,"
+  echo "      and all $reasoned give '$reason' as their problem"
+  return 0
+}
+
+# ef_status_reasons prints "<jobs reported> <jobs whose problem is the given FailReason>" for a
+# rep group, so the gate can assert the CAUSE of the burying and still FAIL loudly when nothing
+# was reported. --limit 0 turns off `wr status`'s same-status grouping (its default --limit 1
+# would collapse all N jobs into one stanza plus a "+ N other commands" line), and the output is
+# streamed through awk rather than captured, because every stanza quotes the whole ~130KB Cmd.
+ef_status_reasons() {  # <repGroup> <failReason>
+  osunset; timeout 300 "$WR" status --deployment development -i "$1" --limit 0 2>/dev/null \
+    | awk -v r="Previous problem: $2" '/^Cwd: /{s++} $0==r{m++} END{printf "%d %d\n", s+0, m+0}'
+}
+
+# ef_attempts counts the `argument list too long` exec failures across every runner log. Runner
+# log lines can be ~130KB here (the failing command is quoted), so -o keeps the output small.
+ef_attempts() {  # <logdir>
+  local n
+  n=$(grep -rhao 'argument list too long' "$1" 2>/dev/null | wc -l)
+  case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
+}
+
+# ef_num pulls "<name>: <n>" out of a `wr status -o counts` blob, printing 0 if it is absent or
+# unparseable (which its caller must treat as an unmeasured FAIL, never as a cheap PASS).
+ef_num() {  # <countsBlob> <name>
+  local n
+  n=$(printf '%s' "$1" | grep -aoE "$2: [0-9]+" | grep -aoE '[0-9]+' | head -1)
+  case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -1582,6 +1764,17 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         total) + control-RPC latency (defaults 100000 6062). REQUIRES
                         WRDEV_PRISTINE_DB=<big DB> (pristine10, or .../prod.db). Post-fix gate: bw stays
                         low, no bwmax growth, status stays responsive.
+  exec-impossible-retries [jobs] [seconds] [cores]
+                        reliable4 FINDING 5 SCALE GATE (real binary, farm-safe - -s local, no LSF job
+                        ever submitted): N jobs whose Cmd is over Linux's 128KB MAX_ARG_STRLEN, so
+                        fork/exec can NEVER succeed. Runs the dev manager with --runner_filelog and
+                        asserts each such job costs exactly ONE runner slot and ONE attempt: buried
+                        == N (manager side) AND 'argument list too long' lines == N (runner side)
+                        AND 'command line too long' as the problem of all N (the right CAUSE, so a
+                        blanket bury-every-start-failure cannot pass on the counts alone)
+                        (defaults 20 120 2; WRDEV_EXECFAIL_PADKB overrides the 130KB Cmd padding).
+                        Pre-fix: buried == 0 (the retry ceiling is never reached because StartTime
+                        is never set) and attempts >> N and still climbing.
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -1612,6 +1805,7 @@ case "${1:-help}" in
   idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
   control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
+  exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
