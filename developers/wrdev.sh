@@ -1333,12 +1333,19 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   # is a high-water MARK, so a reference scan taken first would make its own (legitimate)
   # excursion the baseline, and no growth the timed commands caused could ever be reported.
   #
+  # It then times `wr status -i <substr> -z --limit 1` separately (reliable4 ITEM B), against its own
+  # VmHWM baseline: that request legitimately wants history but can only ever RETURN one job per
+  # status group, so it must cost O(limit), not O(history).
+  #
   # GATE (the doc's batch targets): limit/suspend/resume all under WRDEV_HS_MAX_MS (5000ms),
-  # peak-RSS growth under WRDEV_HS_MAX_RSS_MB, and the commands must actually have done their
-  # work (suspended == resumed == live). A MISSING or INVALID measurement is a FAIL, never a
+  # peak-RSS growth under WRDEV_HS_MAX_RSS_MB, the status -z --limit 1 under WRDEV_HS_MAX_STATUS_MS
+  # with its own peak-RSS growth under WRDEV_HS_MAX_STATUS_RSS_MB, and the commands must actually
+  # have done their work (suspended == resumed == live, and the status command still standing in
+  # for all `seeded - 1` other commands). A MISSING or INVALID measurement is a FAIL, never a
   # PASS: no seed line, a seeded history too small to gate on, a dead manager, jobs not added,
-  # a reference scan that did not return the seeded history, or an unparseable timing/RSS all
-  # exit 1. The size floors matter because the pre-fix cost is PROPORTIONAL to the history:
+  # a reference scan that did not return the seeded history, a status command that did not return
+  # the seeded history's one status group, or an unparseable timing/RSS all exit 1. The size
+  # floors matter because the pre-fix cost is PROPORTIONAL to the history:
   # `wr suspend -i <rg>` decoded one group's records and `wr resume -i <substr> -z` decoded
   # every group's, so with a small history the pre-fix code passes too and the gate proves
   # nothing (WRDEV_HS_MIN_PERGROUP / WRDEV_HS_MIN_ARCHIVED).
@@ -1351,6 +1358,7 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   need_repo; need_bin; ensure_config
   local archived="${1:-200000}" groups="${2:-20}" live="${3:-5000}"
   local maxms="${WRDEV_HS_MAX_MS:-5000}" maxrssmb="${WRDEV_HS_MAX_RSS_MB:-512}"
+  local maxstatusms="${WRDEV_HS_MAX_STATUS_MS:-5000}" maxstatusrssmb="${WRDEV_HS_MAX_STATUS_RSS_MB:-128}"
   local minpergroup="${WRDEV_HS_MIN_PERGROUP:-1000}" minarchived="${WRDEV_HS_MIN_ARCHIVED:-100000}"
   local rgp="hsrg" rg1="hsrg0" lg="hslimit"
   local dbf="$PROD_RUN/db" jobs="$WRDEV_ROOT/hsjobs.json" out="$WRDEV_ROOT/control-rpc-history.out"
@@ -1358,8 +1366,11 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   echo "reliable4 FINDING 1 control-RPC gate: $archived archived jobs over $groups rep groups,"
   echo "  $live live ready-but-blocked jobs ($lg:0, so no runner and no LSF job is ever created),"
   echo "  then the REAL 'wr limit', 'wr suspend -i $rg1' and 'wr resume -i $rgp -z' are timed."
+  echo "  Then 'wr status -i $rgp -z --limit 1' is timed separately (reliable4 ITEM B): it wants the"
+  echo "  history but can only return one job per status group, so it must cost O(limit), not O(history)."
   echo "  prod pre-fix: 'wr resume -i portal -z' timed out at 120s, kept scanning for 12+ min,"
-  echo "  manager heap 348MB -> 12143MB. Gate: each command <= ${maxms}ms, peak-RSS growth <= ${maxrssmb}MB."
+  echo "  manager heap 348MB -> 12143MB. Gate: each control command <= ${maxms}ms, peak-RSS growth"
+  echo "  <= ${maxrssmb}MB; status -z --limit 1 <= ${maxstatusms}ms and <= ${maxstatusrssmb}MB of its own peak-RSS growth."
   echo "  A MISSING measurement (no seed, dead manager, no reference scan) is a FAIL, not a PASS,"
   echo "  as is a history too small to gate on (>= $minpergroup per group and >= $minarchived in total:"
   echo "  the pre-fix cost was proportional to it, so a small history passes pre-fix as well)."
@@ -1420,11 +1431,68 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   local rssmb=-1
   { [ "$rss0" -ge 0 ] && [ "$rss1" -ge 0 ]; } && rssmb=$(((rss1 - rss0) / 1024))
 
-  # the reference, deliberately AFTER the measurement above: `wr status` DOES want the
-  # history, so this both proves the seeded history is real and reachable through the same
-  # getbr RPC the timed commands used, and shows what paying for it costs. EVERY history-
-  # decoding request belongs here rather than earlier, the counts display included, for the
-  # VmHWM baseline reason above.
+  # SCALE GATE for reliable4 ITEM B, and a SEPARATE measurement from both the control
+  # commands above and the reference scan below. `wr status -i <substr> -z --limit 1` is a
+  # request that legitimately wants history but can only ever RETURN one job per status
+  # group, and it used to decode every matching RepGroup's entire history first - so the
+  # 12.1GB excursion FINDING 1 closed for suspend/resume stayed reachable from a status
+  # command, with no way for an operator to know that -l 1 did not bound the work.
+  #
+  # It gets its OWN VmHWM baseline, sampled here rather than reused from rss0: rss1 is
+  # already this run's high-water mark, and growth measured from a stale, lower baseline
+  # would report the control commands' excursion as this one's. It also runs BEFORE the
+  # reference scan for the same reason the control commands do - the reference decodes a
+  # whole group ON PURPOSE, so letting it run first would make no growth here reportable.
+  #
+  # That baseline is sampled after a `-o counts -z` warm-up, ON PURPOSE. bbolt mmaps the
+  # database, so ANY walk of the history makes its pages resident and grows VmHWM whether or
+  # not one record is decoded, and at these sizes that page residency is comparable to the
+  # decode itself: from a COLD baseline the fixed and unfixed managers are only 757MB vs
+  # 1391MB apart at 200k records, most of it shared. `wr status -o counts` walks exactly the
+  # same records through the count-only path (addCompleteJobStatusByRepGroup with
+  # includeDetails false), which decodes NONE of them, so after it the baseline already holds
+  # the mmap residency and what the timed command adds on top is the DECODE - the thing this
+  # gate exists to catch. The warm-up's own reported complete count must equal the seeded
+  # history, or it did not walk it and the baseline is not the one this gate assumes.
+  #
+  # Of the two cost metrics the RSS one is the DISCRIMINATING one: measured this way the same
+  # 200k history costs 29MB fixed and 677MB unfixed. The time bound is only a ceiling against a
+  # gross regression - warmed by the count-only pass above, the request takes ~1.0s fixed and
+  # ~2.1s unfixed, so timing alone would not separate them and a gate resting on it would be
+  # one of the false-PASS gates .docs/reliable4/next-steps-260819.md warns about.
+  #
+  # It is gated on its answer as well as its cost: with every seeded record identical they
+  # all fall in one status group, so `-o details --limit 1` must print exactly one job for that
+  # group standing in for the other `seeded - 1`. A pushdown that returned a different
+  # count would be changing what `wr status` reports, which is not what this fix is.
+  local statms=-1 statsim=-1 statrss0=-1 statrss1=-1 statrssmb=-1 statout="" warmms=-1 warmcomplete=-1
+  if [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; then
+    t0=$(date +%s%3N)
+    warmcomplete=$(timeout 1800 "$WR" status --deployment production -i "$rgp" -z -o counts 2>/dev/null \
+      | grep -aoE 'complete: [0-9]+' | grep -aoE '[0-9]+')
+    t1=$(date +%s%3N); warmms=$((t1 - t0))
+    case "${warmcomplete:-x}" in (*[!0-9]*|'') warmcomplete=-1 ;; esac
+    echo "  count-only warm-up 'wr status -i $rgp -z -o counts' saw $warmcomplete complete jobs in ${warmms}ms"
+    statrss0=$(awk '/^VmHWM:/{print $2}' "/proc/$mpid/status" 2>/dev/null)
+    t0=$(date +%s%3N)
+    statout=$(timeout 1800 "$WR" status --deployment production -i "$rgp" -z --limit 1 -o details 2>&1)
+    t1=$(date +%s%3N); statms=$((t1 - t0))
+    statrss1=$(awk '/^VmHWM:/{print $2}' "/proc/$mpid/status" 2>/dev/null)
+    printf '=== wr status -i %s -z --limit 1 ===\n%s\n' "$rgp" "$statout" >> "$out"
+    statsim=$(printf '%s\n' "$statout" | grep -aoE '\+ [0-9]+ other commands' \
+      | grep -aoE '[0-9]+' | sort -n | tail -1)
+    echo "  'wr status -i $rgp -z --limit 1' took ${statms}ms and stood in for ${statsim:-<none>} other commands"
+  fi
+  for v in statsim statrss0 statrss1; do
+    case "${!v}" in (*[!0-9]*|'') eval "$v=-1" ;; esac
+  done
+  { [ "$statrss0" -ge 0 ] && [ "$statrss1" -ge 0 ]; } && statrssmb=$(((statrss1 - statrss0) / 1024))
+
+  # the reference, deliberately AFTER the measurements above: `wr status` with no limit DOES
+  # want the whole history, so this both proves the seeded history is real and reachable
+  # through the same getbr RPC the timed commands used, and shows what paying for it costs.
+  # EVERY history-decoding request belongs here rather than earlier, the counts display
+  # included, for the VmHWM baseline reason above.
   local refjobs=-1 refms=-1
   if [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; then
     t0=$(date +%s%3N)
@@ -1438,7 +1506,9 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   case "${refjobs:-x}" in (*[!0-9]*|'') refjobs=-1 ;; esac
 
   echo "## VERDICT: limit=${limms}ms suspend=${susms}ms (suspended=$suspended)" \
-       "resume -z=${resms}ms (resumed=$resumed) peakRSSgrowth=${rssmb}MB" \
+       "resume -z=${resms}ms (resumed=$resumed) peakRSSgrowth=${rssmb}MB;" \
+       "status -z --limit 1=${statms}ms (similar=$statsim) peakRSSgrowth=${statrssmb}MB" \
+       "[count-only warm-up: $warmcomplete jobs in ${warmms}ms]" \
        "[reference history scan: $refjobs jobs in ${refms}ms]"
   # a gate that PASSES when the measurement is missing is worse than no gate, so an absent
   # seed line, a history too small for the pre-fix code to have failed on either, a manager
@@ -1457,6 +1527,12 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
     && unmeasured="the reference 'wr status -i $rg1' returned $refjobs complete jobs, not the $pergroup seeded: the history is not reachable, so a fast suspend/resume proves nothing"
   [ -z "$unmeasured" ] && { [ "$limms" -lt 0 ] || [ "$susms" -lt 0 ] || [ "$resms" -lt 0 ] || [ "$rssmb" -lt 0 ]; } \
     && unmeasured="could not read a timing or the manager's VmHWM, so the commands were not measured"
+  [ -z "$unmeasured" ] && { [ "$statms" -lt 0 ] || [ "$statrssmb" -lt 0 ]; } \
+    && unmeasured="could not time 'wr status -i $rgp -z --limit 1' or read the manager's VmHWM around it, so the ITEM B pushdown was not measured"
+  [ -z "$unmeasured" ] && [ "$warmcomplete" -ne "$seeded" ] \
+    && unmeasured="the count-only warm-up saw $warmcomplete complete jobs, not the $seeded seeded, so the VmHWM baseline it exists to establish does not hold the whole history's mmap residency and the growth measured after it is not the decode"
+  [ -z "$unmeasured" ] && [ "$statsim" -ne "$((seeded - 1))" ] \
+    && unmeasured="'wr status -i $rgp -z --limit 1' stood in for $statsim other commands, not the $((seeded - 1)) seeded: it did not return the history's one status group, so its cost proves nothing"
   if [ -n "$unmeasured" ]; then
     verdict=1
     echo "FAIL (NOT MEASURED): $unmeasured"
@@ -1472,9 +1548,18 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
     echo "FAIL: a control command is paying for the archived history again (>${maxms}ms or >${maxrssmb}MB)"
     echo "  => suspend/resume must send a state filter (cmd/suspend.go getSelectedJobs) and"
     echo "     getJobsByRepGroup must only fetch complete jobs when asked (repGroupOptions.IncludeComplete)"
+  elif [ "$statms" -gt "$maxstatusms" ] || [ "$statrssmb" -gt "$maxstatusrssmb" ]; then
+    verdict=1
+    echo "FAIL: 'wr status -i $rgp -z --limit 1' is still materialising the whole history"
+    echo "  (${statms}ms > ${maxstatusms}ms or ${statrssmb}MB > ${maxstatusrssmb}MB of peak-RSS growth)"
+    echo "  => the Limit/Offset must be pushed down into retrieveOldestCompleteJobsByRepGroup and"
+    echo "     spent ACROSS getRepGroupsList's loop (newCompleteJobsBudget), so that a request that"
+    echo "     can only return one job per status group decodes one job per status group"
   else
     echo "PASS: with $archived archived jobs over $groups rep groups (a $refms ms scan when a request"
-    echo "  actually asks for it), limit/suspend/resume -z cost ${limms}/${susms}/${resms}ms and ${rssmb}MB"
+    echo "  actually asks for it), limit/suspend/resume -z cost ${limms}/${susms}/${resms}ms and ${rssmb}MB,"
+    echo "  and 'wr status -i $rgp -z --limit 1' cost ${statms}ms and ${statrssmb}MB while still standing in"
+    echo "  for all $statsim other commands"
   fi
   echo "## CLEANUP"
   safe_kill "$(mgr_pid "$PROD_RUN")"
