@@ -165,17 +165,7 @@ export function setupWebSocket(viewModel) {
 
             ws.onmessage = (e) => {
                 try {
-                    const json = JSON.parse(e.data);
-
-                    if (json.hasOwnProperty('FromState')) {
-                        handleStateChangeMessage(viewModel, json);
-                    } else if (json.hasOwnProperty('State')) {
-                        handleJobDetailsMessage(viewModel, json);
-                    } else if (json.hasOwnProperty('IP')) {
-                        handleServerMessage(viewModel, json);
-                    } else if (json.hasOwnProperty('Msg')) {
-                        handleSchedulerMessage(viewModel, json);
-                    }
+                    applyStatusMessage(viewModel, JSON.parse(e.data));
                 } catch (error) {
                     console.error("Error processing message:", error);
                     viewModel.statuserror.push(`Error processing message: ${error.message}`);
@@ -188,6 +178,64 @@ export function setupWebSocket(viewModel) {
     };
 
     connect();
+}
+
+/**
+ * Routes one decoded /status_ws message to its handler. Messages are
+ * distinguished by the fields they carry, so a message type this client does not
+ * know about is ignored rather than misapplied - which is also what makes the
+ * seed boundary safe to send to an older status page.
+ * @param {StatusViewModel} viewModel - The main view model
+ * @param {object} json - The decoded message
+ */
+function applyStatusMessage(viewModel, json) {
+    if (json.hasOwnProperty('SeedBoundary')) {
+        handleSeedBoundaryMessage(viewModel, json);
+    } else if (json.hasOwnProperty('FromState')) {
+        handleStateChangeMessage(viewModel, json);
+    } else if (json.hasOwnProperty('State')) {
+        handleJobDetailsMessage(viewModel, json);
+    } else if (json.hasOwnProperty('IP')) {
+        handleServerMessage(viewModel, json);
+    } else if (json.hasOwnProperty('Msg')) {
+        handleSchedulerMessage(viewModel, json);
+    }
+}
+
+/**
+ * Handles a seed boundary message, which brackets the scan-on-connect
+ * status-count seed the server sends in reply to our "current" request.
+ *
+ * We join the server's live delta feed when the socket is accepted, which is
+ * before our "current" request can even reach it, so every transition emitted
+ * between then and the server's queue snapshot is reported to us twice: once as
+ * its own from->to delta and once by the seed, which already shows the job in
+ * its destination state. Deltas are anonymous counts rather than job identities,
+ * so the occupancy model cannot spot the duplicate - it parks the unbacked exit
+ * in `pending`, the seed's occupancy then satisfies it, and one job moves
+ * permanently from its old bucket to its new one. That is why the status page
+ * could sit at 274 running with 4 actually running, and why a page refresh
+ * (which re-seeds from scratch) was the only cure.
+ *
+ * The "begin" boundary is written before that snapshot, and a delta is only ever
+ * written after the transition it reports, so everything received before the
+ * boundary describes a transition the seed already accounts for: we drop it all
+ * and let the seed that follows establish the counts. That is exactly the reset
+ * a reconnect performs, so resetLiveCounts is reused rather than duplicated.
+ *
+ * The seed is written under the server's per-connection write mutex, so nothing
+ * can interleave the pair and there is nothing for us to do at "end": the
+ * closing marker is part of the wire contract so that a consumer can tell where
+ * the seed stops - which is how the regression harnesses detect a delta that
+ * landed inside the bracket, i.e. a violation of the atomicity this reset
+ * depends on - rather than something this client has to act on.
+ * @param {StatusViewModel} viewModel - The main view model
+ * @param {object} json - The JSON message data ({ SeedBoundary })
+ */
+function handleSeedBoundaryMessage(viewModel, json) {
+    if (json['SeedBoundary'] === 'begin') {
+        resetLiveCounts(viewModel);
+    }
 }
 
 // stateToProperty maps a wire JobState string to the tracker's display bucket

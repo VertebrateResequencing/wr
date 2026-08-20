@@ -939,6 +939,137 @@ cmd_flicker_check() {  # flicker-check [handler.js] - reproduce/verify the web s
   return "$rc"
 }
 
+cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reliable4 FINDING 7 web count divergence
+  # Deterministic, in-process reproducer/gate (build-tagged reliability_repro, NOT part
+  # of make test) for reliable4 FINDING 7 (.docs/reliable4/prod-run-20260817.md): the web
+  # status page showed 274 running when 4 were running, and only a page refresh fixed it.
+  #
+  # NOT a dropped delta and NOT a missing one. The scan-on-connect seed and the live
+  # delta feed are not a consistent cut: setupUpdateListener joins the never-drop
+  # statusCaster BEFORE the client's "current" request can arrive, and
+  # sendCurrentStatusCounts then snapshots the queue, so every transition emitted in
+  # that window is reported TWICE - once as its own from->to delta and once by the seed,
+  # which already shows the job in its destination state. The client's occupancy model
+  # cannot spot the duplicate (deltas are anonymous counts, not job identities), so one
+  # unit of occupancy moves permanently from the source bucket to the destination one.
+  # During a ramp-up that inflates `running`; the later limit->0 mass exit does not cause
+  # it, it just makes it glaring because the true running count falls to a handful while
+  # the offset stays. Only a reconnect (which re-seeds and clears the model) corrects it -
+  # the operator's page refresh.
+  #
+  # The fix brackets the seed with jstatusSeedBoundary markers, written under the
+  # connection's write mutex so nothing interleaves them, and the client resets to the
+  # seed on the "begin" marker. Two shapes are run, both replaying the RECORDED wire
+  # stream through the REAL websocket-handler.js
+  # (jobqueue/testdata/status-count-reconcile/replay-stream.mjs), so "the web UI would
+  # show N running" is the shipped client's own answer:
+  #   forced  - the DISCRIMINATING shape. The interleaving is forced (dial, prove the
+  #             caster member is live, run the transitions, let their deltas be
+  #             delivered, THEN send "current"), so the magnitude is exact and the gate
+  #             never flakes. Pre-fix it over-counts `running` by the whole overlap set.
+  #   natural - the RESIDUAL MEASUREMENT. "current" is sent immediately on open exactly
+  #             as the browser does, while jobs keep starting. In-process the
+  #             pre-snapshot part of the window (the request hop, plus any delta the
+  #             caster had not written yet) is microseconds, so what is left is the seed
+  #             walk itself, which no boundary can close without locking the queue across
+  #             it (DEVELOPERS.md rule 1). It replays the same recording twice - as the
+  #             shipped client reads it and with the markers stripped, which is what an
+  #             older status page sees - and asserts only that the bracket is present,
+  #             that nothing interleaves it (both RED pre-fix) and that the boundary
+  #             never makes the residual worse. It PRINTS the residual and the seed
+  #             walk that bounds it.
+  need_repo
+  command -v node >/dev/null 2>&1 || die "node is required for status-seed-overlap"
+  local overlap="${1:-120}" natbacklog="${2:-20000}"
+  echo "reliable4 FINDING 7 web status count divergence (deterministic, in-process):"
+  echo "the running bar a NEVER-RECONNECTING status client shows must equal the truth."
+  echo "scale: forced overlap=$overlap, natural backlog=$natbacklog (defaults 120 / 20000)"
+  osunset
+  local out rc=0
+  out=$(WR_SO_OVERLAP="$overlap" WR_SO_NAT_BACKLOG="$natbacklog" \
+    timeout 600 go -C "$REPO" test -tags "netgo reliability_repro" ./jobqueue/ \
+    -run 'TestReliable4StatusSeedOverlap' -count=1 -v 2>&1) || rc=$?
+  printf '%s\n' "$out" | grep -aE 'SEED-OVERLAP-REPRO|--- (PASS|FAIL)|^(ok|FAIL)'
+
+  # hard FAIL (NOT MEASURED) if either shape produced no measurement: a gate that
+  # passes when the measurement is absent is worse than no gate.
+  local forced natural bracket overcounts
+  forced=$(printf '%s\n' "$out" | grep -aoE 'SEED-OVERLAP-REPRO forced true_running=[0-9]+ shown_running=[0-9]+' | tail -1)
+  natural=$(printf '%s\n' "$out" | grep -aoE 'SEED-OVERLAP-REPRO natural ramp_started=[0-9]+ true_running=[0-9]+ shown_running=[0-9]+' | tail -1)
+  bracket=$(printf '%s\n' "$out" | grep -aoE 'natural bracket=[0-9]+/[0-9]+ queue=[0-9]+ seedwalk_ms=[0-9.]+ jobswalk_ms=[0-9.]+ starts_per_s=[0-9]+ residual_predicted=[0-9.]+' | tail -1)
+  overcounts=$(printf '%s\n' "$out" | grep -aoE 'overcount_boundary_aware=[0-9-]+ overcount_boundary_blind=[0-9-]+' | tail -1)
+  if [ -z "$forced" ]; then
+    echo "status-seed-overlap: FAIL (NOT MEASURED - the forced shape printed no comparison, so"
+    echo "  it never reached it. Is node present? did the server start? see the output above)"
+    return 1
+  fi
+
+  local ftrue fshown ntrue nshown nramp begins ends seedwalk starts predicted aware blind
+  ftrue=$(printf '%s' "$forced" | sed -E 's/.*true_running=([0-9]+).*/\1/')
+  fshown=$(printf '%s' "$forced" | sed -E 's/.*shown_running=([0-9]+).*/\1/')
+
+  # the discriminating comparison, reported before anything else so a pre-fix run says
+  # what actually went wrong rather than blaming the missing residual measurement (the
+  # natural shape aborts at its own bracket assertion pre-fix, and prints nothing).
+  if [ "$fshown" -ne "$ftrue" ]; then
+    echo "status-seed-overlap: forced  true_running=$ftrue shown_running=$fshown"
+    echo "status-seed-overlap: FAIL (seed/delta overlap double-counts: running over-counted by"
+    echo "  $((fshown - ftrue)) in the forced shape, on a client that never reconnected)"
+    return "${rc:-1}"
+  fi
+
+  if [ -z "$natural" ] || [ -z "$bracket" ] || [ -z "$overcounts" ]; then
+    echo "status-seed-overlap: FAIL (NOT MEASURED - a natural, bracket or overcount measurement"
+    echo "  line is missing, so the residual was never measured; see the output above)"
+    return 1
+  fi
+  nramp=$(printf '%s' "$natural" | sed -E 's/.*ramp_started=([0-9]+).*/\1/')
+  ntrue=$(printf '%s' "$natural" | sed -E 's/.*true_running=([0-9]+).*/\1/')
+  nshown=$(printf '%s' "$natural" | sed -E 's/.*shown_running=([0-9]+).*/\1/')
+  begins=$(printf '%s' "$bracket" | sed -E 's|.*bracket=([0-9]+)/[0-9]+.*|\1|')
+  ends=$(printf '%s' "$bracket" | sed -E 's|.*bracket=[0-9]+/([0-9]+).*|\1|')
+  seedwalk=$(printf '%s' "$bracket" | sed -E 's/.*seedwalk_ms=([0-9.]+).*/\1/')
+  starts=$(printf '%s' "$bracket" | sed -E 's/.*starts_per_s=([0-9]+).*/\1/')
+  predicted=$(printf '%s' "$bracket" | sed -E 's/.*residual_predicted=([0-9.]+).*/\1/')
+  aware=$(printf '%s' "$overcounts" | sed -E 's/.*aware=([0-9-]+).*/\1/')
+  blind=$(printf '%s' "$overcounts" | sed -E 's/.*blind=([0-9-]+).*/\1/')
+  echo "status-seed-overlap: forced  true_running=$ftrue shown_running=$fshown (the discriminating shape)"
+  echo "status-seed-overlap: natural true_running=$ntrue shown_running=$nshown (ramp started $nramp)"
+  echo "status-seed-overlap: natural bracket=$begins/$ends seed_walk=${seedwalk}ms at ${starts} starts/s"
+  echo "status-seed-overlap:   => ACCEPTED RESIDUAL: the seed walk is not a point in time, so up to"
+  echo "status-seed-overlap:      ~$predicted transitions can be counted twice (measured: $aware; a"
+  echo "status-seed-overlap:      boundary-blind client on the same recording: $blind)"
+
+  # a natural run that started no jobs measured nothing either.
+  if [ "$nramp" -le 0 ]; then
+    echo "status-seed-overlap: FAIL (NOT MEASURED - the natural ramp started 0 jobs)"
+    return 1
+  fi
+
+  if [ "$begins" -ne 1 ] || [ "$ends" -ne 1 ]; then
+    echo "status-seed-overlap: FAIL (the seed is not bracketed: begin=$begins end=$ends, expected 1/1,"
+    echo "  so the client has no way to tell what predates the seed)"
+    return 1
+  fi
+
+  if [ "$aware" -gt "$blind" ]; then
+    echo "status-seed-overlap: FAIL (the boundary made the residual WORSE: $aware vs $blind blind)"
+    return 1
+  fi
+
+  # the go test itself must have passed too: it asserts more than this gate parses
+  # (the bracket's ordering, that nothing was dropped, and the ready bar as well as
+  # the running one).
+  if [ "$rc" -ne 0 ]; then
+    echo "status-seed-overlap: FAIL (the reproducer's own assertions failed; see above)"
+    return "$rc"
+  fi
+
+  echo "status-seed-overlap: PASS (the seed no longer double-counts what predates it; the residual"
+  echo "  above is the seed walk itself, which is bounded by the walk and not by the connect window)"
+  return 0
+}
+
 cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - runner over-provisioning invariant
   # Deterministic, in-process (no manager, no LSF): reproduces the reliable3 LSF-scale
   # bug where sibling scheduler groups sharing ONE limit group each get the limit
@@ -1359,6 +1490,7 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   local archived="${1:-200000}" groups="${2:-20}" live="${3:-5000}"
   local maxms="${WRDEV_HS_MAX_MS:-5000}" maxrssmb="${WRDEV_HS_MAX_RSS_MB:-512}"
   local maxstatusms="${WRDEV_HS_MAX_STATUS_MS:-5000}" maxstatusrssmb="${WRDEV_HS_MAX_STATUS_RSS_MB:-128}"
+  local maxplainrssmb="${WRDEV_HS_MAX_PLAIN_RSS_MB:-128}"
   local minpergroup="${WRDEV_HS_MIN_PERGROUP:-1000}" minarchived="${WRDEV_HS_MIN_ARCHIVED:-100000}"
   local rgp="hsrg" rg1="hsrg0" lg="hslimit"
   local dbf="$PROD_RUN/db" jobs="$WRDEV_ROOT/hsjobs.json" out="$WRDEV_ROOT/control-rpc-history.out"
@@ -1488,6 +1620,43 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   done
   { [ "$statrss0" -ge 0 ] && [ "$statrss1" -ge 0 ]; } && statrssmb=$(((statrss1 - statrss0) / 1024))
 
+  # SCALE GATE for reliable4 BUG D3, and again a SEPARATE measurement. cmd/status.go
+  # zeroes the limit for the UNGROUPED output formats, so `wr status -i <substr> -z -o plain`
+  # (and any explicit --limit 0) still asks for every matching archived record and gets the
+  # unbounded decode that ITEM B removed from the default path. The 2026-08-20 validation
+  # gate measured that at 6,975ms and +905MB of peak RSS on only 154,000 records, which
+  # extrapolates to ~12.6GB on production's ~2.15M complete jobs - the same excursion
+  # FINDING 1 closed for the control paths, one flag away.
+  #
+  # There is no result-preserving bound for this shape (-o plain prints one line per job
+  # KEY, so the limitJobs grouping the grouped formats fold into is not available to it), so
+  # the fix is a heap budget on the fetch plus a refusal that names the way out. This gate
+  # therefore measures the COST, not the answer: whether the request is served or refused,
+  # it must not take the manager's peak RSS up by more than WRDEV_HS_MAX_PLAIN_RSS_MB. If it
+  # IS refused, the refusal must name a way out, or the operator is simply stuck.
+  #
+  # Its baseline is sampled here, after the -z --limit 1 measurement and before the
+  # reference scan, for the same VmHWM high-water-mark reason as those: a baseline taken
+  # any earlier would already include another measurement's excursion.
+  local plainms=-1 plainrss0=-1 plainrss1=-1 plainrssmb=-1 plainlines=-1 plainrefused=0 plainout=""
+  if [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; then
+    plainrss0=$(awk '/^VmHWM:/{print $2}' "/proc/$mpid/status" 2>/dev/null)
+    t0=$(date +%s%3N)
+    plainout=$(timeout 1800 "$WR" status --deployment production -i "$rgp" -z -o plain 2>&1)
+    t1=$(date +%s%3N); plainms=$((t1 - t0))
+    plainrss1=$(awk '/^VmHWM:/{print $2}' "/proc/$mpid/status" 2>/dev/null)
+    plainlines=$(printf '%s\n' "$plainout" | awk -F'\t' '$2=="complete"{n++} END{print n+0}')
+    printf '=== wr status -i %s -z -o plain (first 5 lines) ===\n%s\n' "$rgp" \
+      "$(printf '%s\n' "$plainout" | head -5)" >> "$out"
+    printf '%s\n' "$plainout" | grep -aq 'too much completed-job history' && plainrefused=1
+    echo "  'wr status -i $rgp -z -o plain' took ${plainms}ms, printed $plainlines complete lines" \
+      "(refused=$plainrefused)"
+  fi
+  for v in plainrss0 plainrss1 plainlines; do
+    case "${!v}" in (*[!0-9]*|'') eval "$v=-1" ;; esac
+  done
+  { [ "$plainrss0" -ge 0 ] && [ "$plainrss1" -ge 0 ]; } && plainrssmb=$(((plainrss1 - plainrss0) / 1024))
+
   # the reference, deliberately AFTER the measurements above: `wr status` with no limit DOES
   # want the whole history, so this both proves the seeded history is real and reachable
   # through the same getbr RPC the timed commands used, and shows what paying for it costs.
@@ -1507,7 +1676,8 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
 
   echo "## VERDICT: limit=${limms}ms suspend=${susms}ms (suspended=$suspended)" \
        "resume -z=${resms}ms (resumed=$resumed) peakRSSgrowth=${rssmb}MB;" \
-       "status -z --limit 1=${statms}ms (similar=$statsim) peakRSSgrowth=${statrssmb}MB" \
+       "status -z --limit 1=${statms}ms (similar=$statsim) peakRSSgrowth=${statrssmb}MB;" \
+       "status -z -o plain=${plainms}ms (lines=$plainlines refused=$plainrefused) peakRSSgrowth=${plainrssmb}MB" \
        "[count-only warm-up: $warmcomplete jobs in ${warmms}ms]" \
        "[reference history scan: $refjobs jobs in ${refms}ms]"
   # a gate that PASSES when the measurement is missing is worse than no gate, so an absent
@@ -1531,6 +1701,10 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
     && unmeasured="could not time 'wr status -i $rgp -z --limit 1' or read the manager's VmHWM around it, so the ITEM B pushdown was not measured"
   [ -z "$unmeasured" ] && [ "$warmcomplete" -ne "$seeded" ] \
     && unmeasured="the count-only warm-up saw $warmcomplete complete jobs, not the $seeded seeded, so the VmHWM baseline it exists to establish does not hold the whole history's mmap residency and the growth measured after it is not the decode"
+  [ -z "$unmeasured" ] && { [ "$plainms" -lt 0 ] || [ "$plainrssmb" -lt 0 ] || [ -z "$plainout" ]; } \
+    && unmeasured="could not time 'wr status -i $rgp -z -o plain' or read the manager's VmHWM around it, so the BUG D3 unbounded shape was not measured"
+  [ -z "$unmeasured" ] && [ "$plainrefused" -eq 0 ] && [ "$plainlines" -ne "$seeded" ] \
+    && unmeasured="'wr status -i $rgp -z -o plain' neither returned the $seeded seeded jobs ($plainlines lines) nor was refused, so whatever it did was not the shape this gate measures"
   [ -z "$unmeasured" ] && [ "$statsim" -ne "$((seeded - 1))" ] \
     && unmeasured="'wr status -i $rgp -z --limit 1' stood in for $statsim other commands, not the $((seeded - 1)) seeded: it did not return the history's one status group, so its cost proves nothing"
   if [ -n "$unmeasured" ]; then
@@ -1548,6 +1722,17 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
     echo "FAIL: a control command is paying for the archived history again (>${maxms}ms or >${maxrssmb}MB)"
     echo "  => suspend/resume must send a state filter (cmd/suspend.go getSelectedJobs) and"
     echo "     getJobsByRepGroup must only fetch complete jobs when asked (repGroupOptions.IncludeComplete)"
+  elif [ "$plainrssmb" -gt "$maxplainrssmb" ]; then
+    verdict=1
+    echo "FAIL: 'wr status -i $rgp -z -o plain' is still materialising the whole history"
+    echo "  (${plainrssmb}MB > ${maxplainrssmb}MB of peak-RSS growth, in ${plainms}ms)"
+    echo "  => cmd/status.go zeroes the limit for the ungrouped output formats, so this shape"
+    echo "     gets the unbounded archived decode. It needs a heap budget on the fetch"
+    echo "     (newArchivedBytesBudget) and a refusal that names the way out"
+  elif [ "$plainrefused" -eq 1 ] && ! printf '%s\n' "$plainout" | grep -aq -- '--limit'; then
+    verdict=1
+    echo "FAIL: 'wr status -i $rgp -z -o plain' was refused without naming a way out"
+    echo "  => a refusal an operator cannot act on is worse than a slow answer"
   elif [ "$statms" -gt "$maxstatusms" ] || [ "$statrssmb" -gt "$maxstatusrssmb" ]; then
     verdict=1
     echo "FAIL: 'wr status -i $rgp -z --limit 1' is still materialising the whole history"
@@ -1559,7 +1744,8 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
     echo "PASS: with $archived archived jobs over $groups rep groups (a $refms ms scan when a request"
     echo "  actually asks for it), limit/suspend/resume -z cost ${limms}/${susms}/${resms}ms and ${rssmb}MB,"
     echo "  and 'wr status -i $rgp -z --limit 1' cost ${statms}ms and ${statrssmb}MB while still standing in"
-    echo "  for all $statsim other commands"
+    echo "  for all $statsim other commands, and the ungrouped 'wr status -i $rgp -z -o plain' cost"
+    echo "  ${plainms}ms and ${plainrssmb}MB (refused=$plainrefused, lines=$plainlines)"
   fi
   echo "## CLEANUP"
   safe_kill "$(mgr_pid "$PROD_RUN")"
@@ -2214,6 +2400,16 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
   flicker-check [h.js]  reproduce/verify the web status-bar flicker/overcount family
                         (deterministic node harness + browser fixtures; no manager needed)
+  status-seed-overlap [overlap] [natBacklog]
+                        reliable4 FINDING 7 gate: the scan-on-connect seed and the live delta
+                        feed are not a consistent cut, so a transition straddling the seed is
+                        counted TWICE and a never-reconnecting status page over-counts
+                        `running` for the rest of the run (prod: 274 shown vs 4 real). Runs a
+                        forced-interleaving shape (exact, non-flaky, the discriminating one)
+                        and a natural one (the browser's own connect sequence) that measures
+                        the accepted residual - the seed walk itself - by replaying one
+                        recording both with and without the seed boundary, through the REAL
+                        websocket-handler.js. No manager, no LSF (defaults 120 20000)
   overprovision-check [limit] [siblings] [ready]
                         deterministic prod-scale check: summed runners requested per limit
                         group stay <= the limit (fails on pre-fix per-group accounting; no manager)
@@ -2376,6 +2572,7 @@ case "${1:-help}" in
   probe) cmd_probe "${2:-3}" "${3:-0}" ;;
   web-burst) cmd_web_burst "${2:-10000}" ;;
   flicker-check) cmd_flicker_check "${2:-}" ;;
+  status-seed-overlap) cmd_status_seed_overlap "${2:-120}" "${3:-20000}" ;;
   overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
   overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
   limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
