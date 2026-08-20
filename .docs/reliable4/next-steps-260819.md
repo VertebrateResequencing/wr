@@ -47,11 +47,19 @@ plan itself has moved on:
   any wait the client explicitly asked for); `Cmd` is bounded in runner **and**
   manager log lines. Runner log 82,427 -> 1,415 bytes/job in the gate, 571 in the
   farm run; manager log 42,722 -> 2,250.
-- **Item D** — **reproduced, and the hypothesis below is wrong.** No delta is
-  dropped and none is missing: the client joins the live delta feed before its
-  `"current"` snapshot is served, so any transition in that window is counted
-  **twice**. The `limit -> 0` mass exit is not the cause — it is what made a
-  pre-existing offset glaring. Fix in flight per `.docs/bugfixes/260820-2.md`.
+- **Item D** — `f237e95`. **Reproduced, and the hypothesis below is wrong.** No
+  delta is dropped and none is missing: the client joins the live delta feed
+  before its `"current"` snapshot is served, so any transition in that window is
+  counted **twice**. The `limit -> 0` mass exit is not the cause — it is what made
+  a pre-existing offset glaring. Fixed with a bounded seed-boundary marker
+  (forced-shape over-count 121 -> 0); the residual is quantified, not claimed
+  exact. Shipped with it: the regression harness that **could not fail** on this
+  bug now can, and item B's last reachable heap bomb (`-o plain`, extrapolating to
+  ~12.6 GB on prod) is closed by a decode-free pricing pass plus an
+  operator-approved refusal. See `.docs/bugfixes/260820-2.md`, including its
+  follow-up list — the biggest remaining item there is the status seed's
+  per-RepGroup archived decode on **every** page connect (pre-existing, rule-6
+  class).
 - **Item E** — **answered by measurement: do not do it.** Queue-mutex block delay
   fell **61x** to 0.89% of the total and the ranking flipped. Two new hotspots
   displaced it: the **DB backup chain at 27.68% of peak CPU** and
