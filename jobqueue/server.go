@@ -1039,6 +1039,72 @@ func releaseSpendsARetry(job *Job, rep releaseReport) bool {
 	return rep.attempted || !job.StartTime.IsZero()
 }
 
+// completeJobsBudget tracks how many more archived jobs each of limitJobs' groups
+// can still contribute to a getJobsByRepGroup answer. A limit applies to the
+// groups as a whole and not to each matching RepGroup, so the budget is spent as
+// the RepGroup loop walks them: once a group is full, later RepGroups only count
+// their members of it.
+type completeJobsBudget struct {
+	perGroup  int
+	remaining map[string]int
+}
+
+// newCompleteJobsBudget returns the budget opts allows each of limitJobs' groups,
+// or nil if opts' limit cannot be pushed down to the database at all.
+//
+// limitJobs groups jobs by state, exit code and fail reason, keeps the first
+// Offset+Limit members of each group, and counts the rest in the last kept
+// member's Similar (addJobToGroup, applyOffsetToGroups). So no more than
+// Offset+Limit jobs of any one group can ever be returned, and the rest only need
+// counting - a cursor step rather than a codec decode of a production-sized
+// record.
+//
+// A filter stops the pushdown only when the pre-pass cannot DECIDE it from an
+// archived record's facets, since the whole point is that a record the pre-pass
+// merely counts stands in for one it never decoded. Of jobMatchesFilters' three
+// filters:
+//
+//   - the State filter is decidable: State and Lost are both facets, and
+//     archivedJobGrouper applies matchesStateFilter to them exactly as
+//     jobMatchesFilters does (getDBJobsByRepGroup has also already rejected every
+//     state filter but complete before the database is read at all);
+//   - the FailReason/ExitCode filter is decidable for the same reason:
+//     matchesFailureFilter reads only FailReason and Exitcode, and both are
+//     facets. Whether an archived record can actually match it is beside the
+//     point - markJobComplete clears FailReason, so today's archived records
+//     mostly cannot, and discarding them in the pre-pass is precisely how they
+//     stop costing a decode. Only the web status page's failed-job drill-down
+//     (sendJobDetails) sets it, and it sets a Limit with it;
+//   - WaitingForDepGroups is NOT decidable, so it is refused. Its input is a
+//     variable-length []string that archivedJobFacets deliberately does not
+//     carry, because decoding one per archived record is the very per-record
+//     allocation this pushdown exists to remove - and it cannot be assumed away
+//     either, since nothing clears the field when a job is archived.
+func newCompleteJobsBudget(opts repGroupOptions) *completeJobsBudget {
+	if opts.Limit <= 0 || opts.WaitingForDepGroups {
+		return nil
+	}
+
+	return &completeJobsBudget{
+		perGroup:  max(opts.Offset, 0) + opts.Limit,
+		remaining: make(map[string]int),
+	}
+}
+
+// limit says how many more of the given group's archived jobs are worth decoding.
+func (b *completeJobsBudget) limit(group string) int {
+	if remaining, spent := b.remaining[group]; spent {
+		return remaining
+	}
+
+	return b.perGroup
+}
+
+// spend records that n of the given group's archived jobs have been decoded.
+func (b *completeJobsBudget) spend(group string, n int) {
+	b.remaining[group] = max(b.limit(group)-n, 0)
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token     []byte
@@ -2358,6 +2424,102 @@ func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
 
+// allCompleteJobsByRepGroup gets every one of rg's complete jobs, oldest-started
+// first. This is the unbounded fetch a request whose limit cannot be pushed down
+// still needs; see newCompleteJobsBudget.
+func (s *Server) allCompleteJobsByRepGroup(rg string, srerr *string, qerr *string) []*Job {
+	var complete []*Job
+
+	complete, *srerr, *qerr = s.getCompleteJobsByRepGroup(rg)
+
+	sort.Slice(complete, func(i, j int) bool {
+		return startedBefore(complete[i].StartTime, complete[i].EndTime,
+			complete[j].StartTime, complete[j].EndTime)
+	})
+
+	return stampRepGroup(complete, rg)
+}
+
+// stampRepGroup sets each job's RepGroup to the one they were fetched for, since a
+// job that has been re-run can have been archived under a different one.
+func stampRepGroup(jobs []*Job, rg string) []*Job {
+	for _, job := range jobs {
+		job.RepGroup = rg
+	}
+
+	return jobs
+}
+
+// oldestCompleteJobsByRepGroup gets only as many of rg's complete jobs as budget
+// can still use, oldest-started first, plus a per-group count of the ones it
+// counted but did not decode. It spends what it used out of budget, so that a
+// limit spans the RepGroups getJobsByRepGroup loops over rather than applying to
+// each of them separately.
+func (s *Server) oldestCompleteJobsByRepGroup(rg string, opts repGroupOptions,
+	budget *completeJobsBudget, srerr *string, qerr *string) ([]*Job, map[string]int) {
+	page, err := s.db.retrieveOldestCompleteJobsByRepGroup(rg, completeJobsQuery{
+		group: s.archivedJobGrouper(opts),
+		limit: budget.limit,
+	})
+
+	*srerr, *qerr = dbErrorStrings(err)
+
+	if err != nil {
+		return nil, nil
+	}
+
+	undecoded := make(map[string]int, len(page.counted))
+
+	for group, count := range page.counted {
+		budget.spend(group, page.fetched[group])
+
+		if left := count - page.fetched[group]; left > 0 {
+			undecoded[group] = left
+		}
+	}
+
+	return stampRepGroup(page.jobs, rg), undecoded
+}
+
+// dbErrorStrings converts a database error into the (srerr, qerr) pair
+// getJobsByRepGroup reports, both empty when there was no error.
+func dbErrorStrings(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+
+	return ErrDBError, err.Error()
+}
+
+// archivedJobGrouper returns the function retrieveOldestCompleteJobsByRepGroup
+// uses to decide which of limitJobs' groups an archived record belongs to, and
+// whether opts' filters keep it at all. It must agree exactly with
+// jobMatchesFilters and groupJobsByCharacteristics, since that is what lets a
+// record it merely counts stand in for one it never decoded; newCompleteJobsBudget
+// refuses the pushdown for the filters that cannot be answered from the facets.
+func (s *Server) archivedJobGrouper(opts repGroupOptions) func(*archivedJobFacets) (string, bool) {
+	return func(facets *archivedJobFacets) (string, bool) {
+		state := s.normalizeJobState(facets.State, facets.Lost)
+		if !s.matchesStateFilter(state, opts.State) {
+			return "", false
+		}
+
+		if !s.matchesFailureFilter(facets.FailReason, facets.Exitcode, opts.FailReason, opts.ExitCode) {
+			return "", false
+		}
+
+		return jobGroup(state, facets.Exitcode, facets.FailReason), true
+	}
+}
+
+// jobGroup is the key limitJobs groups a job under: jobs sharing it are
+// interchangeable in the answer, so all but the first Offset+Limit of them are
+// only counted, in the last of those jobs' Similar. archivedJobGrouper must
+// produce the same key from an archived record's facets alone.
+func jobGroup(state JobState, exitCode int, failReason string) string {
+	return fmt.Sprintf("%s.%d.%s", state, exitCode, failReason)
+}
+
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 	if !filter {
 		return true
@@ -2385,6 +2547,21 @@ func (s *Server) setRC(rc string) {
 	s.racmutex.Lock()
 	s.rc = rc
 	s.racmutex.Unlock()
+}
+
+// countUndecodedJobs adds the jobs that were counted but never decoded to the
+// Similar of their group's last member - the very member addJobToGroup would have
+// incremented once for each of them. A group can only have had members left
+// undecoded once it was already full, so it always has that member.
+func countUndecodedJobs(groups map[string][]*Job, undecoded map[string]int) {
+	for group, count := range undecoded {
+		members := groups[group]
+		if len(members) == 0 {
+			continue
+		}
+
+		members[len(members)-1].Similar += count
+	}
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -5618,12 +5795,19 @@ type repGroupOptions struct {
 	Match    RepGroupMatch
 	// IncludeComplete must be set by (and only by) callers that genuinely want
 	// archived jobs as well as live ones, because satisfying it means
-	// cursor-scanning and codec-decoding the ENTIRE archived history of every
-	// matching RepGroup, with no limit, offset or streaming. On the production DB
-	// that cost minutes of CPU per request and 12GB of heap (reliable4 FINDING 1),
-	// so it must be an explicit ask: it used to be inferred from State being empty,
-	// which silently handed the whole scan to every caller that just did not have a
-	// state to filter on.
+	// cursor-scanning the ENTIRE archived history of every matching RepGroup, with
+	// no streaming. On the production DB that cost minutes of CPU per request and
+	// 12GB of heap (reliable4 FINDING 1), so it must be an explicit ask: it used to
+	// be inferred from State being empty, which silently handed the whole scan to
+	// every caller that just did not have a state to filter on.
+	//
+	// How much of that history is codec-DECODED, which is where the heap went,
+	// depends on the Limit below: a pushable Limit (see newCompleteJobsBudget)
+	// bounds the decodes by Offset+Limit per limitJobs group, leaving the rest of
+	// the history counted but not materialised. Without one - which includes
+	// `wr status -o plain` and any `--limit 0`, since cmd/status.go zeroes the
+	// limit for the ungrouped output formats - every matching record is still
+	// decoded in full.
 	IncludeComplete bool
 	limitJobsOptions
 }
@@ -5642,11 +5826,19 @@ func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 }
 
 // getJobsByRepGroup gets the live jobs in the given group, plus its complete ones
-// if opts.IncludeComplete is set (which is unbounded work - see the warning there).
+// if opts.IncludeComplete is set (which is unbounded work unless opts also has a
+// pushable Limit - see the warning there and newCompleteJobsBudget).
 func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (jobs []*Job, srerr string, qerr string) {
 	rgs, srerr, qerr := s.getRepGroupsList(opts.RepGroup, opts.Match)
 	if srerr != "" {
 		return nil, srerr, qerr
+	}
+
+	limitOpts := opts.toLimitOpts()
+	budget := newCompleteJobsBudget(opts)
+
+	if budget != nil {
+		limitOpts.undecodedComplete = make(map[string]int)
 	}
 
 	for i := range rgs {
@@ -5654,11 +5846,15 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd)
 		jobs = append(jobs, queueJobs...)
 
-		complete := s.getDBJobsByRepGroup(rg, opts, &srerr, &qerr)
+		complete, undecoded := s.getDBJobsByRepGroup(rg, opts, budget, &srerr, &qerr)
 		jobs = append(jobs, complete...)
+
+		for group, count := range undecoded {
+			limitOpts.undecodedComplete[group] += count
+		}
 	}
 
-	jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
+	jobs = s.limitJobs(ctx, jobs, limitOpts)
 
 	return jobs, srerr, qerr
 }
@@ -5704,33 +5900,25 @@ func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, ge
 
 // getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup,
 // but only if the caller explicitly asked for complete jobs (see
-// repGroupOptions.IncludeComplete) and its state filter can match one.
-func (s *Server) getDBJobsByRepGroup(rg string, opts repGroupOptions, srerr *string, qerr *string) []*Job {
+// repGroupOptions.IncludeComplete) and its state filter can match one. With a
+// budget it fetches only the jobs that budget can still use, and also returns a
+// per-group count of the archived jobs it counted but deliberately did not
+// decode.
+func (s *Server) getDBJobsByRepGroup(rg string, opts repGroupOptions, budget *completeJobsBudget,
+	srerr *string, qerr *string) ([]*Job, map[string]int) {
 	if !opts.IncludeComplete {
-		return nil
+		return nil, nil
 	}
 
 	if opts.State != "" && opts.State != JobStateComplete {
-		return nil
+		return nil, nil
 	}
 
-	var complete []*Job
-
-	complete, *srerr, *qerr = s.getCompleteJobsByRepGroup(rg)
-
-	for _, cj := range complete {
-		cj.RepGroup = rg
+	if budget == nil {
+		return s.allCompleteJobsByRepGroup(rg, srerr, qerr), nil
 	}
 
-	sort.Slice(complete, func(i, j int) bool {
-		if complete[i].StartTime.Equal(complete[j].StartTime) {
-			return complete[i].EndTime.Before(complete[j].EndTime)
-		}
-
-		return complete[i].StartTime.Before(complete[j].StartTime)
-	})
-
-	return complete
+	return s.oldestCompleteJobsByRepGroup(rg, opts, budget, srerr, qerr)
 }
 
 // getCompleteJobsByRepGroup gets complete jobs in the given group.
@@ -5890,6 +6078,13 @@ type limitJobsOptions struct {
 	GetStd              bool     // If true, populate StdOut and StdErr of jobs
 	GetEnv              bool     // If true, populate Env of jobs
 	WaitingForDepGroups bool     // If true, return jobs waiting on never-seen dep groups
+
+	// undecodedComplete counts, per group, the archived jobs getJobsByRepGroup
+	// counted but deliberately did not decode because Limit was already satisfied
+	// (see newCompleteJobsBudget). They are added to the Similar of their group's
+	// last kept member, which is exactly what addJobToGroup would have done with
+	// them had they been decoded.
+	undecodedComplete map[string]int
 }
 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
@@ -6009,6 +6204,7 @@ func (s *Server) matchesFailureFilter(jobFailReason string, jobExitCode int,
 // groupAndLimitJobs groups jobs by characteristics and applies limits.
 func (s *Server) groupAndLimitJobs(jobs []*Job, opts limitJobsOptions) []*Job {
 	groups := s.groupJobsByCharacteristics(jobs, opts)
+	countUndecodedJobs(groups, opts.undecodedComplete)
 	groups = s.applyOffsetToGroups(groups, opts.Offset)
 
 	return s.collectJobsFromGroups(groups)
@@ -6027,8 +6223,7 @@ func (s *Server) groupJobsByCharacteristics(jobs []*Job, opts limitJobsOptions) 
 		jState, jExitCode, jFailReason, jLost := getJobProps(job)
 		jState = s.normalizeJobState(jState, jLost)
 
-		group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
-		s.addJobToGroup(job, group, groups, opts)
+		s.addJobToGroup(job, jobGroup(jState, jExitCode, jFailReason), groups, opts)
 	}
 
 	return groups

@@ -340,6 +340,143 @@ func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, p
 	return nil
 }
 
+// archivedJobFacets are the few fields of an archived job needed to place it in a
+// bounded page of its RepGroup's history: the two times it is ordered by, and the
+// state, exit code, fail reason and lost flag that decide which of limitJobs'
+// groups it falls in.
+//
+// Its field names are deliberately the same as Job's. The codec encodes a Job as
+// a map of its exported field names, so decoding a record into this instead
+// matches these six by name and structurally SKIPS the rest, without allocating
+// the Cmd, Env, StdOut and StdErr values that make a full decode expensive: a
+// 130KB-command record costs 1.7us and 48 bytes here versus 46.5us and 134KB
+// through decodeArchivedJob.
+type archivedJobFacets struct {
+	StartTime  time.Time
+	EndTime    time.Time
+	State      JobState
+	Exitcode   int
+	FailReason string
+	Lost       bool
+}
+
+// completeJobsQuery describes how the caller of
+// retrieveOldestCompleteJobsByRepGroup will group and limit the archived jobs it
+// asks for, so that the ones it could never return are counted instead of
+// decoded.
+type completeJobsQuery struct {
+	// group returns the key of the group the caller will put an archived job with
+	// these facets in, and false if the caller's filters discard it outright.
+	group func(*archivedJobFacets) (string, bool)
+
+	// limit returns how many more jobs of the given group the caller can still
+	// use. Any beyond that are only counted.
+	limit func(string) int
+}
+
+// completeJobsPage is a bounded page of one RepGroup's archived jobs.
+type completeJobsPage struct {
+	// jobs are the archived jobs that were decoded, oldest-started first.
+	jobs []*Job
+
+	// fetched is how many of jobs fell in each group.
+	fetched map[string]int
+
+	// counted is how many of the RepGroup's archived jobs fall in each group,
+	// including the ones jobs does not contain.
+	counted map[string]int
+}
+
+// archivedJobCandidate is an archived job a bounded page might contain: its bolt
+// key (which, like every bolt key, is only valid for the life of the transaction
+// it was read in), its group, and the times it is ordered by.
+type archivedJobCandidate struct {
+	key   []byte
+	group string
+	start time.Time
+	end   time.Time
+}
+
+// oldestArchivedJobs keeps the limit oldest-started of the archived jobs offered
+// to it, without holding on to the rest.
+//
+// It sorts and truncates only once it has twice as many candidates as it needs,
+// so offering the whole of a RepGroup's history costs O(history log limit) time
+// but only O(limit) memory - which is the entire point, since it is the memory
+// that took production's manager to a 12.1GB heap. The sort is stable, so jobs
+// with identical times stay in the order the cursor produced them.
+type oldestArchivedJobs struct {
+	limit      int
+	pruneAt    int
+	candidates []archivedJobCandidate
+}
+
+// newOldestArchivedJobs returns a selector that keeps the limit oldest-started of
+// the jobs offered to it, pruning once it holds twice that many - or never, if
+// twice that many would overflow, which can only mean the limit already exceeds
+// any history it could be asked about.
+func newOldestArchivedJobs(limit int) *oldestArchivedJobs {
+	limit = max(limit, 0)
+
+	pruneAt := limit + limit
+	if pruneAt < limit {
+		pruneAt = math.MaxInt
+	}
+
+	return &oldestArchivedJobs{limit: limit, pruneAt: pruneAt}
+}
+
+// offer gives the selector another of the group's archived jobs to consider.
+func (o *oldestArchivedJobs) offer(key []byte, group string, facets *archivedJobFacets) {
+	// NOTE: this early-out is a memory optimisation, NOT a protected guarantee: with
+	// limit 0 pruneAt is 0 too, so without it every offer would append and then
+	// immediately have oldest() truncate back to nothing, returning the same (empty)
+	// selection. It matters because a group whose budget is already spent is offered
+	// every remaining record of the history, and that is exactly the append this fix
+	// exists to avoid.
+	if o.limit == 0 {
+		return
+	}
+
+	o.candidates = append(o.candidates, archivedJobCandidate{
+		key:   key,
+		group: group,
+		start: facets.StartTime,
+		end:   facets.EndTime,
+	})
+
+	if len(o.candidates) >= o.pruneAt {
+		o.oldest()
+	}
+}
+
+// oldest sorts the candidates offered so far oldest-started first, drops any
+// beyond the limit, and returns what is left.
+func (o *oldestArchivedJobs) oldest() []archivedJobCandidate {
+	sort.SliceStable(o.candidates, func(i, j int) bool {
+		return startedBefore(o.candidates[i].start, o.candidates[i].end,
+			o.candidates[j].start, o.candidates[j].end)
+	})
+
+	if len(o.candidates) > o.limit {
+		o.candidates = o.candidates[:o.limit]
+	}
+
+	return o.candidates
+}
+
+// startedBefore orders archived jobs by start time, then end time. Both the
+// unbounded fetch and the bounded one must order by it, or a limited request
+// would return different jobs from the ones the same request without a limit puts
+// first.
+func startedBefore(aStart, aEnd, bStart, bEnd time.Time) bool {
+	if aStart.Equal(bStart) {
+		return aEnd.Before(bEnd)
+	}
+
+	return aStart.Before(bStart)
+}
+
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
 // last pace. On Linux it starts asynchronous writeback of the just-written range
 // and waits on the previous one (cheap, pipelined, no full-file round-trip);
@@ -460,6 +597,52 @@ func (b beBatch) applyExits(tx *bolt.Tx) error {
 	}
 
 	return nil
+}
+
+// archivedScan is the state selectOldestArchivedJobs carries across the records it
+// walks: the caller's query, the per-group counts and selections being built, and
+// a decoder and facets buffer reused for every record so that walking a whole
+// history allocates nothing per record.
+type archivedScan struct {
+	query     completeJobsQuery
+	counted   map[string]int
+	selectors map[string]*oldestArchivedJobs
+	decoder   *codec.Decoder
+	facets    archivedJobFacets
+}
+
+// consider decodes one archived record's facets and, if the query keeps it, counts
+// it and offers it to its group's selector.
+func (a *archivedScan) consider(key, encoded []byte) error {
+	a.facets = archivedJobFacets{}
+
+	a.decoder.ResetBytes(encoded)
+
+	if err := a.decoder.Decode(&a.facets); err != nil {
+		return err
+	}
+
+	group, keep := a.query.group(&a.facets)
+	if !keep {
+		return nil
+	}
+
+	a.counted[group]++
+	a.selector(group).offer(key, group, &a.facets)
+
+	return nil
+}
+
+// selector returns the selector keeping group's oldest jobs, creating it with the
+// group's limit if this is the first job seen in it.
+func (a *archivedScan) selector(group string) *oldestArchivedJobs {
+	selector, exists := a.selectors[group]
+	if !exists {
+		selector = newOldestArchivedJobs(a.query.limit(group))
+		a.selectors[group] = selector
+	}
+
+	return selector
 }
 
 type db struct {
@@ -1497,6 +1680,121 @@ func (db *db) failPendingArchives() {
 func (db *db) stopArchiveWriter() {
 	close(db.arStop)
 	<-db.arWriterDone
+}
+
+// retrieveOldestCompleteJobsByRepGroup is retrieveCompleteJobsByRepGroup with the
+// caller's limit pushed down: it walks the same RTK cursor, but decodes only each
+// record's archivedJobFacets, and fully decodes just the oldest-started
+// query.limit(group) of each group. On the production database that is the
+// difference between materialising 2.15M Jobs (a 12.1GB heap excursion) and
+// materialising as many as the request can actually return.
+func (db *db) retrieveOldestCompleteJobsByRepGroup(repgroup string,
+	query completeJobsQuery) (*completeJobsPage, error) {
+	page := &completeJobsPage{
+		fetched: make(map[string]int),
+		counted: make(map[string]int),
+	}
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		selected, err := db.selectOldestArchivedJobs(tx, repgroup, query, page.counted)
+		if err != nil {
+			return err
+		}
+
+		return db.decodeArchivedJobs(tx, selected, page)
+	})
+
+	return page, err
+}
+
+// selectOldestArchivedJobs walks repgroup's archived records, counting them per
+// group in counted, and returns the keys of the oldest-started query.limit(group)
+// of each group, oldest-started first overall.
+func (db *db) selectOldestArchivedJobs(tx *bolt.Tx, repgroup string,
+	query completeJobsQuery, counted map[string]int) ([]archivedJobCandidate, error) {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	cursor := tx.Bucket(bucketRTK).Cursor()
+	scan := &archivedScan{
+		query:     query,
+		counted:   counted,
+		selectors: make(map[string]*oldestArchivedJobs),
+		decoder:   codec.NewDecoderBytes(nil, db.ch),
+	}
+
+	prefix := []byte(repgroup + dbDelimiter)
+	for k, _ := cursor.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = cursor.Next() {
+		key := bytes.TrimPrefix(k, prefix)
+
+		encoded := completeJobBucket.Get(key)
+		if len(encoded) == 0 || newJobBucket.Get(key) != nil {
+			continue
+		}
+
+		if err := scan.consider(key, encoded); err != nil {
+			return nil, err
+		}
+	}
+
+	return mergeOldestArchivedJobs(scan.selectors), nil
+}
+
+// mergeOldestArchivedJobs flattens the per-group selections into the single
+// oldest-started-first order retrieveCompleteJobsByRepGroup's caller sorts a
+// RepGroup's whole history into.
+func mergeOldestArchivedJobs(selectors map[string]*oldestArchivedJobs) []archivedJobCandidate {
+	var merged []archivedJobCandidate
+
+	for _, selector := range selectors {
+		merged = append(merged, selector.oldest()...)
+	}
+
+	// NOTE: this cross-group sort is presentation only, and is NOT a protected
+	// guarantee: each selector's output is already oldest-first, and limitJobs
+	// re-groups the page by the same key the selectors are keyed on, so removing
+	// the sort changes no answer. It is here so that a page reads like the
+	// unbounded fetch it stands in for (which sorts the same way), and so that a
+	// future caller of this that does not re-group is not silently handed a
+	// map-ordered list.
+	sort.SliceStable(merged, func(i, j int) bool {
+		return startedBefore(merged[i].start, merged[i].end, merged[j].start, merged[j].end)
+	})
+
+	return merged
+}
+
+// decodeArchivedJobs fully decodes the selected candidates into page.jobs,
+// recording how many of them fell in each group.
+func (db *db) decodeArchivedJobs(tx *bolt.Tx, selected []archivedJobCandidate, page *completeJobsPage) error {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	page.jobs = make([]*Job, 0, len(selected))
+
+	for i := range selected {
+		job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, selected[i].key)
+		if err != nil {
+			return err
+		}
+
+		if job == nil {
+			// unreachable: selectOldestArchivedJobs applied decodeArchivedJob's two
+			// guards (a non-empty complete record, and no live record under the same
+			// key) to this very key, in this very bolt.View - and a View is a
+			// consistent snapshot, so no writer can have changed either bucket since.
+			// The count is undone rather than merely skipped so that this cannot be
+			// silently WRONG if that ever stops holding: a candidate that yields no
+			// job must leave counted as well as fetched, or the difference between
+			// them would add a phantom to its group's Similar.
+			page.counted[selected[i].group]--
+
+			continue
+		}
+
+		page.jobs = append(page.jobs, job)
+		page.fetched[selected[i].group]++
+	}
+
+	return nil
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
