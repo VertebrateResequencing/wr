@@ -2647,6 +2647,100 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 	return jobs, err
 }
 
+// spendArchivedBytesByRepGroup charges budget for every archived record
+// retrieveCompleteJobsByRepGroup would decode for this RepGroup, WITHOUT decoding
+// any of them: it walks the same index and reads each record's encoded length,
+// which costs no allocation. It returns the budget's error as soon as the budget
+// is exhausted, so a request that cannot bound how much history it will
+// materialise finds out before it has materialised any of it.
+//
+// A record that is currently live (being re-run), which the decode would skip, is
+// charged too. That makes the refusal marginally early rather than late.
+func (db *db) spendArchivedBytesByRepGroup(repgroup string, budget *archivedBytesBudget) error {
+	return db.bolt.View(func(tx *bolt.Tx) error {
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		lookupBucket := tx.Bucket(bucketRTK).Cursor()
+
+		prefix := []byte(repgroup + dbDelimiter)
+		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
+			if err := budget.spend(completeJobBucket.Get(bytes.TrimPrefix(k, prefix))); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// ErrArchivedHistoryTooBig is what a request that asks for complete jobs with no
+// limit gets when the history it matches is too large to materialise. It is a
+// deliberate, operator-visible refusal: the alternative is what production
+// actually did, which was to take the manager's heap from 0.35GB to over 12GB
+// (and, for 2.15M complete jobs, would be over 12GB again through
+// `wr status -o plain`). The message names the way out, since every route to
+// this request has one.
+var ErrArchivedHistoryTooBig = errors.New("too much completed-job history to return at once: " +
+	"re-run with --limit, or a state filter, or -o counts")
+
+// isArchivedHistoryTooBig reports whether a getJobsByRepGroup error string is the
+// ErrArchivedHistoryTooBig refusal rather than a genuine failure. spend wraps the
+// sentinel with the numbers that produced it, so it is recognised by its prefix -
+// the pricing pass returns no other error of its own. It exists so that a caller
+// which has to translate the refusal (restJobsStatusByID, into an HTTP status)
+// does not have to decide what the message looks like for itself.
+func isArchivedHistoryTooBig(err string) bool {
+	return strings.HasPrefix(err, ErrArchivedHistoryTooBig.Error())
+}
+
+// maxArchivedBytesDefault caps how many bytes of encoded archived records ONE
+// request that cannot push its limit down (see newCompleteJobsBudget) will
+// decode. It is a byte budget rather than a job count because archived records
+// vary by three orders of magnitude in size - a job with a 130KB command line
+// costs as much as a hundred ordinary ones - so only bytes bound the heap.
+// Production's 12.1GB excursion came from roughly 3GB of records; at this cap
+// that request is refused instead, while everything that fits (the 154,000-record
+// group the 2026-08-20 validation gate measured is ~230MB) is returned exactly as
+// before.
+const maxArchivedBytesDefault = 256 * 1024 * 1024
+
+// maxArchivedBytes is the live cap. It is a var only so tests can drive it down;
+// nothing in the manager writes it, so it needs no synchronisation.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var maxArchivedBytes = maxArchivedBytesDefault
+
+// archivedBytesBudget is the byte budget one unbounded archived fetch may spend
+// across all the RepGroups its request matches, spent by
+// spendArchivedBytesByRepGroup before anything is decoded. A nil budget is
+// unlimited.
+type archivedBytesBudget struct {
+	remaining int
+	priced    int
+}
+
+// newArchivedBytesBudget returns a budget of maxArchivedBytes bytes.
+func newArchivedBytesBudget() *archivedBytesBudget {
+	return &archivedBytesBudget{remaining: maxArchivedBytes}
+}
+
+// spend accounts for one archived record, returning ErrArchivedHistoryTooBig
+// once the budget is exhausted. A nil budget spends nothing and never errors.
+func (b *archivedBytesBudget) spend(encoded []byte) error {
+	if b == nil {
+		return nil
+	}
+
+	b.remaining -= len(encoded)
+	b.priced++
+
+	if b.remaining < 0 {
+		return fmt.Errorf("%w (over %d bytes at %d complete jobs)", ErrArchivedHistoryTooBig,
+			maxArchivedBytes, b.priced)
+	}
+
+	return nil
+}
+
 // decodeArchivedJob decodes the job with the given key from the complete bucket,
 // returning nil (and no error) if it is not present there or is currently live
 // (being re-run).

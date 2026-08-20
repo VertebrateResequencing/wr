@@ -1268,6 +1268,33 @@ type JobModifyResponse struct {
 	Jobs     []JStatus         `json:"jobs"`
 }
 
+// restStatusErrorCode is the HTTP status a failed status query reports.
+//
+// ErrArchivedHistoryTooBig is not a fault: the server is healthy and is telling
+// the caller that this particular query - an unbounded fetch of this RepGroup's
+// completed history, since limit defaults to 0 - is one it will not answer, and
+// naming the bounded queries it will (a limit, a state filter, counts). A 5xx
+// would say the server is broken and invite a blind retry, so it gets a 4xx.
+//
+// It is specifically the 400 this endpoint already returns when it cannot use the
+// limit parameter it was given (restJobsStatus, on parseRESTStatusQuery's error),
+// rather than 413: RFC 9110's 413 is about REQUEST content being too large to
+// process, and this request carries none - it is the response that would be. The
+// refusal text reaches the caller in the body either way (writeJobsResponse).
+//
+// .docs/issue-197/spec.md, the binding REST contract, fixes status codes only for
+// the PATCH modification endpoint (400/404/409), and says nothing about GET job
+// status, so nothing there is changed by this.
+//
+// Anything else really is a server-side failure, and keeps its 500.
+func restStatusErrorCode(qerr string) int {
+	if isArchivedHistoryTooBig(qerr) {
+		return http.StatusBadRequest
+	}
+
+	return http.StatusInternalServerError
+}
+
 func restEditableItemState(state queue.ItemState) bool {
 	switch state {
 	case queue.ItemStateDelay, queue.ItemStateReady, queue.ItemStateDependent, queue.ItemStateBury:
@@ -1580,7 +1607,7 @@ func (s *Server) restJobsStatusByID(ctx context.Context, id string, q restStatus
 
 	theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
 	if qerr != "" {
-		return nil, http.StatusInternalServerError, Error{Err: qerr}
+		return nil, restStatusErrorCode(qerr), Error{Err: qerr}
 	}
 
 	return theseJobs, http.StatusOK, nil

@@ -2426,7 +2426,8 @@ func queueClosedError(op, key string) error {
 
 // allCompleteJobsByRepGroup gets every one of rg's complete jobs, oldest-started
 // first. This is the unbounded fetch a request whose limit cannot be pushed down
-// still needs; see newCompleteJobsBudget.
+// still needs; see newCompleteJobsBudget, and checkArchivedHistoryFits for what
+// keeps its heap use bounded.
 func (s *Server) allCompleteJobsByRepGroup(rg string, srerr *string, qerr *string) []*Job {
 	var complete []*Job
 
@@ -2438,6 +2439,67 @@ func (s *Server) allCompleteJobsByRepGroup(rg string, srerr *string, qerr *strin
 	})
 
 	return stampRepGroup(complete, rg)
+}
+
+// checkArchivedHistoryFits prices the archived history a request is about to
+// materialise, and refuses the request if it does not fit in one
+// archivedBytesBudget. It only applies to a request that asked for complete jobs
+// and whose limit could not be pushed down (see newCompleteJobsBudget): those -
+// `wr status -o plain`, `-o summary`, and any explicit `--limit 0`, since
+// cmd/status.go zeroes the limit for the ungrouped output formats - decode every
+// matching record, which took production's manager from 0.35GB to over 12GB and
+// is what DEVELOPERS.md rule 6 forbids on a control path.
+//
+// There is no result-preserving bound available for those shapes: `-o plain`
+// prints one line per job KEY and `-o summary` accumulates per-job statistics, so
+// neither can be served from the folded representatives the grouped formats use.
+// So the choice is between an unbounded heap and an explicit refusal, and this is
+// the refusal. It prices the whole request BEFORE anything is decoded, so a
+// refused request costs no heap at all, and it names the ways out, all of which
+// work: a limit, a state filter, or the count-only output.
+//
+// Everything that fits is fetched exactly as it always was.
+func (s *Server) checkArchivedHistoryFits(rgs []string, opts repGroupOptions,
+	budget *completeJobsBudget) (string, string) {
+	if !archivedHistoryNeedsPricing(opts, budget) {
+		return "", ""
+	}
+
+	return s.priceArchivedHistory(rgs)
+}
+
+// archivedHistoryNeedsPricing reports whether this request is one of the ones
+// that will decode every matching archived record, and so has to be priced
+// first.
+func archivedHistoryNeedsPricing(opts repGroupOptions, budget *completeJobsBudget) bool {
+	if budget != nil || !opts.IncludeComplete {
+		return false
+	}
+
+	return opts.State == "" || opts.State == JobStateComplete
+}
+
+// priceArchivedHistory spends one budget across every RepGroup the request
+// matches, and returns the (srerr, qerr) refusal as soon as it is exhausted. The
+// refusal reaches the operator verbatim, so it goes in srerr, which is the half
+// of the pair the client turns into its error.
+func (s *Server) priceArchivedHistory(rgs []string) (string, string) {
+	budget := newArchivedBytesBudget()
+
+	for _, rg := range rgs {
+		err := s.db.spendArchivedBytesByRepGroup(rg, budget)
+		if err == nil {
+			continue
+		}
+
+		if errors.Is(err, ErrArchivedHistoryTooBig) {
+			return err.Error(), err.Error()
+		}
+
+		return dbErrorStrings(err)
+	}
+
+	return "", ""
 }
 
 // stampRepGroup sets each job's RepGroup to the one they were fetched for, since a
@@ -5844,6 +5906,13 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 
 	if budget != nil {
 		limitOpts.undecodedComplete = make(map[string]int)
+	}
+
+	// a request whose limit cannot be pushed down has to materialise every
+	// matching archived record, so before any of them is decoded its whole
+	// history is priced against a heap budget - see newArchivedBytesBudget.
+	if srerr, qerr = s.checkArchivedHistoryFits(rgs, opts, budget); srerr != "" {
+		return nil, srerr, qerr
 	}
 
 	for i := range rgs {

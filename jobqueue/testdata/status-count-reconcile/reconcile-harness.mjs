@@ -23,9 +23,13 @@
 //      Coherent code must never transiently overcount or dip.
 //
 //   B. connect DURING a burst (the scan-on-connect SEED RACE). Live deltas that
-//      arrive around the connect handshake overlap the snapshot seed. The
-//      pre-fix client does not just twitch here - it PERMANENTLY diverges
-//      (ends with more jobs than exist). Coherent code converges exactly.
+//      arrive around the connect handshake overlap the snapshot seed, so the
+//      same transition is reported twice. Scored PER BUCKET against what a
+//      client that can tell a duplicate from new information would show: the
+//      total is conserved by the occupancy model whatever happens, so only the
+//      per-bucket distribution can see reliable4 FINDING 7 (a job stuck in
+//      `running` that has long since left it). B2 is the same race with emission
+//      jitter, which measures the residual no seed boundary can remove.
 //
 //   C. mixed workload with rerun CYCLES (complete->ready->running->complete),
 //      bury, delete and lost, out of order. Guards order-independence and that
@@ -85,13 +89,29 @@ const context = {
 };
 context.globalThis = context;
 vm.createContext(context);
-vm.runInContext(source + '\nglobalThis.handleStateChangeMessage = handleStateChangeMessage;', context,
-  { filename: 'websocket-handler.js' });
+vm.runInContext(source +
+  '\nglobalThis.handleStateChangeMessage = handleStateChangeMessage;' +
+  '\nglobalThis.applyStatusMessage = typeof applyStatusMessage === "function" ? applyStatusMessage : null;',
+  context, { filename: 'websocket-handler.js' });
 const applyDelta = context.handleStateChangeMessage;
 if (typeof applyDelta !== 'function') {
   console.error('reconcile-harness: handler did not expose handleStateChangeMessage');
   process.exit(2);
 }
+
+// applyMessage drives the handler's own message router when it has one, so the
+// seed boundary markers the server brackets its scan-on-connect seed with are
+// routed the way the browser routes them. A handler that predates the router
+// only ever saw messages carrying FromState, so that is all it is given - which
+// is exactly what an older status page sees against a newer server, and what
+// makes the pre-fix/post-fix A/B fair on an identical stream.
+const applyMessage = context.applyStatusMessage
+  ? context.applyStatusMessage
+  : (vmodel, m) => {
+    if (Object.prototype.hasOwnProperty.call(m, 'FromState')) {
+      applyDelta(vmodel, m);
+    }
+  };
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) so the gate never flakes.
@@ -166,16 +186,35 @@ function scenarioA(seed, N, window) {
 // ---------------------------------------------------------------------------
 // Scenario B: connect DURING a burst (seed race). Faithful model: mutation
 // order, per-delta emission jitter, seed reflecting true state at connect +
-// handshake, only deltas emitted at/after connect delivered live.
+// handshake, only deltas emitted at/after connect delivered live, and the seed
+// bracketed by the boundary markers the server writes under its per-connection
+// write mutex (so the bracket is one uninterrupted run of messages).
+//
+// It is scored PER BUCKET, not on the per-RepGroup total. The total is conserved
+// by the occupancy model by construction (total occupancy == the sum of the
+// creations it was told about), so a seed race that moves one job from `ready`
+// to `running` and leaves it there - reliable4 FINDING 7, the status page
+// showing 274 running with 4 running - is invisible to a total-only score. The
+// reference is what a client that could tell duplicates from new information
+// would show: the seed, plus every DELIVERED mutation that the seed does not
+// already account for (mtime > snapM). `leftover` jobs never complete, so the
+// final distribution spans more than one bucket and a misdistribution cannot
+// hide in a single terminal one.
+//
+// The same stream is replayed twice: once with the boundary markers routed to
+// the handler, and once without them, which is exactly what a status page that
+// predates them sees. The difference is what the boundary bought.
 // ---------------------------------------------------------------------------
-function scenarioB(seed, N, jitter, handshake, connectFrac) {
+function scenarioB(seed, N, jitter, handshake, connectFrac, leftover) {
   const rand = rng(seed);
   const muts = [{ from: 'new', to: 'ready', count: N, mtime: 0 }];
   const evs = [];
   for (let j = 0; j < N; j++) {
     const s = 1 + rand() * (N - 2);
     evs.push({ from: 'ready', to: 'running', mtime: s });
-    evs.push({ from: 'running', to: 'complete', mtime: s + rand() * (N * 0.01) + 1e-4 });
+    if (j >= leftover) {
+      evs.push({ from: 'running', to: 'complete', mtime: s + rand() * (N * 0.01) + 1e-4 });
+    }
   }
   evs.sort((a, b) => a.mtime - b.mtime);
   let idx = 1;
@@ -196,30 +235,85 @@ function scenarioB(seed, N, jitter, handshake, connectFrac) {
 
   const liveMuts = muts.map(m => ({ ...m, etime: m.mtime + rand() * jitter })).filter(m => m.etime >= connectM);
   liveMuts.sort((a, b) => a.etime - b.etime);
-  const stream = [];
+  const deltas = [];
   for (const m of liveMuts) {
-    stream.push({ etime: m.etime, RepGroup: '+all+', FromState: m.from, ToState: m.to, Count: m.count });
-    stream.push({ etime: m.etime, RepGroup: RG, FromState: m.from, ToState: m.to, Count: m.count });
+    for (const rg of ['+all+', RG]) {
+      deltas.push({ etime: m.etime, mtime: m.mtime, RepGroup: rg, FromState: m.from, ToState: m.to, Count: m.count });
+    }
   }
-  const snap = trueAt(snapM);
-  for (const s of ['ready', 'running']) if (snap[s] > 0) stream.push({ etime: snapM, seed: true, RepGroup: '+all+', FromState: 'new', ToState: s, Count: snap[s] });
-  for (const s of ['ready', 'running', 'complete']) if (snap[s] > 0) stream.push({ etime: snapM, seed: true, RepGroup: RG, FromState: 'new', ToState: s, Count: snap[s] });
-  stream.sort((a, b) => (a.etime - b.etime) || ((a.seed ? 1 : 0) - (b.seed ? 1 : 0)));
 
-  const vmv = newVM();
-  const rgT = () => vmv.repGroups[vmv.repGroupLookup[RG]];
-  let seeded = false, worstOver = 0;
-  for (const d of stream) {
-    if (d.seed) seeded = true;
-    applyDelta(vmv, { RepGroup: d.RepGroup, FromState: d.FromState, ToState: d.ToState, Count: d.Count });
-    if (!seeded) continue; // pre-seed the client is legitimately still loading
-    const rt = rgT();
-    if (rt && total(rt, COUNT_PROPS) > N) worstOver = Math.max(worstOver, total(rt, COUNT_PROPS) - N);
+  const snap = trueAt(snapM);
+  const seedBlock = [];
+  for (const st of ['ready', 'running']) {
+    if (snap[st] > 0) seedBlock.push({ seed: true, RepGroup: '+all+', FromState: 'new', ToState: st, Count: snap[st] });
   }
-  const rt = rgT();
+  for (const st of ['ready', 'running', 'complete']) {
+    if (snap[st] > 0) seedBlock.push({ seed: true, RepGroup: RG, FromState: 'new', ToState: st, Count: snap[st] });
+  }
+
+  // the bracket goes in as one block at the snapshot: the server holds the
+  // connection's write mutex from before the snapshot until after the last seed
+  // message, so no live delta can land inside it.
+  const stream = [
+    ...deltas.filter(d => d.etime <= snapM),
+    { boundary: 'begin' },
+    ...seedBlock,
+    { boundary: 'end' },
+    ...deltas.filter(d => d.etime > snapM),
+  ];
+
+  // the duplicates the boundary CANNOT remove: a mutation the snapshot already
+  // saw whose delta was emitted late enough to arrive after the bracket (a
+  // changedCb goroutine descheduled past the snapshot). Each can misplace at
+  // most one job.
+  const dupAfterSeed = deltas.filter(d => d.RepGroup === RG && d.mtime <= snapM && d.etime > snapM).length;
+
+  const aware = newVM();
+  const blind = newVM();
+  const ideal = Object.create(null);
+  const rgOf = (vmv) => vmv.repGroups[vmv.repGroupLookup[RG]];
+  const errOf = (vmv) => {
+    const t = rgOf(vmv);
+    if (!t) return 0;
+    let worst = 0;
+    for (const p of COUNT_PROPS) worst = Math.max(worst, Math.abs(t[p]() - (ideal[p] || 0)));
+    return worst;
+  };
+
+  let scoring = false, worstAware = 0, worstBlind = 0;
+  for (const d of stream) {
+    if (d.boundary) {
+      applyMessage(aware, { SeedBoundary: d.boundary });
+      if (d.boundary === 'end') scoring = true;
+      continue;
+    }
+
+    const msg = { RepGroup: d.RepGroup, FromState: d.FromState, ToState: d.ToState, Count: d.Count };
+    applyMessage(aware, msg);
+    applyMessage(blind, msg);
+
+    if (d.RepGroup === RG && (d.seed || d.mtime > snapM)) {
+      if (d.FromState !== 'new') ideal[d.FromState] = (ideal[d.FromState] || 0) - d.Count;
+      ideal[d.ToState] = (ideal[d.ToState] || 0) + d.Count;
+    }
+
+    if (scoring) {
+      worstAware = Math.max(worstAware, errOf(aware));
+      worstBlind = Math.max(worstBlind, errOf(blind));
+    }
+  }
+
+  const rt = rgOf(aware);
   const rgFinal = rt ? total(rt, COUNT_PROPS) : 0;
   const rgComplete = rt ? rt.complete() : 0;
-  return { converged: rgFinal === N && rgComplete === N, rgFinal, rgComplete, worstOver };
+  const rgRunning = rt ? rt.running() : 0;
+
+  return {
+    worstAware, worstBlind, dupAfterSeed,
+    finalAware: errOf(aware), finalBlind: errOf(blind),
+    converged: rgFinal === N && rgComplete === N - leftover && rgRunning === leftover,
+    rgFinal, rgComplete, rgRunning,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -286,17 +380,43 @@ console.error(`reconcile-harness: handler=${path.relative(process.cwd(), handler
     `worstRepGroupTotalError=${wErr} worstAllOvercount=${wOver} worstAllNegative=${wNeg} convergeFailures=${convFail}/120`);
 }
 
-// B
+// B1: the seed race with emission in causal order, so everything delivered
+// before the bracket really does predate the snapshot. A client that resets to
+// the seed on the boundary is then EXACT per bucket; one that cannot see the
+// boundary double-counts the whole handshake window and stays wrong.
 {
-  let convFail = 0, wOver = 0, exFinal = 0, exComplete = 0;
+  let awareFail = 0, wAware = 0, wBlind = 0, convFail = 0, exFinal = 0, exComplete = 0;
   for (let s = 1; s <= 120; s++) {
-    const r = scenarioB(s * 40503, 1500, 18, 8, 0.3 + (s % 5) * 0.1);
-    wOver = Math.max(wOver, r.worstOver);
+    const r = scenarioB(s * 40503, 1500, 0, 8, 0.3 + (s % 5) * 0.1, 7);
+    wAware = Math.max(wAware, r.worstAware); wBlind = Math.max(wBlind, r.worstBlind);
+    if (r.worstAware !== 0) awareFail++;
     if (!r.converged) { convFail++; if (convFail === 1) { exFinal = r.rgFinal; exComplete = r.rgComplete; } }
   }
   record('B/connect-mid-burst-seed-race',
-    convFail === 0 && wOver === 0,
-    `convergeFailures=${convFail}/120 worstOvercount=${wOver}` + (convFail ? ` egFinalTotal=${exFinal} egComplete=${exComplete} (want 1500/1500)` : ''));
+    awareFail === 0 && wAware === 0 && convFail === 0,
+    `worstPerBucketError=${wAware} (boundary-blind client on the same stream: ${wBlind})`
+    + ` inexactTrials=${awareFail}/120 convergeFailures=${convFail}/120`
+    + (convFail ? ` egFinalTotal=${exFinal} egComplete=${exComplete} (want 1500/1493)` : ''));
+}
+
+// B2: the same race with emission JITTER, i.e. a changedCb goroutine descheduled
+// past the snapshot. Those duplicates arrive after the bracket, so no boundary
+// can remove them - this measures that accepted residual, and asserts the
+// boundary never makes it worse and never exceeds the duplicates the model
+// actually delivered late.
+{
+  let wAware = 0, wBlind = 0, worse = 0, overBound = 0, dupMax = 0;
+  for (let s = 1; s <= 120; s++) {
+    const r = scenarioB(s * 40503, 1500, 18, 8, 0.3 + (s % 5) * 0.1, 7);
+    wAware = Math.max(wAware, r.worstAware); wBlind = Math.max(wBlind, r.worstBlind);
+    dupMax = Math.max(dupMax, r.dupAfterSeed);
+    if (r.worstAware > r.worstBlind) worse++;
+    if (r.finalAware > r.dupAfterSeed) overBound++;
+  }
+  record('B2/seed-race-residual-under-emission-jitter',
+    worse === 0 && overBound === 0,
+    `worstPerBucketError=${wAware} (boundary-blind: ${wBlind}) lateDuplicates<=${dupMax}`
+    + ` madeWorse=${worse}/120 overResidualBound=${overBound}/120`);
 }
 
 // C
