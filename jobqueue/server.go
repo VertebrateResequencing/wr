@@ -5382,7 +5382,7 @@ func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseR
 
 	s.decrementGroupCount(ctx, sgroup)
 	s.db.updateJobAfterExit(ctx, job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
-	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
+	clog.Debug(ctx, msg, "key", job.Key(), "cmd", job.loggableCmd(), "schedGrp", sgroup)
 }
 
 // inputToQueuedJobs shows you which of the inputJobs are now actually in the
@@ -5550,7 +5550,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// paths). schedulerGroup is the field getSchedulerGroup() reads under
 		// its own lock; capture it directly here to avoid re-locking.
 		repGroup := job.RepGroup
-		cmd := job.Cmd
+		cmd := job.loggableCmd()
 		schedGroup := job.schedulerGroup
 		job.Unlock()
 
@@ -5559,7 +5559,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 			pass.schedGroups[schedGroup]++
 			pass.repGroups = append(pass.repGroups, repGroup)
 
-			clog.Debug(ctx, "removed job", "cmd", cmd)
+			clog.Debug(ctx, "removed job", "key", jobkey, "cmd", cmd)
 		} else {
 			// removal failed, so the job is still in the queue; revert its state
 			// so it is not left visibly Deleted.
@@ -5677,18 +5677,23 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 	for _, job := range jobs {
 		readyCallbackExpected := false
 
-		item, errg := s.q.Get(job.Key())
+		// hoisted: Key() rebuilds and hashes the whole Cmd, so a job with a 130KB
+		// command line paid for that once per call site.
+		key := job.Key()
+
+		item, errg := s.q.Get(key)
 		if errg == nil && item != nil && len(item.UnresolvedDependencies()) == 0 {
 			readyCallbackExpected = true
 
 			s.setRACPending()
 		}
 
-		err := s.q.Kick(ctx, job.Key())
+		err := s.q.Kick(ctx, key)
 		if err == nil {
 			job.Lock()
 			job.UntilBuried = initialUntilBuried(job.Retries)
-			clog.Debug(ctx, "unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
+			clog.Debug(ctx, "unburied job", "key", key, "cmd", job.loggableCmd(),
+				"schedGrp", job.schedulerGroup)
 			job.State = JobStateReady
 			job.Unlock()
 

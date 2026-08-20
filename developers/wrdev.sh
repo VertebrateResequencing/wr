@@ -1930,6 +1930,188 @@ ts_run() {  # <jobs> <seconds> <repGroup> <logdir> <jobfile> <retries> <wantAtte
   return 0
 }
 
+cmd_runner_log_bytes() {  # runner-log-bytes [jobs] [seconds] [cores] [padKB] - reliable4 ITEM C2 SCALE GATE
+  # SCALE GATE for reliable4 ITEM C2 (.docs/reliable4/next-steps-260819.md): a runner must not
+  # write its job's whole command line to its log. The command line is entirely user-supplied and
+  # production's was routinely tens of KB (the 2026-08-17 profiling run measured a p99 of 24,261
+  # bytes and a MAXIMUM of 1,345,498 bytes for a single `reserved a job` line), and every job was
+  # logged that way FOUR times: `reserved a job`, `will start executing`, `started executing`
+  # (client-side, inside Execute) and `command ... ran OK`. 0d22eda cut the multiplier - an
+  # unrunnable job is attempted once rather than forever - but not the per-line size, so a run of
+  # ordinary, SUCCESSFUL jobs still produced ~4x the command line per job in runner logs. That is
+  # what made the production logs unreadable at exactly the moment they were needed.
+  #
+  # This is the measurement the handoff doc names as the honest one: log BYTES PER COMPLETED JOB
+  # over a real run, using bkill-hygiene's log-bytes technique (11f1537). It is the only thing
+  # that pins the three cmd/runner.go call sites, which no unit test can reach (they live inside a
+  # cobra Run closure). End-to-end on the REAL binary and farm-safe: -s local, so no LSF job is
+  # ever submitted and the only processes are our own dev manager plus at most `cores` local
+  # runners, running `true` with a padded shell COMMENT so nothing is printed and nothing is slow.
+  #
+  # It measures FOUR things over `jobs` completed jobs, in two independent logs:
+  #   bytesPerJob     = total size of every RUNNER log file / jobs      (runner volume)
+  #   tailSentinel    = runner-log lines carrying the Cmd's distinctive TAIL (runner boundedness)
+  #   mgrBytesPerJob  = size of the MANAGER's own log / jobs            (manager volume)
+  #   mgrTailSentinel = manager-log lines carrying that same tail       (manager boundedness)
+  # The sentinel is the sharp half: it sits at the very END of each Cmd, so it can only appear in
+  # a log line that copied the command line WHOLE. A bytes threshold alone could be satisfied by
+  # dropping a log line instead of bounding it; a sentinel count alone would not notice the volume
+  # creeping back through some other line. Pre-fix all four fail.
+  #
+  # The manager is deliberately started with --debug, because that is production's own state (it
+  # was turned on during the 260725 investigation, ~12MB/min, and the handoff doc's operational
+  # notes say to confirm whether it is still on) and it is the regime the NEXT profiling round
+  # will read. The manager's per-job lines - `reserved job`, `completed job`, `released job` /
+  # `buried job`, `unburied job`, `removed job` - are clog.Debug, so they are invisible without it.
+  # --debug is not propagated to runners (buildRunnerCmd, cmd/manager.go), so it does not perturb
+  # the runner-log half of the measurement.
+  #
+  # A MISSING measurement (dead manager, nothing added, jobs never completed, no runner logs, zero
+  # bytes in either log, or a padKB too small for the Cmd to dominate the fixed per-job log
+  # overhead) is a hard FAIL, never a cheap PASS.
+  need_bin; ensure_config
+  local jobs="${1:-30}" secs="${2:-180}" cores="${3:-2}" padkb="${4:-20}"
+  local rg=rgrunnerlog
+  local logdir="$WRDEV_ROOT/runnerlog-runnerlogs" work="$WRDEV_ROOT/runnerlog.json"
+  local maxper="${WRDEV_RUNLOG_MAX_BYTES_PER_JOB:-4096}" minpad="${WRDEV_RUNLOG_MIN_PADKB:-4}"
+  # 8192 not 4096: the MEASURED post-fix figure on this host is 2,250 bytes/job at jobs=30, and the
+  # manager log also carries fixed startup/scheduler debug lines that get divided by `jobs`, so a
+  # small `jobs` would otherwise false-FAIL. Pre-fix is ~43,000 bytes/job (2 whole copies of a 20KB
+  # Cmd on top of the same 2,250), so 8192 still discriminates by more than 5x - and the sentinel
+  # check below is the sharp half regardless of padKB.
+  local mgrmaxper="${WRDEV_MGRLOG_MAX_BYTES_PER_JOB:-8192}"
+  echo "reliable4 ITEM C2 runner-log-bytes gate: $jobs SUCCESSFUL jobs each with a ~${padkb}KB Cmd,"
+  echo "on an isolated dev manager (-s local, --max_cores $cores, --runner_filelog, --debug)."
+  echo "prod pre-fix: 'reserved a job' p99 24,261 bytes, max 1,345,498 bytes, and 4 such lines per job."
+  echo "Gate: runner-log bytes/completed job <= $maxper AND manager-log bytes/completed job <= $mgrmaxper"
+  echo "      AND 0 lines in EITHER log carrying the Cmd's tail sentinel."
+  echo "A MISSING measurement (no runner logs, 0 bytes, jobs never completed, dead manager) is a FAIL."
+  rm -rf "$logdir" 2>/dev/null; mkdir -p "$logdir"
+  cmd_stop >/dev/null 2>&1 || true
+  rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
+  echo "starting isolated dev manager (-s local, --debug); dev mode wipes the DB"
+  osunset ; timeout 90 "$WR" manager start --deployment development -s local --debug \
+    --max_cores "$cores" --runner_filelog "$logdir" 2>&1 | grep -aE 'started on|token=' | head -2
+  local mpid; mpid=$(mgr_pid "$DEV_RUN")
+  { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
+  echo "pid $mpid"
+  sleep 3
+
+  local rc=0
+  rl_run "$jobs" "$secs" "$rg" "$logdir" "$work" "$padkb" "$mpid" "$maxper" "$minpad" \
+    "$DEV_RUN/log" "$mgrmaxper" || rc=$?
+  echo "## CLEANUP"
+  cmd_stop >/dev/null 2>&1
+  ef_reap_runners "$logdir"
+  rm -rf "$logdir" 2>/dev/null; rm -f "$work" 2>/dev/null
+  return "$rc"
+}
+
+# rl_run does the measured part of runner-log-bytes, so the caller can always clean up the
+# runner-log dir and the (large) job file without its `rm`s swallowing the FAIL exit code.
+rl_run() {  # <jobs> <secs> <repGroup> <logdir> <jobfile> <padKB> <mgrPid> <maxPerJob> <minPadKB> <mgrLog> <mgrMaxPerJob>
+  local jobs="$1" secs="$2" rg="$3" logdir="$4" work="$5" padkb="$6" mpid="$7" maxper="$8" minpad="$9"
+  local mgrlog="${10}" mgrmaxper="${11}"
+  local sent=WRDEVCMDTAILSENTINEL
+  # the index goes at the FRONT of the padding so every Cmd is unique (same Cmd+Cwd is the same
+  # job key, so identical commands would be deduplicated down to one), leaving the sentinel at the
+  # very end where only a whole-command-line copy can reach it.
+  echo "generating $jobs unique jobs with a ~${padkb}KB padded Cmd -> $work"
+  perl -e "my \$pad='c' x ($padkb*1024); for my \$i (1..$jobs){ print '{\"cmd\":\"true #'.\$i.' '.\$pad.'$sent\",\"memory\":\"100M\",\"cpus\":1}'.\"\n\" }" \
+    > "$work"
+  local out arc
+  out=$(osunset; timeout 300 "$WR" add -f "$work" --rep_grp "$rg" \
+    --deployment development 2>&1); arc=$?
+  echo "$out" | tail -1
+  if [ "$arc" -ne 0 ] || ! echo "$out" | grep -qE "Added $jobs new commands"; then
+    echo "FAIL (NOT MEASURED): $jobs jobs were not added (manager up? see the wr add output above)"
+    return 1
+  fi
+
+  echo "waiting up to ${secs}s for all $jobs to complete"
+  local counts="" complete=0 waited=0
+  while [ "$waited" -lt "$secs" ]; do
+    sleep 5; waited=$((waited + 5))
+    counts=$(osunset; timeout 60 "$WR" status --deployment development -i "$rg" -o counts 2>/dev/null | tr '\n' ' ')
+    complete=$(ef_num "$counts" complete)
+    echo "  t=${waited}s $rg[$counts] runnerLogBytes=$(rl_bytes "$logdir")"
+    [ "$complete" -ge "$jobs" ] && break
+  done
+
+  local logbytes; logbytes=$(rl_bytes "$logdir")
+  local logfiles; logfiles=$(find "$logdir" -type f 2>/dev/null | wc -l)
+  local hits; hits=$(ef_attempts "$logdir" "$sent")
+  local mgrbytes; mgrbytes=$(rl_bytes "$mgrlog")
+  local mgrhits; mgrhits=$(ef_attempts "$mgrlog" "$sent")
+  local perjob=0 mgrperjob=0
+  [ "$jobs" -gt 0 ] && perjob=$((logbytes / jobs)) && mgrperjob=$((mgrbytes / jobs))
+  echo "## VERDICT: complete=$complete/$jobs  runnerLogBytes=$logbytes  bytesPerJob=$perjob (max $maxper)"
+  echo "##          tailSentinelLines=$hits (want 0)  runnerLogFiles=$logfiles  cmdBytes~$((padkb * 1024))"
+  echo "##          managerLogBytes=$mgrbytes  mgrBytesPerJob=$mgrperjob (max $mgrmaxper)"
+  echo "##          mgrTailSentinelLines=$mgrhits (want 0)  managerLog=$mgrlog"
+  echo "##          counts: $rg[$counts]"
+
+  # a gate that PASSES when the measurement is missing is worse than no gate.
+  local unmeasured=""
+  [ "$jobs" -gt 0 ] || unmeasured="asked for $jobs jobs, so there was nothing to measure"
+  [ -z "$unmeasured" ] && { ps -p "$mpid" >/dev/null 2>&1 || unmeasured="the dev manager (pid $mpid) died during the run"; }
+  [ -z "$unmeasured" ] && [ "$padkb" -lt "$minpad" ] \
+    && unmeasured="padKB $padkb is under WRDEV_RUNLOG_MIN_PADKB $minpad: too small for the Cmd to dominate the fixed per-job log overhead (timestamps, keys, the other per-job lines), so bytes-per-job would stop measuring command-line volume. Note the pre-fix code still FAILS well below $minpad (the sentinel check catches it at any padKB, and the bytes check at ~2KB too), so this bound is conservative, not load-bearing"
+  [ -z "$unmeasured" ] && [ -z "$counts" ] \
+    && unmeasured="'wr status -i $rg -o counts' returned nothing, so no manager-side state was read"
+  [ -z "$unmeasured" ] && [ "$complete" -ne "$jobs" ] \
+    && unmeasured="only $complete/$jobs jobs completed in ${waited}s, so bytes-per-COMPLETED-job is not comparable"
+  [ -z "$unmeasured" ] && [ "$logfiles" -le 0 ] \
+    && unmeasured="no runner log files under $logdir, so no runner ever started (--runner_filelog broken?)"
+  [ -z "$unmeasured" ] && [ "$logbytes" -le 0 ] \
+    && unmeasured="the runner logs are empty, so nothing was logged to measure"
+  [ -z "$unmeasured" ] && [ ! -f "$mgrlog" ] \
+    && unmeasured="there is no manager log at $mgrlog, so the manager-log half was never measured"
+  [ -z "$unmeasured" ] && [ "$mgrbytes" -le 0 ] \
+    && unmeasured="the manager log $mgrlog is empty, so --debug is not writing the per-job lines this measures"
+  if [ -n "$unmeasured" ]; then
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real measurement; inspect $logdir and the counts above"
+    return 1
+  fi
+  if [ "$hits" -ne 0 ]; then
+    echo "FAIL: $hits runner-log lines carry the END of the command line, so a whole ~$((padkb * 1024))-byte"
+    echo "      Cmd is being copied into the log ($perjob bytes per completed job)"
+    echo "  => bound it with internal.Abbreviate and keep the job key, so 'wr status' still yields the whole thing"
+    return 1
+  fi
+  if [ "$mgrhits" -ne 0 ]; then
+    echo "FAIL: $mgrhits MANAGER-log lines carry the END of the command line, so a whole"
+    echo "      ~$((padkb * 1024))-byte Cmd is being copied into the manager's own log ($mgrperjob bytes per job)"
+    echo "  => bound the per-job clog.Debug sites (reserved/completed/released/buried/unburied/removed job)"
+    echo "     with job.loggableCmd() and keep the job key; that log is what the next prod profile reads"
+    return 1
+  fi
+  if [ "$perjob" -gt "$maxper" ]; then
+    echo "FAIL: $perjob runner-log bytes per completed job (want <= $maxper) for a ~$((padkb * 1024))-byte Cmd"
+    echo "  => something on the per-job path is logging unbounded, user-supplied content"
+    return 1
+  fi
+  if [ "$mgrperjob" -gt "$mgrmaxper" ]; then
+    echo "FAIL: $mgrperjob MANAGER-log bytes per completed job (want <= $mgrmaxper) for a"
+    echo "      ~$((padkb * 1024))-byte Cmd, with --debug on as production had it"
+    echo "  => something on the manager's per-job path is logging unbounded, user-supplied content"
+    return 1
+  fi
+  echo "PASS: $jobs jobs with a ~$((padkb * 1024))-byte Cmd each cost $perjob runner-log bytes and"
+  echo "      $mgrperjob manager-log bytes per job (<= $maxper / $mgrmaxper), and no line in either log"
+  echo "      carried the command line's tail"
+  return 0
+}
+
+# rl_bytes prints the total size of every file under a runner-log dir, or 0 when there is nothing
+# there (which its caller must treat as an unmeasured FAIL, never as a cheap PASS).
+rl_bytes() {  # <logdir>
+  local n
+  n=$(find "$1" -type f -printf '%s\n' 2>/dev/null | awk '{t+=$1} END{printf "%d\n", t+0}')
+  case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -2158,6 +2340,20 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         (defaults 1900 120). Pre-fix: one ~1,900-id argv, ~104KB of log per cycle,
                         all 1,900 ids re-killed on the next cycle, no killed/gone split, and a hung
                         bkill blocks the kill path for as long as it hangs.
+  runner-log-bytes [jobs] [seconds] [cores] [padKB]
+                        reliable4 ITEM C2 SCALE GATE (real binary, farm-safe - -s local, no LSF job
+                        ever submitted): N SUCCESSFUL jobs whose Cmd carries a ~padKB padded shell
+                        comment, run under --runner_filelog and --debug, then measures BYTES PER
+                        COMPLETED JOB in the runner logs AND in the manager's own log, and counts
+                        lines in each carrying the Cmd's tail sentinel. PASS = runner bytes/job <=
+                        WRDEV_RUNLOG_MAX_BYTES_PER_JOB (4096), manager bytes/job <=
+                        WRDEV_MGRLOG_MAX_BYTES_PER_JOB (8192) and 0 sentinel lines in either
+                        (defaults 30 180 2 20). Pre-fix: ~4 copies of the whole Cmd per job in the
+                        runner log (`reserved a job`, `will start executing`, `started executing`,
+                        `command ... ran OK`) and 2 more in the manager log (`reserved job`,
+                        `completed job`), so the sentinel is present in both. It is the only thing
+                        that pins the cmd/runner.go call sites, which no unit test can reach, and
+                        the only end-to-end check of the manager log with --debug on, as prod had it.
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
@@ -2202,6 +2398,7 @@ case "${1:-help}" in
   limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
   backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
   backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
+  runner-log-bytes) cmd_runner_log_bytes "${2:-30}" "${3:-180}" "${4:-2}" "${5:-20}" ;;
   prod-start) cmd_prod_start "${2:-local}" ;;
   prod-stop) cmd_prod_stop ;;
   crash-recovery) cmd_crash_recovery ;;

@@ -47,6 +47,10 @@ import (
 
 const logDirPerm = 0o770
 
+// jobLineFixedArgs is how many key-value args logJobLine always logs (the job's
+// key and its bounded command line).
+const jobLineFixedArgs = 4
+
 // runnerMinProcs is the number of OS threads the runner forces when there is
 // only a single CPU, so that we don't lock up if we mount.
 const runnerMinProcs = 2
@@ -243,7 +247,7 @@ complete.`,
 				break
 			}
 
-			clog.Info(context.Background(), "reserved a job", "key", job.Key(), "attempts", job.Attempts, "cmd", job.Cmd)
+			logJobLine(context.Background(), "reserved a job", job, "attempts", job.Attempts)
 
 			if job.Requirements.Time != jobTime {
 				// confirm we have enough time left to run this
@@ -301,7 +305,7 @@ complete.`,
 				}
 			}
 
-			info("will start executing [%s]", job.Cmd)
+			logJobLine(context.Background(), "will start executing", job)
 			err = jq.Execute(context.Background(), job, config.RunnerExecShell)
 			numrun++
 
@@ -322,12 +326,33 @@ complete.`,
 					}
 				}
 			} else {
-				info("command [%s] ran OK (exit code %d)", job.Cmd, job.Exitcode)
+				logJobLine(context.Background(), "command ran OK", job, "exitcode", job.Exitcode)
 			}
 		}
 
 		info("wr runner exiting, having run %d commands, because %s", numrun, exitReason)
 	},
+}
+
+// logJobLine logs msg about job at info level, always naming the job's key and a
+// BOUNDED rendering of its command line, plus any extra key-value pairs.
+//
+// The runner logs its job's command line on every reservation, every start and
+// every success, and the command line is entirely user-supplied: production
+// measured a p99 of 24,261 bytes and a maximum of 1,345,498 bytes for a single
+// "reserved a job" line, and the same job's Cmd was written out again by the two
+// other lines. 0d22eda cut the multiplier (an unrunnable job is attempted once
+// rather than forever) but not the per-line size, which is what this does.
+//
+// The key is what keeps the abbreviation free of cost to an operator: `wr status`
+// yields the whole command line for it. internal.Abbreviate is presentation only,
+// so the command actually executed is unaffected.
+func logJobLine(ctx context.Context, msg string, job *jobqueue.Job, extra ...any) {
+	args := make([]any, 0, len(extra)+jobLineFixedArgs)
+	args = append(args, "key", job.Key(), "cmd", internal.Abbreviate(job.Cmd))
+	args = append(args, extra...)
+
+	clog.Info(ctx, msg, args...)
 }
 
 // reserveSchedulerID returns this runner's scheduler element id in the

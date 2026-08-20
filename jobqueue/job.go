@@ -45,6 +45,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys/v5"
 	"github.com/VertebrateResequencing/wr/container"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -317,6 +318,17 @@ func (j *Job) derivedLocked() *jobDerived {
 // made for clients), which starts with no memo, so nothing to invalidate.
 func (j *Job) invalidateDerivedLocked() {
 	j.derived = nil
+}
+
+// loggableCmd returns the job's command line bounded for a log line or an error
+// message (see internal.Abbreviate). Every runner logs its job's command line
+// several times per job, and a Cmd big enough to fail exec with E2BIG is by
+// definition over 128KB, which is what took production's runner log lines to
+// 1.3MB. It is presentation only: j.Cmd itself is untouched, so the command that
+// actually gets run - and the command `wr status` reports for j.Key() - is
+// always the whole thing.
+func (j *Job) loggableCmd() string {
+	return internal.Abbreviate(j.Cmd)
 }
 
 func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, workingDir string) string {

@@ -36,10 +36,12 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -65,6 +67,39 @@ const (
 	// groups).
 	schedGroupWithLimitParts = 2
 )
+
+// slowRequestThresholdDefault is how long a single client RPC may take before
+// handleRequest warns about it.
+//
+// It has to be quiet on a healthy busy manager and unmissable on a sick one. The
+// slowest LEGITIMATE hot-path RPC measured at scale is an archive at p99 2.75s
+// (660 concurrent archivers against a 9.99GiB DB, f7e36bc), so 10s sits ~3.6x
+// above the worst normal case and a busy manager does not spam the log. At the
+// other end, ClientMinRequestTimeout is 60s: warning at 10s reaches an operator
+// while the manager is merely degrading, rather than only after clients have
+// already given up. Production's silent 12-minute, 12GB request is 72x over it.
+const slowRequestThresholdDefault = 10 * time.Second
+
+// slowRequestLogMsg is the message of the slow-request warning; operators and
+// log summarisers grep for it, so it is a constant rather than a literal.
+const slowRequestLogMsg = "slow request"
+
+// slowRequestDecodeLogMsg is the message of the slow-DECODE warning. It extends
+// slowRequestLogMsg so that one grep finds both halves of "the manager sat on a
+// request for minutes".
+const slowRequestDecodeLogMsg = slowRequestLogMsg + " decode"
+
+// slowRequestSelectorParts is the initial capacity for a rendered selector's
+// parts: how many clientRequest fields requestSelector can report.
+const slowRequestSelectorParts = 6
+
+// slowRequestThreshold is the live threshold. It is a var only so tests can
+// drive it down; nothing in the manager writes it, so it needs no
+// synchronisation (a test must set it before the server it measures starts
+// serving).
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var slowRequestThreshold = slowRequestThresholdDefault
 
 type subscriptionCatchUpRecord struct {
 	job    *Job
@@ -387,6 +422,181 @@ func malformedAddJobMessage(jobs []*Job) string {
 	return ""
 }
 
+// warnIfSlowRequest warns when one client RPC took longer than
+// slowRequestThreshold, naming the method, what it was asking about, how long it
+// took and how big a reply it produced. Production ran a 12-minute, 12GB request
+// and logged NOTHING about it: it was identified only because a profiling
+// session happened to be attached.
+//
+// The fast path is a single duration comparison, so it costs nothing on the
+// per-RPC hot path (measured at 88ns and ZERO allocations per RPC, against a
+// 5.6us RPC); everything that costs anything (rendering the selector,
+// formatting) happens only once the threshold has already been crossed.
+//
+// It deliberately does NOT sample runtime.ReadMemStats for an allocation delta,
+// even on the slow path. ReadMemStats stops the world, and the slow path is
+// precisely where that is unaffordable: when the manager is degrading EVERY
+// request crosses the threshold, so a per-slow-request stop-the-world would
+// amplify the stall being diagnosed - the same observer effect that ruined the
+// 2026-07-28 CPU profile. A process-wide cumulative allocation counter could not
+// be attributed to one request anyway, because handleRequest runs concurrently
+// with the other RPC readers, so it would credit other goroutines' work to
+// whichever request happened to be slow. replyBytes is exact, correctly
+// attributed and free: production's case was handleGetByRepGroup encoding a
+// multi-GB reply for a client that had already given up, and the reply's encoded
+// size names that precisely.
+//
+// It logs at WARN deliberately, and that level is asserted: the manager runs at
+// logLevel "warn" unless started with --debug (cmd/manager.go's
+// setupManagerLogging), and clog wraps the handler in log.LvlFilterHandler, so
+// demoting this line to debug or info would delete it from the shipped manager
+// log entirely and silently restore the exact production silence it exists to
+// fix. This is Bug 5's lesson: an unexplained outcome must reach an operator at
+// the DEFAULT log level.
+func warnIfSlowRequest(ctx context.Context, cr *clientRequest, sr *serverResponse,
+	srerr string, replyBytes int, start time.Time,
+) {
+	// the whole fast path: one duration comparison against a threshold the request
+	// itself may legitimately raise. A separate cheaper pre-check against the bare
+	// threshold was measured to save ~3ns of the 88ns this costs (the two nanotime
+	// reads dominate), and it could never fail a test, because a wait is never
+	// negative - so it was dead weight, not an optimisation.
+	elapsed := time.Since(start)
+
+	wait := requestWait(cr)
+	if elapsed < slowRequestThreshold+wait {
+		return
+	}
+
+	// report the reply that was actually SENT: replyToClient discards sr entirely
+	// when srerr is set and sends {Err: srerr}, so counting sr.Jobs there would
+	// credit the client with jobs it never received.
+	jobs := 0
+	if srerr == "" && sr != nil {
+		jobs = len(sr.Jobs)
+	}
+
+	args := []any{
+		"method", cr.Method, "selector", requestSelector(cr), "duration", elapsed,
+		"clientWait", wait, "replyBytes", replyBytes, "replyJobs", jobs,
+	}
+	if srerr != "" {
+		args = append(args, "replyErr", srerr)
+	}
+
+	clog.Warn(ctx, slowRequestLogMsg, args...)
+}
+
+// requestWait is how long a request explicitly asked the server to HOLD it
+// before answering, which is not the manager being slow. Two methods block by
+// design: a reserve waits for a job to become ready (a runner polls with -r
+// seconds, 2 by default) and a subscription long-poll is held for
+// serverSubscriptionHoldTime, 25 SECONDS - so without this every idle subscriber
+// would trip any threshold under 25s on every poll, which is exactly the log
+// spam that would make the warning worthless. Every other method ignores
+// cr.Timeout, so a client cannot use it to hide a genuinely slow request.
+//
+// The two exemptions differ, and each mirrors what the server actually does with
+// the client's number.
+func requestWait(cr *clientRequest) time.Duration {
+	switch cr.Method {
+	case requestMethodReserve:
+		// reserveWithLimits passes cr.Timeout straight through to the limiter and
+		// then to queue.Reserve without clamping it, so the whole claim really is
+		// time the client asked to wait. A zero/negative timeout does not block at
+		// all, so it buys no exemption.
+		if cr.Timeout > 0 {
+			return cr.Timeout
+		}
+	case requestMethodWaitForUpdates:
+		// mirror waitForSubscriptionUpdates' own clamp exactly (see
+		// server_subscription.go): it holds the poll for serverSubscriptionHoldTime
+		// both when the client asks for nothing (<= 0, which the wire format
+		// accepts and which any hand-written client or a refactor dropping
+		// Subscription.updateRequest's Timeout would send) AND when it asks for
+		// more than the hold. Not mirroring the first half would put one spurious
+		// warning per idle subscriber per poll in the log; not mirroring the second
+		// would let a client hide a genuinely wedged waitForUpdates - one stuck on
+		// csmutex, say - for as long as it cared to claim.
+		if cr.Timeout <= 0 || cr.Timeout > serverSubscriptionHoldTime {
+			return serverSubscriptionHoldTime
+		}
+
+		return cr.Timeout
+	}
+
+	return 0
+}
+
+// requestSelector renders what a request was asking about, so a slow-request
+// warning is actionable without a profiler attached. Only called once the
+// duration threshold has been crossed.
+func requestSelector(cr *clientRequest) string {
+	parts := make([]string, 0, slowRequestSelectorParts)
+	parts = appendSelector(parts, "repgroup", requestRepGroup(cr))
+	parts = appendSelector(parts, "match", string(cr.RepGroupMatch))
+	parts = appendSelector(parts, "state", string(cr.State))
+	parts = appendSelector(parts, "limitgroup", cr.LimitGroup)
+	parts = appendSelector(parts, "schedgroup", cr.SchedulerGroup)
+	parts = appendSelector(parts, "keys", selectorCount(len(cr.Keys)))
+	parts = appendSelector(parts, "jobs", selectorCount(len(cr.Jobs)))
+
+	return strings.Join(parts, " ")
+}
+
+// appendSelector appends "key=value" to parts, skipping an empty value and
+// bounding value's length: RepGroups and limit group names are user-supplied, and
+// a warning about an over-sized request must not itself be over-sized.
+func appendSelector(parts []string, key, value string) []string {
+	if value == "" {
+		return parts
+	}
+
+	return append(parts, key+"="+internal.Abbreviate(value))
+}
+
+// requestRepGroup returns the RepGroup a request selects on, or "" if it does
+// not select on one.
+func requestRepGroup(cr *clientRequest) string {
+	if cr.Job == nil {
+		return ""
+	}
+
+	return cr.Job.RepGroup
+}
+
+// selectorCount renders a count for a selector, or "" when there is nothing to
+// report.
+func selectorCount(n int) string {
+	if n == 0 {
+		return ""
+	}
+
+	return strconv.Itoa(n)
+}
+
+// warnIfSlowDecode warns when a request took longer than slowRequestThreshold
+// just to be DECODED off the wire, which handleRequest cannot report as an
+// ordinary slow request because a failed decode leaves it with no method and no
+// selector to name.
+//
+// The gap is small but it is exactly the shape of the incident this whole item
+// exists for: production's silent request was 12 GB, and a multi-GB body that
+// runs out of memory or hits a codec error spends its minutes inside
+// dec.Decode() and then returns early. dispatchClientRequest does log the decode
+// error itself, but only when ServerLogClientErrors is set and never with a
+// duration or a size, so "the manager was wedged for 12 minutes" was still
+// invisible. requestBytes is the actionable fact here, and it is free.
+func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, decodeErr error) {
+	elapsed := time.Since(start)
+	if elapsed < slowRequestThreshold {
+		return
+	}
+
+	clog.Warn(ctx, slowRequestDecodeLogMsg, "duration", elapsed,
+		"requestBytes", requestBytes, "err", decodeErr)
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -404,12 +614,18 @@ func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup str
 // clientRequest, does the requested work, then responds back to the client with
 // a serverResponse.
 func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
+	start := time.Now()
+
 	dec := codec.NewDecoderBytes(m.Body, s.ch)
 	cr := &clientRequest{}
 
 	errd := dec.Decode(cr)
 	if errd != nil {
+		requestBytes := len(m.Body)
+
 		m.Free()
+
+		warnIfSlowDecode(ctx, requestBytes, start, errd)
 
 		return errd
 	}
@@ -428,7 +644,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		sr, srerr, qerr = s.dispatchMethod(ctx, cr, drain)
 	}
 
-	return s.replyToClient(ctx, m, cr, sr, srerr, qerr)
+	replyBytes, err := s.replyToClient(ctx, m, cr, sr, srerr, qerr)
+
+	warnIfSlowRequest(ctx, cr, sr, srerr, replyBytes, start)
+
+	return err
 }
 
 // validateRequest checks a request's token and that the server can serve it,
@@ -462,10 +682,11 @@ func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, str
 	return "", ""
 }
 
-// replyToClient sends sr (or an error response) back to the client, returning a
-// detailed error for logging when srerr is set.
+// replyToClient sends sr (or an error response) back to the client, returning
+// how many bytes the reply encoded to and a detailed error for logging when
+// srerr is set.
 func (s *Server) replyToClient(ctx context.Context, m *mangos.Message, cr *clientRequest,
-	sr *serverResponse, srerr, qerr string) error {
+	sr *serverResponse, srerr, qerr string) (int, error) {
 	// on error, just send the error back to client and return a more detailed
 	// error for logging
 	if srerr != "" {
@@ -481,10 +702,13 @@ func (s *Server) replyToClient(ctx context.Context, m *mangos.Message, cr *clien
 	return s.reply(m, sr) // *** log failure to reply?
 }
 
-// replyError sends an error response to the client and returns a detailed
-// jobqueue Error for logging (defaulting qerr to srerr).
-func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRequest, srerr, qerr string) error {
-	if errr := s.reply(m, &serverResponse{Err: srerr}); errr != nil {
+// replyError sends an error response to the client and returns how many bytes it
+// encoded to plus a detailed jobqueue Error for logging (defaulting qerr to
+// srerr).
+func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRequest,
+	srerr, qerr string) (int, error) {
+	replyBytes, errr := s.reply(m, &serverResponse{Err: srerr})
+	if errr != nil {
 		clog.Warn(ctx, "reply to client failed", "err", errr)
 	}
 
@@ -492,7 +716,7 @@ func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRe
 		qerr = srerr
 	}
 
-	return Error{cr.Method, cr.key(), qerr}
+	return replyBytes, Error{cr.Method, cr.key(), qerr}
 }
 
 // handlePing returns server info for a ping request.
@@ -828,7 +1052,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
 	job := s.itemToJob(ctx, item, false, true)
-	clog.Debug(ctx, "reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
+	clog.Debug(ctx, "reserved job", "key", item.Key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
 
 	return &serverResponse{Job: job}
 }
@@ -1167,7 +1391,7 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 	s.rpl.Lock()
 	s.rpl.Delete(rgroup, key)
 	s.rpl.Unlock()
-	clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
+	clog.Debug(ctx, "completed job", "key", key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
 	s.decrementGroupCount(ctx, sgroup, 1)
 
 	return nil, "", ""
@@ -2119,7 +2343,7 @@ func (s *Server) schedGroupToLimitGroups(group string) []string {
 }
 
 // reply to a client.
-func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
+func (s *Server) reply(m *mangos.Message, sr *serverResponse) (int, error) {
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
@@ -2128,7 +2352,7 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	if err != nil {
 		m.Free()
 
-		return err
+		return 0, err
 	}
 
 	m.Body = encoded
@@ -2138,5 +2362,5 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 		m.Free()
 	}
 
-	return err
+	return len(encoded), err
 }
