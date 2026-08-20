@@ -173,13 +173,6 @@ var errGetRecentState = errors.New(
 	"GetRecent (--recent) only returns complete jobs and does not support a state filter",
 )
 
-// startFailureCmdMax is how much of a command line a permanent start failure
-// quotes in its error. The E2BIG case is BY DEFINITION a command line over
-// MAX_ARG_STRLEN, and every runner logs this error, so quoting the whole thing
-// is what took production's runner logs to 1.3MB single lines; the length is the
-// actionable fact there, not the bytes.
-const startFailureCmdMax = 200
-
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
 	RepGroupMatchSubStr RepGroupMatch = "substr"
@@ -421,13 +414,13 @@ func (c *Client) reportStartFailure(job *Job, jc string, startErr error) error {
 		extra := recoveryExtra("releasing the job", c.releaseAfterAttempt(job, nil, FailReasonStart))
 		extra += unmountExtra(job)
 
-		return fmt.Errorf("could not start command [%s]: %w%s", jc, startErr, extra)
+		return fmt.Errorf("could not start command [%s]: %w%s", internal.Abbreviate(jc), startErr, extra)
 	}
 
 	// unmounted before burying, so that any failure to unmount is recorded in
 	// the job's stderr along with the start failure itself.
 	buryErr := fmt.Errorf("could not start command [%s]: %w (%s, which is permanent, so it has been buried)%s",
-		abbreviateCmdLine(jc), startErr, failReason, unmountExtra(job))
+		internal.Abbreviate(jc), startErr, failReason, unmountExtra(job))
 
 	return c.buryWrapErr(job, failReason, buryErr)
 }
@@ -476,16 +469,6 @@ func permanentStartFailReason(err error) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// abbreviateCmdLine renders a command line for an error message, replacing
-// everything past startFailureCmdMax bytes with its total length.
-func abbreviateCmdLine(jc string) string {
-	if len(jc) <= startFailureCmdMax {
-		return jc
-	}
-
-	return fmt.Sprintf("%s[...] (truncated; %d bytes total)", jc[:startFailureCmdMax], len(jc))
 }
 
 // releaseAfterAttempt is Release for a job whose Cmd we actually tried to run.
@@ -1858,7 +1841,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return c.reportStartFailure(job, jc, err)
 	}
 
-	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
+	clog.Info(ctx, "started executing", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
 
 	var oomMonitor *cgroupOOMMonitor
 
@@ -1970,11 +1953,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			if errc != nil {
 				if errk == nil {
-					clog.Info(ctx, "killed cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid)
+					clog.Info(ctx, "killed cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
 
 					errk = errc
 				} else {
-					clog.Warn(ctx, "failed to kill cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid, "err", errk)
+					clog.Warn(ctx, "failed to kill cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid, "err", errk)
 					errk = fmt.Errorf("%w, and getting child processes failed: %w", errk, errc)
 				}
 			}
@@ -1998,11 +1981,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				// result in their death
 				errc = child.Terminate()
 				if errk == nil {
-					clog.Info(ctx, "killed child of cmd", "cmd", job.Cmd, "pid", child.Pid)
+					clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
 
 					errk = errc
 				} else {
-					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.Cmd, "pid", child.Pid)
+					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
 
 					errk = fmt.Errorf("%w, and killing its child process failed: %w", errk, errc)
 				}
@@ -2535,7 +2518,7 @@ func abnormalOutcome(in execOutcomeInput, cmdOut string) execOutcome {
 		dorelease:  true,
 		failreason: FailReasonAbnormal,
 		myerr: fmt.Errorf("command [%s] failed to complete normally (%w)%s%s",
-			in.job.Cmd, in.err, in.mayBeTemp, cmdOut),
+			in.job.loggableCmd(), in.err, in.mayBeTemp, cmdOut),
 	}
 }
 
@@ -2569,21 +2552,21 @@ func (c *Client) classifyExitStatus(in execOutcomeInput, waitStatus syscall.Wait
 		out.myerr = fmt.Errorf(
 			"command [%s] exited with code %d (permission problem, or command is not executable), "+
 				"which seems permanent, so it has been buried%s",
-			in.job.Cmd, exitcode, cmdOut,
+			in.job.loggableCmd(), exitcode, cmdOut,
 		)
 	case exitCodeCommandNotFound:
 		out.failreason = FailReasonCFound
 		//nolint:err113
 		out.myerr = fmt.Errorf(
 			"command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s",
-			in.job.Cmd, exitcode, cmdOut,
+			in.job.loggableCmd(), exitcode, cmdOut,
 		)
 	case exitCodeCommandInvalid:
 		out.failreason = FailReasonCExit
 		//nolint:err113
 		out.myerr = fmt.Errorf(
 			"command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s",
-			in.job.Cmd, exitcode, cmdOut,
+			in.job.loggableCmd(), exitcode, cmdOut,
 		)
 	default:
 		out = c.classifyReleasedExit(in, waitStatus, exitcode, cmdOut)
@@ -2635,7 +2618,7 @@ func signalExitError(job *Job, waitStatus syscall.WaitStatus, mayBeTemp, cmdOut 
 	//nolint:err113
 	return fmt.Errorf(
 		"command [%s] terminated by signal %s (shell exit code %d)%s%s",
-		job.Cmd, waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
+		job.loggableCmd(), waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
 	)
 }
 
@@ -2657,13 +2640,13 @@ func plainExitOutcome(job *Job, exitcode int, mayBeTemp, cmdOut string) (bury bo
 		//nolint:err113
 		return true, fmt.Errorf(
 			"command [%s] exited with code %d%s%s",
-			job.Cmd, exitcode, ", after the noretries time, so will not be tried again", cmdOut,
+			job.loggableCmd(), exitcode, ", after the noretries time, so will not be tried again", cmdOut,
 		)
 	}
 
 	//nolint:err113
 	return false, fmt.Errorf(
-		"command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
+		"command [%s] exited with code %d%s%s", job.loggableCmd(), exitcode, mayBeTemp, cmdOut)
 }
 
 // signalledOutcome returns the fail reason and error for a job killed by a
