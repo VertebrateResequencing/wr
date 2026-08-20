@@ -24,7 +24,48 @@ Branch is `reliable4`. Nothing in this batch has been pushed.
 
 ---
 
-## STATUS: findings 1–5 are FIXED; the farm-scale validation gate is DEFERRED
+## STATUS (updated 2026-08-20): items A, B, C done; the VALIDATION GATE PASSED
+
+**Superseding update, 2026-08-20.** Everything below this block was written on
+2026-08-19 and is kept for its reasoning and its hard-won process notes, but the
+plan itself has moved on:
+
+- **Item A** — `785a151`. Pre-start releases now spend a retry, so they cannot loop
+  forever. The client reports whether it *attempted* the command (additive wire
+  field, back-compatible both ways); one server predicate, evaluated once and
+  carried on the report, drives both the bury decision and the decrement.
+  Manager-initiated releases keep the StartTime-only rule, so a healthy-but-slow
+  starting job still cannot burn its retries. Neither of the doc's two candidate
+  fixes was used as written — candidate 1 was **measured wrong** (`cmd/runner.go`
+  releases jobs it never tried to run). See `.docs/bugfixes/260819-1.md`.
+- **Item B** — `5b90c53`. Archived decoding is bounded by the query's limit:
+  5,000 -> 1 decode for the default query, and the web failed-jobs drill-down
+  207 -> 2. **The trigger described below is wrong**: `-l` is `--cmdline`, not
+  `--limit`; `--limit` has no shorthand and defaults to 1, so plain
+  `wr status -i <substr> -z` was the heap bomb and no flag was needed.
+- **Item C** — `53c323f`. Slow/heavy requests now warn (10 s threshold, offset by
+  any wait the client explicitly asked for); `Cmd` is bounded in runner **and**
+  manager log lines. Runner log 82,427 -> 1,415 bytes/job in the gate, 571 in the
+  farm run; manager log 42,722 -> 2,250.
+- **Item D** — **reproduced, and the hypothesis below is wrong.** No delta is
+  dropped and none is missing: the client joins the live delta feed before its
+  `"current"` snapshot is served, so any transition in that window is counted
+  **twice**. The `limit -> 0` mass exit is not the cause — it is what made a
+  pre-existing offset glaring. Fix in flight per `.docs/bugfixes/260820-2.md`.
+- **Item E** — **answered by measurement: do not do it.** Queue-mutex block delay
+  fell **61x** to 0.89% of the total and the ranking flipped. Two new hotspots
+  displaced it: the **DB backup chain at 27.68% of peak CPU** and
+  `lsf.snapshotReserved` at **21.35% of mutex hold**.
+- **The validation gate (Batch 4) RAN and PASSED all six targets**, at a harsher
+  regime than the profiling run it validates (2000/2000 sustained runners vs ~686,
+  ~365 archives/s vs prod's 12/s). Finding 6 is confirmed fixed. Full report:
+  **`.docs/reliable4/validation-gate-260820.md`** — read that before the next
+  profiling round, especially its three calibration traps (notably: `pristine10`
+  is a **false PASS** for anything history-related).
+
+---
+
+## ORIGINAL STATUS (2026-08-19): findings 1–5 are FIXED; the farm-scale validation gate is DEFERRED
 
 Seven commits on `reliable4` (2026-08-18/19), each fix → review → commit, all with
 `make lint` clean and `make test`/`make race` at **393 passed, 0 data races**:
