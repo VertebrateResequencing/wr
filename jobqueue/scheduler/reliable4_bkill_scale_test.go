@@ -83,9 +83,10 @@ const (
 	bkScaleLogMax = 4096
 
 	// bkScaleHangBoundMs is how long killExcessCmds may take when bkill hangs: the
-	// shipped 1m exec timeout plus its 2s pipe grace, with margin for a loaded
-	// farm node.
-	bkScaleHangBoundMs = 90000
+	// shipped 1m exec timeout plus its 15s pipe-close grace, with margin for a
+	// loaded farm node. It stays well under bkScaleDefaultHangSecs, so a bound that
+	// stopped working would still show up as a failure here.
+	bkScaleHangBoundMs = 100000
 
 	// bkScaleOutcomeElements is how many elements the killed-vs-already-gone
 	// measurement uses (half are reported terminated, half already gone).

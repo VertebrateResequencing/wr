@@ -271,7 +271,9 @@ func TestReliable4BkillBounded(t *testing.T) {
 
 // setBkillTunables lowers the kill-path package vars for the duration of the
 // test (the per-bkill element cap to bkillTestBatch, so a prod-scale cycle needs
-// several batches), restoring them afterwards.
+// several batches, and the pipe-close grace to testPipeCloseGrace, so a bkill
+// whose descendant holds the pipes open costs milliseconds rather than the
+// shipped 15s), restoring them afterwards.
 func setBkillTunables(t *testing.T, execTimeout, backoffMin, backoffMax time.Duration) {
 	t.Helper()
 
@@ -280,6 +282,8 @@ func setBkillTunables(t *testing.T, execTimeout, backoffMin, backoffMax time.Dur
 
 	maxBkillBatchSize, bkillExecTimeout = bkillTestBatch, execTimeout
 	killBackoffMin, killBackoffMax = backoffMin, backoffMax
+
+	setPipeCloseGraces(t, testPipeCloseGrace)
 
 	t.Cleanup(func() {
 		maxBkillBatchSize, bkillExecTimeout = origBatch, origTimeout

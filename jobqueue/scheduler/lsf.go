@@ -148,10 +148,14 @@ const (
 	// bsubExecTimeout.
 	defaultBsubExecTimeout = 5 * time.Minute
 
-	// bsubKillGracePeriod is how long, after the bsub exec timeout kills bsub,
-	// we wait before force-closing its output pipes so the exec returns even if
-	// a child process is still holding them open.
-	bsubKillGracePeriod = 2 * time.Second
+	// defaultBsubPipeCloseGrace is the default bound on how long a bsub exec may
+	// take to close its output pipes after bsub itself is done. It is ADDED to
+	// defaultBsubExecTimeout, not contained by it: a bsub the timeout killed whose
+	// orphan still holds the pipe returns after the two together, so at a fifth of
+	// the timeout it lengthens that worst case by 20% and no more. Meanwhile an
+	// ordinary successful bsub, whose descendant on prod held the pipe past 2s,
+	// stays nowhere near it. See bsubPipeCloseGrace.
+	defaultBsubPipeCloseGrace = 1 * time.Minute
 
 	// defaultMaxBkillBatchSize is the conservative default cap on the number of
 	// LSF element ids wr hands a single bkill. It matches
@@ -170,10 +174,15 @@ const (
 	// reclamation. See bkillExecTimeout.
 	defaultBkillExecTimeout = 1 * time.Minute
 
-	// bkillGracePeriod is how long, after the bkill exec timeout kills bkill, we
-	// wait before force-closing its output pipes so the exec returns even if a
-	// child process is still holding them open.
-	bkillGracePeriod = 2 * time.Second
+	// defaultBkillPipeCloseGrace is the default bound on how long a bkill exec may
+	// take to close its output pipes after bkill itself is done. As with
+	// defaultBsubPipeCloseGrace it is ADDED to the exec timeout, not contained by
+	// it, so a wedged batch costs defaultBkillExecTimeout plus this; at a quarter of
+	// that timeout the worst case stays the same order as the timeout the kill path
+	// is already designed to tolerate inside a scheduling pass, while leaving many
+	// times the 2s that proved too short on the bsub side ample room for the
+	// descendant an ordinary bkill leaves behind. See bkillPipeCloseGrace.
+	defaultBkillPipeCloseGrace = 15 * time.Second
 
 	// defaultKillBackoffMin is the default minimum interval that must pass before
 	// wr re-issues a bkill for an element it has already asked LSF to kill. It is
@@ -219,6 +228,27 @@ var maxBsubArraySize = defaultMaxBsubArraySize //nolint:gochecknoglobals
 // package var so tests can lower it.
 var bsubExecTimeout = defaultBsubExecTimeout //nolint:gochecknoglobals
 
+// bsubPipeCloseGrace bounds how long we wait for bsub's output pipes to be closed
+// once bsub itself is done, before force-closing them so the exec returns.
+//
+// It is the exec.Cmd.WaitDelay of EVERY bsub, not only one the exec timeout
+// killed: Go starts that timer "when either the associated Context is done or a
+// call to Wait observes that the child process has exited, whichever occurs
+// first", and when it fires on a bsub that "otherwise exited with a successful
+// status", Output returns exec.ErrWaitDelay instead of nil. So this is a hard cap
+// on how long a bsub that worked may take to close its stdout, which is why the
+// value alone cannot make it safe: submitToQueue must (and does) accept an
+// ErrWaitDelay whose captured output names the array LSF took. At 2s, a real farm
+// bsub whose descendant held the pipe past that had wr reporting accepted array
+// submissions as failed schedules (.docs/bugfixes/260824-1.md).
+//
+// It must stay non-zero: with WaitDelay unset, "I/O pipes will be read until EOF,
+// which might not occur until orphaned subprocesses of the command have also
+// closed their descriptors", so a killed bsub with an orphan on the pipe would
+// block anyway and bsubExecTimeout would bound nothing
+// (.docs/bugfixes/260722-1.md). It is a package var so tests can lower it.
+var bsubPipeCloseGrace = defaultBsubPipeCloseGrace //nolint:gochecknoglobals
+
 // maxBkillBatchSize caps the number of LSF element ids wr hands a single bkill
 // (DEVELOPERS.md rule 7). A kill cycle with more excess elements than this is
 // split into as many batches as needed, each its own bkill exec, so an unbounded
@@ -233,6 +263,16 @@ var maxBkillBatchSize = defaultMaxBkillBatchSize //nolint:gochecknoglobals
 // cancellation cannot abort a kill LSF has already been asked for. It is a
 // package var so tests can lower it.
 var bkillExecTimeout = defaultBkillExecTimeout //nolint:gochecknoglobals
+
+// bkillPipeCloseGrace bounds how long we wait for bkill's output pipes to be
+// closed once bkill itself is done, before force-closing them so the exec returns.
+// As bsubPipeCloseGrace explains in full, this is the WaitDelay of EVERY bkill
+// (Go starts the timer when the child exits, not only when the exec context is
+// done), so a successful bkill whose descendant holds the pipes open comes back as
+// exec.ErrWaitDelay - which killSummary.ranToCompletion therefore treats as the
+// completed kill it is. It must stay non-zero for bkillExecTimeout to bound
+// anything. It is a package var so tests can lower it.
+var bkillPipeCloseGrace = defaultBkillPipeCloseGrace //nolint:gochecknoglobals
 
 // killBackoffMin and killBackoffMax bound the jittered exponential interval that
 // must pass before wr re-issues a bkill for an element it has already asked LSF
@@ -319,8 +359,9 @@ type killSummary struct {
 	deferred    int    // excess elements the back-off left alone this cycle
 	abandoned   int    // due elements not asked about, because a bkill did not complete
 	batches     int    // bkill invocations
+	lingered    bool   // a bkill exited cleanly but left a descendant on its pipes
 	failure     string // why a bkill could not be run to completion
-	exit        string // a bkill's non-zero exit status
+	exit        string // a bkill's non-zero exit status, or its lingering-pipe error
 	out         string // a bounded excerpt of a failing bkill's output
 }
 
@@ -330,7 +371,11 @@ type killSummary struct {
 // elements that were already gone. Elements bkill said nothing about count as
 // killed if it exited cleanly (it accepted the request; bkill -b can be silent)
 // and as unaccounted otherwise - which is what stops a "No matching job found"
-// hiding un-reclaimed over-provisioned runners.
+// hiding un-reclaimed over-provisioned runners. A bkill that exited cleanly and
+// then lingered on its pipes (see lingeredOnPipes) still exited cleanly, and bkill
+// exits non-zero if ANY element it was given was already gone, so its elements are
+// credited as killed even though the output that would have said so may have been
+// cut short.
 func (k *killSummary) account(ids []string, out string, err error) {
 	unexplained := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -339,11 +384,23 @@ func (k *killSummary) account(ids []string, out string, err error) {
 
 	k.accountLines(out, unexplained)
 
-	if err == nil {
+	if err == nil || lingeredOnPipes(err) {
 		k.killed += len(unexplained)
 	} else {
 		k.unaccounted += len(unexplained)
 	}
+}
+
+// lingeredOnPipes reports whether err says an LSF command did its job and then
+// left a descendant on its output pipes. Go returns exec.ErrWaitDelay only when
+// the command "otherwise exited with a successful status" and no cancellation
+// happened, so the work it was asked to do was accepted; all this error adds is
+// that something it spawned still held the inherited pipes open when the
+// pipe-close grace expired, so os/exec closed them (see bsubPipeCloseGrace).
+// Callers must therefore treat it as a success, or they report submissions and
+// kills that really happened as failures.
+func lingeredOnPipes(err error) bool {
+	return errors.Is(err, exec.ErrWaitDelay)
 }
 
 // accountLines credits every element that a line of the given bkill output reports
@@ -396,9 +453,13 @@ func (k *killSummary) log(ctx context.Context, bkillExe string, due []string) {
 }
 
 // needsAttention reports whether this cycle left something unexplained, and so
-// should be logged at warn rather than debug.
+// should be logged at warn rather than debug. A bkill that lingered on its pipes
+// counts: it is not a failure (its kills stand), but wr force-closed the pipes of
+// a live descendant of an LSF command and may have read only part of what bkill
+// said, so an operator running at the default log level has to be able to see it -
+// and with the grace at defaultBkillPipeCloseGrace it can only happen rarely.
 func (k *killSummary) needsAttention() bool {
-	return k.unaccounted > 0 || k.abandoned > 0 || k.retried > 0 || k.failure != ""
+	return k.unaccounted > 0 || k.abandoned > 0 || k.retried > 0 || k.failure != "" || k.lingered
 }
 
 // logArgs returns the bounded key/value pairs describing this cycle: counts, a
@@ -460,19 +521,28 @@ func (k *killSummary) ranToCompletion(execErr, err error, out string) bool {
 		return false
 	}
 
+	if err == nil {
+		return true
+	}
+
 	var exitErr *exec.ExitError
-	if err != nil && !errors.As(err, &exitErr) {
+	if !errors.As(err, &exitErr) && !lingeredOnPipes(err) {
 		k.fail(err.Error(), out)
 
 		return false
 	}
 
-	if err != nil {
-		// bkill exits non-zero if ANY element it was given was already gone, which
-		// is normal; the counts say whether that is all it was.
-		k.exit = err.Error()
-		k.out = loggableProcessOutput(out)
-	}
+	// bkill exits non-zero if ANY element it was given was already gone, which is
+	// normal; the counts say whether that is all it was. A lingering pipe is not a
+	// failure either (see lingeredOnPipes) - the kills bkill reported still
+	// happened, so the cycle's remaining batches must still be issued - but it is
+	// recorded, and escalates the summary to warn, because the output it cut short
+	// is the output those counts came from. Like the counts, the flag is sticky
+	// across the cycle's batches: one batch that lingered must not be forgotten
+	// because a later one exited normally.
+	k.lingered = k.lingered || lingeredOnPipes(err)
+	k.exit = err.Error()
+	k.out = loggableProcessOutput(out)
 
 	return true
 }
@@ -871,9 +941,11 @@ func (s *lsf) bkillBatch(ids []string, sum *killSummary) bool {
 	//nolint:gosec // LSF management command; execCtx is deliberately not the scheduling ctx (see above)
 	killcmd := exec.CommandContext(execCtx, s.bkillExe, bkillArgs(ids)...)
 
-	// WaitDelay ensures CombinedOutput() returns promptly once the timeout has
-	// killed bkill, even if a child of bkill is still holding the pipes open.
-	killcmd.WaitDelay = bkillGracePeriod
+	// WaitDelay bounds how long CombinedOutput() waits for bkill's pipes to close,
+	// so a child still holding them open cannot stop the exec returning - whether
+	// bkill was killed by the timeout above or exited on its own (see
+	// bkillPipeCloseGrace).
+	killcmd.WaitDelay = bkillPipeCloseGrace
 
 	out, err := killcmd.CombinedOutput()
 
@@ -893,12 +965,51 @@ func bkillArgs(ids []string) []string {
 	return append(args, ids...)
 }
 
+// runBsub runs bsub with the given args, returning its stdout and the error from
+// running it.
+//
+// The exec context is derived from context.Background() rather than the scheduling
+// ctx (which is why this takes no ctx), so scheduling-context cancellation cannot
+// abort an in-flight submission, but it is bounded by bsubExecTimeout so a
+// hung/oversized bsub becomes a retryable error instead of blocking this group's
+// scheduling forever, and by bsubPipeCloseGrace so a child still holding the
+// output pipe open cannot stop the exec returning either.
+func (s *lsf) runBsub(bsubArgs []string) ([]byte, error) {
+	execCtx, cancel := context.WithTimeout(context.Background(), bsubExecTimeout)
+	defer cancel()
+
+	//nolint:gosec // LSF job submission; execCtx is deliberately detached from the scheduling ctx (see above)
+	bsubcmd := exec.CommandContext(execCtx, s.bsubExe, bsubArgs...)
+	bsubcmd.WaitDelay = bsubPipeCloseGrace
+
+	return bsubcmd.Output()
+}
+
+// bsubFailure returns the message describing a bsub that failed. bsub reports the
+// real reason an LSF submission was rejected (e.g. a pending-job threshold or a
+// restricted queue) on its stderr, while err itself carries only the bare exit
+// status (typically "exit status 255"), so bsubStderr recovers that stderr and it
+// is surfaced alongside, making the rejection diagnosable rather than opaque. When
+// there is no stderr to recover the suffix is omitted rather than appending a
+// misleading empty (bsub stderr: "") that would hide the real failure mode.
+func (s *lsf) bsubFailure(bsubArgs []string, err error) string {
+	msg := fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)
+
+	if stderr := bsubStderr(err); stderr != "" {
+		msg += fmt.Sprintf(" (bsub stderr: %q)", stderr)
+	}
+
+	return msg
+}
+
 // bsubStderr returns bsub's stderr, extracted from an error returned by
 // exec.Cmd.Output(). When bsub starts but exits non-zero, Output() returns an
 // *exec.ExitError whose Stderr field holds the captured stderr (captured because
-// submitToQueue leaves Cmd.Stderr nil); that stderr carries the real LSF
-// rejection reason. Any other error (e.g. bsub could not be executed at all)
-// yields an empty string.
+// runBsub leaves Cmd.Stderr nil); that stderr carries the real LSF rejection
+// reason. Any other error yields an empty string: bsub could not be executed at
+// all, or it exited successfully and only its pipes went wrong (an
+// exec.ErrWaitDelay carries no stderr, which is why the production log of
+// .docs/bugfixes/260824-1.md showed none).
 func bsubStderr(err error) string {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -1497,37 +1608,21 @@ func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, _ uin
 // submitToQueue runs bsub with the given args and waits until the submitted job
 // appears in bjobs (see waitForBjob for why).
 func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
-	// submit to the queue. We derive the exec context from context.Background()
-	// rather than the scheduling ctx so scheduling-context cancellation cannot
-	// abort an in-flight submission, but bound it with bsubExecTimeout so a
-	// hung/oversized bsub becomes a logged, retryable error instead of blocking
-	// this group's scheduling forever.
-	execCtx, cancel := context.WithTimeout(context.Background(), bsubExecTimeout)
-	defer cancel()
+	//nolint:contextcheck // runBsub deliberately takes no ctx: its exec must not be cancellable by the scheduling ctx
+	bsubout, err := s.runBsub(bsubArgs)
 
-	//nolint:gosec,contextcheck // LSF job submission; execCtx is deliberately detached from the scheduling ctx (see above)
-	bsubcmd := exec.CommandContext(execCtx, s.bsubExe, bsubArgs...)
+	if err != nil && !lingeredOnPipes(err) {
+		return Error{lsfScheduler, opSchedule, s.bsubFailure(bsubArgs, err)}
+	}
 
-	// WaitDelay ensures Output() returns promptly after the timeout kills bsub,
-	// even if a child of bsub is still holding the output pipe open.
-	bsubcmd.WaitDelay = bsubKillGracePeriod
-
-	bsubout, err := bsubcmd.Output()
 	if err != nil {
-		// bsub reports the real reason an LSF submission was rejected (e.g. a
-		// pending-job threshold or a restricted queue) on its stderr, while err
-		// itself carries only the bare exit status (typically "exit status 255").
-		// bsubStderr recovers that stderr (captured by Output() into the returned
-		// *exec.ExitError) so we surface it alongside the exit status, making the
-		// rejection diagnosable rather than opaque. When bsub could not be executed
-		// at all there is no stderr, so the suffix is omitted rather than appending a
-		// misleading empty (bsub stderr: "") that would hide the real failure mode.
-		msg := fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)
-		if stderr := bsubStderr(err); stderr != "" {
-			msg += fmt.Sprintf(" (bsub stderr: %q)", stderr)
-		}
-
-		return Error{lsfScheduler, opSchedule, msg}
+		// bsub exited successfully but left a descendant holding its stdout open
+		// past bsubPipeCloseGrace, so os/exec closed the pipe and returned
+		// exec.ErrWaitDelay (see there). LSF took the submission all the same, so
+		// this is not the failure it used to be reported as - but the output may
+		// have been cut short, so it is not silent either.
+		clog.Warn(ctx, "bsub exited successfully but left a descendant holding its output pipe open",
+			"cmd", s.bsubExe, "grace", bsubPipeCloseGrace, "out", loggableProcessOutput(string(bsubout)))
 	}
 
 	matches := s.bsubRegex.FindStringSubmatch(string(bsubout))
@@ -1539,7 +1634,7 @@ func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
 		return Error{lsfScheduler, opSchedule, "after running bsub, failed to find the submitted jobs in bjobs"}
 	}
 
-	return err
+	return nil
 }
 
 // waitForBjob waits until the submitted job with the given id appears in bjobs

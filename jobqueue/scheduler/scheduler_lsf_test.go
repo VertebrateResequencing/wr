@@ -60,6 +60,12 @@ const (
 	runlimitKey = "runlimit"
 )
 
+// testPipeCloseGrace is the pipe-close grace the fake-LSF tests run with. The
+// shipped graces are a minute (bsub) and 15s (bkill), so a fake exe that
+// deliberately leaves a descendant on its pipes would cost that long; lowering the
+// grace makes the same code path cost milliseconds.
+const testPipeCloseGrace = 200 * time.Millisecond
+
 func init() {
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
 }
@@ -102,6 +108,34 @@ func TestLSFLoadPrivateKey(t *testing.T) {
 
 		So(s.privateKey, ShouldBeEmpty)
 		So(buf.String(), ShouldBeEmpty)
+	})
+}
+
+// fakeBsubDelays is how the fake bsub of newFakeLSFScheduler should hold things
+// up. The zero value is a bsub that responds immediately and leaves nothing
+// behind.
+type fakeBsubDelays struct {
+	// sleepSecs, if >0, makes the fake bsub sleep that many seconds before
+	// responding, to exercise bsubExecTimeout.
+	sleepSecs int
+
+	// lingerSecs, if >0, makes the fake bsub background a subshell that holds the
+	// inherited stdout pipe open for that many seconds after bsub itself has
+	// exited successfully, to exercise bsubPipeCloseGrace (see
+	// TestReliable4BsubPipeLinger).
+	lingerSecs int
+}
+
+// setPipeCloseGraces lowers the bsub and bkill pipe-close graces for the duration
+// of the test, restoring them afterwards.
+func setPipeCloseGraces(t *testing.T, grace time.Duration) {
+	t.Helper()
+
+	origBsub, origBkill := bsubPipeCloseGrace, bkillPipeCloseGrace
+	bsubPipeCloseGrace, bkillPipeCloseGrace = grace, grace
+
+	t.Cleanup(func() {
+		bsubPipeCloseGrace, bkillPipeCloseGrace = origBsub, origBkill
 	})
 }
 
@@ -713,7 +747,7 @@ func TestLSFArrayChunking(t *testing.T) {
 	Convey("Given an lsf scheduler with fake LSF exes and a small max array size", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, 0)
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeBsubDelays{})
 
 		origMax := maxBsubArraySize
 
@@ -776,12 +810,18 @@ func TestLSFArrayChunking(t *testing.T) {
 	Convey("Given an lsf scheduler whose bsub hangs", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, 30)
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeBsubDelays{sleepSecs: 30})
 
 		origTimeout := bsubExecTimeout
 
 		bsubExecTimeout = 300 * time.Millisecond
 		defer func() { bsubExecTimeout = origTimeout }()
+
+		// the fake bsub's `sleep 30` inherits the stdout pipe and outlives the
+		// bsub the timeout kills, so what bounds the return is the exec timeout
+		// plus the pipe-close grace; the shipped grace is a minute (see
+		// bsubPipeCloseGrace), so lower it too to keep this fast.
+		setPipeCloseGraces(t, testPipeCloseGrace)
 
 		Convey("schedule returns a retryable error bounded by the exec timeout", func() {
 			start := time.Now()
@@ -796,15 +836,19 @@ func TestLSFArrayChunking(t *testing.T) {
 
 // newFakeLSFScheduler builds an *lsf wired to fake bsub/bjobs/bkill executables
 // written into dir, so schedule() can be driven without a real LSF. The fake
-// bsub appends the value of each -J argument (one per line) to jArgsFile and
-// prints a parseable "Job <id>" line; bsubSleep, if >0, makes the fake bsub
-// sleep that many seconds before responding (to exercise the exec timeout).
-func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, bsubSleep int) *lsf {
+// bsub appends the value of each -J argument (one per line) to jArgsFile, prints
+// a parseable "Job <id>" line and exits 0, held up as delays asks.
+func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, delays fakeBsubDelays) *lsf {
 	t.Helper()
 
 	sleep := ""
-	if bsubSleep > 0 {
-		sleep = fmt.Sprintf("sleep %d\n", bsubSleep)
+	if delays.sleepSecs > 0 {
+		sleep = fmt.Sprintf("sleep %d\n", delays.sleepSecs)
+	}
+
+	linger := ""
+	if delays.lingerSecs > 0 {
+		linger = fmt.Sprintf("( sleep %d ) &\n", delays.lingerSecs)
 	}
 
 	bsubExe := filepath.Join(dir, "bsub")
@@ -815,7 +859,8 @@ for a in "$@"; do
   if [ "$a" = "-J" ]; then capture=1; fi
 done
 echo "Job <321>"
-`, sleep, jArgsFile))
+%sexit 0
+`, sleep, jArgsFile, linger))
 
 	// bjobs is called both as `bjobs -w` (list, must report nothing so the
 	// scheduler thinks 0 are already scheduled) and as `bjobs -w <id>` (the
