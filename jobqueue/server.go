@@ -3972,9 +3972,20 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 		ttd = cloudConfig.GetServerKeepTime()
 	}
 
-	itemdefs := make([]*queue.ItemDef, 0, len(priorJobs))
+	// every job's dependencies are resolved up front, a chunk of jobs per read
+	// transaction, rather than one or more transactions per job below: resolving
+	// 150,472 of them one at a time cost production hundreds of thousands of read
+	// transactions on a cold database (.docs/bugfixes/260825-2.md). It is a
+	// separate pass because the loop below calls the scheduler, which must not run
+	// inside a read transaction.
+	resolved, errd := s.db.resolveDependencies(ctx, priorJobs)
+	if errd != nil {
+		return errd
+	}
 
-	for _, job := range priorJobs {
+	itemdefs := make([]*queue.ItemDef, 0, len(resolved))
+
+	for _, recovered := range resolved {
 		// abort promptly if shutdown cancelled us, before doing further
 		// per-job scheduler.Recover work or the enqueue below (which would
 		// otherwise race scheduler cleanup and queue destroy during shutdown).
@@ -3982,12 +3993,7 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 			return err
 		}
 
-		itemdef, err := s.recoveredItemDef(ctx, job, loginUser, ttd)
-		if err != nil {
-			return err
-		}
-
-		itemdefs = append(itemdefs, itemdef)
+		itemdefs = append(itemdefs, s.recoveredItemDef(ctx, recovered, loginUser, ttd))
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -3999,17 +4005,13 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 	return err
 }
 
-// recoveredItemDef builds the queue item definition for a single recovered job,
-// setting its start sub-queue based on the job's prior state and, for running
-// jobs, re-incrementing limit groups and asking the scheduler to recover them.
-func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser string,
-	ttd time.Duration) (*queue.ItemDef, error) {
-	deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
-	if err != nil {
-		return nil, err
-	}
-
-	job.setWaitingForDepGroups(waitingForDepGroups)
+// recoveredItemDef builds the queue item definition for a single recovered job
+// from its already-resolved dependency keys, setting its start sub-queue based
+// on the job's prior state and, for running jobs, re-incrementing limit groups
+// and asking the scheduler to recover them.
+func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, loginUser string,
+	ttd time.Duration) *queue.ItemDef {
+	job := recovered.job
 
 	// schedulerGroup is unexported, so it is not gob-serialised and comes back
 	// empty on decode. For a recovered running job this must be recomputed from
@@ -4033,7 +4035,7 @@ func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser strin
 	itemdef := &queue.ItemDef{
 		Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
 		Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
-		Dependencies: deps,
+		Dependencies: recovered.deps,
 	}
 
 	switch job.State {
@@ -4049,7 +4051,7 @@ func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser strin
 		// any other recovered state keeps the default start queue.
 	}
 
-	return itemdef, nil
+	return itemdef
 }
 
 // recoverRunningJob re-increments a recovered running job's limit groups and

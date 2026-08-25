@@ -2357,15 +2357,17 @@ func (db *db) checkIfLive(key string) (bool, error) {
 	var isLive bool
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		if newJobBucket.Get([]byte(key)) != nil {
-			isLive = true
-		}
+		isLive = checkIfLiveTx(tx, key)
 
 		return nil
 	})
 
 	return isLive, err
+}
+
+// checkIfLiveTx is checkIfLive using the given read transaction.
+func checkIfLiveTx(tx *bolt.Tx, key string) bool {
+	return tx.Bucket(bucketJobsLive).Get([]byte(key)) != nil
 }
 
 // checkIfComplete tells you if a job with the given key is currently in the
@@ -2967,16 +2969,7 @@ func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, er
 	var jobKeys []string
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		lookupBucket := tx.Bucket(bucketDTK).Cursor()
-
-		prefix := []byte(depgroup + dbDelimiter)
-		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
-			key := bytes.TrimPrefix(k, prefix)
-			if newJobBucket.Get(key) != nil {
-				jobKeys = append(jobKeys, string(key))
-			}
-		}
+		jobKeys = retrieveIncompleteJobKeysByDepGroupTx(tx, depgroup)
 
 		return nil
 	})
@@ -2984,12 +2977,30 @@ func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, er
 	return jobKeys, err
 }
 
+// retrieveIncompleteJobKeysByDepGroupTx is retrieveIncompleteJobKeysByDepGroup
+// using the given read transaction.
+func retrieveIncompleteJobKeysByDepGroupTx(tx *bolt.Tx, depgroup string) []string {
+	var jobKeys []string
+
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	lookupBucket := tx.Bucket(bucketDTK).Cursor()
+
+	prefix := []byte(depgroup + dbDelimiter)
+	for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
+		key := bytes.TrimPrefix(k, prefix)
+		if newJobBucket.Get(key) != nil {
+			jobKeys = append(jobKeys, string(key))
+		}
+	}
+
+	return jobKeys
+}
+
 func (db *db) depGroupEverSeen(depGroup string) (bool, error) {
 	var seen bool
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDepGroups)
-		seen = b.Get([]byte(depGroup)) != nil
+		seen = depGroupEverSeenTx(tx, depGroup)
 
 		return nil
 	})
@@ -2997,19 +3008,45 @@ func (db *db) depGroupEverSeen(depGroup string) (bool, error) {
 	return seen, err
 }
 
+// depGroupEverSeenTx is depGroupEverSeen using the given read transaction.
+func depGroupEverSeenTx(tx *bolt.Tx, depGroup string) bool {
+	return tx.Bucket(bucketDepGroups).Get([]byte(depGroup)) != nil
+}
+
+// depGroupsEverSeen says, for each of the given dep groups, whether a job with
+// that dep group has ever been added.
+//
+// An empty list is answered without opening a transaction: every job's
+// dependencies are resolved through here, and a job with no dep group
+// dependencies (the common case) has nothing to look up. Paying a bolt read
+// transaction for it cost prior-state recovery 150,472 pointless transactions
+// against a cold 7 GB database in production (.docs/bugfixes/260825-2.md).
 func (db *db) depGroupsEverSeen(depGroups []string) (map[string]bool, error) {
+	if len(depGroups) == 0 {
+		return make(map[string]bool), nil
+	}
+
 	seen := make(map[string]bool, len(depGroups))
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDepGroups)
-		for _, depGroup := range depGroups {
-			seen[depGroup] = b.Get([]byte(depGroup)) != nil
-		}
+		seen = depGroupsEverSeenTx(tx, depGroups)
 
 		return nil
 	})
 
 	return seen, err
+}
+
+// depGroupsEverSeenTx is depGroupsEverSeen using the given read transaction.
+func depGroupsEverSeenTx(tx *bolt.Tx, depGroups []string) map[string]bool {
+	seen := make(map[string]bool, len(depGroups))
+
+	b := tx.Bucket(bucketDepGroups)
+	for _, depGroup := range depGroups {
+		seen[depGroup] = b.Get([]byte(depGroup)) != nil
+	}
+
+	return seen
 }
 
 // storeEnv stores a clientRequest.Env in db unless cached, which means it must
