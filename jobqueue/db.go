@@ -153,7 +153,22 @@ const slowBackupTestDelay = 100 * time.Millisecond
 const (
 	dbUpgradeProgressEntries  = 10000
 	dbUpgradeProgressInterval = 2 * time.Second
+
+	// dbUpgradeLogIntervalDefault is how often a database upgrade's progress is
+	// logged where a default `wr manager start` can show it (see
+	// dbUpgradeReporter). It is far coarser than dbUpgradeProgressInterval, which
+	// paces the status sidecar: a rebuild of millions of entries must add tens of
+	// manager log lines, not thousands, while still showing an operator that a
+	// minutes-long phase is moving. A phase shorter than one interval logs no
+	// progress at all, its start and completion lines being enough.
+	dbUpgradeLogIntervalDefault = 30 * time.Second
 )
+
+// dbUpgradeLogInterval is the live interval. It is a var only so tests can
+// shorten it; nothing user-facing changes it.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var dbUpgradeLogInterval = dbUpgradeLogIntervalDefault
 
 // compactTxMaxSize bounds the size (bytes) of each bolt.Compact destination
 // transaction, so compacting a multi-gigabyte database commits regularly instead
@@ -1810,12 +1825,37 @@ func deleteLimitGroup(b *bolt.Bucket, key, existing []byte) (limitGroupOutcome, 
 	return limitGroupRemoved, nil
 }
 
+// dbUpgradeReporter reports a one-off database upgrade (the index rebuilds
+// initDB does the first time it opens a database an older wr wrote) to both the
+// status sidecar `wr manager start` polls and the manager log.
+//
+// Its milestones - the upgrade starting, each phase starting and completing, and
+// the upgrade finishing - are logged at warn, not info, because the log handler
+// the manager hands the server is warn-filtered unless --debug is given
+// (cmd.setupManagerLogging), and the upgrade runs before the manager serves
+// anything: with nothing in the log, a rebuild that takes minutes on a large
+// database is indistinguishable from a hang (.docs/bugfixes/260825-3.md item 2).
+// That is the same reason prior-state recovery's milestones are warns - see
+// recoverPriorJobsAndNote.
+//
+// Per-entry progress stays at info, ie. --debug only, because a real rebuild
+// processes millions of entries and this log has to stay readable (53c323f).
+// Alongside it, at most one "still running" line per dbUpgradeLogInterval is
+// logged at warn, so that a phase long enough to worry an operator visibly moves
+// while the default log stays proportional to the phase's duration rather than
+// to how many entries it processed.
 type dbUpgradeReporter struct {
-	dbFile         string
-	info           func(string, ...any)
-	warn           func(string, ...any)
+	dbFile string
+	info   func(string, ...any)
+	warn   func(string, ...any)
+	// now supplies the time the "still running" rate limit measures, and nothing
+	// else (the sidecar's own pacing keeps its own clock). It is time.Now in
+	// production, and a test seam only so the rate limit can be pinned exactly,
+	// without depending on how long a loaded host takes to run a rebuild.
+	now            func() time.Time
 	startedAt      time.Time
 	lastWrite      time.Time
+	lastLog        time.Time
 	started        bool
 	phaseActive    bool
 	phaseStartedAt time.Time
@@ -1840,6 +1880,7 @@ func newDBUpgradeReporter(ctx context.Context, dbFile string) *dbUpgradeReporter
 		dbFile:    dbFile,
 		info:      info,
 		warn:      warn,
+		now:       time.Now,
 		startedAt: time.Now(),
 	}
 }
@@ -1855,7 +1896,7 @@ func (r *dbUpgradeReporter) startPhase(state, detail string) {
 
 	if !r.started {
 		r.started = true
-		r.info("database upgrade started", "db", r.dbFile)
+		r.warn("database upgrade started", "db", r.dbFile)
 	}
 
 	r.phaseActive = true
@@ -1863,9 +1904,13 @@ func (r *dbUpgradeReporter) startPhase(state, detail string) {
 	r.phaseState = state
 	r.phaseDetail = detail
 	r.phaseProcessed = 0
+	// the phase's own start line is the first thing an operator sees of it, so
+	// the rate limit's interval runs from here: a phase shorter than one interval
+	// says nothing more.
+	r.lastLog = r.now()
 
 	r.writeStatus(state, detail, 0)
-	r.info("database upgrade step started", "state", state, "detail", detail, "processed", 0)
+	r.warn("database upgrade step started", "state", state, "detail", detail, "processed", 0)
 }
 
 func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
@@ -1885,7 +1930,28 @@ func (r *dbUpgradeReporter) writeProgress(state, detail string, processed int) {
 	r.phaseProcessed = processed
 
 	r.writeStatus(state, detail, processed)
+	r.logProgress(state, detail, processed)
+}
+
+// logProgress logs every progress point at info, which only --debug records, and
+// additionally reports at warn, at most once per dbUpgradeLogInterval, that the
+// phase is still running and how far it has got. The warn line is what a default
+// `wr manager start` shows, and it carries its own message so that a default-level
+// log makes plain it is a sample taken every dbUpgradeLogInterval and not one
+// line per progress point (the same reason recovery's heartbeat has its own
+// message - see startRecoveryHeartbeat).
+func (r *dbUpgradeReporter) logProgress(state, detail string, processed int) {
 	r.info("database upgrade progress", "state", state, "detail", detail, "processed", processed)
+
+	now := r.now()
+	if now.Sub(r.lastLog) < dbUpgradeLogInterval {
+		return
+	}
+
+	r.lastLog = now
+
+	r.warn("database upgrade step still running", "state", state, "detail", detail, "processed", processed,
+		"took", time.Since(r.phaseStartedAt))
 }
 
 func (r *dbUpgradeReporter) progressDue(processed int) bool {
@@ -1912,7 +1978,7 @@ func (r *dbUpgradeReporter) completePhase(state, detail string, processed int) {
 	r.phaseProcessed = processed
 
 	r.writeStatus(state, detail, processed)
-	r.info("database upgrade step complete", "state", state, "detail", detail,
+	r.warn("database upgrade step complete", "state", state, "detail", detail,
 		"processed", processed, "took", time.Since(r.phaseStartedAt))
 }
 
@@ -1941,7 +2007,7 @@ func (r *dbUpgradeReporter) finish(upgradeErr error) {
 			"took", time.Since(r.startedAt))
 	} else {
 		r.completePhase(r.phaseState, r.phaseDetail, r.phaseProcessed)
-		r.info("database upgrade complete", "db", r.dbFile, "took", time.Since(r.startedAt))
+		r.warn("database upgrade complete", "db", r.dbFile, "took", time.Since(r.startedAt))
 	}
 
 	if err := internal.RemoveDBUpgradeStatus(r.dbFile); err != nil {
