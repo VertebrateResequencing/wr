@@ -244,6 +244,18 @@ var BsubID uint64 //nolint:gochecknoglobals
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var numRPCReaders = 6
 
+// recoveryHeartbeatInterval is how often the background prior-state recovery
+// says it is still working while the re-enqueue is in flight (spec B1). The
+// enqueue is a single batch, so there is no per-job progress to report (the
+// restored count jumps 0 -> total in one step); a time-based heartbeat is the
+// only thing that distinguishes a slow recovery from a hung manager. It is
+// deliberately longer than a whole warm restart's recovery (~40s for ~148k
+// jobs) so the common fast case logs no heartbeat at all. It is a package var
+// (not user-configurable) purely so tests can shorten it.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var recoveryHeartbeatInterval = time.Minute
+
 // envPprofAddr is the environment variable that, when set to a host:port (eg.
 // "localhost:6060"), makes Serve() start an opt-in net/http/pprof endpoint for
 // profiling the manager. It is unset by default, in which case no endpoint is
@@ -252,8 +264,8 @@ const envPprofAddr = "WR_PPROF_ADDR"
 
 // recoveryPauseHookForTest, if non-nil, is copied into each new Server's
 // recoveryPauseHook during Serve so a test can install a hook that blocks
-// background recovery before recovery has a chance to run. It is a test-only
-// seam and is nil in production.
+// background recovery before it re-enqueues anything. It is a test-only seam
+// and is nil in production.
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
@@ -1145,9 +1157,11 @@ type Server struct {
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
 	statusWSDetailsHook       func()
-	// recoveryPauseHook, if non-nil, is called at the top of the background
-	// prior-state recovery goroutine so a test can block recovery and observe
-	// the recovering window (modelled on statusWSDetailsHook). nil in production.
+	// recoveryPauseHook, if non-nil, is called by the background prior-state
+	// recovery just before it re-enqueues the prior jobs, so a test can block
+	// recovery and observe the recovering window - including the "still
+	// recovering" heartbeat, whose window the hook sits inside (modelled on
+	// statusWSDetailsHook). nil in production.
 	recoveryPauseHook   func()
 	pauseRequests       int
 	wsconns             map[string]*websocket.Conn
@@ -1420,10 +1434,10 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 // with no false losses, spec B2); here we only fill in the true total, which
 // happens before the background goroutine (and thus recoveryPauseHook) runs so
 // progress reporting is correct at the pause (spec B1 acceptance test 4). The
-// goroutine calls recoveryPauseHook (if set) at the top so a test can block and
-// observe the recovering window, updates progress via noteRecovered, and calls
-// finishRecovering when done. Recovery keeps the single-batch enqueue
-// (recoverPriorJobs -> enqueueItems).
+// goroutine calls recoveryPauseHook (if set) just before the re-enqueue so a
+// test can block and observe the recovering window, updates progress via
+// noteRecovered, and calls finishRecovering when done. Recovery keeps the
+// single-batch enqueue (recoverPriorJobs -> enqueueItems).
 func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfig, db *db) error {
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
@@ -1440,10 +1454,9 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 }
 
 // recoverInBackground is the body of the background prior-state recovery
-// goroutine launched by startPriorStateRecovery (spec B1). It calls
-// recoveryPauseHook (if set) at the top so a test can block and observe the
-// recovering window, re-enqueues the prior jobs in a single batch, records the
-// result via noteRecovered, and marks recovery finished on return.
+// goroutine launched by startPriorStateRecovery (spec B1). It re-enqueues the
+// prior jobs in a single batch, records the result via noteRecovered, and marks
+// recovery finished on return.
 //
 // Because the enqueue is a single batch, progress is all-or-nothing: the
 // restored count set by noteRecovered goes from 0 straight to the total in one
@@ -1465,10 +1478,6 @@ func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, w
 	defer s.rescheduleReadyAfterRecovery(ctx)
 	defer s.finishRecovering()
 
-	if s.recoveryPauseHook != nil {
-		s.recoveryPauseHook()
-	}
-
 	s.recoverPriorJobsAndNote(ctx, config, priorJobs)
 }
 
@@ -1477,6 +1486,15 @@ func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, w
 // shutdown has cancelled ctx (so we never touch the scheduler, DB or queue
 // during teardown), and treats a cancellation surfaced by recoverPriorJobs as
 // an expected quiet return rather than a failure.
+//
+// The milestones are logged at warn, not info, because the log handler the
+// manager hands the server is warn-filtered unless --debug is given
+// (cmd.setupManagerLogging), and on a default start an operator must be able to
+// tell a recovering manager from one that has lost every job: production once
+// spent 15+ minutes recovering 148,393 jobs with nothing in the log but client
+// "server is recovering prior state" errors, which read as total job loss (spec
+// B1, .docs/bugfixes/260825-1.md). This is the same reason the "pprof profiling
+// endpoint enabled" notice is a warn.
 func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfig, priorJobs []*Job) {
 	if err := ctx.Err(); err != nil {
 		clog.Debug(ctx, "prior-state recovery aborted during shutdown", "err", err)
@@ -1484,9 +1502,9 @@ func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfi
 		return
 	}
 
-	clog.Info(ctx, "recovering prior state", "total", len(priorJobs))
+	clog.Warn(ctx, "recovering prior state", "total", len(priorJobs))
 
-	err := s.recoverPriorJobs(ctx, config, priorJobs)
+	err := s.recoverPriorJobsWithHeartbeat(ctx, config, priorJobs)
 	if err != nil && errors.Is(err, context.Canceled) {
 		clog.Debug(ctx, "prior-state recovery aborted during shutdown", "err", err)
 
@@ -1502,7 +1520,66 @@ func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfi
 	s.noteRecovered(len(priorJobs))
 
 	restored, total := s.recoveryProgress()
-	clog.Info(ctx, "recovering: prior state recovered", "restored", restored, "total", total)
+	clog.Warn(ctx, "recovering: prior state recovered", "restored", restored, "total", total)
+}
+
+// recoverPriorJobsWithHeartbeat re-enqueues the prior jobs while a heartbeat
+// reports that recovery is still working, and stops that heartbeat before
+// returning, so no "still recovering" line can ever follow recovery's outcome
+// line.
+//
+// It also calls recoveryPauseHook (if set) inside the heartbeat's window, so a
+// test can block here to exercise a long recovery; the hook is nil in
+// production.
+func (s *Server) recoverPriorJobsWithHeartbeat(ctx context.Context, config ServerConfig, priorJobs []*Job) error {
+	stopHeartbeat := s.startRecoveryHeartbeat(ctx, len(priorJobs))
+	defer stopHeartbeat()
+
+	if s.recoveryPauseHook != nil {
+		s.recoveryPauseHook()
+	}
+
+	return s.recoverPriorJobs(ctx, config, priorJobs)
+}
+
+// startRecoveryHeartbeat starts a goroutine that logs, every
+// recoveryHeartbeatInterval, that prior-state recovery is still working, with
+// how long it has been going. It reports elapsed time rather than a job count
+// because the re-enqueue is a single batch (the restored count jumps 0 -> total
+// in one step), so there is no per-job progress to report.
+//
+// The returned function stops the heartbeat and waits for the goroutine to
+// exit, so the heartbeat can neither outlive recovery nor leak; the goroutine
+// also observes ctx (s.bgCtx), so a shutdown during recovery ends it promptly.
+func (s *Server) startRecoveryHeartbeat(ctx context.Context, total int) func() {
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	started := time.Now()
+
+	go func() {
+		defer close(stopped)
+		defer internal.LogPanic(ctx, "jobqueue prior-state recovery heartbeat", false)
+
+		ticker := time.NewTicker(recoveryHeartbeatInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				clog.Warn(ctx, "recovering: still recovering prior state", "total", total,
+					"elapsed", time.Since(started).Round(time.Millisecond))
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+		<-stopped
+	}
 }
 
 // rescheduleReadyAfterRecovery re-triggers the ready-added callback when the
