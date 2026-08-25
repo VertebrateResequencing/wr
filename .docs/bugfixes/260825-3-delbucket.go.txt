@@ -1,0 +1,34 @@
+// delbucket deletes a named top-level bucket from a BoltDB file, to set up the
+// "index missing, so rebuild it at open" state that dbUpgradeReporter reports on.
+package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
+)
+
+func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: delbucket <db file> <bucket>")
+		os.Exit(2)
+	}
+
+	db, err := bolt.Open(os.Args[1], 0o600, &bolt.Options{Timeout: 10 * time.Second})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open:", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err = db.Update(func(tx *bolt.Tx) error {
+		return tx.DeleteBucket([]byte(os.Args[2]))
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "delete:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("deleted bucket %q from %s\n", os.Args[2], os.Args[1])
+}
