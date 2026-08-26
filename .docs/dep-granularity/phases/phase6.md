@@ -79,8 +79,8 @@ Covers all 4 F1 acceptance tests. Carry these figures:
   count, and the sum of `len(item.Dependencies())` over all queue items equal to
   the fixture's total declared edge count.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 6.2: F2 - Transaction counts [parallel with 6.1]
 
@@ -112,8 +112,8 @@ Covers all 3 F2 acceptance tests:
    per group would be loose enough to hide a regression to per-job reads inside
    a chunk.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill (review all items in
@@ -238,8 +238,8 @@ arranged beside the numbers.
 `$WRDEV_ROOT`, never against `/nfs/hgi/wr/lsf/.wr_production/`, and keep the
 fixture copy and its heavy I/O off `/nfs/hgi`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.4: F4 - Regression guards
 
@@ -284,8 +284,8 @@ passed, 9 skipped, 29 packages** for its own item 2 fix. Measure `make test` at
 the branch point, take that count as the baseline rather than the literal 413,
 and record which figure was used.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Phase gate
 
@@ -294,3 +294,139 @@ and record which figure was used.
   figures behind them, plus E9's phase measurements and stated ceiling, all in
   `.docs/dep-granularity/` before merge.
 - Then restart production on the result.
+
+
+## Phase 6 outcome (2026-08-26)
+
+Implemented and reviewed PASS. Every discriminator claim was reproduced
+independently by the reviewer rather than taken on report.
+
+### The gates discriminate - proven, not assumed
+
+**F3, default shape (30,000 waiters x 3,000 members, 6,300 groups), pre-fix
+worktree at `8b9ba00` against post-fix `f2ccaee`:** pre-fix climbs 763 -> 2,069
+-> 4,502 -> 7,368 -> 9,896 MB with nothing in the log but "still recovering
+prior state", and is killed at the harness RSS ceiling with recovery never
+finishing. Post-fix: **285 MB, exit 0**, recovery 0.196 s, add 0.459 s. The
+ceiling figure is a **floor** on the true pre-fix peak, so the ratio is
+"at least 28x", not a measurement.
+
+**Reduced shape (30,000 x 300), where the pre-fix arm completes** and all three
+metrics have real numbers on both sides:
+
+| metric | pre-fix | post-fix | ratio |
+| --- | --- | --- | --- |
+| peak RSS | 3,635 MB | 279 MB | 13.0x |
+| recovery | 17.098 s | 0.129 s | 132x |
+| add | 17.957 s | 0.408 s | 44x |
+
+All three discriminate by far more than 4x, so all three are gated.
+
+**The false PASS was demonstrated, not reasoned about.** Remove
+`dgfWriteLegacyLookups` from the fixture - so `bucketDTK` is left to
+`storeNewJobs`, which after A3 writes nothing - and the **pre-fix binary passes**
+at 342 MB. That is this repo's five-times-repeated failure mode caught
+deliberately. The reviewer additionally found the gate cannot silently accept a
+blunt self-generated fixture: GoConvey's `FailureHalts` aborts the generator
+before its `DEPGRAN-FIXTURE` line, so the gate takes its
+`FAIL (NOT MEASURED)` branch - but that protection is **implicit**, depending on
+the `Printf` sitting after the `So()`s while the gate ignores `go test`'s exit
+status.
+
+F1 and F2 mutations both re-run and confirmed: expanding group members again
+gives 400,000 and 4,000,000 keys (3,175 and 16,418 B/job) and fails three named
+lines; withholding `registerDepGroupMembers` fails one; a per-read reader fails
+three; one-chunk-per-pass fails two of three, the 100-job case being one chunk
+either way - which is exactly why the 2,500-job case was added.
+
+### Two measurement defects found by measuring, not by reasoning
+
+Both would have produced silent false PASSes, and both are now guarded by
+`growth > 0` assertions in the same block as the bounds:
+
+- A single `runtime.GC()` reads **zero** on some runs, because `HeapAlloc`
+  counts unswept dead objects. It collects twice now.
+- Without `runtime.KeepAlive` on the fixture, the big fixture's growth read
+  **-565,128 bytes** - the collector took `depGroupMembers`' 2,000 per-job maps
+  between the two reads. An underflow-guarded zero passes every bound.
+
+Every other measurement in the phase was audited for the same failure mode and
+is either an exact equality or explicitly sentinelled into `FAIL (NOT MEASURED)`.
+
+### Three harness-fidelity bugs, each of which measured the harness
+
+`date`/`awk`/`ps` per poll turned a 13 ms recovery into 259 ms of fork latency;
+`VmHWM` sampled once a second reported **10 MB where the peak was 212 MB**; and
+an inline status sample blinded the log reader for 25 ms so `recoverySec` read
+0.000. Fixed with `$EPOCHREALTIME`, builtin `/proc` reads, a fifo-as-sleep, a
+VmHWM read on every poll, and a backgrounded status sample whose
+answered-after-the-window rule biases toward FAIL, never toward PASS.
+
+### `wr manager status` on the daemonized path: expected, by operator decision
+
+During the window it dies with "could not read token file; has the manager been
+started?", because `connect` reads the token before `reportManagerStartupStatus`
+is reached and E1 moved the token write to publication. **Operator decision
+(2026-08-26): this is not a bug** - status is only expected to work once
+`wr manager start` says the manager has started, which follows from the intent of
+the whole E-series. `wr manager start` itself printed progress throughout the
+measured trace. `.docs/dep-granularity/scale-gate.md` and spec E5's story text
+were reworded to record it as expected; **do not make the pid-file branch consult
+the sidecar, as that would undo E1.**
+
+Consequence: E5's useful half is the **no-pid-file** branch (`starting: <phase>`,
+which the gate asserts and which covers the instant before the pid file exists).
+The pid-file branch's `reportManagerStartupStatus()` call at `cmd/manager.go:511`
+is **unreachable dead weight** - `connect` either returns a client or `die()`s,
+and E5's tests miss it because they drive the helper directly.
+
+### Gates
+
+`make lint` 0 issues; `go vet -tags netgo` and `-tags 'netgo reliability_repro'`
+clean; `make test` **483 passed - 9 skipped - 29 packages** four times across
+implementation and review at load 118-125; **`make race` 483 passed - 8 skipped,
+0 data races** (F4 item 4, previously unrun in this delivery);
+`-race --count 3` on the new tests clean; `cleanorder -min-diff -dry` zero diff
+on all three changed Go files; `bash -n developers/wrdev.sh` OK;
+`wrdev.sh backlog-rescan-check` and `idle-backlog-cpu` both PASS. No failures of
+any kind in either review pass, so no flake attribution was needed.
+
+Baseline arithmetic: `8b9ba00` was **421 passed - 9 skipped** (per
+`.docs/bugfixes/260825-3.md`, not the older 413 figure); phases 1-5 add 61 test
+functions of which one is behind `reliability_repro`, and phase 6 adds 2, so
+421 + 60 + 2 = 483.
+
+### Follow-ups, none blocking
+
+1. `cmd/manager.go:511`'s `reportManagerStartupStatus()` is unreachable - delete
+   it or rework the branch.
+2. **E2 acceptance test 4 still has zero automated coverage** (`wr manager start
+   -f` prints "started on" only after the bind). The gate now *prints* the
+   evidence - post-fix "started on" lands 0-2 ms after "prior state recovered",
+   pre-fix 16,099 ms before - but the FAIL condition was built and then removed,
+   on the reasoning that it would fail the pre-fix arm on ordering before the
+   memory metrics were compared, voiding the A/B. The reviewer judged that
+   half-right: placed **last**, after every metric threshold, it cannot mask a
+   blunt fixture, because a pre-fix or blunt run fails on memory first and never
+   reaches it. Better still, the ordering is observable in a daemonized manager's
+   own log, so a durable `cmd`-level test needs no in-process `startJQ`.
+3. `dep_granularity_run` takes 16 positional parameters where the rest of
+   wrdev.sh uses globals - one miscounted argument silently shifts everything.
+4. The gate starts the manager with `-f`, so no pid file: an interrupted run
+   leaves a manager `safe_kill` cannot reap, and the next run's `rm -rf` would
+   delete a live manager's directory. Fails loudly rather than falsely; a trap or
+   cmdline sweep would close it.
+5. If `mkfifo` fails, `read -t -u 8` errors every iteration - a tight spin for up
+   to `waitsec`. `mkfifo || die` closes it.
+6. `MAX_RECOVERY_SEC=1` is ~5-6x the post-fix figure and `MAX_ADD_SEC=2` ~4x,
+   rather than the "2x rounded up" the spec asks; 0.5 and 1 would be tighter.
+   Both still clear the "at most half pre-fix" test.
+7. Add a comment at the fixture step's `|| true` recording that the
+   missing-`DEPGRAN-FIXTURE`-line branch is what catches a failed generator.
+8. A fixture supplied via `WRDEV_DEPGRAN_DB` is validated only for existence -
+   worth a line in the doc's caveats, since that is the A/B path.
+9. Fixture shape is production's scaled down unevenly: live jobs 39,299 vs
+   150,472 (3.8x) but memberships 9,299 vs >=250,000 (27x), with every non-big
+   group holding one member. The concentration into one 3,000-member group is
+   what drives the expansion and 28x discrimination proves it is enough, but the
+   `WRDEV_DEPGRAN_*` knobs exist to reach the real shape.

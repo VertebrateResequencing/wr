@@ -89,6 +89,14 @@ const (
 	// more than one chunk, which the production default (1000) would not.
 	depTxChunkSize = 10
 
+	// depTxProdChunkSize is the chunk size production recovers at, and
+	// depTxProdPassJobs a job count that spans more than one chunk of it, so that
+	// "exactly ceil(N/1000)" is a real division rather than the single chunk
+	// depTxResolutions jobs would make of it.
+	depTxProdChunkSize  = 1000
+	depTxProdPassJobs   = 2500
+	depTxProdPassChunks = 3
+
 	// the end-to-end restart fixture: depTxE2EParents jobs carrying
 	// depTxE2EGroup, depTxE2EChildren jobs depending on it, and one job waiting
 	// on depTxE2EFutureGroup, which no job is ever added with.
@@ -382,7 +390,27 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			So(perJobTx, ShouldEqual, depTxReadingJobs)
 			So(depTxReadingJobs+depTxReadFreeJobs, ShouldEqual, len(jobs))
 
-			So(passTx, ShouldBeLessThanOrEqualTo, depTxWantChunks(len(jobs)))
+			So(passTx, ShouldEqual, depTxWantChunks(len(jobs)))
+		})
+
+		Convey("At the production chunk size the pass costs exactly one transaction per 1,000 jobs", func() {
+			So(dependencyResolutionChunkSize, ShouldEqual, depTxProdChunkSize)
+
+			many := depTxRecoveryJobs(depTxProdPassJobs)
+			So(depTxWantChunks(len(many)), ShouldEqual, depTxProdPassChunks)
+
+			before := fixture.db.bolt.Stats().TxN
+			resolved, err := fixture.db.resolveDependencies(ctx, many, fixture.groups)
+			passTx := fixture.db.bolt.Stats().TxN - before
+
+			So(err, ShouldBeNil)
+			So(resolved, ShouldHaveLength, len(many))
+
+			// exactly ceil(N/1000), not a range. A bound loose enough to allow one
+			// transaction per essence dependency or one per named dep group would
+			// still be satisfied by a regression to per-job reads inside a chunk,
+			// which is the cost this pass exists to remove.
+			So(passTx, ShouldEqual, depTxProdPassChunks)
 		})
 
 		Convey("Jobs spanning many chunks cost exactly one transaction per chunk", func() {

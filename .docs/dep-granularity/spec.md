@@ -2010,10 +2010,22 @@ covers.
 As an operator, I want `wr manager status` to say the manager is starting rather
 than lie about it, in both daemonized and foreground modes.
 
-Today, during the window: the daemonized path finds a pid file, fails to
-connect, and `die()`s with "supposed to be running with pid N, but is
-non-responsive" (`cmd/manager.go:511`); the `-f` path has no pid file at all and
-prints "stopped". Both are wrong, and inconsistent with each other.
+Today, during the window: the `-f` path has no pid file at all and prints
+"stopped", which is what this section fixes. The daemonized path finds a pid
+file and `die()`s - **not**, as this text originally said, with "supposed to be
+running with pid N, but is non-responsive", but with "could not read token file;
+has the manager been started?", because `connect` reads the token before
+`reportManagerStartupStatus()` is ever reached and E1 moved the token write to
+publication (measured 2026-08-26; see
+`.docs/dep-granularity/scale-gate.md`).
+
+**That daemonized-path behaviour is expected and must not be changed** (operator
+decision, 2026-08-26): `wr manager status` is only expected to work once
+`wr manager start` says the manager has started, because during the window the
+manager is meant to look as though no start has been attempted. Making the
+pid-file branch consult the sidecar would undo E1. So the branch this section
+actually improves is the no-pid-file one, and the `cmd/manager.go:511` call in
+the pid-file branch is unreachable dead weight.
 
 In `managerStatusCmd`, before either of those outcomes, read the sidecar via the
 existing `currentManagerDBUpgradeStatus` (`cmd/manager.go:883`), which combines
