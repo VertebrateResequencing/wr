@@ -522,13 +522,14 @@ func TestServerRejectsAddWithNilDependency(t *testing.T) {
 		token := bytes.Repeat([]byte("x"), tokenLength)
 		sock := &captureSocket{ch: ch}
 		server := &Server{
-			ch:    ch,
-			sock:  sock,
-			token: token,
-			db:    testDB,
-			q:     queue.New(ctx, "payload-nil-dependency"),
-			rpl:   newRGToKeys(),
-			up:    true,
+			ch:        ch,
+			sock:      sock,
+			token:     token,
+			db:        testDB,
+			q:         queue.New(ctx, "payload-nil-dependency"),
+			rpl:       newRGToKeys(),
+			depGroups: newDepGroupMembers(),
+			up:        true,
 		}
 		sock.server = server
 
@@ -624,13 +625,14 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 		token := bytes.Repeat([]byte("x"), tokenLength)
 		sock := &captureSocket{ch: ch}
 		server := &Server{
-			ch:    ch,
-			sock:  sock,
-			token: token,
-			db:    testDB,
-			q:     queue.New(ctx, "payload-nil-behaviour"),
-			rpl:   newRGToKeys(),
-			up:    true,
+			ch:        ch,
+			sock:      sock,
+			token:     token,
+			db:        testDB,
+			q:         queue.New(ctx, "payload-nil-behaviour"),
+			rpl:       newRGToKeys(),
+			depGroups: newDepGroupMembers(),
+			up:        true,
 		}
 		sock.server = server
 

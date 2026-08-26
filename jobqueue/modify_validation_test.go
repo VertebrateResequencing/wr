@@ -184,6 +184,7 @@ func newModifierValidationHarness(t *testing.T) *modifierValidationHarness {
 	server := &Server{
 		ch: ch, sock: sock, token: token, db: testDB,
 		q: queue.New(ctx, "modifier-validation"), rpl: newRGToKeys(), up: true,
+		depGroups:  newDepGroupMembers(),
 		ServerInfo: &ServerInfo{Mode: ServerModeNormal},
 	}
 	server.SetItemTTR(time.Minute)

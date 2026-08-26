@@ -31,12 +31,9 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 
 	bolt "go.etcd.io/bbolt"
 )
-
-const neverSeenDepGroupDependencyPrefix = "depgroup-not-seen:"
 
 // dependencyResolutionChunkSize is how many jobs resolveDependencies resolves
 // per bolt read transaction.
@@ -76,7 +73,6 @@ var dependencyResolutionChunkSize = 1000
 type depReader interface {
 	depGroupEverSeen(depGroup string) (bool, error)
 	depGroupsEverSeen(depGroups []string) (map[string]bool, error)
-	retrieveIncompleteJobKeysByDepGroup(depGroup string) ([]string, error)
 	checkIfLive(jobKey string) (bool, error)
 }
 
@@ -92,10 +88,6 @@ func (r txDepReader) depGroupEverSeen(depGroup string) (bool, error) {
 
 func (r txDepReader) depGroupsEverSeen(depGroups []string) (map[string]bool, error) {
 	return depGroupsEverSeenTx(r.tx, depGroups), nil
-}
-
-func (r txDepReader) retrieveIncompleteJobKeysByDepGroup(depGroup string) ([]string, error) {
-	return retrieveIncompleteJobKeysByDepGroupTx(r.tx, depGroup), nil
 }
 
 func (r txDepReader) checkIfLive(jobKey string) (bool, error) {
@@ -123,7 +115,9 @@ type resolvedJob struct {
 // uncontended. Nothing that can block on another goroutine - the scheduler, the
 // queue, a client write - may be done in here, since the transaction would be
 // held across it (DEVELOPERS.md rule 1).
-func (db *db) resolveDependencyChunk(ctx context.Context, jobs []*Job) ([]resolvedJob, error) {
+func (db *db) resolveDependencyChunk(
+	ctx context.Context, jobs []*Job, groups depGroupState,
+) ([]resolvedJob, error) {
 	resolved := make([]resolvedJob, 0, len(jobs))
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
@@ -134,7 +128,7 @@ func (db *db) resolveDependencyChunk(ctx context.Context, jobs []*Job) ([]resolv
 				return errc
 			}
 
-			keys, waitingForDepGroups, errd := job.Dependencies.incompleteJobKeys(reader)
+			keys, waitingForDepGroups, errd := job.Dependencies.dependencyKeys(reader, groups)
 			if errd != nil {
 				return errd
 			}
@@ -153,18 +147,43 @@ func (db *db) resolveDependencyChunk(ctx context.Context, jobs []*Job) ([]resolv
 	return resolved, nil
 }
 
-func (d *Dependency) collectIncompleteJobKeys(
-	reader depReader,
-	seenDepGroups map[string]bool,
-	jobKeys, waitingForDepGroups map[string]bool,
-) error {
-	keys, waiting, err := d.incompleteJobKeysWithSeen(reader, seenDepGroups)
+// depGroupState answers whether a dep group has a live member job, without a
+// database read.
+type depGroupState interface {
+	hasMembers(depGroup string) bool
+}
+
+// collectDepGroupKey applies the dep-group half of the resolution rule: a group
+// with a live member blocks; a group with none that has been seen is satisfied
+// and contributes nothing; a group with none that has never been seen blocks and
+// is reported as waited for.
+func (d *Dependency) collectDepGroupKey(
+	liveMembers, seen, jobKeys, waitingForDepGroups map[string]bool,
+) {
+	if !liveMembers[d.DepGroup] && seen[d.DepGroup] {
+		return
+	}
+
+	jobKeys[depGroupDependencyKey(d.DepGroup)] = true
+
+	if !liveMembers[d.DepGroup] {
+		waitingForDepGroups[d.DepGroup] = true
+	}
+}
+
+// collectEssenceJobKey adds this essence dependency's job key to jobKeys if that
+// job is still live; a job that is not live has nothing left to wait for.
+func (d *Dependency) collectEssenceJobKey(reader depReader, jobKeys map[string]bool) error {
+	if d.Essence == nil {
+		return nil
+	}
+
+	keys, _, err := d.incompleteEssenceJobKeys(reader)
 	if err != nil {
 		return err
 	}
 
-	collectIncompleteJobKeys(keys, jobKeys, waitingForDepGroups)
-	collectStrings(waiting, waitingForDepGroups)
+	collectStrings(keys, jobKeys)
 
 	return nil
 }
@@ -173,30 +192,6 @@ func collectStrings(values []string, set map[string]bool) {
 	for _, value := range values {
 		set[value] = true
 	}
-}
-
-func (d *Dependency) incompleteDepGroupJobKeys(
-	reader depReader,
-	seenDepGroups map[string]bool,
-) ([]string, []string, error) {
-	keys, err := reader.retrieveIncompleteJobKeysByDepGroup(d.DepGroup)
-	if err != nil {
-		return []string{}, []string{}, err
-	}
-
-	if len(keys) > 0 {
-		return keys, nil, nil
-	}
-
-	if seenDepGroups[d.DepGroup] {
-		return nil, nil, nil
-	}
-
-	return []string{neverSeenDepGroupDependencyKey(d.DepGroup)}, []string{d.DepGroup}, nil
-}
-
-func neverSeenDepGroupDependencyKey(depGroup string) string {
-	return neverSeenDepGroupDependencyPrefix + depGroup
 }
 
 func (d *Dependency) incompleteEssenceJobKeys(reader depReader) ([]string, []string, error) {
@@ -270,22 +265,44 @@ func appendDependencyViaJSON(deps Dependencies, dep dependencyViaJSON) Dependenc
 	return deps
 }
 
-// incompleteJobKeys converts the constituent Dependency structs in to internal
-// job keys that uniquely identify the jobs we are dependent upon. Note that if
-// you have dependencies that are specified with DepGroups, then you should re-
-// call this and update every time a new Job is added with one of our
-// DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
-// are incomplete (they could have been Archive()d in the past if they are now
-// being re-run).
-func (d Dependencies) incompleteJobKeys(reader depReader) ([]string, []string, error) {
-	seenDepGroups, err := reader.depGroupsEverSeen(d.DepGroups())
+// dependencyKeys returns the queue dependency keys for these Dependencies - one
+// depgroup:G key per unsatisfied declared group, one job key per live essence
+// dependency - plus the declared groups that have never been seen.
+//
+// A dep group edge stays at the granularity the user declared it: one opaque key
+// for the whole group, never one key per member job. Whether the group still has
+// a live member is answered from groups, in memory. Only a group with no live
+// member needs the database, to tell "seen, so all its jobs are done and the
+// edge is satisfied" from "never seen, so the edge blocks and is reported as
+// waited for"; a job whose groups all have live members therefore opens no read
+// transaction for the seen check.
+//
+// The returned slice is built fresh for every call, and must be: Item's
+// Dependencies() returns the live backing slice and ChangedKey() mutates it in
+// place, so two items may never share one.
+func (d Dependencies) dependencyKeys(
+	reader depReader, groups depGroupState,
+) ([]string, []string, error) {
+	liveMembers, memberless := d.depGroupMembership(groups)
+
+	seen, err := reader.depGroupsEverSeen(memberless)
 	if err != nil {
 		return []string{}, []string{}, err
 	}
 
-	jobKeys, waitingForDepGroups, err := d.incompleteJobKeysByDependency(reader, seenDepGroups)
-	if err != nil {
-		return []string{}, []string{}, err
+	jobKeys := make(map[string]bool)
+	waitingForDepGroups := make(map[string]bool)
+
+	for _, dep := range d {
+		if dep.DepGroup != "" {
+			dep.collectDepGroupKey(liveMembers, seen, jobKeys, waitingForDepGroups)
+
+			continue
+		}
+
+		if errd := dep.collectEssenceJobKey(reader, jobKeys); errd != nil {
+			return []string{}, []string{}, errd
+		}
 	}
 
 	return sortedStringSet(jobKeys), sortedStringSet(waitingForDepGroups), nil
@@ -302,32 +319,33 @@ func sortedStringSet(set map[string]bool) []string {
 	return values
 }
 
-func (d Dependencies) incompleteJobKeysByDependency(
-	reader depReader,
-	seenDepGroups map[string]bool,
-) (map[string]bool, map[string]bool, error) {
-	jobKeys := make(map[string]bool)
-	waitingForDepGroups := make(map[string]bool)
+// depGroupMembership answers, for each declared dep group, whether it has a live
+// member job, and also lists the ones that do not - the only groups whose "was
+// it ever seen" answer matters. Each group is asked about exactly once, so a
+// membership that changes part way through a resolution cannot make one group
+// look both blocked and never seen.
+func (d Dependencies) depGroupMembership(groups depGroupState) (map[string]bool, []string) {
+	liveMembers := make(map[string]bool)
+
+	var memberless []string
 
 	for _, dep := range d {
 		if dep.DepGroup == "" {
-			keys, waiting, err := dep.incompleteJobKeys(reader)
-			if err != nil {
-				return nil, nil, err
-			}
-
-			collectIncompleteJobKeys(keys, jobKeys, waitingForDepGroups)
-			collectStrings(waiting, waitingForDepGroups)
-
 			continue
 		}
 
-		if err := dep.collectIncompleteJobKeys(reader, seenDepGroups, jobKeys, waitingForDepGroups); err != nil {
-			return nil, nil, err
+		if _, asked := liveMembers[dep.DepGroup]; asked {
+			continue
+		}
+
+		liveMembers[dep.DepGroup] = groups.hasMembers(dep.DepGroup)
+
+		if !liveMembers[dep.DepGroup] {
+			memberless = append(memberless, dep.DepGroup)
 		}
 	}
 
-	return jobKeys, waitingForDepGroups, nil
+	return liveMembers, memberless
 }
 
 // DepGroups returns all the DepGroups of our constituent Dependency structs.
@@ -367,42 +385,6 @@ type Dependency struct {
 	DepGroup string
 }
 
-// incompleteJobKeys calculates the job keys that this dependency refers to. For
-// a Dependency made with Essence, you will get a single key which will be the
-// same key you'd get from *Job.key() on a Job made with the same essence.
-// For a Dependency made with a DepGroup, you will get the *Job.key()s of all
-// the jobs in the queue and database that have that DepGroup in their
-// DepGroups. You will only get keys for jobs that are currently in the queue.
-func (d *Dependency) incompleteJobKeys(reader depReader) ([]string, []string, error) {
-	seenDepGroups := make(map[string]bool)
-
-	if d.DepGroup != "" {
-		seen, err := reader.depGroupEverSeen(d.DepGroup)
-		if err != nil {
-			return []string{}, []string{}, err
-		}
-
-		seenDepGroups[d.DepGroup] = seen
-	}
-
-	return d.incompleteJobKeysWithSeen(reader, seenDepGroups)
-}
-
-func (d *Dependency) incompleteJobKeysWithSeen(
-	reader depReader,
-	seenDepGroups map[string]bool,
-) ([]string, []string, error) {
-	if d.DepGroup != "" {
-		return d.incompleteDepGroupJobKeys(reader, seenDepGroups)
-	}
-
-	if d.Essence != nil {
-		return d.incompleteEssenceJobKeys(reader)
-	}
-
-	return []string{}, nil, nil
-}
-
 // NewEssenceDependency makes it a little easier to make a new *Dependency based
 // on Cmd+Cwd, for use in NewDependencies(). Leave cwd as an empty string if the
 // job you are describing does not have CwdMatters true.
@@ -420,19 +402,6 @@ func NewDepGroupDependency(depgroup string) *Dependency {
 	}
 }
 
-func collectIncompleteJobKeys(keys []string, jobKeys, waitingForDepGroups map[string]bool) {
-	for _, key := range keys {
-		jobKeys[key] = true
-		if depGroup, ok := neverSeenDepGroupFromDependencyKey(key); ok {
-			waitingForDepGroups[depGroup] = true
-		}
-	}
-}
-
-func neverSeenDepGroupFromDependencyKey(key string) (string, bool) {
-	return strings.CutPrefix(key, neverSeenDepGroupDependencyPrefix)
-}
-
 // resolveDependencies resolves the dependencies of every one of the given jobs,
 // dependencyResolutionChunkSize jobs per bolt read transaction, returning each
 // job paired with its dependency keys in the order given, and setting each job's
@@ -447,14 +416,16 @@ func neverSeenDepGroupFromDependencyKey(key string) (string, bool) {
 //
 // ctx is checked before each job, so a cancelled recovery ends the transaction
 // it is in and never opens the next chunk's.
-func (db *db) resolveDependencies(ctx context.Context, jobs []*Job) ([]resolvedJob, error) {
+func (db *db) resolveDependencies(
+	ctx context.Context, jobs []*Job, groups depGroupState,
+) ([]resolvedJob, error) {
 	resolved := make([]resolvedJob, 0, len(jobs))
 
 	// max() because slices.Chunk() panics on a chunk size below 1, and
 	// dependencyResolutionChunkSize is a var that a test can set (as
 	// numRPCReaders is).
 	for chunk := range slices.Chunk(jobs, max(1, dependencyResolutionChunkSize)) {
-		chunkResolved, err := db.resolveDependencyChunk(ctx, chunk)
+		chunkResolved, err := db.resolveDependencyChunk(ctx, chunk, groups)
 		if err != nil {
 			return nil, err
 		}

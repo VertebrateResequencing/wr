@@ -2170,14 +2170,14 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	jobsToQueue, jobsToUpdate []*Job, alreadyAdded int, err error,
 ) {
-	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
 	if err != nil {
 		return jobsToQueue, jobsToUpdate, alreadyAdded, err
 	}
 
 	if len(encodedJobs) > 0 {
-		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs)
+		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 	}
 
 	// *** on error, because we were batching, and doing lookups separately to
@@ -2207,13 +2207,12 @@ type batchStore struct {
 // storeNewJobData concurrently stores the job and lookup data prepared by
 // prepareNewJobs, returning the first error encountered. rgLookups and
 // encodedJobs are always stored; the other lookups only if non-empty.
-func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups, dgLookups,
+func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 	depGroupsSeen, rdgLookups, rgs sobsd) error {
 	stores := []batchStore{{"rglookups", bucketRTK, rgLookups, db.storeLookups}}
 
 	for _, s := range []batchStore{
 		{"repGroups", bucketRGs, rgs, db.storeLookups},
-		{"dgLookups", bucketDTK, dgLookups, db.storeLookups},
 		{"depGroupsSeen", bucketDepGroups, depGroupsSeen, db.storeLookups},
 		{"rdgLookups", bucketRDTK, rdgLookups, db.storeLookups},
 	} {
@@ -2274,7 +2273,7 @@ func collectFirstError(errs chan error, n int) error {
 }
 
 //nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.
-func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
+func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
 	repGroups := make(map[string]bool)
@@ -2291,7 +2290,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 			added, err = db.checkIfComplete(keyStr)
 			if err != nil {
-				return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+				return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 					jobsToQueue, jobsToUpdate, alreadyAdded, err
 			}
 
@@ -2313,7 +2312,6 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 		for _, depGroup := range job.DepGroups {
 			if depGroup != "" {
-				dgLookups = append(dgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
 				depGroups[depGroup] = true
 			}
 		}
@@ -2333,7 +2331,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		job.RUnlock()
 
 		if err != nil {
-			return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+			return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 				jobsToQueue, jobsToUpdate, alreadyAdded, err
 		}
 
@@ -2364,7 +2362,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 				job.RUnlock()
 
 				if err != nil {
-					return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+					return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 						jobsToQueue, jobsToUpdate, alreadyAdded, err
 				}
 
@@ -2389,7 +2387,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		}
 	}
 
-	return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+	return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
 // generateLookupKey creates a lookup key understood by the retrieval methods,
@@ -3369,12 +3367,12 @@ func (db *db) launchJobChangeUpdate(key, encoded []byte) {
 // associated with the new jobs.
 func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job) error {
 	//nolint:dogsled // modifyLiveJobs only needs the persistence fields from prepareNewJobs.
-	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
+	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
 	if err != nil {
 		return err
 	}
 
-	lookups := newJobLookups(rgLookups, rgs, dgLookups, depGroupsSeen, rdgLookups)
+	lookups := newJobLookups(rgLookups, rgs, depGroupsSeen, rdgLookups)
 
 	sort.Sort(encodedJobs)
 
@@ -3395,23 +3393,20 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 type jobLookups struct {
 	rg         sobsd
 	repGroups  sobsd
-	dg         sobsd
 	depGroups  sobsd
 	reverseDep sobsd
 }
 
 // newJobLookups sorts and groups the lookup sobsds prepared by prepareNewJobs.
-func newJobLookups(rgLookups, rgs, dgLookups, depGroupsSeen, rdgLookups sobsd) jobLookups {
+func newJobLookups(rgLookups, rgs, depGroupsSeen, rdgLookups sobsd) jobLookups {
 	sort.Sort(rgLookups)
 	sort.Sort(rgs)
-	sort.Sort(dgLookups)
 	sort.Sort(depGroupsSeen)
 	sort.Sort(rdgLookups)
 
 	return jobLookups{
 		rg:         rgLookups,
 		repGroups:  rgs,
-		dg:         dgLookups,
 		depGroups:  depGroupsSeen,
 		reverseDep: rdgLookups,
 	}
@@ -3539,7 +3534,6 @@ func (db *db) putAllLookups(tx *bolt.Tx, lookups jobLookups) error {
 	}{
 		{bucketRTK, lookups.rg},
 		{bucketRGs, lookups.repGroups},
-		{bucketDTK, lookups.dg},
 		{bucketDepGroups, lookups.depGroups},
 		{bucketRDTK, lookups.reverseDep},
 	}
