@@ -1143,10 +1143,14 @@ type Server struct {
 	// and queue destroy - rather than at the final wg.Wait. bgCancel cancels the
 	// context those goroutines observe, so shutdown can tell them to abort
 	// promptly and quietly instead of racing the teardown.
-	bgWG                      *waitgroup.WaitGroup
-	bgCancel                  context.CancelFunc
-	q                         *queue.Queue
-	rpl                       *rgToKeys
+	bgWG     *waitgroup.WaitGroup
+	bgCancel context.CancelFunc
+	q        *queue.Queue
+	rpl      *rgToKeys
+	// depGroups holds, per dep group with at least one live member job, the keys
+	// of those members, so a dep-group dependency resolves to one opaque
+	// depgroup:G key instead of one key per member job.
+	depGroups                 *depGroupMembers
 	limiter                   *limiter.Limiter
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
@@ -3556,6 +3560,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		sock:                      sock,
 		ch:                        new(codec.BincHandle),
 		rpl:                       newRGToKeys(),
+		depGroups:                 newDepGroupMembers(),
 		limiter:                   l,
 		db:                        db,
 		pprofServer:               pprofServer,
@@ -3978,7 +3983,7 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 	// transactions on a cold database (.docs/bugfixes/260825-2.md). It is a
 	// separate pass because the loop below calls the scheduler, which must not run
 	// inside a read transaction.
-	resolved, errd := s.db.resolveDependencies(ctx, priorJobs)
+	resolved, errd := s.db.resolveDependencies(ctx, priorJobs, s.depGroups)
 	if errd != nil {
 		return errd
 	}
@@ -5118,7 +5123,7 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 	warningDepGroups := make(map[string]bool)
 
 	for _, job := range jobsToQueue {
-		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
 			// srerr/qerr are unconditionally overwritten by
 			// updateJobDependencies below, so there is nothing to record here
@@ -5261,7 +5266,7 @@ func (s *Server) gatherDependencyUpdates(jobs []*Job) ([]jobDependencyUpdate, bo
 	readyCallbackExpected := false
 
 	for _, job := range jobs {
-		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
 			return updates, readyCallbackExpected, err
 		}

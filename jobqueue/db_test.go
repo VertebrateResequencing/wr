@@ -323,7 +323,10 @@ func TestDBReverseLookupIndex(t *testing.T) {
 			return nil
 		})
 		So(err, ShouldBeNil)
-		So(parentLookups, ShouldEqual, 2)
+		// bucketDTK is retired, so the parent holds only its repgroup entry; the
+		// child's two are a repgroup entry and a reverse dep-group (bucketRDTK)
+		// entry, and those keep being written.
+		So(parentLookups, ShouldEqual, 1)
 		So(childLookups, ShouldEqual, 2)
 
 		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
@@ -359,15 +362,17 @@ func TestDBReverseLookupIndex(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(oldDepKeys, ShouldHaveLength, 0)
 
+		// the modify writes the new key's lookups through prepareNewJobs, which no
+		// longer writes bucketDTK, so the retired index knows nothing of it.
 		newDepKeys, err := testDB.retrieveIncompleteJobKeysByDepGroup("new-parent-dg")
 		So(err, ShouldBeNil)
-		So(newDepKeys, ShouldContain, newParentKey)
+		So(newDepKeys, ShouldHaveLength, 0)
 
 		err = testDB.bolt.View(func(tx *bolt.Tx) error {
 			So(countLookupEntriesByJobKey(tx, parentOldKey), ShouldEqual, 0)
 			So(countReverseLookupEntriesByJobKey(tx, parentOldKey), ShouldEqual, 0)
-			So(countLookupEntriesByJobKey(tx, newParentKey), ShouldEqual, 2)
-			So(countReverseLookupEntriesByJobKey(tx, newParentKey), ShouldEqual, 2)
+			So(countLookupEntriesByJobKey(tx, newParentKey), ShouldEqual, 1)
+			So(countReverseLookupEntriesByJobKey(tx, newParentKey), ShouldEqual, 1)
 
 			return nil
 		})
@@ -462,7 +467,7 @@ func TestDBDepGroups(t *testing.T) {
 		second := testDBJob("echo second", "second")
 		second.DepGroups = []string{sharedDepGroup, otherDepGroup}
 
-		_, _, _, depGroupsSeen, _, _, _, _, _, err := testDB.prepareNewJobs([]*Job{first, second}, false)
+		_, _, depGroupsSeen, _, _, _, _, _, err := testDB.prepareNewJobs([]*Job{first, second}, false)
 		So(err, ShouldBeNil)
 		So(depGroupsSeen, ShouldHaveLength, 2)
 
@@ -543,7 +548,14 @@ func TestDBDepGroups(t *testing.T) {
 		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{legacy}, false)
 		So(err, ShouldBeNil)
 
+		// bucketDTK is retired and no longer written, and its entries are
+		// pre-upgrade data by definition, so the fixture writes one directly.
 		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			if errd := replaceLookupRebuildTestBucket(tx, bucketDTK,
+				[]byte("legacy"+dbDelimiter+legacy.Key())); errd != nil {
+				return errd
+			}
+
 			return tx.DeleteBucket(bucketDepGroups)
 		})
 		So(err, ShouldBeNil)

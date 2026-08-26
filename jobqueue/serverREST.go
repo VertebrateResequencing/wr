@@ -2318,7 +2318,7 @@ func (s *Server) changeModifiedQueueKeys(modified map[string]string, jobs []*Job
 
 func (s *Server) updateModifiedQueueJobs(ctx context.Context, jobs []*Job) error {
 	for _, job := range jobs {
-		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
 			return err
 		}

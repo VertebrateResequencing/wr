@@ -87,6 +87,13 @@ const (
 	depTxE2EFutureGroup = "reliable4-deptx-e2e-future"
 	depTxE2EParents     = 3
 	depTxE2EChildren    = 20
+
+	// depTxBigGroup is a dep group grown from depTxBigMembers to
+	// depTxBigGrownMembers live members, to show the resolved key count does not
+	// scale with membership.
+	depTxBigGroup        = "deptx-big-group"
+	depTxBigMembers      = 500
+	depTxBigGrownMembers = 5000
 )
 
 // depTxFixture is a database holding the live jobs, dep groups and dep group
@@ -101,6 +108,11 @@ type depTxFixture struct {
 	// liveKey is the key of a live job with no dep group, for essence
 	// dependencies.
 	liveKey string
+
+	// groups is the per-group live-member state the fixture's live jobs
+	// represent, which dependency resolution answers "has this dep group a live
+	// member?" from.
+	groups *depGroupMembers
 }
 
 // newDepTxFixture builds the fixture database. The caller must close
@@ -134,7 +146,21 @@ func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 	liveGroupKeys := []string{first.Key(), second.Key()}
 	slices.Sort(liveGroupKeys)
 
-	return &depTxFixture{db: testDB, liveGroupKeys: liveGroupKeys, liveKey: live.Key()}
+	// gone was deleted from the live bucket, so depTxGoneGroup has no live
+	// member and only first and second are members of anything.
+	groups := newDepGroupMembers()
+	groups.add([]string{depTxLiveGroup}, first.Key())
+	groups.add([]string{depTxLiveGroup}, second.Key())
+
+	return &depTxFixture{db: testDB, liveGroupKeys: liveGroupKeys, liveKey: live.Key(), groups: groups}
+}
+
+// soResolves resolves deps against the fixture, asserting no error.
+func (f *depTxFixture) soResolves(deps Dependencies) ([]string, []string) {
+	keys, waiting, err := deps.dependencyKeys(f.db, f.groups)
+	So(err, ShouldBeNil)
+
+	return keys, waiting
 }
 
 // TestReliable4DependencyFreeTxCost proves that resolving the dependencies of a
@@ -162,7 +188,7 @@ func TestReliable4DependencyFreeTxCost(t *testing.T) {
 			unexpected := 0
 
 			for range depTxResolutions {
-				keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+				keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 				if err != nil || len(keys) != 0 || len(waiting) != 0 {
 					unexpected++
 				}
@@ -179,7 +205,7 @@ func TestReliable4DependencyFreeTxCost(t *testing.T) {
 			unexpected := 0
 
 			for range depTxResolutions {
-				keys, _, err := deps.incompleteJobKeys(fixture.db)
+				keys, _, err := deps.dependencyKeys(fixture.db, fixture.groups)
 				if err != nil || len(keys) != 1 {
 					unexpected++
 				}
@@ -212,7 +238,7 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 		Convey("No dependencies resolves to no keys and no waited-for groups", func() {
 			var deps Dependencies
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
 			So(keys, ShouldResemble, []string{})
 			So(waiting, ShouldResemble, []string{})
@@ -221,7 +247,7 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 		Convey("A dep group with live members resolves to all their keys", func() {
 			deps := Dependencies{NewDepGroupDependency(depTxLiveGroup)}
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
 			So(keys, ShouldResemble, fixture.liveGroupKeys)
 			So(waiting, ShouldResemble, []string{})
@@ -230,7 +256,7 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 		Convey("A seen dep group with no live members resolves to no keys", func() {
 			deps := Dependencies{NewDepGroupDependency(depTxGoneGroup)}
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
 			So(keys, ShouldResemble, []string{})
 			So(waiting, ShouldResemble, []string{})
@@ -239,16 +265,16 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 		Convey("A never seen dep group resolves to its sentinel key and is waited for", func() {
 			deps := Dependencies{NewDepGroupDependency(depTxNeverSeenGroup)}
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
-			So(keys, ShouldResemble, []string{neverSeenDepGroupDependencyKey(depTxNeverSeenGroup)})
+			So(keys, ShouldResemble, []string{depGroupDependencyKey(depTxNeverSeenGroup)})
 			So(waiting, ShouldResemble, []string{depTxNeverSeenGroup})
 		})
 
 		Convey("An essence dependency on a live job resolves to that job's key", func() {
 			deps := Dependencies{NewEssenceDependency(depTxLiveCmd, "")}
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
 			So(keys, ShouldResemble, []string{fixture.liveKey})
 			So(waiting, ShouldResemble, []string{})
@@ -257,7 +283,7 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 		Convey("An essence dependency on a job that is not live resolves to no keys", func() {
 			deps := Dependencies{NewEssenceDependency(depTxGoneCmd, "")}
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
 			So(keys, ShouldResemble, []string{})
 			So(waiting, ShouldResemble, []string{})
@@ -271,10 +297,10 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 			}
 
 			want := append([]string{}, fixture.liveGroupKeys...)
-			want = append(want, neverSeenDepGroupDependencyKey(depTxNeverSeenGroup), fixture.liveKey)
+			want = append(want, depGroupDependencyKey(depTxNeverSeenGroup), fixture.liveKey)
 			slices.Sort(want)
 
-			keys, waiting, err := deps.incompleteJobKeys(fixture.db)
+			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
 			So(keys, ShouldResemble, want)
 			So(waiting, ShouldResemble, []string{depTxNeverSeenGroup})
@@ -309,7 +335,7 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			failed := 0
 
 			for _, job := range jobs {
-				if _, _, err := job.Dependencies.incompleteJobKeys(fixture.db); err != nil {
+				if _, _, err := job.Dependencies.dependencyKeys(fixture.db, fixture.groups); err != nil {
 					failed++
 				}
 			}
@@ -317,7 +343,7 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			perJobTx := fixture.db.bolt.Stats().TxN - beforePerJob
 
 			beforePass := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(ctx, jobs)
+			resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
 			passTx := fixture.db.bolt.Stats().TxN - beforePass
 
 			So(failed, ShouldEqual, 0)
@@ -333,7 +359,7 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			wantChunks := depTxWantChunks(len(jobs))
 
 			before := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(ctx, jobs)
+			resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
 			passTx := fixture.db.bolt.Stats().TxN - before
 
 			So(err, ShouldBeNil)
@@ -367,7 +393,7 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			cancelled, cancel := context.WithCancel(ctx)
 			cancel()
 
-			resolved, err := fixture.db.resolveDependencies(cancelled, jobs)
+			resolved, err := fixture.db.resolveDependencies(cancelled, jobs, fixture.groups)
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, context.Canceled), ShouldBeTrue)
 			So(resolved, ShouldBeNil)
@@ -394,7 +420,7 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			cancel()
 
 			before := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(cancelled, jobs)
+			resolved, err := fixture.db.resolveDependencies(cancelled, jobs, fixture.groups)
 			passTx := fixture.db.bolt.Stats().TxN - before
 
 			So(errors.Is(err, context.Canceled), ShouldBeTrue)
@@ -460,7 +486,7 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 	failed := 0
 
 	for i, job := range jobs {
-		keys, waiting, err := job.Dependencies.incompleteJobKeys(fixture.db)
+		keys, waiting, err := job.Dependencies.dependencyKeys(fixture.db, fixture.groups)
 		if err != nil {
 			failed++
 		}
@@ -468,7 +494,7 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 		wantKeys[i], wantWaiting[i] = keys, waiting
 	}
 
-	resolved, err := fixture.db.resolveDependencies(ctx, jobs)
+	resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
 
 	So(failed, ShouldEqual, 0)
 	So(err, ShouldBeNil)
@@ -510,6 +536,118 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 	// and ones left waiting on a never seen dep group.
 	So(withKeys, ShouldBeGreaterThan, 0)
 	So(withWaiting, ShouldBeGreaterThan, 0)
+}
+
+// TestDepGranularityDependencyKeys pins the resolution rule that keeps a
+// dep-group dependency at the granularity the user declared it: one opaque
+// depgroup:G key standing for the whole group, whatever the group's membership,
+// with individual job keys only for essence dependencies.
+func TestDepGranularityDependencyKeys(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a database and the per-group state its live jobs represent", t, func() {
+		fixture := newDepTxFixture(t, ctx)
+
+		defer func() {
+			So(fixture.db.close(ctx), ShouldBeNil)
+		}()
+
+		Convey("A dep group with live members resolves to that group's one key", func() {
+			before := fixture.db.bolt.Stats().TxN
+
+			deps, waiting := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxLiveGroup)})
+			So(deps, ShouldResemble, []string{depGroupDependencyKey(depTxLiveGroup)})
+			So(waiting, ShouldResemble, []string{})
+
+			// the group has a live member, so the seen check is not needed and no
+			// read transaction is opened for it.
+			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, 0)
+		})
+
+		Convey("A seen dep group with no live member is satisfied", func() {
+			deps, waiting := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxGoneGroup)})
+			So(deps, ShouldResemble, []string{})
+			So(waiting, ShouldResemble, []string{})
+		})
+
+		Convey("A never seen dep group blocks and is reported as waited for", func() {
+			deps, waiting := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxNeverSeenGroup)})
+			So(deps, ShouldResemble, []string{depGroupDependencyKey(depTxNeverSeenGroup)})
+			So(waiting, ShouldResemble, []string{depTxNeverSeenGroup})
+		})
+
+		Convey("An essence dependency on a live job resolves to that job's key", func() {
+			deps, waiting := fixture.soResolves(Dependencies{NewEssenceDependency(depTxLiveCmd, "")})
+			So(deps, ShouldResemble, []string{fixture.liveKey})
+			So(waiting, ShouldResemble, []string{})
+		})
+
+		Convey("An essence dependency on a job that is not live is satisfied", func() {
+			deps, _ := fixture.soResolves(Dependencies{NewEssenceDependency(depTxGoneCmd, "")})
+			So(deps, ShouldResemble, []string{})
+		})
+
+		Convey("Mixed dependencies resolve to the sorted set of their keys", func() {
+			want := []string{
+				depGroupDependencyKey(depTxLiveGroup),
+				depGroupDependencyKey(depTxNeverSeenGroup),
+				fixture.liveKey,
+			}
+			slices.Sort(want)
+
+			deps, waiting := fixture.soResolves(Dependencies{
+				NewDepGroupDependency(depTxLiveGroup),
+				NewDepGroupDependency(depTxNeverSeenGroup),
+				NewEssenceDependency(depTxLiveCmd, ""),
+			})
+			So(deps, ShouldResemble, want)
+			So(deps, ShouldHaveLength, 3)
+			So(waiting, ShouldResemble, []string{depTxNeverSeenGroup})
+		})
+
+		Convey("The resolved key count does not grow with the group's membership", func() {
+			depTxGrowGroup(fixture, 0, depTxBigMembers)
+			So(fixture.groups.memberships(), ShouldEqual, len(fixture.liveGroupKeys)+depTxBigMembers)
+
+			deps, _ := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxBigGroup)})
+			So(deps, ShouldHaveLength, 1)
+
+			depTxGrowGroup(fixture, depTxBigMembers, depTxBigGrownMembers)
+			So(fixture.groups.memberships(), ShouldEqual, len(fixture.liveGroupKeys)+depTxBigGrownMembers)
+
+			deps, _ = fixture.soResolves(Dependencies{NewDepGroupDependency(depTxBigGroup)})
+			So(deps, ShouldHaveLength, 1)
+		})
+
+		Convey("A job with no dependencies resolves to nothing, for no read transaction", func() {
+			var none Dependencies
+
+			before := fixture.db.bolt.Stats().TxN
+			unexpected := 0
+
+			for range depTxResolutions {
+				deps, waiting, err := none.dependencyKeys(fixture.db, fixture.groups)
+				if err != nil || !slices.Equal(deps, []string{}) || !slices.Equal(waiting, []string{}) {
+					unexpected++
+				}
+			}
+
+			So(unexpected, ShouldEqual, 0)
+			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, 0)
+		})
+	})
+}
+
+// depTxGrowGroup records synthetic live members from through to-1 in
+// depTxBigGroup.
+func depTxGrowGroup(fixture *depTxFixture, from, to int) {
+	for i := from; i < to; i++ {
+		fixture.groups.add([]string{depTxBigGroup}, "deptx-big-member-"+strconv.Itoa(i))
+	}
 }
 
 // TestReliable4RecoveryDependencyState proves that the queue state a

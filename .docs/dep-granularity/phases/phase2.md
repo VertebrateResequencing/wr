@@ -127,8 +127,8 @@ test checks the ratio. What is checkable is the count itself, and F1 acceptance
 test 3 checks it exactly against a fixture's own (group, member) pair total. Do
 not carry either ratio into code comments.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: A2 - Dependencies resolve to group keys, not member keys
 
@@ -213,8 +213,8 @@ them, and `:5082` and `:5225` are correct wherever the spec labels them call
 sites - which is what the Architecture item 3 bullet, this story's
 five-call-site list, and the Membership hook set's four-call-site list all do.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: A3 - `bucketDTK` stops being written
 
@@ -270,8 +270,8 @@ resolution call is new; it is asserted rather than assumed because it is the
 story's whole upgrade claim. Tests 3 and 4 are regression guards that already
 hold pre-change. Test 5 is `TestDBReverseLookupIndex`, updated.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Phase gate
 
@@ -281,3 +281,91 @@ hold pre-change. Test 5 is `TestDBReverseLookupIndex`, updated.
 - The `queue` package stays green (phase 1's gate).
 - Dependency-bearing `jobqueue` tests are expected red until phase 4, and C2's
   two rewritten tests until phase 3; see "The green window opens here" above.
+
+
+## Phase 2 outcome (2026-08-26)
+
+Implemented and reviewed PASS. `make lint` 0 issues, `go vet -tags netgo` clean,
+`-race` clean on the four new tests. The full suite cannot produce a total while
+the green window is open (the runner aborts on the first failing lane), so the
+evidence is a run with exactly the ten expected reds skipped: **415 passed - 22
+skipped - 29 packages**, reconciling as baseline 424 + 4 new test functions - 13
+skipped lane-instances (eight single-lane functions, plus three shards of
+`TestJobqueueExecutionAndDependencyScenarios` and two of `TestJobqueueModify`).
+The reviewer confirmed **no eleventh red**: with those ten skipped the suite is
+entirely green, `TestServerWebI` and `TestSubscriptionReconnectResync` included,
+at load 116-118. Skips removed afterwards, checksums restored.
+
+### The green window, verified rather than asserted
+
+Every one of the ten reds was traced to its failing assertion. The seven waiting
+on phase 4's D1 add hook all show the *same* signature - an edge that must block
+resolves as satisfied, because `hasMembers` is false while `bucketDepGroups` says
+the group has been seen. Not one shows a different failure kind: no panic, no
+error, no wedged job, no lost key. The two C2 reds are the assertions the spec
+names, and `TestReliable4RecoveryDependencyPass` fails with
+`Expected '70' to be greater than '100'` - the spec's own predicted 70
+transactions, arriving on the nose. The other shards of the two sharded tests are
+green (Execution a 9.5s, c 17.1s; Modify b 7.6s).
+
+### Locking
+
+All five rules hold on every path, error and early-return included. Rule 5 (no
+shard lock held across a call into `queue`) needs no test and cannot have one: the
+shard mutexes are unexported and every mutator returns `[]string`, so a caller has
+nothing to hold a lock across. The reviewer sharpened the reason - it is the
+*combination* of unexported shards and value-returning mutators, not the
+signatures alone.
+
+One margin worth recording: `apply` iterates `slices.Sorted(maps.Keys(muts))`, so
+group shards are taken in a total order even if the one-at-a-time rule were
+broken. Rule 2 is belt-and-braces, not the sole protection. Confirming it still
+matters took the faithful violation - holding every group shard at once in *map*
+order, since sorted order would not deadlock - which fails test 10 at its 120 s
+deadline.
+
+### Mutations re-run by the reviewer
+
+Six, all producing named failures rather than a package-wide panic: rekey
+leave-before-join (test 7 `:159`), rekey locking in call order (test 12 `:257` in
+11.6 s), all-group-shards-at-once (test 10 `:218`), asking the seen-cache for
+every declared group instead of only the memberless ones (`:568`, the TxN==0
+assertion), and three separate resolution-rule mutations pinning the five-case
+partition (`:573`, `:579`/`:607`, `:564`/`:609`). The A3 restore-a-`bucketDTK`-write
+mutation produced two named failures rather than the reported three - GoConvey's
+`FailureHalts` masks the siblings - which is cosmetic; the guarantee is pinned.
+
+### Judgement calls upheld, one for a corrected reason
+
+- `prepareNewJobs` 10 -> 9 returns: forced, and `//nolint:dogsled` is still needed.
+- `depReader.depGroupEverSeen` kept with no caller: upheld, but the implementor's
+  reason was inverted. C1's wrapper needs the method *because* it stays in the
+  interface - so the real justification is spec fidelity (the New-symbols block
+  removes only `retrieveIncompleteJobKeysByDepGroup`), not a downstream need.
+- Three `&Server{}` literals initialised rather than making `hasMembers`
+  nil-safe: upheld, and this is the one that matters. A nil-safe `hasMembers`
+  returns "no live members", which resolves a group *with* live members as
+  satisfied - converting a missing initialisation into precisely the silent
+  wrong-order execution this spec exists to prevent. A nil map panics loudly
+  instead. **Any new hand-built `Server` reaching the add, modify or recovery
+  paths needs `depGroups: newDepGroupMembers()`.**
+
+### Non-blocking, for later phases
+
+- **C2 should consolidate, not duplicate:** `TestDepGranularityDependencyKeys`'
+  resolution Conveys are what C2 rewrites `TestReliable4DependencyResolutionUnchanged`
+  into, and its last Convey duplicates `TestReliable4DependencyFreeTxCost`'s
+  first. A spec-ordering artifact.
+- `incompleteEssenceJobKeys`' middle return is always nil and now discarded at its
+  one call site (`dependency.go:181`) - narrow it to `([]string, error)`.
+- `resolveDependencyChunk`'s doc comment enumerates what runs inside the read
+  transaction; it now also takes a shard mutex via `hasMembers` (O(1) map op,
+  never I/O, so no rule-1 concern) and one clause would keep it true.
+- `dgRekeyDeadline` lacks `dgChurnDeadline`'s "hang detector, not a latency
+  budget" note - the note is what stops a future agent A/B-ing a phantom.
+- `reliable4_dependency_tx_test.go:168` names the deleted `incompleteJobKeys` in a
+  historical note; C2 does not own it.
+- `add(depGroups, "")` records a job-key entry contributing no group member, so
+  `memberships()` and the job map disagree until removal. Unreachable (job keys
+  are 32-hex); a one-line empty-key guard removes the asymmetry.
+- `depgroups_test.go` borrows `webiEcho1` from `serverWebI_test.go`.

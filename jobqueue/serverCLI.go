@@ -1716,7 +1716,7 @@ func (s *Server) persistModifiedJobsToDB(ctx context.Context, cr *clientRequest,
 
 // reflectModifiedJobInQueue updates a modified job's dependencies in the queue.
 func (s *Server) reflectModifiedJobInQueue(ctx context.Context, job *Job) {
-	deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
+	deps, waitingForDepGroups, depErr := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 	if depErr != nil {
 		clog.Error(ctx, "failed to get job dependencies", "err", depErr)
 
