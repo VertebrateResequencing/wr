@@ -1432,8 +1432,8 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 
 // registerDepGroupMembers records each job as a live member of its DepGroups,
 // releasing nothing: it only adds, so no group can empty. It is recovery's bulk
-// rebuild, and will be the add path's first pass. Call it before resolving any
-// dependency against this state.
+// rebuild and the add path's first pass. Call it before resolving any dependency
+// against this state.
 func (s *Server) registerDepGroupMembers(jobs []*Job) {
 	for _, job := range jobs {
 		if len(job.DepGroups) == 0 {
@@ -1448,7 +1448,53 @@ func (s *Server) registerDepGroupMembers(jobs []*Job) {
 // satisfies the queue dependency key of every group thereby emptied. Must not be
 // called while holding the queue mutex.
 func (s *Server) releaseDepGroupMembership(ctx context.Context, jobKey string) {
-	for _, depGroup := range s.depGroups.remove(jobKey) {
+	s.satisfyEmptiedDepGroups(ctx, s.depGroups.remove(jobKey))
+}
+
+// replaceDepGroupMembership makes newGroups jobKey's membership and satisfies the
+// queue dependency key of every group thereby emptied. On the add path it is the
+// second of two passes, after registerDepGroupMembers has recorded the whole
+// batch's groups, so it only ever applies drops there. Must not be called while
+// holding the queue mutex.
+func (s *Server) replaceDepGroupMembership(ctx context.Context, jobKey string, newGroups []string) {
+	s.satisfyEmptiedDepGroups(ctx, s.depGroups.replace(jobKey, newGroups))
+}
+
+// rekeyDepGroupMembership is replaceDepGroupMembership across a key change, for
+// the modify path: newKey takes newGroups before oldKey's membership is dropped,
+// so a group both keys belong to is never seen as empty and its waiters are not
+// released early. Must not be called while holding the queue mutex.
+func (s *Server) rekeyDepGroupMembership(ctx context.Context, oldKey, newKey string, newGroups []string) {
+	s.satisfyEmptiedDepGroups(ctx, s.depGroups.rekey(oldKey, newKey, newGroups))
+}
+
+// rekeyDepGroupMembershipForModifiedJobs makes each modified job's declared
+// DepGroups its membership under its (possibly new) key, dropping the membership
+// held under the old key paired with it in oldKeys, which must be index-parallel
+// with jobs.
+// Dropping the old key is not optional: nothing else does it, so a key-changing
+// modification would otherwise leave a phantom member keeping the group
+// non-empty and wedging its waiters forever.
+func (s *Server) rekeyDepGroupMembershipForModifiedJobs(ctx context.Context, oldKeys []string, jobs []*Job) {
+	for i, job := range jobs {
+		// the modification wrote DepGroups under the job's own lock, and another
+		// request could be modifying the same job now, so read it under the lock
+		// and release before rekeying: satisfying an emptied group takes the queue
+		// mutex, which is above the job lock in the lock order.
+		job.RLock()
+		newKey, depGroups := job.Key(), job.DepGroups
+		job.RUnlock()
+
+		s.rekeyDepGroupMembership(ctx, oldKeys[i], newKey, depGroups)
+	}
+}
+
+// satisfyEmptiedDepGroups resolves the queue dependency key of each of these dep
+// groups, which have no live member left, so that anything waiting only on one of
+// them becomes ready. It takes the queue mutex, so no membership shard lock may
+// be held here.
+func (s *Server) satisfyEmptiedDepGroups(ctx context.Context, emptied []string) {
+	for _, depGroup := range emptied {
 		if err := s.q.SatisfyDependency(ctx, depGroupDependencyKey(depGroup)); err != nil {
 			// the only error is a closed queue, ie. we are shutting down, so the
 			// waiters will be resolved afresh by the next server's recovery.
@@ -2532,6 +2578,52 @@ func (s *Server) prepareAndCountReadyJob(ctx context.Context, q *queue.Queue,
 	if snapshot.priority > group.priority {
 		group.priority = snapshot.priority
 	}
+}
+
+// updateDepGroupMembershipForNewJobs makes each of these jobs' declared
+// DepGroups its whole live membership, and releases the waiters of any dep group
+// the batch has left with no live member.
+//
+// It is two passes, and the order is load-bearing: registerDepGroupMembers
+// records every job's groups first, so a batch that both drops a group from one
+// job and adds another member of it cannot see that group momentarily empty and
+// release its waiters ahead of the new member. After that pass, no group named
+// anywhere in the batch is empty, so the drops the second pass applies can only
+// empty groups the batch no longer declares at all.
+//
+// Call it after storeNewJobs, which is what lets a member and a dependent added
+// in the same batch see each other, and before anything resolves a dependency
+// against this state.
+func (s *Server) updateDepGroupMembershipForNewJobs(ctx context.Context, jobsToQueue []*Job) {
+	s.registerDepGroupMembers(jobsToQueue)
+
+	for _, job := range jobsToQueue {
+		s.replaceDepGroupMembership(ctx, job.Key(), job.DepGroups)
+	}
+}
+
+// jobHasDependents says whether anything still depends on this job, either on
+// its own key (an essence dependency) or through one of its dep groups. Both
+// have to be asked: a dep-group dependency is an edge on the group's own key, so
+// a member's key is not among the queue's dependants at all.
+func (s *Server) jobHasDependents(job *Job, jobKey string) (bool, error) {
+	hasDeps, err := s.q.HasDependents(jobKey)
+	if err != nil || hasDeps {
+		return hasDeps, err
+	}
+
+	job.RLock()
+	depGroups := job.DepGroups
+	job.RUnlock()
+
+	for _, depGroup := range depGroups {
+		hasDeps, err = s.q.HasDependents(depGroupDependencyKey(depGroup))
+		if err != nil || hasDeps {
+			return hasDeps, err
+		}
+	}
+
+	return false, nil
 }
 
 func queueClosedError(op, key string) error {
@@ -5132,6 +5224,8 @@ func (s *Server) createJobs(
 		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
+	s.updateDepGroupMembershipForNewJobs(ctx, jobsToQueue)
+
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
 	added, dups, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
@@ -5266,10 +5360,12 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 	return nil
 }
 
-// updateJobDependencies is used to handle the jobsToUpdate from storeNewJobs()
-// and db.modifyLiveJobs(). These are those jobs currently in the queue that
-// need their dependencies updated because they just changed when we stored the
-// jobs.
+// updateJobDependencies is used by queueNewJobItems to handle the jobsToUpdate
+// from storeNewJobs(). These are those jobs currently in the queue that need
+// their dependencies updated because they just changed when we stored the jobs.
+// The modify path does not come through here: db.modifyLiveJobs() discards
+// prepareNewJobs' jobsToQueue/jobsToUpdate, so it never refreshes a group's
+// waiters this way.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
 	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(jobs)
 	if qerr != nil {
@@ -5706,7 +5802,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// we can't allow the removal of jobs that have dependencies, as *queue
 		// would regard that as satisfying the dependency and downstream jobs
 		// would start
-		hasDeps, err := s.q.HasDependents(jobkey)
+		hasDeps, err := s.jobHasDependents(job, jobkey)
 		if err != nil || hasDeps {
 			if hasDeps {
 				pass.skippedDeps = append(pass.skippedDeps, job)
@@ -5757,6 +5853,13 @@ func (s *Server) finalizeDeletedJobs(ctx context.Context, pass deletePass) {
 	// delete from db live bucket all in one go
 	if errd := s.db.deleteLiveJobs(ctx, pass.toDelete); errd != nil {
 		clog.Error(ctx, "job deletion from database failed", "err", errd)
+	}
+
+	// these jobs have left the live bucket, so they are no longer live members of
+	// their dep groups; any group whose last live member was among them now has
+	// nothing left to wait for.
+	for _, key := range pass.toDelete {
+		s.releaseDepGroupMembership(ctx, key)
 	}
 
 	// update scheduler now we have fewer jobs

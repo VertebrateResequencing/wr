@@ -1390,8 +1390,9 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 
 	// this job has left the live bucket, so it is no longer a live member of its
 	// dep groups; any group it was the last live member of now has nothing left
-	// to wait for. It is after q.Remove, not before, because satisfying a group's
-	// key takes the queue mutex.
+	// to wait for. It is after the archive and the q.Remove, not before, because a
+	// group's waiters must not be promoted until the job they waited for has
+	// really completed and left the queue.
 	s.releaseDepGroupMembership(ctx, key)
 
 	s.rpl.Lock()
@@ -1708,6 +1709,11 @@ func (s *Server) persistModifiedJobsToDB(ctx context.Context, cr *clientRequest,
 
 		return
 	}
+
+	// this is above the DependenciesSet || PrioritySet guard below because a
+	// DepGroups-only modification never passes that guard, and that is exactly
+	// the case that must not wedge a group's waiters.
+	s.rekeyDepGroupMembershipForModifiedJobs(ctx, oldKeys, toModify)
 
 	if !cr.Modifier.DependenciesSet && !cr.Modifier.PrioritySet {
 		return

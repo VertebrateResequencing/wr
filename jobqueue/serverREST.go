@@ -2259,9 +2259,16 @@ func (s *Server) storeModifiedJobs(ctx context.Context, modified map[string]stri
 
 	s.storeModifiedLimitGroupsIfNeeded(ctx, jobs, modifier)
 
-	if err := s.db.modifyLiveJobs(ctx, modifiedOldKeys(modified, jobs), jobs); err != nil {
+	oldKeys := modifiedOldKeys(modified, jobs)
+
+	if err := s.db.modifyLiveJobs(ctx, oldKeys, jobs); err != nil {
 		return err
 	}
+
+	// this is above the DependenciesSet || PrioritySet guard below because a
+	// DepGroups-only modification never passes that guard, and that is exactly
+	// the case that must not wedge a group's waiters.
+	s.rekeyDepGroupMembershipForModifiedJobs(ctx, oldKeys, jobs)
 
 	if modifier.DependenciesSet || modifier.PrioritySet {
 		return s.updateModifiedQueueJobs(ctx, jobs)
