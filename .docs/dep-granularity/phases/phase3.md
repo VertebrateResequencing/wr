@@ -154,8 +154,8 @@ covering all 8 C1 acceptance tests. Carry these figures:
   **500**; without the pass-long lifetime it is **50**. Those three numbers are
   what make the test discriminate.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 3.2: C2 - Rewrite the committed transaction-cost tests
 
@@ -212,8 +212,8 @@ depTxWantChunks(len(jobs))` at `depTxChunkSize` with `wantChunks > 1` and
 growing by 0 over 100 no-dependency resolutions and by exactly 100 over 100
 essence-only ones, the 70 above, and `recoveryTx < len(jobs)`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Phase gate
 
@@ -222,3 +222,106 @@ essence-only ones, the 70 above, and `recoveryTx < len(jobs)`.
   and 2's gates.
 - Add-path, modify-path and delete-path dependency tests stay red until phase 4;
   see phase 2's "green window" note.
+
+
+## Phase 3 outcome (2026-08-26)
+
+Implemented and reviewed PASS, no blocking findings. `make lint` 0 issues, `go vet
+-tags netgo` clean, `-race` clean on all nine new/reworked tests including the
+3,000-job chain. Full suite with the eleven green-window reds skipped: **422
+passed - 20 skipped - 29 packages**, reconciling three independent ways (415 from
+phase 2, plus the two C2 reds now green, plus five new tests; 22 - 2 = 20 skips;
+and the per-package skip breakdown). Skips removed afterwards, tree byte-identical.
+
+### C2: the consolidation went the safe direction
+
+The review brief framed this backwards and the reviewer caught it. **Nothing was
+removed from `TestReliable4DependencyResolutionUnchanged`** - Convey inventories
+are unchanged for all four spec-named tests (2/7/6/2). All six removals came out
+of *phase 2's* `TestDepGranularityDependencyKeys` (8 Conveys -> 2), so the
+duplicate copy was deleted and the spec-named test kept its assertions.
+
+Checked property by property, two of the survivors are *stronger* than what they
+replaced: the essence-on-dead case now asserts `waiting` as well as `keys`, and
+`perJobTx` asserts `== 70` where the old test only asserted `> 100`. The 70 is
+derivable rather than magic - 100 jobs over 7 dependency kinds gives residues 0-1
+fifteen times each (30 read-free) and residues 2-6 fourteen times each (70
+reading). The two Conveys kept in the phase 2 test are exactly the non-duplicates.
+
+### The moved failure was real C1 progress, not a defect in disguise
+
+`TestReliable4RecoveryDependencyState`'s failure moved from `:711`/`:730` to
+`:693`. Verified by stashing the change and re-running at `3390f23`: there, `:706`
+(`states == beforeRestart`) *passed* because both sides were equally wrong. Now
+`beforeRestart` says children are "ready" - wrong, captured through the un-hooked
+add path - while the actual post-restart state says "dependent", which is
+correct. The old `:730` half now passes. Dropping the archive hook makes that same
+Convey fail at `:733`, which confirms the mechanism independently.
+
+The other ten reds have byte-identical failing file:line:message at HEAD, so phase
+3 changed none of them, and every one reduces to the D1 signature (an edge that
+must block resolves as satisfied). Green shards re-run and confirmed: Execution a
+and c, Modify b.
+
+### `rc == ""`: verified in the code, and load-bearing
+
+`jobqueueTestInit` sets no `RunnerCmd`; the only two dispatch sites are
+`readyAddedCallback`'s `if rc != "" && !s.isRecovering()` (`server.go:4656`) and
+`scheduleRunners`' early return (`:6427`). So nothing executes these jobs behind
+the tests' backs, and no `Pause`/`Resume` is needed - pausing would in fact have
+blocked the `Reserve` that C1 test 3 depends on. This matters more than it looks:
+the chain-scale fixture's first server leaves ~3,000 wrongly-ready jobs, which a
+runner command would have started running.
+
+Consequence: the pre-existing comment in `TestReliable4RecoveryDependencyState`
+about "a manager-spawned runner may win one first" is **verifiably wrong**; the
+real reason `reserved == nil` is tolerated there is a Reserve timeout under load.
+
+### The cache
+
+Spec signatures unchanged. `cachedSeenDepReader` is an extra unlisted type,
+introduced because `cleanorder` had no fixpoint while the two types named each
+other; the memo is shared by reference and `resolveDependencies` builds exactly
+one cache per pass, before the chunk loop. Single production caller, single
+goroutine, so the unlocked memo is safe as documented.
+
+Eight mutations all produced named failures. One refinement worth keeping: the
+spec's "without the shared cache the delta is 500" is only observable if the
+counting wrapper is retained - bypassing the wrapper gives 0, keeping it but never
+consulting the memo gives 500. The `== 1` assertion falsifies all three, so it
+discriminates as intended, just via the second route.
+
+### Non-blocking, carried forward
+
+- **`TestJobqueueProduction` failed once** at `jobqueue_test.go:7645`
+  (`GetByEssence` nil after a DB-preserving restart) at load 116.5, then passed on
+  re-run and 3/3 in isolation. Nameable mechanism: the test's `serve` helper does
+  not wait for recovery, so a post-restart `GetByEssence` can race the recovery
+  window - which is what E2's `Serving()` wait closes. **Phase 5/6 should confirm
+  E2 covers it.**
+- **Phase 4 should tighten C1 test 6 to the two-queue comparison** the acceptance
+  text names, once D1 makes a pre-restart queue the right reference. Today it uses
+  fixture-derived counts, because `bucketDepGroups` is written by
+  `storeNewJobData`'s `batchStore` (`db.go:2222`), so a same-batch dependency on a
+  live group resolves as satisfied at add time - the substitute still
+  discriminates (dropping the recovery hook flips Ready 3 -> 3000).
+- **The archive hook is skipped when `s.q.Remove` errors**, after the DB archive
+  has committed, leaving a phantom member that keeps `hasMembers(G)` true and
+  wedges G's waiters until a restart. Narrow, and phase 4's D3 delete hook covers
+  the concurrent-delete route; the placement is what the spec dictates, so this is
+  a note for phase 4's review.
+- **The inline reason at `serverCLI.go:1390` is wrong**: it says the hook goes
+  after `q.Remove` "because satisfying a group's key takes the queue mutex", but no
+  queue mutex is held at either point. The real reasons are that the archive must
+  have committed and the job must be out of the queue before its waiters are
+  promoted.
+- `startPriorStateRecovery`'s doc comment does not mention the new group-state
+  rebuild; `dgrReserveWait` lacks the house "hang detector, not a latency budget"
+  phrasing; `So(depTxReadingJobs+depTxReadFreeJobs, ShouldEqual, len(jobs))` is a
+  constant identity no behaviour change can falsify; `dgrMissingItems`' doc
+  overstates what the helper alone catches.
+- Still open from phase 2's list, unassigned: narrowing `incompleteEssenceJobKeys`
+  to `([]string, error)`, `dgRekeyDeadline`'s missing note, the `add(depGroups,
+  "")` empty-key asymmetry, and `reliable4_dependency_tx_test.go:182`'s historical
+  reference to the deleted `incompleteJobKeys` (left deliberately - it is a "used
+  to" statement that still explains why the no-dependency guard exists).

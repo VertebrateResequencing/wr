@@ -680,8 +680,14 @@ type db struct {
 	// so a test counts only the decodes of ITS OWN server; a process-wide counter
 	// would be perturbed by any other live server in the same test binary.
 	archivedDecodes atomic.Uint64
-	wg              *waitgroup.WaitGroup
-	wgMutex         sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
+	// depGroupSeenGets counts the dep groups a resolution pass actually read from
+	// bucketDepGroups - one per distinct group with no live member, not one per
+	// job naming it. resolveDependencies passes it to newSeenDepGroupCache. Like
+	// archivedDecodes it is INERT observability, and lives on the db so a test
+	// counts only its own server's reads.
+	depGroupSeenGets atomic.Uint64
+	wg               *waitgroup.WaitGroup
+	wgMutex          sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
 	// The best-effort change/exit updates are persisted by a single long-lived
 	// writer goroutine (bestEffortWriter) that folds ALL currently-pending work
