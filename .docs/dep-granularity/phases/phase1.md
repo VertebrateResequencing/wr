@@ -64,8 +64,8 @@ the new shape: a `depgroup:` key has no backing item to `Remove`, so without
 waiter, at one acquisition each. Read the Locking section for the baseline
 figure. No acceptance test in this delivery depends on either count.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: B2 - The two existence proxies stop asking for a backing item
 
@@ -106,8 +106,8 @@ Tests in `queue/queue_test.go`, covering all 4 B2 acceptance tests:
 - Test 4: after an `Update` to no dependencies, `HasDependents("depgroup:g1")`
   is false.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: B3 - Package documentation
 
@@ -130,8 +130,8 @@ as `[]string{"depgroup:g1"}`, because `Item.ChangedKey`
 guard is against an implementation that starts rewriting dependency keys
 wholesale.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Phase gate
 
@@ -141,3 +141,41 @@ wholesale.
 - This phase leaves the whole tree green. The mid-delivery window in which the
   `jobqueue` suite is not green opens in phase 2 and closes in phase 4; see
   those files.
+
+
+## Phase 1 outcome (2026-08-26)
+
+Implemented and reviewed; `make lint` 0 issues, `go vet` clean, `queue` package
+green including `-race` x5, and `make test` **424 passed - 9 skipped - 29
+packages** (baseline 421 plus the three new test functions).
+
+The reviewer mutation-proved the three guarantees that matter: restoring
+`lockExistingItem` breaks four of the five B1 tests (so "a dependency key need not
+name an item" is pinned), restoring `itemHasDeps`' existence proxy breaks B2 test
+2 with exactly the failure B2 predicts, and restoring `pruneDependants`' guard
+breaks B2 tests 3 and 4 independently. B2 test 1 is provably untouched: five diff
+hunks, all pure insertions, zero deleted lines.
+
+Two judgement calls upheld. `cleanorder -min-diff` puts `SatisfyDependency` at
+`queue.go:310`, an odd home for an exported method, but the readable alternative
+reshuffles 278 lines of unrelated declarations - the odd placement is the price of
+`-min-diff`. And `itemHasDeps` keeping a receiver it no longer uses is *middle man*
+under code-smells, but both the spec and the phase file name that function as the
+site that changes, so inlining it would be a divergence.
+
+### Follow-ups recorded, not done
+
+- **`delete(queue.dependants, key)` (`queue/queue.go:1719`) is untested by
+  anything.** Deleting that line leaves the whole `queue` package green. It is
+  what stops a satisfied group key's waiter entry lingering in `queue.dependants`.
+  Pre-existing and untouched by this phase; B1 test 5 is the natural home, and
+  closing it costs three lines (`HasDependents(depG1)` false after the two
+  satisfies).
+- `promoteDependants`' `dep.state == ItemStateDependent` check is redundant with
+  `Item.resolveDependency`'s own state guard (`queue/item.go:277`).
+- The destroyed-queue enumeration remains non-exhaustive: `AddMany`, `ChangeKey`,
+  `Suspend`, `Resume` and `HasDependents` all return `ErrQueueClosed` and are not
+  asserted there. Pre-existing.
+- `TestQueueChangeKeyLeavesItemlessDependency` keys its dependant `key2`
+  (`"key_2"`) while the rename target is `keyG2` (`"key2"`) - no collision, easy to
+  misread.

@@ -52,6 +52,8 @@ const (
 	key5     = "key_5"
 	key6     = "key_6"
 	keyG2    = "key2"
+	depG1    = "depgroup:g1"
+	depG2    = "depgroup:g2"
 )
 
 type changedStruct struct {
@@ -743,6 +745,9 @@ func TestQueue(t *testing.T) {
 					So(err, ShouldNotBeNil)
 					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.Remove(ctx, "fake")
+					So(err, ShouldNotBeNil)
+					shouldBeQueueError(err, ErrQueueClosed)
+					err = queue.SatisfyDependency(ctx, "fake")
 					So(err, ShouldNotBeNil)
 					shouldBeQueueError(err, ErrQueueClosed)
 					err = queue.SetDelay("fake", 0*time.Second)
@@ -2019,6 +2024,20 @@ func containsSingleItemChange(records []*changedStruct, from, to SubQueue) bool 
 	return false
 }
 
+// itemChangeCount returns the total number of items recorded as having moved
+// from one given sub-queue to another.
+func itemChangeCount(records []*changedStruct, from, to SubQueue) int {
+	count := 0
+
+	for _, record := range records {
+		if record.from == from && record.to == to {
+			count += record.count
+		}
+	}
+
+	return count
+}
+
 type queueCallbackRecorder struct {
 	mutex      sync.Mutex
 	readyCalls int
@@ -2335,6 +2354,124 @@ func TestQueueSuspendResume(t *testing.T) {
 	})
 }
 
+func TestQueueSatisfyDependency(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Satisfying a dependency key with no item readies every waiter", func() {
+		queue := New(ctx, "satisfy dependency queue")
+		defer qdestroy(queue)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetReadyAddedCallback(recorder.ready)
+		queue.SetChangedCallback(recorder.changed)
+
+		waiters := addItemlessDependants(ctx, queue, 3, depG1)
+		So(countInState(waiters, ItemStateDependent), ShouldEqual, 3)
+		So(queue.Stats().Dependant, ShouldEqual, 3)
+
+		err := queue.SatisfyDependency(ctx, depG1)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(countInState(waiters, ItemStateReady), ShouldEqual, 3)
+
+		stats := queue.Stats()
+		So(stats.Ready, ShouldEqual, 3)
+		So(stats.Dependant, ShouldEqual, 0)
+		So(recorder.readyCallCount(), ShouldEqual, 1)
+		So(itemChangeCount(recorder.changeRecords(), SubQueueDependent, SubQueueReady), ShouldEqual, 3)
+	})
+
+	synctestConvey(t, "Satisfying one of an item's dependency keys leaves the rest to wait", func() {
+		queue := New(ctx, "satisfy partial dependency queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "", []string{depG1, depG2})
+		So(err, ShouldBeNil)
+
+		err = queue.SatisfyDependency(ctx, depG1)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+		So(item.UnresolvedDependencies(), ShouldResemble, []string{depG2})
+
+		err = queue.SatisfyDependency(ctx, depG2)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
+	synctestConvey(t, "Satisfying a dependency key nothing waits on changes nothing", func() {
+		queue := New(ctx, "satisfy unwanted dependency queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		_, err = queue.Add(ctx, key2, "", testData, 0, 0, time.Minute, "", []string{depG1})
+		So(err, ShouldBeNil)
+
+		before := queue.Stats()
+
+		err = queue.SatisfyDependency(ctx, "depgroup:nobody")
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(queue.Stats(), ShouldResemble, before)
+	})
+
+	synctestConvey(t, "Satisfying the same dependency key twice transitions its waiter once", func() {
+		queue := New(ctx, "satisfy twice dependency queue")
+		defer qdestroy(queue)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "", []string{depG1})
+		So(err, ShouldBeNil)
+
+		err = queue.SatisfyDependency(ctx, depG1)
+		So(err, ShouldBeNil)
+		err = queue.SatisfyDependency(ctx, depG1)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+		So(queue.Stats().Ready, ShouldEqual, 1)
+		So(itemChangeCount(recorder.changeRecords(), SubQueueDependent, SubQueueReady), ShouldEqual, 1)
+	})
+}
+
+// addItemlessDependants adds n items to the queue, each depending on the given
+// dependency key, and returns them.
+func addItemlessDependants(ctx context.Context, queue *Queue, n int, dep string) []*Item {
+	items := make([]*Item, 0, n)
+
+	for i := range n {
+		item, err := queue.Add(ctx, fmt.Sprintf("waiter_%d", i), "", testData, 0, 0, time.Minute, "", []string{dep})
+		So(err, ShouldBeNil)
+
+		items = append(items, item)
+	}
+
+	return items
+}
+
+// countInState returns how many of the given items are currently in the given
+// state.
+func countInState(items []*Item, state ItemState) int {
+	count := 0
+
+	for _, item := range items {
+		if item.Stats().State == state {
+			count++
+		}
+	}
+
+	return count
+}
+
 func TestQueueChangedCallbackDispatchesConcurrently(t *testing.T) {
 	ctx := context.Background()
 
@@ -2412,5 +2549,103 @@ func TestQueueChangedCallbacksRunConcurrently(t *testing.T) {
 
 		close(releaseFirst)
 		synctest.Wait()
+	})
+}
+
+func TestQueueDependencyKeyWithoutItem(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Kicking a buried item with an unsatisfied itemless dependency keeps it waiting", func() {
+		queue := New(ctx, "kick itemless dependency queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		_, err = queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+
+		err = queue.Bury(item.Key)
+		So(err, ShouldBeNil)
+
+		stats := item.Stats()
+		err = queue.Update(ctx, item.Key, "", item.Data(), stats.Priority, stats.Delay, stats.TTR, []string{depG1})
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateBury)
+
+		err = queue.Kick(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+		So(queue.Stats().Dependant, ShouldEqual, 1)
+
+		err = queue.SatisfyDependency(ctx, depG1)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
+	synctestConvey(t, "Updating an itemless dependency to another drops the old waiter entry", func() {
+		queue := New(ctx, "swap itemless dependency queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "", []string{depG1})
+		So(err, ShouldBeNil)
+
+		stats := item.Stats()
+		err = queue.Update(ctx, item.Key, "", item.Data(), stats.Priority, stats.Delay, stats.TTR, []string{depG2})
+		So(err, ShouldBeNil)
+
+		hasG1, err := queue.HasDependents(depG1)
+		So(err, ShouldBeNil)
+		So(hasG1, ShouldBeFalse)
+
+		hasG2, err := queue.HasDependents(depG2)
+		So(err, ShouldBeNil)
+		So(hasG2, ShouldBeTrue)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+
+		err = queue.SatisfyDependency(ctx, depG2)
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
+	synctestConvey(t, "Updating away an itemless dependency drops its waiter entry", func() {
+		queue := New(ctx, "drop itemless dependency queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "", []string{depG1})
+		So(err, ShouldBeNil)
+
+		stats := item.Stats()
+		err = queue.Update(ctx, item.Key, "", item.Data(), stats.Priority, stats.Delay, stats.TTR, []string{})
+		So(err, ShouldBeNil)
+
+		hasG1, err := queue.HasDependents(depG1)
+		So(err, ShouldBeNil)
+		So(hasG1, ShouldBeFalse)
+	})
+}
+
+func TestQueueChangeKeyLeavesItemlessDependency(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Renaming an item does not rewrite a dependency key that names no item", func() {
+		queue := New(ctx, "rename itemless dependency queue")
+		defer qdestroy(queue)
+
+		dependant, err := queue.Add(ctx, key2, "", testData, 0, 0, time.Minute, "", []string{depG1})
+		So(err, ShouldBeNil)
+
+		_, err = queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		err = queue.ChangeKey(key1, keyG2)
+		So(err, ShouldBeNil)
+
+		So(dependant.UnresolvedDependencies(), ShouldResemble, []string{depG1})
+		So(dependant.Stats().State, ShouldEqual, ItemStateDependent)
 	})
 }
