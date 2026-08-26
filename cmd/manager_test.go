@@ -44,20 +44,79 @@ import (
 const (
 	testDBUpgradeState  = "rebuild job lookup index"
 	testDBUpgradeDetail = "rebuilding database job lookup index"
+
+	// managerStatusTestTotal and managerStatusTestProcessed are production's own
+	// figures from the 2026-08-25 restarts, so the E5 message tests read like the
+	// line an operator would see.
+	managerStatusTestTotal     = 150472
+	managerStatusTestProcessed = 9000
 )
 
+// TestManagerDBUpgradeStatusLogMessage covers every state the startup sidecar
+// can hold, because the manager now writes that sidecar on every start and not
+// only after a database upgrade (spec E4). A state that is not recognised must
+// take the plain starting wording, so a phase added later and left unclassified
+// degrades to something honest rather than telling an operator their database is
+// being upgraded for the whole of a twenty-minute startup.
 func TestManagerDBUpgradeStatusLogMessage(t *testing.T) {
-	Convey("manager DB upgrade status logging distinguishes post-upgrade startup", t, func() {
-		So(managerDBUpgradeStatusLogMessage(internal.DBUpgradeStatus{
-			State:  testDBUpgradeState,
-			Detail: testDBUpgradeDetail,
-		}), ShouldEqual, "wr manager is upgrading its database: rebuilding database job lookup index")
-
-		So(managerDBUpgradeStatusLogMessage(internal.DBUpgradeStatus{
-			State:  internal.DBUpgradePostStartupState,
-			Detail: internal.DBUpgradePostStartupDetail,
-		}), ShouldEqual, "wr manager is starting after database upgrade: starting manager after database upgrade")
-	})
+	for _, phase := range []struct {
+		state    string
+		detail   string
+		expected string
+	}{
+		{
+			state:    internal.DBUpgradeDepGroupIndexState,
+			detail:   "rebuilding database dependency-group index",
+			expected: "wr manager is upgrading its database: rebuilding database dependency-group index",
+		},
+		{
+			state:    testDBUpgradeState,
+			detail:   testDBUpgradeDetail,
+			expected: "wr manager is upgrading its database: rebuilding database job lookup index",
+		},
+		{
+			state:    internal.DBUpgradeCommitState,
+			detail:   "committing database upgrade",
+			expected: "wr manager is upgrading its database: committing database upgrade",
+		},
+		{
+			state:    internal.DBUpgradePostStartupState,
+			detail:   internal.DBUpgradePostStartupDetail,
+			expected: "wr manager is starting after database upgrade: starting manager after database upgrade",
+		},
+		{
+			state:    internal.DBStartupPrepareState,
+			detail:   "preparing sockets, certificates and the scheduler",
+			expected: "wr manager is starting: preparing sockets, certificates and the scheduler",
+		},
+		{
+			state:    internal.DBStartupDecodeState,
+			detail:   "reading prior incomplete jobs from the database",
+			expected: "wr manager is starting: reading prior incomplete jobs from the database",
+		},
+		{
+			state:    internal.DBStartupDepGroupState,
+			detail:   "building dependency-group state from the prior jobs",
+			expected: "wr manager is starting: building dependency-group state from the prior jobs",
+		},
+		{
+			state:    internal.DBStartupRecoveryState,
+			detail:   "recovering prior state, 21m0s elapsed",
+			expected: "wr manager is starting: recovering prior state, 21m0s elapsed",
+		},
+		{
+			state:    "a phase a later wr adds",
+			detail:   "doing something this wr has never heard of",
+			expected: "wr manager is starting: doing something this wr has never heard of",
+		},
+	} {
+		Convey("manager startup logging describes the "+phase.state+" phase honestly", t, func() {
+			So(managerDBUpgradeStatusLogMessage(internal.DBUpgradeStatus{
+				State:  phase.state,
+				Detail: phase.detail,
+			}), ShouldEqual, phase.expected)
+		})
+	}
 }
 
 func TestGetBadLogLinesScansRotatedManagerLogs(t *testing.T) {
@@ -871,6 +930,142 @@ func TestManagerRecomputeCountsSubcommandRemoved(t *testing.T) {
 	})
 }
 
+// TestManagerStatusDuringStartup covers all four E5 acceptance tests. The
+// manager deliberately does not listen until prior-state recovery ends, so
+// during that window a connect says nothing and the sidecar is the only channel:
+// without reading it, wr manager status reports "non-responsive" (non-zero exit)
+// when there is a pid file and "stopped" when there is not, which are both wrong
+// and inconsistent with each other.
+//
+// managerStatusCmd itself die()s and has no in-process harness, so these drive
+// the helpers it calls, in the pattern this file already uses: swap the package
+// config for a t.TempDir() one, write a sidecar, and call the helper directly.
+// The one-line wiring in managerStatusCmd is not reachable that way, so spec F3
+// step 5 is its only automated exercise.
+func TestManagerStatusDuringStartup(t *testing.T) {
+	Convey("wr manager status reads a live startup sidecar", t, func() {
+		restoreManagerStatusConfig(t)
+
+		// the zero time and 0 are what the command passes: it has neither a
+		// preStart nor a child process handle, and time.Now() would reject every
+		// sidecar since the file always predates the call.
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     internal.DBStartupRecoveryState,
+			Detail:    "recovering prior state, 1m2s elapsed",
+			Total:     managerStatusTestTotal,
+			PID:       os.Getpid(),
+			StartedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}, time.Now())
+
+		// reportManagerStartupStatus is what owns the zero-time/zero-PID decision,
+		// so it is driven here rather than currentManagerDBUpgradeStatus directly:
+		// a call passing time.Now() would reject this sidecar, since the file
+		// always predates the call.
+		So(reportManagerStartupStatus(), ShouldBeTrue)
+
+		status, starting := currentManagerDBUpgradeStatus(time.Time{}, 0)
+		So(starting, ShouldBeTrue)
+
+		message := managerStartupStatusMessage(status)
+		So(message, ShouldContainSubstring, "starting")
+		So(message, ShouldNotContainSubstring, "stopped")
+		So(message, ShouldNotContainSubstring, "non-responsive")
+		So(message, ShouldContainSubstring, internal.DBStartupRecoveryState)
+		So(message, ShouldContainSubstring, "150472")
+		So(message, ShouldContainSubstring, "1m2s elapsed")
+	})
+
+	Convey("wr manager status reports a real upgrade count when there is one", t, func() {
+		restoreManagerStatusConfig(t)
+
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    "rebuilding database job lookup index",
+			Processed: managerStatusTestProcessed,
+			Total:     managerStatusTestTotal,
+			PID:       os.Getpid(),
+			StartedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}, time.Now())
+
+		So(reportManagerStartupStatus(), ShouldBeTrue)
+
+		status, starting := currentManagerDBUpgradeStatus(time.Time{}, 0)
+		So(starting, ShouldBeTrue)
+		So(managerStartupStatusMessage(status), ShouldContainSubstring, "9000/150472")
+	})
+
+	// what a real database upgrade writes: dbUpgradeReporter.writeStatus fills in
+	// Processed but not Total, because the rebuild is a bolt ForEach and knowing
+	// the total would cost a second full pass over a multi-GB bucket. The count
+	// must survive that, or the one phase with a genuine count reports none.
+	Convey("wr manager status keeps the upgrade count when there is no total", t, func() {
+		restoreManagerStatusConfig(t)
+
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     testDBUpgradeState,
+			Detail:    testDBUpgradeDetail,
+			Processed: managerStatusTestProcessed,
+			PID:       os.Getpid(),
+			StartedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}, time.Now())
+
+		status, starting := currentManagerDBUpgradeStatus(time.Time{}, 0)
+		So(starting, ShouldBeTrue)
+
+		message := managerStartupStatusMessage(status)
+		So(message, ShouldContainSubstring, "9000")
+		So(message, ShouldContainSubstring, testDBUpgradeState)
+		So(message, ShouldContainSubstring, testDBUpgradeDetail)
+	})
+
+	Convey("wr manager status ignores a sidecar whose process is gone", t, func() {
+		restoreManagerStatusConfig(t)
+
+		writeDBUpgradeStatusForTest(t, config.ManagerDBFile, internal.DBUpgradeStatus{
+			State:     internal.DBStartupRecoveryState,
+			Detail:    "recovering prior state, 1m2s elapsed",
+			Total:     managerStatusTestTotal,
+			PID:       deadPIDForTest(t),
+			StartedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}, time.Now())
+
+		So(reportManagerStartupStatus(), ShouldBeFalse)
+
+		_, starting := currentManagerDBUpgradeStatus(time.Time{}, 0)
+		So(starting, ShouldBeFalse)
+	})
+
+	Convey("wr manager status ignores an absent sidecar", t, func() {
+		restoreManagerStatusConfig(t)
+
+		So(reportManagerStartupStatus(), ShouldBeFalse)
+
+		_, starting := currentManagerDBUpgradeStatus(time.Time{}, 0)
+		So(starting, ShouldBeFalse)
+	})
+}
+
+// restoreManagerStatusConfig points the package config at a fresh t.TempDir()
+// for the duration of the test, restoring it afterwards.
+func restoreManagerStatusConfig(t *testing.T) {
+	t.Helper()
+
+	oldConfig := config
+
+	t.Cleanup(func() { config = oldConfig })
+
+	dir := t.TempDir()
+	config = &internal.Config{
+		ManagerDBFile:    filepath.Join(dir, "db"),
+		ManagerTokenFile: filepath.Join(dir, "client.token"),
+		ManagerPort:      "0",
+	}
+}
+
 func writeDBUpgradeStatusForTest(t *testing.T, dbFile string, status internal.DBUpgradeStatus, modTime time.Time) {
 	t.Helper()
 
@@ -880,4 +1075,18 @@ func writeDBUpgradeStatusForTest(t *testing.T, dbFile string, status internal.DB
 	path := internal.DBUpgradeStatusPath(dbFile)
 	So(os.WriteFile(path, payload, 0o600), ShouldBeNil)
 	So(os.Chtimes(path, modTime, modTime), ShouldBeNil)
+}
+
+// deadPIDForTest returns the pid of a process that has certainly exited, so the
+// sidecar's liveness check must reject it.
+func deadPIDForTest(t *testing.T) int {
+	t.Helper()
+
+	child := exec.Command("sh", "-c", "exit 0") //nolint:noctx // short-lived test subprocess
+	So(child.Start(), ShouldBeNil)
+
+	pid := child.Process.Pid
+	So(child.Wait(), ShouldBeNil)
+
+	return pid
 }

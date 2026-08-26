@@ -1852,9 +1852,26 @@ additive field:
     }
 
     // New states, alongside DBUpgradePostStartupState:
+    DBStartupPrepareState   = "prepare to serve"
     DBStartupDecodeState    = "decode live jobs"
     DBStartupDepGroupState  = "build dependency-group state"
     DBStartupRecoveryState  = "recover prior state"
+
+`DBStartupPrepareState` covers the span from `initDB` returning to
+`startPriorStateRecovery` being called: socket creation, `prepareListener`'s
+keypair and CA load, `currentServerIP`/`fqdn`, `scheduler.New` (which shells out
+under LSF) and `createQueue`. **It was added during implementation, when the
+original three states left that span with no sidecar at all** - so on a start
+that performed no DB upgrade, `wr manager status` died "non-responsive" for its
+whole duration, which is the defect E5 exists to remove. The post-upgrade state
+must therefore be written only when an upgrade really ran (`upgradedOnOpen`),
+rather than on every start.
+
+Still uncovered, and outside this section's scope: `initDB` itself, which runs
+before any sidecar can be written and whose production cost is the one phase the
+measurements do not bound (it mmaps a 15 GB file). `wr manager status` remains
+"non-responsive" for that span; `wr manager start` is unaffected, since it
+reports elapsed time without a phase name.
 
 `DBStartupRecoveryState` is written as the **last synchronous statement of
 `startPriorStateRecovery`** (`server.go:1433`): after `setRecoveryTotal`, before
@@ -2038,9 +2055,16 @@ window and records the outcome.
    reports the status as live, and `managerStartupStatusMessage` names the
    phase, the 150472 total and that elapsed time, saying "starting" rather than
    "stopped" or "non-responsive".
-2. Given a sidecar naming a live PID with `Processed: 9000, Total: 150472`,
-   then the message contains "9000/150472" (the DB-upgrade phases do have a
-   real count).
+2. Given a sidecar naming a live PID with `Processed: 9000` and no `Total`,
+   then the message contains "9000 so far". **This, not the combined form, is
+   what wr can currently produce:** the two writers are disjoint - the startup
+   reporter never sets `Processed`, and `dbUpgradeReporter.writeStatus` never
+   sets `Total`, because totalling `rebuildJobLookupEntries` would need a second
+   full `ForEach` over three buckets during the slowest phase of an already-slow
+   start, which rule 6 forbids. A `Processed: 9000, Total: 150472` sidecar
+   yielding "9000/150472" is retained as a forward-looking case, reachable if
+   the enqueue is ever split into batches (`noteRecovered` is already additive,
+   so `Processed` could then carry `restored`).
 3. Given a sidecar whose recorded PID is not running, then
    `currentManagerDBUpgradeStatus(time.Time{}, 0)` reports nothing live and the
    existing pid-file/connect logic decides the outcome unchanged.

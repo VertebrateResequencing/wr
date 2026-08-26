@@ -283,6 +283,14 @@ func (m *depGroupMembers) memberships() int {
 
 // add records jobKey as a live member of each of depGroups. Idempotent.
 func (m *depGroupMembers) add(depGroups []string, jobKey string) {
+	// an empty job key would be recorded in the job -> groups map but skipped by
+	// applyOne, whose join is sentinelled on "", leaving the two maps
+	// disagreeing. Real job keys are 32-hex, so this cannot happen; the guard is
+	// so it cannot start happening either.
+	if jobKey == "" {
+		return
+	}
+
 	shard := m.jobShard(jobKey)
 
 	shard.mu.Lock()
@@ -324,6 +332,14 @@ func (m *depGroupMembers) replace(jobKey string, newGroups []string) []string {
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
+
+	// the add path's second pass calls this for every job in the batch, and a job
+	// that declares no group and holds none has nothing to drop, so it is worth
+	// not allocating the two maps retargetLocked would: a 150k-job add would
+	// otherwise throw 150k of them away.
+	if len(newGroups) == 0 && len(shard.groups[jobKey]) == 0 {
+		return nil
+	}
 
 	muts := make(groupMutations)
 	shard.retargetLocked(jobKey, newGroups, muts)

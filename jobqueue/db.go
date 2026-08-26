@@ -83,8 +83,8 @@ const (
 	// against a running manager,
 	// but if that check is fooled (e.g. a missing token file) a manager may still
 	// hold the lock; a bounded timeout makes the subcommand fail cleanly instead
-	// of blocking forever. The running manager's own initDB opens intentionally
-	// omit this and block/wait.
+	// of blocking forever. The manager's own initDB opens are bounded too, by
+	// managerDBOpenTimeout.
 	offlineDBOpenTimeout = 10 * time.Second
 
 	// s3ProfilePathParts is the number of parts in a "profile@path" S3 spec.
@@ -120,6 +120,35 @@ var (
 	RecMBRound  = 100 // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
 	RecSecRound = 1   // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
+
+// managerDBOpenTimeout bounds how long the manager's initDB waits for the
+// BoltDB file lock before failing with ErrDBLocked (spec E7). Without it bbolt
+// retries the flock every 50ms forever, so a second manager started while the
+// first is still in its startup window blocks indefinitely and then acquires the
+// database the instant the winner exits - which collides with the documented
+// rollback procedure, since it would start writing to the file being restored.
+//
+// 30s is not derived from ServerShutdownWaitTime: the lock is held well past it,
+// because db.close copies the whole database to db_bk before closing bolt, and
+// at production's 7GB on NFS that copy alone can exceed 30s. It sits between the
+// bounded waits inside a shutdown and the 120s wr manager stop itself allows
+// (daemonStopGiveupS), so a start racing a prompt shutdown still wins the lock
+// while a start racing a slow one fails with a message naming the file rather
+// than lurking until the winner exits. The cost is real and accepted: a restart
+// that overlaps a slow shutdown can now fail and need retrying.
+//
+// It is a package var (not user-configurable) purely so tests can shorten it,
+// which is also what keeps their harness deadlines short.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var managerDBOpenTimeout = 30 * time.Second
+
+// ErrDBLocked is returned by initDB when another wr manager holds the database
+// file lock. It is deliberately NOT treated as a corrupt database: the
+// restore-from-backup path would unlink the live file out from under the running
+// manager and come up on a stale backup, on a fresh inode so the flock protects
+// nothing (spec E7).
+var ErrDBLocked = errors.New("another wr manager holds this database")
 
 // errDBClosed is returned when an operation is attempted on a closed database.
 var errDBClosed = errors.New("database closed")
@@ -308,7 +337,7 @@ func collectReverseLookupRebuildBucket(tx *bolt.Tx, bucket []byte, progress *dbU
 
 		totalProcessed := processedBefore + processed
 		if progress.progressDue(totalProcessed) {
-			progress.progress("rebuild job lookup index",
+			progress.progress(internal.DBUpgradeJobLookupState,
 				fmt.Sprintf("rebuilding database job lookup index (%d source entries processed so far; currently reading %s)",
 					totalProcessed, bucketName),
 				totalProcessed)
@@ -341,7 +370,7 @@ func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, p
 
 	for i, key := range entries {
 		if i > 0 && progress.progressDue(i) {
-			progress.writeProgress("rebuild job lookup index",
+			progress.writeProgress(internal.DBUpgradeJobLookupState,
 				fmt.Sprintf("writing sorted database job lookup index (%d reverse entries written, %d entries processed)",
 					i, totalProcessed),
 				totalProcessed)
@@ -832,6 +861,14 @@ func (db *db) copyBackup(tx *bolt.Tx, path string) error {
 //
 //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx,nestif // entry point: sequential fallible db open/recovery
 func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) {
+	// the manager is unreachable for the whole of this and the recovery phases
+	// that follow it, so each phase reports its own elapsed time at warn, where
+	// the default log level shows it and an operator sizing the startup window
+	// can see where the time went (spec E9). initDB's own cost is dominated by
+	// opening and mmapping the file, which at production's multi-GB size is the
+	// bulk of "process start to first log line".
+	initStarted := time.Now()
+
 	var backupsEnabled bool
 
 	var accessor *muxfys.S3Accessor
@@ -911,7 +948,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+			boltdb, err = openManagerBolt(dbFile)
 			msg = "created new empty db file " + dbFile
 		} else {
 			err = copyFile(dbBkFile, dbFile)
@@ -919,15 +956,26 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, msg, err
 			}
 
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+			boltdb, err = openManagerBolt(dbFile)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 			openedExistingDB = true
 		}
 	} else {
 		openedExistingDB = true
 
-		boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+		boltdb, err = openManagerBolt(dbFile)
 		if err != nil {
+			// a lock timeout means another wr manager is running, NOT that the
+			// file is corrupt, and it must never reach the restore path below:
+			// that path treats any open error as "corrupt (?) db file", so it
+			// would unlink the live database out from under the running manager
+			// (which keeps writing to a deleted inode and loses everything at
+			// exit) and come up as a second live manager on a stale backup, on a
+			// fresh inode so the flock protects nothing (spec E7).
+			if errors.Is(err, berrors.ErrTimeout) {
+				return nil, msg, fmt.Errorf("%w: %s", ErrDBLocked, dbFile)
+			}
+
 			// try the backup
 			bkPath := dbBkFile
 			if accessor != nil {
@@ -951,7 +999,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+				backupDB, errbk := openManagerBolt(bkPath)
 				if errbk == nil {
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -971,7 +1019,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 						return nil, msg, err
 					}
 
-					boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+					boltdb, err = openManagerBolt(dbFile)
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
@@ -1025,7 +1073,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if openedExistingDB && !hadDepGroups {
-			upgrade.startPhase("rebuild dep-group index", "rebuilding database dependency-group index")
+			upgrade.startPhase(internal.DBUpgradeDepGroupIndexState, "rebuilding database dependency-group index")
 
 			errf = rebuildDepGroups(tx, upgrade)
 			if errf != nil {
@@ -1046,7 +1094,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if openedExistingDB && !hadJobLookupEntries {
-			upgrade.startPhase("rebuild job lookup index", "rebuilding database job lookup index")
+			upgrade.startPhase(internal.DBUpgradeJobLookupState, "rebuilding database job lookup index")
 
 			errf = rebuildJobLookupEntries(tx, upgrade)
 			if errf != nil {
@@ -1095,7 +1143,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if upgrade.active() {
-			upgrade.startPhase("commit database upgrade", "committing database upgrade")
+			upgrade.startPhase(internal.DBUpgradeCommitState, "committing database upgrade")
 		}
 
 		return nil
@@ -1142,6 +1190,9 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	if backupsEnabled {
 		go dbstruct.backupTicker(ctx)
 	}
+
+	clog.Warn(ctx, "recovering: opened database", "db", dbFile,
+		"elapsed", time.Since(initStarted).Round(time.Millisecond))
 
 	return dbstruct, msg, err
 }
@@ -2026,7 +2077,7 @@ func rebuildDepGroupEntries(depGroupBucket, lookupBucket *bolt.Bucket, progress 
 	err := lookupBucket.ForEach(func(k, _ []byte) error {
 		processed++
 		if progress.progressDue(processed) {
-			progress.progress("rebuild dep-group index",
+			progress.progress(internal.DBUpgradeDepGroupIndexState,
 				fmt.Sprintf("rebuilding database dependency-group index (%d entries processed)", processed),
 				processed)
 		}
@@ -2143,6 +2194,17 @@ func compactBoltInto(dstPath, srcPath string) (err error) {
 	}()
 
 	return bolt.Compact(dst, src, compactTxMaxSize)
+}
+
+// openManagerBolt opens one of the manager's BoltDB files, bounding the wait for
+// its file lock at managerDBOpenTimeout so a second manager fails with
+// ErrDBLocked instead of blocking forever and then acquiring the database the
+// instant the winner exits (spec E7).
+func openManagerBolt(path string) (*bolt.DB, error) {
+	return bolt.Open(path, dbFilePermission, &bolt.Options{
+		FreelistType: bolt.FreelistMapType,
+		Timeout:      managerDBOpenTimeout,
+	})
 }
 
 // putLimitGroup stores a non-negative limit for a group.
@@ -4281,7 +4343,7 @@ func rebuildJobLookupEntries(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 		return err
 	}
 
-	progress.completePhase("rebuild job lookup index",
+	progress.completePhase(internal.DBUpgradeJobLookupState,
 		fmt.Sprintf("rebuilt database job lookup index (%d entries processed, %d reverse entries written)",
 			totalProcessed, len(entries)),
 		totalProcessed)
@@ -4298,7 +4360,7 @@ func rebuildDepGroups(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 
 	lookupBucket := tx.Bucket(bucketDTK)
 	if depGroupBucket == nil || lookupBucket == nil {
-		progress.completePhase("rebuild dep-group index",
+		progress.completePhase(internal.DBUpgradeDepGroupIndexState,
 			"rebuilt database dependency-group index (0 entries processed)",
 			0)
 
@@ -4310,7 +4372,7 @@ func rebuildDepGroups(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 		return err
 	}
 
-	progress.completePhase("rebuild dep-group index",
+	progress.completePhase(internal.DBUpgradeDepGroupIndexState,
 		fmt.Sprintf("rebuilt database dependency-group index (%d entries processed)", processed),
 		processed)
 

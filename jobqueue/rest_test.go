@@ -1126,6 +1126,16 @@ func TestREST(t *testing.T) {
 		server, _, token, errt = Serve(ctx, serverConfig)
 		So(errt, ShouldBeNil)
 
+		// Serve returns while prior-state recovery is still running, so neither
+		// the REST endpoints nor the manager port are up yet. A server that never
+		// publishes stops the test here rather than leaving every step below to
+		// fail against an unreachable one.
+		select {
+		case <-server.Serving():
+		case <-time.After(servePublishWait):
+			t.Fatal("timed out waiting for the server to start serving")
+		}
+
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
 

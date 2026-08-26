@@ -120,9 +120,17 @@ const (
 	// enough to hold a SIGINT and a SIGTERM.
 	signalChanBuffer = 2
 
-	// serverListenWait is how long Serve() waits for ListenAndServe() to start
-	// listening before declaring itself ready.
+	// serverListenWait is how long the web interface waits for ListenAndServe()
+	// to start listening before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
+
+	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
+	// how long, publication retries the RPC port bind before giving up and
+	// exiting (spec E1). They are the budget the serve test helper already used
+	// for exactly this failure, back when the bind happened inside Serve: time
+	// for a server a prior test recently stopped to really stop listening.
+	serverBindRetryInterval = 500 * time.Millisecond
+	serverBindRetryBudget   = 5 * time.Second
 
 	// ownerReadWrite is the file mode for files only the owning user may read
 	// or write (used for the auth token and uploaded files).
@@ -130,6 +138,17 @@ const (
 
 	postUpgradeStartupState  = internal.DBUpgradePostStartupState
 	postUpgradeStartupDetail = internal.DBUpgradePostStartupDetail
+
+	// startupPrepareDetail, startupDecodeDetail and startupDepGroupDetail
+	// describe the three startup phases that precede recovery.
+	startupPrepareDetail  = "preparing sockets, certificates and the scheduler"
+	startupDecodeDetail   = "reading prior incomplete jobs from the database"
+	startupDepGroupDetail = "building dependency-group state from the prior jobs"
+
+	// startupRecoveryDetailPrefix and startupRecoveryDetailSuffix bracket the
+	// elapsed time the recovery phase reports as its detail.
+	startupRecoveryDetailPrefix = "recovering prior state, "
+	startupRecoveryDetailSuffix = " elapsed"
 
 	// ttrReleaseWait is how long the TTR callback waits for a lost item to
 	// return to the run queue before releasing it.
@@ -261,6 +280,16 @@ var recoveryHeartbeatInterval = time.Minute
 // profiling the manager. It is unset by default, in which case no endpoint is
 // started and there is no profiling overhead.
 const envPprofAddr = "WR_PPROF_ADDR"
+
+// publishExit is how publication ends the process when it cannot make the
+// server reachable: the token file could not be written, or the RPC port could
+// not be bound within the retry budget (spec E1). An invisible manager holding
+// the database lock is worse than a dead one. It is a var so a test can observe
+// the exit instead of ending the test binary, in the style of
+// recoveryPauseHookForTest.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
+var publishExit = os.Exit
 
 // recoveryPauseHookForTest, if non-nil, is copied into each new Server's
 // recoveryPauseHook during Serve so a test can install a hook that blocks
@@ -1117,12 +1146,121 @@ func (b *completeJobsBudget) spend(group string, n int) {
 	b.remaining[group] = max(b.limit(group)-n, 0)
 }
 
+// startupStatusReporter writes the manager's startup-phase sidecar, which for
+// however many minutes prior-state recovery takes is the PRIMARY operator
+// channel: nothing is listening, so wr manager start polls this file and wr
+// manager status reads it (spec E4).
+//
+// It is written on every start, not only after a database upgrade, and its
+// removal belongs to publication and to shutdown rather than to Serve returning
+// - Serve now returns at the instant the sidecar becomes the only channel. The
+// PID checks in cmd's currentManagerDBUpgradeStatus are the backstop for a
+// process killed without returning, not a licence to leave the file.
+//
+// Serve is its only constructor and every Server it builds has one, so its
+// methods do not tolerate a nil receiver, the same as depGroupMembers.
+type startupStatusReporter struct {
+	dbFile string
+	logger log15.Logger
+	// startedAt is carried into every write so the sidecar's StartedAt stays the
+	// start of this startup rather than the time of its latest phase.
+	startedAt time.Time
+
+	// mu guards the current phase, which refresh (called from the recovery
+	// heartbeat's goroutine) rewrites with a fresh elapsed time.
+	mu    sync.Mutex
+	state string
+	total int
+}
+
+// newStartupStatusReporter returns a reporter for dbFile's sidecar, having
+// written the phase the database open has just left the manager in: at this
+// point the database is open, but sockets, certificates, this host's IP and the
+// scheduler are still to come and the manager cannot yet accept connections.
+//
+// Only a start that really did upgrade the database on open reports the
+// post-upgrade phase. This file is written on EVERY start (spec E4), so a start
+// that upgraded nothing reporting the post-upgrade phase would have every reader
+// of the sidecar - `wr manager start`'s log line and `wr manager status` alike -
+// tell the operator about a database upgrade that never happened.
+func newStartupStatusReporter(dbFile string, logger log15.Logger, upgradedOnOpen bool) *startupStatusReporter {
+	r := &startupStatusReporter{dbFile: dbFile, logger: logger, startedAt: time.Now()}
+
+	if upgradedOnOpen {
+		r.report(postUpgradeStartupState, postUpgradeStartupDetail, 0)
+	} else {
+		r.report(internal.DBStartupPrepareState, startupPrepareDetail, 0)
+	}
+
+	return r
+}
+
+// report writes state as the current startup phase, remembering it so refresh
+// can rewrite it with a later elapsed time. total is the size of the wait when
+// it is known, and 0 when it is not.
+func (r *startupStatusReporter) report(state, detail string, total int) {
+	r.mu.Lock()
+	r.state, r.total = state, total
+	r.mu.Unlock()
+
+	r.write(state, detail, total)
+}
+
+// refresh rewrites the current phase with a new detail and a fresh UpdatedAt.
+// That pair is the whole signal distinguishing a slow start from a hang, because
+// there is no per-job progress to report: recovery enqueues in a single batch.
+func (r *startupStatusReporter) refresh(detail string) {
+	r.mu.Lock()
+	state, total := r.state, r.total
+	r.mu.Unlock()
+
+	if state == "" {
+		return
+	}
+
+	r.write(state, detail, total)
+}
+
+func (r *startupStatusReporter) write(state, detail string, total int) {
+	err := internal.WriteDBUpgradeStatus(r.dbFile, internal.DBUpgradeStatus{
+		State:     state,
+		Detail:    detail,
+		Total:     total,
+		StartedAt: r.startedAt,
+	})
+	if err != nil {
+		r.logger.Warn("failed to write startup status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
+	}
+}
+
+// remove deletes the sidecar. Publication calls it once the manager is
+// reachable, shutdown calls it so the file does not outlive a manager that died
+// in the window, and Serve's error path calls it because neither of those runs
+// there.
+func (r *startupStatusReporter) remove() {
+	if err := internal.RemoveDBUpgradeStatus(r.dbFile); err != nil {
+		r.logger.Warn("failed to remove startup status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
+	}
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token     []byte
 	uploadDir string
 	sock      mangos.Socket
-	ch        codec.Handle
+	// tlsConfig is the keypair and CA pool prepareListener loaded during Serve,
+	// used by the port bind publication does when recovery ends (spec E1).
+	tlsConfig *tls.Config
+	// serving is closed once the server has published its externally observable
+	// surface, and also by beginShutdown so a caller never waits forever on a
+	// server that is being stopped (spec E2). servingOnce guards that double
+	// close.
+	serving     chan struct{}
+	servingOnce sync.Once
+	// startupStatus writes the startup-phase sidecar that is the only operator
+	// channel while the manager is not yet reachable (spec E4).
+	startupStatus *startupStatusReporter
+	ch            codec.Handle
 	// runner command string compatible with fmt.Sprintf(..., schedulerGroup,
 	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
 	rc string
@@ -1189,9 +1327,14 @@ type Server struct {
 	blocking bool
 	// recovering, recoveryTotal and recoveryRestored track background prior-state
 	// recovery (spec B1); all guarded by ssmutex.
-	recovering         bool
-	recoveryTotal      int
-	recoveryRestored   int
+	recovering       bool
+	recoveryTotal    int
+	recoveryRestored int
+	// readersStarted records whether publication got as far as starting the RPC
+	// readers, so shutdown inside the startup window does not wait
+	// ServerShutdownWaitTime for a clientHandlingDone that nothing will ever
+	// close (spec E3). Guarded by ssmutex.
+	readersStarted     bool
 	racChecking        bool
 	killRunners        bool
 	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
@@ -1472,6 +1615,7 @@ func (s *Server) rekeyDepGroupMembership(ctx context.Context, oldKey, newKey str
 // DepGroups its membership under its (possibly new) key, dropping the membership
 // held under the old key paired with it in oldKeys, which must be index-parallel
 // with jobs.
+//
 // Dropping the old key is not optional: nothing else does it, so a key-changing
 // modification would otherwise leave a phantom member keeping the group
 // non-empty and wedging its waiters forever.
@@ -1504,20 +1648,29 @@ func (s *Server) satisfyEmptiedDepGroups(ctx context.Context, emptied []string) 
 	}
 }
 
-// startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
-// scan), fills in that total on the already-active recovering state, and
-// launches a background goroutine that re-enqueues them so Serve returns while
-// recovery is still running (spec B1). The recovering flag was set true by
-// Serve before it began accepting client RPCs (so the recovery window is closed
-// with no false losses, spec B2); here we only fill in the true total, which
-// happens before the background goroutine (and thus recoveryPauseHook) runs so
-// progress reporting is correct at the pause (spec B1 acceptance test 4). The
-// goroutine calls recoveryPauseHook (if set) just before the re-enqueue so a
-// test can block and observe the recovering window, updates progress via
-// noteRecovered, and calls finishRecovering when done. Recovery keeps the
-// single-batch enqueue (recoverPriorJobs -> enqueueItems).
-func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfig, db *db) error {
-	priorJobs, err := db.recoverIncompleteJobs()
+// startPriorStateRecovery marks the server recovering, reads the prior
+// incomplete jobs (a cheap live-bucket scan), fills in that total, and launches
+// a background goroutine that re-enqueues them and then publishes the server's
+// externally observable surface, so Serve returns while recovery is still
+// running (spec E1). The goroutine calls recoveryPauseHook (if set) just before
+// the re-enqueue so a test can block and observe the startup window, updates
+// progress via noteRecovered, and calls finishRecovering when done. Recovery
+// keeps the single-batch enqueue (recoverPriorJobs -> enqueueItems).
+//
+// setRecovering must come first, before the decode: it resets recoveryTotal and
+// recoveryRestored, whereas setRecoveryTotal deliberately does not touch the
+// flag, so calling setRecovering afterwards would zero the total just filled in.
+//
+// ctx is the background-startup context shutdown cancels; serveCtx is Serve's
+// own, which shutdown never cancels, and is what publication hands the web
+// interface and the RPC readers - stopBackgroundStartupTasks cancels ctx at the
+// top of shutdown, long before the readers are meant to stop.
+func (s *Server) startPriorStateRecovery(ctx, serveCtx context.Context, config ServerConfig, db *db) error {
+	s.setRecovering(0)
+
+	s.startupStatus.report(internal.DBStartupDecodeState, startupDecodeDetail, 0)
+
+	priorJobs, err := s.decodePriorJobs(serveCtx, db)
 	if err != nil {
 		return err
 	}
@@ -1525,15 +1678,222 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 	// the per-group live-member state has to exist before any dependency is
 	// resolved against it, or a group whose members are all still live would
 	// resolve as satisfied and its waiters would run in the wrong order.
-	s.registerDepGroupMembers(priorJobs)
+	s.buildDepGroupState(serveCtx, priorJobs)
 
 	s.setRecoveryTotal(len(priorJobs))
 
+	// written here, as the last synchronous statement, rather than inside
+	// recoverInBackground: written there it would usually land before Serve
+	// returns and occasionally not, which is a manufactured flake for anything
+	// reading the sidecar as soon as Serve has returned (spec E4).
+	s.startupStatus.report(internal.DBStartupRecoveryState, startupRecoveryDetail(0), len(priorJobs))
+
 	wgk := s.bgWG.Add(1)
 
-	go s.recoverInBackground(ctx, config, wgk, priorJobs)
+	go s.recoverInBackground(ctx, serveCtx, config, wgk, priorJobs)
 
 	return nil
+}
+
+// startupRecoveryDetail describes the recovery phase by how long it has been
+// going, since its restored count is all-or-nothing and would read 0 for the
+// whole window.
+func startupRecoveryDetail(elapsed time.Duration) string {
+	return startupRecoveryDetailPrefix + elapsed.Round(time.Millisecond).String() + startupRecoveryDetailSuffix
+}
+
+// decodePriorJobs reads the prior incomplete jobs out of the live bucket, timing
+// the phase. The elapsed field is at warn, not info, so it appears at the
+// default log level and an operator sizing this startup window can see where the
+// time went (spec E9).
+func (s *Server) decodePriorJobs(ctx context.Context, db *db) ([]*Job, error) {
+	started := time.Now()
+
+	priorJobs, err := db.recoverIncompleteJobs()
+	if err != nil {
+		return nil, err
+	}
+
+	clog.Warn(ctx, "recovering: decoded live jobs", "jobs", len(priorJobs),
+		"elapsed", time.Since(started).Round(time.Millisecond))
+
+	return priorJobs, nil
+}
+
+// buildDepGroupState registers the prior jobs' dep-group memberships, timing the
+// phase (spec E9).
+func (s *Server) buildDepGroupState(ctx context.Context, priorJobs []*Job) {
+	s.startupStatus.report(internal.DBStartupDepGroupState, startupDepGroupDetail, len(priorJobs))
+
+	started := time.Now()
+
+	s.registerDepGroupMembers(priorJobs)
+
+	clog.Warn(ctx, "recovering: built dependency-group state", "memberships", s.depGroups.memberships(),
+		"elapsed", time.Since(started).Round(time.Millisecond))
+}
+
+// Serving returns a channel that is closed once the server has published its
+// externally observable surface: the web interface is up, the token file is
+// written and the RPC listener is bound and being read (spec E2). Serve returns
+// before any of that, while prior-state recovery is still running, so a caller
+// that then talks to the server must wait on this first.
+//
+// It is also closed by shutdown, so a caller never waits forever on a server
+// that is being stopped; a receive on it therefore means "reachable, or never
+// going to be", not "reachable".
+func (s *Server) Serving() <-chan struct{} {
+	return s.serving
+}
+
+// closeServing closes the serving channel, at most once: publication and
+// shutdown can both reach it.
+func (s *Server) closeServing() {
+	s.servingOnce.Do(func() { close(s.serving) })
+}
+
+// noteReadersStarted records that publication started the RPC readers, so
+// shutdown knows clientHandlingDone will actually be closed (spec E3).
+func (s *Server) noteReadersStarted() {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.readersStarted = true
+}
+
+// clientHandlingStarted reports whether publication got as far as starting the
+// RPC readers.
+func (s *Server) clientHandlingStarted() bool {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.readersStarted
+}
+
+// publishServingSurface makes the server externally observable, in the order
+// spec E1 lays out: the web interface (which also starts the casters and
+// registers the scheduler callbacks), the token file, the RPC port bind, the RPC
+// readers, and finally close(s.serving).
+//
+// It is the last plain statement of recoverInBackground rather than a defer:
+// recoverInBackground's LogPanic defer exits the process, and a publication
+// defer registered after it would publish a listener microseconds before that
+// exit. The cost of a tail statement is that publication happens before
+// finishRecovering (a defer), leaving a sub-millisecond window with the listener
+// up while isRecovering() is still true. That order is deliberate: it means
+// isRecovering() == false implies a bound listener, which is what keeps
+// waitUntilRecovered-gated tests race-free, and any request that does land in
+// the window gets the retryable ErrRecovering.
+//
+// bgCtx is the background-startup context: recoverPriorJobsAndNote returns early
+// when shutdown cancels it, so this tail IS reached while the socket is being
+// torn down, and publishing then would race the teardown.
+//
+// An invisible manager holding the database lock is worse than a dead one, so a
+// token write failure, or a port bind still failing after the retry budget,
+// exits the process through publishExit. Publication returns immediately after
+// that call: with the real os.Exit the difference is unobservable, but a test
+// double returns, and none of the steps after the bind may run against an
+// unbound socket.
+func (s *Server) publishServingSurface(bgCtx, ctx context.Context, config ServerConfig) {
+	if err := bgCtx.Err(); err != nil {
+		clog.Debug(ctx, "not publishing the serving surface during shutdown", "err", err)
+
+		return
+	}
+
+	s.startWebInterface(ctx, config)
+
+	if !s.persistTokenAndListen(ctx, config) {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+
+	go s.serveClients(ctx, s.sock, s.wg, wgk, s.stopClientHandling, s.clientHandlingDone)
+
+	s.noteReadersStarted()
+
+	// the sidecar's job is done: from here the manager answers for itself.
+	s.startupStatus.remove()
+
+	s.closeServing()
+}
+
+// persistTokenAndListen writes the token file and binds the RPC listener,
+// reporting whether both succeeded. On failure it exits the process through
+// publishExit: an invisible manager holding the database lock is worse than a
+// dead one. The token write is not retried, because unlike the bind its failure
+// is not port contention.
+func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig) bool {
+	if err := persistToken(config.TokenFile, s.token); err != nil {
+		clog.Error(ctx, "could not write the token file, so exiting", "path", config.TokenFile, "err", err)
+		publishExit(1)
+
+		return false
+	}
+
+	if err := s.listenWithRetries(ctx, config.Port); err != nil {
+		clog.Error(ctx, "could not listen on the manager port, so exiting", "port", config.Port, "err", err)
+		publishExit(1)
+
+		return false
+	}
+
+	return true
+}
+
+// startWebInterface starts the web interface and blocks until it reports itself
+// ready, which is also when s.httpServer, the casters and the scheduler
+// callbacks are in place.
+//
+// Its waitgroup key is registered here, immediately before its go, rather than
+// in Serve: a key issued in Serve would be outstanding on every run where
+// publication does not happen (a shutdown inside the startup window, or the
+// publishExit path), and shutdown's s.wg.Wait would then never return.
+func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
+	ready := make(chan bool)
+	wgk := s.wg.Add(1)
+
+	go s.serveWebInterface(ctx, config, "0.0.0.0:"+config.WebPort,
+		config.CertFile, config.KeyFile, s.wg, wgk, ready)
+
+	<-ready
+}
+
+// listenWithRetries binds the command socket to port, retrying every
+// serverBindRetryInterval for up to serverBindRetryBudget before giving up.
+//
+// The retry is not belt and braces: the bind used to happen in Serve, where an
+// in-use port came back as a Serve error the caller could retry, and it now
+// happens in the recovery goroutine where nothing can. The committed suite
+// really does re-bind ports a just-stopped server has not finished releasing
+// (reliable4_dependency_tx_test.go:551-554, and each reliable2_dbcompat_test.go
+// test binds the ports the previous one held), so without this a whole go test
+// binary would be taken down by publishExit.
+func (s *Server) listenWithRetries(ctx context.Context, port string) error {
+	err := listenTLS(s.sock, s.tlsConfig, port)
+	if err == nil {
+		return nil
+	}
+
+	clog.Warn(ctx, "could not listen on the manager port yet, retrying", "port", port, "err", err)
+
+	limit := time.After(serverBindRetryBudget)
+	ticker := time.NewTicker(serverBindRetryInterval)
+
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err = listenTLS(s.sock, s.tlsConfig, port); err == nil {
+				return nil
+			}
+		case <-limit:
+			return err
+		}
+	}
 }
 
 // recoverInBackground is the body of the background prior-state recovery
@@ -1550,7 +1910,17 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 // destroy. On cancellation it returns quietly (finishRecovering still runs, so
 // the recovering flag is cleared) without calling scheduler.Recover, enqueuing,
 // or logging the shutdown as a failure.
-func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, wgk string, priorJobs []*Job) {
+//
+// Publication is its last plain statement, and hangs off recovery ENDING rather
+// than succeeding: recoverPriorJobsAndNote logs and returns on failure, so
+// gating publication on success would leave a manager that is up, holds the
+// database lock, and is invisible forever while wr manager start polls
+// indefinitely. The correctness-critical half still fails loudly, because a
+// decode or group-build error returns from startPriorStateRecovery and makes
+// Serve error out.
+func (s *Server) recoverInBackground(ctx, serveCtx context.Context, config ServerConfig,
+	wgk string, priorJobs []*Job,
+) {
 	defer internal.LogPanic(ctx, "jobqueue prior-state recovery", true)
 	defer s.bgWG.Done(wgk)
 	// re-schedule ready work once recovery has finished. Defers run LIFO, so
@@ -1562,6 +1932,8 @@ func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, w
 	defer s.finishRecovering()
 
 	s.recoverPriorJobsAndNote(ctx, config, priorJobs)
+
+	s.publishServingSurface(ctx, serveCtx, config)
 }
 
 // recoverPriorJobsAndNote re-enqueues the prior jobs (in a single batch) and
@@ -1653,8 +2025,7 @@ func (s *Server) startRecoveryHeartbeat(ctx context.Context, total int) func() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				clog.Warn(ctx, "recovering: still recovering prior state", "total", total,
-					"elapsed", time.Since(started).Round(time.Millisecond))
+				s.reportStillRecovering(ctx, total, time.Since(started))
 			}
 		}
 	}()
@@ -1663,6 +2034,17 @@ func (s *Server) startRecoveryHeartbeat(ctx context.Context, total int) func() {
 		close(stop)
 		<-stopped
 	}
+}
+
+// reportStillRecovering says, in the log and in the startup sidecar, that
+// recovery has been going for elapsed. The sidecar rides this existing tick
+// rather than a timer of its own, so an operator watching wr manager start sees
+// the same heartbeat through the file (spec E4).
+func (s *Server) reportStillRecovering(ctx context.Context, total int, elapsed time.Duration) {
+	clog.Warn(ctx, "recovering: still recovering prior state", "total", total,
+		"elapsed", elapsed.Round(time.Millisecond))
+
+	s.startupStatus.refresh(startupRecoveryDetail(elapsed))
 }
 
 // rescheduleReadyAfterRecovery re-triggers the ready-added callback when the
@@ -2214,25 +2596,23 @@ func failureMayUpdateJobRequirements(job *Job) bool {
 		job.FailReason == FailReasonTime
 }
 
-func updateJobRequirementsForRetry(
-	job *Job,
-	jobOverride uint8,
-	recommendedReq *scheduler.Requirements,
-) {
-	// Requirements is an input of the memoised derived scheduler-group strings
-	// (jobDerived), and everything below can change it in place on EITHER exit:
-	// applyRecommendedJobRequirements applies a learned value for any resource the
-	// user did not specify whatever their override (see cmd/add.go's "If you
-	// choose to override eg. only disk..."), including on the
-	// jobOverrideAlwaysUseJobReqs early return below. Invalidating in a defer is
-	// therefore not just tidier, it is the only placement no future edit to those
-	// branches or that early return can silently defeat.
-	//
-	// It is also deliberately unconditional rather than conditional on a value
-	// actually changing: only the jobs a rac cycle deems schedulable reach here
-	// (prepareReadyJob is the bounded half of the cycle, see
-	// scheduleReadyJobsByPriority), so re-deriving when the numbers happen to come
-	// out the same costs nothing at backlog scale.
+// updateJobRequirementsForRetry applies the learned requirements a retry should
+// use, and invalidates the job's memoised derived scheduler-group strings.
+//
+// Requirements is an input of those derived strings (jobDerived), and everything
+// below can change it in place on EITHER exit: applyRecommendedJobRequirements
+// applies a learned value for any resource the user did not specify whatever
+// their override (see cmd/add.go's "If you choose to override eg. only
+// disk..."), including on the jobOverrideAlwaysUseJobReqs early return below.
+// Invalidating in a defer is therefore not just tidier, it is the only placement
+// no future edit to those branches or that early return can silently defeat.
+//
+// It is also deliberately unconditional rather than conditional on a value
+// actually changing: only the jobs a rac cycle deems schedulable reach here
+// (prepareReadyJob is the bounded half of the cycle, see
+// scheduleReadyJobsByPriority), so re-deriving when the numbers happen to come
+// out the same costs nothing at backlog scale.
+func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *scheduler.Requirements) {
 	defer job.invalidateDerivedLocked()
 
 	if job.RequirementsOrig == nil {
@@ -3361,27 +3741,6 @@ func joinStartupMessages(certMsg, dbMsg string) string {
 	}
 }
 
-func keepPostUpgradeStartupStatus(dbFile string, upgradedOnOpen bool, logger log15.Logger) func() {
-	if !upgradedOnOpen {
-		return func() {}
-	}
-
-	if err := internal.WriteDBUpgradeStatus(dbFile, internal.DBUpgradeStatus{
-		State:  postUpgradeStartupState,
-		Detail: postUpgradeStartupDetail,
-	}); err != nil {
-		logger.Warn("failed to write post-upgrade startup status", "path", internal.DBUpgradeStatusPath(dbFile),
-			"err", err)
-	}
-
-	return func() {
-		if err := internal.RemoveDBUpgradeStatus(dbFile); err != nil {
-			logger.Warn("failed to remove post-upgrade startup status", "path", internal.DBUpgradeStatusPath(dbFile),
-				"err", err)
-		}
-	}
-}
-
 // closeOnError calls closeFn (typically a deferred resource close) only when
 // *errp is already non-nil, wrapping any close error into *errp under name so
 // the original error is preserved.
@@ -3415,6 +3774,47 @@ func ensureCertificates(config ServerConfig, certDomain string, serverLogger log
 	return "created a new key and certificate for TLS", nil
 }
 
+// prepareListener sets the command socket's receive options, verifies the
+// certificates have not expired, and loads the TLS keypair and CA pool,
+// returning the earliest certificate expiry time and the TLS config the eventual
+// bind will use.
+//
+// It deliberately does NOT bind the port. Everything that can fail on bad input
+// - an expired certificate, a mismatched keypair - fails here, fast, through
+// Serve's error return, while the bind itself happens only when prior-state
+// recovery ends and the server publishes its externally observable surface (spec
+// E1).
+func prepareListener(sock mangos.Socket, interruptTime time.Duration,
+	caFile, certFile, keyFile string) (time.Time, *tls.Config, error) {
+	// we open ourselves up to possible denial-of-service attack if a client
+	// sends us tons of data, but at least the client doesn't silently hang
+	// forever when it legitimately wants to Add() a ton of jobs
+	// unlimited Recv() length
+	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
+		return time.Time{}, nil, err
+	}
+
+	// we'll wait ServerInterruptTime to recv from clients before trying again,
+	// allowing us to check if signals have been passed
+	if err := sock.SetOption(mangos.OptionRecvDeadline, interruptTime); err != nil {
+		return time.Time{}, nil, err
+	}
+
+	// check certificate expiry, because everything breaks with generic errors
+	// when it expires
+	expiry, err := earliestCertExpiry(caFile, certFile)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+
+	tlsConfig, err := serverTLSConfig(caFile, certFile, keyFile)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+
+	return expiry, tlsConfig, nil
+}
+
 // earliestCertExpiry returns the sooner of the CA and server certificate expiry
 // times, erroring if either has already expired or cannot be read.
 func earliestCertExpiry(caFile, certFile string) (time.Time, error) {
@@ -3443,61 +3843,10 @@ func earliestCertExpiry(caFile, certFile string) (time.Time, error) {
 	return expiry, nil
 }
 
-// configureAndListen sets the command socket's receive options, verifies the
-// certificates have not expired, and starts listening for TLS connections,
-// returning the earliest certificate expiry time.
-func configureAndListen(sock mangos.Socket, interruptTime time.Duration,
-	caFile, certFile, keyFile, port string) (time.Time, error) {
-	// we open ourselves up to possible denial-of-service attack if a client
-	// sends us tons of data, but at least the client doesn't silently hang
-	// forever when it legitimately wants to Add() a ton of jobs
-	// unlimited Recv() length
-	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return time.Time{}, err
-	}
-
-	// we'll wait ServerInterruptTime to recv from clients before trying again,
-	// allowing us to check if signals have been passed
-	if err := sock.SetOption(mangos.OptionRecvDeadline, interruptTime); err != nil {
-		return time.Time{}, err
-	}
-
-	// check certificate expiry, because everything breaks with generic errors
-	// when it expires
-	expiry, err := earliestCertExpiry(caFile, certFile)
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	// have mangos listen using TLS over TCP
-	if err := listenTLS(sock, caFile, certFile, keyFile, port); err != nil {
-		return time.Time{}, err
-	}
-
-	return expiry, nil
-}
-
 // listenTLS makes the given socket listen for TLS-over-TCP connections on port,
-// using the configured certificate and (if readable) CA pool.
-func listenTLS(sock mangos.Socket, caFile, certFile, keyFile, port string) error {
-	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return err
-	}
-
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
-	listenOpts := make(map[string]any)
-
-	caCert, err := os.ReadFile(caFile)
-	if err == nil {
-		certPool := x509.NewCertPool()
-		certPool.AppendCertsFromPEM(caCert)
-		tlsConfig.RootCAs = certPool
-	}
-
-	listenOpts[mangos.OptionTLSConfig] = tlsConfig
-
-	return sock.ListenOptions("tls+tcp://0.0.0.0:"+port, listenOpts)
+// using the config prepareListener built.
+func listenTLS(sock mangos.Socket, tlsConfig *tls.Config, port string) error {
+	return sock.ListenOptions("tls+tcp://0.0.0.0:"+port, map[string]any{mangos.OptionTLSConfig: tlsConfig})
 }
 
 // currentServerIP determines the non-loopback IP address other machines should
@@ -3519,9 +3868,16 @@ func currentServerIP(config ServerConfig, serverLogger log15.Logger) (string, er
 	return ip, nil
 }
 
-// Serve is for use by a server executable and makes it start listening on
-// localhost at the configured port for Connect()ions from clients, and then
-// handles those clients.
+// Serve is for use by a server executable and makes it serve clients on
+// localhost at the configured port.
+//
+// It returns once startup has been validated and prior-state recovery has
+// begun, which is BEFORE the server is reachable: the RPC listener, the web
+// interface and the token file are published only when recovery ends, which
+// takes as long as the recovered live jobs need (minutes, at scale). A caller
+// that then talks to the server must wait on Serving() first; a Connect() before
+// that gets ErrNoServer, exactly as it would against a manager that is simply
+// down.
 //
 // It returns a *Server that you will typically call Block() on to block until
 // your executable receives a SIGINT or SIGTERM, or you call Stop(), at which
@@ -3579,7 +3935,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	// check if the cert files are available
-	httpAddr := "0.0.0.0:" + config.WebPort
 	caFile := config.CAFile
 	certFile := config.CertFile
 	keyFile := config.KeyFile
@@ -3607,7 +3962,20 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
-	defer keepPostUpgradeStartupStatus(config.DBFile, db.upgradedOnOpen, serverLogger)()
+
+	// the startup sidecar is written from here on. Its removal belongs to
+	// publication and to shutdown, so this defer covers only the paths where
+	// neither runs: an error return from here on would otherwise leave the file
+	// behind for the next reader (spec E4).
+	startupStatus := newStartupStatusReporter(config.DBFile, serverLogger, db.upgradedOnOpen)
+
+	defer func() {
+		closeOnError(&err, "startup status", func() error {
+			startupStatus.remove()
+
+			return nil
+		})
+	}()
 
 	sock, err := xrep.NewSocket()
 	if err != nil {
@@ -3616,9 +3984,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	defer func() { closeOnError(&err, "socket", sock.Close) }()
 
-	var expiry time.Time
+	var (
+		expiry    time.Time
+		tlsConfig *tls.Config
+	)
 
-	expiry, err = configureAndListen(sock, timings.InterruptTime, caFile, certFile, keyFile, config.Port)
+	expiry, tlsConfig, err = prepareListener(sock, timings.InterruptTime, caFile, certFile, keyFile)
 	if err != nil {
 		return s, msg, token, err
 	}
@@ -3683,6 +4054,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		token:                     token,
 		uploadDir:                 uploadDir,
 		sock:                      sock,
+		tlsConfig:                 tlsConfig,
+		serving:                   make(chan struct{}),
+		startupStatus:             startupStatus,
 		ch:                        new(codec.BincHandle),
 		rpl:                       newRGToKeys(),
 		depGroups:                 newDepGroupMembers(),
@@ -3732,45 +4106,21 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	go s.handleSignals(ctx, sigs, certExpired, stopSigHandling)
 
-	// set up the web interface
-	ready := make(chan bool)
-	wgk := wg.Add(1)
-
-	go s.serveWebInterface(ctx, config, httpAddr, certFile, keyFile, wg, wgk, ready)
-
-	<-ready
-
-	// store token on disk
-	if err = persistToken(config.TokenFile, token); err != nil {
-		return s, msg, token, err
-	}
-
-	// mark ourselves recovering (total unknown for now) BEFORE we start
-	// accepting client RPCs, so a pre-crash runner reconnecting during the
-	// cheap live-bucket scan below gets a retryable ErrRecovering rather than a
-	// terminal ErrBadJob for a to-be-restored job (spec B2: recovery timing
-	// never causes a new false loss). This only sets an O(1) flag, so readiness
-	// is not delayed; the true total is filled in by startPriorStateRecovery
-	// after the scan, before the background goroutine runs (spec B1).
-	s.setRecovering(0)
-
-	// now that we're ready, set up responding to command-line clients
-	wgk = wg.Add(1)
-
-	go s.serveClients(ctx, sock, wg, wgk, stopClientHandling, clientHandlingDone)
-
-	// recover any prior incomplete jobs in the background, so the manager
-	// answers clients (ping/status/add) immediately regardless of how much
-	// history or how many running jobs the db holds (spec B1). We read the
+	// recover any prior incomplete jobs in the background, and publish the
+	// externally observable surface (web interface, token file, RPC listener)
+	// only when that recovery ends (spec E1). Nothing may serve a request before
+	// the per-group live-member state exists, because a dep group the state has
+	// not yet learned looks empty, and an empty seen group means satisfied - the
+	// newly added job would be released ahead of its dependencies. We read the
 	// prior jobs synchronously (a cheap live-bucket scan) so recoveryProgress's
 	// total is known before the background goroutine runs, then re-enqueue them
 	// in the goroutine. Recovery keeps the single-batch enqueue so AddMany
 	// resolves dependencies within the one batch.
-	if err = s.startPriorStateRecovery(bgCtx, config, db); err != nil {
+	if err = s.startPriorStateRecovery(bgCtx, ctx, config, db); err != nil {
 		// the scan failed before the background goroutine (which would clear
-		// the flag) was launched, so clear the recovering flag we set above to
-		// avoid leaving it stuck true (production die()s on this error, but keep
-		// it clean).
+		// the flag) was launched, so clear the recovering flag it set to avoid
+		// leaving it stuck true (production die()s on this error, but keep it
+		// clean).
 		s.finishRecovering()
 
 		return s, msg, token, err
@@ -3782,6 +4132,14 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 // serveWebInterface runs the server's HTTP web interface and REST API, starts
 // the status broadcasters, and registers the scheduler callbacks, signalling
 // ready once ListenAndServe has had time to start.
+//
+// Publication calls it, so it runs only once prior-state recovery has ended
+// (spec E1). Scheduler messages and bad-server updates raised before then are
+// therefore DISCARDED rather than queued: the openstack implementation
+// nil-checks both callbacks, caster.Broadcasting is a no-op and Send with no
+// members drops. That is deliberate and harmless - nothing is watching the web
+// interface during the window, since it is not up - but it is written down here
+// rather than lost by accident (spec E3).
 func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, httpAddr, certFile,
 	keyFile string, wg *waitgroup.WaitGroup, wgk string, ready chan<- bool) {
 	// log panics and die
@@ -4108,10 +4466,15 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 	// transactions on a cold database (.docs/bugfixes/260825-2.md). It is a
 	// separate pass because the loop below calls the scheduler, which must not run
 	// inside a read transaction.
+	resolveStarted := time.Now()
+
 	resolved, errd := s.db.resolveDependencies(ctx, priorJobs, s.depGroups)
 	if errd != nil {
 		return errd
 	}
+
+	clog.Warn(ctx, "recovering: resolved prior job dependencies", "jobs", len(resolved),
+		"elapsed", time.Since(resolveStarted).Round(time.Millisecond))
 
 	itemdefs := make([]*queue.ItemDef, 0, len(resolved))
 
@@ -4130,7 +4493,12 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 		return err
 	}
 
+	enqueueStarted := time.Now()
+
 	_, _, err := s.enqueueItems(ctx, itemdefs)
+
+	clog.Warn(ctx, "recovering: enqueued prior jobs", "jobs", len(itemdefs),
+		"elapsed", time.Since(enqueueStarted).Round(time.Millisecond))
 
 	return err
 }
@@ -6301,6 +6669,26 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	return jobs
 }
 
+// serverTLSConfig loads the server certificate and key, adding the CA pool if
+// the CA file is readable.
+func serverTLSConfig(caFile, certFile, keyFile string) (*tls.Config, error) {
+	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+
+	caCert, err := os.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
+
+	return tlsConfig, nil
+}
+
 func increaseJobDiskAfterFailure(job *Job) {
 	const diskIncreaseRoundGB = 100
 
@@ -7048,6 +7436,11 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	// no enqueue while s.q.Destroy runs.
 	s.stopBackgroundStartupTasks()
 
+	// that wait includes publication, so nothing can write the sidecar after
+	// this: remove it here so it does not outlive a manager stopped inside the
+	// startup window (spec E4).
+	s.startupStatus.remove()
+
 	s.waitForRunnersToDie(ctx, wait)
 
 	// stop the scheduler
@@ -7084,11 +7477,20 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 // closeServerCommsAndDB closes the command line interface, command socket and
 // database, and frees any clients waiting on a reserve.
+//
+// Stopping the readers is skipped when publication never started them (a
+// shutdown inside the startup window, spec E3): nothing would ever close
+// clientHandlingDone, so waitForClientHandling would burn a whole
+// ServerShutdownWaitTime and log a spurious timeout warning.
 func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 	// close our command line interface
 	s.closeClientSubscriptions()
-	close(s.stopClientHandling)
-	s.waitForClientHandling(ctx)
+
+	if s.clientHandlingStarted() {
+		close(s.stopClientHandling)
+		s.waitForClientHandling(ctx)
+	}
+
 	time.Sleep(s.timings.ShutdownSocketWait)
 
 	if err := s.sock.Close(); err != nil {
@@ -7157,6 +7559,11 @@ func (s *Server) beginShutdown(ctx context.Context, stopSigHandling bool) bool {
 	s.killRunners = true
 	s.krmutex.Unlock()
 
+	// a caller waiting for publication must not wait forever on a server that is
+	// being stopped, and publication is skipped once bgCtx is cancelled - which
+	// stopBackgroundStartupTasks does immediately after this returns (spec E2).
+	s.closeServing()
+
 	return true
 }
 
@@ -7213,7 +7620,15 @@ func (s *Server) closeWebSockets(ctx context.Context) {
 // shutdownHTTPServer shuts the web interface down, forcing completion after
 // httpServerShutdownTime because a graceful shutdown is slow due to a fixed
 // 500ms poll.
+//
+// s.httpServer is set inside serveWebInterface, which publication runs only once
+// prior-state recovery has ended, so a SIGTERM inside the startup window arrives
+// with nothing to shut down (spec E3).
 func (s *Server) shutdownHTTPServer(ctx context.Context) {
+	if s.httpServer == nil {
+		return
+	}
+
 	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
 
 	go func() {
@@ -7230,6 +7645,15 @@ func (s *Server) shutdownHTTPServer(ctx context.Context) {
 // waitForPortsClosed blocks until both the command and web ports are no longer
 // being listened to (which is the best proxy we have for them being free).
 // portStillListening closes any open connection as a side effect.
+//
+// Since publication moved the binds past Serve's return (spec E1), the manager
+// may never have bound these ports: they come from the config in the Server
+// literal, not from the bind. Inside the startup window that is benign - nothing
+// is listening, both dials fail, and this returns on its first iteration - which
+// is why no production change is needed. It bites only when something ELSE holds
+// one of them, because this loop has neither a deadline nor a context check, and
+// that is why E1 acceptance test 5 closes its own listener before stopping the
+// server.
 func (s *Server) waitForPortsClosed(ctx context.Context) {
 	for {
 		stillUp := s.portStillListening(ctx, s.ServerInfo.Port)

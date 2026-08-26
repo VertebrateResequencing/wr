@@ -242,6 +242,8 @@ func startQueueCommandTestServer(ctx context.Context, t *testing.T) (
 
 		server, _, token, err := jobqueue.Serve(ctx, serverConfig)
 		if err == nil {
+			waitForTestServerServing(t, server)
+
 			return testConfig, serverConfig, addr, reqs, server, token
 		}
 

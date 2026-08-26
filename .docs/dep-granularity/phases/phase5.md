@@ -149,8 +149,8 @@ symbols and is added by E2, but E1 tests 2 to 5 consume it. Land the
 `Serving()` accessor here; leave E2 the `beginShutdown` close, the callers'
 waits, the doc amendments and the test-helper split.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.2: E7 - A double-started manager fails cleanly [parallel with 5.1]
 
@@ -198,8 +198,8 @@ time and **inode**; test 2 that `db_bk` is unmodified and the holder's
 subsequent reads and writes still succeed; test 3 that a locked DB with no
 `db_bk` still yields `ErrDBLocked` rather than a bare `bolt.ErrTimeout`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill (review all items in
@@ -263,8 +263,8 @@ a test that skipped the release would pass while leaking a wedged `Stop`, the
 held bolt file lock and both held ports into the rest of the package run. Test 6
 is a doc and lint check, not a Go test.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 5.4: E3 - Shutdown during the window
 
@@ -295,8 +295,8 @@ the pause hook once `Stop` has been entered is required for the same reason as
 E2 test 2. The test also asserts the DB file lock is released, by a second
 `initDB` on the same file succeeding.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 5.5: E4 - The sidecar is the primary operator channel during startup
 
@@ -313,8 +313,12 @@ The PID checks in `currentManagerDBUpgradeStatus` are a backstop for a process
 killed without returning, not a licence to leave the file.
 
 Add `Total int json:"total,omitempty"` to `internal.DBUpgradeStatus` and the
-three new states `DBStartupDecodeState`, `DBStartupDepGroupState` and
-`DBStartupRecoveryState` alongside `DBUpgradePostStartupState`. `Total` is
+four new states `DBStartupPrepareState`, `DBStartupDecodeState`,
+`DBStartupDepGroupState` and `DBStartupRecoveryState` alongside
+`DBUpgradePostStartupState`. (The spec originally named three; `PrepareState`
+was added during implementation because the other three left the initDB ->
+`startPriorStateRecovery` span with no sidecar, so a non-upgrade start reported
+"non-responsive" for its whole duration.) `Total` is
 `omitempty`, so files written when it is unset are byte-identical to today's.
 `DBStartupRecoveryState` is written as the **last synchronous statement of
 `startPriorStateRecovery`** - after `setRecoveryTotal`, before the `go
@@ -373,8 +377,8 @@ Files: `internal/db_upgrade_status.go`, `jobqueue/server.go`. Tests in
   (`server_startup_test.go:186`), because the recovery phase's `Detail` is an
   elapsed time that changes on every tick.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Batch 2 (parallel, after item 5.5 is reviewed)
 
@@ -408,8 +412,8 @@ uses `Processed: 9000, Total: 150472` and asserts the message contains
 "9000/150472". **The wiring in `managerStatusCmd` is not reachable that way**,
 so F3 procedure step 5 is the only automated exercise of it.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.7: E6 - Retain the ErrRecovering machinery [parallel with 5.6, 5.8]
 
@@ -439,8 +443,8 @@ assertions unchanged and only the `Connect`/`Touch` pair replaced;
 all three symbols are still present and referenced, so they are not deleted as
 dead code.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.8: E8 - A long absence keeps a runner [parallel with 5.6, 5.7]
 
@@ -458,8 +462,8 @@ never returned a terminal error, the job is not run twice, and the final queue
 holds exactly one item for its key. Drive the timings from `ClientRetryWait` and
 a shortened `retryTime` rather than waiting 24 hours.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item.
 Launch review subagents using the `go-reviewer` skill (review all items in
@@ -500,8 +504,8 @@ point. Test 3 is the recorded numbers and stated ceiling in
 and F3 (phase 6) adds `TestDepGranularityFixture` to it. Leave room for that
 rather than assuming the file is E9's alone.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Phase gate
 
@@ -510,3 +514,123 @@ rather than assuming the file is E9's alone.
 - `jobqueue`, `cmd`, `client` and `client/testing` green: E2's helper changes
   are the only thing keeping the last three green after E1, so a whole-package
   `ErrNoServer` there is a missed helper, not a flake.
+
+
+## Phase 5 outcome (2026-08-26)
+
+Implemented, **FAILED first review with two blocking findings**, fixed, and
+passed re-review. Gates on the final tree: `make lint` 0 issues, `go vet -tags
+netgo` and `-tags 'netgo reliability_repro'` clean across all five package sets,
+`make test` **481 passed - 9 skipped - 29 packages** four times across the two
+review passes at load 117-119, `-race` clean, `cleanorder -min-diff -dry` clean
+apart from the two documented pre-existing spots.
+
+### Blocking 1: E1 could kill runner subprocesses
+
+`withRunnerServer` (`runner_lifecycle_test.go`) spawned `--runnermode` with no
+`-test.run` filter, so the runner subprocess ran the whole suite before reaching
+`runner()` - including an unguarded test that starts a server on the **default
+development port**, because `jobqueueTestInit` deliberately skips
+`isolateTestConfig` in runnermode. Under E1 a lost bind is no longer an error a
+helper can retry: publication burns its budget and calls `publishExit` ->
+`os.Exit(1)`, killing the runner before it reaches the entrypoint.
+
+Proven both ways, twice, with port 46407 held by an unrelated listener:
+`TestJobqueueRunnerLostJobs` FAILs at ~180 s with repeated `err="exit status 1"`
+without the filter, and passes in seconds with it. The class was **illegible as
+well as broken** - `silenceExpectedRunCmdWaitLogs` swallows the killed-runner
+log, so only a downstream assertion fails.
+
+Fixed by adding `-test.run '^TestJobqueueRunnerModeEntrypoint$'`, placed after
+`--runnermode`+`failArg` so the silencer's prefix match still holds. An
+independent sweep confirmed the other four spawn sites already carry a filter,
+and that the two using the *broad* `-test.run TestJobqueue` are safe: of ~60
+matching tests, exactly two lack the `runnermode || servermode` guard, and both
+are the dispatch entrypoints themselves.
+
+Narrowing the silencer was considered and declined: the obvious narrowing breaks
+`TestJobqueueRunnerScheduling`, and in `TestJobqueueRunnerFailureRetry` a
+deliberate exit-1 and a `publishExit` exit-1 are indistinguishable at the
+`log15.Record` level. With the filter in place the runner subprocess can no
+longer reach a `serve()` at all, so the class is closed at source.
+
+**Correction to the earlier diagnosis.** The `-test.run` fix applied to
+`TestJobqueueRunnerScheduling` was right, but the reason recorded with it was
+not: startup stagger is real and pre-existing, but the dominant new cost was E1
+killing runner processes. Phase 5 adds no pre-entrypoint CPU of its own - all 26
+new test functions carry the guard.
+
+### Blocking 2: the startup window was reported as a database upgrade
+
+`managerDBUpgradeStatusLogMessage` branched only on the post-upgrade state, so
+the new states fell through to the else and `wr manager start` printed
+`wr manager is upgrading its database: recovering prior state, 21m0s elapsed`
+once per heartbeat for the whole window. Worse, `newStartupStatusReporter` wrote
+the post-upgrade state on **every** start, so a normal start also claimed
+"starting after database upgrade" for the pre-recovery span. Exactly the defect
+class E5 exists to remove, in the channel E4 makes primary; nothing caught it
+because coverage existed only for the old state.
+
+Fixed in three parts: the three DB-upgrade phase strings became named constants
+with an `IsDBUpgradeState` predicate (replacing nine literals in `db.go`); the
+message helper now defaults **unrecognised** states to "wr manager is starting",
+so a state added by a later wr cannot fall through to the lie again; and
+`newStartupStatusReporter` takes `upgradedOnOpen` so the post-upgrade phase is
+written only when an upgrade really ran. `upgradedOnOpen` was traced to its
+source and is true only when a real index rebuild ran on an existing DB.
+
+`TestManagerDBUpgradeStatusLogMessage` is now table-driven over all eight
+reachable states plus an unrecognised one; flipping the default arm back fails
+five rows by name.
+
+### Spec amendments made (2026-08-26)
+
+- **E4 now names four states.** `DBStartupPrepareState` covers initDB-returning
+  to `startPriorStateRecovery`; without it that span had no sidecar and a
+  non-upgrade start reported "non-responsive" throughout.
+- **E5 acceptance test 2 was asserting a state wr cannot produce.** Its
+  `Processed: 9000, Total: 150472` fixture requires both writers at once, but
+  they are disjoint: the startup reporter never sets `Processed`, and the
+  upgrade reporter never sets `Total`. Totalling `rebuildJobLookupEntries` would
+  need a second full `ForEach` over three buckets during the slowest phase of an
+  already-slow start - rule 6 forbids it. The reachable "9000 so far" form is
+  now the named case; the combined form is retained as forward-looking, since
+  `noteRecovered` is already additive if the enqueue is ever batched.
+
+### A third no-op mutation, resolved by deletion
+
+The three `startupStatusReporter` nil guards could not be made to fail by any
+mutation. Rather than add a test for an unreachable case, they were dropped, and
+the reachability was verified independently: `shutdown` returns early unless
+`beginShutdown` sees `s.up`, `up: true` appears in one production literal (the
+same one that sets `startupStatus`), and none of the seven test files building
+`&Server{up: true}` calls `Stop`/`shutdown`/`beginShutdown`/`closeServing`;
+`report`/`refresh` are reachable only from `Serve`-built servers.
+
+**This is deliberately the opposite of phase 4's `depGroupMembers` design**,
+which panics on nil on purpose to catch a real production path. Both are right;
+do not unify them.
+
+### Carried forward
+
+- **E2 acceptance test 4** (`wr manager start -f` prints "started on" only after
+  the bind) has no automated test - `startJQ` `die()`s and daemonizes, so it is
+  not in-process reachable. The production change is present and correct
+  (`cmd/manager.go:1438`). Either add a seam-level test or record it in the spec
+  the way E5 records its own unreachable wiring.
+- **No sidecar during `initDB` itself** on a non-upgrade start, so `wr manager
+  status` still dies "non-responsive" for that span - the largest remaining hole
+  in "the sidecar is the primary operator channel", and the one phase whose
+  production cost the measurements do not bound. A phase written before
+  `bolt.Open` would close it.
+- `ctx` means bgCtx inside `recoverInBackground`/`startPriorStateRecovery` but
+  Serve's ctx inside `publishServingSurface`; both documented, still confusing.
+- `depgranularity_startup_test.go` carries `//go:build !windows` while using
+  nothing Unix-specific, and the untagged `reliable2_dbcompat_test.go` now
+  depends on helpers defined there.
+- `TestServeReportsPostUpgradeStartupUntilTokenReady` no longer asserts any
+  post-upgrade state; the spec sanctions keeping the name.
+- Newly observed load flakes, each passing 3/3 in isolation on both trees:
+  `TestJobqueueRunnerResourceLearning` (one-bucket `PeakRAM` rounding),
+  `internal`'s `TestConfig` (mock-stdin port calculation), `network/port`'s
+  `TestPort` (host FD/port exhaustion).

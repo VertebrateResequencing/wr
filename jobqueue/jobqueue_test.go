@@ -97,6 +97,12 @@ const (
 	// sequence with headroom. It is free on the success path (the test stops the
 	// daemon itself, so Block() returns long before this fires).
 	daemonBackstopWait = 3 * runnerStartWait
+	// servePublishWait bounds how long the serve helper waits for a server to
+	// publish itself. It is a hang detector, not a latency budget: the only thing
+	// between Serve returning and publication is the recovery of whatever prior
+	// jobs the test's DB holds, which for these tests is few or none, so it costs
+	// nothing on the success path.
+	servePublishWait = runnerStartWait
 	// signalTestMaxCores is the fixed core capacity the --servermode test daemon
 	// (runServer) gives its local scheduler for TestJobqueueSignal's
 	// runner-enabled blocks. The local scheduler schedules against this
@@ -1406,10 +1412,48 @@ func runServer(ctx context.Context) {
 	os.Exit(0)
 }
 
-// serve calls Serve() but with a retry for 5s on failure. This allows time for
-// a server that we recently stopped in a prior test to really not be listening
-// on the ports any more.
+// errServeNeverPublished is what the serve helper returns when a server never
+// publishes itself. It is a hang detector, not a latency budget: every server
+// these tests start publishes as soon as its (empty or tiny) recovery finishes.
+var errServeNeverPublished = errors.New("the server did not start serving")
+
+// serve calls serveWithoutPublication and then waits for the server to publish
+// itself, so a test that connects straight afterwards does not get ErrNoServer:
+// Serve() returns while prior-state recovery is still running, and the manager
+// port is bound only when that recovery ends.
+//
+// A test that deliberately observes the startup window must call
+// serveWithoutPublication instead, since waiting here would deadlock against a
+// recovery parked at recoveryPauseHook.
+//
+// A publication timeout comes back as this helper's error rather than as a
+// failed So: the helper has no *testing.T, and runServer (the --servermode
+// daemon) calls it outside any Convey, where a So would panic about a missing
+// Convey context instead of saying what went wrong.
 func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
+	server, msg, token, err := serveWithoutPublication(ctx, config)
+	if err != nil {
+		return server, msg, token, err
+	}
+
+	select {
+	case <-server.Serving():
+	case <-time.After(servePublishWait):
+		return server, msg, token, fmt.Errorf("%w after %s", errServeNeverPublished, servePublishWait)
+	}
+
+	return server, msg, token, err
+}
+
+// serveWithoutPublication calls Serve() but with a retry for 5s on failure. This
+// allows time for a server that we recently stopped in a prior test to really
+// not be listening on the ports any more.
+//
+// What that retry no longer covers is the RPC port bind, which moved past
+// Serve's return into the recovery goroutine; publication carries its own retry
+// on the same 500ms/5s budget, so port contention stays the failure these
+// helpers pass through unchanged.
+func serveWithoutPublication(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
 	server, msg, token, err := Serve(ctx, config)
 	if err != nil {
 		limit := time.After(5 * time.Second)

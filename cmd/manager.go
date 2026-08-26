@@ -508,17 +508,27 @@ using, and other details about the manager.`,
 				return
 			}
 
+			if reportManagerStartupStatus() {
+				return
+			}
+
 			die("wr manager on port %s is supposed to be running with pid %d, but is non-responsive",
 				config.ManagerPort, pid)
 		}
 
 		// no pid file, so it's supposed to be down; confirm
 		jq := connect(1*time.Second, true)
-		if jq == nil {
-			fmt.Println("stopped")
-		} else {
+		if jq != nil {
 			reportLiveStatus(jq)
+
+			return
 		}
+
+		if reportManagerStartupStatus() {
+			return
+		}
+
+		fmt.Println("stopped")
 	},
 }
 
@@ -918,6 +928,63 @@ func managerDBUpgradeStatusText(status internal.DBUpgradeStatus) string {
 	return status.State
 }
 
+// reportManagerStartupStatus prints the manager's startup phase, reporting
+// whether the sidecar showed a live one.
+//
+// The manager deliberately does not listen until prior-state recovery ends, so a
+// failed connect no longer means "dead" and both of this command's answers would
+// otherwise be wrong and inconsistent with each other: "non-responsive" (and a
+// non-zero exit) when there is a pid file, "stopped" when there is not (spec E5).
+//
+// It passes the zero time and 0 to currentManagerDBUpgradeStatus, so the recorded
+// PID's liveness is the whole test: wr manager status has neither a preStart nor
+// a child process handle, and passing time.Now() would reject every sidecar,
+// since the file always predates the call.
+func reportManagerStartupStatus() bool {
+	status, starting := currentManagerDBUpgradeStatus(time.Time{}, 0)
+	if !starting {
+		return false
+	}
+
+	fmt.Println(managerStartupStatusMessage(status))
+
+	return true
+}
+
+// managerStartupStatusMessage describes a manager that is still starting. It
+// names the phase, and then whatever progress that phase really has. The detail
+// carries the phase's elapsed time, which is what distinguishes a slow start
+// from a hang.
+//
+// Each phase has one of the counts, not both. The database-upgrade phases count
+// the entries they have rebuilt but do not know how many there are, because the
+// rebuild is a bolt ForEach and a total would cost a second full pass over a
+// multi-GB bucket during the one phase that is already the slowest; they take
+// the "N so far" form. The recovery phase knows its total but has no per-job
+// progress, since it enqueues in a single batch, so it takes the "N in total"
+// form. The combined form is what a phase carrying both would take.
+//
+// It is a separate helper so the wording is testable without running the
+// command, which die()s.
+func managerStartupStatusMessage(status internal.DBUpgradeStatus) string {
+	msg := "starting: " + status.State
+
+	switch {
+	case status.Processed > 0 && status.Total > 0:
+		msg += fmt.Sprintf(", %d/%d", status.Processed, status.Total)
+	case status.Processed > 0:
+		msg += fmt.Sprintf(", %d so far", status.Processed)
+	case status.Total > 0:
+		msg += fmt.Sprintf(", %d in total", status.Total)
+	}
+
+	if status.Detail != "" {
+		msg += " (" + status.Detail + ")"
+	}
+
+	return msg
+}
+
 func monitorManagerStartupProcess(process *os.Process) <-chan error {
 	done := make(chan error, 1)
 
@@ -1099,13 +1166,30 @@ func reportManagerDBUpgradeStatus(status internal.DBUpgradeStatus) {
 	info("%s", managerDBUpgradeStatusLogMessage(status))
 }
 
+// managerDBUpgradeStatusLogMessage says what the sidecar's phase actually
+// reports. The manager writes the sidecar on every start now, not only after a
+// database upgrade (spec E4), so most of what it holds is an ordinary startup
+// phase; calling one of those "upgrading its database" tells an operator
+// something untrue about their manager for the whole startup window, which is
+// the defect spec E5 exists to remove.
 func managerDBUpgradeStatusLogMessage(status internal.DBUpgradeStatus) string {
-	text := managerDBUpgradeStatusText(status)
-	if status.State == internal.DBUpgradePostStartupState || status.Detail == internal.DBUpgradePostStartupDetail {
-		return "wr manager is starting after database upgrade: " + text
-	}
+	return managerDBUpgradeStatusPhrase(status) + ": " + managerDBUpgradeStatusText(status)
+}
 
-	return "wr manager is upgrading its database: " + text
+// managerDBUpgradeStatusPhrase describes what the manager is doing in this
+// phase. Only the database-upgrade states earn the upgrade wording; an
+// unrecognised state takes the plain starting wording, so a phase added later
+// and not classified degrades to something honest rather than to a lie.
+func managerDBUpgradeStatusPhrase(status internal.DBUpgradeStatus) string {
+	switch {
+	case internal.IsDBUpgradeState(status.State):
+		return "wr manager is upgrading its database"
+	case status.State == internal.DBUpgradePostStartupState,
+		status.Detail == internal.DBUpgradePostStartupDetail:
+		return "wr manager is starting after database upgrade"
+	default:
+		return "wr manager is starting"
+	}
 }
 
 func reportManagerStartupWaiting(elapsed time.Duration, phase string) {
@@ -1349,6 +1433,11 @@ func startJQ(postCreation, preDestroy []byte) {
 	if err != nil {
 		die("wr manager failed to start : %s", err)
 	}
+
+	// Serve() returns while prior-state recovery is still running, so nothing is
+	// listening yet; without this wait, "started on" and the web URL would
+	// announce a manager that will not answer for minutes.
+	<-server.Serving()
 
 	// logStarted disables file logging, so re-add the handler for the final
 	// message logged after blocking

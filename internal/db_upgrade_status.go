@@ -36,19 +36,67 @@ import (
 const (
 	dbUpgradeStatusPerm = 0o600
 
+	// DBUpgradeDepGroupIndexState, DBUpgradeJobLookupState and
+	// DBUpgradeCommitState are the phases of a one-off database upgrade: the
+	// index rebuilds the manager does the first time it opens a database an
+	// older wr wrote. They are the ONLY states that mean the database itself is
+	// being upgraded - see IsDBUpgradeState.
+	DBUpgradeDepGroupIndexState = "rebuild dep-group index"
+	DBUpgradeJobLookupState     = "rebuild job lookup index"
+	DBUpgradeCommitState        = "commit database upgrade"
+
 	// DBUpgradePostStartupState and DBUpgradePostStartupDetail describe the
 	// post-upgrade phase where the database upgrade is done but the manager is
-	// still starting and cannot yet accept client connections.
+	// still starting and cannot yet accept client connections. A start that
+	// upgraded nothing reports DBStartupPrepareState for that same span instead,
+	// so an ordinary start never claims an upgrade happened.
 	DBUpgradePostStartupState  = "start manager after database upgrade"
 	DBUpgradePostStartupDetail = "starting manager after database upgrade"
+
+	// DBStartupPrepareState, DBStartupDecodeState, DBStartupDepGroupState and
+	// DBStartupRecoveryState are the manager's startup phases after the database
+	// is open. For however many minutes they take, the manager is not yet
+	// listening, so this sidecar is the only channel telling an operator a slow
+	// start from a hang.
+	DBStartupPrepareState  = "prepare to serve"
+	DBStartupDecodeState   = "decode live jobs"
+	DBStartupDepGroupState = "build dependency-group state"
+	DBStartupRecoveryState = "recover prior state"
 )
+
+// IsDBUpgradeState reports whether state is one of the database-upgrade phases,
+// which are the only states that may be described to a user as the database
+// being upgraded. Every other state above is an ordinary startup phase that the
+// manager writes on every start, so describing one of those as an upgrade is a
+// lie about what the manager is doing.
+//
+// A state added above must be classified here, and a caller must treat an
+// unrecognised state as a startup phase rather than an upgrade, so that a state
+// someone forgets to classify degrades to the honest wording.
+func IsDBUpgradeState(state string) bool {
+	switch state {
+	case DBUpgradeDepGroupIndexState, DBUpgradeJobLookupState, DBUpgradeCommitState:
+		return true
+	default:
+		return false
+	}
+}
 
 // DBUpgradeStatus records a manager database upgrade phase that can be shown to
 // the user while the manager is not yet ready to accept connections.
 type DBUpgradeStatus struct {
-	State     string    `json:"state"`
-	Detail    string    `json:"detail"`
-	Processed int       `json:"processed,omitempty"`
+	State  string `json:"state"`
+	Detail string `json:"detail"`
+	// Processed is written only where a real count exists, which is the
+	// database-upgrade phases. The recovery phase leaves it unset, because
+	// recovery enqueues in one batch and so its restored count reads 0 for the
+	// whole multi-minute window and then jumps to Total: an operator watching
+	// 0/150472 would read a hang.
+	Processed int `json:"processed,omitempty"`
+	// Total is the size of the wait, when it is known. It is omitempty, so a file
+	// written without it is byte-identical to one written before this field
+	// existed and an older reader ignores it.
+	Total     int       `json:"total,omitempty"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
