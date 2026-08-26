@@ -1430,6 +1430,34 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 	return jobs, "", ""
 }
 
+// registerDepGroupMembers records each job as a live member of its DepGroups,
+// releasing nothing: it only adds, so no group can empty. It is recovery's bulk
+// rebuild, and will be the add path's first pass. Call it before resolving any
+// dependency against this state.
+func (s *Server) registerDepGroupMembers(jobs []*Job) {
+	for _, job := range jobs {
+		if len(job.DepGroups) == 0 {
+			continue
+		}
+
+		s.depGroups.add(job.DepGroups, job.Key())
+	}
+}
+
+// releaseDepGroupMembership drops jobKey from every group it is a member of and
+// satisfies the queue dependency key of every group thereby emptied. Must not be
+// called while holding the queue mutex.
+func (s *Server) releaseDepGroupMembership(ctx context.Context, jobKey string) {
+	for _, depGroup := range s.depGroups.remove(jobKey) {
+		if err := s.q.SatisfyDependency(ctx, depGroupDependencyKey(depGroup)); err != nil {
+			// the only error is a closed queue, ie. we are shutting down, so the
+			// waiters will be resolved afresh by the next server's recovery.
+			clog.Debug(ctx, "could not satisfy an emptied dep group's waiters",
+				"depGroup", depGroup, "err", err)
+		}
+	}
+}
+
 // startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
 // scan), fills in that total on the already-active recovering state, and
 // launches a background goroutine that re-enqueues them so Serve returns while
@@ -1447,6 +1475,11 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 	if err != nil {
 		return err
 	}
+
+	// the per-group live-member state has to exist before any dependency is
+	// resolved against it, or a group whose members are all still live would
+	// resolve as satisfied and its waiters would run in the wrong order.
+	s.registerDepGroupMembers(priorJobs)
 
 	s.setRecoveryTotal(len(priorJobs))
 

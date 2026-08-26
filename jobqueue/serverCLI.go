@@ -1388,6 +1388,12 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 		return nil, ErrInternalError, err.Error()
 	}
 
+	// this job has left the live bucket, so it is no longer a live member of its
+	// dep groups; any group it was the last live member of now has nothing left
+	// to wait for. It is after q.Remove, not before, because satisfying a group's
+	// key takes the queue mutex.
+	s.releaseDepGroupMembership(ctx, key)
+
 	s.rpl.Lock()
 	s.rpl.Delete(rgroup, key)
 	s.rpl.Unlock()

@@ -74,6 +74,16 @@ const (
 	// chosen so a per-job transaction is unmistakable in the count.
 	depTxResolutions = 100
 
+	// depTxReadingJobs and depTxReadFreeJobs partition depTxRecoveryJobs'
+	// depTxResolutions jobs by whether resolving one costs a bolt read
+	// transaction. Of the seven kinds it cycles through, five have to ask the
+	// database something - the "ever seen" check for a dep group with no live
+	// member, or the checkIfLive for an essence dependency - which is 70 jobs. The
+	// other 30 have no dependencies at all, or name only depTxLiveGroup, and a dep
+	// group with a live member is answered from memory.
+	depTxReadingJobs  = 70
+	depTxReadFreeJobs = 30
+
 	// depTxChunkSize is the chunk size the multi-chunk tests drive
 	// dependencyResolutionChunkSize down to; it divides depTxResolutions into
 	// more than one chunk, which the production default (1000) would not.
@@ -101,8 +111,10 @@ const (
 type depTxFixture struct {
 	db *db
 
-	// liveGroupKeys are the keys of the live jobs in depTxLiveGroup, sorted as
-	// incompleteJobKeys returns them.
+	// liveGroupKeys are the keys of the live jobs in depTxLiveGroup, and are what
+	// groups records as that group's members. They are no longer an expected
+	// resolution result: a dep group resolves to its own one key, never to its
+	// members'.
 	liveGroupKeys []string
 
 	// liveKey is the key of a live job with no dep group, for essence
@@ -149,8 +161,10 @@ func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 	// gone was deleted from the live bucket, so depTxGoneGroup has no live
 	// member and only first and second are members of anything.
 	groups := newDepGroupMembers()
-	groups.add([]string{depTxLiveGroup}, first.Key())
-	groups.add([]string{depTxLiveGroup}, second.Key())
+
+	for _, key := range liveGroupKeys {
+		groups.add([]string{depTxLiveGroup}, key)
+	}
 
 	return &depTxFixture{db: testDB, liveGroupKeys: liveGroupKeys, liveKey: live.Key(), groups: groups}
 }
@@ -218,9 +232,13 @@ func TestReliable4DependencyFreeTxCost(t *testing.T) {
 }
 
 // TestReliable4DependencyResolutionUnchanged pins the resolved dependency keys
-// and waited-for dep groups for every kind of dependency, so the
-// transaction-count changes cannot alter any answer. Each expectation here holds
-// both before and after those changes.
+// and waited-for dep groups for every kind of dependency, so a change to what
+// dependency resolution costs cannot quietly change what it answers.
+//
+// One answer is deliberately different from the one this test originally pinned:
+// a dep group now resolves to its own single opaque key instead of one key per
+// live member job. Everything else - which kinds block, which are satisfied, and
+// which groups are reported as waited for - is the same partition as before.
 func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -244,13 +262,17 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 			So(waiting, ShouldResemble, []string{})
 		})
 
-		Convey("A dep group with live members resolves to all their keys", func() {
+		Convey("A dep group with live members resolves to that group's own key", func() {
 			deps := Dependencies{NewDepGroupDependency(depTxLiveGroup)}
 
 			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
 			So(err, ShouldBeNil)
-			So(keys, ShouldResemble, fixture.liveGroupKeys)
+			So(keys, ShouldResemble, []string{depGroupDependencyKey(depTxLiveGroup)})
 			So(waiting, ShouldResemble, []string{})
+
+			// the group has more than one live member, so this is the granularity
+			// change and not just a one-member coincidence.
+			So(fixture.liveGroupKeys, ShouldHaveLength, 2)
 		})
 
 		Convey("A seen dep group with no live members resolves to no keys", func() {
@@ -262,7 +284,7 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 			So(waiting, ShouldResemble, []string{})
 		})
 
-		Convey("A never seen dep group resolves to its sentinel key and is waited for", func() {
+		Convey("A never seen dep group resolves to that group's key and is waited for", func() {
 			deps := Dependencies{NewDepGroupDependency(depTxNeverSeenGroup)}
 
 			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
@@ -296,8 +318,11 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 				NewEssenceDependency(depTxLiveCmd, ""),
 			}
 
-			want := append([]string{}, fixture.liveGroupKeys...)
-			want = append(want, depGroupDependencyKey(depTxNeverSeenGroup), fixture.liveKey)
+			want := []string{
+				depGroupDependencyKey(depTxLiveGroup),
+				depGroupDependencyKey(depTxNeverSeenGroup),
+				fixture.liveKey,
+			}
 			slices.Sort(want)
 
 			keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
@@ -330,7 +355,7 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 
 		jobs := depTxRecoveryJobs(depTxResolutions)
 
-		Convey("The pass costs a transaction per chunk where per-job resolution costs one or more each", func() {
+		Convey("The pass costs a transaction per chunk where per-job resolution costs one per reading job", func() {
 			beforePerJob := fixture.db.bolt.Stats().TxN
 			failed := 0
 
@@ -349,7 +374,14 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			So(failed, ShouldEqual, 0)
 			So(err, ShouldBeNil)
 			So(resolved, ShouldHaveLength, len(jobs))
-			So(perJobTx, ShouldBeGreaterThan, len(jobs))
+
+			// one transaction for each job that has to ask the database
+			// something, and none at all for the rest: a dep group with a live
+			// member is answered from memory, so a dependency on one costs no
+			// database read however many members the group has.
+			So(perJobTx, ShouldEqual, depTxReadingJobs)
+			So(depTxReadingJobs+depTxReadFreeJobs, ShouldEqual, len(jobs))
+
 			So(passTx, ShouldBeLessThanOrEqualTo, depTxWantChunks(len(jobs)))
 		})
 
@@ -538,10 +570,14 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 	So(withWaiting, ShouldBeGreaterThan, 0)
 }
 
-// TestDepGranularityDependencyKeys pins the resolution rule that keeps a
-// dep-group dependency at the granularity the user declared it: one opaque
-// depgroup:G key standing for the whole group, whatever the group's membership,
-// with individual job keys only for essence dependencies.
+// TestDepGranularityDependencyKeys pins what keeping a dep-group dependency at
+// the granularity the user declared it buys: the resolved key count does not grow
+// with the group's membership, and a group with a live member is answered from
+// memory for no database read at all.
+//
+// What each kind of dependency resolves to is pinned once, by
+// TestReliable4DependencyResolutionUnchanged, and a job with no dependencies
+// costing no read transaction by TestReliable4DependencyFreeTxCost.
 func TestDepGranularityDependencyKeys(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -568,47 +604,6 @@ func TestDepGranularityDependencyKeys(t *testing.T) {
 			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, 0)
 		})
 
-		Convey("A seen dep group with no live member is satisfied", func() {
-			deps, waiting := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxGoneGroup)})
-			So(deps, ShouldResemble, []string{})
-			So(waiting, ShouldResemble, []string{})
-		})
-
-		Convey("A never seen dep group blocks and is reported as waited for", func() {
-			deps, waiting := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxNeverSeenGroup)})
-			So(deps, ShouldResemble, []string{depGroupDependencyKey(depTxNeverSeenGroup)})
-			So(waiting, ShouldResemble, []string{depTxNeverSeenGroup})
-		})
-
-		Convey("An essence dependency on a live job resolves to that job's key", func() {
-			deps, waiting := fixture.soResolves(Dependencies{NewEssenceDependency(depTxLiveCmd, "")})
-			So(deps, ShouldResemble, []string{fixture.liveKey})
-			So(waiting, ShouldResemble, []string{})
-		})
-
-		Convey("An essence dependency on a job that is not live is satisfied", func() {
-			deps, _ := fixture.soResolves(Dependencies{NewEssenceDependency(depTxGoneCmd, "")})
-			So(deps, ShouldResemble, []string{})
-		})
-
-		Convey("Mixed dependencies resolve to the sorted set of their keys", func() {
-			want := []string{
-				depGroupDependencyKey(depTxLiveGroup),
-				depGroupDependencyKey(depTxNeverSeenGroup),
-				fixture.liveKey,
-			}
-			slices.Sort(want)
-
-			deps, waiting := fixture.soResolves(Dependencies{
-				NewDepGroupDependency(depTxLiveGroup),
-				NewDepGroupDependency(depTxNeverSeenGroup),
-				NewEssenceDependency(depTxLiveCmd, ""),
-			})
-			So(deps, ShouldResemble, want)
-			So(deps, ShouldHaveLength, 3)
-			So(waiting, ShouldResemble, []string{depTxNeverSeenGroup})
-		})
-
 		Convey("The resolved key count does not grow with the group's membership", func() {
 			depTxGrowGroup(fixture, 0, depTxBigMembers)
 			So(fixture.groups.memberships(), ShouldEqual, len(fixture.liveGroupKeys)+depTxBigMembers)
@@ -621,23 +616,6 @@ func TestDepGranularityDependencyKeys(t *testing.T) {
 
 			deps, _ = fixture.soResolves(Dependencies{NewDepGroupDependency(depTxBigGroup)})
 			So(deps, ShouldHaveLength, 1)
-		})
-
-		Convey("A job with no dependencies resolves to nothing, for no read transaction", func() {
-			var none Dependencies
-
-			before := fixture.db.bolt.Stats().TxN
-			unexpected := 0
-
-			for range depTxResolutions {
-				deps, waiting, err := none.dependencyKeys(fixture.db, fixture.groups)
-				if err != nil || !slices.Equal(deps, []string{}) || !slices.Equal(waiting, []string{}) {
-					unexpected++
-				}
-			}
-
-			So(unexpected, ShouldEqual, 0)
-			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, 0)
 		})
 	})
 }
@@ -656,6 +634,15 @@ func depTxGrowGroup(fixture *depTxFixture, from, to int) {
 // per job. The dependency keys recovery resolved are then exercised for real:
 // completing the parents must release the children, while the child waiting on a
 // never seen dep group stays dependent.
+//
+// Its state strings are what WaitingForDepGroups means, which the dep-group
+// granularity change does not touch: never-seen groups only.
+//
+// Both its Connect calls stand as they are once the manager's externally
+// observable surface is published only at the end of recovery. The first is
+// against the first server, which the serve helper waits on; the second already
+// follows release() and waitUntilRecovered, and publication happens before
+// recovery is marked finished, so there is nothing left to race.
 func TestReliable4RecoveryDependencyState(t *testing.T) {
 	if runnermode || servermode {
 		return

@@ -31,6 +31,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync/atomic"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -109,19 +110,20 @@ type resolvedJob struct {
 // so a cancel cannot leave the transaction open).
 //
 // Only work that reads the database belongs in here. It does also call
-// job.setWaitingForDepGroups, which takes that Job's own mutex; that is safe
-// because recoverIncompleteJobs decodes a fresh *Job per database record, so
-// these pointers are private to the recovery goroutine and the lock is
-// uncontended. Nothing that can block on another goroutine - the scheduler, the
-// queue, a client write - may be done in here, since the transaction would be
-// held across it (DEVELOPERS.md rule 1).
+// groups.hasMembers, which takes one of depGroupMembers' shard mutexes for a
+// single O(1) map read, and job.setWaitingForDepGroups, which takes that Job's
+// own mutex; both are safe because recoverIncompleteJobs decodes a fresh *Job
+// per database record, so these pointers are private to the recovery goroutine
+// and the locks are uncontended. Nothing that can block on another goroutine -
+// the scheduler, the queue, a client write - may be done in here, since the
+// transaction would be held across it (DEVELOPERS.md rule 1).
 func (db *db) resolveDependencyChunk(
-	ctx context.Context, jobs []*Job, groups depGroupState,
+	ctx context.Context, jobs []*Job, groups depGroupState, cache *seenDepGroupCache,
 ) ([]resolvedJob, error) {
 	resolved := make([]resolvedJob, 0, len(jobs))
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		reader := txDepReader{tx: tx}
+		reader := cache.depReader(txDepReader{tx: tx})
 
 		for _, job := range jobs {
 			if errc := ctx.Err(); errc != nil {
@@ -151,6 +153,80 @@ func (db *db) resolveDependencyChunk(
 // database read.
 type depGroupState interface {
 	hasMembers(depGroup string) bool
+}
+
+// newSeenDepGroupCache returns an empty cache that counts the reads it makes
+// into gets.
+func newSeenDepGroupCache(gets *atomic.Uint64) *seenDepGroupCache {
+	return &seenDepGroupCache{seen: make(map[string]bool), gets: gets}
+}
+
+// cachedSeenDepReader is the depReader seenDepGroupCache.depReader returns: the
+// dep-group half of the reads come from the cache's memo, everything else
+// straight from the wrapped reader. It holds the memo and the counter rather than
+// the cache itself, so that it and seenDepGroupCache do not name each other.
+type cachedSeenDepReader struct {
+	depReader
+	seen map[string]bool
+	gets *atomic.Uint64
+}
+
+func (r cachedSeenDepReader) depGroupEverSeen(depGroup string) (bool, error) {
+	if seen, cached := r.seen[depGroup]; cached {
+		return seen, nil
+	}
+
+	seen, err := r.depReader.depGroupEverSeen(depGroup)
+	if err != nil {
+		return false, err
+	}
+
+	r.gets.Add(1)
+	r.seen[depGroup] = seen
+
+	return seen, nil
+}
+
+// depGroupsEverSeen answers each group from the cache, asking the wrapped reader
+// only about the ones the pass has not asked about yet. It asks one group at a
+// time because the wrapped reader is a txDepReader sharing the chunk's already
+// open read transaction, where a get is a bucket read and not a transaction of
+// its own.
+func (r cachedSeenDepReader) depGroupsEverSeen(depGroups []string) (map[string]bool, error) {
+	seen := make(map[string]bool, len(depGroups))
+
+	for _, depGroup := range depGroups {
+		everSeen, err := r.depGroupEverSeen(depGroup)
+		if err != nil {
+			return nil, err
+		}
+
+		seen[depGroup] = everSeen
+	}
+
+	return seen, nil
+}
+
+// seenDepGroupCache memoises "was this dep group ever seen" for the length of
+// one resolution pass, so a never-seen group named by 150,000 live jobs costs
+// one bucketDepGroups get rather than 150,000. bucketDepGroups is only ever
+// added to, and nothing is served during recovery, so a cached answer cannot go
+// stale within a pass.
+//
+// resolveDependencies walks its chunks one at a time, so the memo is only ever
+// used by the goroutine running the pass and needs no lock of its own; the
+// counter is an atomic so a test can read it from another goroutine.
+type seenDepGroupCache struct {
+	seen map[string]bool
+	gets *atomic.Uint64
+}
+
+// depReader wraps reader so that depGroupsEverSeen is answered from the cache,
+// asking reader only about groups the pass has not asked about yet. The wrapper
+// is rebuilt per chunk (each chunk has its own transaction) while the memo it
+// shares lives for the whole pass.
+func (c *seenDepGroupCache) depReader(reader depReader) depReader {
+	return cachedSeenDepReader{depReader: reader, seen: c.seen, gets: c.gets}
 }
 
 // collectDepGroupKey applies the dep-group half of the resolution rule: a group
@@ -416,16 +492,22 @@ func NewDepGroupDependency(depgroup string) *Dependency {
 //
 // ctx is checked before each job, so a cancelled recovery ends the transaction
 // it is in and never opens the next chunk's.
+//
+// One seenDepGroupCache is built for the whole pass and handed to every chunk, so
+// the "ever seen" answer for a group is read once however many jobs name it:
+// without it the check is per job, and the 150,472 live jobs production recovered
+// naming one never-seen group would cost 150,472 gets.
 func (db *db) resolveDependencies(
 	ctx context.Context, jobs []*Job, groups depGroupState,
 ) ([]resolvedJob, error) {
 	resolved := make([]resolvedJob, 0, len(jobs))
+	cache := newSeenDepGroupCache(&db.depGroupSeenGets)
 
 	// max() because slices.Chunk() panics on a chunk size below 1, and
 	// dependencyResolutionChunkSize is a var that a test can set (as
 	// numRPCReaders is).
 	for chunk := range slices.Chunk(jobs, max(1, dependencyResolutionChunkSize)) {
-		chunkResolved, err := db.resolveDependencyChunk(ctx, chunk, groups)
+		chunkResolved, err := db.resolveDependencyChunk(ctx, chunk, groups, cache)
 		if err != nil {
 			return nil, err
 		}
