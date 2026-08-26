@@ -500,15 +500,17 @@ using, and other details about the manager.`,
 		// see if pid file suggests it is supposed to be running
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		if err == nil {
-			// confirm
+			// confirm. connect() either returns a client or die()s, so there is
+			// nothing after this branch to report a startup phase to: during the
+			// startup window it dies reading the token file, which E1 writes only
+			// at publication. That is the intended answer - status is expected to
+			// work once `wr manager start` says the manager has started - so do
+			// NOT make this branch consult the startup sidecar, which would undo
+			// the whole point of publishing the manager only when it can serve.
 			jq := connect(managerConnectTimeout)
 			if jq != nil {
 				reportLiveStatus(jq)
 
-				return
-			}
-
-			if reportManagerStartupStatus() {
 				return
 			}
 

@@ -1895,6 +1895,13 @@ dep_granularity_run() {
     echo "  its shape is whatever built it: the waiters/members/groups arguments only label the summary."
   else
     rm -f "$fixture" "${fixture}_bk"
+    # `|| true` because `set -u` is on and a non-zero `go test` would end the run before the
+    # verdict machinery below could report it. Nothing is lost by ignoring the exit status:
+    # a generator that failed is caught by the missing DEPGRAN-FIXTURE line two lines down,
+    # which is a FAIL (NOT MEASURED), never a PASS. That protection is implicit and worth
+    # keeping in mind if either end moves - the Printf that produces the line sits AFTER the
+    # generator's So()s, and GoConvey's FailureHalts abandons the block on the first failed
+    # one, so a generator that asserted its way to a stop never prints it.
     WRDEV_ROOT="$WRDEV_ROOT" WR_DEPGRAN_DB="$fixture" WR_DEPGRAN_WAITERS="$waiters" \
       WR_DEPGRAN_MEMBERS="$members" WR_DEPGRAN_GROUPS="$groups" WR_DEPGRAN_GROUP="$biggroup" \
       WR_DEPGRAN_BLOCKER="$blocker" \
@@ -1908,6 +1915,7 @@ dep_granularity_run() {
   [ -f "$fixture" ] || { echo "FAIL (NOT MEASURED): no fixture database at $fixture"; return 1; }
 
   safe_kill "$(mgr_pid "$PROD_RUN")" >/dev/null 2>&1
+  dep_granularity_sweep
   rm -rf "$PROD_RUN" 2>/dev/null; mkdir -p "$PROD_RUN"
   cp "$fixture" "$PROD_RUN/db" || { echo "FAIL (NOT MEASURED): could not copy the fixture"; return 1; }
 
@@ -1917,6 +1925,12 @@ dep_granularity_run() {
     >> "$mgrout" 2>&1 &
   local mpid=$!
   echo "  manager pid $mpid, foreground output $mgrout, manager log $mgrlog"
+
+  # an interrupted run would otherwise leave that manager holding $PROD_RUN, since -f writes
+  # no pid file for the next run's safe_kill to find. The trap covers the signal case and
+  # dep_granularity_sweep above the kill -9 case; both are cleared when the run ends normally,
+  # so the ordinary teardown below stays the only one that speaks.
+  trap 'safe_kill "$mpid"; trap - INT TERM; exit 130' INT TERM
 
   # the window, sampled from process start. The log is read through a held file descriptor
   # rather than re-grepped, so following it costs no process per poll. Every timestamp comes
@@ -1939,9 +1953,19 @@ dep_granularity_run() {
   nowms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
   deadlinems=$(( nowms + waitsec * 1000 ))
 
-  # a fifo nothing writes to, so `read -t` is a sleep that costs no process.
+  # a fifo nothing writes to, so `read -t` is a sleep that costs no process. Failing to make
+  # it is a hard stop rather than something to carry on without: fd 8 would then be unopened,
+  # every `read -t -u 8` at the bottom of the loop would error instead of sleeping, and the
+  # loop would spin flat out for up to waitsec. It fails here rather than through `die` so the
+  # manager started above is torn down rather than leaked.
   fifo=$(mktemp -u "$WRDEV_ROOT/depgran-tick.XXXXXX")
-  mkfifo "$fifo" && exec 8<>"$fifo"
+  if ! { mkfifo "$fifo" && exec 8<>"$fifo"; }; then
+    rm -f "$fifo"
+    safe_kill "$mpid"; wait "$mpid" 2>/dev/null; trap - INT TERM
+    echo "FAIL (NOT MEASURED): could not create the poll fifo $fifo"
+
+    return 1
+  fi
   rm -f "$fifo"
 
   while :; do
@@ -2058,12 +2082,20 @@ dep_granularity_run() {
 
   safe_kill "$mpid"
   wait "$mpid" 2>/dev/null
+  trap - INT TERM
 
-  # E2 acceptance test 4, observed and printed rather than gated on: the manager announces
-  # itself only once recovery has finished, and pre-fix it binds and says so at t=0, so this
-  # reads negative. Deliberately not a FAIL condition. Making it one would fail the pre-fix
-  # binary on ordering before this gate's own metrics were even compared, which is exactly
-  # how a memory gate stops noticing that its fixture has gone blunt.
+  # E2 acceptance test 4: `wr manager start -f` prints "wr manager ... started on" only after
+  # the listener is bound, which is after recovery ends. The wall-clock gap the poll loop
+  # measured is printed as evidence, but the VERDICT is taken from the order the two lines sit
+  # in the manager's own log, because that is not a race: the loop breaks on the finish line,
+  # so it can miss a "started on" written a millisecond later, while both lines come from the
+  # same logger and so reach the file in the order they were emitted. The check itself is
+  # deliberately LAST, after every metric threshold (see below).
+  local finishline startedline
+  finishline=$(grep -an 'msg="recovering: prior state recovered"' "$mgrlog" 2>/dev/null \
+    | head -1 | cut -d: -f1)
+  startedline=$(grep -anE 'msg="wr manager .* started on ' "$mgrlog" 2>/dev/null \
+    | head -1 | cut -d: -f1)
   if [ "$servingms" -ne 0 ] && [ "$finishms" -ne 0 ]; then
     echo "  'started on' was logged $((servingms - finishms))ms after 'prior state recovered'" \
          "(negative means it announced itself before recovery finished, as the pre-fix tree does)"
@@ -2133,6 +2165,28 @@ dep_granularity_run() {
     return 1
   fi
 
+  # E2 acceptance test 4, and deliberately AFTER every metric threshold above. A pre-fix
+  # binary, or a post-fix one measured against a blunt fixture, fails on memory or on the
+  # recovery time first and never reaches this line - which is what keeps an ordering check
+  # from masking the memory gate this whole function exists to be. Placed any earlier it would
+  # fail the pre-fix arm of the A/B on ordering before the two sides' memory figures had been
+  # compared at all, voiding the comparison.
+  if [ -z "$startedline" ] || [ -z "$finishline" ]; then
+    echo "FAIL (NOT MEASURED): the manager log has no 'started on' and/or 'prior state"
+    echo "  recovered' line, so the startup ordering was never observed; inspect $mgrlog"
+    return 1
+  fi
+
+  if [ "$startedline" -lt "$finishline" ]; then
+    echo "FAIL (WRONG ORDER): 'wr manager ... started on' was logged at line $startedline of"
+    echo "  the manager log, before 'prior state recovered' at line $finishline"
+    echo "  => 'wr manager start -f' must announce the manager only once the listener is bound,"
+    echo "     which is after recovery ends: startJQ waits on server.Serving() before"
+    echo "     logStarted (cmd/manager.go). Announcing at t=0 advertises a manager that will"
+    echo "     not answer for as long as recovery takes"
+    return 1
+  fi
+
   # last, so that a run failing for any other reason is never widened: a longer run of a run
   # that already FAILs teaches nothing. 2 asks the caller to widen the window once.
   if [ "$statusin" = "-" ]; then
@@ -2144,6 +2198,20 @@ dep_granularity_run() {
   echo "PASS: peakRssMb=$peakrssmb, recovery in ${recoveryms}ms, 'wr manager status' answered" \
        "'$statusin' inside the window, and one more member added in ${addms}ms"
   return 0
+}
+
+# dep_granularity_sweep reaps a prod-mode manager left behind by an interrupted run of this
+# gate. The gate starts its manager with -f, so there is no pid file and mgr_pid/safe_kill
+# have nothing to find; a leftover manager would still hold $PROD_RUN when the next run
+# rm -rf'd it. Candidates are found by cmdline, and safe_kill still refuses any pid whose
+# running process is not our isolated $WR binary, so a real production manager (a different
+# binary path entirely) can never be a candidate here.
+dep_granularity_sweep() {
+  local pid
+  for pid in $(pgrep -u "$(id -u)" -f "^$WR manager start --deployment production" 2>/dev/null); do
+    [ "$pid" = "$$" ] && continue
+    safe_kill "$pid"
+  done
 }
 
 # dep_granularity_proc reads the manager's peak RSS and whether it is still a live process,

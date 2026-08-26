@@ -126,11 +126,21 @@ end to end rather than asserted in a test:
   wrote its token and served clients for the whole 16-second recovery.
 
 That is the only automated exercise of E2 acceptance test 4 there is; `startJQ`
-`die()`s and daemonizes, so it is not reachable in-process. The gate prints it and
-does not gate on it: making it a FAIL condition would fail the pre-fix binary on
-publication ordering before this gate's own metrics were compared at all, and a
-memory gate that stops reporting on memory is how a fixture goes blunt without
-anyone noticing.
+`die()`s and daemonizes, so it is not reachable in-process.
+
+The gate now **fails** on the wrong order, but the check is deliberately the
+**last** one, after every metric threshold. There it cannot mask the memory gate:
+a pre-fix binary, or a post-fix one measured against a blunt fixture, fails on
+memory or recovery time first and never reaches it. Placed any earlier it would
+fail the pre-fix arm of an A/B on ordering before the two sides' memory figures
+had been compared at all, voiding the comparison the gate exists for.
+
+The verdict is taken from the order the two lines sit in the manager's own log,
+not from the wall-clock gap printed above it. The gap is evidence; the order is
+the assertion. The poll loop breaks on the finish line, so it can miss a
+`started on` written a millisecond later - post-fix that gap is 0 to 2 ms - while
+both lines come from the same logger and so reach the file in the order they were
+emitted, whatever the loop saw.
 
 ## The thresholds
 
@@ -205,7 +215,20 @@ the gate uses.
 - **The gate uses `wr manager start -f`.** That is what makes the manager's pid
   knowable from t=0 and its log capturable, but it also means no pid file, so
   `wr manager status` takes its no-pid-file branch. The pid-file branch behaves
-  differently during the window - see below.
+  differently during the window - see below. No pid file also means an
+  interrupted run leaves a manager that `safe_kill "$(mgr_pid ...)"` cannot find,
+  so the gate sweeps for one by cmdline before it `rm -rf`s `$PROD_RUN`, and traps
+  `INT`/`TERM` while its own manager is up.
+- **A fixture supplied through `WRDEV_DEPGRAN_DB` is validated only for
+  existence.** The gate checks the path is a file and reports its size; it does
+  not open it, count its jobs or check its shape, and the `waiters`/`members`/
+  `groups` arguments then only label the `DEPGRAN-SUMMARY` line. That matters
+  because supplying the fixture is exactly the A/B path - it is how the pre-fix
+  worktree, which has no generator, is handed the same database - so a wrong or
+  stale path buys a run that measures something other than what its summary says.
+  Regenerate rather than reuse if there is any doubt about which shape a kept
+  fixture has. The generated path is validated properly: no `DEPGRAN-FIXTURE`
+  line is a `FAIL (NOT MEASURED)`.
 - These figures are this host's, at load 118. The ratios are what to compare
   against, not the absolute milliseconds.
 
@@ -213,11 +236,16 @@ the gate uses.
 
 `managerStatusCmd` has two branches, and the gate only exercises one of them.
 With a pid file present it calls `connect(managerConnectTimeout)`, and `connect`
-reads the token file first and `die()`s when it is missing - before
-`reportManagerStartupStatus()` is ever reached. E1 moved the token write to
-publication, so during the startup window there is no token file unless a
-previous run left one, and `wr manager stop` deletes it on a clean stop
+reads the token file first and `die()`s when it is missing. E1 moved the token
+write to publication, so during the startup window there is no token file unless
+a previous run left one, and `wr manager stop` deletes it on a clean stop
 (`cmd/manager.go` `deleteToken`).
+
+That branch used to end with a `reportManagerStartupStatus()` call, which could
+never run: `connect` either returns a client or `die()`s, so the only way past it
+was a `(nil, nil)` from `jobqueue.Connect`, which has no such return. It has been
+deleted, leaving the branch exactly as it stood before the E-series, and a
+comment in its place saying why it must not be replaced.
 
 So `wr manager stop` followed by `wr manager start` on a database that takes a
 while to recover leaves `wr manager status` answering, for the whole window:
