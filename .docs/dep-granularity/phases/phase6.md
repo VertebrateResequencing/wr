@@ -430,3 +430,51 @@ functions of which one is behind `reliability_repro`, and phase 6 adds 2, so
    group holding one member. The concentration into one 3,000-member group is
    what drives the expansion and 28x discrimination proves it is enough, but the
    `WRDEV_DEPGRAN_*` knobs exist to reach the real shape.
+
+### Follow-ups closed (2026-08-27)
+
+Follow-ups 1, 2, 4, 5, 7 and 8 above are done, in a cleanup pass that changed no
+product behaviour:
+
+1. Deleted. The reachability argument was re-derived before touching anything:
+   `connect(managerConnectTimeout)` warns, so a missing token file `die()`s at
+   `cmd/root.go:371` and a `jobqueue.Connect` error at `:382`, and `Connect` has
+   no `(nil, nil)` return path. The branch now reads exactly as it did before the
+   E-series, with a comment where the call was saying why it must not come back.
+2. Route 1 taken, and the check is now the gate's last, after every metric
+   threshold. Its verdict comes from the ORDER the two lines sit in the manager's
+   own log rather than from the poll loop's clock: the loop breaks on the finish
+   line, so post-fix it usually never reads the `started on` line written 0-2 ms
+   later - the clean run below printed no gap at all - and a wall-clock condition
+   would have been a coin flip. A/B at 20,000 x 1,000 x 3,000: clean tree
+   `PASS: peakRssMb=170, recovery in 107ms ... added in 486ms`; with `logStarted`
+   moved above `<-server.Serving()` and nothing else changed, the same fixture
+   gives `FAIL (WRONG ORDER): ... started on ... at line 5 ... before 'prior state
+   recovered' at line 9` with peakRssMb 172, recoverySec 0.107, addSec 0.449 and
+   `statusInWindow=starting` all still inside their thresholds - so it fails on
+   ordering alone, and only after everything else has been compared.
+   Route 2 (a durable `cmd`-level test) was rejected: the ordering is only
+   observable in a manager process's own log, `cmd` has no test that builds or
+   runs the wr binary, and adding one puts a binary build plus a real manager
+   start into `make test`. A helper-driven test would have had exactly the
+   weakness follow-up 1 exists because of.
+4. `dep_granularity_sweep` reaps a leftover `-f` manager by cmdline before the
+   `rm -rf`, and an `INT`/`TERM` trap covers the interrupt case while the gate's
+   own manager is up. `safe_kill` still refuses any pid that is not our isolated
+   binary, so a real production manager can never be a candidate. Proven by
+   starting a manager exactly as the gate does: `pid file: <none>` (which is what
+   defeats `safe_kill "$(mgr_pid ...)"`), `pgrep finds: 70097`,
+   `killed our manager pid 70097`.
+5. `mkfifo`/`exec 8<>` failure is now a `FAIL (NOT MEASURED)` return rather than
+   a silent fall-through into a `waitsec`-long spin. It returns rather than
+   `die()`s so that the manager started a few lines above is torn down instead of
+   leaked.
+7. Comment added, including why the protection is implicit (`FailureHalts` stops
+   the generator before the `Printf`).
+8. Recorded in `scale-gate.md`'s caveats.
+
+3 was left alone deliberately: `dep_granularity_run`'s 16 positional parameters
+are a miscount hazard, but they are currently correct and are validated only by a
+gate run that takes minutes, so rewriting them to globals risks a validated gate
+for no behaviour gain. 6 and 9 are threshold and fixture-shape judgements, not
+defects.

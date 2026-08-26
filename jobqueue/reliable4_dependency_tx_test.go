@@ -437,6 +437,38 @@ func TestReliable4RecoveryDependencyPass(t *testing.T) {
 			So(wantChunks, ShouldBeLessThan, len(jobs))
 		})
 
+		// dependencyResolutionChunkSize is a var so that the tests above can lower
+		// it, and slices.Chunk panics outright on a chunk size below 1. The floor
+		// in resolveDependencies is what keeps a zero or negative one from taking
+		// the manager down in the middle of prior-state recovery, and without it
+		// this block panics rather than failing an assertion
+		// (.docs/bugfixes/260825-3.md item 4).
+		Convey("A chunk size below one is floored to one rather than panicking", func() {
+			floored, cost := 0, 0
+
+			for _, size := range []int{0, -1} {
+				func() {
+					defer setDependencyResolutionChunkSize(size)()
+
+					before := fixture.db.bolt.Stats().TxN
+					resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
+
+					if err == nil && len(resolved) == len(jobs) {
+						floored++
+					}
+
+					// floored to one, so a transaction per job: the smallest
+					// chunking the pass can do, never a pass-wide transaction.
+					if fixture.db.bolt.Stats().TxN-before == len(jobs) {
+						cost++
+					}
+				}()
+			}
+
+			So(floored, ShouldEqual, 2)
+			So(cost, ShouldEqual, 2)
+		})
+
 		Convey("The pass resolves every job exactly as per-job resolution does", func() {
 			depTxSoResolvesAsPerJob(ctx, fixture, jobs)
 		})
@@ -697,7 +729,8 @@ func TestReliable4RecoveryDependencyState(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(inserts, ShouldEqual, len(jobs))
 
-		beforeRestart := depTxJobStates(jq)
+		beforeRestart, err := depTxJobStates(jq)
+		So(err, ShouldBeNil)
 		So(beforeRestart, ShouldHaveLength, len(jobs))
 
 		disconnect(jq)
@@ -718,7 +751,9 @@ func TestReliable4RecoveryDependencyState(t *testing.T) {
 		defer disconnect(jq)
 
 		Convey("Recovery restores every job's state and waited-for dep groups, for far fewer transactions", func() {
-			So(depTxJobStates(jq), ShouldResemble, beforeRestart)
+			afterRestart, errs := depTxJobStates(jq)
+			So(errs, ShouldBeNil)
+			So(afterRestart, ShouldResemble, beforeRestart)
 
 			// the states really are a mix, so the comparison is not just
 			// agreeing that everything is ready.
@@ -747,7 +782,10 @@ func TestReliable4RecoveryDependencyState(t *testing.T) {
 			}
 
 			ready := func() bool {
-				states := depTxJobStates(jq)
+				states, errs := depTxJobStates(jq)
+				if errs != nil {
+					return false
+				}
 
 				for i := range depTxE2EChildren {
 					if states["echo deptx e2e child "+strconv.Itoa(i)] != string(JobStateReady)+" waiting:" {
@@ -759,7 +797,10 @@ func TestReliable4RecoveryDependencyState(t *testing.T) {
 			}
 
 			So(pollUntil(ready), ShouldBeTrue)
-			So(depTxJobStates(jq)["echo deptx e2e waiter"],
+
+			states, errs := depTxJobStates(jq)
+			So(errs, ShouldBeNil)
+			So(states["echo deptx e2e waiter"],
 				ShouldEqual, string(JobStateDependent)+" waiting:"+depTxE2EFutureGroup)
 		})
 	})
@@ -797,15 +838,23 @@ func depTxE2EJobs(reqs *jqs.Requirements) []*Job {
 }
 
 // depTxJobStates returns each of the rep group's jobs' state and waited-for dep
-// groups, keyed by command, as the queue currently reports them.
-func depTxJobStates(jq *Client) map[string]string {
+// groups, keyed by command, as the queue currently reports them, along with any
+// error from asking.
+//
+// It returns the error instead of asserting on it because it is called from a
+// pollUntil condition, which polls every 20ms for up to 30s: a So() in there
+// fires ~1500 assertions on a single failure, which go-conventions bans. Every
+// caller asserts once, outside the poll.
+func depTxJobStates(jq *Client) (map[string]string, error) {
 	jobs, err := jq.GetByRepGroup(depTxE2ERepGroup, false, 0, "", false, false)
-	So(err, ShouldBeNil)
+	if err != nil {
+		return nil, err
+	}
 
 	states := make(map[string]string, len(jobs))
 	for _, job := range jobs {
 		states[job.Cmd] = string(job.State) + " waiting:" + strings.Join(job.WaitingForDepGroups, ",")
 	}
 
-	return states
+	return states, nil
 }
