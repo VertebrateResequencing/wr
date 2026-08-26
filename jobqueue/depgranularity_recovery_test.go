@@ -407,13 +407,14 @@ func dgrOnlyJob(jq *Client, repGroup string) *Job {
 
 // TestDepGranularityRecoveryChainScale covers C1 acceptance test 6: dgrChainJobs
 // live jobs in which every job both belongs to and depends on a chain of dep
-// groups recover into exactly the sub-queues the fixture was built to land in,
+// groups recover into exactly the sub-queues they were in before the restart,
 // with every key present exactly once.
 //
-// The reference counts are the fixture's own, not a first server's queue: until
-// the add path maintains the group state (phase 4, D1) a client-added queue
-// resolves a group whose members are all still live as satisfied, so its
-// pre-restart counts would differ from recovery's for a reason outside C1.
+// The reference is the first server's own queue, which the add path maintaining
+// the group state (D1) makes the right one: both queues are built from the same
+// declared groups, one by the add path and one by recovery, so they have to
+// agree. The fixture's own counts are asserted as well, because a comparison
+// between two queues can be satisfied by both being wrong in the same way.
 func TestDepGranularityRecoveryChainScale(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -442,10 +443,15 @@ func TestDepGranularityRecoveryChainScale(t *testing.T) {
 
 		So(chainKeys, ShouldHaveLength, dgrChainJobs)
 
+		beforeRestart := d.server.q.Stats()
+		beforeMemberships := d.server.depGroups.memberships()
+
 		d.restart(ctx)
 
-		Convey("Recovery restores every job into its own sub-queue, losing and duplicating none", func() {
+		Convey("Recovery restores every job into the sub-queue it was in, losing and duplicating none", func() {
 			stats := d.server.q.Stats()
+			So(stats, ShouldResemble, beforeRestart)
+
 			So(stats.Items, ShouldEqual, dgrChainJobs)
 			So(stats.Ready, ShouldEqual, dgrChains)
 			So(stats.Dependant, ShouldEqual, dgrChainJobs-dgrChains)
@@ -454,6 +460,7 @@ func TestDepGranularityRecoveryChainScale(t *testing.T) {
 			So(stats.Suspended, ShouldEqual, 0)
 
 			So(dgrMissingItems(d.server, chainKeys), ShouldEqual, 0)
+			So(d.server.depGroups.memberships(), ShouldEqual, beforeMemberships)
 			So(d.server.depGroups.memberships(), ShouldEqual, dgrChainJobs)
 		})
 	})

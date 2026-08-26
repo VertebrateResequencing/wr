@@ -133,8 +133,8 @@ covering all 6 D1 acceptance tests. Carry these figures and reasons:
   new job as the only member, and W becomes ready only once that new job
   completes.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.2: D2 - Modify maintains the group sets
 
@@ -189,8 +189,8 @@ in-package (the technique E6 uses for `getij`, so no HTTP harness is needed)
 with a `JobModifier` that sets neither dependencies nor priority; it is the
 assertion that the hook sits above the guard rather than inside it.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.3: D3 - `wr remove`'s dependant guard is re-derived
 
@@ -222,8 +222,8 @@ retries the skipped parent); a parent with no waiters at all deletes cleanly and
 `SatisfyDependency("depgroup:G")` with no dependants causes no error; and one of
 two members deleted alone is still skipped.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 4.4: D4 - `Kick` reports the sub-queue it landed in
 
@@ -245,8 +245,8 @@ Neither fails at the pre-fix commit - test 1's job has no dependencies at all,
 and test 2's pre-change dependency is a member job key that does have a backing
 item.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Spec reading (parked ambiguity 3), resolved
 
@@ -276,3 +276,148 @@ equally distinct.
 - F4's sweep: the `jobqueue` suite is green again after this phase. Record
   `uptime` beside every result, and never accept a "known flake" attribution
   without a load-matched A/B against a pristine worktree.
+
+
+## Phase 4 outcome (2026-08-26)
+
+Implemented and reviewed PASS, no blocking findings. **The green window is
+closed:** `make test` gives **450 passed - 9 skipped - 29 packages** twice
+consecutively at load 116-118, the 9 being the pre-existing environment skips
+(openstack x2, docker, singularity, sudo, speed, supplementary group, LSF). No
+`TEMPORARY` skip was ever added. `make lint` 0 issues, `go vet -tags netgo`
+clean, `-race` 23/23 on the `TestDepGranularity*` tests with 0 races,
+`cleanorder -min-diff -dry` proposes nothing on all five changed/new files.
+Totals reconcile exactly: 422 + 11 unskipped + 17 new = 450, and 20 - 11 = 9.
+
+`make race` was **not** run and F4 item 4 still wants it before merge.
+
+### A confirmed spec defect: D1 acceptance test 6 cannot fail
+
+As worded, it does not discriminate the two-pass ordering, and the reason is
+unconditional rather than a timing accident. For a single `replace` pass to
+release a waiter early, some later job in the batch must *join* G - and joining G
+puts G into `prepareNewJobs`' declared-`depGroups` set (`db.go:2318-2322`), which
+is what `retrieveDependentJobs` is called with, which returns the live waiter in
+`jobsToUpdate`, which `queueNewJobItems` -> `updateJobDependencies` ->
+`dependencyKeys` -> `q.Update` puts straight back. Mutations m2 (register pass
+dropped) and m3 (passes swapped) both leave the end-to-end test green.
+
+The fix was a second, narrower test driving `updateDepGroupMembershipForNewJobs`
+directly. **Reword the acceptance test** (drive the membership pass, or assert the
+emitted sub-queue transitions) rather than trusting its current text.
+
+### The two-pass ordering earns its keep, and the harm is worse than "runs early"
+
+`SatisfyDependency` promotes the waiter to ready and fires `readyAdded`, with
+nothing holding the queue mutex for the rest of `createJobs`, so an in-flight
+`Reserve` can take it. The repairing `q.Update` then calls `updateDependencies` ->
+`detachForDependentMove`, which for `ItemStateRun` **removes the item from the run
+sub-queue** and switches it to dependent. So the waiter is reserved and started
+ahead of its parent and then yanked out from under its own runner, whose archive
+is then rejected - the `jarchive: bad job` churn signature DEVELOPERS.md rule 4
+exists to prevent.
+
+**Residual window, unchanged from before this work:** an archive of G's last old
+member concurrent with an add of a new member opens the identical window, and no
+two-pass ordering can close it. The pre-change model had the same race
+(`Remove` satisfied the old member key before the new one existed), so nothing
+regresses - but the narrow test must not be read as proof no such window exists.
+
+### A wrong flake diagnosis, corrected
+
+Phase 4's implementor reported D1 test 2's flakiness as the 1-second backup ticker
+swamping a 1.25x ratio on a two-transaction signal, and added
+`dgaStartServerNoBackups`. **That diagnosis is false.** `initDB` sets
+`backupsEnabled = deployment == internal.Production || forceBackups`
+(`db.go:843`), `jobqueueTestInit` builds a *development* config and never sets
+`forceBackups`, so no `backupTicker` goroutine ever starts - for `dgrStartServer`
+either. The helper is `dgrStartServer` plus an inert line, and its comment
+describes a cadence that was never running.
+
+What actually fixed the flake is the **20-sequential-adds-per-side** measurement
+(process-wide `Stats().TxN` really is shared with other background readers, +3 in
+~2 of 8 runs). That is also a deviation from the spec, which says one add - a
+legitimate determinism fix, recorded here rather than left implicit. The spec's
+other figures (200 / 2,000 members, 500 waiters, 1.25x) are unchanged, and the
+reworked assertion still discriminates: injecting one `depGroupEverSeen` read per
+live member gives 40,307 against a 5,383.75 budget, ~9.4x, failing at `:156`.
+
+### Evidence corrections
+
+- **"m1 reproduces all eleven" is not established.** Withholding all five phase-4
+  hook calls and enumerating tests individually gives **7** red lane-instances,
+  not 11 (`TestRerunDependentJobWaitsOnIncompleteDependencies`,
+  `TestNeverSeenDepGroupsWait`, `TestSameBatchAndLiveDepGroupReblocking`,
+  `TestRESTJobModificationValidation`, `TestSubscriptionRepGroupAggregate`,
+  Execution shard b, Modify shard a). The suite runner uses `-failfast`, so a lane
+  stops at its first red and hides the rest. Four of phase 3's eleven skips look
+  to have been unnecessary. An evidence-accuracy point, not a code defect.
+- Phase 3's outcome section does **not** name the eleven with file:line, contrary
+  to what phase 4's briefing claimed; phase 2's does.
+- **5 of the 20 `jobqueue` `&Server{}` literals initialise `depGroups`**, not 3 of
+  25 (five of the 25 are `cloud.Server`). The reasoning held up under spot-check:
+  the two literals that reach `createJobs` are exactly the two that initialise the
+  field; `client_payload_test.go:430`/`:472` send `requestMethodAdd` but assert
+  `ErrBadRequest` before `createJobs`. The deliberate nil-map panic is not armed
+  anywhere.
+
+### Locking
+
+The modify hook's `job.RLock()`-snapshot-then-release is correct, and the ordering
+claim behind it is real and production-reachable: `Queue.releaseTimedOutItems`
+calls `ttrCb` **while holding `queue.mutex.Lock()`** (`queue/queue.go:1942`) and
+the server's `ttrCallback` takes `job.Lock()` (`server.go:4601`), so
+`queue.mutex -> job` is an established order and holding a job lock across
+`SatisfyDependency` could deadlock. `modifyJob` writes `job.DepGroups` under
+`job.Lock()` as a whole-slice assignment, so the snapshotted header is safe.
+
+No job lock or queue mutex is held across a shard acquisition on any of the three
+new paths, `depgroups.go` is unmodified, and no package-wide 10-minute panic
+appeared in four suite runs plus the race run.
+
+**Pre-existing inversion worth a follow-up:** `modifyJob` holds `job.Lock()`
+across `skipForDuplicateKey` -> `checkJobByKey` -> `s.q.Get`, which takes
+`queue.mutex` - a job->queue order against `ttrCallback`'s queue->job.
+
+### Residual-gap analysis, each leg checked
+
+`queue.Remove` returns only `ErrQueueClosed` or `ErrNotFound`; there are exactly
+two production `s.q.Remove` sites and both now release membership, so
+phase 3's carried-forward phantom-member note is **discharged**. `ErrQueueClosed`
+is consistent both ways (archive writes the complete bucket before `q.Remove`, so
+recovery will not re-register; a failed delete keeps the key out of
+`pass.toDelete` so recovery correctly does). Modify-vs-archive is excluded by
+state - `collectModifiableJobs` skips `ItemStateRun`, `restEditableItemState`
+admits only Delay/Ready/Dependent/Bury, and both paths `Pause()` first.
+
+**One hole the analysis does not name:** `finalizeDeletedJobs` releases membership
+unconditionally, including when `db.deleteLiveJobs` failed (error logged, not
+returned), so waiters go ready while the live record survives and are re-blocked
+at the next restart. Defensible - the queue item is gone, so the job can never run
+- but it should be stated.
+
+### Follow-ups for phase 5 (comment defects first: false comments trap readers)
+
+1. `dgaStartServerNoBackups` is an inert duplicate of `dgrStartServer` carrying a
+   false explanatory comment - drop it and use `dgrStartServer`, or state the real
+   reason.
+2. `TestDepGranularityAddDropAndJoinInOneCall`'s doc claims discrimination it has
+   been proved not to have, and contradicts the next test's doc.
+3. `TestDepGranularityAddDropAndJoinMembershipPass`'s doc should say it pins the
+   two-pass *structure*, so a future refactor knows why inlining breaks it.
+4. `dgaAddMemberTxCost` swallows each `jq.Add` error, so a real failure reports
+   "19 != 20" instead of the error.
+5. `replaceDepGroupMembership` runs for every job in `jobsToQueue`, allocating an
+   empty map and taking a job-key shard even for jobs that declare no groups and
+   hold none - 150k throwaway maps on exactly the adds this work protects. A
+   read-only pre-check removes it.
+6. `rekeyDepGroupMembershipForModifiedJobs` is outside the spec's New-symbols list
+   (justified: it deduplicates both modify sites and centralises the RLock
+   discipline); its doc comment wants a blank `//` paragraph separator.
+7. Modify into a never-seen group leaves the waiter's `WaitingForDepGroups` still
+   naming that group, so `wr status` shows a stale "waiting for" until something
+   refreshes it. Cosmetic, and far better than the pre-change permanent wedge.
+8. Still open from earlier phases: `dgrReserveWait` and `dgRekeyDeadline` lack the
+   house "hang detector, not a latency budget" note; `incompleteEssenceJobKeys`
+   could narrow to `([]string, error)`; the `add(depGroups, "")` empty-key
+   asymmetry.
