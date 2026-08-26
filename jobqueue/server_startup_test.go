@@ -67,6 +67,19 @@ func waitForServeStartup(t *testing.T, result <-chan serveStartupResult) serveSt
 	}
 }
 
+// TestServeReportsPostUpgradeStartupUntilTokenReady covers E4 acceptance test 7.
+// It keeps its name because prepareDBNeedingStartupUpgrade is still its fixture,
+// but the FIFO-backed token now holds PUBLICATION rather than Serve, so the
+// sidecar assertion moves from "gone when Serve returns" to "gone when
+// <-server.Serving() returns".
+//
+// It cannot assert postUpgradeStartupDetail in that window. The FIFO blocks at
+// persistToken, which is publication step 2, and by then the startup phase writes
+// have moved the sidecar on three times, the last of them to
+// DBStartupRecoveryState. Nor is there any seam between initDB and
+// startPriorStateRecovery at which the upgrade detail is guaranteed to still be
+// readable. So it matches on State: the recovery phase's Detail is an elapsed
+// time that changes on every heartbeat tick.
 func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
 	Convey("Serve keeps a live startup-progress sidecar after a DB upgrade until the token is ready", t, func() {
 		ctx := context.Background()
@@ -85,9 +98,9 @@ func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
 
 		So(waitForFIFOInitialToken(initialTokenWritten), ShouldBeNil)
 
-		status, found := waitForDBUpgradeStatusDetail(
+		status, found := waitForDBUpgradeStatusState(
 			serverConfig.DBFile,
-			postUpgradeStartupDetail,
+			internal.DBStartupRecoveryState,
 			2*time.Second,
 		)
 
@@ -95,8 +108,7 @@ func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
 		So(statErr, ShouldBeNil)
 		So(tokenInfo.Size(), ShouldEqual, 0)
 		So(found, ShouldBeTrue)
-		So(status.State, ShouldEqual, "start manager after database upgrade")
-		So(status.Detail, ShouldEqual, postUpgradeStartupDetail)
+		So(status.State, ShouldEqual, internal.DBStartupRecoveryState)
 		So(status.PID, ShouldEqual, os.Getpid())
 
 		tokenRead := readFIFOAsync(serverConfig.TokenFile)
@@ -111,6 +123,8 @@ func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
 		tokenReadResult := waitForFIFORead(t, serverConfig.TokenFile, tokenRead)
 		So(tokenReadResult.err, ShouldBeNil)
 		So(tokenReadResult.payload, ShouldResemble, result.token)
+
+		So(waitForServing(result.server), ShouldBeTrue)
 
 		_, _, err := internal.ReadDBUpgradeStatus(serverConfig.DBFile)
 		So(os.IsNotExist(err), ShouldBeTrue)
@@ -183,12 +197,15 @@ func waitForFIFOInitialToken(written <-chan error) error {
 	}
 }
 
-func waitForDBUpgradeStatusDetail(dbFile, detail string, timeout time.Duration) (internal.DBUpgradeStatus, bool) {
+// waitForDBUpgradeStatusState polls the startup sidecar until it reports the
+// given state, matching on State rather than Detail because the recovery phase's
+// Detail is an elapsed time that changes on every heartbeat tick.
+func waitForDBUpgradeStatusState(dbFile, state string, timeout time.Duration) (internal.DBUpgradeStatus, bool) {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
 		status, _, err := internal.ReadDBUpgradeStatus(dbFile)
-		if err == nil && status.Detail == detail {
+		if err == nil && status.State == state {
 			return status, true
 		}
 
@@ -251,44 +268,66 @@ func waitForFIFOReadCleanup(result <-chan fifoReadResult) {
 	}
 }
 
+// waitForServing reports whether the server published its externally observable
+// surface within recoveryWaitTimeout.
+func waitForServing(server *Server) bool {
+	select {
+	case <-server.Serving():
+		return true
+	case <-time.After(recoveryWaitTimeout):
+		return false
+	}
+}
+
+// TestServeDoesNotReportPostUpgradeStartupForBrandNewDB covers E4 acceptance
+// test 8. Both its old premises changed: the sidecar is now written on every
+// start, not only after an upgrade, and the web port comes up only at
+// publication. So it asserts instead that a brand-new DB's sidecar reports a
+// non-upgrade startup phase during the window, that neither port answers before
+// publication, and that the sidecar is gone and both ports answer afterwards.
+//
+// It drops the token FIFO for recoveryPauseHookForTest. The FIFO blocks at
+// persistToken, which is publication step 2, by which time step 1 has already
+// brought the web port up, so a FIFO window cannot assert the web port is still
+// closed. The pause hook works even for a brand-new DB: it fires in
+// recoverPriorJobsWithHeartbeat, before recoverPriorJobs reaches its
+// len(priorJobs) == 0 early return. The token round-trip the FIFO also covered
+// stays covered by TestServeReportsPostUpgradeStartupUntilTokenReady.
 func TestServeDoesNotReportPostUpgradeStartupForBrandNewDB(t *testing.T) {
 	Convey("Serve does not report post-upgrade startup for a brand-new DB", t, func() {
 		ctx := context.Background()
-		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		_, serverConfig, addr, _, connectTime := jobqueueTestInit(true)
 		serverConfig.dontWipeDevDB = true
 
-		initialTokenWritten := prepareFIFOBackedToken(t, serverConfig.TokenFile)
+		server, token, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
-		serveResult := make(chan serveStartupResult, 1)
+		defer dgsCleanup(ctx, server, release)()
 
-		go func() {
-			server, _, token, err := Serve(ctx, serverConfig)
-			serveResult <- serveStartupResult{server: server, token: token, err: err}
-		}()
+		status, _, err := internal.ReadDBUpgradeStatus(serverConfig.DBFile)
+		So(err, ShouldBeNil)
+		So(status.State, ShouldNotEqual, internal.DBUpgradePostStartupState)
+		So(status.State, ShouldEqual, internal.DBStartupRecoveryState)
 
-		So(waitForFIFOInitialToken(initialTokenWritten), ShouldBeNil)
-		So(waitForTLSWebPort(
-			"localhost:"+serverConfig.WebPort,
-			serverConfig.CAFile,
-			serverConfig.CertDomain,
-			2*time.Second,
-		), ShouldBeTrue)
+		webAddr := "localhost:" + serverConfig.WebPort
+		So(waitForTLSWebPort(webAddr, serverConfig.CAFile, serverConfig.CertDomain,
+			200*time.Millisecond), ShouldBeFalse)
 
-		_, _, err := internal.ReadDBUpgradeStatus(serverConfig.DBFile)
+		jq, errc := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, connectTime)
+		So(jq, ShouldBeNil)
+		So(errc, ShouldNotBeNil)
+
+		release()
+		So(waitForServing(server), ShouldBeTrue)
+
+		_, _, err = internal.ReadDBUpgradeStatus(serverConfig.DBFile)
 		So(os.IsNotExist(err), ShouldBeTrue)
 
-		tokenRead := readFIFOAsync(serverConfig.TokenFile)
+		So(waitForTLSWebPort(webAddr, serverConfig.CAFile, serverConfig.CertDomain,
+			recoveryWaitTimeout), ShouldBeTrue)
 
-		result := waitForServeStartup(t, serveResult)
-		if result.server != nil {
-			defer result.server.Stop(ctx, true)
-		}
-
-		So(result.err, ShouldBeNil)
-
-		tokenReadResult := waitForFIFORead(t, serverConfig.TokenFile, tokenRead)
-		So(tokenReadResult.err, ShouldBeNil)
-		So(tokenReadResult.payload, ShouldResemble, result.token)
+		jq, errc = Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, connectTime)
+		So(errc, ShouldBeNil)
+		So(jq.Disconnect(), ShouldBeNil)
 	})
 }
 

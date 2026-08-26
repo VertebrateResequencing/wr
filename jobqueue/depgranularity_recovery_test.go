@@ -88,8 +88,9 @@ const (
 	dgrChainRepGroup   = "depgranularity-recovery-chain"
 
 	// dgrReserveWait is how long a reserve of an already-ready job is given. It is
-	// generous because it costs nothing on the success path and this node runs at
-	// a load average well above its core count.
+	// a hang detector, not a latency budget: it costs nothing on the success path,
+	// and is generous because this node runs at a load average well above its core
+	// count. If it ever fires spuriously, the answer is a larger bound.
 	dgrReserveWait = 30 * time.Second
 )
 

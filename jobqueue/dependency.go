@@ -254,7 +254,7 @@ func (d *Dependency) collectEssenceJobKey(reader depReader, jobKeys map[string]b
 		return nil
 	}
 
-	keys, _, err := d.incompleteEssenceJobKeys(reader)
+	keys, err := d.incompleteEssenceJobKeys(reader)
 	if err != nil {
 		return err
 	}
@@ -270,19 +270,22 @@ func collectStrings(values []string, set map[string]bool) {
 	}
 }
 
-func (d *Dependency) incompleteEssenceJobKeys(reader depReader) ([]string, []string, error) {
+// incompleteEssenceJobKeys returns this essence dependency's job key if that job
+// is still live, and nothing if it is not: a job that is not live has nothing
+// left to wait for.
+func (d *Dependency) incompleteEssenceJobKeys(reader depReader) ([]string, error) {
 	jobKey := d.Essence.Key()
 
 	live, err := reader.checkIfLive(jobKey)
 	if err != nil {
-		return []string{}, []string{}, err
+		return nil, err
 	}
 
 	if live {
-		return []string{jobKey}, nil, nil
+		return []string{jobKey}, nil
 	}
 
-	return []string{}, nil, nil
+	return nil, nil
 }
 
 // Dependencies is a slice of *Dependency, for use in Job.Dependencies. It

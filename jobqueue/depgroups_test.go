@@ -68,7 +68,10 @@ const (
 	dgChurnDeadline = 2 * time.Minute
 
 	// the opposing-rekey race: 4 goroutines rekeying a -> b against 4 rekeying
-	// b -> a, 500 iterations each.
+	// b -> a, 500 iterations each. dgRekeyDeadline is a hang detector, not a
+	// latency budget: it costs nothing when the test passes, and only fires when
+	// the two job-key shards were locked in call order rather than in ascending
+	// shard index. If it ever fires spuriously, the answer is a larger bound.
 	dgRekeyWorkers    = 4
 	dgRekeyIterations = 500
 	dgRekeyDeadline   = 10 * time.Second

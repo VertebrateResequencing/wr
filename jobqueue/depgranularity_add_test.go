@@ -162,7 +162,7 @@ func TestDepGranularityAddTransactionCost(t *testing.T) {
 // waiters on it, then returns how many bolt read transactions dgaTxAdds further
 // one-member adds cost.
 func dgaAddMemberTxCost(ctx context.Context, members int) int {
-	d := dgaStartServerNoBackups(ctx)
+	d := dgrStartServer(ctx)
 
 	defer d.stop(ctx)
 
@@ -178,9 +178,9 @@ func dgaAddMemberTxCost(ctx context.Context, members int) int {
 
 	for i := range dgaTxAdds {
 		inserts, _, err := jq.Add([]*Job{dgaMemberJob(d, dgaGroup, dgaExtraName+strconv.Itoa(i))}, envVars, true)
-		if err == nil {
-			added += inserts
-		}
+		So(err, ShouldBeNil)
+
+		added += inserts
 	}
 
 	txns := d.server.db.bolt.Stats().TxN - before
@@ -188,23 +188,6 @@ func dgaAddMemberTxCost(ctx context.Context, members int) int {
 	So(added, ShouldEqual, dgaTxAdds)
 
 	return txns
-}
-
-// dgaStartServerNoBackups starts a development server with database backups
-// switched off. Stats().TxN counts read transactions, and the periodic backup
-// takes one on a one-second cadence of its own, so leaving backups on would put
-// a stray read inside a measurement window of a few milliseconds now and then.
-func dgaStartServerNoBackups(ctx context.Context) *dgrServer {
-	config, serverConfig, addr, reqs, connectTime := jobqueueTestInit(true)
-	serverConfig.DBFileBackup = ""
-
-	server, _, token, err := serve(ctx, serverConfig)
-	So(err, ShouldBeNil)
-
-	return &dgrServer{
-		server: server, serverConfig: serverConfig, config: config,
-		addr: addr, reqs: reqs, connectTime: connectTime, token: token,
-	}
 }
 
 // TestDepGranularityAddSameBatchMemberAndWaiter covers D1 acceptance test 3, a
@@ -330,10 +313,18 @@ func TestDepGranularityAddRerunDropsDepGroup(t *testing.T) {
 	})
 }
 
-// TestDepGranularityAddDropAndJoinInOneCall covers D1 acceptance test 6, the
-// two-pass ordering test: one call that both drops a group from one job and adds
-// another member of it must not release that group's waiters. The drop is listed
-// first, which is the order a single replace pass gets wrong.
+// TestDepGranularityAddDropAndJoinInOneCall covers D1 acceptance test 6's
+// end-to-end outcome: one call that both drops a group from one job and adds
+// another member of it leaves that group's waiters blocked, and releases them
+// only once the new member completes.
+//
+// It cannot discriminate the two-pass ordering, and not by timing accident:
+// joining the group puts it in prepareNewJobs' declared-depGroups set
+// (db.go:2318-2322), so retrieveDependentJobs returns the live waiter and
+// q.Update repairs a single replace pass' early release unconditionally. The
+// harm one pass really does - the waiter going ready in between, where a runner
+// can reserve it ahead of the new member - is only visible at the membership
+// seam, which TestDepGranularityAddDropAndJoinMembershipPass drives.
 func TestDepGranularityAddDropAndJoinInOneCall(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -372,12 +363,16 @@ func TestDepGranularityAddDropAndJoinInOneCall(t *testing.T) {
 }
 
 // TestDepGranularityAddDropAndJoinMembershipPass covers the ordering half of D1
-// acceptance test 6 at the seam where the ordering is decidable. In a whole
-// Client.Add, the early release a single replace pass causes is repaired by the
-// dependency refresh that follows it, so the group's waiters end up in the right
-// sub-queue either way; what one pass really costs is that they go ready in
-// between, where a runner can reserve them ahead of the new member. Updating the
-// batch's membership on its own leaves that visible.
+// acceptance test 6 at the seam where the ordering is decidable, and so pins the
+// two-pass STRUCTURE of updateDepGroupMembershipForNewJobs: a refactor that
+// inlines the register pass into the replace loop, or swaps the two, fails here
+// and nowhere else. In a whole Client.Add the early release a single replace
+// pass causes is repaired by the dependency refresh that follows it, so the
+// group's waiters end up in the right sub-queue either way; what one pass really
+// costs is that they go ready in between, where a runner can reserve them ahead
+// of the new member and then have the repairing q.Update yank the item out from
+// under its own runner. Updating the batch's membership on its own leaves that
+// visible.
 func TestDepGranularityAddDropAndJoinMembershipPass(t *testing.T) {
 	if runnermode || servermode {
 		return

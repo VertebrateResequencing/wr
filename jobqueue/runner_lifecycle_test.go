@@ -811,7 +811,19 @@ func withRunnerServer(
 		failArg = " --runnerfail"
 	}
 
+	// -test.run restricts the --runnermode subprocess to the one test that
+	// handles it, as the other spawn sites and startServer do. Without it each
+	// runner re-runs the whole suite before reaching runner(), and the suite
+	// contains tests that do NOT guard on runnermode - among them
+	// TestClientRequestTimeoutDecoupledFromConnect, which calls serve(). A
+	// runnermode jobqueueTestInit does not isolate its config, so that server
+	// tries the default development port, and a lost bind is no longer an error
+	// the serve helper can retry: publication burns its 5s budget and calls
+	// publishExit, killing the runner before it ever reaches runner(). The flag
+	// is part of the (consistent) runner cmdline, so crash recovery, which
+	// matches a recovered runner by its exact cmdline, still works.
 	runningConfig.RunnerCmd = runnerCmd + " --runnermode" + failArg +
+		" -test.run '^TestJobqueueRunnerModeEntrypoint$'" +
 		" --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 		" --rtimeout %d --maxmins %d --rmanagerdir " + rmd + " --tmpdir " + runnerTmpDir
 	server, _, token, errs := serve(ctx, runningConfig)

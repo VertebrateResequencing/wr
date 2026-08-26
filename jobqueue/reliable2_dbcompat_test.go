@@ -152,13 +152,20 @@ func TestReliable2DBCompatOpen(t *testing.T) {
 	})
 }
 
-// TestReliable2RecoveryWindowReturnsRecovering covers H2 acceptance test 1
-// against the retained recovery window: while background prior-state recovery is
-// still running, a reconnecting runner's j* call for a key that recovery has not
-// yet restored into the queue must receive the retryable ErrRecovering, not the
-// terminal ErrBadJob. It drives the window deterministically by blocking
-// recovery at the retained recoveryPauseHook seam (so the fixture's incomplete
-// jobs are provably not yet enqueued), then issues a Touch for one of them.
+// TestReliable2RecoveryWindowReturnsRecovering covers H2 acceptance test 1, and
+// spec E6 acceptance test 1, against the retained recovery window: a j* call for
+// a key that recovery has not yet restored into the queue must receive the
+// retryable ErrRecovering, not the terminal ErrBadJob. It drives the window
+// deterministically by blocking recovery at the retained recoveryPauseHook seam,
+// so the fixture's incomplete jobs are provably not yet enqueued.
+//
+// The call is made in-package on the server rather than through a connected
+// client. Under spec E1 the manager publishes nothing until recovery ends, so no
+// client can connect during the window at all: what becomes unreachable is the
+// SERVER-REQUEST pathway in production, which is why E6 keeps ErrRecovering as
+// defence in depth (the sub-millisecond publish-before-finishRecovering window
+// keeps the branch reachable) and satisfies .docs/reliable2/spec.md H2's written
+// contract vacuously rather than actively.
 func TestReliable2RecoveryWindowReturnsRecovering(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -167,19 +174,16 @@ func TestReliable2RecoveryWindowReturnsRecovering(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("A recovery-window j* call for a not-yet-restored key returns ErrRecovering not ErrBadJob", t, func() {
-		config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
 
 		dbPath := copyFixtureToTempDB(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath
 		serverConfig.DBFileBackup = dbPath + "_bk"
 		serverConfig.dontWipeDevDB = true
 
-		server, token, release := pausedRecoveringFixtureServer(ctx, serverConfig)
+		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
-		defer func() {
-			release()
-			server.Stop(ctx, true)
-		}()
+		defer dgsCleanup(ctx, server, release)()
 
 		// recovery is blocked at the pause hook, so the prior incomplete jobs have
 		// not yet been re-enqueued (the single-batch enqueue runs only after the
@@ -190,22 +194,16 @@ func TestReliable2RecoveryWindowReturnsRecovering(t *testing.T) {
 		So(total, ShouldEqual, dbcompatIncompleteCount)
 		So(restored, ShouldEqual, 0)
 
-		jq, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-		So(errc, ShouldBeNil)
+		// a reconnecting runner's request for an incomplete fixture job whose key
+		// recovery has not yet restored. getij misses in the queue but, because the
+		// server is still recovering, returns the retryable ErrRecovering rather
+		// than the terminal ErrBadJob.
+		cr := &clientRequest{Job: dbcompatIncompleteJob(dbcompatIncompleteCmd1)}
 
-		defer disconnect(jq)
-
-		// H2 acceptance test 1: a reconnecting runner touches an incomplete fixture
-		// job whose key recovery has not yet restored. getij misses in the queue
-		// but, because the server is still recovering, returns the retryable
-		// ErrRecovering rather than the terminal ErrBadJob.
-		touchJob := dbcompatIncompleteJob(dbcompatIncompleteCmd1)
-
-		_, err := jq.Touch(touchJob)
-		So(err, ShouldNotBeNil)
-		So(strings.Contains(err.Error(), ErrRecovering), ShouldBeTrue)
-		So(strings.Contains(err.Error(), ErrBadJob), ShouldBeFalse)
-		So(strings.Contains(err.Error(), ErrBadRequest), ShouldBeFalse)
+		_, _, errStr := server.getij(cr, true)
+		So(errStr, ShouldEqual, ErrRecovering)
+		So(strings.Contains(errStr, ErrBadJob), ShouldBeFalse)
+		So(strings.Contains(errStr, ErrBadRequest), ShouldBeFalse)
 	})
 }
 
@@ -232,33 +230,30 @@ func TestReliable2RecoveryRestoresIncompleteJobs(t *testing.T) {
 
 		server, token, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
-		defer func() {
-			release()
-			server.Stop(ctx, true)
-		}()
-
-		jq, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-		So(errc, ShouldBeNil)
-
-		defer disconnect(jq)
+		defer dgsCleanup(ctx, server, release)()
 
 		// during the window the incomplete jobs are not yet enqueued, so nothing is
-		// reservable.
+		// reservable. Asserted server-side rather than through a client Reserve,
+		// because under spec E1 no client can connect until publication.
 		So(server.isRecovering(), ShouldBeTrue)
+		So(server.q.Stats().Items, ShouldEqual, 0)
 
-		windowJob, errr := jq.Reserve(500 * time.Millisecond)
-		So(errr, ShouldBeNil)
-		So(windowJob, ShouldBeNil)
-
-		// release recovery and wait for the background goroutine to finish.
+		// release recovery and wait for the background goroutine to finish and for
+		// the server to publish itself.
 		release()
 		So(waitUntilRecovered(server), ShouldBeTrue)
 		So(server.isRecovering(), ShouldBeFalse)
+		So(dgsWaitServing(server), ShouldBeTrue)
 
 		// recovery restored the known incomplete jobs (all-or-nothing single batch).
 		restored, total := server.recoveryProgress()
 		So(total, ShouldEqual, dbcompatIncompleteCount)
 		So(restored, ShouldEqual, dbcompatIncompleteCount)
+
+		jq, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(errc, ShouldBeNil)
+
+		defer disconnect(jq)
 
 		// H2 acceptance test 2: the recovered jobs are now reservable/runnable.
 		reservedRepGroups := reserveIncompleteJobs(jq)
@@ -294,13 +289,18 @@ func copyFixtureToTempDB(t *testing.T, suggestedName string) string {
 	return dstPath
 }
 
-// pausedRecoveringFixtureServer opens a server against serverConfig's DB (a copy
-// of the committed fixture) with its background prior-state recovery blocked at
-// the retained recoveryPauseHook seam, so the recovering window is observable
-// without timing flakiness. It returns the server, a connect token, and an
-// idempotent release func that unblocks recovery. The caller owns server.Stop
-// and must arrange for release to run (recovery, and thus a clean shutdown, is
-// stuck at the hook until then).
+// pausedRecoveringFixtureServer opens a server against serverConfig's DB (for
+// this file, a copy of the committed fixture; the startup-window tests point it
+// at their own) with its background prior-state recovery blocked at the retained
+// recoveryPauseHook seam, so the startup window is observable without timing
+// flakiness. It returns the server, a connect token, and an idempotent release
+// func that unblocks recovery. The caller owns server.Stop and must arrange for
+// release to run (recovery, publication and thus a clean shutdown are all stuck
+// at the hook until then).
+//
+// It opens the server with serveWithoutPublication, not serve: publication is
+// what the hook is holding, so waiting for it here would deadlock against a
+// release that can only come after this function returns.
 func pausedRecoveringFixtureServer(ctx context.Context, serverConfig ServerConfig) (*Server, []byte, func()) {
 	hookEntered := make(chan struct{})
 	release := make(chan struct{})
@@ -316,7 +316,7 @@ func pausedRecoveringFixtureServer(ctx context.Context, serverConfig ServerConfi
 	}
 	defer func() { recoveryPauseHookForTest = nil }()
 
-	server, _, token, err := serve(ctx, serverConfig)
+	server, _, token, err := serveWithoutPublication(ctx, serverConfig)
 	recoveryPauseHookForTest = nil
 
 	So(err, ShouldBeNil)
@@ -400,4 +400,65 @@ func reserveIncompleteJobs(jq *Client) []string {
 	}
 
 	return repGroups
+}
+
+// TestReliable2RecoveryMachineryRetained covers spec E6 acceptance test 3. E6's
+// decision is to KEEP the recovery-window RPC machinery as defence in depth even
+// though spec E1 makes the server-request pathway unreachable in production, for
+// three recorded reasons: the scheduling gate is still load-bearing (
+// buildSchedulerGroups still runs during the window and no bsub must happen
+// before serving begins), the sub-millisecond publish-before-finishRecovering
+// window keeps the getij branches reachable, and .docs/reliable2/spec.md H2 is a
+// binding written contract.
+//
+// This is a live grep of the tree rather than a behavioural assertion because
+// what it guards against is a future reader deleting all three as dead code; the
+// behaviour itself is covered by the two tests above.
+func TestReliable2RecoveryMachineryRetained(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("The retained recovery-window machinery is still present and referenced", t, func() {
+		// the sentinel itself, getij's recovering branch, getijForReport's, and the
+		// runner-dispatch gate. The sentinel's name and value are matched as two
+		// substrings of one line rather than as the single gofmt-aligned string
+		// they appear as, so that adding a longer name to that const block
+		// re-aligns it without failing this test with a misleading "the machinery
+		// was deleted".
+		So(dbcompatGrepCount(t, "server.go", "ErrRecovering", `= "server is recovering`), ShouldEqual, 1)
+		So(dbcompatGrepCount(t, "serverCLI.go", "return item, nil, ErrRecovering"), ShouldEqual, 1)
+		So(dbcompatGrepCount(t, "serverCLI.go", "return nil, ErrRecovering"), ShouldEqual, 1)
+		So(dbcompatGrepCount(t, "server.go", "!s.isRecovering()"), ShouldBeGreaterThanOrEqualTo, 1)
+	})
+}
+
+// dbcompatGrepCount counts the lines of the named package source file that
+// contain every one of substrs.
+func dbcompatGrepCount(t *testing.T, file string, substrs ...string) int {
+	t.Helper()
+
+	source, err := os.ReadFile(file)
+	So(err, ShouldBeNil)
+
+	count := 0
+
+	for line := range strings.SplitSeq(string(source), "\n") {
+		if lineContainsAll(line, substrs) {
+			count++
+		}
+	}
+
+	return count
+}
+
+// lineContainsAll reports whether line contains every one of substrs.
+func lineContainsAll(line string, substrs []string) bool {
+	for _, substr := range substrs {
+		if !strings.Contains(line, substr) {
+			return false
+		}
+	}
+
+	return true
 }

@@ -33,8 +33,23 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
+)
+
+const (
+	// seedJobCount is how many prior incomplete jobs TestServeWaitsForPublication
+	// leaves in the database, so the server it then starts has a real recovery to
+	// run before it can publish itself.
+	seedJobCount = 3
+
+	// serveTestCertDomain is the domain jobqueue.Serve generates its certificate
+	// for when the config names none, and so the name a client must verify
+	// against.
+	serveTestCertDomain = "localhost"
 )
 
 func TestTestingServer(t *testing.T) {
@@ -79,6 +94,94 @@ func TestTestingServer(t *testing.T) {
 			s.Stop(context.Background(), false)
 		})
 	})
+}
+
+// TestServeWaitsForPublication covers E2 acceptance test 5. Serve is exported,
+// so "the returned server is reachable" is the only post-condition an
+// out-of-repo caller has to rely on, and jobqueue.Serve no longer provides it:
+// it returns while prior-state recovery is still running, with the manager port
+// closed. A DB holding prior incomplete jobs is what gives that recovery
+// something to do, so a helper that did not wait would fail here on every run.
+func TestServeWaitsForPublication(t *testing.T) {
+	Convey("Serve returns a server a single Connect can reach", t, func() {
+		ctx := context.Background()
+
+		config, d := PrepareWrConfig(t)
+		defer d()
+
+		// production, because a development database is wiped when it is opened
+		// and the flag that suppresses that is not part of the exported config.
+		config.Deployment = "production"
+
+		// the token is captured from the seeding server, which persists it: Serve
+		// reuses an existing token file, so the same token authenticates against
+		// the restarted server. Reading it here rather than after the restart is
+		// what makes the Connect below the assertion that discriminates - the
+		// token file is published at the same moment as the listener.
+		token := seedIncompleteJobs(t, config)
+
+		server := Serve(t, config)
+		defer server.Stop(ctx, false)
+
+		jq, err := jobqueue.Connect(managerAddr(config), config.CAFile,
+			serveTestCertDomain, token, serverTimeout)
+		So(err, ShouldBeNil)
+		So(jq, ShouldNotBeNil)
+		So(jq.Disconnect(), ShouldBeNil)
+	})
+}
+
+// seedIncompleteJobs starts a server, adds seedJobCount jobs that nothing will
+// run (the test config configures no runner command), and stops it, leaving
+// config's database holding that many prior incomplete jobs. It returns the auth
+// token, which the next server reuses.
+func seedIncompleteJobs(t *testing.T, config jobqueue.ServerConfig) []byte {
+	t.Helper()
+
+	ctx := context.Background()
+	server := Serve(t, config)
+
+	token := readServerToken(t, config)
+
+	jq, err := jobqueue.Connect(managerAddr(config), config.CAFile,
+		serveTestCertDomain, token, serverTimeout)
+	So(err, ShouldBeNil)
+
+	jobs := make([]*jobqueue.Job, seedJobCount)
+	for i := range jobs {
+		jobs[i] = &jobqueue.Job{
+			Cmd:          "echo seed " + strconv.Itoa(i),
+			Cwd:          os.TempDir(),
+			ReqGroup:     "clienttesting-seed",
+			RepGroup:     "clienttesting-seed",
+			Requirements: &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1},
+		}
+	}
+
+	added, existed, err := jq.Add(jobs, os.Environ(), false)
+	So(err, ShouldBeNil)
+	So(added, ShouldEqual, seedJobCount)
+	So(existed, ShouldEqual, 0)
+	So(jq.Disconnect(), ShouldBeNil)
+
+	server.Stop(ctx, true)
+
+	return token
+}
+
+// readServerToken reads the auth token the server wrote when it published
+// itself.
+func readServerToken(t *testing.T, config jobqueue.ServerConfig) []byte {
+	t.Helper()
+
+	token, err := os.ReadFile(config.TokenFile)
+	So(err, ShouldBeNil)
+
+	return token
+}
+
+func managerAddr(config jobqueue.ServerConfig) string {
+	return net.JoinHostPort(serveTestCertDomain, config.Port)
 }
 
 func TestLaneFreePort(t *testing.T) {

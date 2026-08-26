@@ -197,8 +197,18 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 		runningConfig := serverConfig
 		rmd := strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
+		// -test.run restricts the --runnermode subprocess to the one test that
+		// handles it, for the reason startServer gives for --servermode plus a
+		// second one that matters here: without it every runner runs the whole
+		// suite's ~200 guarded tests before reaching runner(), which costs ~3s of
+		// CPU per runner. With 16 runners launched at once on a loaded host that
+		// staggers their reserves over tens of seconds, and this test's whole
+		// subject is how many jobs run SIMULTANEOUSLY. The flag is part of the
+		// (consistent) runner cmdline, so crash recovery, which matches a
+		// recovered runner by its exact cmdline, still works.
 		runningConfig.RunnerCmd = runnerCmd +
-			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
+			" --runnermode -test.run '^TestJobqueueRunnerModeEntrypoint$'" +
+			" --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 			" --rtimeout %d --maxmins %d --rmanagerdir " + rmd + " --tmpdir " + runnertmpdir
 		server, _, token, errs := serve(ctx, runningConfig)
 		So(errs, ShouldBeNil)

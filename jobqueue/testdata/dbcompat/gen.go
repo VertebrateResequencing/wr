@@ -97,6 +97,11 @@ func main() {
 		log.Fatalf("Serve failed: %s", err)
 	}
 
+	// Serve returns while prior-state recovery is still running, so the manager
+	// port is not yet bound and populate's client would get ErrNoServer. This
+	// file is //go:build ignore and run by hand, so no test run would catch it.
+	<-server.Serving()
+
 	populate(ctx, config, token)
 
 	// give the one-time startup backfill goroutine time to write the

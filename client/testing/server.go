@@ -46,6 +46,11 @@ const (
 	serverTimeout        = 10 * time.Second
 	serverRetryFrequency = 500 * time.Millisecond
 
+	// serverPublishTimeout is how long Serve waits for the server to publish
+	// itself. It is a hang detector, not a latency budget: these test databases
+	// hold no prior jobs, so publication happens immediately.
+	serverPublishTimeout = 30 * time.Second
+
 	// these speed the test server up versus its seconds-to-minutes production
 	// timing defaults; the client tests run quick jobs and just need the server
 	// to react and shut down promptly.
@@ -234,9 +239,15 @@ managerdir: "%s"`
 	}
 }
 
-// Serve calls jobqueue.Serve() but with a retry for 5s on failure. This allows
-// time for a server that we recently stopped in a prior test to really not be
-// listening on the ports any more.
+// Serve calls jobqueue.Serve() but with a retry for 5s on failure, and then
+// waits for the returned server to publish itself. The retry allows time for a
+// server that we recently stopped in a prior test to really not be listening on
+// the ports any more; the wait is because jobqueue.Serve() returns while
+// prior-state recovery is still running, so the manager port is not yet bound
+// and a caller that connected immediately would get ErrNoServer with no retry.
+//
+// This is exported, so the post-condition "the returned server is reachable" is
+// the only thing an out-of-repo caller has to rely on.
 func Serve(t *testing.T, config jobqueue.ServerConfig) *jobqueue.Server {
 	t.Helper()
 
@@ -248,6 +259,8 @@ func Serve(t *testing.T, config jobqueue.ServerConfig) *jobqueue.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	waitForServing(t, server)
 
 	return server
 }
@@ -275,5 +288,19 @@ func serveWithRetries(t *testing.T, config jobqueue.ServerConfig) (server *jobqu
 
 			return server, err
 		}
+	}
+}
+
+// waitForServing blocks until the server has published its externally
+// observable surface, failing the test if that takes longer than
+// serverPublishTimeout. The bound is a hang detector, not a latency budget: the
+// test DBs here have no prior jobs, so publication is immediate.
+func waitForServing(t *testing.T, server *jobqueue.Server) {
+	t.Helper()
+
+	select {
+	case <-server.Serving():
+	case <-time.After(serverPublishTimeout):
+		t.Fatal("timed out waiting for the jobqueue server to start serving")
 	}
 }
