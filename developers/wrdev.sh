@@ -1754,6 +1754,454 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   return "$verdict"
 }
 
+cmd_dep_granularity_check() {  # dep-granularity-check [waiters] [members] [groups] - dep-granularity SCALE GATE
+  # SCALE GATE for the dep-granularity spec (.docs/dep-granularity/spec.md F3). Production
+  # was OOM-killed FIVE times at ~180GB recovering its prior state: an -inuse_space profile
+  # taken mid-recovery put 97.55% of a 15.65GB live heap in recoveredItemDef, while the
+  # 150,472 decoded jobs themselves were only 376MB (2.40%) of it. The bytes were the jobs'
+  # dependency KEY LISTS - the pre-fix code expanded a dependency on a dep group into one
+  # key per LIVE MEMBER of that group - so retention was waiters x members, ~19,000 keys per
+  # job. Recovery of those 150,472 jobs took 42m56s; the manager served for four minutes and
+  # died.
+  #
+  # This is an end-to-end gate on the REAL binary, and it covers the ADD path as well as
+  # recovery. It builds a fixture database of `members` live jobs in one dep group, one live
+  # job in each of the other `groups`-1 groups, and `waiters` live jobs depending on the big
+  # group (via TestDepGranularityFixture, which stores them through db.storeNewJobs so
+  # bucketRDTK and bucketDepGroups hold what the real add path puts there, and writes
+  # bucketDTK itself as the pre-upgrade data it is - see that test for why BOTH of those
+  # matter, and .docs/dep-granularity/scale-gate.md for the recorded numbers). It then points
+  # an isolated PROD-mode manager at a COPY of it (prod mode preserves the DB; dev mode wipes
+  # it), measures the recovery window between two log lines that exist in both trees, samples
+  # `wr manager status` inside that window, and finally times `wr add` of one more member
+  # into the big group.
+  #
+  # Nothing ever runs: every fixture job also depends on a dep group NO job is ever added
+  # with, so the whole database is permanently `dependent`, no runner is launched and no LSF
+  # job is submitted. The manager runs with -f, so it is the process this function started
+  # (no pid file, no daemon) and /proc/<pid>/status can be sampled from t=0.
+  #
+  # A/B the fix by running this in a pre-fix `git worktree` (the branch point, 8b9ba00) vs
+  # the fixed tree. Neither the mode nor the fixture generator exists at that commit, so
+  # copy THIS script over there and hand the pre-fix run the fixture through
+  # WRDEV_DEPGRAN_DB: pristine means the product code under test, not the harness, and REPO
+  # is resolved from this script's own path so the pre-fix worktree builds and measures the
+  # pre-fix binary. That only works because the fixture writes bucketDTK itself; leave those
+  # entries to storeNewJobs and the pre-fix binary finds no member keys to expand, allocates
+  # nothing quadratically and hands back a false PASS.
+  #
+  # A MISSING or INVALID measurement is a FAIL, never a PASS: no DEPGRAN-FIXTURE line from
+  # the generator, an unreadable or zero peakRssMb, a manager that never reached recovery at
+  # all, or (in a run that did finish recovering) an unreadable recoverySec/addSec or an add
+  # that did not add its one job all exit 1. The DEPGRAN-SUMMARY line itself is printed from
+  # the measurements rather than parsed back out of them, so unlike archive-rate there is no
+  # case where it can go missing while the verdict is still reached. A run whose
+  # start line appeared but whose finish line never did is a PLAIN FAIL rather than "not
+  # measured": that is the pre-fix outcome this gate exists to catch, and peakRssMb is still
+  # reported from the samples taken before the death.
+  #
+  # Disk: the fixture is ~110MB at the default shape and each run copies it, so $WRDEV_ROOT
+  # needs room for two of them plus the manager's own backup; the copy is removed in CLEANUP
+  # below and the fixture itself is kept, so a second run (the other side of an A/B) can be
+  # handed it through WRDEV_DEPGRAN_DB. Memory: the PRE-FIX run is the one that needs headroom - it retains
+  # waiters x members dependency keys - so it is capped by WRDEV_DEPGRAN_ABORT_RSS_MB, which
+  # kills the manager and reports the FAIL rather than taking the host down with it.
+  need_repo; need_bin; ensure_config
+  # an empty positional (the dispatcher passes one when the argument is absent) has to fall
+  # back too, which ${1:-...} alone does not do for an argument that is set but empty.
+  local waiters="${1:-}" members="${2:-}" groups="${3:-}"
+  waiters="${waiters:-${WRDEV_DEPGRAN_WAITERS:-30000}}"
+  members="${members:-${WRDEV_DEPGRAN_MEMBERS:-3000}}"
+  groups="${groups:-${WRDEV_DEPGRAN_GROUPS:-6300}}"
+  # each threshold is 2x the post-fix figure at the default shape, rounded up to a round
+  # number, and each is at most half the pre-fix figure - a threshold the pre-fix run would
+  # pass is not a gate. The figures behind them, and the A/B they came from, are recorded in
+  # .docs/dep-granularity/scale-gate.md.
+  local maxrssmb="${WRDEV_DEPGRAN_MAX_RSS_MB:-700}"
+  local maxrecsec="${WRDEV_DEPGRAN_MAX_RECOVERY_SEC:-1}"
+  local maxaddsec="${WRDEV_DEPGRAN_MAX_ADD_SEC:-2}"
+  local abortrssmb="${WRDEV_DEPGRAN_ABORT_RSS_MB:-16000}"
+  local waitsec="${WRDEV_DEPGRAN_TIMEOUT_SEC:-1800}"
+  local biggroup="${WRDEV_DEPGRAN_GROUP:-depgran-big}"
+  local blocker="${WRDEV_DEPGRAN_BLOCKER:-depgran-blocker}"
+  local supplied="${WRDEV_DEPGRAN_DB:-}"
+  local out="$WRDEV_ROOT/dep-granularity-check.out"
+  local mgrout="$WRDEV_ROOT/dep-granularity-manager.out"
+  local fixture="$WRDEV_ROOT/depgran_fixture_db"
+  local addrg="depgran-add"
+  mkdir -p "$WRDEV_ROOT"
+  echo "dep-granularity scale gate: $waiters waiters on a $members-member dep group, $groups groups in total"
+  echo "  prod pre-fix: 150,472 live jobs, ~19,000 retained keys each, 97.55% of a 15.65GB heap in"
+  echo "  recoveredItemDef, 42m56s to recover, five OOM kills at ~180GB."
+  echo "  gate: peakRssMb <= ${maxrssmb}, recoverySec <= ${maxrecsec}, addSec <= ${maxaddsec},"
+  echo "  statusInWindow must be 'starting' or 'up', never 'nonresponsive' and never '-' twice."
+
+  # one run's diagnostics per file: the fixture step truncates it, but a run handed a
+  # pre-built fixture skips that step and would otherwise append to the previous run's.
+  : > "$out"
+
+  local rc=0
+  dep_granularity_run "$waiters" "$members" "$groups" "$maxrssmb" "$maxrecsec" "$maxaddsec" \
+    "$abortrssmb" "$waitsec" "$biggroup" "$blocker" "$supplied" "$out" "$mgrout" "$fixture" "$addrg" || rc=$?
+
+  # exit 2 means the run was clean except that nothing sampled `wr manager status` inside the
+  # startup window, which is the one thing the gate can fix by trying again: doubling the
+  # waiters lengthens recovery and so widens the window. Widen ONCE, and never a run that
+  # already failed for another reason (rc 1), which a longer run would not teach anything
+  # about. A supplied fixture cannot be widened, since generating one is what widening means.
+  if [ "$rc" -eq 2 ]; then
+    if [ -n "$supplied" ]; then
+      rc=1
+      echo "  (not widening: WRDEV_DEPGRAN_DB supplies the fixture, so its shape is fixed)"
+    else
+      waiters=$((waiters * 2))
+      echo "=== widening the window once: rerunning with $waiters waiters ==="
+      rc=0
+      dep_granularity_run "$waiters" "$members" "$groups" "$maxrssmb" "$maxrecsec" "$maxaddsec" \
+        "$abortrssmb" "$waitsec" "$biggroup" "$blocker" "$supplied" "$out" "$mgrout" "$fixture" \
+        "$addrg" "widened-waiters-to-$waiters" || rc=$?
+      [ "$rc" -eq 2 ] && rc=1
+    fi
+  fi
+
+  echo "## CLEANUP"
+  rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk" 2>/dev/null
+  rm -rf "$PROD_RUN" 2>/dev/null
+  return "$rc"
+}
+
+# dep_granularity_run is cmd_dep_granularity_check's body, split out so that the cleanup
+# above cannot swallow the verdict: the exit status is captured and returned, exactly as
+# archive-rate does with its pipeline.
+dep_granularity_run() {
+  local waiters="$1" members="$2" groups="$3" maxrssmb="$4" maxrecsec="$5" maxaddsec="$6"
+  local abortrssmb="$7" waitsec="$8" biggroup="$9" blocker="${10}" supplied="${11}"
+  local out="${12}" mgrout="${13}" fixture="${14}" addrg="${15}"
+  local errors="${16:-}"
+  [ -n "$errors" ] && errors="${errors};"
+
+  # the delimiter lines are in the manager's OWN log file, not in what -f prints: the
+  # foreground output carries a handful of INFO lines in the terminal format, while
+  # config.ManagerLogFile gets the structured lvl=/msg= records both trees write.
+  local mgrlog="$PROD_RUN/log"
+
+  osunset
+
+  echo "=== fixture ==="
+  if [ -n "$supplied" ]; then
+    [ -f "$supplied" ] || { echo "FAIL (NOT MEASURED): WRDEV_DEPGRAN_DB=$supplied does not exist"; return 1; }
+    fixture="$supplied"
+    echo "  using the supplied fixture $fixture ($(stat -c %s "$fixture") bytes); generation skipped."
+    echo "  its shape is whatever built it: the waiters/members/groups arguments only label the summary."
+  else
+    rm -f "$fixture" "${fixture}_bk"
+    WRDEV_ROOT="$WRDEV_ROOT" WR_DEPGRAN_DB="$fixture" WR_DEPGRAN_WAITERS="$waiters" \
+      WR_DEPGRAN_MEMBERS="$members" WR_DEPGRAN_GROUPS="$groups" WR_DEPGRAN_GROUP="$biggroup" \
+      WR_DEPGRAN_BLOCKER="$blocker" \
+      timeout 3600 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+        -run TestDepGranularityFixture -count=1 -v -timeout 3500s >> "$out" 2>&1 || true
+    rm -f "${fixture}_bk"
+    local seed; seed=$(grep -aoE 'DEPGRAN-FIXTURE .*' "$out" | tail -1)
+    echo "  ${seed:-<no DEPGRAN-FIXTURE line; see $out>}"
+    [ -n "$seed" ] || { echo "FAIL (NOT MEASURED): the fixture generator produced no DEPGRAN-FIXTURE line"; return 1; }
+  fi
+  [ -f "$fixture" ] || { echo "FAIL (NOT MEASURED): no fixture database at $fixture"; return 1; }
+
+  safe_kill "$(mgr_pid "$PROD_RUN")" >/dev/null 2>&1
+  rm -rf "$PROD_RUN" 2>/dev/null; mkdir -p "$PROD_RUN"
+  cp "$fixture" "$PROD_RUN/db" || { echo "FAIL (NOT MEASURED): could not copy the fixture"; return 1; }
+
+  echo "=== starting the isolated prod-mode manager on a copy of it ==="
+  : > "$mgrout"
+  WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" nohup "$WR" manager start --deployment production -s local -f \
+    >> "$mgrout" 2>&1 &
+  local mpid=$!
+  echo "  manager pid $mpid, foreground output $mgrout, manager log $mgrlog"
+
+  # the window, sampled from process start. The log is read through a held file descriptor
+  # rather than re-grepped, so following it costs no process per poll. Every timestamp comes
+  # from bash's own clock and every poll from a builtin, because a fork costs tens of
+  # milliseconds on a host at load 120 and the whole startup window is a few hundred
+  # milliseconds once the fix is in: an earlier version of this loop used date/awk/ps per
+  # iteration and measured a 13ms recovery as 259ms of its own latency.
+  #
+  # VmHWM is read on EVERY poll rather than once a second, and once more after the add below.
+  # It is a high-water mark, so the last reading of a live process is its peak; the polling is
+  # for the process that dies, whose /proc entry goes with it. Sampled once a second, a
+  # post-fix run that recovers in under a second got exactly one reading - taken at t=0, of a
+  # process that had allocated nothing - and reported 10MB where the real peak was 212MB,
+  # which is a measurement of nothing that would pass any threshold.
+  local peakkb=0 startms=0 finishms=0 servingms=0 sampledms=0 firedms=0 statusin="-"
+  local aborted=0 died=0 logopen=0 sampling=0 pollsec="0.02" line nowms deadlinems fifo
+  local statusfile samplepid=""
+  statusfile="$WRDEV_ROOT/depgran-status.$$"
+  rm -f "$statusfile" "$statusfile.part"
+  nowms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+  deadlinems=$(( nowms + waitsec * 1000 ))
+
+  # a fifo nothing writes to, so `read -t` is a sleep that costs no process.
+  fifo=$(mktemp -u "$WRDEV_ROOT/depgran-tick.XXXXXX")
+  mkfifo "$fifo" && exec 8<>"$fifo"
+  rm -f "$fifo"
+
+  while :; do
+    nowms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+
+    if [ "$logopen" -eq 0 ] && [ -f "$mgrlog" ]; then exec 9< "$mgrlog"; logopen=1; fi
+
+    if [ "$logopen" -eq 1 ]; then
+      while IFS= read -r line <&9; do
+        case "$line" in
+          # the start line first: the heartbeat's progress line contains its text, so the
+          # window opens on the FIRST match and the msg= field keeps the two apart.
+          *'msg="recovering prior state"'*)
+            [ "$startms" -eq 0 ] && startms=$(( ${EPOCHREALTIME/[.,]/} / 1000 )) ;;
+          *'msg="recovering: prior state recovered"'*)
+            [ "$finishms" -eq 0 ] && finishms=$(( ${EPOCHREALTIME/[.,]/} / 1000 )) ;;
+          *'started on '*)
+            [ "$servingms" -eq 0 ] && servingms=$(( ${EPOCHREALTIME/[.,]/} / 1000 )) ;;
+        esac
+      done
+    fi
+
+    dep_granularity_proc "$mpid"
+    case "$DEPGRAN_PROC_HWM" in (''|*[!0-9]*) ;; (*)
+      [ "$DEPGRAN_PROC_HWM" -gt "$peakkb" ] && peakkb="$DEPGRAN_PROC_HWM" ;;
+    esac
+    if [ "$peakkb" -gt $(( abortrssmb * 1024 )) ]; then aborted=1; break; fi
+    if [ "$DEPGRAN_PROC_ALIVE" -eq 0 ]; then died=1; break; fi
+
+    # the ONE in-window `wr manager status`, fired as soon as there is a startup phase to
+    # report: the sidecar's existence means one is in progress, and it appears before the
+    # recovery line does. The pre-fix tree writes no sidecar, so there the start line is what
+    # fires it, and the answer is `up` - which is not a FAIL and which acceptance test 1 does
+    # not rest on. Whether it landed inside the window is decided afterwards, by comparing
+    # when it answered with when the finish line appeared.
+    #
+    # It runs in the BACKGROUND. Run inline it takes ~25ms, during which this loop reads no
+    # log lines - and 25ms is a third of the whole post-fix recovery, so both delimiter lines
+    # then arrived in the same drain and recoverySec measured 0.000.
+    if [ "$sampling" -eq 0 ] && [ "$finishms" -eq 0 ] \
+      && { [ -f "$PROD_RUN/db.upgrade" ] || [ "$startms" -ne 0 ]; }; then
+      firedms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+      sampling=1
+      ( dep_granularity_status_sample "$out" > "$statusfile.part"; mv "$statusfile.part" "$statusfile" ) &
+      samplepid=$!
+    fi
+
+    if [ "$sampling" -eq 1 ] && [ -f "$statusfile" ]; then
+      sampledms=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+      statusin=$(cat "$statusfile")
+      sampling=2
+    fi
+
+    # full resolution until recovery has been going for a while, then a tenth of it: a
+    # post-fix window is a few tens of milliseconds and a 0.2s poll quantises it to nothing,
+    # while a pre-fix recovery of this shape runs for many minutes and does not need it.
+    [ "$startms" -ne 0 ] && [ $(( nowms - startms )) -gt 5000 ] && pollsec="0.2"
+
+    [ "$finishms" -ne 0 ] && break
+    [ "$nowms" -gt "$deadlinems" ] && break
+
+    read -t "$pollsec" -u 8 line
+  done
+  [ "$logopen" -eq 1 ] && exec 9<&-
+  exec 8<&-
+
+  # a sample still in flight when the window closed did not answer inside it, whatever it
+  # goes on to say. It is waited for by pid, never with a bare wait, which would wait for the
+  # manager too and never return.
+  [ -n "$samplepid" ] && wait "$samplepid" 2>/dev/null
+  rm -f "$statusfile" "$statusfile.part"
+
+  [ "$sampledms" -ne 0 ] && echo "  'wr manager status' was fired inside the window and took" \
+    "$(( sampledms - firedms ))ms to answer '$statusin'"
+
+  # a sample that only came back after the window had closed measured the wrong thing.
+  if [ "$sampledms" -eq 0 ]; then
+    statusin="-"
+  elif [ "$finishms" -ne 0 ] && [ "$finishms" -lt "$sampledms" ]; then
+    statusin="-"
+  fi
+
+  local recoveryms=-1
+  { [ "$startms" -ne 0 ] && [ "$finishms" -ne 0 ]; } && recoveryms=$((finishms - startms))
+
+  [ "$aborted" -eq 1 ] && errors="${errors}aborted-at-rss-ceiling;"
+  [ "$died" -eq 1 ] && errors="${errors}manager-died-during-recovery;"
+  { [ "$startms" -ne 0 ] && [ "$finishms" -eq 0 ] && [ "$aborted" -eq 0 ] && [ "$died" -eq 0 ]; } \
+    && errors="${errors}recovery-did-not-finish-in-${waitsec}s;"
+  [ "$statusin" = "-" ] && errors="${errors}status-sample-missed-the-window;"
+
+  # the add path, which is the other half of the quadratic: adding one more member to a dep
+  # group re-resolves every job waiting on it.
+  local addms=-1 added=-1
+  if [ "$finishms" -ne 0 ] && dep_granularity_wait_up 300; then
+    local t0 t1 addout
+    t0=$(( ${EPOCHREALTIME/[.,]/} / 1000 ))
+    addout=$(echo "true #$addrg $$" | timeout 3600 "$WR" add --deployment production \
+      -e "$biggroup" -d "$blocker" --rep_grp "$addrg" --retries 0 2>&1)
+    t1=$(( ${EPOCHREALTIME/[.,]/} / 1000 )); addms=$((t1 - t0))
+    added=$(printf '%s\n' "$addout" | grep -aoE 'Added [0-9]+ new commands' | grep -aoE '[0-9]+' | head -1)
+    case "${added:-x}" in (''|*[!0-9]*) added=-1 ;; esac
+    printf '=== wr add ===\n%s\n' "$addout" >> "$out"
+  elif [ "$finishms" -ne 0 ]; then
+    errors="${errors}manager-never-answered-after-recovery;"
+  fi
+
+  # the last high-water reading, covering the add as well: VmHWM only ever grows, so this is
+  # the whole run's peak whenever the manager is still alive to be read.
+  dep_granularity_proc "$mpid"
+  case "$DEPGRAN_PROC_HWM" in (''|*[!0-9]*) ;; (*)
+    [ "$DEPGRAN_PROC_HWM" -gt "$peakkb" ] && peakkb="$DEPGRAN_PROC_HWM" ;;
+  esac
+
+  safe_kill "$mpid"
+  wait "$mpid" 2>/dev/null
+
+  # E2 acceptance test 4, observed and printed rather than gated on: the manager announces
+  # itself only once recovery has finished, and pre-fix it binds and says so at t=0, so this
+  # reads negative. Deliberately not a FAIL condition. Making it one would fail the pre-fix
+  # binary on ordering before this gate's own metrics were even compared, which is exactly
+  # how a memory gate stops noticing that its fixture has gone blunt.
+  if [ "$servingms" -ne 0 ] && [ "$finishms" -ne 0 ]; then
+    echo "  'started on' was logged $((servingms - finishms))ms after 'prior state recovered'" \
+         "(negative means it announced itself before recovery finished, as the pre-fix tree does)"
+  fi
+
+  # the manager's own log, kept where the cleanup cannot reach it: its per-phase elapsed
+  # fields are how a slow run is attributed to a phase.
+  printf '=== manager log ===\n' >> "$out"
+  cat "$mgrlog" >> "$out" 2>/dev/null
+
+  local peakrssmb=-1
+  [ "$peakkb" -gt 0 ] && peakrssmb=$((peakkb / 1024))
+  printf 'DEPGRAN-SUMMARY waiters=%s members=%s peakRssMb=%s recoverySec=%s statusInWindow=%s addSec=%s errors=%s\n' \
+    "$waiters" "$members" "$peakrssmb" "$(dep_granularity_secs "$recoveryms")" "$statusin" \
+    "$(dep_granularity_secs "$addms")" "${errors:--}"
+
+  # the verdict. A gate that passes when the measurement is missing is worse than no gate, so
+  # an absent or unreadable metric is a hard failure; the one exception is a run that started
+  # recovering and never finished, which is a plain FAIL because it is the pre-fix outcome
+  # this gate exists to catch.
+  if [ "$startms" -eq 0 ]; then
+    echo "FAIL (NOT MEASURED): the manager never logged 'recovering prior state', so it never"
+    echo "  reached recovery and nothing was measured; inspect $out"
+    return 1
+  fi
+
+  if [ "$peakrssmb" -le 0 ]; then
+    echo "FAIL (NOT MEASURED): no usable VmHWM sample, so the manager's peak memory was never"
+    echo "  measured; inspect $out"
+    return 1
+  fi
+
+  if [ "$finishms" -eq 0 ]; then
+    echo "FAIL: recovery started and never finished (peakRssMb=$peakrssmb, errors=$errors)"
+    echo "  => this is the pre-fix outcome: expanding a dep-group dependency into one key per"
+    echo "     live member retains waiters x members keys, and the manager dies or crawls long"
+    echo "     before it can publish (spec A1 and A2)"
+    return 1
+  fi
+
+  if [ "$recoveryms" -lt 0 ] || [ "$addms" -lt 0 ]; then
+    echo "FAIL (NOT MEASURED): recovery finished but recoverySec or addSec is absent (errors=$errors)"
+    echo "  => a run whose 'wr add' never happened would otherwise sail past every threshold"
+    return 1
+  fi
+
+  if [ "$added" -ne 1 ]; then
+    echo "FAIL (WRONG RESULT): 'wr add' of one member into $biggroup reported $added new commands"
+    echo "  => the add was timed but did not do the work the timing is supposed to cover"
+    return 1
+  fi
+
+  if [ "$statusin" = "nonresponsive" ]; then
+    echo "FAIL: 'wr manager status' died against a manager that was still starting"
+    echo "  => that is exactly what spec E5 exists to prevent: the startup sidecar must be read"
+    echo "     before the command decides the manager is non-responsive (cmd/manager.go)"
+    return 1
+  fi
+
+  if [ "$peakrssmb" -gt "$maxrssmb" ] \
+    || [ "$(awk -v a="$recoveryms" -v b="$maxrecsec" 'BEGIN{print (a>b*1000)?1:0}')" -eq 1 ] \
+    || [ "$(awk -v a="$addms" -v b="$maxaddsec" 'BEGIN{print (a>b*1000)?1:0}')" -eq 1 ]; then
+    echo "FAIL: a threshold was exceeded (peakRssMb=$peakrssmb/$maxrssmb," \
+         "recoveryMs=$recoveryms/$((maxrecsec * 1000)), addMs=$addms/$((maxaddsec * 1000)))"
+    echo "  => a dep-group dependency must stay one opaque key for the whole group, resolved"
+    echo "     against the in-memory per-group member state (jobqueue/depgroups.go)"
+    return 1
+  fi
+
+  # last, so that a run failing for any other reason is never widened: a longer run of a run
+  # that already FAILs teaches nothing. 2 asks the caller to widen the window once.
+  if [ "$statusin" = "-" ]; then
+    echo "FAIL: nothing sampled 'wr manager status' inside the startup window"
+    echo "  => a run that never samples leaves E5's command wiring with no automated coverage"
+    return 2
+  fi
+
+  echo "PASS: peakRssMb=$peakrssmb, recovery in ${recoveryms}ms, 'wr manager status' answered" \
+       "'$statusin' inside the window, and one more member added in ${addms}ms"
+  return 0
+}
+
+# dep_granularity_proc reads the manager's peak RSS and whether it is still a live process,
+# out of /proc with shell builtins only. It reports through globals because a command
+# substitution would fork, which is what this loop exists to avoid; a zombie counts as dead,
+# since this function's caller is the process's parent and never reaps it until the end.
+dep_granularity_proc() {
+  local pid="$1" key value rest
+  DEPGRAN_PROC_HWM=""
+  DEPGRAN_PROC_ALIVE=0
+
+  [ -r "/proc/$pid/status" ] || return 0
+
+  while read -r key value rest; do
+    case "$key" in
+      VmHWM:) DEPGRAN_PROC_HWM="$value" ;;
+      State:) [ "$value" != "Z" ] && DEPGRAN_PROC_ALIVE=1 ;;
+    esac
+  done < "/proc/$pid/status"
+}
+
+# dep_granularity_secs renders a millisecond measurement as seconds, and a missing one as the
+# "-" step 7 asks for: no numeric threshold can evaluate a metric the run never reached, so
+# it must be visibly absent rather than zero.
+dep_granularity_secs() {
+  [ "$1" -lt 0 ] && { echo "-"; return 0; }
+  awk -v ms="$1" 'BEGIN{printf "%.3f", ms/1000}'
+}
+
+# dep_granularity_status_sample runs `wr manager status` once and classifies its answer.
+dep_granularity_status_sample() {
+  local out="$1" sout srce=0
+  sout=$(timeout 120 "$WR" manager status --deployment production 2>&1) || srce=$?
+  printf '=== wr manager status (in window) rc=%s ===\n%s\n' "$srce" "$sout" >> "$out"
+  if [ "$srce" -ne 0 ]; then echo "nonresponsive"; return 0; fi
+  case "$sout" in
+    *"starting:"*) echo "starting" ;;
+    *"Status website:"*) echo "up" ;;
+    # anything else is "stopped", which the command prints when it finds no pid file, no
+    # listener and no startup sidecar. The sample was fired because the sidecar existed, so
+    # that answer means the sidecar went away before the command read it - which is the
+    # window closing, not an answer about the window.
+    *) echo "-" ;;
+  esac
+}
+
+# dep_granularity_wait_up waits up to the given seconds for the manager to answer as a
+# running manager, which is what step 6 needs before it can time an add.
+dep_granularity_wait_up() {
+  local secs="$1" waited=0
+  while [ "$waited" -lt "$secs" ]; do
+    timeout 60 "$WR" manager status --deployment production 2>&1 | grep -aq 'Status website:' && return 0
+    sleep 2
+    waited=$((waited + 2))
+  done
+  return 1
+}
+
 cmd_runner_started_timeout_check() {  # runner-started-timeout-check - reliable4 #3 Started() kills healthy cmd
   # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of make
   # test) for reliable4 ISSUE #3: after exec, the runner reports its PID via c.Started();
@@ -2451,6 +2899,25 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         nothing was measured (no seed, dead manager, no reference history scan),
                         OR the seeded history is under WRDEV_HS_MIN_PERGROUP (1000) per group or
                         WRDEV_HS_MIN_ARCHIVED (100000) in total, which the pre-fix code passes too.
+  dep-granularity-check [waiters] [members] [groups]
+                        dep-granularity SCALE GATE (real binary, farm-safe - every fixture job waits
+                        on a never-seen dep group, so nothing is ever scheduled and no runner or LSF
+                        job is created): builds a DB of W jobs waiting on one M-member dep group
+                        among G groups (TestDepGranularityFixture), points an isolated PROD-mode
+                        manager at a copy of it, and reports peak RSS, the recovery window between
+                        the two 'recovering' log lines, what 'wr manager status' says INSIDE that
+                        window, and how long 'wr add' of one more member takes (defaults 30000 3000
+                        6300; a ~110MB fixture, copied per run and the copy removed again). Prod
+                        pre-fix: 150,472 live jobs, 97.55% of a 15.65GB heap in recoveredItemDef,
+                        42m56s to recover, five OOM kills at ~180GB. PASS = peakRssMb <=
+                        WRDEV_DEPGRAN_MAX_RSS_MB, recoverySec <= WRDEV_DEPGRAN_MAX_RECOVERY_SEC,
+                        addSec <= WRDEV_DEPGRAN_MAX_ADD_SEC and statusInWindow starting/up;
+                        FAIL = a threshold exceeded, recovery started and never finished (the
+                        pre-fix outcome), 'wr manager status' non-responsive or never sampled, OR
+                        nothing was measured.
+                        WRDEV_DEPGRAN_DB=<file> measures a pre-built fixture instead of generating
+                        one, which is how the pre-fix worktree (8b9ba00) gets a fixture at all;
+                        WRDEV_DEPGRAN_ABORT_RSS_MB (16000) caps the pre-fix run's memory.
   runner-started-timeout-check
                         reliable4 #3 reproducer: a transient post-exec Started() RPC timeout
                         kills a healthy running command; fails until Started() tolerates it
@@ -2581,6 +3048,7 @@ case "${1:-help}" in
   idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
   bkill-hygiene) cmd_bkill_hygiene "${2:-1900}" "${3:-120}" ;;
   control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
+  dep-granularity-check) cmd_dep_granularity_check "${2:-}" "${3:-}" "${4:-}" ;;
   runner-started-timeout-check) cmd_runner_started_timeout_check ;;
   exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
   transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
