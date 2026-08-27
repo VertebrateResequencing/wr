@@ -3214,18 +3214,41 @@ func depGroupsEverSeenTx(tx *bolt.Tx, depGroups []string) map[string]bool {
 	return seen
 }
 
-// storeEnv stores a clientRequest.Env in db unless cached, which means it must
-// already be there. Returns a key by which the stored Env can be retrieved.
+// storeEnv stores a clientRequest.Env in db unless it is already stored.
+// Returns a key by which the stored Env can be retrieved.
+//
+// A miss in the envCacheSize-entry cache does not mean the record is absent:
+// production holds 549 distinct envs, so a cache miss whose bytes are already in
+// bucketEnvs, identical under the same key, is the ordinary case. Asking a read
+// transaction first keeps the write transaction - a full commit that rewrites the
+// freelist and fsyncs twice, taken sequentially before createJobs on the add
+// path - for the envs that are genuinely new (.docs/bugfixes/260827-2.md).
+//
+// Finding the key stored is as conclusive as finding it cached was: both assume
+// no collision of byteKey's 128-bit hash, and bucketEnvs is never deleted from,
+// so a stored key cannot go away.
 func (db *db) storeEnv(env []byte) (string, error) {
 	envkey := byteKey(env)
-	if !db.envcache.Contains(envkey) {
-		err := db.store(bucketEnvs, envkey, env)
-		if err != nil {
-			return envkey, err
-		}
-
-		db.envcache.Add(envkey, env)
+	if db.envcache.Contains(envkey) {
+		return envkey, nil
 	}
+
+	var stored bool
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		stored = tx.Bucket(bucketEnvs).Get([]byte(envkey)) != nil
+
+		return nil
+	})
+	if err == nil && !stored {
+		err = db.store(bucketEnvs, envkey, env)
+	}
+
+	if err != nil {
+		return envkey, err
+	}
+
+	db.envcache.Add(envkey, env)
 
 	return envkey, nil
 }
