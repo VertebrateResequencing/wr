@@ -754,6 +754,11 @@ type db struct {
 	arStop       chan struct{} // closed by close() to stop the writer after a final drain
 	arWriterDone chan struct{} // closed by the writer when it has fully stopped
 	arStopped    bool          // guarded by arMu: the writer will drain no more
+	// arFold is what the archive writer's folding actually achieved, summarised
+	// to the log once per archiveFoldReportInterval (see archivefold.go). Atomics
+	// only: it adds no lock to the archive path and no behaviour depends on it.
+	arFold     archiveFoldStats
+	arFoldStop chan struct{} // closed by close() to stop the fold reporter
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -1181,11 +1186,13 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		arSignal:           make(chan struct{}, 1),
 		arStop:             make(chan struct{}),
 		arWriterDone:       make(chan struct{}),
+		arFoldStop:         make(chan struct{}),
 		upgradedOnOpen:     upgradedOnOpen,
 	}
 
 	go dbstruct.bestEffortWriter(ctx)
 	go dbstruct.archiveWriter(ctx)
+	go dbstruct.archiveFoldReporter(ctx)
 
 	if backupsEnabled {
 		go dbstruct.backupTicker(ctx)
@@ -1572,7 +1579,12 @@ type archiveOp struct {
 	encoded []byte
 	job     *Job
 	result  chan error // buffered(1): this caller's individual reply
-	replied bool       // writer-only, so reply() is idempotent
+	// queued is when the caller offered this archive to the writer, so the
+	// periodic fold summary can report how long it then waited to be picked up
+	// (see archivefold.go). Set by archiveJob before enqueuing, so the wait
+	// includes acquiring arMu.
+	queued  time.Time
+	replied bool // writer-only, so reply() is idempotent
 }
 
 // reply gives this archive's own outcome to its waiting caller, at most once.
@@ -1662,6 +1674,11 @@ func (db *db) drainArchives(final bool) {
 		return
 	}
 
+	// how long these callers waited to be picked up, recorded once per archive
+	// here rather than per transaction, so a per-job retry cannot double-count it
+	// (see archivefold.go).
+	db.arFold.observeWaits(ops, time.Now())
+
 	db.applyArchives(ops)
 
 	// mark the db dirty for the backup ticker exactly as the pre-fix per-archive
@@ -1707,7 +1724,13 @@ func (db *db) applyArchives(ops []*archiveOp) {
 // transaction is rolled back, so the caller can take that op out and retry the
 // rest.
 func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
+	started := time.Now()
+
+	var begun time.Time
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		begun = time.Now()
+
 		for i, op := range ops {
 			if err := db.applyArchiveOp(tx, op); err != nil {
 				if failed != nil {
@@ -1720,6 +1743,15 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 
 		return nil
 	})
+
+	// the fold this transaction achieved, how long it took in total, and how much
+	// of that was spent acquiring bolt's single write lock before the transaction
+	// body ran - so a concurrent add's transactions starving the archive writer is
+	// distinguishable from this transaction's own commit being expensive
+	// (archivefold.go).
+	db.arFold.observeTx(len(ops), time.Since(started), begun.Sub(started))
+
+	return err
 }
 
 // applyArchiveOp applies one archive within tx, turning a panic into that
@@ -2552,6 +2584,7 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		encoded: encoded,
 		job:     job,
 		result:  make(chan error, 1),
+		queued:  time.Now(),
 	}
 
 	if !db.enqueueArchive(op) {
@@ -4012,6 +4045,10 @@ func (db *db) finaliseBackup(ctx context.Context) {
 	// first because its callers are synchronously waiting on the outcome.
 	db.stopArchiveWriter()
 	db.stopBestEffortWriter()
+
+	// after the archive writer's final drain, so its last transactions make it
+	// into the final fold summary.
+	db.stopArchiveFoldReporter(ctx)
 
 	// drain ongoing async write transactions so the final backup captures them.
 	db.wgMutex.Lock()
