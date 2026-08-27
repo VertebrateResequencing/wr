@@ -460,6 +460,109 @@ fold **217.64** on this code, versus **1.00** with coalescing mutated away, wher
 is readable against both regimes. A fold of ~1 with a *small* wait means arrivals
 are merely sparse - which is why the split had to be on the same line.
 
+## Three mechanisms, separated by experiment (2026-08-27)
+
+A controlled A/B on `/nfs/hgi` (production's own filesystem) plus a 16-minute
+read-only sample of the live manager separated **three independent mechanisms**.
+Evidence in `/nfs/hgi/wr/sb10-wrdevtest/mmaplock/`.
+
+### Mechanism A: the add path's lock contention - CONFIRMED, and it matches the workload
+
+The operator supplied the missing workload shape: **the portal dedup jobs are fast
+and each one `add`s compress jobs, which depend on all the dedup jobs finishing
+first.** So adds are interleaved roughly 1:1 with completions, from the runners
+themselves, and one huge dep group is where the 112,486 memberships come from.
+
+Reproduced by interleaving one `storeNewJobs` per archive:
+
+| | archives | p50 | max |
+| --- | --- | --- | --- |
+| archives only | **357/s** | 897 ms | 1,893 ms |
+| archives + interleaved adds | **150/s** | 2,497 ms | 5,792 ms |
+
+**Adds halve throughput and multiply latency 2.8x, hitting `add` and `jarchive`
+equally, and it is entirely independent of freelist slack** (identical in both
+arms). The fold line names the mechanism: `meanLock=1.421s maxLock=3.9s` - the
+archive writer spends most of each transaction **waiting for bolt's write lock**,
+held by the add path's `bolt.Batch`. The add path costs 3-6 write transactions per
+request and the archive writer's plain `Update` cannot join a Batch.
+
+This explains the log ratio directly: 8,637 slow `add` against 6,403 slow
+`jarchive` is not two problems, it is one contention with more requests exposed on
+the add side.
+
+### Mechanism B: the backup copy's I/O - CONFIRMED as production's *current* latency
+
+16 minutes of 2-second sampling of the live manager (read-only `stat`;
+`.wr_production/` untouched):
+
+- **12 copies, each the full 8.99 GB, 28-40 s each, 35% duty cycle**
+- `db` stayed at 8,998,133,760 bytes throughout - **no growth, so no remap**
+- **10 slow `jarchive`s, 17.4-26.6 s, about one per copy cycle**, 8 of 10
+  overlapping a measured copy window
+
+So production's ordinary slow archives today are the copy's I/O - the unfixed
+**"Part C copy-I/O relief"**, already prototyped at 15.8 s -> 0.7 s via incremental
+fsync. Statistical caveat recorded honestly: with a 20 s request, a 28 s copy and
+an 81 s cycle, chance overlap is ~62%, so 8/10 is suggestive rather than decisive;
+the strong evidence is the once-per-cycle cadence and durations bounded by the copy.
+
+### Mechanism C: the mmaplock remap freeze - CONFIRMED real, currently dormant
+
+`db.backupToBackupFile` wraps the whole copy in one `db.bolt.View`, holding
+`mmaplock.RLock()` for its life. A write that must grow the file calls `db.mmap`,
+which wants `mmaplock.Lock()`, and Go's `RWMutex` then queues everything behind it.
+
+The A/B isolated exactly this. Same fixture, same filesystem, same 1,143
+archivers; the only difference was freelist slack:
+
+| | Arm A (as-is) | Arm B (same DB, compacted) |
+| --- | --- | --- |
+| free pages | **821,353** (45.5%) | **7** (0.0%) |
+| file growth during run | **0 bytes** | **+966 MiB** |
+| mmap steps crossed | **0** | **1** |
+| throughput / p99 | 357/s / 1,484 ms | 360/s / 1,491 ms |
+| **max archive** | **1,893 ms** | **6,613 ms** |
+| watchdog stalls | 0 | **3** |
+
+Throughput and p99 are *identical*; the only difference across 430,000 archives is
+Arm B's multi-second outlier, at the exact second the file crossed its mmap
+boundary. Per-second samples show **zero archives completing for the copy's
+remaining ~5 s**, then 229 draining the instant it finished.
+
+**Goroutine dump taken mid-freeze** (`armB-stall-1.txt`), 1,153 goroutines: 1,143
+archivers in `chan receive`, **one** writer in `sync.RWMutex.Lock` under
+`bbolt.(*DB).mmap(..., 0xc0000000)` - 3 GiB, i.e. `db.mmaplock.Lock()` - beneath
+`archiveTx`; and the holder in `internal/poll.(*FD).Pread` under
+`bbolt.(*Tx).WriteTo` <- `copyBackup` <- `backupToBackupFile` <- `bbolt.(*DB).View`.
+Mechanism proven, not inferred.
+
+**The freeze equals the copy's remaining time**, so it scales with DB size over
+copy bandwidth: ~6 s here (3.2 GB at ~350 MB/s), but production's live copy is
+9.0 GB in 28-40 s, so its ceiling today would be ~40 s - and far more during
+07:58-08:08, when the copy was slower under load and **the DB grew 7.34 -> 8.54 GB**.
+
+**A self-amplifying coupling worth naming:** an open read transaction pins every
+page freed during it (`freelist.ReleasePendingPages` only releases below the oldest
+read txid), so **the copy starves the freelist and thereby causes the growth that
+triggers the remap.**
+
+### Near-term prediction - worth watching
+
+Production's free pages fell from **271,809 (14:54) to 111,133 (16:13)** with the
+file size static: 0.46 GB of slack left, and 0.67 GB of high-water growth to the
+next mmap step. **When the next add burst consumes that, remaps resume**, and any
+that lands inside a copy freezes `add` and `jarchive` alike for the copy's
+remainder. Mechanism C is dormant, not absent.
+
+### Reading a production `archive fold` line
+
+| signature | meaning |
+| --- | --- |
+| `maxTx` large, `maxLock` ~0, `maxFold` huge | mmap remap freeze (mechanism C) |
+| `maxLock` ~ `maxTx` | add-path lock contention (mechanism A) |
+| `maxWait` large, `maxTx` small | sparse arrivals - not a problem |
+
 ## Which cause? Not settled yet
 
 
