@@ -681,11 +681,130 @@ against 470 lost reports at limit 2000. Every request still pays 11-13 s.
   remap was forced while profiling. It remains confirmed in the harness with a
   goroutine dump, and dormant here.
 
-### Loose end for the reviewers
+### INDEPENDENT REVIEW of this profile - several of my readings were wrong
 
-`maxFold` reads **exactly 164** in every steady-state line. That is suspiciously
-constant for a value that should vary with arrival timing, and may indicate a cap
-somewhere rather than a measurement. Worth checking before the figure is quoted.
+A fresh analysis of the same files corrected the section above. **The conclusion
+survives; two of the arguments for it do not.** Corrections, in order of
+importance:
+
+**1. The 84.93 / 9.10 / 5.59% mutex split is a TRANSACTION-COUNT split, not a
+hold-time split.** Go's mutex profile charges the *unlocker* the wait of the one
+waiter it hands off to; under a persistently deep FIFO queue that wait is
+approximately `queue_depth x mean_hold`, which is the same whoever unlocks. The
+`contentions` dimension - which I did not use - reads 89.6 / 6.1 / 4.3%, and the
+**mean delay per handoff is nearly equal across all three writers** (3.04 s,
+4.80 s, 4.21 s), with the *archive* writer's the largest. Had the add path done
+13x more but 13x shorter transactions, the profile would read identically.
+
+So "85% of mutex delay is the add path" carries no hold-time information. The add
+path **does** hold roughly 78-85% of the lock, but that comes from independent
+evidence: at saturation the holds must sum to the window, the archive writer's
+hold is `meanTx - meanLock` (0.42-0.54 s x 36 txs = ~16 s), best-effort ~4 s, and
+the residual ~93 s over 1,079 add transactions = **86 ms each**.
+
+**2. "The archive writer is merely a victim" is wrong as stated.** It is the *sole
+gate* on completion throughput - `completions/s == meanFold / meanTx` is an
+identity - so its service time sets the ceiling. And in aggregate waiter-seconds
+the **add path is the main victim** (96.07% of blocked waiter time, versus the
+archive writer's 1.86%), because it has 30-45 concurrent waiters while the archive
+writer is a single goroutine. The defensible statement is per-goroutine: **the
+archive writer is blocked 89-93% of its cycle.**
+
+**3. "Not CPU-bound" was understated by 16x.** 4,790 ms of samples over 30 s is
+16% of *one core*; gctrace reports **16 P**, so the manager used 0.16 cores =
+**1.0% of the machine**. GC printed 0% throughout, heap flat at ~1.08 GB.
+
+**4. "Stop the add path monopolising the lock" is unsupported as a throughput
+fix.** Adds and completions are ~1:1 by construction, both need the same lock, and
+the whole budget is ~10 write transactions/s. Giving the archive writer priority
+just moves the queue from `jarchive` to `add`. What the data supports instead:
+
+- **Cut the add path's transaction COUNT, not its priority.** 763 goroutines are
+  blocked in `bolt.DB.Batch`, 655 of them spawned by `db.launchBatchStore` (one per
+  batched store), spread across **28 simultaneous `batch.run` transactions**. The
+  add path achieves **2.6 adds per transaction** against the archive writer's
+  **125** - about 48x more transactions per unit of user-visible work. Replacing
+  `bolt.Batch` with the same explicit drain-everything-pending writer the archives
+  already use is the direct analogue.
+- **Then attack the 60-90 ms per-transaction floor**, which is ~93% off-CPU. It is
+  measured directly at limit 1: `meanTx` 52-74 ms with `meanLock` 0-1 ms and fold
+  exactly 1. That is what a bolt write commit costs on this DB whatever the payload.
+
+**5. A second competing consumer that NONE of the instrumentation can see.**
+Because bolt is MVCC the backup's `tx.WriteTo` takes **no write lock**, so it is
+invisible to the mutex profile, the block profile and `archivefold` alike. From
+`samples.csv`: **22 distinct `db_bk.tmp` lifetimes, ~30-31 s each, one starting
+every ~80-90 s, present in 26.4% of samples** - about **8.5 GB in 31 s, ~275 MB/s
+of competing NFS write bandwidth at a ~26% duty cycle**, against a lock whose hold
+is ~93% write and fsync. How much of the 86 ms it costs **cannot be determined
+from these profiles**; it needs an A/B with the backup off or throttled.
+
+Secondary effect confirmed: a 31 s read transaction pins pages freed during it, so
+writers must allocate fresh ones - the DB grew 8.396 -> 8.573 GB over the run.
+
+**Not a compaction story, though:** the freelist retains ~110k free pages ~= 450 MB
+~= 5.4% of the file. Freelist *CPU* is still 54% of the write path
+(`Tx.commitFreelist` 0.69 s of `DB.Update`'s 1.27 s), but the volume is small.
+
+**6. `maxFold` = 164 is not a cap - it is a closed-loop artefact.** No size bound
+exists anywhere on the drain path (`swapArchives` takes `arPending` wholesale).
+The sequence is actually 131, 163, 164 x10, 166, 165, 168 - it tracks `maxTx`.
+Because the writer *is* the rate limiter, `archives/s == meanFold/meanTx`, so
+arrival rate is proportional to `1/meanTx` and `maxFold ~= arrival_rate x maxTx`,
+predicted within ~5% on every line. Nothing is being clipped.
+
+**7. RSA at 24.63% is real churn but irrelevant.** `jobqueue.Client` creates one
+mangos socket in `Connect` and reuses it, so **no handshake is paid per request** -
+the 745 long-lived pipes confirm it. The churn is per client *process*: ~23-30 new
+connections/s against ~23-27 completions/s, i.e. about one per completion, because
+each dedup job's own `wr add` is a fresh process. But `handshaker.worker` is
+**0.35% of the host**; the entry tops the profile only because the manager does
+almost no CPU work at all. An ECDSA server key would be 20-40x cheaper if it ever
+mattered.
+
+**8. My slow-request statistics were window-dependent and are tail means.** Over
+the whole log: `add` **n=28,806 mean 13.54 s max 24.96 s**; `jarchive` **n=4,403
+mean 11.67 s max 35.18 s**. Both are conditioned on >= 10 s (that is the log
+threshold), so they are tail means, not means. The untruncated mean is
+`meanWait + meanTx` ~= **7.6 s**.
+
+**9. Provenance correction:** all four profile types are cumulative from process
+start (16:33:20), and load only began ~16:41:45. So the load profiles cover **~113 s
+of actual contention**, not the 474 s between snapshots - any rate divided by 474
+is ~4x too low.
+
+**10. The profiled run never reached the 60 s floor.** Max `jarchive` in the whole
+window is **35.18 s**. This is a milder regime than the failure being diagnosed
+(1,143 runners, latency pinned at 60 s, 470 lost reports), so extrapolating a fix
+from it is reasonable but **not proven**.
+
+**Two cross-instrument agreements worth trusting**, both independent of my
+reasoning: the mutex profile's bolt-lock total (5,252.7 s) against the block
+profile's `beginRWTx` (5,313.8 s) agree to **1.2%**; and the block profile's
+`archiveTx` wait (98.97 s) against the fold log's own `meanLock x txs` over the
+same window (~100 s) agree to **~1%**. Also: **29 goroutines blocked in
+`sync.Mutex.Lock`, all on the same mutex address, all in `bolt.beginRWTx`** - there
+is one serialiser, and `queue.mutex` is 290x smaller (18.06 s, 0.34%).
+
+**Also confirmed, and relevant to work in flight:** there are **no `os/exec`,
+`bsub`, `bjobs`, `RunCmd`, `limiter` or scheduler frames anywhere** in the 2,715
+goroutine dump, and 99.9% of the archive handler's blocking is the archive writer.
+So the synchronous LSF call in `decrementGroupCount` was blocking nothing at that
+instant - it remains a latent unbounded call worth bounding, but it is not this
+bottleneck.
+
+### The measurement that would have prevented the misreading
+
+Add the same four counters `archivefold` gives archives - transactions, calls
+folded, lock wait, transaction duration - **to the add path's writer**. The
+hold-time split in correction 1 is *derived*, not measured, because nothing
+instruments the add path the way `archivefold` instruments archives. It is a small
+change and it would settle the central number directly.
+
+### Loose ends - both now settled
+
+`maxFold` = 164 and the RSA CPU entry were both open when this section was first
+written; corrections 6 and 7 above settle them. Neither is a defect.
 
 ## Which cause? Not settled yet
 
