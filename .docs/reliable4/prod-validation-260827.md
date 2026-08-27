@@ -563,6 +563,130 @@ remainder. Mechanism C is dormant, not absent.
 | `maxLock` ~ `maxTx` | add-path lock contention (mechanism A) |
 | `maxWait` large, `maxTx` small | sparse arrivals - not a problem |
 
+## PRODUCTION PROFILE, 16:33-16:54 (2026-08-27) - mechanism A confirmed
+
+Manager restarted on `v0.37.1-90-g11fb939` (so the `archive fold` instrumentation
+from `9fbccb4` was deployed for the first time) with
+`GODEBUG=gctrace=1 WR_PPROF_ADDR=0.0.0.0:6060`, `-f`. Portal limit was 1 at
+startup, raised to **500** at ~16:41. `WR_PPROF_ADDR` also enables mutex and block
+profiling (`server.go:3263`).
+
+**Profile and sample files: `/nfs/hgi/wr/sb10-pprof/prof260827/`**
+
+| file | what |
+| --- | --- |
+| `base-{mutex,block,goroutine,heap}.pb.gz` | baseline at limit 1, 16:35:49 |
+| `base-goroutine.txt` | baseline goroutine listing (69 goroutines) |
+| `load-{mutex,block,goroutine}.pb.gz` | under load at limit 500, 16:43:43 |
+| `load-cpu.pb.gz` | 30 s CPU profile, 16:43:44 |
+| `load-goroutine-full.txt` | full goroutine dump with stacks, under load |
+| `samples.csv` | 2 s samples: db size, `db_bk.tmp` size, slow-request counts |
+
+Manager log: `/nfs/hgi/wr/lsf/.wr_production/log`. Foreground/gctrace log:
+`/nfs/hgi/wr/sb10-pprof/wr-fg-1787844800.log`.
+
+### Recovery at nearly double the job count
+
+| phase | elapsed |
+| --- | --- |
+| opened database | 1.189 s |
+| decoded live jobs (**296,949**) | **1m12.152s** |
+| built dependency-group state (**258,218** memberships) | 892 ms |
+| resolved prior job dependencies | **268 ms** |
+| enqueued prior jobs | 635 ms |
+| **16:33:21 -> 16:34:36 total** | **75 s** |
+
+**296,949 jobs in 75 s**, against the old code's 42m56s for 150,472. Dependency
+resolution is 268 ms at 258,218 memberships. Decode is 96% of the window and is
+the only remaining startup cost.
+
+### Mechanism A is production's dominant serialiser - three independent measurements
+
+**1. The mutex profile** (`load-mutex.pb.gz`, 5,272 s total delay):
+
+| path | share |
+| --- | --- |
+| **`bbolt.(*batch).run` -> `batch.trigger` -> `sync.Once.Do`** | **84.93%** (4,478 s) |
+| `archiveWriter` -> `drainArchives` -> `archiveTx` | 9.10% (480 s) |
+| `bestEffortWriter` -> `drainBestEffort` | 5.59% (295 s) |
+
+`bolt.Batch` is used **only by the add path**; the archive and best-effort writers
+both use plain `Update`. So **85% of all mutex delay in the manager is the add path
+holding bolt's write lock**, and the archive writer is a victim at 9%. Flat cost is
+`sync.(*Mutex).Unlock` under `bbolt.(*DB).Update` -> `Tx.Commit` -> `Tx.close`
+(99.63%).
+
+**2. The `archive fold` line**, steady state at limit 500, five consecutive minutes
+within a few percent of each other:
+
+```
+txs=13 archives=1606 meanFold=123.54 maxFold=164 meanWait=2.477s maxWait=6.46s
+  meanTx=5.062s maxTx=7.501s meanLock=4.52s maxLock=7.005s interval=1m0s
+```
+
+**`meanLock` / `meanTx` = 89%** - nine tenths of every archive transaction is spent
+waiting for a lock someone else holds. And `meanFold` is 123-127 with a max of 164,
+so **the writer is batching correctly**; it simply cannot get the lock. That is the
+signature the instrumentation was built to identify.
+
+**3. The block profile** (`load-block.pb.gz`, 51.40 hrs total):
+`handleAdd` -> `createJobs` **7.20 hrs (14.02%)** against `handleArchive` ->
+`archiveCompletedJob` **3.97 hrs (7.72%)** - adds block roughly twice as much as
+archives.
+
+**4. Slow-request counts agree**, and more starkly than this morning:
+
+| method | n | mean | max |
+| --- | --- | --- | --- |
+| `add` | **14,996** | 13.1 s | 20.0 s |
+| `jarchive` | 1,494 | 11.1 s | 25.9 s |
+
+A **10:1** ratio, up from this morning's 1.35:1.
+
+### The manager is not CPU-bound
+
+`load-cpu.pb.gz`: 30 s wall, **4,790 ms of samples = 15.97%** of capacity. So
+nothing here is a compute limit. Two entries worth recording anyway:
+
+- **`crypto/internal/fips140/bigmod` at 24.63% cumulative** (`montgomeryMul`,
+  `addMulVVW1024`) - RSA, i.e. TLS handshakes. The largest single CPU consumer, and
+  it suggests client connection churn: each `wr add` from a runner appears to pay a
+  handshake. Worth a look independently of the write path.
+- **`freelist.(*hashMap).freePageIds` at 12.53%** - freelist work is back up
+  (an earlier validation had driven it from 18.6% to 2.47%), consistent with the DB
+  having grown and refragmented.
+
+### Throughput peaks well below limit 2000
+
+| limit | concurrent runners | completions/s |
+| --- | --- | --- |
+| 1 | ~1 | ~2/s (104-153/min) |
+| **500** | ~349 rising | **~23-27/s** (1,392-1,632/min) |
+| 2000 (this morning) | 1,143 | **~14/s** |
+
+**Throughput roughly halves between limit 500 and limit 2000.** The optimum is at or
+below 500, and beyond it more concurrency actively costs throughput - textbook
+saturation collapse, and a useful operational fact on its own.
+
+At limit 500 nothing was lost: **0 requests at or over 30 s, 0 at or over 60 s**,
+against 470 lost reports at limit 2000. Every request still pays 11-13 s.
+
+### Mechanisms B and C this session
+
+- **B (backup copy I/O): present.** `jarchive` max 25.9 s, in the same 17-27 s band
+  measured earlier, and the backup ran at a **9.2% duty cycle** (79 of 860 samples
+  had a `db_bk.tmp`), much lower than the 35% seen this morning at higher load.
+- **C (mmap remap freeze): not observed.** The DB grew 139 MB during the ramp
+  (9.015 -> 9.154 GB between 16:42:23 and 16:43:17) and then went static, so no
+  remap was forced while profiling. It remains confirmed in the harness with a
+  goroutine dump, and dormant here.
+
+### Loose end for the reviewers
+
+`maxFold` reads **exactly 164** in every steady-state line. That is suspiciously
+constant for a value that should vary with arrival timing, and may indicate a cap
+somewhere rather than a measurement. Worth checking before the figure is quoted.
+
 ## Which cause? Not settled yet
 
 
