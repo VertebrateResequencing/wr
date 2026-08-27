@@ -806,6 +806,91 @@ change and it would settle the central number directly.
 `maxFold` = 164 and the RSA CPU entry were both open when this section was first
 written; corrections 6 and 7 above settle them. Neither is a defect.
 
+## The two independent analyses: agreed, disputed, added
+
+Two fresh-context analyses examined the same production window by different routes
+- one from the **profiles**, one from the **code**. Neither saw the other's output.
+This is the reconciliation.
+
+### Agreed by both
+
+- **There is exactly one contended resource: bolt's write lock.** The profile route
+  proved it observationally (29 goroutines blocked in `sync.Mutex.Lock`, all on the
+  same mutex address, all in `bolt.beginRWTx`; `queue.mutex` 290x smaller at 0.34%).
+  The code route reached the same place by tracing every lock on both hot paths.
+- **The add path dominates that lock.** Profile route: ~78-85%, *derived* from
+  saturation plus the fold log. Code route: **87.7%, computed directly** from the
+  fold line (`13 x (meanTx - meanLock) = 7.40 s of 60 s = 12.3%` for archives, so
+  87.7% is everything else). Two methods, ~3-10 points apart, same conclusion.
+- **The manager is not CPU-bound.** 1.0% of a 16-core host.
+- **Reordering or prioritising the writers will not help.** Adds and completions are
+  ~1:1 and share one lock; priority moves the queue rather than shortening it. Both
+  independently concluded the lever is *transaction count*, not scheduling.
+- **The periodic backup is a real competing consumer that the mutex and block
+  profiles cannot see**, because bolt is MVCC and `tx.WriteTo` takes no write lock.
+
+### Disputed - and the code route wins on evidence
+
+- **The freelist.** The profile route concluded "not a compaction story… the volume
+  is small" (~110k free pages, 5.4% of the file, and freelist *CPU* only matters
+  when CPU is scarce, which it is not). The code route **reproduced the opposite**:
+  the identical empty write transaction costs **0.63 ms with an empty freelist and
+  61.3 ms at production's 111k free pages**, because `Tx.Commit` unconditionally
+  rewrites the entire free+pending list - 890 KB, written and fsynced, for zero
+  work. A reproduction beats an inference, so this stands as the explanation of the
+  52-74 ms floor.
+- **Whether the backup's cost is knowable.** The profile route said it cannot be
+  determined without an A/B. The code route showed it is closed-form: the copy's
+  read transaction pins pending pages, `EstimatedWritePageSize` counts them, and
+  every commit during the copy pays. Both are right in their own frame - the profile
+  route said "from *these profiles*" - but the practical answer is that two
+  `bolt.Stats()` fields on the existing fold line would settle it.
+
+### Added by the profile route alone
+
+- **The methodological catch that mattered most:** Go's mutex profile charges the
+  *unlocker* the wait of the waiter it hands off to, so under a deep FIFO queue the
+  84.93/9.10/5.59% split is a **transaction-count** split carrying no hold-time
+  information. My published reading of it was wrong, and no amount of code reading
+  would have caught that.
+- **Cross-instrument agreement worth trusting:** mutex-profile bolt-lock total
+  5,252.7 s against block-profile `beginRWTx` 5,313.8 s - **1.2% apart**; and
+  block-profile archive wait 98.97 s against the fold log's own figure ~100 s -
+  **~1%**.
+- 501 concurrent in-flight requests, **every one blocked** (239 add, 263 archive);
+  745 live mangos connections.
+- `maxFold` = 164 is a closed-loop artefact (`maxFold ~= arrival_rate x maxTx`,
+  predicted within 5% on every line), not a cap.
+- RSA is ~one new connection per completion - real churn, because each `wr add` is a
+  fresh process - but 0.35% of the host, and no handshake is paid per *request*.
+- **No `os/exec`, `bsub`, `bjobs` or scheduler frames anywhere in 2,715 goroutines**,
+  so the synchronous LSF call was blocking nothing at that instant.
+
+### Added by the code route alone
+
+- **`bucketEnvs` grows by one never-deleted ~6-11 KB record per add**, because
+  `managerremotesameaslocal: true` ships per-runner `os.Environ()` and the cache is
+  12 entries. **This is the upstream cause of the DB growth that every other
+  mechanism feeds on**, and both documents had been silent on it.
+- **Three *sequential* write transactions per single-job add** - the latency
+  mechanism the transaction count alone could not explain. 3 x 4.6 s queue traversal
+  = 13.8 s against a measured 13.54 s tail mean.
+- The freelist reproduction above.
+- The concrete minimum fix: three edits, no new machinery, ~2.4-4x the ceiling.
+- **The ordering hazard** that any add-fold change must argue past: `prepareNewJobs`
+  reads before it writes, and adds interact through dep groups.
+- A plain bug in `storeBatched` (an extra empty committed transaction per store),
+  and the explanation of `wr add 150000` taking 72.5 s (split into ~50 transactions).
+- No 6-request concurrency cap: `numRPCReaders` bounds admission only.
+
+### Net position
+
+The diagnosis is settled and neither analysis was redundant. **The floor is the
+freelist rewrite; the multiplier is three sequential add transactions; the growth
+that feeds both is an env record that is never deleted.** The fix is a set of
+cheap, contained edits, not new machinery - and the profile route's contribution
+was to stop the wrong fix being built on a misread number.
+
 ## Which cause? Not settled yet
 
 
