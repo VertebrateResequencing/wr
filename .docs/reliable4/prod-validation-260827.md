@@ -5,11 +5,16 @@ found the NEXT ceiling.** Recovery went from 42m56s to 36.4s and peak RSS from
 ~181 GB to 7.84 GB, with no OOM and no crash. Raising a job limit from 20 to 2000
 (1,143 concurrent runners) held memory fine but drove archive latency to the 60 s
 client floor and lost **470 final-state reports in one minute**. So the memory
-work is done; **write-path throughput is now the binding constraint**. What is
-*causing* that ceiling is **not yet established** - see "Which cause? Not settled
-yet", which corrects an earlier reading of this document that named DB-backup copy
-I/O as the cause. Three candidates remain and they imply different fixes; do not
-start coding until one is confirmed.
+work is done; **write-path throughput is now the binding constraint**.
+
+Measurement has since ruled out the two explanations that would have made this a
+hard limit: **fsync latency is 0.73 ms**, and free pages are only 10.9%, so
+neither durability nor freelist size accounts for a 70 ms transaction - and the
+same code reaches 172/s on local disk. Roughly 68 ms per transaction remains
+unexplained and needs a production profile to decompose.
+
+Two design directions are being explored in `throughput-architecture.md`; a
+**regression sweep of 26 wrdev.sh gates found no regression** from this delivery.
 
 Read this first for the current position. Background: the OOM diagnosis is in
 `prod-restart-260825.md`, the design in `.docs/dep-granularity/spec.md`, and each
@@ -17,6 +22,7 @@ phase file's "Phase N outcome" section carries corrections to that spec rather
 than just status.
 
 ## What was deployed
+
 
 `wr v0.37.1-77-gfb5df01` on farm22-ibackup01, started 2026-08-27 07:36:26 by the
 operator. Seven commits, each implemented, independently reviewed and committed
@@ -37,6 +43,7 @@ before this run (15.03 GB at 45.9% free pages -> 7.3 GB), and `db_predep-granula
 was kept as a pre-deployment copy.
 
 ## Startup, measured
+
 
 These are the phase lines this delivery added (section E9), at warn so they appear
 in an ordinary manager log with no `--debug`:
@@ -59,6 +66,7 @@ used to be expanded into per-job key lists are now built once, in 318 ms.
 
 ## Memory, measured
 
+
 ```
 VmHWM:  7844984 kB
 VmRSS:  7844984 kB
@@ -76,6 +84,7 @@ physical RAM, which is why the kill was arithmetically certain.
 
 ## Also confirmed working in production
 
+
 - **Publication after recovery.** The pid file appeared at 07:36, `client.token`
   and `manager.addr` at 07:37 - the token is now written at publication, so
   nothing outside could reach a half-recovered manager.
@@ -86,210 +95,8 @@ physical RAM, which is why the kill was arithmetically certain.
 - **`wr manager v0.37.1-77-gfb5df01 started on ...`** is logged *after*
   `prior state recovered`, which is the ordering the `fb5df01` gate now enforces.
 
-## Remaining issues
-
-### 1. Decode is now the entire startup cost
-
-34.664 s of the 36.4 s window - 95%. It has nothing to do with dependencies any
-more; it is reading and decoding 151,280 job records from a 7.3 GB DB.
-
-This is the only lever left if faster startup is wanted, and it would mean a
-batched or parallel decode. Note the measurements doc
-(`.docs/dep-granularity/startup-window-measurements.md`) bounds the *other*
-phases at synthetic scale but explicitly does not bound `initDB` or decode at
-production scale - this run is the first production figure for decode.
-
-**Recommendation: leave it.** 36 s is a perfectly good startup, and a parallel
-decode touches the recovery path this work has just stabilised.
-
-### 2. A thundering herd at publication
-
-57 `add jobs=10` requests took 10.1 s to 15.7 s each. All of them *started* at
-the publication instant (they are logged 07:37:12-07:37:17 with durations of
-10-15 s), and the durations climb monotonically, which is queueing rather than
-individual slowness.
-
-This is a **direct consequence of the new design**, not a defect in it: clients
-that would previously have trickled in and collected `ErrRecovering` now all
-arrive at the same moment, because the manager becomes reachable atomically. They
-had been waiting anyway, so nothing is lost, and 15.7 s is far under the 60 s
-`ClientMinRequestTimeout` floor.
-
-Worth watching rather than fixing: the herd scales with how many clients are
-blocked during the window, and the window scales with the job count. If a future
-recovery is slower, or more clients are waiting, this could approach the floor -
-at which point clients start retrying and the churn dynamics of
-`prod-restart-260825.md` become reachable again. `replyJobs=0` on all 57 suggests
-they were duplicate adds, so the work itself was cheap; the cost was contention.
-
-### 3. Continuous full-DB backup, causing the only other latency
-
-This is the top *confirmed* latency source at ordinary concurrency. Whether it is
-also what caps throughput under load is **not established** - see "Which cause?
-Not settled yet" before treating it as the fix for the stress test.
-
-```
-db_bk      7,283,757,056  07:42:33   (finished)
-db_bk.tmp  3,675,652,096  07:43:32   (already half-written)
-```
-
-Back-to-back full 7.3 GB copies - roughly 80 MB/s to NFS, indefinitely, because
-the dirty-flag ticker refires as soon as jobs keep completing. The two slow
-`jarchive` requests in the log (11.2 s at 07:40:15, 13.7 s at 07:41:25) sit
-inside that copy window.
-
-This is the **unfixed "Part C copy-I/O relief"** recorded in the
-backup-coordination work: `f51af04` stopped the backup *serialising* the archive
-hot path, but the copy itself is still a raw `tx.WriteTo` of the whole file, and
-archives pay latency while it runs.
-
-Context for how bad it is now, against `prod-state-260824.md`: **220 slow
-jarchives per 28 minutes, 20 of them past the 60 s floor**. This run: 2 in 5
-minutes, worst 13.7 s, none near the floor. Most of that improvement is the
-operator's compaction (15 GB -> 7.3 GB) rather than code. But it is now the top
-remaining latency source, and unlike the old behaviour it is *perpetual* rather
-than occasional.
-
-A prototype already exists and was measured: incrementally fsyncing the backup
-copy every ~32 MB took a 10 GB DB's freeze from 15.8 s to 0.7 s, size-independent
-(`reliable4-backup-stall-reinvestigation`). That is the starting point, not a
-blank page.
-
-## Which cause? Not settled yet
-
-An earlier revision of this document treated issue 3 (continuous full-DB backup
-copy) as the cause of the stress test's latency. **That was a leap, and it should
-not be acted on as fact.** A competing explanation fits the same evidence and
-implies different work.
-
-### The observation that raises the doubt
-
-The completion rates look like a hard ceiling, not a gradual degradation:
-
-| limit | runners | completions/s |
-| --- | --- | --- |
-| 20 | ~20 | **8.7/s** |
-| 2000 | 1,143 | **~14/s**, then erratic |
-
-Twenty runners were already at ~60% of the rate that 1,143 runners could reach.
-Now compare `prod-state-260824.md` and the `archive-rate` gate's recorded
-production figure: **queue ~600 deep, ~12/s, mean block 43000 ms** with 660
-concurrent archivers. Nearly the same number - and that gate measures the archive
-path **in-process, with no manager and no backup running at all**.
-
-One synchronous bolt write transaction per archive, each fsyncing to NFS at
-roughly 70 ms, serialized, *is* about 14/s. If that is the mechanism, relieving
-the backup copy barely moves it.
-
-### Sweep evidence, 2026-08-27: candidates 2 and 3 largely refuted
-
-Two gates from the regression sweep bear directly on this, and both point away
-from "the archive path is inherently ~14/s".
-
-| measurement | archivers | rate | mean | DB | filesystem | backups |
-| --- | --- | --- | --- | --- | --- | --- |
-| `archive-rate` gate | 660 | **172/s** | 41 ms | pristine6, 7.4 GB, 3202 MiB freelist | **local** `/dev/vda3` | on |
-| `limit-drain 20000 2000 30` | ~2000 runners | **~67/s** sustained | - | small, fresh | **NFS** (`$HOME`) | off (dev mode) |
-| **production, 08:00-08:07** | 1,143 runners | **~14/s** | - | 8.5 GB, growing | **NFS** | **on, continuous** |
-
-- **172/s on a 7.4 GB DB with a 3.2 GB freelist** says the archive code path, the
-  write lock and freelist/spill cost are *not* the ceiling. That substantially
-  refutes **candidate 3**, and refutes the structural half of **candidate 2**.
-- **~67/s across NFS** (2000 runners on 30-second jobs, drained clean with
-  `archive_reject=0`) says one fsync per archive over NFS is *not* a 14/s ceiling
-  either. That refutes the rest of **candidate 2**.
-- Production differs from both by exactly two things: a **continuously copied
-  7.3 GB backup**, and a **big DB on NFS**.
-
-So **candidate 1 is now the leading explanation**, with a sub-variant worth keeping
-separate: big-DB-on-NFS effects that neither gate covers, since `archive-rate` had
-the big DB but not NFS, and `limit-drain` had NFS but not the big DB.
-
-**Be careful how far this is pushed.** No single gate isolates one variable - the
-inference is by elimination across two measurements with *different* confounds,
-which is weaker than one controlled A/B. `archive-rate`'s fixture copy lived on
-local disk, so it says nothing about NFS fsync latency; `limit-drain` used a small
-dev-mode DB with backups off, so it says nothing about big-DB or backup effects.
-Nothing yet reproduces production's actual combination of big DB **and** NFS
-**and** continuous backup. That combination is only available in production, which
-is why the next measurement has to be taken there.
-
-### Three candidates, three different fixes
-
-1. **Backup copy I/O competing for the same NFS bandwidth.** Fix: incrementally
-   fsync the copy - already prototyped, 15.8 s -> 0.7 s on a 10 GB DB,
-   size-independent.
-2. **One fsync per archive, serialized on the single write lock.** Fix: coalesce
-   multiple archives per commit. Materially harder, because archives are
-   synchronous *by design* - the client is waiting for durability, so batching
-   trades latency for throughput and needs a correctness argument.
-3. **Freelist/spill CPU on a growing DB** (7.3 -> 8.5 GB during this run). Fix:
-   compaction cadence. Note `NoFreelistSync` was already tried and **dropped**
-   for breaking the fast-startup invariant - do not revisit it without reading
-   why.
-
-### What the logs can and cannot settle
-
-The pre-stress evidence supports candidate 1 *at low concurrency*: slow
-`jarchive`s at 07:40-07:57 arrived roughly one per few minutes, 10-22 s, clustered
-in backup windows. But at 1,143 runners that evidence cannot distinguish "the
-backup is stealing I/O" from "the write path was always ~14/s and 1,143 runners
-now queue on it". The backup windows also cannot be reconstructed retroactively -
-only the current `db_bk.tmp` size and `db_bk` mtime are observable, so there is no
-way to go back and check whether latency fell in the gaps between copies.
-
-### How to settle it
-
-The in-process route has now been taken and did not settle it - it eliminated two
-candidates rather than confirming one (above). **The remaining question is
-production-only**, so measure there:
-
-1. **Restart with `WR_PPROF_ADDR` and raise the limit again.** Recovery is now 36 s,
-   so a restart is cheap. Capture CPU + mutex + block profiles during saturation.
-   The discriminating question is where the archive goroutines sit: `fdatasync`/NFS
-   write, versus freelist/spill CPU, versus waiting on `db.rwlock`.
-2. **In the same run, correlate archive latency against backup progress.** Sample
-   `db_bk.tmp`'s size every couple of seconds and line the copy windows up against
-   the manager log's slow-request timestamps. **If latency falls in the gaps
-   between copies, candidate 1 is confirmed directly** - and that needs no profile
-   at all, just sampling during the run. This could not be done retroactively for
-   the 07:58-08:08 test because only the current `db_bk.tmp` is observable.
-3. **The decisive config experiment, if a filesystem is available:** point the
-   backup at a *different* filesystem (the `report-storm-lsf` mode already supports
-   this idea via `WR_RS_BKDIR`, "back up to a separate filesystem so it can't
-   starve the DB's I/O"). If the ceiling moves, candidate 1 is proven and Part C is
-   the fix. If it does not, the cause is the big DB on NFS, and the lever is
-   compaction cadence rather than copy pacing.
-
-**Observer-effect warning:** pprof sampling on this manager perturbs what it
-measures. Use the sampling tiers recorded in the prod-profiling notes rather than
-continuous capture, or the profile will report the cost of profiling.
-
-## Next steps, in order
-
-1. **Establish which cause is real before writing any code** - see "Which cause?
-   Not settled yet". Start with the `archive-rate` gate result from the wrdev.sh
-   sweep, which needs no production change; profile production only if that is
-   inconclusive. Getting this wrong means fixing the backup copy and discovering
-   the ceiling has not moved.
-2. **Watch issue 2** across a few more restarts. It needs no code today; what
-   would change that is a herd that approaches the 60 s floor.
-3. **Leave issue 1** unless startup time becomes a complaint.
-4. Close out the remaining recorded items in `.docs/bugfixes/260825-1.md`
-   (items 2-4), several of which became moot now that recovery completes before
-   any client can connect.
-
-## Things not to "fix"
-
-- **`wr manager status` dies with "could not read token file" for the whole
-  startup window on the daemonized path.** Operator decision, 2026-08-27: this is
-  expected, not a bug - status is only expected to work once `wr manager start`
-  says the manager has started. Making the pid-file branch consult the sidecar
-  would undo the entire point of publishing late.
-- The green window in `3390f23` is deliberate: ten test functions are red at that
-  commit by design. Do not bisect through it expecting a green suite.
-
 ## Limit stress test, 07:58-08:08 - the next ceiling, measured
+
 
 The operator raised a job limit from **20 to 2000** at ~07:58 to stress the new
 build. LSF filled it to **1,143 concurrent runners** (wr's own `wrp_*` jobs; the
@@ -384,6 +191,7 @@ controlled A/B.
 
 ## wrdev.sh regression sweep - no regression found
 
+
 26 gates run against the delivered code, at load 119-121 on 8 cores. Every gate
 that asserts a fixed invariant passes, with wide margins, including all four that
 exercise the rewritten startup path.
@@ -458,3 +266,261 @@ runner" rule, and the disk-pressure advice to use `/tmp` collides with it.
 - `parseBmgroups` (`jobqueue/scheduler/lsf.go:1491`) starts `bmgroup -w` and never
   calls `Wait()`, so every manager leaves a defunct `[bmgroup]` child. Present at
   both commits.
+## Remaining issues
+
+
+### 1. Decode is now the entire startup cost
+
+34.664 s of the 36.4 s window - 95%. It has nothing to do with dependencies any
+more; it is reading and decoding 151,280 job records from a 7.3 GB DB.
+
+This is the only lever left if faster startup is wanted, and it would mean a
+batched or parallel decode. Note the measurements doc
+(`.docs/dep-granularity/startup-window-measurements.md`) bounds the *other*
+phases at synthetic scale but explicitly does not bound `initDB` or decode at
+production scale - this run is the first production figure for decode.
+
+**Recommendation: leave it.** 36 s is a perfectly good startup, and a parallel
+decode touches the recovery path this work has just stabilised.
+
+### 2. A thundering herd at publication
+
+57 `add jobs=10` requests took 10.1 s to 15.7 s each. All of them *started* at
+the publication instant (they are logged 07:37:12-07:37:17 with durations of
+10-15 s), and the durations climb monotonically, which is queueing rather than
+individual slowness.
+
+This is a **direct consequence of the new design**, not a defect in it: clients
+that would previously have trickled in and collected `ErrRecovering` now all
+arrive at the same moment, because the manager becomes reachable atomically. They
+had been waiting anyway, so nothing is lost, and 15.7 s is far under the 60 s
+`ClientMinRequestTimeout` floor.
+
+Worth watching rather than fixing: the herd scales with how many clients are
+blocked during the window, and the window scales with the job count. If a future
+recovery is slower, or more clients are waiting, this could approach the floor -
+at which point clients start retrying and the churn dynamics of
+`prod-restart-260825.md` become reachable again. `replyJobs=0` on all 57 suggests
+they were duplicate adds, so the work itself was cheap; the cost was contention.
+
+### 3. Continuous full-DB backup, causing the only other latency
+
+This is the top *confirmed* latency source at ordinary concurrency. Whether it is
+also what caps throughput under load is **not established** - see "Which cause?
+Not settled yet" before treating it as the fix for the stress test.
+
+```
+db_bk      7,283,757,056  07:42:33   (finished)
+db_bk.tmp  3,675,652,096  07:43:32   (already half-written)
+```
+
+Back-to-back full 7.3 GB copies - roughly 80 MB/s to NFS, indefinitely, because
+the dirty-flag ticker refires as soon as jobs keep completing. The two slow
+`jarchive` requests in the log (11.2 s at 07:40:15, 13.7 s at 07:41:25) sit
+inside that copy window.
+
+This is the **unfixed "Part C copy-I/O relief"** recorded in the
+backup-coordination work: `f51af04` stopped the backup *serialising* the archive
+hot path, but the copy itself is still a raw `tx.WriteTo` of the whole file, and
+archives pay latency while it runs.
+
+Context for how bad it is now, against `prod-state-260824.md`: **220 slow
+jarchives per 28 minutes, 20 of them past the 60 s floor**. This run: 2 in 5
+minutes, worst 13.7 s, none near the floor. Most of that improvement is the
+operator's compaction (15 GB -> 7.3 GB) rather than code. But it is now the top
+remaining latency source, and unlike the old behaviour it is *perpetual* rather
+than occasional.
+
+A prototype already exists and was measured: incrementally fsyncing the backup
+copy every ~32 MB took a 10 GB DB's freeze from 15.8 s to 0.7 s, size-independent
+(`reliable4-backup-stall-reinvestigation`). That is the starting point, not a
+blank page.
+
+## Which cause? Not settled yet
+
+
+An earlier revision of this document treated issue 3 (continuous full-DB backup
+copy) as the cause of the stress test's latency. **That was a leap, and it should
+not be acted on as fact.** A competing explanation fits the same evidence and
+implies different work.
+
+### The observation that raises the doubt
+
+The completion rates look like a hard ceiling, not a gradual degradation:
+
+| limit | runners | completions/s |
+| --- | --- | --- |
+| 20 | ~20 | **8.7/s** |
+| 2000 | 1,143 | **~14/s**, then erratic |
+
+Twenty runners were already at ~60% of the rate that 1,143 runners could reach.
+Now compare `prod-state-260824.md` and the `archive-rate` gate's recorded
+production figure: **queue ~600 deep, ~12/s, mean block 43000 ms** with 660
+concurrent archivers. Nearly the same number - and that gate measures the archive
+path **in-process, with no manager and no backup running at all**.
+
+One synchronous bolt write transaction per archive, each fsyncing to NFS at
+roughly 70 ms, serialized, *is* about 14/s. If that is the mechanism, relieving
+the backup copy barely moves it.
+
+### Direct measurements, 2026-08-27: durability latency is NOT the constraint
+
+Two cheap probes, taken against the live filesystem and the live DB:
+
+```
+fsync, 4 KB, 30 samples:
+  /nfs/hgi (holds the prod DB)   median 0.73 ms   p90 0.84 ms   max 1.07 ms
+  /tmp     (local /dev/vda3)     median 0.26 ms   p90 0.34 ms   max 0.53 ms
+
+boltfree on the live db (8.59 GB, txid 35888):
+  free 228908 pages (0.94 GB) = 10.9% of the file
+```
+
+A bolt commit costs two fsyncs, so durability is **~1.5 ms** of a **~70 ms**
+transaction. The freelist is ~1.8 MB per commit at 228,908 free pages - real, but
+not 70 ms either. **So there is no fundamental durability floor at 14/s**, and the
+framing "database write speed is inherently limited" does not survive contact with
+the numbers: the same code reached 172/s on a 7.4 GB DB on local disk.
+
+Roughly 68 ms per transaction is unaccounted for and **cannot be decomposed from
+outside the process**. The leading suspects are NFS *bandwidth* contention with
+the continuous 7.3 GB backup (81 MB/s sustained) and scattered dirty-page writes
+across a large tree. Note the fsync probe does not refute the bandwidth theory:
+fsync latency and write bandwidth are different quantities, and a 4 KB probe
+measures the former only.
+
+### Sweep evidence, 2026-08-27: candidates 2 and 3 largely refuted
+
+Two gates from the regression sweep bear directly on this, and both point away
+from "the archive path is inherently ~14/s".
+
+| measurement | archivers | rate | mean | DB | filesystem | backups |
+| --- | --- | --- | --- | --- | --- | --- |
+| `archive-rate` gate | 660 | **172/s** | 41 ms | pristine6, 7.4 GB, 3202 MiB freelist | **local** `/dev/vda3` | on |
+| `limit-drain 20000 2000 30` | ~2000 runners | **~67/s** sustained | - | small, fresh | **NFS** (`$HOME`) | off (dev mode) |
+| **production, 08:00-08:07** | 1,143 runners | **~14/s** | - | 8.5 GB, growing | **NFS** | **on, continuous** |
+
+- **172/s on a 7.4 GB DB with a 3.2 GB freelist** says the archive code path, the
+  write lock and freelist/spill cost are *not* the ceiling. That substantially
+  refutes **candidate 3**, and refutes the structural half of **candidate 2**.
+- **~67/s across NFS** (2000 runners on 30-second jobs, drained clean with
+  `archive_reject=0`) says one fsync per archive over NFS is *not* a 14/s ceiling
+  either. That refutes the rest of **candidate 2**.
+- Production differs from both by exactly two things: a **continuously copied
+  7.3 GB backup**, and a **big DB on NFS**.
+
+So **candidate 1 is now the leading explanation**, with a sub-variant worth keeping
+separate: big-DB-on-NFS effects that neither gate covers, since `archive-rate` had
+the big DB but not NFS, and `limit-drain` had NFS but not the big DB.
+
+**Be careful how far this is pushed.** No single gate isolates one variable - the
+inference is by elimination across two measurements with *different* confounds,
+which is weaker than one controlled A/B. `archive-rate`'s fixture copy lived on
+local disk, so it says nothing about NFS fsync latency; `limit-drain` used a small
+dev-mode DB with backups off, so it says nothing about big-DB or backup effects.
+Nothing yet reproduces production's actual combination of big DB **and** NFS
+**and** continuous backup. That combination is only available in production, which
+is why the next measurement has to be taken there.
+
+### Three candidates, three different fixes
+
+1. **Backup copy I/O competing for the same NFS bandwidth.** Fix: incrementally
+   fsync the copy - already prototyped, 15.8 s -> 0.7 s on a 10 GB DB,
+   size-independent.
+2. **One fsync per archive, serialized on the single write lock.** Fix: coalesce
+   multiple archives per commit. Materially harder, because archives are
+   synchronous *by design* - the client is waiting for durability, so batching
+   trades latency for throughput and needs a correctness argument.
+3. **Freelist/spill CPU on a growing DB** (7.3 -> 8.5 GB during this run). Fix:
+   compaction cadence. Note `NoFreelistSync` was already tried and **dropped**
+   for breaking the fast-startup invariant - do not revisit it without reading
+   why.
+
+### What the logs can and cannot settle
+
+The pre-stress evidence supports candidate 1 *at low concurrency*: slow
+`jarchive`s at 07:40-07:57 arrived roughly one per few minutes, 10-22 s, clustered
+in backup windows. But at 1,143 runners that evidence cannot distinguish "the
+backup is stealing I/O" from "the write path was always ~14/s and 1,143 runners
+now queue on it". The backup windows also cannot be reconstructed retroactively -
+only the current `db_bk.tmp` size and `db_bk` mtime are observable, so there is no
+way to go back and check whether latency fell in the gaps between copies.
+
+### How to settle it
+
+The in-process route has now been taken and did not settle it - it eliminated two
+candidates rather than confirming one (above). **The remaining question is
+production-only**, so measure there:
+
+1. **Restart with `WR_PPROF_ADDR` and raise the limit again.** Recovery is now 36 s,
+   so a restart is cheap. Capture CPU + mutex + block profiles during saturation.
+   The discriminating question is where the archive goroutines sit: `fdatasync`/NFS
+   write, versus freelist/spill CPU, versus waiting on `db.rwlock`.
+2. **In the same run, correlate archive latency against backup progress.** Sample
+   `db_bk.tmp`'s size every couple of seconds and line the copy windows up against
+   the manager log's slow-request timestamps. **If latency falls in the gaps
+   between copies, candidate 1 is confirmed directly** - and that needs no profile
+   at all, just sampling during the run. This could not be done retroactively for
+   the 07:58-08:08 test because only the current `db_bk.tmp` is observable.
+3. **The decisive config experiment, if a filesystem is available:** point the
+   backup at a *different* filesystem (the `report-storm-lsf` mode already supports
+   this idea via `WR_RS_BKDIR`, "back up to a separate filesystem so it can't
+   starve the DB's I/O"). If the ceiling moves, candidate 1 is proven and Part C is
+   the fix. If it does not, the cause is the big DB on NFS, and the lever is
+   compaction cadence rather than copy pacing.
+
+**Observer-effect warning:** pprof sampling on this manager perturbs what it
+measures. Use the sampling tiers recorded in the prod-profiling notes rather than
+continuous capture, or the profile will report the cost of profiling.
+
+## Things not to "fix"
+
+
+- **`wr manager status` dies with "could not read token file" for the whole
+  startup window on the daemonized path.** Operator decision, 2026-08-27: this is
+  expected, not a bug - status is only expected to work once `wr manager start`
+  says the manager has started. Making the pid-file branch consult the sidecar
+  would undo the entire point of publishing late.
+- The green window in `3390f23` is deliberate: ten test functions are red at that
+  commit by design. Do not bisect through it expecting a green suite.
+
+## Next steps
+
+
+### Done
+
+- **The wrdev.sh regression sweep** - 26 gates, no regression; see the section
+  above.
+- **The in-process route to identifying the cause** - taken via the `archive-rate`
+  gate. It eliminated two of the three candidates rather than confirming one.
+- **The direct filesystem and freelist probes** - fsync latency and free-page
+  count are both ruled out as the explanation (see above).
+
+### Open, in order
+
+1. **Design the throughput fix.** Two approaches are being explored in
+   `throughput-architecture.md`: **group commit** (batch archives into shared bolt
+   transactions) and **splitting the live set from the archive**. Group commit is
+   worth doing regardless of how the remaining ~68 ms decomposes, because batching
+   divides *every* per-transaction cost by the batch size - it is robust to the
+   open question below.
+   **Ruled out by the operator (2026-08-27):** moving the DB to local disk, and
+   relying on compaction cadence or a separate backup filesystem. Those may still
+   be measured as diagnostics, but nothing is to depend on them.
+2. **Profile production when the operator can restart it** (deferred - a restart
+   is not available right now). Capture CPU + mutex + block during saturation with
+   the limit raised, *and* sample `db_bk.tmp`'s size every couple of seconds so
+   archive latency can be correlated against backup copy windows. That answers
+   where the ~68 ms goes and whether the split in idea 2 must also move the DB off
+   NFS. **This document gets updated with the result.**
+3. **Watch the publication herd** (issue 2) across a few more restarts. No code
+   needed today; what would change that is a herd approaching the 60 s floor.
+4. **Leave the decode cost** (issue 1) unless startup time becomes a complaint.
+5. Close out the remaining recorded items in `.docs/bugfixes/260825-1.md`
+   (items 2-4), several of which became moot now that recovery completes before
+   any client can connect.
+6. Two pre-existing defects the sweep turned up, both minor: `wrdev.sh dump`
+   leaves a manager that `stop`/`clean` cannot kill (no pid file under `-f`), and
+   `parseBmgroups` never `Wait()`s its `bmgroup -w` child, so every manager leaves
+   a defunct process.
+
