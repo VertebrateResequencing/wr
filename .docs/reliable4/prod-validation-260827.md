@@ -5,10 +5,11 @@ found the NEXT ceiling.** Recovery went from 42m56s to 36.4s and peak RSS from
 ~181 GB to 7.84 GB, with no OOM and no crash. Raising a job limit from 20 to 2000
 (1,143 concurrent runners) held memory fine but drove archive latency to the 60 s
 client floor and lost **470 final-state reports in one minute**. So the memory
-work is done; **write-path throughput is now the binding constraint**, and issue
-3 below (DB-backup copy I/O) is both the top remaining latency source and the
-thing that gates raising limits. See "Limit stress test" for the numbers and the
-acceptance test it implies.
+work is done; **write-path throughput is now the binding constraint**. What is
+*causing* that ceiling is **not yet established** - see "Which cause? Not settled
+yet", which corrects an earlier reading of this document that named DB-backup copy
+I/O as the cause. Three candidates remain and they imply different fixes; do not
+start coding until one is confirmed.
 
 Read this first for the current position. Background: the OOM diagnosis is in
 `prod-restart-260825.md`, the design in `.docs/dep-granularity/spec.md`, and each
@@ -123,9 +124,9 @@ they were duplicate adds, so the work itself was cheap; the cost was contention.
 
 ### 3. Continuous full-DB backup, causing the only other latency
 
-**This is the one worth doing next**, and the limit stress test below promotes it
-from "top remaining latency" to "the thing standing between this manager and the
-throughput its hardware should give".
+This is the top *confirmed* latency source at ordinary concurrency. Whether it is
+also what caps throughput under load is **not established** - see "Which cause?
+Not settled yet" before treating it as the fix for the stress test.
 
 ```
 db_bk      7,283,757,056  07:42:33   (finished)
@@ -154,12 +155,81 @@ copy every ~32 MB took a 10 GB DB's freeze from 15.8 s to 0.7 s, size-independen
 (`reliable4-backup-stall-reinvestigation`). That is the starting point, not a
 blank page.
 
+## Which cause? Not settled yet
+
+An earlier revision of this document treated issue 3 (continuous full-DB backup
+copy) as the cause of the stress test's latency. **That was a leap, and it should
+not be acted on as fact.** A competing explanation fits the same evidence and
+implies different work.
+
+### The observation that raises the doubt
+
+The completion rates look like a hard ceiling, not a gradual degradation:
+
+| limit | runners | completions/s |
+| --- | --- | --- |
+| 20 | ~20 | **8.7/s** |
+| 2000 | 1,143 | **~14/s**, then erratic |
+
+Twenty runners were already at ~60% of the rate that 1,143 runners could reach.
+Now compare `prod-state-260824.md` and the `archive-rate` gate's recorded
+production figure: **queue ~600 deep, ~12/s, mean block 43000 ms** with 660
+concurrent archivers. Nearly the same number - and that gate measures the archive
+path **in-process, with no manager and no backup running at all**.
+
+One synchronous bolt write transaction per archive, each fsyncing to NFS at
+roughly 70 ms, serialized, *is* about 14/s. If that is the mechanism, relieving
+the backup copy barely moves it.
+
+### Three candidates, three different fixes
+
+1. **Backup copy I/O competing for the same NFS bandwidth.** Fix: incrementally
+   fsync the copy - already prototyped, 15.8 s -> 0.7 s on a 10 GB DB,
+   size-independent.
+2. **One fsync per archive, serialized on the single write lock.** Fix: coalesce
+   multiple archives per commit. Materially harder, because archives are
+   synchronous *by design* - the client is waiting for durability, so batching
+   trades latency for throughput and needs a correctness argument.
+3. **Freelist/spill CPU on a growing DB** (7.3 -> 8.5 GB during this run). Fix:
+   compaction cadence. Note `NoFreelistSync` was already tried and **dropped**
+   for breaking the fast-startup invariant - do not revisit it without reading
+   why.
+
+### What the logs can and cannot settle
+
+The pre-stress evidence supports candidate 1 *at low concurrency*: slow
+`jarchive`s at 07:40-07:57 arrived roughly one per few minutes, 10-22 s, clustered
+in backup windows. But at 1,143 runners that evidence cannot distinguish "the
+backup is stealing I/O" from "the write path was always ~14/s and 1,143 runners
+now queue on it". The backup windows also cannot be reconstructed retroactively -
+only the current `db_bk.tmp` size and `db_bk` mtime are observable, so there is no
+way to go back and check whether latency fell in the gaps between copies.
+
+### How to settle it
+
+**Cheapest first, and it may be free:** the `archive-rate` gate in the wrdev.sh
+sweep measures the archive path in-process against a big DB with no backup
+involved. If it reproduces ~12-14/s, candidate 2 is confirmed without touching
+production.
+
+**If that is inconclusive:** restart the manager with `WR_PPROF_ADDR`, raise the
+limit again, and capture CPU + mutex + block profiles during saturation. The
+discriminating question is where the archive goroutines actually sit -
+`fdatasync`/NFS write (candidate 1 or 2), freelist/spill CPU (candidate 3), or
+waiting on `db.rwlock` (candidate 2). That is a direct read rather than an
+inference.
+
+**Observer-effect warning:** pprof sampling on this manager perturbs what it
+measures. Use the sampling tiers recorded in the prod-profiling notes rather than
+continuous capture, or the profile will report the cost of profiling.
+
 ## Next steps, in order
 
-1. **Tackle issue 3** - DB-backup copy I/O. Bounded, prototyped, and now
-   demonstrably the constraint that gates raising job limits: the stress test
-   above pinned archive latency at the 60 s client floor and lost 470 completion
-   reports. See the section below.
+1. **Establish which cause is real before writing any code** - see "Which cause?
+   Not settled yet". Start with the `archive-rate` gate result from the wrdev.sh
+   sweep, which needs no production change; profile production only if that is
+   inconclusive. Getting this wrong means fixing the backup copy and discovering
+   the ceiling has not moved.
 2. **Watch issue 2** across a few more restarts. It needs no code today; what
    would change that is a herd that approaches the 60 s floor.
 3. **Leave issue 1** unless startup time becomes a complaint.
