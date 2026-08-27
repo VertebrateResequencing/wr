@@ -1,8 +1,30 @@
 # Raising the archive throughput ceiling: group commit, and splitting live from archive
 
-**STATUS: exploration, nothing decided, nothing built.** This is the home for the
-two design directions the operator wants pursued. Read
+**STATUS: exploration - but read the correction below before acting on idea 1.**
+This is the home for the two design directions the operator wants pursued. Read
 `prod-validation-260827.md` first for the measurements that motivate them.
+
+> **CORRECTION, 2026-08-27: idea 1 is already built for the archive path, and
+> already deployed.** `f7e36bc` (an ancestor of production's `fb5df01`) replaced
+> the per-archive `db.bolt.Batch` with a single coalescing `archiveWriter` that
+> folds every pending archive into ONE `db.Update` and replies to each waiter with
+> its own error. So this document's "each completed job currently costs one bolt
+> write transaction" is not true of the deployed code, and the 07:58-08:08 symptom
+> happened *with* group commit running.
+>
+> `developers/wrdev.sh archive-ceiling` then measured what the shape is worth: on
+> production's own filesystem, with the continuous backup streaming, the archive
+> path does **364/s** and nothing within 12x of the client floor; mutated to one
+> transaction per archive it does **21/s** with a mean archive of **70 s** and
+> 1,827 reports past the floor - production's symptom exactly. So production is
+> running the fast code and behaving like the slow code. **Find out why the writer
+> is not batching there before designing more batching**; the leading hypothesis
+> (something upstream of `db.archiveJob` serialising completions, most likely the
+> queue mutex against `satisfyEmptiedDepGroups`) and the discriminating measurement
+> are recorded in `prod-validation-260827.md`.
+>
+> The measurements also weaken idea 2's premise: 25 KB records - production's
+> `portal_builder` size - cost only 8% more per completion than 256-byte ones here.
 
 ## The problem, stated precisely
 
