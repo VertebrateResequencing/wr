@@ -84,6 +84,83 @@ Items 1 and 2 together first - the read says where to instrument, the
 instrumentation makes the next restart decisive. Then item 3, which is the one
 that might reproduce the entire symptom locally today. Item 4 whenever.
 
+## RESOLVED: what the fixes are (2026-08-27)
+
+Experiment has replaced the guesswork. Three mechanisms are confirmed and
+separated - see "Three mechanisms, separated by experiment" in
+`prod-validation-260827.md` for the evidence, including a mid-freeze goroutine
+dump and a 16-minute live production sample. The fixes follow from them.
+
+### Fix A - stop the add path monopolising bolt's write lock
+
+**Evidence:** interleaving one `storeNewJobs` per archive takes throughput from
+**357/s to 150/s** and p50 latency from 897 ms to 2,497 ms, hitting `add` and
+`jarchive` equally, independent of freelist slack. The fold line reads
+`meanLock=1.421s maxLock=3.9s`: the archive writer spends most of each transaction
+*waiting for the write lock*, held by the add path's `bolt.Batch`.
+
+**Why it matters most:** it is the largest measured effect, it reproduces on
+demand, it is filesystem-independent, and it matches the real workload (dedup jobs
+complete fast and each adds compress jobs).
+
+**Shape:** the add path costs 3-6 write transactions per request
+(`storeLimitGroups`, plus 2-5 concurrent `bolt.Batch` goroutines from
+`storeNewJobData`), and the archive writer's plain `Update` cannot join a Batch.
+Either route adds through the *same* coalescing writer the archives use, so both
+share one transaction stream rather than fighting for the lock, or cut the add
+path's transaction count. The first is more attractive because the machinery
+already exists and is proven (`archiveWriter`, `f7e36bc`).
+
+**Care needed:** `add` must remain durable before its reply, exactly as archive is.
+Sharing a writer must not turn one caller's bad record into everyone's failure -
+the existing per-waiter error reply is the model.
+
+### Fix B - stop the backup copy's I/O disrupting the manager
+
+**Evidence:** production today shows ~10 slow `jarchive`s of 17-27 s per 16
+minutes, about one per backup copy cycle, with 12 full 8.99 GB copies at a 35%
+duty cycle and the DB not growing at all - so this is copy I/O, not remap.
+
+**This is the long-recorded "Part C copy-I/O relief", and it is already
+prototyped:** incrementally fsyncing the copy every ~32 MB took a 10 GB DB's
+freeze from **15.8 s to 0.7 s**, size-independent. It is the smallest, most
+bounded, most immediately valuable piece of work here.
+
+### Fix C - stop a growing file freezing behind the copy's read transaction
+
+**Evidence:** confirmed by A/B on freelist slack alone (same DB compacted vs
+as-is) and by goroutine dump - a writer blocked in `bbolt.(*DB).mmap` ->
+`db.mmaplock.Lock()` beneath `archiveTx`, while the backup's `Tx.WriteTo` holds
+`mmaplock.RLock()` for the whole copy. **The freeze lasts the copy's remaining
+time**, so it scales with DB size over copy bandwidth: ~6 s in the harness,
+~40 s at production's current copy speed, and worse under load.
+
+**Currently dormant in production, and predicted to return:** free pages fell from
+271,809 to 111,133 in 80 minutes with the file size static. 0.46 GB of slack
+remains before writes must grow the file again.
+
+**Shape options, needing evaluation rather than a choice made here:** grow the
+mmap ahead of need *outside* copy windows; size `InitialMmapSize` so remaps are
+rare; or take the backup from something other than a long-lived bolt read
+transaction. Note the copy cannot simply be chunked into several short read
+transactions - a bolt backup needs one consistent snapshot.
+
+**A coupling that must be designed for:** an open read transaction pins every page
+freed during it, so the copy starves the freelist and thereby *causes* the growth
+that triggers the remap. Fix B shortens the copy and therefore shrinks fix C's
+exposure; **fix A raises throughput and therefore grows the file faster, which
+increases it.** A without C could make C fire more often.
+
+### Recommended process
+
+- **Fix B via `/bugfix` now.** Prototyped, bounded, addresses production's current
+  pain, and independently valuable whatever else happens.
+- **Fixes A and C via `/spec-writer`, together.** They are coupled through the
+  freelist (above), both touch the DB write path where durability and backup
+  consistency are at stake, and A's benefit changes C's exposure. The
+  dep-granularity delivery is the precedent for how much that coupling costs if it
+  is discovered mid-implementation rather than designed.
+
 ## The problem, stated precisely
 
 Production completes **~14 jobs/s** however many runners are pointed at it. At
