@@ -26,6 +26,64 @@ This is the home for the two design directions the operator wants pursued. Read
 > The measurements also weaken idea 2's premise: 25 KB records - production's
 > `portal_builder` size - cost only 8% more per completion than 256-byte ones here.
 
+## What to do next, without waiting for a profile (2026-08-27)
+
+The production profile is deferred until the operator can restart, but three of
+these four items do not need it, and the second largely removes the need for it.
+
+### 1. Read the completion path for per-completion exclusive locks
+
+Free, and it targets everything below it. From a runner's final-state report
+arriving to `archiveJob` being called, the path runs `getijForReport` ->
+`s.q.Get` -> archive -> `q.Remove` -> membership release ->
+`satisfyEmptiedDepGroups`. **If any step takes the queue *write* lock once per
+completion, that alone caps completions at the rate that lock turns over**, and
+the coalescing `archiveWriter` would never see two pending archives at once
+however fast it is - which is exactly the "runs the fast code, behaves like the
+slow code" observation.
+
+Known constraint to respect while reading: `queue.mutex -> job` is an established
+acquisition order (`releaseTimedOutItems` calls `ttrCb` under `queue.mutex`,
+`queue/queue.go:1942`; `ttrCallback` takes `job.Lock()`, `server.go:4601`).
+
+### 2. Make the manager report the batch size it actually achieves
+
+The central question is *why the writer folds only one archive at a time in
+production*, and nothing currently in the log answers it. An inert counter plus a
+periodic line - the established convention (`db.archivedDecodes` `5c75a15`,
+`Job.derivations` `8087866`, `db.archiveTxObserver` `f7e36bc`,
+`db.depGroupSeenGets` this delivery) - would answer it from an **ordinary manager
+log with no `--debug` and no pprof**.
+
+If production reports a mean fold of ~1 while `archive-ceiling` reports ~100, the
+diagnosis is settled on the spot. This is the highest value-per-line item here: it
+makes the next restart decisive whether or not profiling is enabled.
+
+### 3. Test the ingredient the hunt never varied: dep-group membership
+
+The ingredient hunt varied NFS, the continuous backup, record size (25 KB, +8%)
+and live-set size (80,000 jobs through the real RPC path) - and reproduced
+nothing. It did **not** vary dep-group membership, which is the largest remaining
+difference between the harness and production: **112,486 memberships** on a
+dependency-heavy `portal_builder` workload.
+
+That matters because the suspected serialisation point only bites when completions
+actually empty groups. Give `archive-ceiling` (or a sibling) production's
+dep-group shape and see whether 364/s collapses toward 14/s. If it does, the whole
+thing is reproducible on this host and fixable without touching production.
+
+### 4. Unrelated, actionable now
+
+`wr add` of **150,000 jobs in one request takes 72.5 s**, and the client abandons
+it at its own 60 s `ClientMinRequestTimeout` floor (80,000 jobs: 49.7 s). Measured
+2026-08-27. Nothing to do with the throughput ceiling; a real defect on its own.
+
+### Order
+
+Items 1 and 2 together first - the read says where to instrument, the
+instrumentation makes the next restart decisive. Then item 3, which is the one
+that might reproduce the entire symptom locally today. Item 4 whenever.
+
 ## The problem, stated precisely
 
 Production completes **~14 jobs/s** however many runners are pointed at it. At
