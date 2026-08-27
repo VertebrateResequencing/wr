@@ -236,6 +236,58 @@ const (
 	limitGroupBytes = 8
 )
 
+// limitGroupWrite is the bucket write that achieving a limit group's outcome
+// needs.
+type limitGroupWrite int
+
+const (
+	limitGroupWriteNone limitGroupWrite = iota
+	limitGroupWritePut
+	limitGroupWriteDelete
+)
+
+// planLimitGroup decides what should happen to a single limit group: the
+// outcome to report, and the bucket write (if any) that achieving it needs. The
+// outcome does not imply a write, and vice versa: a non-count group is reported
+// removed with nothing ever stored for it, while a group stored for the first
+// time is reported unchanged, having had no previous value to change.
+//
+// It only reads b, so it can also be called in a read transaction, to find out
+// whether a write transaction is needed at all.
+func planLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, limitGroupWrite) {
+	if !limitG.IsCount() {
+		return limitGroupRemoved, limitGroupWriteNone
+	}
+
+	existing := b.Get([]byte(group))
+
+	if limit := limitG.Limit(); limit >= 0 {
+		return planLimitGroupStore(existing, limit)
+	}
+
+	if existing == nil {
+		return limitGroupUnchanged, limitGroupWriteNone
+	}
+
+	return limitGroupRemoved, limitGroupWriteDelete
+}
+
+// planLimitGroupStore decides the outcome and write for a limit group with a
+// non-negative limit, given the value currently stored for it (nil if it has
+// none).
+func planLimitGroupStore(existing []byte, limit int64) (limitGroupOutcome, limitGroupWrite) {
+	if existing == nil {
+		return limitGroupUnchanged, limitGroupWritePut
+	}
+
+	//nolint:gosec // limit is >= 0 here, so fits in a uint64
+	if binary.BigEndian.Uint64(existing) == uint64(limit) {
+		return limitGroupUnchanged, limitGroupWriteNone
+	}
+
+	return limitGroupChanged, limitGroupWritePut
+}
+
 // sobsd ('slice of byte slice doublets') implements sort interface so we can
 // sort a slice of []byte doublets, sorting on the first byte slice, needed for
 // efficient Puts in to the database.
@@ -1227,8 +1279,22 @@ func (db *db) setBatchTuning(delay time.Duration, size int) {
 // database; any existing entry is removed and the name is returned in the
 // removed slice.
 func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (changed, removed []string, err error) {
+	var writeNeeded bool
+
+	changed, removed, writeNeeded, err = db.planLimitGroups(limitGroups)
+	if err != nil || !writeNeeded {
+		return changed, removed, err
+	}
+
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLGs)
+
+		// classified again in here, discarding what the read transaction found:
+		// only the write transaction's view of the bucket is authoritative.
+		// Assigning rather than appending also keeps every group reported once if
+		// bbolt re-runs this function, which it does to the surviving members of a
+		// batch when one member fails.
+		changed, removed = nil, nil
 
 		for group, limitG := range limitGroups {
 			outcome, errs := storeLimitGroup(b, group, limitG)
@@ -1236,13 +1302,7 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 				return errs
 			}
 
-			switch outcome {
-			case limitGroupRemoved:
-				removed = append(removed, group)
-			case limitGroupChanged:
-				changed = append(changed, group)
-			case limitGroupUnchanged:
-			}
+			changed, removed = recordLimitGroupOutcome(outcome, group, changed, removed)
 		}
 
 		return nil
@@ -1255,33 +1315,71 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 type limitGroupOutcome int
 
 // storeLimitGroup stores (or deletes) a single limit group in the given bucket,
-// reporting what it did.
+// reporting what it did. b must come from a write transaction.
 func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, error) {
-	if !limitG.IsCount() {
-		return limitGroupRemoved, nil
+	outcome, write := planLimitGroup(b, group, limitG)
+
+	var err error
+
+	switch write {
+	case limitGroupWritePut:
+		err = putLimitGroup(b, []byte(group), limitG.Limit())
+	case limitGroupWriteDelete:
+		err = b.Delete([]byte(group))
+	case limitGroupWriteNone:
 	}
 
-	limit := limitG.Limit()
-	key := []byte(group)
-	existing := b.Get(key)
-
-	if limit < 0 {
-		return deleteLimitGroup(b, key, existing)
-	}
-
-	if existing != nil && binary.BigEndian.Uint64(existing) == uint64(limit) {
-		return limitGroupUnchanged, nil
-	}
-
-	if err := putLimitGroup(b, key, limit); err != nil {
+	if err != nil {
 		return limitGroupUnchanged, err
 	}
 
-	if existing != nil {
-		return limitGroupChanged, nil
+	return outcome, nil
+}
+
+// recordLimitGroupOutcome appends group to changed or removed as its outcome
+// requires, returning both slices.
+func recordLimitGroupOutcome(outcome limitGroupOutcome, group string,
+	changed, removed []string,
+) ([]string, []string) {
+	switch outcome {
+	case limitGroupRemoved:
+		removed = append(removed, group)
+	case limitGroupChanged:
+		changed = append(changed, group)
+	case limitGroupUnchanged:
 	}
 
-	return limitGroupUnchanged, nil
+	return changed, removed
+}
+
+// planLimitGroups classifies limitGroups in a read transaction, returning what
+// storeLimitGroups' write transaction would report for them, and whether any of
+// them actually needs a bucket write. A read transaction fsyncs nothing, while
+// bolt's Commit has no early-out: it always rewrites the freelist page and
+// fsyncs twice, even for a transaction that wrote nothing.
+func (db *db) planLimitGroups(limitGroups map[string]*limiter.GroupData) (
+	changed, removed []string, writeNeeded bool, err error,
+) {
+	if len(limitGroups) == 0 {
+		return nil, nil, false, nil
+	}
+
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLGs)
+
+		for group, limitG := range limitGroups {
+			outcome, write := planLimitGroup(b, group, limitG)
+			if write != limitGroupWriteNone {
+				writeNeeded = true
+			}
+
+			changed, removed = recordLimitGroupOutcome(outcome, group, changed, removed)
+		}
+
+		return nil
+	})
+
+	return changed, removed, writeNeeded, err
 }
 
 // retrieveCompleteJobsRecent returns archived jobs whose end time is at or past
@@ -1899,19 +1997,6 @@ func (db *db) decodeArchivedJobs(tx *bolt.Tx, selected []archivedJobCandidate, p
 	}
 
 	return nil
-}
-
-// deleteLimitGroup deletes a limit group's stored value if it had one.
-func deleteLimitGroup(b *bolt.Bucket, key, existing []byte) (limitGroupOutcome, error) {
-	if existing == nil {
-		return limitGroupUnchanged, nil
-	}
-
-	if err := b.Delete(key); err != nil {
-		return limitGroupUnchanged, err
-	}
-
-	return limitGroupRemoved, nil
 }
 
 // dbUpgradeReporter reports a one-off database upgrade (the index rebuilds
