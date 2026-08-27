@@ -1090,68 +1090,284 @@ cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - 
   return "$rc"
 }
 
-cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReserves] - reliable3 2b over-count
-  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
-  # make test) for reliable3 ISSUE 2b: a single scheduler group's final scheduling
-  # count exceeds its limit group's limit because countJobInGroup caps the ready count
-  # against an EARLY capacity read while accountForRunningJobs later adds ALL running
-  # jobs on top with no limit check. Reserves landing in that non-atomic window inflate
-  # the count (production saw 3313 for a 2000 limit). PASSES on current (buggy) code,
-  # showing finalCount = limit + windowReserves > limit.
+cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReserves] - reliable3 2b over-count GATE
+  # Deterministic, in-process REGRESSION GATE (build-tagged reliability_repro, NOT part of
+  # make test) for reliable3 ISSUE 2b: a scheduler group's final scheduling count must NEVER
+  # exceed its limit group's limit. countJobInGroup caps the READY count against an EARLY
+  # capacity read, and accountForRunningJobs then adds ALL running jobs on top, so reserves
+  # landing in that non-atomic window inflate the count (production saw 3313 for a 2000
+  # limit); capGroupCountsToLimits trims the summed sibling counts back to the limit.
+  #
+  # It USED TO BE INVERTED - it asserted the over-count was PRESENT, so it passed on the buggy
+  # code and started failing the moment the cap landed, ie. its exit code came to mean the
+  # opposite of what any reader assumes. It now asserts the invariant, and asserts BOTH halves
+  # so it cannot pass vacuously: that the arrangement really does over-count BEFORE the cap
+  # (uncappedCount > limit; otherwise the cap is being credited for nothing) and that the
+  # capped count is at or under the limit while STILL asking for runners (an upper bound alone
+  # would be satisfied by a cap that trimmed everything to zero).
+  #
+  # Gate: uncappedCount > limit AND 0 < finalCount <= limit. FAIL = the cap is gone or has
+  # started trimming to nothing, or the arrangement produced no over-count to cap. Deleting
+  # the capGroupCountsToLimits call at the end of accountForRunningJobs turns it red.
+  # A MISSING measurement (no OVERCOUNT-REPRO line) is a hard FAIL, never a cheap PASS.
   need_repo
   local limit="${1:-2000}" initial="${2:-300}" window="${3:-1500}"
-  echo "reliable3 2b over-count (deterministic, in-process): a group's count exceeds its limit"
-  echo "when reserves land between the early capacity read and the later running snapshot."
-  echo "scale: limit=$limit initialRunning=$initial windowReserves=$window (finalCount should be limit+window)"
+  echo "reliable3 2b over-count gate (deterministic, in-process): a group's summed count must stay"
+  echo "within its limit group's limit even when reserves land between the early capacity read and"
+  echo "the later running snapshot."
+  echo "scale: limit=$limit initialRunning=$initial windowReserves=$window"
+  echo "Gate: uncappedCount > $limit (the arrangement really over-counts) AND 0 < finalCount <= $limit."
+  echo "prod pre-fix: count=3313 for a 2000 limit. A MISSING measurement is a FAIL, not a PASS."
   osunset
-  local out rc
+  local out rc=0
   out=$(WR_OP_LIMIT="$limit" WR_RC_INITIAL="$initial" WR_RC_WINDOW="$window" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run TestReliable3OverCountRunningSnapshot -count=1 -v 2>&1); rc=$?
+    -run TestReliable3OverCountRunningSnapshot -count=1 -v 2>&1) || rc=$?
   printf '%s\n' "$out" | grep -aE 'OVERCOUNT-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
-  return "$rc"
+
+  local repro uncapped final
+  repro=$(printf '%s\n' "$out" | grep -aoE 'OVERCOUNT-REPRO: .*' | tail -1)
+  uncapped=$(bk_num "$repro" uncappedCount); final=$(bk_num "$repro" finalCount)
+  for v in uncapped final; do
+    case "${!v}" in (*[!0-9-]*|'') eval "$v=-1" ;; esac
+  done
+
+  echo "## VERDICT: limit=$limit uncappedCount=$uncapped finalCount=$final"
+  if [ -z "$repro" ] || [ "$uncapped" -lt 0 ] || [ "$final" -lt 0 ]; then
+    echo "FAIL (NOT MEASURED): no usable OVERCOUNT-REPRO line, so neither count was measured"
+    echo "  => this gate only reports PASS on a real measurement; see the test output above"
+    return 1
+  fi
+  if [ "$uncapped" -le "$limit" ]; then
+    echo "FAIL (NOT DISCRIMINATING): the uncapped count was $uncapped, not over the $limit limit, so"
+    echo "  there was no over-count for the cap to remove and a low finalCount proves nothing"
+    echo "  => raise WR_RC_WINDOW / lower WR_RC_INITIAL so reserves really do land in the window"
+    return 1
+  fi
+  if [ "$final" -gt "$limit" ]; then
+    echo "FAIL: the group's count is $final, over its $limit limit (uncapped it was $uncapped)"
+    echo "  => the summed sibling counts per limit group must be trimmed back to the limit"
+    echo "     (capGroupCountsToLimits / trimGroupsToLimit, called from accountForRunningJobs)"
+    return 1
+  fi
+  if [ "$final" -le 0 ]; then
+    echo "FAIL: the count was trimmed to $final, so no runners are requested for work that fits"
+    echo "  => trimGroupsToLimit must remove only the overage, not the whole request"
+    return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: the reproducer's own assertions failed (rc=$rc) even though the counts are in bounds"
+    return "$rc"
+  fi
+  echo "PASS: an arrangement that reaches $uncapped uncapped is held at $final, within the $limit limit,"
+  echo "      and still requests runners for the work that fits"
+  return 0
 }
 
-cmd_limit_stall_check() {  # limit-stall-check [limit] [ready] - reliable3 §1 silent-confirm stall
-  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
-  # make test) for reliable3 ISSUE 1: (1) scheduler.ProcessNotRunningOnHost and
-  # lsf.initialize fail SILENTLY (no log) when death-confirmation cannot succeed, and
-  # (2) the CONSEQUENCE - a limit group full of phantom slots (unconfirmable lost jobs)
-  # skips every new ready job, so scheduling stalls. PASSES on current code. NOTE: a
-  # "loud only" fix logs the failure but does NOT clear the phantom slots, so the stall
-  # part still reproduces after it - that is the headline finding.
+cmd_limit_stall_check() {  # limit-stall-check [limit] [ready] - reliable3 §1 limit-slot + loud-confirm GATE
+  # Deterministic, in-process REGRESSION GATE (build-tagged reliability_repro, NOT part of
+  # make test) for the two halves of reliable3 ISSUE 1:
+  #
+  #   (1) LIMIT SLOTS: a limit group whose slots are ALL held schedules nothing more - every
+  #       new ready job is limit-skipped, not scheduled. That is correct behaviour and always
+  #       was, so this half's assertions are unchanged; what production suffered was where the
+  #       held slots came from (phantom slots: reserved-then-lost jobs whose slots were never
+  #       released because death confirmation never succeeded), which this half does not
+  #       exercise - it holds the slots by incrementing the limiter directly.
+  #   (2) LOUD CONFIRMATION: the confirmation path used to fail SILENTLY, so a manager whose
+  #       reclaim was completely broken looked healthy and the stall in (1) had no visible
+  #       cause. ProcessNotRunningOnHost must WARN when it cannot determine whether the process
+  #       is alive (it still answers "maybe running", which is the safe answer - a job is only
+  #       re-run once its runner is CONFIRMED dead), and lsf.initialize must WARN when the
+  #       configured ssh private key cannot be read instead of swallowing the error.
+  #
+  # Half (2) WAS INVERTED - it asserted the ABSENCE of any log, so it passed on the silent code
+  # and started failing once the warnings landed. It now asserts the warnings are present AND
+  # that they name what an operator has to act on (the host and pid; the key path), since a bare
+  # "something went wrong" leaves the operator where the silence did. Removing either warn turns
+  # this red.
+  #
+  # Gate: scheduled == 0 AND skipped == ready, AND the cannot-confirm warning is present and
+  # names the host and pid, AND (where LSF is usable) the key warning is present and names the
+  # path. The key facet needs a working LSF, so it SKIPS elsewhere; the verdict says which
+  # facets were measured rather than counting a skip as coverage.
+  # A MISSING measurement (no LIMIT-STALL-REPRO or CONFIRM-LOUD-REPRO line) is a hard FAIL.
   need_repo
   local limit="${1:-2000}" ready="${2:-5000}"
-  echo "reliable3 §1 silent-confirmation + limit-slot stall (deterministic, in-process)."
-  echo "scale: limit=$limit phantomSlots=$limit newReady=$ready (all new ready jobs should be skipped)."
-  echo "the SilentConfirm part shows ProcessNotRunningOnHost/lsf.initialize log NOTHING on failure."
+  echo "reliable3 §1 limit-slot + loud-confirmation gate (deterministic, in-process)."
+  echo "scale: limit=$limit heldSlots=$limit newReady=$ready (all new ready jobs must be skipped)."
+  echo "Gate: scheduled == 0 AND skipped == $ready; the cannot-confirm warning present, naming the"
+  echo "host and pid; and where LSF is usable, the unreadable-private-key warning naming the path."
+  echo "A MISSING measurement is a FAIL, not a PASS; a skipped facet is reported as unmeasured."
   osunset
-  local out rc
+  local out rc=0
   out=$(WR_OP_LIMIT="$limit" WR_STALL_READY="$ready" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run 'TestReliable3LimitSlotStall|TestReliable3SilentConfirmFailure' -count=1 -v 2>&1); rc=$?
-  printf '%s\n' "$out" | grep -aE 'LIMIT-STALL-REPRO|SILENT-CONFIRM-REPRO|KEY-SWALLOW-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
-  return "$rc"
+    -run 'TestReliable3LimitSlotStall|TestReliable3ConfirmFailureIsLoud' -count=1 -v 2>&1) || rc=$?
+  printf '%s\n' "$out" \
+    | grep -aE 'LIMIT-STALL-REPRO|CONFIRM-LOUD-REPRO|KEY-WARN-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
+
+  local stall confirm keyline scheduled skipped
+  stall=$(printf '%s\n' "$out" | grep -aoE 'LIMIT-STALL-REPRO: .*' | tail -1)
+  confirm=$(printf '%s\n' "$out" | grep -aoE 'CONFIRM-LOUD-REPRO: .*' | tail -1)
+  keyline=$(printf '%s\n' "$out" | grep -aoE 'KEY-WARN-REPRO: .*' | tail -1)
+  scheduled=$(bk_num "$stall" scheduled); skipped=$(bk_num "$stall" skipped)
+  for v in scheduled skipped; do
+    case "${!v}" in (*[!0-9-]*|'') eval "$v=-1" ;; esac
+  done
+
+  local keymeasured="no" keyverdict="not measured (no usable LSF on this host)"
+  if printf '%s\n' "$keyline" | grep -aq 'keyWarnMeasured=true'; then
+    keymeasured="yes"
+    keyverdict="warned=$(ls_flag "$keyline" keyWarned) namesPath=$(ls_flag "$keyline" namesPath)"
+  fi
+
+  echo "## VERDICT: scheduled=$scheduled skipped=$skipped/$ready;" \
+       "cannotConfirmWarned=$(ls_flag "$confirm" cannotConfirmWarned)" \
+       "namesHost=$(ls_flag "$confirm" namesHost) namesPid=$(ls_flag "$confirm" namesPid);" \
+       "keyFacetMeasured=$keymeasured ($keyverdict)"
+
+  if [ -z "$stall" ] || [ "$scheduled" -lt 0 ] || [ "$skipped" -lt 0 ]; then
+    echo "FAIL (NOT MEASURED): no usable LIMIT-STALL-REPRO line, so the limit-slot half never ran"
+    echo "  => this gate only reports PASS on a real measurement; see the test output above"
+    return 1
+  fi
+  if [ -z "$confirm" ]; then
+    echo "FAIL (NOT MEASURED): no CONFIRM-LOUD-REPRO line, so the confirmation half never ran"
+    echo "  => this gate only reports PASS on a real measurement; see the test output above"
+    return 1
+  fi
+  if [ "$scheduled" -ne 0 ] || [ "$skipped" -ne "$ready" ]; then
+    echo "FAIL: a limit group with every slot held scheduled $scheduled jobs and skipped $skipped"
+    echo "  of $ready (want 0 and $ready): the limiter is no longer the source of truth for slot"
+    echo "  occupancy, which is the over-provisioning family (see overprovision-check)"
+    return 1
+  fi
+  local flag
+  for flag in cannotConfirmWarned namesHost namesPid; do
+    if [ "$(ls_flag "$confirm" "$flag")" != "true" ]; then
+      echo "FAIL: the cannot-confirm outcome is silent again ($flag=false)"
+      echo "  => a death confirmation that cannot succeed must WARN, naming the host and pid"
+      echo "     (Scheduler.warnCannotConfirm, called from ProcessNotRunningOnHost)"
+      return 1
+    fi
+  done
+  if [ "$keymeasured" = "yes" ]; then
+    for flag in keyWarned namesPath; do
+      if [ "$(ls_flag "$keyline" "$flag")" != "true" ]; then
+        echo "FAIL: an unreadable ssh private key is swallowed again ($flag=false)"
+        echo "  => lsf.loadPrivateKey must WARN and name the path, or ssh (and so every death"
+        echo "     confirmation) is permanently broken with nothing said"
+        return 1
+      fi
+    done
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: the reproducer's own assertions failed (rc=$rc) even though the parsed"
+    echo "  measurements are within bounds; see the output above"
+    return "$rc"
+  fi
+  echo "PASS: $ready ready jobs behind a fully-held $limit limit group were all skipped and none"
+  echo "      scheduled, and the cannot-confirm warning named its host and pid"
+  [ "$keymeasured" = "yes" ] \
+    && echo "      (and the unreadable private key warned, naming its path)" \
+    || echo "      (the private-key facet was NOT measured here: no usable LSF, so that warn is unproven)"
+  return 0
 }
 
-cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] - reliable3 2a fairness
-  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of
-  # make test) for reliable3 ISSUE 2a's refinement: the shared per-limit-group budget is
-  # allocated FIRST-COME across sibling scheduler groups, so a low-priority sibling
-  # scanned first consumes the whole budget and starves a higher-priority sibling.
-  # PASSES on current code, showing the high-priority sibling gets count=0.
+# ls_flag prints the true/false value of a `key=true|false` field in one of the
+# limit-stall-check reproducer lines, or "unmeasured" when the field is absent (which its
+# caller must treat as a failure, never as a cheap PASS).
+ls_flag() {  # <line> <key>
+  local v
+  v=$(printf '%s\n' "$1" | grep -aoE "$2=(true|false)" | tail -1 | cut -d= -f2)
+  case "$v" in (true|false) echo "$v" ;; (*) echo "unmeasured" ;; esac
+}
+
+cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] - reliable3 2a fairness (INVERTED)
+  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of make
+  # test) for reliable3 ISSUE 2a's refinement, which is STILL AN OPEN DEFECT: the shared
+  # per-limit-group budget is allocated FIRST-COME across sibling scheduler groups, so a
+  # low-priority sibling scanned first consumes the whole budget and starves a higher-priority
+  # sibling (which then gets count=0 and its whole ready backlog skipped).
+  #
+  # THIS MODE IS INVERTED, DELIBERATELY: it asserts the BUGGY behaviour, so exit 0 means THE
+  # BUG REPRODUCED, not that an invariant holds. It is the dangerous shape of gate, so it
+  # prints a banner saying so - a reader scanning exit codes across a sweep would otherwise
+  # read its zero as good news, which is exactly what happened in the 2026-08-27 sweep. It was
+  # NOT flipped to permanently red: the defect is real and outstanding, and a gate that can
+  # only ever fail stops being read. The outstanding item is recorded in
+  # .docs/reliable4/prod-validation-260827.md.
+  #
+  # Exit status means "was anything measured", not "is the invariant held": exit 1 only when
+  # the reproducer produced no measurement. Both measured outcomes exit 0 and are told apart by
+  # their banner - BUG STILL PRESENT (the starvation reproduced), or NO LONGER REPRODUCES, in
+  # which case the banner asks for this mode to be converted into a proper regression gate
+  # (the higher-priority sibling must get its share of the budget).
   need_repo
   local limit="${1:-2000}" extra="${2:-500}"
   echo "reliable3 2a priority fairness (deterministic, in-process): a low-priority sibling"
   echo "scanned first starves a higher-priority sibling of the shared limit-group budget."
-  echo "scale: limit=$limit readyPerGroup=$((limit + extra)) (high-priority sibling should get 0)"
+  echo "scale: limit=$limit readyPerGroup=$((limit + extra))"
+  echo "INVERTED MODE: it asserts the BUG, so exit 0 means the bug reproduced. Exit 1 means"
+  echo "nothing was measured. Read the banner below, never the exit code alone."
   osunset
-  local out rc
+  local out rc=0
   out=$(WR_OP_LIMIT="$limit" WR_PF_READY="$extra" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run TestReliable3PriorityFairnessStarvation -count=1 -v 2>&1); rc=$?
+    -run TestReliable3PriorityFairnessStarvation -count=1 -v 2>&1) || rc=$?
   printf '%s\n' "$out" | grep -aE 'PRIORITY-FAIRNESS-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
-  return "$rc"
+
+  local repro low high skipped
+  repro=$(printf '%s\n' "$out" | grep -aoE 'PRIORITY-FAIRNESS-REPRO: .*' | tail -1)
+  low=$(pf_num "$repro" 'low\(pri0\)\.count')
+  high=$(pf_num "$repro" 'high\(pri250\)\.count')
+  skipped=$(pf_num "$repro" 'high\.skipped')
+  for v in low high skipped; do
+    case "${!v}" in (*[!0-9]*|'') eval "$v=-1" ;; esac
+  done
+
+  echo "## VERDICT: limit=$limit low(pri0).count=$low high(pri250).count=$high high.skipped=$skipped"
+  if [ -z "$repro" ] || [ "$low" -lt 0 ] || [ "$high" -lt 0 ] || [ "$skipped" -lt 0 ]; then
+    echo "FAIL (NOT MEASURED): no usable PRIORITY-FAIRNESS-REPRO line, so neither sibling's count"
+    echo "  was measured; this is the ONLY outcome this mode exits non-zero for. See the output above"
+    return 1
+  fi
+
+  if [ "$high" -eq 0 ] && [ "$low" -eq "$limit" ] && [ "$skipped" -gt 0 ]; then
+    echo "==============================================================================="
+    echo "!! EXIT 0 HERE MEANS THE BUG IS STILL PRESENT, NOT THAT AN INVARIANT HOLDS. !!"
+    echo "==============================================================================="
+    echo "The reliable3 2a starvation REPRODUCED: the low-priority sibling took the whole"
+    echo "$limit-slot budget and the priority-250 sibling got 0, with $skipped of its ready jobs"
+    echo "skipped. This is an OPEN DEFECT, recorded in .docs/reliable4/prod-validation-260827.md."
+    echo "Do not read this mode's zero exit as a passing invariant anywhere it is swept."
+    echo "==============================================================================="
+    if [ "$rc" -ne 0 ]; then
+      echo "FAIL: the numbers say the starvation reproduced but the reproducer's own assertions"
+      echo "  failed (rc=$rc), so one of them no longer matches the line above; see the output"
+      return "$rc"
+    fi
+    return 0
+  fi
+
+  echo "==============================================================================="
+  echo "!! THE 2a STARVATION NO LONGER REPRODUCES - good news, and this mode is now  !!"
+  echo "!! OBSOLETE AS WRITTEN.                                                      !!"
+  echo "==============================================================================="
+  echo "It asserts the BUG, so from here on it will keep reporting failing assertions."
+  echo "CONVERT IT into a regression gate: the higher-priority sibling must get its share"
+  echo "of the shared limit-group budget (high(pri250).count > 0), then remove the open"
+  echo "item from .docs/reliable4/prod-validation-260827.md."
+  echo "==============================================================================="
+  return 0
+}
+
+# pf_num prints the integer value of a `<key>=<int>` field in the priority-fairness
+# reproducer line, printing nothing when the key is absent (which its caller must treat as an
+# unmeasured FAIL). The keys contain regex metacharacters, so they are passed pre-escaped.
+pf_num() {  # <line> <escapedKey>
+  printf '%s\n' "$1" | grep -aoE "$2=[0-9]+" | tail -1 | cut -d= -f2
 }
 
 cmd_backlog_rescan_check() {  # backlog-rescan-check [limit] [backlog] - reliable4 #1 rac backlog rescan
@@ -2930,14 +3146,38 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         deterministic prod-scale check: summed runners requested per limit
                         group stay <= the limit (fails on pre-fix per-group accounting; no manager)
   overcount-check [limit] [initialRunning] [windowReserves]
-                        reliable3 2b reproducer: a group's count exceeds its limit when reserves
-                        land between the early capacity read and the running snapshot (no manager)
+                        reliable3 2b GATE (deterministic, in-process, no manager): a group's
+                        summed count must stay within its limit group's limit even when reserves
+                        land between the early capacity read and the later running snapshot
+                        (prod pre-fix: count=3313 for a 2000 limit). PASS = the arrangement
+                        really over-counts before the cap (uncappedCount > limit) AND
+                        0 < finalCount <= limit; FAIL = capGroupCountsToLimits is gone or has
+                        started trimming to nothing, OR the arrangement produced no over-count
+                        to cap, OR nothing was measured. Was an INVERTED reproducer (it asserted
+                        the over-count was present, so it passed on the buggy code); converted
+                        (defaults 2000 300 1500)
   limit-stall-check [limit] [ready]
-                        reliable3 §1 reproducer: silent death-confirmation failure + phantom-slot
-                        limit-group stall (all new ready jobs skipped); loud-only won't clear it
+                        reliable3 §1 GATE (deterministic, in-process, no manager), two halves:
+                        (1) a limit group with every slot held schedules nothing - scheduled == 0
+                        and skipped == ready, which is correct behaviour and unchanged; and
+                        (2) a death confirmation that cannot succeed must WARN naming the host
+                        and pid, and an unreadable ssh private key must WARN naming the path.
+                        Half (2) was INVERTED (it asserted the ABSENCE of any log, so it passed
+                        on the silent code); converted. FAIL = a held-slot group schedules work,
+                        or either warning is gone or stops naming what to act on, OR nothing was
+                        measured. The key facet needs a usable LSF and is reported as UNMEASURED
+                        where there is none, never counted as coverage (defaults 2000 5000)
   priority-fairness-check [limit] [readyExtra]
-                        reliable3 2a reproducer: first-come budget allocation starves a higher-
-                        priority sibling scanned after a low-priority one (no manager)
+                        reliable3 2a reproducer, still INVERTED ON PURPOSE because the defect is
+                        OPEN: first-come budget allocation starves a higher-priority sibling
+                        scanned after a low-priority one (no manager). It asserts the BUG, so
+                        EXIT 0 MEANS THE BUG IS STILL PRESENT, not that an invariant holds - it
+                        prints a banner saying so, since a zero exit read as good news in the
+                        2026-08-27 sweep. Exit status here means "was anything measured": exit 1
+                        ONLY when no measurement was produced. If the starvation ever stops
+                        reproducing, the banner says so and asks for this mode to be converted
+                        into a regression gate. Open item recorded in
+                        .docs/reliable4/prod-validation-260827.md (defaults 2000 500)
   backlog-rescan-check [limit] [backlog]
                         reliable4 #1 reproducer: a rac cycle scans the whole ready backlog
                         (racScanWork == backlog); fails until the scan is bounded to ~limit
