@@ -25,25 +25,38 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  ******************************************************************************/
 
-// This file holds EXPERIMENTAL reproducers for the three remaining reliable3
-// reliability issues. They are gated behind the `reliability_repro` build tag so
-// they are NOT part of `make test`; run them with:
+// This file holds the reliable3 reliability checks that run outside `make test`,
+// behind the `reliability_repro` build tag:
 //
 //	go test -tags reliability_repro ./jobqueue/ -run <TestName>
 //
 // (or via the developers/wrdev.sh overcount-check / limit-stall-check /
-// priority-fairness-check commands). Unlike the shipped red-until-fixed TDD
-// tests, these reproducers ASSERT THE BUGGY BEHAVIOUR: they were written to
-// PASS on PRE-fix code, each demonstrating one original defect. THIS BRANCH
-// APPLIES the fixes, so the reproducers NO LONGER reproduce: running them now
-// (go test -tags reliability_repro ./jobqueue/) is EXPECTED TO FAIL for the
-// fixed issues, because their buggy-behaviour assertions no longer hold (the
-// over-count, priority-fairness and silent-confirm reproducers all flip to
-// failing). The lone exception is the limit-stall reproducer: it models the
-// phantom-slot consequence at the limiter level and the shipped confirmation
-// fix is loud-only, so it still passes - see its comment. They are retained to
-// document each original bug and to demonstrate it against a PRE-fix checkout
-// (e.g. git stash, or checking out the pre-fix commit).
+// priority-fairness-check commands).
+//
+// They began as reproducers that ASSERTED THE BUGGY BEHAVIOUR, so each PASSed on
+// PRE-fix code. Three of the four defects have since been fixed on this branch, so
+// those three now assert the FIXED INVARIANT instead - a reproducer whose exit
+// code says "the bug is present" is worse than useless once the bug is gone,
+// because a zero exit then means the opposite of what a reader assumes:
+//
+//   - TestReliable3OverCountRunningSnapshot builds the 2b over-count arrangement
+//     and asserts the summed count is capped at the limit group's limit
+//     (capGroupCountsToLimits). It still checks that the arrangement really does
+//     over-count BEFORE the cap, so it cannot pass vacuously.
+//   - TestReliable3LimitSlotStall asserts the limiter invariant it always
+//     asserted - a limit group whose slots are all held schedules nothing more -
+//     which is correct behaviour, not a defect; only its framing changed.
+//   - TestReliable3ConfirmFailureIsLoud (was TestReliable3SilentConfirmFailure)
+//     asserts that a death-confirmation that cannot succeed, and an unreadable
+//     ssh private key, each WARN, naming the host and pid / the key path.
+//
+// TestReliable3PriorityFairnessStarvation is the exception and stays INVERTED,
+// because reliable3 issue 2a's priority-fairness defect is STILL PRESENT: the
+// shared per-limit-group budget is handed out first-come, so a low-priority
+// sibling scanned first starves a higher-priority one. Its PASS therefore means
+// "the bug reproduced", which is why its wrdev.sh mode prints a banner saying so
+// rather than letting a zero exit read as an invariant holding. See
+// .docs/reliable4/prod-validation-260827.md for that outstanding item.
 //
 // They deliberately exercise the real accounting primitives (countJobInGroup,
 // accountForRunningJobs, seedLimitGroupBudgets, the limiter, and
@@ -77,21 +90,32 @@ func reproCaptureCtx(ctx context.Context) (context.Context, *bytes.Buffer) {
 	return clog.ContextWithLogHandler(ctx, handler), buf
 }
 
-// TestReliable3OverCountRunningSnapshot reproduces reliable3 ISSUE 2b: a single
-// scheduler group's final scheduling count can exceed its limit group's limit,
-// because countJobInGroup caps the READY count against remaining capacity read
-// EARLY (when seedLimitGroupBudgets first reads GetRemainingCapacity), while
-// accountForRunningJobs later adds ALL run-sub-queue jobs of the group on top
-// with no limit check. Reserves that land between those two reads make the
-// running snapshot larger than the early capacity read reflected, so
+// TestReliable3OverCountRunningSnapshot builds the exact arrangement of reliable3
+// ISSUE 2b and asserts the FIXED invariant: a scheduler group's final scheduling
+// count never exceeds its limit group's limit.
 //
-//	finalCount = cappedReady + running = (limit - initialRunning) + (initialRunning + window) = limit + window
+// The arrangement: countJobInGroup caps the READY count against remaining capacity
+// read EARLY (when seedLimitGroupBudgets first reads GetRemainingCapacity), and
+// accountForRunningJobs then adds ALL run-sub-queue jobs of the group on top.
+// Reserves that land between those two reads make the running snapshot larger than
+// the early capacity read reflected, so the count BEFORE any cap is
 //
-// which exceeds the limit by the number of window reserves (production saw
-// count=3313 for a 2000 limit). Deterministic: the interleaving is controlled
-// directly. Scale knobs: WR_OP_LIMIT, WR_RC_INITIAL, WR_RC_WINDOW (keep
-// WR_RC_INITIAL + WR_RC_WINDOW <= WR_OP_LIMIT: you cannot have more jobs running
-// than the limit).
+//	cappedReady + running = (limit - initialRunning) + (initialRunning + window) = limit + window
+//
+// ie. over the limit by the number of window reserves (production saw count=3313
+// for a 2000 limit). capGroupCountsToLimits, called at the end of
+// accountForRunningJobs, trims the summed sibling counts back to the limit.
+//
+// Both halves are asserted, because either alone would be a false PASS: that the
+// UNCAPPED count really does exceed the limit (or the arrangement is not
+// reproducing the over-count at all, and the cap is being credited for nothing),
+// and that the capped count is at or under it while still asking for runners (a
+// cap that trimmed everything to zero would satisfy an upper bound alone). Removing
+// the capGroupCountsToLimits call turns this red.
+//
+// Deterministic: the interleaving is controlled directly. Scale knobs: WR_OP_LIMIT,
+// WR_RC_INITIAL, WR_RC_WINDOW (keep WR_RC_INITIAL + WR_RC_WINDOW <= WR_OP_LIMIT:
+// you cannot have more jobs running than the limit).
 func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -100,7 +124,7 @@ func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 	ctx := context.Background()
 	req := &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}
 
-	Convey("A group's count exceeds its limit when reserves land between the capacity read and the running snapshot", t, func() {
+	Convey("A group's count stays within its limit when reserves land between the capacity read and the running snapshot", t, func() {
 		limit := opEnvInt("WR_OP_LIMIT", 2000)
 		initialRunning := opEnvInt("WR_RC_INITIAL", 300)
 		windowReserves := opEnvInt("WR_RC_WINDOW", 1500)
@@ -163,31 +187,54 @@ func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(added, ShouldEqual, totalRunning)
 
-		// (4) accountForRunningJobs adds ALL running jobs on top, with no limit check.
+		// (4) accountForRunningJobs adds ALL running jobs on top, then
+		// capGroupCountsToLimits trims the summed sibling counts back to the limit.
+		// uncappedCount is what the group's count would be without that trim, ie. the
+		// over-count this arrangement exists to produce.
+		uncappedCount := cappedReady + totalRunning
+
 		s.accountForRunningJobs(q, groups)
 		finalCount := groups[grpName].count
 
-		t.Logf("OVERCOUNT-REPRO: limit=%d cappedReady=%d running=%d => finalCount=%d (exceeds limit by %d)",
-			limit, cappedReady, totalRunning, finalCount, finalCount-limit)
+		t.Logf("OVERCOUNT-REPRO: limit=%d cappedReady=%d running=%d => uncappedCount=%d "+
+			"(over the limit by %d) finalCount=%d (over the limit by %d)",
+			limit, cappedReady, totalRunning, uncappedCount, uncappedCount-limit,
+			finalCount, finalCount-limit)
 
-		Convey("the final count exceeds the limit (the 2b over-count bug is present)", func() {
-			So(finalCount, ShouldBeGreaterThan, limit)
+		Convey("the arrangement really does over-count before the cap", func() {
+			So(uncappedCount, ShouldBeGreaterThan, limit)
+		})
+
+		Convey("the final count does not exceed the limit (the 2b over-count is capped)", func() {
+			So(finalCount, ShouldBeLessThanOrEqualTo, limit)
+		})
+
+		Convey("and runners are still requested for the work that fits", func() {
+			So(finalCount, ShouldBeGreaterThan, 0)
 		})
 	})
 }
 
-// TestReliable3LimitSlotStall reproduces reliable3 ISSUE 1's CONSEQUENCE: once a
-// limit group is full of phantom slots (reserved-then-lost jobs parked in
-// SubQueueRun whose limit slots were never released because death-confirmation
-// never succeeds - see TestReliable3SilentConfirmFailure), every new ready job
-// in that limit group is limit-skipped, so scheduling stalls. Modelled at the
-// limiter + countJobInGroup level (faithful to the mechanism: the limiter is the
-// single source of truth for slot occupancy). Scale knobs: WR_OP_LIMIT (phantom
-// slots) and WR_STALL_READY (new ready jobs).
+// TestReliable3LimitSlotStall asserts the limiter invariant behind reliable3 ISSUE
+// 1's CONSEQUENCE: a limit group whose slots are ALL held schedules nothing more,
+// however long the ready backlog behind it is - every new ready job is
+// limit-skipped rather than scheduled. That is correct behaviour and must stay
+// (breaking it is the over-provisioning family overprovision-check guards), so
+// unlike the other reliable3 checks in this file nothing about this test's
+// assertions needed to change; only the framing did.
 //
-// NB: a "loud only" fix (logging could-not-determine) does NOT change this
-// reproducer - the phantom slots still exhaust the limit, so it still passes.
-// That is the point: loud-only surfaces the stall, it does not remove it.
+// What made it a reproducer was where the held slots came from in production:
+// phantom slots, ie. reserved-then-lost jobs parked in SubQueueRun whose limit
+// slots were never released because death-confirmation never succeeded. This test
+// does not exercise that cause at all - it holds the slots by incrementing the
+// limiter directly - so its PASS says nothing about whether phantom slots can
+// still form. The confirmation path itself is covered by
+// TestReliable3ConfirmFailureIsLoud here, and by the reliable4 runner-pid liveness
+// and lost-runner-backstop tests in the main suite.
+//
+// Modelled at the limiter + countJobInGroup level, faithful to the mechanism: the
+// limiter is the single source of truth for slot occupancy. Scale knobs:
+// WR_OP_LIMIT (held slots) and WR_STALL_READY (new ready jobs).
 func TestReliable3LimitSlotStall(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -196,15 +243,15 @@ func TestReliable3LimitSlotStall(t *testing.T) {
 	ctx := context.Background()
 	req := &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}
 
-	Convey("Phantom slots from unconfirmable lost jobs exhaust the limit group and skip all new ready jobs", t, func() {
+	Convey("A limit group whose slots are all held skips every new ready job", t, func() {
 		limit := opEnvInt("WR_OP_LIMIT", 2000)
 		newReady := opEnvInt("WR_STALL_READY", 5000)
 
 		s := newOverProvisionServer(limit)
 		grpName := "200:30:1:1:samehash" + jobSchedLimitGroupSeparator + "lg"
 
-		// fill the limit group with `limit` phantom slots: reserved-then-lost jobs
-		// whose limit slots were never released (confirmation never succeeds).
+		// hold every one of the limit group's slots, as production's phantom slots
+		// did: reserved-then-lost jobs whose slots were never released.
 		for range limit {
 			s.limiter.Increment(ctx, []string{"lg"})
 		}
@@ -226,37 +273,50 @@ func TestReliable3LimitSlotStall(t *testing.T) {
 
 		g := groups[grpName]
 
-		t.Logf("LIMIT-STALL-REPRO: limit=%d phantomSlots=%d newReady=%d => scheduled=%d skipped=%d",
+		t.Logf("LIMIT-STALL-REPRO: limit=%d heldSlots=%d newReady=%d => scheduled=%d skipped=%d",
 			limit, limit, newReady, g.count, g.skipped)
 
-		Convey("no new ready jobs are scheduled - the limit group is stalled by phantom slots", func() {
+		Convey("no new ready jobs are scheduled, and every one is recorded as skipped", func() {
 			So(g.count, ShouldEqual, 0)
 			So(g.skipped, ShouldEqual, newReady)
 		})
 	})
 }
 
-// TestReliable3SilentConfirmFailure reproduces reliable3 ISSUE 1's ROOT: the
-// death-confirmation path fails SILENTLY, so a broken reclaim masquerades as a
-// healthy manager. Two facets:
+// TestReliable3ConfirmFailureIsLoud asserts the FIXED invariant for reliable3
+// ISSUE 1's ROOT. That root was silence: the death-confirmation path failed with no
+// log at all, so a manager whose reclaim was completely broken looked healthy, and
+// the phantom-slot stall it caused (TestReliable3LimitSlotStall) had no visible
+// cause. Two facets, one assertion each:
 //
-//  1. scheduler.ProcessNotRunningOnHost returns false ("still running / cannot
-//     confirm") on a getHost/ssh failure with NO log - the mock scheduler's
-//     getHost returns (nil,false), which is exactly the could-not-determine case.
-//  2. lsf.initialize swallows a private-key read error (the `if err == nil`
-//     store), so a mis-pathed key leaves ssh permanently broken with NO log.
+//  1. scheduler.ProcessNotRunningOnHost must WARN when it cannot determine whether
+//     the process is alive. It still returns false ("still running / cannot
+//     confirm"), which is the safe answer - a job is only re-run once its runner is
+//     CONFIRMED dead (DEVELOPERS.md rule 4) - but it must say so. The mock
+//     scheduler's getHost returns (nil,false), which is exactly the
+//     could-not-determine case (Scheduler.warnCannotConfirm).
+//  2. lsf.initialize must WARN when the configured ssh private key cannot be read.
+//     It used to swallow the error (an `if err == nil` store), so a mis-pathed key
+//     left ssh - and therefore every death confirmation - permanently broken and
+//     silent (lsf.loadPrivateKey).
 //
-// The "loud only" fix would add a warn to each; this reproducer then flips
-// (a log appears). Note this only makes the failure VISIBLE - it does not stop
-// the resulting stall (see TestReliable3LimitSlotStall).
-func TestReliable3SilentConfirmFailure(t *testing.T) {
+// The warnings are asserted to NAME the thing an operator has to act on (the host
+// and pid; the key path), not merely to be non-empty: a bare "something went wrong"
+// would leave the operator exactly where the silent version did. Removing either
+// warn turns this red.
+//
+// Facet 2 needs a usable LSF, so it SKIPS where there is none. The gate reports
+// which facets were measured rather than treating a skip as coverage: see the
+// CONFIRM-LOUD-REPRO line, which is what developers/wrdev.sh limit-stall-check
+// parses.
+func TestReliable3ConfirmFailureIsLoud(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
 
-	Convey("ProcessNotRunningOnHost silently returns cannot-confirm (false) when the host is unavailable", t, func() {
+	Convey("ProcessNotRunningOnHost warns when it cannot confirm whether the process is alive", t, func() {
 		sched, err := scheduler.New(ctx, "mock", &scheduler.ConfigMock{
 			RunnerFunc: func(context.Context, string) {},
 		})
@@ -264,50 +324,77 @@ func TestReliable3SilentConfirmFailure(t *testing.T) {
 
 		logCtx, buf := reproCaptureCtx(ctx)
 		notRunning := sched.ProcessNotRunningOnHost(logCtx, 12345, "unreachable-host")
+		logged := buf.String()
 
-		t.Logf("SILENT-CONFIRM-REPRO: ProcessNotRunningOnHost returned notRunning=%v (expected false), log=%q",
-			notRunning, buf.String())
+		t.Logf("CONFIRM-LOUD-REPRO: cannotConfirmWarned=%v namesHost=%v namesPid=%v notRunning=%v log=%q",
+			logged != "", strings.Contains(logged, "unreachable-host"), strings.Contains(logged, "12345"),
+			notRunning, logged)
 
-		Convey("it reports the job as still running (false), i.e. does not confirm death", func() {
+		Convey("it still reports the job as maybe-running (false), i.e. does not confirm death", func() {
 			So(notRunning, ShouldBeFalse)
 		})
 
-		Convey("and emits NO log about the could-not-determine outcome (the silent-failure bug)", func() {
-			So(buf.String(), ShouldBeEmpty)
+		Convey("and it warns, naming the host and pid an operator has to look at", func() {
+			So(logged, ShouldNotBeEmpty)
+			So(strings.ToLower(logged), ShouldContainSubstring, "could not confirm")
+			So(logged, ShouldContainSubstring, "unreachable-host")
+			So(logged, ShouldContainSubstring, "12345")
 		})
 	})
 
-	Convey("lsf.initialize swallows a private-key read error with no log", t, func() {
+	Convey("lsf.initialize warns when the configured private key cannot be read", t, func() {
+		badKey := "/nonexistent/wr-reliable3-repro-key"
+
 		logCtx, buf := reproCaptureCtx(ctx)
 		_, err := scheduler.New(logCtx, "lsf", &scheduler.ConfigLSF{
 			Deployment:     "development",
 			Shell:          "bash",
-			PrivateKeyPath: "/nonexistent/wr-reliable3-repro-key",
+			PrivateKeyPath: badKey,
 		})
 
 		if err != nil {
-			t.Logf("KEY-SWALLOW-REPRO: SKIPPED - lsf.initialize needs a working LSF here: %v", err)
+			t.Logf("KEY-WARN-REPRO: keyWarnMeasured=false SKIPPED - lsf.initialize needs a working LSF here: %v",
+				err)
 			SkipConvey("LSF not usable on this host, cannot exercise lsf.initialize", func() {})
 
 			return
 		}
 
-		t.Logf("KEY-SWALLOW-REPRO: lsf.initialize err=%v, log=%q", err, buf.String())
+		logged := buf.String()
 
-		Convey("the bad key path produces no key-related warning (the silent-swallow bug)", func() {
-			So(strings.ToLower(buf.String()), ShouldNotContainSubstring, "key")
+		t.Logf("KEY-WARN-REPRO: keyWarnMeasured=true keyWarned=%v namesPath=%v log=%q",
+			strings.Contains(strings.ToLower(logged), "private key"), strings.Contains(logged, badKey), logged)
+
+		Convey("the unreadable key path produces a warning that names it", func() {
+			So(strings.ToLower(logged), ShouldContainSubstring, "private key")
+			So(logged, ShouldContainSubstring, badKey)
 		})
 	})
 }
 
 // TestReliable3PriorityFairnessStarvation reproduces reliable3 ISSUE 2a's
-// remaining refinement: the shared per-limit-group budget is allocated
-// FIRST-COME across sibling scheduler groups. buildSchedulerGroups scans ready
-// jobs in scheduler-group (map) order, not priority order, so if a low-priority
-// sibling is scanned first it consumes the whole shared budget and a
-// higher-priority sibling gets nothing. Deterministic: feed the low-priority
-// sibling's ready jobs first, then the high-priority sibling's. Scale knob:
-// WR_OP_LIMIT and WR_PF_READY (extra ready per group beyond the limit).
+// remaining refinement, which is STILL PRESENT: the shared per-limit-group budget
+// is allocated FIRST-COME across sibling scheduler groups. buildSchedulerGroups
+// scans ready jobs in scheduler-group (map) order, not priority order, so if a
+// low-priority sibling is scanned first it consumes the whole shared budget and a
+// higher-priority sibling gets nothing.
+//
+// THIS TEST IS INVERTED and deliberately stays that way: it asserts the BUGGY
+// behaviour, so it PASSES while the defect exists. A zero exit here does NOT mean
+// an invariant holds - it means the starvation reproduced. developers/wrdev.sh
+// priority-fairness-check prints a banner saying exactly that, because the one
+// thing worse than an inverted reproducer is one whose exit code is mistaken for a
+// green invariant. Flipping it to permanently red was considered and rejected: a
+// gate that can only ever fail stops being read.
+//
+// When the defect IS fixed, this test goes red and the wrdev.sh mode says so and
+// asks for it to be converted into a regression gate (high-priority sibling gets
+// its share of the budget). The outstanding item is recorded in
+// .docs/reliable4/prod-validation-260827.md.
+//
+// Deterministic: feed the low-priority sibling's ready jobs first, then the
+// high-priority sibling's. Scale knobs: WR_OP_LIMIT and WR_PF_READY (extra ready
+// per group beyond the limit).
 func TestReliable3PriorityFairnessStarvation(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -346,10 +433,11 @@ func TestReliable3PriorityFairnessStarvation(t *testing.T) {
 			})
 		}
 
-		t.Logf("PRIORITY-FAIRNESS-REPRO: limit=%d low(pri0).count=%d high(pri250).count=%d high.skipped=%d",
-			limit, groups[lowGrp].count, groups[highGrp].count, groups[highGrp].skipped)
+		t.Logf("PRIORITY-FAIRNESS-REPRO: limit=%d readyPerGroup=%d low(pri0).count=%d "+
+			"high(pri250).count=%d high.skipped=%d",
+			limit, readyPerGroup, groups[lowGrp].count, groups[highGrp].count, groups[highGrp].skipped)
 
-		Convey("the higher-priority sibling is starved (the first-come allocation bug is present)", func() {
+		Convey("the higher-priority sibling is starved (the first-come allocation bug is STILL present)", func() {
 			So(groups[lowGrp].count, ShouldEqual, limit)
 			So(groups[highGrp].count, ShouldEqual, 0)
 			So(groups[highGrp].skipped, ShouldBeGreaterThan, 0)

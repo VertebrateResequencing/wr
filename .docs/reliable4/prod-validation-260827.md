@@ -214,20 +214,30 @@ delivery would have shown:
 - `churn 40000` (real LSF): fully drained 40000/40000, `badjob=0`, `notrun=0`,
   status RPC 29-64 ms.
 
-### Three exit-1 results, all pre-existing, none a regression
+### Three exit-1 results, all pre-existing, none a regression - now resolved
 
-Each was A/B'd against a worktree at `a083f1d` and behaves identically there.
+Each was A/B'd against a worktree at `a083f1d` and behaved identically there. All
+three were *inverted* reproducers: they asserted the presence of a reliable3 bug,
+so their exit codes had come to mean the opposite of what a reader assumes. Two
+have been converted into regression gates and the third now says what its exit
+code means:
 
-- **`overcount-check`** and **`limit-stall-check`** are *inverted* reproducers -
-  their own comments say they pass on buggy code. `overcount-check` now reports
-  `finalCount=2000 (exceeds limit by 0)`, so its `ShouldBeGreaterThan` fails
-  because the bug is fixed. `limit-stall-check`'s `SilentConfirmFailure` half fails
-  because the code now *logs* the warning whose absence it asserts. Both are the
-  desirable outcome.
-- **`priority-fairness-check` exits 0, and that is not good news.** It is also
-  inverted, and it still demonstrates the reliable3 2a starvation
-  (`low(pri0).count=2000 high(pri250).count=0 high.skipped=2500`). Unchanged by
-  this delivery; do not read its zero exit as an invariant holding.
+- **`overcount-check`** asserted `finalCount > limit`, so it passed on the buggy
+  code and started failing when the cap landed (`finalCount=2000`, exceeds by 0).
+  It now asserts the invariant - the summed count stays within the limit - and
+  also asserts that the arrangement really does over-count *before*
+  `capGroupCountsToLimits` trims it, so it cannot pass vacuously.
+- **`limit-stall-check`**'s `SilentConfirmFailure` half asserted the *absence* of
+  any log. It now asserts both warnings are present and name what an operator has
+  to act on (the host and pid; the key path). Its `LimitSlotStall` half always
+  asserted correct behaviour - a limit group whose slots are all held schedules
+  nothing more - so only its framing changed.
+- **`priority-fairness-check` exits 0, and that is not good news.** It still
+  demonstrates the reliable3 2a starvation
+  (`low(pri0).count=2000 high(pri250).count=0 high.skipped=2500`), so it stays
+  inverted, because the defect is open and a permanently-red gate stops being
+  read. It now prints a banner saying that its zero exit means the bug reproduced,
+  and exits non-zero only when nothing was measured. See the open item below.
 
 ### A harness trap worth knowing
 
@@ -523,4 +533,17 @@ continuous capture, or the profile will report the cost of profiling.
    leaves a manager that `stop`/`clean` cannot kill (no pid file under `-f`), and
    `parseBmgroups` never `Wait()`s its `bmgroup -w` child, so every manager leaves
    a defunct process.
+7. **Reliable3 issue 2a: priority-unfair limit-group budget allocation. OPEN, and
+   reproducible on demand.** The shared per-limit-group budget is handed out
+   first-come across sibling scheduler groups, in map order rather than priority
+   order, so a low-priority sibling scanned first takes the whole budget and a
+   higher-priority sibling gets nothing. `developers/wrdev.sh
+   priority-fairness-check` reproduces it deterministically in-process:
+   `low(pri0).count=2000 high(pri250).count=0 high.skipped=2500` at a 2000 limit.
+   That mode is an INVERTED reproducer - it asserts the bug, so its **exit 0 means
+   the bug is still present** - and it prints a banner to that effect. When this is
+   fixed, convert that mode into a regression gate (the higher-priority sibling
+   must get its share) and delete this item. Not seen to bite production yet, which
+   is why it is recorded rather than scheduled: it needs sibling scheduler groups
+   of *differing* priority sharing one limit group.
 
