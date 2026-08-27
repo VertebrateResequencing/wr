@@ -84,6 +84,185 @@ Items 1 and 2 together first - the read says where to instrument, the
 instrumentation makes the next restart decisive. Then item 3, which is the one
 that might reproduce the entire symptom locally today. Item 4 whenever.
 
+## SUPERSEDING ANALYSIS (2026-08-27, code-first, independent)
+
+A second independent analysis worked from the **code** rather than the profiles and
+**overturns the central conclusion below**. Read this section first; the one that
+follows is kept for its measurements, not its prescription.
+
+### The three findings nobody had
+
+**1. `bucketEnvs` grows by one never-deleted record per add - and it is the
+upstream cause of the DB growth every other mechanism feeds on.**
+
+`managerremotesameaslocal: true` is set in production
+(`/nfs/hgi/wr/lsf/.wr_config.yml`), so `addEnvVars` (`cmd/add.go:713`) ships the
+client's whole `os.Environ()`. On an LSF exec node that includes `LSB_JOBID`,
+`LSB_JOBINDEX`, `LSB_HOSTS` and `TMPDIR`, so `byteKey` (`jobqueue/utils.go:145`)
+is **unique per add**. The cache is **12 entries** (`db.go:69`), and `bucketEnvs`
+has only `Put` and `Get` - **never `Delete`** (`db.go:3224`, `:3243`).
+
+So every `wr add` pays an extra write transaction *and* permanently grows the DB
+by a ~6-11 KB record. That growth is what starves the freelist, forces the mmap
+remaps of "mechanism C", and inflates every backup copy. **Both prior documents
+were silent on it while depending on the growth it causes.**
+
+Kill-or-confirm: bucket stats on `bucketEnvs` - `KeyN` should be about the
+cumulative add count, `LeafInuse` growing ~6-11 KB per add.
+
+**2. A single-job add serialises THREE write transactions, and that is the latency
+mechanism** - not the transaction count:
+
+| # | source | sequential? | writes anything? |
+| --- | --- | --- | --- |
+| 1 | `storeEnv` -> `bolt.Batch` (`db.go:3852`) | **blocks before `createJobs`** | yes, a unique never-deleted record |
+| 2 | `storeLimitGroups` -> `bolt.Batch` (`db.go:1230`), **unconditional** | **blocks before `storeNewJobs`** | usually **nothing** (`storeLimitGroup` returns unchanged without a Put) |
+| 3-7 | `storeNewJobData` -> 5 x `launchBatchStore` | concurrent with each other | yes, ~7 keys |
+
+A no-op bolt transaction is **not** free: `Tx.Commit` always runs
+`commitFreelist`, always writes and fdatasyncs, always writes and fdatasyncs the
+meta page. There is no early-out. So transaction 2 pays a full commit for zero work.
+
+**This explains the distribution, which the count ratio could not.** The archive
+writer's turn interval is 60/13 = 4.6 s and an archive totals ~7.5 s, so archives
+*straddle* the 10 s log threshold and a minority cross. An add pays three
+sequential waits: 3 x 4.6 s = **13.8 s against a measured 13.54 s tail mean and
+12.97 s p50** - so nearly every add crosses. One fact accounts for the 6.5x count
+ratio, both tail means, and the p50/p99 shapes.
+
+**3. The 52-74 ms floor is the freelist page, rewritten in full on every commit -
+and my reasoning for dismissing it was a category error.**
+
+`Tx.Commit` always calls `commitFreelist`, which writes the **entire** free+pending
+list, sized `16 + 8 x (free + pending)`; `Copyall` re-sorts the whole pending list
+and, for the hashmap freelist wr uses, rebuilds and re-sorts the whole free list on
+**every** commit. Production's ~111k free pages means an **890 KB freelist page
+written and fsynced on every commit, including one that changes nothing.**
+
+Reproduced on a shape-matched fixture, local ext4, same empty write transaction:
+
+| free pages | freelist page | empty write tx |
+| --- | --- | --- |
+| ~0 | 24 B | **0.63 ms** |
+| 111,273 | 890 KB | **9.30 ms** |
+| 111,055 (measured in-process just after the deletes) | 890 KB | **61.3 ms** |
+| 150,273 | 1.20 MB | 13.54 ms (worst 39.6 ms) |
+
+**0.63 ms to 61 ms for identical work** - and that 61.3 ms is at exactly
+production's free-page count, inside production's 52-74 ms band. The difference
+between 9 ms and 61 ms is *state*: whether a contiguous run exists for the freelist
+page itself, or it must come off the end of the file, moving the high-water mark
+into `db.grow` -> `ftruncate` -> a **third** fsync.
+
+**My error:** I used a 0.73 ms fsync measurement to rule durability out. That is
+the *latency of an empty sync*; it says nothing about syncing 0.9 MB. That category
+error is the whole of the "unexplained 68 ms".
+
+### Why throughput FALLS between limit 500 and 2000
+
+Four code-level reasons per-unit cost rises with concurrency:
+
+1. **The backup's read transaction pins pending pages for its whole ~30 s**
+   (`ReleasePendingPages` only releases below the oldest read txid), and the
+   freelist page written per commit grows with pending count - so **the faster the
+   manager runs, the more every commit costs during a copy.** Measured: pending
+   218 -> 654 over 60 empty commits with one read tx held; at production's rates
+   that is ~135k pending pages, roughly tripling the per-commit freelist write.
+2. `ReleasePendingPages` is itself O(open readers + pending ids) inside
+   `db.rwlock` + `db.metalock`.
+3. Backup duty cycle rises with load - measured 9.2% at limit 500, **35% at limit
+   2000** - so more competing NFS bandwidth raises the floor further.
+4. **Retry amplification past 60 s:** `Client.request` does not retry, so a timed-out
+   `wr add` fails the dedup command, fails the job, and wr re-runs it - the whole
+   add happens again. That converts "flat" into "falls".
+
+### Verdict on the fix proposed below: right target, wrong instrument, skips the cheap 80%
+
+**Do not build a second coalescing writer yet.** The asymmetry is real -
+`bolt.Batch`'s window is armed at batch creation and does not adapt to
+back-pressure, so under saturation each 10 ms of queueing yields another
+transaction, where `drainArchives` swaps the whole pending slice and folds with the
+backlog. But:
+
+- **The 2-5 concurrent `Batch` calls need no new machinery to become one
+  transaction** - they are five independent bucket writes from five goroutines that
+  then all block. Doing all five inside **one** `db.bolt.Batch` is strictly better.
+  Note concurrency across bolt write transactions can never help: they serialise on
+  one mutex, so those goroutines only *add* transactions. At `jobs=1` the
+  concurrency is pure loss.
+- **It misses the two sequential transactions**, which are what set the latency.
+- **`bolt.Batch` already provides** per-caller error attribution with member-by-member
+  solo retry and panic isolation. `applyArchives`/`applyArchiveOp` are a hand-rolled
+  copy of it. Replacing `Batch` means re-owning that for no gain.
+
+**Minimum change that moves the number** - three edits in `jobqueue/db.go`, no new
+machinery, no ordering change:
+
+1. `storeEnv`: raise `envCacheSize` from 12 to ~2x the runner count, or check
+   `bucketEnvs` with a cheap `View` first. **Better, fix the cause: stop shipping
+   per-runner `os.Environ()`** (finding 1).
+2. `storeLimitGroups`: do the comparison in a `View`, take a write transaction only
+   when something differs. Microseconds against a ~57 ms commit.
+3. `storeNewJobData`: one `bolt.Batch` doing all five puts, no goroutines.
+
+Effect at the measured mix: an add goes from **3 sequential phases / 7 transactions
+to 1 phase / 1 transaction**; per-job add cost from ~35 ms toward ~5-12 ms of
+write-lock time; an (add + completion) pair from ~40 ms to ~10-17 ms - **2.4-4x the
+completion ceiling, roughly 60-110/s** - and add latency roughly thirds.
+
+### The hazard to design for before ANY add-fold change
+
+`prepareNewJobs` computes `jobsToQueue`/`jobsToUpdate` from a **read** transaction
+taken *before* the write (`db.go:2984`). Archives are independent of one another;
+adds interact through dep groups and `bucketRDTK`. **Widening the fold widens the
+read-then-write window**, so two adds that are each other's dependency-resolution
+input could both observe "no live member" and both be queued ready. The current
+5-way split already has this window; a 100-way fold makes it 100x wider. This needs
+a written argument, and it is the single thing to flag hardest.
+
+### A plain bug found in passing
+
+`storeBatched` (`db.go:3907`): `if offset := num - (num % batchSize); offset != 0`
+fires with `offset == num` whenever `num % batchSize == 0`, calling
+`storer(bucket, data[num:])` on an **empty slice** - one extra fully-committed
+empty write transaction per store, five per bulk add, whenever the count divides
+evenly. Should be `if rem := num % batchSize; rem != 0 { storer(data[num-rem:]) }`.
+
+Relatedly, `storeBatched` splits large adds into 1000-item chunks, so a 150,000-job
+add becomes **50+ write transactions** - which is the recorded `wr add 150000` at
+72.5 s. bbolt handles multi-MB transactions fine; this repo's own
+`compactTxMaxSize` is 64 MB.
+
+### Ranked residuals, each with a killable observable
+
+Beyond the above: `retrieveDependentJobs` on the add path is an O(dependents)
+prefix scan with a full decode per hit, transitively, inside a read transaction -
+rule-6 shape on the *add* path, scaling with 258,218 memberships (latent, not
+firing yet). `readyItemData()` builds a `[]any` of every ready job under
+`queue.mutex.RLock` - ~4.7 MB per pass at 296,949 jobs, coalesced to once per
+500 ms. ~2 MB of heap per empty commit from `freePageIds` + `Copyall`, ~36 MB/s of
+freelist garbage at 18 commits/s. `s.rpl` is a server-wide exclusive lock per
+completion with an O(1) body but an O(n) `Values()`.
+
+Looked for and **not** found: no unbuffered single-consumer channel on a hot path
+(`arSignal`, `beSignal`, `op.result` are all buffered(1)); no hot-path `sync.Once`
+beyond bbolt's own; and **no 6-request concurrency cap** - `numRPCReaders = 6`
+bounds admission only, handlers run in fresh goroutines.
+
+### Where this contradicts the measurements below
+
+- **"Not a compaction story… the volume is small"** is the wrong test. 890 KB is
+  small in bytes and enormous in cost. The row below reading "the same code, 7.4 GB
+  DB, local disk | 172/s (5.8 ms/txn)" is essentially **all freelist and no
+  payload** - read there as evidence the code path is fine. Compaction is not the
+  fix, but the freelist is the largest single lever on the floor, and the floor
+  multiplies everything.
+- **"0.73 ms fsync, therefore not durability"** - category error, see finding 3.
+- **"How much the backup costs cannot be determined from these profiles"** - it can
+  be determined from the code plus two `bolt.Stats()` fields, since the copy pins
+  pending pages and every commit during it pays for them. Closed form, not a
+  profiling problem.
+
 ## RESOLVED: what the fixes are (2026-08-27)
 
 Experiment has replaced the guesswork. Three mechanisms are confirmed and
