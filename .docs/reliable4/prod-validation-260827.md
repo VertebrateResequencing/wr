@@ -358,6 +358,108 @@ copy every ~32 MB took a 10 GB DB's freeze from 15.8 s to 0.7 s, size-independen
 (`reliable4-backup-stall-reinvestigation`). That is the starting point, not a
 blank page.
 
+## The completion path, read - and a reframe (2026-08-27)
+
+A static read of the whole completion path, plus a fuller read of the production
+log, **demotes the dep-group hypothesis and produces a much better candidate**.
+
+### `add` is hit harder than `jarchive`, which rules out most suspects
+
+Of 15,042 `slow request` lines: **8,637 are `add`, 6,403 `jarchive`**, co-timed
+minute for minute through the saturation window. `add jobs=1` alone: n=5,785,
+**p50 43.3 s, p90 65.5 s, max 213 s**, with **1,577 adds at or past 60 s** against
+567 jarchives past 59 s.
+
+And the cost is **size-independent**: `add jobs=37651` took 20.4 s while
+`add jobs=1` took 43 s at the median; on a quiet manager `add jobs=59489` took
+53 s, while under saturation `add jobs=4481` took 3m13s.
+
+`add` never touches `getijForReport`, `q.Get`, `db.archiveJob`, `q.Remove` or
+`satisfyEmptiedDepGroups`. **So whatever serialises is shared with `add`**, which
+demotes every archive-specific suspect - including `satisfyEmptiedDepGroups`, the
+hypothesis this read was commissioned to test.
+
+Corollary worth stating: **the 14/s rate is a consequence of the latency, not an
+independent cap.** 1,143 runners x (2.3 s job + ~60 s archive) is about 18/s,
+which is production's ~14/s. The only question is why *every* request takes tens
+of seconds.
+
+### Leading candidate: bolt's `mmaplock`, and compaction is what exposed it
+
+`db.backupToBackupFile` (`db.go:4246`) wraps the entire 7.3-8.7 GB copy in **one**
+`db.bolt.View`. A bbolt read transaction holds `db.mmaplock.RLock()` for its whole
+life; `db.allocate` calls `db.mmap` whenever the freelist cannot satisfy a write,
+and `db.mmap` takes `db.mmaplock.Lock()`. bbolt's own comment: *"When the mmap is
+remapped it will obtain a write lock so all transactions must finish before it can
+be remapped."* Go's `RWMutex` then queues every new reader behind that pending
+writer.
+
+**Consequence: the whole DB freezes for up to the remainder of the ~100 s copy**,
+hitting `add` (`bolt.Batch`) and `jarchive` (`bolt.Update`) equally, for a duration
+independent of request size. That fits every number above, including the 213 s
+maximum.
+
+**Why no harness reproduced it, and the irony in that:** `pristine6` carries a
+3,202 MiB freelist (819,745 free pages), so `db.mmap` is never called and the
+freeze cannot occur. Production was **compacted on 2026-08-25** to 10.9% free and
+has been **growing** since (8.591 GB at 13:23 to 8.678 GB at 14:26 on 2026-08-27,
+`db_bk` rewritten every ~2 minutes). The compaction that cut backup volume by
+45.9% also removed the free-page slack that had been letting writes avoid growing
+the file. This is the one ingredient the hunt never varied.
+
+**How to kill or confirm it:** re-run `archive-ceiling` against a *compacted* copy,
+so the archive path must grow the file while the backup's read transaction is open.
+No production access needed.
+
+### Other candidates worth acting on regardless
+
+- **The `add` path demands 3-6 bolt write transactions per request**
+  (`storeLimitGroups`, plus 2-5 concurrent `bolt.Batch` goroutines from
+  `storeNewJobData`). `bolt.Batch` only coalesces callers arriving before the
+  current batch starts, and the archive writer's plain `Update` cannot join a
+  Batch at all. At ~1,000 slow adds/min that is ~100 write transactions/s demanded
+  against ~14/s available.
+- **`decrementGroupCount` runs the LSF scheduler synchronously inside the archive
+  RPC** (`server.go:7081` calls `scheduleRunners` directly, *not* in a goroutine -
+  contrast `scheduleGroup` at `server.go:5271`, which spawns one precisely
+  "because the external scheduler command (eg. bsub) can be slow"). That reaches
+  `parseBjobs`, which runs **`bjobs -w` over all the user's LSF jobs with no
+  timeout and no context** (`scheduler/lsf.go:2053`). Mercury's LSF had 22,500+
+  foreign pending jobs at 08:00. A direct route to individual jarchives crossing
+  the floor; it does not explain the `add` latency.
+- **`limiter.vivifyGroup` holds the limiter's exclusive mutex across a bolt read
+  transaction** (`limiter/limiter.go:212` -> `db.retrieveLimitGroup`) - a rule-1
+  violation on a lock every completion needs via `markJobComplete` -> `Decrement`.
+- **Two server-wide exclusive locks are already taken once per completion**:
+  `queue.mutex` via `q.Remove`, and `s.rpl`. Rule 2's prohibition on *adding* one
+  is operating against a path that has two, plus `waitgroup.WaitGroup.mu` twice
+  per RPC.
+- **`AddMany` holds `queue.mutex` across the whole batch** (`queue.go:848`) - N
+  item constructions, map inserts, dependency wiring and heap pushes under one
+  hold. Production logged `add jobs=37651` and `add jobs=59489`, so this is a
+  genuine stop-the-world, though only ~2 such adds appear in the log.
+- **`processTimedOutItems` holds `queue.mutex` across the whole TTR pass**
+  (`queue.go:1918`), calling `ttrCallback` -> `markJobLost` -> two
+  `statusCaster.Send`s under the write lock, with `ServerItemTTR` = 60 s and 1,143
+  running jobs whose touches are queued behind it. Periodic and self-amplifying.
+
+### New instrumentation, landed
+
+`9fbccb4` adds a periodic warn-level `archive fold` line reporting the fold
+achieved plus the **wait/transaction split**, so "the writer is starved" and "the
+writer is slow" are distinguishable from an ordinary production log:
+
+```
+msg="archive fold" txs=94 archives=20458 meanFold=217.64 maxFold=423
+  meanWait=342ms maxWait=922ms meanTx=634ms maxTx=923ms meanLock=0s maxLock=0s interval=1m0s
+```
+
+Proven to discriminate on production's own filesystem with the backup streaming:
+fold **217.64** on this code, versus **1.00** with coalescing mutated away, where
+`meanWait` climbs to **1m17.8s** against a `meanTx` of 78 ms. So a production line
+is readable against both regimes. A fold of ~1 with a *small* wait means arrivals
+are merely sparse - which is why the split had to be on the same line.
+
 ## Which cause? Not settled yet
 
 
