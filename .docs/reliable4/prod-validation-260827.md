@@ -1,9 +1,14 @@
 # Production validation of the dep-granularity work, 2026-08-27
 
-**STATUS: the change works in production.** Recovery went from 42m56s to 36.4s
-and peak RSS from ~181 GB to 7.84 GB, with no OOM and no crash. Three issues
-remain, none urgent; the top one is DB-backup copy I/O, which is a bounded piece
-of work that has already been prototyped.
+**STATUS: the change works in production, and a deliberate stress test then
+found the NEXT ceiling.** Recovery went from 42m56s to 36.4s and peak RSS from
+~181 GB to 7.84 GB, with no OOM and no crash. Raising a job limit from 20 to 2000
+(1,143 concurrent runners) held memory fine but drove archive latency to the 60 s
+client floor and lost **470 final-state reports in one minute**. So the memory
+work is done; **write-path throughput is now the binding constraint**, and issue
+3 below (DB-backup copy I/O) is both the top remaining latency source and the
+thing that gates raising limits. See "Limit stress test" for the numbers and the
+acceptance test it implies.
 
 Read this first for the current position. Background: the OOM diagnosis is in
 `prod-restart-260825.md`, the design in `.docs/dep-granularity/spec.md`, and each
@@ -118,7 +123,9 @@ they were duplicate adds, so the work itself was cheap; the cost was contention.
 
 ### 3. Continuous full-DB backup, causing the only other latency
 
-**This is the one worth doing next.**
+**This is the one worth doing next**, and the limit stress test below promotes it
+from "top remaining latency" to "the thing standing between this manager and the
+throughput its hardware should give".
 
 ```
 db_bk      7,283,757,056  07:42:33   (finished)
@@ -149,8 +156,10 @@ blank page.
 
 ## Next steps, in order
 
-1. **Tackle issue 3** - DB-backup copy I/O. Bounded, prototyped, and it is the
-   only thing still costing production latency. See the section below.
+1. **Tackle issue 3** - DB-backup copy I/O. Bounded, prototyped, and now
+   demonstrably the constraint that gates raising job limits: the stress test
+   above pinned archive latency at the 60 s client floor and lost 470 completion
+   reports. See the section below.
 2. **Watch issue 2** across a few more restarts. It needs no code today; what
    would change that is a herd that approaches the 60 s floor.
 3. **Leave issue 1** unless startup time becomes a complaint.
@@ -167,6 +176,99 @@ blank page.
   would undo the entire point of publishing late.
 - The green window in `3390f23` is deliberate: ten test functions are red at that
   commit by design. Do not bisect through it expecting a green suite.
+
+## Limit stress test, 07:58-08:08 - the next ceiling, measured
+
+The operator raised a job limit from **20 to 2000** at ~07:58 to stress the new
+build. LSF filled it to **1,143 concurrent runners** (wr's own `wrp_*` jobs; the
+~22,500 other pending mercury jobs in `bjobs` are unrelated `gb-cram-*` work, and
+wr's own pending runners peaked around 840 - **no over-provisioning**, so
+\#553/\#554 are still holding).
+
+### Throughput did not scale, then degraded
+
+Completions per minute, counted from `msg="command ran OK"` across all runner
+logs in `/nfs/hgi/wr/lsf/runner_logs/26.08.27/`:
+
+| period | limit | concurrent runners | completions/min |
+| --- | --- | --- | --- |
+| 07:38-07:57 | 20 | ~20 | **~500-550, steady** (448-710, mean ~520) |
+| 07:59-08:04 | 2000 | 690 -> 1,143 | 984, 2072, 833, 439, 1101, 640 |
+
+**57x the concurrency bought ~1.6x the throughput, and made it erratic.** The 439
+in the 08:02 minute is *below* the old steady rate while running 1,143 runners
+instead of 20. That is saturation, not capacity: the runners queue on the single
+serialized DB write path rather than doing more work.
+
+### Latency walked up to the client floor and pinned there
+
+Max `slow request` duration per minute (threshold is
+`slowRequestThresholdDefault = 10s`, `serverCLI.go:82`):
+
+| minute | slow reqs | max duration |
+| --- | --- | --- |
+| 07:58 | 63 | 11.0 s |
+| 07:59 | 1633 | 29.4 s |
+| 08:00 | 2568 | 19.6 s |
+| 08:01 | 1593 | 47.7 s |
+| 08:02 | 1187 | 50.8 s |
+| 08:03 | 1817 | 51.6 s |
+| 08:04 | 1557 | **59.9 s** |
+| 08:05 | 1688 | 59.6 s |
+| 08:06 | 1633 | **59.9 s** |
+| 08:07 | 851 | **60.0 s** |
+
+`ClientMinRequestTimeout` is **60 s** (`client.go:120`). A grep for durations
+>= 60 s returns **zero**, and that is not reassurance - it is the signature of
+the ceiling being enforced from the client side. The server cannot log a longer
+duration because the client has already given up. Distribution over 08:04-08:07:
+103 requests at >= 59 s, 2,429 at 50-59 s, 1,168 at 30-50 s, 2,029 under 30 s.
+
+### It did break, and here is the evidence
+
+The runner logs carry **470 x `msg="failed to update server with cmd's final
+state" err="receive time out"`**, and **all 470 fall in the single minute
+08:06** - the moment the plateau reached the floor. They arrive together because
+they were all queued behind the same write path and all hit their 60 s deadline
+at once.
+
+That is completed work whose report was lost: the command ran fine, the archive
+RPC timed out. It is the precursor to the discard-and-rerun churn of
+`prod-restart-260825.md` - the manager still believes those jobs are running, so
+TTR expiry releases and re-runs them. Against 18,690 total completions, 470 is
+**2.5%** of the run's reports lost in one minute.
+
+Manager-side there was exactly one other error in the whole run,
+`jobqueue add(): bad request (missing arguments?)` at 08:00:25 - a single
+instance, the kind of malformed request that shows up when clients time out
+mid-send.
+
+The operator dropped the limit back to 20 on this evidence; runners drained
+promptly and nothing crashed.
+
+### What this tells us, and what it does not
+
+**Holds up under 57x the validated load:** memory (no OOM, no growth), the
+dependency machinery (no dependency-related error in 18,690 completions), and the
+manager's stability (no crash, no restart, no wedge). The dep-granularity work is
+not what breaks here.
+
+**The new binding constraint is write-path throughput**, and issue 3 is its
+proximate cause: a continuous full 7.3 GB backup copy competing with the archive
+path for the same NFS I/O, with archives serialized behind it.
+
+**Acceptance test for the issue-3 work:** sustain `limit 2000` (~1,000+
+concurrent runners) with archive latency well clear of 60 s and **zero** "failed
+to update server with cmd's final state" in the runner logs. That is a sharper,
+production-grounded gate than any synthetic threshold, and it is reproducible on
+demand by raising the limit again.
+
+Two caveats on the throughput numbers, so they are not over-read. Completion rate
+is counted from runner-side "command ran OK" lines, which record the command
+finishing, not the archive succeeding - so the post-change figures include work
+whose report was subsequently lost. And the pre-change baseline is a 20-minute
+window on one workload mix; it is a solid steady-state figure but not a
+controlled A/B.
 
 ## wrdev.sh regression sweep
 
