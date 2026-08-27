@@ -4035,8 +4035,11 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 		}
 	}
 
-	if offset := num - (num % batchSize); offset != 0 {
-		if err := storer(bucket, data[offset:]); err != nil {
+	// only a partial final batch is left to store: when batchSize divides num
+	// exactly there is nothing, and storing it anyway would commit an empty
+	// write transaction.
+	if rem := num % batchSize; rem != 0 {
+		if err := storer(bucket, data[num-rem:]); err != nil {
 			return err
 		}
 	}

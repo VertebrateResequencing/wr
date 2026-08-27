@@ -27,10 +27,10 @@ package jobqueue
 
 // Transaction-cost regression tests for what one wr add pays in bolt write
 // transactions (.docs/bugfixes/260827-2.md): its environment (item 1), its
-// limit groups (item 2), and the job and lookup data itself (item 3). Every
-// commit rewrites the freelist page and fsyncs twice, with no early-out for a
-// transaction that changes nothing, and the add path waits for each of them in
-// turn.
+// limit groups (item 2), the job and lookup data itself (item 3), and
+// storeBatched's empty final batch (item 4). Every commit rewrites the freelist
+// page and fsyncs twice, with no early-out for a transaction that changes
+// nothing, and the add path waits for each of them in turn.
 //
 // The cost is measured with bbolt's meta transaction id, which it increments
 // once per COMMITTED write transaction, so the difference across a call is an
@@ -41,7 +41,9 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/limiter"
@@ -315,4 +317,72 @@ func addTxRepGroupLookupKeys(d *dgrServer, repGroup string) []string {
 	So(err, ShouldBeNil)
 
 	return keys
+}
+
+func TestReliable4StoreBatchedNoEmptyBatch(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		Convey("storeBatched stores every item without an empty final batch", func() {
+			for _, tc := range []struct {
+				num   int
+				calls int
+			}{
+				{999, 1},
+				{1000, 1},
+				{1001, 2},
+				{2000, 2},
+			} {
+				calls, empty, stored := storeBatchedCost(d, tc.num)
+				So(empty, ShouldEqual, 0)
+				So(calls, ShouldEqual, tc.calls)
+				So(stored, ShouldEqual, tc.num)
+			}
+		})
+	})
+}
+
+// storeBatchedCost stores num lookups through storeBatched, returning how many
+// storer calls it made, how many of those had nothing to store (each of which
+// would be a committed, empty write transaction), and how many of the lookups
+// can be read back afterwards.
+func storeBatchedCost(d *dgrServer, num int) (calls, empty, stored int) {
+	prefix := "rl4sb-" + strconv.Itoa(num) + "-"
+
+	data := make(sobsd, num)
+	for i := range data {
+		data[i] = [2][]byte{[]byte(prefix + strconv.Itoa(i)), nil}
+	}
+
+	sort.Sort(data)
+
+	err := d.server.db.storeBatched(bucketRGs, data, func(bucket []byte, chunk sobsd) error {
+		calls++
+
+		if len(chunk) == 0 {
+			empty++
+		}
+
+		return d.server.db.storeLookups(bucket, chunk)
+	})
+	So(err, ShouldBeNil)
+
+	rgs, err := d.server.db.retrieveRepGroups()
+	So(err, ShouldBeNil)
+
+	for _, rg := range rgs {
+		if strings.HasPrefix(rg, prefix) {
+			stored++
+		}
+	}
+
+	return calls, empty, stored
 }
