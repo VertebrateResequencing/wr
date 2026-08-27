@@ -34,6 +34,7 @@ package scheduler
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -184,6 +185,33 @@ const (
 	// descendant an ordinary bkill leaves behind. See bkillPipeCloseGrace.
 	defaultBkillPipeCloseGrace = 15 * time.Second
 
+	// defaultBjobsExecTimeout is the default bound on how long a single `bjobs -w`
+	// exec may take before it is killed and turned into a retryable error. That
+	// query lists every job in the invoking user's LSF account, not just wr's, so
+	// how long it takes is set by a shared farm's queue depth rather than by
+	// anything wr caps (the production incident this bound came from had 22,500+
+	// foreign pending jobs) - and it runs inside every scheduling pass, so
+	// whatever it costs is paid before that pass can submit or reclaim anything.
+	// Three times bjobsAppearTimeout (which already assumes a bjobs round trip
+	// finishes in well under 10s) leaves an honestly slow mbatchd ample room,
+	// while half of defaultBkillExecTimeout keeps a wedged one from costing a pass
+	// more than the kill path in the same pass already may. With
+	// defaultBjobsPipeCloseGrace added, the worst case stays under the 60s
+	// ClientMinRequestTimeout floor a stalled request is measured against. A stale
+	// count for one pass is far cheaper than a stalled pass: schedule() turns the
+	// error into a retry under the group's existing backoff. See bjobsExecTimeout.
+	defaultBjobsExecTimeout = 30 * time.Second
+
+	// defaultBjobsPipeCloseGrace is the default bound on how long a `bjobs -w`
+	// exec may take to close its output pipe after bjobs itself is done. As with
+	// defaultBsubPipeCloseGrace it is ADDED to the exec timeout, not contained by
+	// it, so a wedged query costs defaultBjobsExecTimeout plus this; at a third of
+	// that timeout the two together still fit under the 60s
+	// ClientMinRequestTimeout floor, while leaving many times the 2s that proved
+	// too short on the bsub side for the descendant a bjobs may leave behind. See
+	// bjobsPipeCloseGrace.
+	defaultBjobsPipeCloseGrace = 10 * time.Second
+
 	// defaultKillBackoffMin is the default minimum interval that must pass before
 	// wr re-issues a bkill for an element it has already asked LSF to kill. It is
 	// comfortably longer than the few seconds bjobs takes to stop reporting a
@@ -273,6 +301,30 @@ var bkillExecTimeout = defaultBkillExecTimeout //nolint:gochecknoglobals
 // completed kill it is. It must stay non-zero for bkillExecTimeout to bound
 // anything. It is a package var so tests can lower it.
 var bkillPipeCloseGrace = defaultBkillPipeCloseGrace //nolint:gochecknoglobals
+
+// bjobsExecTimeout bounds how long a single `bjobs -w` invocation may run before
+// it is killed, so a wedged or pathologically slow mbatchd cannot stall a
+// scheduling pass indefinitely. As with bsubExecTimeout it is applied via a
+// context derived from context.Background() rather than the scheduling context,
+// so scheduling-context cancellation cannot abort a query in flight. It is a
+// package var so tests can lower it.
+var bjobsExecTimeout = defaultBjobsExecTimeout //nolint:gochecknoglobals
+
+// bjobsPipeCloseGrace bounds how long we wait for `bjobs -w`'s output pipe to be
+// closed once bjobs itself is done, before force-closing it so the exec returns.
+// As bsubPipeCloseGrace explains in full, this is the WaitDelay of EVERY bjobs
+// exec (Go starts the timer when the child exits, not only when the exec context
+// is done), so a bjobs that delivered its whole list and then left a descendant
+// on the pipe comes back as exec.ErrWaitDelay - which parseBjobs therefore treats
+// as the complete read it is.
+//
+// It must stay non-zero, AND parseBjobs must keep giving the exec a Stdout whose
+// pipe os/exec owns (see bjobsLineParser): only then does os/exec force-close
+// that pipe, and without the force-close bjobsExecTimeout bounds nothing at all
+// on the path this matters most - a bjobs whose descendant holds the pipe open
+// (.docs/bugfixes/260722-1.md, .docs/bugfixes/260827-1.md). It is a package var
+// so tests can lower it.
+var bjobsPipeCloseGrace = defaultBjobsPipeCloseGrace //nolint:gochecknoglobals
 
 // killBackoffMin and killBackoffMax bound the jittered exponential interval that
 // must pass before wr re-issues a bkill for an element it has already asked LSF
@@ -562,6 +614,85 @@ func (d *deferredSleeper) Sleep(_ context.Context, dur time.Duration) {
 // recorded returns the duration most recently passed to Sleep.
 func (d *deferredSleeper) recorded() time.Duration {
 	return time.Duration(d.nanos.Load())
+}
+
+// bjobsLineParser is the Stdout of parseBjobs' bjobs exec: it splits the bytes
+// os/exec copies out of bjobs into whole lines and hands each to parseBjobsLine
+// as it arrives, so a long job list is never held in memory in full (every
+// scheduler group can have its own bjobs -w in flight at once, and the list
+// covers every job in the account).
+//
+// It is an io.Writer rather than a bufio.Scanner over Cmd.StdoutPipe because
+// os/exec force-closes only the pipes it owns, and it owns them only when Stdout
+// is not already an *os.File. With StdoutPipe, a scan blocked on a descendant
+// that inherited the pipe is interrupted by neither the exec context nor
+// WaitDelay (measured: a descendant holding the pipe for 30s outlasted a 2s exec
+// context and a 0.5s WaitDelay in full), so the timeout would bound nothing on
+// exactly the path it is there for. See bjobsPipeCloseGrace.
+type bjobsLineParser struct {
+	jobPrefix string
+	callback  bjobsCB
+
+	// partial holds the bytes of a line that the current chunk ended part-way
+	// through, to be prepended to the next one.
+	partial []byte
+
+	// lines counts the lines parsed, for the lingering-pipe log.
+	lines int
+
+	// tooLong records that a single line exceeded scanBufferSize, the cap the
+	// bufio.Scanner this replaced enforced. Parsing stops there, as the scanner's
+	// bufio.ErrTooLong did, and parseBjobs fails.
+	tooLong bool
+}
+
+// Write implements io.Writer for os/exec's copy out of bjobs' stdout. It never
+// returns an error, so the copy is never cut short by us; an over-long line is
+// recorded in tooLong for parseBjobs to fail on.
+func (b *bjobsLineParser) Write(p []byte) (int, error) {
+	n := len(p)
+
+	for !b.tooLong {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			b.partial = append(b.partial, p...)
+			b.tooLong = len(b.partial) > scanBufferSize
+
+			break
+		}
+
+		b.emit(p[:i])
+		p = p[i+1:]
+	}
+
+	return n, nil
+}
+
+// emit hands one whole line, with any bytes buffered from earlier Writes
+// prepended, to parseBjobsLine.
+func (b *bjobsLineParser) emit(line []byte) {
+	if len(b.partial) > 0 {
+		b.partial = append(b.partial, line...)
+		line = b.partial
+	}
+
+	b.lines++
+
+	parseBjobsLine(string(line), b.jobPrefix, b.callback)
+
+	b.partial = b.partial[:0]
+}
+
+// flush parses any final line bjobs did not terminate with a newline, as the
+// bufio.Scanner this replaced would have. Only call it once the exec has
+// completed with the whole list read, so a partial line is never mistaken for a
+// whole one.
+func (b *bjobsLineParser) flush() {
+	if len(b.partial) == 0 {
+		return
+	}
+
+	b.emit(nil)
 }
 
 // lsf is our implementer of scheduleri.
@@ -1931,7 +2062,7 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, maxAllowed int) (count i
 	}
 
 	if maxAllowed < 0 {
-		return s.countCmds(jobPrefix, full)
+		return s.countCmds(ctx, jobPrefix, full)
 	}
 
 	return s.killExcessCmds(ctx, jobPrefix, maxAllowed)
@@ -1941,7 +2072,7 @@ func (s *lsf) checkCmd(ctx context.Context, cmd string, maxAllowed int) (count i
 // full is true the prefix covers all of this deployment's wr jobs, so the
 // scanned element ids are used to prune the reserved-element set (bounded
 // memory over a long-lived manager).
-func (s *lsf) countCmds(jobPrefix string, full bool) (count int, err error) {
+func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count int, err error) {
 	var (
 		present map[string]bool
 		reAid   *regexp.Regexp
@@ -1961,7 +2092,7 @@ func (s *lsf) countCmds(jobPrefix string, full bool) (count int, err error) {
 			}
 		}
 	}
-	err = s.parseBjobs(jobPrefix, cb)
+	err = s.parseBjobs(ctx, jobPrefix, cb)
 
 	if full {
 		s.pruneReserved(present)
@@ -2022,7 +2153,7 @@ func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed i
 		maxAllowed: maxAllowed,
 	}
 
-	err = s.parseBjobs(jobPrefix, kc.consider)
+	err = s.parseBjobs(ctx, jobPrefix, kc.consider)
 
 	if len(kc.toKill) > 0 {
 		s.killElements(ctx, kc.toKill)
@@ -2050,37 +2181,57 @@ type bjobsCB func(jobID, stat, jobName string)
 // parseBjobs runs bjobs, filters on a job name prefix, excludes exited jobs and
 // gives columns 1 (JOBID), 3 (STAT) and 7 (JOB_NAME) to your callback for each
 // bjobs output line.
-func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
-	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
-	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w")
+//
+// The exec is bounded by bjobsExecTimeout plus bjobsPipeCloseGrace, and anything
+// that leaves the list incomplete is returned as an error rather than as a
+// silently short set of callbacks: the counts those callbacks build (countCmds,
+// killExcessCmds) decide whether wr submits more runners or kills some, so a
+// short list would have it do the wrong one. schedule() turns the error into a
+// retryable scheduling failure under the scheduler group's existing backoff.
+func (s *lsf) parseBjobs(ctx context.Context, jobPrefix string, callback bjobsCB) error {
+	// the exec timeout is applied via a context of its own, derived from
+	// context.Background(), so cancelling the scheduling ctx cannot abort a query
+	// wr has already asked LSF for (see bjobsExecTimeout).
+	execCtx, cancel := context.WithTimeout(context.Background(), bjobsExecTimeout)
+	defer cancel()
 
-	bjout, err := bjcmd.StdoutPipe()
+	//nolint:gosec,contextcheck // LSF management command; execCtx is deliberately not the scheduling ctx (see above)
+	bjcmd := exec.CommandContext(execCtx, s.config.Shell, "-c", s.bjobsExe+" -w")
+
+	// WaitDelay bounds how long Run() waits for bjobs' output pipe to close once
+	// bjobs itself is done, so a descendant that inherited the pipe cannot hold
+	// this exec open indefinitely (see bjobsPipeCloseGrace).
+	bjcmd.WaitDelay = bjobsPipeCloseGrace
+
+	lines := &bjobsLineParser{jobPrefix: jobPrefix, callback: callback}
+	bjcmd.Stdout = lines
+
+	err := bjcmd.Run()
+
+	if err != nil && !lingeredOnPipes(err) {
+		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to run [bjobs -w]: %s", err)}
+	}
+
 	if err != nil {
-		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
+		// bjobs exited by itself and then left a descendant holding its stdout
+		// open past bjobsPipeCloseGrace, so os/exec closed the pipe and returned
+		// exec.ErrWaitDelay (see there). The list is still complete - bjobs could
+		// not have exited until everything it wrote had been consumed - so this is
+		// not a failure, but an LSF command outliving its own exit is not silent
+		// either (mirroring the same decision for bsub in
+		// .docs/bugfixes/260824-1.md).
+		clog.Warn(ctx, "bjobs exited successfully but left a descendant holding its output pipe open",
+			"cmd", s.bjobsExe, "grace", bjobsPipeCloseGrace, "lines", lines.lines)
 	}
 
-	err = bjcmd.Start()
-	if err != nil {
-		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
+	if lines.tooLong {
+		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf(
+			"failed to read everything from [bjobs -w]: a line exceeded %d bytes", scanBufferSize)}
 	}
 
-	bjScanner := bufio.NewScanner(bjout)
-	bjScanner.Buffer([]byte{}, scanBufferSize)
+	lines.flush()
 
-	for bjScanner.Scan() {
-		parseBjobsLine(bjScanner.Text(), jobPrefix, callback)
-	}
-
-	if err = bjScanner.Err(); err != nil {
-		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to read everything from [bjobs -w]: %s", err)}
-	}
-
-	err = bjcmd.Wait()
-	if err != nil {
-		err = Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
-	}
-
-	return err
+	return nil
 }
 
 // parseBjobsLine passes the job id, status and name from a single bjobs -w line
@@ -2134,7 +2285,7 @@ func (s *lsf) cleanup(ctx context.Context) {
 		toKill = append(toKill, jobID)
 	}
 
-	err := s.parseBjobs(jobNamePrefix(s.config.Deployment), cb)
+	err := s.parseBjobs(ctx, jobNamePrefix(s.config.Deployment), cb)
 	if err != nil {
 		clog.Error(ctx, "cleanup parse bjobs failed", "err", err)
 	}

@@ -93,7 +93,7 @@ func TestReliable4BsubPipeLinger(t *testing.T) {
 	Convey("Given an lsf scheduler whose successful bsub leaves a descendant holding its output pipe", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeBsubDelays{lingerSecs: testPipeLingerSecs})
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeLSFDelays{lingerSecs: testPipeLingerSecs})
 		setPipeCloseGraces(t, testPipeCloseGrace)
 
 		ctx, logs := captureLogCtx()
