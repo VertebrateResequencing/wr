@@ -34,14 +34,19 @@ Production completes **~14 jobs/s** however many runners are pointed at it. At
 minute**. Throughput rose only ~1.6x for 57x the concurrency, so the constraint is
 serialisation, not capacity.
 
-Each completed job currently costs **one bolt write transaction**:
-`archiveJob` deletes the key from `bucketStdO`, `bucketStdE` and `bucketJobsLive`,
-puts the encoded job into `bucketJobsComplete`, updates two per-ReqGroup stat
-buckets and the rep-group end time - six-plus buckets scattered across an 8.59 GB
-tree. bbolt has a single writer, so those transactions are strictly serial.
+**This section's original diagnosis was wrong and is kept only because the
+measurements in it stand.** It assumed each completed job costs one bolt write
+transaction. It does not: `archiveJob` hands the work to the coalescing
+`archiveWriter` (`db.go:1579`), which folds every pending archive into one
+transaction. What is true is that production behaves *as if* each completion cost
+its own transaction - 14/s, latency at the floor - which is what the correction
+block above is about.
 
-At ~70 ms per transaction that is 14/s, and the 70 ms is **not** what one would
-first guess:
+The per-transaction work itself is six-plus buckets scattered across an 8.59 GB
+tree: deletes from `bucketStdO`, `bucketStdE` and `bucketJobsLive`, a put into
+`bucketJobsComplete`, two per-ReqGroup stat buckets and the rep-group end time.
+
+Production's ~70 ms per completed job is **not** what one would first guess:
 
 | component | measured | verdict |
 | --- | --- | --- |
@@ -56,12 +61,19 @@ process. The leading suspects are NFS write-*bandwidth* contention with the
 continuous backup (81 MB/s sustained) and scattered dirty-page writes across a
 large tree. A production profile is deferred until the operator can restart.
 
-### Why that uncertainty does not block idea 1
+### Why that uncertainty mattered - and why it now blocks idea 1 instead
 
-**Group commit divides every per-transaction cost by the batch size**, whatever
-those costs turn out to be - freelist, page writes, fsyncs, bandwidth share. It is
-the one fix that does not depend on winning the diagnosis argument first. That is
-the main reason to start there.
+The original argument was that group commit divides every per-transaction cost by
+the batch size, whatever those costs are, so it needed no diagnosis first. That
+argument was sound *and* moot: the batching already exists, and
+`wrdev.sh archive-ceiling` shows it delivering 364/s on production's own
+filesystem with the backup streaming.
+
+So the uncertainty now blocks rather than excuses: **something is preventing that
+batching from happening in production**, and until that is identified, more
+batching has nothing to divide. Everything below this line is retained as design
+notes for the day a batching change is genuinely needed - it is not a plan of
+work.
 
 ### Explicitly ruled out by the operator, 2026-08-27
 
@@ -78,7 +90,7 @@ running.
 
 ## Idea 1: group commit
 
-### The shape
+### The shape - ALREADY IMPLEMENTED, see the correction at the top
 
 Concurrent archive requests are folded into one bolt write transaction. Each
 caller blocks until the transaction **that contains its own write** commits, then
