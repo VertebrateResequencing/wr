@@ -3006,6 +3006,26 @@ func (s *Server) jobHasDependents(job *Job, jobKey string) (bool, error) {
 	return false, nil
 }
 
+// scheduleRunnersAsync schedules runners for the given group in its own
+// goroutine, so no caller waits on the external scheduler command (eg. bsub, and
+// on LSF a `bjobs -w` over every job in the account) that scheduleRunners
+// reaches: scheduleGroup must not hold s.psgmutex across it, and
+// decrementGroupCount is the last thing an archive RPC does before replying.
+//
+// The group must be a clone/snapshot the goroutine then exclusively owns, since
+// scheduleRunners mutates its failures and retry-backoff state (and hands it to
+// retryScheduleRunnersLater) without taking the sgroup lock.
+func (s *Server) scheduleRunnersAsync(ctx context.Context, group *sgroup) {
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
+		defer s.wg.Done(wgk)
+
+		s.scheduleRunners(ctx, group)
+	}()
+}
+
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
@@ -5308,16 +5328,7 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 
 	s.previouslyScheduledGroups[name] = group
 
-	snapshot := group.snapshot()
-
-	wgk := s.wg.Add(1)
-
-	go func(group *sgroup) {
-		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
-		defer s.wg.Done(wgk)
-
-		s.scheduleRunners(ctx, group)
-	}(snapshot)
+	s.scheduleRunnersAsync(ctx, group.snapshot())
 }
 
 // accountForRunningJobs adds currently running jobs into the group counts so
@@ -7157,6 +7168,15 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 
 // adjust our count of how many jobs with this schedulerGroup we need in the job
 // scheduler. Optionally supply the number to decrement by (default 1).
+//
+// The decrement itself is synchronous, so the group's count is correct the moment
+// this returns, but telling the external scheduler about it is not: this is the
+// last thing an archive RPC does before replying, and scheduleRunners reaches a
+// command (bsub, and on LSF a `bjobs -w` over every job in the account) that can
+// take seconds. Concurrent RPC handlers already gave the sync call no ordering
+// guarantee over which count reaches the scheduler last, and the scheduler's own
+// per-cmd coalescing plus the next rac pass converge on the current count
+// regardless.
 func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string, optionalDrop ...int) {
 	drop := 1
 	if len(optionalDrop) == 1 {
@@ -7182,8 +7202,7 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 
 	count := group.decrement(drop)
 	if count >= 0 {
-		clone := group.clone(count)
-		s.scheduleRunners(ctx, clone)
+		s.scheduleRunnersAsync(ctx, group.clone(count))
 	}
 }
 

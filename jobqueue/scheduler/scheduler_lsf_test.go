@@ -111,10 +111,10 @@ func TestLSFLoadPrivateKey(t *testing.T) {
 	})
 }
 
-// fakeBsubDelays is how the fake bsub of newFakeLSFScheduler should hold things
-// up. The zero value is a bsub that responds immediately and leaves nothing
+// fakeLSFDelays is how the fake exes of newFakeLSFScheduler should hold things
+// up. The zero value is an LSF that responds immediately and leaves nothing
 // behind.
-type fakeBsubDelays struct {
+type fakeLSFDelays struct {
 	// sleepSecs, if >0, makes the fake bsub sleep that many seconds before
 	// responding, to exercise bsubExecTimeout.
 	sleepSecs int
@@ -124,6 +124,22 @@ type fakeBsubDelays struct {
 	// exited successfully, to exercise bsubPipeCloseGrace (see
 	// TestReliable4BsubPipeLinger).
 	lingerSecs int
+
+	// bjobsSleepSecs, if >0, makes the fake bjobs sleep that many seconds before
+	// answering a `bjobs -w` list call (the `bjobs -w <id>` appearance check is
+	// always answered at once), to exercise bjobsExecTimeout.
+	bjobsSleepSecs int
+
+	// bjobsLingerSecs, if >0, makes the fake bjobs background a subshell that
+	// holds the inherited stdout pipe open for that many seconds after bjobs
+	// itself has exited successfully, to exercise bjobsPipeCloseGrace (see
+	// TestReliable4BjobsBound).
+	bjobsLingerSecs int
+
+	// bjobsListJobs is how many RUN jobs of the "false" cmd the fake `bjobs -w`
+	// list call reports, so a caller can tell a complete read of that list from a
+	// short one.
+	bjobsListJobs int
 }
 
 // setPipeCloseGraces lowers the bsub and bkill pipe-close graces for the duration
@@ -137,6 +153,33 @@ func setPipeCloseGraces(t *testing.T, grace time.Duration) {
 	t.Cleanup(func() {
 		bsubPipeCloseGrace, bkillPipeCloseGrace = origBsub, origBkill
 	})
+}
+
+// fakeBjobsListBody is the part of newFakeLSFScheduler's fake bjobs that answers
+// a `bjobs -w` list call: it sleeps and/or lingers on its stdout pipe as delays
+// asks, and reports delays.bjobsListJobs RUN elements of one array of the "false"
+// cmd (the cmd the fake-LSF tests schedule), in real `bjobs -w` column order.
+func fakeBjobsListBody(delays fakeLSFDelays) string {
+	var body strings.Builder
+
+	if delays.bjobsSleepSecs > 0 {
+		fmt.Fprintf(&body, "sleep %d\n", delays.bjobsSleepSecs)
+	}
+
+	prefix := jobName("false", "development", false)
+
+	for i := 1; i <= delays.bjobsListJobs; i++ {
+		fmt.Fprintf(&body, "echo %q\n", fmt.Sprintf(
+			"9876543 sb10 RUN normal host1 exec-host-1 %s_Xn0KpDLt[%d] Jul 22 12:00", prefix, i))
+	}
+
+	if delays.bjobsLingerSecs > 0 {
+		fmt.Fprintf(&body, "( sleep %d ) &\n", delays.bjobsLingerSecs)
+	}
+
+	body.WriteString("exit 0\n")
+
+	return body.String()
 }
 
 // TestLSFSubmitToQueueStderr guards submitToQueue's bsub-failure error message.
@@ -747,7 +790,7 @@ func TestLSFArrayChunking(t *testing.T) {
 	Convey("Given an lsf scheduler with fake LSF exes and a small max array size", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeBsubDelays{})
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeLSFDelays{})
 
 		origMax := maxBsubArraySize
 
@@ -810,7 +853,7 @@ func TestLSFArrayChunking(t *testing.T) {
 	Convey("Given an lsf scheduler whose bsub hangs", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeBsubDelays{sleepSecs: 30})
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeLSFDelays{sleepSecs: 30})
 
 		origTimeout := bsubExecTimeout
 
@@ -838,7 +881,7 @@ func TestLSFArrayChunking(t *testing.T) {
 // written into dir, so schedule() can be driven without a real LSF. The fake
 // bsub appends the value of each -J argument (one per line) to jArgsFile, prints
 // a parseable "Job <id>" line and exits 0, held up as delays asks.
-func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, delays fakeBsubDelays) *lsf {
+func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, delays fakeLSFDelays) *lsf {
 	t.Helper()
 
 	sleep := ""
@@ -862,15 +905,17 @@ echo "Job <321>"
 %sexit 0
 `, sleep, jArgsFile, linger))
 
-	// bjobs is called both as `bjobs -w` (list, must report nothing so the
-	// scheduler thinks 0 are already scheduled) and as `bjobs -w <id>` (the
-	// post-submit appearance check, which must report a long-enough line).
+	// bjobs is called both as `bjobs -w` (list, reporting delays.bjobsListJobs
+	// jobs of the "false" cmd, so by default the scheduler thinks 0 are already
+	// scheduled) and as `bjobs -w <id>` (the post-submit appearance check, which
+	// must report a long-enough line).
 	bjobsExe := filepath.Join(dir, "bjobs")
 	writeFakeExe(t, bjobsExe, `#!/bin/bash
 if [ -n "$2" ]; then
   echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
+  exit 0
 fi
-`)
+`+fakeBjobsListBody(delays))
 
 	bkillExe := filepath.Join(dir, "bkill")
 	writeFakeExe(t, bkillExe, "#!/bin/bash\nexit 0\n")
