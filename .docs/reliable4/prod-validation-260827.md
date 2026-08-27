@@ -181,6 +181,39 @@ One synchronous bolt write transaction per archive, each fsyncing to NFS at
 roughly 70 ms, serialized, *is* about 14/s. If that is the mechanism, relieving
 the backup copy barely moves it.
 
+### Sweep evidence, 2026-08-27: candidates 2 and 3 largely refuted
+
+Two gates from the regression sweep bear directly on this, and both point away
+from "the archive path is inherently ~14/s".
+
+| measurement | archivers | rate | mean | DB | filesystem | backups |
+| --- | --- | --- | --- | --- | --- | --- |
+| `archive-rate` gate | 660 | **172/s** | 41 ms | pristine6, 7.4 GB, 3202 MiB freelist | **local** `/dev/vda3` | on |
+| `limit-drain 20000 2000 30` | ~2000 runners | **~67/s** sustained | - | small, fresh | **NFS** (`$HOME`) | off (dev mode) |
+| **production, 08:00-08:07** | 1,143 runners | **~14/s** | - | 8.5 GB, growing | **NFS** | **on, continuous** |
+
+- **172/s on a 7.4 GB DB with a 3.2 GB freelist** says the archive code path, the
+  write lock and freelist/spill cost are *not* the ceiling. That substantially
+  refutes **candidate 3**, and refutes the structural half of **candidate 2**.
+- **~67/s across NFS** (2000 runners on 30-second jobs, drained clean with
+  `archive_reject=0`) says one fsync per archive over NFS is *not* a 14/s ceiling
+  either. That refutes the rest of **candidate 2**.
+- Production differs from both by exactly two things: a **continuously copied
+  7.3 GB backup**, and a **big DB on NFS**.
+
+So **candidate 1 is now the leading explanation**, with a sub-variant worth keeping
+separate: big-DB-on-NFS effects that neither gate covers, since `archive-rate` had
+the big DB but not NFS, and `limit-drain` had NFS but not the big DB.
+
+**Be careful how far this is pushed.** No single gate isolates one variable - the
+inference is by elimination across two measurements with *different* confounds,
+which is weaker than one controlled A/B. `archive-rate`'s fixture copy lived on
+local disk, so it says nothing about NFS fsync latency; `limit-drain` used a small
+dev-mode DB with backups off, so it says nothing about big-DB or backup effects.
+Nothing yet reproduces production's actual combination of big DB **and** NFS
+**and** continuous backup. That combination is only available in production, which
+is why the next measurement has to be taken there.
+
 ### Three candidates, three different fixes
 
 1. **Backup copy I/O competing for the same NFS bandwidth.** Fix: incrementally
@@ -207,17 +240,26 @@ way to go back and check whether latency fell in the gaps between copies.
 
 ### How to settle it
 
-**Cheapest first, and it may be free:** the `archive-rate` gate in the wrdev.sh
-sweep measures the archive path in-process against a big DB with no backup
-involved. If it reproduces ~12-14/s, candidate 2 is confirmed without touching
-production.
+The in-process route has now been taken and did not settle it - it eliminated two
+candidates rather than confirming one (above). **The remaining question is
+production-only**, so measure there:
 
-**If that is inconclusive:** restart the manager with `WR_PPROF_ADDR`, raise the
-limit again, and capture CPU + mutex + block profiles during saturation. The
-discriminating question is where the archive goroutines actually sit -
-`fdatasync`/NFS write (candidate 1 or 2), freelist/spill CPU (candidate 3), or
-waiting on `db.rwlock` (candidate 2). That is a direct read rather than an
-inference.
+1. **Restart with `WR_PPROF_ADDR` and raise the limit again.** Recovery is now 36 s,
+   so a restart is cheap. Capture CPU + mutex + block profiles during saturation.
+   The discriminating question is where the archive goroutines sit: `fdatasync`/NFS
+   write, versus freelist/spill CPU, versus waiting on `db.rwlock`.
+2. **In the same run, correlate archive latency against backup progress.** Sample
+   `db_bk.tmp`'s size every couple of seconds and line the copy windows up against
+   the manager log's slow-request timestamps. **If latency falls in the gaps
+   between copies, candidate 1 is confirmed directly** - and that needs no profile
+   at all, just sampling during the run. This could not be done retroactively for
+   the 07:58-08:08 test because only the current `db_bk.tmp` is observable.
+3. **The decisive config experiment, if a filesystem is available:** point the
+   backup at a *different* filesystem (the `report-storm-lsf` mode already supports
+   this idea via `WR_RS_BKDIR`, "back up to a separate filesystem so it can't
+   starve the DB's I/O"). If the ceiling moves, candidate 1 is proven and Part C is
+   the fix. If it does not, the cause is the big DB on NFS, and the lever is
+   compaction cadence rather than copy pacing.
 
 **Observer-effect warning:** pprof sampling on this manager perturbs what it
 measures. Use the sampling tiers recorded in the prod-profiling notes rather than
@@ -340,10 +382,79 @@ whose report was subsequently lost. And the pre-change baseline is a 20-minute
 window on one workload mix; it is a solid steady-state figure but not a
 controlled A/B.
 
-## wrdev.sh regression sweep
+## wrdev.sh regression sweep - no regression found
 
-Running at the time of writing; results to be appended here. The sweep covers
-every self-checking gate in `developers/wrdev.sh`, including the real-LSF modes
-and the big-DB modes (fixtures at `/nfs/hgi/wr/sb10-bigdb/`), with any failure
-A/B'd against a worktree at `a083f1d` - the commit immediately before this
-delivery - before it is called a regression.
+26 gates run against the delivered code, at load 119-121 on 8 cores. Every gate
+that asserts a fixed invariant passes, with wide margins, including all four that
+exercise the rewritten startup path.
+
+**Startup-semantics evidence specifically**, which is where a regression from this
+delivery would have shown:
+
+- `crash-recovery` (real LSF, prod mode): manager killed mid-run, restarted on the
+  preserved DB while its runner survived; the re-sent archive was **accepted**,
+  `complete=1`, `marker=1` (ran exactly once). Publication-after-recovery does not
+  break runner reconnect.
+- `dep-granularity-check` samples `wr manager status` *inside* the recovery window
+  and got `starting` in 45 ms - the harness copes with the new ordering.
+- `control-rpc-history` and `unsuspend-burst` both bring prod-mode managers up on
+  large DBs through `cmd_prod_start` (a 90 s-bounded `manager start` that greps for
+  `started on`) with no timing trouble.
+- `limit-drain 20000 2000 30`: **fully drained**, concurrent runners peaked
+  1957-2000 without exceeding the limit, and `lost`, `badjob`, `confirmed_dead` and
+  `archive_reject` were **all 0**.
+- `churn 40000` (real LSF): fully drained 40000/40000, `badjob=0`, `notrun=0`,
+  status RPC 29-64 ms.
+
+### Three exit-1 results, all pre-existing, none a regression
+
+Each was A/B'd against a worktree at `a083f1d` and behaves identically there.
+
+- **`overcount-check`** and **`limit-stall-check`** are *inverted* reproducers -
+  their own comments say they pass on buggy code. `overcount-check` now reports
+  `finalCount=2000 (exceeds limit by 0)`, so its `ShouldBeGreaterThan` fails
+  because the bug is fixed. `limit-stall-check`'s `SilentConfirmFailure` half fails
+  because the code now *logs* the warning whose absence it asserts. Both are the
+  desirable outcome.
+- **`priority-fairness-check` exits 0, and that is not good news.** It is also
+  inverted, and it still demonstrates the reliable3 2a starvation
+  (`low(pri0).count=2000 high(pri250).count=0 high.skipped=2500`). Unchanged by
+  this delivery; do not read its zero exit as an invariant holding.
+
+### A harness trap worth knowing
+
+Putting `WRDEV_ROOT` on `/tmp` **silently disables every LSF gate that needs a
+real runner**, with no error line saying why. `/tmp` here is local `/dev/vda3`, so
+no exec node can read the wr binary: runners reach RUN and die with
+`Exited with exit code 127` in under a second, which is invisible between `bjobs`
+polls. `crash-recovery` failed twice this way before being re-run on NFS, where it
+passed in 34 s. This is the DEVELOPERS.md "build on NFS so exec nodes can run the
+runner" rule, and the disk-pressure advice to use `/tmp` collides with it.
+
+### Not measured, and what it would take
+
+- **`report-storm-lsf`** and **`backup-stall-check`** - the only two gates needing
+  a multi-GB DB *and* real LSF runners, so both the DB and the binary must sit on
+  an exec-visible filesystem. `/tmp` is local, home had under 2 GB free, and
+  creating a working area under `/nfs/hgi/wr/` was denied. Needs ~25 GB of
+  exec-visible scratch.
+- **`limit-drain` at its default 60000** - run at 20000 (10:1 rather than 30:1) to
+  keep one shared-farm saturation window to 9 minutes. It did reach the full 2000
+  concurrent runners and drained clean; the untested delta is a *longer* saturation
+  window, which is where the original prod stall appeared. ~27 min of 2000 farm
+  slots would close it.
+- **`web-burst`** - manual verdict, fixed 900 s window; the same failure family is
+  covered deterministically by `flicker-check` (PASS).
+- The four big-DB gates used **`pristine6`** (7.4 GB, freelist 3202 MiB) rather
+  than `pristine10`, so a fixture plus its per-gate copy fit in `/tmp`. Per the
+  known false-PASS trap it was used only for backup/freelist/write-storm/archive
+  work; `control-rpc-history` seeded its own DB.
+
+### Two incidental pre-existing defects found
+
+- `wrdev.sh dump` prints a stale pid, because a `-f` foreground manager writes no
+  pid file - so `wrdev.sh stop`/`clean` cannot kill a `dump`-started manager.
+  Identical at `a083f1d`.
+- `parseBmgroups` (`jobqueue/scheduler/lsf.go:1491`) starts `bmgroup -w` and never
+  calls `Wait()`, so every manager leaves a defunct `[bmgroup]` child. Present at
+  both commits.
