@@ -26,10 +26,11 @@
 package jobqueue
 
 // Transaction-cost regression tests for what one wr add pays in bolt write
-// transactions (.docs/bugfixes/260827-2.md): its environment (item 1) and its
-// limit groups (item 2). Every commit rewrites the freelist page and fsyncs
-// twice, with no early-out for a transaction that changes nothing, and the add
-// path waits for each of them in turn.
+// transactions (.docs/bugfixes/260827-2.md): its environment (item 1), its
+// limit groups (item 2), and the job and lookup data itself (item 3). Every
+// commit rewrites the freelist page and fsyncs twice, with no early-out for a
+// transaction that changes nothing, and the add path waits for each of them in
+// turn.
 //
 // The cost is measured with bbolt's meta transaction id, which it increments
 // once per COMMITTED write transaction, so the difference across a call is an
@@ -38,6 +39,7 @@ package jobqueue
 // transactions.
 
 import (
+	"bytes"
 	"context"
 	"strconv"
 	"testing"
@@ -45,6 +47,12 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
+)
+
+const (
+	addTxRepGroup = "rl4tx-rg"
+	addTxDepGroup = "rl4tx-dg"
+	addTxWaitedOn = "rl4tx-dep"
 )
 
 func TestReliable4AddEnvNoRewrite(t *testing.T) {
@@ -178,6 +186,90 @@ func limitGroupsStoreCost(d *dgrServer, limitGroups map[string]*limiter.GroupDat
 	return changed, removed, addTxWriteTxID(d) - before
 }
 
+// limitGroupsAB returns the two limit groups the limit group test stores, with
+// the given limits.
+func limitGroupsAB(a, b int64) map[string]*limiter.GroupData {
+	return map[string]*limiter.GroupData{
+		"rl4lg-a": limiter.NewCountGroupData(a),
+		"rl4lg-b": limiter.NewCountGroupData(b),
+	}
+}
+
+// limitGroupStored returns the limit the database holds for group, so that a
+// store which commits nothing can still be held to leaving the right value
+// there. Asserts that a limit is stored for the group at all.
+func limitGroupStored(ctx context.Context, d *dgrServer, group string) int64 {
+	gd := d.server.db.retrieveLimitGroup(ctx, group)
+	So(gd.IsCount(), ShouldBeTrue)
+
+	return gd.Limit()
+}
+
+func TestReliable4AddOneWriteTx(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server with bolt's write coalescing disabled", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		jq := d.connect()
+
+		defer disconnect(jq)
+
+		// with MaxBatchSize 1, every Batch call gets a transaction of its own, so
+		// what is counted is the number of transactions the add path asks for,
+		// not the number bbolt's 10ms coalescing window happens to merge them
+		// into.
+		d.server.db.bolt.MaxBatchSize = 1
+
+		// the first add of all pays for storing the client's environment, which
+		// later adds find cached
+		_, _, err := jq.Add([]*Job{d.job("echo rl4tx warm", "rl4tx-warm")}, envVars, true)
+		So(err, ShouldBeNil)
+
+		Convey("An add costs one write transaction, and all its data is stored", func() {
+			job := d.job("echo rl4tx one", addTxRepGroup)
+			job.DepGroups = []string{addTxDepGroup}
+			job.Dependencies = Dependencies{NewDepGroupDependency(addTxWaitedOn)}
+
+			before := addTxWriteTxID(d)
+
+			added, _, errA := jq.Add([]*Job{job}, envVars, true)
+			So(errA, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			So(addTxWriteTxID(d)-before, ShouldEqual, 1)
+
+			live, errL := d.server.db.checkIfLive(job.Key())
+			So(errL, ShouldBeNil)
+			So(live, ShouldBeTrue)
+
+			rgs, errR := d.server.db.retrieveRepGroups()
+			So(errR, ShouldBeNil)
+			So(rgs, ShouldContain, addTxRepGroup)
+
+			seen, errD := d.server.db.depGroupEverSeen(addTxDepGroup)
+			So(errD, ShouldBeNil)
+			So(seen, ShouldBeTrue)
+
+			// the job waits on addTxWaitedOn, so a later add of a member of that
+			// dep group has to find it through the reverse lookup
+			_, jobsToUpdate, errW := d.server.db.retrieveDependentJobs(
+				map[string]bool{addTxWaitedOn: true}, nil)
+			So(errW, ShouldBeNil)
+			So(len(jobsToUpdate), ShouldEqual, 1)
+			So(jobsToUpdate[0].Key(), ShouldEqual, job.Key())
+
+			// and the rep group lookup the completed-job queries use is there
+			So(addTxRepGroupLookupKeys(d, addTxRepGroup), ShouldResemble, []string{job.Key()})
+		})
+	})
+}
+
 // addTxWriteTxID returns the database's current meta transaction id. A read
 // transaction reports the id of the last committed write transaction, so the
 // difference between two of these is how many write transactions committed in
@@ -205,21 +297,22 @@ func addTxEvictEnvCache(d *dgrServer, label string) {
 	}
 }
 
-// limitGroupsAB returns the two limit groups the limit group test stores, with
-// the given limits.
-func limitGroupsAB(a, b int64) map[string]*limiter.GroupData {
-	return map[string]*limiter.GroupData{
-		"rl4lg-a": limiter.NewCountGroupData(a),
-		"rl4lg-b": limiter.NewCountGroupData(b),
-	}
-}
+// addTxRepGroupLookupKeys returns the job keys bucketRTK holds for the given rep
+// group, which is how the completed-job queries find a rep group's jobs.
+func addTxRepGroupLookupKeys(d *dgrServer, repGroup string) []string {
+	var keys []string
 
-// limitGroupStored returns the limit the database holds for group, so that a
-// store which commits nothing can still be held to leaving the right value
-// there. Asserts that a limit is stored for the group at all.
-func limitGroupStored(ctx context.Context, d *dgrServer, group string) int64 {
-	gd := d.server.db.retrieveLimitGroup(ctx, group)
-	So(gd.IsCount(), ShouldBeTrue)
+	err := d.server.db.bolt.View(func(tx *bolt.Tx) error {
+		prefix := []byte(repGroup + dbDelimiter)
 
-	return gd.Limit()
+		cursor := tx.Bucket(bucketRTK).Cursor()
+		for k, _ := cursor.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = cursor.Next() {
+			keys = append(keys, string(bytes.TrimPrefix(k, prefix)))
+		}
+
+		return nil
+	})
+	So(err, ShouldBeNil)
+
+	return keys
 }

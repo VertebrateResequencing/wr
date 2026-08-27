@@ -311,6 +311,10 @@ func (s sobsd) Less(i, j int) bool {
 // a particular bucket.
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
+// sobsdPutter is the kind of function that puts the contents of a sobsd in the
+// given bucket, inside a bolt write transaction.
+type sobsdPutter func(tx *bolt.Tx, bucket []byte, encodes sobsd) error
+
 // reverseLookupEntries stores complete keys for bucketJobLookupEntries. During
 // old-DB upgrades we collect only these index keys, not job payloads, so they
 // can be sorted into destination-bucket order before BoltDB sees any Put.
@@ -571,6 +575,14 @@ func startedBefore(aStart, aEnd, bStart, bEnd time.Time) bool {
 	}
 
 	return aStart.Before(bStart)
+}
+
+// newJobStore is one bucket's worth of the data prepareNewJobs produced, and
+// the put that stores it inside a write transaction.
+type newJobStore struct {
+	bucket  []byte
+	encodes sobsd
+	put     sobsdPutter
 }
 
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
@@ -1999,6 +2011,60 @@ func (db *db) decodeArchivedJobs(tx *bolt.Tx, selected []archivedJobCandidate, p
 	return nil
 }
 
+// newJobStores returns the bucket stores for the data prepareNewJobs produced,
+// in the order they get written.
+func (db *db) newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs sobsd) []newJobStore {
+	stores := []newJobStore{{bucketRTK, rgLookups, db.putLookups}}
+
+	for _, s := range []newJobStore{
+		{bucketRGs, rgs, db.putLookups},
+		{bucketDepGroups, depGroupsSeen, db.putLookups},
+		{bucketRDTK, rdgLookups, db.putLookups},
+	} {
+		if len(s.encodes) > 0 {
+			stores = append(stores, s)
+		}
+	}
+
+	return append(stores, newJobStore{bucketJobsLive, encodedJobs, db.putEncodedJobs})
+}
+
+// storeNewJobDataChunked stores each bucket's data in storeBatched-sized write
+// transactions, for an add too big to put in one.
+func (db *db) storeNewJobDataChunked(stores []newJobStore) error {
+	for _, s := range stores {
+		storer := func(bucket []byte, chunk sobsd) error {
+			return db.bolt.Batch(func(tx *bolt.Tx) error {
+				return s.put(tx, bucket, chunk)
+			})
+		}
+
+		if err := db.storeBatched(s.bucket, s.encodes, storer); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// storesNeedChunking says whether any of the stores holds enough data that
+// storeBatched would split it over more than one write transaction.
+func storesNeedChunking(stores []newJobStore) bool {
+	for _, s := range stores {
+		if !fitsOneBatch(len(s.encodes)) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// fitsOneBatch says whether num items are few enough for storeBatched to store
+// them in a single storer call.
+func fitsOneBatch(num int) bool {
+	return num < batchSizeFor(num)
+}
+
 // dbUpgradeReporter reports a one-off database upgrade (the index rebuilds
 // initDB does the first time it opens a database an older wr wrote) to both the
 // status sidecar `wr manager start` polls and the manager log.
@@ -2368,6 +2434,13 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 // will be returned in the jobsToUpdate slice: you should use queue methods to
 // update the job in the queue.
 //
+// An add that fails normally stores nothing, since everything goes in one write
+// transaction. Only an add with enough data to need chunking (see
+// storeNewJobData) can leave part of it stored, which is harmless: those jobs
+// do not enter the in-memory queue, the user gets an error and adds them again,
+// and a lookup pointing at a job that was not stored is silently skipped on
+// retrieval.
+//
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	jobsToQueue, jobsToUpdate []*Job, alreadyAdded int, err error,
@@ -2382,14 +2455,6 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 	}
 
-	// *** on error, because we were batching, and doing lookups separately to
-	// each other and jobs, we should go through and remove anything we did
-	// manage to add... (but this isn't so critical, since on failure here,
-	// they are not added to the in-memory queue and user gets an error and they
-	// would try to add everything back again; conversely, if we try to retrieve
-	// non-existent jobs based on lookups that shouldn't be there, they are
-	// silently skipped)
-
 	if err == nil && alreadyAdded != len(jobs) {
 		db.backupDirty.Store(true)
 	}
@@ -2397,81 +2462,41 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	return jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
-// batchStore describes one bucket-store to carry out concurrently in
-// storeNewJobData.
-type batchStore struct {
-	label   string
-	bucket  []byte
-	encodes sobsd
-	storer  sobsdStorer
-}
-
-// storeNewJobData concurrently stores the job and lookup data prepared by
-// prepareNewJobs, returning the first error encountered. rgLookups and
-// encodedJobs are always stored; the other lookups only if non-empty.
+// storeNewJobData stores the job and lookup data prepared by prepareNewJobs.
+// rgLookups and encodedJobs are always stored; the other lookups only if
+// non-empty.
+//
+// It stores them all in ONE write transaction, unless there is enough data that
+// storeBatched would chunk it. Bolt write transactions serialise on a single
+// mutex, so storing the buckets concurrently overlapped no work; it only cost a
+// commit per bucket, and every commit rewrites the freelist page and fsyncs
+// twice. One transaction also means a failure stores nothing, instead of
+// leaving some buckets written and others not.
 func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 	depGroupsSeen, rdgLookups, rgs sobsd) error {
-	stores := []batchStore{{"rglookups", bucketRTK, rgLookups, db.storeLookups}}
+	// the sorting below used to happen in per-bucket goroutines, which is where
+	// a panic in it was logged and exited on.
+	defer internal.LogPanic(ctx, "jobqueue database storeNewJobs", true)
 
-	for _, s := range []batchStore{
-		{"repGroups", bucketRGs, rgs, db.storeLookups},
-		{"depGroupsSeen", bucketDepGroups, depGroupsSeen, db.storeLookups},
-		{"rdgLookups", bucketRDTK, rdgLookups, db.storeLookups},
-	} {
-		if len(s.encodes) > 0 {
-			stores = append(stores, s)
-		}
-	}
+	stores := db.newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 
-	stores = append(stores, batchStore{"encodedJobs", bucketJobsLive, encodedJobs, db.storeEncodedJobs})
-
-	errs := make(chan error, len(stores))
-
-	db.wgMutex.Lock()
 	for _, s := range stores {
-		db.launchBatchStore(ctx, s, errs)
-	}
-	db.wgMutex.Unlock()
-
-	return collectFirstError(errs, len(stores))
-}
-
-// launchBatchStore launches a goroutine that sorts and stores one batchStore,
-// sending the result to errs. Must be called with db.wgMutex held.
-func (db *db) launchBatchStore(ctx context.Context, s batchStore, errs chan<- error) {
-	wgk := db.wg.Add(1)
-
-	go func() {
-		defer internal.LogPanic(ctx, "jobqueue database storeNewJobs "+s.label, true)
-		defer db.wg.Done(wgk)
-
 		sort.Sort(s.encodes)
-
-		errs <- db.storeBatched(s.bucket, s.encodes, s.storer)
-	}()
-}
-
-// collectFirstError reads n results from errs, returning the last non-nil error
-// seen (matching the original storeNewJobs behaviour) and closing errs.
-func collectFirstError(errs chan error, n int) error {
-	var err error
-
-	seen := 0
-
-	for thisErr := range errs {
-		if thisErr != nil {
-			err = thisErr
-		}
-
-		seen++
-		if seen == n {
-			close(errs)
-
-			break
-		}
 	}
 
-	return err
+	if storesNeedChunking(stores) {
+		return db.storeNewJobDataChunked(stores)
+	}
+
+	return db.bolt.Batch(func(tx *bolt.Tx) error {
+		for _, s := range stores {
+			if err := s.put(tx, s.bucket, s.encodes); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 }
 
 //nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.
@@ -3995,13 +4020,13 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 // name of the bucket to store in.
 func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error {
 	num := len(data)
-	batchSize := batchSizeFor(num)
 
 	// based on https://github.com/boltdb/bolt/issues/337#issue-64861745
-	if num < batchSize {
+	if fitsOneBatch(num) {
 		return storer(bucket, data)
 	}
 
+	batchSize := batchSizeFor(num)
 	batches := num / batchSize
 
 	for i := range batches {
@@ -4089,15 +4114,6 @@ func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
 	}
 
 	return b.Put(reverseLookupEntryKey(jobKey, lookupBucket, lookupKey), nil)
-}
-
-// storeEncodedJobs is a sobsdStorer for storing Jobs in the db.
-func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) error {
-	err := db.bolt.Batch(func(tx *bolt.Tx) error {
-		return db.putEncodedJobs(tx, bucket, encodes)
-	})
-
-	return err
 }
 
 // putEncodedJobs does the work of storeEncodedJobs(). You nust be inside a bolt
