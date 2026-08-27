@@ -10,11 +10,23 @@ work is done; **write-path throughput is now the binding constraint**.
 Measurement has since ruled out the two explanations that would have made this a
 hard limit: **fsync latency is 0.73 ms**, and free pages are only 10.9%, so
 neither durability nor freelist size accounts for a 70 ms transaction - and the
-same code reaches 172/s on local disk. Roughly 68 ms per transaction remains
-unexplained and needs a production profile to decompose.
+same code reaches 172/s on local disk.
+
+**Then a reproduction attempt moved the question.** With production's own
+ingredients - the big DB, on NFS, with the continuous full-DB backup streaming at
+its own 80 MB/s - the archive path does **364/s**, not 14/s, and no archive comes
+within 12x of the client floor. Mutate it to **one bolt write transaction per
+archive** and it reproduces all three production symptoms exactly (21/s, mean
+archive 70 s, 1,827 reports past the floor). But **group commit already landed at
+`f7e36bc` and is in the deployed `fb5df01`** - so production is running the code
+that measures 364/s and behaving like the code that measures 21/s. See "Group
+commit is already in production" and the two sections after it; the leading
+hypothesis is that something upstream of `db.archiveJob` serialises completions so
+the coalescing writer only ever has one archive to fold.
 
 Two design directions are being explored in `throughput-architecture.md`; a
-**regression sweep of 26 wrdev.sh gates found no regression** from this delivery.
+**regression sweep of 26 wrdev.sh gates found no regression** from this delivery,
+and the three gates whose verdicts had become misleading are now fixed.
 
 Read this first for the current position. Background: the OOM diagnosis is in
 `prod-restart-260825.md`, the design in `.docs/dep-granularity/spec.md`, and each
@@ -432,6 +444,106 @@ Nothing yet reproduces production's actual combination of big DB **and** NFS
 **and** continuous backup. That combination is only available in production, which
 is why the next measurement has to be taken there.
 
+### Group commit is already in production, and the symptom happened anyway
+
+**Correction to this document's own framing.** It says a completed job "currently
+costs one bolt write transaction". That has not been true since `f7e36bc`
+(2026-08-18), which is an ancestor of the deployed `fb5df01`. `db.archiveJob`
+encodes the job *outside* any transaction, enqueues an `archiveOp`, and a single
+long-lived `archiveWriter` folds **every** archive pending at that moment into ONE
+`db.Update`, replying to each waiter with its own error (bbolt-`Batch`-like
+per-caller semantics, including re-running a failing member on its own).
+`TestReliable4ArchivesCoalesceIntoOneTransaction` in the main suite pins the
+archives-per-transaction ratio.
+
+So `throughput-architecture.md`'s **idea 1 is, for the archive path, already
+implemented and already deployed** - and the 07:58-08:08 symptom occurred with it
+running. Two things follow:
+
+- the arithmetic "one synchronous transaction per archive at ~70 ms *is* about
+  14/s" no longer follows from the code, so it cannot stand as candidate 2's
+  mechanism without new evidence;
+- the 2026-08-17 block profile that put 100% of `archiveCompletedJob`'s block time
+  inside `db.archiveJob` **predates** `f7e36bc`, so it cannot be cited for where
+  the 08:00 latency sat.
+
+### In-process reproduction with production's ingredients: the symptom does not appear
+
+`developers/wrdev.sh archive-ceiling` was built to reproduce the *symptom* rather
+than any fix's mechanism, and run on `/nfs/hgi` - the filesystem production's own
+DB lives on - with the periodic full-DB backup forced on and its streamed bytes
+measured. `report-storm` was then run at production's shape to cover the whole
+server RPC path rather than `db.archiveJob` alone.
+
+| measurement | concurrency | achieved | worst archive | over the 60 s floor |
+| --- | --- | --- | --- | --- |
+| `archive-ceiling`, pristine6 (6.89 GiB, 3202 MiB freelist), NFS, backups ON (27,347 MB at 75.8 MB/s), 256-byte Cmds | 20 -> 1,143 | 8.37/s -> **363.9/s** (43.5x for 57.1x) | 1.62 s | 0 |
+| same, **25 KB Cmds** (production's `portal_builder` size; 31,362 MB at 86.9 MB/s) | 20 -> 1,143 | 8.37/s -> **334.3/s** (39.9x) | 2.03 s | 0 |
+| `report-storm` through the real server RPC path: 80,000-job live set, 1,143 real client runners, same DB on NFS, backups ON | 1,143 | **~350/s**, all 80,000 drained, 0 timeouts, 0 rejections | 5.10 s | 0 |
+| **production, 08:00-08:07** | 20 -> 1,143 | 8.7/s -> **~14/s** (1.6x) | >= 59.9 s | **470 reports lost** |
+
+None of these is sufficient to produce the symptom: a 6.89 GiB DB with a 3.2 GB
+freelist; NFS; a continuous full-DB backup copying at production's own ~80 MB/s;
+1,143 concurrent archivers; production-sized 25 KB records; or a production-sized
+live set driven through the real RPC handlers. The in-process write path is
+**24-26x faster** than production's and its worst archive is **12-37x clear** of
+the client floor. Record size in particular is nearly free here: 100x bigger
+records cost 8% of the throughput.
+
+### The mutation that DOES reproduce it: one transaction per archive
+
+The same mode, with `db.archiveJob` mutated to take its own `db.bolt.Update` per
+archive instead of enqueuing to the coalescing writer - everything else identical,
+same DB, same filesystem, same backup streaming at 83.1 MB/s:
+
+| | low, 20 archivers | high, 1,143 archivers |
+| --- | --- | --- |
+| achieved | 8.18/s | **21.32/s** (efficiency 0.043) |
+| mean archive | 152 ms | **69,995 ms** |
+| p99 / max | 650 / 800 ms | 91,158 / 91,432 ms |
+| queue depth | 1-6 | **1,108-1,129** |
+| over the 60 s floor | 0 | **1,827** |
+
+`throughputFactor` **2.61x for 57.1x the concurrency**. Production measured
+**1.6x for 57x**, latency pinned at the floor, 470 reports lost. All three
+symptoms, to the digit.
+
+**So production behaves exactly like the code with no group commit, while running
+the code with it.** The two are indistinguishable from outside - a queue that
+drains at one archive per transaction looks the same however the transaction came
+to hold one archive - so there are two candidate explanations, and they need
+different work:
+
+1. **The writer is not batching in production, because something UPSTREAM of
+   `db.archiveJob` serialises completions**, leaving it one archive to fold at a
+   time. The obvious candidate is the queue mutex: `getijForReport` does `s.q.Get`
+   on every report, while `satisfyEmptiedDepGroups` takes the queue's write lock
+   per completion, once per dep group the completion emptied - and production has
+   **112,486 dep-group memberships** and a dependency-heavy `portal_builder`
+   workload. The in-process runs above cannot see this: `archive-ceiling` bypasses
+   the server entirely, and `report-storm`'s 80,000 jobs have no dep groups at all.
+   This is a hypothesis, not a finding.
+2. **The 60 s is not inside the archive at all**, and the resemblance is
+   coincidence.
+
+Both are answered by the same measurement, which is already the deferred item
+below: **a mutex + block profile of the live manager under saturation.** The
+question it has to answer has changed, though - not "where do the 68 ms inside the
+bolt transaction go", but "how many archives is the coalescing writer folding per
+transaction, and what is holding the queue mutex while they wait".
+
+**What else is left, and it is all production-only:** 1,143 *remote* runners over
+real TLS connections plus their touch traffic, rather than in-process clients; the
+LSF scheduler on the same manager (`bsub`/`bjobs`/`bkill` subprocesses,
+`killExcessCmds`, the scheduling callback); the web status feed; production's real
+DB contents and key distribution (2.15M complete, 118k live) rather than the
+generator's; and whatever else was competing for `/nfs/hgi` and for the farm at
+08:00, including ~22,500 other pending mercury jobs.
+
+An incidental find from the same runs: **`wr add` of 150,000 jobs in one request
+took 72.5 s and the client gave up at its own 60 s floor** (80,000 took 49.7 s).
+Not this symptom, but the same floor, and a real ceiling on bulk add.
+
 ### Three candidates, three different fixes
 
 1. **Backup copy I/O competing for the same NFS bandwidth.** Fix: incrementally
@@ -508,21 +620,27 @@ continuous capture, or the profile will report the cost of profiling.
 
 ### Open, in order
 
-1. **Design the throughput fix.** Two approaches are being explored in
-   `throughput-architecture.md`: **group commit** (batch archives into shared bolt
-   transactions) and **splitting the live set from the archive**. Group commit is
-   worth doing regardless of how the remaining ~68 ms decomposes, because batching
-   divides *every* per-transaction cost by the batch size - it is robust to the
-   open question below.
+1. **Do NOT start by building group commit - it is already built and deployed**
+   (`f7e36bc`, in `fb5df01`). See "Group commit is already in production" above.
+   The next step for `throughput-architecture.md`'s idea 1 is to find out **why it
+   is not batching in production**, since one transaction per archive is exactly
+   what production's numbers look like and what the mutation above reproduces.
+   Idea 2's premise is also weakened by the measurements above: 25 KB records cost
+   8% more than 256-byte ones here, and the whole in-process write path is 24x
+   faster than production's.
    **Ruled out by the operator (2026-08-27):** moving the DB to local disk, and
    relying on compaction cadence or a separate backup filesystem. Those may still
    be measured as diagnostics, but nothing is to depend on them.
 2. **Profile production when the operator can restart it** (deferred - a restart
-   is not available right now). Capture CPU + mutex + block during saturation with
-   the limit raised, *and* sample `db_bk.tmp`'s size every couple of seconds so
-   archive latency can be correlated against backup copy windows. That answers
-   where the ~68 ms goes and whether the split in idea 2 must also move the DB off
-   NFS. **This document gets updated with the result.**
+   is not available right now) - now the critical path, and with a sharper
+   question. Capture CPU + **mutex + block** during saturation with the limit
+   raised, *and* sample `db_bk.tmp`'s size every couple of seconds so archive
+   latency can be correlated against backup copy windows. The question is no
+   longer "where do the 68 ms inside the transaction go" but **"how many archives
+   is the coalescing writer folding per transaction, and what is holding the queue
+   mutex while they wait"** - `satisfyEmptiedDepGroups` per completion against
+   112,486 dep-group memberships is the leading suspect.
+   **This document gets updated with the result.**
 3. **Watch the publication herd** (issue 2) across a few more restarts. No code
    needed today; what would change that is a herd approaching the 60 s floor.
 4. **Leave the decode cost** (issue 1) unless startup time becomes a complaint.

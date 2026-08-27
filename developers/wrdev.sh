@@ -475,6 +475,180 @@ cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4
   rm -f "$work" "${work}_bk" 2>/dev/null
   return "$verdict"
 }
+cmd_archive_ceiling() {  # archive-ceiling [lowArchivers] [highArchivers] [seconds] [thinkMs] - THROUGHPUT CEILING GATE
+  # SCALE GATE for the production symptom of 2026-08-27 07:58-08:08
+  # (.docs/reliable4/prod-validation-260827.md, "Limit stress test"), reproduced as a SYMPTOM
+  # rather than as any particular mechanism, so that ANY fix which removes it passes and a
+  # "fix" that changes the mechanism without helping does not:
+  #
+  #   1. archive RPC latency walked to the 60s ClientMinRequestTimeout floor and pinned there
+  #      (max per minute 11.0s -> 29.4s -> 47.7s -> 51.6s -> 59.9s; a grep for >= 60s returns
+  #      ZERO, which is the client giving up, not reassurance);
+  #   2. 470 runner-side `failed to update server with cmd's final state` err="receive time out"
+  #      in the single minute 08:06 - completed work whose report was lost;
+  #   3. throughput did not scale: ~8.7 completions/s at ~20 runners, ~14/s at 1,143. 57x the
+  #      concurrency for ~1.6x the throughput, one minute of it BELOW the 20-runner rate.
+  #
+  # Symptom 3 is the primary assertion because a RATIO between two concurrency levels measured
+  # in the same run is far less sensitive to this shared host's load (85-122 on 8 cores) than
+  # any absolute latency is. Symptoms 1 and 2 are asserted as well, being the sharper failures:
+  # no archive may reach the client floor, and none may cross it.
+  #
+  # Farm-safe and in-process, exactly like archive-rate: no LSF job, no manager, no real job
+  # command ever runs. LOW then HIGH archiver counts drive think-then-synchronously-archive
+  # against ONE copy of a big DB opened through the real initDB, with the think time JITTERED so
+  # arrivals are not in lockstep (see archive-rate's header for why that is load-bearing).
+  #
+  # WHAT IT MEASURED, AND WHAT THAT SETTLED (2026-08-27, this host, load ~122). Production's
+  # ingredients were reproduced as closely as an in-process run can: the 6.89GiB pristine6 DB
+  # with its 3202MiB freelist, ON NFS (/nfs/hgi, the filesystem production's own DB lives on),
+  # with the periodic full-file backup FORCED ON and MEASURED streaming 27,347MB at 75.8MB/s,
+  # which is production's own ~80MB/s continuous copy.
+  #
+  #   at HEAD:              low 8.37/s (mean 102ms, max 270ms), high 363.88/s (mean 851ms,
+  #                         max 1620ms) => 43.5x for 57.1x the concurrency, 0 over the floor
+  #   with 25KB Cmds        low 8.37/s, high 334.31/s (max 2032ms) => 39.9x, 0 over the floor.
+  #   (production's         100x bigger records cost 8% of the throughput, so record size is
+  #    portal_builder size) not the ceiling either
+  #   ONE TRANSACTION       low 8.18/s, high 21.32/s (MEAN 69,995ms, p99 91,158ms), queue 1,108
+  #   PER ARCHIVE           deep, 1,827 archives past the 60s client floor => 2.61x for 57.1x
+  #   (mutation)            => RED, and it is production's symptom to the digit
+  #
+  # Production measured 8.7/s -> ~14/s (1.6x for 57x), latency pinned at the floor, 470 reports
+  # lost in one minute. So the mutation - strictly one bolt write transaction per archive -
+  # reproduces ALL THREE production symptoms, and HEAD does not reproduce any of them. The
+  # coalescing archive writer (f7e36bc, in the deployed fb5df01) is what separates them.
+  #
+  # That leaves a sharp question rather than a fix: production runs the code that measures
+  # 363/s here and behaves like the code that measures 21/s. The two are indistinguishable from
+  # outside, so EITHER the writer is not batching in production - most likely because something
+  # UPSTREAM of db.archiveJob serialises completions, so it only ever has one archive pending
+  # (q.Get under the queue mutex, against SatisfyDependency holding it per completion, is the
+  # obvious candidate at production's 112,486 dep-group memberships) - OR the 60s is not in the
+  # archive at all. Both are answered by a mutex/block profile of the live manager under
+  # saturation, which is the deferred production profile in prod-validation-260827.md.
+  #
+  # So at HEAD this PASSES. It is a regression gate on the scaling the archive path HAS, and a
+  # reproducer of the production symptom whenever that scaling is lost. What it does NOT cover
+  # is the server's per-completion work - it calls db.archiveJob directly, as archive-rate does;
+  # report-storm at production's shape (80,000-job live set, 1,143 real client runners, same DB
+  # on NFS, backups ON) also drained clean at ~350/s with a 5.1s worst archive, but its jobs
+  # have no dep groups. Use report-storm / report-storm-lsf for the whole-server shape.
+  #
+  # Gate: throughputFactor >= WRDEV_AC_MIN_FACTOR (10; prod managed 1.6), no archive over
+  # WRDEV_AC_MAX_LAT_MS (30000, half the client floor) in either phase, and ZERO archives at or
+  # over the floor. A MISSING or NON-DISCRIMINATING measurement is a FAIL, never a PASS: no
+  # summary line, a phase that archived nothing, an unparseable figure, backups asked for but
+  # never seen to stream, or a workload whose offered high rate could not have shown the factor
+  # in the first place.
+  # Needs WR_AC_DB (or WRDEV_PRISTINE_DB) = a big DB from the generator; each run COPIES it into
+  # WRDEV_AC_WORK (default $WRDEV_ROOT), which needs room for it plus its backup, and removes
+  # the copy again. PUT THAT ON NFS: on local disk the run says nothing about production's
+  # filesystem.
+  need_repo
+  local low="${1:-20}" high="${2:-1143}" secs="${3:-180}" thinkms="${4:-2300}"
+  local minfactor="${WRDEV_AC_MIN_FACTOR:-10}" maxlatms="${WRDEV_AC_MAX_LAT_MS:-30000}"
+  local backup="${WRDEV_AC_BACKUP:-1}" work="${WRDEV_AC_WORK:-$WRDEV_ROOT}"
+  local cmdbytes="${WRDEV_AC_CMD_BYTES:-256}"
+  local db="${WR_AC_DB:-${WRDEV_PRISTINE_DB:-}}" gorc=0
+  { [ -n "$db" ] && [ -f "$db" ]; } \
+    || die "set WR_AC_DB (or WRDEV_PRISTINE_DB) to a big freelist DB (see backup-stall-check / TestReliable4InflateDB)"
+  local out="$WRDEV_ROOT/archive-ceiling.out"
+  mkdir -p "$WRDEV_ROOT" "$work"
+  echo "reliable4 throughput-ceiling gate: ${low} then ${high} archivers, ${thinkms}ms think time,"
+  echo "  ${secs}s per phase, cmdBytes=${cmdbytes}, backups=${backup}, work=$work"
+  echo "  DB $db ($(ls -la "$db" | awk '{print $5}') bytes; COPIED into $work, never mutated in place)"
+  echo "  prod symptom to reproduce: 20 runners -> 8.7/s, 1143 -> ~14/s (1.6x for 57x), archive"
+  echo "  latency pinned at the 60s client floor, 470 final-state reports lost in one minute."
+  echo "  gate: throughputFactor >= ${minfactor}x, no archive over ${maxlatms}ms, 0 at/over the floor."
+  echo "  A MISSING or NON-DISCRIMINATING measurement is a FAIL, not a PASS."
+  osunset
+  WRDEV_ROOT="$WRDEV_ROOT" WR_AC_DB="$db" WR_AC_WORK="$work" WR_AC_BACKUP="$backup" \
+    WR_AC_LOW="$low" WR_AC_HIGH="$high" WR_AC_SECONDS="$secs" WR_AC_THINK_MS="$thinkms" \
+    WR_AC_CMD_BYTES="$cmdbytes" \
+    timeout $((secs * 2 + 2400)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4ArchiveCeiling -count=1 -v -timeout $((secs * 2 + 2300))s > "$out" 2>&1 || gorc=$?
+  grep -aE 'ARCHCEIL|PASS|FAIL|panic|^ok |^---' "$out" | grep -avE 'no test files'
+
+  local sum lowrate highrate factor lowmax highmax overfloor errs archives backupmb lowarch higharch
+  sum=$(grep -aoE 'ARCHCEIL-SUMMARY .*' "$out" | tail -1)
+  lowrate=$(ac_float "$sum" lowRate); highrate=$(ac_float "$sum" highRate)
+  factor=$(ac_float "$sum" throughputFactor)
+  lowarch=$(bk_num "$sum" lowArchivers); higharch=$(bk_num "$sum" highArchivers)
+  lowmax=$(bk_num "$sum" lowMaxMs); highmax=$(bk_num "$sum" highMaxMs)
+  overfloor=$(bk_num "$sum" overFloor); errs=$(bk_num "$sum" errors)
+  archives=$(bk_num "$sum" archives); backupmb=$(bk_num "$sum" backupMb)
+  for v in lowarch higharch lowmax highmax overfloor errs archives backupmb; do
+    case "${!v}" in (*[!0-9-]*|'') eval "$v=-1" ;; esac
+  done
+
+  echo "## VERDICT: low=${lowarch}@${lowrate:-?}/s high=${higharch}@${highrate:-?}/s" \
+       "throughputFactor=${factor:-?}x (min ${minfactor}x) lowMax=${lowmax}ms highMax=${highmax}ms" \
+       "(max ${maxlatms}ms) overClientFloor=$overfloor archives=$archives archiveErrors=$errs" \
+       "backupMb=$backupmb goExit=$gorc"
+
+  local verdict=0 unmeasured=""
+  [ -n "$sum" ] || unmeasured="the run produced no ARCHCEIL-SUMMARY line (test crashed, timed out, skipped, or could not open the DB?)"
+  [ -z "$unmeasured" ] && { [ -z "$lowrate" ] || [ -z "$highrate" ] || [ -z "$factor" ]; } \
+    && unmeasured="could not read lowRate/highRate/throughputFactor out of the summary line"
+  [ -z "$unmeasured" ] && { [ "$lowmax" -lt 0 ] || [ "$highmax" -lt 0 ] || [ "$overfloor" -lt 0 ] \
+    || [ "$archives" -lt 0 ] || [ "$lowarch" -le 0 ] || [ "$higharch" -le 0 ]; } \
+    && unmeasured="could not read a latency, the over-floor count, the archive total or an archiver count"
+  [ -z "$unmeasured" ] && [ "$archives" -le 0 ] \
+    && unmeasured="no archive completed, so neither phase measured anything (archives=$archives)"
+  [ -z "$unmeasured" ] && [ "$(ac_gt "$lowrate" 0)" != "1" ] \
+    && unmeasured="the low-concurrency phase archived nothing per second, so there is no baseline to scale against"
+  [ -z "$unmeasured" ] && [ "$backup" = "1" ] && [ "$backupmb" -le 0 ] \
+    && unmeasured="backups were forced ON but no backup bytes were seen streaming, so production's continuous full-DB copy was NOT present and this run is not the environment it claims"
+  # a workload that could not have shown the factor even on a perfect system proves nothing: the
+  # OFFERED high rate has to exceed the low phase's achieved rate by at least the threshold.
+  local offeredhigh=""
+  [ -z "$unmeasured" ] && offeredhigh=$(awk -v a="$higharch" -v t="$thinkms" 'BEGIN{printf "%.2f", a/(t/1000)}')
+  [ -z "$unmeasured" ] && [ "$(ac_gt "$offeredhigh" "$(awk -v a="$lowrate" -v f="$minfactor" 'BEGIN{printf "%.4f", a*f}')")" != "1" ] \
+    && unmeasured="the high phase only offered ${offeredhigh}/s against a ${lowrate}/s baseline, which cannot demonstrate a ${minfactor}x factor however well the write path behaves (raise highArchivers or lower thinkMs)"
+
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real, discriminating measurement; inspect $out"
+  elif [ "$gorc" -ne 0 ] || [ "$errs" -ne 0 ]; then
+    verdict=1
+    echo "FAIL (TEST FAILED): the reproducer itself failed (go test exit $gorc, archive errors $errs), so"
+    echo "  the figures above are not a valid measurement of a healthy archive path; inspect $out"
+  elif [ "$overfloor" -gt 0 ]; then
+    verdict=1
+    echo "FAIL: $overfloor archives took at least the 60s ClientMinRequestTimeout floor to complete,"
+    echo "  so their reports would have been LOST exactly as production's 470 were (symptom 2)"
+  elif [ "$lowmax" -gt "$maxlatms" ] || [ "$highmax" -gt "$maxlatms" ]; then
+    verdict=1
+    echo "FAIL: an archive took ${lowmax}ms (low) / ${highmax}ms (high), over the ${maxlatms}ms bound, so"
+    echo "  latency is walking towards the client floor as production's did (symptom 1)"
+  elif [ "$(ac_gt "$factor" "$minfactor")" != "1" ]; then
+    verdict=1
+    echo "FAIL: ${higharch} archivers achieved only ${factor}x the throughput of ${lowarch} (min ${minfactor}x),"
+    echo "  so throughput does not scale with concurrency - production's symptom 3 (1.6x for 57x)"
+    echo "  => the completions are serialising somewhere; find WHERE before choosing a mechanism"
+  else
+    echo "PASS: ${higharch} archivers reached ${highrate}/s against ${lowarch} archivers' ${lowrate}/s"
+    echo "      (${factor}x for $(awk -v a="$higharch" -v b="$lowarch" 'BEGIN{printf "%.1f", a/b}')x the concurrency),"
+    echo "      worst archive ${highmax}ms, none at the client floor, with ${backupmb}MB of backup copied"
+  fi
+  echo "## CLEANUP"
+  rm -f "$work/archceil_work_db" "$work/archceil_work_db_bk" "$work/archceil_work_db_bk.tmp" 2>/dev/null
+  return "$verdict"
+}
+
+# ac_float extracts a `key=<float>` value from the ARCHCEIL-SUMMARY line, printing nothing when
+# the key is absent (so the caller FAILs NOT MEASURED rather than treating it as zero).
+ac_float() {  # <line> <key>
+  printf '%s\n' "$1" | grep -aoE "$2=[0-9]+\.[0-9]+" | tail -1 | cut -d= -f2
+}
+
+# ac_gt prints 1 when the first float argument is >= the second, else 0. Used because the shell's
+# own [ ] cannot compare the fractional rates and factors this gate is built on.
+ac_gt() {  # <a> <b>
+  awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{print (a+0 >= b+0) ? 1 : 0}'
+}
 
 cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5 confirm-dead SSH leak repro
   # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
@@ -3249,6 +3423,34 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         and nothing over the floor (WRDEV_ARCHRATE_MAX_MEAN_MS / _MAX_P99_MS); FAIL =
                         the archives queue on the one write lock again, OR nothing was measured, OR
                         the reproducer itself failed (non-zero go test exit / any archive error).
+  archive-ceiling [lowArchivers] [highArchivers] [seconds] [thinkMs]
+                        reliable4 THROUGHPUT-CEILING GATE (in-process, SAFE - no LSF/manager/
+                        commands): reproduces the 2026-08-27 production SYMPTOM rather than any
+                        fix's mechanism, so any change that removes it passes. LOW then HIGH
+                        archiver counts think-then-synchronously-archive against ONE copy of a
+                        big DB (WR_AC_DB / WRDEV_PRISTINE_DB) opened via the real initDB, with
+                        the periodic full-DB backup FORCED ON by default and its streamed bytes
+                        MEASURED, and with the copy placed in WRDEV_AC_WORK (default \$WRDEV_ROOT)
+                        so the run can be taken on NFS as production is (defaults 20 1143 180
+                        2300). Prod symptom: 20 runners -> 8.7/s, 1143 -> ~14/s (1.6x for 57x),
+                        archive latency pinned at the 60s client floor, 470 final-state reports
+                        lost in one minute. PASS = throughputFactor >= WRDEV_AC_MIN_FACTOR (10),
+                        no archive over WRDEV_AC_MAX_LAT_MS (30000) in either phase, and ZERO at
+                        or over the floor; FAIL = throughput does not scale, latency walks to the
+                        floor, reports would be lost, OR nothing discriminating was measured (no
+                        summary, an empty phase, unparseable figures, backups asked for but never
+                        seen streaming, or a high phase that could not have shown the factor).
+                        MEASURED 2026-08-27 on NFS with 27,347MB of backup streamed at 75.8MB/s:
+                        8.37/s -> 363.88/s, 43.5x for 57.1x, worst archive 1620ms, none near the
+                        floor, so it PASSES at HEAD; 25KB Cmds (production's size) only cost 8%.
+                        Mutated to ONE bolt transaction per archive it goes RED and reproduces
+                        ALL THREE production symptoms: 8.18/s -> 21.32/s (2.61x for 57.1x), mean
+                        archive 69,995ms, queue 1,108 deep, 1,827 archives past the 60s floor.
+                        So it is both a regression gate on the scaling the archive path HAS and a
+                        reproducer of the symptom whenever that scaling is lost. It does not
+                        cover the server's per-completion work (it calls db.archiveJob directly);
+                        see report-storm / report-storm-lsf. WRDEV_AC_BACKUP=0 A/Bs the backup
+                        ingredient away, WRDEV_AC_CMD_BYTES the record size.
   confirm-dead-leak [checks] [host]
                         reliable4 Fix 5 repro (real LSF + ssh): drives ProcessNotRunningOnHost N times
                         and counts leaked ssh-client goroutines; each check dials a client that is never
@@ -3362,6 +3564,7 @@ case "${1:-help}" in
   transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
+  archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
   writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
