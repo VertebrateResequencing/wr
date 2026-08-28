@@ -1,90 +1,86 @@
-# Raising the archive throughput ceiling: group commit, and splitting live from archive
+# The manager's write-path throughput ceiling
 
-**STATUS: exploration - but read the correction below before acting on idea 1.**
-This is the home for the two design directions the operator wants pursued. Read
-`prod-validation-260827.md` first for the measurements that motivate them.
+## STATUS as of 2026-08-28 - read this section only
 
-> **CORRECTION, 2026-08-27: idea 1 is already built for the archive path, and
-> already deployed.** `f7e36bc` (an ancestor of production's `fb5df01`) replaced
-> the per-archive `db.bolt.Batch` with a single coalescing `archiveWriter` that
-> folds every pending archive into ONE `db.Update` and replies to each waiter with
-> its own error. So this document's "each completed job currently costs one bolt
-> write transaction" is not true of the deployed code, and the 07:58-08:08 symptom
-> happened *with* group commit running.
->
-> `developers/wrdev.sh archive-ceiling` then measured what the shape is worth: on
-> production's own filesystem, with the continuous backup streaming, the archive
-> path does **364/s** and nothing within 12x of the client floor; mutated to one
-> transaction per archive it does **21/s** with a mean archive of **70 s** and
-> 1,827 reports past the floor - production's symptom exactly. So production is
-> running the fast code and behaving like the slow code. **Find out why the writer
-> is not batching there before designing more batching**; the leading hypothesis
-> (something upstream of `db.archiveJob` serialising completions, most likely the
-> queue mutex against `satisfyEmptiedDepGroups`) and the discriminating measurement
-> are recorded in `prod-validation-260827.md`.
->
-> The measurements also weaken idea 2's premise: 25 KB records - production's
-> `portal_builder` size - cost only 8% more per completion than 256-byte ones here.
+Everything below it is working history, kept for its measurements and its dead
+ends. Where a later section contradicts an earlier one, the later one is right;
+the ones marked SUPERSEDED are wrong and are retained only so the reasoning is not
+repeated.
 
-## What to do next, without waiting for a profile (2026-08-27)
+### Where we stand
 
-The production profile is deferred until the operator can restart, but three of
-these four items do not need it, and the second largely removes the need for it.
+**The problem.** The production manager's job-completion rate does not scale with
+concurrency. At 1,143 runners it managed ~14 completions/s with archive latency
+pinned at the 60 s `ClientMinRequestTimeout` floor and **470 completion reports
+lost in one minute**; at ~349 runners it manages ~23-27/s with every request paying
+7-13 s. Slow `add`s outnumber slow `jarchive`s about 10:1.
 
-### 1. Read the completion path for per-completion exclusive locks
+**The diagnosis, corroborated twice independently.** One contended resource -
+bbolt's single writer lock - and the **add path holds ~88% of it**. Two analyses
+reached this separately, one from the profiles and one from the code, and a third
+agent given only the profile files reached it again with no access to either. The
+two purpose-built coalescing writers (archive, best-effort) work correctly; the add
+path has no coalescing and fragments each request across several transactions.
 
-Free, and it targets everything below it. From a runner's final-state report
-arriving to `archiveJob` being called, the path runs `getijForReport` ->
-`s.q.Get` -> archive -> `q.Remove` -> membership release ->
-`satisfyEmptiedDepGroups`. **If any step takes the queue *write* lock once per
-completion, that alone caps completions at the rate that lock turns over**, and
-the coalescing `archiveWriter` would never see two pending archives at once
-however fast it is - which is exactly the "runs the fast code, behaves like the
-slow code" observation.
+**A second, independent cost:** a single bolt commit on this database is
+**52-74 ms whatever it carries**, because `Tx.Commit` unconditionally rewrites the
+whole freelist and fsyncs twice. Reproduced: the *same empty transaction* costs
+0.63 ms with an empty freelist and 61.3 ms at production's free-page count. This
+floor multiplies everything above it and is untouched by any change so far.
 
-Known constraint to respect while reading: `queue.mutex -> job` is an established
-acquisition order (`releaseTimedOutItems` calls `ttrCb` under `queue.mutex`,
-`queue/queue.go:1942`; `ttrCallback` takes `job.Lock()`, `server.go:4601`).
+**What was done, and what it achieved.** Seven commits (`72d3d3d` `10d3908`
+`639fcd8` `462b253` `144c788` `4a63e87` `2b56048`) took a single-job add from
+**7 write transactions to 1** and collapsed its three sequential phases into one.
+Measured against the reproducer: **+44% throughput, p50 40.2 s -> 28.9 s, and no
+add crossing the 60 s client floor** where 118 crossed it before and 117 gave up.
 
-### 2. Make the manager report the batch size it actually achieves
+**But the problem is not fixed.** `wrdev.sh add-storm` still **FAILS** at HEAD:
+1,924 single-job adds over 10 s in two minutes, p50 28.9 s, 590 write transactions
+queued at once, throughput rising only 1.93x for 35x the concurrency. The ceiling
+moved; it did not lift.
 
-The central question is *why the writer folds only one archive at a time in
-production*, and nothing currently in the log answers it. An inert counter plus a
-periodic line - the established convention (`db.archivedDecodes` `5c75a15`,
-`Job.derivations` `8087866`, `db.archiveTxObserver` `f7e36bc`,
-`db.depGroupSeenGets` this delivery) - would answer it from an **ordinary manager
-log with no `--debug` and no pprof**.
+**Production is not running any of this.** It is on `v0.37.1-90-g11fb939` at portal
+limit 500, which predates all seven commits.
 
-If production reports a mean fold of ~1 while `archive-ceiling` reports ~100, the
-diagnosis is settled on the spot. This is the highest value-per-line item here: it
-makes the next restart decisive whether or not profiling is enabled.
+### What to consider next
 
-### 3. Test the ingredient the hunt never varied: dep-group membership
+1. **`WR_MANAGERDBBATCHDELAY`, the shipping knob nobody has evaluated.** Widening
+   bbolt's coalescing window took the reproducer from **12.82 to 179 adds/s - 14x -
+   with no code change at all.** That is a signal, not a recommendation: it trades
+   latency on an idle manager for coalescing under load, and neither the idle cost
+   nor the tradeoff has been measured. It is the cheapest thing on this list by an
+   order of magnitude and deserves a deliberate decision.
+2. **The remaining add-path fragmentation.** HEAD still fails the gate. bbolt
+   cannot coalesce *across* requests - `batch.run()` detaches the batch the instant
+   one starts, so the next arrival opens a fresh 10 ms window regardless of whether
+   the previous transaction has committed. Fixing that means wr coalescing adds
+   itself, the way it already does archives.
+3. **Idea 2, splitting the live set from the archive** (section below, never
+   started). The only idea that attacks the **per-commit floor** rather than the
+   transaction count, and it would make the backup incremental as a side effect.
+   Its go/no-go is the two-store atomicity argument.
+4. **Three recorded bugs, unfixed** (`.docs/bugfixes/260827-2.md` items 8, 10, 12).
+   One has a restart-surviving symptom: **a limit group can never be un-stored** -
+   `wr limit -g 'name:-1'` reports it removed and the in-memory limit goes, but the
+   record survives and vivifies back after a restart.
+5. **Two validation gaps to close before any of this merges.** `DEVELOPERS.md` §3
+   requires real-LSF Tier-B validation, and none of today's commits has it. And the
+   30 s `bjobs` bound added in `df13076` turns a *chronically slow* `bjobs` into a
+   *failing* one, escalating to a 30-minute per-group backoff - that number should
+   be measured against the real LSF account under load before it is trusted.
 
-The ingredient hunt varied NFS, the continuous backup, record size (25 KB, +8%)
-and live-set size (80,000 jobs through the real RPC path) - and reproduced
-nothing. It did **not** vary dep-group membership, which is the largest remaining
-difference between the harness and production: **112,486 memberships** on a
-dependency-heavy `portal_builder` workload.
+### The process lesson, recorded because it cost real work
 
-That matters because the suspected serialisation point only bites when completions
-actually empty groups. Give `archive-ceiling` (or a sibling) production's
-dep-group shape and see whether 364/s collapses toward 14/s. If it does, the whole
-thing is reproducible on this host and fixable without touching production.
-
-### 4. Unrelated, actionable now
-
-`wr add` of **150,000 jobs in one request takes 72.5 s**, and the client abandons
-it at its own 60 s `ClientMinRequestTimeout` floor (80,000 jobs: 49.7 s). Measured
-2026-08-27. Nothing to do with the throughput ceiling; a real defect on its own.
-
-### Order
-
-Items 1 and 2 together first - the read says where to instrument, the
-instrumentation makes the next restart decisive. Then item 3, which is the one
-that might reproduce the entire symptom locally today. Item 4 whenever.
+The seven commits were validated by **transaction-count probes** - a measure of the
+hypothesised mechanism, not of the observed symptom - and were described as a fix
+on that basis. The reproducer that should have come first was built afterwards, and
+it showed the problem remains. Two other headline claims died the same way: the
+`bucketEnvs` growth theory (falsified by one bucket-stats command) and a mutex
+profile misread as hold-time when it was transaction count. **Reproduce the symptom
+first; a mechanism-level measurement cannot tell you whether a fix fixed anything.**
 
 ## THE REPRODUCER, AND THE HONEST VERDICT ON THE FIXES (2026-08-28)
+
 
 `wrdev.sh add-storm` (`d305332`) reproduces the production symptom. It was built
 by an agent given **only the profile files** - no access to these documents, no
@@ -172,6 +168,7 @@ no-diff constraint reached it (none naming the add path, bolt batching,
 `storeLimitGroups` or transactions); its analysis started from the profiles.
 
 ## FIXED, AND ONE HEADLINE FINDING FALSIFIED (2026-08-28)
+
 
 All seven items are implemented and committed (`.docs/bugfixes/260827-2.md`):
 `72d3d3d` `10d3908` `639fcd8` `462b253` `144c788` `4a63e87` `2b56048`.
@@ -265,6 +262,7 @@ both tag sets, `-race` clean, and each of the seven commits builds and vets in
 isolation.
 
 ## SUPERSEDING ANALYSIS (2026-08-27, code-first, independent)
+
 
 A second independent analysis worked from the **code** rather than the profiles and
 **overturns the central conclusion below**. Read this section first; the one that
@@ -443,7 +441,106 @@ bounds admission only, handlers run in fresh goroutines.
   pending pages and every commit during it pays for them. Closed form, not a
   profiling problem.
 
+## Idea 2: split the live set from the archive
+
+
+### The shape
+
+The DB is 8.59 GB, of which **~7.65 GB is live data and the great majority of that
+is completed jobs** (the shape recorded earlier: ~2.15M complete against ~118k
+live). Every completion pays to insert into that tree, and every backup re-copies
+all of it.
+
+Split the store in two:
+
+- a **live/hot store** holding only incomplete jobs plus the small indexes the
+  scheduling paths need - on the order of 118k records, a few hundred MB. All
+  mutation happens here, so commits touch a small tree with a small freelist.
+- an **archive store** holding completed jobs, written once and never updated -
+  append-only, or a sequence of immutable segments with an index.
+
+### Why this is the strategic option
+
+It attacks the cause rather than amortising it, and it fixes **two** problems at
+once:
+
+1. **Throughput**: a completion becomes a small write to a small tree plus an
+   append, instead of an insert into an 8.59 GB tree.
+2. **Backup (issue 3)**: an immutable archive store needs backing up **once per
+   segment**, not re-copied every 90 seconds. The continuous 7.3 GB copy - the
+   thing currently competing for the NFS bandwidth that idea 1 is trying to use
+   better - largely disappears. Only the small live store needs frequent backup.
+
+It also shrinks the startup decode window (issue 1) as a side effect, since
+recovery reads the live store only. And it is the honest version of the operator's
+own append-only-journal instinct: the same "sequential append, no tree churn"
+benefit, but **without** a second source of truth for live state, without a
+replay-and-fold protocol, and without a crash-during-fold failure mode - because
+nothing is ever folded back. A record is either live or archived, never both.
+
+### What to work out
+
+1. **Who reads the archive, and how.** `wr status` history, rep-group aggregates,
+   `bucketRTK`/`bucketRGs`-shaped history paths, the REST contract in
+   `.docs/issue-197/spec.md`, and the "archived history too big" bounds
+   (`ErrArchivedHistoryTooBig`, `maxArchivedBytes`). Every one of these has to keep
+   working, and rule 6 forbids a history scan on a startup or control path - so the
+   archive store needs an index, not a scan.
+2. **The move itself must be atomic across two stores.** Archiving means "remove
+   from live, add to archive". Two stores means no single transaction covers both.
+   Options: write to the archive first and treat a live-store delete failure as a
+   retryable no-op (the record is idempotently archived - which the existing
+   `jobAlreadyComplete` path already models), or keep a small intent record. This
+   is the hard part of the design and deserves its own written argument.
+3. **Migration from a 8.59 GB single DB**, without a startup history scan (rule 6).
+   Probably: open the existing DB as the archive store and create a fresh live
+   store, since the live set is small and can be re-derived from what recovery
+   already reads.
+4. **Segment lifecycle** - size, rotation, and how "back up each segment once"
+   interacts with the existing `db_bk`/`db_bk.tmp` mechanism and the compaction
+   tooling.
+5. **What `wr manager compact` means** when there are two stores.
+
+### Risks
+
+This is a storage-format change to a system whose data loss modes have been
+painstakingly mapped. It cannot be delivered as one commit, and it needs the same
+phase-by-phase treatment as the dep-granularity work, including a green window
+that is documented rather than discovered. The two-store atomicity question (point
+2) is the one that decides whether it is tractable; if that argument cannot be
+written down cleanly, the idea should be dropped in favour of idea 1 alone.
+
+---
+
+## Open questions for the operator
+
+
+None blocking. Two worth answering before idea 2 is designed in detail:
+
+1. How long must completed-job history remain queryable through the manager? If
+   there is a retention horizon, the archive store's segment lifecycle gets much
+   simpler.
+2. Is the ~2.15M completed-job history queried in practice, or mostly retained
+   because nothing has deleted it? That changes whether the archive store needs a
+   real index or merely needs to exist.
+---
+
+# SUPERSEDED MATERIAL BELOW THIS LINE
+
+Every section from here on is either wrong or has been overtaken. It is retained so
+that a reader can see what was tried and why it was abandoned, and so the same dead
+ends are not re-entered. **Do not act on anything below without checking it against
+the STATUS section at the top.**
+
+Specifically: idea 1 (group commit for archives) **was already built and deployed**
+before this document proposed it - `f7e36bc`'s coalescing `archiveWriter` folds
+every pending archive into one transaction, and the 07:58-08:08 production symptom
+happened *with* it running. "The problem, stated precisely" assumed one write
+transaction per completion, which is false of the deployed code. And "What to do
+next, without waiting for a profile" is stale: the profile was taken on 2026-08-27.
+
 ## RESOLVED: what the fixes are (2026-08-27)
+
 
 Experiment has replaced the guesswork. Three mechanisms are confirmed and
 separated - see "Three mechanisms, separated by experiment" in
@@ -522,6 +619,7 @@ increases it.** A without C could make C fire more often.
 
 ## The problem, stated precisely
 
+
 Production completes **~14 jobs/s** however many runners are pointed at it. At
 1,143 concurrent runners the archive RPC latency walked up to the 60 s
 `ClientMinRequestTimeout` floor and **470 completion reports were lost in one
@@ -583,6 +681,7 @@ running.
 ---
 
 ## Idea 1: group commit
+
 
 ### The shape - ALREADY IMPLEMENTED, see the correction at the top
 
@@ -668,77 +767,8 @@ so the error paths deserve more test attention than the happy path.
 
 ---
 
-## Idea 2: split the live set from the archive
-
-### The shape
-
-The DB is 8.59 GB, of which **~7.65 GB is live data and the great majority of that
-is completed jobs** (the shape recorded earlier: ~2.15M complete against ~118k
-live). Every completion pays to insert into that tree, and every backup re-copies
-all of it.
-
-Split the store in two:
-
-- a **live/hot store** holding only incomplete jobs plus the small indexes the
-  scheduling paths need - on the order of 118k records, a few hundred MB. All
-  mutation happens here, so commits touch a small tree with a small freelist.
-- an **archive store** holding completed jobs, written once and never updated -
-  append-only, or a sequence of immutable segments with an index.
-
-### Why this is the strategic option
-
-It attacks the cause rather than amortising it, and it fixes **two** problems at
-once:
-
-1. **Throughput**: a completion becomes a small write to a small tree plus an
-   append, instead of an insert into an 8.59 GB tree.
-2. **Backup (issue 3)**: an immutable archive store needs backing up **once per
-   segment**, not re-copied every 90 seconds. The continuous 7.3 GB copy - the
-   thing currently competing for the NFS bandwidth that idea 1 is trying to use
-   better - largely disappears. Only the small live store needs frequent backup.
-
-It also shrinks the startup decode window (issue 1) as a side effect, since
-recovery reads the live store only. And it is the honest version of the operator's
-own append-only-journal instinct: the same "sequential append, no tree churn"
-benefit, but **without** a second source of truth for live state, without a
-replay-and-fold protocol, and without a crash-during-fold failure mode - because
-nothing is ever folded back. A record is either live or archived, never both.
-
-### What to work out
-
-1. **Who reads the archive, and how.** `wr status` history, rep-group aggregates,
-   `bucketRTK`/`bucketRGs`-shaped history paths, the REST contract in
-   `.docs/issue-197/spec.md`, and the "archived history too big" bounds
-   (`ErrArchivedHistoryTooBig`, `maxArchivedBytes`). Every one of these has to keep
-   working, and rule 6 forbids a history scan on a startup or control path - so the
-   archive store needs an index, not a scan.
-2. **The move itself must be atomic across two stores.** Archiving means "remove
-   from live, add to archive". Two stores means no single transaction covers both.
-   Options: write to the archive first and treat a live-store delete failure as a
-   retryable no-op (the record is idempotently archived - which the existing
-   `jobAlreadyComplete` path already models), or keep a small intent record. This
-   is the hard part of the design and deserves its own written argument.
-3. **Migration from a 8.59 GB single DB**, without a startup history scan (rule 6).
-   Probably: open the existing DB as the archive store and create a fresh live
-   store, since the live set is small and can be re-derived from what recovery
-   already reads.
-4. **Segment lifecycle** - size, rotation, and how "back up each segment once"
-   interacts with the existing `db_bk`/`db_bk.tmp` mechanism and the compaction
-   tooling.
-5. **What `wr manager compact` means** when there are two stores.
-
-### Risks
-
-This is a storage-format change to a system whose data loss modes have been
-painstakingly mapped. It cannot be delivered as one commit, and it needs the same
-phase-by-phase treatment as the dep-granularity work, including a green window
-that is documented rather than discovered. The two-store atomicity question (point
-2) is the one that decides whether it is tractable; if that argument cannot be
-written down cleanly, the idea should be dropped in favour of idea 1 alone.
-
----
-
 ## How the two relate
+
 
 They are complementary, not alternatives, and they compose in either order:
 
@@ -756,13 +786,62 @@ mostly the backup half; if it shows tree-size costs dominating, idea 2's value i
 mostly the throughput half. Either way the profile sharpens idea 2's design rather
 than gating idea 1's start.
 
-## Open questions for the operator
+## What to do next, without waiting for a profile (2026-08-27)
 
-None blocking. Two worth answering before idea 2 is designed in detail:
 
-1. How long must completed-job history remain queryable through the manager? If
-   there is a retention horizon, the archive store's segment lifecycle gets much
-   simpler.
-2. Is the ~2.15M completed-job history queried in practice, or mostly retained
-   because nothing has deleted it? That changes whether the archive store needs a
-   real index or merely needs to exist.
+The production profile is deferred until the operator can restart, but three of
+these four items do not need it, and the second largely removes the need for it.
+
+### 1. Read the completion path for per-completion exclusive locks
+
+Free, and it targets everything below it. From a runner's final-state report
+arriving to `archiveJob` being called, the path runs `getijForReport` ->
+`s.q.Get` -> archive -> `q.Remove` -> membership release ->
+`satisfyEmptiedDepGroups`. **If any step takes the queue *write* lock once per
+completion, that alone caps completions at the rate that lock turns over**, and
+the coalescing `archiveWriter` would never see two pending archives at once
+however fast it is - which is exactly the "runs the fast code, behaves like the
+slow code" observation.
+
+Known constraint to respect while reading: `queue.mutex -> job` is an established
+acquisition order (`releaseTimedOutItems` calls `ttrCb` under `queue.mutex`,
+`queue/queue.go:1942`; `ttrCallback` takes `job.Lock()`, `server.go:4601`).
+
+### 2. Make the manager report the batch size it actually achieves
+
+The central question is *why the writer folds only one archive at a time in
+production*, and nothing currently in the log answers it. An inert counter plus a
+periodic line - the established convention (`db.archivedDecodes` `5c75a15`,
+`Job.derivations` `8087866`, `db.archiveTxObserver` `f7e36bc`,
+`db.depGroupSeenGets` this delivery) - would answer it from an **ordinary manager
+log with no `--debug` and no pprof**.
+
+If production reports a mean fold of ~1 while `archive-ceiling` reports ~100, the
+diagnosis is settled on the spot. This is the highest value-per-line item here: it
+makes the next restart decisive whether or not profiling is enabled.
+
+### 3. Test the ingredient the hunt never varied: dep-group membership
+
+The ingredient hunt varied NFS, the continuous backup, record size (25 KB, +8%)
+and live-set size (80,000 jobs through the real RPC path) - and reproduced
+nothing. It did **not** vary dep-group membership, which is the largest remaining
+difference between the harness and production: **112,486 memberships** on a
+dependency-heavy `portal_builder` workload.
+
+That matters because the suspected serialisation point only bites when completions
+actually empty groups. Give `archive-ceiling` (or a sibling) production's
+dep-group shape and see whether 364/s collapses toward 14/s. If it does, the whole
+thing is reproducible on this host and fixable without touching production.
+
+### 4. Unrelated, actionable now
+
+`wr add` of **150,000 jobs in one request takes 72.5 s**, and the client abandons
+it at its own 60 s `ClientMinRequestTimeout` floor (80,000 jobs: 49.7 s). Measured
+2026-08-27. Nothing to do with the throughput ceiling; a real defect on its own.
+
+### Order
+
+Items 1 and 2 together first - the read says where to instrument, the
+instrumentation makes the next restart decisive. Then item 3, which is the one
+that might reproduce the entire symptom locally today. Item 4 whenever.
+
