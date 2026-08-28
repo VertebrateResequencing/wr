@@ -63,9 +63,11 @@ package jobqueue
 //	>> 1      ~ meanTx  large    SLOW: the writer folds fine but its transaction
 //	                             is expensive. meanLock then says which: close to
 //	                             meanTx means it is queuing on bolt's single write
-//	                             lock behind other writers (the add path takes
-//	                             several bolt.Batch transactions per request),
-//	                             near zero means its own commit is the cost
+//	                             lock behind another writer (newJobsWriter and
+//	                             bestEffortWriter each take one transaction per
+//	                             fold, and wr mod / wr remove / limit-group
+//	                             writes take a bolt.Batch one), near zero means
+//	                             its own commit is the cost
 //
 // It follows the established inert-counter convention (db.archivedDecodes
 // 5c75a15, Job.derivations 8087866, db.archiveTxObserver f7e36bc,
@@ -163,9 +165,10 @@ func (s archiveFoldSummary) meanTx() time.Duration {
 }
 
 // meanLock is the average part of those durations spent acquiring bolt's single
-// write lock. Close to meanTx means the writer is queuing behind other writers
-// (the add path takes several bolt.Batch transactions per request); near zero
-// means the transaction's own commit is what costs.
+// write lock. Close to meanTx means the writer is queuing behind another writer
+// (newJobsWriter and bestEffortWriter each take one transaction per fold, and wr
+// mod / wr remove / limit-group writes take a bolt.Batch one); near zero means
+// the transaction's own commit is what costs.
 func (s archiveFoldSummary) meanLock() time.Duration {
 	return s.perTx(s.lockNanos)
 }

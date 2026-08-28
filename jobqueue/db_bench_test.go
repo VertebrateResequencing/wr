@@ -70,13 +70,16 @@ const benchJobCount = 3000
 // goroutines finish.
 const benchDBWaitTimeout = 5 * time.Minute
 
-// benchArchiveConcurrency is how many jobs are archived concurrently. archiveJob
-// commits via db.bolt.Batch, and BoltDB only coalesces commits from concurrent
-// callers (up to its MaxBatchSize/MaxBatchDelay). The live server reaches
-// archiveJob from many simultaneous client-request handlers, so archiving
-// concurrently here mirrors that critical path; a single-threaded loop would
-// instead measure the degenerate one-commit-per-job worst case and could not
-// show coalescing at all.
+// benchArchiveConcurrency is how many jobs are archived concurrently.
+// archiveJob encodes outside any transaction and hands the job to the single
+// coalescing archiveWriter, which folds every archive pending when it wakes
+// into one db.bolt.Update. Only concurrent callers can leave more than one
+// archive pending (each blocks on its own outcome), so how deep that fold gets
+// is a function of concurrency. The live server reaches archiveJob from many
+// simultaneous client-request handlers, so archiving concurrently here mirrors
+// that critical path; a single-threaded loop would instead measure the
+// degenerate one-transaction-per-job worst case and could not show folding at
+// all.
 const benchArchiveConcurrency = 64
 
 // BenchmarkOwnMemoryAccounting guards the per-job own-memory accounting cost on
@@ -211,21 +214,23 @@ func BenchmarkUpdateJobState(b *testing.B) {
 
 // BenchmarkArchiveJobs measures the completion path: archiveJob moves a job from
 // the live bucket to the complete bucket, deletes its std buckets and records
-// its per-ReqGroup stats, in a BoltDB batch. This is the per-job work behind the
-// server's archiveCompletedJob, driven concurrently as the server drives it.
-// Each iteration freshly seeds benchJobCount live jobs (outside the timer) and
-// then archives them all (inside the timer). The reported bolt_writes/job is the
-// headline write-coalescing signal for the completion path: a regression that
-// stopped batching archive commits would push it up sharply (towards one fsync
-// per job). bolt_txns/job counts the same thing directly (how many separate write
+// its per-ReqGroup stats, in the write transaction the archiveWriter folds it
+// into. This is the per-job work behind the server's archiveCompletedJob, driven
+// concurrently as the server drives it. Each iteration freshly seeds
+// benchJobCount live jobs (outside the timer) and then archives them all (inside
+// the timer). The reported bolt_writes/job is the headline write-coalescing
+// signal for the completion path: a regression that stopped the writer folding
+// archives together would push it up sharply (towards one fsync per job).
+// bolt_txns/job counts the same thing directly (how many separate write
 // transactions the archives were applied in, per archive) via the prod-inert
 // archiveTxObserver seam.
 //
-// This is the SATURATED regime - benchArchiveConcurrency archivers looping with no
-// think time - where arrivals are dense enough that bbolt's own 10ms-window
-// batching also coalesces well; its ns/op is dominated by the batching WAIT.
-// BenchmarkArchiveSpacedArrivals covers the production regime, where arrivals are
-// spread wider than that window.
+// This is the SATURATED regime - benchArchiveConcurrency archivers looping with
+// no think time - where every writer wake finds a deep queue of pending
+// archives, so the fold is at its most effective and ns/op is dominated by the
+// WAIT to be picked up and committed. BenchmarkArchiveSpacedArrivals covers the
+// production regime, where arrivals are spread wider than bbolt's 10ms batching
+// window - the case bbolt's own Batch could not coalesce at all.
 func BenchmarkArchiveJobs(b *testing.B) {
 	// the recorder is installed first so that, cleanups running LIFO, the database
 	// (and so its archive writer) is closed before the observer is cleared.
@@ -565,8 +570,9 @@ func boltPages(testDB *db) int64 {
 }
 
 // archiveJobsConcurrently archives every job using benchArchiveConcurrency
-// worker goroutines, so the per-job archiveJob/bolt.Batch commits can coalesce
-// the way they do under the concurrent server request load.
+// worker goroutines, so the archiveWriter finds a queue of pending archives to
+// fold into each transaction, the way it does under the concurrent server
+// request load.
 //
 // On an archiveJob error a worker records it (b.Error is goroutine-safe) and
 // sets a shared failed flag, but keeps draining work to completion rather than
