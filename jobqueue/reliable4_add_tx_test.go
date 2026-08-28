@@ -214,7 +214,7 @@ func TestReliable4AddOneWriteTx(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a server with bolt's write coalescing disabled", t, func() {
+	Convey("Given a server where every remaining Batch call commits alone", t, func() {
 		d := dgrStartServer(ctx)
 
 		defer d.stop(ctx)
@@ -223,10 +223,15 @@ func TestReliable4AddOneWriteTx(t *testing.T) {
 
 		defer disconnect(jq)
 
-		// with MaxBatchSize 1, every Batch call gets a transaction of its own, so
-		// what is counted is the number of transactions the add path asks for,
-		// not the number bbolt's 10ms coalescing window happens to merge them
-		// into.
+		// the add's own bucket writes ride in the coalescing newJobsWriter's
+		// db.bolt.Update, which no bbolt batching knob reaches, so the one
+		// transaction counted below is that fold and nothing else: storeEnv and
+		// storeLimitGroups contribute none. MaxBatchSize 1 is what makes that
+		// attributable, by keeping the db.bolt.Batch callers the add path still
+		// reaches (storeEnv via db.store, and storeLimitGroups) from hiding
+		// inside a batch shared with a concurrent Batch call elsewhere in the
+		// server: a transaction either of them committed is then counted here
+		// instead of being coalesced away.
 		d.server.db.bolt.MaxBatchSize = 1
 
 		// the first add of all pays for storing the client's environment, which
