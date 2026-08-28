@@ -117,7 +117,7 @@ func TestReliable4ConfirmDeadConcurrencyBound(t *testing.T) {
 				// is a single pid check per job). A DISTINCT host per job makes each its
 				// own host batch, so the peak in-flight equals the number of hosts
 				// checked at once -- exactly what the per-host limiter bounds.
-				server.confirmOrReleaseLostJob(ctx, &Job{}, lostJobDetails{
+				server.confirmOrReleaseLostJob(ctx, lostJobDetails{
 					key: "cdkey" + strconv.Itoa(i), host: "mockhost" + strconv.Itoa(i),
 					pid: 1000 + i, runnerPid: 0, killCalled: false,
 					checkTimeout: checkTimeout, checkRetryTime: checkRetry,

@@ -99,7 +99,7 @@ func TestReliable4ConfirmDeadGroupsByHost(t *testing.T) {
 
 				// exactly what markJobLost spawns per lost job: same host, distinct
 				// pids, runnerPid > 0 so confirmJobDead checks BOTH pids (2 checks/job).
-				server.confirmOrReleaseLostJob(ctx, &Job{}, lostJobDetails{
+				server.confirmOrReleaseLostJob(ctx, lostJobDetails{
 					key: "grpkey" + strconv.Itoa(i), host: "deadnode",
 					pid: 1000 + i, runnerPid: 5000 + i, killCalled: false,
 					checkTimeout: checkTimeout, checkRetryTime: checkRetry,

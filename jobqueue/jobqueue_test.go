@@ -1074,8 +1074,9 @@ func isIdent(expr ast.Expr, name string) bool {
 // file paths derived from the directory) in config to test-private values: two
 // free ports and a fresh temp dir. This lets each test use its own server
 // without colliding on the fixed dev manager port or ~/.wr_development, which
-// is what allows the tests to run concurrently. The temp dir is left for the
-// Makefile (or the OS) to clean up.
+// is what allows the tests to run concurrently. The temp dir outlives the test
+// that created it (its runner subprocesses keep using the manager dir inside
+// it), and TestMain removes it when this test binary exits.
 func isolateTestConfig(config *internal.Config) {
 	port, err := freeTestPort()
 	if err != nil {
@@ -1087,7 +1088,7 @@ func isolateTestConfig(config *internal.Config) {
 		log.Fatal(err)
 	}
 
-	dir, err := os.MkdirTemp("", "wrtest")
+	dir, err := newTestTempDir("config")
 	if err != nil {
 		log.Fatal(err)
 	}
