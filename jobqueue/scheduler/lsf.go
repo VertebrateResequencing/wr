@@ -2153,7 +2153,13 @@ func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count
 	}
 	err = s.parseBjobs(ctx, jobPrefix, cb)
 
-	if full {
+	// prune only from a snapshot that is both full AND complete: an element
+	// missing from a bjobs that failed, or that bjobsExecTimeout cut short
+	// mid-list, is not an element LSF no longer has. Forgetting it would let
+	// killExcessCmds bkill an element wr has handed a job reservation to, which
+	// DEVELOPERS.md rule 5 forbids. Only shutdown asks for a full snapshot today,
+	// so this is narrow, but it is the same set the kill path reads.
+	if full && err == nil {
 		s.pruneReserved(present)
 	}
 
