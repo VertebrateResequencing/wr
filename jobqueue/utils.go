@@ -840,10 +840,18 @@ var errNotBelowBaseDir = errors.New("dir is not below the base dir")
 // would already be above baseDir, and the walk would then delete the empty
 // ancestors of the directory tree we were supposed to stay inside.
 func rmEmptyDirs(leafDir, baseDir string) error {
-	if !dirIsBelow(leafDir, baseDir) {
+	leaf, base, ok := deletableDirBelow(leafDir, baseDir)
+	if !ok {
 		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseDir)
 	}
 
+	return rmCheckedEmptyDirs(leaf, base)
+}
+
+// rmCheckedEmptyDirs does rmEmptyDirs's deletions for a leafDir and baseDir that
+// deletableDirBelow has already proven and normalised, so a caller that needed
+// that proof for its own deletions doesn't have to pay for it twice.
+func rmCheckedEmptyDirs(leafDir, baseDir string) error {
 	err := removeManaged(leafDir)
 	if err != nil && !os.IsNotExist(err) {
 		// *** not sure where the "directory not empty" string comes from;
@@ -864,12 +872,19 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 // when the next parent would be baseDir or outside it, or when it hits a dir it
 // cannot remove (which is expected when another Job is running from the same
 // Cwd, so the error is ignored).
+//
+// Both paths must have come from deletableDirBelow, which is what makes the
+// lexical check here sufficient: every dir this reaches is an ancestor of a
+// leafDir already proven to be inside baseDir, so it is inside baseDir too, and
+// deletableDirBelow proved that none of those ancestors is a symlink pointing
+// somewhere else. Re-proving that per level would multiply the (on Lustre,
+// expensive) metadata operations by the depth of the walk.
 func rmEmptyParentDirs(leafDir, baseDir string) {
 	current := leafDir
 
 	for {
 		parent := filepath.Dir(current)
-		if !dirIsBelow(parent, baseDir) || removeManaged(parent) != nil {
+		if !lexicalDirIsBelow(parent, baseDir) || removeManaged(parent) != nil {
 			return
 		}
 
@@ -877,27 +892,98 @@ func rmEmptyParentDirs(leafDir, baseDir string) {
 	}
 }
 
-// dirIsBelow tells you if dir is a proper descendant of baseDir, ie. strictly
-// inside it. Both are first made absolute, cleaned and symlink-resolved, so an
-// unclean or relative path, or a symlink that really points elsewhere, can't
-// sneak past. Equal paths give false, as does anything that can't be resolved,
-// so a true result can be treated as permission to delete dir.
-func dirIsBelow(dir, baseDir string) bool {
+// deletableDirBelow proves that dir is a proper descendant of baseDir, ie.
+// strictly inside it, and may therefore be deleted. It returns absolute cleaned
+// forms of dir and baseDir for the deletion to use. ok is false if dir could not
+// be proven to be inside baseDir, in which case nothing may be deleted.
+//
+// The check is lexical first, which costs no syscalls: both paths are made
+// absolute and cleaned, and an escape via ".." or a dir equal to baseDir fails.
+// Then every component of dir below baseDir is lstat'ed to confirm it is a real
+// directory, which proves dir can only be reached by descending inside baseDir,
+// whatever baseDir itself resolves to. Only if one of those components turns out
+// to be a symlink (or a file) do we pay for fully resolving both paths and
+// comparing those, so a symlink that stays inside baseDir is still deletable
+// while one that leaves it is refused.
+func deletableDirBelow(dir, baseDir string) (string, string, bool) {
 	if dir == "" || baseDir == "" {
-		return false
+		return "", "", false
 	}
 
-	absDir, err := resolvedAbsPath(dir)
+	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return false
+		return "", "", false
 	}
 
-	absBase, err := resolvedAbsPath(baseDir)
+	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
-		return false
+		return "", "", false
 	}
 
-	rel, err := filepath.Rel(absBase, absDir)
+	if !lexicalDirIsBelow(absDir, absBase) {
+		return "", "", false
+	}
+
+	if componentsAreRealDirs(absDir, len(absBase)) {
+		return absDir, absBase, true
+	}
+
+	return resolvedDirBelow(dir, baseDir)
+}
+
+// componentsAreRealDirs tells you if every path component of absDir below its
+// first baseLen bytes (which must be the base dir absDir is inside) is a real
+// directory, rather than a symlink or a file. A component that doesn't exist
+// counts as fine, since nothing can be deleted through it, and means there is
+// nothing deeper left to check.
+func componentsAreRealDirs(absDir string, baseLen int) bool {
+	for i := baseLen + 1; i <= len(absDir); i++ {
+		if i < len(absDir) && absDir[i] != filepath.Separator {
+			continue
+		}
+
+		info, err := os.Lstat(absDir[:i])
+		if err != nil {
+			return os.IsNotExist(err)
+		}
+
+		if !info.IsDir() {
+			return false
+		}
+	}
+
+	return true
+}
+
+// resolvedDirBelow is deletableDirBelow's slow path, for when dir reaches its
+// place inside baseDir through a symlink. It fully resolves the symlinks in both
+// paths and compares those, returning the resolved paths if dir is strictly
+// inside baseDir. Since a resolved path has no symlinked components, walking up
+// from the resolved dir stays inside the resolved baseDir, so the results can be
+// used just like deletableDirBelow's.
+func resolvedDirBelow(dir, baseDir string) (string, string, bool) {
+	resolvedDir, err := resolvedAbsPath(dir)
+	if err != nil {
+		return "", "", false
+	}
+
+	resolvedBase, err := resolvedAbsPath(baseDir)
+	if err != nil {
+		return "", "", false
+	}
+
+	if !lexicalDirIsBelow(resolvedDir, resolvedBase) {
+		return "", "", false
+	}
+
+	return resolvedDir, resolvedBase, true
+}
+
+// lexicalDirIsBelow tells you if dir is strictly inside baseDir according to the
+// text of the paths alone. Both must already be absolute and cleaned. No
+// symlinks are resolved, so this costs no syscalls; equal paths give false.
+func lexicalDirIsBelow(dir, baseDir string) bool {
+	rel, err := filepath.Rel(baseDir, dir)
 
 	return err == nil && relIsBelow(rel)
 }

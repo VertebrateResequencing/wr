@@ -269,8 +269,11 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 	// only a dir strictly inside Cwd can be a dir that wr created; if ActualCwd
 	// says otherwise (eg. it is stale after a `wr mod --cwd`, or was poisoned
 	// with Cwd itself), deleting it would destroy directories that belong to the
-	// user, so we delete nothing and report why.
-	if !dirIsBelow(workSpace, j.Cwd) {
+	// user, so we delete nothing and report why. We prove that once here and
+	// hand the result to the parent dir walk, so that neither the proof nor the
+	// walk repeats the (on Lustre, expensive) path metadata operations.
+	checkedWorkSpace, checkedCwd, ok := deletableDirBelow(workSpace, j.Cwd)
+	if !ok {
 		return fmt.Errorf("%w: refusing to clean up %s, which is not inside the job's cwd %s",
 			errNotBelowBaseDir, workSpace, j.Cwd)
 	}
@@ -280,7 +283,7 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 	}
 
 	// delete any empty parent directories up to Cwd
-	return rmEmptyDirs(workSpace, j.Cwd)
+	return rmCheckedEmptyDirs(checkedWorkSpace, checkedCwd)
 }
 
 // cleanupWorkSpace deletes the contents of the Job's workspace dir. If the Job
