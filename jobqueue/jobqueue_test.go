@@ -6941,7 +6941,8 @@ func TestJobqueueModify(t *testing.T) {
 			modify("a", 1)
 
 			job = kick("a", rgroup, cmd, tmp)
-			So(job.ActualCwd, ShouldEqual, tmp)
+			// a cwd_matters job runs in Cwd itself, so it has no ActualCwd
+			So(job.ActualCwd, ShouldBeBlank)
 			So(job.Cwd, ShouldEqual, tmp)
 
 			jm = NewJobModifer()

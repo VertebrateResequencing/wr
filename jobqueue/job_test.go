@@ -57,6 +57,9 @@ const testOnFailureCmd = "echo failed"
 // modification tests.
 const testOnExitCmd = "echo old"
 
+// liveStatusCwd is the Cwd of the Job that liveStatusJob() returns.
+const liveStatusCwd = "/tmp/wr"
+
 func TestJobEnv(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -445,7 +448,7 @@ func TestJob(t *testing.T) {
 
 		status, err := job.ToStatus()
 		So(err, ShouldBeNil)
-		So(status.CwdBase, ShouldEqual, "/tmp/wr")
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
 		So(status.Cwd, ShouldEqual, "/job1")
 		So(status.PeakRAM, ShouldEqual, 321)
 		So(status.CPUtime, ShouldEqual, 4)
@@ -493,6 +496,20 @@ func TestJob(t *testing.T) {
 		So(status.SSHCommand, ShouldEqual, "")
 	})
 
+	Convey("ToStatus() falls back to Cwd in SSHCommand when there is no ActualCwd", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.CwdMatters = true
+		job.ActualCwd = ""
+		job.HostIP = ""
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- worker1 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+
 	Convey("ToStatus() shell-quotes a running job's actual cwd in SSHCommand", t, func() {
 		job := liveStatusJob(JobStateRunning)
 		job.HostIP = ""
@@ -531,11 +548,47 @@ func TestJob(t *testing.T) {
 	})
 }
 
+func TestJobModifierCwdMatters(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Modifying a job to cwd_matters clears its ActualCwd", t, func() {
+		job := &Job{Cwd: liveStatusCwd, ActualCwd: liveStatusCwd + "/abc/cwd"}
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(true)
+		jm.applyTo(job)
+
+		// the job now runs in Cwd itself, and a blank ActualCwd is what stops
+		// the cleanup behaviours treating Cwd's parent as a wr workspace
+		So(job.CwdMatters, ShouldBeTrue)
+		So(job.ActualCwd, ShouldBeBlank)
+	})
+
+	Convey("A job modified to cwd_matters still displays its working dir and ssh command", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.HostIP = ""
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(true)
+		jm.applyTo(job)
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdMatters, ShouldBeTrue)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- worker1 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
 func liveStatusJob(state JobState) *Job {
 	return &Job{
 		Cmd:       "echo live status",
-		Cwd:       "/tmp/wr",
-		ActualCwd: "/tmp/wr/job1",
+		Cwd:       liveStatusCwd,
+		ActualCwd: liveStatusCwd + "/job1",
 		Requirements: &scheduler.Requirements{
 			RAM:   1,
 			Time:  time.Minute,

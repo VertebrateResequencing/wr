@@ -85,6 +85,16 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 		So(second.CPUtime, ShouldEqual, 7*time.Second)
 	})
 
+	Convey("Live execute snapshots of a cwd_matters job carry no cwd", t, func() {
+		state := newExecuteLiveState("", &liveTailSaver{}, &liveTailSaver{})
+		state.updateResources(123, 456, 7*time.Second)
+
+		snapshot := state.snapshot()
+
+		So(snapshot.Cwd, ShouldBeBlank)
+		So(snapshot.PeakRAM, ShouldEqual, 123)
+	})
+
 	Convey("Live execute resource snapshots keep maximum observed values", t, func() {
 		state := newExecuteLiveState("/work/actual", &liveTailSaver{}, &liveTailSaver{})
 		state.updateResources(123, 456, 7*time.Second)
@@ -941,7 +951,7 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 		return
 	}
 
-	Convey("Execute sends stdout tails once per touch from the actual cwd", t, func() {
+	Convey("Execute sends stdout tails once per touch", t, func() {
 		capture := &liveTouchCapture{}
 		client := newLiveExecuteCaptureClient(capture)
 		cwd := liveExecuteCwd(t)
@@ -949,14 +959,39 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 
 		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
-		states := capture.matching(func(state *JobEndState) bool {
-			return len(state.Stdout) != 0
-		})
+		states := capture.matching(withLiveStdout)
 		So(len(states), ShouldBeGreaterThanOrEqualTo, 2)
 		So(decompressLiveTouch(states[0].Stdout), ShouldEqual, "alpha\n")
-		So(states[0].Cwd, ShouldEqual, cwd)
 		So(decompressLiveTouch(states[1].Stdout), ShouldEqual, "beta\n")
-		So(states[1].Cwd, ShouldEqual, cwd)
+	})
+
+	Convey("Execute of a cwd_matters job sends no cwd in its live snapshots", t, func() {
+		capture := &liveTouchCapture{}
+		client := newLiveExecuteCaptureClient(capture)
+		job := liveExecuteJob(client, liveExecuteCwd(t), "printf 'alpha\\n'; sleep 0.6")
+
+		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+		So(capture.matching(withLiveStdout), ShouldNotBeEmpty)
+
+		// a cwd_matters job runs in the user's own Cwd, so it has no actual cwd
+		// to report; a reported one becomes an ActualCwd whose parent the
+		// cleanup behaviours would delete
+		So(capture.matching(withLiveCwd), ShouldBeEmpty)
+		So(job.ActualCwd, ShouldBeBlank)
+	})
+
+	Convey("Execute of a job with a wr-created working dir sends it in live snapshots", t, func() {
+		capture := &liveTouchCapture{}
+		client := newLiveExecuteCaptureClient(capture)
+		cwd := liveExecuteCwd(t)
+		job := liveExecuteHashedCwdJob(client, cwd, "printf 'alpha\\n'; sleep 0.6")
+
+		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+
+		states := capture.matching(withLiveCwd)
+		So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
+		So(states[0].Cwd, ShouldStartWith, cwd+string(filepath.Separator))
+		So(states[0].Cwd, ShouldEqual, job.ActualCwd)
 	})
 
 	Convey("Execute sends stderr tails once per touch", t, func() {
@@ -967,9 +1002,7 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 
 		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
-		states := capture.matching(func(state *JobEndState) bool {
-			return len(state.Stderr) != 0
-		})
+		states := capture.matching(withLiveStderr)
 		So(len(states), ShouldBeGreaterThanOrEqualTo, 2)
 		So(decompressLiveTouch(states[0].Stderr), ShouldEqual, "err-alpha\n")
 		So(decompressLiveTouch(states[1].Stderr), ShouldEqual, "err-beta\n")
@@ -1078,6 +1111,27 @@ func liveExecuteJob(client *Client, cwd string, cmd string) *Job {
 		},
 		ReservedBy: client.clientid,
 	}
+}
+
+func withLiveCwd(state *JobEndState) bool {
+	return state.Cwd != ""
+}
+
+func withLiveStdout(state *JobEndState) bool {
+	return len(state.Stdout) != 0
+}
+
+func withLiveStderr(state *JobEndState) bool {
+	return len(state.Stderr) != 0
+}
+
+// liveExecuteHashedCwdJob returns a job that is not CwdMatters, so that
+// Execute() creates a unique working directory below cwd for it.
+func liveExecuteHashedCwdJob(client *Client, cwd string, cmd string) *Job {
+	job := liveExecuteJob(client, cwd, cmd)
+	job.CwdMatters = false
+
+	return job
 }
 
 func liveMarkedStream(prefix, suffix string) []byte {

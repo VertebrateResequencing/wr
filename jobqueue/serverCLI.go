@@ -297,7 +297,7 @@ func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
 			HostIP:     job.HostIP,
 			CwdBase:    job.Cwd,
 			Cwd:        cwdLeaf,
-			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.ActualCwd),
+			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.workingDir()),
 		},
 		stdoutC: slices.Clone(job.StdOutC),
 		stderrC: slices.Clone(job.StdErrC),
@@ -356,10 +356,7 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	job.Lock()
 	defer job.Unlock()
 
-	if jes.Cwd != "" {
-		job.ActualCwd = jes.Cwd
-	}
-
+	job.setActualCwd(jes.Cwd)
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
@@ -1116,10 +1113,7 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 	j.PeakDisk = endState.PeakDisk
 	j.CPUtime = endState.CPUtime
 	j.EndTime = endState.EndTime
-
-	if endState.Cwd != "" {
-		j.ActualCwd = endState.Cwd
-	}
+	j.setActualCwd(endState.Cwd)
 }
 
 // archiveCompletedJob persists a completed job to the complete bucket and

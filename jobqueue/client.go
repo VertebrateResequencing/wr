@@ -1306,7 +1306,7 @@ func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir s
 	cmd.Dir = actualCwd
 
 	job.Lock()
-	job.ActualCwd = actualCwd
+	job.setActualCwd(actualCwd)
 	job.Unlock()
 
 	return actualCwd, tmpDir, nil
@@ -1558,7 +1558,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// before doing any other pre-start tasks, which might take time, start
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
-	liveState := newExecuteLiveState(cmd.Dir, liveStdout, liveStderr)
+	liveState := newExecuteLiveState(actualCwd, liveStdout, liveStderr)
 	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
 	var wkbsMutex sync.RWMutex
@@ -2744,11 +2744,7 @@ func (c *Client) ended(job *Job, jes *JobEndState) {
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
 	job.EndTime = jes.EndTime
-
-	if jes.Cwd != "" {
-		job.ActualCwd = jes.Cwd
-	}
-
+	job.setActualCwd(jes.Cwd)
 	job.StdOutC = jes.Stdout
 	job.StdErrC = jes.Stderr
 }

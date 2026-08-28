@@ -1072,9 +1072,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.CPUtime = jes.CPUtime
 
 	j.EndTime = jes.EndTime
-	if jes.Cwd != "" {
-		j.ActualCwd = jes.Cwd
-	}
+	j.setActualCwd(jes.Cwd)
 	j.Unlock()
 }
 
@@ -1283,7 +1281,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
 		Host:                j.Host,
 		HostID:              j.HostID,
 		HostIP:              j.HostIP,
-		SSHCommand:          sshCommandForRunningJob(state, j.Requirements, j.Host, j.HostIP, j.ActualCwd),
+		SSHCommand:          sshCommandForRunningJob(state, j.Requirements, j.Host, j.HostIP, j.workingDir()),
 		Walltime:            j.WallTime().Seconds(),
 		CPUtime:             j.CPUtime.Seconds(),
 		Attempts:            j.Attempts,
@@ -1346,6 +1344,38 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 	streams.envOverrides, err = j.envCurrentOverrides()
 
 	return streams, err
+}
+
+// setActualCwd records cwd as the unique working directory that wr created below
+// Cwd for this Job's Cmd. A blank cwd is ignored, and so is any cwd for a
+// CwdMatters Job: that Cmd runs in the user's own Cwd, so there is no wr-created
+// working directory, and a blank ActualCwd is exactly how the rest of wr (the
+// cleanup behaviours in particular) knows the working directory must never be
+// deleted. Must be called with the Job locked.
+func (j *Job) setActualCwd(cwd string) {
+	if cwd == "" || j.CwdMatters {
+		return
+	}
+
+	j.ActualCwd = cwd
+}
+
+// workingDir returns the directory this Job's Cmd runs in, or "" if that isn't
+// known yet: ActualCwd if wr created a unique working directory below Cwd, or
+// Cwd itself when CwdMatters, since then the Cmd runs in Cwd. A non-CwdMatters
+// Job that has yet to report an ActualCwd gets "" rather than Cwd, because its
+// Cmd runs in a unique directory below Cwd, not in Cwd. Must be called with at
+// least an RLock held.
+func (j *Job) workingDir() string {
+	if j.ActualCwd != "" {
+		return j.ActualCwd
+	}
+
+	if j.CwdMatters {
+		return j.Cwd
+	}
+
+	return ""
 }
 
 // cwdLeaf returns the part of ActualCwd below Cwd (prefixed with "/"), or "" if
@@ -1854,7 +1884,9 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 	if j.CwdMattersSet {
 		job.CwdMatters = j.CwdMatters
 		if j.CwdMatters {
-			job.ActualCwd = job.Cwd
+			// the job will now run in Cwd itself, so it no longer has a
+			// wr-created working directory below Cwd
+			job.ActualCwd = ""
 		}
 	}
 
