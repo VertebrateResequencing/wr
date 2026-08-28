@@ -746,6 +746,81 @@ func TestRESTJobModificationValidation(t *testing.T) {
 	})
 }
 
+func TestJobViaJSONBehaviours(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	cleanupViaJSON := BehavioursViaJSON{BehaviourViaJSON{Cleanup: true}}
+
+	Convey("Converting a JobViaJSON with wr add's default on_exit cleanup behaviour", t, func() {
+		jd := &JobDefaults{Cwd: "/some/cwd", OnExit: cleanupViaJSON.Behaviours(OnExit)}
+
+		Convey("a normal job gets the cleanup, for disk space tracking and workspace reuse", func() {
+			job, err := (&JobViaJSON{Cmd: "echo normal"}).Convert(jd)
+			So(err, ShouldBeNil)
+			So(job.CwdMatters, ShouldBeFalse)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeTrue)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+		})
+
+		Convey("a job that asks for cwd_matters itself gets no cleanup", func() {
+			job, err := (&JobViaJSON{Cmd: "echo per job", CwdMatters: true}).Convert(jd)
+			So(err, ShouldBeNil)
+			So(job.CwdMatters, ShouldBeTrue)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.Behaviours.String(), ShouldBeBlank)
+		})
+
+		Convey("a job that gets cwd_matters from the defaults gets no cleanup", func() {
+			jd.CwdMatters = true
+
+			job, err := (&JobViaJSON{Cmd: "echo defaulted"}).Convert(jd)
+			So(err, ShouldBeNil)
+			So(job.CwdMatters, ShouldBeTrue)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.Behaviours.String(), ShouldBeBlank)
+		})
+	})
+
+	Convey("Converting a cwd_matters JobViaJSON that asks for cleanup explicitly", t, func() {
+		jd := &JobDefaults{Cwd: "/some/cwd", CwdMatters: true}
+		jvj := &JobViaJSON{
+			Cmd: "echo explicit",
+			OnExit: BehavioursViaJSON{
+				BehaviourViaJSON{Run: "echo done"},
+				BehaviourViaJSON{Cleanup: true},
+			},
+			OnFailure: cleanupViaJSON,
+			OnSuccess: BehavioursViaJSON{
+				BehaviourViaJSON{CleanupAll: true},
+				BehaviourViaJSON{Remove: true},
+			},
+		}
+
+		Convey("the cleanups are dropped from every trigger and the rest survive", func() {
+			job, err := jvj.Convert(jd)
+			So(err, ShouldBeNil)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.Behaviours.RemovalRequested(), ShouldBeTrue)
+			So(job.Behaviours.String(), ShouldEqual,
+				`{"on_success":[{"remove":true}],"on_exit":[{"run":"echo done"}]}`)
+		})
+	})
+}
+
+// hasCleanupBehaviour tells you if any of bs would delete a job's working
+// directory.
+func hasCleanupBehaviour(bs Behaviours) bool {
+	for _, b := range bs {
+		if b.Do == Cleanup || b.Do == CleanupAll {
+			return true
+		}
+	}
+
+	return false
+}
+
 func TestRESTWaitingDepGroups(t *testing.T) {
 	ctx := context.Background()
 
@@ -1685,6 +1760,38 @@ func TestREST(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.Retries, ShouldEqual, 0)
 			So(job.NoRetriesOverWalltime, ShouldEqual, 5*time.Minute)
+		})
+
+		Convey("A POSTed cwd_matters job doesn't advertise cleanup behaviours it can never do", func() {
+			cmd := "echo cwd matters"
+			inputJobs := []*JobViaJSON{{Cmd: cmd}}
+			jsonValue, err := json.Marshal(inputJobs)
+			So(err, ShouldBeNil)
+
+			postURL := jobsEndPoint + "/?rep_grp=cwdMattersRepGrp&cwd=/tmp/foo&cwd_matters=true&on_exit=" +
+				url.QueryEscape(`[{"run":"echo after"},{"cleanup":true}]`) + "&on_failure=" +
+				url.QueryEscape(`[{"cleanup_all":true}]`)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, postURL, bytes.NewBuffer(jsonValue))
+			So(err, ShouldBeNil)
+			req.Header.Add("Authorization", bearer)
+			req.Header.Add("Content-Type", "application/json")
+			response, err := client.Do(req)
+			So(err, ShouldBeNil)
+			responseData, err := io.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+
+			var jstati []JStatus
+
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldBeNil)
+			So(len(jstati), ShouldEqual, 1)
+			So(jstati[0].CwdMatters, ShouldBeTrue)
+			So(jstati[0].Behaviours, ShouldEqual, `{"on_exit":[{"run":"echo after"}]}`)
+
+			job, err := jq.GetByEssence(&JobEssence{Cmd: cmd, Cwd: "/tmp/foo"}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"run":"echo after"}]}`)
 		})
 
 		Convey("Trying to POST a job with a non-existent cloud_script fails", func() {

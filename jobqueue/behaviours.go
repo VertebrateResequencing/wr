@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
@@ -441,6 +442,26 @@ func (bs Behaviours) RemovalRequested() bool {
 	}
 
 	return false
+}
+
+// withoutCleanups returns bs with every Cleanup and CleanupAll Behaviour
+// removed, regardless of trigger, and nil if that leaves none.
+//
+// Those actions can only ever delete the wr-created working directory of a job
+// with CwdMatters false (see Behaviour.cleanup), so on a cwd_matters job they
+// are documented no-ops that must not be stored: keeping one would have wr
+// advertise a deletion that will never happen, and it was such a stored no-op
+// that deleted the wrong directory when ActualCwd got poisoned with Cwd.
+func (bs Behaviours) withoutCleanups() Behaviours {
+	kept := slices.DeleteFunc(slices.Clone(bs), func(b *Behaviour) bool {
+		return b.Do == Cleanup || b.Do == CleanupAll
+	})
+
+	if len(kept) == 0 {
+		return nil
+	}
+
+	return kept
 }
 
 // String provides a nice string representation of Behaviours for user
