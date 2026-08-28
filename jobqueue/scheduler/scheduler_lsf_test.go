@@ -227,6 +227,44 @@ func TestLSFSubmitToQueueStderr(t *testing.T) {
 	})
 }
 
+// TestLSFParseBjobsStderr guards parseBjobs' bjobs-failure error message, as
+// TestLSFSubmitToQueueStderr does submitToQueue's. Every scheduling pass asks
+// LSF what it already has with `bjobs -w`, and when that exits non-zero the
+// error used to carry only the bare "exit status 1" while the reason mbatchd
+// gave went to bjobs' stderr and was dropped. When there is no stderr to
+// surface, the "(bjobs stderr:" suffix is omitted rather than misleadingly
+// showing an empty one. It needs no real LSF: bjobsExe is pointed at a tiny
+// script.
+func TestLSFParseBjobsStderr(t *testing.T) {
+	countNothing := func(_, _, _ string) {}
+
+	Convey("parseBjobs surfaces bjobs' stderr in the returned error when bjobs exits non-zero", t, func() {
+		const wantStderr = "Batch system daemon not responding ... still trying"
+
+		fakeBjobs := filepath.Join(t.TempDir(), "bjobs")
+		writeFakeExe(t, fakeBjobs, "#!/bin/sh\necho '"+wantStderr+"' >&2\nexit 1\n")
+
+		s := &lsf{config: &ConfigLSF{Shell: "bash"}, bjobsExe: fakeBjobs}
+
+		err := s.parseBjobs(context.Background(), "wrd_", countNothing)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, wantStderr)
+		So(err.Error(), ShouldContainSubstring, "(bjobs stderr:")
+	})
+
+	Convey("parseBjobs omits the stderr suffix when bjobs wrote nothing to stderr", t, func() {
+		fakeBjobs := filepath.Join(t.TempDir(), "bjobs")
+		writeFakeExe(t, fakeBjobs, "#!/bin/sh\nexit 1\n")
+
+		s := &lsf{config: &ConfigLSF{Shell: "bash"}, bjobsExe: fakeBjobs}
+
+		err := s.parseBjobs(context.Background(), "wrd_", countNothing)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "failed to run [bjobs -w]")
+		So(err.Error(), ShouldNotContainSubstring, "(bjobs stderr:")
+	})
+}
+
 func TestLSF(t *testing.T) {
 	ctx := context.Background()
 	// check if LSF seems to be installed

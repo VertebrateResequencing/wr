@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2019, 2024 Genome Research Ltd.
+ * Copyright (c) 2019, 2024, 2026 Genome Research Ltd.
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>
  *
@@ -32,12 +32,15 @@ group. Then when you want to have something in one or more of those groups, you
 call Increment(). If limits have not been reached, it returns true. When your
 "something" is done, Decrement().
 
-Your callback is only called once per group while that group is in use: the
-limit you provide is stored in memory. But Decrement() removes groups from
-memory when the count becomes zero, so that unused groups don't fill up memory.
-If a subsequent Increment() uses a group that was removed from memory, your
-callback will be called again to find out the limit. It is intended that you
-don't store all your limits in memory yourself, but retrieve them from disk.
+The limit your callback provides is stored in memory, so a group already in use
+usually needs no call at all. But Decrement() removes groups from memory when
+the count becomes zero, so that unused groups don't fill up memory. If a
+subsequent Increment() uses a group that was removed from memory, your callback
+will be called again to find out the limit. It is intended that you don't store
+all your limits in memory yourself, but retrieve them from disk. Because the
+callback is never called while the Limiter holds its own lock, it is allowed to
+be slow, but it can therefore be called concurrently, and more than once for the
+same group.
 If you need to change the limit of a group, your callback should start returning
 the new limit, and you should call SetLimit() to change the memorised limit, if
 any.

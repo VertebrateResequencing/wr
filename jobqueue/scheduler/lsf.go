@@ -62,6 +62,11 @@ import (
 // is 65536, but bjob names can be much bigger, so we allow for a larger buffer.
 const scanBufferSize = 1000 * bufio.MaxScanTokenSize
 
+// bjobsStderrMax caps how many bytes of a failing `bjobs -w`'s stderr wr keeps
+// to report with the error. It matches the cap Cmd.Output() applies to the
+// stderr it captures, which is what bsubStderr reads. See bjobsStderr.
+const bjobsStderrMax = 32 * 1024
+
 const ErrInvalidBsubOpts = "invalid lsf bsub options"
 
 // errBadLSFConfig is the Error message used when initialize() is not given a
@@ -712,6 +717,51 @@ func (b *bjobsLineParser) flush() {
 	}
 
 	b.emit(nil)
+}
+
+// bjobsStderr is the Stderr of parseBjobs' bjobs exec. bjobs says why LSF refused
+// a query there, while the error the exec returns carries only the bare exit
+// status, so it is captured to report alongside - the same reason bsubStderr
+// recovers bsub's, which parseBjobs cannot do because that stderr comes from
+// Cmd.Output() and parseBjobs needs an io.Writer Stdout (see bjobsLineParser).
+//
+// It keeps at most bjobsStderrMax bytes and discards the rest, so however much a
+// failing LSF command writes, wr holds a bounded amount of it (DEVELOPERS.md rule
+// 7); Cmd.Output() caps the stderr it captures for the same reason.
+type bjobsStderr struct {
+	kept []byte
+}
+
+// Write keeps as much of p as still fits under bjobsStderrMax. It reports all of
+// p written and never errors, so os/exec's copy is not cut short by the cap.
+func (b *bjobsStderr) Write(p []byte) (int, error) {
+	n := len(p)
+
+	room := bjobsStderrMax - len(b.kept)
+	if room <= 0 {
+		return n, nil
+	}
+
+	if n > room {
+		p = p[:room]
+	}
+
+	b.kept = append(b.kept, p...)
+
+	return n, nil
+}
+
+// errSuffix returns what bjobs' stderr adds to the message of an error describing
+// a bjobs that failed: LSF's actual reason, quoted. When bjobs wrote nothing
+// there (it could not be executed at all, or died on a signal) the suffix is
+// empty rather than a misleading `(bjobs stderr: "")`.
+func (b *bjobsStderr) errSuffix() string {
+	kept := strings.TrimSpace(string(b.kept))
+	if kept == "" {
+		return ""
+	}
+
+	return fmt.Sprintf(" (bjobs stderr: %q)", kept)
 }
 
 // lsf is our implementer of scheduleri.
@@ -2268,13 +2318,17 @@ func (s *lsf) parseBjobs(ctx context.Context, jobPrefix string, callback bjobsCB
 	// this exec open indefinitely (see bjobsPipeCloseGrace).
 	bjcmd.WaitDelay = bjobsPipeCloseGrace
 
+	// what os/exec copies out of bjobs is parsed as it arrives (see
+	// bjobsLineParser), and a bounded amount of its stderr is kept to report with
+	// a failure (see bjobsStderr).
 	lines := &bjobsLineParser{jobPrefix: jobPrefix, callback: callback}
-	bjcmd.Stdout = lines
+	stderr := &bjobsStderr{}
+	bjcmd.Stdout, bjcmd.Stderr = lines, stderr
 
 	err := bjcmd.Run()
 
 	if err != nil && !lingeredOnPipes(err) {
-		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to run [bjobs -w]: %s", err)}
+		return Error{lsfScheduler, opParseBjobs, fmt.Sprintf("failed to run [bjobs -w]: %s%s", err, stderr.errSuffix())}
 	}
 
 	if err != nil {
