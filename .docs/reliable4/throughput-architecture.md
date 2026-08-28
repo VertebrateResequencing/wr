@@ -16,11 +16,13 @@ lost in one minute**; at ~349 runners it manages ~23-27/s with every request pay
 7-13 s. Slow `add`s outnumber slow `jarchive`s about 10:1.
 
 **The diagnosis, corroborated twice independently.** One contended resource -
-bbolt's single writer lock - and the **add path holds ~88% of it**. Two analyses
+bbolt's single writer lock - and the **add path held ~88% of it**. Two analyses
 reached this separately, one from the profiles and one from the code, and a third
 agent given only the profile files reached it again with no access to either. The
-two purpose-built coalescing writers (archive, best-effort) work correctly; the add
-path has no coalescing and fragments each request across several transactions.
+add path was the one write path with no coalescing writer of its own, so it
+fragmented each request across several transactions; the archive and best-effort
+writers were working correctly. The add path has a coalescing writer of its own
+now, and that is what fixed it.
 
 **A second, independent cost:** a single bolt commit on this database is
 **52-74 ms whatever it carries**, because `Tx.Commit` unconditionally rewrites the
@@ -34,31 +36,41 @@ floor multiplies everything above it and is untouched by any change so far.
 Measured against the reproducer: **+44% throughput, p50 40.2 s -> 28.9 s, and no
 add crossing the 60 s client floor** where 118 crossed it before and 117 gave up.
 
-**But the problem is not fixed.** `wrdev.sh add-storm` still **FAILS** at HEAD:
-1,924 single-job adds over 10 s in two minutes, p50 28.9 s, 590 write transactions
-queued at once, throughput rising only 1.93x for 35x the concurrency. The ceiling
-moved; it did not lift.
+**Then the add path got its own coalescing writer, and the gate PASSES.**
+`db.storeNewJobData` no longer calls `db.bolt.Batch`: it enqueues its prepared
+bucket writes on a single long-lived `newJobsWriter`, which folds every pending
+add into ONE `db.bolt.Update` and replies to each caller with its own error,
+under a 32 MB / 50,000-put bound on one fold. `wrdev.sh add-storm` PASSES at
+**213.86 adds/s against HEAD's 18.66**, `throughputFactor` **22.22x** against
+the 10x bound, `highP50` **1,224 ms** against the 5,000 ms bound, `overSlow`
+**0** and `txnsPerAdd` **0.01**. The trial log, with the dead ends and every
+measurement, is `.docs/reliable4/addstorm-fix-trials.md`; the section below
+summarises it.
 
 **Production is not running any of this.** It is on `v0.37.1-90-g11fb939` at portal
 limit 500, which predates all seven commits.
 
 ### What to consider next
 
-1. **`WR_MANAGERDBBATCHDELAY`, the shipping knob nobody has evaluated.** Widening
-   bbolt's coalescing window took the reproducer from **12.82 to 179 adds/s - 14x -
-   with no code change at all.** That is a signal, not a recommendation: it trades
-   latency on an idle manager for coalescing under load, and neither the idle cost
-   nor the tradeoff has been measured. It is the cheapest thing on this list by an
-   order of magnitude and deserves a deliberate decision.
-2. **The remaining add-path fragmentation.** HEAD still fails the gate. bbolt
-   cannot coalesce *across* requests - `batch.run()` detaches the batch the instant
-   one starts, so the next arrival opens a fresh 10 ms window regardless of whether
-   the previous transaction has committed. Fixing that means wr coalescing adds
-   itself, the way it already does archives.
+1. **`WR_MANAGERDBBATCHDELAY` is REFUTED as a fix**, by being run against the
+   gate as its mutation control. It removed the fragmentation completely and
+   still reached only 96.64 adds/s against a pass mark of ~100/s, while costing
+   the low phase its latency (p50 127 -> 480 ms). Any delay is a wait the writer
+   did not need. It is also now inert on the add path, since all three
+   coalescing writers call `db.bolt.Update` rather than `db.bolt.Batch`, so its
+   help text describes a knob that no longer does what it says
+   (`.docs/bugfixes/260828-1.md`).
+2. **The remaining add-path fragmentation is DONE.** bbolt cannot coalesce
+   *across* requests - `batch.run()` detaches the batch the instant one starts,
+   so the next arrival opens a fresh 10 ms window regardless of whether the
+   previous transaction has committed - so wr now coalesces adds itself, the way
+   it already did archives.
 3. **Idea 2, splitting the live set from the archive** (section below, never
-   started). The only idea that attacks the **per-commit floor** rather than the
-   transaction count, and it would make the backup incremental as a side effect.
-   Its go/no-go is the two-store atomicity argument.
+   started). It attacks the **per-commit floor**, which turned out not to bind:
+   the commit *rate* never rose in any passing run, at 1.4-1.7 commits/s in both
+   the control and the fix, and only the work per commit did. It would still
+   make the backup incremental, which is a separate benefit on a separate
+   problem. Its go/no-go is the two-store atomicity argument.
 4. **Three recorded bugs, unfixed** (`.docs/bugfixes/260827-2.md` items 8, 10, 12).
    One has a restart-surviving symptom: **a limit group can never be un-stored** -
    `wr limit -g 'name:-1'` reports it removed and the in-memory limit goes, but the
@@ -74,10 +86,50 @@ limit 500, which predates all seven commits.
 The seven commits were validated by **transaction-count probes** - a measure of the
 hypothesised mechanism, not of the observed symptom - and were described as a fix
 on that basis. The reproducer that should have come first was built afterwards, and
-it showed the problem remains. Two other headline claims died the same way: the
+it showed the problem remained. Two other headline claims died the same way: the
 `bucketEnvs` growth theory (falsified by one bucket-stats command) and a mutex
 profile misread as hold-time when it was transaction count. **Reproduce the symptom
 first; a mechanism-level measurement cannot tell you whether a fix fixed anything.**
+
+## THE ADD PATH GETS A COALESCING WRITER (2026-08-28)
+
+`db.storeNewJobData` used to persist an add with `db.bolt.Batch`. It now
+enqueues its prepared bucket writes on a single long-lived `newJobsWriter`,
+which folds every currently-pending add into ONE `db.bolt.Update` and replies to
+each caller with its own error. It is the same shape as the `archiveWriter`
+beside it, sharing that writer's per-caller error isolation through the generic
+`applyFolded`, plus a 32 MB / 50,000-put bound on how much one transaction may
+fold.
+
+The gate, against the T0 baseline measured on the same fixture and host:
+
+| | HEAD at T0 | with the writer | bound |
+| --- | --- | --- | --- |
+| high-phase add rate | 18.66/s | **213.86/s** | ~100/s to pass |
+| `throughputFactor` | 1.97x | **22.22x** | >= 10x |
+| `highP50` | 30,138 ms | **1,224 ms** | <= 5,000 ms |
+| `overSlow` | 1,930 | **0** | 0 |
+| `txnsPerAdd` | 0.58 | **0.01** | <= 1.00 |
+
+Three things the trials settled that were not known before:
+
+- **The gate is one number, not five thresholds.** With 700 clients on a 2 s
+  think time, `R = 700/(2 + L)`, so the `highP50 <= 5 s` and
+  `throughputFactor >= 10` bounds both reduce to sustaining ~100 adds/s. The
+  model predicted every run's latency from its rate to within 4%, so anyone
+  tuning against this gate should tune the rate.
+- **The batch-delay knob was never a fix.** Run as the mutation control it
+  removed the fragmentation completely (`txnsPerAdd` 0.58 -> 0.02,
+  `maxBeginRWTx` 573 -> 15) and still reached only 96.64 adds/s, 3% short of the
+  pass mark, at a low-phase p50 of 480 ms against 127 ms.
+- **The per-commit floor was never the thing to fix.** The commit rate stayed at
+  1.4-1.7/s in both the control and the fix; only the work per commit rose. In
+  the bounded trial 28,312 adds rode on 205 write transactions.
+
+The trial log has the seeded solution space, each trial's numbers and the ideas
+left untried on purpose: `.docs/reliable4/addstorm-fix-trials.md`. Real-LSF
+Tier-B validation of the writer is still outstanding
+(`.docs/bugfixes/260828-1.md`).
 
 ## THE REPRODUCER, AND THE HONEST VERDICT ON THE FIXES (2026-08-28)
 
@@ -370,7 +422,7 @@ backlog. But:
   concurrency is pure loss.
 - **It misses the two sequential transactions**, which are what set the latency.
 - **`bolt.Batch` already provides** per-caller error attribution with member-by-member
-  solo retry and panic isolation. `applyArchives`/`applyArchiveOp` are a hand-rolled
+  solo retry and panic isolation. `applyFolded`/`applyArchiveOp` are a hand-rolled
   copy of it. Replacing `Batch` means re-owning that for no gain.
 
 **Minimum change that moves the number** - three edits in `jobqueue/db.go`, no new

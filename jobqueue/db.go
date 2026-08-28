@@ -157,6 +157,10 @@ var errDBClosed = errors.New("database closed")
 // malformed job fails only itself (as it did under bbolt.Batch's safelyCall).
 var errArchivePanic = errors.New("panic while archiving job")
 
+// errNewJobsPanic is the same for the one add whose bucket puts panicked, so a
+// malformed job fails only its own add.
+var errNewJobsPanic = errors.New("panic while storing new jobs")
+
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
 // updateJobAfterExit() calls to complete.
 const jobExitUpdatePollInterval = 10 * time.Millisecond
@@ -830,6 +834,28 @@ type db struct {
 	// a -race failure.
 	arFoldInterval time.Duration
 	arFoldStop     chan struct{} // closed by close() to stop the fold reporter
+	// New adds are SYNCHRONOUS too - the client's add RPC blocks until its jobs
+	// are durable - and are persisted by their own single coalescing writer
+	// (newJobsWriter), for the same reason the archives have one: db.bolt.Batch
+	// detaches its current batch the instant one STARTS and arms a fresh
+	// MaxBatchDelay timer, so on the production-shaped database, where a commit
+	// costs 50-120ms whatever it carries, adds arriving during a commit each got a
+	// transaction of their own and queued on bolt's single write lock. Live
+	// production (2026-08-27) measured 763 goroutines parked in DB.Batch against
+	// 573 transactions queued in beginRWTx, for a MEDIAN single-job add of 12.8s.
+	// bbolt coalesces WITHIN a 10ms window but never ACROSS a commit, which is the
+	// wrong way round when a commit is an order of magnitude longer than the
+	// window; this writer coalesces across the commit instead, so whatever arrives
+	// while one transaction is committing rides in the next one. The fold each
+	// transaction takes is bounded (see newJobsFoldMaxBytes), so a deep queue
+	// cannot turn into unbounded dirty-page memory. njMu guards the pending queue;
+	// the writer takes neither db.Lock nor db.wgMutex.
+	njMu         sync.Mutex
+	njPending    []*newJobsOp  // adds waiting to be folded into the next transaction
+	njSignal     chan struct{} // buffered(1) kick: adds are pending
+	njStop       chan struct{} // closed by close() to stop the writer after a final drain
+	njWriterDone chan struct{} // closed by the writer when it has fully stopped
+	njStopped    bool          // guarded by njMu: the writer will drain no more
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -1259,11 +1285,15 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		arWriterDone:       make(chan struct{}),
 		arFoldInterval:     archiveFoldReportInterval,
 		arFoldStop:         make(chan struct{}),
+		njSignal:           make(chan struct{}, 1),
+		njStop:             make(chan struct{}),
+		njWriterDone:       make(chan struct{}),
 		upgradedOnOpen:     upgradedOnOpen,
 	}
 
 	go dbstruct.bestEffortWriter(ctx)
 	go dbstruct.archiveWriter(ctx)
+	go dbstruct.newJobsWriter(ctx)
 	go dbstruct.archiveFoldReporter(ctx)
 
 	if backupsEnabled {
@@ -1797,27 +1827,43 @@ func (db *db) drainArchives(final bool) {
 	// (see archivefold.go).
 	db.arFold.observeWaits(ops, time.Now())
 
-	db.applyArchives(ops)
+	applyFolded(ops, db.archiveTx)
 
 	// mark the db dirty for the backup ticker exactly as the pre-fix per-archive
 	// path did: unconditionally, after the write attempt.
 	db.backupDirty.Store(true)
 }
 
-// applyArchives folds ops into ONE write transaction and replies to each waiter
-// individually. It mirrors bbolt.Batch's per-caller error semantics, so one bad
-// job cannot fail its batch-mates: an archive that fails the shared transaction is
-// taken out of it and the rest are retried together, then each removed archive is
-// re-run in a transaction of its own so its caller gets its own error. The loop
-// always terminates because every pass either replies to everything left or
-// removes one op.
-func (db *db) applyArchives(ops []*archiveOp) {
-	var solo []*archiveOp
+// foldedOp is one caller's pending write, waiting for a coalescing writer to
+// persist it and hand back that caller's own outcome. Both synchronous coalescing
+// writers' ops (archiveOp, newJobsOp) are one.
+type foldedOp interface {
+	reply(err error)
+}
+
+// applyFolded folds ops into ONE write transaction, via applyTx, and replies to
+// each waiter individually. It mirrors bbolt.Batch's per-caller error semantics,
+// so one bad op cannot fail its transaction-mates: an op that fails the shared
+// transaction is taken out of it and the rest are retried together, then each
+// removed op is re-run in a transaction of its own so its caller gets its own
+// error. The loop always terminates because every pass either replies to
+// everything left or removes one op.
+//
+// applyTx must report a failing op's index through its second argument (and
+// nothing at all when that argument is nil), so this can tell "the shared
+// transaction failed because of one op" from "it failed as a whole".
+//
+// This is shared by the archive and new jobs writers rather than written twice
+// because the error isolation is the subtle part of both - the swap-remove, the
+// solo re-runs, and the termination argument above - and a third coalescing
+// writer would otherwise copy it a third time.
+func applyFolded[T foldedOp](ops []T, applyTx func(ops []T, failed *int) error) {
+	var solo []T
 
 	for len(ops) > 0 {
 		failed := -1
 
-		err := db.archiveTx(ops, &failed)
+		err := applyTx(ops, &failed)
 		if failed >= 0 {
 			solo = append(solo, ops[failed])
 			ops[failed], ops = ops[len(ops)-1], ops[:len(ops)-1]
@@ -1833,7 +1879,7 @@ func (db *db) applyArchives(ops []*archiveOp) {
 	}
 
 	for _, op := range solo {
-		op.reply(db.archiveTx([]*archiveOp{op}, nil))
+		op.reply(applyTx([]T{op}, nil))
 	}
 }
 
@@ -1902,6 +1948,300 @@ func (db *db) failPendingArchives() {
 func (db *db) stopArchiveWriter() {
 	close(db.arStop)
 	<-db.arWriterDone
+}
+
+const (
+	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
+	// folded into ONE write transaction may carry. bbolt holds every page a write
+	// transaction dirties in memory until it commits, so an unbounded fold makes
+	// the writer's peak memory a function of how deep the add queue got. That
+	// matters because an add stays on the folded path until storesNeedChunking
+	// splits it, which allows nearly storeBatchGranularity items per bucket, and
+	// production's real jobs carry ~25KB commands: a handful of concurrent
+	// large-but-unchunked adds would dirty gigabytes. It is also self-amplifying,
+	// since a longer commit gives the next fold longer to grow.
+	//
+	// 32MB sits well above the case this writer exists for and well below anything
+	// that threatens the manager. The measured 700-concurrent-single-job-add storm
+	// folds ~1,750 puts of ~1.5KB, about 2.6MB, so that whole storm still commits
+	// in ONE transaction with an order of magnitude of headroom. It is also a
+	// couple of times the ~13.5MB freelist that production's 15GB database rewrites
+	// on every commit, so the fixed per-commit cost cannot come to dominate the
+	// useful bytes a bounded transaction carries: at production's ~25KB commands a
+	// full fold is still ~1,300 jobs.
+	newJobsFoldMaxBytes = 32 * 1024 * 1024
+
+	// newJobsFoldMaxPuts bounds how many Puts those same folded adds may make,
+	// because bytes alone do not bound the work: a lookup-bucket item is a key with
+	// no value at all, so a flood of them costs B+tree splits and rebalances (and a
+	// page dirtied per touched node) while barely moving the byte budget.
+	//
+	// 50,000 is ~20,000 folded single-job adds, each of which is only a couple of
+	// puts, so it is more than an order of magnitude past the 700-client storm: in
+	// practice newJobsFoldMaxBytes governs the large-add case and this bound only
+	// catches a pathological tiny-put flood.
+	newJobsFoldMaxPuts = 50000
+)
+
+// newJobsOp is one add's prepared bucket stores, waiting for the coalescing new
+// jobs writer to persist them and hand back its own outcome.
+type newJobsOp struct {
+	stores []newJobStore
+	result chan error // buffered(1): this caller's individual reply
+	// foldBytes and foldPuts are what this add costs the fold budget: the encoded
+	// key and value bytes it will dirty, and the number of Puts it will make. They
+	// are measured once, where the op is built and outside every lock, because
+	// swapNewJobs spends the budget while holding njMu and so must not re-walk
+	// every pending add's stores on every transaction.
+	foldBytes int
+	foldPuts  int
+	replied   bool // writer-only, so reply() is idempotent
+}
+
+// reply gives this add's own outcome to its waiting caller, at most once. result
+// is buffered and never closed, so this neither blocks the writer nor can ever
+// send on a closed channel.
+func (op *newJobsOp) reply(err error) {
+	if op.replied {
+		return
+	}
+
+	op.replied = true
+	op.result <- err
+}
+
+// newJobsFoldCost measures what an add costs the fold budget. Keys count as well
+// as values because they occupy the same dirtied pages, and an item destined for
+// an indexed lookup bucket counts twice: putLookups mirrors each of those into
+// bucketJobLookupEntries, so it is two keyed puts rather than one (see
+// putReverseLookupEntry). That mirror's key is somewhat longer than the lookup key
+// it derives from, which this ignores; a budget only has to track the dominant
+// term, which is the encoded job payload.
+func newJobsFoldCost(stores []newJobStore) (foldBytes, foldPuts int) {
+	for _, s := range stores {
+		perItem := 1
+		if isIndexedLookupBucket(s.bucket) {
+			perItem = 2
+		}
+
+		for _, doublet := range s.encodes {
+			foldBytes += perItem * (len(doublet[0]) + len(doublet[1]))
+			foldPuts += perItem
+		}
+	}
+
+	return foldBytes, foldPuts
+}
+
+// splitNewJobsFold divides the pending adds into the leading run one write
+// transaction can afford (newJobsFoldMaxBytes, newJobsFoldMaxPuts) and the
+// remainder to leave pending, spending the budget in arrival order so no add is
+// reordered behind a later one. The first op is always taken even if it alone
+// exceeds the budget, so an add bigger than the whole budget makes progress in a
+// transaction of its own instead of being starved forever.
+//
+// The remainder is copied to a fresh slice rather than resliced, so the taken ops
+// (up to a budget's worth of encoded bytes) become garbage the moment they are
+// persisted, instead of staying reachable through the pending queue's backing
+// array - which would hand back the memory the budget exists to bound.
+func splitNewJobsFold(pending []*newJobsOp) (fold, remainder []*newJobsOp) {
+	foldBytes, foldPuts := 0, 0
+
+	for i, op := range pending {
+		if i > 0 && overNewJobsFoldBudget(foldBytes+op.foldBytes, foldPuts+op.foldPuts) {
+			return pending[:i], append([]*newJobsOp(nil), pending[i:]...)
+		}
+
+		foldBytes += op.foldBytes
+		foldPuts += op.foldPuts
+	}
+
+	return pending, nil
+}
+
+// overNewJobsFoldBudget says whether a fold carrying these bytes and puts would
+// exceed what one write transaction is allowed to hold dirty.
+func overNewJobsFoldBudget(foldBytes, foldPuts int) bool {
+	return foldBytes > newJobsFoldMaxBytes || foldPuts > newJobsFoldMaxPuts
+}
+
+// newJobsWriter is the single long-lived goroutine that persists new jobs. Each
+// wake folds as many currently-pending adds as the fold budget allows into ONE
+// write transaction and then replies to each of their waiters individually, so
+// adds that arrive while a commit is in flight cost one shared commit rather than
+// one commit each (see the njMu comment on the db struct for the production
+// failure this exists to prevent, and newJobsFoldMaxBytes for why the fold is
+// bounded). A wake that leaves adds pending re-arms njSignal, so the next
+// transaction starts at once rather than waiting for another arrival. Started by
+// initDB; stopped, after a final drain, by close() via stopNewJobsWriter.
+func (db *db) newJobsWriter(ctx context.Context) {
+	defer close(db.njWriterDone)
+	defer db.failPendingNewJobs()
+	defer internal.LogPanic(ctx, "jobqueue database new jobs writer", true)
+
+	for {
+		select {
+		case <-db.njStop:
+			db.drainNewJobs(true)
+
+			return
+		case <-db.njSignal:
+			db.drainNewJobs(false)
+		}
+	}
+}
+
+// enqueueNewJobs queues op for the new jobs writer and kicks it. It reports false
+// if the writer has already made its final drain, so the caller is told the
+// database is closed instead of waiting for a reply that can never come.
+func (db *db) enqueueNewJobs(op *newJobsOp) bool {
+	db.njMu.Lock()
+
+	if db.njStopped {
+		db.njMu.Unlock()
+
+		return false
+	}
+
+	db.njPending = append(db.njPending, op)
+	db.njMu.Unlock()
+
+	db.kickNewJobsWriter()
+
+	return true
+}
+
+// kickNewJobsWriter tells the new jobs writer that adds are pending. njSignal is
+// buffered(1), so this never blocks (with or without njMu held) and coalesced
+// kicks are harmless: a drain persists everything the budget allows and re-arms
+// the signal for whatever is left.
+func (db *db) kickNewJobsWriter() {
+	select {
+	case db.njSignal <- struct{}{}:
+	default:
+	}
+}
+
+// swapNewJobs takes ownership of as many currently-pending adds as one write
+// transaction can afford and leaves the rest pending, so callers keep enqueuing
+// (never blocking) while the writer persists the snapshot, and the writer's
+// dirty-page memory stays bounded however deep the queue got. If it leaves
+// anything pending it re-arms njSignal, so the writer starts the next transaction
+// immediately instead of waiting for the next arrival; when it leaves nothing the
+// signal stays unarmed, so an empty queue parks the writer rather than spinning
+// it.
+//
+// When final is true it also latches the queue shut in the same critical section,
+// so an add submitted after the last drain is rejected rather than left waiting
+// forever. A final swap is bounded like any other, so its caller must keep
+// swapping until it returns nothing (see drainNewJobs and failPendingNewJobs).
+func (db *db) swapNewJobs(final bool) []*newJobsOp {
+	db.njMu.Lock()
+	defer db.njMu.Unlock()
+
+	if final {
+		db.njStopped = true
+	}
+
+	ops, remaining := splitNewJobsFold(db.njPending)
+	db.njPending = remaining
+
+	if len(remaining) > 0 {
+		db.kickNewJobsWriter()
+	}
+
+	return ops
+}
+
+// drainNewJobs persists currently-pending adds, at most one fold budget's worth
+// per write transaction, and replies to each waiter with its own outcome.
+//
+// A non-final drain does one transaction and returns, having re-armed njSignal if
+// it left anything pending, so the writer gets to check njStop between
+// transactions. A final drain has no later wake to rely on, so it loops until the
+// queue is empty: it persists EVERYTHING pending, in as many transactions as the
+// budget needs, and terminates because the first swap latched the queue shut so
+// nothing new can arrive.
+func (db *db) drainNewJobs(final bool) {
+	for {
+		ops := db.swapNewJobs(final)
+		if len(ops) == 0 {
+			return
+		}
+
+		applyFolded(ops, db.newJobsTx)
+
+		if !final {
+			return
+		}
+	}
+}
+
+// newJobsTx applies every op's bucket puts within one write transaction. If an
+// op's own work fails, its index is recorded in failed (when non-nil) and the
+// whole transaction is rolled back, so the caller can take that op out and retry
+// the rest.
+func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		for i, op := range ops {
+			if err := db.applyNewJobsOp(tx, op); err != nil {
+				if failed != nil {
+					*failed = i
+				}
+
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// applyNewJobsOp applies one add's stores within tx, turning a panic into that
+// add's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does not,
+// so without it a single malformed job would take the whole manager down instead
+// of failing one add; the transaction is rolled back either way.
+func (db *db) applyNewJobsOp(tx *bolt.Tx, op *newJobsOp) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%w: %v", errNewJobsPanic, p)
+		}
+	}()
+
+	for _, s := range op.stores {
+		if err = s.put(tx, s.bucket, s.encodes); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// failPendingNewJobs latches the add queue shut and fails anything still in it.
+// The normal shutdown drain (drainNewJobs(true)) leaves nothing to do here; this
+// is the safety net for a writer that stopped without it, so no add caller can be
+// left waiting forever. It loops for the same reason that drain does: each swap
+// takes only a fold budget's worth, and a caller left in the remainder would wait
+// forever.
+func (db *db) failPendingNewJobs() {
+	for {
+		ops := db.swapNewJobs(true)
+		if len(ops) == 0 {
+			return
+		}
+
+		for _, op := range ops {
+			op.reply(errDBClosed)
+		}
+	}
+}
+
+// stopNewJobsWriter tells the new jobs writer to do a final drain and exit, then
+// waits for it. Called once from finaliseBackup (close()), before the wg drain and
+// final backup, so no queued add is lost on shutdown.
+func (db *db) stopNewJobsWriter() {
+	close(db.njStop)
+	<-db.njWriterDone
 }
 
 // retrieveOldestCompleteJobsByRepGroup is retrieveCompleteJobsByRepGroup with the
@@ -2480,6 +2820,22 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 // commit per bucket, and every commit rewrites the freelist page and fsyncs
 // twice. One transaction also means a failure stores nothing, instead of
 // leaving some buckets written and others not.
+//
+// The sorting happens here, OUTSIDE any transaction, and the stores are then
+// handed to the single coalescing newJobsWriter, which folds them in with as many
+// other pending adds as one transaction's budget allows into ONE db.Update and
+// replies here with this add's own outcome. That is what makes concurrent adds
+// share a commit instead of queueing one transaction each on bolt's single write
+// lock; see the njMu comment on the db struct. This call blocks until this add is
+// persisted, exactly as the previous db.bolt.Batch did.
+//
+// Folding does not widen the read-then-write window that prepareNewJobs' own
+// dependency resolution reads in (two adds that are each other's resolution input
+// can each see the other's jobs as not yet stored). That window is this caller's
+// wait for its own commit, and it gets SHORTER: under bbolt.Batch an add's
+// transaction queued behind every other add's transaction on the one write lock
+// (production measured that queue 573 deep), whereas here it waits for at most the
+// commit already in flight.
 func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 	depGroupsSeen, rdgLookups, rgs sobsd) error {
 	// the sorting below used to happen in per-bucket goroutines, which is where
@@ -2492,19 +2848,27 @@ func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 		sort.Sort(s.encodes)
 	}
 
+	// an add too big for one transaction keeps its own chunked path: those are
+	// rare and each of their chunks is already a full transaction's worth, so
+	// there is nothing for folding to win.
 	if storesNeedChunking(stores) {
 		return db.storeNewJobDataChunked(stores)
 	}
 
-	return db.bolt.Batch(func(tx *bolt.Tx) error {
-		for _, s := range stores {
-			if err := s.put(tx, s.bucket, s.encodes); err != nil {
-				return err
-			}
-		}
+	foldBytes, foldPuts := newJobsFoldCost(stores)
 
-		return nil
-	})
+	op := &newJobsOp{
+		stores:    stores,
+		result:    make(chan error, 1),
+		foldBytes: foldBytes,
+		foldPuts:  foldPuts,
+	}
+
+	if !db.enqueueNewJobs(op) {
+		return errDBClosed
+	}
+
+	return <-op.result
 }
 
 //nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.
@@ -4173,11 +4537,13 @@ func (db *db) finaliseBackup(ctx context.Context) {
 		inProgress = db.stopBackupTicker()
 	}
 
-	// stop the archive and best-effort writers and drain their queues first, so
-	// every enqueued archive is persisted (and its caller replied to) and all
-	// enqueued change/exit writes are persisted (and their db.wg tracking released)
-	// before the wg drain and final backup below. The archive queue is drained
-	// first because its callers are synchronously waiting on the outcome.
+	// stop the add, archive and best-effort writers and drain their queues first,
+	// so every enqueued add and archive is persisted (and its caller replied to)
+	// and all enqueued change/exit writes are persisted (and their db.wg tracking
+	// released) before the wg drain and final backup below. The add and archive
+	// queues are drained first because their callers are synchronously waiting on
+	// the outcome.
+	db.stopNewJobsWriter()
 	db.stopArchiveWriter()
 	db.stopBestEffortWriter()
 
