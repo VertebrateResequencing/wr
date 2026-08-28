@@ -868,10 +868,13 @@ This is the reconciliation.
 
 ### Added by the code route alone
 
-- **`bucketEnvs` grows by one never-deleted ~6-11 KB record per add**, because
-  `managerremotesameaslocal: true` ships per-runner `os.Environ()` and the cache is
-  12 entries. **This is the upstream cause of the DB growth that every other
-  mechanism feeds on**, and both documents had been silent on it.
+- ~~`bucketEnvs` grows by one never-deleted ~6-11 KB record per add~~ -
+  **FALSIFIED by measurement 2026-08-28**: `bucketEnvs` holds 549 keys / 1.31 MB
+  against `bucketJobsComplete`'s 2.15M keys / 2.87 GB, i.e. 0.04% of leaf bytes,
+  and `Client.Execute` replaces `cmd.Env` from `job.Env()` so the key is not unique
+  per add. The DB's growth is just archived jobs accumulating. A redundant write
+  transaction on a cache miss was real and is fixed (`72d3d3d`). See
+  `throughput-architecture.md`.
 - **Three *sequential* write transactions per single-job add** - the latency
   mechanism the transaction count alone could not explain. 3 x 4.6 s queue traversal
   = 13.8 s against a measured 13.54 s tail mean.

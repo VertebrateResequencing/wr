@@ -84,6 +84,99 @@ Items 1 and 2 together first - the read says where to instrument, the
 instrumentation makes the next restart decisive. Then item 3, which is the one
 that might reproduce the entire symptom locally today. Item 4 whenever.
 
+## FIXED, AND ONE HEADLINE FINDING FALSIFIED (2026-08-28)
+
+All seven items are implemented and committed (`.docs/bugfixes/260827-2.md`):
+`72d3d3d` `10d3908` `639fcd8` `462b253` `144c788` `4a63e87` `2b56048`.
+
+### The `bucketEnvs` growth claim below is WRONG. It was measured and falsified.
+
+The section that follows names "`bucketEnvs` grows by one never-deleted record per
+add" as the upstream cause of the DB growth that starves the freelist, forces the
+mmap remaps and inflates the backup. **That is not true**, and it was published
+here on an unverified inference.
+
+Bucket stats on `/nfs/hgi/wr/sb10-bigdb/prod.db`, taken with
+`managerremotesameaslocal: true` already in force:
+
+| bucket | keys | leaf bytes |
+| --- | --- | --- |
+| `bucketEnvs` | **549** | **1.31 MB** |
+| `bucketJobsComplete` | 2,155,154 | 2.87 GB |
+
+Envs are **0.04%** of leaf bytes. The mechanism was wrong too, and the code says
+so: `Client.Execute` sets `cmd.Env` from `job.Env()`, **replacing** the
+environment, so a `wr add` running as a wr job never sees the runner's
+`LSB_JOBID`/`LSB_JOBINDEX` and the key is not unique per add.
+
+So **the DB's growth is just archived jobs accumulating** - 2.15M complete records
+- which is inherent to what the manager stores, not a leak. Mechanism C's growth
+driver needs no separate explanation.
+
+What *was* real in item 1: a 12-entry cache miss on an already-stored env cost a
+redundant write transaction. That is fixed. `envCacheSize` stays at 12, nothing
+user-visible changed, and no operator config change is needed.
+
+### A second correction: the suggested counter would have measured the wrong thing
+
+`db.bolt.Stats().TxN` counts **read** transactions only (`beginTx`, not
+`beginRWTx`). Anything using it to count write transactions - as this document
+previously suggested - measures the wrong quantity. The measurements below use
+`db.bolt.View` + `tx.ID()`, which counts committed write transactions exactly and
+needs no instrumentation.
+
+### What was actually achieved: measured, A/B against a worktree at `062d05a`
+
+| measurement | before | after |
+| --- | --- | --- |
+| single-job add, default coalescing | 2 | **1** |
+| single-job add, coalescing off | 4 | **1** |
+| single-job add, brand-new env, coalescing off | 5 | **2** |
+| 1000-job add, coalescing off | 6 | **3** |
+| `storeLimitGroups(empty)` / `(nil)` | 1 | **0** |
+| re-`storeEnv` of a cache-evicted env | 1 | **0** |
+| `storeBatched` at 1000 / 2000 items | 2 calls (1 empty) / 3 (1 empty) | **1 (0)** / **2 (0)** |
+
+Counting the env write that item 1 removed, a single-job add went from **7 write
+transactions to 1**, and its three *sequential* phases became one.
+
+### The 2.4-4x completion-ceiling prediction is NOT demonstrated
+
+Nothing above measures completions. That prediction converts add-path write-lock
+time into completions per second, and no existing gate can show it:
+`wrdev.sh archive-ceiling` drives `db.archiveJob` directly and **never adds a
+job**, so it exercises precisely the path these items do not touch. Proving it
+needs an **add-and-complete workload against a big-freelist DB on NFS**, which does
+not exist as a gate and would have to be built. Treat the throughput figure as
+unproven until then.
+
+### Still open, recorded not fixed (checklist items 8-12)
+
+- **`retrieveEnv` caches a miss**, so a later `storeEnv` of those bytes stores
+  nothing and the env is never written. Independent of item 1.
+- **A limit group can never be un-stored.** `NewCountGroupData` returns a
+  non-count `GroupData` for a negative limit, so `storeLimitGroup`'s Delete branch
+  is unreachable from every caller. `wr limit -g 'name:-1'` reports the group
+  removed and `RemoveLimit` runs, but the record survives in `bucketLGs` and
+  **vivifies back after a restart**. Needs a design decision.
+- `bolt.Batch` can re-run its function, so the old `storeLimitGroups` could report
+  a group twice; incidentally fixed by item 2's reset-inside-the-closure.
+- Two load flakes, both pre-existing and both A/B'd:
+  `TestDepGranularityRunnerSurvivesLongAbsence` was **4/10 at `062d05a` and 1/10
+  after** (a fixed `time.After` where the test should wait on the archive having
+  provably failed once); `TestJobSubscriptions` and
+  `TestSubscriptionReconnectResync` are whole-suite-only, 0/10 in isolation.
+
+### Process note
+
+Item 1 went through a full implementor-plus-reviewer cycle. **Items 2-7 were
+self-verified** - every diff read, every mutation re-run with md5-checked restores,
+all gates run - but not independently reviewed, after two spend-limit interruptions
+had already cost the run a lot of wall clock. Gates on the final tree: `make lint`
+0 issues, `make test` **498 passed - 9 skipped - 29 packages**, `go vet` clean under
+both tag sets, `-race` clean, and each of the seven commits builds and vets in
+isolation.
+
 ## SUPERSEDING ANALYSIS (2026-08-27, code-first, independent)
 
 A second independent analysis worked from the **code** rather than the profiles and
