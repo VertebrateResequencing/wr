@@ -428,6 +428,59 @@ func TestDBDepGroups(t *testing.T) {
 		So(seen[otherDepGroup], ShouldBeTrue)
 	})
 
+	Convey("Resurrecting a dependent does not re-queue complete jobs from the same batch", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(
+			ctx,
+			filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"),
+			internal.Development,
+			false,
+			false,
+		)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			So(testDB.close(ctx), ShouldBeNil)
+		}()
+
+		const growDepGroup = "grow"
+
+		firstMember := testDBJob("echo first member", "first-member")
+		firstMember.DepGroups = []string{growDepGroup}
+		dependent := testDBJob("echo dependent", "dependent")
+		dependent.Dependencies = Dependencies{NewDepGroupDependency(growDepGroup)}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{firstMember, dependent}, true)
+		So(err, ShouldBeNil)
+		So(testDB.archiveJob(ctx, firstMember.Key(), firstMember), ShouldBeNil)
+		So(testDB.archiveJob(ctx, dependent.Key(), dependent), ShouldBeNil)
+
+		secondMember := testDBJob("echo second member", "second-member")
+		secondMember.DepGroups = []string{growDepGroup}
+
+		jobsToQueue, _, alreadyAdded, err := testDB.storeNewJobs(ctx, []*Job{firstMember, secondMember}, true)
+		So(err, ShouldBeNil)
+		So(alreadyAdded, ShouldEqual, 1)
+
+		queued := make([]string, 0, len(jobsToQueue))
+		for _, job := range jobsToQueue {
+			queued = append(queued, job.Cmd)
+
+			// every queued job must also be recoverable from the live bucket
+			live, errl := testDB.checkIfLive(job.Key())
+			So(errl, ShouldBeNil)
+			So(live, ShouldBeTrue)
+		}
+
+		So(queued, ShouldNotContain, firstMember.Cmd)
+		So(queued, ShouldContain, secondMember.Cmd)
+		So(queued, ShouldContain, dependent.Cmd)
+		So(queued, ShouldHaveLength, 2)
+	})
+
 	Convey("Opening an old DB rebuilds seen dep groups from historical dep group lookups", t, func() {
 		ctx := context.Background()
 		tmpdir := t.TempDir()
