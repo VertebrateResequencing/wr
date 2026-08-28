@@ -84,6 +84,93 @@ Items 1 and 2 together first - the read says where to instrument, the
 instrumentation makes the next restart decisive. Then item 3, which is the one
 that might reproduce the entire symptom locally today. Item 4 whenever.
 
+## THE REPRODUCER, AND THE HONEST VERDICT ON THE FIXES (2026-08-28)
+
+`wrdev.sh add-storm` (`d305332`) reproduces the production symptom. It was built
+by an agent given **only the profile files** - no access to these documents, no
+sight of the diff, no commit messages - and it independently reached the same
+diagnosis: **85% of mutex delay under bbolt's writer lock is `bbolt.(*batch).run`,
+i.e. the add path**, with the two purpose-built coalescing writers working fine and
+the slow archives merely queueing behind it.
+
+### It reproduces, and it discriminates
+
+Real manager, real socket, real clients each adding **one** job, against a copy of
+a big production-shaped DB on NFS with backups streaming. Farm-safe: mock
+scheduler, inert runners, no LSF job, no command executed. It emits the identical
+production warning line, down to `selector="jobs=1"` and `replyBytes=222`.
+
+| | production | **@`11fb939`** | + mutation control | **@HEAD `214aa84`** |
+| --- | --- | --- | --- | --- |
+| single-job add p50 | 12.8 s | **40.2 s** | 1.67 s | **28.9 s** |
+| adds over 10 s | 28,815 / 23 min | **1,367 / 120 s** | **0** | **1,924 / 120 s** |
+| adds hitting the 60 s floor | - | **118** (117 gave up) | 0 | **0** |
+| add throughput | - | 12.82/s | 179.07/s | **18.44/s** |
+| scaling | 1.6x for 57x | **1.50x for 35x** | 26.56x for 35x | **1.93x for 35x** |
+| write txns per add | - | 1.05 | 0.01 | **0.58** |
+| queued in `beginRWTx` | 29 | **607** | 3 | **590** |
+| verdict | - | **FAIL** | PASS | **FAIL** |
+
+The mutation control is *not* a fix: it widens bbolt's coalescing window through
+the existing `WR_MANAGERDBBATCHDELAY` knob, changing no wr code. Its purpose is to
+prove the gate measures **transaction fragmentation** rather than merely a large
+database - and it does, RED to GREEN on the same DB and host.
+
+### The verdict on the seven commits
+
+**They helped measurably. They did not fix the problem.** Black-box measurement at
+HEAD - the number only, without inspecting what changed:
+
+- write transactions per add roughly **halved** (1.05 -> 0.58)
+- throughput **+44%** (12.82 -> 18.44/s)
+- p50 **40.2 s -> 28.9 s**
+- **nothing crossed the 60 s client floor**, against 118 crossings at `11fb939` of
+  which 117 gave up - operationally the most meaningful single change, since that
+  is the boundary where completed work starts being lost and re-run
+
+But **HEAD still FAILS**: 1,924 single-job adds over 10 s in two minutes, p50
+28.9 s, 590 write transactions queued at once, and throughput still rising only
+1.93x for 35x the concurrency. The ceiling is intact; it has moved, not lifted.
+
+**This is what the earlier sections should have said and did not.** The seven
+commits were validated by transaction-count probes - a measure of the *mechanism*
+hypothesised, not of the *symptom* observed - and were described as a fix on that
+basis. The reproducer that should have come first now exists, and it says the
+problem remains.
+
+### The finding worth acting on
+
+The mutation control reached **179 adds/s against 12.82** - a 14x improvement from
+an existing operational knob with no code change. That is not a recommendation:
+widening the batch delay trades latency on an idle manager for coalescing under
+load, and nobody has measured the idle cost or argued the tradeoff. But a 14x
+signal from a knob that already ships deserves a deliberate decision rather than
+being left unexamined.
+
+### Two refinements to earlier claims
+
+- **The backup hurts archives, not adds.** From the reproducer's samples, slow
+  adds accrue at the same rate whether or not the backup is streaming (45.4 vs
+  40.9 per 2 s sample), while slow *archives* more than double (5.2 vs 12.2).
+- **The env cache was never the issue**, independently confirmed: `db.storeEnv` is
+  **9 events out of 111,988** in the production block profile. Consistent with the
+  falsification recorded below.
+
+### Caveats the reproducer itself records
+
+Only adds completing inside the window are counted, so the slowest are dropped and
+the latency figures are conservative. `txnsPerAdd` is a backstop rather than the
+primary check: under deep saturation bbolt coalesces from queue length alone and
+the ratio falls below 1 while the path is still broken (`11fb939` measured 1.05
+with 607 transactions queued), so it must be read beside `maxBeginRWTx`. And the
+harness is *harsher* than production - p50 40 s against 12.8 s - because the only
+available fixture has a 4.5x larger freelist than production's post-compaction DB
+and this host runs at load ~120.
+
+**Disclosure:** the agent had seen three recent commit *subjects* before the
+no-diff constraint reached it (none naming the add path, bolt batching,
+`storeLimitGroups` or transactions); its analysis started from the profiles.
+
 ## FIXED, AND ONE HEADLINE FINDING FALSIFIED (2026-08-28)
 
 All seven items are implemented and committed (`.docs/bugfixes/260827-2.md`):
