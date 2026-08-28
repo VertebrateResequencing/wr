@@ -606,23 +606,82 @@ each is cheaper to revisit than to re-derive:
   host at load 125 - **not** bolt. That is the next ceiling if one is ever wanted;
   the gate does not require reaching it.
 
-### Suggested next steps
+### Outcome
 
-1. **Land the real implementation** - see the decision below.
-2. **Real-LSF Tier-B validation.** `DEVELOPERS.md` §3 requires it for reliability
-   changes and neither this fix nor the seven commits before it has it. `add-storm`
-   is in-process (real server, real socket, real clients, but a mock scheduler).
-3. **Correct the STATUS section of `throughput-architecture.md`**, which says HEAD
-   fails the gate, and its "what to consider next" list, whose items 1 (the delay
-   knob) and 3 (split the live set) this log answers.
-4. **Re-measure against a production-shaped database** if a number closer to what
+Both landed, with real-LSF validation:
+
+- `dc54666` **Coalesce concurrent adds into one bolt write transaction** - the
+  writer, its bound, the shared `applyFolded`, five behaviour tests in the normal
+  build and four bound tests repro-tagged. `make test` 503 passed, `make race` 503
+  passed across 44 lanes, `make lint` 0 issues, scale gate 213.86 adds/s / 22.22x /
+  p50 1,224 ms / `overSlow` 0.
+- `6fda86f` **Stop the archive-fold reporter racing its interval var** - a
+  pre-existing `make race` failure this work had to clear first, since `make race`
+  was red at `8d6cd0a` before any of it.
+- `cde2433` **Validate the add path against real LSF** - `add-storm-lsf` plus
+  `add-storm-fixture`, Tier-B per `DEVELOPERS.md` §3.
+
+#### The Tier-B fixture problem, which is the part worth remembering
+
+`add-storm` is in-process: real server, real socket, real clients, but a **mock
+scheduler**, so no `bsub`, no runner, and no command ever runs. It therefore cannot
+touch the property this fix puts most at risk - that an add the client was TOLD
+succeeded is durable, now that the commit happens on a shared writer goroutine
+rather than the caller's.
+
+Neither existing fixture could support that test:
+
+- **`pristine6` has zero incomplete jobs.** A run against it exercises nothing that
+  recovered live jobs do - re-enqueue, scheduler grouping, `rac` scanning,
+  dependency release - and none of their competition for the single writer. A
+  complete-only fixture tests the wrong thing, which is easy to miss because the
+  run passes.
+- **`prod.db` has 118,213 incomplete PRODUCTION jobs**, whose commands a real-LSF
+  manager recovers and `bsub`s, running them as you. Measured, and refused: an
+  attempt recovered all 118,213 and the guard killed the manager with nothing
+  submitted.
+
+So the fixture is generated instead: 20,000 jobs whose every command starts `echo
+aslfix`, 5% of them adding further jobs themselves - production's actual shape, and
+the mechanism that produced the add storm - with dependencies and dep groups
+(10,000 ready + 10,000 dependent), all held in a limit group set to **0** so they
+cannot run while being added, on top of a complete-only base so the file keeps its
+production-sized freelist. `add-storm-lsf` audits every recovered command against
+the manifest's safe prefix and only then raises the limit.
+
+Because incomplete jobs are now *expected*, counting them is no longer a safety
+test. Safety is layered instead: a sidecar manifest required **before any manager
+starts** (so an unstamped database cannot reach a scheduler at all), the limit-0
+block, the per-command prefix audit, and the post-recovery count as a backstop.
+Every layer was made to fire.
+
+Two runs, both PASS: 2113/2113 and 1327/1327 acknowledged adds present after
+`kill -9` and a DB-preserving restart, 0 missing, p50 710/559 ms with nothing over
+the 10 s threshold, while the recovered population completed 11,307 and 8,203 of
+20,000 on real runners (peak 57/45 in RUN) and added 602 and 326 jobs of its own.
+Run 1 also showed dependency release, `dependent` falling 10,000 -> 8,600.
+
+### Suggested next steps
+1. **Re-measure against a production-shaped database** if a number closer to what
    production will see is wanted: this fixture has 4.8x production's free-page count.
    `/nfs/hgi/wr/lsf/.wr_production/db_predep-granularity` is a static current-shape
    copy. Not required - the harsher fixture passing is the stronger result - but it
    would size the headroom production actually gets.
-5. **The three recorded bugs in `.docs/bugfixes/260827-2.md` (items 8, 10, 12)** are
+2. **Three bugs this work uncovered** are recorded and unfixed in
+   `.docs/bugfixes/260828-1.md`: the suite leaks `/tmp/wrtest*` per call while
+   `make clean` only removes `/tmp/wr` (25,023 dirs / ~105 GB had filled this
+   host's `/tmp` and failed a `make race` run at HEAD); `TestOwnMemoryMB` flakes
+   under `-race` on a 1 MB Pss tolerance; and `managerdbbatchdelay` /
+   `managerdbbatchsize` now govern none of the manager's three write paths but
+   `cmd/conf.go`, `jobqueue/server.go:222` and two `archivefold.go` comments still
+   say they do.
+3. **The three recorded bugs in `.docs/bugfixes/260827-2.md` (items 8, 10, 12)** are
    untouched by any of this; one has a restart-surviving symptom (a limit group can
    never be un-stored).
+4. **The next ceiling, if one is ever wanted**, is not bolt: the fix left 235.93/s
+   against 350/s offered with nothing queued in `beginRWTx`, so the residual ~930 ms
+   per add is request handling, the 148k-item in-memory queue, `checkIfComplete`'s
+   per-add read, and this host's load.
 
 ### Spec or bugfix?
 
