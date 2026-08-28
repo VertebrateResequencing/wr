@@ -28,7 +28,11 @@ Two design directions are being explored in `throughput-architecture.md`; a
 **regression sweep of 26 wrdev.sh gates found no regression** from this delivery,
 and the three gates whose verdicts had become misleading are now fixed.
 
-Read this first for the current position. Background: the OOM diagnosis is in
+**Read `throughput-architecture.md`'s STATUS section first for the current
+position** - it supersedes this document's conclusions. What this document is for
+is the **measurement record**: the deployment, the startup and memory figures, the
+limit stress test, the regression sweep, and the production profile. Those stand.
+The sections reasoning *forward* from them have been overtaken, and are marked. Background: the OOM diagnosis is in
 `prod-restart-260825.md`, the design in `.docs/dep-granularity/spec.md`, and each
 phase file's "Phase N outcome" section carries corrections to that spec rather
 than just status.
@@ -288,7 +292,13 @@ runner" rule, and the disk-pressure advice to use `/tmp` collides with it.
 - `parseBmgroups` (`jobqueue/scheduler/lsf.go:1491`) starts `bmgroup -w` and never
   calls `Wait()`, so every manager leaves a defunct `[bmgroup]` child. Present at
   both commits.
-## Remaining issues
+## Remaining issues (as at 2026-08-27 morning - startup scope only)
+
+**Scoped to the dep-granularity/startup delivery, not to the throughput ceiling.**
+Issues 1 and 2 stand as written. Issue 3's framing was later refined: the backup
+hurts *archives*, not adds (the reproducer measured slow adds accruing at the same
+rate whether or not the copy is streaming, while slow archives more than double).
+
 
 
 ### 1. Decode is now the entire startup cost
@@ -894,7 +904,14 @@ that feeds both is an env record that is never deleted.** The fix is a set of
 cheap, contained edits, not new machinery - and the profile route's contribution
 was to stop the wrong fix being built on a misread number.
 
-## Which cause? Not settled yet
+## SETTLED - superseded: "Which cause? Not settled yet"
+
+**This section's question has been answered and its framing is obsolete.** The
+cause is the add path's fragmentation of bolt write transactions, corroborated by
+three independent analyses, plus a payload-independent 52-74 ms per-commit floor
+caused by the freelist rewrite - see `throughput-architecture.md`. The candidate
+enumeration below is retained only to show what was eliminated and how.
+
 
 
 An earlier revision of this document treated issue 3 (continuous full-DB backup
@@ -1142,8 +1159,13 @@ continuous capture, or the profile will report the cost of profiling.
 - The green window in `3390f23` is deliberate: ten test functions are red at that
   commit by design. Do not bisect through it expecting a green suite.
 
-## Next steps
+## Next steps (superseded - see `throughput-architecture.md`'s STATUS section)
 
+**The forward-looking list below is out of date.** It predates the reproducer, the
+seven add-path commits, and the falsification of the `bucketEnvs` theory. The
+current position and the ranked next actions live in
+`throughput-architecture.md`'s STATUS section. The "Done" list here remains
+accurate as a record of what was completed.
 
 ### Done
 
