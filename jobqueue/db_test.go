@@ -442,9 +442,9 @@ func TestDBDepGroups(t *testing.T) {
 		)
 		So(err, ShouldBeNil)
 
-		defer func() {
+		Reset(func() {
 			So(testDB.close(ctx), ShouldBeNil)
-		}()
+		})
 
 		const growDepGroup = "grow"
 

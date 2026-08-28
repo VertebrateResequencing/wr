@@ -3573,8 +3573,11 @@ func TestCompleteJobsNotRerunWhenDepGroupGrows(t *testing.T) {
 
 	Convey("Adding a new dep group member does not re-run complete members of the same batch", t, func() {
 		config, server, jq, standardReqs := start()
-		defer server.Stop(ctx, true)
-		defer disconnect(jq)
+
+		Reset(func() {
+			disconnect(jq)
+			server.Stop(ctx, true)
+		})
 
 		firstMember := makeJob("echo grow first member", "grow-first-member", standardReqs)
 		firstMember.DepGroups = []string{"grow"}
