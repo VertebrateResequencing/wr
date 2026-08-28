@@ -341,6 +341,24 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			soPathsExist(precious, stale, filepath.Join(parent, "old_cwd"))
 		})
 
+		Convey("Cleanup of a Job whose Cwd was modified deletes nothing, silently", func() {
+			old := filepath.Join(parent, "old_cwd")
+			ranIn := filepath.Join(old, "wr_cwd", "unique", "cwd")
+			err = os.MkdirAll(ranIn, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: old, ActualCwd: ranIn}
+
+			jm := NewJobModifer()
+			jm.SetCwd(cwd)
+			jm.applyTo(job)
+
+			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
+			So(cleanupAll.Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsExist(precious, parent, cwd, old, ranIn)
+		})
+
 		Convey("Cleanup of a Job with an ActualCwd that leaves Cwd via a symlink deletes nothing and errors", func() {
 			err = os.Symlink(parent, filepath.Join(cwd, "escape"))
 			So(err, ShouldBeNil)

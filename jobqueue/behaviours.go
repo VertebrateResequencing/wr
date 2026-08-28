@@ -355,6 +355,11 @@ func removeActualCwd(actualCwd string, keepDirs []string) error {
 
 // run simply runs the given command from Job's actual cwd.
 func (b *Behaviour) run(j *Job) error {
+	// this falls back to Cwd unconditionally, unlike Job.workingDir(), which
+	// does so only when CwdMatters: cmd.Dir must name a directory that exists,
+	// and Cwd is the only one we know does. Don't unify the two: workingDir()
+	// feeds what we display and offer to ssh to, where claiming a
+	// non-CwdMatters job with no reported ActualCwd is in Cwd would be a lie.
 	actualCwd := j.ActualCwd
 	if actualCwd == "" {
 		actualCwd = j.Cwd

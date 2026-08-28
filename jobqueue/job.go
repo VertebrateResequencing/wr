@@ -130,8 +130,8 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	}
 }
 
-func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, actualCwd string) string {
-	if state != JobStateRunning || actualCwd == "" {
+func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, workingDir string) string {
+	if state != JobStateRunning || workingDir == "" {
 		return ""
 	}
 
@@ -140,7 +140,7 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 		return ""
 	}
 
-	remote := "cd " + quoteRemoteCwd(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
+	remote := "cd " + quoteRemoteCwd(workingDir) + " && exec ${SHELL:-/bin/sh} -l"
 
 	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
@@ -1877,15 +1877,20 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 		job.Cmd = j.Cmd
 	}
 
+	// ActualCwd names a wr-created working directory below the Cwd the job last
+	// ran in, and is what lets the cleanup behaviours treat its parent as a
+	// disposable workspace. Moving the job to a new Cwd, or making it run in
+	// Cwd itself, means it has no such directory any more, so a stale value
+	// must not survive either modification.
 	if j.Cwd != "" {
 		job.Cwd = j.Cwd
+		job.ActualCwd = ""
 	}
 
 	if j.CwdMattersSet {
 		job.CwdMatters = j.CwdMatters
+
 		if j.CwdMatters {
-			// the job will now run in Cwd itself, so it no longer has a
-			// wr-created working directory below Cwd
 			job.ActualCwd = ""
 		}
 	}

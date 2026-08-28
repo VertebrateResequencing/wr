@@ -184,6 +184,71 @@ func TestJobModifierBehaviours(t *testing.T) {
 	})
 }
 
+func TestJobMountBaseDirs(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const cwd = "/some/cwd"
+
+	workSpace := cwd + "/wr_cwd/a/b/c/uniq"
+	ranIn := workSpace + "/cwd"
+
+	for _, tc := range []struct {
+		name          string
+		job           *Job
+		onCwd         []bool
+		wantCwd       string
+		wantMount     string
+		wantCacheBase string
+	}{
+		{
+			name:          "a job that ran in a wr-created working directory mounts there",
+			job:           &Job{Cwd: cwd, ActualCwd: ranIn},
+			wantCwd:       ranIn,
+			wantMount:     ranIn,
+			wantCacheBase: workSpace,
+		},
+		{
+			name:          "an ActualCwd takes precedence over onCwd",
+			job:           &Job{Cwd: cwd, ActualCwd: ranIn},
+			onCwd:         []bool{true},
+			wantCwd:       ranIn,
+			wantMount:     ranIn,
+			wantCacheBase: workSpace,
+		},
+		{
+			name:          "a cwd_matters job mounts in cwd's mnt subdirectory, cached in cwd",
+			job:           &Job{Cwd: cwd, CwdMatters: true},
+			wantCwd:       cwd,
+			wantMount:     cwd + "/mnt",
+			wantCacheBase: cwd,
+		},
+		{
+			name:          "a job that has not run yet mounts in cwd's mnt subdirectory too",
+			job:           &Job{Cwd: cwd},
+			wantCwd:       cwd,
+			wantMount:     cwd + "/mnt",
+			wantCacheBase: cwd,
+		},
+		{
+			name:          "onCwd without an ActualCwd mounts on cwd itself, cached in its parent",
+			job:           &Job{Cwd: cwd},
+			onCwd:         []bool{true},
+			wantCwd:       cwd,
+			wantMount:     cwd,
+			wantCacheBase: "/some",
+		},
+	} {
+		Convey("mountBaseDirs says "+tc.name, t, func() {
+			gotCwd, gotMount, gotCacheBase := tc.job.mountBaseDirs(tc.onCwd)
+			So(gotCwd, ShouldEqual, tc.wantCwd)
+			So(gotMount, ShouldEqual, tc.wantMount)
+			So(gotCacheBase, ShouldEqual, tc.wantCacheBase)
+		})
+	}
+}
+
 func TestJob(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -581,6 +646,42 @@ func TestJobModifierCwdMatters(t *testing.T) {
 		So(status.Cwd, ShouldBeBlank)
 		So(status.SSHCommand, ShouldEqual,
 			"ssh -- worker1 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
+func TestJobModifierCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	newCwd := "/tmp/wr-modified"
+
+	Convey("Modifying a job's cwd clears the ActualCwd of its last run", t, func() {
+		job := liveStatusJob(JobStateRunning)
+
+		jm := NewJobModifer()
+		jm.SetCwd(newCwd)
+		jm.applyTo(job)
+
+		So(job.Cwd, ShouldEqual, newCwd)
+
+		// the old ActualCwd is not below the new Cwd, so it names a directory
+		// that has nothing to do with this job any more
+		So(job.ActualCwd, ShouldBeBlank)
+	})
+
+	Convey("A job with a modified cwd shows that cwd, with no working dir below it", t, func() {
+		job := liveStatusJob(JobStateRunning)
+
+		jm := NewJobModifer()
+		jm.SetCwd(newCwd)
+		jm.applyTo(job)
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, newCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldBeBlank)
 	})
 }
 
