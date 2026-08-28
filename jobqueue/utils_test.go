@@ -27,8 +27,10 @@ package jobqueue
 
 import (
 	"bytes"
+	"errors"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -57,6 +59,80 @@ func TestOwnMemoryMB(t *testing.T) {
 			withChildren, errc := currentMemory(os.Getpid())
 			So(errc, ShouldBeNil)
 			So(mb, ShouldBeLessThanOrEqualTo, withChildren+1)
+		})
+	})
+}
+
+func TestRmEmptyDirs(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a base dir with a nested leaf dir inside it", t, func() {
+		outer := t.TempDir()
+		base := filepath.Join(outer, "base")
+		aDir := filepath.Join(base, "wr_cwd", "a")
+		leaf := filepath.Join(aDir, "b", "unique")
+		err := os.MkdirAll(leaf, os.ModePerm)
+		So(err, ShouldBeNil)
+
+		Convey("rmEmptyDirs deletes the leaf and its empty parents, but not baseDir", func() {
+			So(rmEmptyDirs(leaf, base), ShouldBeNil)
+
+			_, err = os.Stat(filepath.Join(base, "wr_cwd"))
+			So(err, ShouldNotBeNil)
+			soPathsExist(base, outer)
+		})
+
+		Convey("rmEmptyDirs stops at the first non-empty parent", func() {
+			err = os.WriteFile(filepath.Join(aDir, "output.txt"), []byte("kept\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			So(rmEmptyDirs(leaf, base), ShouldBeNil)
+
+			_, err = os.Stat(filepath.Join(aDir, "b"))
+			So(err, ShouldNotBeNil)
+			soPathsExist(aDir, base, outer)
+		})
+
+		Convey("rmEmptyDirs treats an unclean baseDir as the same dir, so still stops at it", func() {
+			So(rmEmptyDirs(leaf, base+string(filepath.Separator)), ShouldBeNil)
+
+			_, err = os.Stat(filepath.Join(base, "wr_cwd"))
+			So(err, ShouldNotBeNil)
+			soPathsExist(base, outer)
+		})
+
+		Convey("rmEmptyDirs refuses a leafDir that is baseDir, so can't walk above it", func() {
+			err = rmEmptyDirs(base, base)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(leaf, base, outer)
+		})
+
+		Convey("rmEmptyDirs refuses a leafDir that is not below baseDir", func() {
+			other := filepath.Join(outer, "other")
+			otherLeaf := filepath.Join(other, "leaf")
+			err = os.MkdirAll(otherLeaf, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirs(otherLeaf, base)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(otherLeaf, other, base, outer)
+		})
+
+		Convey("rmEmptyDirs refuses a leafDir that only looks below baseDir before symlinks resolve", func() {
+			err = os.Symlink(outer, filepath.Join(base, "escape"))
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirs(filepath.Join(base, "escape", "base"), base)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(leaf, base, outer)
 		})
 	})
 }

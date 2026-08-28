@@ -826,10 +826,24 @@ func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 	return cwd, tmpDir, mkdirManaged(tmpDir, os.ModePerm)
 }
 
+// errNotBelowBaseDir is returned when we're asked to delete a directory that is
+// not inside the base directory that bounds the deletion.
+var errNotBelowBaseDir = errors.New("dir is not below the base dir")
+
 // rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
-// stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
-// doesn't exist.
+// stopping before it reaches baseDir (leaving that, and everything above it,
+// undeleted). It's ok if leafDir doesn't exist.
+//
+// leafDir must be a proper descendant of baseDir; otherwise nothing at all is
+// deleted and errNotBelowBaseDir is returned. There is no safe upward walk to
+// do from anywhere else: with leafDir == baseDir the first parent considered
+// would already be above baseDir, and the walk would then delete the empty
+// ancestors of the directory tree we were supposed to stay inside.
 func rmEmptyDirs(leafDir, baseDir string) error {
+	if !dirIsBelow(leafDir, baseDir) {
+		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseDir)
+	}
+
 	err := removeManaged(leafDir)
 	if err != nil && !os.IsNotExist(err) {
 		// *** not sure where the "directory not empty" string comes from;
@@ -847,17 +861,80 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 }
 
 // rmEmptyParentDirs removes the empty parent directories of leafDir, stopping
-// when it reaches baseDir or hits a dir it cannot remove (which is expected
-// when another Job is running from the same Cwd, so the error is ignored).
+// when the next parent would be baseDir or outside it, or when it hits a dir it
+// cannot remove (which is expected when another Job is running from the same
+// Cwd, so the error is ignored).
 func rmEmptyParentDirs(leafDir, baseDir string) {
 	current := leafDir
 
-	for parent := filepath.Dir(current); parent != baseDir; parent = filepath.Dir(current) {
-		if removeManaged(parent) != nil {
-			break
+	for {
+		parent := filepath.Dir(current)
+		if !dirIsBelow(parent, baseDir) || removeManaged(parent) != nil {
+			return
 		}
 
 		current = parent
+	}
+}
+
+// dirIsBelow tells you if dir is a proper descendant of baseDir, ie. strictly
+// inside it. Both are first made absolute, cleaned and symlink-resolved, so an
+// unclean or relative path, or a symlink that really points elsewhere, can't
+// sneak past. Equal paths give false, as does anything that can't be resolved,
+// so a true result can be treated as permission to delete dir.
+func dirIsBelow(dir, baseDir string) bool {
+	if dir == "" || baseDir == "" {
+		return false
+	}
+
+	absDir, err := resolvedAbsPath(dir)
+	if err != nil {
+		return false
+	}
+
+	absBase, err := resolvedAbsPath(baseDir)
+	if err != nil {
+		return false
+	}
+
+	rel, err := filepath.Rel(absBase, absDir)
+
+	return err == nil && relIsBelow(rel)
+}
+
+// relIsBelow tells you if a relative path produced by filepath.Rel describes
+// somewhere strictly inside the dir it is relative to.
+func relIsBelow(rel string) bool {
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolvedAbsPath returns path as an absolute cleaned path with its symlinks
+// resolved. Since path, or the deeper parts of it, may not exist (eg. it has
+// already been deleted), it resolves the deepest ancestor that does exist and
+// appends the remainder to that.
+func resolvedAbsPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	rest := ""
+
+	for current := abs; ; current = filepath.Dir(current) {
+		resolved, errEval := filepath.EvalSymlinks(current)
+		if errEval == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+
+		if !os.IsNotExist(errEval) {
+			return "", errEval
+		}
+
+		if filepath.Dir(current) == current {
+			return abs, nil
+		}
+
+		rest = filepath.Join(filepath.Base(current), rest)
 	}
 }
 

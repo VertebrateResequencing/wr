@@ -29,6 +29,7 @@ package jobqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -282,4 +283,83 @@ func TestBehaviours(t *testing.T) {
 			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
 		})
 	})
+}
+
+func TestBehaviourCleanupSafety(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job Cwd inside a dir of precious user files", t, func() {
+		parent := t.TempDir()
+		cwd := filepath.Join(parent, "wr_RunCisEQTL")
+		err := os.MkdirAll(cwd, os.ModePerm)
+		So(err, ShouldBeNil)
+
+		precious := filepath.Join(parent, "05_RunCisEQTL.R")
+
+		err = os.WriteFile(precious, []byte("important\n"), 0o600)
+		So(err, ShouldBeNil)
+
+		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		Convey("Cleanup of a CwdMatters Job does nothing, even if it has an ActualCwd", func() {
+			// wr <= v0.37.1 could persist ActualCwd == Cwd on such a Job, and
+			// deleting the parent of that destroyed the user's own files.
+			job := &Job{Cwd: cwd, CwdMatters: true, ActualCwd: cwd}
+
+			So(cleanupAll.Trigger(OnExit, job), ShouldBeNil)
+			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsExist(precious, parent, cwd)
+		})
+
+		Convey("Cleanup of a Job with an ActualCwd equal to its Cwd deletes nothing and errors", func() {
+			job := &Job{Cwd: cwd, ActualCwd: cwd}
+
+			err = cleanupAll.Trigger(OnExit, job)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(precious, parent, cwd)
+		})
+
+		Convey("Cleanup of a Job with an ActualCwd outside its Cwd deletes nothing and errors", func() {
+			// this is the shape a stale ActualCwd takes after the Job's Cwd is
+			// modified to somewhere else.
+			stale := filepath.Join(parent, "old_cwd", "wr_cwd", "unique", "cwd")
+			err = os.MkdirAll(stale, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: stale}
+
+			err = cleanup.Trigger(OnExit, job)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(precious, stale, filepath.Join(parent, "old_cwd"))
+		})
+
+		Convey("Cleanup of a Job with an ActualCwd that leaves Cwd via a symlink deletes nothing and errors", func() {
+			err = os.Symlink(parent, filepath.Join(cwd, "escape"))
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(cwd, "escape", "cwd")}
+
+			err = cleanupAll.Trigger(OnExit, job)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(precious, parent, cwd)
+		})
+	})
+}
+
+// soPathsExist asserts that each of the given paths still exists.
+func soPathsExist(paths ...string) {
+	for _, path := range paths {
+		_, err := os.Stat(path)
+		So(err, ShouldBeNil)
+	}
 }

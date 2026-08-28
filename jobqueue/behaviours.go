@@ -250,9 +250,14 @@ func (b *Behaviour) String() string {
 // files designated as outputs, but that designation is *** not yet implemented,
 // so for now we always wipe everything.)
 func (b *Behaviour) cleanup(j *Job, _ bool) error {
-	if j.ActualCwd == "" {
-		// must be a CwdMatters job, or somehow ActualCwd didn't get set; we do
-		// nothing in this case
+	if j.CwdMatters || j.ActualCwd == "" {
+		// a CwdMatters job runs directly in the user's own Cwd, so wr created no
+		// dir for it and cleanup is documented (cmd/add.go) as having no effect.
+		// ActualCwd should always be blank for such a Job, but we don't rely on
+		// that: a Job persisted by wr v0.37.0|1 can have it set to Cwd, and then
+		// deleting the parent of ActualCwd would destroy the user's own data.
+		// For any other Job, a blank ActualCwd just means it never ran, so
+		// again there's nothing wr created to delete.
 		return nil
 	}
 
@@ -260,6 +265,15 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 	// that should be deleted; it contains tmp, cwd and possibly mount cache
 	// dirs (that we don't want to delete).
 	workSpace := filepath.Dir(j.ActualCwd)
+
+	// only a dir strictly inside Cwd can be a dir that wr created; if ActualCwd
+	// says otherwise (eg. it is stale after a `wr mod --cwd`, or was poisoned
+	// with Cwd itself), deleting it would destroy directories that belong to the
+	// user, so we delete nothing and report why.
+	if !dirIsBelow(workSpace, j.Cwd) {
+		return fmt.Errorf("%w: refusing to clean up %s, which is not inside the job's cwd %s",
+			errNotBelowBaseDir, workSpace, j.Cwd)
+	}
 
 	if err := cleanupWorkSpace(j, workSpace); err != nil {
 		return err
