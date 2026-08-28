@@ -1228,10 +1228,10 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 // group that an input job is a member of. If not, jobsToQueue return value will
 // be identical to the input job slice (minus any jobs ignored due to being
 // complete). Otherwise, if the affected job was Archive()d (and not currently
-// being re-run), then it will be appended to (a copy of) the input job slice
-// and returned in jobsToQueue. If the affected job was in the live bucket
-// (currently queued), it will be returned in the jobsToUpdate slice: you should
-// use queue methods to update the job in the queue.
+// being re-run), then it will be returned in jobsToQueue alongside those same
+// input jobs. If the affected job was in the live bucket (currently queued), it
+// will be returned in the jobsToUpdate slice: you should use queue methods to
+// update the job in the queue.
 //
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
@@ -1437,15 +1437,13 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 			}
-
-			if len(jobsToQueue) > 0 {
-				jobsToQueue = append(jobsToQueue, jobs...)
-			} else {
-				jobsToQueue = keptJobs
-			}
-		} else {
-			jobsToQueue = keptJobs
 		}
+
+		// jobsToQueue now holds any resurrected archived dependents, to which we
+		// add the input jobs we actually stored. It must be keptJobs and not
+		// jobs: an input job that checkIfComplete ruled out was never encoded,
+		// so queueing it would run it while it is absent from the live bucket.
+		jobsToQueue = append(jobsToQueue, keptJobs...)
 
 		for rg := range repGroups {
 			rgs = append(rgs, [2][]byte{[]byte(rg), nil})
