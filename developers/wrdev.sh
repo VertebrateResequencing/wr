@@ -650,6 +650,196 @@ ac_gt() {  # <a> <b>
   awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{print (a+0 >= b+0) ? 1 : 0}'
 }
 
+cmd_add_storm() {  # add-storm [lowClients] [highClients] [seconds] [thinkMs] - ADD-PATH LATENCY GATE
+  # SCALE GATE for the production symptom PROFILED on 2026-08-27 16:35-17:16 on
+  # farm22-ibackup01 (/nfs/hgi/wr/sb10-pprof/prof260827/, binary v0.37.2 = 11fb939), which the
+  # manager's own log states plainly: 33,585 "slow request" warnings in 40 minutes, 28,815 of
+  # them method=add, p50 12.8s / p90 16.8s / max 40.0s, and 20,524 of those adds carried
+  # selector="jobs=1" - a SINGLE job, a handful of small keys, taking over ten seconds.
+  #
+  # WHAT THE PROFILES SAY IS HAPPENING. The process is not busy (30s CPU profile = 4.79s, 16%
+  # of ONE core on 8). The goroutine dump has 763 goroutines parked inside bbolt's DB.Batch
+  # (524 storeLookups + 131 storeEncodedJobs + 108 storeLimitGroups) and 29 more queued in
+  # bbolt.(*DB).beginRWTx - ie. 29 WRITE TRANSACTIONS in flight at once on a database with
+  # exactly one writer. The mutex profile puts 4,478s (85%) of the delay on that writer lock
+  # under bbolt.(*batch).run - the DB.Batch path, ie. the ADD path - against 480s (9%) for the
+  # archive writer and 295s (6%) for the best-effort writer. So the two purpose-built
+  # coalescing writers are NOT the contention; the add path is, and the 4,767 slow jarchives
+  # are queued behind it.
+  #
+  # THE MECHANISM is transaction fragmentation on the add path. One single-job add asks bbolt
+  # for ~4-5 separate write transactions: Server.createJobs unconditionally calls
+  # storeLimitGroups (and for a job naming its group without a `:limit` suffix that map is
+  # EMPTY, so it is a transaction that stores nothing at all), then db.storeNewJobData fans out
+  # one Batch per bucket. bbolt's Batch cannot fold them, because batch.run() detaches db.batch
+  # the instant a batch starts, so the next arrival opens a fresh batch on a fresh 10ms timer
+  # whether or not the previous transaction has committed. Every transaction then pays a FIXED
+  # cost that dwarfs its payload - bbolt rewrites the whole freelist and fdatasyncs twice - and
+  # an add's latency becomes that fixed cost times its queue position.
+  #
+  # WHAT THIS GATE MEASURES. Through the REAL server over the REAL socket with REAL clients (so
+  # a fix anywhere on the add path shows up and none is assumed), against a COPY of a big
+  # production-shaped DB, LOW then HIGH client concurrency, each client looping
+  # think-then-add-ONE-job with a JITTERED think time (arrivals in lockstep would land in one
+  # 10ms bbolt window and coalesce even unfixed, which would pass vacuously):
+  #   - the SYMPTOM: client-observed add latency, and how many adds crossed the manager's own
+  #     10s slow-request threshold or the 60s ClientMinRequestTimeout floor;
+  #   - the SCALING: high-phase throughput over low-phase throughput, a ratio measured in one
+  #     run and therefore far less sensitive to this shared host's load (~120 on 8 cores) than
+  #     any absolute latency;
+  #   - the MECHANISM, countable rather than inferred: writeTxns/add, from the bolt txid delta
+  #     across the phase, plus the peak goroutines parked in DB.Batch and queued in beginRWTx,
+  #     the two numbers the production dump reported (763 and 28).
+  #
+  # Farm-safe: no LSF job, no bsub, no real command; the scheduler is the mock one and its
+  # "runners" just park, bounded by one limit group. Nothing outside WRDEV_ROOT is written.
+  #
+  # Gate, symptom first: no add may reach the 60s client floor, none may cross the manager's
+  # own 10s slow-request threshold (production crossed it 28,815 times), highP50 <=
+  # WRDEV_AS_MAX_P50_MS (5000), and throughputFactor >= WRDEV_AS_MIN_FACTOR (10). txnsPerAdd
+  # <= WRDEV_AS_MAX_TXNS_PER_ADD (1.00) is a BACKSTOP, not the primary check: one add's writes
+  # belong in one transaction. Read it with maxBeginRWTx beside it, because under deep enough
+  # saturation bbolt starts coalescing out of sheer queue length and txnsPerAdd falls below 1
+  # while the path is still broken - the measured 11fb939 run had txnsPerAdd 0.75 with 610
+  # transactions queued at once. A MISSING or NON-DISCRIMINATING measurement is a FAIL, never
+  # a PASS.
+  #
+  # WR_AS_DB (or WRDEV_PRISTINE_DB) must be a big production-shaped DB; /nfs/hgi/wr/sb10-bigdb/
+  # prod.db is the closest available (7.38GiB, 476,531 free pages = 24.6%, so 3.6MiB of freelist
+  # per commit, against production's own 9.10GiB / 99,443 pages / 0.8MiB after its 2026-08-25
+  # compaction - so this fixture OVERSTATES the per-transaction fixed cost, which the run
+  # reports so it can be read for what it is). Each run COPIES it into WRDEV_AS_WORK (default
+  # $WRDEV_ROOT, which needs room for it plus its backup) and removes the copy again. PUT THAT
+  # ON NFS: on local disk the run says nothing about production's filesystem.
+  #
+  # MUTATION CONTROL (proves the gate measures the fragmentation, and is NOT a fix):
+  # WRDEV_AS_BATCH_DELAY_MS=500 widens bbolt's coalescing window via the existing
+  # db.setBatchTuning, folding the concurrent Batch calls into one transaction. If the gate is
+  # RED without it and GREEN with it, what it is measuring is the fragmentation.
+  need_repo
+  local low="${1:-20}" high="${2:-700}" secs="${3:-120}" thinkms="${4:-2000}"
+  local minfactor="${WRDEV_AS_MIN_FACTOR:-10}" maxp50="${WRDEV_AS_MAX_P50_MS:-5000}"
+  local maxtxns="${WRDEV_AS_MAX_TXNS_PER_ADD:-1.00}"
+  local backup="${WRDEV_AS_BACKUP:-1}" work="${WRDEV_AS_WORK:-$WRDEV_ROOT}"
+  local cmdbytes="${WRDEV_AS_CMD_BYTES:-256}"
+  local db="${WR_AS_DB:-${WRDEV_PRISTINE_DB:-}}" gorc=0
+  { [ -n "$db" ] && [ -f "$db" ]; } \
+    || die "set WR_AS_DB (or WRDEV_PRISTINE_DB) to a big production-shaped DB (eg. /nfs/hgi/wr/sb10-bigdb/prod.db)"
+  local out="$WRDEV_ROOT/add-storm.out"
+  mkdir -p "$WRDEV_ROOT" "$work"
+  echo "add-path latency gate: ${low} then ${high} clients each adding ONE job per ${thinkms}ms,"
+  echo "  ${secs}s per phase, cmdBytes=${cmdbytes}, backups=${backup}, work=$work"
+  echo "  DB $db ($(ls -la "$db" | awk '{print $5}') bytes; COPIED into $work, never mutated in place)"
+  echo "  prod symptom to reproduce: 28,815 slow adds in 23min, p50 12.8s / max 40.0s, 20,524 of"
+  echo "  them adding ONE job; 763 goroutines parked in DB.Batch, 29 queued in beginRWTx."
+  echo "  gate: overSlow == 0, highP50 <= ${maxp50}ms, throughputFactor >= ${minfactor}x,"
+  echo "  txnsPerAdd <= ${maxtxns}. A MISSING or NON-DISCRIMINATING measurement is a FAIL."
+  [ -n "${WRDEV_AS_BATCH_DELAY_MS:-}${WRDEV_AS_BATCH_SIZE:-}" ] \
+    && echo "  MUTATION CONTROL: bbolt batching widened to delay=${WRDEV_AS_BATCH_DELAY_MS:-default}ms size=${WRDEV_AS_BATCH_SIZE:-default}"
+  osunset
+  WRDEV_ROOT="$WRDEV_ROOT" WR_AS_DB="$db" WR_AS_WORK="$work" WR_AS_BACKUP="$backup" \
+    WR_AS_LOW="$low" WR_AS_HIGH="$high" WR_AS_SECONDS="$secs" WR_AS_THINK_MS="$thinkms" \
+    WR_AS_CMD_BYTES="$cmdbytes" \
+    WR_AS_BATCH_DELAY_MS="${WRDEV_AS_BATCH_DELAY_MS:-}" WR_AS_BATCH_SIZE="${WRDEV_AS_BATCH_SIZE:-}" \
+    timeout $((secs * 2 + 2400)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
+      -run TestReliable4AddStorm -count=1 -v -timeout $((secs * 2 + 2300))s > "$out" 2>&1 || gorc=$?
+  grep -aE 'ADDSTORM|PASS|FAIL|panic|^ok |^---' "$out" | grep -avE 'no test files'
+
+  local sum lowrate highrate factor lowp50 highp50 highp99 highmax overslow overfloor errs
+  local adds txnsperadd maxbatch maxbeginrw backupmb lowcl highcl timedout
+  sum=$(grep -aoE 'ADDSTORM-SUMMARY .*' "$out" | tail -1)
+  lowrate=$(ac_float "$sum" lowRate); highrate=$(ac_float "$sum" highRate)
+  factor=$(ac_float "$sum" throughputFactor); txnsperadd=$(ac_float "$sum" txnsPerAdd)
+  lowcl=$(bk_num "$sum" lowClients); highcl=$(bk_num "$sum" highClients)
+  lowp50=$(bk_num "$sum" lowP50Ms); highp50=$(bk_num "$sum" highP50Ms)
+  highp99=$(bk_num "$sum" highP99Ms); highmax=$(bk_num "$sum" highMaxMs)
+  overslow=$(bk_num "$sum" overSlow); overfloor=$(bk_num "$sum" overFloor)
+  timedout=$(bk_num "$sum" timedOut)
+  errs=$(bk_num "$sum" errors); adds=$(bk_num "$sum" adds)
+  maxbatch=$(bk_num "$sum" maxBatchParked); maxbeginrw=$(bk_num "$sum" maxBeginRWTx)
+  backupmb=$(bk_num "$sum" backupMb)
+  for v in lowcl highcl lowp50 highp50 highp99 highmax overslow overfloor timedout errs adds \
+           maxbatch maxbeginrw backupmb; do
+    case "${!v}" in (*[!0-9-]*|'') eval "$v=-1" ;; esac
+  done
+
+  echo "## VERDICT: low=${lowcl}@${lowrate:-?}/s high=${highcl}@${highrate:-?}/s" \
+       "throughputFactor=${factor:-?}x (min ${minfactor}x) lowP50=${lowp50}ms highP50=${highp50}ms" \
+       "(max ${maxp50}ms) highP99=${highp99}ms highMax=${highmax}ms overSlow=$overslow" \
+       "overClientFloor=$overfloor clientTimedOut=$timedout txnsPerAdd=${txnsperadd:-?} (max ${maxtxns})" \
+       "maxBatchParked=$maxbatch maxBeginRWTx=$maxbeginrw adds=$adds addErrors=$errs" \
+       "backupMb=$backupmb goExit=$gorc"
+
+  local verdict=0 unmeasured=""
+  [ -n "$sum" ] || unmeasured="the run produced no ADDSTORM-SUMMARY line (test crashed, timed out, skipped, or could not open the DB?)"
+  [ -z "$unmeasured" ] && { [ -z "$lowrate" ] || [ -z "$highrate" ] || [ -z "$factor" ] || [ -z "$txnsperadd" ]; } \
+    && unmeasured="could not read lowRate/highRate/throughputFactor/txnsPerAdd out of the summary line"
+  [ -z "$unmeasured" ] && { [ "$lowp50" -lt 0 ] || [ "$highp50" -lt 0 ] || [ "$overslow" -lt 0 ] \
+    || [ "$adds" -lt 0 ] || [ "$lowcl" -le 0 ] || [ "$highcl" -le 0 ]; } \
+    && unmeasured="could not read a latency, the over-threshold count, the add total or a client count"
+  [ -z "$unmeasured" ] && [ "$adds" -le 0 ] \
+    && unmeasured="no add completed, so neither phase measured anything (adds=$adds)"
+  [ -z "$unmeasured" ] && [ "$(ac_gt "$lowrate" 0)" != "1" ] \
+    && unmeasured="the low-concurrency phase added nothing per second, so there is no baseline to scale against"
+  [ -z "$unmeasured" ] && [ "$maxbeginrw" -lt 0 ] \
+    && unmeasured="no goroutine dump was sampled, so the write-transaction queue was never observed"
+  [ -z "$unmeasured" ] && [ "$backup" = "1" ] && [ "$backupmb" -le 0 ] \
+    && unmeasured="backups were forced ON but no backup bytes were seen streaming, so production's continuous full-DB copy was NOT present and this run is not the environment it claims"
+  # a workload that could not have shown the factor even on a perfect system proves nothing.
+  local offeredhigh=""
+  [ -z "$unmeasured" ] && offeredhigh=$(awk -v c="$highcl" -v t="$thinkms" 'BEGIN{printf "%.2f", c/(t/1000)}')
+  [ -z "$unmeasured" ] && [ "$(ac_gt "$offeredhigh" "$(awk -v a="$lowrate" -v f="$minfactor" 'BEGIN{printf "%.4f", a*f}')")" != "1" ] \
+    && unmeasured="the high phase only offered ${offeredhigh}/s against a ${lowrate}/s baseline, which cannot demonstrate a ${minfactor}x factor however well the add path behaves (raise highClients or lower thinkMs)"
+
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate only reports PASS on a real, discriminating measurement; inspect $out"
+  elif [ "$gorc" -ne 0 ] || [ "$errs" -ne 0 ]; then
+    verdict=1
+    echo "FAIL (TEST FAILED): the reproducer itself failed (go test exit $gorc, and $errs adds failed"
+    echo "  for a reason OTHER than outliving the client's request timeout), so the figures above are"
+    echo "  not a valid measurement of the add path; inspect $out"
+  elif [ "$overfloor" -gt 0 ] || [ "$timedout" -gt 0 ]; then
+    verdict=1
+    echo "FAIL: $overfloor adds reached the 60s ClientMinRequestTimeout floor and $timedout of them"
+    echo "  gave up with 'receive time out' - on a job the manager may well have stored anyway."
+    echo "  That is the worst form of the symptom: the client and the database now disagree"
+    echo "  => txnsPerAdd=${txnsperadd}, peak ${maxbatch} goroutines parked in DB.Batch and ${maxbeginrw}"
+    echo "     write transactions queued on bbolt's single writer lock"
+  elif [ "$overslow" -gt 0 ]; then
+    verdict=1
+    echo "FAIL: $overslow adds crossed the manager's own 10s slow-request threshold, which is"
+    echo "  production's symptom exactly (28,815 slow adds, 20,524 of them adding ONE job)"
+    echo "  => txnsPerAdd=${txnsperadd}, peak ${maxbatch} goroutines parked in DB.Batch and ${maxbeginrw}"
+    echo "     write transactions queued on bbolt's single writer lock"
+  elif [ "$highp50" -gt "$maxp50" ]; then
+    verdict=1
+    echo "FAIL: the median add took ${highp50}ms at ${highcl} clients, over the ${maxp50}ms bound, so add"
+    echo "  latency is walking towards the slow-request threshold as production's did"
+  elif [ "$(ac_gt "$factor" "$minfactor")" != "1" ]; then
+    verdict=1
+    echo "FAIL: ${highcl} clients achieved only ${factor}x the add throughput of ${lowcl} (min ${minfactor}x),"
+    echo "  so add throughput does not scale with concurrency"
+    echo "  => the adds are serialising somewhere; ${maxbeginrw} write transactions were queued at once"
+  elif [ "$(ac_gt "$maxtxns" "$txnsperadd")" != "1" ]; then
+    verdict=1
+    echo "FAIL: the add path cost ${txnsperadd} bolt write transactions per job added (max ${maxtxns}), so"
+    echo "  one add is still fragmented across several transactions, each paying a full commit's"
+    echo "  fixed cost (freelist rewrite + two fdatasyncs) for a few small keys"
+    echo "  => fold an add's bucket writes into ONE transaction, and coalesce concurrent adds into"
+    echo "     it, as archiveWriter/applyArchives already do for the archive path"
+  else
+    echo "PASS: ${highcl} clients reached ${highrate}/s against ${lowcl} clients' ${lowrate}/s"
+    echo "      (${factor}x for $(awk -v a="$highcl" -v b="$lowcl" 'BEGIN{printf "%.1f", a/b}')x the concurrency),"
+    echo "      median add ${highp50}ms, worst ${highmax}ms, none over the slow-request threshold,"
+    echo "      at ${txnsperadd} write transactions per job with ${backupmb}MB of backup copied"
+  fi
+  echo "## CLEANUP"
+  rm -f "$work/addstorm_work_db" "$work/addstorm_work_db_bk" "$work/addstorm_work_db_bk.tmp" 2>/dev/null
+  return "$verdict"
+}
+
 cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5 confirm-dead SSH leak repro
   # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
   # Drives Scheduler.ProcessNotRunningOnHost (the lost-job dead-confirmation ssh check) N
@@ -3451,6 +3641,38 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         cover the server's per-completion work (it calls db.archiveJob directly);
                         see report-storm / report-storm-lsf. WRDEV_AC_BACKUP=0 A/Bs the backup
                         ingredient away, WRDEV_AC_CMD_BYTES the record size.
+  add-storm [lowClients] [highClients] [seconds] [thinkMs]
+                        ADD-PATH LATENCY GATE for the 2026-08-27 PROFILED production symptom
+                        (/nfs/hgi/wr/sb10-pprof/prof260827/, binary v0.37.2 = 11fb939): 33,585
+                        "slow request" warnings in 40min, 28,815 of them method=add, p50 12.8s /
+                        max 40.0s, and 20,524 adding ONE job. The profiles pin it: 763 goroutines
+                        parked in bbolt's DB.Batch, 28 write transactions queued in beginRWTx, and
+                        85% of the writer-lock delay under bbolt.(*batch).run - the ADD path, not
+                        the archive or best-effort writers, which have coalescing writers and
+                        contribute 9% and 6%. In-process but END TO END and farm-safe (real server,
+                        real socket, real clients; mock scheduler, no LSF job, no command ever
+                        runs): LOW then HIGH client counts each loop think-then-add-ONE-job with a
+                        JITTERED think time against a COPY of a big production-shaped DB
+                        (WR_AS_DB / WRDEV_PRISTINE_DB) with backups ON, copy placed in
+                        WRDEV_AS_WORK (default \$WRDEV_ROOT) so the run is taken on NFS as
+                        production is (defaults 20 700 120 2000). Reports the symptom (add
+                        latency, adds over the 10s slow-request threshold and the 60s client
+                        floor), the scaling (high/low throughput ratio, load-robust), and the
+                        MECHANISM counted rather than inferred: bolt write transactions per job
+                        added (txid delta) plus peak goroutines parked in DB.Batch / queued in
+                        beginRWTx, the two numbers the production dump gave (763 and 29). An add that fails
+                        BECAUSE it outlived the client's 60s timeout is counted as the symptom
+                        (timedOut), not as a broken harness; any other failure is the latter.
+                        PASS = overSlow 0,
+                        highP50 <= WRDEV_AS_MAX_P50_MS (5000), throughputFactor >=
+                        WRDEV_AS_MIN_FACTOR (10) and txnsPerAdd <= WRDEV_AS_MAX_TXNS_PER_ADD
+                        (1.00); FAIL = an add crosses a threshold production crossed, throughput
+                        does not scale, an add still costs several transactions, OR nothing
+                        discriminating was measured. WRDEV_AS_BATCH_DELAY_MS=500 is the MUTATION
+                        CONTROL (widens bbolt's coalescing window via the existing
+                        db.setBatchTuning; not a fix) - RED without it and GREEN with it is the
+                        proof the gate measures the fragmentation. WRDEV_AS_BACKUP=0 A/Bs the
+                        backup ingredient away, WRDEV_AS_CMD_BYTES the record size.
   confirm-dead-leak [checks] [host]
                         reliable4 Fix 5 repro (real LSF + ssh): drives ProcessNotRunningOnHost N times
                         and counts leaked ssh-client goroutines; each check dials a client that is never
@@ -3565,6 +3787,7 @@ case "${1:-help}" in
   ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
   archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
   archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
+  add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
   writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
