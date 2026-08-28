@@ -99,7 +99,7 @@ func TestReliable4BjobsBound(t *testing.T) {
 			bjobsListJobs:  testBjobsListJobs,
 		})
 
-		setBjobsTunables(t, testBjobsExecTimeout, testPipeCloseGrace)
+		setBjobsTunables(t, testBjobsExecTimeout)
 
 		ctx, _ := captureLogCtx()
 
@@ -143,7 +143,7 @@ func TestReliable4BjobsBound(t *testing.T) {
 
 		// the exec timeout stays at its shipped value here: what has to bound this
 		// query is the pipe-close grace, since bjobs itself exited immediately.
-		setBjobsTunables(t, defaultBjobsExecTimeout, testPipeCloseGrace)
+		setBjobsTunables(t, defaultBjobsExecTimeout)
 
 		ctx, logs := captureLogCtx()
 
@@ -166,13 +166,14 @@ func TestReliable4BjobsBound(t *testing.T) {
 	})
 }
 
-// setBjobsTunables sets the bjobs exec timeout and pipe-close grace for the
-// duration of the test, restoring them afterwards.
-func setBjobsTunables(t *testing.T, execTimeout, grace time.Duration) {
+// setBjobsTunables sets the bjobs exec timeout to the given value, and the bjobs
+// pipe-close grace to testPipeCloseGrace, for the duration of the test,
+// restoring both afterwards.
+func setBjobsTunables(t *testing.T, execTimeout time.Duration) {
 	t.Helper()
 
 	origTimeout, origGrace := bjobsExecTimeout, bjobsPipeCloseGrace
-	bjobsExecTimeout, bjobsPipeCloseGrace = execTimeout, grace
+	bjobsExecTimeout, bjobsPipeCloseGrace = execTimeout, testPipeCloseGrace
 
 	t.Cleanup(func() {
 		bjobsExecTimeout, bjobsPipeCloseGrace = origTimeout, origGrace

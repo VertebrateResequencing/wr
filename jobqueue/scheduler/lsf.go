@@ -131,9 +131,10 @@ const (
 	// bmgroup -w output line must have (a group name plus at least one host).
 	bmgroupMinFields = 2
 
-	// bjobsAppearTimeout is how long, after a successful bsub, we wait for the
-	// submitted job to appear in bjobs output before giving up.
-	bjobsAppearTimeout = 10 * time.Second
+	// defaultBjobsAppearTimeout is the default bound on how long, after a
+	// successful bsub, we wait for the submitted job to appear in bjobs output
+	// before giving up. See bjobsAppearTimeout.
+	defaultBjobsAppearTimeout = 10 * time.Second
 
 	// bjobsAppearPollFreq is how often we poll bjobs while waiting for a
 	// submitted job to appear.
@@ -306,8 +307,12 @@ var bkillPipeCloseGrace = defaultBkillPipeCloseGrace //nolint:gochecknoglobals
 // it is killed, so a wedged or pathologically slow mbatchd cannot stall a
 // scheduling pass indefinitely. As with bsubExecTimeout it is applied via a
 // context derived from context.Background() rather than the scheduling context,
-// so scheduling-context cancellation cannot abort a query in flight. It is a
-// package var so tests can lower it.
+// so scheduling-context cancellation cannot abort a query in flight.
+//
+// It bounds EVERY `bjobs -w` exec: the list query in parseBjobs, and the
+// per-poll `bjobs -w <id>` appearance check in bjobAppeared, which had no bound
+// at all until .docs/bugfixes/260827-2.md. It is a package var so tests can lower
+// it.
 var bjobsExecTimeout = defaultBjobsExecTimeout //nolint:gochecknoglobals
 
 // bjobsPipeCloseGrace bounds how long we wait for `bjobs -w`'s output pipe to be
@@ -318,13 +323,27 @@ var bjobsExecTimeout = defaultBjobsExecTimeout //nolint:gochecknoglobals
 // on the pipe comes back as exec.ErrWaitDelay - which parseBjobs therefore treats
 // as the complete read it is.
 //
-// It must stay non-zero, AND parseBjobs must keep giving the exec a Stdout whose
-// pipe os/exec owns (see bjobsLineParser): only then does os/exec force-close
-// that pipe, and without the force-close bjobsExecTimeout bounds nothing at all
-// on the path this matters most - a bjobs whose descendant holds the pipe open
-// (.docs/bugfixes/260722-1.md, .docs/bugfixes/260827-1.md). It is a package var
-// so tests can lower it.
+// It must stay non-zero, AND every bjobs exec must keep giving os/exec pipes it
+// owns: only those does os/exec force-close, and without the force-close
+// bjobsExecTimeout bounds nothing at all on the path this matters most - a bjobs
+// whose descendant holds the pipe open (.docs/bugfixes/260722-1.md,
+// .docs/bugfixes/260827-1.md). parseBjobs does that with an io.Writer Stdout (see
+// bjobsLineParser) rather than Cmd.StdoutPipe, and bjobAppeared with
+// CombinedOutput, whose pipes are os/exec's own. It is a package var so tests can
+// lower it.
 var bjobsPipeCloseGrace = defaultBjobsPipeCloseGrace //nolint:gochecknoglobals
+
+// bjobsAppearTimeout bounds how long waitForBjob waits for a just-submitted job
+// to appear in bjobs output before giving up, and so bounds the whole time
+// submitToQueue - and the scheduling pass behind it - spends on that wait.
+//
+// waitForBjob enforces it on its OWN select rather than only on its polling
+// goroutine's, because a poll already running cannot be interrupted: with the
+// deadline only inside the goroutine, an appearance check that outlived the
+// window extended the window by however long it took, which for an unbounded
+// `bjobs -w <id>` was forever (.docs/bugfixes/260827-2.md). It is a package var so
+// tests can lower it.
+var bjobsAppearTimeout = defaultBjobsAppearTimeout //nolint:gochecknoglobals
 
 // killBackoffMin and killBackoffMax bound the jittered exponential interval that
 // must pass before wr re-issues a bkill for an element it has already asked LSF
@@ -1150,6 +1169,28 @@ func bsubStderr(err error) string {
 	return ""
 }
 
+// pollForBjob polls bjobs for the given job id until it appears, returning true,
+// or the given window passes without it appearing, returning false. Each poll is
+// itself bounded (see bjobAppeared), so an unanswered one cannot leave this
+// running indefinitely after waitForBjob has given up on it.
+func (s *lsf) pollForBjob(jobID string, window, execTimeout, pipeGrace time.Duration) bool {
+	limit := time.After(window)
+
+	ticker := time.NewTicker(bjobsAppearPollFreq)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if s.bjobAppeared(jobID, execTimeout, pipeGrace) {
+				return true
+			}
+		case <-limit:
+			return false
+		}
+	}
+}
+
 // bqueuesParser holds the mutable state used while parsing the output of
 // `bqueues -l` line by line.
 type bqueuesParser struct {
@@ -1781,44 +1822,62 @@ func (s *lsf) submitToQueue(ctx context.Context, bsubArgs []string) error {
 // subsequent busy() call returns false, that means the job completed and we're
 // really not busy.
 func (s *lsf) waitForBjob(ctx context.Context, jobID string) bool {
+	// the bounds are read here, on this goroutine, and handed to the poller
+	// below: that poller can outlive this call (a poll in progress cannot be
+	// interrupted) and they are package vars tests lower, so a poller reading
+	// them itself would be reading state its caller has already moved on from.
+	window, execTimeout, pipeGrace := bjobsAppearTimeout, bjobsExecTimeout, bjobsPipeCloseGrace
+
+	// ready is buffered so that when the deadline below wins, the abandoned
+	// poller's send cannot block it from returning (see bjobsAppearTimeout).
 	ready := make(chan bool, 1)
 
 	go func() {
 		defer internal.LogPanic(ctx, "lsf scheduling", true)
 
-		limit := time.After(bjobsAppearTimeout)
-		ticker := time.NewTicker(bjobsAppearPollFreq)
-
-		for {
-			select {
-			case <-ticker.C:
-				if s.bjobAppeared(jobID) {
-					ticker.Stop()
-
-					ready <- true
-
-					return
-				}
-			case <-limit:
-				ticker.Stop()
-
-				ready <- false
-
-				return
-			}
-		}
+		//nolint:contextcheck // each poll's exec is bounded by its own ctx (see bjobAppeared)
+		ready <- s.pollForBjob(jobID, window, execTimeout, pipeGrace)
 	}()
 
-	return <-ready
+	select {
+	case appeared := <-ready:
+		return appeared
+	case <-time.After(window):
+		return false
+	}
 }
 
 // bjobAppeared returns true if bjobs -w now reports the job with the given id.
-func (s *lsf) bjobAppeared(jobID string) bool {
-	//nolint:gosec,noctx // LSF management command; must complete regardless of scheduling ctx cancellation
-	bjcmd := exec.Command(s.bjobsExe, "-w", jobID)
+//
+// The exec is bounded by the given execTimeout plus pipeGrace, the package vars
+// waitForBjob read for it, exactly as parseBjobs' list query is bounded. It had
+// neither until .docs/bugfixes/260827-2.md, and since a poll in progress cannot
+// be interrupted, one appearance check LSF never answered hung waitForBjob ->
+// submitToQueue -> schedule() for as long as it liked, leaving that scheduler
+// group's Scheduler.Schedule limiter held and so the group never scheduled again.
+func (s *lsf) bjobAppeared(jobID string, execTimeout, pipeGrace time.Duration) bool {
+	// as in parseBjobs, the exec timeout is applied via a context of its own,
+	// derived from context.Background(), so cancelling the scheduling ctx cannot
+	// abort a query wr has already asked LSF for (see bjobsExecTimeout).
+	execCtx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
 
-	bjout, errf := bjcmd.CombinedOutput()
-	if errf != nil {
+	//nolint:gosec // LSF management command; execCtx is deliberately not the scheduling ctx (see above)
+	bjcmd := exec.CommandContext(execCtx, s.bjobsExe, "-w", jobID)
+
+	// WaitDelay bounds how long CombinedOutput waits for bjobs' output pipes to
+	// close once bjobs itself is done, so a descendant that inherited them cannot
+	// hold this exec open after the timeout has killed bjobs. It must stay
+	// non-zero, and only works because CombinedOutput's pipes are os/exec's own
+	// ones, which are the only ones os/exec force-closes (see
+	// bjobsPipeCloseGrace).
+	bjcmd.WaitDelay = pipeGrace
+
+	// a bjobs that exited cleanly and merely left a descendant on its pipes
+	// printed everything it meant to (see lingeredOnPipes), so its answer counts;
+	// any other failure is just "not appeared yet", and the next poll asks again.
+	bjout, err := bjcmd.CombinedOutput()
+	if err != nil && !lingeredOnPipes(err) {
 		return false
 	}
 

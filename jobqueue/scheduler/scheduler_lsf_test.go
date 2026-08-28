@@ -126,9 +126,16 @@ type fakeLSFDelays struct {
 	lingerSecs int
 
 	// bjobsSleepSecs, if >0, makes the fake bjobs sleep that many seconds before
-	// answering a `bjobs -w` list call (the `bjobs -w <id>` appearance check is
-	// always answered at once), to exercise bjobsExecTimeout.
+	// answering a `bjobs -w` list call (see bjobsAppearSleepSecs for the
+	// appearance check, which is otherwise answered at once), to exercise
+	// bjobsExecTimeout.
 	bjobsSleepSecs int
+
+	// bjobsAppearSleepSecs, if >0, makes the fake bjobs sleep that many seconds
+	// before answering a `bjobs -w <id>` appearance check (the call waitForBjob
+	// polls with), to exercise the bound on that check (see
+	// TestReliable4BjobAppearedBound).
+	bjobsAppearSleepSecs int
 
 	// bjobsLingerSecs, if >0, makes the fake bjobs background a subshell that
 	// holds the inherited stdout pipe open for that many seconds after bjobs
@@ -905,6 +912,11 @@ echo "Job <321>"
 %sexit 0
 `, sleep, jArgsFile, linger))
 
+	appearSleep := ""
+	if delays.bjobsAppearSleepSecs > 0 {
+		appearSleep = fmt.Sprintf("  sleep %d\n", delays.bjobsAppearSleepSecs)
+	}
+
 	// bjobs is called both as `bjobs -w` (list, reporting delays.bjobsListJobs
 	// jobs of the "false" cmd, so by default the scheduler thinks 0 are already
 	// scheduled) and as `bjobs -w <id>` (the post-submit appearance check, which
@@ -912,7 +924,7 @@ echo "Job <321>"
 	bjobsExe := filepath.Join(dir, "bjobs")
 	writeFakeExe(t, bjobsExe, `#!/bin/bash
 if [ -n "$2" ]; then
-  echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
+`+appearSleep+`  echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
   exit 0
 fi
 `+fakeBjobsListBody(delays))
