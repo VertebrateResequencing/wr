@@ -819,10 +819,17 @@ type db struct {
 	arWriterDone chan struct{} // closed by the writer when it has fully stopped
 	arStopped    bool          // guarded by arMu: the writer will drain no more
 	// arFold is what the archive writer's folding actually achieved, summarised
-	// to the log once per archiveFoldReportInterval (see archivefold.go). Atomics
-	// only: it adds no lock to the archive path and no behaviour depends on it.
-	arFold     archiveFoldStats
-	arFoldStop chan struct{} // closed by close() to stop the fold reporter
+	// to the log once per arFoldInterval (see archivefold.go). Atomics only: it
+	// adds no lock to the archive path and no behaviour depends on it.
+	arFold archiveFoldStats
+	// arFoldInterval is this db's own copy of archiveFoldReportInterval, taken
+	// here by initDB so the reporter goroutine only reads a value its own db
+	// owns. The reporter is deliberately not joined on close (see
+	// stopArchiveFoldReporter), so a read of the package var on that goroutine
+	// has no happens-before edge with the next test that shortens it, which is
+	// a -race failure.
+	arFoldInterval time.Duration
+	arFoldStop     chan struct{} // closed by close() to stop the fold reporter
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -1250,6 +1257,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		arSignal:           make(chan struct{}, 1),
 		arStop:             make(chan struct{}),
 		arWriterDone:       make(chan struct{}),
+		arFoldInterval:     archiveFoldReportInterval,
 		arFoldStop:         make(chan struct{}),
 		upgradedOnOpen:     upgradedOnOpen,
 	}

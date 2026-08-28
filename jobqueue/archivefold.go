@@ -110,6 +110,13 @@ const (
 // six minutes. It is a package var (not user-configurable) purely so tests can
 // shorten it, exactly as recoveryHeartbeatInterval is.
 //
+// Read it ONLY from initDB, which snapshots it into db.arFoldInterval for the
+// reporter to use. Unlike the recovery heartbeat, whose stop function joins its
+// goroutine, the reporter goroutine is deliberately never joined (see
+// stopArchiveFoldReporter), so reading this var on that goroutine has no
+// happens-before edge with the next test that shortens it - a data race that
+// aborts the whole `make race` run at its first lane.
+//
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var archiveFoldReportInterval = time.Minute
 
@@ -321,14 +328,14 @@ func formatMeanFold(mean float64) string {
 }
 
 // archiveFoldReporter is the goroutine that logs one archive-fold summary per
-// archiveFoldReportInterval. An interval with no transaction logs nothing, so an
-// idle manager pays a single atomic load a minute and adds no log volume.
-// Started by initDB; told to exit by close() via stopArchiveFoldReporter, which
-// writes the final summary itself.
+// db.arFoldInterval. An interval with no transaction logs nothing, so an idle
+// manager pays a single atomic load a minute and adds no log volume. Started by
+// initDB; told to exit by close() via stopArchiveFoldReporter, which writes the
+// final summary itself.
 func (db *db) archiveFoldReporter(ctx context.Context) {
 	defer internal.LogPanic(ctx, "jobqueue archive fold reporter", false)
 
-	ticker := time.NewTicker(archiveFoldReportInterval)
+	ticker := time.NewTicker(db.arFoldInterval)
 	defer ticker.Stop()
 
 	for {
@@ -360,7 +367,7 @@ func (db *db) reportArchiveFold(ctx context.Context) {
 		"maxTx", time.Duration(summary.maxTx).Round(time.Millisecond), //nolint:gosec // accumulated count
 		"meanLock", summary.meanLock().Round(time.Millisecond),
 		"maxLock", time.Duration(summary.maxLock).Round(time.Millisecond), //nolint:gosec // accumulated count
-		"interval", archiveFoldReportInterval)
+		"interval", db.arFoldInterval)
 }
 
 // stopArchiveFoldReporter writes the final summary and tells the reporter
