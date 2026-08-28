@@ -840,6 +840,810 @@ cmd_add_storm() {  # add-storm [lowClients] [highClients] [seconds] [thinkMs] - 
   return "$verdict"
 }
 
+cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] - BUILD the safe incomplete-job fixture add-storm-lsf needs
+  # add-storm-lsf needs a database that looks like production's did when the add storm happened:
+  # production had 118,213 INCOMPLETE jobs with dependencies, dep groups and limit groups, and
+  # the add path interacts with all of it - recovery re-enqueues them, the scheduler groups them,
+  # rac scans them, they compete with the storm's adds for the one bolt writer, and (production's
+  # actual shape) some of them ADD MORE JOBS as they run. A complete-only fixture removes every
+  # one of those conditions, so this command manufactures them, harmlessly.
+  #
+  # WHAT IT PRODUCES. On top of WRDEV_PRISTINE_DB (a complete-only base, so the file keeps a
+  # production-sized freelist and per-commit cost - /nfs/hgi/wr/sb10-bigdb/pristine6), N jobs that
+  # are:
+  #  - HARMLESS by construction. Every command starts with the safe prefix "echo aslfix", which is
+  #    recorded in the manifest and which add-storm-lsf re-checks on every incomplete job before
+  #    it lets anything run.
+  #  - A MINORITY THAT ADD JOBS THEMSELVES: selfAddPct% run 'echo … && echo <child> | wr add …',
+  #    with the absolute isolated binary path and WR_CONFIG_DIR baked in so they work from an exec
+  #    node. Their children are `echo aslfix …` jobs in the same limit group. This is the
+  #    portal_builder shape that produced the production add storm, and the most valuable part of
+  #    the fixture.
+  #  - DEPENDENT: odd-numbered jobs join dep group aslfixa<i mod depGroups>; even-numbered ones
+  #    DEPEND on the group holding job i-1 and join aslfixb<i mod depGroups>. So the recovered set
+  #    is ~half ready and ~half dependent, with real dep-group membership and reverse-dependency
+  #    state for recovery to rebuild.
+  #  - UNABLE TO RUN until told: every job is in limit group `aslblock` with its limit set to 0.
+  #    That survives the restart (unlike suspend), is one `wr limit -g aslblock:n` to reverse, and
+  #    means the fixture can be opened by a manager without anything becoming dispatchable.
+  #
+  # SAFE WHILE GENERATING. The generator's manager runs `-s local --max_cores 1 --max_ram 1`, so
+  # reqCheck calls every job (>=100MB) impossible and NOTHING can be dispatched, on LSF or here -
+  # belt to the braces of the "base must have 0 incomplete jobs" check it makes before adding.
+  # No bsub is issued by this command at all.
+  #
+  # OUTPUT: the database is moved to WRDEV_ASL_FIXTURE (default $WRDEV_ROOT/aslfixture.db) with a
+  # sidecar <fixture>.aslmanifest recording its size, mtime, incomplete count, safe prefix, block
+  # group and job cwd. That cwd is <fixture>.jobcwd - it belongs to the FIXTURE, not to the
+  # generation run, so deleting this run's work dir cannot break the fixture's jobs. It gathers one
+  # wr_cwd subdirectory per job run, and is safe to delete between runs. add-storm-lsf REFUSES any fixture without a matching manifest, before it starts a
+  # manager, which is what stops an unstamped database (prod.db and its 118,213 real live jobs)
+  # from ever reaching a scheduler.
+  #
+  # COST: dominated by two 7.4GB NFS copies of the base (~50s each) and one big add; 20,000 jobs
+  # takes about 3-4 minutes end to end. WRDEV_ROOT needs room for the base copy AND the fixture
+  # AND a backup (~3x the base) - use WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/devroot.
+  need_bin
+  local n="${1:-20000}" selfpct="${2:-5}" dgroups="${3:-200}"
+  local base="${WRDEV_PRISTINE_DB:-}" out="${WRDEV_ASL_FIXTURE:-$WRDEV_ROOT/aslfixture.db}"
+  local rg="rgaslfix" kidrg="rgaslfixkid" block="aslblock" prefix="echo aslfix"
+  # the cwd the fixture's jobs (and the jobs they add) run under. It belongs to the FIXTURE, not
+  # to this generation run, so the fixture keeps working after this run's work dir is deleted. It
+  # fills with one wr_cwd subdirectory per job run and is safe to delete between runs.
+  local jobcwd="$out.jobcwd"
+  local pr="$PROD_RUN" plog="$PROD_RUN/log"
+  { [ -n "$base" ] && [ -f "$base" ]; } \
+    || die "set WRDEV_PRISTINE_DB to a big COMPLETE-ONLY base database (eg. /nfs/hgi/wr/sb10-bigdb/pristine6, or make one with '$0 backup-stall-check'); this command adds the incomplete jobs itself"
+  case "$n$selfpct$dgroups" in (*[!0-9]*) die "jobs, selfAddPct and depGroups must be numbers" ;; esac
+  { [ "$n" -gt 0 ] && [ "$dgroups" -gt 0 ] && [ "$selfpct" -ge 0 ] && [ "$selfpct" -le 100 ]; } \
+    || die "need jobs > 0, depGroups > 0 and 0 <= selfAddPct <= 100"
+  ensure_config
+  ASL_DIR="$WRDEV_ROOT/aslfixgen-$(date +%s)"
+  ASL_STOP="$ASL_DIR/stop"
+  ASL_PIDS=()
+  ASL_CLEANED=0
+  ASL_KEEP_DB=0
+  mkdir -p "$ASL_DIR" "$jobcwd" || die "could not create $ASL_DIR and $jobcwd (is WRDEV_ROOT writable?)"
+  trap 'asl_cleanup' EXIT
+  trap 'asl_cleanup; exit 1' INT TERM
+
+  echo "building an add-storm-lsf fixture: $n jobs (${selfpct}% of them self-adding), $dgroups dep"
+  echo "  groups, all in limit group $block:0 so none can run; safe prefix '$prefix'"
+  echo "  base $base -> $out (+ $out.aslmanifest); its jobs will run under $jobcwd"
+  cmd_prod_stop >/dev/null 2>&1
+  sleep 2
+  mkdir -p "$pr"
+  rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  local cp0
+  cp0=$(date +%s)
+  echo "copying base ($(stat -c %s "$base") bytes)"
+  cp -f "$base" "$pr/db" || die "could not copy the base (room for ~3x its size under $WRDEV_ROOT?)"
+  echo "  copied in $(( $(date +%s) - cp0 ))s"
+
+  echo "starting the generator's manager: -s local --max_cores 1 --max_ram 1, so no job of any"
+  echo "  size can be dispatched and no bsub is ever issued"
+  # shellcheck disable=SC2086 # no optional args here, but keep the call shaped like asl_start_manager
+  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 900 "$WR" manager start \
+    --deployment production -s local --max_cores 1 --max_ram 1 2>&1 \
+    | grep -aE 'started on|token=' | head -2
+  local pid upms
+  pid=$(mgr_pid "$pr")
+  [ -n "$pid" ] || die "the generator's manager did not start (see $plog)"
+  upms=$(asl_wait_up 600)
+  [ "$upms" != "0" ] || die "the generator's manager never answered a status RPC (see $plog)"
+
+  local pre
+  pre=$(asl_incomplete_total)
+  if [ "$pre" != "0" ]; then
+    echo "FAIL (UNSAFE BASE): $base carries $pre incomplete job(s) (-1 means unreadable), so it is"
+    echo "  not a complete-only base. Nothing was added. Use /nfs/hgi/wr/sb10-bigdb/pristine6 or"
+    echo "  generate a base with '$0 backup-stall-check'."
+    return 1
+  fi
+  echo "base check: 0 incomplete jobs, so every incomplete job in the fixture is one this command made"
+
+  local jobsfile="$ASL_DIR/fixjobs.json"
+  echo "generating $n job definitions -> $jobsfile"
+  ASL_P="$prefix" ASL_WR="$WR" ASL_CFG="$CONFIG_DIR" ASL_JCWD="$jobcwd" ASL_RG="$rg" \
+  ASL_KRG="$kidrg" ASL_BLK="$block" ASL_Q="$QUEUE" ASL_HOME="$HOME" perl -e '
+    my ($n, $selfpct, $g) = @ARGV;
+    my ($p, $wr, $cfg, $jcwd, $rg, $krg, $blk, $q, $home) =
+      @ENV{qw(ASL_P ASL_WR ASL_CFG ASL_JCWD ASL_RG ASL_KRG ASL_BLK ASL_Q ASL_HOME)};
+    my $sq = chr(39);
+    for my $i (1 .. $n) {
+      my $grp = $i % $g;
+      my $cmd = qq($p $i plain);
+      if ($selfpct > 0 && ($i % 100) < $selfpct) {
+        my $kid = qq($p $i kid);
+        $cmd = qq($p $i selfadd && echo $sq$kid$sq | HOME=$home WR_CONFIG_DIR=$cfg $wr add -f - ) .
+               qq(--deployment production -i $krg -l $blk --queue $q --memory 100M --time 5m ) .
+               qq(--retries 0 --cwd $jcwd --disable_relative_check);
+      }
+      my $extra = ($i % 2)
+        ? qq(,"dep_grps":["aslfixa$grp"])
+        : qq(,"deps":["aslfixa) . (($i - 1) % $g) . qq("],"dep_grps":["aslfixb$grp"]);
+      print qq({"cmd":"$cmd","rep_grp":"$rg","memory":"500M","time":"5m","retries":2,) .
+            qq("queue":"$q","limit_grps":["$blk:0"]$extra}\n);
+    }
+  ' "$n" "$selfpct" "$dgroups" > "$jobsfile" || die "could not generate the job definitions"
+  echo "  $(wc -l < "$jobsfile") definitions, $(stat -c %s "$jobsfile") bytes;" \
+       "$(grep -c 'selfadd' "$jobsfile") of them self-adding"
+
+  local add0 addout addrc=0
+  add0=$(date +%s)
+  echo "adding them (ONE request; they are blocked by $block:0 the moment they land)"
+  addout=$(osunset; timeout 1800 "$WR" add -f "$jobsfile" --deployment production \
+    --cwd "$jobcwd" --disable_relative_check 2>&1) || addrc=$?
+  printf '%s\n' "$addout" | tail -2
+  echo "  add exit $addrc in $(( $(date +%s) - add0 ))s"
+  printf '%s\n' "$addout" | grep -qE "Added $n new commands" \
+    || die "the add did not report all $n commands as new (see above); fixture NOT written"
+
+  local blob inc lim
+  blob=$(osunset; timeout 300 "$WR" status --deployment production -i "$rg" -o counts 2>/dev/null)
+  inc=$(asl_incomplete_total)
+  lim=$(osunset; timeout 120 "$WR" limit -g "$block" --deployment production 2>/dev/null | tail -1)
+  echo "fixture state: incomplete=$inc  $block limit=${lim:-?}  rep group $rg counts:" \
+       "$(printf '%s' "$blob" | tr '\n' ' ')"
+  [ "$inc" = "$n" ] || die "the manager reports $inc incomplete jobs, not the $n added; fixture NOT written"
+  [ "${lim:-x}" = "0" ] || die "limit group $block is ${lim:-unset}, not 0, so the fixture's jobs would be dispatchable; fixture NOT written"
+  local audited bad
+  read -r audited bad <<<"$(asl_prefix_audit "$prefix")"
+  echo "prefix audit: $audited incomplete commands read, $bad of them NOT starting with '$prefix'"
+  { [ "$audited" = "$n" ] && [ "$bad" = "0" ]; } \
+    || die "the prefix audit read $audited of $n commands and found $bad unsafe; fixture NOT written"
+
+  echo "stopping the manager cleanly so the fixture closes consistent"
+  osunset
+  timeout 600 "$WR" manager stop --deployment production 2>&1 | tail -2
+  local waited=0
+  while [ "$waited" -lt 120 ]; do
+    ps -p "$pid" >/dev/null 2>&1 || break
+    sleep 3
+    waited=$(( waited + 3 ))
+  done
+  if ps -p "$pid" >/dev/null 2>&1; then
+    echo "  it did not stop in ${waited}s; killing our verified pid (bolt is crash-safe)"
+    safe_kill "$pid"
+    sleep 3
+  fi
+
+  mv -f "$pr/db" "$out" || die "could not move the fixture to $out"
+  rm -f "$pr/db_bk"* 2>/dev/null
+  ASL_KEEP_DB=1
+  asl_manifest_write "$out" "$n" "$prefix" "$block" "$base" "$n" "$selfpct" "$dgroups" "$rg" "$kidrg" "$jobcwd"
+  echo "## FIXTURE: $out ($(stat -c %s "$out") bytes, $n incomplete jobs, all in $block:0)"
+  sed 's/^/  /' "$out.aslmanifest"
+  echo "PASS: use it with:  WRDEV_ROOT=$WRDEV_ROOT WRDEV_PRISTINE_DB=$out $0 add-storm-lsf"
+  return 0
+}
+
+asl_manifest_write() {  # <fixture> <incomplete> <prefix> <blockGroup> <base> <jobs> <selfPct> <depGroups> <repGrp> <kidRepGrp> <jobCwd>
+  # the sidecar that makes a fixture usable: add-storm-lsf refuses to open a database whose
+  # manifest is missing, or whose size/mtime no longer match the file beside it, BEFORE it starts
+  # any manager - so an unstamped database can never reach a scheduler.
+  local f="$1"
+  cat > "$f.aslmanifest" <<EOF
+aslfixture 1
+db $f
+size $(stat -c %s "$f")
+mtime $(stat -c %Y "$f")
+incomplete $2
+prefix $3
+blockgroup $4
+repgroup ${9}
+kidrepgroup ${10}
+jobcwd ${11}
+base $5
+jobs $6
+selfaddpct $7
+depgroups $8
+generated $(date -Is)
+generator $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
+EOF
+}
+
+asl_manifest_field() {  # <manifest> <field> - the field's value (everything after the first space)
+  grep -m1 "^$2 " "$1" 2>/dev/null | cut -d' ' -f2-
+}
+
+asl_prefix_audit() {  # <safe prefix> - "commandsRead notStartingWithPrefix" over every INCOMPLETE job
+  # the safety check that matters once a fixture HAS incomplete jobs: counting them says nothing
+  # about what they would run, so read every incomplete job's command and check the prefix. Done
+  # BEFORE the block group is raised, while nothing is dispatchable. The reply is large (~1.5KB a
+  # job), so this can itself log a slow request - of method getir, never add.
+  local out="$ASL_DIR/audit.json"
+  osunset
+  timeout 900 "$WR" status --deployment production -o json --limit 0 --timeout 600 \
+    > "$out" 2>/dev/null
+  ASL_AUDIT_PREFIX="$1" perl -e '
+    my $p = $ENV{ASL_AUDIT_PREFIX};
+    my ($t, $b) = (0, 0);
+    local $/;
+    my $j = <STDIN>;
+    $j = q() unless defined $j;
+    while ($j =~ /"Cmd":"((?:[^"\\\\]|\\\\.)*)"/g) { $t++; $b++ unless index($1, $p) == 0 }
+    print qq($t $b\n);
+  ' < "$out"
+}
+
+cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [limit] [thinkMs] - REAL-LSF ADD-PATH TIER-B GATE
+  # TIER-B (real LSF) validation of the add-path coalescing writer landed in dc54666, which took
+  # an add's bolt commit OFF the calling goroutine and onto a shared newJobsWriter. DEVELOPERS.md
+  # §3 requires this for a reliability change, on the grounds that "in-process tests have
+  # repeatedly passed while real LSF failed": the in-process gate (add-storm) has a real server, a
+  # real socket and real clients but a MOCK scheduler - no bsub, no runner, no command ever runs -
+  # so it can neither watch the new writer compete with archiveWriter/bestEffortWriter under real
+  # runner traffic, nor kill the manager and ask what it kept.
+  #
+  # THE LOAD IT RUNS. A fixture from `add-storm-fixture` (see its header) supplies production's
+  # missing condition: tens of thousands of INCOMPLETE jobs with dependencies, dep groups and a
+  # limit group, blocked at limit 0. This command raises that limit at the start, so across the
+  # whole run three sources of work contend for the one bolt writer: the storm's own concurrent
+  # `wr add` processes, the recovered population running on real LSF and archiving, and the adds
+  # that the recovered population's self-adding jobs issue themselves (production's portal_builder
+  # shape). Then the manager is kill -9'd in the middle of it.
+  #
+  # WHAT THIS PROVES, in the order the three properties are worth:
+  #  1. AN ACKNOWLEDGED ADD SURVIVES A MANAGER KILL - the property the fix puts at risk. Adds are
+  #     real `wr add` CLI processes; each logs whether the client was TOLD its add succeeded
+  #     ("Added 1 new commands", rc 0). Mid-storm the manager is kill -9'd (via safe_kill, which
+  #     refuses any pid that is not our isolated binary) and restarted on the SAME database, and
+  #     then EVERY acknowledged command is looked up by key with `wr status -f`, which searches the
+  #     live queue AND the complete store (server.getJobsByKeys), so an add that has since run and
+  #     been archived still counts as present. An add whose reply was lost to the outage is NOT
+  #     acknowledged and is excluded: the assertion is "the manager knows at least every
+  #     acknowledged add", and both numbers are printed so the margin is visible. The same lookup
+  #     is run over a command the run never added (must find 0: otherwise "present" is vacuous)
+  #     and over the adds the client was NOT told about (informative). createJobs waits on the disk
+  #     write before replying deliberately (jobqueue/server.go: "we must guarantee that jobs are
+  #     never lost"), so a reply-before-commit defect in the new writer shows up here and nowhere
+  #     else.
+  #  2. THE CRITICAL PATH IS INTACT ON REAL LSF - add -> ready -> Reserve -> Started -> Touch ->
+  #     Archive (DEVELOPERS.md §1) - evidenced by our namespaced LSF jobs seen in RUN by bjobs and
+  #     by the storm's and the recovered population's complete counts rising, reported separately.
+  #  3. CONCURRENT ADDS STAY FAST WHILE REAL RUNNERS REPORT - add latency p50/p99/max outside the
+  #     kill window, and how many adds crossed the manager's own 10s slow-request threshold
+  #     (production's symptom: 28,815 slow adds in 23 minutes, p50 12.8s), while the recovered
+  #     population archives and adds jobs of its own.
+  #
+  # WHAT IT DOES NOT COVER: throughput scaling (add-storm's job - this runs tens of adders, not
+  # 700, and gates no rate) and write-transaction COUNTS (no txid sampling; that is add-storm's
+  # mechanism measurement). The manager-side slow-add count is reported, not gated, because it
+  # cannot be separated from the restart window. inFlightAtKill is the sharpest case - an
+  # acknowledgement crossing the kill - and it is reported, not gated, because whether an add is
+  # mid-flight at one instant is luck; more adders make it likelier.
+  #
+  # SAFETY, IN LAYERS, because a fixture with incomplete jobs is a fixture whose jobs a real
+  # scheduler will run:
+  #  1. WRDEV_PRISTINE_DB must have a <db>.aslmanifest written by `add-storm-fixture`, whose size
+  #     and mtime still match the file. No manifest, or a mismatch, and this command REFUSES
+  #     BEFORE STARTING ANY MANAGER. That is what keeps an unstamped database out - notably
+  #     /nfs/hgi/wr/sb10-bigdb/prod.db, a copy of real production with 118,213 live jobs (measured
+  #     2026-08-28) whose commands a real bsub would RUN AS YOU. Set WRDEV_ASL_BOLTBUCKETS to a
+  #     boltbuckets binary (eg. /nfs/hgi/wr/sb10-pprof/boltbuckets/boltbuckets) for an additional
+  #     OFFLINE jobslive count against the manifest; it is a cross-check, not a dependency.
+  #  2. The fixture's jobs are in a limit group set to 0, so recovery cannot make them
+  #     dispatchable.
+  #  3. After the manager starts and BEFORE that limit is raised, the incomplete count must equal
+  #     the manifest's, and EVERY incomplete job's command must start with the manifest's safe
+  #     prefix. Only then is the limit raised.
+  #  4. The post-recovery count check remains as the last backstop.
+  # Farm safety unchanged: an isolated PROD-mode manager (own config, ports and managerdir) whose
+  # LSF jobs are namespaced ${PROD_JOB_PREFIX}* by WR_JOBNAME_TOKEN, so they can never be confused
+  # with a real production wrp_*; cleanup is by that namespace and by exact jobid only, and a trap
+  # runs it on every exit path. PROD mode is required because development wipes the DB on every
+  # `manager start` and this test needs it preserved across the restart.
+  #
+  # SPACE: the fixture is COPIED to $PROD_RUN/db and backed up beside it, so WRDEV_ROOT needs room
+  # for ~2x the fixture. The default ($HOME/wr-devtest) has ~14GB and is NOT enough - use
+  # WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/devroot (192GB free, the same NFS as production).
+  #
+  # Knobs: WRDEV_PRISTINE_DB (REQUIRED, a stamped fixture), WRDEV_DEBUG=1 (manager --debug, like
+  # prod), WRDEV_ASL_RESUME_LIMIT (how many recovered jobs may run at once; defaults to `limit`),
+  # WRDEV_ASL_RUNSEC (storm job length, 1), WRDEV_ASL_DOWN_SEC (outage, 12),
+  # WRDEV_ASL_ADD_TIMEOUT (per add `timeout`, 90), WRDEV_ASL_START_TIMEOUT (300),
+  # WRDEV_ASL_MAX_P50_MS (5000), WRDEV_ASL_MIN_COMPLETE (1), WRDEV_ASL_MIN_FIX_COMPLETE (1),
+  # WRDEV_ASL_MIN_KID_JOBS (1).
+  #
+  # A MISSING OR NON-DISCRIMINATING MEASUREMENT IS A FAIL, never a PASS: nothing acknowledged
+  # before the kill, a manager that did not actually die, no restart, no ${PROD_JOB_PREFIX}* job
+  # ever in RUN, no completion from the storm or from the recovered population, no job added by a
+  # job, a lookup that "finds" a command never added, or an unreadable figure each report FAIL and
+  # name themselves. The exit status is non-zero on any FAIL.
+  need_bin
+  local adders="${1:-24}" prekill="${2:-120}" postrestart="${3:-120}" limit="${4:-30}" thinkms="${5:-1000}"
+  local runsec="${WRDEV_ASL_RUNSEC:-1}" downsec="${WRDEV_ASL_DOWN_SEC:-12}"
+  local ato="${WRDEV_ASL_ADD_TIMEOUT:-90}" sto="${WRDEV_ASL_START_TIMEOUT:-300}"
+  local maxp50="${WRDEV_ASL_MAX_P50_MS:-5000}" mincomplete="${WRDEV_ASL_MIN_COMPLETE:-1}"
+  local minfix="${WRDEV_ASL_MIN_FIX_COMPLETE:-1}" minkid="${WRDEV_ASL_MIN_KID_JOBS:-1}"
+  local resume="${WRDEV_ASL_RESUME_LIMIT:-$limit}"
+  local rg="rgasl" pr="$PROD_RUN" plog="$PROD_RUN/log" db="${WRDEV_PRISTINE_DB:-}"
+  { [ -n "$db" ] && [ -f "$db" ]; } \
+    || die "set WRDEV_PRISTINE_DB to a fixture built by '$0 add-storm-fixture'"
+
+  # LAYER 1, before any manager exists: the fixture must be stamped, and the stamp must still
+  # describe the file it sits beside.
+  local mf="$db.aslmanifest" minc mprefix mblock mfixrg mkidrg msize mmtime asize amtime
+  [ -f "$mf" ] || die "REFUSING to open $db: no $mf sidecar. This command raises a limit group and lets a database's incomplete jobs RUN on real LSF, so it only opens a fixture stamped by '$0 add-storm-fixture'. An unstamped database can hold somebody else's live jobs - /nfs/hgi/wr/sb10-bigdb/prod.db holds 118,213 - whose commands would then run as you"
+  [ "$(asl_manifest_field "$mf" aslfixture)" = "1" ] || die "REFUSING to open $db: $mf is not an aslfixture version 1 manifest"
+  minc=$(asl_manifest_field "$mf" incomplete)
+  mprefix=$(asl_manifest_field "$mf" prefix)
+  mblock=$(asl_manifest_field "$mf" blockgroup)
+  mfixrg=$(asl_manifest_field "$mf" repgroup)
+  mkidrg=$(asl_manifest_field "$mf" kidrepgroup)
+  msize=$(asl_manifest_field "$mf" size)
+  mmtime=$(asl_manifest_field "$mf" mtime)
+  asize=$(stat -c %s "$db" 2>/dev/null)
+  amtime=$(stat -c %Y "$db" 2>/dev/null)
+  [ "$msize" = "$asize" ] || die "REFUSING to open $db: its manifest was written for a $msize-byte database but the file is $asize bytes, so the stamp does not describe it. Regenerate the fixture"
+  [ "$mmtime" = "$amtime" ] || die "REFUSING to open $db: its manifest records mtime $mmtime but the file's is $amtime, so it has been written to since it was stamped. Regenerate the fixture"
+  case "${minc:-}" in (''|*[!0-9]*) die "REFUSING to open $db: its manifest's incomplete count '${minc:-}' is not a number" ;; esac
+  [ "$minc" -gt 0 ] || die "REFUSING to open $db: its manifest says it holds no incomplete jobs, so it is not the fixture this gate needs (use '$0 add-storm-fixture')"
+  { [ -n "$mprefix" ] && [ -n "$mblock" ] && [ -n "$mfixrg" ] && [ -n "$mkidrg" ]; } \
+    || die "REFUSING to open $db: its manifest is missing a prefix, blockgroup, repgroup or kidrepgroup"
+  echo "fixture manifest OK: $minc incomplete jobs, safe prefix '$mprefix', blocked by $mblock,"
+  echo "  rep groups $mfixrg (+ $mkidrg for jobs those jobs add), stamped $(asl_manifest_field "$mf" generated)"
+  local bb="${WRDEV_ASL_BOLTBUCKETS:-}" bblive=""
+  if [ -n "$bb" ] && [ -x "$bb" ]; then
+    echo "offline cross-check with $bb (reads the whole file; minutes on a big one)"
+    bblive=$(timeout 3600 "$bb" "$db" jobslive 2>/dev/null | awk '$1=="jobslive"{print $2}')
+    case "${bblive:-}" in
+      ("$minc") echo "  jobslive=$bblive, matches the manifest" ;;
+      (''|*[!0-9]*) echo "  could not read a jobslive count ('${bblive:-}'), so this cross-check says nothing" ;;
+      (*) die "REFUSING to open $db: boltbuckets counts $bblive live jobs but its manifest says $minc" ;;
+    esac
+  fi
+
+  ensure_config
+  ASL_DIR="$WRDEV_ROOT/addstormlsf-$(date +%s)"
+  ASL_STOP="$ASL_DIR/stop"
+  ASL_PIDS=()
+  ASL_CLEANED=0
+  ASL_KEEP_DB=0
+  ASL_MAX_RUN=0
+  ASL_MAX_PEND=0
+  ASL_COMPLETE=0
+  ASL_MAX_RPC_MS=0
+  ASL_FIXRG="$mfixrg"
+  ASL_KIDRG="$mkidrg"
+  ASL_FIX_COMPLETE=0
+  ASL_T0=$(date +%s)
+  mkdir -p "$ASL_DIR/jobcwd" || die "could not create $ASL_DIR (is WRDEV_ROOT writable?)"
+  trap 'asl_cleanup' EXIT
+  trap 'asl_cleanup; exit 1' INT TERM
+
+  echo "add-path REAL-LSF gate: $adders concurrent 'wr add' loops, each adding ONE sleep-$runsec"
+  echo "  job per ~${thinkms}ms (jittered) to rep group $rg behind limit group asllimit:$limit,"
+  echo "  while the fixture's $minc recovered jobs run at $mblock:$resume and add jobs of their own;"
+  echo "  ${prekill}s storm, kill -9 the manager, ${downsec}s down, restart on the SAME DB,"
+  echo "  ${postrestart}s more storm, then every ACKNOWLEDGED add must still be in the database."
+  echo "  work dir $ASL_DIR; LSF jobs ${PROD_JOB_PREFIX}* on queue $QUEUE"
+  cmd_prod_stop >/dev/null 2>&1
+  sleep 2
+  mkdir -p "$pr"
+  rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  local cp0
+  echo "copying fixture $db ($asize bytes) -> $pr/db (mutated by this run; the fixture is not)"
+  cp0=$(date +%s)
+  cp -f "$db" "$pr/db" || die "could not copy the fixture (room for ~2x $asize bytes under $WRDEV_ROOT?)"
+  echo "  copied in $(( $(date +%s) - cp0 ))s"
+
+  echo "starting isolated PROD-mode manager (backups ON, -s lsf, debug=${WRDEV_DEBUG:-0})"
+  asl_start_manager "$sto"
+  local pid1 upms1
+  pid1=$(mgr_pid "$pr")
+  [ -n "$pid1" ] || die "the isolated prod-mode manager did not start (see $plog)"
+  upms1=$(asl_wait_up 900)
+  if [ "$upms1" = "0" ]; then
+    echo "## VERDICT: managerPid=$pid1 answeringStatusRPCs=no"
+    echo "FAIL (NOT MEASURED): the manager never answered a status RPC, so nothing was measured;"
+    echo "  inspect $plog"
+    return 1
+  fi
+  echo "manager pid $pid1 answering status RPCs"
+
+  # LAYER 3: nothing is dispatchable yet (the fixture's jobs sit at limit 0), so audit what the
+  # manager actually recovered before letting any of it run.
+  local live audited bad
+  live=$(asl_incomplete_total)
+  if [ "$live" != "$minc" ]; then
+    echo "## VERDICT: recoveredIncomplete=$live manifestIncomplete=$minc"
+    echo "FAIL (UNSAFE FIXTURE): the manager recovered $live incomplete jobs where the manifest"
+    echo "  says $minc (-1 means the count could not be read). The database is not the one that was"
+    echo "  stamped, so its jobs are not known to be safe. Nothing was unblocked; tearing down."
+    return 1
+  fi
+  read -r audited bad <<<"$(asl_prefix_audit "$mprefix")"
+  if [ "$audited" != "$minc" ] || [ "$bad" != "0" ]; then
+    echo "## VERDICT: recoveredIncomplete=$live commandsAudited=$audited unsafeCommands=$bad"
+    echo "FAIL (UNSAFE FIXTURE): the prefix audit read $audited of $minc incomplete commands and"
+    echo "  found $bad that do not start with '$mprefix'. Only commands this fixture generated may"
+    echo "  be allowed to run. Nothing was unblocked; tearing down."
+    return 1
+  fi
+  echo "recovered-job audit: $audited/$minc incomplete commands read, all starting with '$mprefix'"
+  local newlim
+  newlim=$(osunset; timeout 120 "$WR" limit -g "$mblock:$resume" --deployment production 2>&1 | tail -1)
+  echo "raised $mblock to ${newlim:-?} (was 0), so the recovered population may now run on real LSF"
+  [ "${newlim:-x}" = "$resume" ] || die "could not raise limit group $mblock to $resume (got '${newlim:-}')"
+
+  local i deadline
+  deadline=$(( $(date +%s) + prekill + postrestart + 1800 ))
+  for i in $(seq 1 "$adders"); do
+    asl_adder "$i" "$deadline" "$rg" "$limit" "$runsec" "$thinkms" "$ato" &
+    ASL_PIDS+=("$!")
+  done
+  echo "launched $adders adder loops -> $ASL_DIR/adder_*.log"
+  asl_sample_loop "$prekill" "$rg" "storm"
+
+  local killms alivebefore=0 aliveafter=1 killproven=no pid2 upms2 completeatkill fixatkill
+  completeatkill="$ASL_COMPLETE"
+  fixatkill="$ASL_FIX_COMPLETE"
+  ps -p "$pid1" >/dev/null 2>&1 && alivebefore=1
+  echo "--- killing manager pid $pid1 mid-storm (kill -9; the DB is left in place) ---"
+  killms=$(date +%s%3N)
+  safe_kill "$pid1"
+  sleep 2
+  ps -p "$pid1" >/dev/null 2>&1 || aliveafter=0
+  { [ "$alivebefore" = 1 ] && [ "$aliveafter" = 0 ]; } && killproven=yes
+  echo "  aliveBeforeKill=$alivebefore aliveAfterKill=$aliveafter killProven=$killproven;" \
+       "staying down ${downsec}s"
+  sleep "$downsec"
+  echo "--- restarting on the SAME db ($(stat -c %s "$pr/db" 2>/dev/null) bytes) ---"
+  asl_start_manager "$sto"
+  pid2=$(mgr_pid "$pr")
+  upms2=$(asl_wait_up 900)
+  if [ "$upms2" = "0" ]; then
+    echo "  the restarted manager never answered a status RPC"
+    upms2=$(date +%s%3N)
+  else
+    echo "  restarted manager pid ${pid2:-none} answered $(( (upms2 - killms) / 1000 ))s after the kill"
+  fi
+  asl_sample_loop "$postrestart" "$rg" "post-restart"
+
+  touch "$ASL_STOP"
+  echo "stopping adders (each finishes its in-flight add first, up to ${ato}s)"
+  local p
+  for p in "${ASL_PIDS[@]}"; do
+    wait "$p" 2>/dev/null
+  done
+  ASL_PIDS=()
+
+  echo "## MEASUREMENT"
+  local nlogs stats adds acked ackedpre inflight winacked measured overslow
+  nlogs=$(find "$ASL_DIR" -maxdepth 1 -name 'adder_*.log' 2>/dev/null | wc -l)
+  adds=0; acked=0; ackedpre=0; inflight=0; winacked=0; measured=0; overslow=0
+  if [ "$nlogs" -gt 0 ]; then
+    stats=$(asl_stats "$ASL_DIR" "$killms" "$upms2")
+    read -r adds acked ackedpre inflight winacked measured overslow <<<"$stats"
+  fi
+  local p50=-1 p99=-1 lmax=-1
+  if [ "$measured" -gt 0 ]; then
+    asl_latencies "$ASL_DIR" "$killms" "$upms2" | LC_ALL=C sort -n > "$ASL_DIR/lat.txt"
+    p50=$(asl_pct "$ASL_DIR/lat.txt" 50)
+    p99=$(asl_pct "$ASL_DIR/lat.txt" 99)
+    lmax=$(asl_pct "$ASL_DIR/lat.txt" 100)
+  fi
+
+  local present=0 missing=0 statusrc=0 found=0 notfound=""
+  if [ "$acked" -gt 0 ]; then
+    asl_acked_cmds "$ASL_DIR" | LC_ALL=C sort -u > "$ASL_DIR/acked.txt"
+    awk '{printf "{\"cmd\":\"%s\"}\n", $0}' "$ASL_DIR/acked.txt" > "$ASL_DIR/acked.json"
+    osunset
+    timeout 900 "$WR" status --deployment production -f "$ASL_DIR/acked.json" -o json --limit 0 \
+      > "$ASL_DIR/found.json" 2> "$ASL_DIR/found.err" || statusrc=$?
+    perl -ne 'while(/"Cmd":"([^"]*)"/g){print "$1\n"}' "$ASL_DIR/found.json" 2>/dev/null \
+      | LC_ALL=C sort -u > "$ASL_DIR/found.txt"
+    found=$(wc -l < "$ASL_DIR/found.txt")
+    present=$(LC_ALL=C comm -12 "$ASL_DIR/acked.txt" "$ASL_DIR/found.txt" | wc -l)
+    missing=$(LC_ALL=C comm -23 "$ASL_DIR/acked.txt" "$ASL_DIR/found.txt" | wc -l)
+    notfound=$(grep -aoE '[0-9]+/[0-9]+ cmds were not found' "$ASL_DIR/found.err" | tail -1)
+    echo "  looked up $acked acknowledged commands by key (status -f exit $statusrc): found $found," \
+         "wr itself said '${notfound:-nothing missing}'"
+  fi
+
+  # the built-in negative control: the SAME lookup, over a command this run never added, must find
+  # nothing - otherwise "present" is vacuous and proves nothing. The commands the client was NOT
+  # told about are looked up too, so the reader can see what the exclusion actually set aside
+  # (a reply lost after the commit leaves the job in the database; a failed connect does not).
+  local sentinel sfound=0 unackedindb=0
+  sentinel="sleep $runsec # aslsf never-added $(basename "$ASL_DIR")"
+  printf '{"cmd":"%s"}\n' "$sentinel" > "$ASL_DIR/sentinel.json"
+  timeout 120 "$WR" status --deployment production -f "$ASL_DIR/sentinel.json" -o json --limit 0 \
+    > "$ASL_DIR/sentinel.out" 2>/dev/null
+  sfound=$(perl -ne 'while(/"Cmd":"([^"]*)"/g){print "$1\n"}' "$ASL_DIR/sentinel.out" 2>/dev/null | wc -l)
+  if [ "$(( adds - acked ))" -gt 0 ]; then
+    asl_unacked_cmds "$ASL_DIR" | LC_ALL=C sort -u \
+      | awk '{printf "{\"cmd\":\"%s\"}\n", $0}' > "$ASL_DIR/unacked.json"
+    timeout 300 "$WR" status --deployment production -f "$ASL_DIR/unacked.json" -o json --limit 0 \
+      > "$ASL_DIR/unacked.out" 2>/dev/null
+    unackedindb=$(perl -ne 'while(/"Cmd":"([^"]*)"/g){print "$1\n"}' "$ASL_DIR/unacked.out" 2>/dev/null \
+      | LC_ALL=C sort -u | wc -l)
+  fi
+  echo "  negative control: a command this run never added was 'found' $sfound time(s), which must" \
+       "be 0; of the $(( adds - acked )) adds the client was NOT told about, the manager has $unackedindb"
+
+  if [ "$missing" -gt 0 ]; then
+    echo "  MISSING acknowledged commands (up to 5 of $missing):"
+    LC_ALL=C comm -23 "$ASL_DIR/acked.txt" "$ASL_DIR/found.txt" | head -5 | sed 's/^/    /'
+  fi
+
+  local dbblob cc cbur dbtotal k mgrslow mgrslowadd fixblob fixc fixb fixr fixd kidblob kidc kidtot
+  dbblob=$(osunset; timeout 300 "$WR" status --deployment production -i "$rg" -o counts 2>/dev/null)
+  cc=$(ef_num "$dbblob" complete)
+  cbur=$(ef_num "$dbblob" buried)
+  dbtotal=$(ef_num "$dbblob" 'lost contact')
+  for k in complete running ready dependent suspended delayed buried; do
+    dbtotal=$(( dbtotal + $(ef_num "$dbblob" "$k") ))
+  done
+  fixblob=$(osunset; timeout 300 "$WR" status --deployment production -i "$mfixrg" -o counts 2>/dev/null)
+  fixc=$(ef_num "$fixblob" complete)
+  fixb=$(ef_num "$fixblob" buried)
+  fixr=$(ef_num "$fixblob" ready)
+  fixd=$(ef_num "$fixblob" dependent)
+  kidblob=$(osunset; timeout 300 "$WR" status --deployment production -i "$mkidrg" -o counts 2>/dev/null)
+  kidc=$(ef_num "$kidblob" complete)
+  kidtot=$(ef_num "$kidblob" 'lost contact')
+  for k in complete running ready dependent suspended delayed buried; do
+    kidtot=$(( kidtot + $(ef_num "$kidblob" "$k") ))
+  done
+  mgrslow=$(grep -ac 'slow request' "$plog" 2>/dev/null)
+  mgrslow=${mgrslow:-0}
+  mgrslowadd=$(grep -a 'slow request' "$plog" 2>/dev/null | grep -ac 'method=add')
+  mgrslowadd=${mgrslowadd:-0}
+
+  echo "## VERDICT: adders=$adders adds=$adds acked=$acked ackedPreKill=$ackedpre" \
+       "inFlightAtKill=$inflight ackedInKillWindow=$winacked notAcked=$(( adds - acked ))" \
+       "presentAfterRestart=$present/$acked missingAcked=$missing neverAddedFound=$sfound" \
+       "unackedInDb=$unackedindb stormJobsInDb=$dbtotal killProven=$killproven oldPid=$pid1" \
+       "newPid=${pid2:-none} outage=$(( (upms2 - killms) / 1000 ))s measuredAdds=$measured" \
+       "p50=${p50}ms p99=${p99}ms max=${lmax}ms (max p50 ${maxp50}ms) overSlow=$overslow" \
+       "mgrSlowRequests=$mgrslow mgrSlowAdds=$mgrslowadd maxLSFRun=$ASL_MAX_RUN" \
+       "maxLSFPend=$ASL_MAX_PEND stormCompleteAtKill=$completeatkill stormComplete=$cc" \
+       "stormBuried=$cbur fixIncomplete=$minc fixCompleteAtKill=$fixatkill fixComplete=$fixc" \
+       "fixBuried=$fixb fixReadyNow=$fixr fixDependentNow=$fixd kidJobs=$kidtot" \
+       "kidComplete=$kidc maxStatusRPC=${ASL_MAX_RPC_MS}ms"
+
+  local verdict=0 unmeasured=""
+  [ "$nlogs" -gt 0 ] || unmeasured="no adder wrote a log, so not one add was even attempted"
+  [ -z "$unmeasured" ] && [ "$adds" -le 0 ] \
+    && unmeasured="no add completed, so there is nothing to check the database against"
+  [ -z "$unmeasured" ] && [ "$acked" -le 0 ] \
+    && unmeasured="no add was acknowledged, so the survival property has no subjects"
+  [ -z "$unmeasured" ] && [ "$ackedpre" -le 0 ] \
+    && unmeasured="no add was acknowledged BEFORE the kill, so the kill put no acknowledged add at risk (raise preKillSec)"
+  [ -z "$unmeasured" ] && [ "$killproven" != "yes" ] \
+    && unmeasured="the manager did not actually die at the kill (aliveBefore=$alivebefore aliveAfter=$aliveafter), so nothing was crash-tested"
+  [ -z "$unmeasured" ] && { [ -z "${pid2:-}" ] || [ "${pid2:-}" = "$pid1" ]; } \
+    && unmeasured="the manager did not come back as a new process (old $pid1, new ${pid2:-none}), so the database was never re-read"
+  [ -z "$unmeasured" ] && [ "$statusrc" -ne 0 ] \
+    && unmeasured="the 'wr status -f' lookup of the acknowledged commands failed (exit $statusrc), so presence was not measured; see $ASL_DIR/found.err"
+  [ -z "$unmeasured" ] && [ "$sfound" -ne 0 ] \
+    && unmeasured="the lookup 'found' a command this run never added, so it cannot tell present from absent and the survival check would pass vacuously"
+  [ -z "$unmeasured" ] && [ "$found" -le 0 ] && [ "$dbtotal" -gt 0 ] \
+    && unmeasured="the lookup found nothing at all while the storm's rep group holds $dbtotal jobs, so the lookup itself is broken rather than the adds being lost"
+  [ -z "$unmeasured" ] && [ "$measured" -le 0 ] \
+    && unmeasured="every acknowledged add fell inside the kill window, so there is no add latency outside it to judge"
+  [ -z "$unmeasured" ] && [ "$ASL_MAX_RUN" -le 0 ] \
+    && unmeasured="no ${PROD_JOB_PREFIX}* job was ever seen in RUN by bjobs, so nothing reached a real runner (LSF slow to dispatch? raise preKillSec/postRestartSec, or check queue $QUEUE)"
+  [ -z "$unmeasured" ] && [ "$cc" -lt "$mincomplete" ] \
+    && unmeasured="only $cc of the storm's jobs completed (min $mincomplete), so the storm's own critical path was not shown end to end"
+  [ -z "$unmeasured" ] && [ "$fixc" -lt "$minfix" ] \
+    && unmeasured="only $fixc of the fixture's $minc recovered jobs completed (min $minfix), so the recovered population was never dispatched and the add path was NOT measured against the load this fixture exists to provide (fixReadyNow=$fixr fixDependentNow=$fixd maxLSFPend=$ASL_MAX_PEND: LSF slow to dispatch, or the limit was not raised?)"
+  [ -z "$unmeasured" ] && [ "$kidtot" -lt "$minkid" ] \
+    && unmeasured="no job added a job ($mkidrg holds $kidtot), so production's own add-storm mechanism - jobs adding jobs while the storm runs - was not exercised"
+
+  if [ -n "$unmeasured" ]; then
+    verdict=1
+    echo "FAIL (NOT MEASURED): $unmeasured"
+    echo "  => this gate reports PASS only on a real, discriminating measurement; logs in $ASL_DIR"
+  elif [ "$missing" -gt 0 ]; then
+    verdict=1
+    echo "FAIL: $missing of $acked ACKNOWLEDGED adds are not in the database after the kill and the"
+    echo "  restart. The client was told they were stored and they were not, which is exactly what"
+    echo "  moving the commit onto a shared writer risks: the reply must not be sent before the"
+    echo "  transaction carrying that add has committed"
+    echo "  => $ackedpre were acknowledged before the kill and $inflight were in flight at it; the"
+    echo "     commands are listed above, and in full in $ASL_DIR/acked.txt vs found.txt"
+  elif [ "$overslow" -gt 0 ]; then
+    verdict=1
+    echo "FAIL: $overslow acknowledged adds took 10s or more outside the kill window, which is"
+    echo "  production's symptom (28,815 slow adds in 23 minutes, 20,524 of them adding ONE job)"
+    echo "  => p50 ${p50}ms p99 ${p99}ms max ${lmax}ms over $measured adds, while the storm"
+    echo "     completed $cc jobs and the recovered population $fixc; the manager logged"
+    echo "     $mgrslowadd slow adds of its own"
+  elif [ "$p50" -gt "$maxp50" ]; then
+    verdict=1
+    echo "FAIL: the median add took ${p50}ms, over the ${maxp50}ms bound, with real runners"
+    echo "  reporting - so the add writer is queueing behind the archive/best-effort writers"
+  else
+    echo "PASS: all $acked acknowledged adds ($ackedpre of them before the kill, $inflight in flight"
+    echo "      at it) were still in the database after kill -9 of pid $pid1 and a restart as pid"
+    echo "      $pid2, and a command never added was correctly not found; the storm completed $cc"
+    echo "      jobs and the fixture's recovered population $fixc (of $minc, $fixb buried), which"
+    echo "      themselves added $kidtot jobs, all on real LSF runners (peak $ASL_MAX_RUN in RUN);"
+    echo "      the $measured adds outside the kill window took p50 ${p50}ms / p99 ${p99}ms /"
+    echo "      max ${lmax}ms, none over the manager's 10s slow-request threshold"
+  fi
+  return "$verdict"
+}
+
+asl_cleanup() {  # idempotent add-storm-lsf/fixture teardown: adders, manager, OUR LSF namespace, DB copy
+  [ "${ASL_CLEANED:-0}" = "1" ] && return 0
+  ASL_CLEANED=1
+  echo "## CLEANUP"
+  [ -n "${ASL_STOP:-}" ] && touch "$ASL_STOP" 2>/dev/null
+  local p left
+  for p in "${ASL_PIDS[@]}"; do
+    kill "$p" 2>/dev/null  # our own adder subshells, by the pid we recorded when forking them
+  done
+  cmd_prod_stop >/dev/null 2>&1
+  # SAFE: only the namespaced jobs of our own isolated manager; NEVER a real production wrp_*
+  timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
+  sleep 5
+  timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o jobid -noheader 2>/dev/null | sort -u \
+    | while read -r j; do timeout 30 bkill -r "$j" >/dev/null 2>&1; done
+  sleep 5
+  left=$(timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o stat -noheader 2>/dev/null | wc -l)
+  echo "  our manager stopped; ${PROD_JOB_PREFIX}* jobs left in LSF: ${left:-0}"
+  if [ "${ASL_KEEP_DB:-0}" = "1" ]; then
+    echo "  kept the generated fixture; working files are in ${ASL_DIR:-?}"
+  else
+    rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
+    echo "  removed the working DB copy; the per-add logs are kept in ${ASL_DIR:-?}"
+  fi
+}
+
+asl_start_manager() {  # <startTimeout> - (re)start the isolated PROD-mode LSF manager on the EXISTING db
+  local dbg=""
+  [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
+  # shellcheck disable=SC2086 # deliberate word-splitting of the optional --debug flag
+  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout "${1:-300}" "$WR" manager start \
+    --deployment production -s lsf $dbg 2>&1 | grep -aE 'started on|token=' | head -2
+}
+
+asl_wait_up() {  # <maxSeconds> - epoch ms at which the isolated prod manager first answered a status RPC, else 0
+  local deadline
+  deadline=$(( $(date +%s) + ${1:-300} ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if osunset; timeout 60 "$WR" status --deployment production -o counts >/dev/null 2>&1; then
+      date +%s%3N
+      return 0
+    fi
+    sleep 3
+  done
+  echo 0
+  return 1
+}
+
+asl_incomplete_total() {  # every INCOMPLETE job the manager knows of (-1 if unreadable)
+  local blob total k
+  blob=$(osunset; timeout 300 "$WR" status --deployment production -o counts 2>/dev/null)
+  case "$blob" in
+    (*"complete:"*) ;;
+    (*) echo -1; return 1 ;;
+  esac
+  total=$(ef_num "$blob" 'lost contact')
+  for k in running ready dependent suspended delayed buried; do
+    total=$(( total + $(ef_num "$blob" "$k") ))
+  done
+  echo "$total"
+}
+
+asl_adder() {  # <id> <deadlineEpoch> <repGroup> <limit> <runsec> <thinkMs> <addTimeout>
+  # one real `wr add` CLI process per iteration, adding ONE uniquely-marked job, and logging
+  # "endEpochMs latencyMs rc acked cmd" so the aggregation can tell an ACKNOWLEDGED add (rc 0 and
+  # the server said it stored exactly one command) from every other outcome. Each add is wrapped
+  # in `timeout` so no adder can hang through the manager outage.
+  local id="$1" deadline="$2" rg="$3" limit="$4" runsec="$5" thinkms="$6" ato="$7"
+  local log="$ASL_DIR/adder_$id.log" i=0 s e rc out ack cmd think
+  RANDOM=$(( ($(date +%N) + id * 7919) % 32768 ))
+  while [ ! -f "$ASL_STOP" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+    i=$((i+1))
+    cmd="sleep $runsec # aslsf $id $i"
+    s=$(date +%s%3N)
+    out=$(printf '{"cmd":"%s","queue":"%s","memory":"500M"}\n' "$cmd" "$QUEUE" \
+      | timeout "$ato" "$WR" add -f - --deployment production -i "$rg" -l "asllimit:$limit" \
+        --cwd "$ASL_DIR/jobcwd" --time 5m --retries 3 --disable_relative_check 2>&1)
+    rc=$?
+    e=$(date +%s%3N)
+    ack=0
+    case "$out" in (*"Added 1 new commands"*) [ "$rc" -eq 0 ] && ack=1 ;; esac
+    printf '%s %s %s %s %s\n' "$e" "$((e-s))" "$rc" "$ack" "$cmd" >> "$log"
+    [ "$ack" -eq 0 ] && printf '%s: %s\n' "$cmd" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" >> "$log.err"
+    # jittered think time: arrivals in lockstep would coalesce even on a broken add path
+    think=$(( thinkms / 2 + RANDOM % (thinkms + 1) ))
+    sleep "$(( think / 1000 )).$(printf '%03d' $(( think % 1000 )))"
+  done
+}
+
+asl_sample_loop() {  # <seconds> <repGroup> <label> - trace LSF, storm and recovered-population progress
+  local secs="$1" rg="$2" label="$3" endts bj run pend blob cc cr cb s e ms n
+  local fblob fc fb fr fd frun kblob kc kt k
+  endts=$(( $(date +%s) + secs ))
+  while [ "$(date +%s)" -lt "$endts" ]; do
+    bj=$(timeout 30 bjobs -J "${PROD_JOB_PREFIX}*" -o stat -noheader 2>/dev/null)
+    run=$(printf '%s\n' "$bj" | grep -c '^RUN')
+    pend=$(printf '%s\n' "$bj" | grep -c '^PEND')
+    s=$(date +%s%3N)
+    blob=$(osunset; timeout 90 "$WR" status --deployment production -i "$rg" -o counts 2>/dev/null)
+    e=$(date +%s%3N)
+    ms=$(( e - s ))
+    cc=$(ef_num "$blob" complete)
+    cr=$(ef_num "$blob" running)
+    cb=$(ef_num "$blob" buried)
+    fblob=$(osunset; timeout 90 "$WR" status --deployment production -i "$ASL_FIXRG" -o counts 2>/dev/null)
+    fc=$(ef_num "$fblob" complete)
+    fb=$(ef_num "$fblob" buried)
+    fr=$(ef_num "$fblob" ready)
+    fd=$(ef_num "$fblob" dependent)
+    frun=$(ef_num "$fblob" running)
+    kblob=$(osunset; timeout 90 "$WR" status --deployment production -i "$ASL_KIDRG" -o counts 2>/dev/null)
+    kc=$(ef_num "$kblob" complete)
+    kt=0
+    for k in complete running ready dependent suspended delayed buried; do
+      kt=$(( kt + $(ef_num "$kblob" "$k") ))
+    done
+    n=$(asl_logged_adds)
+    echo "  [$label t+$(( $(date +%s) - ASL_T0 ))s] storm: adds=$n complete=$cc running=$cr" \
+         "buried=$cb | recovered: complete=$fc running=$frun ready=$fr dependent=$fd buried=$fb" \
+         "| kids=$kt/$kc | LSF_RUN=$run LSF_PEND=$pend status_rpc=${ms}ms"
+    [ "$run" -gt "$ASL_MAX_RUN" ] && ASL_MAX_RUN="$run"
+    [ "$pend" -gt "$ASL_MAX_PEND" ] && ASL_MAX_PEND="$pend"
+    [ "$cc" -gt "$ASL_COMPLETE" ] && ASL_COMPLETE="$cc"
+    [ "$ms" -gt "$ASL_MAX_RPC_MS" ] && ASL_MAX_RPC_MS="$ms"
+    [ "$fc" -gt "$ASL_FIX_COMPLETE" ] && ASL_FIX_COMPLETE="$fc"
+    sleep 10
+  done
+}
+
+asl_logged_adds() {  # how many adds have been logged so far (0 before the first)
+  local n
+  n=$(awk 'END{print NR}' "$ASL_DIR"/adder_*.log 2>/dev/null)
+  case "${n:-}" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
+}
+
+asl_stats() {  # <logdir> <killMs> <upMs> - "adds acked ackedPreKill inFlightAtKill ackedInWindow measuredOutsideWindow overSlow"
+  # An add's interval is [end-latency, end]. The kill window is [killMs, upMs]: an add overlapping
+  # it was talking to a dying or restarting manager, so its LATENCY says nothing about the add
+  # path - but its acknowledgement still binds, so window adds stay in acked and in the presence
+  # check, and only their latency is set aside.
+  awk -v k="$2" -v u="$3" '
+    NF < 5 { next }
+    { end=$1+0; lat=$2+0; ack=$4+0; st=end-lat
+      adds++
+      if (st<=k && end>=k) inflight++
+      inwin = !(end<k || st>u)
+      if (ack==1) { acked++
+        if (end<k) pre++
+        if (inwin) winacked++
+        else { measured++; if (lat>=10000) slow++ }
+      }
+    }
+    END { printf "%d %d %d %d %d %d %d\n", adds+0, acked+0, pre+0, inflight+0, winacked+0, measured+0, slow+0 }
+  ' "$1"/adder_*.log
+}
+
+asl_latencies() {  # <logdir> <killMs> <upMs> - the latency of every acknowledged add OUTSIDE the kill window
+  awk -v k="$2" -v u="$3" \
+    'NF < 5 { next } { end=$1+0; lat=$2+0; if ($4+0!=1) next; if (!(end<k || end-lat>u)) next; print lat }' \
+    "$1"/adder_*.log
+}
+
+asl_acked_cmds() {  # <logdir> - the command line of every ACKNOWLEDGED add
+  awk 'NF >= 5 && $4+0 == 1 { s=$5; for (i=6; i<=NF; i++) s=s" "$i; print s }' "$1"/adder_*.log
+}
+
+asl_unacked_cmds() {  # <logdir> - the command line of every add the client was NOT told had succeeded
+  awk 'NF >= 5 && $4+0 != 1 { s=$5; for (i=6; i<=NF; i++) s=s" "$i; print s }' "$1"/adder_*.log
+}
+
+asl_pct() {  # <numerically sorted file> <percentile> - the value at that percentile, -1 when empty
+  awk -v p="$2" '{ v[NR]=$1 }
+    END { if (NR==0) { print -1; exit } i=int((p/100)*NR+0.5); if (i<1) i=1; if (i>NR) i=NR; print v[i] }' "$1"
+}
+
 cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5 confirm-dead SSH leak repro
   # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
   # Drives Scheduler.ProcessNotRunningOnHost (the lost-job dead-confirmation ssh check) N
@@ -3673,6 +4477,62 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         db.setBatchTuning; not a fix) - RED without it and GREEN with it is the
                         proof the gate measures the fragmentation. WRDEV_AS_BACKUP=0 A/Bs the
                         backup ingredient away, WRDEV_AS_CMD_BYTES the record size.
+  add-storm-fixture [jobs] [selfAddPct] [depGroups]
+                        BUILDS the fixture add-storm-lsf needs, because a complete-only database
+                        removes the condition the add path interacts with: production had 118,213
+                        INCOMPLETE jobs with dependencies, dep groups and limit groups while the
+                        add storm happened. On top of WRDEV_PRISTINE_DB (a COMPLETE-ONLY base, so
+                        the file keeps a production-sized freelist - /nfs/hgi/wr/sb10-bigdb/
+                        pristine6) it adds N jobs (defaults 20000 5 200) that are harmless by
+                        construction (every command starts "echo aslfix"), dependent (half join a
+                        dep group, half DEPEND on one), and blocked at limit 0 so opening the
+                        fixture makes nothing dispatchable; selfAddPct% of them are
+                        'echo … && echo <child> | wr add …' with the absolute binary path and
+                        WR_CONFIG_DIR baked in, which is production's own portal_builder
+                        shape - jobs adding jobs - and the reason the storm existed. Its manager
+                        runs -s local --max_cores 1 --max_ram 1, so nothing can be dispatched and
+                        no bsub is ever issued, and it refuses a base that already holds
+                        incomplete jobs. Writes the DB to WRDEV_ASL_FIXTURE (default
+                        \$WRDEV_ROOT/aslfixture.db) plus a <fixture>.aslmanifest recording size,
+                        mtime, incomplete count, safe prefix and block group - the stamp
+                        add-storm-lsf demands before it will open anything. ~3-4min for 20000
+                        jobs; needs ~3x the base free under WRDEV_ROOT.
+  add-storm-lsf [adders] [preKillSec] [postRestartSec] [limit] [thinkMs]
+                        REAL-LSF (Tier B) validation of the add-path coalescing writer that
+                        add-storm gates in-process (DEVELOPERS.md §3: "in-process tests have
+                        repeatedly passed while real LSF failed"). Isolated PROD-mode manager
+                        (backups ON, -s lsf) on a COPY of an add-storm-fixture fixture, whose
+                        limit group it raises so the recovered incomplete population runs on real
+                        LSF and adds jobs of its own, WHILE N concurrent real 'wr add' CLI loops
+                        each add ONE sleep job (defaults 24 120 120 30 1000). Three sources of
+                        work then contend for the one bolt writer, and the manager is kill -9'd in
+                        the middle. Proves, in this order: (1) every add the client was TOLD
+                        succeeded is still in the DB after the kill and a DB-preserving restart
+                        (looked up by key with status -f, so live AND complete jobs count; adds
+                        whose reply the outage ate are excluded and both numbers printed; a
+                        command never added must NOT be found, or the check is vacuous); (2) the
+                        critical path on real LSF - ${PROD_JOB_PREFIX}* jobs in RUN and the
+                        storm's and the recovered population's complete counts rising, reported
+                        separately; (3) add latency p50/p99/max outside the kill window plus adds
+                        over the manager's 10s slow-request threshold, while real runners archive.
+                        REQUIRES WRDEV_PRISTINE_DB to carry a matching <db>.aslmanifest: without
+                        one, or on a size/mtime mismatch, it REFUSES BEFORE STARTING A MANAGER,
+                        which is what keeps an unstamped database out - prod.db is a copy of real
+                        production with 118,213 live jobs whose commands a real bsub would RUN AS
+                        YOU. It then re-checks the recovered count and audits EVERY incomplete
+                        job's command for the safe prefix before raising the limit.
+                        WRDEV_ASL_BOLTBUCKETS=<boltbuckets binary> adds an offline jobslive
+                        cross-check. Needs WRDEV_ROOT with room for ~2x the fixture, so NOT the
+                        ~14GB default - use WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/devroot. Safe: LSF
+                        jobs namespaced (never a real wrp_*), cleaned up by that namespace and
+                        exact jobid on every exit path. PASS = no acknowledged add missing, none
+                        over 10s, p50 <= WRDEV_ASL_MAX_P50_MS (5000); FAIL = a lost acknowledged
+                        add, a slow add, OR nothing discriminating measured (no acknowledged add
+                        before the kill, a manager that did not die, no restart, no LSF job in
+                        RUN, no storm completion, no recovered-population completion, no job added
+                        by a job, or a lookup that finds what was never added).
+                        WRDEV_ASL_RESUME_LIMIT / WRDEV_DEBUG=1 / WRDEV_ASL_RUNSEC /
+                        WRDEV_ASL_DOWN_SEC / WRDEV_ASL_ADD_TIMEOUT / WRDEV_ASL_START_TIMEOUT.
   confirm-dead-leak [checks] [host]
                         reliable4 Fix 5 repro (real LSF + ssh): drives ProcessNotRunningOnHost N times
                         and counts leaked ssh-client goroutines; each check dials a client that is never
@@ -3788,6 +4648,8 @@ case "${1:-help}" in
   archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
   archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
   add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
+  add-storm-lsf) cmd_add_storm_lsf "${2:-24}" "${3:-120}" "${4:-120}" "${5:-30}" "${6:-1000}" ;;
+  add-storm-fixture) cmd_add_storm_fixture "${2:-20000}" "${3:-5}" "${4:-200}" ;;
   confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
   writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
   report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
