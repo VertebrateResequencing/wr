@@ -66,7 +66,7 @@ func expectedRunnerWaitCmd(
 	defer expectedRunnerMutex.RUnlock()
 
 	for runnerCmd, expected := range expectedRunners {
-		matchesExpectedRunner := strings.HasPrefix(cmd, runnerCmd+" --runnermode ") &&
+		matchesExpectedRunner := strings.HasPrefix(cmd, runnerCmd+runnerModeTestRun+" --runnermode ") &&
 			strings.Contains(cmd, " --schedgrp '") &&
 			strings.Contains(cmd, " --rdeployment ") &&
 			strings.Contains(cmd, " --rserver '") &&
@@ -197,7 +197,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 		runningConfig := serverConfig
 		rmd := strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
-		runningConfig.RunnerCmd = runnerCmd +
+		runningConfig.RunnerCmd = runnerCmd + runnerModeTestRun +
 			" --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 			" --rtimeout %d --maxmins %d --rmanagerdir " + rmd + " --tmpdir " + runnertmpdir
 		server, _, token, errs := serve(ctx, runningConfig)
