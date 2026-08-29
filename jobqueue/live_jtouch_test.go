@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,8 +40,15 @@ import (
 	"go.nanomsg.org/mangos/v3"
 )
 
+// liveJTouchActualCwd is the ActualCwd a live jtouch reports for a job whose
+// Cwd is testCwd. It has to be under testCwd: a status update carries the leaf
+// of ActualCwd relative to the job's Cwd, and liveJobCwdLeaf reports an
+// ActualCwd outside it whole instead.
+//
+//nolint:gochecknoglobals // derived from testCwd, which is made per run.
+var liveJTouchActualCwd = filepath.Join(testCwd, "wr", "job1")
+
 const (
-	liveJTouchActualCwd      = "/tmp/wr/job1"
 	liveJTouchPreviousCwd    = "/tmp/old"
 	liveJTouchPreviousStderr = "olderr\n"
 	liveJTouchPreviousStdout = "old\n"

@@ -117,7 +117,6 @@ const (
 	// the test daemon; production default behaviour is unchanged.
 	signalTestMaxCores    = 1
 	serverRC              = `echo %s %s %s %s %d %d`
-	testCwd               = "/tmp"
 	manuallyAdded         = "manually_added"
 	reqGroupFake          = "fake_group"
 	reqGroupFallocate     = "fallocate"
@@ -1582,8 +1581,8 @@ func TestJobqueueSignal(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 10 * time.Minute, Cores: 1}, Retries: uint8(0), RepGroup: "signal_fail"})
-			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "time_fail"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 10 * time.Minute, Cores: 1}, Retries: uint8(0), RepGroup: "signal_fail"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "time_fail"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1731,8 +1730,8 @@ func TestJobqueueSignal(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
-			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1937,8 +1936,8 @@ func TestJobqueueSignal(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: float64(signalTestMaxCores)}, Retries: uint8(0), RepGroup: "recover"})
-			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "lost"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: float64(signalTestMaxCores)}, Retries: uint8(0), RepGroup: "recover"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "lost"})
 			inserts, already, erra := jq.Add(jobs, envVars, true)
 			So(erra, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -2040,7 +2039,7 @@ func TestJobqueueSignal(t *testing.T) {
 			// capacity - proving new runners don't overcommit because of the
 			// existing (surviving) runner.
 			cmd3 := "echo 1"
-			jobs = []*Job{{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
+			jobs = []*Job{{Cmd: cmd3, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
 			inserts, already, err = jq.Add(jobs, envVars, true)
 
 			errd = jq.Disconnect()
@@ -2162,8 +2161,8 @@ func TestJobqueueBasics(t *testing.T) {
 			var jobs []*Job
 
 			req := &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}
-			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: req, Retries: uint8(0), RepGroup: "test"})
-			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: req, Retries: uint8(0), RepGroup: "test"})
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: req, Retries: uint8(0), RepGroup: "test"})
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: testCwd, ReqGroup: "fake_group", Requirements: req, Retries: uint8(0), RepGroup: "test"})
 			ids, err := jq.AddAndReturnIDs(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(len(ids), ShouldEqual, 2)
@@ -2497,7 +2496,7 @@ func TestJobqueueBasics(t *testing.T) {
 
 				inserts, already, err := jq.Add([]*Job{{
 					Cmd:          "echo $wr_jobqueue_test_no_envvar && false",
-					Cwd:          "/tmp",
+					Cwd:          testCwd,
 					ReqGroup:     "new_group",
 					Requirements: standardReqs,
 					Priority:     uint8(100),
@@ -2536,7 +2535,7 @@ func TestJobqueueBasics(t *testing.T) {
 				// value of the envvar gets used for the job
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 
-				inserts, already, err = jq.Add([]*Job{{Cmd: "echo $wr_jobqueue_test_no_envvar && false && false", Cwd: "/tmp", ReqGroup: "new_group", Requirements: standardReqs, Priority: uint8(101), RepGroup: "withenvvar"}}, os.Environ(), true)
+				inserts, already, err = jq.Add([]*Job{{Cmd: "echo $wr_jobqueue_test_no_envvar && false && false", Cwd: testCwd, ReqGroup: "new_group", Requirements: standardReqs, Priority: uint8(101), RepGroup: "withenvvar"}}, os.Environ(), true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
@@ -2568,7 +2567,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(err, ShouldBeNil)
 				inserts, already, err := jq.Add([]*Job{{
 					Cmd:          "echo $wr_jobqueue_test_no_envvar && echo $wr_jobqueue_test_no_envvar2 && false",
-					Cwd:          "/tmp",
+					Cwd:          testCwd,
 					RepGroup:     "noenvvar",
 					ReqGroup:     "new_group",
 					Requirements: standardReqs,
@@ -3869,7 +3868,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 			jobs = append(jobs, &Job{
 				Cmd:          sleepTrueCmd,
-				Cwd:          "/tmp",
+				Cwd:          testCwd,
 				ReqGroup:     "fake_group",
 				Requirements: standardReqs,
 				Retries:      uint8(2),
@@ -3877,7 +3876,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			})
 			jobs = append(jobs, &Job{
 				Cmd:          sleepFalseCmd,
-				Cwd:          "/tmp",
+				Cwd:          testCwd,
 				ReqGroup:     "fake_group",
 				Requirements: standardReqs,
 				Retries:      uint8(2),
@@ -3948,8 +3947,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				So(stderr, ShouldEqual, "")
 
 				actualCwd := job.ActualCwd
+				key := job.Key()
 				expectedCwdPrefix := filepath.Join(
-					"/tmp", "jobqueue_cwd", "7", "4", "7", "27e23009c78b126f274aa64416f30",
+					testCwd, "jobqueue_cwd", key[0:1], key[1:2], key[2:3], key[3:],
 				)
 				So(actualCwd, ShouldStartWith, expectedCwdPrefix)
 				So(actualCwd, ShouldEndWith, "cwd")
@@ -4163,7 +4163,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					jobs2 = append(jobs2, &Job{
 						Cmd:                   noRetriesCmd,
-						Cwd:                   "/tmp",
+						Cwd:                   testCwd,
 						ReqGroup:              "fake_group",
 						Requirements:          standardReqs,
 						Retries:               uint8(1),
@@ -4268,8 +4268,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 				Convey("Cmds with pipes in them are handled correctly", func() {
 					jobs = nil
-					jobs = append(jobs, &Job{Cmd: "sleep 0.1 && true | true", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
-					jobs = append(jobs, &Job{Cmd: "sleep 0.1 && true | false | true", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_fail"})
+					jobs = append(jobs, &Job{Cmd: "sleep 0.1 && true | true", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
+					jobs = append(jobs, &Job{Cmd: "sleep 0.1 && true | false | true", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_fail"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
@@ -4313,7 +4313,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 				Convey("Invalid commands are immediately buried", func() {
 					jobs = nil
-					jobs = append(jobs, &Job{Cmd: "awesjnalakjf --foo", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_fail"})
+					jobs = append(jobs, &Job{Cmd: "awesjnalakjf --foo", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_fail"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4345,7 +4345,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				Convey("If a job uses more memory than expected it is not killed, but we recommend more next time", func() {
 					jobs = nil
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
-					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
 
 					server.db.recMBRound = 1
 					defer func() {
@@ -4370,7 +4370,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, 0)
 
 					cmd2 := "echo another high mem job"
-					jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
+					jobs = append(jobs, &Job{Cmd: cmd2, Cwd: testCwd, ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
 					inserts, already, err = jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4402,7 +4402,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					defer os.RemoveAll(tmpdir)
 
 					cmd := fmt.Sprintf("perl -Mstrict -we 'open(OUT, qq[>%s/$$]); my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { sleep(60); exit 0; } open(OUT, qq[>%s/$subpid]); waitpid $subpid, 0; exit 0; }  open(OUT, qq[>%s/$pid]); sleep(30); waitpid $pid, 0'", tmpdir, tmpdir, tmpdir)
-					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4476,7 +4476,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				Convey("Jobs that fork and change processgroup have correct memory usage reported", func() {
 					jobs = nil
 					cmd := `perl -Mstrict -we 'my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { my @a; for (1..100) { push(@a, q[a] x 10000000); } exit 0; } waitpid $subpid, 0; exit 0; } my @b; for (1..100) { push(@b, q[b] x 1000000); } waitpid $pid, 0'`
-					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4499,7 +4499,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					Convey("Jobs that fork and change processgroup have correct CPU time reported", func() {
 						jobs = nil
 						cmd := `perl -Mstrict -we 'my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { my $a = 2; for (1..10000000) { $a *= $a } exit 0; } waitpid $subpid, 0; exit 0; } my $b = 2; for (1..10000000) { $b *= $b } waitpid $pid, 0'`
-						jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+						jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
 						inserts, already, err := jq.Add(jobs, envVars, true)
 						So(err, ShouldBeNil)
 						So(inserts, ShouldEqual, 1)
@@ -4612,7 +4612,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 				Convey("The stdout/err of jobs is limited in size", func() {
 					jobs = nil
-					jobs = append(jobs, &Job{Cmd: "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
+					jobs = append(jobs, &Job{Cmd: "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4696,7 +4696,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				Convey("The stdout/err of jobs is filtered for \\r blocks", func() {
 					jobs = nil
 					progressCmd := "perl -e '$|++; print qq[a\nb\n\nprogress: 98%\r]; for (99..100) { print qq[progress: $_%\r]; sleep(1); } print qq[\n\nc\n]; exit(1)'"
-					jobs = append(jobs, &Job{Cmd: progressCmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
+					jobs = append(jobs, &Job{Cmd: progressCmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4724,7 +4724,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					jobs = nil
 					progressCmd = "perl -e '$|++; print qq[a\nb\n\n]; for (99..100) { print qq[progress: $_%\r]; sleep(1); } print qq[\n\nc\n]; exit(1)'"
-					jobs = append(jobs, &Job{Cmd: progressCmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
+					jobs = append(jobs, &Job{Cmd: progressCmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
 					inserts, _, err = jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4754,7 +4754,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				Convey("Jobs with long lines of stderr do not cause execution to hang", func() {
 					jobs = nil
 					bigerrCmd := `perl -e 'for (1..10) { for (1..65536) { print STDERR qq[e] } print STDERR qq[\n] }' && false`
-					jobs = append(jobs, &Job{Cmd: bigerrCmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "bigerr"})
+					jobs = append(jobs, &Job{Cmd: bigerrCmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "bigerr"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -4917,7 +4917,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					jobs = nil
 					cmd := "perl -MTime::HiRes=sleep -e 'sleep 0.8'"
-					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -5023,7 +5023,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 			var jobs []*Job
 			for i := range 3 {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp1"})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp1"})
 			}
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
@@ -5042,7 +5042,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				Convey("Then you can add dups and a new one under a new RepGroup and reserve/execute all of them", func() {
 					jobs = nil
 					for i := range 4 {
-						jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp2"})
+						jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp2"})
 					}
 
 					inserts, already, err := jq.Add(jobs, envVars, false)
@@ -5081,7 +5081,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			Convey("You can add dups and a new one under a new RepGroup", func() {
 				jobs = nil
 				for i := range 4 {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp2"})
+					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo rgduptest %d", i), Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "rp2"})
 				}
 
 				inserts, already, err := jq.Add(jobs, envVars, false)
@@ -5128,9 +5128,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: "echo deptest1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep1"})
-			jobs = append(jobs, &Job{Cmd: "echo deptest2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep2"})
-			jobs = append(jobs, &Job{Cmd: "echo deptest3", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep3"})
+			jobs = append(jobs, &Job{Cmd: "echo deptest1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep1"})
+			jobs = append(jobs, &Job{Cmd: "echo deptest2", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep2"})
+			jobs = append(jobs, &Job{Cmd: "echo deptest3", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep3"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 3)
@@ -5214,7 +5214,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 			mkLCTJob := func(cmd, repGroup string, endTime time.Time) *Job {
 				return &Job{
 					Cmd:       cmd,
-					Cwd:       "/tmp",
+					Cwd:       testCwd,
 					ReqGroup:  "fake_group",
 					RepGroup:  repGroup,
 					StartTime: endTime.Add(-1 * time.Second),
@@ -5307,16 +5307,16 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					d2 := NewEssenceDependency("echo deptest2", "")
 					d3 := NewEssenceDependency("echo deptest3", "")
 
-					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", Dependencies: Dependencies{d1}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", Dependencies: Dependencies{d1}})
 					d4 := NewEssenceDependency("echo deptest4", "")
 
-					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5", Dependencies: Dependencies{d1, d2, d3}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5", Dependencies: Dependencies{d1, d2, d3}})
 					d5 := NewEssenceDependency("echo deptest5", "")
 
-					jobs = append(jobs, &Job{Cmd: "echo deptest6", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep6", Dependencies: Dependencies{d3, d4}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest6", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep6", Dependencies: Dependencies{d3, d4}})
 					d6 := NewEssenceDependency("echo deptest6", "")
-					jobs = append(jobs, &Job{Cmd: "echo deptest7", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep7", Dependencies: Dependencies{d5, d6}})
-					jobs = append(jobs, &Job{Cmd: "echo deptest8", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep8", Dependencies: Dependencies{d5}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest7", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep7", Dependencies: Dependencies{d5, d6}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest8", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep8", Dependencies: Dependencies{d5}})
 
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -5496,8 +5496,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					jobs = nil
 					d5 := NewEssenceDependency("echo deptest5", "")
-					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", Dependencies: Dependencies{d5}})
-					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5"})
+					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", Dependencies: Dependencies{d5}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5"})
 
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -5545,9 +5545,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: "echo deptest1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep1", DepGroups: []string{"dep1", "dep1+2+3"}})
-			jobs = append(jobs, &Job{Cmd: "echo deptest2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep2", DepGroups: []string{"dep2", "dep1+2+3"}})
-			jobs = append(jobs, &Job{Cmd: "echo deptest3", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep3", DepGroups: []string{"dep3", "dep1+2+3"}})
+			jobs = append(jobs, &Job{Cmd: "echo deptest1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep1", DepGroups: []string{"dep1", "dep1+2+3"}})
+			jobs = append(jobs, &Job{Cmd: "echo deptest2", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep2", DepGroups: []string{"dep2", "dep1+2+3"}})
+			jobs = append(jobs, &Job{Cmd: "echo deptest3", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep3", DepGroups: []string{"dep3", "dep1+2+3"}})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 3)
@@ -5579,16 +5579,16 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					d123 := NewDepGroupDependency("dep1+2+3")
 					d3 := NewDepGroupDependency("dep3")
 
-					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", DepGroups: []string{"dep4"}, Dependencies: Dependencies{d1}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", DepGroups: []string{"dep4"}, Dependencies: Dependencies{d1}})
 					d4 := NewDepGroupDependency("dep4")
 
-					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5", DepGroups: []string{"dep5"}, Dependencies: Dependencies{d123}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5", DepGroups: []string{"dep5"}, Dependencies: Dependencies{d123}})
 					d5 := NewDepGroupDependency("dep5")
 
-					jobs = append(jobs, &Job{Cmd: "echo deptest6", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep6", DepGroups: []string{"dep6"}, Dependencies: Dependencies{d3, d4}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest6", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep6", DepGroups: []string{"dep6"}, Dependencies: Dependencies{d3, d4}})
 					d6 := NewDepGroupDependency("dep6")
-					jobs = append(jobs, &Job{Cmd: "echo deptest7", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep7", DepGroups: []string{"final"}, Dependencies: Dependencies{d5, d6}})
-					jobs = append(jobs, &Job{Cmd: "echo deptest8", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep8", DepGroups: []string{"final"}, Dependencies: Dependencies{d5}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest7", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep7", DepGroups: []string{"final"}, Dependencies: Dependencies{d5, d6}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest8", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep8", DepGroups: []string{"final"}, Dependencies: Dependencies{d5}})
 
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -5758,9 +5758,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 						Convey("DepGroup dependencies are live, bringing back jobs if new jobs are added that match their dependencies", func() {
 							jobs = nil
 							dfinal := NewDepGroupDependency("final")
-							jobs = append(jobs, &Job{Cmd: "echo after final", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "afterfinal", DepGroups: []string{"afterfinal"}, Dependencies: Dependencies{dfinal}})
+							jobs = append(jobs, &Job{Cmd: "echo after final", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "afterfinal", DepGroups: []string{"afterfinal"}, Dependencies: Dependencies{dfinal}})
 							dafinal := NewDepGroupDependency("afterfinal")
-							jobs = append(jobs, &Job{Cmd: "echo after after-final", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "after-afterfinal", Dependencies: Dependencies{dafinal}})
+							jobs = append(jobs, &Job{Cmd: "echo after after-final", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "after-afterfinal", Dependencies: Dependencies{dafinal}})
 							inserts, already, err := jq.Add(jobs, envVars, true)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 2)
@@ -5793,7 +5793,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 							So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 							jobs = nil
-							jobs = append(jobs, &Job{Cmd: "echo deptest9", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep9", DepGroups: []string{"final"}})
+							jobs = append(jobs, &Job{Cmd: "echo deptest9", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep9", DepGroups: []string{"final"}})
 							inserts, already, err = jq.Add(jobs, envVars, true)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 1)
@@ -5885,7 +5885,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 							So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
 							jobs = nil
-							jobs = append(jobs, &Job{Cmd: "echo deptest10", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep10", DepGroups: []string{"final"}})
+							jobs = append(jobs, &Job{Cmd: "echo deptest10", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep10", DepGroups: []string{"final"}})
 							inserts, already, err = jq.Add(jobs, envVars, true)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 3)
@@ -5915,8 +5915,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					jobs = nil
 					d5 := NewDepGroupDependency("dep5")
-					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", Dependencies: Dependencies{d5}})
-					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5", DepGroups: []string{"dep5"}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest4", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep4", Dependencies: Dependencies{d5}})
+					jobs = append(jobs, &Job{Cmd: "echo deptest5", Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep5", DepGroups: []string{"dep5"}})
 
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -5987,7 +5987,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 
 			var addJobs []*Job
 			for i := 1; i <= 5; i++ {
-				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:3"}})
+				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: testCwd, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:3"}})
 			}
 
 			inserts, already, err := jq.Add(addJobs, envVars, true)
@@ -6067,7 +6067,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				So(len(jobs), ShouldEqual, 2)
 
 				jobs = []*Job{}
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", 6), Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"a:3", "b:4"}})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", 6), Cwd: testCwd, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"a:3", "b:4"}})
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
@@ -6100,7 +6100,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			Convey("You can even add Jobs with bad LimitGroup names", func() {
 				var jobs []*Job
 
-				jobs = append(jobs, &Job{Cmd: "echo bad", Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:d3"}})
+				jobs = append(jobs, &Job{Cmd: "echo bad", Cwd: testCwd, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:d3"}})
 				_, _, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 			})
@@ -6231,7 +6231,7 @@ func TestJobqueueModules(t *testing.T) {
 
 			addJobs := []*Job{{
 				Cmd: strings.Join(cmds, " && "),
-				Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs,
+				Cwd: testCwd, ReqGroup: "rgroup", Requirements: standardReqs,
 				Override: uint8(2), Retries: uint8(0), RepGroup: "moduletest",
 				Modules: testModules}}
 
@@ -6270,7 +6270,7 @@ func TestJobqueueModify(t *testing.T) {
 	learnedRgroup := "200:30:1:0"
 	learnedRAMNormal := 100
 	learnedRAMExtraRange := []int{200, 500}
-	tmp := "/tmp"
+	tmp := testCwd
 	echoACmd := "echo a"
 
 	Convey("Once a new jobqueue server is up and client is connected", t, func() {
@@ -7048,7 +7048,7 @@ func TestJobqueueHighMem(t *testing.T) {
 			var jobs []*Job
 
 			cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 800000000) }'"
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "run_out_of_mem"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "run_out_of_mem"})
 
 			server.db.recMBRound = 1
 			defer func() {
@@ -7150,7 +7150,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 			jobs := []*Job{{
 				Cmd:          "sleep 10",
-				Cwd:          "/tmp",
+				Cwd:          testCwd,
 				ReqGroup:     "pending_kill",
 				Requirements: &jqs.Requirements{RAM: 1, Time: time.Second, Cores: 1},
 				Retries:      uint8(0),
@@ -7199,13 +7199,13 @@ func TestJobqueueProduction(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err = jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -7394,7 +7394,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -7455,7 +7455,7 @@ func TestJobqueueProduction(t *testing.T) {
 			var jobs []*Job
 
 			job1Cmd := "sleep 1 && echo noninstant"
-			jobs = append(jobs, &Job{Cmd: job1Cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "nij"})
+			jobs = append(jobs, &Job{Cmd: job1Cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "nij"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -7475,7 +7475,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(running, ShouldEqual, 1)
 				So(etc.Minutes(), ShouldBeLessThanOrEqualTo, 30)
 
-				jobs = append(jobs, &Job{Cmd: "echo added", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "nij"})
+				jobs = append(jobs, &Job{Cmd: "echo added", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "nij"})
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
@@ -8224,7 +8224,7 @@ sudo usermod -aG docker ` + osUser
 			cores := float64(1)
 			jobs = append(jobs, &Job{
 				Cmd:          "ls " + ccfmodPath,
-				Cwd:          "/tmp",
+				Cwd:          testCwd,
 				ReqGroup:     "rg",
 				Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: cores, Other: other},
 				Override:     uint8(2),
@@ -8257,7 +8257,7 @@ sudo usermod -aG docker ` + osUser
 
 			releaseJobs := []*Job{{
 				Cmd:          "echo release",
-				Cwd:          "/tmp",
+				Cwd:          testCwd,
 				ReqGroup:     "ccfmod-release",
 				Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0},
 				Override:     uint8(2),
@@ -8287,7 +8287,7 @@ sudo usermod -aG docker ` + osUser
 
 			rg := "scmod"
 			csmodPath := "/tmp/csmod"
-			jobs = append(jobs, &Job{Cmd: "ls " + csmodPath, Cwd: "/tmp", ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(1), Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+			jobs = append(jobs, &Job{Cmd: "ls " + csmodPath, Cwd: testCwd, ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(1), Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -8371,7 +8371,7 @@ sudo usermod -aG docker ` + osUser
 			coresMore := flavor.Cores
 
 			rg := "rg"
-			jobs = append(jobs, &Job{Cmd: "getconf _NPROCESSORS_ONLN && false", Cwd: "/tmp", ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(cores), Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+			jobs = append(jobs, &Job{Cmd: "getconf _NPROCESSORS_ONLN && false", Cwd: testCwd, ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(cores), Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -8455,7 +8455,7 @@ sudo usermod -aG docker ` + osUser
 			rg := "first_docker"
 			dockerName := "jobqueue_test." + internal.RandomString()
 			dockerCmd := "docker run --rm --name " + dockerName + " sendu/usememory:v1 && false"
-			jobs = append(jobs, &Job{Cmd: dockerCmd, Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+			jobs = append(jobs, &Job{Cmd: dockerCmd, Cwd: testCwd, ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -8515,9 +8515,9 @@ sudo usermod -aG docker ` + osUser
 		Convey("You can run cmds that have fractional or 0 CPU requirements simultaneously on 1 CPU", func() {
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 1", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.9, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
-			jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 2", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.1, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
-			jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 3", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+			jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 1", Cwd: testCwd, ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.9, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+			jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 2", Cwd: testCwd, ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.1, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+			jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 3", Cwd: testCwd, ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 3)
@@ -8570,12 +8570,12 @@ sudo usermod -aG docker ` + osUser
 			other["cloud_script"] = dockerInstallScript
 
 			dockerName := "jobqueue_test." + internal.RandomString()
-			jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "named_docker", MonitorDocker: dockerName})
+			jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: testCwd, ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "named_docker", MonitorDocker: dockerName})
 
 			other = make(map[string]string)
 			other["cloud_script"] = dockerInstallScript
 			dockerCidFile := "jobqueue_test.cidfile"
-			jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
+			jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: testCwd, ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -8641,7 +8641,7 @@ sudo usermod -aG docker ` + osUser
 			rg := "noDocker_" + internal.RandomString()
 			jobs := []*Job{{
 				Cmd:           "docker run sendu/usememory:v1",
-				Cwd:           "/tmp",
+				Cwd:           testCwd,
 				ReqGroup:      rg,
 				Requirements:  &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1},
 				Override:      uint8(2),
@@ -8717,7 +8717,7 @@ sudo usermod -aG docker ` + osUser
 			other := make(map[string]string)
 			configPath := "~/.wr_test.config"
 			other["cloud_config_files"] = remoteConfigPath + ":" + configPath
-			jobs = append(jobs, &Job{Cmd: "cat " + configPath + " && false", Cwd: "/tmp", ReqGroup: "cat", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Hour, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "with_config_file"})
+			jobs = append(jobs, &Job{Cmd: "cat " + configPath + " && false", Cwd: testCwd, ReqGroup: "cat", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Hour, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "with_config_file"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -8770,15 +8770,15 @@ sudo usermod -aG docker ` + osUser
 			var jobs []*Job
 
 			dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
-			jobs = append(jobs, &Job{Cmd: "sleep 1", Cwd: "/tmp", ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, Override: uint8(2), Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 4", Cwd: "/tmp", ReqGroup: "echo", Requirements: dropReq, Priority: uint8(255), Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 5", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "sleep 1", Cwd: testCwd, ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: testCwd, ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, Override: uint8(2), Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: testCwd, ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 4", Cwd: testCwd, ReqGroup: "echo", Requirements: dropReq, Priority: uint8(255), Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 5", Cwd: testCwd, ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, Retries: uint8(3), RepGroup: "manually_added"})
 
 			count := 100
 			for i := 6; i <= count; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: testCwd, ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
 			}
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
@@ -8842,7 +8842,7 @@ sudo usermod -aG docker ` + osUser
 			other := map[string]string{"cloud_script": "true"}
 			req := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0, Other: other}
 
-			jobs = append(jobs, &Job{Cmd: "sleep 300", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
+			jobs = append(jobs, &Job{Cmd: "sleep 300", Cwd: testCwd, ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -9039,7 +9039,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 			var jobs []*Job
 
-			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, mountEnvVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)

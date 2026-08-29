@@ -119,6 +119,53 @@ func TestSuiteTempReaping(t *testing.T) {
 	})
 }
 
+func TestSuiteLeavesForeignJobDirsAlone(t *testing.T) {
+	Convey("A run leaves the working dir of a job someone else submitted alone", t, func() {
+		foreign := plantJobqueueCwdDir(t)
+
+		So(RunPlan(t.Context(), io.Discard, io.Discard, t.TempDir(),
+			Plan{Mode: ModeTest, Module: "example.com/m"}), ShouldBeNil)
+
+		_, err := os.Stat(foreign)
+		So(err, ShouldBeNil)
+	})
+}
+
+// plantJobqueueCwdDir makes one dir under /tmp/jobqueue_cwd for the duration of
+// the test, standing in for the working dir of a live job someone else on this
+// host submitted with --cwd /tmp: jobqueue's mkHashedDir builds every such job
+// a dir under exactly that path, holding its stdout, stderr, .wr_ metadata and
+// the cwd the command runs in.
+//
+// It makes the shared parent the way jobqueue does, world-accessible so users
+// coexist under it, and only when it is missing, and removes only what it made.
+func plantJobqueueCwdDir(t *testing.T) string {
+	t.Helper()
+
+	parent := filepath.Join("/tmp", "jobqueue_cwd")
+
+	_, err := os.Stat(parent)
+	madeParent := os.IsNotExist(err)
+
+	So(os.MkdirAll(parent, os.ModePerm), ShouldBeNil)
+
+	dir := filepath.Join(parent, "wrtest-"+strconv.Itoa(os.Getpid())+"-foreign")
+	So(os.Mkdir(dir, plantedDirMode), ShouldBeNil)
+
+	// no assertion here: this runs after the Convey block that called us has
+	// ended, where So has nowhere to report to. os.Remove leaves the parent
+	// alone unless it is empty, so a real job's dir in it is never at risk.
+	t.Cleanup(func() {
+		os.RemoveAll(dir)
+
+		if madeParent {
+			os.Remove(parent)
+		}
+	})
+
+	return dir
+}
+
 // killedRunSuiteTemp returns a temp dir made, and left behind, by a run of this
 // binary that is no longer around - what a killed suite leaves in os.TempDir().
 func killedRunSuiteTemp(t *testing.T) string {

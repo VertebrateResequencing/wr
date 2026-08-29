@@ -246,7 +246,7 @@ func wsfLiveJobs(n int) []*Job {
 	for i := range jobs {
 		jobs[i] = &Job{
 			Cmd:          fmt.Sprintf("wsfreeze-live %d %s", i, pad),
-			Cwd:          "/tmp",
+			Cwd:          testCwd,
 			RepGroup:     "wsfreeze",
 			ReqGroup:     "wsfreeze",
 			Requirements: &jqs.Requirements{RAM: 100, Time: time.Hour, Cores: 1, Disk: 1},
@@ -275,7 +275,7 @@ func wsfArchiverLoop(ctx context.Context, database *db, stop <-chan struct{}, co
 		now := time.Now()
 		job := &Job{
 			Cmd:          fmt.Sprintf("wsfreeze-archive %d-%d %s", nonce, i, pad),
-			Cwd:          "/tmp",
+			Cwd:          testCwd,
 			RepGroup:     "wsfreeze",
 			ReqGroup:     "wsfreeze",
 			Requirements: &jqs.Requirements{RAM: 100, Time: time.Hour, Cores: 1, Disk: 1},
