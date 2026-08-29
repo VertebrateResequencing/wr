@@ -172,8 +172,8 @@ managerdbbkfile: "db_bk"
 # a fixed window, and this knob cannot reach it.
 #
 # What it does still govern:
-#   - defining or changing limit groups (db.storeLimitGroups): wr limit, and
-#     the limit groups an added job declares
+#   - defining, changing or removing limit groups (db.storeLimitGroups): wr
+#     limit, and the limit groups an added job declares
 #   - storing a client environment the database has not seen before
 #     (db.storeEnv's db.store): once per distinct environment, on add
 #   - removing jobs (db.deleteLiveJobs): wr remove, plus one write per job for

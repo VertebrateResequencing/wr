@@ -252,25 +252,28 @@ const (
 
 // planLimitGroup decides what should happen to a single limit group: the
 // outcome to report, and the bucket write (if any) that achieving it needs. The
-// outcome does not imply a write, and vice versa: a non-count group is reported
-// removed with nothing ever stored for it, while a group stored for the first
-// time is reported unchanged, having had no previous value to change.
+// outcome does not imply a write, and vice versa: a group whose limit is being
+// forgotten is reported removed whether or not it had a record to delete, while
+// a group stored for the first time is reported unchanged, having had no
+// previous value to change.
 //
 // It only reads b, so it can also be called in a read transaction, to find out
 // whether a write transaction is needed at all.
 func planLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, limitGroupWrite) {
-	if !limitG.IsCount() {
-		return limitGroupRemoved, limitGroupWriteNone
-	}
-
 	existing := b.Get([]byte(group))
 
-	if limit := limitG.Limit(); limit >= 0 {
-		return planLimitGroupStore(existing, limit)
+	if limitG.IsCount() {
+		return planLimitGroupStore(existing, limitG.Limit())
 	}
 
-	if existing == nil {
-		return limitGroupUnchanged, limitGroupWriteNone
+	// what is left is either a time-based group, which derives its limit from
+	// its own name and so is never stored, or the invalid GroupData that
+	// limiter.NewCountGroupData() makes of the negative limit a user gives
+	// (name:-1) to forget a group's limit entirely. That one has to take any
+	// record with it: the limiter vivifies groups from this bucket on demand, so
+	// a surviving record brings the removed limit straight back.
+	if limitG.IsValid() || existing == nil {
+		return limitGroupRemoved, limitGroupWriteNone
 	}
 
 	return limitGroupRemoved, limitGroupWriteDelete
