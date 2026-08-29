@@ -120,6 +120,22 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateRemoved:   JobStateComplete,
 }
 
+// resolveMountPoint says where a MountConfig.Mount ends up being mounted: the
+// default when it is unspecified, itself when it is absolute, and otherwise
+// relative to cwd (so it can climb out of cwd, eg. "../shared" for a mount
+// shared between the Jobs of a Cwd).
+func resolveMountPoint(mcMount, cwd, defaultMount string) string {
+	if mcMount == "" {
+		return defaultMount
+	}
+
+	if filepath.IsAbs(mcMount) {
+		return mcMount
+	}
+
+	return filepath.Join(cwd, mcMount)
+}
+
 func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	if len(j.incrementedLimitGroups) > 0 {
 		if lim != nil {
@@ -128,6 +144,21 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 
 		j.incrementedLimitGroups = []string{}
 	}
+}
+
+// mountPoints returns the directory each of the Job's MountConfigs mounts on,
+// resolved exactly as Mount() resolves them, so that a caller which must avoid
+// touching the Job's mount points knows precisely which dirs those are.
+func (j *Job) mountPoints() []string {
+	cwd, defaultMount, _ := j.mountBaseDirs(nil)
+
+	points := make([]string, 0, len(j.MountConfigs))
+
+	for _, mc := range j.MountConfigs {
+		points = append(points, resolveMountPoint(mc.Mount, cwd, defaultMount))
+	}
+
+	return points
 }
 
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
@@ -949,18 +980,11 @@ func (ms *mountState) resolveCacheDir(cacheDir, defaultCacheBase string) string 
 // resolveMount resolves a MountConfig's mount point relative to cwd (or the
 // default), recording it as a unique mounted dir when appropriate.
 func (ms *mountState) resolveMount(mcMount, cwd, defaultMount string) string {
-	if mcMount == "" {
-		ms.mountedDirs = append(ms.mountedDirs, defaultMount)
+	mount := resolveMountPoint(mcMount, cwd, defaultMount)
 
-		return defaultMount
+	if !filepath.IsAbs(mcMount) {
+		ms.mountedDirs = append(ms.mountedDirs, mount)
 	}
-
-	if filepath.IsAbs(mcMount) {
-		return mcMount
-	}
-
-	mount := filepath.Join(cwd, mcMount)
-	ms.mountedDirs = append(ms.mountedDirs, mount)
 
 	return mount
 }

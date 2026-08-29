@@ -403,6 +403,111 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			soPathsGone(output, tmpDir)
 		})
 
+		Convey("Given a mounting Job with a mount point in its workspace, outside its ActualCwd", func() {
+			// sharing one mount between the Jobs of a Cwd means giving a
+			// relative MountConfig.Mount that climbs out of the Job's own
+			// ActualCwd, which lands it in the workspace that cleanup sweeps.
+			// The mount is still live when cleanup runs (Job.Unmount comes
+			// after it in client.go), and os.RemoveAll has no mount awareness,
+			// so deleting it would recurse into the user's remote filesystem.
+			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			actualCwd := filepath.Join(workSpace, "cwd")
+			err = os.MkdirAll(actualCwd, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			output := filepath.Join(actualCwd, "out.txt")
+			err = os.WriteFile(output, []byte("output\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			tmpDir := filepath.Join(workSpace, "tmp")
+			err = os.Mkdir(tmpDir, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			Convey("Cleanup keeps a mount one level out of ActualCwd, and the mount inside it", func() {
+				shared := filepath.Join(workSpace, "shared")
+				remote := filepath.Join(shared, "remote.txt")
+				err = os.MkdirAll(shared, os.ModePerm)
+				So(err, ShouldBeNil)
+
+				err = os.WriteFile(remote, []byte("remote\n"), 0o600)
+				So(err, ShouldBeNil)
+
+				mounted := filepath.Join(actualCwd, testMountDir, "data.txt")
+				err = os.MkdirAll(filepath.Dir(mounted), os.ModePerm)
+				So(err, ShouldBeNil)
+
+				err = os.WriteFile(mounted, []byte("mounted\n"), 0o600)
+				So(err, ShouldBeNil)
+
+				job := &Job{
+					Cwd:          cwd,
+					ActualCwd:    actualCwd,
+					MountConfigs: MountConfigs{{Mount: "../shared"}, {Mount: testMountDir}},
+				}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				// survival is asserted before the error, since a leaf stops at
+				// its first failed So and the deletion is the evidence that
+				// matters.
+				soPathsExist(remote, shared, mounted, actualCwd, workSpace, cwd, precious)
+				soPathsGone(output, tmpDir)
+
+				So(err, ShouldBeNil)
+			})
+
+			Convey("Cleanup keeps a mount nested deeper out of ActualCwd, and the dirs above it", func() {
+				nested := filepath.Join(workSpace, "a", "b")
+				remote := filepath.Join(nested, "remote.txt")
+				err = os.MkdirAll(nested, os.ModePerm)
+				So(err, ShouldBeNil)
+
+				err = os.WriteFile(remote, []byte("remote\n"), 0o600)
+				So(err, ShouldBeNil)
+
+				job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: "../a/b"}}}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				soPathsExist(remote, nested, filepath.Join(workSpace, "a"), workSpace, cwd, precious)
+				soPathsGone(output, tmpDir)
+
+				So(err, ShouldBeNil)
+			})
+
+			Convey("Cleanup leaves an absolute mount outside the workspace alone, and still cleans", func() {
+				outside := filepath.Join(parent, "shared_mount")
+				remote := filepath.Join(outside, "remote.txt")
+				err = os.MkdirAll(outside, os.ModePerm)
+				So(err, ShouldBeNil)
+
+				err = os.WriteFile(remote, []byte("remote\n"), 0o600)
+				So(err, ShouldBeNil)
+
+				job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: outside}}}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				// nothing of the mount is inside the workspace, so the whole
+				// workspace goes, as it does for a Job with no mounts at all.
+				soPathsExist(remote, outside, cwd, precious)
+				soPathsGone(output, tmpDir, actualCwd, workSpace)
+
+				So(err, ShouldBeNil)
+			})
+
+			Convey("Cleanup of a Job that mounts on its ActualCwd keeps that, but not the workspace extras", func() {
+				job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{}}}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				soPathsExist(output, actualCwd, workSpace, cwd, precious)
+				soPathsGone(tmpDir)
+
+				So(err, ShouldBeNil)
+			})
+		})
+
 		Convey("Cleanup of a mounting Job still tidies empty parents when its workspace has gone", func() {
 			// cleanup runs more than once for the same Job: the runner does it
 			// (client.go), and for a lost job the server does it again

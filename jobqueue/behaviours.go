@@ -328,7 +328,7 @@ func cleanupWorkSpace(j *Job, workSpace, actualCwd provenDirs) error {
 		}
 	}
 
-	return removeWorkSpaceExtras(workSpace.leaf)
+	return removeWorkSpaceExtras(workSpace.leaf, mountedWorkSpaceEntries(j, workSpace.leaf))
 }
 
 // mountDirsToKeep works out, from a Job's MountConfigs, which relative dirs to
@@ -347,11 +347,61 @@ func mountDirsToKeep(mcs MountConfigs) (keepDirs []string, keepActualCwd bool) {
 	return keepDirs, false
 }
 
-// removeWorkSpaceExtras deletes everything inside workSpace except for cwd and
-// the cache dirs, incase a job.Cmd did something like `touch ../foo`. It's ok if
-// workSpace doesn't exist; see cleanupWorkSpace. Any other read failure, eg. a
-// permissions or IO problem, is returned.
-func removeWorkSpaceExtras(workSpace string) error {
+// mountedWorkSpaceEntries returns, for each of the Job's mount points that lies
+// inside workSpace, the name of the workSpace entry you would have to go
+// through to reach it. Those entries must be left alone: deleting one would
+// delete the mount point, or the dirs above a deeper one along with it.
+//
+// cmd/add.go documents cleanup as ignoring mounted dirs, and the mounts are
+// still live when cleanup runs (Job.Unmount comes after it in client.go), so
+// os.RemoveAll - which has no mount awareness - would recurse through a mount
+// point into the user's remote file system.
+//
+// Mount points below the ActualCwd, and outside workSpace entirely, need
+// nothing here: the former are kept by removeActualCwd, and the latter are
+// somewhere cleanup never deletes.
+func mountedWorkSpaceEntries(j *Job, workSpace string) map[string]bool {
+	entries := make(map[string]bool, len(j.MountConfigs))
+
+	for _, mount := range j.mountPoints() {
+		if name, ok := entryLeadingTo(workSpace, mount); ok {
+			entries[name] = true
+		}
+	}
+
+	return entries
+}
+
+// entryLeadingTo returns the name of the entry of dir that path is inside (path
+// itself, if it is a direct child). ok is false if path is not strictly inside
+// dir, or if either path could not be made absolute.
+func entryLeadingTo(dir, path string) (string, bool) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil || !relIsBelow(rel) {
+		return "", false
+	}
+
+	name, _, _ := strings.Cut(rel, string(filepath.Separator))
+
+	return name, true
+}
+
+// removeWorkSpaceExtras deletes everything inside workSpace except for cwd, the
+// cache dirs, and the given entries leading to the Job's mount points, incase a
+// job.Cmd did something like `touch ../foo`. It's ok if workSpace doesn't exist;
+// see cleanupWorkSpace. Any other read failure, eg. a permissions or IO problem,
+// is returned.
+func removeWorkSpaceExtras(workSpace string, keepEntries map[string]bool) error {
 	entries, err := os.ReadDir(workSpace)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -362,7 +412,7 @@ func removeWorkSpaceExtras(workSpace string) error {
 	}
 
 	for _, entry := range entries {
-		if entry.Name() == "cwd" || strings.HasPrefix(entry.Name(), ".muxfys") {
+		if keptWorkSpaceEntry(entry.Name(), keepEntries) {
 			continue
 		}
 
@@ -372,6 +422,13 @@ func removeWorkSpaceExtras(workSpace string) error {
 	}
 
 	return nil
+}
+
+// keptWorkSpaceEntry says if an entry of a Job's workspace must survive
+// cleanup: its ActualCwd, one of the muxfys mount cache dirs, or an entry
+// leading to one of its mount points.
+func keptWorkSpaceEntry(name string, keepEntries map[string]bool) bool {
+	return name == "cwd" || strings.HasPrefix(name, ".muxfys") || keepEntries[name]
 }
 
 // removeActualCwd deletes the Job's ActualCwd, keeping the given relative dirs
