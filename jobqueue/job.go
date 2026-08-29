@@ -878,8 +878,8 @@ func (j *Job) mountBaseDirs(onCwd []bool) (cwd, defaultMount, defaultCacheBase s
 	// working directory to mount in or cache beside, whatever ActualCwd says: a
 	// Job persisted by wr v0.37.0|1 can have it set to Cwd, and then the cache
 	// base would become the parent of the user's own Cwd.
-	if !j.CwdMatters && j.ActualCwd != "" {
-		cwd = j.ActualCwd
+	if created := j.createdCwd(); created != "" {
+		cwd = created
 		defaultMount = cwd
 		defaultCacheBase = filepath.Dir(cwd)
 	} else if len(onCwd) == 1 && onCwd[0] {
@@ -1068,7 +1068,7 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	// excluded even if it has an ActualCwd, because wr created no directory for
 	// it: one persisted by wr v0.37.0|1 can have ActualCwd set to Cwd, and there
 	// is nothing there for us to tidy up.
-	if !j.CwdMatters && j.ActualCwd != "" {
+	if j.createdCwd() != "" {
 		err = j.rmEmptyMountDirs()
 	}
 
@@ -1323,7 +1323,7 @@ func (j *Job) ToStatus() (JStatus, error) {
 	j.RLock()
 	defer j.RUnlock()
 
-	leaf, err := cwdLeaf(j.Cwd, j.ActualCwd)
+	leaf, err := cwdLeaf(j.Cwd, j.createdCwd())
 	if err != nil {
 		return JStatus{}, err
 	}
@@ -1456,22 +1456,40 @@ func (j *Job) setActualCwd(cwd string) {
 	j.ActualCwd = cwd
 }
 
-// workingDir returns the directory this Job's Cmd runs in, or "" if that isn't
-// known yet: ActualCwd if wr created a unique working directory below Cwd, or
-// Cwd itself when CwdMatters, since then the Cmd runs in Cwd. A non-CwdMatters
-// Job that has yet to report an ActualCwd gets "" rather than Cwd, because its
-// Cmd runs in a unique directory below Cwd, not in Cwd. Must be called with at
-// least an RLock held.
-func (j *Job) workingDir() string {
-	if j.ActualCwd != "" {
-		return j.ActualCwd
+// createdCwd returns the unique working directory wr created for this Job below
+// Cwd, or "" if wr created none.
+//
+// It is "" for a CwdMatters Job whatever ActualCwd says, because wr creates no
+// directory for one: the Cmd runs in the user's own Cwd. setActualCwd refuses to
+// write ActualCwd on such a Job, but one persisted by wr v0.37.0|1 can still be
+// read back carrying Cwd there, and every caller of this is deciding something
+// about a directory wr owns - what to display as the leaf below Cwd, where to
+// mount, what may be tidied up. Must be called with at least an RLock held.
+func (j *Job) createdCwd() string {
+	if j.CwdMatters {
+		return ""
 	}
 
+	return j.ActualCwd
+}
+
+// workingDir returns the directory this Job's Cmd runs in, or "" if that isn't
+// known yet: Cwd when CwdMatters, since then the Cmd runs in Cwd itself, and
+// otherwise ActualCwd, the unique working directory wr created below Cwd. A
+// non-CwdMatters Job that has yet to report an ActualCwd gets "" rather than
+// Cwd, because its Cmd runs in a unique directory below Cwd, not in Cwd.
+//
+// CwdMatters is checked FIRST so that ActualCwd is ignored entirely on such a
+// Job, rather than only when it happens to be empty. setActualCwd refuses to
+// write it there, but a Job persisted by v0.37.x can still be read back with
+// the poisoned value, and this is what wr displays and offers to ssh to.
+// Must be called with at least an RLock held.
+func (j *Job) workingDir() string {
 	if j.CwdMatters {
 		return j.Cwd
 	}
 
-	return ""
+	return j.createdCwd()
 }
 
 // unixNanoPtr returns a pointer to t's UnixNano value, or nil if t is the zero

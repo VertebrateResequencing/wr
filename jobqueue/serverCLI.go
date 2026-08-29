@@ -276,7 +276,7 @@ func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
 	job.RLock()
 	defer job.RUnlock()
 
-	leaf, err := cwdLeaf(job.Cwd, job.ActualCwd)
+	leaf, err := cwdLeaf(job.Cwd, job.createdCwd())
 	if err != nil {
 		return nil, err
 	}

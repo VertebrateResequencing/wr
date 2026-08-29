@@ -609,7 +609,27 @@ func TestJob(t *testing.T) {
 		status, err := job.ToStatus()
 		So(err, ShouldBeNil)
 		So(status.CwdBase, ShouldEqual, liveStatusCwd)
-		So(status.Cwd, ShouldEqual, "/")
+
+		// blank, the same as the cwd_matters Convey above reports for a Job with
+		// no ActualCwd at all: wr created no directory for a cwd_matters Job, so
+		// there is no leaf below Cwd to show, and carrying the v0.37.0|1 poison
+		// must not change what is displayed. Before createdCwd() this showed
+		// "/" here and blank there, for two Jobs that run in the same place.
+		So(status.Cwd, ShouldBeBlank)
+
+		// The poisoning always wrote Cwd itself, so the assertion above cannot
+		// tell "ActualCwd is ignored on a CwdMatters Job" apart from "ActualCwd
+		// was used and happened to give the same answer". A poisoned value that
+		// DIFFERS from Cwd is what makes it discriminate: this fails if any of
+		// these paths consults ActualCwd on a CwdMatters Job again.
+		job.ActualCwd = liveStatusCwd + "/poisoned"
+
+		status, err = job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- 10.0.0.8 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
 	})
 
 	Convey("ToStatus() of a job with an ActualCwd outside its Cwd shows that dir in full", t, func() {
