@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -556,6 +557,49 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
+
+		Convey("Given a mounting Job whose ActualCwd holds a mount dir and an output file", func() {
+			// a relative MountConfig.Mount is whatever the user typed for `wr
+			// add --mounts`, so it can name somewhere outside the dir being
+			// cleared. Walking up from such a dir never reaches that dir, and
+			// used to walk past the filesystem root forever, hanging both the
+			// runner and the manager goroutine that cleans up a lost job.
+			const cleanupTimeout = 5 * time.Second
+
+			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			actualCwd := filepath.Join(workSpace, "cwd")
+			mounted := filepath.Join(actualCwd, testMountDir, "data.txt")
+			err = os.MkdirAll(filepath.Dir(mounted), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mounted, []byte("mounted\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			output := filepath.Join(actualCwd, "out.txt")
+			err = os.WriteFile(output, []byte("output\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			for _, escape := range []string{"../evil", "..", "."} {
+				Convey("Cleanup finishes and still keeps the real mount dir, despite a Mount of "+escape, func() {
+					job := &Job{
+						Cwd:          cwd,
+						ActualCwd:    actualCwd,
+						MountConfigs: MountConfigs{{Mount: escape}, {Mount: testMountDir}},
+					}
+
+					returned, cleanupErr := triggerWithin(cleanup, job, cleanupTimeout)
+
+					// termination and the kept mount are asserted before the
+					// error, since a leaf stops at its first failed So and a
+					// hang is the failure that matters.
+					So(returned, ShouldBeTrue)
+					soPathsExist(mounted, actualCwd, workSpace, cwd, precious)
+					soPathsGone(output)
+
+					So(cleanupErr, ShouldBeNil)
+				})
+			}
+		})
 	})
 }
 
@@ -572,5 +616,22 @@ func soPathsGone(paths ...string) {
 	for _, path := range paths {
 		_, err := os.Stat(path)
 		So(os.IsNotExist(err), ShouldBeTrue)
+	}
+}
+
+// triggerWithin runs the given Behaviour on the given Job in a goroutine and
+// returns whether it finished within d, along with the error it gave if it did.
+// Cleanup of a Job can hang forever, and calling it directly would then take
+// out the whole test binary instead of failing this one assertion.
+func triggerWithin(b *Behaviour, j *Job, d time.Duration) (bool, error) {
+	errCh := make(chan error, 1)
+
+	go func() { errCh <- b.Trigger(OnExit, j) }()
+
+	select {
+	case err := <-errCh:
+		return true, err
+	case <-time.After(d):
+		return false, nil
 	}
 }

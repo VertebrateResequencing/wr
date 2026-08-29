@@ -1094,6 +1094,16 @@ func resolvedAbsPath(path string) (string, error) {
 // except for the given folders (relative paths). It's ok if path doesn't exist:
 // there is then nothing of ours left to delete there. Any other read failure,
 // eg. a permissions or IO problem, is returned.
+//
+// An exception that doesn't land strictly inside path is skipped rather than
+// treated as an error. A MountConfig.Mount is whatever the user typed for `wr
+// add --mounts`, so it can be ".", ".." or "../evil", and walking up from such a
+// dir never reaches path: it used to run past the filesystem root forever,
+// hanging cleanup on the runner and in the server goroutine that cleans up a
+// lost job. Skipping is safe because only descendants of path are ever deleted
+// here, so an exception outside path was protecting nothing anyway, whereas
+// erroring would abandon the job's workspace for no gain. The walk also stops at
+// the filesystem root regardless of that, so it cannot be made unbounded again.
 func removeAllExcept(path string, exceptions []string) error {
 	path = filepath.Clean(path)
 
@@ -1111,12 +1121,14 @@ func removeAllExcept(path string, exceptions []string) error {
 
 	for _, dir := range exceptions {
 		abs := filepath.Join(path, dir)
+		if !lexicalDirIsBelow(abs, path) {
+			continue
+		}
+
 		keepDirs[abs] = true
 
-		parent := filepath.Dir(abs)
-		for parent != path {
+		for parent := filepath.Dir(abs); parent != path && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
 			checkDirs[parent] = true
-			parent = filepath.Dir(parent)
 		}
 	}
 
