@@ -1472,12 +1472,6 @@ func TestJobqueueSignal(t *testing.T) {
 		return
 	}
 
-	if servermode {
-		runServer(ctx)
-
-		return
-	}
-
 	config, _, addr, _, clientConnectTime := jobqueueTestInit(false)
 
 	// these tests need the server running in it's own pid so we can test signal

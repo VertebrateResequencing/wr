@@ -77,15 +77,14 @@ type runnerServerFixture struct {
 // matches a recovered runner by its exact cmdline, is unaffected.
 const runnerModeTestRun = " -test.run TestJobqueueRunnerModeEntrypoint"
 
+// TestJobqueueRunnerModeEntrypoint pins the invariant TestMain now enforces:
+// no test ever runs in a subprocess mode, because dispatchSubprocessMode() exits
+// the process first. It keeps the name that runnerModeTestRun filters on.
 func TestJobqueueRunnerModeEntrypoint(t *testing.T) {
-	if servermode {
-		return
-	}
-
-	if runnermode {
-		runner(context.Background())
-		os.Exit(0)
-	}
+	Convey("No test runs in --runnermode or --servermode", t, func() {
+		So(runnermode, ShouldBeFalse)
+		So(servermode, ShouldBeFalse)
+	})
 }
 
 func TestJobqueueRunnerLostJobs(t *testing.T) {

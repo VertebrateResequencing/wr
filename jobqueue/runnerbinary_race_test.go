@@ -42,6 +42,8 @@ const envTestRunnerBinary = "WR_TEST_RUNNER_BINARY"
 var runnerBinaryTempDir string
 
 func TestMain(m *testing.M) {
+	dispatchSubprocessMode()
+
 	code := m.Run()
 
 	if runnerBinaryTempDir != "" {
