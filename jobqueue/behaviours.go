@@ -262,48 +262,65 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 		return nil
 	}
 
+	// wr made ActualCwd itself, as a real dir strictly inside Cwd. If it is
+	// anything else now (eg. it is stale after a `wr mod --cwd`, was poisoned
+	// with Cwd itself, is an unclean path that cleans out of Cwd, or the Job's
+	// own Cmd replaced a dir below Cwd with a symlink), we cannot tell which
+	// directory wr is entitled to delete, so we delete nothing and report why.
+	// Leaving a workspace behind is recoverable; deleting the wrong directory is
+	// what this whole guard exists to prevent.
+	//
+	// A resolved proof is not good enough here, because it names the symlink's
+	// target rather than ActualCwd: the workspace would be taken to be the
+	// target's parent, and the deletions below descend into ActualCwd through
+	// os.ReadDir, which follows a symlinked final component. We prove ActualCwd
+	// once here and hand the result to everything below, so that neither the
+	// proof nor the deletions repeat the (on Lustre, expensive) path metadata
+	// operations.
+	provenActual, ok := realDirBelow(j.ActualCwd, j.Cwd)
+	if !ok {
+		return fmt.Errorf("%w: refusing to clean up %s, which is not a real dir inside the job's cwd %s",
+			errNotBelowBaseDir, j.ActualCwd, j.Cwd)
+	}
+
 	// it's the parent of ActualCwd that is the unique dir that got created
 	// that should be deleted; it contains tmp, cwd and possibly mount cache
 	// dirs (that we don't want to delete).
-	workSpace := filepath.Dir(j.ActualCwd)
-
-	// only a dir strictly inside Cwd can be a dir that wr created; if ActualCwd
-	// says otherwise (eg. it is stale after a `wr mod --cwd`, or was poisoned
-	// with Cwd itself), deleting it would destroy directories that belong to the
-	// user, so we delete nothing and report why. We prove that once here and
-	// hand the result to the parent dir walk, so that neither the proof nor the
-	// walk repeats the (on Lustre, expensive) path metadata operations.
-	checkedWorkSpace, checkedCwd, ok := deletableDirBelow(workSpace, j.Cwd)
+	workSpace, ok := provenActual.parent()
 	if !ok {
-		return fmt.Errorf("%w: refusing to clean up %s, which is not inside the job's cwd %s",
-			errNotBelowBaseDir, workSpace, j.Cwd)
+		return fmt.Errorf("%w: refusing to clean up the parent of %s, which is not inside the job's cwd %s",
+			errNotBelowBaseDir, provenActual.leaf, j.Cwd)
 	}
 
-	if err := cleanupWorkSpace(j, workSpace); err != nil {
+	if err := cleanupWorkSpace(j, workSpace, provenActual); err != nil {
 		return err
 	}
 
 	// delete any empty parent directories up to Cwd
-	return rmCheckedEmptyDirs(checkedWorkSpace, checkedCwd)
+	return rmCheckedEmptyDirs(workSpace)
 }
 
 // cleanupWorkSpace deletes the contents of the Job's workspace dir. If the Job
 // used mounts it takes care not to delete the cache dirs or mounted dirs;
 // otherwise it just deletes everything in one go.
-func cleanupWorkSpace(j *Job, workSpace string) error {
+//
+// It takes provenDirs rather than paths so that this, the one destructive
+// deletion in the cleanup path, cannot be reached with a raw Job field or any
+// other unproven string.
+func cleanupWorkSpace(j *Job, workSpace, actualCwd provenDirs) error {
 	if len(j.MountConfigs) == 0 {
-		return removeAllManaged(workSpace)
+		return removeAllManaged(workSpace.leaf)
 	}
 
 	keepDirs, keepActualCwd := mountDirsToKeep(j.MountConfigs)
 
 	if !keepActualCwd {
-		if err := removeActualCwd(j.ActualCwd, keepDirs); err != nil {
+		if err := removeActualCwd(actualCwd, keepDirs); err != nil {
 			return err
 		}
 	}
 
-	return removeWorkSpaceExtras(workSpace)
+	return removeWorkSpaceExtras(workSpace.leaf)
 }
 
 // mountDirsToKeep works out, from a Job's MountConfigs, which relative dirs to
@@ -345,12 +362,15 @@ func removeWorkSpaceExtras(workSpace string) error {
 
 // removeActualCwd deletes the Job's ActualCwd, keeping the given relative dirs
 // if any were specified.
-func removeActualCwd(actualCwd string, keepDirs []string) error {
+//
+// actualCwd must be proven a real dir, not a symlink: removeAllExcept reads it
+// with os.ReadDir, which would otherwise delete a link target's contents.
+func removeActualCwd(actualCwd provenDirs, keepDirs []string) error {
 	if len(keepDirs) > 0 {
-		return removeAllExcept(actualCwd, keepDirs)
+		return removeAllExcept(actualCwd.leaf, keepDirs)
 	}
 
-	return removeAllManaged(actualCwd)
+	return removeAllManaged(actualCwd.leaf)
 }
 
 // run simply runs the given command from Job's actual cwd.

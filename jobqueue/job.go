@@ -130,6 +130,42 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	}
 }
 
+// cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
+// alongside cwdBase as a Job's working directory. It is the single projection
+// used for both a stored Job's JStatus and a live Job's JobUpdate, so that
+// neither can gain or lose a guard the other lacks.
+//
+// A blank cwd (the Job has no working directory of its own yet) gives "". A cwd
+// that is cwdBase gives "/", which is what a Job persisted by wr v0.37.0|1, with
+// its ActualCwd poisoned with Cwd, has. A cwd that is not below cwdBase at all -
+// a stale ActualCwd left over from a `wr mod --cwd` on a Job that predates wr
+// clearing it - is shown in full rather than as a leaf climbing out of cwdBase
+// with "..".
+func cwdLeaf(cwdBase, cwd string) (string, error) {
+	if cwd == "" {
+		return "", nil
+	}
+
+	if cwdBase == "" {
+		return cwd, nil
+	}
+
+	rel, err := filepath.Rel(cwdBase, cwd)
+	if err != nil {
+		return "", err
+	}
+
+	if rel == "." {
+		return "/", nil
+	}
+
+	if !relIsBelow(rel) {
+		return cwd, nil
+	}
+
+	return "/" + rel, nil
+}
+
 func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, workingDir string) string {
 	if state != JobStateRunning || workingDir == "" {
 		return ""
@@ -778,7 +814,11 @@ func (j *Job) mountBaseDirs(onCwd []bool) (cwd, defaultMount, defaultCacheBase s
 	defaultMount = filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase = cwd
 
-	if j.ActualCwd != "" {
+	// a CwdMatters Job runs in the user's own Cwd, so it has no wr-created
+	// working directory to mount in or cache beside, whatever ActualCwd says: a
+	// Job persisted by wr v0.37.0|1 can have it set to Cwd, and then the cache
+	// base would become the parent of the user's own Cwd.
+	if !j.CwdMatters && j.ActualCwd != "" {
 		cwd = j.ActualCwd
 		defaultMount = cwd
 		defaultCacheBase = filepath.Dir(cwd)
@@ -971,8 +1011,11 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 		return logs, fmt.Errorf("Unmount failure(s): %w", err)
 	}
 
-	// delete any empty dirs
-	if j.ActualCwd != "" {
+	// delete any empty dirs. As in Behaviour.cleanup, a CwdMatters Job is
+	// excluded even if it has an ActualCwd, because wr created no directory for
+	// it: one persisted by wr v0.37.0|1 can have ActualCwd set to Cwd, and there
+	// is nothing there for us to tidy up.
+	if !j.CwdMatters && j.ActualCwd != "" {
 		err = j.rmEmptyMountDirs()
 	}
 
@@ -1227,19 +1270,19 @@ func (j *Job) ToStatus() (JStatus, error) {
 	j.RLock()
 	defer j.RUnlock()
 
-	cwdLeaf, err := j.cwdLeaf()
+	leaf, err := cwdLeaf(j.Cwd, j.ActualCwd)
 	if err != nil {
 		return JStatus{}, err
 	}
 
-	return j.buildJStatus(streams, cwdLeaf), nil
+	return j.buildJStatus(streams, leaf), nil
 }
 
 // buildJStatus assembles a JStatus from the job and the already-gathered
-// streams and cwdLeaf. Must be called with at least an RLock held.
+// streams and cwd leaf. Must be called with at least an RLock held.
 //
 //nolint:funlen // a flat field-by-field mapping of the many-fielded Job struct
-func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
+func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 	state := j.State
 	if state == JobStateRunning && j.Lost {
 		state = JobStateLost
@@ -1257,7 +1300,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
 		Cmd:                 j.Cmd,
 		State:               state,
 		CwdBase:             j.Cwd,
-		Cwd:                 cwdLeaf,
+		Cwd:                 leaf,
 		HomeChanged:         j.ChangeHome,
 		Behaviours:          j.Behaviours.String(),
 		Mounts:              j.MountConfigs.String(),
@@ -1376,21 +1419,6 @@ func (j *Job) workingDir() string {
 	}
 
 	return ""
-}
-
-// cwdLeaf returns the part of ActualCwd below Cwd (prefixed with "/"), or "" if
-// there is no ActualCwd. Must be called with at least an RLock held.
-func (j *Job) cwdLeaf() (string, error) {
-	if j.ActualCwd == "" {
-		return "", nil
-	}
-
-	leaf, err := filepath.Rel(j.Cwd, j.ActualCwd)
-	if err != nil {
-		return "", err
-	}
-
-	return "/" + leaf, nil
 }
 
 // unixNanoPtr returns a pointer to t's UnixNano value, or nil if t is the zero
@@ -1879,9 +1907,11 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 
 	// ActualCwd names a wr-created working directory below the Cwd the job last
 	// ran in, and is what lets the cleanup behaviours treat its parent as a
-	// disposable workspace. Moving the job to a new Cwd, or making it run in
-	// Cwd itself, means it has no such directory any more, so a stale value
-	// must not survive either modification.
+	// disposable workspace. Setting a Cwd, or making the job run in Cwd itself,
+	// means it has no such directory any more, so a stale value must not survive
+	// either modification. (We can't skip the clear when the supplied Cwd equals
+	// the job's: cmd/mod.go passes the flag through unnormalised, so they could
+	// name the same dir without matching.)
 	if j.Cwd != "" {
 		job.Cwd = j.Cwd
 		job.ActualCwd = ""

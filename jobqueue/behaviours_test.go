@@ -290,6 +290,10 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		return
 	}
 
+	// testMountDir is the relative Mount of a MountConfig in these tests: the dir
+	// inside the Job's ActualCwd that cleanup must leave alone.
+	const testMountDir = "mnt"
+
 	Convey("Given a Job Cwd inside a dir of precious user files", t, func() {
 		parent := t.TempDir()
 		cwd := filepath.Join(parent, "wr_RunCisEQTL")
@@ -371,6 +375,141 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 			soPathsExist(precious, parent, cwd)
 		})
+
+		Convey("Cleanup of a mounting Job wipes its workspace but keeps the mount dir", func() {
+			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			actualCwd := filepath.Join(workSpace, "cwd")
+			mounted := filepath.Join(actualCwd, testMountDir, "data.txt")
+			err = os.MkdirAll(filepath.Dir(mounted), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(mounted, []byte("mounted\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			output := filepath.Join(actualCwd, "out.txt")
+			err = os.WriteFile(output, []byte("output\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			tmpDir := filepath.Join(workSpace, "tmp")
+			err = os.Mkdir(tmpDir, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: testMountDir}}}
+
+			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsExist(mounted, actualCwd, workSpace, cwd, precious)
+			soPathsGone(output, tmpDir)
+		})
+
+		Convey("Cleanup of a mounting Job whose ActualCwd is a symlink out of Cwd deletes nothing there", func() {
+			// a Job's own Cmd can replace its working directory with a symlink,
+			// and the mounts branch reaches ActualCwd through os.ReadDir, which
+			// follows one; proving only its parent would not notice.
+			outside := filepath.Join(parent, "outside")
+			err = os.Mkdir(outside, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			outsideFile := filepath.Join(outside, "precious.txt")
+			err = os.WriteFile(outsideFile, []byte("important\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			err = os.MkdirAll(workSpace, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			actualCwd := filepath.Join(workSpace, "cwd")
+			err = os.Symlink(outside, actualCwd)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: testMountDir}}}
+
+			err = cleanup.Trigger(OnExit, job)
+
+			// survival is asserted before the error, since a leaf stops at its
+			// first failed So and the deletion is the evidence that matters.
+			soPathsExist(outsideFile, outside, precious, parent, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("Given an ActualCwd that a Job's Cmd replaced with a symlink to elsewhere inside Cwd", func() {
+			// wr made ActualCwd itself, so a symlink there means the Job's own
+			// Cmd swapped it. Proving the symlink's target instead would make
+			// the workspace out to be the target's parent - unrelated user data
+			// - and delete that, while the real workspace survived.
+			userDir := filepath.Join(cwd, "userdata")
+			results := filepath.Join(userDir, "results")
+			err = os.MkdirAll(results, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			sibling := filepath.Join(userDir, "sibling.txt")
+			err = os.WriteFile(sibling, []byte("mine\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			err = os.MkdirAll(filepath.Join(workSpace, "tmp"), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			actualCwd := filepath.Join(workSpace, "cwd")
+			err = os.Symlink(results, actualCwd)
+			So(err, ShouldBeNil)
+
+			// with no way to tell which dir wr is entitled to delete, cleanup
+			// deletes nothing at all: leaving a workspace behind is recoverable,
+			// deleting the user's own dir is not.
+			Convey("Cleanup deletes nothing and errors", func() {
+				job := &Job{Cwd: cwd, ActualCwd: actualCwd}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				// survival is asserted before the error, since a leaf stops at
+				// its first failed So and the deletion is the evidence that
+				// matters.
+				soPathsExist(sibling, results, userDir, workSpace, actualCwd, cwd, precious)
+
+				So(err, ShouldNotBeNil)
+				So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+			})
+
+			Convey("Cleanup of a mounting Job deletes nothing and errors", func() {
+				job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: testMountDir}}}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				soPathsExist(sibling, results, userDir, workSpace, actualCwd, cwd, precious)
+
+				So(err, ShouldNotBeNil)
+				So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+			})
+		})
+
+		Convey("Cleanup of a mounting Job with an ActualCwd ending in .. deletes nothing and errors", func() {
+			// an unclean ActualCwd, as a rogue client or a corrupt database
+			// could supply: its parent proves fine, but cleaning the raw string
+			// gives Cwd itself, which is what the incident destroyed.
+			workSpace := filepath.Join(cwd, "wr_cwd")
+			err = os.MkdirAll(filepath.Join(workSpace, "unique"), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			script := filepath.Join(cwd, "04_RunCisEQTL.R")
+			err = os.WriteFile(script, []byte("important\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			job := &Job{
+				Cwd:          cwd,
+				ActualCwd:    workSpace + string(filepath.Separator) + "..",
+				MountConfigs: MountConfigs{{Mount: testMountDir}},
+			}
+
+			err = cleanup.Trigger(OnExit, job)
+
+			soPathsExist(script, workSpace, cwd, precious, parent)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
 	})
 }
 
@@ -379,5 +518,13 @@ func soPathsExist(paths ...string) {
 	for _, path := range paths {
 		_, err := os.Stat(path)
 		So(err, ShouldBeNil)
+	}
+}
+
+// soPathsGone asserts that each of the given paths has been deleted.
+func soPathsGone(paths ...string) {
+	for _, path := range paths {
+		_, err := os.Stat(path)
+		So(os.IsNotExist(err), ShouldBeTrue)
 	}
 }

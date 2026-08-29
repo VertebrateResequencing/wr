@@ -34,7 +34,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -277,7 +276,7 @@ func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
 	job.RLock()
 	defer job.RUnlock()
 
-	cwdLeaf, err := liveJobCwdLeaf(job.Cwd, job.ActualCwd)
+	leaf, err := cwdLeaf(job.Cwd, job.ActualCwd)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +295,7 @@ func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
 			HostID:     job.HostID,
 			HostIP:     job.HostIP,
 			CwdBase:    job.Cwd,
-			Cwd:        cwdLeaf,
+			Cwd:        leaf,
 			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.workingDir()),
 		},
 		stdoutC: slices.Clone(job.StdOutC),
@@ -368,31 +367,6 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	if len(jes.Stderr) != 0 {
 		job.StdErrC = jes.Stderr
 	}
-}
-
-func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
-	if cwd == "" {
-		return "", nil
-	}
-
-	if cwdBase == "" {
-		return cwd, nil
-	}
-
-	rel, err := filepath.Rel(cwdBase, cwd)
-	if err != nil {
-		return "", err
-	}
-
-	if rel == "." {
-		return "/", nil
-	}
-
-	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return cwd, nil
-	}
-
-	return "/" + rel, nil
 }
 
 func malformedAddJobMessage(jobs []*Job) string {

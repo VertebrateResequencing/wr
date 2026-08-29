@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -225,6 +226,13 @@ func TestJobMountBaseDirs(t *testing.T) {
 			wantCacheBase: cwd,
 		},
 		{
+			name:          "a cwd_matters job with an ActualCwd poisoned by wr v0.37.0|1 caches in cwd too",
+			job:           &Job{Cwd: cwd, CwdMatters: true, ActualCwd: cwd},
+			wantCwd:       cwd,
+			wantMount:     cwd + "/mnt",
+			wantCacheBase: cwd,
+		},
+		{
 			name:          "a job that has not run yet mounts in cwd's mnt subdirectory too",
 			job:           &Job{Cwd: cwd},
 			wantCwd:       cwd,
@@ -247,6 +255,24 @@ func TestJobMountBaseDirs(t *testing.T) {
 			So(gotCacheBase, ShouldEqual, tc.wantCacheBase)
 		})
 	}
+}
+
+func TestJobUnmount(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a cwd_matters job with a mount and an ActualCwd poisoned by wr v0.37.0|1", t, func() {
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, CwdMatters: true, ActualCwd: cwd, MountConfigs: MountConfigs{{}}}
+
+		Convey("Unmount() deletes nothing and doesn't complain about the user's own cwd", func() {
+			logs, err := job.Unmount()
+			So(err, ShouldBeNil)
+			So(logs, ShouldBeBlank)
+			soPathsExist(cwd, filepath.Dir(cwd))
+		})
+	})
 }
 
 func TestJob(t *testing.T) {
@@ -561,7 +587,7 @@ func TestJob(t *testing.T) {
 		So(status.SSHCommand, ShouldEqual, "")
 	})
 
-	Convey("ToStatus() falls back to Cwd in SSHCommand when there is no ActualCwd", t, func() {
+	Convey("ToStatus() of a cwd_matters job with no ActualCwd puts its Cwd in SSHCommand", t, func() {
 		job := liveStatusJob(JobStateRunning)
 		job.CwdMatters = true
 		job.ActualCwd = ""
@@ -573,6 +599,27 @@ func TestJob(t *testing.T) {
 		So(status.Cwd, ShouldBeBlank)
 		So(status.SSHCommand, ShouldEqual,
 			"ssh -- worker1 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+
+	Convey("ToStatus() of a job with an ActualCwd poisoned by wr v0.37.0|1 shows Cwd as the working dir", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.CwdMatters = true
+		job.ActualCwd = job.Cwd
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldEqual, "/")
+	})
+
+	Convey("ToStatus() of a job with an ActualCwd outside its Cwd shows that dir in full", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Cwd = "/tmp/wr-modified"
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, "/tmp/wr-modified")
+		So(status.Cwd, ShouldEqual, liveStatusCwd+"/job1")
 	})
 
 	Convey("ToStatus() shell-quotes a running job's actual cwd in SSHCommand", t, func() {

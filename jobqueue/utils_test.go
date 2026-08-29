@@ -134,6 +134,30 @@ func TestRmEmptyDirs(t *testing.T) {
 
 			soPathsExist(leaf, base, outer)
 		})
+
+		Convey("rmEmptyDirs leaves an empty dir outside baseDir alone, even reached via a symlink", func() {
+			// an empty dir is the dangerous case: the upward walk only stops
+			// deleting when it hits a dir it cannot remove, so if the
+			// containment guard ever stopped working, this dir (and the
+			// symlink leading to it) would actually be deleted, rather than
+			// the walk merely failing on a non-empty dir outside baseDir.
+			outsideEmpty := filepath.Join(outer, "empty")
+			err = os.Mkdir(outsideEmpty, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			escape := filepath.Join(base, "escape")
+			err = os.Symlink(outer, escape)
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirs(filepath.Join(escape, "empty"), base)
+
+			// survival is asserted before the error, so that a broken guard
+			// shows up as the deletion it is, not as a missing error value.
+			soPathsExist(outsideEmpty, escape, leaf, base, outer)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
 	})
 }
 
