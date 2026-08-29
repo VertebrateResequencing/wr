@@ -301,6 +301,36 @@ func TestRESTJobModificationEndpoint(t *testing.T) {
 					`"on_exit":[{"run":"echo new"},{"cleanup_all":true}]}`)
 		})
 
+		Convey("PATCH of an empty behaviour array turns that trigger off", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest empty behaviours",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-behaviours",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-empty-behaviours",
+				Behaviours: Behaviours{
+					{When: OnFailure, Do: Run, Arg: testOnFailureCmd},
+					{When: OnExit, Do: Run, Arg: "echo gone1"},
+					{When: OnExit, Do: Run, Arg: "echo gone2"},
+				},
+			})
+
+			// this is the semantics `wr mod --on_exit '[]'` matches: supplying
+			// an empty set for a trigger turns it off, and the triggers that
+			// were not supplied are left alone
+			body := `{"on_exit":[]}`
+			status, _, decoded := patchJob(restJobsEndpoint+key, body, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],"on_exit":[{"nothing":true}]}`)
+
+			stored := getJobStatuses(decoded.Jobs[0].Key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],"on_exit":[{"nothing":true}]}`)
+		})
+
 		Convey("PATCH rejects requests without token or bearer auth", func() {
 			key := addJob(&Job{
 				Cmd:          "echo rest no auth",

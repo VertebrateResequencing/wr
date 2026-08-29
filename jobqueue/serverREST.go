@@ -1197,31 +1197,23 @@ func (jvj *JobModifyViaJSON) setModifierBehaviours(modifier *JobModifier) {
 	)
 
 	if jvj.OnFailure != nil {
-		behaviours = append(behaviours, modifyBehaviours(*jvj.OnFailure, OnFailure)...)
+		behaviours = append(behaviours, ModifyBehaviours(*jvj.OnFailure, OnFailure)...)
 		set = true
 	}
 
 	if jvj.OnSuccess != nil {
-		behaviours = append(behaviours, modifyBehaviours(*jvj.OnSuccess, OnSuccess)...)
+		behaviours = append(behaviours, ModifyBehaviours(*jvj.OnSuccess, OnSuccess)...)
 		set = true
 	}
 
 	if jvj.OnExit != nil {
-		behaviours = append(behaviours, modifyBehaviours(*jvj.OnExit, OnExit)...)
+		behaviours = append(behaviours, ModifyBehaviours(*jvj.OnExit, OnExit)...)
 		set = true
 	}
 
 	if set {
 		modifier.SetBehaviours(behaviours)
 	}
-}
-
-func modifyBehaviours(bvj BehavioursViaJSON, when BehaviourTrigger) Behaviours {
-	if len(bvj) == 0 {
-		bvj = BehavioursViaJSON{{Nothing: true}}
-	}
-
-	return bvj.Behaviours(when)
 }
 
 func (jvj *JobModifyViaJSON) setModifierContainerFields(modifier *JobModifier) {

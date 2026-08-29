@@ -54,6 +54,13 @@ const (
 // subscription disconnect.
 var ErrSubscriptionClosed = errors.New("jobqueue subscription closed: unrecoverable disconnect")
 
+// errRetryBudgetSpent fails one reconnect attempt that had no retry budget left
+// to bound its next step with. It does not itself end the retry loop: reconnect()
+// still decides whether to attempt again solely by comparing the clock to
+// retryEnd, so connection errors, ErrClosedStop and ErrRecovering keep retrying
+// exactly as before, and a spent budget ends the loop there rather than here.
+var errRetryBudgetSpent = errors.New("jobqueue subscription reconnect: retry budget spent")
+
 // JobUpdateKind discriminates the events on a Subscription channel.
 type JobUpdateKind int
 
@@ -379,7 +386,12 @@ func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
 }
 
 func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
-	if err := s.client.reconnect(subscriptionBudgetTimeout(retryEnd, subscriptionReconnectTimeout)); err != nil {
+	remaining, err := subscriptionBudgetRemaining(retryEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = s.client.reconnect(min(remaining, subscriptionReconnectTimeout)); err != nil {
 		return nil, err
 	}
 
@@ -391,12 +403,7 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 		return nil, err
 	}
 
-	// the resubscribe must not outlive the retry budget: a manager part-way
-	// through shutdown can answer the connect-time Ping above and then stop
-	// answering anything. requestWithin only ever narrows, so the production 24h
-	// budget leaves the client's usual generous receive floor in place and a
-	// slow-but-alive manager is still not mistaken for a dead one.
-	resp, err := s.client.requestWithin(s.subscribeRequest(), time.Until(retryEnd))
+	resp, err := s.resubscribeWithinBudget(retryEnd)
 	if err != nil {
 		_ = sock.Close()
 
@@ -410,23 +417,46 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 	return resp.JobUpdates, nil
 }
 
-// subscriptionBudgetTimeout returns limit, shortened to whatever is left of the
-// reconnect retry budget ending at retryEnd, so the step it is given (the
-// reconnect's Connect and readiness Ping) cannot outlive that budget. It does
-// not bound the whole attempt: the resubscribe is capped separately, by
-// requestWithin, but dialling the replacement subscription socket carries only
-// that socket's own deadline, and the unsubscribe cleaning up a replacement the
-// subscription rejects is on the client's usual ClientMinRequestTimeout floor.
-// An already-spent budget gets limit: whether to make another attempt at all is
-// reconnect()'s decision, and a non-positive timeout would mean "no timeout" to
-// the socket.
-func subscriptionBudgetTimeout(retryEnd time.Time, limit time.Duration) time.Duration {
+// subscriptionBudgetRemaining returns how long is left of the reconnect retry
+// budget ending at retryEnd, so a step of a reconnect attempt can be bounded by
+// it and cannot outlive it. It returns errRetryBudgetSpent once nothing is
+// left: no timeout value would bound the step then, since both requestWithin
+// and a mangos socket read a non-positive one as "no bound at all", so the step
+// must not be taken.
+//
+// It does not bound a whole attempt: dialling the replacement subscription
+// socket carries only that socket's own deadline, and the unsubscribe cleaning
+// up a replacement the subscription rejects is on the client's usual
+// ClientMinRequestTimeout floor.
+func subscriptionBudgetRemaining(retryEnd time.Time) (time.Duration, error) {
 	remaining := time.Until(retryEnd)
 	if remaining <= 0 {
-		return limit
+		return 0, errRetryBudgetSpent
 	}
 
-	return min(remaining, limit)
+	return remaining, nil
+}
+
+// resubscribeWithinBudget sends the resubscribe request, bounded by whatever is
+// left of the reconnect retry budget ending at retryEnd.
+//
+// The resubscribe must not outlive that budget: a manager part-way through
+// shutdown can answer the connect-time Ping of the attempt this is part of and
+// then stop answering anything. requestWithin only ever narrows, so the
+// production 24h budget leaves the client's usual generous receive floor in
+// place and a slow-but-alive manager is still not mistaken for a dead one.
+//
+// The budget is re-read here rather than passed in from the top of the attempt
+// because the connect and dial steps before this one consume it: a budget that
+// ran out in the meantime would ask requestWithin for no bound at all, handing
+// this request the very ClientMinRequestTimeout floor the cap exists to avoid.
+func (s *Subscription) resubscribeWithinBudget(retryEnd time.Time) (*serverResponse, error) {
+	remaining, err := subscriptionBudgetRemaining(retryEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.client.requestWithin(s.subscribeRequest(), remaining)
 }
 
 func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string) error {

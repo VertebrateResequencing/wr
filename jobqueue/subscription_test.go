@@ -1717,6 +1717,89 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		So(reqErr, ShouldBeNil)
 		So(resp, ShouldNotBeNil)
 	})
+
+	Convey("A reconnect whose budget is spent gives up instead of blocking on the socket's floor", t, func() {
+		ctx := context.Background()
+
+		// as in the first Convey, a single RPC reader makes the shutdown window
+		// deterministic: it answers the reconnecting client's connect-time Ping
+		// and then exits, leaving the resubscribe that follows unanswered.
+		defer setNumRPCReaders(1)()
+
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+
+		// a budget this small is already spent when the first attempt starts,
+		// which is what a budget spent by an attempt's own connect step looks
+		// like from the resubscribe: time.Until(retryEnd) is non-positive, and a
+		// non-positive timeout asks requestWithin for no bound at all, handing
+		// the resubscribe the socket's ClientMinRequestTimeout floor.
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, time.Nanosecond)
+		serverConfig.Timings.InterruptTime = 5 * time.Second
+		serverConfig.Timings.ShutdownSocketWait = 2 * time.Second
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		So(jq.retryTime, ShouldEqual, time.Nanosecond)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-spent-budget"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		stopped := make(chan struct{})
+		start := time.Now()
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		So(subscriptionUpdatesClosed(sub), ShouldBeTrue)
+
+		gaveUpAfter := time.Since(start)
+
+		So(gaveUpAfter, ShouldBeLessThan, ClientMinRequestTimeout)
+		So(errors.Is(sub.Err(), ErrSubscriptionClosed), ShouldBeTrue)
+
+		<-stopped
+	})
+
+	Convey("A reconnect attempt whose budget is spent sends no resubscribe, even to a healthy manager", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-spent-budget-live"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
+
+		catchUp, reconnectErr := sub.reconnectOnce(time.Now().Add(-time.Millisecond))
+
+		// the manager would happily answer a resubscribe; the point is that a
+		// spent budget means the attempt is not made at all, so nothing new is
+		// registered and there is no request left waiting on the socket's floor
+		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
+		So(catchUp, ShouldBeNil)
+		So(reconnectErr, ShouldNotBeNil)
+	})
 }
 
 // applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
