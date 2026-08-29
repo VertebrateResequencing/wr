@@ -377,6 +377,66 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			soPathsExist(precious, parent, cwd)
 		})
 
+		Convey("Given a workspace whose path is swapped for a symlink after cleanup has checked it", func() {
+			// this is the race that the deletions are made through a handle on
+			// Cwd to survive. A proof is about a path string, and every syscall
+			// re-resolves that string, so a directory component checked to be
+			// real can be a symlink by the time a deletion walks through it.
+			// The hook puts the test in exactly that moment, which is otherwise
+			// not reachable reliably.
+			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			actualCwd := filepath.Join(workSpace, "cwd")
+			err = os.MkdirAll(actualCwd, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: actualCwd}
+
+			swapWrCwdFor := func(target string) {
+				cleanupProvenHook = func() {
+					cleanupProvenHook = nil
+					wrCwd := filepath.Join(cwd, "wr_cwd")
+
+					So(os.Rename(wrCwd, filepath.Join(cwd, "moved")), ShouldBeNil)
+					So(os.Symlink(target, wrCwd), ShouldBeNil)
+				}
+			}
+
+			Reset(func() { cleanupProvenHook = nil })
+
+			Convey("Cleanup deletes nothing through a symlink leading out of Cwd", func() {
+				decoy := filepath.Join(parent, "decoy", "unique", "cwd")
+				err = os.MkdirAll(decoy, os.ModePerm)
+				So(err, ShouldBeNil)
+
+				swapWrCwdFor(filepath.Join("..", "decoy"))
+
+				err = cleanupAll.Trigger(OnExit, job)
+
+				// survival is asserted before the error, so that a lost race
+				// shows up as the deletion it is, not as a missing error value.
+				soPathsExist(decoy, precious, parent, cwd)
+
+				So(err, ShouldNotBeNil)
+			})
+
+			Convey("Cleanup deletes nothing through a symlink leading elsewhere inside Cwd", func() {
+				// staying inside Cwd is not enough on its own: the os.Root
+				// handle permits a relative symlink that does, so the dir the
+				// handle opens is also proven to be the dir that was checked.
+				userData := filepath.Join(cwd, "userdata", "unique", "cwd")
+				err = os.MkdirAll(userData, os.ModePerm)
+				So(err, ShouldBeNil)
+
+				swapWrCwdFor("userdata")
+
+				err = cleanupAll.Trigger(OnExit, job)
+
+				soPathsExist(userData, precious, parent, cwd)
+
+				So(err, ShouldNotBeNil)
+			})
+		})
+
 		Convey("Cleanup of a mounting Job wipes its workspace but keeps the mount dir", func() {
 			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
 			actualCwd := filepath.Join(workSpace, "cwd")

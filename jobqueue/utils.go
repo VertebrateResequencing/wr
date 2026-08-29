@@ -755,11 +755,6 @@ func mkHeldDir(dir, holdFile string) error {
 // entries). The paths are trusted by design and cleaned before use, which also
 // satisfies gosec's path-traversal analysis without per-call suppressions.
 
-// removeAllManaged is os.RemoveAll for a jobqueue-managed path.
-func removeAllManaged(path string) error {
-	return os.RemoveAll(filepath.Clean(path))
-}
-
 // removeManaged is os.Remove for a jobqueue-managed path.
 func removeManaged(path string) error {
 	return os.Remove(filepath.Clean(path))
@@ -831,9 +826,38 @@ func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 // not inside the base directory that bounds the deletion.
 var errNotBelowBaseDir = errors.New("dir is not below the base dir")
 
+// openBaseRoot opens baseDir as an os.Root: a handle on the directory itself,
+// through which every deletion below it is done with a path relative to the
+// handle.
+//
+// That is what closes the gap between proving a path may be deleted and
+// deleting it. A proof is about a path string, and a path string is re-resolved
+// by every syscall that uses it, so a directory component proven to be real can
+// be replaced with a symlink a moment later and the deletion follows it
+// wherever it leads. A relative operation on a root cannot leave that root: the
+// operating system refuses it at the moment of the deletion, and refuses
+// absolute symlinks outright, so a swap made after the proof can no longer
+// redirect a deletion out of baseDir.
+//
+// The handle also pins the directory: if baseDir is renamed while we work, the
+// deletions still happen inside the directory we opened, not inside whatever
+// took its place.
+func openBaseRoot(baseDir string) (*os.Root, error) {
+	if baseDir == "" {
+		return nil, fmt.Errorf("%w: no base dir was given", errNotBelowBaseDir)
+	}
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return os.OpenRoot(absBase)
+}
+
 // rmEmptyDirs deletes leafDir and its parent directories if they are empty,
 // stopping before it reaches baseDir (leaving that, and everything above it,
-// undeleted). It's ok if leafDir doesn't exist.
+// undeleted). It's ok if leafDir, or baseDir itself, doesn't exist.
 //
 // leafDir must be a proper descendant of baseDir; otherwise nothing at all is
 // deleted and errNotBelowBaseDir is returned. There is no safe upward walk to
@@ -841,7 +865,17 @@ var errNotBelowBaseDir = errors.New("dir is not below the base dir")
 // would already be above baseDir, and the walk would then delete the empty
 // ancestors of the directory tree we were supposed to stay inside.
 func rmEmptyDirs(leafDir, baseDir string) error {
-	proven, ok := deletableDirBelow(leafDir, baseDir)
+	baseRoot, err := openBaseRoot(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		return fmt.Errorf("%w: could not open %s: %w", errNotBelowBaseDir, baseDir, err)
+	}
+	defer baseRoot.Close()
+
+	proven, ok := deletableDirBelow(baseRoot, leafDir)
 	if !ok {
 		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseDir)
 	}
@@ -849,12 +883,12 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 	return rmCheckedEmptyDirs(proven)
 }
 
-// provenDirs is a pair of absolute cleaned paths proven fit for deletion: leaf
-// is strictly inside base, and no component of leaf below base is a symlink, so
-// deleting leaf and walking up from it can neither leave base nor delete
-// something a link merely points at.
+// provenDirs is a directory proven fit for deletion, paired with the open root
+// that bounds every deletion made with it: rel is strictly inside root, and no
+// component of it is a symlink, so deleting rel and walking up from it can
+// neither leave root nor delete something a link merely points at.
 //
-// It does not promise that leaf is the path its caller asked about:
+// It does not promise that rel is the path its caller asked about:
 // deletableDirBelow proves a symlink's target instead of the symlink. Only
 // realDirBelow proves the asked-about path itself, which is what a caller that
 // derives further paths from the leaf, or deletes through it, needs.
@@ -865,8 +899,26 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 // instruction the next person copies past, and how the cleanup behaviour came
 // to delete the parent of a user's own working directory in the first place.
 type provenDirs struct {
-	leaf string
+	// root is the open handle every deletion goes through. It is owned by
+	// whoever opened it, not by this value: parent() shares the same handle,
+	// and none of the methods here close it.
+	root *os.Root
+
+	// rel is the proven dir, relative to root: cleaned, and never "." or above.
+	rel string
+
+	// leaf and base are the absolute forms of the proven dir and the dir
+	// bounding it. They are for error messages and for deriving other paths;
+	// deletions use root and rel, because only those cannot be re-resolved
+	// somewhere else between the proof and the deletion.
 	base string
+	leaf string
+
+	// info is what the proof lstat'ed at leaf, or nil if nothing was there
+	// then, or if the proof was deletableDirBelow's resolved fallback.
+	// openProven needs it to prove that the directory it opens is the one that
+	// was proven.
+	info os.FileInfo
 }
 
 // parent returns dirs.leaf's parent, still proven: an ancestor of a proven leaf
@@ -874,19 +926,73 @@ type provenDirs struct {
 // when that parent would be base itself or outside it, in which case there is
 // no deletable dir above the leaf.
 func (dirs provenDirs) parent() (provenDirs, bool) {
-	parent := filepath.Dir(dirs.leaf)
-	if !lexicalDirIsBelow(parent, dirs.base) {
+	rel := filepath.Dir(dirs.rel)
+	if !relIsBelow(rel) {
 		return provenDirs{}, false
 	}
 
-	return provenDirs{leaf: parent, base: dirs.base}, true
+	dirs.rel = rel
+	dirs.leaf = filepath.Dir(dirs.leaf)
+	dirs.info = nil
+
+	return dirs, true
+}
+
+// remove deletes the proven dir itself, through the root, so the name cannot
+// resolve outside it. Like os.Remove it only succeeds on an empty directory,
+// and it unlinks a symlink rather than following it.
+func (dirs provenDirs) remove() error {
+	return dirs.root.Remove(dirs.rel)
+}
+
+// openProven opens the proven dir as a root of its own, so that everything
+// deleted inside it is named by a path relative to that handle rather than by a
+// string resolved afresh each time.
+//
+// It also proves the handle refers to the directory the proof lstat'ed, so a
+// symlink swapped in for any component after the proof cannot redirect the
+// deletions to a different directory, even one inside base. An os.Root alone
+// does not give that: it refuses absolute symlinks and any escape from the
+// root, but follows a relative symlink that stays inside it.
+//
+// A dir that has gone since it was proven gives an os.IsNotExist error.
+func (dirs provenDirs) openProven() (*os.Root, error) {
+	if dirs.info == nil {
+		return nil, &os.PathError{Op: "open", Path: dirs.leaf, Err: os.ErrNotExist}
+	}
+
+	return openVerifiedDir(dirs.root, dirs.rel, dirs.info)
+}
+
+// openVerifiedDir opens name, a path relative to parent, as a root of its own,
+// and proves that the directory it opened is the one info describes. info must
+// have been taken with an lstat made before name was last resolved, or it
+// proves nothing.
+func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, error) {
+	dirRoot, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+
+	opened, err := dirRoot.Stat(".")
+	if err == nil && !os.SameFile(opened, info) {
+		err = fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, dirRoot.Name())
+	}
+
+	if err != nil {
+		dirRoot.Close()
+
+		return nil, err
+	}
+
+	return dirRoot, nil
 }
 
 // rmCheckedEmptyDirs does rmEmptyDirs's deletions for dirs that
 // deletableDirBelow has already proven and normalised, so a caller that needed
 // that proof for its own deletions doesn't have to pay for it twice.
 func rmCheckedEmptyDirs(dirs provenDirs) error {
-	err := removeManaged(dirs.leaf)
+	err := dirs.remove()
 	if err != nil && !os.IsNotExist(err) {
 		if errIsDirNotEmpty(err) {
 			return nil
@@ -916,82 +1022,82 @@ func errIsDirNotEmpty(err error) bool {
 // it cannot remove (which is expected when another Job is running from the same
 // Cwd, so the error is ignored).
 //
-// Taking provenDirs is what makes the lexical check here sufficient: every dir
-// this reaches is an ancestor of a leaf already proven to be inside base, so it
-// is inside base too, and none of those ancestors is a symlink pointing
-// somewhere else. Re-proving that per level would multiply the (on Lustre,
-// expensive) metadata operations by the depth of the walk.
+// Taking provenDirs is what makes the lexical check in parent() sufficient:
+// every dir this reaches is an ancestor of a leaf already proven to be inside
+// base, so it is inside base too, and the removals go through the root, which
+// cannot reach outside base however the paths resolve at the time. Re-proving
+// that per level would multiply the (on Lustre, expensive) metadata operations
+// by the depth of the walk.
 func rmEmptyParentDirs(dirs provenDirs) {
-	current := dirs.leaf
-
 	for {
-		parent := filepath.Dir(current)
-		if !lexicalDirIsBelow(parent, dirs.base) || removeManaged(parent) != nil {
+		parent, ok := dirs.parent()
+		if !ok || parent.remove() != nil {
 			return
 		}
 
-		current = parent
+		dirs = parent
 	}
 }
 
 // deletableDirBelow proves that dir, or the directory dir's symlinks lead to, is
-// a proper descendant of baseDir, ie. strictly inside it, and may therefore be
-// deleted. ok is false if nothing could be proven to be inside baseDir, in which
-// case nothing may be deleted.
+// a proper descendant of baseRoot's dir, ie. strictly inside it, and may
+// therefore be deleted. ok is false if nothing could be proven to be inside it,
+// in which case nothing may be deleted.
 //
 // The returned leaf is dir itself when realDirBelow proves it; otherwise it is
 // the resolved directory dir points at, which is a different directory than dir
 // names. A caller that must delete dir itself, or that derives further paths
 // from the leaf, has to use realDirBelow directly.
-func deletableDirBelow(dir, baseDir string) (provenDirs, bool) {
-	if proven, ok := realDirBelow(dir, baseDir); ok {
+func deletableDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
+	if proven, ok := realDirBelow(baseRoot, dir); ok {
 		return proven, true
 	}
 
-	return resolvedDirBelow(dir, baseDir)
+	return resolvedDirBelow(baseRoot, dir)
 }
 
-// realDirBelow proves that dir is a proper descendant of baseDir, ie. strictly
-// inside it, and that dir is the directory that would be deleted, rather than
-// something a symlink points at. It returns the proven absolute cleaned forms of
-// dir and baseDir for the deletion to use. ok is false if that could not be
-// proven, in which case nothing may be deleted.
+// realDirBelow proves that dir is a proper descendant of baseRoot's dir, ie.
+// strictly inside it, and that dir is the directory that would be deleted,
+// rather than something a symlink points at. It returns dir as a path relative
+// to baseRoot for the deletion to use. ok is false if that could not be proven,
+// in which case nothing may be deleted.
 //
-// The check is lexical first, which costs no syscalls: both paths are made
-// absolute and cleaned, and an escape via ".." or a dir equal to baseDir fails.
-// Then every component of dir below baseDir is lstat'ed to confirm it is a real
-// directory, which proves dir can only be reached by descending inside baseDir,
-// whatever baseDir itself resolves to.
+// The check is lexical first, which costs no syscalls: dir is made absolute and
+// cleaned, and an escape via ".." or a dir equal to the base fails. Then every
+// component of dir below the base is lstat'ed to confirm it is a real
+// directory, which proves dir can only be reached by descending inside the
+// base, whatever the base itself resolves to.
 //
-// A symlinked component fails even when it stays inside baseDir, because our
+// A symlinked component fails even when it stays inside the base, because our
 // deletion helpers disagree about symlinks: os.RemoveAll unlinks a final one,
-// while os.ReadDir follows it and deletes the target's contents instead. Callers
-// that only walk empty dirs upward with os.Remove can fall back to
+// while os.ReadDir follows it and deletes the target's contents instead. That
+// is a distinct property from the containment the root handle enforces, which
+// permits a relative symlink leading somewhere else inside the base. Callers
+// that only walk empty dirs upward with a remove can fall back to
 // resolvedDirBelow via deletableDirBelow.
-func realDirBelow(dir, baseDir string) (provenDirs, bool) {
-	if dir == "" || baseDir == "" {
+func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
+	if dir == "" {
 		return provenDirs{}, false
 	}
+
+	absBase := baseRoot.Name()
 
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return provenDirs{}, false
 	}
 
-	absBase, err := filepath.Abs(baseDir)
-	if err != nil {
+	rel, err := filepath.Rel(absBase, absDir)
+	if err != nil || !relIsBelow(rel) {
 		return provenDirs{}, false
 	}
 
-	if !lexicalDirIsBelow(absDir, absBase) {
+	info, ok := componentsAreRealDirs(absDir, absBase)
+	if !ok {
 		return provenDirs{}, false
 	}
 
-	if !componentsAreRealDirs(absDir, absBase) {
-		return provenDirs{}, false
-	}
-
-	return provenDirs{leaf: absDir, base: absBase}, true
+	return provenDirs{root: baseRoot, rel: rel, base: absBase, leaf: absDir, info: info}, true
 }
 
 // componentsAreRealDirs tells you if every path component of absDir below
@@ -999,7 +1105,12 @@ func realDirBelow(dir, baseDir string) (provenDirs, bool) {
 // rather than a symlink or a file. A component that doesn't exist counts as
 // fine, since nothing can be deleted through it, and means there is nothing
 // deeper left to check.
-func componentsAreRealDirs(absDir, absBase string) bool {
+//
+// It returns what it lstat'ed at absDir itself, or nil if absDir wasn't there,
+// so that a caller opening absDir can prove the directory it gets is this one.
+func componentsAreRealDirs(absDir, absBase string) (os.FileInfo, bool) {
+	var deepest os.FileInfo
+
 	for i := len(absBase) + 1; i <= len(absDir); i++ {
 		if i < len(absDir) && absDir[i] != filepath.Separator {
 			continue
@@ -1007,51 +1118,49 @@ func componentsAreRealDirs(absDir, absBase string) bool {
 
 		info, err := os.Lstat(absDir[:i])
 		if err != nil {
-			return os.IsNotExist(err)
+			return nil, os.IsNotExist(err)
 		}
 
 		if !info.IsDir() {
-			return false
+			return nil, false
 		}
+
+		deepest = info
 	}
 
-	return true
+	return deepest, true
 }
 
 // resolvedDirBelow is deletableDirBelow's slow path, for when dir reaches its
-// place inside baseDir through a symlink. It fully resolves the symlinks in both
-// paths and compares those, returning the resolved paths if dir is strictly
-// inside baseDir. Since a resolved path has no symlinked components, walking up
-// from the resolved dir stays inside the resolved baseDir.
+// place inside the base through a symlink. It fully resolves the symlinks in
+// both paths and compares those, returning the resolved dir as a path relative
+// to baseRoot if it is strictly inside the base. Since a resolved path has no
+// symlinked components, walking up from the resolved dir stays inside the
+// resolved base.
+//
+// The resolved base names the same directory as baseRoot, so a path relative to
+// one is a path relative to the other.
 //
 // The leaf it proves is the directory dir points at, not dir, so its parent is
 // not dir's parent and deleting it does not delete dir. Only use it where that
 // substitution is harmless.
-func resolvedDirBelow(dir, baseDir string) (provenDirs, bool) {
+func resolvedDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 	resolvedDir, err := resolvedAbsPath(dir)
 	if err != nil {
 		return provenDirs{}, false
 	}
 
-	resolvedBase, err := resolvedAbsPath(baseDir)
+	resolvedBase, err := resolvedAbsPath(baseRoot.Name())
 	if err != nil {
 		return provenDirs{}, false
 	}
 
-	if !lexicalDirIsBelow(resolvedDir, resolvedBase) {
+	rel, err := filepath.Rel(resolvedBase, resolvedDir)
+	if err != nil || !relIsBelow(rel) {
 		return provenDirs{}, false
 	}
 
-	return provenDirs{leaf: resolvedDir, base: resolvedBase}, true
-}
-
-// lexicalDirIsBelow tells you if dir is strictly inside baseDir according to the
-// text of the paths alone. Both must already be absolute and cleaned. No
-// symlinks are resolved, so this costs no syscalls; equal paths give false.
-func lexicalDirIsBelow(dir, baseDir string) bool {
-	rel, err := filepath.Rel(baseDir, dir)
-
-	return err == nil && relIsBelow(rel)
+	return provenDirs{root: baseRoot, rel: rel, base: resolvedBase, leaf: resolvedDir}, true
 }
 
 // relIsBelow tells you if a relative path produced by filepath.Rel describes
@@ -1090,69 +1199,70 @@ func resolvedAbsPath(path string) (string, error) {
 	}
 }
 
-// removeAllExcept deletes the contents of a given directory (absolute path),
-// except for the given folders (relative paths). It's ok if path doesn't exist:
-// there is then nothing of ours left to delete there. Any other read failure,
-// eg. a permissions or IO problem, is returned.
-//
-// An exception that doesn't land strictly inside path is skipped rather than
-// treated as an error. A MountConfig.Mount is whatever the user typed for `wr
-// add --mounts`, so it can be ".", ".." or "../evil", and walking up from such a
-// dir never reaches path: it used to run past the filesystem root forever,
-// hanging cleanup on the runner and in the server goroutine that cleans up a
-// lost job. Skipping is safe because only descendants of path are ever deleted
-// here, so an exception outside path was protecting nothing anyway, whereas
-// erroring would abandon the job's workspace for no gain. The walk also stops at
-// the filesystem root regardless of that, so it cannot be made unbounded again.
-func removeAllExcept(path string, exceptions []string) error {
-	path = filepath.Clean(path)
-
-	entries, err := os.ReadDir(path)
+// readDirIn reads the entries of dir, a path relative to dirRoot, through the
+// root handle, so the read cannot be redirected outside it.
+func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
+	f, err := dirRoot.Open(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-
-		return err
+		return nil, err
 	}
+	defer f.Close()
 
-	keepDirs := make(map[string]bool)
-	checkDirs := make(map[string]bool)
+	return f.ReadDir(-1)
+}
+
+// removeAllExcept deletes the contents of dirRoot's own directory, except for
+// the given folders (paths relative to it).
+//
+// An exception that doesn't land strictly inside the directory is skipped rather
+// than treated as an error. A MountConfig.Mount is whatever the user typed for
+// `wr add --mounts`, so it can be ".", ".." or "../evil", and walking up from
+// such a dir never reaches the directory: it used to run past the filesystem
+// root forever, hanging cleanup on the runner and in the server goroutine that
+// cleans up a lost job. Skipping is safe because only descendants of the
+// directory are ever deleted here, so an exception outside it was protecting
+// nothing anyway, whereas erroring would abandon the job's workspace for no
+// gain.
+func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
+	keepDirs, checkDirs := exceptionDirs(exceptions)
+
+	return removeWithExceptions(dirRoot, ".", keepDirs, checkDirs)
+}
+
+// exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep
+// and the set of dirs that must be recursed into to reach them, both as paths
+// relative to the dir being emptied.
+func exceptionDirs(exceptions []string) (keepDirs, checkDirs map[string]bool) {
+	keepDirs = make(map[string]bool, len(exceptions))
+	checkDirs = make(map[string]bool, len(exceptions))
 
 	for _, dir := range exceptions {
-		abs := filepath.Join(path, dir)
-		if !lexicalDirIsBelow(abs, path) {
+		rel := filepath.Join(".", dir)
+		if !relIsBelow(rel) {
 			continue
 		}
 
-		keepDirs[abs] = true
+		keepDirs[rel] = true
 
-		for parent := filepath.Dir(abs); parent != path && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+		for parent := filepath.Dir(rel); relIsBelow(parent); parent = filepath.Dir(parent) {
 			checkDirs[parent] = true
 		}
 	}
 
-	return removeEntriesWithExceptions(path, entries, keepDirs, checkDirs)
+	return keepDirs, checkDirs
 }
 
-// removeWithExceptions is the recursive part of removeAllExcept's
-// implementation that does the real work of deleting stuff. Unlike
-// removeAllExcept, a path that doesn't exist is an error here: our caller just
-// listed it as one of a directory's entries.
-func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
-	entries, err := os.ReadDir(path)
+// removeWithExceptions deletes the contents of dir, a path relative to dirRoot,
+// keeping the dirs named in keepDirs and recursing into those in checkDirs.
+func removeWithExceptions(dirRoot *os.Root, dir string, keepDirs, checkDirs map[string]bool) error {
+	entries, err := readDirIn(dirRoot, dir)
 	if err != nil {
 		return err
 	}
 
-	return removeEntriesWithExceptions(path, entries, keepDirs, checkDirs)
-}
-
-// removeEntriesWithExceptions handles each of the given entries of dir.
-func removeEntriesWithExceptions(dir string, entries []os.DirEntry, keepDirs, checkDirs map[string]bool) error {
 	for _, entry := range entries {
-		if err := removeEntryWithExceptions(filepath.Join(dir, entry.Name()), entry.IsDir(),
-			keepDirs, checkDirs); err != nil {
+		err = removeEntryWithExceptions(dirRoot, filepath.Join(dir, entry.Name()), entry.IsDir(), keepDirs, checkDirs)
+		if err != nil {
 			return err
 		}
 	}
@@ -1163,16 +1273,16 @@ func removeEntriesWithExceptions(dir string, entries []os.DirEntry, keepDirs, ch
 // removeEntryWithExceptions handles a single entry for removeWithExceptions:
 // files are removed, kept dirs are left, dirs containing exceptions are
 // recursed into, and other dirs are removed entirely.
-func removeEntryWithExceptions(abs string, isDir bool, keepDirs, checkDirs map[string]bool) error {
+func removeEntryWithExceptions(dirRoot *os.Root, rel string, isDir bool, keepDirs, checkDirs map[string]bool) error {
 	switch {
 	case !isDir:
-		return removeManaged(abs)
-	case keepDirs[abs]:
+		return dirRoot.Remove(rel)
+	case keepDirs[rel]:
 		return nil
-	case checkDirs[abs]:
-		return removeWithExceptions(abs, keepDirs, checkDirs)
+	case checkDirs[rel]:
+		return removeWithExceptions(dirRoot, rel, keepDirs, checkDirs)
 	default:
-		return removeAllManaged(abs)
+		return dirRoot.RemoveAll(rel)
 	}
 }
 
