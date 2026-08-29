@@ -276,7 +276,7 @@ func reliable4StallJob(nonce, i int64, pad string) *Job {
 
 	return &Job{
 		Cmd:      cmd,
-		Cwd:      "/tmp",
+		Cwd:      testCwd,
 		RepGroup: "reliable4stall",
 		ReqGroup: "reliable4stall",
 		Requirements: &scheduler.Requirements{

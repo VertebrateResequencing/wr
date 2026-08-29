@@ -51,6 +51,26 @@ const testTempDirPrefix = "wrtest-"
 // TestTestBinaryTempDirs) do its work instead of skipping.
 const envTempDirChild = "WR_TEST_TEMPDIR_CHILD"
 
+// envSharedTestCwd carries testCwd to the --servermode/--runnermode children
+// this test binary starts, so that only the process that made it owns it.
+const envSharedTestCwd = "WR_TEST_SHARED_CWD"
+
+// testCwd is the Cwd given to every test job. It must not be /tmp: mkHashedDir
+// puts the working directory of a job that has a Cwd and no CwdMatters - its
+// stdout, its stderr, its .wr_ metadata and the directory the command actually
+// runs in - under <Cwd>/jobqueue_cwd, so a Cwd of /tmp makes the tests share
+// /tmp/jobqueue_cwd with the live jobs of everyone else on this host who ran
+// `wr add --cwd /tmp`. Different jobs hash to different leaves, so sharing that
+// parent is harmless until something deletes it; giving the tests a directory
+// of their own means nothing the suite does can reach a real job's files.
+//
+// It is made at package initialisation rather than in TestMain so that the
+// other package-level values derived from it (liveJTouchActualCwd) are built
+// from the real path; Go orders initialisation by that dependency.
+//
+//nolint:gochecknoglobals // one dir per run, made once and removed by TestMain.
+var testCwd = sharedTestCwd()
+
 // tempDirChildReport prefixes the child's report of the dir it created.
 const tempDirChildReport = "TEMPDIR="
 
@@ -198,6 +218,30 @@ func exitedProcessPid(t *testing.T) int {
 	So(cmd.Run(), ShouldBeNil)
 
 	return cmd.Process.Pid
+}
+
+// sharedTestCwd returns the Cwd this run gives its test jobs: the one our
+// parent made, if this process is a --servermode/--runnermode child of another
+// test binary, else a new temp dir that TestMain removes when this binary
+// exits. The flags that say which mode we are in are not parsed until m.Run,
+// so the environment is what tells us, and a child must not make a directory of
+// its own: the suite starts one per job, and each would outlive a killed child
+// until some later run's reaper noticed it.
+func sharedTestCwd() string {
+	if dir := os.Getenv(envSharedTestCwd); dir != "" {
+		return dir
+	}
+
+	dir, err := newTestTempDir("cwd")
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "failed to create the test cwd: %s\n", err)
+
+		os.Exit(1)
+	}
+
+	os.Setenv(envSharedTestCwd, dir) //nolint:usetesting // TestMain has no *testing.T to Setenv through.
+
+	return dir
 }
 
 // newTestTempDir creates a temp dir that TestMain removes when this test binary

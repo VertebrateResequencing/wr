@@ -161,8 +161,6 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
 	}
 
 	defer removeTemp(stderr, base)
-	cleanupSharedJobqueueCwd(stderr)
-	defer cleanupSharedJobqueueCwd(stderr)
 
 	restorePortBase, err := setRunPortBase(ctx, plan)
 	if err != nil {
@@ -947,14 +945,6 @@ func closeLog(file *os.File) {
 }
 
 func removeTemp(stderr io.Writer, path string) {
-	if err := os.RemoveAll(path); err != nil {
-		writeCleanupWarning(stderr, path, err)
-	}
-}
-
-func cleanupSharedJobqueueCwd(stderr io.Writer) {
-	path := filepath.Join("/tmp", "jobqueue_cwd")
-
 	if err := os.RemoveAll(path); err != nil {
 		writeCleanupWarning(stderr, path, err)
 	}

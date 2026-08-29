@@ -345,7 +345,7 @@ func reliable4ArchivedJob(i int, pad string, endTime time.Time) *Job {
 
 	return &Job{
 		Cmd:      cmd,
-		Cwd:      "/tmp",
+		Cwd:      testCwd,
 		RepGroup: fmt.Sprintf("reliable4_repgroup_%d", i%64),
 		ReqGroup: fmt.Sprintf("reliable4_reqgroup_%d", i%16),
 		Requirements: &scheduler.Requirements{
