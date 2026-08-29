@@ -36,11 +36,15 @@ const (
 	// minSearchPort is the lowest port a range can start at, keeping the search
 	// clear of the well-known and registered ports below it.
 	minSearchPort = 10000
+	// searchablePorts is how many ports the search covers, and so the longest
+	// range it could ever hand back.
+	searchablePorts = maxPort - minSearchPort + 1
 )
 
 var (
 	errListenerAddrNotTCP = errors.New("listener address was not *net.TCPAddr")
 	errNoContiguousRange  = errors.New("no contiguous range of available ports")
+	errInvalidRangeSize   = errors.New("invalid port range size")
 )
 
 // listener interface is used instead of *net.TCPListener directly, so that we
@@ -92,10 +96,18 @@ func NewChecker(host string) (*Checker, error) {
 // which on a busy machine took what was left of that range and then failed with
 // "bind: address already in use" on a request for any port at all.
 //
+// A size below 1, or above the number of ports the search covers, is turned
+// down outright: no host could satisfy it, so it is a mistake in the request
+// rather than a host that happens to be full.
+//
 // NB: there is the potential for a race condition here, where once released,
 // another process gets one of the ports before you use it, so start listening
 // on all the returned ports as soon as possible after calling this.
 func (c *Checker) AvailableRange(size int) (int, int, error) {
+	if size < 1 || size > searchablePorts {
+		return 0, 0, fmt.Errorf("%w: %d is not between 1 and %d", errInvalidRangeSize, size, searchablePorts)
+	}
+
 	var err error
 
 	defer func() {

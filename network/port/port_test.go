@@ -74,6 +74,26 @@ func TestPort(t *testing.T) {
 			checkAvailableRange(checker, 4)
 		})
 
+		Convey("You can get the smallest range there is", func() {
+			checkAvailableRange(checker, 1)
+		})
+
+		Convey("AvailableRange turns down a size no range could have", func() {
+			checkRejectedRangeSize(checker, 0)
+			checkRejectedRangeSize(checker, -1)
+			checkRejectedRangeSize(checker, searchablePorts+1)
+		})
+
+		Convey("AvailableRange still goes looking for a range as long as the whole search", func() {
+			checker.listen = allPortsTaken
+
+			first, last, err := checker.AvailableRange(searchablePorts)
+			So(first, ShouldEqual, 0)
+			So(last, ShouldEqual, 0)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNoContiguousRange), ShouldBeTrue)
+		})
+
 		Convey("AvailableRange never holds more ports than the range asked for", func() {
 			counter := &portCounter{}
 			checker.listen = counter.listen
@@ -123,6 +143,17 @@ func checkAvailableRange(checker *Checker, size int) {
 	So(err, ShouldBeNil)
 	So(first, ShouldBeBetweenOrEqual, 1, maxPort)
 	So(last, ShouldEqual, first+size-1)
+}
+
+// checkRejectedRangeSize asserts that the checker turns down a size it could
+// never hand back a range for, saying so instead of offering a range that runs
+// backwards.
+func checkRejectedRangeSize(checker *Checker, size int) {
+	first, last, err := checker.AvailableRange(size)
+	So(first, ShouldEqual, 0)
+	So(last, ShouldEqual, 0)
+	So(err, ShouldNotBeNil)
+	So(errors.Is(err, errInvalidRangeSize), ShouldBeTrue)
 }
 
 type countedListener struct {
