@@ -3523,6 +3523,104 @@ func TestSameBatchAndLiveDepGroupReblocking(t *testing.T) {
 	})
 }
 
+func TestCompleteJobsNotRerunWhenDepGroupGrows(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	start := func() (internal.Config, *Server, *Client, *jqs.Requirements) {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		serverConfig.Timings.ItemTTR = 2 * time.Second
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		return config, server, jq, standardReqs
+	}
+
+	makeJob := func(cmd, repGroup string, reqs *jqs.Requirements) *Job {
+		return &Job{
+			Cmd:          cmd,
+			Cwd:          testCwd,
+			ReqGroup:     reqGroupFake,
+			Requirements: reqs,
+			Retries:      uint8(0),
+			RepGroup:     repGroup,
+		}
+	}
+
+	runReserved := func(config internal.Config, jq *Client, expected int) []string {
+		var ran []string
+
+		for range expected + 1 {
+			reserved, err := jq.Reserve(200 * time.Millisecond)
+			So(err, ShouldBeNil)
+
+			if reserved == nil {
+				break
+			}
+
+			ran = append(ran, reserved.Cmd)
+			So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+		}
+
+		return ran
+	}
+
+	Convey("Adding a new dep group member does not re-run complete members of the same batch", t, func() {
+		config, server, jq, standardReqs := start()
+
+		Reset(func() {
+			disconnect(jq)
+			server.Stop(ctx, true)
+		})
+
+		firstMember := makeJob("echo grow first member", "grow-first-member", standardReqs)
+		firstMember.DepGroups = []string{"grow"}
+
+		inserts, already, err := jq.Add([]*Job{firstMember}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+		So(runReserved(config, jq, 1), ShouldResemble, []string{firstMember.Cmd})
+
+		dependent := makeJob("echo grow dependent", "grow-dependent", standardReqs)
+		dependent.Dependencies = Dependencies{NewDepGroupDependency("grow")}
+
+		inserts, already, err = jq.Add([]*Job{dependent}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+		So(runReserved(config, jq, 1), ShouldResemble, []string{dependent.Cmd})
+
+		// re-adding the complete firstMember alongside a brand new member of its
+		// dep group resurrects only the archived dependent, not firstMember
+		secondMember := makeJob("echo grow second member", "grow-second-member", standardReqs)
+		secondMember.DepGroups = []string{"grow"}
+
+		inserts, already, err = jq.Add([]*Job{firstMember, secondMember}, envVars, true)
+		So(err, ShouldBeNil)
+
+		ran := runReserved(config, jq, 2)
+		So(ran, ShouldNotContain, firstMember.Cmd)
+		So(ran, ShouldContain, secondMember.Cmd)
+		So(ran, ShouldContain, dependent.Cmd)
+		So(ran, ShouldHaveLength, 2)
+		So(already, ShouldEqual, 1)
+		So(inserts, ShouldEqual, 2)
+
+		complete, err := jq.GetByRepGroup(firstMember.RepGroup, false, 0, JobStateComplete, false, false)
+		So(err, ShouldBeNil)
+		So(complete, ShouldHaveLength, 1)
+		So(complete[0].Exitcode, ShouldEqual, 0)
+		So(complete[0].Attempts, ShouldEqual, 1)
+	})
+}
+
 func TestCommandDependenciesStayStatic(t *testing.T) {
 	if runnermode || servermode {
 		return

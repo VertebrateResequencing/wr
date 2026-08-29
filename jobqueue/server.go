@@ -4385,7 +4385,8 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 	// now that jobs are in the db we can get dependencies fully, so now we can
 	// build our itemdefs *** we really need to test for cycles, because if the
 	// user creates one, we won't let them delete the bad jobs! storeNewJobs()
-	// returns jobsToQueue, which is all of cr.Jobs plus any previously
+	// returns jobsToQueue, which is all of cr.Jobs that it actually stored
+	// (excluding any ignored for being complete already) plus any previously
 	// Archive()d jobs that were resurrected because of one of their DepGroup
 	// dependencies being in cr.Jobs
 	var itemdefs []*queue.ItemDef
