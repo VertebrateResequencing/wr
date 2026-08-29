@@ -830,7 +830,7 @@ func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 // not inside the base directory that bounds the deletion.
 var errNotBelowBaseDir = errors.New("dir is not below the base dir")
 
-// rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
+// rmEmptyDirs deletes leafDir and its parent directories if they are empty,
 // stopping before it reaches baseDir (leaving that, and everything above it,
 // undeleted). It's ok if leafDir doesn't exist.
 //
