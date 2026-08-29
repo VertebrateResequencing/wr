@@ -54,6 +54,9 @@ const envTempDirChild = "WR_TEST_TEMPDIR_CHILD"
 // tempDirChildReport prefixes the child's report of the dir it created.
 const tempDirChildReport = "TEMPDIR="
 
+// testTempDirMode is the permission a test's own planted temp dir gets.
+const testTempDirMode = 0o700
+
 //nolint:gochecknoglobals // TestMain removes the temp dirs this process created.
 var testTempDirs struct {
 	sync.Mutex
@@ -86,7 +89,14 @@ func TestTempDirChild(t *testing.T) {
 // On the way in it also reaps what earlier runs left behind when they never
 // reached here; reapDeadTestTempDirs states the guarantee that reaping does and
 // does not give.
+//
+// Mounts must go first, and not for tidiness: reapDeadTestTempDirs' RemoveAll
+// recurses INTO a mount point it finds in a dir it is removing, so if a killed
+// binary's child still holds that mount's fuse fd, the RemoveAll blocks in
+// request_wait_answer and wedges the reaper here - before m.Run(), where no
+// -test.timeout watchdog exists yet, so the run hangs for good with no panic.
 func TestMain(m *testing.M) {
+	reapDeadTestMounts()
 	reapDeadTestTempDirs()
 
 	code := m.Run()
@@ -118,11 +128,23 @@ func TestTestBinaryTempDirs(t *testing.T) {
 	})
 
 	Convey("A killed run's temp dirs get reaped, but a live run's do not", t, func() {
-		dead, err := os.MkdirTemp("", testTempDirPattern(exitedProcessPid(t), "reaptest"))
+		exited := exitedProcessPid(t)
+
+		dead, err := os.MkdirTemp("", testTempDirPattern(exited, "reaptest"))
 		So(err, ShouldBeNil)
 
 		live, err := newTestTempDir("reaptest")
 		So(err, ShouldBeNil)
+
+		// a name that only looks like the exited pid's must not borrow its
+		// deadness, or a planted dir could aim the reaper wherever it liked.
+		uncanonical := filepath.Join(os.TempDir(),
+			testTempDirPrefix+"+"+strconv.Itoa(exited)+"-reaptest-planted")
+		So(os.Mkdir(uncanonical, testTempDirMode), ShouldBeNil)
+
+		defer func() {
+			So(os.RemoveAll(uncanonical), ShouldBeNil)
+		}()
 
 		reapDeadTestTempDirs()
 
@@ -130,6 +152,9 @@ func TestTestBinaryTempDirs(t *testing.T) {
 		So(os.IsNotExist(err), ShouldBeTrue)
 
 		_, err = os.Stat(live)
+		So(err, ShouldBeNil)
+
+		_, err = os.Stat(uncanonical)
 		So(err, ShouldBeNil)
 	})
 }
@@ -230,7 +255,9 @@ func reapDeadTestTempDirs() {
 	}
 }
 
-// testTempDirPid returns the pid encoded in a newTestTempDir path.
+// testTempDirPid returns the pid encoded in a newTestTempDir path. The pid must
+// be written canonically, so that a planted "wrtest-+123-x" or "wrtest-0123-x"
+// cannot borrow the liveness of pid 123.
 func testTempDirPid(path string) (int, bool) {
 	name := strings.TrimPrefix(filepath.Base(path), testTempDirPrefix)
 
@@ -240,7 +267,7 @@ func testTempDirPid(path string) (int, bool) {
 	}
 
 	pid, err := strconv.Atoi(pidStr)
-	if err != nil || pid <= 0 {
+	if err != nil || pid <= 0 || strconv.Itoa(pid) != pidStr {
 		return 0, false
 	}
 
