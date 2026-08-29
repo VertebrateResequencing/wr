@@ -411,7 +411,7 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 	}
 
 	if !s.replaceSock(sock, resp.SubscriptionID, dialAddr) {
-		return nil, s.unsubscribeRejectedReplacement(resp.SubscriptionID)
+		return nil, s.unsubscribeRejectedReplacement(resp.SubscriptionID, retryEnd)
 	}
 
 	return resp.JobUpdates, nil
@@ -425,9 +425,8 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 // must not be taken.
 //
 // It does not bound a whole attempt: dialling the replacement subscription
-// socket carries only that socket's own deadline, and the unsubscribe cleaning
-// up a replacement the subscription rejects is on the client's usual
-// ClientMinRequestTimeout floor.
+// socket carries only that socket's own deadline, and mangos's first Dial is
+// synchronous with no timeout of its own.
 func subscriptionBudgetRemaining(retryEnd time.Time) (time.Duration, error) {
 	remaining := time.Until(retryEnd)
 	if remaining <= 0 {
@@ -459,15 +458,39 @@ func (s *Subscription) resubscribeWithinBudget(retryEnd time.Time) (*serverRespo
 	return s.client.requestWithin(s.subscribeRequest(), remaining)
 }
 
-func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string) error {
-	if _, err := s.client.request(&clientRequest{
+func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string, retryEnd time.Time) error {
+	if _, err := s.client.requestWithin(&clientRequest{
 		Method:         requestMethodUnsubscribe,
 		SubscriptionID: subscriptionID,
-	}); err != nil {
+	}, rejectedReplacementUnsubscribeTimeout(retryEnd)); err != nil {
 		return errors.Join(ErrSubscriptionClosed, err)
 	}
 
 	return ErrSubscriptionClosed
+}
+
+// rejectedReplacementUnsubscribeTimeout bounds the unsubscribe that removes a
+// replacement subscription the client registered and then rejected. That is a
+// step of a reconnect attempt, so whatever is left of the attempt's retry
+// budget bounds it: on plain request() it waits on the socket's
+// ClientMinRequestTimeout floor instead, holding the poll goroutine for a
+// minute past a budget of milliseconds. requestWithin only ever narrows, so the
+// production ClientRetryTime budget leaves the step exactly as it was.
+//
+// A spent budget still sends it, bounded by subscriptionReconnectTimeout,
+// rather than skipping it. Nothing else can remove that replacement: its id is
+// known only here (Unsubscribe sends the id the subscription is still holding),
+// and the manager has no reaper for a registration. Skipping would strand a
+// serverSubscription, its delivery goroutine and its queues for the manager's
+// lifetime, and leave hasAnyClientSubscriptions permanently true, which costs
+// every job transition the zero-subscriber early-out it depends on.
+func rejectedReplacementUnsubscribeTimeout(retryEnd time.Time) time.Duration {
+	remaining, err := subscriptionBudgetRemaining(retryEnd)
+	if err != nil {
+		return subscriptionReconnectTimeout
+	}
+
+	return remaining
 }
 
 func (s *Subscription) subscribeRequest() *clientRequest {

@@ -1800,6 +1800,89 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		So(catchUp, ShouldBeNil)
 		So(reconnectErr, ShouldNotBeNil)
 	})
+
+	Convey("The unsubscribe cleaning up a rejected replacement is bounded by the retry budget", t, func() {
+		ctx := context.Background()
+
+		// as in the first Convey, a single RPC reader makes the shutdown window
+		// deterministic: once one request goes unread, nothing else the client
+		// sends is answered while the command socket stays open.
+		defer setNumRPCReaders(1)()
+
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.InterruptTime = 5 * time.Second
+		serverConfig.Timings.ShutdownSocketWait = 3 * time.Second
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-rejected-replacement"})
+		So(err, ShouldBeNil)
+
+		stopped := make(chan struct{})
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+		So(unread, ShouldBeTrue)
+
+		// a reconnect re-Connect()s, which leaves the client on the
+		// ClientMinRequestTimeout floor, so that is the deadline this step has
+		// to narrow to stay inside its budget
+		So(jq.sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(subscriptionReconnectTimeout)), ShouldBeNil)
+
+		took, returned, unsubErr := unsubscribeRejectedWithin(sub, unboundedRequestBudget, unreadPingWait)
+
+		So(returned, ShouldBeTrue)
+		So(took, ShouldBeLessThan, time.Second)
+		So(errors.Is(unsubErr, ErrSubscriptionClosed), ShouldBeTrue)
+
+		<-stopped
+	})
+
+	Convey("A rejected replacement is unsubscribed even when the retry budget is spent", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-rejected-replacement-spent"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		// stands in for the replacement a reconnect registers moments before the
+		// subscription rejects it: nothing else knows that id, since Unsubscribe
+		// sends the id the subscription is still holding, so an unsubscribe
+		// skipped here leaves the manager holding it for life
+		replacement, err := jq.request(&clientRequest{
+			Method: requestMethodSubscribe,
+			Keys:   []string{"subscription-rejected-replacement-spent"},
+		})
+		So(err, ShouldBeNil)
+		So(serverClientSubscriptionCount(server), ShouldEqual, 2)
+
+		unsubErr := sub.unsubscribeRejectedReplacement(replacement.SubscriptionID, time.Now().Add(-time.Millisecond))
+
+		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
+		So(errors.Is(unsubErr, ErrSubscriptionClosed), ShouldBeTrue)
+	})
 }
 
 // applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
@@ -3005,6 +3088,36 @@ func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
 			return tx.Bucket(bucketJobsLive).Put([]byte(key), encoded)
 		})
 		So(err, ShouldBeNil)
+	}
+}
+
+// unsubscribeRejectedWithin runs the unsubscribe that cleans up a rejected
+// replacement subscription against a manager that will never answer it, giving
+// it budget as its retry budget, and reports how long it took and whether it
+// came back at all within limit. It closes the client's socket if it did not:
+// an unbounded receive holds the client lock, so nothing else on that client
+// (Disconnect included) could proceed while it waits.
+func unsubscribeRejectedWithin(sub *Subscription, budget, limit time.Duration) (time.Duration, bool, error) {
+	type outcome struct {
+		took time.Duration
+		err  error
+	}
+
+	done := make(chan outcome, 1)
+	start := time.Now()
+
+	go func() {
+		err := sub.unsubscribeRejectedReplacement("rejected-replacement", time.Now().Add(budget))
+		done <- outcome{took: time.Since(start), err: err}
+	}()
+
+	select {
+	case o := <-done:
+		return o.took, true, o.err
+	case <-time.After(limit):
+		_ = sub.client.sock.Close()
+
+		return limit, false, nil
 	}
 }
 

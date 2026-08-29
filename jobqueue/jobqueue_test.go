@@ -126,6 +126,22 @@ const (
 	awsSecretAccessKeyEnv = "AWS_SECRET_ACCESS_KEY" // #nosec G101 -- test env-var name only.
 )
 
+const (
+	// reserveWaitingForAddTimeout is how long a Reserve that is meant to be
+	// ended by a later Add is willing to wait. Only the Add can make it return a
+	// job at all - running the wait out returns nil - so this is generous enough
+	// that a loaded box cannot end the wait first, and its only remaining job is
+	// to fail a reserve that never returns. The old test asked for 1s and then
+	// required the reserve back within 800ms of starting, which a contended box
+	// missed (.docs/bugfixes/260828-4.md BUG 3).
+	reserveWaitingForAddTimeout = 30 * time.Second
+	// reserveStillWaitingCheck is how long a Reserve must stay unanswered before
+	// the job it is waiting for is added, so that "while waiting on a Reserve"
+	// is really what is being tested. Nothing of that scheduler group exists
+	// yet, so load can only lengthen this wait, never end it early.
+	reserveStillWaitingCheck = 200 * time.Millisecond
+)
+
 // test command-line flag variables, populated by init() via the flag package.
 //
 //nolint:gochecknoglobals // test flag variables set up in init()
@@ -2337,73 +2353,38 @@ func TestJobqueueBasics(t *testing.T) {
 					So(job, ShouldBeNil)
 
 					Convey("Adding one while waiting on a Reserve will return the new job", func() {
-						worked := make(chan bool)
+						done := make(chan reserveOutcome, 1)
 
 						go func() {
-							job, err := jq.ReserveScheduled(1000*time.Millisecond, "1024:300:1:0")
-							if err != nil {
-								worked <- false
-
-								return
-							}
-
-							if job == nil {
-								worked <- false
-
-								return
-							}
-
-							if job.Cmd == "new" {
-								worked <- true
-
-								return
-							}
-
-							worked <- false
+							job, errr := jq.ReserveScheduled(reserveWaitingForAddTimeout, "1024:300:1:0")
+							done <- reserveOutcome{job: job, err: errr}
 						}()
 
-						ok := make(chan bool)
+						// nothing of that scheduler group exists yet, so a reserve
+						// that came back here came back wrongly; a loaded box can
+						// only make the wait longer, never shorter, so this is the
+						// one direction the clock is safe in
+						_, returnedBeforeAdd := receiveReserveOutcome(done, reserveStillWaitingCheck)
+						So(returnedBeforeAdd, ShouldBeFalse)
 
-						go func() {
-							ticker := time.NewTicker(100 * time.Millisecond)
-							ticks := 0
+						jobs = append(jobs, &Job{Cmd: "new", Cwd: "/fake/cwd", ReqGroup: "add_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 5 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 
-							for {
-								select {
-								case <-ticker.C:
-									ticks++
-									if ticks == 2 {
-										jobs = append(jobs, &Job{Cmd: "new", Cwd: "/fake/cwd", ReqGroup: "add_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 5 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+						gojq, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+						So(errc, ShouldBeNil)
 
-										gojq, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-										if errc != nil {
-											fmt.Printf("Connect failed: %s\n", errc)
-										}
-										defer disconnect(gojq)
+						defer disconnect(gojq)
 
-										_, _, erra := gojq.Add(jobs, envVars, true)
-										if errc != nil {
-											fmt.Printf("Add failed: %s\n", erra)
-										}
-									}
+						_, _, erra := gojq.Add(jobs, envVars, true)
+						So(erra, ShouldBeNil)
 
-									continue
-								case w := <-worked:
-									ticker.Stop()
-
-									if w && ticks <= 8 {
-										ok <- true
-									}
-
-									ok <- false
-
-									return
-								}
-							}
-						}()
-
-						<-time.After(2 * time.Second)
-						So(<-ok, ShouldBeTrue)
+						// a reserve that ran out its own wait returns a nil job, so
+						// the added command coming back is what proves the add is
+						// what ended the wait
+						outcome, returned := receiveReserveOutcome(done, reserveWaitingForAddTimeout)
+						So(returned, ShouldBeTrue)
+						So(outcome.job, ShouldNotBeNil)
+						So(outcome.job.Cmd, ShouldEqual, "new")
+						So(outcome.err, ShouldBeNil)
 					})
 				})
 			})
@@ -9638,6 +9619,24 @@ func timelimitDebug(jobs []*Job, err error) {
 
 			fmt.Printf(" [%s]: %s (%s)\n", job.Cmd, job.State, stderr)
 		}
+	}
+}
+
+// reserveOutcome is what a ReserveScheduled call returned, so a test can start
+// one in a goroutine and wait for it.
+type reserveOutcome struct {
+	job *Job
+	err error
+}
+
+// receiveReserveOutcome waits up to timeout for a reserve started in another
+// goroutine to return, reporting false if it had not returned by then.
+func receiveReserveOutcome(done <-chan reserveOutcome, timeout time.Duration) (reserveOutcome, bool) {
+	select {
+	case o := <-done:
+		return o, true
+	case <-time.After(timeout):
+		return reserveOutcome{}, false
 	}
 }
 
