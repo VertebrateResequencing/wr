@@ -212,7 +212,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600), ShouldBeNil)
 
 		started := time.Now()
-		readyAt := started.Add(90 * time.Millisecond)
+		statusUntil := started.Add(90 * time.Millisecond)
 		statusDone := make(chan struct{})
 		statusErr := make(chan error, 1)
 
@@ -229,7 +229,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 			defer ticker.Stop()
 
 			for range ticker.C {
-				if time.Now().After(readyAt) {
+				if time.Now().After(statusUntil) {
 					return
 				}
 
@@ -246,10 +246,21 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 			}
 		}()
 
+		// The connector reports "not ready" for a fixed number of polls rather
+		// than until a wall-clock instant, so how long the setup above took
+		// cannot shorten the wait. Each poll costs at least
+		// managerStartupPollInterval, so the wait lasts at least
+		// startupNilPolls*managerStartupPollInterval.
+		const startupNilPolls = 18
+
 		var reports []string
 
+		attempts := 0
+
 		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
-			if time.Now().After(readyAt) {
+			attempts++
+
+			if attempts > startupNilPolls {
 				return &jobqueue.Client{}
 			}
 
@@ -267,7 +278,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		}
 
 		So(jq, ShouldNotBeNil)
-		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 80*time.Millisecond)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, startupNilPolls*managerStartupPollInterval)
 		So(reports, ShouldContain, "rebuilding database job lookup index")
 	})
 
@@ -351,23 +362,23 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		So(os.Chtimes(config.ManagerTokenFile, preStart.Truncate(time.Second), preStart.Truncate(time.Second)),
 			ShouldBeNil)
 
-		readyAt := time.Now().Add(30 * time.Millisecond)
+		// The token's coarse mtime, older than the wait's own start, is the
+		// whole fixture; nothing here needs a delay before the manager is
+		// ready. Starting the timeout at the wait keeps slow setup from
+		// consuming it, and the first attempt connecting proves the coarse
+		// mtime did not hold the connect back.
 		attempts := 0
 
-		jq := waitForManagerStartupWith(preStart, 80*time.Millisecond, func(time.Duration) *jobqueue.Client {
+		jq := waitForManagerStartupWith(time.Now(), 80*time.Millisecond, func(time.Duration) *jobqueue.Client {
 			attempts++
 
-			if time.Now().After(readyAt) {
-				return &jobqueue.Client{}
-			}
-
-			return nil
+			return &jobqueue.Client{}
 		}, func(internal.DBUpgradeStatus) {
 			So("new-token startup should not report an upgrade", ShouldBeBlank)
 		})
 
 		So(jq, ShouldNotBeNil)
-		So(attempts, ShouldBeGreaterThan, 0)
+		So(attempts, ShouldEqual, 1)
 	})
 
 	Convey("manager startup waits when a new token is empty", t, func() {
@@ -453,14 +464,22 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 			UpdatedAt: statusTime,
 		}, statusTime)
 
+		// A fixed number of "not ready" polls bounds the wait by construction,
+		// so the fixture needs no wall-clock check that the manager becomes
+		// ready before the startup timeout would expire.
+		const startupNilPolls = 20
+
+		So(startupNilPolls*managerStartupPollInterval, ShouldBeLessThan, startupTimeout)
+
 		started := time.Now()
-		readyAt := started.Add(100 * time.Millisecond)
-		So(readyAt.Before(preStart.Add(startupTimeout)), ShouldBeTrue)
+		attempts := 0
 
 		var reports []string
 
 		jq := waitForManagerStartupWith(preStart, startupTimeout, func(time.Duration) *jobqueue.Client {
-			if time.Now().After(readyAt) {
+			attempts++
+
+			if attempts > startupNilPolls {
 				return &jobqueue.Client{}
 			}
 
@@ -470,7 +489,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		})
 
 		So(jq, ShouldNotBeNil)
-		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 90*time.Millisecond)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, startupNilPolls*managerStartupPollInterval)
 		So(reports, ShouldContain, "single fresh upgrade status")
 	})
 
@@ -510,13 +529,17 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 			UpdatedAt: statusTime,
 		}, preStart.Truncate(time.Second))
 
+		const startupNilPolls = 12
+
 		started := time.Now()
-		readyAt := started.Add(60 * time.Millisecond)
+		attempts := 0
 
 		var reports []string
 
 		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
-			if time.Now().After(readyAt) {
+			attempts++
+
+			if attempts > startupNilPolls {
 				return &jobqueue.Client{}
 			}
 
@@ -526,7 +549,7 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		})
 
 		So(jq, ShouldNotBeNil)
-		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 50*time.Millisecond)
+		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, startupNilPolls*managerStartupPollInterval)
 		So(reports, ShouldContain, "fresh upgrade with coarse status mtime")
 	})
 
@@ -565,12 +588,12 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 		}, statusTime)
 
 		started := time.Now()
-		readyAt := started.Add(100 * time.Millisecond)
+		tokenAt := started.Add(100 * time.Millisecond)
 
 		tokenErr := make(chan error, 1)
 
 		go func() {
-			time.Sleep(time.Until(readyAt))
+			time.Sleep(time.Until(tokenAt))
 
 			tokenErr <- os.WriteFile(config.ManagerTokenFile, []byte("token"), 0o600)
 		}()
@@ -579,21 +602,21 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 
 		attempts := 0
 
+		// The connector is only reached once the token exists, so it can
+		// succeed unconditionally: the single attempt proves the wait polled
+		// through the quiet commit phase and connected as soon as the late
+		// token appeared.
 		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
 			attempts++
 
-			if time.Now().After(readyAt) {
-				return &jobqueue.Client{}
-			}
-
-			return nil
+			return &jobqueue.Client{}
 		}, func(status internal.DBUpgradeStatus) {
 			reports = append(reports, managerDBUpgradeStatusText(status))
 		})
 
 		So(<-tokenErr, ShouldBeNil)
 		So(jq, ShouldNotBeNil)
-		So(attempts, ShouldBeGreaterThan, 0)
+		So(attempts, ShouldEqual, 1)
 		So(time.Since(started), ShouldBeGreaterThanOrEqualTo, 90*time.Millisecond)
 		So(reports, ShouldContain, "committing database upgrade")
 	})
@@ -634,20 +657,22 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 			UpdatedAt: statusTime,
 		}, statusTime)
 
-		readyAt := time.Now().Add(60 * time.Millisecond)
+		attempts := 0
 		reports := 0
 
+		// An always-ready connector makes the nil result non-vacuous: the
+		// invalid PID must stop the already-expired timeout being extended, so
+		// the wait has to give up before it ever tries to connect.
 		jq := waitForManagerStartupWith(preStart, 20*time.Millisecond, func(time.Duration) *jobqueue.Client {
-			if time.Now().After(readyAt) {
-				return &jobqueue.Client{}
-			}
+			attempts++
 
-			return nil
+			return &jobqueue.Client{}
 		}, func(internal.DBUpgradeStatus) {
 			reports++
 		})
 
 		So(jq, ShouldBeNil)
+		So(attempts, ShouldEqual, 0)
 		So(reports, ShouldEqual, 0)
 	})
 }
@@ -714,15 +739,26 @@ func TestWaitForLiveManagerStartup(t *testing.T) {
 			UpdatedAt: statusTime,
 		}, statusTime)
 
-		readyAt := preStart.Add(70 * time.Millisecond)
+		// The connector reports "not ready" for a fixed number of polls rather
+		// than until a wall-clock instant. Setup above (spawning the child and
+		// writing status files) can stall for far longer than any such
+		// instant, and did: the wait then found the manager ready on its first
+		// poll and logged nothing. A poll count cannot be consumed by setup,
+		// and since each poll costs at least managerStartupPollInterval the
+		// wait spans at least startupNilPolls*managerStartupPollInterval,
+		// which is several managerStartupReportInterval periods.
+		const startupNilPolls = 12
 
 		var reports []string
 
 		upgradeReports := 0
+		attempts := 0
 
 		jq, err := waitForLiveManagerStartupWith(preStart, 20*time.Millisecond, child.Process.Pid, processDone,
 			func(time.Duration) *jobqueue.Client {
-				if time.Now().After(readyAt) {
+				attempts++
+
+				if attempts > startupNilPolls {
 					return &jobqueue.Client{}
 				}
 
@@ -735,7 +771,7 @@ func TestWaitForLiveManagerStartup(t *testing.T) {
 
 		So(err, ShouldBeNil)
 		So(jq, ShouldNotBeNil)
-		So(time.Since(preStart), ShouldBeGreaterThanOrEqualTo, 60*time.Millisecond)
+		So(time.Since(preStart), ShouldBeGreaterThanOrEqualTo, startupNilPolls*managerStartupPollInterval)
 		So(upgradeReports, ShouldBeGreaterThan, 0)
 		So(len(reports), ShouldBeGreaterThan, 1)
 		So(reports[0], ShouldContainSubstring, "wr manager is still starting")
