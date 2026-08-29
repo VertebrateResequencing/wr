@@ -9071,6 +9071,23 @@ func TestJobqueueWithMounts(t *testing.T) {
 	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
 	isolateTestConfig(config)
 
+	// the jobs below mount inside mountDir rather than a t.TempDir(), so that a
+	// mount this run leaves behind is one a later run can find and release: the
+	// reaping in reapDeadTestMounts keys on the creating pid that only a
+	// newTestTempDir name carries.
+	mountDir, merr := newTestTempDir("mounts")
+	if merr != nil {
+		t.Fatal(merr)
+	}
+
+	failMountTestOnTimeout(t, mountDir)
+
+	t.Cleanup(func() {
+		if forced := releaseMuxFysMountsUnder(mountDir); len(forced) > 0 {
+			t.Errorf("mounts outlived the test that made them: %v", forced)
+		}
+	})
+
 	addr := "localhost:" + config.ManagerPort
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
@@ -9199,7 +9216,8 @@ func TestJobqueueWithMounts(t *testing.T) {
 	})
 
 	Convey("You can connect and run commands that rely on files in a remote S3 object store", t, func() {
-		cwd := t.TempDir()
+		cwd, cerr := os.MkdirTemp(mountDir, "cwd")
+		So(cerr, ShouldBeNil)
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
