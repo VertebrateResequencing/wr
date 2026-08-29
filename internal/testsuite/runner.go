@@ -46,6 +46,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v4/process"
 	"golang.org/x/term"
 )
 
@@ -59,6 +60,8 @@ const (
 	maxDefaultParallel    = 24
 	parallelPerCPU        = 6
 	minTestPortBase       = 10000
+	tempPrefixTest        = "wrtest."
+	tempPrefixRace        = "wrrace."
 	lanePortSpan          = 200
 	defaultEphemeralStart = 32768
 	maxTCPPort            = 65535
@@ -150,6 +153,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, mode Mode) err
 func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root string, plan Plan) error {
 	started := time.Now()
 
+	reapDeadSuiteTemps()
+
 	base, err := os.MkdirTemp("", tempPrefix(plan.Mode))
 	if err != nil {
 		return fmt.Errorf("create test-suite temp dir: %w", err)
@@ -186,6 +191,72 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
 	prog.stop()
 
 	return reportResults(stdout, plan.Module, results, time.Since(started))
+}
+
+// reapDeadSuiteTemps removes the temp dirs earlier suite runs left in
+// os.TempDir() because they were killed before RunPlan could remove their own -
+// by a timeout wrapper, a Ctrl-C, or an agent's tool deadline. Each such run
+// leaks one dir, of 130-230MB, that nothing else ever removes.
+//
+// It keys on whether the pid encoded in the dir's name - the pid of the process
+// that CREATED it - is still alive, so a suite running concurrently keeps its
+// dir. That distinction is the whole reason this is not an rm -rf /tmp/wrtest*
+// in make clean: on a /tmp shared with other checkouts and agents that deletes
+// a live run's manager databases, which is not hypothetical - it happened
+// during review of the equivalent per-config-dir reaper.
+//
+// A dir from a PRE-FIX binary is named wrtest.<random>, carrying no pid, so it
+// matches nothing here.
+func reapDeadSuiteTemps() {
+	for _, prefix := range []string{tempPrefixTest, tempPrefixRace} {
+		matches, err := filepath.Glob(filepath.Join(os.TempDir(), prefix+"*.*"))
+		if err != nil {
+			continue
+		}
+
+		for _, path := range matches {
+			if pid, ok := suiteTempPid(prefix, path); ok && !pidExists(pid) {
+				_ = os.RemoveAll(path)
+			}
+		}
+	}
+}
+
+// suiteTempPid returns the pid encoded in a temp dir that tempPrefix named with
+// the given prefix. The pid must be written canonically, so that a planted
+// "wrtest.+123.x" or "wrtest.0123.x" cannot borrow the liveness of pid 123.
+func suiteTempPid(prefix, path string) (int, bool) {
+	pidStr, _, found := strings.Cut(strings.TrimPrefix(filepath.Base(path), prefix), ".")
+	if !found {
+		return 0, false
+	}
+
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 || strconv.Itoa(pid) != pidStr {
+		return 0, false
+	}
+
+	return pid, true
+}
+
+// pidExists says whether pid is a process on this host, erring towards yes so
+// that an unreadable /proc never costs us someone else's temp dir. The jobqueue
+// test suite's reaper of its own per-config dirs has the same helper, on
+// purpose: both give the same guarantee about the creating process.
+func pidExists(pid int) bool {
+	exists, err := process.PidExists(int32(pid)) //nolint:gosec // a pid always fits in an int32
+
+	return err != nil || exists
+}
+
+// modeTempPrefix returns the part of a temp dir name that says which suite made
+// it.
+func modeTempPrefix(mode Mode) string {
+	if mode == ModeRace {
+		return tempPrefixRace
+	}
+
+	return tempPrefixTest
 }
 
 func setRunPortBase(ctx context.Context, plan Plan) (func(), error) {
@@ -893,10 +964,10 @@ func writeCleanupWarning(stderr io.Writer, path string, err error) {
 	_, _ = io.WriteString(stderr, "warning: cleanup "+path+": "+err.Error()+"\n") //nolint:errcheck
 }
 
+// tempPrefix returns the os.MkdirTemp prefix for the suite's own temp dir in
+// mode. The creating pid is part of it so that a dir left behind by a run that
+// was killed before RunPlan could remove its own can be reaped by a later run;
+// see reapDeadSuiteTemps.
 func tempPrefix(mode Mode) string {
-	if mode == ModeRace {
-		return "wrrace."
-	}
-
-	return "wrtest."
+	return modeTempPrefix(mode) + strconv.Itoa(os.Getpid()) + "."
 }
