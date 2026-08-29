@@ -301,12 +301,21 @@ func cleanupBelowCwd(j *Job, cwdRoot *os.Root) error {
 		cleanupProvenHook()
 	}
 
-	if err := emptyWorkSpace(j, workSpace, actualCwdName); err != nil {
+	// the descent to the workspace is made once and its handles kept, so that
+	// emptying the workspace and then deleting it and its empty parents cost
+	// one metadata lookup per level instead of re-walking Cwd for each of them.
+	chain, err := workSpace.openChain()
+	if err != nil {
+		return err
+	}
+	defer chain.closeAll()
+
+	if err := emptyWorkSpace(j, chain, actualCwdName); err != nil {
 		return err
 	}
 
 	// delete the emptied workspace and any empty parent directories up to Cwd
-	return rmCheckedEmptyDirs(workSpace)
+	return chain.removeUpward()
 }
 
 // provenWorkSpace proves the unique dir wr created for this Job: the parent of
@@ -349,8 +358,8 @@ func provenWorkSpace(j *Job, cwdRoot *os.Root) (provenDirs, string, error) {
 // triggers it again - and Job.Unmount deletes the emptied workspace in between,
 // so the second run finds nothing to delete. Erroring here would skip the empty
 // parent dirs that Behaviour.cleanup goes on to tidy.
-func emptyWorkSpace(j *Job, workSpace provenDirs, actualCwdName string) error {
-	wsRoot, err := workSpace.openProven()
+func emptyWorkSpace(j *Job, chain dirChain, actualCwdName string) error {
+	wsRoot, err := chain.openLeaf()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -360,14 +369,14 @@ func emptyWorkSpace(j *Job, workSpace provenDirs, actualCwdName string) error {
 	}
 	defer wsRoot.Close()
 
-	return cleanupWorkSpace(j, wsRoot, workSpace, actualCwdName)
+	return cleanupWorkSpace(j, wsRoot, chain.leaf, actualCwdName)
 }
 
 // cleanupWorkSpace deletes the contents of the Job's workspace dir, all of it
 // relative to wsRoot, the proven handle on that dir. If the Job used mounts it
 // takes care not to delete the cache dirs or mounted dirs; otherwise it just
 // deletes everything in one go.
-func cleanupWorkSpace(j *Job, wsRoot *os.Root, workSpace provenDirs, actualCwdName string) error {
+func cleanupWorkSpace(j *Job, wsRoot *os.Root, workSpace, actualCwdName string) error {
 	actualCwdInfo, err := provenActualCwd(j, wsRoot, actualCwdName)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -385,7 +394,7 @@ func cleanupWorkSpace(j *Job, wsRoot *os.Root, workSpace provenDirs, actualCwdNa
 		}
 	}
 
-	return removeWorkSpaceExtras(wsRoot, mountedWorkSpaceEntries(j, workSpace.leaf))
+	return removeWorkSpaceExtras(wsRoot, mountedWorkSpaceEntries(j, workSpace))
 }
 
 // provenActualCwd proves that the Job's ActualCwd, which must be the named entry

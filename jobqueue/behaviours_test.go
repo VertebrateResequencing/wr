@@ -437,6 +437,36 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			})
 		})
 
+		Convey("Cleanup deletes nothing outside Cwd when the workspace it checked had already gone", func() {
+			// with no workspace there to lstat, there is no inode for the open
+			// to be checked against, so the handle on Cwd is all that stands
+			// between the upward walk and the empty dirs it would unlink.
+			victim := filepath.Join(parent, "victim", "unique")
+			err = os.MkdirAll(victim, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			wrCwd := filepath.Join(cwd, "wr_cwd")
+			err = os.Mkdir(wrCwd, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			cleanupProvenHook = func() {
+				cleanupProvenHook = nil
+
+				So(os.Remove(wrCwd), ShouldBeNil)
+				So(os.Symlink(filepath.Join("..", "victim"), wrCwd), ShouldBeNil)
+			}
+
+			Reset(func() { cleanupProvenHook = nil })
+
+			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(wrCwd, "unique", "cwd")}
+
+			err = cleanupAll.Trigger(OnExit, job)
+
+			soPathsExist(victim, precious, parent, cwd)
+
+			So(err, ShouldNotBeNil)
+		})
+
 		Convey("Cleanup of a mounting Job wipes its workspace but keeps the mount dir", func() {
 			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
 			actualCwd := filepath.Join(workSpace, "cwd")

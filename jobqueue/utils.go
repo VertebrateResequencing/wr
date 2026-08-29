@@ -900,52 +900,113 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 // to delete the parent of a user's own working directory in the first place.
 type provenDirs struct {
 	// root is the open handle every deletion goes through. It is owned by
-	// whoever opened it, not by this value: parent() shares the same handle,
-	// and none of the methods here close it.
+	// whoever opened it, not by this value: the chain openChain returns shares
+	// the same handle, and neither closes it.
 	root *os.Root
 
 	// rel is the proven dir, relative to root: cleaned, and never "." or above.
 	rel string
 
-	// leaf and base are the absolute forms of the proven dir and the dir
-	// bounding it. They are for error messages and for deriving other paths;
-	// deletions use root and rel, because only those cannot be re-resolved
-	// somewhere else between the proof and the deletion.
-	base string
+	// leaf is the absolute form of the proven dir. It is for error messages and
+	// for deriving other paths; deletions use root and rel, because only those
+	// cannot be re-resolved somewhere else between the proof and the deletion.
 	leaf string
 
 	// info is what the proof lstat'ed at leaf, or nil if nothing was there
 	// then, or if the proof was deletableDirBelow's resolved fallback.
-	// openProven needs it to prove that the directory it opens is the one that
+	// openLeaf needs it to prove that the directory it opens is the one that
 	// was proven.
 	info os.FileInfo
 }
 
-// parent returns dirs.leaf's parent, still proven: an ancestor of a proven leaf
-// is inside base too, and is reached without traversing a symlink. ok is false
-// when that parent would be base itself or outside it, in which case there is
-// no deletable dir above the leaf.
-func (dirs provenDirs) parent() (provenDirs, bool) {
-	rel := filepath.Dir(dirs.rel)
-	if !relIsBelow(rel) {
-		return provenDirs{}, false
+// openChain descends from dirs.root to the proven dir, keeping a handle on
+// every directory on the way down, so that the deletions made with it cost one
+// metadata lookup per level instead of re-walking the whole path for each of
+// them.
+//
+// A component that has gone since the proof ends the descent, which is not a
+// failure in itself; the chain then knows it is incomplete. Any other failure
+// to open a component is returned, having closed whatever had been opened.
+//
+// The caller must closeAll the returned chain.
+func (dirs provenDirs) openChain() (dirChain, error) {
+	chain := dirChain{
+		names: strings.Split(dirs.rel, string(filepath.Separator)),
+		leaf:  dirs.leaf,
+		info:  dirs.info,
+	}
+	chain.roots = append(make([]*os.Root, 0, len(chain.names)), dirs.root)
+
+	for _, name := range chain.names[:len(chain.names)-1] {
+		dirRoot, err := chain.deepest().OpenRoot(name)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return chain, nil
+			}
+
+			chain.closeAll()
+
+			return dirChain{}, err
+		}
+
+		chain.roots = append(chain.roots, dirRoot)
 	}
 
-	dirs.rel = rel
-	dirs.leaf = filepath.Dir(dirs.leaf)
-	dirs.info = nil
-
-	return dirs, true
+	return chain, nil
 }
 
-// remove deletes the proven dir itself, through the root, so the name cannot
-// resolve outside it. Like os.Remove it only succeeds on an empty directory,
-// and it unlinks a symlink rather than following it.
-func (dirs provenDirs) remove() error {
-	return dirs.root.Remove(dirs.rel)
+// dirChain is an open handle on the directory that each component of a proven
+// path lives in: roots[i] is the handle names[i] is an entry of, so roots[0] is
+// the base the descent started from, and each handle after it was opened on the
+// name before it.
+//
+// It exists for the deletion walk. An os.Root resolves a relative path one
+// component at a time, so removing the leaf and then each of its parents by a
+// shrinking path relative to the base re-walks the whole path every time, which
+// is O(depth^2) metadata lookups - and on the shared filesystems jobs actually
+// run on, metadata lookups are what the cost of cleanup is made of. Keeping the
+// handles from the one descent makes it exactly one lookup per level.
+//
+// The handles also pin their directories, so every removal happens in the
+// directory the descent opened, whatever is done to the names above it in the
+// meantime.
+type dirChain struct {
+	// roots holds the base handle followed by the handles the descent opened.
+	// It is shorter than names when a component had already gone, and never
+	// covers the leaf itself: that is opened by openLeaf, which proves its
+	// identity as well.
+	roots []*os.Root
+
+	// names is the proven dir's path relative to the base, split into its
+	// components, so the last of them is the leaf's own name.
+	names []string
+
+	// leaf is the absolute path of the proven dir, for error messages, and info
+	// is what the proof lstat'ed there, or nil if nothing was there then.
+	leaf string
+	info os.FileInfo
 }
 
-// openProven opens the proven dir as a root of its own, so that everything
+// deepest is the handle on the deepest directory the descent opened.
+func (c dirChain) deepest() *os.Root {
+	return c.roots[len(c.roots)-1]
+}
+
+// complete says if the descent reached the leaf's own parent, ie. every
+// directory above the leaf was still there.
+func (c dirChain) complete() bool {
+	return len(c.roots) == len(c.names)
+}
+
+// closeAll closes the handles the descent opened. roots[0] belongs to whoever
+// opened it, so it is left alone.
+func (c dirChain) closeAll() {
+	for i := len(c.roots) - 1; i > 0; i-- {
+		c.roots[i].Close()
+	}
+}
+
+// openLeaf opens the proven dir as a root of its own, so that everything
 // deleted inside it is named by a path relative to that handle rather than by a
 // string resolved afresh each time.
 //
@@ -956,12 +1017,67 @@ func (dirs provenDirs) remove() error {
 // root, but follows a relative symlink that stays inside it.
 //
 // A dir that has gone since it was proven gives an os.IsNotExist error.
-func (dirs provenDirs) openProven() (*os.Root, error) {
-	if dirs.info == nil {
-		return nil, &os.PathError{Op: "open", Path: dirs.leaf, Err: os.ErrNotExist}
+func (c dirChain) openLeaf() (*os.Root, error) {
+	if c.info == nil || !c.complete() {
+		return nil, &os.PathError{Op: "open", Path: c.leaf, Err: os.ErrNotExist}
 	}
 
-	return openVerifiedDir(dirs.root, dirs.rel, dirs.info)
+	last := len(c.names) - 1
+
+	return openVerifiedDir(c.roots[last], c.names[last], c.info)
+}
+
+// removeUpward removes the proven dir and then each of its parents in turn,
+// stopping before it reaches the base (leaving that, and everything above it,
+// undeleted) and stopping early at a dir it cannot remove - which is expected
+// when another Job is running from the same base, so that is not an error.
+//
+// Each removal names a single entry of the pinned handle on the directory that
+// entry lives in, so no part of the path is left to be resolved again, and like
+// os.Remove it only succeeds on an empty directory and unlinks a symlink rather
+// than following it.
+//
+// A leaf that has already gone is not a failure: its parents are still ours to
+// tidy, which is the ordinary state on the second cleanup of a Job. A parent
+// that has gone means the walk would stop at that level anyway, so an
+// incomplete chain removes nothing.
+func (c dirChain) removeUpward() error {
+	if !c.complete() {
+		return nil
+	}
+
+	last := len(c.names) - 1
+
+	err := c.roots[last].Remove(c.names[last])
+	if err != nil && !os.IsNotExist(err) {
+		if errIsDirNotEmpty(err) {
+			return nil
+		}
+
+		return err
+	}
+
+	c.removeEmptyParents()
+
+	return nil
+}
+
+// removeEmptyParents removes the empty parent directories of the chain's leaf,
+// from the deepest up, stopping before the base and at the first dir that will
+// not go.
+//
+// The chain is what makes it safe to remove these without re-proving each
+// level: every one of them is an ancestor of a leaf already proven to be inside
+// the base, and each removal is made in the directory the descent opened, which
+// cannot be outside the base however the names resolve now.
+func (c dirChain) removeEmptyParents() {
+	parents := c.names[:len(c.names)-1]
+
+	for i := len(parents) - 1; i >= 0; i-- {
+		if c.roots[i].Remove(parents[i]) != nil {
+			return
+		}
+	}
 }
 
 // openVerifiedDir opens name, a path relative to parent, as a root of its own,
@@ -992,18 +1108,13 @@ func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, 
 // deletableDirBelow has already proven and normalised, so a caller that needed
 // that proof for its own deletions doesn't have to pay for it twice.
 func rmCheckedEmptyDirs(dirs provenDirs) error {
-	err := dirs.remove()
-	if err != nil && !os.IsNotExist(err) {
-		if errIsDirNotEmpty(err) {
-			return nil
-		}
-
+	chain, err := dirs.openChain()
+	if err != nil {
 		return err
 	}
+	defer chain.closeAll()
 
-	rmEmptyParentDirs(dirs)
-
-	return nil
+	return chain.removeUpward()
 }
 
 // errIsDirNotEmpty says if err is a directory removal that failed because the
@@ -1015,28 +1126,6 @@ func rmCheckedEmptyDirs(dirs provenDirs) error {
 // message is not part of any contract, and is not the same on every platform.
 func errIsDirNotEmpty(err error) bool {
 	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
-}
-
-// rmEmptyParentDirs removes the empty parent directories of dirs.leaf, stopping
-// when the next parent would be dirs.base or outside it, or when it hits a dir
-// it cannot remove (which is expected when another Job is running from the same
-// Cwd, so the error is ignored).
-//
-// Taking provenDirs is what makes the lexical check in parent() sufficient:
-// every dir this reaches is an ancestor of a leaf already proven to be inside
-// base, so it is inside base too, and the removals go through the root, which
-// cannot reach outside base however the paths resolve at the time. Re-proving
-// that per level would multiply the (on Lustre, expensive) metadata operations
-// by the depth of the walk.
-func rmEmptyParentDirs(dirs provenDirs) {
-	for {
-		parent, ok := dirs.parent()
-		if !ok || parent.remove() != nil {
-			return
-		}
-
-		dirs = parent
-	}
 }
 
 // deletableDirBelow proves that dir, or the directory dir's symlinks lead to, is
@@ -1097,7 +1186,7 @@ func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 		return provenDirs{}, false
 	}
 
-	return provenDirs{root: baseRoot, rel: rel, base: absBase, leaf: absDir, info: info}, true
+	return provenDirs{root: baseRoot, rel: rel, leaf: absDir, info: info}, true
 }
 
 // componentsAreRealDirs tells you if every path component of absDir below
@@ -1160,7 +1249,7 @@ func resolvedDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 		return provenDirs{}, false
 	}
 
-	return provenDirs{root: baseRoot, rel: rel, base: resolvedBase, leaf: resolvedDir}, true
+	return provenDirs{root: baseRoot, rel: rel, leaf: resolvedDir}, true
 }
 
 // relIsBelow tells you if a relative path produced by filepath.Rel describes
