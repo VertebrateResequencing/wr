@@ -48,82 +48,58 @@ func TestPort(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(checker, ShouldNotBeNil)
 
-		Convey("You can get an available port number", func() {
-			port, err := checker.availablePort()
+		Convey("The operating system offers a free port, and hands it straight back", func() {
+			port, err := checker.offeredPort()
 			So(err, ShouldBeNil)
 			So(port, ShouldBeBetweenOrEqual, 1, maxPort)
-			So(len(checker.ports), ShouldEqual, 1)
-			So(checker.ports[port], ShouldBeTrue)
+			So(checker.listeners, ShouldBeEmpty)
 
-			Convey("afterwards, release works, and failures are handled", func() {
-				err = checker.release(err)
-				So(err, ShouldBeNil)
+			Convey("release reports a held port that will not close", func() {
+				tcpListener, errl := net.ListenTCP("tcp", checker.Addr)
+				So(errl, ShouldBeNil)
 
-				_, err = checker.availablePort()
-				So(err, ShouldBeNil)
+				checker.listeners = append(checker.listeners, &mockListener{tcpListener})
 
-				tcpListener, ok := checker.listeners[0].(*net.TCPListener)
-				So(ok, ShouldBeTrue)
-
-				checker.listeners[0] = &mockListener{tcpListener}
-				err = checker.release(err)
+				err = checker.release(nil)
 				So(err, ShouldNotBeNil)
 				So(errors.Is(err, syscall.EINVAL), ShouldBeTrue)
-			})
-		})
-
-		Convey("portsAfter works", func() {
-			portsBeforeAfterTest(checker,
-				func() []int { return checker.portsAfter(10) },
-				[]int{9, 12, 13, 15}, 11, []int{11, 12, 13})
-		})
-
-		Convey("portsBefore works", func() {
-			portsBeforeAfterTest(checker,
-				func() []int { return checker.portsBefore(10) },
-				[]int{11, 8, 7, 5}, 9, []int{7, 8, 9})
-		})
-
-		Convey("checkRange returns nothing with no available ports", func() {
-			set, has := checker.checkRange(10, 4)
-			So(has, ShouldBeFalse)
-			So(len(set), ShouldEqual, 0)
-
-			Convey("but returns ports above starting point", func() {
-				rangeTest(checker, []int{9, 11, 12, 13, 14}, []int{10, 11, 12, 13})
-			})
-
-			Convey("but returns ports below starting point", func() {
-				rangeTest(checker, []int{11, 9, 8, 7, 6}, []int{7, 8, 9, 10})
-			})
-
-			Convey("but returns ports below and above starting point", func() {
-				rangeTest(checker, []int{8, 9, 11, 12}, []int{8, 9, 10, 11})
-			})
-
-			Convey("and returns nothing with non-contiguous available ports", func() {
-				setPortsTrue(checker, 7, 8, 12, 13)
-
-				set, has := checker.checkRange(10, 4)
-				So(has, ShouldBeFalse)
-				So(len(set), ShouldEqual, 0)
+				So(checker.listeners, ShouldBeEmpty)
+				So(tcpListener.Close(), ShouldBeNil)
 			})
 		})
 
 		Convey("You can get a range of available ports multiple times in a row", func() {
-			if ok := checkAvailableRange(checker, 2); !ok {
-				return
-			}
-
-			if ok := checkAvailableRange(checker, 4); !ok {
-				return
-			}
-
+			checkAvailableRange(checker, 2)
+			checkAvailableRange(checker, 4)
 			checkAvailableRange(checker, 4)
 		})
 
+		Convey("AvailableRange never holds more ports than the range asked for", func() {
+			counter := &portCounter{}
+			checker.listen = counter.listen
+
+			first, last, err := checker.AvailableRange(4)
+			So(err, ShouldBeNil)
+			So(first, ShouldBeBetweenOrEqual, 1, maxPort)
+			So(last, ShouldEqual, first+3)
+			So(counter.peak, ShouldEqual, 4)
+			So(counter.live, ShouldEqual, 0)
+		})
+
+		Convey("AvailableRange reports a host with no free ports to give", func() {
+			checker.listen = allPortsTaken
+
+			first, last, err := checker.AvailableRange(4)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNoContiguousRange), ShouldBeTrue)
+			So(first, ShouldEqual, 0)
+			So(last, ShouldEqual, 0)
+		})
+
 		Convey("AvailableRange fails when tcp listening fails", func() {
-			addr, err := net.ResolveTCPAddr("tcp", "localhost:1")
+			// an address in the documentation range is not on this host, so no
+			// user can listen on it, privileged or not
+			addr, err := net.ResolveTCPAddr("tcp", "203.0.113.1:0")
 			So(err, ShouldBeNil)
 
 			checker.Addr = addr
@@ -139,47 +115,69 @@ func TestPort(t *testing.T) {
 	})
 }
 
-func setPortsTrue(checker *Checker, ports ...int) {
-	for _, port := range ports {
-		checker.ports[port] = true
-	}
-}
-
-func portsBeforeAfterTest(checker *Checker, cb func() []int, truePorts []int, changePort int, expected []int) {
-	result := cb()
-	So(len(result), ShouldEqual, 0)
-
-	setPortsTrue(checker, truePorts...)
-
-	result = cb()
-	So(len(result), ShouldEqual, 0)
-
-	setPortsTrue(checker, changePort)
-
-	result = cb()
-	So(len(result), ShouldEqual, 3)
-	So(result, ShouldResemble, expected)
-}
-
-func rangeTest(checker *Checker, truePorts []int, expected []int) {
-	setPortsTrue(checker, truePorts...)
-	set, has := checker.checkRange(10, 4)
-	So(has, ShouldBeTrue)
-	So(len(set), ShouldEqual, 4)
-	So(set, ShouldResemble, expected)
-}
-
-func checkAvailableRange(checker *Checker, size int) bool {
+// checkAvailableRange asserts that the checker hands back a contiguous range
+// size long. It needs no tolerance for a low ulimit -n: a search holds only
+// size ports at a time.
+func checkAvailableRange(checker *Checker, size int) {
 	first, last, err := checker.AvailableRange(size)
-	if err != nil {
-		So(err.Error(), ShouldContainSubstring, "too many open files")
-		SkipConvey("your ulimit -n is too low for AvailableRange to function", func() {})
-
-		return false
-	}
-
+	So(err, ShouldBeNil)
 	So(first, ShouldBeBetweenOrEqual, 1, maxPort)
 	So(last, ShouldEqual, first+size-1)
+}
 
-	return true
+type countedListener struct {
+	*net.TCPListener
+
+	counter *portCounter
+}
+
+func (c *countedListener) Close() error {
+	c.counter.live--
+
+	return c.TCPListener.Close()
+}
+
+// portCounter takes real ports, counting how many of them are held at the same
+// time. A search that waits for the operating system to hand out adjacent ports
+// by chance peaks at a quarter of the host's ephemeral port range, which is
+// what exhausted that range in the test suite; one that tries candidate ranges
+// by number peaks at the size it was asked for.
+type portCounter struct {
+	live int
+	peak int
+}
+
+func (p *portCounter) listen(addr *net.TCPAddr) (listener, error) {
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	p.live++
+
+	if p.live > p.peak {
+		p.peak = p.live
+	}
+
+	return &countedListener{TCPListener: l, counter: p}, nil
+}
+
+type takenPortListener struct{}
+
+func (t takenPortListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: minSearchPort}
+}
+
+func (t takenPortListener) Close() error {
+	return nil
+}
+
+// allPortsTaken stands in for a host that can be listened on, but on which
+// every port the sweep asks for by number is already in use.
+func allPortsTaken(addr *net.TCPAddr) (listener, error) {
+	if addr.Port != 0 {
+		return nil, syscall.EADDRINUSE
+	}
+
+	return takenPortListener{}, nil
 }
