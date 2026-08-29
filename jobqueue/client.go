@@ -765,8 +765,15 @@ func (c *Client) Disconnect() error {
 // information about the server. If err is nil, it works. This is the only
 // command that interacts with the server that works if a blank or invalid
 // token had been supplied to Connect().
+//
+// timeout bounds how long we wait for the server's reply, so that a ping into a
+// manager that still listens but no longer reads (the window during shutdown
+// between its RPC readers stopping and its command socket closing) fails within
+// the caller's own budget instead of on the socket's ClientMinRequestTimeout
+// floor. requestWithin can only narrow, so a ping on a socket whose deadline is
+// already shorter (Connect's readiness ping) is unaffected.
 func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
-	resp, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
+	resp, err := c.requestWithin(&clientRequest{Method: "ping", Timeout: timeout}, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -823,23 +830,23 @@ func (c *Client) ShutdownServer() bool {
 		return false
 	}
 
-	// wait a while for the server to stop responding to Pings
-	limit := time.After(ClientShutdownTimeout)
+	// wait a while for the server to stop responding to Pings. The deadline is
+	// re-checked every pass rather than raced against in a select, so that a
+	// ping's own duration cannot carry us past ClientShutdownTimeout.
+	deadline := time.Now().Add(ClientShutdownTimeout)
 	ticker := time.NewTicker(ClientShutdownTestInterval)
 
-	for {
-		select {
-		case <-ticker.C:
-			_, err = c.Ping(ClientSuggestedPingTimeout)
-			if err != nil {
-				ticker.Stop()
+	defer ticker.Stop()
 
-				return true
-			}
-		case <-limit:
-			return false
+	for time.Now().Before(deadline) {
+		<-ticker.C
+
+		if _, err = c.Ping(ClientSuggestedPingTimeout); err != nil {
+			return true
 		}
 	}
+
+	return false
 }
 
 // BackupDB backs up the server's database to the given path. Note that
