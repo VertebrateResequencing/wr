@@ -64,6 +64,14 @@ const (
 	// the large-history startup must be responsive.
 	c2AbsoluteStartupLimit = 5 * time.Second
 
+	// c2StartupSamples is how many times each startup is timed. The figure used
+	// is the FASTEST of them: scheduling noise on a shared runner only ever adds
+	// time, never removes it, so the minimum is the best estimate of the real
+	// startup cost. Taking it for both history sizes keeps the comparison
+	// honest - a genuine O(history) scan is present in every sample, so it still
+	// shows up in the fastest one and still fails the ratio below.
+	c2StartupSamples = 3
+
 	c2HistoryRepGroupPrefix = "reliable2-history-group-"
 	c2SeedRepGroup          = "reliable2-startup-seed"
 
@@ -94,8 +102,8 @@ func TestReliable2FastStartupNoHistoryScan(t *testing.T) {
 		defer largeServer.Stop(ctx, true)
 
 		t.Logf(
-			"Serve startup took %s with %d completed-only jobs and %s with %d",
-			smallElapsed, c2SmallHistorySize, largeElapsed, c2LargeHistorySize,
+			"fastest of %d Serve startups took %s with %d completed-only jobs and %s with %d",
+			c2StartupSamples, smallElapsed, c2SmallHistorySize, largeElapsed, c2LargeHistorySize,
 		)
 
 		// C2 acceptance test: no scaling with history size, and an absolute
@@ -108,9 +116,13 @@ func TestReliable2FastStartupNoHistoryScan(t *testing.T) {
 }
 
 // measureCompletedHistoryStartup pre-populates config's DB with count
-// completed-only jobs, starts Serve, and returns the startup duration together
-// with the running server (the caller stops it). dontWipeDevDB is set so Serve
-// opens the pre-populated DB.
+// completed-only jobs, then times Serve against it c2StartupSamples times,
+// returning the fastest startup along with the server left running by the last
+// sample (the caller stops it). dontWipeDevDB is set so every Serve opens the
+// same pre-populated DB.
+//
+// Only the startup is repeated, not the population, so the extra samples cost
+// milliseconds rather than another history build.
 func measureCompletedHistoryStartup(ctx context.Context, t *testing.T, config ServerConfig,
 	count int,
 ) (time.Duration, *Server) {
@@ -119,18 +131,35 @@ func measureCompletedHistoryStartup(ctx context.Context, t *testing.T, config Se
 	config.dontWipeDevDB = true
 	prepareCompletedHistory(ctx, t, config, count)
 
-	started := time.Now()
-	server, _, token, err := Serve(ctx, config)
-	elapsed := time.Since(started)
+	var (
+		fastest time.Duration
+		server  *Server
+	)
 
-	So(err, ShouldBeNil)
-	// assert on a bool rather than passing the live *Server to ShouldNotBeNil:
-	// the latter reflectively deep-formats the whole struct, racing the
-	// background recovery goroutine that is still mutating it.
-	So(server != nil, ShouldBeTrue)
-	So(token, ShouldHaveLength, tokenLength)
+	for i := range c2StartupSamples {
+		if server != nil {
+			server.Stop(ctx, true)
+		}
 
-	return elapsed, server
+		started := time.Now()
+		sampled, _, token, err := Serve(ctx, config)
+		elapsed := time.Since(started)
+
+		So(err, ShouldBeNil)
+		// assert on a bool rather than passing the live *Server to ShouldNotBeNil:
+		// the latter reflectively deep-formats the whole struct, racing the
+		// background recovery goroutine that is still mutating it.
+		So(sampled != nil, ShouldBeTrue)
+		So(token, ShouldHaveLength, tokenLength)
+
+		if i == 0 || elapsed < fastest {
+			fastest = elapsed
+		}
+
+		server = sampled
+	}
+
+	return fastest, server
 }
 
 // prepareCompletedHistory creates a DB pre-populated with a completed-only

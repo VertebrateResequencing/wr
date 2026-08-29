@@ -328,11 +328,35 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 			jobMB := int(math.Floor(float64(maxMem) / float64(maxCPU*2)))
 
+			// As in the fractional-CPU scenario above, make the jobs BLOCK until the
+			// test releases them rather than `sleep 1`. With short jobs the peak
+			// simultaneous count was a race between how quickly the server spawned
+			// runners and how quickly those 1s jobs finished: on a slow or busy box
+			// the early jobs completed before the later runners existed, so the peak
+			// was an undercount of what memory actually permitted. CI saw peaks of 2
+			// and 3 where >=maxCPU was required. Blocking removes the race: nothing
+			// finishes until every runner memory allows has spawned, so the peak is
+			// exactly the number memory permits.
+			markerDir, err := os.MkdirTemp("", "wr_memory_limited_test")
+			So(err, ShouldBeNil)
+
+			defer os.RemoveAll(markerDir)
+
+			releaseFile := filepath.Join(markerDir, "release")
+
+			// canRun is how many of these jobs fit in memory at once, which is what
+			// this scenario exists to check: each asks for maxMem/(maxCPU*2).
+			canRun := maxCPU * 2
 			count := maxCPU * 3
 			jobs := make([]*Job, 0, count)
 
 			for i := range count {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 1 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: reqGroupPerl, Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: 2, RepGroup: manuallyAdded}) //nolint:lll
+				cmd := blockUntilReleasedCmd(
+					filepath.Join(markerDir, fmt.Sprintf("started.%d", i)),
+					releaseFile,
+					fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i),
+				)
+				jobs = append(jobs, &Job{Cmd: cmd, Cwd: tmpdir, ReqGroup: reqGroupPerl, Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: 2, RepGroup: manuallyAdded}) //nolint:lll
 			}
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
@@ -341,10 +365,31 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			Convey("After some time the jobs get automatically run", func() {
+				// Wait (bounded by the generous runnerStartWait, free on the success
+				// path) until as many jobs are running at once as memory allows.
+				// Deterministic because the jobs block: once canRun runners have
+				// spawned, all canRun jobs run and stay running.
+				var simultaneous int
+
+				reachedMemoryLimit := pollUntilFor(runnerStartWait, func() bool {
+					running, errj := jq.GetByRepGroup(manuallyAdded, false, 0, JobStateRunning, false, false)
+					if errj == nil && len(running) > simultaneous {
+						simultaneous = len(running)
+					}
+
+					return simultaneous >= canRun
+				})
+				So(reachedMemoryLimit, ShouldBeTrue)
+
+				// memory, not cores, is the limit here: more than maxCPU jobs run at
+				// once, but never more than the canRun that fit in memory.
+				So(simultaneous, ShouldBeBetweenOrEqual, maxCPU, canRun)
+
+				// Release the jobs so they finish and the runners exit.
+				So(os.WriteFile(releaseFile, []byte("go"), 0600), ShouldBeNil)
+
 				// wait for the jobs to get run
 				done := make(chan bool, 1)
-
-				var simultaneous int
 
 				go func() {
 					// generous bound for the batch of server-spawned runners to run
@@ -365,11 +410,6 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 								return
 							}
 
-							running, errj := jq.GetByRepGroup(manuallyAdded, false, 0, JobStateRunning, false, false)
-							if errj == nil && len(running) > simultaneous {
-								simultaneous = len(running)
-							}
-
 							continue
 						case <-limit:
 							ticker.Stop()
@@ -385,7 +425,6 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 				}()
 
 				So(<-done, ShouldBeTrue) // we shouldn't have hit our time limit
-				So(simultaneous, ShouldBeBetweenOrEqual, maxCPU, maxCPU*2)
 
 				jobs, err = jq.GetByRepGroup(manuallyAdded, false, 0, "", false, false)
 				So(err, ShouldBeNil)
