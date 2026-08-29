@@ -147,8 +147,15 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 }
 
 // mountPoints returns the directory each of the Job's MountConfigs mounts on,
-// resolved exactly as Mount() resolves them, so that a caller which must avoid
-// touching the Job's mount points knows precisely which dirs those are.
+// resolved against the Job's default base dirs, so that a caller which must
+// avoid touching the Job's mount points knows precisely which dirs those are.
+//
+// It does not take Mount()'s optional onCwd argument, so it agrees with Mount()
+// only for a Job that isn't CwdMatters and has a non-blank ActualCwd: that is
+// the one case mountBaseDirs resolves without consulting onCwd, and it is also
+// the only case Behaviour.cleanup, the sole caller, proceeds in. From anywhere
+// else, a MountConfig with no Mount of its own would be reported at Cwd/mnt
+// when a Mount(true) had put it on Cwd itself.
 func (j *Job) mountPoints() []string {
 	cwd, defaultMount, _ := j.mountBaseDirs(nil)
 
