@@ -3737,6 +3737,11 @@ func (db *db) storeEnv(env []byte) (string, error) {
 
 // retrieveEnv gets a value from the db that was stored with storeEnv(). The
 // value may come from the cache, avoiding db access.
+//
+// Only a hit is cached. retrieve() returns a nil value for a key the database
+// does not hold, and caching that would make envcache.Contains report true for
+// a key with no record behind it, which is what storeEnv takes as proof that
+// those bytes are already stored: storing them would then be a no-op forever.
 func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 	cached, got := db.envcache.Get(envkey)
 	if got {
@@ -3744,6 +3749,10 @@ func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 	}
 
 	envc := db.retrieve(ctx, bucketEnvs, envkey)
+	if envc == nil {
+		return nil
+	}
+
 	db.envcache.Add(envkey, envc)
 
 	return envc
