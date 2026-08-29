@@ -272,6 +272,35 @@ func TestRESTJobModificationEndpoint(t *testing.T) {
 			So(stored[0].Dependencies, ShouldContain, "echo dep [/tmp/dep]")
 		})
 
+		Convey("PATCH replaces all of a trigger's behaviours with the ones supplied", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest behaviours",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-behaviours",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-behaviours",
+				Behaviours: Behaviours{
+					{When: OnFailure, Do: Run, Arg: testOnFailureCmd},
+					{When: OnExit, Do: Run, Arg: "echo old1"},
+					{When: OnExit, Do: Run, Arg: "echo old2"},
+				},
+			})
+
+			body := `{"on_exit":[{"run":"echo new"},{"cleanup_all":true}]}`
+			status, _, decoded := patchJob(restJobsEndpoint+key, body, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],`+
+					`"on_exit":[{"run":"echo new"},{"cleanup_all":true}]}`)
+
+			stored := getJobStatuses(decoded.Jobs[0].Key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],`+
+					`"on_exit":[{"run":"echo new"},{"cleanup_all":true}]}`)
+		})
+
 		Convey("PATCH rejects requests without token or bearer auth", func() {
 			key := addJob(&Job{
 				Cmd:          "echo rest no auth",
