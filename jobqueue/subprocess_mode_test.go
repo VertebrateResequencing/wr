@@ -28,22 +28,40 @@
 package jobqueue
 
 import (
+	"context"
+	"flag"
 	"os"
-	"testing"
 )
 
-// TestMain lets dispatchSubprocessMode() handle a --runnermode or --servermode
-// child before any test runs. The race build has its own TestMain, which calls
-// the same function for the same reason.
-func TestMain(m *testing.M) {
-	dispatchSubprocessMode()
+// dispatchSubprocessMode does the work of a --runnermode or --servermode child
+// and exits the process, before any test is allowed to run.
+//
+// It exists because these children are copies of this test binary, so without
+// it a child runs every test that does not itself guard on runnermode or
+// servermode. Those tests start their own managers, and jobqueueTestInit only
+// isolates ports and the manager dir when NOT in one of these modes (children
+// are meant to inherit the parent's), so each of those managers falls back to
+// the default config - the user's real manager port. One runner child was
+// measured holding 16498 sockets on it, listening and connecting to itself at
+// ~250 connections/second. See .docs/bugfixes/260828-4.md BUG 12.
+//
+// That was fixed by passing -test.run on each child's cmdline, which is still
+// done: it keeps each child's cmdline consistent, which crash recovery relies
+// on to match a recovered runner, and it remains a second layer of defence.
+// This is the layer a newly added call site cannot forget to apply.
+func dispatchSubprocessMode() {
+	flag.Parse()
 
-	os.Exit(m.Run())
-}
+	ctx := context.Background()
 
-// runnerBinary returns the path to a test binary to run as the --servermode or
-// --runnermode subprocess. Outside the race detector the running test binary is
-// exactly what those subprocesses need, so we reuse it directly (no recompile).
-func runnerBinary() (string, error) {
-	return os.Executable()
+	switch {
+	case runnermode:
+		runner(ctx)
+	case servermode:
+		runServer(ctx)
+	default:
+		return
+	}
+
+	os.Exit(0)
 }
