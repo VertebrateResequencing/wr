@@ -100,26 +100,23 @@ func NewChecker(host string) (*Checker, error) {
 // down outright: no host could satisfy it, so it is a mistake in the request
 // rather than a host that happens to be full.
 //
+// A port it could not give back is an error too, and comes back with no range
+// at all: a range it may still be holding one of is not one you can use.
+//
 // NB: there is the potential for a race condition here, where once released,
 // another process gets one of the ports before you use it, so start listening
 // on all the returned ports as soon as possible after calling this.
-func (c *Checker) AvailableRange(size int) (int, int, error) {
+func (c *Checker) AvailableRange(size int) (first, last int, err error) {
 	if size < 1 || size > searchablePorts {
 		return 0, 0, fmt.Errorf("%w: %d is not between 1 and %d", errInvalidRangeSize, size, searchablePorts)
 	}
 
-	var err error
-
-	defer func() {
-		err = c.release(err)
-	}()
+	defer func() { first, last, err = c.releasedRange(first, last, err) }()
 
 	lastStart := maxPort - size + 1
 	starts := lastStart - minSearchPort + 1
 
-	var offered int
-
-	offered, err = c.offeredPort()
+	offered, err := c.offeredPort()
 	if err != nil {
 		return 0, 0, err
 	}
@@ -127,10 +124,10 @@ func (c *Checker) AvailableRange(size int) (int, int, error) {
 	origin := max(offered, minSearchPort)
 
 	for try := range starts {
-		first := minSearchPort + (origin-minSearchPort+try)%starts
+		start := minSearchPort + (origin-minSearchPort+try)%starts
 
-		if c.claimRange(first, size) {
-			return first, first + size - 1, err
+		if c.claimRange(start, size) {
+			return start, start + size - 1, nil
 		}
 
 		if err = c.release(nil); err != nil {
@@ -141,10 +138,22 @@ func (c *Checker) AvailableRange(size int) (int, int, error) {
 	return 0, 0, fmt.Errorf("%w of %d", errNoContiguousRange, size)
 }
 
+// releasedRange gives back every port the search is still holding, and turns
+// the range it found into no range at all if any of them would not close: a
+// range we might still be holding one of is not one a caller can use.
+func (c *Checker) releasedRange(first, last int, err error) (int, int, error) {
+	if err = c.release(err); err != nil {
+		return 0, 0, err
+	}
+
+	return first, last, nil
+}
+
 // offeredPort has the operating system pick a free port, and releases it again.
 // It both proves the host can be listened on at all, and gives the sweep a
 // starting point that differs between calls, so concurrent searches do not all
-// walk the same ports in the same order.
+// walk the same ports in the same order. It gives the port back on every way
+// out, so that it holds nothing whether it found a port number or not.
 func (c *Checker) offeredPort() (int, error) {
 	l, err := c.listen(c.Addr)
 	if err != nil {
@@ -155,7 +164,7 @@ func (c *Checker) offeredPort() (int, error) {
 
 	addr, ok := l.Addr().(*net.TCPAddr)
 	if !ok {
-		return 0, fmt.Errorf("%w: %T", errListenerAddrNotTCP, l.Addr())
+		return 0, c.release(fmt.Errorf("%w: %T", errListenerAddrNotTCP, l.Addr()))
 	}
 
 	return addr.Port, c.release(nil)

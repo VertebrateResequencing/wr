@@ -116,6 +116,29 @@ func TestPort(t *testing.T) {
 			So(last, ShouldEqual, 0)
 		})
 
+		Convey("The operating system offering something that is not a tcp port hands it back anyway", func() {
+			offered := &unixAddrListener{}
+			checker.listen = offered.listen
+
+			port, err := checker.offeredPort()
+			So(port, ShouldEqual, 0)
+			So(offered.closed, ShouldBeTrue)
+			So(checker.listeners, ShouldBeEmpty)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errListenerAddrNotTCP), ShouldBeTrue)
+		})
+
+		Convey("AvailableRange reports ports it could not release, and offers no range", func() {
+			checker.listen = portsThatWillNotClose
+
+			first, last, err := checker.AvailableRange(4)
+			So(first, ShouldEqual, 0)
+			So(last, ShouldEqual, 0)
+			So(checker.listeners, ShouldBeEmpty)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, syscall.EINVAL), ShouldBeTrue)
+		})
+
 		Convey("AvailableRange fails when tcp listening fails", func() {
 			// an address in the documentation range is not on this host, so no
 			// user can listen on it, privileged or not
@@ -211,4 +234,51 @@ func allPortsTaken(addr *net.TCPAddr) (listener, error) {
 	}
 
 	return takenPortListener{}, nil
+}
+
+// portsThatWillNotClose stands in for a host that hands out every port asked
+// for by number, but will not close the ones the sweep claims. The port the
+// operating system offers closes cleanly, so the sweep gets as far as holding
+// a whole range, and only releasing that range fails.
+func portsThatWillNotClose(addr *net.TCPAddr) (listener, error) {
+	if addr.Port == 0 {
+		return takenPortListener{}, nil
+	}
+
+	return unclosableListener{port: addr.Port}, nil
+}
+
+// unixAddrListener stands in for a listener on something that is not a tcp
+// port, so has no port number for the checker to offer. It records having been
+// closed, so a test can see the checker gave it back.
+type unixAddrListener struct {
+	closed bool
+}
+
+func (u *unixAddrListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: "wr_port_test.sock", Net: "unix"}
+}
+
+func (u *unixAddrListener) Close() error {
+	u.closed = true
+
+	return nil
+}
+
+func (u *unixAddrListener) listen(_ *net.TCPAddr) (listener, error) {
+	return u, nil
+}
+
+// unclosableListener stands in for a port that was taken, but that the host
+// will not give back.
+type unclosableListener struct {
+	port int
+}
+
+func (u unclosableListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: u.port}
+}
+
+func (u unclosableListener) Close() error {
+	return syscall.EINVAL
 }
