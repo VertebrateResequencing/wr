@@ -59,7 +59,7 @@ limit 500, which predates all seven commits.
    did not need. It is also now inert on the add path, since all three
    coalescing writers call `db.bolt.Update` rather than `db.bolt.Batch`, so its
    help text describes a knob that no longer does what it says
-   (`.docs/bugfixes/260828-1.md`).
+   (`.docs/bugfixes/260828-5.md`).
 2. **The remaining add-path fragmentation is DONE.** bbolt cannot coalesce
    *across* requests - `batch.run()` detaches the batch the instant one starts,
    so the next arrival opens a fresh 10 ms window regardless of whether the
@@ -129,7 +129,7 @@ Three things the trials settled that were not known before:
 The trial log has the seeded solution space, each trial's numbers and the ideas
 left untried on purpose: `.docs/reliable4/addstorm-fix-trials.md`. Real-LSF
 Tier-B validation of the writer is still outstanding
-(`.docs/bugfixes/260828-1.md`).
+(`.docs/bugfixes/260828-5.md`).
 
 ## THE REPRODUCER, AND THE HONEST VERDICT ON THE FIXES (2026-08-28)
 

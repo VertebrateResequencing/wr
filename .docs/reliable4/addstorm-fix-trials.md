@@ -668,7 +668,7 @@ Run 1 also showed dependency release, `dependent` falling 10,000 -> 8,600.
    copy. Not required - the harsher fixture passing is the stronger result - but it
    would size the headroom production actually gets.
 2. **Three bugs this work uncovered** are recorded and unfixed in
-   `.docs/bugfixes/260828-1.md`: the suite leaks `/tmp/wrtest*` per call while
+   `.docs/bugfixes/260828-5.md`: the suite leaks `/tmp/wrtest*` per call while
    `make clean` only removes `/tmp/wr` (25,023 dirs / ~105 GB had filled this
    host's `/tmp` and failed a `make race` run at HEAD); `TestOwnMemoryMB` flakes
    under `-race` on a 1 MB Pss tolerance; and `managerdbbatchdelay` /
