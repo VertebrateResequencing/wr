@@ -1885,6 +1885,36 @@ func drainSetupUntilDetails(ws *websocket.Conn) {
 	readUntilStatus(ws) //nolint:errcheck
 }
 
+// readPushStates reads push updates until it has seen one for each of the wanted
+// states, requiring every update it reads to be a push update for repGroup and
+// to carry a state that was asked for and not already seen.
+//
+// It collects the states in whatever order they arrive. queue.changed runs each
+// transition's change callback in its OWN goroutine, and only the running one
+// waits for the job's start time (waitForJobStartTime), so a fast command's
+// completion can reach the feed while its running update is still waiting.
+// Reading the states positionally therefore asserted an order the feed does not
+// promise, which showed up as a whole-suite load flake
+// (.docs/bugfixes/260827-2.md item 12).
+func readPushStates(ws *websocket.Conn, repGroup string, states ...JobState) {
+	unseen := make(map[JobState]struct{}, len(states))
+	for _, state := range states {
+		unseen[state] = struct{}{}
+	}
+
+	for len(unseen) > 0 {
+		status, err := readUntilStatus(ws)
+		So(err, ShouldBeNil)
+		So(status.IsPushUpdate, ShouldBeTrue)
+		So(status.RepGroup, ShouldEqual, repGroup)
+
+		_, asked := unseen[status.State]
+		So(asked, ShouldBeTrue)
+
+		delete(unseen, status.State)
+	}
+}
+
 func TestStatusDetailsLiveCompatibility(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -2478,17 +2508,7 @@ func TestJobSubscriptions(t *testing.T) {
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				status1, errr := readUntilStatus(ws1)
-				So(errr, ShouldBeNil)
-				So(status1.IsPushUpdate, ShouldBeTrue)
-				So(status1.RepGroup, ShouldEqual, webiSubRG1)
-				So(status1.State, ShouldEqual, JobStateRunning)
-
-				status1, errr = readUntilStatus(ws1)
-				So(errr, ShouldBeNil)
-				So(status1.IsPushUpdate, ShouldBeTrue)
-				So(status1.RepGroup, ShouldEqual, webiSubRG1)
-				So(status1.State, ShouldEqual, JobStateComplete)
+				readPushStates(ws1, webiSubRG1, JobStateRunning, JobStateComplete)
 
 				So(testNoMoreMessages(ws1), ShouldBeTrue)
 
@@ -2524,17 +2544,7 @@ func TestJobSubscriptions(t *testing.T) {
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
-				status2, errr := readUntilStatus(ws2)
-				So(errr, ShouldBeNil)
-				So(status2.IsPushUpdate, ShouldBeTrue)
-				So(status2.RepGroup, ShouldEqual, webiSubRG2)
-				So(status2.State, ShouldEqual, JobStateRunning)
-
-				status2, errr = readUntilStatus(ws2)
-				So(errr, ShouldBeNil)
-				So(status2.IsPushUpdate, ShouldBeTrue)
-				So(status2.RepGroup, ShouldEqual, webiSubRG2)
-				So(status2.State, ShouldEqual, JobStateComplete)
+				readPushStates(ws2, webiSubRG2, JobStateRunning, JobStateComplete)
 
 				So(testNoMoreMessages(ws2), ShouldBeTrue)
 			})
