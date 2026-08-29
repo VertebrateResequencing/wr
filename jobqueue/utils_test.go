@@ -150,6 +150,31 @@ func TestRmEmptyDirs(t *testing.T) {
 			soPathsExist(leaf, base, outer)
 		})
 
+		Convey("rmEmptyDirs leaves an empty dir inside baseDir alone when a symlink leads to it", func() {
+			// the outside-baseDir case below is caught by the containment
+			// guard; this one is inside baseDir, so containment says yes and
+			// only the refusal to follow a symlink stops it. The Job's own Cmd
+			// can create this link where wr expected the mount dir it made, and
+			// point it at a directory of the user's. That directory is empty, so
+			// deleting it would take its parent on the way up too.
+			userDir := filepath.Join(base, "userdata")
+			userEmpty := filepath.Join(userDir, "results")
+			err = os.MkdirAll(userEmpty, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			link := filepath.Join(base, "mnt")
+			err = os.Symlink(userEmpty, link)
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirs(link, base)
+
+			// survival first, so a broken guard shows up as the deletion it is.
+			soPathsExist(userEmpty, userDir, link, base)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
 		Convey("rmEmptyDirs leaves an empty dir outside baseDir alone, even reached via a symlink", func() {
 			// an empty dir is the dangerous case: the upward walk only stops
 			// deleting when it hits a dir it cannot remove, so if the
