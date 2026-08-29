@@ -586,6 +586,33 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 				So(err, ShouldBeNil)
 			})
 
+			Convey("Cleanup of a Job with an absolute mount point inside its ActualCwd keeps the mount", func() {
+				// MountConfig.Mount may be given as an absolute path ("in any
+				// directory you're able to write to"), and an absolute path can
+				// still land inside the Job's own ActualCwd. The mount is live
+				// when cleanup runs (Job.Unmount comes after it in client.go),
+				// so deleting through it would recurse into the user's remote
+				// filesystem - exactly the hazard the relative case above
+				// guards against.
+				absMount := filepath.Join(actualCwd, "absmnt")
+				mounted := filepath.Join(absMount, "data.txt")
+
+				err = os.MkdirAll(absMount, os.ModePerm)
+				So(err, ShouldBeNil)
+
+				err = os.WriteFile(mounted, []byte("mounted\n"), 0o600)
+				So(err, ShouldBeNil)
+
+				job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: absMount}}}
+
+				err = cleanup.Trigger(OnExit, job)
+
+				soPathsExist(mounted, absMount, actualCwd, workSpace, cwd, precious)
+				soPathsGone(output, tmpDir)
+
+				So(err, ShouldBeNil)
+			})
+
 			Convey("Cleanup of a Job that mounts on its ActualCwd keeps that, but not the workspace extras", func() {
 				job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{}}}
 
@@ -774,7 +801,29 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			err = os.WriteFile(output, []byte("output\n"), 0o600)
 			So(err, ShouldBeNil)
 
-			for _, escape := range []string{"../evil", "..", "."} {
+			Convey("Cleanup keeps the whole ActualCwd when a Mount of \".\" names it", func() {
+				// "." resolves to ActualCwd itself, exactly as "" does, so this
+				// is the same case as the mounts-on-its-ActualCwd Convey above
+				// and must be treated the same way: the mount is live when
+				// cleanup runs, so deleting ActualCwd's contents would delete
+				// through it. Reading MountConfig.Mount as a raw string instead
+				// of resolving it used to make "." and "" mean opposite things
+				// here.
+				job := &Job{
+					Cwd:          cwd,
+					ActualCwd:    actualCwd,
+					MountConfigs: MountConfigs{{Mount: "."}, {Mount: testMountDir}},
+				}
+
+				returned, cleanupErr := triggerWithin(cleanup, job, cleanupTimeout)
+
+				So(returned, ShouldBeTrue)
+				soPathsExist(mounted, output, actualCwd, workSpace, cwd, precious)
+
+				So(cleanupErr, ShouldBeNil)
+			})
+
+			for _, escape := range []string{"../evil", ".."} {
 				Convey("Cleanup finishes and still keeps the real mount dir, despite a Mount of "+escape, func() {
 					job := &Job{
 						Cwd:          cwd,

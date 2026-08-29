@@ -386,7 +386,7 @@ func cleanupWorkSpace(j *Job, wsRoot *os.Root, workSpace, actualCwdName string) 
 		return removeWorkSpaceEntries(wsRoot, nil)
 	}
 
-	keepDirs, keepActualCwd := mountDirsToKeep(j.MountConfigs)
+	keepDirs, keepActualCwd := j.mountDirsToKeep()
 
 	if !keepActualCwd && actualCwdInfo != nil {
 		if err := removeActualCwd(wsRoot, actualCwdName, actualCwdInfo, keepDirs); err != nil {
@@ -420,16 +420,34 @@ func provenActualCwd(j *Job, wsRoot *os.Root, actualCwdName string) (os.FileInfo
 	return info, nil
 }
 
-// mountDirsToKeep works out, from a Job's MountConfigs, which relative dirs to
-// keep, and whether the ActualCwd itself must be kept.
-func mountDirsToKeep(mcs MountConfigs) (keepDirs []string, keepActualCwd bool) {
-	for _, mc := range mcs {
-		if mc.Mount == "" {
+// mountDirsToKeep works out which of the Job's mount points lie inside its
+// ActualCwd, as paths relative to it, and whether one lands on ActualCwd itself
+// (in which case ActualCwd must be kept whole).
+//
+// It works from mountPoints(), which resolves every MountConfig.Mount to an
+// absolute path, rather than from the raw Mount strings. Mount may legitimately
+// be given as an absolute path - the docs allow "any directory you're able to
+// write to" - and an absolute one can still land inside ActualCwd. Reading the
+// raw strings protected only the relative mounts, so an absolute mount inside
+// ActualCwd was deleted through while it was still live, which is how mounted
+// remote content could be reached.
+//
+// Mount points outside ActualCwd are deliberately not returned here: they are
+// protected by removeWorkSpaceExtras instead, which keeps the workspace entry
+// leading to each of them.
+func (j *Job) mountDirsToKeep() (keepDirs []string, keepActualCwd bool) {
+	for _, mount := range j.mountPoints() {
+		rel, err := filepath.Rel(j.ActualCwd, mount)
+		if err != nil {
+			continue
+		}
+
+		if rel == "." {
 			return nil, true
 		}
 
-		if !filepath.IsAbs(mc.Mount) {
-			keepDirs = append(keepDirs, mc.Mount)
+		if relIsBelow(rel) {
+			keepDirs = append(keepDirs, rel)
 		}
 	}
 
