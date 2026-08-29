@@ -698,6 +698,10 @@ func (s *Server) handleSubscribe(ctx context.Context, cr *clientRequest) (*serve
 
 	id, err := s.registerClientSubscription(cr.Keys, repGroup)
 	if err != nil {
+		if errors.Is(err, errSubscriptionClosed) {
+			return nil, ErrClosedStop, err.Error()
+		}
+
 		return nil, ErrBadRequest, err.Error()
 	}
 

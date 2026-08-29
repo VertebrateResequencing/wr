@@ -332,11 +332,23 @@ func (s *serverSubscription) repGroupEmptyDoneUpdate() *JobUpdate {
 	return repGroupAggregateUpdate(s.repGroup, s.repGroupStates)
 }
 
-func (s *Server) storeClientSubscription(sub *serverSubscription) string {
+// storeClientSubscription registers sub and returns its id, or refuses (closing
+// sub and returning ok=false) once shutdown's closeClientSubscriptions() sweep
+// has run. Registration and the sweep share csmutex, so a subscribe request
+// admitted just before shutdown began cannot slip a subscription in behind the
+// sweep, where nothing would ever close it and the subscriber would long-poll a
+// manager that is gone.
+func (s *Server) storeClientSubscription(sub *serverSubscription) (string, bool) {
 	id := fmt.Sprintf("sub-%d", atomic.AddUint64(&s.nextSubscriptionID, 1))
 
 	s.csmutex.Lock()
-	defer s.csmutex.Unlock()
+
+	if s.subsClosed {
+		s.csmutex.Unlock()
+		sub.close()
+
+		return "", false
+	}
 
 	if s.clientSubscriptions == nil {
 		s.clientSubscriptions = make(map[string]*serverSubscription)
@@ -344,11 +356,15 @@ func (s *Server) storeClientSubscription(sub *serverSubscription) string {
 
 	s.clientSubscriptions[id] = sub
 
-	return id
+	s.csmutex.Unlock()
+
+	return id, true
 }
 
 func (s *Server) closeClientSubscriptions() {
 	s.csmutex.Lock()
+
+	s.subsClosed = true
 
 	subs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
 	for id, sub := range s.clientSubscriptions {
@@ -448,11 +464,21 @@ func (s *Server) registerClientSubscription(keys []string, repGroup string) (str
 
 	sub := newServerSubscription(keys, repGroup, s.repGroupSubscriptionKeys(repGroup))
 
-	return s.storeClientSubscription(sub), nil
+	id, ok := s.storeClientSubscription(sub)
+	if !ok {
+		return "", errSubscriptionClosed
+	}
+
+	return id, nil
 }
 
+// registerStatusSubscription registers the server-side subscription a status
+// websocket reads from, returning "" if the server is shutting down; the
+// websocket's readers treat that as an unknown subscription and stop.
 func (s *Server) registerStatusSubscription() string {
-	return s.storeClientSubscription(newStatusServerSubscription())
+	id, _ := s.storeClientSubscription(newStatusServerSubscription())
+
+	return id
 }
 
 func (s *Server) repGroupSubscriptionKeys(repGroup string) []string {

@@ -75,6 +75,13 @@ const (
 	// roughly reserve_time + TTR). Tests pairing this with a sleep/deadline keep
 	// that wait safely above this value so the lost state is still induced.
 	subscriptionLostItemTTR = 1 * time.Second
+
+	// wrAddWaitConnectTimeout is cmd/add.go's defaultAddTimeout: the connect
+	// timeout `wr add -w` gives Connect() before subscribing with that same
+	// client. It is deliberately larger than ClientMinRequestTimeout, which is
+	// what makes a resubscribe cap recomputed from it a widening rather than a
+	// narrowing.
+	wrAddWaitConnectTimeout = 120 * time.Second
 )
 
 var (
@@ -1593,6 +1600,122 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 		So(update.Kind, ShouldEqual, JobUpdateResync)
 		So(sub.Err(), ShouldBeNil)
 		So(subscriptionUpdatesStillOpen(sub, 150*time.Millisecond), ShouldBeTrue)
+	})
+}
+
+func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A subscription gives up on its own retry budget while a stopping manager's socket lingers", t, func() {
+		ctx := context.Background()
+
+		// a single RPC reader makes the shutdown window deterministic. A reader
+		// admits one last request after client handling stops, so this one answers
+		// the reconnecting client's connect-time Ping and then exits, leaving the
+		// resubscribe that follows unanswered while the command socket stays open
+		// for ShutdownSocketWait. In production the same thing happens whenever
+		// concurrent reconnects use up the last of the six readers. InterruptTime
+		// is long so the reader is certainly still waiting when the Ping arrives,
+		// rather than having already timed out of its receive.
+		defer setNumRPCReaders(1)()
+
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, 200*time.Millisecond)
+		serverConfig.Timings.InterruptTime = 5 * time.Second
+		serverConfig.Timings.ShutdownSocketWait = 2 * time.Second
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-shutdown-window"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		// a real client is a separate process, so its retry budget runs while the
+		// manager works through the rest of its shutdown
+		stopped := make(chan struct{})
+		start := time.Now()
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		So(subscriptionUpdatesClosed(sub), ShouldBeTrue)
+
+		gaveUpAfter := time.Since(start)
+
+		So(gaveUpAfter, ShouldBeLessThan, serverConfig.Timings.ShutdownSocketWait)
+		So(errors.Is(sub.Err(), ErrSubscriptionClosed), ShouldBeTrue)
+
+		<-stopped
+	})
+
+	Convey("A subscribe arriving after the manager's subscription sweep is refused, not registered", t, func() {
+		ctx := context.Background()
+		serverConfig, _, _, _ := subscriptionTestConfig(t)
+
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		server.closeClientSubscriptions()
+
+		// handleSubscribe directly, since the point is that registration itself
+		// refuses: a request admitted before shutdown began has already passed the
+		// up-flag check by the time it gets here
+		sr, srerr, _ := server.handleSubscribe(ctx, &clientRequest{
+			Method: requestMethodSubscribe,
+			Keys:   []string{"subscription-late-subscribe"},
+		})
+		So(srerr, ShouldEqual, ErrClosedStop)
+		So(sr, ShouldBeNil)
+		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
+	})
+
+	Convey("A reconnect's retry budget can only narrow a request's deadline, never widen it", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, _ := subscriptionTestConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, wrAddWaitConnectTimeout)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		// a subscription reconnect re-Connect()s with at most
+		// subscriptionReconnectTimeout, so the socket it resubscribes on sits on
+		// the ClientMinRequestTimeout floor, not on the client's original
+		// connect timeout
+		reconnected := requestTimeout(subscriptionReconnectTimeout)
+		So(reconnected, ShouldEqual, ClientMinRequestTimeout)
+		So(jq.sock.SetOption(mangos.OptionRecvDeadline, reconnected), ShouldBeNil)
+
+		// the production reconnect budget is ClientRetryTime, far wider than that
+		// floor, so capping the resubscribe by it must change nothing
+		So(ClientRetryTime, ShouldBeGreaterThan, reconnected)
+
+		resp, reqErr := jq.requestWithin(&clientRequest{Method: requestMethodPing}, ClientRetryTime)
+
+		deadline, optErr := jq.sock.GetOption(mangos.OptionRecvDeadline)
+		So(optErr, ShouldBeNil)
+		So(deadline, ShouldEqual, reconnected)
+
+		So(reqErr, ShouldBeNil)
+		So(resp, ShouldNotBeNil)
 	})
 }
 

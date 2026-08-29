@@ -361,7 +361,7 @@ func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
 			return nil, false
 		}
 
-		catchUp, err := s.reconnectOnce(subscriptionReconnectTimeoutFor(retryEnd))
+		catchUp, err := s.reconnectOnce(retryEnd)
 		if err == nil {
 			return catchUp, true
 		}
@@ -378,17 +378,8 @@ func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
 	}
 }
 
-func subscriptionReconnectTimeoutFor(retryEnd time.Time) time.Duration {
-	remaining := time.Until(retryEnd)
-	if remaining <= 0 {
-		return subscriptionReconnectTimeout
-	}
-
-	return min(remaining, subscriptionReconnectTimeout)
-}
-
-func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error) {
-	if err := s.client.reconnect(timeout); err != nil {
+func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
+	if err := s.client.reconnect(subscriptionBudgetTimeout(retryEnd, subscriptionReconnectTimeout)); err != nil {
 		return nil, err
 	}
 
@@ -400,7 +391,12 @@ func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error
 		return nil, err
 	}
 
-	resp, err := s.client.request(s.subscribeRequest())
+	// the resubscribe must not outlive the retry budget: a manager part-way
+	// through shutdown can answer the connect-time Ping above and then stop
+	// answering anything. requestWithin only ever narrows, so the production 24h
+	// budget leaves the client's usual generous receive floor in place and a
+	// slow-but-alive manager is still not mistaken for a dead one.
+	resp, err := s.client.requestWithin(s.subscribeRequest(), time.Until(retryEnd))
 	if err != nil {
 		_ = sock.Close()
 
@@ -412,6 +408,20 @@ func (s *Subscription) reconnectOnce(timeout time.Duration) ([]*JobUpdate, error
 	}
 
 	return resp.JobUpdates, nil
+}
+
+// subscriptionBudgetTimeout returns limit, shortened to whatever is left of the
+// reconnect retry budget ending at retryEnd, so no step of a single reconnect
+// attempt can outlive the budget the caller set. An already-spent budget gets
+// limit: whether to make another attempt at all is reconnect()'s decision, and
+// a non-positive timeout would mean "no timeout" to the socket.
+func subscriptionBudgetTimeout(retryEnd time.Time, limit time.Duration) time.Duration {
+	remaining := time.Until(retryEnd)
+	if remaining <= 0 {
+		return limit
+	}
+
+	return min(remaining, limit)
 }
 
 func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string) error {

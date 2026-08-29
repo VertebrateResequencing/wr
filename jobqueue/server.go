@@ -958,7 +958,7 @@ type Server struct {
 	ssmutex             sync.RWMutex // up, drain, blocking, Mode, shutdown's q-nil, recovering state
 	rrjMu               sync.RWMutex // leaf lock guarding recoveredRunningJobs
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
-	csmutex             sync.RWMutex // to protect clientSubscriptions
+	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	sync.Mutex
 	wsmutex  sync.RWMutex
@@ -972,6 +972,7 @@ type Server struct {
 	recoveryRestored     int
 	racChecking          bool
 	killRunners          bool
+	subsClosed           bool // shutdown swept the subscriptions; see storeClientSubscription
 	racPending           bool
 	racRunning           bool
 	waitingReserves      []chan struct{}

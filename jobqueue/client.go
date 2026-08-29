@@ -172,6 +172,10 @@ var errGetRecentState = errors.New(
 	"GetRecent (--recent) only returns complete jobs and does not support a state filter",
 )
 
+// errRecvDeadlineType is returned if mangos ever stops reporting the socket's
+// receive deadline as a time.Duration.
+var errRecvDeadlineType = errors.New("socket receive deadline was not a duration")
+
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
 	RepGroupMatchSubStr RepGroupMatch = "substr"
@@ -378,6 +382,86 @@ func (c *Client) GetRecent(period time.Duration, limit int, state JobState, getS
 // non-scheduler/non-LSF clients (the default).
 func (c *Client) SetReserveSchedulerID(schedulerID string) {
 	c.reserveSchedulerID = schedulerID
+}
+
+// requestWithin is request(), but with this one request's receive deadline
+// narrowed to timeout, restoring the socket's own deadline afterwards.
+//
+// It can only ever narrow. The deadline it narrows from and restores to is read
+// off the socket rather than recomputed from c.timeout, because c.timeout is
+// the connect timeout the Client was made with and reconnect() does not update
+// it: recomputing would widen a reconnected socket's deadline (60s to
+// requestTimeout(c.timeout)) in the name of capping it. A timeout that is not
+// shorter than the socket's deadline, or is not positive (mangos reads a
+// non-positive receive deadline as "wait forever"), narrows nothing.
+//
+// The subscription reconnect path uses it because it has a retry budget to
+// honour: a manager part-way through shutdown can still accept a connection and
+// answer the connect-time Ping moments before it stops answering anything, and
+// the unanswered request that follows would otherwise block for the socket's
+// ClientMinRequestTimeout (60s) floor, overrunning a budget of milliseconds.
+// Because only this request is narrowed, every other request keeps that floor
+// and a slow-but-alive server is still not mistaken for a dead one.
+func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (sr *serverResponse, err error) {
+	c.Lock()
+	defer c.Unlock()
+
+	socketTimeout, err := c.recvDeadline()
+	if err != nil {
+		return nil, err
+	}
+
+	if timeout <= 0 || timeout >= socketTimeout {
+		return c.requestLocked(cr)
+	}
+
+	if err = c.sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		restoreErr := c.sock.SetOption(mangos.OptionRecvDeadline, socketTimeout)
+		if err == nil {
+			err = restoreErr
+		}
+	}()
+
+	return c.requestLocked(cr)
+}
+
+// recvDeadline returns the receive deadline the client's socket currently has.
+func (c *Client) recvDeadline() (time.Duration, error) {
+	val, err := c.sock.GetOption(mangos.OptionRecvDeadline)
+	if err != nil {
+		return 0, err
+	}
+
+	timeout, ok := val.(time.Duration)
+	if !ok {
+		return 0, errRecvDeadlineType
+	}
+
+	return timeout, nil
+}
+
+// requestLocked does the work of request(), and must be called with the
+// client's lock held.
+func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
+	if err := c.encodeAndSend(cr); err != nil {
+		return nil, err
+	}
+
+	sr, err := c.recvAndDecode()
+	if err != nil {
+		return nil, err
+	}
+
+	// pull the error out of sr
+	if sr.Err != "" {
+		return sr, Error{cr.Method, cr.key(), sr.Err}
+	}
+
+	return sr, nil
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -3126,21 +3210,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	c.Lock()
 	defer c.Unlock()
 
-	if err := c.encodeAndSend(cr); err != nil {
-		return nil, err
-	}
-
-	sr, err := c.recvAndDecode()
-	if err != nil {
-		return nil, err
-	}
-
-	// pull the error out of sr
-	if sr.Err != "" {
-		return sr, Error{cr.Method, cr.key(), sr.Err}
-	}
-
-	return sr, nil
+	return c.requestLocked(cr)
 }
 
 // encodeAndSend encodes cr (stamping it with this client's token and id) and
