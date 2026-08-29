@@ -145,6 +145,32 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
 
+// mergeBehaviours returns existing with, for each trigger that modifications
+// supplies behaviours for, all of existing's behaviours for that trigger
+// replaced by the whole supplied set in the supplied order. Triggers that
+// modifications does not mention keep their existing behaviours, and a trigger
+// that existing does not have yet gets appended.
+func mergeBehaviours(existing, modifications Behaviours) Behaviours {
+	if len(modifications) == 0 {
+		return existing
+	}
+
+	replaced := make(map[BehaviourTrigger]bool, len(modifications))
+	for _, b := range modifications {
+		replaced[b.When] = true
+	}
+
+	merged := make(Behaviours, 0, len(existing)+len(modifications))
+
+	for _, b := range existing {
+		if !replaced[b.When] {
+			merged = append(merged, b)
+		}
+	}
+
+	return append(merged, modifications...)
+}
+
 func sshTarget(reqs *scheduler.Requirements, host, hostIP string) string {
 	if hostIP == "" {
 		return host
@@ -1916,29 +1942,13 @@ func (j *JobModifier) applyScheduling(job *Job) {
 	}
 }
 
-// applyBehaviours merges any set Behaviours into job, replacing existing
-// behaviours that share a trigger and appending the rest.
+// applyBehaviours merges any set Behaviours into job.
 func (j *JobModifier) applyBehaviours(job *Job) {
 	if !j.BehavioursSet {
 		return
 	}
 
-	for _, newBehaviour := range j.Behaviours {
-		var found bool
-
-		for i, old := range job.Behaviours {
-			if old.When == newBehaviour.When {
-				job.Behaviours[i] = newBehaviour
-				found = true
-
-				break
-			}
-		}
-
-		if !found {
-			job.Behaviours = append(job.Behaviours, newBehaviour)
-		}
-	}
+	job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
 }
 
 // applyContainer applies the mount, bsub and container modifications to job.

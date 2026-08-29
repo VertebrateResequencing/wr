@@ -175,16 +175,15 @@ func TestSchedulerSubmitJobsDefaultsMissingRequirements(t *testing.T) {
 		server := clienttesting.Serve(t, config)
 		defer server.Stop(ctx, true)
 
-		oldMinRequestTimeout := jobqueue.ClientMinRequestTimeout
-
-		jobqueue.ClientMinRequestTimeout = time.Second
-		defer func() {
-			jobqueue.ClientMinRequestTimeout = oldMinRequestTimeout
-		}()
-
+		// ClientMinRequestTimeout is deliberately left at its package default:
+		// it is the floor that stops the real Add below - a DB write plus
+		// scheduler processing - being given up on as a dead manager when the
+		// box is loaded. Lowering it to a second here cost this test a spurious
+		// 'receive time out' (.docs/bugfixes/260828-4.md BUG 2), and nothing
+		// here asserts a timeout.
 		s, err := New(SchedulerSettings{
 			Deployment: testDeployment,
-			Timeout:    time.Second,
+			Timeout:    10 * time.Second,
 			Logger:     log15.New(),
 		})
 		So(err, ShouldBeNil)

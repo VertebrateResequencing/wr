@@ -49,6 +49,14 @@ const testTrueCmd = "true"
 // key tests.
 const testMountPath = "path"
 
+// testOnFailureCmd is the Cmd of an OnFailure Run Behaviour in Job
+// modification tests.
+const testOnFailureCmd = "echo failed"
+
+// testOnExitCmd is the Cmd of a pre-existing OnExit Run Behaviour in Job
+// modification tests.
+const testOnExitCmd = "echo old"
+
 func TestJobEnv(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -79,6 +87,96 @@ func TestJobEnv(t *testing.T) {
 			env, err := (&Job{EnvC: envc, EnvCRetrieved: true}).Env()
 			So(err, ShouldBeNil)
 			So(env, ShouldResemble, []string{})
+		})
+	})
+}
+
+func TestJobModifierBehaviours(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Modifying a Job's Behaviours replaces them per trigger", t, func() {
+		Convey("every behaviour supplied for a trigger is kept, in order", func() {
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
+
+			jm := NewJobModifer()
+			jm.SetBehaviours(Behaviours{
+				{When: OnExit, Do: Run, Arg: "echo x"},
+				{When: OnExit, Do: CleanupAll},
+			})
+			jm.applyTo(job)
+
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"run":"echo x"},{"cleanup_all":true}]}`)
+		})
+
+		Convey("a supplied trigger replaces all the Job's existing behaviours for it", func() {
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, Behaviours: Behaviours{
+				{When: OnExit, Do: Run, Arg: "echo old1"},
+				{When: OnExit, Do: Run, Arg: "echo old2"},
+			}}
+
+			jm := NewJobModifer()
+			jm.SetBehaviours(Behaviours{{When: OnExit, Do: Run, Arg: "echo new"}})
+			jm.applyTo(job)
+
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"run":"echo new"}]}`)
+		})
+
+		Convey("triggers the modification does not mention are left untouched", func() {
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, Behaviours: Behaviours{
+				{When: OnFailure, Do: Run, Arg: testOnFailureCmd},
+				{When: OnExit, Do: Run, Arg: testOnExitCmd},
+			}}
+
+			jm := NewJobModifer()
+			jm.SetBehaviours(Behaviours{{When: OnExit, Do: CleanupAll}})
+			jm.applyTo(job)
+
+			So(job.Behaviours.String(), ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],"on_exit":[{"cleanup_all":true}]}`)
+		})
+
+		Convey("a trigger the Job does not have yet is added", func() {
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, Behaviours: Behaviours{
+				{When: OnFailure, Do: Run, Arg: testOnFailureCmd},
+			}}
+
+			jm := NewJobModifer()
+			jm.SetBehaviours(Behaviours{
+				{When: OnSuccess, Do: Cleanup},
+				{When: OnSuccess, Do: Run, Arg: "echo done"},
+			})
+			jm.applyTo(job)
+
+			So(job.Behaviours.String(), ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],`+
+					`"on_success":[{"cleanup":true},{"run":"echo done"}]}`)
+		})
+
+		Convey("a Nothing behaviour turns off the Job's behaviours for its trigger", func() {
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, Behaviours: Behaviours{
+				{When: OnExit, Do: CleanupAll},
+				{When: OnExit, Do: Run, Arg: testOnExitCmd},
+			}}
+
+			jm := NewJobModifer()
+			jm.SetBehaviours(BehavioursViaJSON{{Nothing: true}}.Behaviours(OnExit))
+			jm.applyTo(job)
+
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"nothing":true}]}`)
+		})
+
+		Convey("Behaviours that were not set are not altered", func() {
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, Behaviours: Behaviours{
+				{When: OnExit, Do: Run, Arg: testOnExitCmd},
+			}}
+
+			jm := NewJobModifer()
+			jm.SetPriority(7)
+			jm.applyTo(job)
+
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"run":"echo old"}]}`)
 		})
 	})
 }

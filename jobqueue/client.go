@@ -172,6 +172,10 @@ var errGetRecentState = errors.New(
 	"GetRecent (--recent) only returns complete jobs and does not support a state filter",
 )
 
+// errRecvDeadlineType is returned if mangos ever stops reporting the socket's
+// receive deadline as a time.Duration.
+var errRecvDeadlineType = errors.New("socket receive deadline was not a duration")
+
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
 	RepGroupMatchSubStr RepGroupMatch = "substr"
@@ -378,6 +382,90 @@ func (c *Client) GetRecent(period time.Duration, limit int, state JobState, getS
 // non-scheduler/non-LSF clients (the default).
 func (c *Client) SetReserveSchedulerID(schedulerID string) {
 	c.reserveSchedulerID = schedulerID
+}
+
+// requestWithin is request(), but with this one request's receive deadline
+// narrowed to timeout, restoring the socket's own deadline afterwards. A failed
+// restore is joined on to whatever the request itself returned rather than
+// replacing it or being dropped: the socket is then stuck on the narrow
+// deadline, so the caller needs to be told, and errors.Is still finds the
+// request's own error for callers that discriminate on it.
+//
+// It can only ever narrow. The deadline it narrows from and restores to is read
+// off the socket rather than recomputed from c.timeout, because c.timeout is
+// the connect timeout the Client was made with and reconnect() does not update
+// it: recomputing would widen a reconnected socket's deadline (60s to
+// requestTimeout(c.timeout)) in the name of capping it. A timeout that is not
+// positive asks for no bound at all, so it narrows nothing; any other timeout
+// narrows whenever the socket's deadline is wider, which includes the socket's
+// deadline being non-positive, since mangos reads that as "wait forever".
+//
+// The subscription reconnect path uses it because it has a retry budget to
+// honour: a manager part-way through shutdown can still accept a connection and
+// answer the connect-time Ping moments before it stops answering anything, and
+// the unanswered request that follows would otherwise block for the socket's
+// ClientMinRequestTimeout (60s) floor, overrunning a budget of milliseconds.
+// Because only this request is narrowed, every other request keeps that floor
+// and a slow-but-alive server is still not mistaken for a dead one.
+func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (sr *serverResponse, err error) {
+	c.Lock()
+	defer c.Unlock()
+
+	socketTimeout, err := c.recvDeadline()
+	if err != nil {
+		return nil, err
+	}
+
+	if timeout <= 0 || (socketTimeout > 0 && timeout >= socketTimeout) {
+		return c.requestLocked(cr)
+	}
+
+	if err = c.sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if restoreErr := c.sock.SetOption(mangos.OptionRecvDeadline, socketTimeout); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
+		}
+	}()
+
+	return c.requestLocked(cr)
+}
+
+// recvDeadline returns the receive deadline the client's socket currently has.
+func (c *Client) recvDeadline() (time.Duration, error) {
+	val, err := c.sock.GetOption(mangos.OptionRecvDeadline)
+	if err != nil {
+		return 0, err
+	}
+
+	timeout, ok := val.(time.Duration)
+	if !ok {
+		return 0, errRecvDeadlineType
+	}
+
+	return timeout, nil
+}
+
+// requestLocked does the work of request(), and must be called with the
+// client's lock held.
+func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
+	if err := c.encodeAndSend(cr); err != nil {
+		return nil, err
+	}
+
+	sr, err := c.recvAndDecode()
+	if err != nil {
+		return nil, err
+	}
+
+	// pull the error out of sr
+	if sr.Err != "" {
+		return sr, Error{cr.Method, cr.key(), sr.Err}
+	}
+
+	return sr, nil
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -681,8 +769,15 @@ func (c *Client) Disconnect() error {
 // information about the server. If err is nil, it works. This is the only
 // command that interacts with the server that works if a blank or invalid
 // token had been supplied to Connect().
+//
+// timeout bounds how long we wait for the server's reply, so that a ping into a
+// manager that still listens but no longer reads (the window during shutdown
+// between its RPC readers stopping and its command socket closing) fails within
+// the caller's own budget instead of on the socket's ClientMinRequestTimeout
+// floor. requestWithin can only narrow, so a ping on a socket whose deadline is
+// already shorter (Connect's readiness ping) is unaffected.
 func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
-	resp, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
+	resp, err := c.requestWithin(&clientRequest{Method: "ping", Timeout: timeout}, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -739,23 +834,23 @@ func (c *Client) ShutdownServer() bool {
 		return false
 	}
 
-	// wait a while for the server to stop responding to Pings
-	limit := time.After(ClientShutdownTimeout)
+	// wait a while for the server to stop responding to Pings. The deadline is
+	// re-checked every pass rather than raced against in a select, so that a
+	// ping's own duration cannot carry us past ClientShutdownTimeout.
+	deadline := time.Now().Add(ClientShutdownTimeout)
 	ticker := time.NewTicker(ClientShutdownTestInterval)
 
-	for {
-		select {
-		case <-ticker.C:
-			_, err = c.Ping(ClientSuggestedPingTimeout)
-			if err != nil {
-				ticker.Stop()
+	defer ticker.Stop()
 
-				return true
-			}
-		case <-limit:
-			return false
+	for time.Now().Before(deadline) {
+		<-ticker.C
+
+		if _, err = c.Ping(ClientSuggestedPingTimeout); err != nil {
+			return true
 		}
 	}
+
+	return false
 }
 
 // BackupDB backs up the server's database to the given path. Note that
@@ -3126,21 +3221,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	c.Lock()
 	defer c.Unlock()
 
-	if err := c.encodeAndSend(cr); err != nil {
-		return nil, err
-	}
-
-	sr, err := c.recvAndDecode()
-	if err != nil {
-		return nil, err
-	}
-
-	// pull the error out of sr
-	if sr.Err != "" {
-		return sr, Error{cr.Method, cr.key(), sr.Err}
-	}
-
-	return sr, nil
+	return c.requestLocked(cr)
 }
 
 // encodeAndSend encodes cr (stamping it with this client's token and id) and

@@ -353,60 +353,7 @@ new internal ids is printed.`,
 			jm.SetContainerMounts(cmdContainerMounts)
 		}
 
-		var (
-			behaviours    jobqueue.Behaviours
-			behavioursSet bool
-		)
-
-		if cobraCmd.Flags().Changed("on_failure") {
-			if cmdOnFailure == "" {
-				cmdOnFailure = nothingBehaviour
-			}
-
-			var bjs jobqueue.BehavioursViaJSON
-
-			err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
-			if err != nil {
-				die("bad --on_failure: %s", err)
-			}
-
-			behaviours = bjs.Behaviours(jobqueue.OnFailure)
-			behavioursSet = true
-		}
-
-		if cobraCmd.Flags().Changed("on_success") {
-			if cmdOnSuccess == "" {
-				cmdOnSuccess = nothingBehaviour
-			}
-
-			var bjs jobqueue.BehavioursViaJSON
-
-			err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
-			if err != nil {
-				die("bad --on_success: %s", err)
-			}
-
-			behaviours = append(behaviours, bjs.Behaviours(jobqueue.OnSuccess)...)
-			behavioursSet = true
-		}
-
-		if cobraCmd.Flags().Changed("on_exit") {
-			if cmdOnExit == "" {
-				cmdOnExit = nothingBehaviour
-			}
-
-			var bjs jobqueue.BehavioursViaJSON
-
-			err = json.Unmarshal([]byte(cmdOnExit), &bjs)
-			if err != nil {
-				die("bad --on_exit: %s", err)
-			}
-
-			behaviours = append(behaviours, bjs.Behaviours(jobqueue.OnExit)...)
-			behavioursSet = true
-		}
-
-		if behavioursSet {
+		if behaviours, behavioursSet := modBehaviours(cobraCmd); behavioursSet {
 			jm.SetBehaviours(behaviours)
 		}
 
@@ -447,6 +394,56 @@ new internal ids is printed.`,
 			fmt.Printf(" %s => %s\n", from, to)
 		}
 	},
+}
+
+// modBehaviours returns the behaviours the mod sub-command's --on_failure,
+// --on_success and --on_exit flags ask for, and whether any of them was
+// supplied at all. A trigger whose flag was not supplied is absent from the
+// returned Behaviours, which is what leaves that trigger's existing behaviours
+// untouched.
+func modBehaviours(cobraCmd *cobra.Command) (jobqueue.Behaviours, bool) {
+	triggerFlags := []struct {
+		name  string
+		value string
+		when  jobqueue.BehaviourTrigger
+	}{
+		{"on_failure", cmdOnFailure, jobqueue.OnFailure},
+		{"on_success", cmdOnSuccess, jobqueue.OnSuccess},
+		{"on_exit", cmdOnExit, jobqueue.OnExit},
+	}
+
+	var (
+		behaviours jobqueue.Behaviours
+		set        bool
+	)
+
+	for _, tf := range triggerFlags {
+		if !cobraCmd.Flags().Changed(tf.name) {
+			continue
+		}
+
+		behaviours = append(behaviours, modTriggerBehaviours(tf.name, tf.value, tf.when)...)
+		set = true
+	}
+
+	return behaviours, set
+}
+
+// modTriggerBehaviours converts the JSON value supplied for one of the mod
+// sub-command's behaviour flags into behaviours for that flag's trigger, dying
+// if the value is not valid JSON.
+func modTriggerBehaviours(name, value string, when jobqueue.BehaviourTrigger) jobqueue.Behaviours {
+	if value == "" {
+		value = nothingBehaviour
+	}
+
+	var bjs jobqueue.BehavioursViaJSON
+
+	if err := json.Unmarshal([]byte(value), &bjs); err != nil {
+		die("bad --%s: %s", name, err)
+	}
+
+	return jobqueue.ModifyBehaviours(bjs, when)
 }
 
 func init() {

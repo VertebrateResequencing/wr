@@ -116,6 +116,20 @@ const (
 	Remove
 )
 
+// ModifyBehaviours converts a BehavioursViaJSON supplied for one trigger when
+// modifying a job to real Behaviours. Unlike Behaviours(), an explicitly
+// supplied empty set becomes the Nothing behaviour, ie. it turns that trigger
+// off: a modification that mentions a trigger replaces all of that trigger's
+// behaviours, so leaving a trigger untouched is done by not mentioning it at
+// all, not by supplying nothing for it.
+func ModifyBehaviours(bjs BehavioursViaJSON, when BehaviourTrigger) Behaviours {
+	if len(bjs) == 0 {
+		bjs = BehavioursViaJSON{{Nothing: true}}
+	}
+
+	return bjs.Behaviours(when)
+}
+
 // Behaviour describes something that should happen in response to a Job's Cmd
 // exiting a certain way.
 type Behaviour struct {

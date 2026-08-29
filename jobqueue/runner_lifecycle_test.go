@@ -61,6 +61,22 @@ type runnerServerFixture struct {
 	maxCPU            int
 }
 
+// runnerModeTestRun restricts a --runnermode child to the one test that
+// handles --runnermode, exactly as jobqueue_test.go does for its own runner and
+// server children.
+//
+// Without it the child runs every test that does not itself guard on
+// runnermode. Those tests start their own managers, and jobqueueTestInit only
+// isolates the ports and manager dir when NOT in runnermode/servermode, so the
+// managers they start fall back to the default config - the user's real
+// production manager port. Measured before this was added: a single runner
+// child of TestJobqueueRunnerScheduling held 16498 sockets on port 5023,
+// listening on it and connecting to itself at roughly 250 connections/second.
+//
+// The flag is a fixed part of the runner cmdline, so crash recovery, which
+// matches a recovered runner by its exact cmdline, is unaffected.
+const runnerModeTestRun = " -test.run TestJobqueueRunnerModeEntrypoint"
+
 func TestJobqueueRunnerModeEntrypoint(t *testing.T) {
 	if servermode {
 		return
@@ -811,7 +827,7 @@ func withRunnerServer(
 		failArg = " --runnerfail"
 	}
 
-	runningConfig.RunnerCmd = runnerCmd + " --runnermode" + failArg +
+	runningConfig.RunnerCmd = runnerCmd + runnerModeTestRun + " --runnermode" + failArg +
 		" --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s" +
 		" --rtimeout %d --maxmins %d --rmanagerdir " + rmd + " --tmpdir " + runnerTmpDir
 	server, _, token, errs := serve(ctx, runningConfig)

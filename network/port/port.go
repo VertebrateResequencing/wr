@@ -31,10 +31,21 @@ import (
 	"net"
 )
 
-const maxPort = 65535
-const maxTries = maxPort - 10000
+const (
+	maxPort = 65535
+	// minSearchPort is the lowest port a range can start at, keeping the search
+	// clear of the well-known and registered ports below it.
+	minSearchPort = 10000
+	// searchablePorts is how many ports the search covers, and so the longest
+	// range it could ever hand back.
+	searchablePorts = maxPort - minSearchPort + 1
+)
 
-var errListenerAddrNotTCP = errors.New("listener address was not *net.TCPAddr")
+var (
+	errListenerAddrNotTCP = errors.New("listener address was not *net.TCPAddr")
+	errNoContiguousRange  = errors.New("no contiguous range of available ports")
+	errInvalidRangeSize   = errors.New("invalid port range size")
+)
 
 // listener interface is used instead of *net.TCPListener directly, so that we
 // can test with a mock version.
@@ -43,11 +54,20 @@ type listener interface {
 	Close() error
 }
 
+func listenTCP(addr *net.TCPAddr) (listener, error) {
+	return net.ListenTCP("tcp", addr)
+}
+
+// listenFunc takes a port by listening on addr. Checker holds one so that a
+// test can see which ports a search takes, and how many of them it holds at
+// once.
+type listenFunc func(addr *net.TCPAddr) (listener, error)
+
 // Checker is used to check for available ports on a host.
 type Checker struct {
 	Addr      *net.TCPAddr
 	listeners []listener
-	ports     map[int]bool
+	listen    listenFunc
 }
 
 // NewChecker returns a Checker that can check ports on the given host.
@@ -58,48 +78,84 @@ func NewChecker(host string) (*Checker, error) {
 	}
 
 	return &Checker{
-		Addr:  addr,
-		ports: make(map[int]bool),
+		Addr:   addr,
+		listen: listenTCP,
 	}, nil
 }
 
-// AvailableRange asks the operating system for ports until it is given a
-// contiguous range of ports size long. It returns the first and last of those
-// port numbers, having released all the ports it took, so they are ready for
-// you to use.
+// AvailableRange walks up from a free port the operating system picked, until
+// it holds size ports in a row, wrapping round to minSearchPort at the top. It
+// returns the first and last of those port numbers, having released all the
+// ports it took, so they are ready for you to use. Starting where the operating
+// system's own pick falls keeps the usual answer inside the range it hands out.
+//
+// It holds at most size ports at once, releasing a candidate range before
+// trying the next. Testing candidate ranges directly is what keeps it to that:
+// waiting instead for the operating system to hand out size adjacent ports by
+// chance meant holding a quarter of the whole ephemeral port range at once,
+// which on a busy machine took what was left of that range and then failed with
+// "bind: address already in use" on a request for any port at all.
+//
+// A size below 1, or above the number of ports the search covers, is turned
+// down outright: no host could satisfy it, so it is a mistake in the request
+// rather than a host that happens to be full.
+//
+// A port it could not give back is an error too, and comes back with no range
+// at all: a range it may still be holding one of is not one you can use.
 //
 // NB: there is the potential for a race condition here, where once released,
 // another process gets one of the ports before you use it, so start listening
 // on all the returned ports as soon as possible after calling this.
-func (c *Checker) AvailableRange(size int) (int, int, error) {
-	var err error
+func (c *Checker) AvailableRange(size int) (first, last int, err error) {
+	if size < 1 || size > searchablePorts {
+		return 0, 0, fmt.Errorf("%w: %d is not between 1 and %d", errInvalidRangeSize, size, searchablePorts)
+	}
 
-	defer func() {
-		err = c.release(err)
-	}()
+	defer func() { first, last, err = c.releasedRange(first, last, err) }()
 
-	var first, last int
+	lastStart := maxPort - size + 1
+	starts := lastStart - minSearchPort + 1
 
-	for range maxTries {
-		var port int
+	offered, err := c.offeredPort()
+	if err != nil {
+		return 0, 0, err
+	}
 
-		port, err = c.availablePort()
-		if err != nil {
-			break
+	origin := max(offered, minSearchPort)
+
+	for try := range starts {
+		start := minSearchPort + (origin-minSearchPort+try)%starts
+
+		if c.claimRange(start, size) {
+			return start, start + size - 1, nil
 		}
 
-		if set, has := c.checkRange(port, size); has {
-			first, last = firstAndLast(set)
-
-			break
+		if err = c.release(nil); err != nil {
+			return 0, 0, err
 		}
 	}
 
-	return first, last, err
+	return 0, 0, fmt.Errorf("%w of %d", errNoContiguousRange, size)
 }
 
-func (c *Checker) availablePort() (int, error) {
-	l, err := net.ListenTCP("tcp", c.Addr)
+// releasedRange gives back every port the search is still holding, and turns
+// the range it found into no range at all if any of them would not close: a
+// range we might still be holding one of is not one a caller can use.
+func (c *Checker) releasedRange(first, last int, err error) (int, int, error) {
+	if err = c.release(err); err != nil {
+		return 0, 0, err
+	}
+
+	return first, last, nil
+}
+
+// offeredPort has the operating system pick a free port, and releases it again.
+// It both proves the host can be listened on at all, and gives the sweep a
+// starting point that differs between calls, so concurrent searches do not all
+// walk the same ports in the same order. It gives the port back on every way
+// out, so that it holds nothing whether it found a port number or not.
+func (c *Checker) offeredPort() (int, error) {
+	l, err := c.listen(c.Addr)
 	if err != nil {
 		return 0, err
 	}
@@ -108,65 +164,25 @@ func (c *Checker) availablePort() (int, error) {
 
 	addr, ok := l.Addr().(*net.TCPAddr)
 	if !ok {
-		return 0, fmt.Errorf("%w: %T", errListenerAddrNotTCP, l.Addr())
+		return 0, c.release(fmt.Errorf("%w: %T", errListenerAddrNotTCP, l.Addr()))
 	}
 
-	port := addr.Port
-	c.ports[port] = true
-
-	return port, nil
+	return addr.Port, c.release(nil)
 }
 
-func (c *Checker) checkRange(start, size int) ([]int, bool) {
-	if len(c.ports) < size {
-		return nil, false
-	}
-
-	after := c.portsAfter(start)
-	if len(after)+1 >= size {
-		return append([]int{start}, after[0:size-1]...), true
-	}
-
-	before := c.portsBefore(start)
-	if len(before)+1 >= size {
-		return append(before[len(before)-size+1:], start), true
-	}
-
-	if len(before)+len(after)+1 >= size {
-		combined := append(before, append([]int{start}, after...)...) //nolint:gocritic
-
-		return combined[0:size], true
-	}
-
-	return nil, false
-}
-
-func (c *Checker) portsAfter(start int) []int {
-	var ports []int
-
-	for i := start + 1; i <= maxPort; i++ {
-		if c.ports[i] {
-			ports = append(ports, i)
-		} else {
-			break
+// claimRange takes the size ports starting at first, reporting whether it took
+// them all. It leaves the ones it did take held, for release to close.
+func (c *Checker) claimRange(first, size int) bool {
+	for port := first; port < first+size; port++ {
+		l, err := c.listen(&net.TCPAddr{IP: c.Addr.IP, Port: port, Zone: c.Addr.Zone})
+		if err != nil {
+			return false
 		}
+
+		c.listeners = append(c.listeners, l)
 	}
 
-	return ports
-}
-
-func (c *Checker) portsBefore(start int) []int {
-	var ports []int
-
-	for i := start - 1; i >= 1; i-- {
-		if c.ports[i] {
-			ports = append([]int{i}, ports...)
-		} else {
-			break
-		}
-	}
-
-	return ports
+	return true
 }
 
 func (c *Checker) release(err error) error {
@@ -186,11 +202,6 @@ func (c *Checker) release(err error) error {
 	}
 
 	c.listeners = nil
-	c.ports = make(map[int]bool)
 
 	return err
-}
-
-func firstAndLast(s []int) (first, last int) {
-	return s[0], s[len(s)-1]
 }
