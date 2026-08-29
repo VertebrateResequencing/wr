@@ -48,7 +48,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
+	log15 "github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -109,13 +111,14 @@ const (
 	dgsRunnerRetryWait = 200 * time.Millisecond
 	dgsRunnerRetryTime = 2 * time.Minute
 
-	// dgsRunnerOutage is how long the manager stays down. It must exceed the
-	// client's request deadline, which Connect sets from its timeout (1.5s in
-	// these tests): mangos queues the send and holds the receive open, so a
-	// shorter outage lets the archive's FIRST attempt land on the restarted
-	// manager and the retry loop is never entered - which is a false PASS, caught
-	// by the hadProblems assertion.
-	dgsRunnerOutage = 2500 * time.Millisecond
+	// dgsFinalStateFailureMsg is the message reportFinalState logs for an attempt
+	// that failed, immediately after it has set hadProblems. Waiting for it is
+	// how the manager stays down until the archive has provably failed at least
+	// once: mangos queues the send and holds the receive open, so restarting on a
+	// wall-clock timer instead lets a first attempt that started late land on the
+	// restarted manager, never entering the retry loop - a false PASS the
+	// hadProblems assertion turns into a load flake.
+	dgsFinalStateFailureMsg = "failed to update server with cmd's final state"
 
 	// dgsRunnerItemTTR keeps the recovered running job reservable for as long as
 	// the retrying archive could need. It is free on the success path.
@@ -259,13 +262,22 @@ func TestDepGranularityRunnerSurvivesLongAbsence(t *testing.T) {
 		// is shorter than the window the restart below opens, so it provably
 		// retries across it rather than happening to catch the first attempt.
 		archived := make(chan dgsArchiveOutcome, 1)
+		archiveCtx, attemptFailed := dgsFinalStateFailures(ctx)
 
 		go func() {
-			worked, hadProblems := jq.reportFinalState(ctx, reserved, dgsEndState(), execAction{archive: true})
+			worked, hadProblems := jq.reportFinalState(archiveCtx, reserved, dgsEndState(),
+				execAction{archive: true})
 			archived <- dgsArchiveOutcome{worked: worked, hadProblems: hadProblems}
 		}()
 
-		<-time.After(dgsRunnerOutage)
+		// the manager stays down until that first attempt has provably failed,
+		// which is what opens the window rather than a wall clock the archiving
+		// goroutine might not be scheduled inside of.
+		select {
+		case <-attemptFailed:
+		case <-time.After(dgsRunnerRetryTime):
+			So("the archive never failed while the manager was down", ShouldBeBlank)
+		}
 
 		restarted, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
@@ -315,6 +327,28 @@ func dgsWaitServing(server *Server) bool {
 	case <-time.After(dgsServingWait):
 		return false
 	}
+}
+
+// dgsFinalStateFailures returns a context to run a final-state report under, and
+// a channel that receives once that report has failed an attempt. The signal is
+// the error reportFinalState logs on every failed attempt, which it writes right
+// after setting hadProblems, so a receive on the channel means the retry loop
+// really was entered.
+func dgsFinalStateFailures(ctx context.Context) (context.Context, <-chan struct{}) {
+	failed := make(chan struct{}, 1)
+
+	handler := log15.FuncHandler(func(r log15.Record) error {
+		if r.Msg == dgsFinalStateFailureMsg {
+			select {
+			case failed <- struct{}{}:
+			default:
+			}
+		}
+
+		return nil
+	})
+
+	return clog.ContextWithLogHandler(ctx, handler), failed
 }
 
 // dgsEndState is a successful end state for a job the test never really ran.
