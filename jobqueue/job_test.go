@@ -732,6 +732,65 @@ func TestJobModifierCwd(t *testing.T) {
 	})
 }
 
+func TestJobModifierBehaviours(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Modifying a job's on_exit to a cleanup stores the cleanup", t, func() {
+		job := &Job{Cwd: liveStatusCwd}
+
+		jm := NewJobModifer()
+		jm.SetBehaviours(Behaviours{{When: OnExit, Do: Cleanup}})
+		jm.applyTo(job)
+
+		So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+	})
+
+	Convey("Modifying a cwd_matters job's on_exit to a cleanup stores nothing", t, func() {
+		job := &Job{
+			Cwd:        liveStatusCwd,
+			CwdMatters: true,
+			Behaviours: Behaviours{{When: OnExit, Do: Run, Arg: "echo old"}},
+		}
+
+		jm := NewJobModifer()
+		jm.SetBehaviours(Behaviours{{When: OnExit, Do: Cleanup}})
+		jm.applyTo(job)
+
+		// a cleanup can only delete a dir wr made, so wr never stores one on a
+		// cwd_matters job; the on_exit the user replaced must still be gone
+		So(job.Behaviours.String(), ShouldBeBlank)
+	})
+
+	Convey("Modifying a job to cwd_matters drops a cleanup it already stored", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Behaviours = Behaviours{
+			{When: OnExit, Do: Cleanup},
+			{When: OnFailure, Do: Run, Arg: "echo failed"},
+		}
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(true)
+		jm.applyTo(job)
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+	})
+
+	Convey("Modifying a cwd_matters job to cwd not mattering stores the cleanup asked for", t, func() {
+		job := &Job{Cwd: liveStatusCwd, CwdMatters: true}
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(false)
+		jm.SetBehaviours(Behaviours{{When: OnExit, Do: Cleanup}})
+		jm.applyTo(job)
+
+		So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+	})
+}
+
 func liveStatusJob(state JobState) *Job {
 	return &Job{
 		Cmd:       "echo live status",

@@ -219,7 +219,7 @@ corresponding to the name of the desired behaviour, and the relevant value. The
 currently available behaviours are: "cleanup_all", which takes a boolean value
 and if true will completely delete the actual working directory created when
 cwd_matters is false (when cwd_matters is true there is no such directory, so
-cleanup_all and cleanup would do nothing, and "wr add" discards them instead of
+cleanup_all and cleanup would do nothing, and wr discards them instead of
 storing them on the job, ie. they won't appear in its status); "cleanup", which
 is like cleanup_all except that it doesn't delete files that have been specified
 as inputs or outputs [since you can't currently specify this, the current

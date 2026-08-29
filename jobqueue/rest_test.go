@@ -229,6 +229,44 @@ func TestRESTJobModificationEndpoint(t *testing.T) {
 			So(len(oldStatuses), ShouldEqual, 0)
 		})
 
+		Convey("PATCH never leaves a cleanup behaviour on a cwd_matters job", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest cleanup",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-cleanup",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-cleanup",
+				Behaviours: Behaviours{
+					{When: OnExit, Do: Cleanup},
+					{When: OnFailure, Do: Run, Arg: "echo failed"},
+				},
+			})
+
+			stored := getJobStatuses(key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],"on_exit":[{"cleanup":true}]}`)
+
+			status, _, decoded := patchJob(restJobsEndpoint+key, `{"cwd_matters":true}`, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].CwdMatters, ShouldBeTrue)
+
+			// the job now runs in the user's own cwd, where a cleanup could
+			// only delete a dir wr never made, so it must not be advertised
+			So(decoded.Jobs[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+
+			newKey := decoded.Jobs[0].Key
+			stored = getJobStatuses(newKey, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+
+			status, _, decoded = patchJob(restJobsEndpoint+newKey, `{"on_exit":[{"cleanup":true}]}`, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+		})
+
 		Convey("PATCH accepts the token query parameter without bearer auth", func() {
 			key := addJob(&Job{
 				Cmd:          "echo rest token auth",

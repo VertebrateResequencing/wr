@@ -2009,13 +2009,25 @@ func (j *JobModifier) applyScheduling(job *Job) {
 	}
 }
 
-// applyBehaviours merges any set Behaviours into job.
+// applyBehaviours merges any set Behaviours into job, then drops every cleanup
+// behaviour the job would be left holding if it now runs in the user's own Cwd.
+//
+// The cleanup filter deliberately runs over the merged result rather than over
+// j.Behaviours: mod's semantics are "replace what this trigger does", so
+// filtering a cleanup out of j.Behaviours would leave the trigger unmentioned
+// and mergeBehaviours would keep the job's old behaviour for it, the opposite
+// of what was asked for. It also runs when no behaviours were modified at all,
+// so that `wr mod --cwd_matters` drops a cleanup the job already stored. applyTo
+// applies the Cwd modifications first, so job.CwdMatters is by now the value
+// this modification leaves the job with.
 func (j *JobModifier) applyBehaviours(job *Job) {
-	if !j.BehavioursSet {
-		return
+	if j.BehavioursSet {
+		job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
 	}
 
-	job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
+	if job.CwdMatters {
+		job.Behaviours = job.Behaviours.withoutCleanups()
+	}
 }
 
 // applyContainer applies the mount, bsub and container modifications to job.
