@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -887,9 +888,7 @@ func (dirs provenDirs) parent() (provenDirs, bool) {
 func rmCheckedEmptyDirs(dirs provenDirs) error {
 	err := removeManaged(dirs.leaf)
 	if err != nil && !os.IsNotExist(err) {
-		// *** not sure where the "directory not empty" string comes from;
-		// probably not cross platform!
-		if strings.Contains(err.Error(), "directory not empty") {
+		if errIsDirNotEmpty(err) {
 			return nil
 		}
 
@@ -899,6 +898,17 @@ func rmCheckedEmptyDirs(dirs provenDirs) error {
 	rmEmptyParentDirs(dirs)
 
 	return nil
+}
+
+// errIsDirNotEmpty says if err is a directory removal that failed because the
+// directory still has entries in it, which is not a problem: it just means
+// there is nothing of ours left to delete there.
+//
+// Linux reports ENOTEMPTY for this; POSIX allows EEXIST instead, so both count.
+// The errnos are compared instead of the error message because os.Remove's
+// message is not part of any contract, and is not the same on every platform.
+func errIsDirNotEmpty(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 // rmEmptyParentDirs removes the empty parent directories of dirs.leaf, stopping

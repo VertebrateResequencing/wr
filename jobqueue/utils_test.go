@@ -95,6 +95,21 @@ func TestRmEmptyDirs(t *testing.T) {
 			soPathsExist(aDir, base, outer)
 		})
 
+		Convey("rmEmptyDirs keeps a non-empty leaf, without error", func() {
+			err = os.WriteFile(filepath.Join(leaf, "output.txt"), []byte("kept\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			So(rmEmptyDirs(leaf, base), ShouldBeNil)
+
+			soPathsExist(leaf, aDir, base, outer)
+
+			Convey("because the OS reports that as an errno we recognise, not as a message", func() {
+				err = os.Remove(leaf)
+				So(err, ShouldNotBeNil)
+				So(errIsDirNotEmpty(err), ShouldBeTrue)
+			})
+		})
+
 		Convey("rmEmptyDirs treats an unclean baseDir as the same dir, so still stops at it", func() {
 			So(rmEmptyDirs(leaf, base+string(filepath.Separator)), ShouldBeNil)
 
