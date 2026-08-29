@@ -402,6 +402,52 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			soPathsGone(output, tmpDir)
 		})
 
+		Convey("Cleanup of a mounting Job still tidies empty parents when its workspace has gone", func() {
+			// cleanup runs more than once for the same Job: the runner does it
+			// (client.go), and for a lost job the server does it again
+			// (killLostJobAndTriggerBehaviours). In between, Job.Unmount's
+			// rmEmptyDirs deletes the workspace the first cleanup emptied, so
+			// the second cleanup finds nothing there. That must not stop it
+			// tidying the empty parents that Unmount's walk could not.
+			hashDir := filepath.Join(cwd, "wr_cwd", "hash")
+			workSpace := filepath.Join(hashDir, "unique")
+			actualCwd := filepath.Join(workSpace, "cwd")
+			err = os.MkdirAll(filepath.Join(actualCwd, testMountDir), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.Mkdir(filepath.Join(workSpace, "tmp"), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			// another Job of the same Cwd is running from a sibling dir, which
+			// stops Unmount's upward walk at hashDir.
+			sibling := filepath.Join(hashDir, "other")
+			err = os.Mkdir(sibling, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: testMountDir}}}
+
+			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
+
+			_, err = job.Unmount()
+			So(err, ShouldBeNil)
+			soPathsGone(workSpace)
+
+			// the other Job then finishes and removes its own dir, leaving
+			// hashDir and wr_cwd empty for our second cleanup to tidy.
+			err = os.RemoveAll(sibling)
+			So(err, ShouldBeNil)
+
+			err = cleanup.Trigger(OnExit, job)
+
+			// the tidying is asserted before the error, since a leaf stops at
+			// its first failed So and the leaked dirs are the evidence that
+			// matters.
+			soPathsGone(hashDir, filepath.Join(cwd, "wr_cwd"))
+			soPathsExist(cwd, precious)
+
+			So(err, ShouldBeNil)
+		})
+
 		Convey("Cleanup of a mounting Job whose ActualCwd is a symlink out of Cwd deletes nothing there", func() {
 			// a Job's own Cmd can replace its working directory with a symlink,
 			// and the mounts branch reaches ActualCwd through os.ReadDir, which

@@ -307,6 +307,14 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 // It takes provenDirs rather than paths so that this, the one destructive
 // deletion in the cleanup path, cannot be reached with a raw Job field or any
 // other unproven string.
+//
+// A workspace that has already gone is not a failure. The same Job's cleanup
+// runs more than once - the runner triggers it, and for a lost job the server
+// triggers it again - and Job.Unmount deletes the emptied workspace in between,
+// so the second run finds nothing to delete. Erroring there would skip the
+// empty parent dirs that Behaviour.cleanup goes on to tidy. The mounts branch
+// has to say so, because both of its helpers start by reading a directory,
+// whereas os.RemoveAll already ignores a missing path.
 func cleanupWorkSpace(j *Job, workSpace, actualCwd provenDirs) error {
 	if len(j.MountConfigs) == 0 {
 		return removeAllManaged(workSpace.leaf)
@@ -340,10 +348,16 @@ func mountDirsToKeep(mcs MountConfigs) (keepDirs []string, keepActualCwd bool) {
 }
 
 // removeWorkSpaceExtras deletes everything inside workSpace except for cwd and
-// the cache dirs, incase a job.Cmd did something like `touch ../foo`.
+// the cache dirs, incase a job.Cmd did something like `touch ../foo`. It's ok if
+// workSpace doesn't exist; see cleanupWorkSpace. Any other read failure, eg. a
+// permissions or IO problem, is returned.
 func removeWorkSpaceExtras(workSpace string) error {
 	entries, err := os.ReadDir(workSpace)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
 		return err
 	}
 

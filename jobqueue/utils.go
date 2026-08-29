@@ -1091,12 +1091,24 @@ func resolvedAbsPath(path string) (string, error) {
 }
 
 // removeAllExcept deletes the contents of a given directory (absolute path),
-// except for the given folders (relative paths).
+// except for the given folders (relative paths). It's ok if path doesn't exist:
+// there is then nothing of ours left to delete there. Any other read failure,
+// eg. a permissions or IO problem, is returned.
 func removeAllExcept(path string, exceptions []string) error {
+	path = filepath.Clean(path)
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		return err
+	}
+
 	keepDirs := make(map[string]bool)
 	checkDirs := make(map[string]bool)
 
-	path = filepath.Clean(path)
 	for _, dir := range exceptions {
 		abs := filepath.Join(path, dir)
 		keepDirs[abs] = true
@@ -1108,19 +1120,26 @@ func removeAllExcept(path string, exceptions []string) error {
 		}
 	}
 
-	return removeWithExceptions(path, keepDirs, checkDirs)
+	return removeEntriesWithExceptions(path, entries, keepDirs, checkDirs)
 }
 
 // removeWithExceptions is the recursive part of removeAllExcept's
-// implementation that does the real work of deleting stuff.
+// implementation that does the real work of deleting stuff. Unlike
+// removeAllExcept, a path that doesn't exist is an error here: our caller just
+// listed it as one of a directory's entries.
 func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
-	entries, errr := os.ReadDir(path)
-	if errr != nil {
-		return errr
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
 	}
 
+	return removeEntriesWithExceptions(path, entries, keepDirs, checkDirs)
+}
+
+// removeEntriesWithExceptions handles each of the given entries of dir.
+func removeEntriesWithExceptions(dir string, entries []os.DirEntry, keepDirs, checkDirs map[string]bool) error {
 	for _, entry := range entries {
-		if err := removeEntryWithExceptions(filepath.Join(path, entry.Name()), entry.IsDir(),
+		if err := removeEntryWithExceptions(filepath.Join(dir, entry.Name()), entry.IsDir(),
 			keepDirs, checkDirs); err != nil {
 			return err
 		}
