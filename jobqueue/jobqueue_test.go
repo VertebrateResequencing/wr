@@ -4020,9 +4020,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				So(stderr, ShouldEqual, "")
 
 				actualCwd := job.ActualCwd
-				key := job.Key()
 				expectedCwdPrefix := filepath.Join(
-					testCwd, "jobqueue_cwd", key[0:1], key[1:2], key[2:3], key[3:],
+					testCwd, "jobqueue_cwd", "7", "4", "7", "27e23009c78b126f274aa64416f30",
 				)
 				So(actualCwd, ShouldStartWith, expectedCwdPrefix)
 				So(actualCwd, ShouldEndWith, "cwd")
