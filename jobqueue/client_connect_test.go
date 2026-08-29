@@ -56,6 +56,17 @@ const heldReplyWait = 2 * time.Second
 // returning late with the manager's reply rather than being cut off here.
 const heldReplyLimit = heldReplyWait + time.Second
 
+// narrowedRequestBudget is the deadline a request asks for when the socket it
+// goes out on already has a far wider one: short enough that the request
+// provably ends on its own budget rather than on the socket's deadline or on
+// the manager's held reply.
+const narrowedRequestBudget = 200 * time.Millisecond
+
+// errDeadlineRestoreFailed stands in for whatever a socket might fail a
+// deadline restore with, so a test can tell that failure apart from the
+// request's own error.
+var errDeadlineRestoreFailed = errors.New("deadline restore failed")
+
 // TestClientRequestTimeoutDecoupledFromConnect proves that the per-request
 // send/recv deadline is decoupled from the (possibly short) timeout passed to
 // Connect. A request whose reply legitimately takes longer than the connect
@@ -101,6 +112,26 @@ func TestClientRequestTimeoutDecoupledFromConnect(t *testing.T) {
 			So(elapsed, ShouldBeGreaterThan, connectTimeout)
 		})
 	})
+}
+
+// restoreFailingSocket is the socket it wraps in every respect except that it
+// fails SetOption once setOptionsBeforeFail of them have passed through, which
+// lets a test fail the deadline restore requestWithin makes after its request.
+// requestWithin narrows with one SetOption and restores with the next, so 1
+// fails the restore alone.
+type restoreFailingSocket struct {
+	mangos.Socket
+	setOptionsBeforeFail int
+}
+
+func (s *restoreFailingSocket) SetOption(name string, value any) error {
+	if s.setOptionsBeforeFail <= 0 {
+		return errDeadlineRestoreFailed
+	}
+
+	s.setOptionsBeforeFail--
+
+	return s.Socket.SetOption(name, value)
 }
 
 // TestRequestBoundedOnDeadlinelessSocket proves that a request narrowed by
@@ -182,6 +213,52 @@ func requestWithinHeldReply(c *Client, budget time.Duration) (time.Duration, boo
 
 		return heldReplyLimit, false, nil
 	}
+}
+
+// TestRequestWithinReportsRestoreFailure proves that when a narrowed request
+// fails AND restoring the socket's own receive deadline afterwards also fails,
+// the caller is told about both. Dropping the restore error leaves the socket
+// stuck on the narrow deadline while the caller has been given no reason at
+// all for the later requests that start timing out because of it, and a caller
+// that discriminates on the request's own error (as Ping and the subscription
+// reconnect do on mangos.ErrRecvTimeout) must still be able to.
+func TestRequestWithinReportsRestoreFailure(t *testing.T) {
+	Convey("Given a manager that holds a reply open longer than a request's budget", t, func() {
+		ctx := context.Background()
+		_, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		Convey("A failed request on a socket that then fails its deadline restore reports both", func() {
+			realSock := jq.sock
+
+			socketDeadline, deadlineErr := jq.recvDeadline()
+			So(deadlineErr, ShouldBeNil)
+			So(socketDeadline, ShouldBeGreaterThan, narrowedRequestBudget)
+
+			jq.sock = &restoreFailingSocket{Socket: realSock, setOptionsBeforeFail: 1}
+
+			took, returned, err := requestWithinHeldReply(jq, narrowedRequestBudget)
+
+			jq.sock = realSock
+			So(realSock.SetOption(mangos.OptionRecvDeadline, socketDeadline), ShouldBeNil)
+
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeLessThan, time.Second)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, mangos.ErrRecvTimeout), ShouldBeTrue)
+			So(errors.Is(err, errDeadlineRestoreFailed), ShouldBeTrue)
+		})
+	})
 }
 
 // TestPingBoundedDuringManagerShutdown proves that a client talking to a

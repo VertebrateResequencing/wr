@@ -385,7 +385,11 @@ func (c *Client) SetReserveSchedulerID(schedulerID string) {
 }
 
 // requestWithin is request(), but with this one request's receive deadline
-// narrowed to timeout, restoring the socket's own deadline afterwards.
+// narrowed to timeout, restoring the socket's own deadline afterwards. A failed
+// restore is joined on to whatever the request itself returned rather than
+// replacing it or being dropped: the socket is then stuck on the narrow
+// deadline, so the caller needs to be told, and errors.Is still finds the
+// request's own error for callers that discriminate on it.
 //
 // It can only ever narrow. The deadline it narrows from and restores to is read
 // off the socket rather than recomputed from c.timeout, because c.timeout is
@@ -421,9 +425,8 @@ func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (sr *se
 	}
 
 	defer func() {
-		restoreErr := c.sock.SetOption(mangos.OptionRecvDeadline, socketTimeout)
-		if err == nil {
-			err = restoreErr
+		if restoreErr := c.sock.SetOption(mangos.OptionRecvDeadline, socketTimeout); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
 		}
 	}()
 
