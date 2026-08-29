@@ -764,6 +764,111 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 	})
 }
 
+// TestServerAddDropsImpossibleCleanups covers the Go API add path, which
+// neither JobViaJSON.resolveBehaviours nor JobModifier.applyBehaviours is on: a
+// caller that builds a *Job itself must still not get a cleanup stored on a
+// cwd_matters job, where it could only ever be a no-op.
+func TestServerAddDropsImpossibleCleanups(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A hand-built job added with the Go API is stored without cleanups it could never do", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		repGroup := "payload-impossible-cleanups"
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			db:    testDB,
+			q:     queue.New(ctx, repGroup),
+			rpl:   newRGToKeys(),
+			up:    true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+
+		newJob := func(cmd string, cwdMatters bool, behaviours Behaviours) *Job {
+			return &Job{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				CwdMatters:   cwdMatters,
+				RepGroup:     repGroup,
+				ReqGroup:     repGroup,
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+				Behaviours:   behaviours,
+			}
+		}
+
+		added, existed, err := client.Add([]*Job{
+			newJob("echo cwd matters cleanup", true, Behaviours{
+				&Behaviour{When: OnExit, Do: Cleanup},
+				&Behaviour{When: OnFailure, Do: Run, Arg: "echo add failed"},
+			}),
+			newJob("echo cwd matters cleanup all", true, Behaviours{
+				&Behaviour{When: OnExit, Do: CleanupAll},
+			}),
+			newJob("echo wr made the cwd", false, Behaviours{
+				&Behaviour{When: OnExit, Do: Cleanup},
+			}),
+		}, []string{"PAYLOAD_IMPOSSIBLE_CLEANUPS=1"}, false)
+
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 3)
+		So(existed, ShouldEqual, 0)
+
+		stored, err := client.GetByRepGroup(repGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(stored, ShouldHaveLength, 3)
+
+		byCmd := make(map[string]*Job, len(stored))
+		for _, job := range stored {
+			byCmd[job.Cmd] = job
+		}
+
+		Convey("a cwd_matters job keeps its other behaviours but loses its cleanup", func() {
+			job := byCmd["echo cwd matters cleanup"]
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_failure":[{"run":"echo add failed"}]}`)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.CwdMatters, ShouldBeTrue)
+		})
+
+		Convey("a cwd_matters job loses a cleanup_all just the same", func() {
+			job := byCmd["echo cwd matters cleanup all"]
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldBeBlank)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.CwdMatters, ShouldBeTrue)
+		})
+
+		Convey("a job that runs in a directory wr makes keeps its cleanup", func() {
+			job := byCmd["echo wr made the cwd"]
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeTrue)
+			So(job.CwdMatters, ShouldBeFalse)
+		})
+	})
+}
+
 func newLiveExecuteCaptureClient(capture *liveTouchCapture) *Client {
 	client, _ := newCaptureClient()
 	client.touchInterval = liveExecuteTouchInterval

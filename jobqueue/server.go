@@ -4301,6 +4301,12 @@ func (s *Server) recordRepGroupKeys(itemdefs []*queue.ItemDef) {
 // prepareInputJobs locks and initialises each input job (env key, retry count,
 // scheduler group, bsub id and user-specified limit groups), returning the
 // limit groups to store and the set of input job keys.
+//
+// It is also where a job loses any cleanup behaviour it could never carry out
+// (see Job.dropImpossibleCleanups). Every job a client adds passes through
+// here, whichever add variant it used and however it was built, so a Job
+// constructed by hand and handed to Client.Add cannot store one either, and no
+// future input converter can reintroduce it by forgetting to filter.
 func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 	rcSet bool) (map[string]*limiter.GroupData, map[string]bool) {
 	limitGroups := make(map[string]*limiter.GroupData)
@@ -4309,6 +4315,8 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
+
+		job.dropImpossibleCleanups()
 
 		job.UntilBuried = job.Retries + 1
 		if rcSet {

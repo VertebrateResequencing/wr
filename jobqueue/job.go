@@ -161,6 +161,28 @@ func (j *Job) mountPoints() []string {
 	return points
 }
 
+// dropImpossibleCleanups removes every cleanup Behaviour this Job would carry
+// without ever being able to carry it out.
+//
+// Behaviour.cleanup only ever deletes the working directory wr itself created
+// below Cwd, so on a CwdMatters job, which runs in the user's own Cwd, a
+// cleanup is a documented no-op that must not be stored: it would have wr
+// advertise a deletion that will never happen, and it was such a stored no-op
+// that deleted the wrong directory when ActualCwd got poisoned with Cwd.
+//
+// The server calls this on every Job that enters its store, whether the Job
+// came from a client (prepareInputJobs) or from the database (db.decodeJob), so
+// that a Job built by hand and passed to Client.Add, and a Job persisted by a
+// wr that stored one, are both covered without a third input converter having
+// to remember to filter.
+func (j *Job) dropImpossibleCleanups() {
+	if !j.CwdMatters {
+		return
+	}
+
+	j.Behaviours = j.Behaviours.withoutCleanups()
+}
+
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
 // alongside cwdBase as a Job's working directory. It is the single projection
 // used for both a stored Job's JStatus and a live Job's JobUpdate, so that
@@ -2049,9 +2071,7 @@ func (j *JobModifier) applyBehaviours(job *Job) {
 		job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
 	}
 
-	if job.CwdMatters {
-		job.Behaviours = job.Behaviours.withoutCleanups()
-	}
+	job.dropImpossibleCleanups()
 }
 
 // applyContainer applies the mount, bsub and container modifications to job.
