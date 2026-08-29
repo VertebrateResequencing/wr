@@ -1540,9 +1540,11 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 
 	Convey("A permanently stopped manager closes only after reconnect retries are exhausted", t, func() {
+		const retryTime = time.Second
+
 		ctx := context.Background()
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, 200*time.Millisecond)
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, retryTime)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1551,19 +1553,69 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 
 		defer disconnect(jq)
 
+		// aim the client's reconnect attempts at a port nothing listens on, so
+		// that every attempt fails at once, which is what "the manager is
+		// permanently gone" means. Aiming them at the manager's own address
+		// instead races its shutdown: the server closes our subscription (which
+		// is what breaks the long poll and so starts the retry budget) before it
+		// closes its command socket, so an attempt landing in that window
+		// connects and then blocks on a subscribe request the dying manager
+		// never answers, for the client's generous receive-deadline floor
+		// (ClientMinRequestTimeout, 60s) instead of for the retry budget under
+		// test. Measured: without this, the Convey hung past its bound in 4 of
+		// 12 runs under load. args[0] is read only while reconnecting, and this
+		// writes it before SubscribeToJobKeys creates the polling goroutine.
+		// The redirect works because reconnectOnce calls client.reconnect (which
+		// dials args[0]) before subscriptionDialAddr (which prefers
+		// ServerInfo.Addr): swap that order and every attempt reaches the real
+		// manager again, silently restoring the hang this avoids.
+		deadPort, err := freeTestPort()
+		So(err, ShouldBeNil)
+
+		jq.args[0] = "localhost:" + strconv.Itoa(deadPort)
+
 		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-d4-permanent"})
 		So(err, ShouldBeNil)
 
 		defer sub.Unsubscribe()
 
+		// the retry budget starts when the polling goroutine notices the broken
+		// socket, on its own clock, and Stop breaks it partway through. Taking
+		// wentAway before anything can break it makes "the channel did not close
+		// until at least a whole retry budget after the manager began going
+		// away" an ordering claim that no deschedule can defeat, where sampling
+		// the channel at a fixed instant after the break is a claim about
+		// scheduling, and was this Convey's original flake.
+		//
+		// The claim is loose by however long Stop keeps this goroutine from
+		// reading the channel: 56-62ms measured here, loaded and unloaded,
+		// dominated by the fixed 50ms ShutdownSocketWait (server.go:6105). That
+		// direction is the safe one, since wentAway can only precede the break,
+		// so the assertion cannot fail falsely; but it is budget the assertion
+		// gets for free, and were Stop ever to reach retryTime the assertion
+		// would stop being able to fail at all. Hence a retryTime of a second
+		// rather than the 200ms this Convey used to run with: that puts the free
+		// budget at ~6% instead of ~31%, while still closing ~1.05s in, well
+		// inside the 3s bound below.
+		//
+		// Breaking the socket ourselves before Stop does NOT tighten this,
+		// though it looks like it should: it only moves the same ~60ms from
+		// before the break to after the close, because either way this goroutine
+		// spends the whole of Stop unable to observe the channel. Measured with
+		// the budget mutated to zero: 61.6ms of slack with closeSock after Stop,
+		// 62.4ms with it before.
+		wentAway := time.Now()
+
 		server.Stop(ctx, true)
 		sub.closeSock()
 
-		So(subscriptionUpdatesStillOpen(sub, 75*time.Millisecond), ShouldBeTrue)
-		So(sub.Err(), ShouldBeNil)
-		So(subscriptionErrBecomes(sub, ErrSubscriptionClosed, 3*time.Second), ShouldBeTrue)
+		// closedAfter also covers "no fatal error while it is still retrying":
+		// only finish() sets a fatal error here, and it closes the channel in
+		// the same sync.Once, so an error set early is an early close.
+		closedAfter, closed := subscriptionUpdatesClosedAfter(sub, wentAway, 3*time.Second)
+		So(closed, ShouldBeTrue)
+		So(closedAfter, ShouldBeGreaterThanOrEqualTo, retryTime)
 		So(errors.Is(sub.Err(), ErrSubscriptionClosed), ShouldBeTrue)
-		So(subscriptionUpdatesClosed(sub), ShouldBeTrue)
 		So(ErrSubscriptionClosed.Error(), ShouldEqual, "jobqueue subscription closed: unrecoverable disconnect")
 	})
 
@@ -1890,6 +1942,30 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 func applySubscriptionReconnectTimings(sc *ServerConfig, retryWait, retryTime time.Duration) {
 	sc.Timings.RetryWait = retryWait
 	sc.Timings.RetryTime = retryTime
+}
+
+// subscriptionUpdatesClosedAfter waits for sub's updates channel to close,
+// discarding any updates delivered first, and reports how much time elapsed
+// between since and the close. It returns false if the channel is still open
+// after timeout, so callers can tell a subscription that closed too soon (a
+// short duration) from one that never closed at all.
+func subscriptionUpdatesClosedAfter(
+	sub *Subscription,
+	since time.Time,
+	timeout time.Duration,
+) (time.Duration, bool) {
+	deadline := time.After(timeout)
+
+	for {
+		select {
+		case _, ok := <-sub.Updates():
+			if !ok {
+				return time.Since(since), true
+			}
+		case <-deadline:
+			return 0, false
+		}
+	}
 }
 
 func TestSubscriptionAuthorization(t *testing.T) {
@@ -3199,25 +3275,6 @@ func subscriptionUpdatesStillOpen(sub *Subscription, timeout time.Duration) bool
 		return ok
 	case <-time.After(timeout):
 		return true
-	}
-}
-
-func subscriptionErrBecomes(sub *Subscription, target error, timeout time.Duration) bool {
-	deadline := time.After(timeout)
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		if errors.Is(sub.Err(), target) {
-			return true
-		}
-
-		select {
-		case <-deadline:
-			return false
-		case <-ticker.C:
-		}
 	}
 }
 
