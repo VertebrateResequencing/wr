@@ -392,8 +392,9 @@ func (c *Client) SetReserveSchedulerID(schedulerID string) {
 // the connect timeout the Client was made with and reconnect() does not update
 // it: recomputing would widen a reconnected socket's deadline (60s to
 // requestTimeout(c.timeout)) in the name of capping it. A timeout that is not
-// shorter than the socket's deadline, or is not positive (mangos reads a
-// non-positive receive deadline as "wait forever"), narrows nothing.
+// positive asks for no bound at all, so it narrows nothing; any other timeout
+// narrows whenever the socket's deadline is wider, which includes the socket's
+// deadline being non-positive, since mangos reads that as "wait forever".
 //
 // The subscription reconnect path uses it because it has a retry budget to
 // honour: a manager part-way through shutdown can still accept a connection and
@@ -411,7 +412,7 @@ func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (sr *se
 		return nil, err
 	}
 
-	if timeout <= 0 || timeout >= socketTimeout {
+	if timeout <= 0 || (socketTimeout > 0 && timeout >= socketTimeout) {
 		return c.requestLocked(cr)
 	}
 

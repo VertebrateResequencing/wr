@@ -411,10 +411,15 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 }
 
 // subscriptionBudgetTimeout returns limit, shortened to whatever is left of the
-// reconnect retry budget ending at retryEnd, so no step of a single reconnect
-// attempt can outlive the budget the caller set. An already-spent budget gets
-// limit: whether to make another attempt at all is reconnect()'s decision, and
-// a non-positive timeout would mean "no timeout" to the socket.
+// reconnect retry budget ending at retryEnd, so the step it is given (the
+// reconnect's Connect and readiness Ping) cannot outlive that budget. It does
+// not bound the whole attempt: the resubscribe is capped separately, by
+// requestWithin, but dialling the replacement subscription socket carries only
+// that socket's own deadline, and the unsubscribe cleaning up a replacement the
+// subscription rejects is on the client's usual ClientMinRequestTimeout floor.
+// An already-spent budget gets limit: whether to make another attempt at all is
+// reconnect()'s decision, and a non-positive timeout would mean "no timeout" to
+// the socket.
 func subscriptionBudgetTimeout(retryEnd time.Time, limit time.Duration) time.Duration {
 	remaining := time.Until(retryEnd)
 	if remaining <= 0 {

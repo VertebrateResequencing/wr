@@ -41,6 +41,11 @@ import (
 // would wait for.
 const unreadPingWait = 2 * time.Second
 
+// unboundedRequestBudget is the deadline a request asks for when the socket it
+// goes out on has none: short enough that waiting for it is unmistakable from
+// waiting for either the ClientMinRequestTimeout floor or forever.
+const unboundedRequestBudget = 200 * time.Millisecond
+
 // TestClientRequestTimeoutDecoupledFromConnect proves that the per-request
 // send/recv deadline is decoupled from the (possibly short) timeout passed to
 // Connect. A request whose reply legitimately takes longer than the connect
@@ -140,6 +145,34 @@ func TestPingBoundedDuringManagerShutdown(t *testing.T) {
 			<-stopped
 		})
 
+		Convey("A request on a socket with no receive deadline is bounded by its own timeout", func() {
+			stopped := make(chan struct{})
+
+			go func() {
+				server.Stop(ctx, true)
+				close(stopped)
+			}()
+
+			_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+			So(unread, ShouldBeTrue)
+
+			// mangos reads a non-positive receive deadline as "wait forever", so
+			// this is the socket state a bounded request most needs to narrow: a
+			// reply that never comes would otherwise never be given up on.
+			So(jq.sock.SetOption(mangos.OptionRecvDeadline, time.Duration(0)), ShouldBeNil)
+
+			took, returned, err := requestWithinUnread(jq, unboundedRequestBudget, unreadPingWait)
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeLessThan, time.Second)
+
+			deadline, optErr := jq.sock.GetOption(mangos.OptionRecvDeadline)
+			So(deadline, ShouldEqual, time.Duration(0))
+			So(optErr, ShouldBeNil)
+			So(errors.Is(err, mangos.ErrRecvTimeout), ShouldBeTrue)
+
+			<-stopped
+		})
+
 		Convey("ShutdownServer reports the manager gone promptly", func() {
 			start := time.Now()
 			ok := jq.ShutdownServer()
@@ -172,4 +205,33 @@ func pingUntilUnread(c *Client, limit time.Duration) (time.Duration, bool) {
 	}
 
 	return 0, false
+}
+
+// requestWithinUnread sends a request the stopping manager will never answer,
+// asking for budget as its receive deadline, and reports how long it took, and
+// whether it came back at all within limit. It closes the client's socket if it
+// did not: an unbounded receive holds the client lock, so nothing else on that
+// client (Disconnect included) could proceed while it waits.
+func requestWithinUnread(c *Client, budget, limit time.Duration) (time.Duration, bool, error) {
+	type outcome struct {
+		took time.Duration
+		err  error
+	}
+
+	done := make(chan outcome, 1)
+	start := time.Now()
+
+	go func() {
+		_, err := c.requestWithin(&clientRequest{Method: requestMethodPing, Timeout: budget}, budget)
+		done <- outcome{took: time.Since(start), err: err}
+	}()
+
+	select {
+	case o := <-done:
+		return o.took, true, o.err
+	case <-time.After(limit):
+		_ = c.sock.Close()
+
+		return limit, false, nil
+	}
 }
