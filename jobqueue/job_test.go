@@ -732,7 +732,7 @@ func TestJobModifierCwd(t *testing.T) {
 	})
 }
 
-func TestJobModifierBehaviours(t *testing.T) {
+func TestJobModifierBehavioursCwdMatters(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
