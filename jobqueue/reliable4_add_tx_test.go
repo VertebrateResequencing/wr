@@ -55,6 +55,11 @@ const (
 	addTxRepGroup = "rl4tx-rg"
 	addTxDepGroup = "rl4tx-dg"
 	addTxWaitedOn = "rl4tx-dep"
+
+	// addTxLimitGroupA and addTxLimitGroupB are the two limit groups the limit
+	// group test stores.
+	addTxLimitGroupA = "rl4lg-a"
+	addTxLimitGroupB = "rl4lg-b"
 )
 
 func TestReliable4AddEnvNoRewrite(t *testing.T) {
@@ -168,33 +173,45 @@ func TestReliable4LimitGroupsNoWrite(t *testing.T) {
 			So(cost, ShouldEqual, 1)
 			So(changed, ShouldBeEmpty) // a group stored for the first time is not a change
 			So(removed, ShouldBeEmpty)
-			So(limitGroupStored(ctx, d, "rl4lg-a"), ShouldEqual, 3)
-			So(limitGroupStored(ctx, d, "rl4lg-b"), ShouldEqual, 0)
+			So(limitGroupStored(ctx, d, addTxLimitGroupA), ShouldEqual, 3)
+			So(limitGroupStored(ctx, d, addTxLimitGroupB), ShouldEqual, 0)
 
 			Convey("Storing the same limits again costs no write transaction", func() {
 				changed, removed, cost = limitGroupsStoreCost(d, limitGroupsAB(3, 0))
 				So(cost, ShouldEqual, 0)
 				So(changed, ShouldBeEmpty)
 				So(removed, ShouldBeEmpty)
-				So(limitGroupStored(ctx, d, "rl4lg-a"), ShouldEqual, 3)
-				So(limitGroupStored(ctx, d, "rl4lg-b"), ShouldEqual, 0)
+				So(limitGroupStored(ctx, d, addTxLimitGroupA), ShouldEqual, 3)
+				So(limitGroupStored(ctx, d, addTxLimitGroupB), ShouldEqual, 0)
 			})
 
 			Convey("Changing one limit costs a write transaction, and only it is reported changed", func() {
 				changed, removed, cost = limitGroupsStoreCost(d, limitGroupsAB(3, 7))
 				So(cost, ShouldEqual, 1)
-				So(changed, ShouldResemble, []string{"rl4lg-b"})
+				So(changed, ShouldResemble, []string{addTxLimitGroupB})
 				So(removed, ShouldBeEmpty)
-				So(limitGroupStored(ctx, d, "rl4lg-a"), ShouldEqual, 3)
-				So(limitGroupStored(ctx, d, "rl4lg-b"), ShouldEqual, 7)
+				So(limitGroupStored(ctx, d, addTxLimitGroupA), ShouldEqual, 3)
+				So(limitGroupStored(ctx, d, addTxLimitGroupB), ShouldEqual, 7)
+			})
+
+			Convey("Removing one limit costs a write transaction and deletes only its record", func() {
+				name, gd := limiter.NameToGroupData(addTxLimitGroupB + ":-1")
+				So(name, ShouldEqual, addTxLimitGroupB)
+
+				changed, removed, cost = limitGroupsStoreCost(d, map[string]*limiter.GroupData{name: gd})
+				So(cost, ShouldEqual, 1)
+				So(changed, ShouldBeEmpty)
+				So(removed, ShouldResemble, []string{addTxLimitGroupB})
+				So(limitGroupStored(ctx, d, addTxLimitGroupA), ShouldEqual, 3)
+				So(limitGroupRecorded(d, addTxLimitGroupB), ShouldBeFalse)
 			})
 		})
 
 		// a limit group that is not a count group - here the name:-1 a user gives
 		// to drop a limit - is reported removed so its caller drops the in-memory
-		// limit, and nothing is stored for it, so no write transaction is needed
-		// to report that.
-		Convey("Storing a non-count group reports it removed without a write transaction", func() {
+		// limit. With no record stored for it there is nothing to delete, so no
+		// write transaction is needed to report that.
+		Convey("Storing a non-count group with no record reports it removed without a write transaction", func() {
 			name, gd := limiter.NameToGroupData("rl4lg-nc:-1")
 			So(name, ShouldEqual, "rl4lg-nc")
 			So(gd.IsCount(), ShouldBeFalse)
@@ -223,8 +240,8 @@ func limitGroupsStoreCost(d *dgrServer, limitGroups map[string]*limiter.GroupDat
 // the given limits.
 func limitGroupsAB(a, b int64) map[string]*limiter.GroupData {
 	return map[string]*limiter.GroupData{
-		"rl4lg-a": limiter.NewCountGroupData(a),
-		"rl4lg-b": limiter.NewCountGroupData(b),
+		addTxLimitGroupA: limiter.NewCountGroupData(a),
+		addTxLimitGroupB: limiter.NewCountGroupData(b),
 	}
 }
 

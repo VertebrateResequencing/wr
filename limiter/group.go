@@ -207,6 +207,10 @@ func NameToGroupData(name string) (string, *GroupData) {
 
 // NewCountGroupData returns a GroupData for a simple run limit group with the
 // given limit.
+//
+// A negative limit means no limit, and gives you an invalid GroupData. That is
+// both what a lookup of a group nothing knows a limit for returns, and what a
+// user asking for name:-1 means: forget this group entirely.
 func NewCountGroupData(limit int64) *GroupData {
 	if limit < 0 {
 		return &GroupData{}
