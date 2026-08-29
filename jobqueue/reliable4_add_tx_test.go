@@ -87,6 +87,37 @@ func TestReliable4AddEnvNoRewrite(t *testing.T) {
 	})
 }
 
+// TestReliable4EnvMissNotCached guards the env cache against memoising an
+// absence. retrieve() returns a nil value for a key the database does not hold,
+// and caching that nil under the key makes envcache.Contains report true - which
+// is precisely what storeEnv takes as proof that those bytes are already stored.
+// A cached miss would therefore make storeEnv of those exact bytes a no-op
+// forever, leaving jobs pointing at an EnvKey with no record behind it
+// (.docs/bugfixes/260827-2.md item 8).
+func TestReliable4EnvMissNotCached(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		Convey("Retrieving an env that was never stored leaves it storable", func() {
+			env := []byte("reliable4-addtx-absent-env")
+			envkey := byteKey(env)
+
+			So(d.server.db.retrieveEnv(ctx, envkey), ShouldBeEmpty)
+			So(d.server.db.envcache.Contains(envkey), ShouldBeFalse)
+
+			So(addTxStoreCost(ctx, d, env), ShouldEqual, 1)
+		})
+	})
+}
+
 // addTxStoreCost returns how many write transactions storing env committed, and
 // asserts that the env is retrievable from the database afterwards regardless:
 // a store that commits nothing must still leave the env there to be read back.
