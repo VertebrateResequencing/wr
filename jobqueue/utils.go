@@ -810,9 +810,15 @@ func retryOrFail(tries *int, err error) (bool, error) {
 	return false, err
 }
 
+// createdCwdName is what mkCwdAndTmp calls the working directory it makes, and
+// so the last component of every ActualCwd wr has ever created. Behaviour's
+// cleanup and its workspace sweep both key off it, so it is named once here
+// rather than spelled out at each of them.
+const createdCwdName = "cwd"
+
 // mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, returning their paths.
 func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
-	cwd = filepath.Join(dir, "cwd")
+	cwd = filepath.Join(dir, createdCwdName)
 	if err = mkdirManaged(cwd, os.ModePerm); err != nil {
 		return cwd, tmpDir, err
 	}

@@ -309,6 +309,39 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
 		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
 
+		Convey("Cleanup deletes nothing when the reported cwd is not one wr created", func() {
+			// the runner reports ActualCwd, and this is what a buggy or tampered
+			// one can report: a real directory strictly inside the Job's own
+			// Cwd, but one the USER made rather than one wr made. Containment
+			// says yes to it, and its parent would then be swept as the
+			// disposable workspace - the exact shape of the incident this PR
+			// exists for, arriving through a different field than last time.
+			userDir := filepath.Join(cwd, "userdata")
+			results := filepath.Join(userDir, "results")
+			err = os.MkdirAll(results, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			notes := filepath.Join(userDir, "notes.txt")
+			err = os.WriteFile(notes, []byte("precious\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd}
+			applyLiveSnapshot(job, &JobEndState{Cwd: results})
+
+			// the value is stored - it is what wr shows for the job - but its
+			// last component is not the name wr gives the working dirs it
+			// creates, so cleanup will not treat its parent as a workspace.
+			So(job.ActualCwd, ShouldEqual, results)
+
+			err = cleanup.Trigger(OnExit, job)
+
+			// survival first: a broken guard shows up as the deletion it is.
+			soPathsExist(notes, results, userDir, cwd, precious)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+
 		Convey("Cleanup of a CwdMatters Job does nothing, even if it has an ActualCwd", func() {
 			// wr <= v0.37.1 could persist ActualCwd == Cwd on such a Job, and
 			// deleting the parent of that destroyed the user's own files.

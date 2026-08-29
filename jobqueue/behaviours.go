@@ -45,6 +45,7 @@ import (
 
 // sentinel errors for behaviour handling.
 var (
+	errNotACreatedCwd         = errors.New("actual cwd is not a working directory wr created")
 	errBehaviourInvalidStatus = errors.New("invalid status")
 	errBehaviourArgNotStr     = errors.New("arg is not a string")
 	errBehaviourArgNotStrSl   = errors.New("arg is not a []string")
@@ -297,6 +298,20 @@ func cleanupBelowCwd(j *Job, cwdRoot *os.Root) error {
 		return err
 	}
 
+	if actualCwdName != createdCwdName {
+		// containment has just proven WHERE this directory is; this is the
+		// cheap half of proving WHOSE it is. ActualCwd arrives from the runner,
+		// and everything below treats its PARENT as a disposable workspace, so
+		// a value naming a real directory of the user's inside Cwd - say
+		// Cwd/userdata/results - passes containment and would have wr sweep
+		// Cwd/userdata. Every working directory wr has ever created is called
+		// createdCwdName, by mkCwdAndTmp, so any other name did not come from
+		// wr and licenses no deletion. Reported rather than ignored: a runner
+		// sending one is a bug, and a silent no-op cleanup is how a workspace
+		// leaks unnoticed.
+		return fmt.Errorf("%w: %s", errNotACreatedCwd, j.ActualCwd)
+	}
+
 	if cleanupProvenHook != nil {
 		cleanupProvenHook()
 	}
@@ -540,7 +555,7 @@ func removeWorkSpaceExtras(wsRoot *os.Root, keepEntries map[string]bool) error {
 // cleanup: its ActualCwd, one of the muxfys mount cache dirs, or an entry
 // leading to one of its mount points.
 func keptWorkSpaceEntry(name string, keepEntries map[string]bool) bool {
-	return name == "cwd" || strings.HasPrefix(name, ".muxfys") || keepEntries[name]
+	return name == createdCwdName || strings.HasPrefix(name, ".muxfys") || keepEntries[name]
 }
 
 // removeActualCwd deletes the Job's ActualCwd, keeping the given relative dirs
