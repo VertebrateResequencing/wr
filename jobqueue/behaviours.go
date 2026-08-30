@@ -298,17 +298,13 @@ func cleanupBelowCwd(j *Job, cwdRoot *os.Root) error {
 		return err
 	}
 
-	if actualCwdName != createdCwdName {
-		// containment has just proven WHERE this directory is; this is the
-		// cheap half of proving WHOSE it is. ActualCwd arrives from the runner,
-		// and everything below treats its PARENT as a disposable workspace, so
-		// a value naming a real directory of the user's inside Cwd - say
-		// Cwd/userdata/results - passes containment and would have wr sweep
-		// Cwd/userdata. Every working directory wr has ever created is called
-		// createdCwdName, by mkCwdAndTmp, so any other name did not come from
-		// wr and licenses no deletion. Reported rather than ignored: a runner
-		// sending one is a bug, and a silent no-op cleanup is how a workspace
-		// leaks unnoticed.
+	if !relIsCreatedCwd(filepath.Join(workSpace.rel, actualCwdName)) {
+		// how far below Cwd the reported directory sits, and what it is called,
+		// are the only things about it wr can check without trusting whoever
+		// reported it. Everything below treats its PARENT as a disposable
+		// workspace, so a value naming a directory of the user's would have wr
+		// sweep that directory whole - which is the incident this fix is named
+		// for, arriving through a different field.
 		return fmt.Errorf("%w: %s", errNotACreatedCwd, j.ActualCwd)
 	}
 

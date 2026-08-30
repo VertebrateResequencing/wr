@@ -31,6 +31,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,4 +345,26 @@ func deterministicLiveBytes(size int) []byte {
 	}
 
 	return data
+}
+
+// TestCreatedCwdDepthMatchesMkHashedDir pins createdCwdDepth against what
+// mkHashedDir actually creates. Cleanup refuses to treat a directory at any
+// other depth as a workspace, so if the two ever drift apart every cleanup
+// would silently stop working rather than fail loudly.
+func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("The working dir mkHashedDir creates is createdCwdDepth below the base", t, func() {
+		base := t.TempDir()
+
+		actualCwd, _, err := mkHashedDir(base, "0123456789abcdef0123456789abcdef")
+		So(err, ShouldBeNil)
+
+		rel, err := filepath.Rel(base, actualCwd)
+		So(err, ShouldBeNil)
+		So(len(strings.Split(rel, string(filepath.Separator))), ShouldEqual, createdCwdDepth)
+		So(filepath.Base(actualCwd), ShouldEqual, createdCwdName)
+	})
 }

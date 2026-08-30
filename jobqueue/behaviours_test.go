@@ -55,7 +55,7 @@ func TestBehaviours(t *testing.T) {
 		b11 := &Behaviour{When: OnFailure, Do: Remove}
 
 		cwd := t.TempDir()
-		actualCwd := filepath.Join(cwd, "a", "b", "c", "def", "cwd")
+		actualCwd := filepath.Join(testWorkSpace(cwd, "def"), "cwd")
 		err := os.MkdirAll(actualCwd, os.ModePerm)
 		So(err, ShouldBeNil)
 		_, err = os.OpenFile(filepath.Join(actualCwd, "a.file"), os.O_RDONLY|os.O_CREATE, 0o666)
@@ -63,8 +63,10 @@ func TestBehaviours(t *testing.T) {
 		_, err = os.OpenFile(filepath.Join(actualCwd, "b.file"), os.O_RDONLY|os.O_CREATE, 0o666)
 		So(err, ShouldBeNil)
 
-		foo := filepath.Join(cwd, "a", "b", "c", "foo")
-		adir := filepath.Join(cwd, "a")
+		foo := filepath.Join(filepath.Dir(testWorkSpace(cwd, "def")), "foo")
+		// the top of the chain wr creates below Cwd, which the upward walk
+		// stops before deleting.
+		adir := filepath.Join(cwd, "wr_cwd")
 		job1 := &Job{Cwd: cwd, ActualCwd: actualCwd}
 		job2 := &Job{Cwd: cwd}
 
@@ -191,7 +193,7 @@ func TestBehaviours(t *testing.T) {
 			So(err, ShouldBeNil)
 			_, err = os.Stat(foo)
 			So(err, ShouldBeNil)
-			_, err = os.Stat(filepath.Join(cwd, "a", "b", "c", "def"))
+			_, err = os.Stat(testWorkSpace(cwd, "def"))
 			So(err, ShouldNotBeNil)
 		})
 
@@ -201,7 +203,7 @@ func TestBehaviours(t *testing.T) {
 			So(err, ShouldBeNil)
 			_, err = os.Stat(foo)
 			So(err, ShouldBeNil)
-			_, err = os.Stat(filepath.Join(cwd, "a", "b", "c", "def"))
+			_, err = os.Stat(testWorkSpace(cwd, "def"))
 			So(err, ShouldNotBeNil)
 		})
 
@@ -286,6 +288,24 @@ func TestBehaviours(t *testing.T) {
 	})
 }
 
+// testHashDirs stand in for the hashed directory levels mkHashedDir puts
+// between the <AppName>_cwd base and the unique workspace.
+//
+//nolint:gochecknoglobals // fixture shape shared by the cleanup tests
+var testHashDirs = []string{"a", "b", "c"}
+
+// testWorkSpace returns a workspace path of the shape AND DEPTH mkHashedDir
+// really creates one at. The depth matters: cleanup refuses to treat anything
+// at another depth as a workspace, because that is the one property of a
+// reported ActualCwd it can check without trusting whoever reported it. A
+// fixture that is too shallow is not just unrealistic, it exercises a path wr
+// would never produce.
+func testWorkSpace(cwd, unique string) string {
+	parts := append([]string{cwd, "wr_cwd"}, testHashDirs...)
+
+	return filepath.Join(append(parts, unique)...)
+}
+
 func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -293,7 +313,7 @@ func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 
 	Convey("Unmount's empty-dir tidy-up stays inside the workspace wr made", t, func() {
 		cwd := t.TempDir()
-		actualCwd := filepath.Join(cwd, "wr_cwd", "unique", "cwd")
+		actualCwd := filepath.Join(testWorkSpace(cwd, "unique"), "cwd")
 
 		// MountConfig.Mount may be an absolute path to "any directory you're
 		// able to write to", so a Job can name an existing directory of the
@@ -314,6 +334,20 @@ func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 		soPathsExist(incoming, userDir, cwd)
 
 		So(err, ShouldBeNil)
+
+		Convey("and does nothing at all when ActualCwd is not one wr could have created", func() {
+			// the workspace used to be filepath.Dir of the reported ActualCwd,
+			// unchecked, so the v0.37.0|1 poisoning shape (ActualCwd == Cwd)
+			// made it the PARENT of Cwd - and then every mount inside Cwd looked
+			// like it was inside the workspace.
+			poisoned := &Job{Cwd: cwd, ActualCwd: cwd, MountConfigs: MountConfigs{{Mount: incoming}}}
+
+			_, err = poisoned.Unmount()
+
+			soPathsExist(incoming, userDir, cwd)
+
+			So(err, ShouldBeNil)
+		})
 	})
 }
 
@@ -339,6 +373,52 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
 		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		Convey("Cleanup deletes nothing when the reported workspace does not exist either", func() {
+			// the must-exist check on the working dir is never reached when the
+			// WORKSPACE is missing too: emptyWorkSpace returns early, and the
+			// upward walk still ran, unlinking every empty directory up to Cwd.
+			// One more non-existent path element was all it took.
+			userTop := filepath.Join(cwd, "results")
+			userMid := filepath.Join(userTop, "2024")
+			err = os.MkdirAll(userMid, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(userMid, "missing", "cwd")}
+
+			err = cleanupAll.Trigger(OnExit, job)
+
+			soPathsExist(userMid, userTop, cwd, precious, parent)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+
+		Convey("Cleanup deletes nothing of a user dir that merely contains a cwd dir", func() {
+			// the name check reads only the last component, so a user directory
+			// owning a subdirectory called "cwd" - which is what wr itself names
+			// things, and a common staging convention - passed it, and the whole
+			// of that directory was swept: not just empty dirs, every file in it.
+			analysis := filepath.Join(cwd, "analysis")
+			script := filepath.Join(analysis, "run.R")
+			deep := filepath.Join(analysis, "results", "final")
+			err = os.MkdirAll(filepath.Join(analysis, "cwd"), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.MkdirAll(deep, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(script, []byte("important\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(analysis, "cwd")}
+
+			err = cleanupAll.Trigger(OnExit, job)
+
+			soPathsExist(script, deep, analysis, cwd, precious, parent)
+
+			So(err, ShouldNotBeNil)
+		})
 
 		Convey("Cleanup deletes nothing when the reported cwd does not exist", func() {
 			// the name check alone reads only the last component, so appending
@@ -421,7 +501,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		Convey("Cleanup of a Job with an ActualCwd outside its Cwd deletes nothing and errors", func() {
 			// this is the shape a stale ActualCwd takes after the Job's Cwd is
 			// modified to somewhere else.
-			stale := filepath.Join(parent, "old_cwd", "wr_cwd", "unique", "cwd")
+			stale := filepath.Join(testWorkSpace(filepath.Join(parent, "old_cwd"), "unique"), "cwd")
 			err = os.MkdirAll(stale, os.ModePerm)
 			So(err, ShouldBeNil)
 
@@ -436,7 +516,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		Convey("Cleanup of a Job whose Cwd was modified deletes nothing, silently", func() {
 			old := filepath.Join(parent, "old_cwd")
-			ranIn := filepath.Join(old, "wr_cwd", "unique", "cwd")
+			ranIn := filepath.Join(testWorkSpace(old, "unique"), "cwd")
 			err = os.MkdirAll(ranIn, os.ModePerm)
 			So(err, ShouldBeNil)
 
@@ -510,7 +590,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			// real can be a symlink by the time a deletion walks through it.
 			// The hook puts the test in exactly that moment, which is otherwise
 			// not reachable reliably.
-			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			workSpace := testWorkSpace(cwd, "unique")
 			actualCwd := filepath.Join(workSpace, "cwd")
 			err = os.MkdirAll(actualCwd, os.ModePerm)
 			So(err, ShouldBeNil)
@@ -594,7 +674,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Cleanup of a mounting Job wipes its workspace but keeps the mount dir", func() {
-			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			workSpace := testWorkSpace(cwd, "unique")
 			actualCwd := filepath.Join(workSpace, "cwd")
 			mounted := filepath.Join(actualCwd, testMountDir, "data.txt")
 			err = os.MkdirAll(filepath.Dir(mounted), os.ModePerm)
@@ -626,7 +706,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			// The mount is still live when cleanup runs (Job.Unmount comes
 			// after it in client.go), and os.RemoveAll has no mount awareness,
 			// so deleting it would recurse into the user's remote filesystem.
-			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			workSpace := testWorkSpace(cwd, "unique")
 			actualCwd := filepath.Join(workSpace, "cwd")
 			err = os.MkdirAll(actualCwd, os.ModePerm)
 			So(err, ShouldBeNil)
@@ -758,8 +838,8 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			// rmEmptyDirs deletes the workspace the first cleanup emptied, so
 			// the second cleanup finds nothing there. That must not stop it
 			// tidying the empty parents that Unmount's walk could not.
-			hashDir := filepath.Join(cwd, "wr_cwd", "hash")
-			workSpace := filepath.Join(hashDir, "unique")
+			workSpace := testWorkSpace(cwd, "unique")
+			hashDir := filepath.Dir(workSpace)
 			actualCwd := filepath.Join(workSpace, "cwd")
 			err = os.MkdirAll(filepath.Join(actualCwd, testMountDir), os.ModePerm)
 			So(err, ShouldBeNil)
@@ -809,7 +889,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			err = os.WriteFile(outsideFile, []byte("important\n"), 0o600)
 			So(err, ShouldBeNil)
 
-			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			workSpace := testWorkSpace(cwd, "unique")
 			err = os.MkdirAll(workSpace, os.ModePerm)
 			So(err, ShouldBeNil)
 
@@ -843,7 +923,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			err = os.WriteFile(sibling, []byte("mine\n"), 0o600)
 			So(err, ShouldBeNil)
 
-			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			workSpace := testWorkSpace(cwd, "unique")
 			err = os.MkdirAll(filepath.Join(workSpace, "tmp"), os.ModePerm)
 			So(err, ShouldBeNil)
 
@@ -914,7 +994,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			// runner and the manager goroutine that cleans up a lost job.
 			const cleanupTimeout = 5 * time.Second
 
-			workSpace := filepath.Join(cwd, "wr_cwd", "unique")
+			workSpace := testWorkSpace(cwd, "unique")
 			actualCwd := filepath.Join(workSpace, "cwd")
 			mounted := filepath.Join(actualCwd, testMountDir, "data.txt")
 			err = os.MkdirAll(filepath.Dir(mounted), os.ModePerm)

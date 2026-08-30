@@ -1103,6 +1103,28 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 	return logs, merr
 }
 
+// createdWorkSpace returns the disposable workspace wr made for this Job - the
+// parent of the working directory it created - or "" if there is no such
+// directory, or the one the Job reports is not one wr could have created.
+//
+// The reported ActualCwd is not trusted here any more than it is by cleanup: an
+// unchecked filepath.Dir of it made the workspace the PARENT of Cwd when
+// ActualCwd was poisoned with Cwd, and every mount inside Cwd then looked like
+// it was inside the workspace. Must be called with at least an RLock held.
+func (j *Job) createdWorkSpace() string {
+	actualCwd := j.createdCwd()
+	if actualCwd == "" {
+		return ""
+	}
+
+	rel, err := filepath.Rel(j.Cwd, actualCwd)
+	if err != nil || !relIsCreatedCwd(rel) {
+		return ""
+	}
+
+	return filepath.Dir(actualCwd)
+}
+
 // rmEmptyMountDirs deletes any empty directories between the Job's mount
 // point(s) and its Cwd. It returns the error from the last cleanup attempted
 // (matching the original Unmount behaviour).
@@ -1117,7 +1139,10 @@ func (j *Job) rmEmptyMountDirs() error {
 	// above it, when it was let loose on every mount point. The workspace is the
 	// only tree wr created, so it is the only one there is anything of ours to
 	// tidy in.
-	workSpace := filepath.Dir(j.ActualCwd)
+	workSpace := j.createdWorkSpace()
+	if workSpace == "" {
+		return nil
+	}
 
 	for _, mount := range j.mountPoints() {
 		if rel, relErr := filepath.Rel(workSpace, mount); relErr != nil || !relIsBelow(rel) {

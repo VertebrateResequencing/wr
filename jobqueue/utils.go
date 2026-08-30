@@ -67,6 +67,18 @@ var AppName = "jobqueue" //nolint:gochecknoglobals // configurable package-wide 
 // mkHashedLevels is the number of directory levels we create in mkHashedDirs.
 const mkHashedLevels = 4
 
+// createdCwdDepth is how many path components below a Job's Cwd the working
+// directory wr creates for it sits: the <AppName>_cwd base, then the
+// mkHashedLevels-1 hashed dirs, then the MkdirTemp leaf, then cwd itself.
+//
+// It is derived from mkHashedLevels rather than written out, and
+// TestCreatedCwdDepthMatchesMkHashedDir pins it against what mkHashedDir
+// actually produces, so the two cannot drift apart silently - which matters,
+// because cleanup refuses to treat anything at another depth as a workspace,
+// and a wrong value here would quietly stop every cleanup instead of failing
+// loudly.
+const createdCwdDepth = mkHashedLevels + 2
+
 // tokenLength is the fixed size of our authentication token, and
 // tokenRandBytes is the number of random bytes that base64-encode to it.
 const (
@@ -1233,6 +1245,28 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 	}
 
 	return infos, true
+}
+
+// relIsCreatedCwd tells you if rel, a path relative to a Job's Cwd, has the
+// shape of a working directory wr created for it: strictly inside Cwd, exactly
+// createdCwdDepth components down, and named createdCwdName.
+//
+// Depth is the part that cannot be faked by naming alone. The name check reads
+// only the last component, so appending "/cwd" to any directory of the user's
+// inside Cwd satisfies it - and everything in that directory was then swept as
+// a "workspace". mkHashedDir always builds at one depth, so anything else was
+// not made by wr.
+//
+// It is deliberately not a proof of origin: a user directory that happens to
+// sit at exactly that depth and end in "cwd" would still pass. Proof of origin
+// would mean keying on the <AppName>_cwd path segment, and AppName is a package
+// var that cmd/runner.go sets to "wr" while the manager leaves it "jobqueue" -
+// so that check would refuse every real workspace server-side, which is where
+// the cleanup that caused the incident runs.
+func relIsCreatedCwd(rel string) bool {
+	return relIsBelow(rel) &&
+		len(strings.Split(rel, string(filepath.Separator))) == createdCwdDepth &&
+		filepath.Base(rel) == createdCwdName
 }
 
 // relIsBelow tells you if a relative path produced by filepath.Rel describes
