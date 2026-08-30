@@ -410,6 +410,44 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			soPathsExist(precious, parent, cwd)
 		})
 
+		Convey("Given a workspace that had already gone when cleanup checked it", func() {
+			// the sibling Convey below swaps a component that DID exist at proof
+			// time; this one covers the case where the proof found nothing at
+			// the leaf, which is a normal outcome - another Job's cleanup, or a
+			// re-run, can have removed the workspace already. The proof still
+			// says "ok, nothing to do", and the upward walk still runs to tidy
+			// empty parents, so the components above the missing leaf are just
+			// as exposed to being swapped as the sibling's are.
+			wrCwd := filepath.Join(cwd, "wr_cwd")
+			err = os.Mkdir(wrCwd, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			// no "unique" below it: the workspace is already gone.
+			actualCwd := filepath.Join(wrCwd, "unique", "cwd")
+
+			victim := filepath.Join(cwd, "userdata", "unique")
+			err = os.MkdirAll(victim, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: actualCwd}
+
+			cleanupProvenHook = func() {
+				cleanupProvenHook = nil
+
+				So(os.Remove(wrCwd), ShouldBeNil)
+				So(os.Symlink("userdata", wrCwd), ShouldBeNil)
+			}
+
+			Reset(func() { cleanupProvenHook = nil })
+
+			Convey("Cleanup deletes nothing through a component swapped after the check", func() {
+				err = cleanupAll.Trigger(OnExit, job)
+
+				// survival first, so a lost race shows up as the deletion it is.
+				soPathsExist(victim, filepath.Join(cwd, "userdata"), cwd, precious, parent)
+			})
+		})
+
 		Convey("Given a workspace whose path is swapped for a symlink after cleanup has checked it", func() {
 			// this is the race that the deletions are made through a handle on
 			// Cwd to survive. A proof is about a path string, and every syscall

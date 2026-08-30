@@ -1109,12 +1109,17 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 func (j *Job) rmEmptyMountDirs() error {
 	var err error
 
-	for _, mc := range j.MountConfigs {
-		switch {
-		case mc.Mount == "":
-			err = rmEmptyDirs(j.ActualCwd, j.Cwd)
-		case !filepath.IsAbs(mc.Mount):
-			err = rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
+	for _, mount := range j.mountPoints() {
+		// an absolute Mount used to be skipped here, so one landing inside the
+		// workspace was never tidied and the workspace it sat in leaked for
+		// good - cleanup deliberately leaves a live mount point alone, and this
+		// is the only thing that comes back for it afterwards. mountPoints()
+		// resolves all three spellings of Mount, so this no longer re-derives
+		// the rule it already knows.
+		if rmErr := rmEmptyDirs(mount, j.Cwd); rmErr != nil && !errors.Is(rmErr, errNotBelowBaseDir) {
+			// a mount outside Cwd is not ours to tidy, which is what
+			// errNotBelowBaseDir means here, not a failure.
+			err = rmErr
 		}
 	}
 

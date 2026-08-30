@@ -916,10 +916,28 @@ type provenDirs struct {
 	// cannot be re-resolved somewhere else between the proof and the deletion.
 	leaf string
 
-	// info is what the proof lstat'ed at leaf, or nil if nothing was there
-	// then. openLeaf needs it to prove that the directory it opens is the one
-	// that was proven.
-	info os.FileInfo
+	// infos is what the proof lstat'ed at each component of rel, in order, so
+	// infos[i] belongs to the i'th component. It is short when the proof ran
+	// out of path that exists, and empty when even the first component was
+	// already gone.
+	//
+	// There is one per component, not just one for the leaf, because the
+	// descent has to prove EVERY level it opens. A proof is about a path
+	// string, and the descent re-resolves that string a component at a time, so
+	// a directory checked here can be a symlink by the time the descent reaches
+	// it. Verifying only the leaf leaves the levels above it swappable, and the
+	// upward walk deletes through those.
+	infos []os.FileInfo
+}
+
+// leafInfo is what the proof found at the leaf, or nil if it had already gone.
+func (dirs provenDirs) leafInfo() os.FileInfo {
+	names := strings.Split(dirs.rel, string(filepath.Separator))
+	if len(dirs.infos) < len(names) {
+		return nil
+	}
+
+	return dirs.infos[len(names)-1]
 }
 
 // openChain descends from dirs.root to the proven dir, keeping a handle on
@@ -936,12 +954,18 @@ func (dirs provenDirs) openChain() (dirChain, error) {
 	chain := dirChain{
 		names: strings.Split(dirs.rel, string(filepath.Separator)),
 		leaf:  dirs.leaf,
-		info:  dirs.info,
+		info:  dirs.leafInfo(),
 	}
 	chain.roots = append(make([]*os.Root, 0, len(chain.names)), dirs.root)
 
-	for _, name := range chain.names[:len(chain.names)-1] {
-		dirRoot, err := chain.deepest().OpenRoot(name)
+	for i, name := range chain.names[:len(chain.names)-1] {
+		if i >= len(dirs.infos) {
+			// the proof stopped here because nothing below existed, so there is
+			// nothing deeper to open and nothing deeper to delete.
+			return chain, nil
+		}
+
+		dirRoot, err := openVerifiedDir(chain.deepest(), name, dirs.infos[i])
 		if err != nil {
 			if os.IsNotExist(err) {
 				return chain, nil
@@ -1169,12 +1193,12 @@ func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 		return provenDirs{}, false
 	}
 
-	info, ok := componentsAreRealDirs(absDir, absBase)
+	infos, ok := componentsAreRealDirs(absDir, absBase)
 	if !ok {
 		return provenDirs{}, false
 	}
 
-	return provenDirs{root: baseRoot, rel: rel, leaf: absDir, info: info}, true
+	return provenDirs{root: baseRoot, rel: rel, leaf: absDir, infos: infos}, true
 }
 
 // componentsAreRealDirs tells you if every path component of absDir below
@@ -1185,8 +1209,8 @@ func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 //
 // It returns what it lstat'ed at absDir itself, or nil if absDir wasn't there,
 // so that a caller opening absDir can prove the directory it gets is this one.
-func componentsAreRealDirs(absDir, absBase string) (os.FileInfo, bool) {
-	var deepest os.FileInfo
+func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
+	var infos []os.FileInfo
 
 	for i := len(absBase) + 1; i <= len(absDir); i++ {
 		if i < len(absDir) && absDir[i] != filepath.Separator {
@@ -1195,17 +1219,20 @@ func componentsAreRealDirs(absDir, absBase string) (os.FileInfo, bool) {
 
 		info, err := os.Lstat(absDir[:i])
 		if err != nil {
-			return nil, os.IsNotExist(err)
+			// the infos gathered so far are returned, not discarded: the
+			// descent still opens those components to walk up from, so it still
+			// needs to prove each of them is the directory checked here.
+			return infos, os.IsNotExist(err)
 		}
 
 		if !info.IsDir() {
 			return nil, false
 		}
 
-		deepest = info
+		infos = append(infos, info)
 	}
 
-	return deepest, true
+	return infos, true
 }
 
 // relIsBelow tells you if a relative path produced by filepath.Rel describes

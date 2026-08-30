@@ -446,7 +446,11 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 
 				var homeChanged string
 
-				if job.ActualCwd != "" {
+				// a cwd_matters job runs in Cwd itself and wr created no
+				// directory for it, so its ActualCwd is ignored here as it is
+				// everywhere else: one persisted by wr v0.37.0|1 carries Cwd in
+				// that field, and a stale one can outlive a `wr mod --cwd`.
+				if !job.CwdMatters && job.ActualCwd != "" {
 					cwd = job.ActualCwd
 					if job.ChangeHome {
 						homeChanged = "Changed home: true\n"
