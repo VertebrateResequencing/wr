@@ -71,6 +71,12 @@ import (
 	"strings"
 )
 
+// procSelfFD is where Linux names a process's own file descriptors, one entry
+// per descriptor number. Naming one to exec as a Dir is how a command gets
+// started in a directory that was opened rather than in one that gets looked up
+// again by name; see runDir.
+const procSelfFD = "/proc/self/fd/"
+
 // muxfysCachePrefix is what muxfys names the cache directories it chooses for
 // itself, inside whichever CacheBase it was given (see its remote.go). They hold
 // a writable mount's output until Unmount uploads it, and cleanup runs before
@@ -454,7 +460,7 @@ func (r *runDir) execDir() string {
 		return r.path
 	}
 
-	fdPath := filepath.Join("/proc/self/fd", strconv.Itoa(int(r.held.Fd())))
+	fdPath := procSelfFD + strconv.Itoa(int(r.held.Fd()))
 
 	held, err := r.held.Stat()
 	if err != nil {
