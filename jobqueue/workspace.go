@@ -443,6 +443,12 @@ func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
 // the handle rather than by testing the platform, so a system that does not
 // answer for its own descriptors falls back rather than pointing a command at a
 // name that means nothing.
+//
+// Neither the nil check nor the same-dir one can be made to fail by a test on a
+// system that has /proc, so neither is a guard a mutation would show up: they
+// are what makes the fallback deliberate rather than accidental. Everything
+// after them falls back anyway, since os.File answers a nil receiver with an
+// error.
 func (r *runDir) execDir() string {
 	if r.held == nil {
 		return r.path
