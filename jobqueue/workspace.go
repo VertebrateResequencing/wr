@@ -776,10 +776,6 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 		return err
 	}
 
-	if len(ws.paths.mounts) == 0 {
-		return removeWorkSpaceEntries(wsRoot, nil)
-	}
-
 	return ws.removeExcept(wsRoot, actualCwd)
 }
 
@@ -813,8 +809,16 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 	return info, nil
 }
 
-// removeExcept deletes the contents of a mounting Job's workspace, keeping the
-// dirs its live mounts and caches need.
+// removeExcept deletes the contents of the Job's workspace, keeping the dirs its
+// live mounts and caches need.
+//
+// A Job with no mounts used to skip this for a straight sweep of every entry,
+// which read as a harmless fast path and was not one: it is the only route to
+// the keep set, so the muxfysCachePrefix rule - the one place a NAME rather than
+// a path identifies a cache dir, and the only thing standing between a writable
+// mount's un-uploaded output and a recursive delete - never ran on that branch.
+// The keep set for a Job with no mounts is just that rule, so taking the branch
+// away costs one RemoveAll the sweep was about to make anyway.
 func (ws *jobWorkSpace) removeExcept(wsRoot *os.Root, actualCwd os.FileInfo) error {
 	if !ws.keep.wholeActualCwd && actualCwd != nil {
 		err := removeActualCwd(wsRoot, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd)
@@ -840,7 +844,8 @@ func (ws *jobWorkSpace) keptEntry(name string) bool {
 }
 
 // removeWorkSpaceEntries deletes every entry of the workspace that keep doesn't
-// claim. A nil keep deletes them all, which is what a Job with no mounts wants.
+// claim. There is no way to ask it to claim nothing, because a caller that could
+// would be a second answer to what cleanup may delete.
 //
 // Each entry is named to wsRoot by its own name alone, with no path above it left
 // to resolve, so nothing done here can be redirected elsewhere.
@@ -851,7 +856,7 @@ func removeWorkSpaceEntries(wsRoot *os.Root, keep func(name string) bool) error 
 	}
 
 	for _, entry := range entries {
-		if keep != nil && keep(entry.Name()) {
+		if keep(entry.Name()) {
 			continue
 		}
 
