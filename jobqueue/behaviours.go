@@ -285,8 +285,9 @@ func (b *Behaviour) String() string {
 // so for now we always wipe everything.)
 //
 // Which dirs those are, and which of them the Job's live mounts and caches need
-// kept, is decided entirely by Job.resolveWorkSpace - the one place any of it is
-// worked out. A nil workspace means wr created nothing here it may delete.
+// kept, is decided entirely by resolveWorkSpace - the one place any of it is
+// worked out - asked of the pinned Job state rather than of the Job. A nil
+// workspace means wr created nothing here it may delete.
 func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
 	ws, err := snap.resolveWorkSpace()
 	if err != nil || ws == nil {
@@ -363,6 +364,9 @@ type Behaviours []*Behaviour
 // OnSuccess if success = true or OnFailure otherwise, then those for OnExit,
 // against the Job as it is now.
 func (bs Behaviours) Trigger(success bool, j *Job) error {
+	// answered before the pin, not after, because most Jobs have no behaviours
+	// at all and this is on the path of every Job that runs: taking the pin
+	// means the Job's lock and the hash Key() makes of its Cmd and mounts.
 	if len(bs) == 0 {
 		return nil
 	}
