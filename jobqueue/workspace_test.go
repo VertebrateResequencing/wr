@@ -100,6 +100,16 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 				ShouldBeFalse)
 		})
 
+		Convey("nor the same path with anything appended or removed", func() {
+			// every component this reads is at a fixed index, so it answers only
+			// about paths of exactly the depth mkHashedDir builds at. Its caller
+			// has already pinned that depth, but a recogniser that quietly said
+			// yes to a deeper path would tolerate a missing dir several levels
+			// below the one wr made.
+			So(relIsJobCreatedCwd(filepath.Join(rel, "deeper"), job.Key()), ShouldBeFalse)
+			So(relIsJobCreatedCwd(filepath.Dir(rel), job.Key()), ShouldBeFalse)
+		})
+
 		Convey("nor one whose unique dir was not made by MkdirTemp", func() {
 			names := strings.Split(rel, string(filepath.Separator))
 			names[len(names)-2] = job.Key()[mkHashedLevels-1:]

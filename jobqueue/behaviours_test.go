@@ -415,9 +415,9 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 		return
 	}
 
-	// both of these were found to be load-bearing but UNTESTED: mutating either
-	// one left the whole suite green while a user's directory was deleted. They
-	// are here so a later simplification cannot remove them silently.
+	// each of these was found to be load-bearing but UNTESTED: mutating any one
+	// of them left the whole suite green while a user's directory was deleted.
+	// They are here so a later simplification cannot remove them silently.
 	Convey("Given a user tree at exactly the depth wr creates its workspaces at", t, func() {
 		cwd := t.TempDir()
 		userTree := filepath.Join(cwd, "a", "b", "c", "d", "e")
@@ -469,6 +469,28 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 			soPathsExist(precious, userTree, cwd)
 
 			So(err, ShouldNotBeNil)
+		})
+
+		Convey("cleanup will not sweep a real dir at that depth that is not named cwd", func() {
+			// depth alone is not enough. Every directory wr creates for a Job is
+			// called "cwd", so a real directory of the user's sitting at exactly
+			// the right depth under any other name was never made by wr - and
+			// treating it as a working directory would sweep its PARENT, which
+			// here is the whole of the user's tree.
+			outputs := filepath.Join(userTree, "outputs")
+			results := filepath.Join(outputs, "counts.tsv")
+			err = os.MkdirAll(outputs, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(results, []byte("counted\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			err = (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job(cwd, outputs))
+
+			soPathsExist(results, outputs, precious, userDir, userTree, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
 		})
 	})
 }
@@ -677,6 +699,43 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 
 			soPathsExist(precious, parent, cwd)
+		})
+
+		Convey("Cleanup deletes nothing when the workspace itself is a symlink inside Cwd", func() {
+			// the deletion helpers disagree about symlinks - os.RemoveAll unlinks
+			// a final one, os.ReadDir follows it - so proving every component is
+			// a REAL dir is a distinct property from staying inside Cwd, which a
+			// relative link like this one satisfies. Without it the sweep would
+			// empty the user's directory the link points at, and lstat'ing the
+			// working directory says nothing: the link is resolved on the way to
+			// it, so what gets checked is the target's own "cwd" entry.
+			userDir := filepath.Join(cwd, "userdata")
+			target := filepath.Join(userDir, "cwd")
+			notes := filepath.Join(target, "notes.txt")
+			err = os.MkdirAll(target, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(notes, []byte("precious\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			workSpace := testWorkSpace(cwd, "unique")
+			err = os.MkdirAll(filepath.Dir(workSpace), os.ModePerm)
+			So(err, ShouldBeNil)
+
+			rel, errr := filepath.Rel(filepath.Dir(workSpace), userDir)
+			So(errr, ShouldBeNil)
+
+			err = os.Symlink(rel, workSpace)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(workSpace, "cwd")}
+
+			err = cleanupAll.Trigger(OnExit, job)
+
+			soPathsExist(notes, target, userDir, cwd, precious, parent)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
 
 		Convey("Given a workspace that had already gone when cleanup checked it", func() {

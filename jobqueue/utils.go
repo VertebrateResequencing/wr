@@ -1257,8 +1257,13 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 }
 
 // relIsCreatedCwd tells you if rel, a path relative to a Job's Cwd, has the
-// shape of a working directory wr created for it: strictly inside Cwd, exactly
-// createdCwdDepth components down, and named createdCwdName.
+// shape of a working directory wr created for it: exactly createdCwdDepth
+// components down, and named createdCwdName.
+//
+// It does not repeat the containment check. createdCwdRel, its only caller,
+// makes that with relIsBelow one line earlier and reports it as a different
+// error, and a second copy of the same rule here answered to no test - which is
+// what a rule stated twice looks like just before the two disagree.
 //
 // Depth is the part that cannot be faked by naming alone. The name check reads
 // only the last component, so appending "/cwd" to any directory of the user's
@@ -1273,27 +1278,40 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 // so that check would refuse every real workspace server-side, which is where
 // the cleanup that caused the incident runs.
 func relIsCreatedCwd(rel string) bool {
-	return relIsBelow(rel) &&
-		len(strings.Split(rel, string(filepath.Separator))) == createdCwdDepth &&
+	return len(strings.Split(rel, string(filepath.Separator))) == createdCwdDepth &&
 		filepath.Base(rel) == createdCwdName
 }
 
 // relIsJobCreatedCwd tells you if rel, a working directory's path relative to a
-// Job's Cwd, is exactly the one mkHashedDir builds for a Job with the given key.
+// Job's Cwd, is one mkHashedDir could have built for a Job with the given key.
 // That is proof of origin, where relIsCreatedCwd is only a coincidence filter.
 //
 // It is built by asking calculateHashedDir - the function that laid the path
-// down - what it would produce, so the two cannot drift apart. Only the base
-// component is exempt, because that is the <AppName>_cwd dir and AppName is a
+// down - what it would produce, so the two cannot drift apart. Being precise
+// about what it therefore accepts, since an earlier version of this comment was
+// not: the shape is <anything>/k0/k1/k2/<k3..><digits>, where k0-k2 are the
+// first three characters of the key and k3.. is the rest of it. The BASE
+// component is not checked at all. It is the <AppName>_cwd dir, and AppName is a
 // package var that cmd/runner.go sets to "wr" while the manager leaves it
-// "jobqueue"; keying on it would refuse every real workspace server-side, which
-// is where the cleanup that caused the original incident runs.
+// "jobqueue", so keying on it would refuse every real workspace server-side -
+// which is where the cleanup that caused the original incident runs. The leaf
+// "cwd" component is not checked here either; relIsCreatedCwd pins it, and
+// createdCwdRel applies that to every path before this is consulted.
 //
-// A false answer is never taken as a reason to delete less than before, only as
-// a reason not to tolerate a missing working directory, so a future change to
-// how os.MkdirTemp names things can leak a workspace but cannot destroy one.
+// A true answer DOES license deleting more than the depth-and-name check alone
+// allows: it is what lets the resolution tolerate a workspace or working
+// directory that is not there, which is otherwise refused. What makes that safe
+// is not the base component but the middle four: the key is 32 hex characters of
+// farm.Hash128, so a path a user could be induced to create their data at cannot
+// carry them. A change to how os.MkdirTemp names things would therefore leak a
+// workspace rather than destroy one, but that is a property of what is checked,
+// not of the direction the answer points.
 func relIsJobCreatedCwd(rel, key string) bool {
 	names := strings.Split(rel, string(filepath.Separator))
+
+	// the depth is a precondition, not a second opinion on relIsCreatedCwd's:
+	// every index below is fixed, so a rel of any other length would read the
+	// wrong components or run off the end of the slice.
 	if len(names) != createdCwdDepth {
 		return false
 	}
