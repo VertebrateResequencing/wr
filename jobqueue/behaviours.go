@@ -392,8 +392,19 @@ func emptyWorkSpace(j *Job, chain dirChain, actualCwdName string) error {
 // takes care not to delete the cache dirs or mounted dirs; otherwise it just
 // deletes everything in one go.
 func cleanupWorkSpace(j *Job, wsRoot *os.Root, workSpace, actualCwdName string) error {
+	// a missing working dir is NOT tolerated here, though a missing workspace is
+	// (emptyWorkSpace returns before this). The name check in cleanupBelowCwd
+	// looks only at the last component, so appending "/cwd" to any directory of
+	// the user's inside Cwd passes it - and nothing else stopped it, because
+	// the directory it named did not have to exist. Requiring it to be there,
+	// and to be a real dir, means the reported path has to name something wr
+	// actually made rather than merely end in the right word.
+	//
+	// The cost is that a workspace whose cwd was already removed, by a cleanup
+	// that failed partway, is now left alone instead of being swept. That is a
+	// leaked directory rather than a deleted one, which is the right way round.
 	actualCwdInfo, err := provenActualCwd(j, wsRoot, actualCwdName)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil {
 		return err
 	}
 

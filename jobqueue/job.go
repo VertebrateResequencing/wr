@@ -1109,16 +1109,22 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 func (j *Job) rmEmptyMountDirs() error {
 	var err error
 
+	// only mount points inside the workspace wr made for this Job are tidied.
+	// Being inside Cwd is NOT enough: MountConfig.Mount may be an absolute path
+	// to "any directory you're able to write to", so a Job can name an existing
+	// directory of the user's inside their own Cwd, and this walk removes empty
+	// dirs and then their empty parents - it deleted the user's dir, and the one
+	// above it, when it was let loose on every mount point. The workspace is the
+	// only tree wr created, so it is the only one there is anything of ours to
+	// tidy in.
+	workSpace := filepath.Dir(j.ActualCwd)
+
 	for _, mount := range j.mountPoints() {
-		// an absolute Mount used to be skipped here, so one landing inside the
-		// workspace was never tidied and the workspace it sat in leaked for
-		// good - cleanup deliberately leaves a live mount point alone, and this
-		// is the only thing that comes back for it afterwards. mountPoints()
-		// resolves all three spellings of Mount, so this no longer re-derives
-		// the rule it already knows.
-		if rmErr := rmEmptyDirs(mount, j.Cwd); rmErr != nil && !errors.Is(rmErr, errNotBelowBaseDir) {
-			// a mount outside Cwd is not ours to tidy, which is what
-			// errNotBelowBaseDir means here, not a failure.
+		if rel, relErr := filepath.Rel(workSpace, mount); relErr != nil || !relIsBelow(rel) {
+			continue
+		}
+
+		if rmErr := rmEmptyDirs(mount, j.Cwd); rmErr != nil {
 			err = rmErr
 		}
 	}

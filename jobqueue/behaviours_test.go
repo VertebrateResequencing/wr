@@ -286,6 +286,37 @@ func TestBehaviours(t *testing.T) {
 	})
 }
 
+func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Unmount's empty-dir tidy-up stays inside the workspace wr made", t, func() {
+		cwd := t.TempDir()
+		actualCwd := filepath.Join(cwd, "wr_cwd", "unique", "cwd")
+
+		// MountConfig.Mount may be an absolute path to "any directory you're
+		// able to write to", so a Job can name an existing directory of the
+		// user's. The tidy-up removes empty dirs and then their empty parents,
+		// so letting it loose on every mount point deleted the user's dir and
+		// the one above it.
+		userDir := filepath.Join(cwd, "userdata")
+		incoming := filepath.Join(userDir, "incoming")
+
+		for _, dir := range []string{actualCwd, incoming} {
+			So(os.MkdirAll(dir, os.ModePerm), ShouldBeNil)
+		}
+
+		job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: incoming}}}
+
+		_, err := job.Unmount()
+
+		soPathsExist(incoming, userDir, cwd)
+
+		So(err, ShouldBeNil)
+	})
+}
+
 func TestBehaviourCleanupSafety(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -308,6 +339,30 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
 		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		Convey("Cleanup deletes nothing when the reported cwd does not exist", func() {
+			// the name check alone reads only the last component, so appending
+			// "/cwd" to any directory of the user's inside Cwd satisfies it -
+			// and the named dir did not have to exist for its PARENT to be
+			// swept as a workspace. This is the same attack as the Convey below
+			// with one path element added, so the two belong together.
+			scripts := filepath.Join(cwd, "scripts")
+			script := filepath.Join(scripts, "05_RunCisEQTL.R")
+			err = os.MkdirAll(scripts, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = os.WriteFile(script, []byte("important\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			job := &Job{Cwd: cwd}
+			applyLiveSnapshot(job, &JobEndState{Cwd: filepath.Join(scripts, "cwd")})
+
+			err = cleanup.Trigger(OnExit, job)
+
+			soPathsExist(script, scripts, cwd, precious, parent)
+
+			So(err, ShouldNotBeNil)
+		})
 
 		Convey("Cleanup deletes nothing when the reported cwd is not one wr created", func() {
 			// the runner reports ActualCwd, and this is what a buggy or tampered
