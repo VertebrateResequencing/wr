@@ -547,7 +547,7 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 		// anything else is refused earlier and is TestWorkSpaceBaseComponent's
 		// case.
 		cwd := t.TempDir()
-		deep := filepath.Join(cwd, "results_cwd", "2024", "runA", "sampleB")
+		deep := filepath.Join(cwd, "results"+createdCwdBaseSuffix, "2024", "runA", "sampleB")
 		So(os.MkdirAll(deep, os.ModePerm), ShouldBeNil)
 
 		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
