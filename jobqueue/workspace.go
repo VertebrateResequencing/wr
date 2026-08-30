@@ -655,6 +655,21 @@ type keptDirs struct {
 	// directory of the user's inside their own Cwd, and that walk removes empty
 	// dirs and then their empty parents.
 	mountPoints []string
+
+	// muxfysNamesWorkSpaceEntry is set when one of the Job's mounts has a
+	// CacheBase that resolves to the workspace itself, which is the default for
+	// a mounting Job. That is the one case where a directory cleanup must keep
+	// has a name rather than a path: muxfys chooses the name of the cache dir it
+	// makes inside the CacheBase it was given (its remote.go), so wr cannot
+	// resolve it in advance and can only recognise the prefix.
+	//
+	// It is a fact about the Job's configuration, worked out here with every
+	// other one, rather than a rule applied to every Job. A Job with no mounts
+	// has no muxfys and so no cache dir of muxfys's naming, and applying the rule
+	// to one anyway meant its own Cmd creating ../.muxfyssquat kept the workspace
+	// alive, then stopped the upward walk with ENOTEMPTY, leaking the whole
+	// <AppName>_cwd/k/k/k chain - one per job, for ever.
+	muxfysNamesWorkSpaceEntry bool
 }
 
 // keptDirs resolves every mount point and cache location the Job has, and
@@ -662,9 +677,7 @@ type keptDirs struct {
 func (p *workSpacePaths) keptDirs() keptDirs {
 	keep := keptDirs{workSpaceEntries: make(map[string]bool, len(p.mounts))}
 
-	mounts := p.mountPoints()
-
-	for _, mount := range mounts {
+	for _, mount := range p.mountPoints() {
 		if _, ok := relBelowDir(p.workSpace, mount); ok {
 			keep.mountPoints = append(keep.mountPoints, mount)
 		}
@@ -672,8 +685,8 @@ func (p *workSpacePaths) keptDirs() keptDirs {
 		keep.protect(p, mount)
 	}
 
-	for _, cache := range p.cacheDirs() {
-		keep.protect(p, cache)
+	for _, mc := range p.mounts {
+		keep.protectCaches(p, mc)
 	}
 
 	return keep
@@ -698,31 +711,33 @@ func (p *workSpacePaths) mountPoints() []string {
 	return points
 }
 
-// cacheDirs resolves every location muxfys may write a mount's cache to, exactly
-// as Job.Mount resolves them for a Job with a wr-created working directory: a
-// MountConfig.CacheBase relative to the working directory and defaulting to the
-// workspace, and a MountTarget.CacheDir relative to the workspace.
+// protectCaches records every location muxfys may write one MountConfig's cache
+// to, resolved exactly as Job.Mount resolves them for a Job with a wr-created
+// working directory: a MountConfig.CacheBase relative to the working directory
+// and defaulting to the workspace, and a MountTarget.CacheDir relative to the
+// workspace (which is the base buildRemoteConfigs hands muxfys).
 //
-// Both are returned, not just the explicit CacheDir, because muxfys creates its
-// own cache directory inside the CacheBase when no CacheDir is given. A
-// CacheBase that resolves to the workspace itself yields the workspace, which
-// classifies as neither inside the working directory nor as an entry of the
-// workspace, and is therefore covered by the muxfysCachePrefix rule instead - the
-// one place a name, rather than a path, is what identifies a cache dir.
-func (p *workSpacePaths) cacheDirs() []string {
-	dirs := make([]string, 0, len(p.mounts))
+// The CacheBase is recorded as well as any explicit CacheDir, because muxfys
+// creates a cache directory of its own inside the CacheBase for every Target
+// that gives no CacheDir. A CacheBase that resolves to the workspace itself -
+// the default for a mounting Job - classifies as neither inside the working
+// directory nor as an entry of the workspace, so what covers the directory
+// muxfys puts there is the muxfysCachePrefix rule, and this is where wr learns
+// that rule has something to cover.
+func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
+	base := filepath.Clean(resolveCacheBase(mc.CacheBase, p.actualCwd, p.workSpace))
 
-	for _, mc := range p.mounts {
-		dirs = append(dirs, filepath.Clean(resolveCacheBase(mc.CacheBase, p.actualCwd, p.workSpace)))
+	k.protect(p, base)
 
-		for _, mt := range mc.Targets {
-			if cacheDir := resolveCacheDir(mt.CacheDir, p.workSpace); cacheDir != "" {
-				dirs = append(dirs, filepath.Clean(cacheDir))
-			}
-		}
+	if rel, ok := relBelowDir(p.workSpace, base); ok && rel == "." {
+		k.muxfysNamesWorkSpaceEntry = true
 	}
 
-	return dirs
+	for _, mt := range mc.Targets {
+		if cacheDir := resolveCacheDir(mt.CacheDir, p.workSpace); cacheDir != "" {
+			k.protect(p, filepath.Clean(cacheDir))
+		}
+	}
 }
 
 // protect records dir as something cleanup must not delete, in whichever of the
@@ -856,8 +871,9 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 // the keep set, so the muxfysCachePrefix rule - the one place a NAME rather than
 // a path identifies a cache dir, and the only thing standing between a writable
 // mount's un-uploaded output and a recursive delete - never ran on that branch.
-// The keep set for a Job with no mounts is just that rule, so taking the branch
-// away costs one RemoveAll the sweep was about to make anyway.
+// Taking the branch away costs one RemoveAll the sweep was about to make anyway,
+// and the keep set for a Job with no mounts is empty, so such a Job is swept
+// exactly as unconditionally as the branch swept it.
 func (ws *jobWorkSpace) removeExcept(wsRoot *os.Root, actualCwd os.FileInfo) error {
 	if !ws.keep.wholeActualCwd && actualCwd != nil {
 		err := removeActualCwd(wsRoot, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd)
@@ -869,9 +885,16 @@ func (ws *jobWorkSpace) removeExcept(wsRoot *os.Root, actualCwd os.FileInfo) err
 	return removeWorkSpaceEntries(wsRoot, ws.keptEntry)
 }
 
-// keptEntry says if an entry of the Job's workspace must survive cleanup: a
-// cache dir muxfys named for itself, or an entry leading to one of the Job's
-// mount points or cache locations.
+// keptEntry says if an entry of the Job's workspace must survive cleanup: an
+// entry leading to one of the Job's mount points or cache locations, or a cache
+// dir muxfys named for itself where the Job has a mount that puts one there.
+//
+// Both halves come out of the keep set, which is derived from the Job's own
+// configuration. The name half used to be asked of every Job instead, and a Job
+// with no mounts has no muxfys and so nothing for it to protect: its own Cmd
+// making a ../.muxfyssquat directory then kept the workspace, and the upward walk
+// that follows hit ENOTEMPTY and gave up, so the workspace and the whole
+// <AppName>_cwd/k/k/k chain above it leaked - one per job, permanently.
 //
 // The working directory needs no rule of its own. It survives exactly when
 // something inside it or at it must survive, and protect() records that same
@@ -879,7 +902,11 @@ func (ws *jobWorkSpace) removeExcept(wsRoot *os.Root, actualCwd os.FileInfo) err
 // own name. A separate rule here would be a second way of saying it, and a
 // second way of saying it is what every round of this bug was made of.
 func (ws *jobWorkSpace) keptEntry(name string) bool {
-	return strings.HasPrefix(name, muxfysCachePrefix) || ws.keep.workSpaceEntries[name]
+	if ws.keep.workSpaceEntries[name] {
+		return true
+	}
+
+	return ws.keep.muxfysNamesWorkSpaceEntry && strings.HasPrefix(name, muxfysCachePrefix)
 }
 
 // removeWorkSpaceEntries deletes every entry of the workspace that keep doesn't

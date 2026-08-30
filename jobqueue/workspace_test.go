@@ -360,30 +360,45 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 			So(err, ShouldBeNil)
 		})
 
-		Convey("The keep set applies to a Job that mounts nothing too", func() {
-			// a Job with no mounts used to skip the keep set entirely for a
-			// straight sweep of every entry. That branch read as a fast path and
-			// was not one: it was the only way to reach cleanup without the
-			// muxfysCachePrefix rule, the one rule keyed on a NAME because it
-			// covers a directory muxfys names for itself rather than one wr can
-			// resolve in advance. A sweep that answers a different question from
-			// every other sweep is how every round of this bug started.
-			//
-			// What it costs is a workspace leaked when a mountless Job's own Cmd
-			// makes a directory with that name - which is the same leak a
-			// mounting Job has always had, and the same way round as everything
-			// else here: a workspace left behind is recoverable, a writable
-			// mount's un-uploaded output is not.
+		Convey("A Job that mounts nothing keeps nothing named like a muxfys cache", func() {
+			// the name rule is the one thing cleanup keeps by NAME rather than by
+			// path, because muxfys chooses the name of the cache dir it makes
+			// inside the CacheBase it was given. A Job with no mounts has no
+			// muxfys, so there is no such dir to protect - and asking the rule of
+			// one anyway meant its own Cmd creating ../.muxfyssquat kept the
+			// workspace alive, after which the upward walk hit ENOTEMPTY and gave
+			// up, leaking the whole <AppName>_cwd chain, one per job, for ever.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			actualCwd, workSpace, tmpDir := realWorkSpace(job)
 
-			decoy := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"_decoy"), "junk.txt")
+			squat := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"squat"), "junk.txt")
 			output := writeFileIn(actualCwd, "out.txt")
 
 			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
 
-			soPathsExist(decoy, workSpace, cwd)
-			soPathsGone(output, actualCwd, tmpDir)
+			soPathsGone(squat, workSpace, filepath.Join(cwd, AppName+createdCwdBaseSuffix),
+				output, actualCwd, tmpDir)
+			soPathsExist(cwd)
+		})
+
+		Convey("Nor does a mounting Job whose cache base is not the workspace", func() {
+			// muxfys names its own dir inside the CacheBase it was given, so a
+			// CacheBase elsewhere puts nothing of muxfys's naming in the
+			// workspace. Keeping one anyway is the same leak, with a mount
+			// attached.
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount:     testWSMount,
+				CacheBase: "cachebase",
+				Targets:   []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			_, workSpace, tmpDir := realWorkSpace(job)
+
+			squat := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"squat"), "junk.txt")
+
+			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsGone(squat, tmpDir)
+			soPathsExist(cwd)
 		})
 
 		Convey("A dir merely named like the configured cache is still deleted", func() {
