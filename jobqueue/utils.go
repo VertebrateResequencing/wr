@@ -1142,6 +1142,32 @@ func (c dirChain) removeEmptyParents() {
 	}
 }
 
+// openVerifiedDirFile opens name, a path relative to parent, as an open FILE on
+// the directory, and proves that the directory it opened is the one info
+// describes - the same proof openVerifiedDir makes, for a caller that needs a
+// descriptor it can name to something else rather than a root to work within.
+//
+// The caller must Close the returned file.
+func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.File, error) {
+	f, err := parent.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	opened, err := f.Stat()
+	if err == nil && !(opened.IsDir() && os.SameFile(opened, info)) {
+		err = fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, f.Name())
+	}
+
+	if err != nil {
+		f.Close()
+
+		return nil, err
+	}
+
+	return f, nil
+}
+
 // openVerifiedDir opens name, a path relative to parent, as a root of its own,
 // and proves that the directory it opened is the one info describes. info must
 // have been taken with an lstat made before name was last resolved, or it

@@ -57,6 +57,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -253,6 +254,11 @@ type jobWorkSpace struct {
 	// cwdRoot with no symlink among the components leading to it.
 	proven provenDirs
 
+	// actualCwdInfo is what the proof lstat'ed at the working directory, or nil
+	// where its absence was tolerated. Anything that opens the working directory
+	// afterwards proves against this that it opened the same one.
+	actualCwdInfo os.FileInfo
+
 	// keep is everything the Job's live mounts and caches need to survive,
 	// classified once against the paths above.
 	keep keptDirs
@@ -277,7 +283,7 @@ func (j *Job) resolveWorkSpace() (*jobWorkSpace, error) {
 		return nil, err
 	}
 
-	return paths.prove()
+	return paths.prove(absenceTolerated)
 }
 
 // resolvedWorkSpaceOrNone is resolveWorkSpace for a caller that has nowhere to
@@ -315,35 +321,155 @@ func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
 // directory of its own for the behaviour to run in. Cwd is still required to be
 // absolute, for the reason absJobDir gives.
 //
-// What remains, and cannot be closed here, is that exec.Cmd takes a path rather
-// than an open directory, so the name is resolved once more when the command
-// starts. Everything above proves the path names no symlink and stays inside
-// Cwd; only the Job's own Cmd is placed to change that afterwards, and it runs
-// as the same user with the same rights, so nothing is gained by doing so.
-func (j *Job) resolveRunDir() (string, error) {
+// The one thing it asks differently is absenceRefused. Sharing a resolution is
+// what makes the two consumers agree; it is not a reason for one of them to
+// inherit a tolerance that means nothing to it, and absence has no legitimate
+// meaning for a directory a command is about to be executed in.
+//
+// It returns the directory HELD OPEN, because exec.Cmd takes a name and resolves
+// it once more when the command starts, which is a window the Job's own Cmd can
+// win - see runDir. The caller must Close the result.
+func (j *Job) resolveRunDir() (*runDir, error) {
 	snap := j.workSpaceSnapshot()
 
 	paths, err := snap.paths()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if paths == nil {
-		return absJobDir("cwd", snap.cwd)
+		return unheldRunDir(absJobDir("cwd", snap.cwd))
 	}
 
-	ws, err := paths.prove()
+	ws, err := paths.prove(absenceRefused)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if ws == nil {
-		return "", fmt.Errorf("%w: the job's cwd %s is not there to run in", errNotBelowBaseDir, paths.cwd)
+		return nil, fmt.Errorf("%w: the job's cwd %s is not there to run in", errNotBelowBaseDir, paths.cwd)
 	}
 	defer ws.Close()
 
-	return ws.paths.actualCwd, nil
+	return ws.openRunDir()
 }
+
+// runDir is the directory a `run` Behaviour's command is to be executed in, with
+// an open handle on it where there is one to be had.
+//
+// The handle is what narrows the last gap in this file. exec.Cmd takes a Dir
+// NAME and the child resolves it again, from the top, when the command starts,
+// so everything proved about the path is proved about a name that is looked up
+// once more afterwards. That window is winnable: a racer doing nothing cleverer
+// than remove/symlink/remove/mkdir on the working directory in a loop redirected
+// the command out of the Job's Cwd 11 times in 200 attempts.
+//
+// It matters more than "the Job's own Cmd could do it anyway" allows, because
+// `run` also fires in the MANAGER, for a job declared lost whose Cmd may still
+// be alive on a node sharing the filesystem. Racer and executor are then
+// different processes on different machines, and the symlink can point anywhere
+// the manager can reach.
+//
+// So the handle is opened at the moment of proof and the command is started
+// relative to it. On Linux that is /proc/self/fd/N, which the child resolves
+// after fork() and before exec, when it still has our file descriptors: it names
+// the directory that was proven, by identity, and no swap of any name above it
+// can redirect the chdir. Where that is not available the name is used, and the
+// window is still there; see execDir.
+type runDir struct {
+	// held is the open directory, or nil when there is none: the Job's own Cwd,
+	// which no proof was made about in the first place.
+	held *os.File
+
+	// path is the directory's name, used when there is no handle and as the
+	// fallback where a handle cannot be named to exec.
+	path string
+}
+
+// unheldRunDir is a runDir for a directory wr has no proof about and so nothing
+// to pin: the Job's own Cwd, where a Job wr created no working directory for
+// runs. It takes absJobDir's pair directly so that its refusal passes through.
+func unheldRunDir(dir string, err error) (*runDir, error) {
+	if err != nil {
+		return nil, err
+	}
+
+	return &runDir{path: dir}, nil
+}
+
+// openRunDir hands back the proven working directory, held open.
+//
+// It is opened through the handle on the Job's Cwd, so the lookup cannot leave
+// it, and the directory it gets is proven to be the one the resolution lstat'ed
+// - an os.Root follows a relative symlink that stays inside its root, so opening
+// by name alone could still be redirected within Cwd between the proof and here.
+func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
+	held, err := openVerifiedDirFile(ws.cwdRoot, ws.paths.rel, ws.actualCwdInfo)
+	if err != nil {
+		return nil, fmt.Errorf("%w: refusing to run in %s: %w", errNotBelowBaseDir, ws.paths.actualCwd, err)
+	}
+
+	return &runDir{held: held, path: ws.paths.actualCwd}, nil
+}
+
+// execDir is the name to give exec.Cmd's Dir.
+//
+// It is the held directory's own file descriptor, named through /proc/self/fd,
+// whenever that names the directory we are holding: the child chdirs to it
+// between fork and exec, while it still has a copy of our descriptor table, so
+// what it lands in is the directory itself rather than whatever the path
+// resolves to by then.
+//
+// Everywhere that is not available - no /proc, or nothing held - it is the path,
+// and the resolution race described on runDir is open. The check is made against
+// the handle rather than by testing the platform, so a system that does not
+// answer for its own descriptors falls back rather than pointing a command at a
+// name that means nothing.
+func (r *runDir) execDir() string {
+	if r.held == nil {
+		return r.path
+	}
+
+	fdPath := filepath.Join("/proc/self/fd", strconv.Itoa(int(r.held.Fd())))
+
+	held, err := r.held.Stat()
+	if err != nil {
+		return r.path
+	}
+
+	named, err := os.Stat(fdPath)
+	if err != nil || !os.SameFile(named, held) {
+		return r.path
+	}
+
+	return fdPath
+}
+
+// Close releases the handle, which must not happen until the command has
+// started: it is what the child chdirs through.
+func (r *runDir) Close() {
+	if r.held != nil {
+		r.held.Close()
+	}
+}
+
+// absenceRule says what a resolution makes of a working directory that is not
+// there. It is a parameter rather than a property of the paths because the two
+// consumers of the resolution differ on it, and only on it.
+//
+// Cleanup tolerates absence, for a workspace the origin proof claims: the Job's
+// own Cmd may have deleted the working directory, or a previous cleanup may
+// have, and cleanup runs twice for a lost job, so refusing would leak a
+// workspace every second time. A `run` behaviour cannot tolerate it - a command
+// cannot execute in a directory that is not there, and returning the name anyway
+// left exec.Cmd to resolve it a second time, at which point whatever creates it
+// in between chooses where the user's command runs.
+type absenceRule bool
+
+const (
+	absenceTolerated absenceRule = true
+	absenceRefused   absenceRule = false
+)
 
 // prove opens the Job's Cwd and proves the workspace is a real directory
 // strictly inside it, with no symlink among the components leading to it.
@@ -352,7 +478,7 @@ func (j *Job) resolveRunDir() (string, error) {
 // than the directory itself, and the deletions below descend into the workspace
 // and into the working directory by reading them, which follows a symlinked
 // final component.
-func (p *workSpacePaths) prove() (*jobWorkSpace, error) {
+func (p *workSpacePaths) prove(absent absenceRule) (*jobWorkSpace, error) {
 	cwdRoot, err := openBaseRoot(p.cwd)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -362,14 +488,16 @@ func (p *workSpacePaths) prove() (*jobWorkSpace, error) {
 		return nil, fmt.Errorf("%w: could not open the job's cwd %s: %w", errNotBelowBaseDir, p.cwd, err)
 	}
 
-	proven, err := p.proveBelow(cwdRoot)
+	proven, actualCwdInfo, err := p.proveBelow(cwdRoot, absent)
 	if err != nil {
 		cwdRoot.Close()
 
 		return nil, err
 	}
 
-	return &jobWorkSpace{paths: p, cwdRoot: cwdRoot, proven: proven, keep: p.keptDirs()}, nil
+	return &jobWorkSpace{
+		paths: p, cwdRoot: cwdRoot, proven: proven, actualCwdInfo: actualCwdInfo, keep: p.keptDirs(),
+	}, nil
 }
 
 // proveBelow proves both halves of what wr made: the workspace, as a real dir
@@ -389,15 +517,17 @@ func (p *workSpacePaths) prove() (*jobWorkSpace, error) {
 // and its rule - absence is tolerated only for a workspace the paths prove wr
 // built for THIS Job - is the same rule either way, which is what keeps the
 // second cleanup of a real Job working while a fabricated path is refused.
-func (p *workSpacePaths) proveBelow(cwdRoot *os.Root) (provenDirs, error) {
+func (p *workSpacePaths) proveBelow(cwdRoot *os.Root, absent absenceRule) (provenDirs, os.FileInfo, error) {
 	proven, ok := realDirBelow(cwdRoot, p.workSpace)
 	if !ok {
-		return provenDirs{}, fmt.Errorf(
-			"%w: refusing to clean up %s, whose parent is not a real dir inside the job's cwd %s",
+		return provenDirs{}, nil, fmt.Errorf(
+			"%w: refusing to use %s, whose parent is not a real dir inside the job's cwd %s",
 			errNotBelowBaseDir, p.actualCwd, p.cwd)
 	}
 
-	return proven, p.proveActualCwd(cwdRoot)
+	info, err := p.proveActualCwd(cwdRoot, absent)
+
+	return proven, info, err
 }
 
 // proveActualCwd proves the Job's working directory is a real directory that is
@@ -406,30 +536,31 @@ func (p *workSpacePaths) proveBelow(cwdRoot *os.Root) (provenDirs, error) {
 // component - which is the one component above it that the workspace proof has
 // not already covered.
 //
-// A working directory that is not there is tolerated only when the paths prove
-// the workspace is the one wr built for this Job, in which case its absence just
-// means the Job's own Cmd removed it, or a previous cleanup did. That keeps
-// cleanup idempotent for every workspace wr actually made, which matters because
-// it runs twice for a lost job.
+// A working directory that is not there is tolerated only when the caller says
+// absence means something to it AND the paths prove the workspace is the one wr
+// built for this Job, in which case its absence just means the Job's own Cmd
+// removed it, or a previous cleanup did. That keeps cleanup idempotent for every
+// workspace wr actually made, which matters because it runs twice for a lost
+// job; see absenceRule for why `run` says no to the same thing.
 //
-// Without that proof, absence is refused. The depth-and-name check reads only
-// the shape of the path, so appending "/cwd" to a directory of the user's at the
-// right depth satisfies it, and its PARENT would then be swept as a workspace,
-// or walked for empty dirs by Unmount's tidy-up. A directory that is not there
-// is not one wr created, and requiring it to be there is all that stands between
-// that user directory and a recursive delete - or, when the workspace is missing
-// too, between the user's empty directories and the upward walk.
-func (p *workSpacePaths) proveActualCwd(cwdRoot *os.Root) error {
+// Otherwise absence is refused. The shape check reads only the path's base name,
+// depth and leaf name, so a directory of the user's below one named for wr
+// satisfies it, and its PARENT would then be swept as a workspace, or walked for
+// empty dirs by Unmount's tidy-up. A directory that is not there is not one wr
+// created, and requiring it to be there is all that stands between that user
+// directory and a recursive delete - or, when the workspace is missing too,
+// between the user's empty directories and the upward walk.
+func (p *workSpacePaths) proveActualCwd(cwdRoot *os.Root, absent absenceRule) (os.FileInfo, error) {
 	info, err := cwdRoot.Lstat(p.rel)
 	if err == nil && info.IsDir() {
-		return nil
+		return info, nil
 	}
 
-	if os.IsNotExist(err) && p.createdForThisJob {
-		return nil
+	if os.IsNotExist(err) && absent == absenceTolerated && p.createdForThisJob {
+		return nil, nil //nolint:nilnil // there is nothing there to have lstat'ed, and that is allowed here
 	}
 
-	return fmt.Errorf("%w: refusing to clean up %s, which is not a real dir inside the job's cwd %s",
+	return nil, fmt.Errorf("%w: refusing to use %s, which is not a real dir inside the job's cwd %s",
 		errNotBelowBaseDir, p.actualCwd, p.cwd)
 }
 

@@ -55,6 +55,13 @@ var (
 // otherwise get into it reliably. It is nil in production.
 var cleanupProvenHook func() //nolint:gochecknoglobals
 
+// runProvenHook, when set, is called in the moment between a `run` Behaviour
+// resolving the directory its command is to execute in and that command
+// starting. That is the window in which the resolved NAME can be made to mean
+// something else, which is why the directory is held open across it, and a test
+// cannot otherwise get into it reliably. It is nil in production.
+var runProvenHook func() //nolint:gochecknoglobals
+
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
 // that Behaviour will trigger.
 type BehaviourTrigger uint8
@@ -276,6 +283,11 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 // same two fields. A Job whose directory cannot be shown to be its own runs
 // nothing at all: the command is the user's and can do anything they can, so
 // running it in the wrong place is exactly the harm this refuses.
+//
+// The directory comes back held open, and cmd.Dir names that handle where the
+// platform allows it to be named, so the command starts in the directory that
+// was proven rather than in whatever its path resolves to by then. See runDir
+// for what that closes and where it is still open.
 func (b *Behaviour) run(j *Job) error {
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
@@ -286,6 +298,11 @@ func (b *Behaviour) run(j *Job) error {
 	if err != nil {
 		return fmt.Errorf("run behaviour refused: %w", err)
 	}
+	defer dir.Close()
+
+	if runProvenHook != nil {
+		runProvenHook()
+	}
 
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
@@ -295,7 +312,7 @@ func (b *Behaviour) run(j *Job) error {
 	// they like, but that is the very nature of this app. This runs as them,
 	// so can do whatever they can do...
 	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", bc)
-	cmd.Dir = dir
+	cmd.Dir = dir.execDir()
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {

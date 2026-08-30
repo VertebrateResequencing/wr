@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -1352,6 +1353,61 @@ func TestBehaviourRunDir(t *testing.T) {
 			err := run.Trigger(OnExit, job)
 
 			So(ranIn(escaped), ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("run executes in the directory that was proven, not in what the name means later", func() {
+			// exec.Cmd takes a NAME and the child resolves it once more when the
+			// command starts, so everything proved about the path was proved
+			// about a string that gets looked up again. The hook puts the test
+			// in exactly that moment; a racer doing this in a loop won it 11
+			// times in 200 before the directory was held open across it.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, _, _ := realWorkSpace(job)
+
+			moved := filepath.Join(cwd, "moved")
+			elsewhere := filepath.Join(cwd, "elsewhere")
+			So(os.MkdirAll(elsewhere, os.ModePerm), ShouldBeNil)
+
+			runProvenHook = func() {
+				runProvenHook = nil
+
+				So(os.Rename(actualCwd, moved), ShouldBeNil)
+				So(os.Symlink(elsewhere, actualCwd), ShouldBeNil)
+			}
+
+			Reset(func() { runProvenHook = nil })
+
+			So(run.Trigger(OnExit, job), ShouldBeNil)
+
+			if runtime.GOOS != "linux" {
+				// exec can only be given the handle where /proc names it, so
+				// everywhere else the name is resolved again and this window is
+				// the residual recorded on runDir.
+				return
+			}
+
+			So(ranIn(elsewhere), ShouldBeFalse)
+			So(ranIn(moved), ShouldBeTrue)
+		})
+
+		Convey("run refuses a working directory that is not there", func() {
+			// cleanup TOLERATES this absence, and has to: the Job's own Cmd may
+			// have deleted the directory, or a previous cleanup may have, and
+			// cleanup runs twice for a lost job. For `run` there is nothing to
+			// tolerate - a command cannot execute in a directory that is not
+			// there - and handing the name back anyway leaves exec.Cmd to
+			// resolve it a second time, when whatever creates it in the meantime
+			// chooses where the user's command runs. The two consumers share one
+			// resolution, so the difference has to be said rather than inherited.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, _, _ := realWorkSpace(job)
+			So(os.RemoveAll(actualCwd), ShouldBeNil)
+
+			err := run.Trigger(OnExit, job)
+
+			soPathsGone(actualCwd)
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
