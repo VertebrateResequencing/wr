@@ -1188,6 +1188,169 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 	})
 }
 
+// testRunMarker is the file a `run` behaviour's command creates in whatever
+// directory it is given, so the tests can say where it actually ran.
+const testRunMarker = "ran_here"
+
+// runBehaviour is a Run Behaviour whose command drops testRunMarker in its
+// working directory.
+func runBehaviour() *Behaviour {
+	return &Behaviour{When: OnExit, Do: Run, Arg: "touch " + testRunMarker}
+}
+
+func TestBehaviourRunDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// a `run` behaviour executes an arbitrary shell command, so where it runs
+	// decides what that command destroys. The directory therefore has to be
+	// answered by the same resolution that licenses a deletion, from the same
+	// fields, rather than by reading the raw ActualCwd a runner reported.
+	Convey("Given a Job Cwd holding directories of the user's own", t, func() {
+		cwd := t.TempDir()
+		scripts := filepath.Join(cwd, "scripts")
+		So(os.MkdirAll(scripts, os.ModePerm), ShouldBeNil)
+
+		run := runBehaviour()
+
+		ranIn := func(dir string) bool {
+			_, err := os.Stat(filepath.Clean(filepath.Join(dir, testRunMarker)))
+
+			return err == nil
+		}
+
+		Convey("run executes in the working directory wr really created", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, _, _ := realWorkSpace(job)
+
+			So(run.Trigger(OnExit, job), ShouldBeNil)
+
+			So(ranIn(actualCwd), ShouldBeTrue)
+			So(ranIn(scripts), ShouldBeFalse)
+		})
+
+		Convey("run executes in Cwd when wr created no working directory", func() {
+			// a Job that has yet to report an ActualCwd has no unique directory
+			// of its own, and Cwd is the only directory we know of. That is the
+			// sound half of the old behaviourRunDir fallback, and it is kept.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+
+			So(run.Trigger(OnExit, job), ShouldBeNil)
+
+			So(ranIn(cwd), ShouldBeTrue)
+		})
+
+		Convey("run executes in Cwd for a CwdMatters Job, whatever its ActualCwd says", func() {
+			// wr <= v0.37.1 persisted ActualCwd == Cwd on such a Job, and a
+			// runner can report anything; wr creates no directory for one, so
+			// the Cmd ran in the user's own Cwd and the behaviour must too.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true, ActualCwd: scripts}
+
+			So(run.Trigger(OnExit, job), ShouldBeNil)
+
+			So(ranIn(cwd), ShouldBeTrue)
+			So(ranIn(scripts), ShouldBeFalse)
+		})
+
+		Convey("run refuses an ActualCwd wr could not have created", func() {
+			// this arrives off the wire: JobEndState.Cwd -> applyLiveSnapshot ->
+			// TriggerBehaviours in the MANAGER. Cleanup refuses it loudly, and
+			// run used to accept the same value and execute the user's command
+			// in their own scripts directory.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			applyLiveSnapshot(job, &JobEndState{Cwd: scripts})
+
+			err := run.Trigger(OnExit, job)
+
+			So(ranIn(scripts), ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+
+		Convey("run refuses an ActualCwd that leaves Cwd through a symlink", func() {
+			// the shape check is lexical, so a path at the right depth through a
+			// symlinked component passes it; only proving every component is a
+			// real dir keeps the command inside the Job's own Cwd.
+			outside := t.TempDir()
+			escapeTarget := filepath.Join(append([]string{outside}, testHashDirs...)...)
+			escaped := filepath.Join(escapeTarget, "unique", createdCwdName)
+			So(os.MkdirAll(escaped, os.ModePerm), ShouldBeNil)
+			So(os.Symlink(outside, filepath.Join(cwd, "escape")), ShouldBeNil)
+
+			viaLink := filepath.Join(append([]string{cwd, "escape"}, testHashDirs...)...)
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, ActualCwd: filepath.Join(viaLink, "unique", createdCwdName)}
+
+			err := run.Trigger(OnExit, job)
+
+			So(ranIn(escaped), ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("run refuses when the Job's Cwd has itself gone", func() {
+			// an empty cmd.Dir is not "nowhere", it is the directory of whatever
+			// process is running the behaviour - the manager, for a lost job.
+			gone := filepath.Join(cwd, "gone")
+			So(os.MkdirAll(gone, os.ModePerm), ShouldBeNil)
+
+			job := &Job{Cwd: gone, Cmd: testWSCmd}
+			realWorkSpace(job)
+
+			So(os.RemoveAll(gone), ShouldBeNil)
+
+			err := run.Trigger(OnExit, job)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+	})
+
+	Convey("Given a process working directory a relative path would resolve against", t, func() {
+		// cleanup and behaviours run in TWO processes with different working
+		// directories: the runner, and the manager when it declares a job lost.
+		// exec.Cmd resolves a relative Dir against the process running it, so a
+		// relative path reported over the wire aims the user's command at
+		// whatever sits beside the MANAGER. This is the bug 448d0b1 fixed for
+		// cleanup, arriving at the same fields through a different consumer.
+		base := t.TempDir()
+		beside := filepath.Join(base, "beside")
+		So(os.MkdirAll(beside, os.ModePerm), ShouldBeNil)
+
+		oldWd, err := os.Getwd()
+		So(err, ShouldBeNil)
+
+		So(os.Chdir(base), ShouldBeNil)
+
+		Reset(func() { So(os.Chdir(oldWd), ShouldBeNil) })
+
+		cwd := filepath.Join(base, "jobcwd")
+		So(os.MkdirAll(cwd, os.ModePerm), ShouldBeNil)
+
+		run := runBehaviour()
+
+		Convey("run refuses a relative ActualCwd", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, ActualCwd: "beside"}
+
+			err = run.Trigger(OnExit, job)
+
+			soPathsGone(filepath.Join(beside, testRunMarker))
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("run refuses a relative Cwd", func() {
+			job := &Job{Cwd: "beside", Cmd: testWSCmd}
+
+			err = run.Trigger(OnExit, job)
+
+			soPathsGone(filepath.Join(beside, testRunMarker))
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+	})
+}
+
 // soPathsExist asserts that each of the given paths still exists.
 func soPathsExist(paths ...string) {
 	for _, path := range paths {

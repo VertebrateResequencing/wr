@@ -269,11 +269,22 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 	return ws.cleanup()
 }
 
-// run simply runs the given command from Job's actual cwd.
+// run runs the given command in the directory the Job's Cmd ran in.
+//
+// Which directory that is comes from Job.resolveRunDir - the same resolution
+// that decides what cleanup may delete, since it is the same question about the
+// same two fields. A Job whose directory cannot be shown to be its own runs
+// nothing at all: the command is the user's and can do anything they can, so
+// running it in the wrong place is exactly the harm this refuses.
 func (b *Behaviour) run(j *Job) error {
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
 		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStr, b.Arg, b.Arg)
+	}
+
+	dir, err := j.resolveRunDir()
+	if err != nil {
+		return fmt.Errorf("run behaviour refused: %w", err)
 	}
 
 	if strings.Contains(bc, " | ") {
@@ -284,7 +295,7 @@ func (b *Behaviour) run(j *Job) error {
 	// they like, but that is the very nature of this app. This runs as them,
 	// so can do whatever they can do...
 	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", bc)
-	cmd.Dir = j.behaviourRunDir()
+	cmd.Dir = dir
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -292,26 +303,6 @@ func (b *Behaviour) run(j *Job) error {
 	}
 
 	return err
-}
-
-// behaviourRunDir is the directory a Run behaviour's command runs in, read under
-// the Job's lock because the manager writes ActualCwd (applyLiveSnapshot) while
-// it triggers behaviours for a lost job.
-//
-// It falls back to Cwd unconditionally, unlike Job.workingDir(), which does so
-// only when CwdMatters: cmd.Dir must name a directory that exists, and Cwd is
-// the only one we know does. Don't unify the two: workingDir() feeds what we
-// display and offer to ssh to, where claiming a non-CwdMatters job with no
-// reported ActualCwd is in Cwd would be a lie.
-func (j *Job) behaviourRunDir() string {
-	j.RLock()
-	defer j.RUnlock()
-
-	if j.ActualCwd != "" {
-		return j.ActualCwd
-	}
-
-	return j.Cwd
 }
 
 // copyToManager copies the files specified in the Arg slice to the configured

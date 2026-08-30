@@ -37,7 +37,21 @@ package jobqueue
 // disagreement always resolved in favour of deleting something of the user's.
 //
 // So the rule this file exists to enforce is: resolve and prove ONCE, then pass
-// the proven value. Nothing that can delete reads j.Cwd or j.ActualCwd again.
+// the proven value. Nothing that can delete below a Job's Cwd, and nothing that
+// runs a command there on the strength of a reported ActualCwd, reads j.Cwd or
+// j.ActualCwd again.
+//
+// A `run` Behaviour belongs to that second half, and used not to. It executes an
+// arbitrary shell command, so the directory it runs in decides what that command
+// destroys, and that is the same question cleanup asks of the same two fields.
+// It had its own answer, which applied none of the checks below, so a poisoned,
+// relative or CwdMatters ActualCwd aimed the user's own command at a directory
+// of theirs - or, relative, at whatever sat beside the MANAGER.
+//
+// The one thing outside this file that still reads j.Cwd to decide where a
+// command runs is Client.resolveWorkingDir, and that is where the runner
+// establishes the working directory in the first place: it writes ActualCwd
+// rather than reading it, so there is nothing there to re-derive.
 
 import (
 	"fmt"
@@ -152,27 +166,43 @@ func (s jobWorkSpaceSnapshot) paths() (*workSpacePaths, error) {
 	}, nil
 }
 
-// absJobDirs cleans a Job's Cwd and ActualCwd, refusing either unless it is
-// already absolute.
+// absJobDir cleans one of a Job's directories, refusing it unless it is already
+// absolute.
 //
 // A relative path means nothing without knowing which process resolves it, and
-// cleanup runs in TWO of them: the runner, and the manager when it declares a
+// this code runs in TWO of them: the runner, and the manager when it declares a
 // job lost (killLostJobAndTriggerBehaviours). Everything below resolves with
 // filepath.Abs, ie. against whichever process is cleaning up - so a relative Cwd
 // made every containment proof hold against the MANAGER's directory instead, and
 // the deletion landed on whatever happened to sit at the same relative path
-// beside it.
+// beside it. exec.Cmd resolves a relative Dir the same way, so a `run` behaviour
+// given one executed the user's command there too.
 //
 // Job.Cwd is stored exactly as the user typed it and cannot be normalised at the
 // source, because it feeds Job.Key() and so job identity. Refusing here turns a
 // deletion in the wrong tree into a leaked workspace and a loud error, which is
 // the right way round.
-func absJobDirs(cwd, actualCwd string) (string, string, error) {
-	if !filepath.IsAbs(cwd) || !filepath.IsAbs(actualCwd) {
-		return "", "", fmt.Errorf("%w: %s and %s must both be absolute", errNotBelowBaseDir, cwd, actualCwd)
+func absJobDir(what, dir string) (string, error) {
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%w: the job's %s %s is not absolute", errNotBelowBaseDir, what, dir)
 	}
 
-	return filepath.Clean(cwd), filepath.Clean(actualCwd), nil
+	return filepath.Clean(dir), nil
+}
+
+// absJobDirs does absJobDir for both of a Job's directories.
+func absJobDirs(cwd, actualCwd string) (string, string, error) {
+	absCwd, err := absJobDir("cwd", cwd)
+	if err != nil {
+		return "", "", err
+	}
+
+	absActualCwd, err := absJobDir("actual cwd", actualCwd)
+	if err != nil {
+		return "", "", err
+	}
+
+	return absCwd, absActualCwd, nil
 }
 
 // createdCwdRel returns actualCwd relative to cwd, having refused it unless it
@@ -265,6 +295,54 @@ func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
 	}
 
 	return ws
+}
+
+// resolveRunDir is the ONE place a Job's Cwd and ActualCwd are read to decide
+// where a `run` Behaviour's command executes. It asks the same resolution
+// cleanup asks, of the same fields, so the two cannot disagree about which
+// directory is the Job's - which they did, in all four ways the resolution
+// exists to rule out.
+//
+// A directory that cannot be shown to be the Job's is refused rather than
+// substituted for: running a user's command in the wrong directory is the thing
+// this whole file is here to prevent, and the command can do anything the user
+// can. A refusal fails the behaviour loudly and runs nothing, which is the same
+// way round as cleanup leaking a workspace rather than deleting the wrong one.
+//
+// A Job wr created no working directory for still runs in its Cwd. That is the
+// sound half of the old behaviourRunDir: a CwdMatters Job's Cmd really did run
+// in the user's own Cwd, and a Job that has yet to report an ActualCwd has no
+// directory of its own for the behaviour to run in. Cwd is still required to be
+// absolute, for the reason absJobDir gives.
+//
+// What remains, and cannot be closed here, is that exec.Cmd takes a path rather
+// than an open directory, so the name is resolved once more when the command
+// starts. Everything above proves the path names no symlink and stays inside
+// Cwd; only the Job's own Cmd is placed to change that afterwards, and it runs
+// as the same user with the same rights, so nothing is gained by doing so.
+func (j *Job) resolveRunDir() (string, error) {
+	snap := j.workSpaceSnapshot()
+
+	paths, err := snap.paths()
+	if err != nil {
+		return "", err
+	}
+
+	if paths == nil {
+		return absJobDir("cwd", snap.cwd)
+	}
+
+	ws, err := paths.prove()
+	if err != nil {
+		return "", err
+	}
+
+	if ws == nil {
+		return "", fmt.Errorf("%w: the job's cwd %s is not there to run in", errNotBelowBaseDir, paths.cwd)
+	}
+	defer ws.Close()
+
+	return ws.paths.actualCwd, nil
 }
 
 // prove opens the Job's Cwd and proves the workspace is a real directory
