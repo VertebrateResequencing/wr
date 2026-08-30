@@ -425,8 +425,14 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 	// of them left the whole suite green while a user's directory was deleted.
 	// They are here so a later simplification cannot remove them silently.
 	Convey("Given a user tree at exactly the depth wr creates its workspaces at", t, func() {
+		// the tree's top component is named the way wr names the base of its
+		// own, because that is what the shape check looks at first: a fixture
+		// named anything else is refused there and none of the guards below is
+		// reached, let alone tested. A directory of the user's that happens to
+		// end in _cwd is the residual the base check leaves, and these are the
+		// guards standing behind it.
 		cwd := t.TempDir()
-		userTree := filepath.Join(cwd, "a", "b", "c", "d", "e")
+		userTree := filepath.Join(cwd, "user"+createdCwdBaseSuffix, "b", "c", "d", "e")
 		userDir := filepath.Join(userTree, "userdata")
 		err := os.MkdirAll(userDir, os.ModePerm)
 		So(err, ShouldBeNil)
@@ -475,6 +481,26 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 			soPathsExist(precious, userTree, cwd)
 
 			So(err, ShouldNotBeNil)
+		})
+
+		Convey("cleanup will not sweep a real dir of the right name at the wrong depth", func() {
+			// every working directory wr creates sits at one depth, so a real
+			// directory of the user's called cwd one level short of it was
+			// never made by wr - and treating it as one would sweep its PARENT,
+			// which here is a directory of theirs holding their data.
+			shallow := filepath.Join(cwd, "user"+createdCwdBaseSuffix, "b", "c")
+			named := filepath.Join(shallow, createdCwdName)
+			So(os.MkdirAll(named, os.ModePerm), ShouldBeNil)
+
+			counts := filepath.Join(shallow, "counts.tsv")
+			So(os.WriteFile(counts, []byte("counted\n"), 0o600), ShouldBeNil)
+
+			err = (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job(cwd, named))
+
+			soPathsExist(counts, named, shallow, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
 		})
 
 		Convey("cleanup will not sweep a real dir at that depth that is not named cwd", func() {

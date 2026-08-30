@@ -52,6 +52,16 @@ package jobqueue
 // command runs is Client.resolveWorkingDir, and that is where the runner
 // establishes the working directory in the first place: it writes ActualCwd
 // rather than reading it, so there is nothing there to re-derive.
+//
+// Resolving once is what stops the two consumers DISAGREEING. It says nothing
+// about whether what they agree on is right, and for five rounds they agreed on
+// a predicate that was only a shape: a path at the depth wr builds at, with a
+// last component called cwd. Both properties an ordinary tree of the user's can
+// have. What identifies a workspace is the base component wr names for itself
+// (relIsCreatedCwd), and, where the Job's key still describes it, the hashed
+// path mkHashedDir laid down (relIsJobCreatedCwd). Everything either consumer is
+// allowed to do rests on those two, so what is written about them has to say
+// exactly what they check and no more.
 
 import (
 	"fmt"
@@ -121,10 +131,14 @@ type workSpacePaths struct {
 	workSpace     string
 	actualCwdName string
 
-	// createdForThisJob is true when the paths are exactly the ones mkHashedDir
-	// builds from this Job's key. That is proof of origin, where depth and name
-	// alone are only a coincidence filter, and it is what lets cleanup tolerate
-	// a working directory the Job's own Cmd deleted.
+	// createdForThisJob is true when the paths are the ones mkHashedDir builds
+	// from this Job's key, base component aside. That is as close to proof of
+	// origin as this can get, and it is what lets cleanup tolerate a working
+	// directory the Job's own Cmd deleted. It stays optional, because Key()
+	// covers the Cmd, mounts and image, so a `wr mod` between a Job running and
+	// its cleanup changes it and every legitimate cleanup after that would be
+	// refused. The base component, which needs no key, is required of every
+	// path instead.
 	createdForThisJob bool
 
 	// mounts is the Job's MountConfigs, from which the mount points and cache
