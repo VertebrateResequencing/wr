@@ -246,7 +246,9 @@ so your "run" behaviours will be able to read from or write to anything in your
 mount point(s). The "cleanup" and "cleanup_all" behaviours, however, will ignore
 your mounted directories and any mount cache directories, so that nothing on
 your remote file systems gets deleted. Unmounting will get rid of them though,
-so you would still end up with a "cleaned" workspace.
+so you would still end up with a "cleaned" workspace - except for a cache
+directory you named yourself, which unmounting deliberately leaves in place, and
+which will therefore be left behind along with the workspace holding it.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are
