@@ -1569,10 +1569,12 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 		// dials args[0]) before subscriptionDialAddr (which prefers
 		// ServerInfo.Addr): swap that order and every attempt reaches the real
 		// manager again, silently restoring the hang this avoids.
-		deadPort, err := freeTestPort()
-		So(err, ShouldBeNil)
-
-		jq.args[0] = "localhost:" + strconv.Itoa(deadPort)
+		// port 0 rather than freeTestPort(): that returns a port nothing holds
+		// at the moment it looks, which another process can bind before the
+		// reconnect attempts get there, quietly restoring the hang this avoids.
+		// Port 0 is never a valid destination, so every attempt fails at once,
+		// which is what "the manager is permanently gone" has to mean here.
+		jq.args[0] = "localhost:0"
 
 		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-d4-permanent"})
 		So(err, ShouldBeNil)
@@ -1604,7 +1606,23 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 		// spends the whole of Stop unable to observe the channel. Measured with
 		// the budget mutated to zero: 61.6ms of slack with closeSock after Stop,
 		// 62.4ms with it before.
+		//
+		// The wait itself runs in its own goroutine, started BEFORE Stop, so
+		// the close is timed from when it happens rather than from whenever
+		// this goroutine gets out of Stop. That is what removes the free budget
+		// described above, instead of merely bounding it.
+		type closeObservation struct {
+			after  time.Duration
+			closed bool
+		}
+
+		observed := make(chan closeObservation, 1)
 		wentAway := time.Now()
+
+		go func() {
+			after, closed := subscriptionUpdatesClosedAfter(sub, wentAway, 3*time.Second)
+			observed <- closeObservation{after: after, closed: closed}
+		}()
 
 		server.Stop(ctx, true)
 		sub.closeSock()
@@ -1612,7 +1630,8 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 		// closedAfter also covers "no fatal error while it is still retrying":
 		// only finish() sets a fatal error here, and it closes the channel in
 		// the same sync.Once, so an error set early is an early close.
-		closedAfter, closed := subscriptionUpdatesClosedAfter(sub, wentAway, 3*time.Second)
+		result := <-observed
+		closedAfter, closed := result.after, result.closed
 		So(closed, ShouldBeTrue)
 		So(closedAfter, ShouldBeGreaterThanOrEqualTo, retryTime)
 		So(errors.Is(sub.Err(), ErrSubscriptionClosed), ShouldBeTrue)
