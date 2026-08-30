@@ -64,11 +64,28 @@ func TestOwnMemoryMB(t *testing.T) {
 	})
 }
 
-func TestRmEmptyDirs(t *testing.T) {
+// rootOf opens dir the way every caller of rmEmptyDirsIn has already had to:
+// as a handle that bounds the walk, so that a component swapped after the proof
+// cannot redirect a deletion out of it.
+func rootOf(dir string) *os.Root {
+	root, err := openBaseRoot(dir)
+	So(err, ShouldBeNil)
+
+	return root
+}
+
+func TestRmEmptyDirsIn(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
+	// rmEmptyDirsIn is the upward walk Job.Unmount's tidy-up makes from a mount
+	// point, and every deletion it makes is bounded by the handle on the Job's
+	// Cwd that the caller has already proven its way to. It used to have a
+	// path-taking twin, rmEmptyDirs, that opened that handle itself; nothing in
+	// wr called it, these tests kept it looking usable, and it was the entry
+	// point the pre-round-7 upward walk went through. The tests are the walk's,
+	// not the twin's, so they now ask them of the live function.
 	Convey("Given a base dir with a nested leaf dir inside it", t, func() {
 		outer := t.TempDir()
 		base := filepath.Join(outer, "base")
@@ -77,30 +94,30 @@ func TestRmEmptyDirs(t *testing.T) {
 		err := os.MkdirAll(leaf, os.ModePerm)
 		So(err, ShouldBeNil)
 
-		Convey("rmEmptyDirs deletes the leaf and its empty parents, but not baseDir", func() {
-			So(rmEmptyDirs(leaf, base), ShouldBeNil)
+		Convey("rmEmptyDirsIn deletes the leaf and its empty parents, but not baseDir", func() {
+			So(rmEmptyDirsIn(rootOf(base), leaf), ShouldBeNil)
 
 			_, err = os.Stat(filepath.Join(base, "wr_cwd"))
 			So(err, ShouldNotBeNil)
 			soPathsExist(base, outer)
 		})
 
-		Convey("rmEmptyDirs stops at the first non-empty parent", func() {
+		Convey("rmEmptyDirsIn stops at the first non-empty parent", func() {
 			err = os.WriteFile(filepath.Join(aDir, "output.txt"), []byte("kept\n"), 0o600)
 			So(err, ShouldBeNil)
 
-			So(rmEmptyDirs(leaf, base), ShouldBeNil)
+			So(rmEmptyDirsIn(rootOf(base), leaf), ShouldBeNil)
 
 			_, err = os.Stat(filepath.Join(aDir, "b"))
 			So(err, ShouldNotBeNil)
 			soPathsExist(aDir, base, outer)
 		})
 
-		Convey("rmEmptyDirs keeps a non-empty leaf, without error", func() {
+		Convey("rmEmptyDirsIn keeps a non-empty leaf, without error", func() {
 			err = os.WriteFile(filepath.Join(leaf, "output.txt"), []byte("kept\n"), 0o600)
 			So(err, ShouldBeNil)
 
-			So(rmEmptyDirs(leaf, base), ShouldBeNil)
+			So(rmEmptyDirsIn(rootOf(base), leaf), ShouldBeNil)
 
 			soPathsExist(leaf, aDir, base, outer)
 
@@ -111,47 +128,47 @@ func TestRmEmptyDirs(t *testing.T) {
 			})
 		})
 
-		Convey("rmEmptyDirs treats an unclean baseDir as the same dir, so still stops at it", func() {
-			So(rmEmptyDirs(leaf, base+string(filepath.Separator)), ShouldBeNil)
+		Convey("rmEmptyDirsIn treats an unclean baseDir as the same dir, so still stops at it", func() {
+			So(rmEmptyDirsIn(rootOf(base+string(filepath.Separator)), leaf), ShouldBeNil)
 
 			_, err = os.Stat(filepath.Join(base, "wr_cwd"))
 			So(err, ShouldNotBeNil)
 			soPathsExist(base, outer)
 		})
 
-		Convey("rmEmptyDirs refuses a leafDir that is baseDir, so can't walk above it", func() {
-			err = rmEmptyDirs(base, base)
+		Convey("rmEmptyDirsIn refuses a leafDir that is baseDir, so can't walk above it", func() {
+			err = rmEmptyDirsIn(rootOf(base), base)
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 
 			soPathsExist(leaf, base, outer)
 		})
 
-		Convey("rmEmptyDirs refuses a leafDir that is not below baseDir", func() {
+		Convey("rmEmptyDirsIn refuses a leafDir that is not below baseDir", func() {
 			other := filepath.Join(outer, "other")
 			otherLeaf := filepath.Join(other, "leaf")
 			err = os.MkdirAll(otherLeaf, os.ModePerm)
 			So(err, ShouldBeNil)
 
-			err = rmEmptyDirs(otherLeaf, base)
+			err = rmEmptyDirsIn(rootOf(base), otherLeaf)
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 
 			soPathsExist(otherLeaf, other, base, outer)
 		})
 
-		Convey("rmEmptyDirs refuses a leafDir that only looks below baseDir before symlinks resolve", func() {
+		Convey("rmEmptyDirsIn refuses a leafDir that only looks below baseDir before symlinks resolve", func() {
 			err = os.Symlink(outer, filepath.Join(base, "escape"))
 			So(err, ShouldBeNil)
 
-			err = rmEmptyDirs(filepath.Join(base, "escape", "base"), base)
+			err = rmEmptyDirsIn(rootOf(base), filepath.Join(base, "escape", "base"))
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 
 			soPathsExist(leaf, base, outer)
 		})
 
-		Convey("rmEmptyDirs leaves an empty dir inside baseDir alone when a symlink leads to it", func() {
+		Convey("rmEmptyDirsIn leaves an empty dir inside baseDir alone when a symlink leads to it", func() {
 			// the outside-baseDir case below is caught by the containment
 			// guard; this one is inside baseDir, so containment says yes and
 			// only the refusal to follow a symlink stops it. The Job's own Cmd
@@ -167,7 +184,7 @@ func TestRmEmptyDirs(t *testing.T) {
 			err = os.Symlink(userEmpty, link)
 			So(err, ShouldBeNil)
 
-			err = rmEmptyDirs(link, base)
+			err = rmEmptyDirsIn(rootOf(base), link)
 
 			// survival first, so a broken guard shows up as the deletion it is.
 			soPathsExist(userEmpty, userDir, link, base)
@@ -176,7 +193,7 @@ func TestRmEmptyDirs(t *testing.T) {
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
 
-		Convey("rmEmptyDirs leaves an empty dir outside baseDir alone, even reached via a symlink", func() {
+		Convey("rmEmptyDirsIn leaves an empty dir outside baseDir alone, even reached via a symlink", func() {
 			// an empty dir is the dangerous case: the upward walk only stops
 			// deleting when it hits a dir it cannot remove, so if the
 			// containment guard ever stopped working, this dir (and the
@@ -190,7 +207,7 @@ func TestRmEmptyDirs(t *testing.T) {
 			err = os.Symlink(outer, escape)
 			So(err, ShouldBeNil)
 
-			err = rmEmptyDirs(filepath.Join(escape, "empty"), base)
+			err = rmEmptyDirsIn(rootOf(base), filepath.Join(escape, "empty"))
 
 			// survival is asserted before the error, so that a broken guard
 			// shows up as the deletion it is, not as a missing error value.

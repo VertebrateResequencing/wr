@@ -887,34 +887,26 @@ func openBaseRoot(baseDir string) (*os.Root, error) {
 	return os.OpenRoot(absBase)
 }
 
-// rmEmptyDirs deletes leafDir and its parent directories if they are empty,
-// stopping before it reaches baseDir (leaving that, and everything above it,
-// undeleted). It's ok if leafDir, or baseDir itself, doesn't exist.
+// rmEmptyDirsIn deletes leafDir and its parent directories if they are empty,
+// stopping before it reaches the dir baseRoot holds open (leaving that, and
+// everything above it, undeleted). It's ok if leafDir doesn't exist.
 //
-// leafDir must be a proper descendant of baseDir; otherwise nothing at all is
-// deleted and errNotBelowBaseDir is returned. There is no safe upward walk to
-// do from anywhere else: with leafDir == baseDir the first parent considered
-// would already be above baseDir, and the walk would then delete the empty
-// ancestors of the directory tree we were supposed to stay inside.
-func rmEmptyDirs(leafDir, baseDir string) error {
-	baseRoot, err := openBaseRoot(baseDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-
-		return fmt.Errorf("%w: could not open %s: %w", errNotBelowBaseDir, baseDir, err)
-	}
-	defer baseRoot.Close()
-
-	return rmEmptyDirsIn(baseRoot, leafDir)
-}
-
-// rmEmptyDirsIn does rmEmptyDirs's work through a handle on the base dir that
-// the caller already holds. A caller that has proven its way inside that dir
-// should use this rather than rmEmptyDirs: the handle pins the directory, so
-// every deletion happens inside the dir that was proven, not inside whatever has
-// taken its place since.
+// leafDir must be a proper descendant of baseRoot's dir, with no symlink among
+// the components leading to it; otherwise nothing at all is deleted and
+// errNotBelowBaseDir is returned. There is no safe upward walk to do from
+// anywhere else: with leafDir being baseRoot's own dir the first parent
+// considered would already be above it, and the walk would then delete the empty
+// ancestors of the tree we were supposed to stay inside.
+//
+// It takes the base dir as an open HANDLE rather than as a path, because every
+// caller has already had to prove its way inside that dir to know it may walk
+// there at all, and the handle carries that proof: the deletions happen inside
+// the dir that was proven, not inside whatever has taken its place since. A
+// path-taking twin, rmEmptyDirs, opened the handle for you and so let a caller
+// walk somewhere it had proven nothing about. It was the entry point the upward
+// walk that deleted a user's own empty output tree went through, and it outlived
+// its last production caller by three rounds, kept alive and looking usable by
+// its own tests.
 func rmEmptyDirsIn(baseRoot *os.Root, leafDir string) error {
 	proven, ok := realDirBelow(baseRoot, leafDir)
 	if !ok {
