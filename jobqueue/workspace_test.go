@@ -26,6 +26,7 @@
 package jobqueue
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -446,5 +447,50 @@ func TestCleanupActualCwdRace(t *testing.T) {
 		wg.Wait()
 
 		soPathsExist(cwd)
+	})
+}
+
+func TestCleanupEmptyParentWalk(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// the upward walk that tidies empty parent directories is bounded by the
+	// containment proof, but containment was all it had: when the reported
+	// workspace was absent, the proof of what wr created never ran, and the walk
+	// unlinked the user's own empty directories up to Cwd.
+	Convey("Given an empty output tree of the user's own, at the depth wr creates at", t, func() {
+		cwd := t.TempDir()
+		deep := filepath.Join(cwd, "results", "2024", "runA", "sampleB")
+		So(os.MkdirAll(deep, os.ModePerm), ShouldBeNil)
+
+		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
+
+		Convey("cleanup deletes none of it for an ActualCwd wr never created", func() {
+			job := &Job{Cwd: cwd, Cmd: "echo eat", ActualCwd: filepath.Join(deep, "absent", createdCwdName)}
+
+			err := cleanupAll.Trigger(OnExit, job)
+
+			soPathsExist(deep, filepath.Dir(deep), cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("cleanup still tidies the empty parents of a workspace wr did create", func() {
+			// the absence of a workspace wr can prove it built is the ordinary
+			// state of a second cleanup, so tolerating that must survive the fix.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			_, workSpace, _ := realWorkSpace(job)
+
+			So(os.RemoveAll(workSpace), ShouldBeNil)
+
+			err := cleanupAll.Trigger(OnExit, job)
+
+			soPathsGone(filepath.Join(cwd, AppName+"_cwd"))
+			soPathsExist(deep, cwd)
+
+			So(err, ShouldBeNil)
+		})
 	})
 }

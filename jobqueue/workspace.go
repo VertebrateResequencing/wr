@@ -298,22 +298,25 @@ func (p *workSpacePaths) prove() (*jobWorkSpace, error) {
 // strictly inside the open Cwd with no symlink among the components leading to
 // it, and the working directory inside it.
 //
-// A workspace that is not there at all is proven trivially. Nothing is inside it
-// to identify and nothing is inside it to delete, so there is nothing to refuse;
-// all that is left for cleanup to do is walk up removing the empty parent dirs,
-// which is bounded by the same containment proof and can delete no data. This is
-// the ordinary state of the second cleanup of a Job, since Job.Unmount removes
-// the workspace the first one emptied.
+// A workspace that is not there at all used to be proven trivially and skip
+// proveActualCwd, on the reasoning that nothing is inside it to identify and
+// nothing is inside it to delete. That was wrong about the second half. What is
+// left for cleanup to do is walk up removing empty parent directories, and those
+// parents are the user's whenever the reported path is: the walk unlinked up to
+// five levels of a user's own empty output tree - `results/2024/runA/sampleB`
+// under an ActualCwd of `.../sampleB/absent/cwd` - and stopped only where a
+// level happened to be non-empty.
+//
+// So absence gets no exemption of its own. proveActualCwd runs on both branches,
+// and its rule - absence is tolerated only for a workspace the paths prove wr
+// built for THIS Job - is the same rule either way, which is what keeps the
+// second cleanup of a real Job working while a fabricated path is refused.
 func (p *workSpacePaths) proveBelow(cwdRoot *os.Root) (provenDirs, error) {
 	proven, ok := realDirBelow(cwdRoot, p.workSpace)
 	if !ok {
 		return provenDirs{}, fmt.Errorf(
 			"%w: refusing to clean up %s, whose parent is not a real dir inside the job's cwd %s",
 			errNotBelowBaseDir, p.actualCwd, p.cwd)
-	}
-
-	if proven.leafInfo() == nil {
-		return proven, nil
 	}
 
 	return proven, p.proveActualCwd(cwdRoot)
@@ -327,16 +330,17 @@ func (p *workSpacePaths) proveBelow(cwdRoot *os.Root) (provenDirs, error) {
 //
 // A working directory that is not there is tolerated only when the paths prove
 // the workspace is the one wr built for this Job, in which case its absence just
-// means the Job's own Cmd removed it. That keeps cleanup idempotent for every
-// workspace wr actually made, which matters because it runs twice for a lost
-// job.
+// means the Job's own Cmd removed it, or a previous cleanup did. That keeps
+// cleanup idempotent for every workspace wr actually made, which matters because
+// it runs twice for a lost job.
 //
 // Without that proof, absence is refused. The depth-and-name check reads only
 // the shape of the path, so appending "/cwd" to a directory of the user's at the
 // right depth satisfies it, and its PARENT would then be swept as a workspace,
 // or walked for empty dirs by Unmount's tidy-up. A directory that is not there
 // is not one wr created, and requiring it to be there is all that stands between
-// that user directory and a recursive delete.
+// that user directory and a recursive delete - or, when the workspace is missing
+// too, between the user's empty directories and the upward walk.
 func (p *workSpacePaths) proveActualCwd(cwdRoot *os.Root) error {
 	info, err := cwdRoot.Lstat(p.rel)
 	if err == nil && info.IsDir() {

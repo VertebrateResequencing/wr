@@ -972,13 +972,16 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			// rmEmptyDirs deletes the workspace the first cleanup emptied, so
 			// the second cleanup finds nothing there. That must not stop it
 			// tidying the empty parents that Unmount's walk could not.
-			workSpace := testWorkSpace(cwd, "unique")
+			//
+			// The workspace is built by the real mkHashedDir, because tolerating
+			// its absence is exactly what the proof of origin licenses: a
+			// hand-made path of the right shape is refused now, which is what
+			// stops the same upward walk unlinking a user's own empty dirs.
+			job := &Job{Cwd: cwd, Cmd: "second cleanup", MountConfigs: MountConfigs{{Mount: testMountDir}}}
+			actualCwd, workSpace, _ := realWorkSpace(job)
 			hashDir := filepath.Dir(workSpace)
-			actualCwd := filepath.Join(workSpace, "cwd")
-			err = os.MkdirAll(filepath.Join(actualCwd, testMountDir), os.ModePerm)
-			So(err, ShouldBeNil)
 
-			err = os.Mkdir(filepath.Join(workSpace, "tmp"), os.ModePerm)
+			err = os.MkdirAll(filepath.Join(actualCwd, testMountDir), os.ModePerm)
 			So(err, ShouldBeNil)
 
 			// another Job of the same Cwd is running from a sibling dir, which
@@ -986,8 +989,6 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			sibling := filepath.Join(hashDir, "other")
 			err = os.Mkdir(sibling, os.ModePerm)
 			So(err, ShouldBeNil)
-
-			job := &Job{Cwd: cwd, ActualCwd: actualCwd, MountConfigs: MountConfigs{{Mount: testMountDir}}}
 
 			So(cleanup.Trigger(OnExit, job), ShouldBeNil)
 
@@ -1005,7 +1006,7 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			// the tidying is asserted before the error, since a leaf stops at
 			// its first failed So and the leaked dirs are the evidence that
 			// matters.
-			soPathsGone(hashDir, filepath.Join(cwd, "wr_cwd"))
+			soPathsGone(hashDir, filepath.Join(cwd, AppName+"_cwd"))
 			soPathsExist(cwd, precious)
 
 			So(err, ShouldBeNil)
