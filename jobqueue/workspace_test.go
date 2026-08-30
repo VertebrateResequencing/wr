@@ -132,6 +132,67 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 			names[0] = "results"
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
 			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeFalse)
+
+			// the name has to END with the suffix, since that is how wr builds
+			// it. A directory of the user's that merely contains it - the
+			// renamed leftovers of an old workspace, say - is one of theirs.
+			names[0] = "wr" + createdCwdBaseSuffix + ".old"
+			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeFalse)
+		})
+	})
+}
+
+func TestOpenVerifiedDirFile(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// this is what makes the handle a `run` behaviour's command starts in worth
+	// having. The path was proven with an lstat, and the open resolves it again,
+	// so between the two a component of it - including the working directory
+	// itself - can be swapped for a symlink to somewhere else inside the Job's
+	// Cwd, which an os.Root follows. Only proving that what was opened is the
+	// same directory that was checked catches that.
+	Convey("Given a directory that has been checked", t, func() {
+		base := t.TempDir()
+		root, err := os.OpenRoot(base)
+		So(err, ShouldBeNil)
+
+		Reset(func() { root.Close() })
+
+		proven := filepath.Join(base, "proven")
+		So(os.MkdirAll(proven, os.ModePerm), ShouldBeNil)
+
+		info, err := root.Lstat("proven")
+		So(err, ShouldBeNil)
+
+		Convey("opening it by name gives a handle on it", func() {
+			f, errr := openVerifiedDirFile(root, "proven", info)
+			So(errr, ShouldBeNil)
+
+			defer f.Close()
+
+			opened, errr := f.Stat()
+			So(errr, ShouldBeNil)
+			So(os.SameFile(opened, info), ShouldBeTrue)
+		})
+
+		Convey("but not once the name leads somewhere else inside the same root", func() {
+			elsewhere := filepath.Join(base, "elsewhere")
+			So(os.MkdirAll(elsewhere, os.ModePerm), ShouldBeNil)
+			So(os.Rename(proven, filepath.Join(base, "moved")), ShouldBeNil)
+			So(os.Symlink("elsewhere", filepath.Join(base, "proven")), ShouldBeNil)
+
+			f, errr := openVerifiedDirFile(root, "proven", info)
+			So(errr, ShouldNotBeNil)
+			So(errors.Is(errr, errNotBelowBaseDir), ShouldBeTrue)
+			So(f, ShouldBeNil)
+		})
+
+		Convey("and nothing at all when there is nothing to prove it against", func() {
+			f, errr := openVerifiedDirFile(root, "proven", nil)
+			So(errr, ShouldNotBeNil)
+			So(f, ShouldBeNil)
 		})
 	})
 }

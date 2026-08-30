@@ -1418,6 +1418,59 @@ func TestBehaviourRunDir(t *testing.T) {
 			So(ranIn(moved), ShouldBeTrue)
 		})
 
+		Convey("run refuses a working directory swapped for another after the proof", func() {
+			// the proof is about a path and the open resolves that path again.
+			// The link is RELATIVE and stays inside Cwd, because an os.Root
+			// refuses an absolute one outright and follows this one - so what
+			// catches it is proving that what was opened is the directory that
+			// was checked.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, _, _ := realWorkSpace(job)
+
+			elsewhere := filepath.Join(cwd, "elsewhere")
+			So(os.MkdirAll(elsewhere, os.ModePerm), ShouldBeNil)
+
+			link, err := filepath.Rel(filepath.Dir(actualCwd), elsewhere)
+			So(err, ShouldBeNil)
+
+			runResolvedHook = func() {
+				runResolvedHook = nil
+
+				So(os.Rename(actualCwd, filepath.Join(cwd, "moved")), ShouldBeNil)
+				So(os.Symlink(link, actualCwd), ShouldBeNil)
+			}
+
+			Reset(func() { runResolvedHook = nil })
+
+			err = run.Trigger(OnExit, job)
+
+			So(ranIn(elsewhere), ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("run leaves no descriptor behind for the directory it held open", func() {
+			// the handle has to outlive the resolution, since the command being
+			// started is what uses it, so it is the behaviour that closes it. A
+			// run behaviour that leaked one would exhaust a long-lived manager.
+			if runtime.GOOS != "linux" {
+				return
+			}
+
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			realWorkSpace(job)
+
+			So(run.Trigger(OnExit, job), ShouldBeNil)
+
+			before := openDescriptors()
+
+			for range 5 {
+				So(run.Trigger(OnExit, job), ShouldBeNil)
+			}
+
+			So(openDescriptors(), ShouldBeLessThanOrEqualTo, before+1)
+		})
+
 		Convey("run refuses a working directory that is not there", func() {
 			// cleanup TOLERATES this absence, and has to: the Job's own Cmd may
 			// have deleted the directory, or a previous cleanup may have, and
@@ -1436,6 +1489,12 @@ func TestBehaviourRunDir(t *testing.T) {
 			soPathsGone(actualCwd)
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			// and the refusal is the resolution's own, made because it proved
+			// the directory absent, rather than an open of it failing further
+			// down: a rule that only holds because the next syscall happens to
+			// fail is a rule nobody knows is there.
+			So(errors.Is(err, os.ErrNotExist), ShouldBeFalse)
 		})
 
 		Convey("run refuses when the Job's Cwd has itself gone", func() {
@@ -1499,6 +1558,16 @@ func TestBehaviourRunDir(t *testing.T) {
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
 	})
+}
+
+// openDescriptors is how many file descriptors this process has open, on a
+// system that says. It is compared against itself, so what it counts besides
+// the ones a test is about does not matter.
+func openDescriptors() int {
+	entries, err := os.ReadDir("/proc/self/fd")
+	So(err, ShouldBeNil)
+
+	return len(entries)
 }
 
 // soPathsExist asserts that each of the given paths still exists.

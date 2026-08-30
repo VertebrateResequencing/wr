@@ -365,6 +365,10 @@ func (j *Job) resolveRunDir() (*runDir, error) {
 	}
 	defer ws.Close()
 
+	if runResolvedHook != nil {
+		runResolvedHook()
+	}
+
 	return ws.openRunDir()
 }
 

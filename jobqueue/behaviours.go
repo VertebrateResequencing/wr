@@ -55,12 +55,20 @@ var (
 // otherwise get into it reliably. It is nil in production.
 var cleanupProvenHook func() //nolint:gochecknoglobals
 
-// runProvenHook, when set, is called in the moment between a `run` Behaviour
-// resolving the directory its command is to execute in and that command
-// starting. That is the window in which the resolved NAME can be made to mean
-// something else, which is why the directory is held open across it, and a test
-// cannot otherwise get into it reliably. It is nil in production.
-var runProvenHook func() //nolint:gochecknoglobals
+// runResolvedHook and runProvenHook, when set, are called in the two moments a
+// `run` Behaviour has to survive, and are nil in production. A test cannot get
+// into either reliably any other way.
+//
+// runResolvedHook is called once the directory the command will run in has been
+// proven and before it is opened: the proof is about a path, and the open
+// resolves that path again. runProvenHook is called once it is open and before
+// the command starts, which is when exec.Cmd resolves the Dir name it was given.
+//
+//nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
+var (
+	runResolvedHook func()
+	runProvenHook   func()
+)
 
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
 // that Behaviour will trigger.
