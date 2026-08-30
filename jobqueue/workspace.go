@@ -206,14 +206,14 @@ func absJobDirs(cwd, actualCwd string) (string, string, error) {
 }
 
 // createdCwdRel returns actualCwd relative to cwd, having refused it unless it
-// is strictly inside cwd and has the shape of a working directory wr creates.
+// is strictly inside cwd and is a path mkHashedDir could have laid down.
 //
-// How far below Cwd the reported directory sits, and what it is called, are the
-// only things about it wr can check without trusting whoever reported it.
-// Everything below treats its PARENT as a disposable workspace, so a value
-// naming a directory of the user's would have wr sweep that directory whole -
-// which is the incident this fix is named for, arriving through a different
-// field.
+// Where below Cwd the reported directory sits, and what the components at each
+// end of it are called, are the only things about it wr can check without
+// trusting whoever reported it. Everything below treats its PARENT as a
+// disposable workspace, so a value naming a directory of the user's would have
+// wr sweep that directory whole - which is the incident this fix is named for,
+// arriving through a different field.
 func createdCwdRel(cwd, actualCwd string) (string, error) {
 	rel, err := filepath.Rel(cwd, actualCwd)
 	if err != nil {

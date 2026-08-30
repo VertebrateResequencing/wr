@@ -295,13 +295,18 @@ func TestBehaviours(t *testing.T) {
 var testHashDirs = []string{"a", "b", "c"}
 
 // testWorkSpace returns a workspace path of the shape AND DEPTH mkHashedDir
-// really creates one at. The depth matters: cleanup refuses to treat anything
-// at another depth as a workspace, because that is the one property of a
-// reported ActualCwd it can check without trusting whoever reported it. A
-// fixture that is too shallow is not just unrealistic, it exercises a path wr
-// would never produce.
+// really creates one at. Both matter: cleanup refuses to treat anything at
+// another depth, or below a base component named anything but <AppName>_cwd, as
+// a workspace, because those are the properties of a reported ActualCwd it can
+// check without trusting whoever reported it. A fixture that is too shallow, or
+// named otherwise, is not just unrealistic, it exercises a path wr would never
+// produce.
+//
+// The base is deliberately the name the RUNNER builds ("wr" + the suffix) while
+// these tests run with AppName still "jobqueue", since that is the split cleanup
+// faces in the manager: what is checked is the suffix, not the app name.
 func testWorkSpace(cwd, unique string) string {
-	parts := append([]string{cwd, "wr_cwd"}, testHashDirs...)
+	parts := append([]string{cwd, "wr" + createdCwdBaseSuffix}, testHashDirs...)
 
 	return filepath.Join(append(parts, unique)...)
 }
@@ -684,14 +689,15 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Cleanup of a Job with an ActualCwd that leaves Cwd via a symlink deletes nothing and errors", func() {
-			// the reported path is at the depth wr really creates its working
-			// dirs at, so the cheap lexical shape check passes it and the
-			// symlinked component is what has to stop it. A shallower fixture
-			// was refused on depth alone and never reached this guard.
-			err = os.Symlink(parent, filepath.Join(cwd, "escape"))
+			// the reported path has the base name, depth and leaf name wr
+			// really creates its working dirs with, so the cheap lexical shape
+			// check passes it and the symlinked component is what has to stop
+			// it. A fixture that is shallower, or whose base is named anything
+			// else, is refused on shape alone and never reaches this guard.
+			err = os.Symlink(parent, filepath.Join(cwd, "escape"+createdCwdBaseSuffix))
 			So(err, ShouldBeNil)
 
-			escaped := filepath.Join(append([]string{cwd, "escape"}, testHashDirs...)...)
+			escaped := filepath.Join(append([]string{cwd, "escape" + createdCwdBaseSuffix}, testHashDirs...)...)
 			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(escaped, "unique", "cwd")}
 
 			err = cleanupAll.Trigger(OnExit, job)
@@ -1328,16 +1334,19 @@ func TestBehaviourRunDir(t *testing.T) {
 		})
 
 		Convey("run refuses an ActualCwd that leaves Cwd through a symlink", func() {
-			// the shape check is lexical, so a path at the right depth through a
-			// symlinked component passes it; only proving every component is a
-			// real dir keeps the command inside the Job's own Cwd.
+			// the shape check is lexical, so a path of the right shape through
+			// a symlinked component passes it; only proving every component is
+			// a real dir keeps the command inside the Job's own Cwd. The link
+			// is named the way a workspace base is, or the shape check refuses
+			// it first and this guard is never reached.
+			link := "escape" + createdCwdBaseSuffix
 			outside := t.TempDir()
 			escapeTarget := filepath.Join(append([]string{outside}, testHashDirs...)...)
 			escaped := filepath.Join(escapeTarget, "unique", createdCwdName)
 			So(os.MkdirAll(escaped, os.ModePerm), ShouldBeNil)
-			So(os.Symlink(outside, filepath.Join(cwd, "escape")), ShouldBeNil)
+			So(os.Symlink(outside, filepath.Join(cwd, link)), ShouldBeNil)
 
-			viaLink := filepath.Join(append([]string{cwd, "escape"}, testHashDirs...)...)
+			viaLink := filepath.Join(append([]string{cwd, link}, testHashDirs...)...)
 			job := &Job{Cwd: cwd, Cmd: testWSCmd, ActualCwd: filepath.Join(viaLink, "unique", createdCwdName)}
 
 			err := run.Trigger(OnExit, job)

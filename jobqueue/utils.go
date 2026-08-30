@@ -67,6 +67,20 @@ var AppName = "jobqueue" //nolint:gochecknoglobals // configurable package-wide 
 // mkHashedLevels is the number of directory levels we create in mkHashedDirs.
 const mkHashedLevels = 4
 
+// createdCwdBaseSuffix ends the name of the base directory mkHashedDir puts
+// every working directory it creates below, and so ends the first component
+// below Cwd of every ActualCwd wr has ever produced (it has done since 2018,
+// before which the same name was built one line further up).
+//
+// It is a SUFFIX rather than the whole name deliberately. The name is
+// AppName+this, and AppName is a package var that cmd/runner.go sets to "wr"
+// while the manager leaves it "jobqueue" - so comparing the whole name against
+// what THIS process would build would refuse every runner-made workspace in the
+// manager, which is where the cleanup that caused the original incident runs.
+// The suffix is agnostic about which of the two made the directory, while still
+// being something wr chose rather than something a Job's Cwd happens to contain.
+const createdCwdBaseSuffix = "_cwd"
+
 // createdCwdDepth is how many path components below a Job's Cwd the working
 // directory wr creates for it sits: the <AppName>_cwd base, then the
 // mkHashedLevels-1 hashed dirs, then the MkdirTemp leaf, then cwd itself.
@@ -701,7 +715,7 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 // creates 2 folders called cwd and tmp, which it returns. Returns an error if
 // there were problems making the directories.
 func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
-	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+"_cwd"), tohash)
+	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+createdCwdBaseSuffix), tohash)
 
 	holdFile := filepath.Join(dir, ".hold")
 	defer func() {
@@ -1256,30 +1270,36 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 	return infos, true
 }
 
-// relIsCreatedCwd tells you if rel, a path relative to a Job's Cwd, has the
-// shape of a working directory wr created for it: exactly createdCwdDepth
-// components down, and named createdCwdName.
+// relIsCreatedCwd tells you if rel, a path relative to a Job's Cwd, is one
+// mkHashedDir could have laid down: it starts at a base component named
+// <something>createdCwdBaseSuffix, is exactly createdCwdDepth components down,
+// and its last component is createdCwdName.
 //
 // It does not repeat the containment check. createdCwdRel, its only caller,
 // makes that with relIsBelow one line earlier and reports it as a different
 // error, and a second copy of the same rule here answered to no test - which is
 // what a rule stated twice looks like just before the two disagree.
 //
-// Depth is the part that cannot be faked by naming alone. The name check reads
-// only the last component, so appending "/cwd" to any directory of the user's
-// inside Cwd satisfies it - and everything in that directory was then swept as
-// a "workspace". mkHashedDir always builds at one depth, so anything else was
-// not made by wr.
+// The base component is the only part of the path that has to be named
+// something WR chose, and it is what makes this more than a coincidence filter.
+// Depth and leaf name alone are properties any tree of the user's can have:
+// appending "/cwd" to a directory of theirs at the right depth satisfied both,
+// and the PARENT of the named directory was then swept as a "workspace", or
+// walked for empty dirs, or handed to a `run` behaviour to execute the user's
+// own command in. Requiring the base as well means the whole reported path has
+// to live below a directory named for wr, inside the Job's own Cwd.
 //
-// It is deliberately not a proof of origin: a user directory that happens to
-// sit at exactly that depth and end in "cwd" would still pass. Proof of origin
-// would mean keying on the <AppName>_cwd path segment, and AppName is a package
-// var that cmd/runner.go sets to "wr" while the manager leaves it "jobqueue" -
-// so that check would refuse every real workspace server-side, which is where
-// the cleanup that caused the incident runs.
+// It still is not proof that THIS Job created it - relIsJobCreatedCwd is that,
+// where it can be had - because nothing stops a Job's Cmd, or a user, making a
+// directory with that name. What it does is stop an ActualCwd reported over the
+// wire pointing the deletion at an ordinary directory of the user's, which is
+// the only part of that an attacker chooses freely.
 func relIsCreatedCwd(rel string) bool {
-	return len(strings.Split(rel, string(filepath.Separator))) == createdCwdDepth &&
-		filepath.Base(rel) == createdCwdName
+	names := strings.Split(rel, string(filepath.Separator))
+
+	return len(names) == createdCwdDepth &&
+		strings.HasSuffix(names[0], createdCwdBaseSuffix) &&
+		names[len(names)-1] == createdCwdName
 }
 
 // relIsJobCreatedCwd tells you if rel, a working directory's path relative to a
@@ -1291,21 +1311,28 @@ func relIsCreatedCwd(rel string) bool {
 // about what it therefore accepts, since an earlier version of this comment was
 // not: the shape is <anything>/k0/k1/k2/<k3..><digits>, where k0-k2 are the
 // first three characters of the key and k3.. is the rest of it. The BASE
-// component is not checked at all. It is the <AppName>_cwd dir, and AppName is a
-// package var that cmd/runner.go sets to "wr" while the manager leaves it
-// "jobqueue", so keying on it would refuse every real workspace server-side -
-// which is where the cleanup that caused the original incident runs. The leaf
-// "cwd" component is not checked here either; relIsCreatedCwd pins it, and
-// createdCwdRel applies that to every path before this is consulted.
+// component is not checked here, and neither is the leaf "cwd" one:
+// relIsCreatedCwd pins both, and createdCwdRel applies that to every path before
+// this is consulted. Checking the base again here would be the same rule stated
+// twice - and it must not become an equality check on AppName+the suffix, since
+// AppName is "wr" in the runner and "jobqueue" in the manager, and cleanup runs
+// in both.
 //
-// A true answer DOES license deleting more than the depth-and-name check alone
-// allows: it is what lets the resolution tolerate a workspace or working
-// directory that is not there, which is otherwise refused. What makes that safe
-// is not the base component but the middle four: the key is 32 hex characters of
-// farm.Hash128, so a path a user could be induced to create their data at cannot
-// carry them. A change to how os.MkdirTemp names things would therefore leak a
-// workspace rather than destroy one, but that is a property of what is checked,
-// not of the direction the answer points.
+// A true answer DOES license deleting more than relIsCreatedCwd alone allows: it
+// is what lets the resolution tolerate a workspace or working directory that is
+// not there, which is otherwise refused. Be clear about how much of the key that
+// rests on, because an earlier version of this comment claimed all 32 characters
+// of it and a probe then bought the tolerance for 12 bits. The only components
+// this checks that also have to EXIST on disk are k0-k2, three hex characters;
+// the one carrying the rest of the key is the unique dir, and that is exactly the
+// component whose absence is being licensed. Key() hashes the Cmd, so whoever
+// submits a Job can grind those three characters to match a directory chain the
+// user already has, in about 4096 tries. What keeps that from reaching the user's
+// data is relIsCreatedCwd's base component: the chain has to sit below a
+// directory named for wr.
+//
+// A change to how os.MkdirTemp names things would leak a workspace rather than
+// destroy one, since it can only turn a true answer false.
 func relIsJobCreatedCwd(rel, key string) bool {
 	names := strings.Split(rel, string(filepath.Separator))
 

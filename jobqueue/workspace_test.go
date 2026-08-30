@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,13 +117,21 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 		})
 
-		Convey("and deliberately ignores the AppName base component", func() {
+		Convey("and leaves the base component to relIsCreatedCwd", func() {
 			// AppName is a package var: cmd/runner.go sets it to "wr" while the
-			// manager leaves it "jobqueue", and cleanup runs in both. Keying on
-			// that component would refuse every real workspace server-side.
+			// manager leaves it "jobqueue", and cleanup runs in both, so neither
+			// recogniser may compare that component against what THIS process
+			// would build - it would refuse every runner-made workspace
+			// server-side. What relIsCreatedCwd requires of it is the suffix,
+			// and stating that here as well would be the same rule stated twice.
 			names := strings.Split(rel, string(filepath.Separator))
-			names[0] = "someone_elses_cwd"
+			names[0] = "someone_elses" + createdCwdBaseSuffix
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
+			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeTrue)
+
+			names[0] = "results"
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
+			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeFalse)
 		})
 	})
 }
@@ -470,8 +479,14 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 	// workspace was absent, the proof of what wr created never ran, and the walk
 	// unlinked the user's own empty directories up to Cwd.
 	Convey("Given an empty output tree of the user's own, at the depth wr creates at", t, func() {
+		// the tree's base component is named the one way relIsCreatedCwd cannot
+		// tell from a workspace of wr's, so that what refuses this is the rule
+		// this test is about - that a working directory which is not there is
+		// only tolerated for a path the origin proof claims. A base named
+		// anything else is refused earlier and is TestWorkSpaceBaseComponent's
+		// case.
 		cwd := t.TempDir()
-		deep := filepath.Join(cwd, "results", "2024", "runA", "sampleB")
+		deep := filepath.Join(cwd, "results_cwd", "2024", "runA", "sampleB")
 		So(os.MkdirAll(deep, os.ModePerm), ShouldBeNil)
 
 		cleanupAll := &Behaviour{When: OnExit, Do: CleanupAll}
@@ -501,6 +516,100 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 			soPathsExist(deep, cwd)
 
 			So(err, ShouldBeNil)
+		})
+	})
+}
+
+// keyGrindMax bounds jobWithKeyPrefix's search, which is expected to take about
+// 16^len(prefix) tries.
+const keyGrindMax = 1 << 20
+
+// jobWithKeyPrefix returns a Job whose Key() starts with prefix, found the way
+// an attacker would: Key() hashes the Cmd (and the mounts and image), all of
+// which come from whoever submitted the job, so a few leading characters of it
+// can simply be ground out.
+func jobWithKeyPrefix(cwd, prefix string) *Job {
+	var job *Job
+
+	for i := range keyGrindMax {
+		candidate := &Job{Cwd: cwd, Cmd: fmt.Sprintf("echo %d", i)}
+		if strings.HasPrefix(candidate.Key(), prefix) {
+			job = candidate
+
+			break
+		}
+	}
+
+	So(job, ShouldNotBeNil)
+
+	return job
+}
+
+func TestWorkSpaceBaseComponent(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// every directory wr has ever created for a Job sits below a base component
+	// named <AppName>_cwd (mkHashedDir), and nothing else about the path a
+	// runner reports is checked against something wr chose. Without that
+	// component pinned, a path of the right depth through directories of the
+	// user's own passes for a workspace.
+	Convey("Given an empty output tree of the user's whose names match a job key's hashed dirs", t, func() {
+		// the hashed dirs are the first three characters of the key, so an
+		// attacker greps the user's Cwd for a three-deep chain and grinds Cmd
+		// until the key matches it - about 4096 tries, or one in 4096 by chance.
+		cwd := t.TempDir()
+		hashed := []string{"1", "2", "3"}
+		job := jobWithKeyPrefix(cwd, strings.Join(hashed, ""))
+		results := filepath.Join(cwd, "results")
+		tree := filepath.Join(append([]string{results}, hashed...)...)
+		So(os.MkdirAll(tree, os.ModePerm), ShouldBeNil)
+
+		// the unique dir below those is the only component carrying the key's
+		// real entropy, and it is exactly the one whose ABSENCE the origin proof
+		// licenses, so the attacker never has to produce it.
+		job.ActualCwd = filepath.Join(tree, job.Key()[mkHashedLevels-1:]+"0", createdCwdName)
+
+		Convey("cleanup unlinks none of it", func() {
+			err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
+
+			soPathsExist(tree, results, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+	})
+
+	Convey("Given a directory of the user's own at the depth and under the name wr creates at", t, func() {
+		cwd := t.TempDir()
+		sample := filepath.Join(cwd, "results", "2024", "runA", "sampleB")
+		scripts := filepath.Join(sample, "scripts")
+		fabricated := filepath.Join(scripts, createdCwdName)
+		So(os.MkdirAll(fabricated, os.ModePerm), ShouldBeNil)
+
+		analyse := writeFileIn(scripts, "analyse.sh")
+		notes := writeFileIn(fabricated, "notes.txt")
+
+		job := &Job{Cwd: cwd, Cmd: testWSCmd, ActualCwd: fabricated}
+
+		Convey("cleanup sweeps none of it", func() {
+			err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
+
+			soPathsExist(notes, analyse, fabricated, scripts, sample, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+
+		Convey("a run behaviour executes nothing in it", func() {
+			err := runBehaviour().Trigger(OnExit, job)
+
+			soPathsGone(filepath.Join(fabricated, testRunMarker))
+			soPathsExist(notes, analyse, fabricated, scripts, sample, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
 		})
 	})
 }
