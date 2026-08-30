@@ -4601,36 +4601,58 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 
 // killLostJobAndTriggerBehaviours kills the lost job and, on success, runs its
 // behaviours, logging any problems.
+//
+// The behaviours are PINNED before the kill, not fetched after it. killJob
+// releases a lost job back to ready, so between it returning and the behaviours
+// running a runner can reserve the RETRY, and the retry's first Touch writes its
+// new working directory onto the very Job this function was about. The
+// behaviours then swept the live retry's directory and ran the user's command in
+// it, and left the abandoned workspace behind. See pinnedBehaviours.
 func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, jobKey string) {
+	pinned, ok := s.pinLostJobBehaviours(ctx, jobKey)
+	if !ok {
+		return
+	}
+
 	if _, errk := s.killJob(ctx, jobKey); errk != nil {
 		clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
 
 		return
 	}
 
+	if lostJobKilledHook != nil {
+		lostJobKilledHook()
+	}
+
+	//nolint:contextcheck // behaviours run detached from the cancellable job context
+	if errt := pinned.trigger(false); errt != nil {
+		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
+	}
+}
+
+// pinLostJobBehaviours takes the behaviours of the job about to be killed, and
+// the state they must act on, as they are while the job is still the lost one.
+func (s *Server) pinLostJobBehaviours(ctx context.Context, jobKey string) (pinnedBehaviours, bool) {
 	q := s.queueIfPresent()
 	if q == nil {
-		clog.Warn(ctx, "failed to get a killed lost job", "err", queueClosedError("Get", jobKey))
+		clog.Warn(ctx, "failed to get a lost job", "err", queueClosedError("Get", jobKey))
 
-		return
+		return pinnedBehaviours{}, false
 	}
 
 	item, errg := q.Get(jobKey)
 	if errg != nil {
-		clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
+		clog.Warn(ctx, "failed to get a lost job", "err", errg)
 
-		return
+		return pinnedBehaviours{}, false
 	}
 
 	job, ok := item.Data().(*Job)
 	if !ok {
-		return
+		return pinnedBehaviours{}, false
 	}
 
-	//nolint:contextcheck // behaviours run detached from the cancellable job context
-	if errt := job.TriggerBehaviours(false); errt != nil {
-		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
-	}
+	return job.pinBehaviours(), true
 }
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.

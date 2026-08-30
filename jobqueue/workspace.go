@@ -120,6 +120,13 @@ func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 	j.RLock()
 	defer j.RUnlock()
 
+	return j.workSpaceSnapshotLocked()
+}
+
+// workSpaceSnapshotLocked is workSpaceSnapshot for a caller that already holds
+// at least the Job's read lock, so that the snapshot can be taken in the same
+// breath as everything else that has to be pinned with it - see pinBehaviours.
+func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	return jobWorkSpaceSnapshot{
 		cwdMatters: j.CwdMatters,
 		cwd:        j.Cwd,
@@ -284,10 +291,16 @@ type jobWorkSpace struct {
 	keep keptDirs
 }
 
-// resolveWorkSpace is the ONE place a Job's Cwd and ActualCwd are read for a
-// destructive purpose. It resolves them, proves what it can about them, and
+// resolveWorkSpace is the ONE place a Job's Cwd and ActualCwd are turned into a
+// licence to delete. It resolves them, proves what it can about them, and
 // resolves and classifies every mount point and cache location in the same
 // breath, so that no caller has to - or is able to - work any of it out again.
+//
+// It is asked of a SNAPSHOT rather than of the Job, so that the answer is about
+// the Job as it was when whoever is deleting decided to delete. The manager
+// triggers a lost job's behaviours on the queue's live Job, and killJob releases
+// that Job back to ready first: reading it again afterwards read the RETRY's
+// working directory. See pinnedBehaviours.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
@@ -297,8 +310,8 @@ type jobWorkSpace struct {
 // wrong directory is not.
 //
 // The caller must Close a non-nil result.
-func (j *Job) resolveWorkSpace() (*jobWorkSpace, error) {
-	paths, err := j.workSpaceSnapshot().paths()
+func (s jobWorkSpaceSnapshot) resolveWorkSpace() (*jobWorkSpace, error) {
+	paths, err := s.paths()
 	if err != nil || paths == nil {
 		return nil, err
 	}
@@ -315,7 +328,7 @@ func (j *Job) resolveWorkSpace() (*jobWorkSpace, error) {
 // unmount. Behaviour.cleanup reports the same refusals loudly, since there they
 // mean a workspace was leaked.
 func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
-	ws, err := j.resolveWorkSpace()
+	ws, err := j.workSpaceSnapshot().resolveWorkSpace()
 	if err != nil {
 		return nil
 	}
@@ -323,11 +336,11 @@ func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
 	return ws
 }
 
-// resolveRunDir is the ONE place a Job's Cwd and ActualCwd are read to decide
-// where a `run` Behaviour's command executes. It asks the same resolution
-// cleanup asks, of the same fields, so the two cannot disagree about which
-// directory is the Job's - which they did, in all four ways the resolution
-// exists to rule out.
+// resolveRunDir is the ONE place a Job's Cwd and ActualCwd decide where a `run`
+// Behaviour's command executes. It asks the same resolution cleanup asks, of the
+// same snapshot, so the two cannot disagree about which directory is the Job's -
+// which they did, in all four ways the resolution exists to rule out, and once
+// more in time rather than in space when the Job moved on between them.
 //
 // A directory that cannot be shown to be the Job's is refused rather than
 // substituted for: running a user's command in the wrong directory is the thing
@@ -349,16 +362,14 @@ func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
 // It returns the directory HELD OPEN, because exec.Cmd takes a name and resolves
 // it once more when the command starts, which is a window the Job's own Cmd can
 // win - see runDir. The caller must Close the result.
-func (j *Job) resolveRunDir() (*runDir, error) {
-	snap := j.workSpaceSnapshot()
-
-	paths, err := snap.paths()
+func (s jobWorkSpaceSnapshot) resolveRunDir() (*runDir, error) {
+	paths, err := s.paths()
 	if err != nil {
 		return nil, err
 	}
 
 	if paths == nil {
-		return unheldRunDir(absJobDir("cwd", snap.cwd))
+		return unheldRunDir(absJobDir("cwd", s.cwd))
 	}
 
 	ws, err := paths.prove(absenceRefused)

@@ -70,6 +70,13 @@ var (
 	runProvenHook   func()
 )
 
+// lostJobKilledHook, when set, is called in the moment between killJob releasing
+// a lost job back to ready and its pinned behaviours running. That moment is
+// when a runner can reserve the RETRY and touch its new working directory onto
+// the same Job, which is the race the pin exists to survive and which a test
+// cannot get into reliably any other way. It is nil in production.
+var lostJobKilledHook func() //nolint:gochecknoglobals
+
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
 // that Behaviour will trigger.
 type BehaviourTrigger uint8
@@ -160,21 +167,27 @@ type Behaviour struct {
 }
 
 // Trigger will carry out our BehaviourAction if the supplied status matches our
-// BehaviourTrigger.
+// BehaviourTrigger, against the Job as it is now.
 func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
+	return b.trigger(status, j.workSpaceSnapshot())
+}
+
+// trigger is Trigger against a Job state that was pinned when the behaviours
+// were decided on, which is not always the same moment; see pinnedBehaviours.
+func (b *Behaviour) trigger(status BehaviourTrigger, ws jobWorkSpaceSnapshot) error {
 	if b.When&status == 0 {
 		return nil
 	}
 
 	switch b.Do {
 	case CleanupAll:
-		return b.cleanup(j, true)
+		return b.cleanup(ws, true)
 	case Cleanup:
-		return b.cleanup(j, false)
+		return b.cleanup(ws, false)
 	case Run:
-		return b.run(j)
+		return b.run(ws)
 	case CopyToManager:
-		return b.copyToManager(j)
+		return b.copyToManager()
 	case Remove, Nothing:
 		return nil
 	}
@@ -274,8 +287,8 @@ func (b *Behaviour) String() string {
 // Which dirs those are, and which of them the Job's live mounts and caches need
 // kept, is decided entirely by Job.resolveWorkSpace - the one place any of it is
 // worked out. A nil workspace means wr created nothing here it may delete.
-func (b *Behaviour) cleanup(j *Job, _ bool) error {
-	ws, err := j.resolveWorkSpace()
+func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
+	ws, err := snap.resolveWorkSpace()
 	if err != nil || ws == nil {
 		return err
 	}
@@ -296,13 +309,13 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 // platform allows it to be named, so the command starts in the directory that
 // was proven rather than in whatever its path resolves to by then. See runDir
 // for what that closes and where it is still open.
-func (b *Behaviour) run(j *Job) error {
+func (b *Behaviour) run(snap jobWorkSpaceSnapshot) error {
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
 		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStr, b.Arg, b.Arg)
 	}
 
-	dir, err := j.resolveRunDir()
+	dir, err := snap.resolveRunDir()
 	if err != nil {
 		return fmt.Errorf("run behaviour refused: %w", err)
 	}
@@ -332,7 +345,7 @@ func (b *Behaviour) run(j *Job) error {
 
 // copyToManager copies the files specified in the Arg slice to the configured
 // location on the manager's machine.
-func (b *Behaviour) copyToManager(*Job) error {
+func (b *Behaviour) copyToManager() error {
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
 		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStrSl, b.Arg, b.Arg)
@@ -347,8 +360,24 @@ func (b *Behaviour) copyToManager(*Job) error {
 type Behaviours []*Behaviour
 
 // Trigger calls Trigger on each constituent Behaviour, first all those for
-// OnSuccess if success = true or OnFailure otherwise, then those for OnExit.
+// OnSuccess if success = true or OnFailure otherwise, then those for OnExit,
+// against the Job as it is now.
 func (bs Behaviours) Trigger(success bool, j *Job) error {
+	if len(bs) == 0 {
+		return nil
+	}
+
+	return bs.trigger(success, j.workSpaceSnapshot())
+}
+
+// trigger is Trigger against a Job state that was pinned when the behaviours
+// were decided on, which is not always the same moment; see pinnedBehaviours.
+//
+// The whole set shares ONE pinned state, rather than each behaviour reading the
+// Job again: a `--on_failure cleanup --on_exit run` pair is one decision about
+// one directory, and re-reading between them is how the two came to act on
+// different ones.
+func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 	if len(bs) == 0 {
 		return nil
 	}
@@ -363,7 +392,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	var merr *multierror.Error
 
 	for _, b := range bs {
-		err := b.Trigger(status, j)
+		err := b.trigger(status, ws)
 		if err != nil {
 			merr = multierror.Append(merr, err)
 		}
@@ -371,13 +400,54 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 
 	status = OnExit
 	for _, b := range bs {
-		err := b.Trigger(status, j)
+		err := b.trigger(status, ws)
 		if err != nil {
 			merr = multierror.Append(merr, err)
 		}
 	}
 
 	return merr.ErrorOrNil()
+}
+
+// pinnedBehaviours is a Job's Behaviours together with the state they must act
+// on, both taken at ONE moment under the Job's lock and carried to them as a
+// value.
+//
+// Behaviours delete the Job's working directory and run the user's own command
+// inside it, and which directory that is comes from the (key, ActualCwd) pair
+// the Job carries. Deciding to trigger them and triggering them are not always
+// the same moment: the manager decides when it declares a job lost, then
+// killJob RELEASES that Job back to ready before the behaviours run, so a runner
+// can reserve the RETRY and its first Touch writes the retry's working directory
+// into that same Job (emitLiveTouchSnapshot -> applyLiveSnapshot). Reading the
+// Job afterwards read the retry's directory: measured, the `run` behaviour's pwd
+// was the retry's, the retry's partial output, working directory and live TMPDIR
+// were deleted while it ran, the workspace that was actually abandoned leaked,
+// and the error was nil - the retry is the same Job with the same key, so no
+// proof about the path can tell the two apart.
+//
+// Pinning is what fixes that, and it is the only thing that can: it is not the
+// resolution that is wrong, it is being asked a question about a moment that has
+// passed. Every other caller triggers the behaviours of a Job it holds alone, so
+// for them the pin is taken at the call itself (Behaviours.Trigger).
+type pinnedBehaviours struct {
+	behaviours Behaviours
+	workSpace  jobWorkSpaceSnapshot
+}
+
+// pinBehaviours pins this Job's Behaviours and the state they must act on, as
+// they are now, for triggering later.
+func (j *Job) pinBehaviours() pinnedBehaviours {
+	j.RLock()
+	defer j.RUnlock()
+
+	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked()}
+}
+
+// trigger runs the pinned Behaviours against the pinned state, as
+// Behaviours.Trigger does against a Job's current state.
+func (p pinnedBehaviours) trigger(success bool) error {
+	return p.behaviours.trigger(success, p.workSpace)
 }
 
 // RemovalRequested tells you if one of the behaviours is Remove.
