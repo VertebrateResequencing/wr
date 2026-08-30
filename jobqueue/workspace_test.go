@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -103,12 +104,26 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 
 		Convey("nor the same path with anything appended or removed", func() {
 			// every component this reads is at a fixed index, so it answers only
-			// about paths of exactly the depth mkHashedDir builds at. Its caller
-			// has already pinned that depth, but a recogniser that quietly said
-			// yes to a deeper path would tolerate a missing dir several levels
-			// below the one wr made.
+			// about paths of exactly the depth mkHashedDir builds at. A deeper
+			// path whose LEAF is still called cwd is the one that matters: the
+			// job's own Cmd can make it inside the dir wr made, and treating it
+			// as a working directory would sweep that dir as a workspace.
+			names := strings.Split(rel, string(filepath.Separator))
+			deeper := slices.Concat(names[:len(names)-1], []string{"extra", createdCwdName})
+
+			So(relIsJobCreatedCwd(filepath.Join(deeper...), job.Key()), ShouldBeFalse)
 			So(relIsJobCreatedCwd(filepath.Join(rel, "deeper"), job.Key()), ShouldBeFalse)
 			So(relIsJobCreatedCwd(filepath.Dir(rel), job.Key()), ShouldBeFalse)
+		})
+
+		Convey("nor one whose hashed dirs are not the ones the key builds", func() {
+			// k0-k2 are the first three characters of the key. They are the only
+			// components of the path the recogniser checks that also have to
+			// exist on disk, so they are the ones an attacker grinds a Cmd to
+			// match; leaving them unchecked would take even that cost away.
+			names := strings.Split(rel, string(filepath.Separator))
+			names[2] = "z"
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 		})
 
 		Convey("nor one whose unique dir was not made by MkdirTemp", func() {
@@ -117,27 +132,31 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 		})
 
-		Convey("and leaves the base component to relIsCreatedCwd", func() {
+		Convey("nor one whose leaf is not the dir mkCwdAndTmp makes", func() {
+			names := strings.Split(rel, string(filepath.Separator))
+			names[len(names)-1] = "tmp"
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
+		})
+
+		Convey("and requires the base component to be named the way wr names one", func() {
 			// AppName is a package var: cmd/runner.go sets it to "wr" while the
-			// manager leaves it "jobqueue", and cleanup runs in both, so neither
-			// recogniser may compare that component against what THIS process
-			// would build - it would refuse every runner-made workspace
-			// server-side. What relIsCreatedCwd requires of it is the suffix,
-			// and stating that here as well would be the same rule stated twice.
+			// manager leaves it "jobqueue", and cleanup runs in both, so the
+			// component must not be compared against what THIS process would
+			// build - that would refuse every runner-made workspace server-side.
+			// The SUFFIX is what is checked, and the hashed dirs below it are
+			// rebuilt from whatever the component actually is.
 			names := strings.Split(rel, string(filepath.Separator))
 			names[0] = "someone_elses" + createdCwdBaseSuffix
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
-			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeTrue)
 
 			names[0] = "results"
-			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
-			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeFalse)
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 
 			// the name has to END with the suffix, since that is how wr builds
 			// it. A directory of the user's that merely contains it - the
 			// renamed leftovers of an old workspace, say - is one of theirs.
 			names[0] = "wr" + createdCwdBaseSuffix + ".old"
-			So(relIsCreatedCwd(filepath.Join(names...)), ShouldBeFalse)
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 		})
 	})
 }
@@ -231,11 +250,20 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 		})
 
 		Convey("An explicit absolute MountTarget.CacheDir in the workspace survives", func() {
-			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{Mount: testWSMount}}}
+			// the CacheDir is filled in after the workspace exists, since it has
+			// to name a path inside it. Only Mount, Target.Profile and
+			// Target.Path reach MountConfigs.Key(), so the workspace wr built
+			// stays the one this Job's key describes; anything that DID change
+			// the key would leave the Job with no workspace it may touch, which
+			// is what a `wr mod` leaves behind.
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount:   testWSMount,
+				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true}},
+			}}}
 			_, workSpace, _ := realWorkSpace(job)
 
 			abs := filepath.Join(workSpace, "abscache")
-			job.MountConfigs[0].Targets = []MountTarget{{Path: testWSTargetPath, Cache: true, CacheDir: abs}}
+			job.MountConfigs[0].Targets[0].CacheDir = abs
 
 			cached := writeFileIn(abs, "unuploaded.txt")
 
@@ -540,12 +568,9 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 	// workspace was absent, the proof of what wr created never ran, and the walk
 	// unlinked the user's own empty directories up to Cwd.
 	Convey("Given an empty output tree of the user's own, at the depth wr creates at", t, func() {
-		// the tree's base component is named the one way relIsCreatedCwd cannot
-		// tell from a workspace of wr's, so that what refuses this is the rule
-		// this test is about - that a working directory which is not there is
-		// only tolerated for a path the origin proof claims. A base named
-		// anything else is refused earlier and is TestWorkSpaceBaseComponent's
-		// case.
+		// the tree is named every way a workspace of wr's is named - a *_cwd
+		// base, a leaf called cwd, at the created depth - so that what refuses
+		// it is the identity check rather than any of the shape rules.
 		cwd := t.TempDir()
 		deep := filepath.Join(cwd, "results"+createdCwdBaseSuffix, "2024", "runA", "sampleB")
 		So(os.MkdirAll(deep, os.ModePerm), ShouldBeNil)
@@ -560,7 +585,7 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 			soPathsExist(deep, filepath.Dir(deep), cwd)
 
 			So(err, ShouldNotBeNil)
-			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
 		})
 
 		Convey("cleanup still tidies the empty parents of a workspace wr did create", func() {
@@ -668,6 +693,52 @@ func TestWorkSpaceBaseComponent(t *testing.T) {
 
 			soPathsGone(filepath.Join(fabricated, testRunMarker))
 			soPathsExist(notes, analyse, fabricated, scripts, sample, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+	})
+}
+
+func TestWorkSpaceOfAnotherJob(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// every Job of a Cwd works below the SAME <AppName>_cwd base component, so
+	// the base check says nothing about which of them a reported path belongs
+	// to: a sibling's workspace has exactly the shape wr's own does, because it
+	// is one. Only the path mkHashedDir builds from a Job's own key tells the
+	// two apart.
+	Convey("Given two Jobs sharing a Cwd, each with the workspace wr really made", t, func() {
+		cwd := t.TempDir()
+
+		victim := &Job{Cwd: cwd, Cmd: "echo victim"}
+		victimCwd, victimWorkSpace, victimTmp := realWorkSpace(victim)
+		results := writeFileIn(victimCwd, "results.txt")
+
+		attacker := &Job{Cwd: cwd, Cmd: "echo attacker"}
+		realWorkSpace(attacker)
+
+		// the runner reports ActualCwd over the wire, so the attacker's Job can
+		// carry the victim's working directory while the victim is still
+		// running in it.
+		applyLiveSnapshot(attacker, &JobEndState{Cwd: victimCwd})
+
+		Convey("cleanup of one deletes nothing of the other's", func() {
+			err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, attacker)
+
+			soPathsExist(results, victimCwd, victimTmp, victimWorkSpace)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+
+		Convey("a run behaviour of one executes nothing in the other's", func() {
+			err := runBehaviour().Trigger(OnExit, attacker)
+
+			soPathsGone(filepath.Join(victimCwd, testRunMarker))
+			soPathsExist(results, victimCwd, victimTmp, victimWorkSpace)
 
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)

@@ -54,14 +54,13 @@ package jobqueue
 // rather than reading it, so there is nothing there to re-derive.
 //
 // Resolving once is what stops the two consumers DISAGREEING. It says nothing
-// about whether what they agree on is right, and for five rounds they agreed on
-// a predicate that was only a shape: a path at the depth wr builds at, with a
-// last component called cwd. Both properties an ordinary tree of the user's can
-// have. What identifies a workspace is the base component wr names for itself
-// (relIsCreatedCwd), and, where the Job's key still describes it, the hashed
-// path mkHashedDir laid down (relIsJobCreatedCwd). Everything either consumer is
-// allowed to do rests on those two, so what is written about them has to say
-// exactly what they check and no more.
+// about whether what they agree on is right, and for six rounds they agreed on
+// predicates that were only shapes: a path at the depth wr builds at, with a
+// last component called cwd, below a component named for wr. An ordinary tree of
+// the user's can have the first two, and every OTHER JOB of the same Cwd has all
+// three - because a sibling's workspace is a workspace. What identifies THIS
+// Job's is the path mkHashedDir builds from its own key, and that is now what
+// relIsJobCreatedCwd requires of every path either consumer acts on.
 
 import (
 	"fmt"
@@ -137,16 +136,6 @@ type workSpacePaths struct {
 	workSpace     string
 	actualCwdName string
 
-	// createdForThisJob is true when the paths are the ones mkHashedDir builds
-	// from this Job's key, base component aside. That is as close to proof of
-	// origin as this can get, and it is what lets cleanup tolerate a working
-	// directory the Job's own Cmd deleted. It stays optional, because Key()
-	// covers the Cmd, mounts and image, so a `wr mod` between a Job running and
-	// its cleanup changes it and every legitimate cleanup after that would be
-	// refused. The base component, which needs no key, is required of every
-	// path instead.
-	createdForThisJob bool
-
 	// mounts is the Job's MountConfigs, from which the mount points and cache
 	// locations that must survive cleanup are resolved.
 	mounts MountConfigs
@@ -171,19 +160,18 @@ func (s jobWorkSpaceSnapshot) paths() (*workSpacePaths, error) {
 		return nil, err
 	}
 
-	rel, err := createdCwdRel(cwd, actualCwd)
+	rel, err := createdCwdRel(cwd, actualCwd, s.key)
 	if err != nil {
 		return nil, err
 	}
 
 	return &workSpacePaths{
-		cwd:               cwd,
-		rel:               rel,
-		actualCwd:         actualCwd,
-		workSpace:         filepath.Dir(actualCwd),
-		actualCwdName:     filepath.Base(actualCwd),
-		createdForThisJob: relIsJobCreatedCwd(rel, s.key),
-		mounts:            s.mounts,
+		cwd:           cwd,
+		rel:           rel,
+		actualCwd:     actualCwd,
+		workSpace:     filepath.Dir(actualCwd),
+		actualCwdName: filepath.Base(actualCwd),
+		mounts:        s.mounts,
 	}, nil
 }
 
@@ -227,15 +215,15 @@ func absJobDirs(cwd, actualCwd string) (string, string, error) {
 }
 
 // createdCwdRel returns actualCwd relative to cwd, having refused it unless it
-// is strictly inside cwd and is a path mkHashedDir could have laid down.
+// is strictly inside cwd and is the path mkHashedDir builds from THIS Job's key.
 //
-// Where below Cwd the reported directory sits, and what the components at each
-// end of it are called, are the only things about it wr can check without
-// trusting whoever reported it. Everything below treats its PARENT as a
-// disposable workspace, so a value naming a directory of the user's would have
-// wr sweep that directory whole - which is the incident this fix is named for,
-// arriving through a different field.
-func createdCwdRel(cwd, actualCwd string) (string, error) {
+// That the reported directory is the one wr built for this Job is the only thing
+// about it wr can establish without trusting whoever reported it, and it is not
+// a formality: everything below treats the reported directory's PARENT as a
+// disposable workspace and runs the user's own `run` command inside the
+// directory itself. Anything less than the key let a value naming a directory of
+// the user's, or another Job's live working directory, do both.
+func createdCwdRel(cwd, actualCwd, key string) (string, error) {
 	rel, err := filepath.Rel(cwd, actualCwd)
 	if err != nil {
 		return "", fmt.Errorf("%w: %s vs %s: %w", errNotBelowBaseDir, actualCwd, cwd, err)
@@ -245,7 +233,7 @@ func createdCwdRel(cwd, actualCwd string) (string, error) {
 		return "", fmt.Errorf("%w: %s is not inside the job's cwd %s", errNotBelowBaseDir, actualCwd, cwd)
 	}
 
-	if !relIsCreatedCwd(rel) {
+	if !relIsJobCreatedCwd(rel, key) {
 		return "", fmt.Errorf("%w: %s", errNotACreatedCwd, actualCwd)
 	}
 
@@ -487,10 +475,11 @@ func (r *runDir) Close() {
 // there. It is a parameter rather than a property of the paths because the two
 // consumers of the resolution differ on it, and only on it.
 //
-// Cleanup tolerates absence, for a workspace the origin proof claims: the Job's
-// own Cmd may have deleted the working directory, or a previous cleanup may
-// have, and cleanup runs twice for a lost job, so refusing would leak a
-// workspace every second time. A `run` behaviour cannot tolerate it - a command
+// Cleanup tolerates absence: the Job's own Cmd may have deleted the working
+// directory, or a previous cleanup may have, and cleanup runs twice for a lost
+// job, so refusing would leak a workspace every second time. What makes that
+// affordable is that the path was proven to be the one wr built for this Job
+// before it was ever missed. A `run` behaviour cannot tolerate it - a command
 // cannot execute in a directory that is not there, and returning the name anyway
 // left exec.Cmd to resolve it a second time, at which point whatever creates it
 // in between chooses where the user's command runs.
@@ -543,10 +532,10 @@ func (p *workSpacePaths) prove(absent absenceRule) (*jobWorkSpace, error) {
 // under an ActualCwd of `.../sampleB/absent/cwd` - and stopped only where a
 // level happened to be non-empty.
 //
-// So absence gets no exemption of its own. proveActualCwd runs on both branches,
-// and its rule - absence is tolerated only for a workspace the paths prove wr
-// built for THIS Job - is the same rule either way, which is what keeps the
-// second cleanup of a real Job working while a fabricated path is refused.
+// So absence gets no exemption of its own: proveActualCwd runs on both branches.
+// What keeps the second cleanup of a real Job working while a fabricated path is
+// refused is not anything here, but createdCwdRel, which has already refused
+// every path that is not the one mkHashedDir built for this Job.
 func (p *workSpacePaths) proveBelow(cwdRoot *os.Root, absent absenceRule) (provenDirs, os.FileInfo, error) {
 	proven, ok := realDirBelow(cwdRoot, p.workSpace)
 	if !ok {
@@ -566,27 +555,24 @@ func (p *workSpacePaths) proveBelow(cwdRoot *os.Root, absent absenceRule) (prove
 // component - which is the one component above it that the workspace proof has
 // not already covered.
 //
-// A working directory that is not there is tolerated only when the caller says
-// absence means something to it AND the paths prove the workspace is the one wr
-// built for this Job, in which case its absence just means the Job's own Cmd
-// removed it, or a previous cleanup did. That keeps cleanup idempotent for every
-// workspace wr actually made, which matters because it runs twice for a lost
-// job; see absenceRule for why `run` says no to the same thing.
+// A working directory that is not there is tolerated when the caller says
+// absence means something to it, and only then. The path has already been proven
+// to be the one mkHashedDir built for this Job (createdCwdRel), so its absence
+// means the Job's own Cmd removed it, or a previous cleanup did; and cleanup
+// runs twice for a lost job, so refusing would leak a workspace every second
+// time. See absenceRule for why `run` says no to the same thing.
 //
-// Otherwise absence is refused. The shape check reads only the path's base name,
-// depth and leaf name, so a directory of the user's below one named for wr
-// satisfies it, and its PARENT would then be swept as a workspace, or walked for
-// empty dirs by Unmount's tidy-up. A directory that is not there is not one wr
-// created, and requiring it to be there is all that stands between that user
-// directory and a recursive delete - or, when the workspace is missing too,
-// between the user's empty directories and the upward walk.
+// Absence used to need the origin proof as a second condition here, because the
+// path check ahead of it read only the base name, depth and leaf name and a
+// directory of the user's could have all three. Now that the origin proof IS
+// that check, this is the same rule, said once.
 func (p *workSpacePaths) proveActualCwd(cwdRoot *os.Root, absent absenceRule) (os.FileInfo, error) {
 	info, err := cwdRoot.Lstat(p.rel)
 	if err == nil && info.IsDir() {
 		return info, nil
 	}
 
-	if os.IsNotExist(err) && absent == absenceTolerated && p.createdForThisJob {
+	if os.IsNotExist(err) && absent == absenceTolerated {
 		return nil, nil //nolint:nilnil // there is nothing there to have lstat'ed, and that is allowed here
 	}
 
