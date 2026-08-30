@@ -443,10 +443,10 @@ func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
 //
 // Where the platform will not name the descriptor it is the path, the second
 // resolution described on runDir is open again, and that is SAID rather than
-// done quietly. A probe measured 5 wins in 300 through that window against 0
-// with the descriptor named, and until this warning existed a wr deployment
-// could sit on the losing side of that for its whole life with nothing in the
-// log to show for it.
+// done quietly. A probe that placed the swap in that window won 50 of 50
+// attempts unnamed against 0 of 50 named, and won it blind 2 times in 1200
+// against 0 in 1200; until this warning existed a wr deployment could sit on the
+// losing side of that for its whole life with nothing in the log to show for it.
 //
 // It warns rather than refuses. There is nothing else to run the command in, so
 // refusing would take a feature away from every job on such a host to avoid a

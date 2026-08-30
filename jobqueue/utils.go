@@ -1334,9 +1334,12 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 func relIsJobCreatedCwd(rel, key string) bool {
 	names := strings.Split(rel, string(filepath.Separator))
 
-	// the depth is a precondition, not a check of its own: every index below is
-	// fixed, so a rel of any other length would read the wrong components or run
-	// off the end of the slice.
+	// the depth is both a check and a precondition. A path ONE LEVEL TOO DEEP
+	// whose leaf is still called cwd - which a Job's own Cmd can make inside the
+	// directory wr gave it - satisfies every other condition here, and treating
+	// it as a working directory would sweep the directory wr gave the Job as a
+	// workspace. Every index below is also fixed, so a rel of any other length
+	// would read the wrong components or run off the end of the slice.
 	if len(names) != createdCwdDepth {
 		return false
 	}

@@ -1815,6 +1815,9 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Content-Type", "application/json")
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
+
+			defer response.Body.Close()
+
 			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 
