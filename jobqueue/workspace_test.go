@@ -30,13 +30,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// osLinux is the only GOOS that names a process's own file descriptors through
+// /proc, which is what pins the directory a `run` behaviour starts in.
+const osLinux = "linux"
 
 // fixture strings shared by the workspace tests.
 const (
@@ -753,6 +759,112 @@ func TestWorkSpaceOfAnotherJob(t *testing.T) {
 
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
+		})
+	})
+}
+
+func TestRunDirWithoutProcFD(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// where the platform will not name a process's own file descriptors, the
+	// working directory can only be given to exec.Cmd as a NAME, which the child
+	// resolves a second time when the command starts. That window was measured
+	// at 5 wins in 300 against 0 with the descriptor named, and it used to be
+	// taken silently: a deployment could sit on the losing side of it for its
+	// whole life with nothing in the log to say so.
+	Convey("Given a host that does not name its own file descriptors", t, func() {
+		missing := filepath.Join(t.TempDir(), "no-proc-here", "fd") + string(filepath.Separator)
+		procFDPrefix = missing
+
+		Reset(func() { procFDPrefix = procSelfFD })
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		Reset(clog.ToDefault)
+
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		actualCwd, _, _ := realWorkSpace(job)
+
+		Convey("a run behaviour still runs in the right directory, and says it could not pin it", func() {
+			So(runBehaviour().Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsExist(filepath.Join(actualCwd, testRunMarker))
+
+			logged := buff.String()
+			So(logged, ShouldContainSubstring, "does not name a process's own file descriptors")
+			So(logged, ShouldContainSubstring, actualCwd)
+		})
+	})
+
+	// procSelfFDInfo names one file per descriptor too, but they are the
+	// descriptors' metadata rather than what they point at. It stands in here for
+	// a host that answers for its own descriptors with something that is not the
+	// directory we hold - which is the only way to reach the same-dir proof on a
+	// box whose /proc is the real one.
+	const procSelfFDInfo = "/proc/self/fdinfo/"
+
+	Convey("Given a host that names something else where its descriptors should be", t, func() {
+		if runtime.GOOS != osLinux {
+			SkipConvey("only linux has /proc/self/fdinfo", func() {})
+
+			return
+		}
+
+		procFDPrefix = procSelfFDInfo
+
+		Reset(func() { procFDPrefix = procSelfFD })
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		Reset(clog.ToDefault)
+
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		actualCwd, _, _ := realWorkSpace(job)
+
+		Convey("the name is not used, and the fallback is warned about", func() {
+			So(runBehaviour().Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsExist(filepath.Join(actualCwd, testRunMarker))
+			So(buff.String(), ShouldContainSubstring, "does not name a process's own file descriptors")
+		})
+	})
+
+	Convey("Given a host that does name them, nothing is warned about", t, func() {
+		if runtime.GOOS != osLinux {
+			SkipConvey("only linux names descriptors through /proc", func() {})
+
+			return
+		}
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		Reset(clog.ToDefault)
+
+		cwd := t.TempDir()
+
+		Convey("for a Job wr made a working directory for", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			realWorkSpace(job)
+
+			So(runBehaviour().Trigger(OnExit, job), ShouldBeNil)
+			So(buff.String(), ShouldBeEmpty)
+		})
+
+		Convey("nor for a Job it made none for, which runs in its own Cwd", func() {
+			// there is no handle to pin here and there never was one to lose:
+			// Cwd is the directory no proof was made about. Warning about it
+			// would cry wolf for every Job that has yet to report an ActualCwd,
+			// which is the ordinary case.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+
+			So(runBehaviour().Trigger(OnExit, job), ShouldBeNil)
+
+			soPathsExist(filepath.Join(cwd, testRunMarker))
+			So(buff.String(), ShouldBeEmpty)
 		})
 	})
 }

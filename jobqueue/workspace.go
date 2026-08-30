@@ -63,11 +63,14 @@ package jobqueue
 // relIsJobCreatedCwd requires of every path either consumer acts on.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/VertebrateResequencing/wr/clog"
 )
 
 // procSelfFD is where Linux names a process's own file descriptors, one entry
@@ -75,6 +78,12 @@ import (
 // started in a directory that was opened rather than in one that gets looked up
 // again by name; see runDir.
 const procSelfFD = "/proc/self/fd/"
+
+// procFDPrefix is procSelfFD. It is a var solely so that a test can stand in a
+// host that does not name its own descriptors: on any box that has /proc the
+// fallback below is otherwise unreachable, and a fallback nothing can reach is a
+// fallback nobody notices is broken. Nothing in wr assigns to it.
+var procFDPrefix = procSelfFD //nolint:gochecknoglobals // the only seam onto the no-/proc path
 
 // muxfysCachePrefix is what muxfys names the cache directories it chooses for
 // itself, inside whichever CacheBase it was given (see its remote.go). They hold
@@ -432,35 +441,62 @@ func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
 // what it lands in is the directory itself rather than whatever the path
 // resolves to by then.
 //
-// Everywhere that is not available - no /proc, or nothing held - it is the path,
-// and the resolution race described on runDir is open. The check is made against
-// the handle rather than by testing the platform, so a system that does not
-// answer for its own descriptors falls back rather than pointing a command at a
-// name that means nothing.
+// Where the platform will not name the descriptor it is the path, the second
+// resolution described on runDir is open again, and that is SAID rather than
+// done quietly. A probe measured 5 wins in 300 through that window against 0
+// with the descriptor named, and until this warning existed a wr deployment
+// could sit on the losing side of that for its whole life with nothing in the
+// log to show for it.
 //
-// Neither the nil check nor the same-dir one can be made to fail by a test on a
-// system that has /proc, so neither is a guard a mutation would show up: they
-// are what makes the fallback deliberate rather than accidental. Everything
-// after them falls back anyway, since os.File answers a nil receiver with an
-// error.
+// It warns rather than refuses. There is nothing else to run the command in, so
+// refusing would take a feature away from every job on such a host to avoid a
+// race that has been open for as long as the feature has existed - which is the
+// disable-everything failure this file has already been bitten by, only loud.
+// wr's own Execute already documents needing /proc for peak RAM tracking, so a
+// host without it is outside what wr supports and the warning says exactly which
+// guarantee it is outside of. It warns every time rather than once, because the
+// exposure is per command and a host that hits it hits it for every one.
+//
+// Nothing held is not that case: it is the Job's own Cwd, which no proof was
+// made about and which has nothing to pin.
 func (r *runDir) execDir() string {
 	if r.held == nil {
 		return r.path
 	}
 
-	fdPath := procSelfFD + strconv.Itoa(int(r.held.Fd()))
+	fdPath, ok := r.fdName()
+	if ok {
+		return fdPath
+	}
+
+	clog.Warn(context.Background(), "this host does not name a process's own file descriptors, so a run "+
+		"behaviour's command must be started at a path that gets resolved again when it starts; whatever "+
+		"can replace that path in between decides where the command runs",
+		"dir", r.path, "fds", procFDPrefix)
+
+	return r.path
+}
+
+// fdName is the held directory named as our own file descriptor, and whether
+// that name really is the directory we are holding.
+//
+// The question is asked of the handle rather than of the platform, so a system
+// that does not answer for its own descriptors says no here rather than having a
+// command pointed at a name that means nothing.
+func (r *runDir) fdName() (string, bool) {
+	fdPath := procFDPrefix + strconv.Itoa(int(r.held.Fd()))
 
 	held, err := r.held.Stat()
 	if err != nil {
-		return r.path
+		return "", false
 	}
 
-	named, err := os.Stat(fdPath)
+	named, err := os.Stat(filepath.Clean(fdPath))
 	if err != nil || !os.SameFile(named, held) {
-		return r.path
+		return "", false
 	}
 
-	return fdPath
+	return fdPath, true
 }
 
 // Close releases the handle, which must not happen until the command has

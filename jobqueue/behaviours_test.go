@@ -1456,7 +1456,7 @@ func TestBehaviourRunDir(t *testing.T) {
 
 			So(run.Trigger(OnExit, job), ShouldBeNil)
 
-			if runtime.GOOS != "linux" {
+			if runtime.GOOS != osLinux {
 				// exec can only be given the handle where /proc names it, so
 				// everywhere else the name is resolved again and this window is
 				// the residual recorded on runDir.
@@ -1502,7 +1502,7 @@ func TestBehaviourRunDir(t *testing.T) {
 			// the handle has to outlive the resolution, since the command being
 			// started is what uses it, so it is the behaviour that closes it. A
 			// run behaviour that leaked one would exhaust a long-lived manager.
-			if runtime.GOOS != "linux" {
+			if runtime.GOOS != osLinux {
 				return
 			}
 
