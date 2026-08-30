@@ -432,7 +432,7 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 		// depth and name both satisfied, but wr never made any of it
 		fabricated := filepath.Join(userTree, "cwd")
 
-		Convey("Unmount's tidy-up will not walk it (isRealDirBelow)", func() {
+		Convey("Unmount's tidy-up will not walk it (the working dir must exist)", func() {
 			job := &Job{
 				Cwd: cwd, ActualCwd: fabricated,
 				MountConfigs: MountConfigs{{Mount: "../userdata"}},
@@ -441,6 +441,26 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 			_, err = job.Unmount()
 
 			soPathsExist(userDir, userTree, cwd)
+		})
+
+		Convey("Unmount's tidy-up will not walk it when the named cwd is a symlink", func() {
+			// wr made the working directory itself, so a symlink there is
+			// something else entirely - here, a link the user happens to keep in
+			// a tree of their own. Proving it is a real dir is what stops the
+			// tidy-up walking that tree and unlinking their empty dirs, and then
+			// the empty dirs above those, all the way up to Cwd.
+			empty := filepath.Join(userDir, "results")
+			So(os.MkdirAll(empty, os.ModePerm), ShouldBeNil)
+			So(os.Symlink(userDir, fabricated), ShouldBeNil)
+
+			job := &Job{
+				Cwd: cwd, ActualCwd: fabricated,
+				MountConfigs: MountConfigs{{Mount: "../userdata/results"}},
+			}
+
+			_, err = job.Unmount()
+
+			soPathsExist(empty, userDir, userTree, cwd)
 		})
 
 		Convey("cleanup will not sweep it when the named cwd does not exist", func() {
@@ -482,10 +502,12 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
 
 		Convey("Cleanup deletes nothing when the reported workspace does not exist either", func() {
-			// the must-exist check on the working dir is never reached when the
-			// WORKSPACE is missing too: emptyWorkSpace returns early, and the
-			// upward walk still ran, unlinking every empty directory up to Cwd.
-			// One more non-existent path element was all it took.
+			// the must-exist check on the working dir is deliberately not
+			// reached when the WORKSPACE is missing too - there is then nothing
+			// inside it to identify or to delete - so the shape check on the
+			// reported path is the only thing that stops the upward walk
+			// unlinking every empty directory up to Cwd. One more non-existent
+			// path element was all it took.
 			userTop := filepath.Join(cwd, "results")
 			userMid := filepath.Join(userTop, "2024")
 			err = os.MkdirAll(userMid, os.ModePerm)
@@ -640,10 +662,15 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Cleanup of a Job with an ActualCwd that leaves Cwd via a symlink deletes nothing and errors", func() {
+			// the reported path is at the depth wr really creates its working
+			// dirs at, so the cheap lexical shape check passes it and the
+			// symlinked component is what has to stop it. A shallower fixture
+			// was refused on depth alone and never reached this guard.
 			err = os.Symlink(parent, filepath.Join(cwd, "escape"))
 			So(err, ShouldBeNil)
 
-			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(cwd, "escape", "cwd")}
+			escaped := filepath.Join(append([]string{cwd, "escape"}, testHashDirs...)...)
+			job := &Job{Cwd: cwd, ActualCwd: filepath.Join(escaped, "unique", "cwd")}
 
 			err = cleanupAll.Trigger(OnExit, job)
 			So(err, ShouldNotBeNil)

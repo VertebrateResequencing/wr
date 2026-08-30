@@ -34,9 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -257,378 +255,22 @@ func (b *Behaviour) String() string {
 // with all empty parent dirs up to Cwd. (The all arg would, when false, keep
 // files designated as outputs, but that designation is *** not yet implemented,
 // so for now we always wipe everything.)
+//
+// Which dirs those are, and which of them the Job's live mounts and caches need
+// kept, is decided entirely by Job.resolveWorkSpace - the one place any of it is
+// worked out. A nil workspace means wr created nothing here it may delete.
 func (b *Behaviour) cleanup(j *Job, _ bool) error {
-	if j.CwdMatters || j.ActualCwd == "" {
-		// a CwdMatters job runs directly in the user's own Cwd, so wr created no
-		// dir for it and cleanup is documented (cmd/add.go) as having no effect.
-		// ActualCwd should always be blank for such a Job, but we don't rely on
-		// that: a Job persisted by wr v0.37.0|1 can have it set to Cwd, and then
-		// deleting the parent of ActualCwd would destroy the user's own data.
-		// For any other Job, a blank ActualCwd just means it never ran, so
-		// again there's nothing wr created to delete.
-		return nil
-	}
-
-	if !filepath.IsAbs(j.Cwd) || !filepath.IsAbs(j.ActualCwd) {
-		// a relative path means nothing without knowing which process resolves
-		// it, and cleanup runs in TWO of them: the runner, and the manager when
-		// it declares a job lost (killLostJobAndTriggerBehaviours). Everything
-		// below resolves with filepath.Abs, i.e. against whichever process is
-		// cleaning up - so a relative Cwd made every containment proof hold
-		// against the MANAGER's directory instead, and deletion landed on
-		// whatever happened to sit at the same relative path beside it.
-		//
-		// Job.Cwd is stored exactly as the user typed it and cannot be
-		// normalised at the source, because it feeds Job.Key() and so job
-		// identity. Refusing here turns a deletion in the wrong tree into a
-		// leaked workspace and a loud error, which is the right way round.
-		return fmt.Errorf("%w: %s and %s must both be absolute", errNotBelowBaseDir, j.Cwd, j.ActualCwd)
-	}
-
-	// every deletion below is made relative to this handle on the Job's Cwd,
-	// which is the boundary all of them must stay inside. Proving a path is
-	// inside Cwd and then deleting the path leaves a window in which a proven
-	// directory component can be replaced with a symlink; deleting through the
-	// handle does not, because the operating system, not us, refuses a name
-	// that resolves outside it at the moment of the deletion.
-	cwdRoot, err := openBaseRoot(j.Cwd)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// the Job's Cwd has already gone, so there is nothing of ours left
-			// inside it to delete.
-			return nil
-		}
-
-		return fmt.Errorf("%w: could not open the job's cwd %s: %w", errNotBelowBaseDir, j.Cwd, err)
-	}
-	defer cwdRoot.Close()
-
-	return cleanupBelowCwd(j, cwdRoot)
-}
-
-// cleanupBelowCwd does Behaviour.cleanup's deletions, all of them relative to
-// an open handle on the Job's Cwd.
-func cleanupBelowCwd(j *Job, cwdRoot *os.Root) error {
-	workSpace, actualCwdName, err := provenWorkSpace(j, cwdRoot)
-	if err != nil {
+	ws, err := j.resolveWorkSpace()
+	if err != nil || ws == nil {
 		return err
 	}
+	defer ws.Close()
 
-	if !relIsCreatedCwd(filepath.Join(workSpace.rel, actualCwdName)) {
-		// how far below Cwd the reported directory sits, and what it is called,
-		// are the only things about it wr can check without trusting whoever
-		// reported it. Everything below treats its PARENT as a disposable
-		// workspace, so a value naming a directory of the user's would have wr
-		// sweep that directory whole - which is the incident this fix is named
-		// for, arriving through a different field.
-		return fmt.Errorf("%w: %s", errNotACreatedCwd, j.ActualCwd)
-	}
-
-	if cleanupProvenHook != nil {
-		cleanupProvenHook()
-	}
-
-	// the descent to the workspace is made once and its handles kept, so that
-	// emptying the workspace and then deleting it and its empty parents cost
-	// one metadata lookup per level instead of re-walking Cwd for each of them.
-	chain, err := workSpace.openChain()
-	if err != nil {
-		return err
-	}
-	defer chain.closeAll()
-
-	if err := emptyWorkSpace(j, chain, actualCwdName); err != nil {
-		return err
-	}
-
-	// delete the emptied workspace and any empty parent directories up to Cwd
-	return chain.removeUpward()
-}
-
-// provenWorkSpace proves the unique dir wr created for this Job: the parent of
-// its ActualCwd, which holds tmp, cwd and possibly mount cache dirs. It returns
-// that dir, proven and bound to cwdRoot, plus the name ActualCwd has within it.
-//
-// wr made ActualCwd itself, as a real dir strictly inside Cwd, so its parent is
-// a real dir strictly inside Cwd too. If either is anything else now (eg. it is
-// stale after a `wr mod --cwd`, was poisoned with Cwd itself, is an unclean path
-// that cleans out of Cwd, or the Job's own Cmd replaced a dir below Cwd with a
-// symlink), we cannot tell which directory wr is entitled to delete, so we
-// delete nothing and report why. Leaving a workspace behind is recoverable;
-// deleting the wrong directory is what this whole guard exists to prevent.
-//
-// A resolved proof is not good enough here, because it names a symlink's target
-// rather than the dir itself: the deletions below descend into the workspace and
-// into ActualCwd by reading them, which follows a symlinked final component.
-func provenWorkSpace(j *Job, cwdRoot *os.Root) (provenDirs, string, error) {
-	absActualCwd, err := filepath.Abs(j.ActualCwd)
-	if err != nil {
-		return provenDirs{}, "", err
-	}
-
-	workSpace, ok := realDirBelow(cwdRoot, filepath.Dir(absActualCwd))
-	if !ok {
-		return provenDirs{}, "", fmt.Errorf(
-			"%w: refusing to clean up %s, whose parent is not a real dir inside the job's cwd %s",
-			errNotBelowBaseDir, j.ActualCwd, j.Cwd)
-	}
-
-	return workSpace, filepath.Base(absActualCwd), nil
-}
-
-// emptyWorkSpace opens the proven workspace as a root of its own, proves it is
-// the dir that was proven rather than one a symlink has since substituted, and
-// deletes its contents through it.
-//
-// A workspace that has already gone is not a failure. The same Job's cleanup
-// runs more than once - the runner triggers it, and for a lost job the server
-// triggers it again - and Job.Unmount deletes the emptied workspace in between,
-// so the second run finds nothing to delete. Erroring here would skip the empty
-// parent dirs that Behaviour.cleanup goes on to tidy.
-func emptyWorkSpace(j *Job, chain dirChain, actualCwdName string) error {
-	wsRoot, err := chain.openLeaf()
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-
-		return err
-	}
-	defer wsRoot.Close()
-
-	return cleanupWorkSpace(j, wsRoot, chain.leaf, actualCwdName)
-}
-
-// cleanupWorkSpace deletes the contents of the Job's workspace dir, all of it
-// relative to wsRoot, the proven handle on that dir. If the Job used mounts it
-// takes care not to delete the cache dirs or mounted dirs; otherwise it just
-// deletes everything in one go.
-func cleanupWorkSpace(j *Job, wsRoot *os.Root, workSpace, actualCwdName string) error {
-	// a missing working dir is NOT tolerated here, though a missing workspace is
-	// (emptyWorkSpace returns before this). The name check in cleanupBelowCwd
-	// looks only at the last component, so appending "/cwd" to any directory of
-	// the user's inside Cwd passes it - and nothing else stopped it, because
-	// the directory it named did not have to exist. Requiring it to be there,
-	// and to be a real dir, means the reported path has to name something wr
-	// actually made rather than merely end in the right word.
-	//
-	// The cost is that a workspace whose cwd was already removed, by a cleanup
-	// that failed partway, is now left alone instead of being swept. That is a
-	// leaked directory rather than a deleted one, which is the right way round.
-	actualCwdInfo, err := provenActualCwd(j, wsRoot, actualCwdName)
-	if err != nil {
-		return err
-	}
-
-	if len(j.MountConfigs) == 0 {
-		return removeWorkSpaceEntries(wsRoot, nil)
-	}
-
-	keepDirs, keepActualCwd := j.mountDirsToKeep()
-
-	if !keepActualCwd && actualCwdInfo != nil {
-		if err := removeActualCwd(wsRoot, actualCwdName, actualCwdInfo, keepDirs); err != nil {
-			return err
-		}
-	}
-
-	return removeWorkSpaceExtras(wsRoot, mountedWorkSpaceEntries(j, workSpace))
-}
-
-// provenActualCwd proves that the Job's ActualCwd, which must be the named entry
-// of the workspace, is a real directory rather than a symlink or a file: the
-// deletions read it, and a read follows a symlinked final component and would
-// delete the target's contents instead.
-//
-// Naming a single entry of an already proven handle is what makes this
-// sufficient: there is no path left for a swap elsewhere to redirect. An
-// ActualCwd that has already gone gives an os.IsNotExist error, which is not a
-// failure, just nothing to delete there.
-func provenActualCwd(j *Job, wsRoot *os.Root, actualCwdName string) (os.FileInfo, error) {
-	info, err := wsRoot.Lstat(actualCwdName)
-	if err != nil {
-		return nil, err
-	}
-
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%w: refusing to clean up %s, which is not a real dir inside the job's cwd %s",
-			errNotBelowBaseDir, j.ActualCwd, j.Cwd)
-	}
-
-	return info, nil
-}
-
-// mountDirsToKeep works out which of the Job's mount points lie inside its
-// ActualCwd, as paths relative to it, and whether one lands on ActualCwd itself
-// (in which case ActualCwd must be kept whole).
-//
-// It works from mountPoints(), which resolves every MountConfig.Mount to an
-// absolute path, rather than from the raw Mount strings. Mount may legitimately
-// be given as an absolute path - the docs allow "any directory you're able to
-// write to" - and an absolute one can still land inside ActualCwd. Reading the
-// raw strings protected only the relative mounts, so an absolute mount inside
-// ActualCwd was deleted through while it was still live, which is how mounted
-// remote content could be reached.
-//
-// Mount points outside ActualCwd are deliberately not returned here: they are
-// protected by removeWorkSpaceExtras instead, which keeps the workspace entry
-// leading to each of them.
-func (j *Job) mountDirsToKeep() (keepDirs []string, keepActualCwd bool) {
-	for _, mount := range j.mountPoints() {
-		rel, ok := relBelowDir(j.ActualCwd, mount)
-		if !ok {
-			continue
-		}
-
-		if rel == "." {
-			return nil, true
-		}
-
-		keepDirs = append(keepDirs, rel)
-	}
-
-	return keepDirs, false
-}
-
-// removeWorkSpaceEntries deletes every entry of the workspace that keep doesn't
-// claim. A nil keep deletes them all, which is what a Job with no mounts wants.
-//
-// Each entry is named to wsRoot by its own name alone, with no path above it
-// left to resolve, so nothing done here can be redirected elsewhere.
-func removeWorkSpaceEntries(wsRoot *os.Root, keep func(name string) bool) error {
-	entries, err := readDirIn(wsRoot, ".")
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		if keep != nil && keep(entry.Name()) {
-			continue
-		}
-
-		if err = wsRoot.RemoveAll(entry.Name()); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// mountedWorkSpaceEntries returns, for each of the Job's mount points that lies
-// inside workSpace, the name of the workSpace entry you would have to go
-// through to reach it. Those entries must be left alone: deleting one would
-// delete the mount point, or the dirs above a deeper one along with it.
-//
-// cmd/add.go documents cleanup as ignoring mounted dirs, and the mounts are
-// still live when cleanup runs (Job.Unmount comes after it in client.go), so a
-// recursive delete - which has no mount awareness - would recurse through a
-// mount point into the user's remote file system.
-//
-// Mount points below the ActualCwd, and outside workSpace entirely, need
-// nothing here: the former are kept by removeActualCwd, and the latter are
-// somewhere cleanup never deletes.
-func mountedWorkSpaceEntries(j *Job, workSpace string) map[string]bool {
-	entries := make(map[string]bool, len(j.MountConfigs))
-
-	for _, mount := range j.mountPoints() {
-		if name, ok := entryLeadingTo(workSpace, mount); ok {
-			entries[name] = true
-		}
-	}
-
-	return entries
-}
-
-// entryLeadingTo returns the name of the entry of dir that path is inside (path
-// itself, if it is a direct child). ok is false if path is not strictly inside
-// dir, or if either path could not be made absolute.
-// relBelowDir returns path relative to dir, with BOTH made absolute first, and
-// whether it is dir itself (".") or strictly inside it.
-//
-// Both sides have to be normalised because Job.Cwd is stored exactly as the
-// user typed it and is never cleaned - it feeds Job.Key(), so normalising it at
-// the source would change job identity - and a relative Cwd makes the ActualCwd
-// built from it relative too, while an absolute MountConfig.Mount stays
-// absolute. filepath.Rel fails when given one of each, and a mount point that
-// failed to be recognised is a mount deleted through while it is still live.
-func relBelowDir(dir, path string) (string, bool) {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", false
-	}
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", false
-	}
-
-	rel, err := filepath.Rel(absDir, absPath)
-	if err != nil {
-		return "", false
-	}
-
-	return rel, rel == "." || relIsBelow(rel)
-}
-
-func entryLeadingTo(dir, path string) (string, bool) {
-	rel, ok := relBelowDir(dir, path)
-	if !ok || rel == "." {
-		return "", false
-	}
-
-	name, _, _ := strings.Cut(rel, string(filepath.Separator))
-
-	return name, true
-}
-
-// removeWorkSpaceExtras deletes everything inside the workspace except for cwd,
-// the cache dirs, and the given entries leading to the Job's mount points, incase
-// a job.Cmd did something like `touch ../foo`.
-func removeWorkSpaceExtras(wsRoot *os.Root, keepEntries map[string]bool) error {
-	return removeWorkSpaceEntries(wsRoot, func(name string) bool {
-		return keptWorkSpaceEntry(name, keepEntries)
-	})
-}
-
-// keptWorkSpaceEntry says if an entry of a Job's workspace must survive
-// cleanup: its ActualCwd, one of the muxfys mount cache dirs, or an entry
-// leading to one of its mount points.
-func keptWorkSpaceEntry(name string, keepEntries map[string]bool) bool {
-	return name == createdCwdName || strings.HasPrefix(name, ".muxfys") || keepEntries[name]
-}
-
-// removeActualCwd deletes the Job's ActualCwd, keeping the given relative dirs
-// if any were specified.
-func removeActualCwd(wsRoot *os.Root, actualCwdName string, actualCwdInfo os.FileInfo, keepDirs []string) error {
-	if len(keepDirs) == 0 {
-		return wsRoot.RemoveAll(actualCwdName)
-	}
-
-	actualCwdRoot, err := openVerifiedDir(wsRoot, actualCwdName, actualCwdInfo)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-
-		return err
-	}
-	defer actualCwdRoot.Close()
-
-	return removeAllExcept(actualCwdRoot, keepDirs)
+	return ws.cleanup()
 }
 
 // run simply runs the given command from Job's actual cwd.
 func (b *Behaviour) run(j *Job) error {
-	// this falls back to Cwd unconditionally, unlike Job.workingDir(), which
-	// does so only when CwdMatters: cmd.Dir must name a directory that exists,
-	// and Cwd is the only one we know does. Don't unify the two: workingDir()
-	// feeds what we display and offer to ssh to, where claiming a
-	// non-CwdMatters job with no reported ActualCwd is in Cwd would be a lie.
-	actualCwd := j.ActualCwd
-	if actualCwd == "" {
-		actualCwd = j.Cwd
-	}
-
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
 		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStr, b.Arg, b.Arg)
@@ -642,7 +284,7 @@ func (b *Behaviour) run(j *Job) error {
 	// they like, but that is the very nature of this app. This runs as them,
 	// so can do whatever they can do...
 	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", bc)
-	cmd.Dir = actualCwd
+	cmd.Dir = j.behaviourRunDir()
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -650,6 +292,26 @@ func (b *Behaviour) run(j *Job) error {
 	}
 
 	return err
+}
+
+// behaviourRunDir is the directory a Run behaviour's command runs in, read under
+// the Job's lock because the manager writes ActualCwd (applyLiveSnapshot) while
+// it triggers behaviours for a lost job.
+//
+// It falls back to Cwd unconditionally, unlike Job.workingDir(), which does so
+// only when CwdMatters: cmd.Dir must name a directory that exists, and Cwd is
+// the only one we know does. Don't unify the two: workingDir() feeds what we
+// display and offer to ssh to, where claiming a non-CwdMatters job with no
+// reported ActualCwd is in Cwd would be a lie.
+func (j *Job) behaviourRunDir() string {
+	j.RLock()
+	defer j.RUnlock()
+
+	if j.ActualCwd != "" {
+		return j.ActualCwd
+	}
+
+	return j.Cwd
 }
 
 // copyToManager copies the files specified in the Arg slice to the configured

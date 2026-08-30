@@ -146,28 +146,6 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	}
 }
 
-// mountPoints returns the directory each of the Job's MountConfigs mounts on,
-// resolved against the Job's default base dirs, so that a caller which must
-// avoid touching the Job's mount points knows precisely which dirs those are.
-//
-// It does not take Mount()'s optional onCwd argument, so it agrees with Mount()
-// only for a Job that isn't CwdMatters and has a non-blank ActualCwd: that is
-// the one case mountBaseDirs resolves without consulting onCwd, and it is also
-// the only case Behaviour.cleanup, the sole caller, proceeds in. From anywhere
-// else, a MountConfig with no Mount of its own would be reported at Cwd/mnt
-// when a Mount(true) had put it on Cwd itself.
-func (j *Job) mountPoints() []string {
-	cwd, defaultMount, _ := j.mountBaseDirs(nil)
-
-	points := make([]string, 0, len(j.MountConfigs))
-
-	for _, mc := range j.MountConfigs {
-		points = append(points, resolveMountPoint(mc.Mount, cwd, defaultMount))
-	}
-
-	return points
-}
-
 // dropImpossibleCleanups removes every cleanup Behaviour this Job would carry
 // without ever being able to carry it out.
 //
@@ -1076,13 +1054,12 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 		return logs, fmt.Errorf("Unmount failure(s): %w", err)
 	}
 
-	// delete any empty dirs. As in Behaviour.cleanup, a CwdMatters Job is
-	// excluded even if it has an ActualCwd, because wr created no directory for
-	// it: one persisted by wr v0.37.0|1 can have ActualCwd set to Cwd, and there
-	// is nothing there for us to tidy up.
-	if j.createdCwd() != "" {
-		err = j.rmEmptyMountDirs()
-	}
+	// delete any empty dirs. Whether there are any of ours to delete, and which
+	// they are, is left entirely to the workspace resolution: a CwdMatters Job
+	// is excluded there, even if it has an ActualCwd, because wr created no
+	// directory for it - one persisted by wr v0.37.0|1 can have ActualCwd set to
+	// Cwd, and there is nothing there for us to tidy up.
+	err = j.rmEmptyMountDirs()
 
 	return logs, err
 }
@@ -1115,96 +1092,21 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 	return logs, merr
 }
 
-// createdWorkSpace returns the disposable workspace wr made for this Job - the
-// parent of the working directory it created - or "" if there is no such
-// directory, or the one the Job reports is not one wr could have created.
-//
-// The reported ActualCwd is not trusted here any more than it is by cleanup: an
-// unchecked filepath.Dir of it made the workspace the PARENT of Cwd when
-// ActualCwd was poisoned with Cwd, and every mount inside Cwd then looked like
-// it was inside the workspace. Must be called with at least an RLock held.
-func (j *Job) createdWorkSpace() string {
-	actualCwd := j.createdCwd()
-	if actualCwd == "" {
-		return ""
-	}
-
-	if !filepath.IsAbs(j.Cwd) || !filepath.IsAbs(actualCwd) {
-		// as in Behaviour.cleanup: a relative path resolves against whichever
-		// process is running, and this runs in the runner while cleanup can run
-		// in the manager.
-		return ""
-	}
-
-	rel, ok := relBelowDir(j.Cwd, actualCwd)
-	if !ok || !relIsCreatedCwd(rel) {
-		return ""
-	}
-
-	// the same proofs cleanup makes, not just the depth and the name. Without
-	// them this walked a tree wr never created and removed the user's empty
-	// directories from it.
-	if !isRealDirBelow(j.Cwd, actualCwd) {
-		return ""
-	}
-
-	return filepath.Dir(actualCwd)
-}
-
-// isRealDirBelow says whether dir is a real directory that is really there,
-// strictly inside cwd, with no symlink among the components leading to it -
-// the proofs Behaviour.cleanup makes before it deletes anything.
-func isRealDirBelow(cwd, dir string) bool {
-	cwdRoot, err := openBaseRoot(cwd)
-	if err != nil {
-		return false
-	}
-
-	defer cwdRoot.Close()
-
-	dirs, proven := realDirBelow(cwdRoot, dir)
-	if !proven {
-		return false
-	}
-
-	// through the root handle rather than by absolute path: the path came from
-	// the runner, and a name resolved relative to a root cannot leave it, so
-	// this cannot be talked into looking outside cwd.
-	info, err := cwdRoot.Lstat(dirs.rel)
-
-	return err == nil && info.IsDir()
-}
-
 // rmEmptyMountDirs deletes any empty directories between the Job's mount
 // point(s) and its Cwd. It returns the error from the last cleanup attempted
 // (matching the original Unmount behaviour).
+//
+// Which dirs it may walk is decided by Job.resolveWorkSpace, the same resolution
+// Behaviour.cleanup uses, so the two cannot disagree about what wr created -
+// which is what they did, in opposite directions, in three rounds of this bug.
 func (j *Job) rmEmptyMountDirs() error {
-	var err error
-
-	// only mount points inside the workspace wr made for this Job are tidied.
-	// Being inside Cwd is NOT enough: MountConfig.Mount may be an absolute path
-	// to "any directory you're able to write to", so a Job can name an existing
-	// directory of the user's inside their own Cwd, and this walk removes empty
-	// dirs and then their empty parents - it deleted the user's dir, and the one
-	// above it, when it was let loose on every mount point. The workspace is the
-	// only tree wr created, so it is the only one there is anything of ours to
-	// tidy in.
-	workSpace := j.createdWorkSpace()
-	if workSpace == "" {
+	ws := j.resolvedWorkSpaceOrNone()
+	if ws == nil {
 		return nil
 	}
+	defer ws.Close()
 
-	for _, mount := range j.mountPoints() {
-		if _, ok := relBelowDir(workSpace, mount); !ok {
-			continue
-		}
-
-		if rmErr := rmEmptyDirs(mount, j.Cwd); rmErr != nil {
-			err = rmErr
-		}
-	}
-
-	return err
+	return ws.rmEmptyMountDirs()
 }
 
 // ToEssense converts a Job to its matching JobEssense, taking less space and

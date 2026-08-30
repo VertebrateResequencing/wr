@@ -893,9 +893,18 @@ func rmEmptyDirs(leafDir, baseDir string) error {
 	}
 	defer baseRoot.Close()
 
+	return rmEmptyDirsIn(baseRoot, leafDir)
+}
+
+// rmEmptyDirsIn does rmEmptyDirs's work through a handle on the base dir that
+// the caller already holds. A caller that has proven its way inside that dir
+// should use this rather than rmEmptyDirs: the handle pins the directory, so
+// every deletion happens inside the dir that was proven, not inside whatever has
+// taken its place since.
+func rmEmptyDirsIn(baseRoot *os.Root, leafDir string) error {
 	proven, ok := realDirBelow(baseRoot, leafDir)
 	if !ok {
-		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseDir)
+		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseRoot.Name())
 	}
 
 	return rmCheckedEmptyDirs(proven)
@@ -1267,6 +1276,45 @@ func relIsCreatedCwd(rel string) bool {
 	return relIsBelow(rel) &&
 		len(strings.Split(rel, string(filepath.Separator))) == createdCwdDepth &&
 		filepath.Base(rel) == createdCwdName
+}
+
+// relIsJobCreatedCwd tells you if rel, a working directory's path relative to a
+// Job's Cwd, is exactly the one mkHashedDir builds for a Job with the given key.
+// That is proof of origin, where relIsCreatedCwd is only a coincidence filter.
+//
+// It is built by asking calculateHashedDir - the function that laid the path
+// down - what it would produce, so the two cannot drift apart. Only the base
+// component is exempt, because that is the <AppName>_cwd dir and AppName is a
+// package var that cmd/runner.go sets to "wr" while the manager leaves it
+// "jobqueue"; keying on it would refuse every real workspace server-side, which
+// is where the cleanup that caused the original incident runs.
+//
+// A false answer is never taken as a reason to delete less than before, only as
+// a reason not to tolerate a missing working directory, so a future change to
+// how os.MkdirTemp names things can leak a workspace but cannot destroy one.
+func relIsJobCreatedCwd(rel, key string) bool {
+	names := strings.Split(rel, string(filepath.Separator))
+	if len(names) != createdCwdDepth {
+		return false
+	}
+
+	hashed, leaf := calculateHashedDir(names[0], key)
+	if hashed != filepath.Join(names[:createdCwdDepth-2]...) {
+		return false
+	}
+
+	return isMkTempName(names[createdCwdDepth-2], leaf)
+}
+
+// isMkTempName tells you if name is what os.MkdirTemp creates for the given
+// prefix: the prefix followed by a non-empty run of digits.
+func isMkTempName(name, prefix string) bool {
+	suffix, ok := strings.CutPrefix(name, prefix)
+	if !ok || suffix == "" {
+		return false
+	}
+
+	return strings.IndexFunc(suffix, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 // relIsBelow tells you if a relative path produced by filepath.Rel describes
