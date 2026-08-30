@@ -989,21 +989,33 @@ func (ms *mountState) buildRemoteConfigs(mc MountConfig, defaultCacheBase string
 	return rcs, nil
 }
 
-// resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase,
-// recording it as a unique cache dir when it is relative.
-func (ms *mountState) resolveCacheDir(cacheDir, defaultCacheBase string) string {
+// resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase. An
+// unset CacheDir (muxfys then chooses its own dir inside the CacheBase) or an
+// absolute one is returned as given.
+//
+// It is a function as well as a mountState method because cleanup must work out
+// the same locations to know what it must not delete, and a second derivation of
+// where a cache lands is a second chance to get it wrong.
+func resolveCacheDir(cacheDir, defaultCacheBase string) string {
 	if cacheDir == "" || filepath.IsAbs(cacheDir) {
 		// *** else, the cache is in a unique dir that I don't know about?
 		return cacheDir
 	}
 
-	cacheDir = filepath.Join(defaultCacheBase, cacheDir)
+	return filepath.Join(defaultCacheBase, cacheDir)
+}
 
-	// *** we should only set this if not writing, or if writing to a non-empty
-	// dir, which we don't know about at this point...
-	ms.cacheDirs = append(ms.cacheDirs, cacheDir)
+// resolveCacheDir resolves a target's CacheDir, recording it as a unique cache
+// dir when it is relative - which is exactly when resolving it changed it.
+func (ms *mountState) resolveCacheDir(cacheDir, defaultCacheBase string) string {
+	resolved := resolveCacheDir(cacheDir, defaultCacheBase)
+	if resolved != cacheDir {
+		// *** we should only set this if not writing, or if writing to a
+		// non-empty dir, which we don't know about at this point...
+		ms.cacheDirs = append(ms.cacheDirs, resolved)
+	}
 
-	return cacheDir
+	return resolved
 }
 
 // resolveMount resolves a MountConfig's mount point relative to cwd (or the
