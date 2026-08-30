@@ -111,8 +111,11 @@ type jobWorkSpaceSnapshot struct {
 // resolution reads from it. Nothing downstream looks at the Job again.
 //
 // Only field copies and Key()'s hash of them happen here, so the lock is held
-// for no longer than the copy itself. MountConfigs is only ever replaced
-// wholesale, never mutated in place, so copying the slice header is enough.
+// for no longer than the copy itself. Copying the slice header is enough for
+// MountConfigs, which is only ever replaced wholesale and never mutated in
+// place - and that used to be untrue of the line below it: MountConfigs.Key()
+// SORTED the Job's own slice, making this read lock hold a write. See
+// MountConfigs.Key for what that cost.
 func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 	j.RLock()
 	defer j.RUnlock()

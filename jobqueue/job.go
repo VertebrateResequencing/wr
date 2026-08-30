@@ -2122,7 +2122,13 @@ func (j *JobModifier) applyBehaviours(job *Job) {
 // applyContainer applies the mount, bsub and container modifications to job.
 func (j *JobModifier) applyContainer(job *Job) {
 	if j.MountConfigsSet {
-		job.MountConfigs = j.MountConfigs
+		// a COPY per job, because one JobModifier is applied to every job of a
+		// `wr mod --mounts` batch: assigning the modifier's own slice gave all
+		// of them one backing array, guarded by as many different mutexes as
+		// there were jobs. Job.Key() no longer writes through it (see
+		// MountConfigs.Key), but a slice shared between jobs that are otherwise
+		// independent is a standing invitation to the next writer.
+		job.MountConfigs = slices.Clone(j.MountConfigs)
 	}
 
 	if j.BsubModeSet {

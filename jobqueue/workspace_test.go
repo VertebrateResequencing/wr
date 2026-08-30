@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -866,5 +867,99 @@ func TestRunDirWithoutProcFD(t *testing.T) {
 			soPathsExist(filepath.Join(cwd, testRunMarker))
 			So(buff.String(), ShouldBeEmpty)
 		})
+	})
+}
+
+// unorderedMounts returns two MountConfigs that are NOT in Mount order, which is
+// the order MountConfigs.Key() reads them in - so asking for the key is what
+// used to reorder them. A fresh list each call, since a shared one would be
+// reordered by the first asking and prove nothing about the second.
+func unorderedMounts() MountConfigs {
+	return MountConfigs{
+		{Mount: "zeta", Targets: []MountTarget{{Path: testWSTargetPath + "/z"}}},
+		{Mount: "alpha", Targets: []MountTarget{{Path: testWSTargetPath + "/a"}}},
+	}
+}
+
+func TestJobKeyConcurrentWithCleanup(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Asking a Job for its key while cleanup asks too is not a write", t, func() {
+		// MountConfigs.Key() sorted the slice it was asked about, and Job.Key()
+		// is asked for by readers holding at most a READ lock: workSpaceSnapshot
+		// under the Job's RLock, and the REST and CLI handlers, jobtransition,
+		// ToEssense and the client under no lock at all. Two of them at once
+		// wrote the same backing array - which -race reports, and which left the
+		// Job holding a config list with one entry lost and another duplicated,
+		// after which a writable mount is never mounted at all and the Cmd's
+		// results are written into a plain directory that cleanup deletes.
+		//
+		// Each round gets its own Job, because the write only happens while the
+		// slice is still in the order it was configured in: one shared Job would
+		// be sorted by whichever reader got there first and the rest would find
+		// nothing left to do.
+		const (
+			concurrentRounds  = 20
+			concurrentReaders = 3
+		)
+
+		cwd := t.TempDir()
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+		wrongKeys := 0
+		mutated := 0
+
+		for round := range concurrentRounds {
+			cmd := fmt.Sprintf("%s %d", testWSCmd, round)
+
+			// the workspace is built for a Job of its own, so that the Job the
+			// readers share has never been asked for its key: that is the state
+			// a Job is in when the manager has just decoded it from the database
+			// or taken it off the wire, and it is the only state in which the
+			// sort had anything to write.
+			built := &Job{Cwd: cwd, Cmd: cmd, MountConfigs: unorderedMounts()}
+			actualCwd, _, _ := realWorkSpace(built)
+
+			job := &Job{Cwd: cwd, Cmd: cmd, MountConfigs: unorderedMounts(), ActualCwd: actualCwd}
+			wanted := unorderedMounts()
+			key := built.Key()
+
+			keys := make([]string, concurrentReaders)
+
+			var wg sync.WaitGroup
+
+			wg.Add(concurrentReaders + 1)
+
+			for reader := range concurrentReaders {
+				go func() {
+					defer wg.Done()
+
+					keys[reader] = job.Key()
+				}()
+			}
+
+			go func() {
+				defer wg.Done()
+
+				//nolint:errcheck // the key and the config list are the assertions
+				cleanup.Trigger(OnExit, job)
+			}()
+
+			wg.Wait()
+
+			for _, got := range keys {
+				if got != key {
+					wrongKeys++
+				}
+			}
+
+			if !reflect.DeepEqual(job.MountConfigs, wanted) {
+				mutated++
+			}
+		}
+
+		So(wrongKeys, ShouldEqual, 0)
+		So(mutated, ShouldEqual, 0)
 	})
 }

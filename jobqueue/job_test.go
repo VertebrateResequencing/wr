@@ -1096,3 +1096,94 @@ func oldByteKey(b []byte) string {
 func oldHexFormat(l, h uint64) string {
 	return fmt.Sprintf("%016x%016x", l, h)
 }
+
+// twoMounts returns two MountConfigs deliberately NOT in Mount order, which is
+// the order MountConfigs.Key() reads them in.
+func twoMounts() MountConfigs {
+	return MountConfigs{
+		{Mount: "zeta", Targets: []MountTarget{{Path: testMountPath + "/z"}}},
+		{Mount: "alpha", Targets: []MountTarget{{Path: testMountPath + "/a"}}},
+	}
+}
+
+func TestMountConfigsKeyDoesNotMutate(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// Key() used to sort the caller's slice. Asking a Job for its key is a read
+	// at every call site in wr - workSpaceSnapshot asks under the Job's READ
+	// lock, and the REST and CLI handlers, the job transitions, ToEssense and
+	// the client ask under no lock at all - so the sort made every reader a
+	// writer of the Job's own MountConfigs. Concurrently that left jobs holding
+	// a slice with one config lost and another duplicated, permanently: a
+	// dropped writable S3 mount is never mounted, so the Cmd's results are
+	// written into a plain directory that cleanup then deletes.
+	Convey("Asking MountConfigs for their key leaves them as they were", t, func() {
+		mcs := twoMounts()
+
+		key := mcs.Key()
+
+		So(mcs[0].Mount, ShouldEqual, "zeta")
+		So(mcs[1].Mount, ShouldEqual, "alpha")
+
+		Convey("while still ignoring the order they were configured in", func() {
+			So(MountConfigs{mcs[1], mcs[0]}.Key(), ShouldEqual, key)
+		})
+
+		Convey("and answering the same way every time when two share a Mount", func() {
+			// sorting a fresh copy on every call is only safe if the sort is
+			// stable: an unstable one could order these differently each time,
+			// and a Job's key decides both its identity and the name of the
+			// working directory it is allowed to delete.
+			same := MountConfigs{
+				{Mount: testMountPath, Targets: []MountTarget{{Path: "one"}}},
+				{Mount: testMountPath, Targets: []MountTarget{{Path: "two"}}},
+			}
+
+			first := same.Key()
+			differed := 0
+
+			for range 20 {
+				if same.Key() != first {
+					differed++
+				}
+			}
+
+			So(differed, ShouldEqual, 0)
+		})
+	})
+
+	Convey("Asking a Job for its key leaves its MountConfigs as they were", t, func() {
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: twoMounts()}
+
+		_ = job.Key()
+
+		So(job.MountConfigs, ShouldResemble, twoMounts())
+	})
+
+	Convey("Asking a JobEssence for its key leaves its MountConfigs as they were", t, func() {
+		je := &JobEssence{Cmd: testTrueCmd, MountConfigs: twoMounts()}
+
+		_ = je.Key()
+
+		So(je.MountConfigs, ShouldResemble, twoMounts())
+	})
+
+	Convey("Modifying a batch's mounts gives each job its own MountConfigs", t, func() {
+		// one JobModifier is applied to every job of a `wr mod --mounts` batch,
+		// and it used to assign its OWN slice to each of them: distinct jobs,
+		// one backing array, as many mutexes as there were jobs.
+		jm := &JobModifier{}
+		jm.SetMountConfigs(twoMounts())
+
+		jobs := []*Job{{Cmd: testTrueCmd, Cwd: testCwdPath}, {Cmd: testOnExitCmd, Cwd: testCwdPath}}
+		for _, job := range jobs {
+			jm.applyTo(job)
+		}
+
+		jobs[0].MountConfigs[0].Mount = "changed"
+
+		So(jobs[1].MountConfigs[0].Mount, ShouldEqual, "zeta")
+	})
+}
