@@ -88,6 +88,8 @@ in this clone leaks `/tmp/wrtest*` directories until those land.
     `make lint` 0 issues.
   - NOT fixed, recorded instead: a stale `running` after a job is **deleted**
     mid-flight. That job is in neither the queue nor the complete bucket, so
-    `statusFromSubscriptionUpdate` falls back to `statusFromJobUpdate`, whose
-    payload has no `Exited` field at all. A rarer shape, and guessing at it would
-    have meant an unjustified clause.
+    `statusFromSubscriptionUpdate` falls back to `statusFromJobUpdate`, which
+    never sets `Exited` - the field is on `JStatus` (`serverWebI.go:232`) and so
+    is always sent, but at its zero value `false`. So the fallback payload cannot
+    report an exited snapshot, and the guard cannot fire on it. A rarer shape, and
+    guessing at it would have meant an unjustified clause.
