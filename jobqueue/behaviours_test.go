@@ -351,6 +351,57 @@ func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 	})
 }
 
+func TestCleanupWithRelativeCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A Job whose Cwd is relative still has its live mount points protected", t, func() {
+		// Job.Cwd is stored exactly as the user typed it - cmd/add.go does not
+		// normalise it, and it cannot, because Cwd feeds Job.Key() and so job
+		// identity. A relative Cwd makes the ActualCwd built from it relative
+		// too, while an absolute MountConfig.Mount stays absolute; comparing one
+		// of each made filepath.Rel fail, the mount go unrecognised, and cleanup
+		// delete straight through it while it was still live.
+		base := t.TempDir()
+
+		oldWd, err := os.Getwd()
+		So(err, ShouldBeNil)
+
+		So(os.Chdir(base), ShouldBeNil)
+
+		Reset(func() { So(os.Chdir(oldWd), ShouldBeNil) })
+
+		work := filepath.Join(base, "work")
+		So(os.MkdirAll(work, os.ModePerm), ShouldBeNil)
+
+		actualCwd, _, err := mkHashedDir(work, "0123456789abcdef0123456789abcdef")
+		So(err, ShouldBeNil)
+
+		mounted := filepath.Join(actualCwd, "mnt", "REMOTE_DATA")
+		So(os.MkdirAll(filepath.Dir(mounted), os.ModePerm), ShouldBeNil)
+		So(os.WriteFile(mounted, []byte("remote\n"), 0o600), ShouldBeNil)
+
+		relCwd, err := filepath.Rel(base, work)
+		So(err, ShouldBeNil)
+
+		relActualCwd, err := filepath.Rel(base, actualCwd)
+		So(err, ShouldBeNil)
+
+		job := &Job{
+			Cwd:          relCwd,
+			ActualCwd:    relActualCwd,
+			MountConfigs: MountConfigs{{Mount: filepath.Join(actualCwd, "mnt")}},
+		}
+
+		err = (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
+
+		soPathsExist(mounted)
+
+		So(err, ShouldBeNil)
+	})
+}
+
 func TestBehaviourCleanupSafety(t *testing.T) {
 	if runnermode || servermode {
 		return

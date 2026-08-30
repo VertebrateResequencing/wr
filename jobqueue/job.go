@@ -1117,12 +1117,43 @@ func (j *Job) createdWorkSpace() string {
 		return ""
 	}
 
-	rel, err := filepath.Rel(j.Cwd, actualCwd)
-	if err != nil || !relIsCreatedCwd(rel) {
+	rel, ok := relBelowDir(j.Cwd, actualCwd)
+	if !ok || !relIsCreatedCwd(rel) {
+		return ""
+	}
+
+	// the same proofs cleanup makes, not just the depth and the name. Without
+	// them this walked a tree wr never created and removed the user's empty
+	// directories from it.
+	if !isRealDirBelow(j.Cwd, actualCwd) {
 		return ""
 	}
 
 	return filepath.Dir(actualCwd)
+}
+
+// isRealDirBelow says whether dir is a real directory that is really there,
+// strictly inside cwd, with no symlink among the components leading to it -
+// the proofs Behaviour.cleanup makes before it deletes anything.
+func isRealDirBelow(cwd, dir string) bool {
+	cwdRoot, err := openBaseRoot(cwd)
+	if err != nil {
+		return false
+	}
+
+	defer cwdRoot.Close()
+
+	dirs, proven := realDirBelow(cwdRoot, dir)
+	if !proven {
+		return false
+	}
+
+	// through the root handle rather than by absolute path: the path came from
+	// the runner, and a name resolved relative to a root cannot leave it, so
+	// this cannot be talked into looking outside cwd.
+	info, err := cwdRoot.Lstat(dirs.rel)
+
+	return err == nil && info.IsDir()
 }
 
 // rmEmptyMountDirs deletes any empty directories between the Job's mount

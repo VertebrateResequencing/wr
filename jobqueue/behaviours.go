@@ -459,8 +459,8 @@ func provenActualCwd(j *Job, wsRoot *os.Root, actualCwdName string) (os.FileInfo
 // leading to each of them.
 func (j *Job) mountDirsToKeep() (keepDirs []string, keepActualCwd bool) {
 	for _, mount := range j.mountPoints() {
-		rel, err := filepath.Rel(j.ActualCwd, mount)
-		if err != nil {
+		rel, ok := relBelowDir(j.ActualCwd, mount)
+		if !ok {
 			continue
 		}
 
@@ -468,9 +468,7 @@ func (j *Job) mountDirsToKeep() (keepDirs []string, keepActualCwd bool) {
 			return nil, true
 		}
 
-		if relIsBelow(rel) {
-			keepDirs = append(keepDirs, rel)
-		}
+		keepDirs = append(keepDirs, rel)
 	}
 
 	return keepDirs, false
@@ -528,7 +526,16 @@ func mountedWorkSpaceEntries(j *Job, workSpace string) map[string]bool {
 // entryLeadingTo returns the name of the entry of dir that path is inside (path
 // itself, if it is a direct child). ok is false if path is not strictly inside
 // dir, or if either path could not be made absolute.
-func entryLeadingTo(dir, path string) (string, bool) {
+// relBelowDir returns path relative to dir, with BOTH made absolute first, and
+// whether it is dir itself (".") or strictly inside it.
+//
+// Both sides have to be normalised because Job.Cwd is stored exactly as the
+// user typed it and is never cleaned - it feeds Job.Key(), so normalising it at
+// the source would change job identity - and a relative Cwd makes the ActualCwd
+// built from it relative too, while an absolute MountConfig.Mount stays
+// absolute. filepath.Rel fails when given one of each, and a mount point that
+// failed to be recognised is a mount deleted through while it is still live.
+func relBelowDir(dir, path string) (string, bool) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", false
@@ -540,7 +547,16 @@ func entryLeadingTo(dir, path string) (string, bool) {
 	}
 
 	rel, err := filepath.Rel(absDir, absPath)
-	if err != nil || !relIsBelow(rel) {
+	if err != nil {
+		return "", false
+	}
+
+	return rel, rel == "." || relIsBelow(rel)
+}
+
+func entryLeadingTo(dir, path string) (string, bool) {
+	rel, ok := relBelowDir(dir, path)
+	if !ok || rel == "." {
 		return "", false
 	}
 
