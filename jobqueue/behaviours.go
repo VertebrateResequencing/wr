@@ -269,6 +269,22 @@ func (b *Behaviour) cleanup(j *Job, _ bool) error {
 		return nil
 	}
 
+	if !filepath.IsAbs(j.Cwd) || !filepath.IsAbs(j.ActualCwd) {
+		// a relative path means nothing without knowing which process resolves
+		// it, and cleanup runs in TWO of them: the runner, and the manager when
+		// it declares a job lost (killLostJobAndTriggerBehaviours). Everything
+		// below resolves with filepath.Abs, i.e. against whichever process is
+		// cleaning up - so a relative Cwd made every containment proof hold
+		// against the MANAGER's directory instead, and deletion landed on
+		// whatever happened to sit at the same relative path beside it.
+		//
+		// Job.Cwd is stored exactly as the user typed it and cannot be
+		// normalised at the source, because it feeds Job.Key() and so job
+		// identity. Refusing here turns a deletion in the wrong tree into a
+		// leaked workspace and a loud error, which is the right way round.
+		return fmt.Errorf("%w: %s and %s must both be absolute", errNotBelowBaseDir, j.Cwd, j.ActualCwd)
+	}
+
 	// every deletion below is made relative to this handle on the Job's Cwd,
 	// which is the boundary all of them must stay inside. Proving a path is
 	// inside Cwd and then deleting the path leaves a window in which a proven

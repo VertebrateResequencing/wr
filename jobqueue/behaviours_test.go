@@ -398,8 +398,64 @@ func TestCleanupWithRelativeCwd(t *testing.T) {
 
 		soPathsExist(mounted)
 
-		So(err, ShouldBeNil)
+		// refused outright, rather than cleaned relative to whichever process
+		// happens to be running: cleanup runs in the runner AND in the manager
+		// when it declares a job lost, and filepath.Abs resolves against the
+		// caller. A relative Cwd made every containment proof hold against the
+		// MANAGER's directory instead, deleting whatever sat at the same
+		// relative path beside it. A leaked workspace and a loud error is the
+		// right way round.
+		So(err, ShouldNotBeNil)
+		So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 	})
+}
+
+func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// both of these were found to be load-bearing but UNTESTED: mutating either
+	// one left the whole suite green while a user's directory was deleted. They
+	// are here so a later simplification cannot remove them silently.
+	Convey("Given a user tree at exactly the depth wr creates its workspaces at", t, func() {
+		cwd := t.TempDir()
+		userTree := filepath.Join(cwd, "a", "b", "c", "d", "e")
+		userDir := filepath.Join(userTree, "userdata")
+		err := os.MkdirAll(userDir, os.ModePerm)
+		So(err, ShouldBeNil)
+
+		precious := filepath.Join(userTree, "precious.txt")
+		err = os.WriteFile(precious, []byte("important\n"), 0o600)
+		So(err, ShouldBeNil)
+
+		// depth and name both satisfied, but wr never made any of it
+		fabricated := filepath.Join(userTree, "cwd")
+
+		Convey("Unmount's tidy-up will not walk it (isRealDirBelow)", func() {
+			job := &Job{
+				Cwd: cwd, ActualCwd: fabricated,
+				MountConfigs: MountConfigs{{Mount: "../userdata"}},
+			}
+
+			_, err = job.Unmount()
+
+			soPathsExist(userDir, userTree, cwd)
+		})
+
+		Convey("cleanup will not sweep it when the named cwd does not exist", func() {
+			err = (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job(cwd, fabricated))
+
+			soPathsExist(precious, userTree, cwd)
+
+			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
+// job builds a minimal non-cwd_matters Job for the guard tests above.
+func job(cwd, actualCwd string) *Job {
+	return &Job{Cwd: cwd, ActualCwd: actualCwd}
 }
 
 func TestBehaviourCleanupSafety(t *testing.T) {

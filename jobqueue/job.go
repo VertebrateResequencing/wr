@@ -1117,6 +1117,13 @@ func (j *Job) createdWorkSpace() string {
 		return ""
 	}
 
+	if !filepath.IsAbs(j.Cwd) || !filepath.IsAbs(actualCwd) {
+		// as in Behaviour.cleanup: a relative path resolves against whichever
+		// process is running, and this runs in the runner while cleanup can run
+		// in the manager.
+		return ""
+	}
+
 	rel, ok := relBelowDir(j.Cwd, actualCwd)
 	if !ok || !relIsCreatedCwd(rel) {
 		return ""
@@ -1176,7 +1183,7 @@ func (j *Job) rmEmptyMountDirs() error {
 	}
 
 	for _, mount := range j.mountPoints() {
-		if rel, relErr := filepath.Rel(workSpace, mount); relErr != nil || !relIsBelow(rel) {
+		if _, ok := relBelowDir(workSpace, mount); !ok {
 			continue
 		}
 
