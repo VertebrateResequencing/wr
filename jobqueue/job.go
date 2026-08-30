@@ -1948,14 +1948,40 @@ func (j *JobModifier) overrideKeyContainer(newJob *Job) {
 	}
 }
 
-// applyTo applies all the set modifications to job in place.
+// applyTo applies all the set modifications to job in place, and then discards
+// any ActualCwd the modifications have invalidated.
+//
+// ActualCwd is the working directory mkHashedDir built below Cwd from the job's
+// Key(), and that is exactly what licenses cleanup to sweep its parent and a
+// `run` behaviour to execute in it: the path is recognised by rebuilding it from
+// the key. So the pair has to stay consistent, and Key() covers the Cmd, the
+// MountConfigs and the container image, every one of which is modifiable here.
+// A modification that changes the key leaves the stored path describing a job
+// definition that no longer exists, and "wr created nothing for this job" - a
+// blank ActualCwd, which cleanup already treats as nothing to do - is then the
+// true account of it.
+//
+// The test is the key itself rather than a clear in each Set* method, because
+// the question is not which fields were touched but whether what was stored is
+// still the path this job's definition builds. A modification that sets a field
+// to the value it already had changes no key and keeps its workspace; one that
+// changes a key-relevant field any of the six ways applyTo can leaks a workspace
+// rather than pointing a deletion at something else. applyCmdCwd clears it for a
+// Cwd change separately, since moving Cwd invalidates the path without changing
+// the key.
 func (j *JobModifier) applyTo(job *Job) {
+	keyBefore := job.Key()
+
 	j.applyCmdCwd(job)
 	j.applyGrouping(job)
 	j.applyRequirements(job)
 	j.applyScheduling(job)
 	j.applyBehaviours(job)
 	j.applyContainer(job)
+
+	if job.Key() != keyBefore {
+		job.ActualCwd = ""
+	}
 }
 
 // applyCmdCwd applies the Cmd/Cwd/CwdMatters/ChangeHome modifications to job.
@@ -1971,6 +1997,12 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 	// either modification. (We can't skip the clear when the supplied Cwd equals
 	// the job's: cmd/mod.go passes the flag through unnormalised, so they could
 	// name the same dir without matching.)
+	//
+	// Neither clear is covered by applyTo's key check. A Cwd change on a job
+	// where Cwd is not part of the key changes no key, and a --cwd_matters on a
+	// job that already had it set changes none either - yet that job is exactly
+	// the one wr v0.37.0|1 persisted with ActualCwd poisoned to Cwd, and this is
+	// where a user clears it.
 	if j.Cwd != "" {
 		job.Cwd = j.Cwd
 		job.ActualCwd = ""

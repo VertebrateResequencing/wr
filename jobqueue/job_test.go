@@ -185,6 +185,95 @@ func TestJobModifierBehaviours(t *testing.T) {
 	})
 }
 
+func TestJobModifierActualCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// ActualCwd is the path mkHashedDir built below Cwd from the Job's Key(),
+	// and cleanup recognises it by rebuilding it from that key. So a
+	// modification that changes the key must not leave the old path behind: a
+	// stored path the current definition cannot build is one wr can prove
+	// nothing about, and "wr created nothing here" is the true account of it.
+	Convey("A modification that changes a Job's key clears its ActualCwd", t, func() {
+		const ran = testCwdPath + "/wr_cwd/a/b/c/uniq0/cwd"
+
+		newJob := func() *Job {
+			return &Job{Cmd: testTrueCmd, Cwd: testCwdPath, ActualCwd: ran}
+		}
+
+		for _, tc := range []struct {
+			name   string
+			modify func(*JobModifier)
+		}{
+			{"the Cmd", func(jm *JobModifier) { jm.SetCmd("echo something else") }},
+			{"the MountConfigs", func(jm *JobModifier) {
+				jm.SetMountConfigs(MountConfigs{{Mount: "mnt", Targets: []MountTarget{{Path: "s3/path"}}}})
+			}},
+			{"the container image", func(jm *JobModifier) { jm.SetWithDocker("ubuntu:latest") }},
+			{"the Cwd", func(jm *JobModifier) { jm.SetCwd("/elsewhere") }},
+			{"CwdMatters", func(jm *JobModifier) { jm.SetCwdMatters(true) }},
+		} {
+			Convey("modifying "+tc.name+" clears it", func() {
+				job := newJob()
+
+				jm := NewJobModifer()
+				tc.modify(jm)
+				jm.applyTo(job)
+
+				So(job.ActualCwd, ShouldBeBlank)
+			})
+		}
+
+		Convey("but a modification that leaves the key alone keeps it", func() {
+			// clearing it costs the user a leaked workspace, so it is only done
+			// where the stored path has actually stopped describing the Job.
+			job := newJob()
+
+			jm := NewJobModifer()
+			jm.SetPriority(7)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldEqual, ran)
+		})
+
+		Convey("and so does one that sets a key field to the value it already had", func() {
+			job := newJob()
+
+			jm := NewJobModifer()
+			jm.SetCmd(testTrueCmd)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldEqual, ran)
+		})
+
+		Convey("a container image change clears it even though the Cmd is untouched", func() {
+			// WithDocker, WithSingularity and ContainerMounts all reach Key()
+			// and none of them is a Cmd or a Cwd, which is how they were missed.
+			job := newJob()
+			job.WithSingularity = "ubuntu.sif"
+
+			jm := NewJobModifer()
+			jm.SetContainerMounts("/data:/data")
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("--cwd_matters on a Job that already had it clears the v0.37 poison", func() {
+			// such a Job's key does not change, but wr v0.37.0|1 persisted it
+			// with ActualCwd set to Cwd, and this is where a user clears that.
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, ActualCwd: testCwdPath}
+
+			jm := NewJobModifer()
+			jm.SetCwdMatters(true)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+	})
+}
+
 func TestJobMountBaseDirs(t *testing.T) {
 	if runnermode || servermode {
 		return
