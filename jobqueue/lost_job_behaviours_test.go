@@ -75,7 +75,7 @@ func TestLostJobBehavioursActOnTheLostRun(t *testing.T) {
 		// with it. OnFailure runs before OnExit, so it reports before the sweep.
 		ranIn := filepath.Join(cwd, "ran_in.txt")
 		job := &Job{
-			Cmd: "true", Cwd: cwd, RepGroup: rg, ReqGroup: rg,
+			Cmd: restFormTrue, Cwd: cwd, RepGroup: rg, ReqGroup: rg,
 			Requirements: standardReqs, Retries: 3,
 			Behaviours: Behaviours{
 				{When: OnFailure, Do: Run, Arg: "pwd > " + ranIn},
