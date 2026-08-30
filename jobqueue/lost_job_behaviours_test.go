@@ -40,6 +40,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,5 +147,51 @@ func TestLostJobBehavioursActOnTheLostRun(t *testing.T) {
 			So(errr, ShouldBeNil)
 			So(strings.TrimSpace(string(ran)), ShouldEqual, lostCwd)
 		})
+	})
+}
+
+func TestPinBehavioursIsLocked(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Pinning a lost job's behaviours reads its state under the Job's lock", t, func() {
+		// the pin is taken in the manager, on the queue's live *Job, while a
+		// runner's touches are writing ActualCwd onto it under that same lock
+		// (applyLiveSnapshot). An unlocked read here is a data race whose
+		// outcome decides which directory the behaviours delete and run in.
+		// -race is what makes this test bite.
+		const (
+			concurrentRounds          = 50
+			concurrentWriterAndPinner = 2
+		)
+
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, Cmd: testWSCmd, Behaviours: Behaviours{{When: OnExit, Do: CleanupAll}}}
+		actualCwd, _, _ := realWorkSpace(job)
+
+		var wg sync.WaitGroup
+
+		wg.Add(concurrentWriterAndPinner)
+
+		go func() {
+			defer wg.Done()
+
+			for range concurrentRounds {
+				applyLiveSnapshot(job, &JobEndState{Cwd: actualCwd})
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+
+			for range concurrentRounds {
+				_ = job.pinBehaviours()
+			}
+		}()
+
+		wg.Wait()
+
+		soPathsExist(cwd)
 	})
 }
