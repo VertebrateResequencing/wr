@@ -1361,5 +1361,22 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 
 		So(recovered.isLostRunLocked(server.mintRunToken()), ShouldBeFalse)
 		So(recovered.isLostRunLocked(0), ShouldBeTrue)
+
+		Convey("and neither is the run reserved after it", func() {
+			// counting from 1 keeps a MINTED token off the recovered run. What
+			// keeps a pin OF the recovered run off the job's later runs is the
+			// reservation each of them begins with: without one, the recovered
+			// job carries the zero token into every run that follows until its
+			// Started, and the pin matches them all.
+			pin := recovered.pinBehaviours()
+			So(recovered.isLostRunLocked(pin.run), ShouldBeTrue)
+
+			server.resetJobForReservation(recovered, newTestClientID())
+
+			// and when that run is itself lost, so that the Lost half answers
+			// yes again, the token is the whole of what refuses the pin.
+			recovered.Lost = true
+			So(recovered.isLostRunLocked(pin.run), ShouldBeFalse)
+		})
 	})
 }
