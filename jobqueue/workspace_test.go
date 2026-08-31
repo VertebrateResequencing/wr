@@ -540,6 +540,95 @@ func TestCleanupWorkingDirSwappedAfterProof(t *testing.T) {
 
 			So(err, ShouldNotBeNil)
 		})
+
+		Convey("and when the proof tolerated the working dir already being absent", func() {
+			// absence is the one case with no identity to check the name
+			// against: there was nothing there to lstat, and the licence to
+			// delete is the path being provably this Job's own. So what KIND of
+			// thing has appeared at that name by the time the sweep looks is the
+			// only question left to ask, and asking it is what stops wr
+			// unlinking a symlink of the user's and reporting success.
+			absent := &Job{Cwd: cwd, Cmd: testWSCmd + " absent"}
+			absentCwd, _, _ := realWorkSpace(absent)
+			So(os.RemoveAll(absentCwd), ShouldBeNil)
+
+			err := swapWorkingDir(absent)
+
+			soPathsExist(notes, userDir, absentCwd, cwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+	})
+}
+
+func TestCleanupWorkingDirSwappedForADirAfterProof(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Cleanup refuses a working dir swapped for another dir after it was proven", t, func() {
+		// what kind of thing sits at a name is not which thing it is. A
+		// DIRECTORY renamed onto the working directory's name after the proof
+		// answers every question about kind identically, so only comparing it
+		// against the lstat the proof took tells the two apart - which is the
+		// comparison `run` makes by construction, through openVerifiedDirFile.
+		// While cleanup asked only about kind, a swap `run` refused to enter was
+		// one cleanup swept, and the whole point of resolving once is that the
+		// two consumers cannot disagree about which directory is the Job's.
+		cwd := t.TempDir()
+
+		userTree := filepath.Join(cwd, "scripts")
+		writeFileIn(userTree, "analyse.sh")
+		writeFileIn(filepath.Join(userTree, "lib"), "helpers.sh")
+
+		swapWorkingDirForDir := func(j *Job) error {
+			cleanupProvenHook = func() {
+				cleanupProvenHook = nil
+
+				So(os.Rename(j.ActualCwd, j.ActualCwd+".moved"), ShouldBeNil)
+				So(os.Rename(userTree, j.ActualCwd), ShouldBeNil)
+			}
+
+			return (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, j)
+		}
+
+		soUserTreeSurvives := func(at string) {
+			soPathsExist(filepath.Join(at, "analyse.sh"), filepath.Join(at, "lib", "helpers.sh"), cwd)
+		}
+
+		Reset(func() { cleanupProvenHook = nil })
+
+		Convey("when the Job has no mounts, so the swept dir is removed whole", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, _, _ := realWorkSpace(job)
+
+			err := swapWorkingDirForDir(job)
+
+			// survival first, so a lost race shows up as the deletion it is,
+			// not as a missing error value.
+			soUserTreeSurvives(actualCwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("and when a live mount inside it would otherwise keep some of it", func() {
+			// the keep set takes the other branch of removeActualCwd, which
+			// opens the working directory and deletes all but the kept dirs
+			// through the handle. Verifying that open against a fresh look at
+			// the name proves only that the name did not change again.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd + " mounted", MountConfigs: MountConfigs{{Mount: testWSMount}}}
+			actualCwd, _, _ := realWorkSpace(job)
+			So(os.MkdirAll(filepath.Join(actualCwd, testWSMount), os.ModePerm), ShouldBeNil)
+
+			err := swapWorkingDirForDir(job)
+
+			soUserTreeSurvives(actualCwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
 	})
 }
 

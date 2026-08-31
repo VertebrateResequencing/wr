@@ -906,6 +906,22 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 // since the proof is simply nothing to delete; one that has become a symlink or
 // a file has been swapped by the Job's own Cmd, and reading it would delete the
 // target's contents instead.
+//
+// Kind is not identity, and asking only about kind was the same DISAGREEMENT
+// this file exists to prevent, one flavour deeper in: a DIRECTORY renamed onto
+// the name after the proof is a real dir, so `run` refused it - it opens against
+// ws.actualCwdInfo through openVerifiedDirFile - while cleanup accepted it and
+// recursively deleted a tree of the user's, returning nil. So the identity comes
+// from the same field, through the same proveSameDir both opens use, and the
+// info handed on is the PROVEN one rather than this fresh look: an identity the
+// proof did not establish must not become the identity of record for the open
+// removeActualCwd goes on to make.
+//
+// A nil ws.actualCwdInfo is the absence proveActualCwd tolerated for cleanup, so
+// there is no identity to compare and nothing that could establish one after the
+// fact. What licenses the deletion there is the path itself: createdCwdRel has
+// already proven it is the one mkHashedDir built for THIS Job, which is the same
+// licence the sweep of a working directory that never went away relies on.
 func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 	info, err := wsRoot.Lstat(ws.paths.actualCwdName)
 	if err != nil {
@@ -921,7 +937,16 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 			errNotBelowBaseDir, ws.paths.actualCwd, ws.paths.cwd)
 	}
 
-	return info, nil
+	if ws.actualCwdInfo == nil {
+		return info, nil
+	}
+
+	if err = proveSameDir(info, ws.actualCwdInfo, ws.paths.actualCwd); err != nil {
+		return nil, fmt.Errorf("refusing to clean up %s inside the job's cwd %s: %w",
+			ws.paths.actualCwd, ws.paths.cwd, err)
+	}
+
+	return ws.actualCwdInfo, nil
 }
 
 // removeExcept deletes the contents of the Job's workspace, keeping the dirs its

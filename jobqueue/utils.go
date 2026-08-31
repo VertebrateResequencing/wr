@@ -1134,15 +1134,33 @@ func (c dirChain) removeEmptyParents() {
 	}
 }
 
+// proveSameDir proves that now describes the same directory as checked, the
+// lstat a proof took of it before its name was last resolved. It is the ONE
+// statement of what "still the directory the proof identified" means, and every
+// consumer of a proven working directory asks it: `run` through the opens below,
+// cleanup through jobWorkSpace.actualCwdNow. Two consumers of one resolution
+// deriving that identity separately is what let cleanup sweep a directory swap
+// that `run` refused to enter.
+//
+// checked must have been taken with an lstat of a DIRECTORY, or this proves
+// nothing: what identifies the thing looked at now is that it is the same file
+// as checked, so a nil or non-directory checked refuses everything rather than
+// accepting anything.
+func proveSameDir(now, checked os.FileInfo, name string) error {
+	if !os.SameFile(now, checked) {
+		return fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, name)
+	}
+
+	return nil
+}
+
 // openVerifiedDirFile opens name, a path relative to parent, as an open FILE on
 // the directory, and proves that the directory it opened is the one info
 // describes - the same proof openVerifiedDir makes, for a caller that needs a
 // descriptor it can name to something else rather than a root to work within.
 //
-// info must have been taken with an lstat of a DIRECTORY made before name was
-// last resolved, or this proves nothing: what identifies the thing opened is
-// that it is the same file as info, so a nil or non-directory info refuses
-// everything rather than accepting anything.
+// info must satisfy proveSameDir's requirements of it, and the proof is
+// worth exactly what that says it is worth.
 //
 // The caller must Close the returned file.
 func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.File, error) {
@@ -1152,8 +1170,8 @@ func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.Fi
 	}
 
 	opened, err := f.Stat()
-	if err == nil && !os.SameFile(opened, info) {
-		err = fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, f.Name())
+	if err == nil {
+		err = proveSameDir(opened, info, f.Name())
 	}
 
 	if err != nil {
@@ -1167,8 +1185,7 @@ func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.Fi
 
 // openVerifiedDir opens name, a path relative to parent, as a root of its own,
 // and proves that the directory it opened is the one info describes. info must
-// have been taken with an lstat made before name was last resolved, or it
-// proves nothing.
+// satisfy proveSameDir's requirements of it, or it proves nothing.
 func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, error) {
 	dirRoot, err := parent.OpenRoot(name)
 	if err != nil {
@@ -1176,8 +1193,8 @@ func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, 
 	}
 
 	opened, err := dirRoot.Stat(".")
-	if err == nil && !os.SameFile(opened, info) {
-		err = fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, dirRoot.Name())
+	if err == nil {
+		err = proveSameDir(opened, info, dirRoot.Name())
 	}
 
 	if err != nil {
